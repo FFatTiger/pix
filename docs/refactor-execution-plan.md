@@ -4,7 +4,7 @@
 > 架构原则与目标见 [`refactor-architecture.md`](./refactor-architecture.md)；所有任务认领、依赖、文件所有权、状态同步、验收和合并顺序以本文件为准。  
 > 新同事加入项目时，先阅读本文件，再阅读 `AGENTS.md` 和自己任务涉及的源码。
 
-- 最后更新：2026-08-10 10:11 CST
+- 最后更新：2026-08-10 10:18 CST
 - 目标主线：Vite Client + Hono Host + `pi-sessiond` + 每会话 Worker + Protocol v1
 - 当前交付：浏览器 / PWA；不交付 Tauri/Electron
 - 集成负责人：待团队指定
@@ -203,8 +203,8 @@ running_sessions_changed runtime_unavailable
 | `G0` | 执行与协作手册 | `DONE` | 当前会话 | `main` | 无 | `docs/refactor-execution-plan.md` |
 | `P0` | Workspace + Protocol v1 | `IN_REVIEW` | `protocol-base-impl` | `refactor/protocol-base` / `pi-web-worktrees/protocol-base` | 无 | commit `478ca71`；Protocol build/typecheck、28 tests、根 tsc 通过；独立验证中 |
 | `V-P0` | Protocol v1 独立验证 | `IN_PROGRESS` | `protocol-base-verifier` | 只读验证 `refactor/protocol-base` | `P0` | 等待 PASS/FAIL |
-| `C0` | Vite Client Shell | `IN_PROGRESS` | `client-shell-impl` | `refactor/client-shell` / `pi-web-worktrees/client-shell` | 无 | commit `15f3722` 验证为 PARTIAL；修复登录后 `next` 深链恢复并补测试中 |
-| `V-C0` | Client Shell 独立验证 | `PAUSED` | `client-shell-verifier` | 只读验证 `refactor/client-shell` | `C0` | 首轮 PARTIAL：1 个 HIGH（登录 deep-link navigation）；等待修复后由同一验证者复验 |
+| `C0` | Vite Client Shell | `IN_REVIEW` | `client-shell-impl` | `refactor/client-shell` / `pi-web-worktrees/client-shell` | 无 | fix commit `d8978b5`；登录 deep-link 修复；7 files / 50 tests、typecheck/build/boundaries 通过；复验中 |
+| `V-C0` | Client Shell 独立验证 | `IN_PROGRESS` | `client-shell-verifier` | 只读验证 `refactor/client-shell` | `C0` | 首轮 PARTIAL；正在复验 `d8978b5` |
 | `I0` | 创建集成分支并归一化 root lockfile | `BLOCKED` | 待指定 | `refactor/architecture-v1` | `V-P0`, `V-C0` | 两项独立验证通过后，先合 P0，再合 C0，然后根目录 `npm install` |
 
 ### 5.2 Wave 1：Runtime、Host、Client 数据层并行
