@@ -4,11 +4,11 @@
 > 架构原则与目标见 [`refactor-architecture.md`](./refactor-architecture.md)；所有任务认领、依赖、文件所有权、状态同步、验收和合并顺序以本文件为准。  
 > 新同事加入项目时，先阅读本文件，再阅读 `AGENTS.md` 和自己任务涉及的源码。
 
-- 最后更新：2026-08-10 10:31 CST
+- 最后更新：2026-08-10 10:38 CST
 - 目标主线：Vite Client + Hono Host + `pi-sessiond` + 每会话 Worker + Protocol v1
 - 当前交付：浏览器 / PWA；不交付 Tauri/Electron
-- 集成负责人：待团队指定
-- 集成分支：`refactor/architecture-v1`（Protocol 基线验收后创建）
+- 集成负责人：`FFatTiger`（当前会话）
+- 集成分支：`refactor/architecture-v1`
 
 ---
 
@@ -201,11 +201,11 @@ running_sessions_changed runtime_unavailable
 | ID | 工作包 | 状态 | 负责人 | 分支 / Worktree | 依赖 | 当前结果 |
 |---|---|---|---|---|---|---|
 | `G0` | 执行与协作手册 | `DONE` | 当前会话 | `main` | 无 | `docs/refactor-execution-plan.md` |
-| `P0` | Workspace + Protocol v1 | `IN_PROGRESS` | `protocol-base-impl` | `refactor/protocol-base` / `pi-web-worktrees/protocol-base` | 无 | commit `478ca71` 独立验证 FAIL；修复强类型 RPC/IPC、cwd lifecycle、streaming schema、cursor 等契约中 |
+| `P0` | Workspace + Protocol v1 | `IN_PROGRESS` | `FFatTiger` / `protocol-base-impl` | `refactor/protocol-base`；[PR #15](https://github.com/FFatTiger/pi-web/pull/15)；[pix #1](https://github.com/FFatTiger/pix/issues/1) | 无 | commit `478ca71` 独立验证 FAIL；修复强类型 RPC/IPC、cwd lifecycle、streaming schema、cursor 等契约中 |
 | `V-P0` | Protocol v1 独立验证 | `PAUSED` | `protocol-base-verifier` | 只读验证 `refactor/protocol-base` | `P0` | 首轮 FAIL：4 个阻塞类契约问题；等待修复后由同一验证者复验 |
 | `C0` | Vite Client Shell | `DONE` | `client-shell-impl` | `refactor/client-shell` / `pi-web-worktrees/client-shell` | 无 | commit `d8978b5`；登录 deep-link 修复；7 files / 50 tests、typecheck/build/boundaries 通过 |
 | `V-C0` | Client Shell 独立验证 | `DONE` | `client-shell-verifier` + 集成负责人复跑 | 只读验证 `refactor/client-shell` | `C0` | 首轮 HIGH 已关闭；主会话复跑 typecheck、50 tests、build、boundaries、diff check 全部 PASS |
-| `I0` | 创建集成分支并归一化 root lockfile | `BLOCKED` | 待指定 | `refactor/architecture-v1` | `V-P0`, `V-C0` | 两项独立验证通过后，先合 P0，再合 C0，然后根目录 `npm install` |
+| `I0` | 归一化集成分支和 root lockfile | `BLOCKED` | `FFatTiger` | `refactor/architecture-v1`（已创建并推送） | `V-P0`, `V-C0` | C0 已通过；等待 Protocol 复验后合 P0/C0 并根目录 `npm install` |
 
 ### 5.2 Wave 1：Runtime、Host、Client 数据层并行
 
@@ -213,7 +213,8 @@ running_sessions_changed runtime_unavailable
 |---|---|---|---|---|---|---|
 | `R1` | pi-sessiond Core | `BLOCKED` | 待认领 | `refactor/sessiond-core` | `P0`, `I0` | `packages/sessiond/**` |
 | `R2` | agent-worker Core | `BLOCKED` | 待认领 | `refactor/agent-worker-core` | `P0`, `I0` | `packages/agent-worker/**` |
-| `H0` | Hono Host Skeleton | `BLOCKED` | 待认领 | `refactor/host-core` | `P0`, `I0` | `packages/host/**` 基础层 |
+| `H0A` | Protocol-independent Hono Host Foundation | `READY` | `Pililink`（已分派，等待接受 pi-web 邀请/开始） | `refactor/h0-host-foundation`；[pix #2](https://github.com/FFatTiger/pix/issues/2) | 无（禁止 runtime wiring） | 可立即开发 security/gate/static/DI 骨架；只改 `packages/host/**` |
+| `H0B` | Hono Host Protocol/runtime wiring | `BLOCKED` | 待认领 | `refactor/host-runtime-wiring` | `P0`, `I0`, `H0A`, `R1` | 后续接正式 Protocol/sessiond；不得由 H0A 自行发明协议 |
 | `C1` | Client Protocol + HTTP Query | `BLOCKED` | 待认领 | `refactor/client-data` | `P0`, `C0`, `I0` | `packages/client/src/api/**` 等 |
 | `CLI0` | CLI / sessiond single-instance 启动 | `BLOCKED` | 待认领 | `refactor/cli-runtime` | `R1`, `R2`, `H0` | `packages/cli/**`, `bin/**` |
 
@@ -1148,5 +1149,6 @@ AGENTS.md
 
 | 日期 | 变更 |
 |---|---|
+| 2026-08-10 | 分工落地：`FFatTiger` 负责 P0/I0；`Pililink` 分派 H0A，可立即从 `refactor/h0-host-foundation` 开始；创建 pix Issues #1/#2 和 pi-web Draft PR #14/#15 |
 | 2026-08-10 | Protocol `478ca71` 独立验证 FAIL；P0 退回修复：RPC/IPC method-payload 强绑定、cwd lifecycle、streaming message、extension response、整数 event cursor |
 | 2026-08-10 | 创建执行与协作手册；记录 P0、C0 当前进度；冻结 Wave 0～3、文件所有权、验收和同步规则 |
