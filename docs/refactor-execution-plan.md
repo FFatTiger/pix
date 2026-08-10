@@ -1,10 +1,14 @@
 # pi-web 架构重构执行与协作手册
 
-> **本文件是本轮重构的执行单一事实源（Execution SSOT）。**  
+> **全局状态：`PAUSED`（项目负责人于 2026-08-10 要求暂停所有工作）。**
+> 在收到明确恢复通知前：不得继续开发、提交、推送、合并、认领新任务或启动自动化实现；保留现有分支、worktree、Draft PR 和本地未提交进度。
+>
+> **本文件是本轮重构的执行单一事实源（Execution SSOT）。**
 > 架构原则与目标见 [`refactor-architecture.md`](./refactor-architecture.md)；所有任务认领、依赖、文件所有权、状态同步、验收和合并顺序以本文件为准。  
 > 新同事加入项目时，先阅读本文件，再阅读 `AGENTS.md` 和自己任务涉及的源码。
 
-- 最后更新：2026-08-10 10:38 CST
+- 最后更新：2026-08-10 10:45 CST
+- 项目状态：`PAUSED`
 - 目标主线：Vite Client + Hono Host + `pi-sessiond` + 每会话 Worker + Protocol v1
 - 当前交付：浏览器 / PWA；不交付 Tauri/Electron
 - 集成负责人：`FFatTiger`（当前会话）
@@ -201,11 +205,11 @@ running_sessions_changed runtime_unavailable
 | ID | 工作包 | 状态 | 负责人 | 分支 / Worktree | 依赖 | 当前结果 |
 |---|---|---|---|---|---|---|
 | `G0` | 执行与协作手册 | `DONE` | 当前会话 | `main` | 无 | `docs/refactor-execution-plan.md` |
-| `P0` | Workspace + Protocol v1 | `IN_PROGRESS` | `FFatTiger` / `protocol-base-impl` | `refactor/protocol-base`；[PR #15](https://github.com/FFatTiger/pi-web/pull/15)；[pix #1](https://github.com/FFatTiger/pix/issues/1) | 无 | commit `478ca71` 独立验证 FAIL；修复强类型 RPC/IPC、cwd lifecycle、streaming schema、cursor 等契约中 |
+| `P0` | Workspace + Protocol v1 | `PAUSED` | `FFatTiger` / `protocol-base-impl` | `refactor/protocol-base`；[PR #15](https://github.com/FFatTiger/pi-web/pull/15)；[pix #1](https://github.com/FFatTiger/pix/issues/1) | 无 | Protocol 修复代理已停止；保留 commit `478ca71` 及 worktree 内当前进度，等待恢复通知 |
 | `V-P0` | Protocol v1 独立验证 | `PAUSED` | `protocol-base-verifier` | 只读验证 `refactor/protocol-base` | `P0` | 首轮 FAIL：4 个阻塞类契约问题；等待修复后由同一验证者复验 |
 | `C0` | Vite Client Shell | `DONE` | `client-shell-impl` | `refactor/client-shell` / `pi-web-worktrees/client-shell` | 无 | commit `d8978b5`；登录 deep-link 修复；7 files / 50 tests、typecheck/build/boundaries 通过 |
 | `V-C0` | Client Shell 独立验证 | `DONE` | `client-shell-verifier` + 集成负责人复跑 | 只读验证 `refactor/client-shell` | `C0` | 首轮 HIGH 已关闭；主会话复跑 typecheck、50 tests、build、boundaries、diff check 全部 PASS |
-| `I0` | 归一化集成分支和 root lockfile | `BLOCKED` | `FFatTiger` | `refactor/architecture-v1`（已创建并推送） | `V-P0`, `V-C0` | C0 已通过；等待 Protocol 复验后合 P0/C0 并根目录 `npm install` |
+| `I0` | 归一化集成分支和 root lockfile | `PAUSED` | `FFatTiger` | `refactor/architecture-v1`（已创建并推送） | `V-P0`, `V-C0` | 不合并 P0/C0、不归一化 lockfile，等待恢复通知 |
 
 ### 5.2 Wave 1：Runtime、Host、Client 数据层并行
 
@@ -213,7 +217,7 @@ running_sessions_changed runtime_unavailable
 |---|---|---|---|---|---|---|
 | `R1` | pi-sessiond Core | `BLOCKED` | 待认领 | `refactor/sessiond-core` | `P0`, `I0` | `packages/sessiond/**` |
 | `R2` | agent-worker Core | `BLOCKED` | 待认领 | `refactor/agent-worker-core` | `P0`, `I0` | `packages/agent-worker/**` |
-| `H0A` | Protocol-independent Hono Host Foundation | `READY` | `Pililink`（已分派，等待接受 pi-web 邀请/开始） | `refactor/h0-host-foundation`；[pix #2](https://github.com/FFatTiger/pix/issues/2) | 无（禁止 runtime wiring） | 可立即开发 security/gate/static/DI 骨架；只改 `packages/host/**` |
+| `H0A` | Protocol-independent Hono Host Foundation | `PAUSED` | `Pililink`（已通知暂停） | `refactor/h0-host-foundation`；[pix #2](https://github.com/FFatTiger/pix/issues/2) | 无（禁止 runtime wiring） | 不得开始或继续开发；保留分支，等待恢复通知 |
 | `H0B` | Hono Host Protocol/runtime wiring | `BLOCKED` | 待认领 | `refactor/host-runtime-wiring` | `P0`, `I0`, `H0A`, `R1` | 后续接正式 Protocol/sessiond；不得由 H0A 自行发明协议 |
 | `C1` | Client Protocol + HTTP Query | `BLOCKED` | 待认领 | `refactor/client-data` | `P0`, `C0`, `I0` | `packages/client/src/api/**` 等 |
 | `CLI0` | CLI / sessiond single-instance 启动 | `BLOCKED` | 待认领 | `refactor/cli-runtime` | `R1`, `R2`, `H0` | `packages/cli/**`, `bin/**` |
@@ -1149,6 +1153,7 @@ AGENTS.md
 
 | 日期 | 变更 |
 |---|---|
+| 2026-08-10 | 项目负责人要求暂停所有工作：停止 Protocol 实现代理；P0/I0/H0A 标记 PAUSED；pix Issues #1/#2 已留言通知；Draft PR #14/#15 保留且不合并 |
 | 2026-08-10 | 分工落地：`FFatTiger` 负责 P0/I0；`Pililink` 分派 H0A，可立即从 `refactor/h0-host-foundation` 开始；创建 pix Issues #1/#2 和 pi-web Draft PR #14/#15 |
 | 2026-08-10 | Protocol `478ca71` 独立验证 FAIL；P0 退回修复：RPC/IPC method-payload 强绑定、cwd lifecycle、streaming message、extension response、整数 event cursor |
 | 2026-08-10 | 创建执行与协作手册；记录 P0、C0 当前进度；冻结 Wave 0～3、文件所有权、验收和同步规则 |
