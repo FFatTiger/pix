@@ -67,7 +67,7 @@ describe("independent interrupt wire path", () => {
         protocolVersion: 1,
         id: `rpc-${type}`,
         method: "runtime.interrupt",
-        params: { sessionId: "s-1", interrupt: { type } },
+        params: { sessionId: "s-1", commandId: `cmd-${type}`, interrupt: { type } },
       };
       assert.equal(SessiondRpcRequestSchema.safeParse(request).success, true);
       assert.equal(SessiondToWorkerMessageSchema.safeParse({
@@ -81,9 +81,9 @@ describe("independent interrupt wire path", () => {
       assert.equal(WorkerToSessiondPushSchema.safeParse({
         type: "worker.interruptResult",
         id: `worker-${type}`,
-        payload: { sessionId: "s-1", result },
+        payload: { sessionId: "s-1", result: { commandId: `cmd-${type}`, result } },
       }).success, true);
-      assert.equal(SessiondRpcResponseSchema.safeParse({ id: `rpc-${type}`, ok: true, method: "runtime.interrupt", result }).success, true);
+      assert.equal(SessiondRpcResponseSchema.safeParse({ id: `rpc-${type}`, ok: true, method: "runtime.interrupt", result: { commandId: `cmd-${type}`, result } }).success, true);
     });
   }
 
@@ -91,6 +91,13 @@ describe("independent interrupt wire path", () => {
     assert.equal(RuntimeInterruptResultSchema.safeParse({ ok: true, type: "abort", error: error() }).success, false);
     assert.equal(RuntimeInterruptResultSchema.safeParse({ ok: false, type: "abort", error: { code: "unavailable", message: "closed" } }).success, false);
     assert.equal(RuntimeInterruptResultSchema.safeParse({ ok: true, type: "prompt" }).success, false);
+  });
+
+  it("rejects runtime.interrupt params missing the browser commandId", () => {
+    assert.equal(SessiondRpcRequestSchema.safeParse({
+      protocolVersion: 1, id: "rpc-x", method: "runtime.interrupt",
+      params: { sessionId: "s-1", interrupt: { type: "abort" } },
+    }).success, false, "commandId is required on the interrupt RPC");
   });
 });
 

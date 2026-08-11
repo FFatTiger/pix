@@ -2,7 +2,6 @@ import { z } from "zod";
 import { RuntimeCommandSchema } from "./commands.js";
 import {
   EmptyObjectSchema,
-  EpochSchema,
   ModelSelectorSchema,
   NonEmptyStringSchema,
   ProtocolErrorSchema,
@@ -10,7 +9,7 @@ import {
   WorkerStatusSchema,
 } from "./common.js";
 import { RuntimeEventDataSchema } from "./events.js";
-import { CorrelatedRuntimeCommandResultSchema, RuntimeInterruptResultSchema, RuntimeInterruptSchema } from "./results.js";
+import { CorrelatedRuntimeCommandResultSchema, CorrelatedRuntimeInterruptResultSchema, RuntimeInterruptSchema } from "./results.js";
 import { RuntimeSnapshotSchema, RuntimeStateSchema } from "./snapshot.js";
 import { ProtocolVersionSchema } from "./version.js";
 
@@ -27,6 +26,12 @@ export const WorkerInitMessageSchema = z.strictObject({
   id: NonEmptyStringSchema,
   protocolVersion: ProtocolVersionSchema,
   payload: z.strictObject({
+    /**
+     * Worker startup mode. `create` starts a brand-new session (create path);
+     * `open` reactivates an existing session (activate path). Mandatory so the
+     * worker never has to infer intent from optional fields.
+     */
+    mode: z.enum(["create", "open"]),
     sessionId: NonEmptyStringSchema,
     cwd: NonEmptyStringSchema,
     projectRoot: NonEmptyStringSchema,
@@ -55,6 +60,8 @@ export const WorkerInterruptMessageSchema = z.strictObject({
   protocolVersion: ProtocolVersionSchema,
   payload: z.strictObject({
     sessionId: NonEmptyStringSchema,
+    /** Browser-issued business correlation id; deduplicated by the authority. */
+    commandId: NonEmptyStringSchema,
     interrupt: RuntimeInterruptSchema,
   }),
 });
@@ -127,7 +134,6 @@ export const WorkerReadyMessageSchema = z.strictObject({
   id: NonEmptyStringSchema.optional(),
   payload: z.strictObject({
     sessionId: NonEmptyStringSchema,
-    epoch: EpochSchema,
     workerStatus: WorkerStatusSchema,
     state: RuntimeStateSchema.optional(),
   }),
@@ -147,7 +153,8 @@ export const WorkerInterruptResultMessageSchema = z.strictObject({
   id: NonEmptyStringSchema,
   payload: z.strictObject({
     sessionId: NonEmptyStringSchema,
-    result: RuntimeInterruptResultSchema,
+    /** Correlated result mirroring worker.commandResult shape. */
+    result: CorrelatedRuntimeInterruptResultSchema,
   }),
 });
 

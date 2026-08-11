@@ -49,7 +49,7 @@ export class SessiondApplication implements SessiondRpcHandler {
       }
       case "runtime.interrupt": {
         const input = params as SessiondMethodParams["runtime.interrupt"];
-        return this.service.interrupt(input.sessionId, input.interrupt, context?.requestId);
+        return this.service.interrupt(input.sessionId, input.commandId, input.interrupt);
       }
       case "runtime.stop": {
         const input = params as SessiondMethodParams["runtime.stop"];

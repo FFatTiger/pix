@@ -1,7 +1,7 @@
 import type {
+  CorrelatedRuntimeInterruptResult,
   RuntimeCommand,
   RuntimeInterrupt,
-  RuntimeInterruptResult,
   RuntimeSnapshot,
   RuntimeCommandResult,
   SessiondToWorkerMessage,
@@ -10,7 +10,14 @@ import type {
 import type { ProtocolError } from "@fffattiger/pix-protocol";
 import type { SessionLocation } from "@fffattiger/pix-runtime-core";
 
+/**
+ * How the worker should start. `create` boots a brand-new session; `open`
+ * reactivates an existing one. Mandatory so the worker never infers intent.
+ */
+export type WorkerStartMode = "create" | "open";
+
 export interface WorkerStartInput {
+  mode: WorkerStartMode;
   activationId: string;
   sessionId: string;
   cwd: string;
@@ -50,6 +57,7 @@ export interface SessionResolver {
 
 export interface WorkerCommandApi {
   command(sessionId: string, command: RuntimeCommand): Promise<RuntimeCommandResult>;
-  interrupt(sessionId: string, interrupt: RuntimeInterrupt): Promise<RuntimeInterruptResult>;
+  /** commandId is the browser-issued business correlation id; result is correlated. */
+  interrupt(sessionId: string, commandId: string, interrupt: RuntimeInterrupt): Promise<CorrelatedRuntimeInterruptResult>;
   snapshot(sessionId: string): Promise<RuntimeSnapshot>;
 }

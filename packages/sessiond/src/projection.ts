@@ -94,6 +94,10 @@ export class SnapshotProjection {
       case "runtime_capabilities_changed": snapshot.capabilities = clone(event.capabilities); break;
       case "session_title": state.sessionName = event.name; break;
       case "bash_update": {
+        // bash_update.output is a per-event DELTA chunk (see Protocol events.ts
+        // JSDoc). This projection is the SINGLE authoritative accumulator: each
+        // delta is concatenated onto the prior cumulative output. An adapter must
+        // never pre-accumulate the deltas before they reach here.
         const existing = state.bash;
         const command = event.command ?? existing?.command ?? "";
         const completed = event.exitCode !== undefined || event.cancelled === true;

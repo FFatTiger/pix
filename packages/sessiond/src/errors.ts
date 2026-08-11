@@ -1,4 +1,4 @@
-import type { ProtocolError, RuntimeCommandResult, RuntimeInterruptResult } from "@fffattiger/pix-protocol";
+import type { CorrelatedRuntimeCommandResult, CorrelatedRuntimeInterruptResult, ProtocolError, RuntimeCommandResult, RuntimeInterruptResult } from "@fffattiger/pix-protocol";
 
 export class SessiondError extends Error {
   constructor(
@@ -33,6 +33,14 @@ export function unavailableCommand(commandId: string, type: RuntimeCommandResult
   return { commandId, result: { ok: false, type, error: { code: "unavailable", message, retryable: true } } };
 }
 
-export function unavailableInterrupt(type: RuntimeInterruptResult["type"], message: string): RuntimeInterruptResult {
-  return { ok: false, type, error: { code: "unavailable", message, retryable: true } };
+export function unavailableInterrupt(commandId: string, type: RuntimeInterruptResult["type"], message: string): CorrelatedRuntimeInterruptResult {
+  return { commandId, result: { ok: false, type, error: { code: "unavailable", message, retryable: true } } };
+}
+
+export function rejectedInterrupt(commandId: string, type: RuntimeInterruptResult["type"], message: string): CorrelatedRuntimeInterruptResult {
+  return { commandId, result: { ok: false, type, error: { code: "command_rejected", message, retryable: false } } };
+}
+
+export function duplicateInterruptUnavailable(commandId: string, type: RuntimeInterruptResult["type"]): CorrelatedRuntimeInterruptResult {
+  return { commandId, result: { ok: false, type, error: { code: "command_duplicate", message: "interrupt was already accepted in this epoch but its result is no longer cached", retryable: false } } };
 }

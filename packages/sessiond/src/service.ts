@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   CorrelatedRuntimeCommandResult,
+  CorrelatedRuntimeInterruptResult,
   RuntimeAttachParams,
   RuntimeCommand,
   RuntimeCreateParams,
@@ -8,7 +9,6 @@ import type {
   RuntimeEvent,
   RuntimeEventData,
   RuntimeInterrupt,
-  RuntimeInterruptResult,
   RuntimeSnapshot,
   RuntimeActivateResult,
   RuntimeGetSnapshotResult,
@@ -22,7 +22,7 @@ import type {
 import { PROTOCOL_VERSION, RuntimeCloseReasonSchema } from "@fffattiger/pix-protocol";
 import type { RuntimeCloseReason } from "@fffattiger/pix-protocol";
 import type { SessionCatalogPort, SessionLocation, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
-import { SessiondError, duplicateResultUnavailable, rejectedCommand, unavailableCommand, unavailableInterrupt } from "./errors.js";
+import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailable, rejectedCommand, rejectedInterrupt, unavailableCommand, unavailableInterrupt } from "./errors.js";
 import { EventJournal, type EventJournalOptions } from "./journal.js";
 import { AsyncMutex } from "./internal/mutex.js";
 import { SnapshotProjection } from "./projection.js";
@@ -91,8 +91,10 @@ interface PendingCommand {
 }
 
 interface PendingInterrupt {
+  commandId: string;
   type: RuntimeInterrupt["type"];
-  resolve: (result: RuntimeInterruptResult) => void;
+  promise: Promise<CorrelatedRuntimeInterruptResult>;
+  resolve: (result: CorrelatedRuntimeInterruptResult) => void;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -120,7 +122,10 @@ interface RecordState {
   acceptedCommands: Map<string, RuntimeCommand["type"]>;
   pendingCommands: Map<string, PendingCommand>;
   pendingInterrupts: Map<string, PendingInterrupt>;
-  acceptedInterrupts: Map<string, Promise<RuntimeInterruptResult>>;
+  /** commandId -> accepted interrupt type; dedups browser commandId per epoch. */
+  acceptedInterrupts: Map<string, RuntimeInterrupt["type"]>;
+  /** commandId -> cached correlated result so retries return the same result. */
+  interruptResults: Map<string, CorrelatedRuntimeInterruptResult>;
   pendingSnapshots: Map<string, PendingSnapshot>;
   unsubscribeWorker: () => void;
   unsubscribeExit: () => void;
@@ -218,6 +223,7 @@ export class SessiondService {
     const operation = (async () => {
       const provisional = `creating:${input.createRequestId}`;
       const start: WorkerStartInput = {
+        mode: "create",
         activationId: randomUUID(),
         sessionId: provisional,
         cwd: input.cwd,
@@ -265,6 +271,7 @@ export class SessiondService {
       if (!location.exists) throw new SessiondError("not_found", `session not found: ${sessionId}`);
       const context = await this.deps.activationContext.resolve(sessionId, location, requestedCwd);
       return this.start({
+        mode: "open",
         activationId: randomUUID(),
         sessionId,
         cwd: context.cwd,
@@ -318,6 +325,7 @@ export class SessiondService {
         pendingCommands: new Map(),
         pendingInterrupts: new Map(),
         acceptedInterrupts: new Map(),
+        interruptResults: new Map(),
         pendingSnapshots: new Map(),
         unsubscribeWorker: () => {},
         unsubscribeExit: () => {},
@@ -338,6 +346,7 @@ export class SessiondService {
           id: `init:${input.activationId}`,
           protocolVersion: PROTOCOL_VERSION,
           payload: {
+            mode: input.mode,
             sessionId: input.sessionId,
             cwd: input.cwd,
             projectRoot: input.projectRoot,
@@ -417,11 +426,16 @@ export class SessiondService {
       }
       case "worker.interruptResult": {
         if (message.payload.sessionId !== record.sessionId) return;
+        const result = message.payload.result;
         const pending = record.pendingInterrupts.get(message.id);
-        if (!pending) return;
+        // Accept only when wire id, commandId AND result type all match the
+        // pending admission. A mismatch is dropped (never wrongly resolved) so
+        // the original waiter times out rather than receiving the wrong result.
+        if (!pending || pending.commandId !== result.commandId || pending.type !== result.result.type) return;
         clearTimeout(pending.timer);
         record.pendingInterrupts.delete(message.id);
-        pending.resolve(message.payload.result);
+        this.cacheInterruptResult(record, result);
+        pending.resolve(result);
         break;
       }
       case "worker.status": record.status = message.payload.status; break;
@@ -455,6 +469,7 @@ export class SessiondService {
       record.commandResults.clear();
       record.acceptedCommands.clear();
       record.acceptedInterrupts.clear();
+      record.interruptResults.clear();
       record.projection.rekey(realId);
       const snapshot = record.projection.snapshot();
       snapshot.cwd = record.cwd;
@@ -515,7 +530,7 @@ export class SessiondService {
       pending.resolve(unavailableCommand(pending.commandId, pending.commandType, message));
     }
     record.pendingCommands.clear();
-    for (const pending of record.pendingInterrupts.values()) { clearTimeout(pending.timer); pending.resolve(unavailableInterrupt(pending.type, message)); }
+    for (const pending of record.pendingInterrupts.values()) { clearTimeout(pending.timer); pending.resolve(unavailableInterrupt(pending.commandId, pending.type, message)); }
     record.pendingInterrupts.clear();
     for (const pending of record.pendingSnapshots.values()) { clearTimeout(pending.timer); pending.reject(new SessiondError("worker_unavailable", message, true)); }
     record.pendingSnapshots.clear();
@@ -570,37 +585,62 @@ export class SessiondService {
     return result;
   }
 
-  async interrupt(sessionId: string, interrupt: RuntimeInterrupt, requestId?: string): Promise<RuntimeInterruptResult> {
+  /**
+   * Interrupts are correlated by the browser-issued commandId, mirroring the
+   * ordinary command path. The RPC envelope `requestId` is transport-only and
+   * is never used for business deduplication.
+   *
+   * - Same commandId + same type: returns the same promise/result and sends the
+   *   worker exactly one interrupt.
+   * - Same commandId + different type: fails closed with a non-retryable
+   *   `command_rejected` result for the current request.
+   * - Capacity reached / stopped / send failure: fails closed with commandId.
+   */
+  async interrupt(sessionId: string, commandId: string, interrupt: RuntimeInterrupt): Promise<CorrelatedRuntimeInterruptResult> {
     const record = this.requireActive(sessionId);
-    const dedupeId = requestId ?? randomUUID();
-    const accepted = record.acceptedInterrupts.get(dedupeId);
-    if (accepted) return accepted;
-    if (record.acceptedInterrupts.size >= this.interruptLimit) return unavailableInterrupt(interrupt.type, "interrupt id capacity reached for this epoch");
-    let immediate: RuntimeInterruptResult | undefined;
-    let promise!: Promise<RuntimeInterruptResult>;
+    let immediate: CorrelatedRuntimeInterruptResult | undefined;
+    let pending!: PendingInterrupt;
     await record.lifecycle.runExclusive(async () => {
-      const known = record.acceptedInterrupts.get(dedupeId);
-      if (known) { promise = known; return; }
       if (this.records.get(sessionId) !== record || ["crashed", "stopped", "stopping"].includes(record.status)) {
-        immediate = unavailableInterrupt(interrupt.type, "runtime stopped before interrupt admission");
+        immediate = unavailableInterrupt(commandId, interrupt.type, "runtime stopped before interrupt admission");
         return;
       }
-      const id = `interrupt:${record.epoch}:${dedupeId}`;
-      const wait = deferred<RuntimeInterruptResult>();
-      promise = wait.promise;
-      record.acceptedInterrupts.set(dedupeId, promise);
-      const timer = setTimeout(() => { record.pendingInterrupts.delete(id); wait.resolve(unavailableInterrupt(interrupt.type, "worker interrupt timed out")); }, this.commandTimeoutMs);
-      record.pendingInterrupts.set(id, { type: interrupt.type, resolve: wait.resolve, timer });
+      const acceptedType = record.acceptedInterrupts.get(commandId);
+      if (acceptedType !== undefined && acceptedType !== interrupt.type) {
+        immediate = rejectedInterrupt(commandId, interrupt.type, `commandId was already accepted as ${acceptedType}`);
+        return;
+      }
+      const cached = record.interruptResults.get(commandId);
+      if (cached) { immediate = cached; return; }
+      const wireId = `interrupt:${record.epoch}:${commandId}`;
+      const existing = record.pendingInterrupts.get(wireId);
+      if (existing) { pending = existing; return; }
+      if (acceptedType !== undefined) { immediate = duplicateInterruptUnavailable(commandId, acceptedType); return; }
+      if (record.acceptedInterrupts.size >= this.interruptLimit) {
+        immediate = rejectedInterrupt(commandId, interrupt.type, "interrupt id capacity reached for this epoch");
+        return;
+      }
+      record.acceptedInterrupts.set(commandId, interrupt.type);
+      const wait = deferred<CorrelatedRuntimeInterruptResult>();
+      const timer = setTimeout(() => {
+        record.pendingInterrupts.delete(wireId);
+        wait.resolve(unavailableInterrupt(commandId, interrupt.type, "worker interrupt timed out"));
+      }, this.commandTimeoutMs);
+      pending = { commandId, type: interrupt.type, promise: wait.promise, resolve: wait.resolve, timer };
+      record.pendingInterrupts.set(wireId, pending);
+      this.touch(record);
       try {
-        await record.worker.send({ type: "worker.interrupt", id, protocolVersion: PROTOCOL_VERSION, payload: { sessionId, interrupt } });
+        await record.worker.send({ type: "worker.interrupt", id: wireId, protocolVersion: PROTOCOL_VERSION, payload: { sessionId, commandId, interrupt } });
       } catch {
         clearTimeout(timer);
-        record.pendingInterrupts.delete(id);
-        immediate = unavailableInterrupt(interrupt.type, "worker interrupt send failed");
-        record.acceptedInterrupts.set(dedupeId, Promise.resolve(immediate));
+        record.pendingInterrupts.delete(wireId);
+        const result = unavailableInterrupt(commandId, interrupt.type, "worker interrupt send failed");
+        this.cacheInterruptResult(record, result);
+        immediate = result;
       }
     });
-    return immediate ?? promise;
+    if (immediate) return immediate;
+    return pending.promise;
   }
 
   async snapshot(sessionId: string): Promise<RuntimeSnapshot> {
@@ -834,6 +874,16 @@ export class SessiondService {
       const oldest = record.commandResults.keys().next().value as string | undefined;
       if (oldest === undefined) break;
       record.commandResults.delete(oldest);
+    }
+  }
+
+  private cacheInterruptResult(record: RecordState, result: CorrelatedRuntimeInterruptResult): void {
+    if (record.interruptResults.has(result.commandId)) record.interruptResults.delete(result.commandId);
+    record.interruptResults.set(result.commandId, result);
+    while (record.interruptResults.size > this.interruptLimit) {
+      const oldest = record.interruptResults.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      record.interruptResults.delete(oldest);
     }
   }
 

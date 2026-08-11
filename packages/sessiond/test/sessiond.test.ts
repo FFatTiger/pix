@@ -72,16 +72,39 @@ test("duplicate commandId before and after result executes once", async () => {
   await service.shutdown();
 });
 
-test("independent interrupt preempts a long prompt", async () => {
+test("worker.init mode is create for create and open for activate", async () => {
+  const createHarness = harness({ worker: { readyDelayMs: 0 } });
+  await createHarness.service.create({ createRequestId: "c-mode", cwd: "/a", projectRoot: "/a" });
+  const createInit = createHarness.workers.workers[0]!.sent.find((item) => item.type === "worker.init");
+  assert.equal(createInit?.type === "worker.init" && createInit.payload.mode, "create", "create path must pass mode create");
+  await createHarness.service.shutdown();
+
+  const activateHarness = harness({ worker: { readyDelayMs: 0 } });
+  await activateHarness.service.activate("s");
+  const activateInit = activateHarness.workers.workers[0]!.sent.find((item) => item.type === "worker.init");
+  assert.equal(activateInit?.type === "worker.init" && activateInit.payload.mode, "open", "activate path must pass mode open");
+  await activateHarness.service.shutdown();
+});
+
+test("independent interrupt preempts a long prompt and dedups by commandId", async () => {
   const { service, workers } = harness({ worker: { commandDelayMs: 100 } });
   await service.activate("s");
   const prompt = service.command("s", { type: "prompt", commandId: "p", message: "long" });
   await wait(5);
-  const interrupt = await service.interrupt("s", { type: "abort" }, "abort-request");
-  const duplicateInterrupt = await service.interrupt("s", { type: "abort" }, "abort-request");
+  // same commandId + same type: returns the same result and sends the worker one interrupt
+  const interrupt = await service.interrupt("s", "abort-request", { type: "abort" });
+  const duplicateInterrupt = await service.interrupt("s", "abort-request", { type: "abort" });
+  // same commandId + different type: fails closed with a non-retryable command_rejected
+  const conflicting = await service.interrupt("s", "abort-request", { type: "clear_queue" });
   const result = await prompt;
   assert.deepEqual(interrupt, duplicateInterrupt);
-  assert.equal(interrupt.ok, true);
+  assert.equal(interrupt.commandId, "abort-request");
+  assert.equal(interrupt.result.ok, true);
+  assert.equal(conflicting.commandId, "abort-request");
+  assert.equal(conflicting.result.ok, false);
+  assert.equal(conflicting.result.type, "clear_queue");
+  assert.equal(conflicting.result.error.code, "command_rejected");
+  assert.equal(conflicting.result.error.retryable, false);
   assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.interrupt").length, 1);
   assert.equal(result.result.ok, false);
   assert.equal(result.result.error.code, "interrupted");
@@ -154,6 +177,23 @@ test("snapshot projection recovers streaming queue extension bash compaction and
   assert.equal(projection.snapshot().state.pendingMessageCount, 1);
   assert.equal(projection.snapshot().state.pendingExtensionUi?.length, 1);
   assert.deepEqual(projection.snapshot().state.writtenFiles, ["/a"]);
+});
+
+test("bash_update output deltas accumulate once without double-joining", () => {
+  // bash_update.output is a per-event DELTA (frozen semantic on both Runtime
+  // Core and Protocol sides). The projection is the single accumulator: two
+  // deltas must join into one cumulative snapshot, exactly once (no duplication).
+  const projection = new SnapshotProjection(snapshot("s"));
+  projection.apply({ type: "bash_update", sessionId: "s", command: "echo", output: "Hello " });
+  assert.equal(projection.snapshot().state.bash?.output, "Hello ");
+  projection.apply({ type: "bash_update", sessionId: "s", output: "World" });
+  assert.equal(projection.snapshot().state.bash?.output, "Hello World");
+  assert.equal(projection.snapshot().state.bash?.updateCount, 2);
+  assert.equal(projection.snapshot().state.isBashRunning, true);
+  // a final delta with exitCode completes the snapshot; prior accumulation is preserved
+  projection.apply({ type: "bash_update", sessionId: "s", output: "!", exitCode: 0 });
+  assert.equal(projection.snapshot().state.bash?.output, "Hello World!");
+  assert.equal(projection.snapshot().state.bash?.completed, true);
 });
 
 test("worker crash is isolated and stale events after reactivation are rejected", async () => {

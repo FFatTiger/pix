@@ -35,7 +35,7 @@ export class FakeWorkerConnection implements WorkerConnection {
         setTimeout(() => {
           const discovered = this.options.discoveredSessionId;
           if (discovered) this.emit({ type: "worker.sessionDiscovered", payload: { sessionId: discovered, sessionFile: `/sessions/${discovered}.jsonl`, cwd: message.payload.cwd } });
-          this.emit({ type: "worker.ready", id: message.id, payload: { sessionId: discovered ?? message.payload.sessionId, epoch: "worker-epoch", workerStatus: "ready" } });
+          this.emit({ type: "worker.ready", id: message.id, payload: { sessionId: discovered ?? message.payload.sessionId, workerStatus: "ready" } });
           if (this.options.snapshot) this.emit({ type: "worker.snapshot", payload: { sessionId: discovered ?? message.payload.sessionId, snapshot: this.options.snapshot } });
         }, this.options.readyDelayMs ?? 0);
         return;
@@ -55,6 +55,7 @@ export class FakeWorkerConnection implements WorkerConnection {
         return;
       }
       case "worker.interrupt": {
+        const commandId = message.payload.commandId;
         const result: RuntimeInterruptResult = { ok: true, type: message.payload.interrupt.type };
         if (message.payload.interrupt.type === "abort" && this.runningPrompt) {
           const running = this.runningPrompt;
@@ -63,7 +64,7 @@ export class FakeWorkerConnection implements WorkerConnection {
           this.emitResult(running.id, running.sessionId, running.commandId, { ok: false, type: "prompt", error: { code: "interrupted", message: "interrupted", retryable: false } });
           this.emitEvent({ type: "prompt_error", sessionId: running.sessionId, errorMessage: "interrupted", error: { code: "interrupted", message: "interrupted", retryable: false } });
         }
-        queueMicrotask(() => this.emit({ type: "worker.interruptResult", id: message.id, payload: { sessionId: message.payload.sessionId, result } }));
+        queueMicrotask(() => this.emit({ type: "worker.interruptResult", id: message.id, payload: { sessionId: message.payload.sessionId, result: { commandId, result } } }));
         return;
       }
       case "worker.getSnapshot":

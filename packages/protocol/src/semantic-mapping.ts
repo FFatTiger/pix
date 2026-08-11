@@ -47,13 +47,32 @@ export const RUNTIME_INTERRUPT_CAPABILITY_MATRIX = {
 export const ACL0_PROTOCOL_SEMANTIC_MATRIX = {
   commandCorrelation: "Protocol commandId -> Runtime command without commandId",
   eventCursor: "Runtime event data -> sessiond epoch/eventId envelope",
-  partialStreaming: "Runtime StreamingAgentMessage <-> Protocol streaming DTO",
+  /**
+   * Runtime Core `MessageUpdateEvent.message` is a CUMULATIVE partial. The R1
+   * stateful Mapper diffs successive cumulative partials into the Protocol
+   * `message_update.delta` and synthesizes streamId/messageId; sessiond then
+   * stamps epoch/eventId. R0 freezes the wire shape; no temporary Mapper is
+   * added in R0. The sessiond SnapshotProjection is the only message-state
+   * accumulator and it consumes deltas.
+   */
+  partialStreaming: "Runtime StreamingAgentMessage (cumulative) <-> Protocol message_update.delta (diff) [R1 Mapper]",
   queuedImages: "Runtime QueuedTurn images <-> Protocol QueuedTurn images",
-  recoverableBash: "Runtime BashProjection <-> Protocol BashProjection",
+  /**
+   * Runtime Core `BashUpdateEvent.output` is a per-event DELTA chunk, and the
+   * Protocol `bash_update.output` carries the SAME delta unchanged (field name
+   * stays `output`). Adapters MUST NOT accumulate; the sessiond
+   * SnapshotProjection is the SINGLE authoritative accumulator.
+   */
+  recoverableBash: "Runtime BashUpdateEvent.output (delta) <-> Protocol bash_update.output (delta) -> sessiond projection accumulates",
   recoverableCompaction: "Runtime CompactionProjection <-> Protocol CompactionProjection",
   extensionCorrelation: "Runtime extension request id <-> response/input id",
   commandResult: "RuntimeCommandResult <-> method-bound correlated result",
-  interruptResult: "RuntimeInterruptResult <-> independent interrupt wire result",
+  /**
+   * The interrupt result is correlated by the browser-issued commandId, mirroring
+   * the ordinary command result shape (`{ commandId, result }`). The RPC envelope
+   * `requestId` is transport-only and is never used for business deduplication.
+   */
+  interruptResult: "RuntimeInterruptResult <-> commandId-correlated result mirroring command result",
   dualAuth: "Runtime AuthProviderInfo.methods <-> Protocol methods[]",
   sessionEntries: "Runtime entryId/parentEntryId <-> Protocol session entries",
 } as const;

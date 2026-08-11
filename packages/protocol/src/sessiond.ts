@@ -13,7 +13,7 @@ import {
   SessionDetailSchema,
   SessionHeaderSchema,
 } from "./domain.js";
-import { CorrelatedRuntimeCommandResultSchema, RuntimeInterruptResultSchema, RuntimeInterruptSchema } from "./results.js";
+import { CorrelatedRuntimeCommandResultSchema, CorrelatedRuntimeInterruptResultSchema, RuntimeInterruptSchema } from "./results.js";
 import { RuntimeEventSchema } from "./events.js";
 import {
   SnapshotDeliveryReasonSchema,
@@ -80,6 +80,8 @@ export type RuntimeCommandParams = z.infer<typeof RuntimeCommandParamsSchema>;
 
 export const RuntimeInterruptParamsSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
+  /** Browser-issued business correlation id; the authority deduplicates on it. */
+  commandId: NonEmptyStringSchema,
   interrupt: RuntimeInterruptSchema,
 });
 export type RuntimeInterruptParams = z.infer<typeof RuntimeInterruptParamsSchema>;
@@ -232,7 +234,7 @@ export type RuntimeListRunningResult = z.infer<
 export const RuntimeCommandResultSchema = CorrelatedRuntimeCommandResultSchema;
 export type RuntimeCommandResult = z.infer<typeof RuntimeCommandResultSchema>;
 
-export const RuntimeInterruptRpcResultSchema = RuntimeInterruptResultSchema;
+export const RuntimeInterruptRpcResultSchema = CorrelatedRuntimeInterruptResultSchema;
 export type RuntimeInterruptRpcResult = z.infer<typeof RuntimeInterruptRpcResultSchema>;
 
 export const RuntimeStopResultSchema = z.strictObject({

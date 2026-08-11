@@ -51,6 +51,15 @@ export const MessageUpdateEventDataSchema = z.strictObject({
   type: z.literal("message_update"),
   streamId: NonEmptyStringSchema,
   messageId: NonEmptyStringSchema,
+  /**
+   * Wire DELTA since the previous message_update — not a cumulative snapshot.
+   *
+   * Semantic mapping (R1 stateful Mapper, NOT implemented in R0): the Runtime
+   * Core `MessageUpdateEvent.message` is a CUMULATIVE partial. The R1 Mapper
+   * diffs successive cumulative partials into this `delta` and synthesizes the
+   * `streamId`/`messageId` correlation. sessiond then stamps the wire cursor
+   * (epoch/eventId) at the authority boundary. R0 freezes this wire shape only.
+   */
   delta: StreamingMessageDeltaSchema,
 });
 export const MessageEndEventDataSchema = z.strictObject({
@@ -171,6 +180,16 @@ export const BashUpdateEventDataSchema = z.strictObject({
   ...eventDataBase,
   type: z.literal("bash_update"),
   command: z.string().optional(),
+  /**
+   * DELTA chunk added since the previous bash_update — NOT a cumulative snapshot.
+   *
+   * This is a frozen delta semantic on BOTH sides of the boundary: the Runtime
+   * Core `BashUpdateEvent.output` is already a per-event delta, and this wire
+   * field carries the same delta through unchanged. An adapter MUST NOT
+   * accumulate here; the sessiond {@link SnapshotProjection} is the SINGLE
+   * authoritative accumulator (it concatenates each delta onto the prior output).
+   * The field name stays `output` to preserve the wire contract.
+   */
   output: z.string().optional(),
   exitCode: z.number().int().optional(),
   cancelled: z.boolean().optional(),

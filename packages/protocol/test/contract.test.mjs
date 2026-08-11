@@ -879,7 +879,7 @@ describe("sessiond RPC", () => {
         ],
       },
       "runtime.command": { commandId: "c-1", result: { ok: true, type: "abort" } },
-      "runtime.interrupt": { ok: true, type: "abort" },
+      "runtime.interrupt": { commandId: "cmd-1", result: { ok: true, type: "abort" } },
       "runtime.stop": { sessionId: "s-1", stopped: true },
       "runtime.hasBusyCwd": {
         cwd: "/tmp/p",
@@ -912,6 +912,7 @@ describe("worker IPC", () => {
       id: "w-1",
       protocolVersion: 1,
       payload: {
+        mode: "create",
         sessionId: "s-1",
         cwd: "/tmp/project",
         projectRoot: "/tmp/project",
@@ -919,6 +920,39 @@ describe("worker IPC", () => {
       },
     });
     assert.equal(init.type, "worker.init");
+    assert.equal(init.payload.mode, "create");
+
+    const openInit = roundTrip(SessiondToWorkerMessageSchema, {
+      type: "worker.init",
+      id: "w-open",
+      protocolVersion: 1,
+      payload: {
+        mode: "open",
+        sessionId: "s-1",
+        cwd: "/tmp/project",
+        projectRoot: "/tmp/project",
+        sessionFile: "/sessions/s-1.jsonl",
+      },
+    });
+    assert.equal(openInit.payload.mode, "open");
+    assert.equal(
+      safeParseSessiondToWorkerMessage({
+        type: "worker.init",
+        id: "w-bad",
+        protocolVersion: 1,
+        payload: { mode: "resume", sessionId: "s-1", cwd: "/p", projectRoot: "/p" },
+      }).success,
+      false,
+      "worker.init rejects unknown mode",
+    );
+
+    const interrupt = roundTrip(SessiondToWorkerMessageSchema, {
+      type: "worker.interrupt",
+      id: "w-int",
+      protocolVersion: 1,
+      payload: { sessionId: "s-1", commandId: "cmd-1", interrupt: { type: "abort" } },
+    });
+    assert.equal(interrupt.payload.commandId, "cmd-1");
 
     const command = roundTrip(SessiondToWorkerMessageSchema, {
       type: "worker.command",
@@ -962,9 +996,10 @@ describe("worker IPC", () => {
         type: "worker.init",
         id: "w-1",
         protocolVersion: 1,
-        payload: { sessionId: "s-1" },
+        payload: { sessionId: "s-1", cwd: "/p", projectRoot: "/p" },
       }).success,
       false,
+      "worker.init rejects missing mode",
     );
     assert.equal(
       safeParseSessiondToWorkerMessage({
@@ -992,11 +1027,18 @@ describe("worker IPC", () => {
       type: "worker.ready",
       payload: {
         sessionId: "s-1",
-        epoch: "e1",
         workerStatus: "ready",
       },
     });
     assert.equal(ready.type, "worker.ready");
+    assert.equal(
+      safeParseWorkerToSessiondMessage({
+        type: "worker.ready",
+        payload: { sessionId: "s-1", epoch: "e1", workerStatus: "ready" },
+      }).success,
+      false,
+      "worker.ready rejects worker-reported epoch",
+    );
 
     const event = roundTrip(WorkerToSessiondPushSchema, {
       type: "worker.event",
@@ -1009,6 +1051,16 @@ describe("worker IPC", () => {
       },
     });
     assert.equal(event.type, "worker.event");
+
+    const interruptResult = roundTrip(WorkerToSessiondPushSchema, {
+      type: "worker.interruptResult",
+      id: "w-ir",
+      payload: {
+        sessionId: "s-1",
+        result: { commandId: "cmd-1", result: { ok: true, type: "abort" } },
+      },
+    });
+    assert.equal(interruptResult.payload.result.commandId, "cmd-1");
 
     assert.equal(
       safeParseWorkerToSessiondMessage({

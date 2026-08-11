@@ -116,3 +116,18 @@ export const RuntimeInterruptResultSchema = z.discriminatedUnion("ok", [
   }),
 ]);
 export type RuntimeInterruptResult = z.infer<typeof RuntimeInterruptResultSchema>;
+
+/**
+ * Transport correlation wraps the canonical interrupt outcome, mirroring
+ * {@link CorrelatedRuntimeCommandResultSchema}. The browser-issued
+ * `commandId` is the business correlation id; the worker echoes it back so the
+ * sessiond authority can match a result to its pending admission without
+ * relying on the RPC envelope `requestId` (transport-only id).
+ */
+export const CorrelatedRuntimeInterruptResultSchema = z.strictObject({
+  commandId: NonEmptyStringSchema,
+  result: RuntimeInterruptResultSchema,
+});
+export type CorrelatedRuntimeInterruptResult = z.infer<
+  typeof CorrelatedRuntimeInterruptResultSchema
+>;

@@ -51,6 +51,13 @@ export interface MessageStartEvent extends RuntimeEventBase {
 
 export interface MessageUpdateEvent extends RuntimeEventBase {
   type: "message_update";
+  /**
+   * CUMULATIVE partial message (not a delta). Each update carries the full
+   * in-progress message built so far. The downstream R1 Mapper diffs successive
+   * cumulative partials into the Protocol `message_update.delta` (a per-event
+   * diff) and synthesizes the streamId/messageId; sessiond stamps epoch/eventId.
+   * Runtime Core never emits deltas or stream ids.
+   */
   message: StreamingAgentMessage;
 }
 
@@ -129,6 +136,13 @@ export interface AutoCompactionEndEvent extends RuntimeEventBase {
 export interface BashUpdateEvent extends RuntimeEventBase {
   type: "bash_update";
   command?: string;
+  /**
+   * DELTA chunk added since the previous bash_update — NOT a cumulative snapshot.
+   * This is a frozen delta semantic: the field is passed through unchanged to
+   * the Protocol `bash_update.output` (same delta), and the sessiond
+   * SnapshotProjection is the single accumulator. Runtime Core never emits a
+   * cumulative bash output on events.
+   */
   output?: string;
   exitCode?: number;
   cancelled?: boolean;
