@@ -274,7 +274,7 @@ B0
 |---|---|---|---|---|
 | `R0` | Protocol Process Corrections | `DONE` | `M1` | `2672c5c`；GPT独立验证PASS；create/open mode、sessiond epoch、interrupt commandId、partial/bash delta；Protocol110、sessiond40 |
 | `R1` | Agent Worker Controller + Mapper | `DONE` | `R0` | `f7388b1` + `710ab1c` + lock `43d5b53`；90/90 + 约90项对抗检查；GPT PASS |
-| `R2` | Child Process Worker Factory | `IN_PROGRESS` | `B3`, `R1` | GPT FAIL：异常parent death遗留orphan Worker、stderr跨chunk redaction泄片段；`r2-verifier-fixes`修复中 |
+| `R2` | Child Process Worker Factory | `IN_REVIEW` | `B3`, `R1` | `9b59801` + `0a7d21e` + GLM `c593070` + test `cb2d2c7`；Worker105/sessiond76/全仓713 PASS；等待GPT复验 |
 | `A1` | Pi SDK Agent Adapter | `DONE` | `B1` | `526b19e` + `fd4612b`；GPT独立验证PASS；SDK0.84真实create/open smoke、92/92、显式prompt+abort capability |
 | `H1` | Runtime WS Gateway | `DONE` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390` + `976c4c6` + `a6eb571`；有界入站/interrupt并发，非法limit回退安全默认；Host172；GPT最终PASS |
 | `C1` | RuntimeSocket + SessionStore | `DONE` | `B2`, `R0`, `H1` | `08f0362` + `d06db38` + `2368938`；Client149；原FAIL全部修复，GPT 29/29对抗探针复验PASS |
@@ -475,7 +475,7 @@ git diff --check
 1. M1：DONE（B0–B5；最终集成 `a7e9e29`；GPT 独立对抗验证 PASS）
 2. `R0`：DONE（`2672c5c`，GPT PASS）；`A1`：DONE（`526b19e` + `fd4612b`，GPT PASS）
 3. H1/C1/R1：DONE；R1 GPT最终PASS
-4. R2 GPT验证FAIL：修复异常parent death orphan与stderr跨chunk redaction后复验；X1实现已完成但暂不集成
+4. R2 blockers已修复：parent death ppid watchdog/early EOF latch + stateful stderr redaction；全仓门禁PASS，等待原GPT复验
 5. C1：DONE（`2368938`，GPT 29/29对抗探针复验PASS）；等待R2后进入X1
 ```
 
