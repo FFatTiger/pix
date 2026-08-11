@@ -186,8 +186,9 @@ streaming：Runtime Core message_update仍为累计partial；Protocol为delta；
 bash：bash_update.output冻结为delta；sessiond SnapshotProjection为唯一累加器
 本地验证：architecture/build/typecheck/root tests/startup E2E/boundaries PASS；Protocol 110/110、sessiond 40/40、A1 92/92、Contract75、Core3
 兼容：Protocol version仍为1；M2尚未发布，无旧消费者兼容alias
-残余：Host WS需在H1将RPC correlated interrupt result翻译为WS interrupt_result；result cache eviction专项可在R1/H1压力测试补强
-独立验证 verdict：PENDING（GPT）
+残余：Host WS需在H1将RPC correlated interrupt result翻译为WS interrupt_result
+独立验证 verdict：PASS（GPT；17/17专项对抗，Protocol110、sessiond40及全仓回归PASS）
+验证说明：同commandId同type仅一次worker send；异type非重试拒绝；错误commandId/type结果丢弃；capacity/send failure/stop/crash/timeout/late result均fail closed并保留commandId。interrupt result cache eviction分支因admission上限在当前设计不可达，但内存仍由interruptLimit有界，不构成风险。
 ```
 
 ## 10. 后续迁移时必须记录的校验

@@ -272,7 +272,7 @@ B0
 
 | ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
-| `R0` | Protocol Process Corrections | `IN_REVIEW` | `M1` | `2672c5c`；create/open mode、sessiond epoch、interrupt commandId、partial/bash delta契约；Protocol110、sessiond40；等待GPT验证 |
+| `R0` | Protocol Process Corrections | `DONE` | `M1` | `2672c5c`；GPT独立验证PASS；create/open mode、sessiond epoch、interrupt commandId、partial/bash delta；Protocol110、sessiond40 |
 | `R1` | Agent Worker Controller + Mapper | `IN_PROGRESS` | `R0` | 审计完成；隔离worktree实现Worker IPC、状态Mapper、create/open/prompt/abort/snapshot/shutdown |
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
 | `A1` | Pi SDK Agent Adapter | `IN_REVIEW` | `B1` | `526b19e` + `fd4612b`；Agent-only迁移、Pi SDK 0.84真实smoke、92/92、显式prompt+abort capability；等待GPT验证 |
@@ -473,7 +473,7 @@ git diff --check
 
 ```text
 1. M1：DONE（B0–B5；最终集成 `a7e9e29`；GPT 独立对抗验证 PASS）
-2. `R0` 与 `A1` 均已集成并进入GPT独立验证；R1/H1只读审计并行进行
+2. `R0`：DONE（`2672c5c`，GPT独立验证PASS）；`A1`等待最终GPT verdict
 3. R1与H1均已完成审计，正在两个隔离worktree并行实现
 4. R1完成后启动R2 Child Process Worker Factory
 5. H1完成后启动C1 RuntimeSocket + SessionStore，最终由X1验收M2
