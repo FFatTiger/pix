@@ -16,7 +16,6 @@ import { hostCommand } from "./commands/host.js";
 import { statusCommand } from "./commands/status.js";
 import { downCommand } from "./commands/down.js";
 import { sessiondCommand } from "./commands/sessiond-foreground.js";
-import { e2eStartupCommand } from "./commands/e2e-stub.js";
 import { pixErr, pixLog } from "./log.js";
 
 function printHelp(): void {
@@ -27,7 +26,6 @@ function printHelp(): void {
   pixLog("  status                                              report sessiond state");
   pixLog("  down --all                                          stop sessiond (requires --all)");
   pixLog("  sessiond                                            run sessiond in the foreground");
-  pixLog("  test:e2e:startup                                    B5 startup e2e (not implemented)");
 }
 
 /**
@@ -48,8 +46,6 @@ export async function runCli(argv: string[]): Promise<number> {
       return downCommand(rest);
     case "sessiond":
       return sessiondCommand();
-    case "test:e2e:startup":
-      return e2eStartupCommand();
     case undefined:
     case "-h":
     case "--help":

@@ -1,7 +1,7 @@
-// Root product dispatcher. The lifecycle commands (`start`, `cli …`,
-// `test:e2e:startup`) are implemented in the compiled `@fffattiger/pix-cli`
-// package; this script only routes `npm run` / direct invocation to it so there
-// is a single source of truth for command behavior (shared with the `pix` bin).
+// Root product dispatcher. The lifecycle commands (`start`, `cli …`) are
+// implemented in the compiled `@fffattiger/pix-cli` package; this script only
+// routes `npm run` / direct invocation to it so there is a single source of
+// truth for command behavior (shared with the `pix` bin).
 //
 // It fails clearly when the CLI has not been built yet, rather than crashing on
 // a missing module.
@@ -17,8 +17,6 @@ function cliArgv(cmd, tail) {
     case "cli":
       // `npm run cli -- status` → product-entry "cli" "status" → runCli ["status", ...]
       return tail;
-    case "test:e2e:startup":
-      return ["test:e2e:startup", ...tail];
     default:
       return null;
   }
@@ -28,7 +26,7 @@ const argv = cliArgv(command, rest);
 
 if (argv === null) {
   console.error(`[pix] unknown bootstrap command: ${command}`);
-  console.error("[pix] available: start | cli | test:e2e:startup");
+  console.error("[pix] available: start | cli");
   process.exitCode = 2;
 } else {
   try {

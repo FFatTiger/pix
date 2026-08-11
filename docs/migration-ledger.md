@@ -56,7 +56,7 @@ bin/pi-web.js
 | `packages/sessiond` | 未提交目录 | 候选代码，不能视为 DONE | `package.json`, `scripts/**`, `src/**`, `test/**`, `tsconfig*.json` | `dist`, `dist-test`, `*.tsbuildinfo`, `node_modules` | `DONE`：`5dc9469` + `44529c3`；GPT复验PASS；38/38 |
 | `packages/pi-sdk-adapter` Agent 路径 | `ed34415` | 有 4 个旧计划未关闭问题 | M2 只取 Agent Factory、Runtime、Mapper、sanitizer、必要 internal | sessions/models/credentials/resources/trust 延后 | `DEFERRED_M2` |
 | `packages/agent-worker` | 无 | 不存在 | 新实现 | — | `NEW_M2` |
-| `packages/cli` | 无新架构实现 | 不存在 | 新实现 | 旧 Next bin | `NEW_M1` |
+| `packages/cli` | 无新架构实现 | 不存在 | 新实现 | 旧 Next bin | `IN_REVIEW`：`8f918a9`；pix lifecycle CLI与production composition完成，等待M1最终验证 |
 
 ## 4. 已完成迁移记录
 
@@ -133,7 +133,26 @@ Client来源：/Users/proxy/Documents/program/pi-web-worktrees/client-data@d9f0b
 依赖审计：2 moderate，来自 @hono/node-server <2.0.5 的Windows encoded-backslash serve-static公告；当前无fixAvailable。本项目不使用其serve-static，使用自有static实现且已有路径遍历/符号链接测试；记录但不阻塞M1。
 ```
 
-## 7. 后续迁移时必须记录的校验
+## 7. B4/B5 — Production Composition 与 Startup E2E 记录
+
+```text
+实现 commit：8f918a9（packages/cli + root product dispatcher）
+CLI：pix、pix-host、pix-sessiond
+生命周期：ensure/reuse detached pix-sessiond、真实RPC probe、Host只关闭自身、status、down --all
+能力：M1 full/readonly capabilities 均为空，不误报agent/files
+包级验证：CLI 29/29；shutdown超时明确返回failed，不伪造成功
+真实生命周期：
+- root product dispatcher启动Host与pix-sessiond
+- /v1/health、capabilities、bootstrap、Client index与Vite JS均200
+- Host停止后pix-sessiond PID不变且RPC健康
+- pix-host重启复用同一PID
+- down --all停止daemon并清理lock/socket
+B5自动化：tests/e2e/startup.mjs；npm run test:e2e:startup PASS
+全仓门禁：architecture/build/typecheck/tests/boundaries/diff-check PASS
+独立验证 verdict：PENDING（GPT最终M1验证）
+```
+
+## 8. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -151,7 +170,7 @@ Client来源：/Users/proxy/Documents/program/pi-web-worktrees/client-data@d9f0b
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 8. sessiond 特别保护
+## 9. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -184,7 +203,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 9. 旧结果可用性摘要
+## 10. 旧结果可用性摘要
 
 ### 可复用
 
@@ -208,7 +227,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 10. 完成条件
+## 11. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -219,7 +238,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 11. 命名决策（历史证据说明）
+## 12. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 

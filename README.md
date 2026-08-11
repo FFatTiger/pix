@@ -6,7 +6,7 @@
 
 ## 当前里程碑
 
-**M1 — Bootable Standalone App**：在本仓库中完成可构建、可启动的新架构应用。一个命令启动 Hono、真实 Vite Client 和独立 sessiond；Host 退出不终止 sessiond。
+**M1 — Bootable Standalone App**：在本仓库中完成可构建、可启动的新架构应用。一个命令启动 Hono、真实 Vite Client 和独立 `pix-sessiond`；Host 退出不终止 `pix-sessiond`。
 
 ## 从这里开始
 
