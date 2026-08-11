@@ -307,7 +307,7 @@ runtime.queue             runtime.stats
 | ID | 工作包 | 状态 | 负责人 | 依赖 | 主要目录 |
 |---|---|---|---|---|---|
 | `H1A` | Sessions read model / export | `BLOCKED` | 待认领 | `H0A`, `ACL0`, `ACL1` | Host service 依赖 `SessionCatalogPort`；Pi/JSONL 解析实现留在 Adapter |
-| `H1B` | Files / git / cwd / worktree | `IN_PROGRESS` | `h1b-files-git-v4` | `refactor/host-files-git` | `H0A` | 已从集成 HEAD `1432ca5` 创建独立 worktree；仅修改 Host services/routes，完成后交 5.6-sol 独立安全验证 |
+| `H1B` | Files / git / cwd / worktree | `DONE` | `h1b-files-git-v4` | `refactor/host-files-git` | `H0A` | 最终 `c007a72`；5.6-sol 多轮安全/并发复验 PASS，Node 22/24 117/117；已以 `e8e5bef`～`e3508e2` 零冲突合入，Host tree `207e9446...` 字节一致并推送 |
 | `H1C` | Models / auth / plugins / skills | `BLOCKED` | 待认领 | `H0A`, `ACL0`, `ACL1` | Host application services 依赖 Model/Credential/Resource/Trust Ports |
 | `H2` | WS Runtime Gateway | `BLOCKED` | 待认领 | `H0A`, `H0B`, `R1` | `packages/host/src/runtime/**` |
 | `R3` | Side Chat + 跨边界 mutation | `BLOCKED` | 待认领 | `R1`, `R2` | sessiond/worker Side Chat 模块 |
@@ -337,7 +337,7 @@ H0A ─────────────────────────�
 C0 ─▶ V-C0 ─────────────────────────▶ I0 ─▶ C1 ─▶ C2
 ```
 
-当前进度（2026-08-11 10:42 CST）：项目已恢复。`W0`、`ACL0`、`C0`、`V-C0`、`H0A`、`P0`、`V-P0` 已完成独立验证并进入集成分支，当前 HEAD `4a47a05`；Node 22.19 workspace/Runtime/Protocol/Host/Client 门禁通过。当前 `R1`、`C1`、`ACL1`、`H1B` 按独立目录并行推进。
+当前进度（2026-08-11 10:42 CST）：项目已恢复。`W0`、`ACL0`、`C0`、`V-C0`、`H0A`、`P0`、`V-P0`、`H1B` 已完成独立验证并进入集成分支，当前 HEAD `e3508e2`；Node 22.19 workspace/Runtime/Protocol/Host/Client 门禁通过。当前 `R1`、`C1`、`ACL1` 按独立目录并行推进；H1B 后续消费者仍等待各自其他依赖，不越过 H1C/C1 等门槛。
 
 ---
 
@@ -1466,6 +1466,7 @@ AGENTS.md
 
 | 日期 | 变更 |
 |---|---|
+| 2026-08-11 | H1B 经多轮 5.6-sol 安全/并发复验最终 PASS（`c007a72`，Node 22/24 117/117），四提交零冲突合入；集成 HEAD `e3508e2`，Host tree `207e9446...` 与验证版本字节一致并推送 |
 | 2026-08-11 | P0 多轮 5.6-sol V-P0 最终 PASS（`ba8a208`，Protocol 109/109、攻击矩阵60/60），tree `16c9144c...` 无冲突合入；`4a47a05` 完成 root lockfile并推送，解锁并并行启动 R1 `refactor/sessiond-core` 与 C1 `refactor/client-data` |
 | 2026-08-11 | C0 W0 严格适配经 5.6-sol 独立复验 PASS（`adb6691`），Client tree 无冲突、字节一致合入；`e6432b9` 完成 root lockfile 并推送，Node 22 Client 50/50、Host 81/81、Runtime contracts 75/75 |
 | 2026-08-11 | H0A 经 5.6-sol 最终安全复验 PASS（`b8e150d`，Node 22/24 81/81），已以 `ad2bde8` + `89e9d05` 合入并由 `1432ca5` 完成 Host root lockfile/发布归一化、推送集成分支；解锁并启动 H1B `refactor/host-files-git` |
