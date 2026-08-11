@@ -106,6 +106,27 @@ switch (mode) {
     drainStdin(() => {}, () => process.exit(0));
     break;
   }
+  case "stderr-split-secret": {
+    // Emit a long secret across many tiny writes (no coalescing) then exit 1
+    // so the parent's exit.error surfaces stderr.snapshot().slice(0,400).
+    const secret =
+      "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF\n";
+    // Write 1–3 bytes at a time to force many pipe-level chunk boundaries.
+    for (let i = 0; i < secret.length; ) {
+      const n = 1 + (i % 3);
+      process.stderr.write(secret.slice(i, i + n));
+      i += n;
+    }
+    // Also a Bearer split similarly.
+    const bearer = "Authorization: Bearer supersecrettokenvalueXYZ1234567890\n";
+    for (let i = 0; i < bearer.length; ) {
+      const n = 1 + (i % 2);
+      process.stderr.write(bearer.slice(i, i + n));
+      i += n;
+    }
+    process.exit(1);
+    break;
+  }
   case "split-frames": {
     const frame = JSON.stringify({
       type: "worker.ready",

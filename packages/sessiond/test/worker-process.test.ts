@@ -15,6 +15,7 @@ import {
 } from "../src/composition/worker-process.js";
 import { PassThrough } from "node:stream";
 import {
+  DEFAULT_STDERR_PENDING_BYTES,
   DEFAULT_STDERR_RING_BYTES,
   redactStderr,
   StderrRing,
@@ -192,13 +193,16 @@ test("StderrRing multi-chunk eviction is newest-biased and stays within maxBytes
   const stream = new PassThrough();
   const ring = new StderrRing(stream, { maxBytes: 32 });
   ring.start();
-  ring.pushText("aaaaaaaaaaaaaaaa"); // 16
-  ring.pushText("bbbbbbbbbbbbbbbb"); // 16 → total 32
-  ring.pushText("ccccccccCCCCMARK"); // 16 → should drop oldest a's
+  // Newlines commit each segment into the ring (line-stateful redaction);
+  // without them everything would stay in pending and only redact on snapshot.
+  // Keep tokens short so the long-base64 redactor does not collapse the body.
+  ring.pushText("aaaa aaaa aaaa\n"); // 15
+  ring.pushText("bbbb bbbb bbbb\n"); // 15 → total 30
+  ring.pushText("cccc cccc MARK\n"); // 15 → should drop oldest a's
   const snap = ring.snapshot();
   assert.ok(Buffer.byteLength(snap, "utf8") <= 32);
-  assert.equal(snap.includes("aaaaaaaa"), false);
-  assert.ok(snap.includes("CCCCMARK"));
+  assert.equal(snap.includes("aaaa"), false);
+  assert.ok(snap.includes("MARK"), `expected newest tail, got ${JSON.stringify(snap)}`);
   ring.stop();
   stream.destroy();
 });
@@ -218,6 +222,162 @@ test("StderrRing single multi-byte oversize chunk trims without tearing code poi
   assert.equal(Buffer.from(snap, "utf8").toString("utf8"), snap);
   // Every remaining char should still be 中 (no U+FFFD / torn fragment).
   assert.ok([...snap].every((ch) => ch === "中"));
+  ring.stop();
+  stream.destroy();
+});
+
+/** Every contiguous substring of `secret` with length ≥ minLen must be absent from `haystack`. */
+function assertNoSecretFragments(haystack: string, secret: string, minLen = 8): void {
+  assert.ok(secret.length >= minLen, `secret must be ≥ ${minLen} chars for fragment check`);
+  for (let i = 0; i <= secret.length - minLen; i += 1) {
+    const frag = secret.slice(i, i + minLen);
+    assert.equal(
+      haystack.includes(frag),
+      false,
+      `leaked secret fragment ${JSON.stringify(frag)} in ${JSON.stringify(haystack.slice(0, 200))}`,
+    );
+  }
+}
+
+/**
+ * Split-boundary redaction: a secret written across 2/3 pipe chunks must not
+ * leave any ≥8-char contiguous original fragment in snapshot() (the same
+ * surface worker-exit errors expose via stderr.snapshot().slice(0,400)).
+ */
+test("StderrRing redacts API key / Bearer / path / token across every 2- and 3-chunk split", () => {
+  const secrets = [
+    {
+      label: "openai-key",
+      full: "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF\n",
+      secretBody: "sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF",
+    },
+    {
+      label: "bearer",
+      full: "Authorization: Bearer supersecrettokenvalueXYZ1234567890\n",
+      secretBody: "supersecrettokenvalueXYZ1234567890",
+    },
+    {
+      label: "path",
+      full: "loading /Users/proxy/.pi/secrets/key-material-abcdef.json\n",
+      secretBody: "/Users/proxy/.pi/secrets/key-material-abcdef.json",
+    },
+    {
+      label: "token-assign",
+      full: "token=abcd1234efgh5678ijkl9012mnop3456qrstuvwx\n",
+      secretBody: "abcd1234efgh5678ijkl9012mnop3456qrstuvwx",
+    },
+  ];
+
+  for (const { label, full, secretBody } of secrets) {
+    // Two-chunk splits at every index.
+    for (let cut = 1; cut < full.length; cut += 1) {
+      const stream = new PassThrough();
+      const ring = new StderrRing(stream, { maxBytes: DEFAULT_STDERR_RING_BYTES });
+      ring.start();
+      ring.pushText(full.slice(0, cut));
+      ring.pushText(full.slice(cut));
+      const snap = ring.snapshot();
+      assertNoSecretFragments(snap, secretBody, 8);
+      // Exact original suffix after a mid-token cut must also be gone.
+      if (cut > 0 && cut < secretBody.length) {
+        const suffix = secretBody.slice(cut);
+        if (suffix.length >= 8) {
+          assert.equal(snap.includes(suffix), false, `${label} 2-split@${cut} suffix leak`);
+        }
+      }
+      ring.stop();
+      stream.destroy();
+    }
+
+    // Three-chunk splits at a few representative interior points.
+    const third = Math.floor(full.length / 3);
+    const cuts: Array<[number, number]> = [
+      [1, 2],
+      [third, third * 2],
+      [Math.max(1, full.indexOf("=") + 1), Math.max(2, full.length - 2)],
+      [Math.max(1, Math.floor(full.length / 2) - 1), Math.floor(full.length / 2) + 1],
+    ];
+    for (const [a, b] of cuts) {
+      if (!(0 < a && a < b && b < full.length)) continue;
+      const stream = new PassThrough();
+      const ring = new StderrRing(stream, { maxBytes: DEFAULT_STDERR_RING_BYTES });
+      ring.start();
+      ring.pushText(full.slice(0, a));
+      ring.pushText(full.slice(a, b));
+      ring.pushText(full.slice(b));
+      const snap = ring.snapshot();
+      assertNoSecretFragments(snap, secretBody, 8);
+      ring.stop();
+      stream.destroy();
+    }
+  }
+});
+
+test("StderrRing snapshot redacts pending incomplete line without retaining raw secret", () => {
+  const stream = new PassThrough();
+  const ring = new StderrRing(stream, { maxBytes: 256 });
+  ring.start();
+  const body = "sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF";
+  // No trailing newline — stays in pending raw until snapshot/stop.
+  ring.pushText(`OPENAI_API_KEY=${body}`);
+  const snap = ring.snapshot();
+  assertNoSecretFragments(snap, body, 8);
+  assert.equal(snap.includes(body), false);
+  // A second snapshot must stay clean (pending still held, re-redacted each time).
+  assertNoSecretFragments(ring.snapshot(), body, 8);
+  ring.stop();
+  // After stop, pending is flushed redacted into the ring and raw is cleared.
+  assertNoSecretFragments(ring.snapshot(), body, 8);
+  stream.destroy();
+});
+
+test("StderrRing pending raw is bounded: no-newline oversize input cannot grow memory", () => {
+  const stream = new PassThrough();
+  const maxPending = 64;
+  const ring = new StderrRing(stream, { maxBytes: 256, maxPendingBytes: maxPending });
+  ring.start();
+  // Secret longer than maxPending, no newline — must force-flush via redaction
+  // and leave no raw pending suffix that could leak a later continuation.
+  const body = `sk-${"a".repeat(80)}${"b".repeat(80)}`;
+  assert.ok(Buffer.byteLength(body, "utf8") > maxPending);
+  ring.pushText(`OPENAI_API_KEY=${body}`);
+  // Internal pending must not retain the full raw (force-flushed).
+  // We can only observe via snapshot, which must be clean and ≤ ring max.
+  const snap = ring.snapshot();
+  assert.ok(Buffer.byteLength(snap, "utf8") <= 256);
+  assertNoSecretFragments(snap, body, 8);
+  // Append a continuation that would have completed a split under the old design.
+  ring.pushText(`${"c".repeat(40)}\n`);
+  const snap2 = ring.snapshot();
+  assertNoSecretFragments(snap2, body, 8);
+  assertNoSecretFragments(snap2, body + "c".repeat(40), 8);
+  ring.stop();
+  stream.destroy();
+  assert.ok(maxPending <= DEFAULT_STDERR_PENDING_BYTES);
+});
+
+test("StderrRing 40-round flood stays bounded and redacted", () => {
+  const stream = new PassThrough();
+  const ring = new StderrRing(stream, { maxBytes: DEFAULT_STDERR_RING_BYTES });
+  ring.start();
+  const line =
+    "OPENAI_API_KEY=sk-secretvalueABCDEFGHIJKLMNOPQRSTUVWX " +
+    "Authorization: Bearer supersecrettokenvalue " +
+    "path=/Users/proxy/.pi/secrets/key.json " +
+    "token=abcd1234efgh5678ijkl9012mnop3456qrstuvwx\n";
+  for (let round = 0; round < 40; round += 1) {
+    // Vary chunking each round so flood covers split edges too.
+    const cut = 1 + (round % Math.max(1, line.length - 2));
+    ring.pushText(line.slice(0, cut));
+    ring.pushText(line.slice(cut));
+  }
+  const snap = ring.snapshot();
+  assert.ok(Buffer.byteLength(snap, "utf8") <= DEFAULT_STDERR_RING_BYTES);
+  assert.equal(snap.includes("sk-secretvalueABCDEFGHIJKLMNOPQRSTUVWX"), false);
+  assert.equal(snap.includes("supersecrettokenvalue"), false);
+  assert.equal(snap.includes("/Users/proxy/.pi/secrets"), false);
+  assert.equal(snap.includes("abcd1234efgh5678ijkl9012mnop3456qrstuvwx"), false);
+  assert.ok(snap.includes("[REDACTED]") || snap.includes("[PATH]"));
   ring.stop();
   stream.destroy();
 });
@@ -338,6 +498,35 @@ test("stderr flood is drained, bounded, and redacted", async () => {
   } finally {
     // Always close so a failed assert never leaves a live child holding the test runner.
     await connection.close().catch(() => {});
+  }
+});
+
+test("stderr split-secret: ring snapshot and worker exit error never surface secret fragments", async () => {
+  const factory = factoryWithArgvMode("stderr-split-secret");
+  let connection: Awaited<ReturnType<ProductionWorkerProcessFactory["start"]>> | undefined;
+  try {
+    connection = await factory.start(startInput);
+    const exit = await onceExit(connection, 5_000);
+    assert.ok(exit.error, "expected non-zero exit to surface an error");
+    const readSnap = (): string => {
+      const snapFn = (connection as unknown as { stderrSnapshot?: () => string }).stderrSnapshot;
+      return typeof snapFn === "function" ? snapFn.call(connection) : "";
+    };
+    const snap = readSnap();
+    const errMsg = exit.error!.message;
+    const bodies = [
+      "sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF",
+      "supersecrettokenvalueXYZ1234567890",
+    ];
+    for (const body of bodies) {
+      assertNoSecretFragments(snap, body, 8);
+      assertNoSecretFragments(errMsg, body, 8);
+      // Exact full secret must not appear either.
+      assert.equal(snap.includes(body), false);
+      assert.equal(errMsg.includes(body), false);
+    }
+  } finally {
+    await connection?.close().catch(() => {});
   }
 });
 

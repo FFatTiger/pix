@@ -283,18 +283,36 @@ export class SerialStdinWriter {
 // stderr ring (bounded + redacted)
 // ---------------------------------------------------------------------------
 
+/** Hard cap on unredacted incomplete-line bytes retained for cross-chunk assembly. */
+export const DEFAULT_STDERR_PENDING_BYTES = 8 * 1024;
+
 export interface StderrRingOptions {
   maxBytes?: number;
+  /** Max raw bytes of an unfinished line kept before a forced redacted flush. */
+  maxPendingBytes?: number;
 }
 
 /**
  * Always-on stderr drain. Keeps a bounded, redacted ring buffer for diagnostics
  * without ever applying backpressure to the child or retaining secrets.
+ *
+ * Redaction is **line-stateful**: incomplete lines are held raw (bounded) and
+ * only enter the ring after a full line is assembled and redacted as a unit.
+ * That closes the split-boundary leak where `OPENAI_API_KEY=sk-abc` + suffix
+ * arrived in separate pipe chunks and per-chunk redaction left the suffix.
+ *
+ * `snapshot()` / `stop()` redact any pending incomplete line before returning
+ * or flushing. Pending raw is strictly bounded; oversize no-newline input is
+ * force-flushed after full-buffer redaction so no unredacted secret is retained
+ * long-term and no cross-boundary raw suffix is kept.
  */
 export class StderrRing {
   private chunks: string[] = [];
   private bytes = 0;
+  /** Unredacted incomplete line (no trailing newline yet). Strictly bounded. */
+  private pendingRaw = "";
   private readonly maxBytes: number;
+  private readonly maxPendingBytes: number;
   private stopped = false;
 
   constructor(
@@ -302,6 +320,7 @@ export class StderrRing {
     options: StderrRingOptions = {},
   ) {
     this.maxBytes = options.maxBytes ?? DEFAULT_STDERR_RING_BYTES;
+    this.maxPendingBytes = options.maxPendingBytes ?? DEFAULT_STDERR_PENDING_BYTES;
   }
 
   start(): void {
@@ -317,6 +336,9 @@ export class StderrRing {
     this.stopped = true;
     this.stream.removeAllListeners("data");
     this.stream.removeAllListeners("error");
+    // Flush any incomplete line through redaction so stop() never drops secrets
+    // into a later reader and never retains raw pending after detach.
+    this.flushPending();
     try {
       this.stream.resume?.(); // ensure any residual data is discarded
     } catch {
@@ -324,9 +346,23 @@ export class StderrRing {
     }
   }
 
-  /** Snapshot of the redacted ring (newest-biased). */
+  /**
+   * Snapshot of the redacted ring (newest-biased), including a redacted view of
+   * any incomplete pending line. Total size ≤ maxBytes, UTF-8 safe. Never
+   * returns unredacted pending raw.
+   */
   snapshot(): string {
-    return this.chunks.join("");
+    const pending =
+      this.pendingRaw.length > 0 ? redactStderr(this.pendingRaw) : "";
+    let text = this.chunks.join("") + pending;
+    if (text.length === 0) return "";
+    if (Buffer.byteLength(text, "utf8") > this.maxBytes) {
+      text = redactStderr(utf8SafeTail(text, this.maxBytes));
+      if (Buffer.byteLength(text, "utf8") > this.maxBytes) {
+        text = utf8SafeTail(text, this.maxBytes);
+      }
+    }
+    return text;
   }
 
   /**
@@ -339,28 +375,76 @@ export class StderrRing {
 
   private push(raw: string): void {
     if (this.stopped || raw.length === 0) return;
-    // Redact first so secrets never enter the ring, even briefly.
-    let text = redactStderr(raw);
-    if (text.length === 0) return;
 
-    // A single redacted chunk may itself exceed the ring. Keep only its newest
+    // Assemble with any incomplete line from prior chunks. Redaction runs only
+    // on complete lines (or on a forced flush of bounded pending).
+    const combined = this.pendingRaw.length > 0 ? this.pendingRaw + raw : raw;
+    this.pendingRaw = "";
+
+    let start = 0;
+    while (start < combined.length) {
+      const nl = combined.indexOf("\n", start);
+      if (nl === -1) break;
+      // Include the newline so ring formatting stays faithful.
+      this.commitRawLine(combined.slice(start, nl + 1));
+      start = nl + 1;
+    }
+
+    if (start < combined.length) {
+      this.holdPending(combined.slice(start));
+    }
+  }
+
+  /** Hold an incomplete line raw, force-flushing through redaction if over bound. */
+  private holdPending(rest: string): void {
+    if (rest.length === 0) {
+      this.pendingRaw = "";
+      return;
+    }
+    const restBytes = Buffer.byteLength(rest, "utf8");
+    if (restBytes <= this.maxPendingBytes) {
+      this.pendingRaw = rest;
+      return;
+    }
+    // Oversize no-newline input: redact the FULL rest first (so split-boundary
+    // patterns still match), push the redacted form into the ring, and drop all
+    // raw pending. Never retain a raw suffix across the bound — that is what
+    // leaked secrets under per-chunk redaction.
+    this.commitRawLine(rest);
+    this.pendingRaw = "";
+  }
+
+  /** Redact one raw line (or forced oversize segment) and append to the ring. */
+  private commitRawLine(rawLine: string): void {
+    if (rawLine.length === 0) return;
+    const text = redactStderr(rawLine);
+    if (text.length === 0) return;
+    this.pushRedacted(text);
+  }
+
+  private flushPending(): void {
+    if (this.pendingRaw.length === 0) return;
+    this.commitRawLine(this.pendingRaw);
+    this.pendingRaw = "";
+  }
+
+  private pushRedacted(text: string): void {
+    // A single redacted segment may itself exceed the ring. Keep only its newest
     // UTF-8-safe tail so snapshot() is never emptied by eviction of the only
-    // remaining chunk (that race made the flood test flaky under coalesced writes).
-    // Re-redact after the cut: a byte-tail can start mid-line and re-expose
-    // patterns that only match with a left context on the full line.
-    const textBytes = Buffer.byteLength(text, "utf8");
+    // remaining chunk. Re-redact after the cut: a byte-tail can start mid-line
+    // and re-expose patterns that only match with left context on the full line.
+    let segment = text;
+    const textBytes = Buffer.byteLength(segment, "utf8");
     if (textBytes > this.maxBytes) {
-      text = redactStderr(utf8SafeTail(text, this.maxBytes));
-      if (text.length === 0) return;
-      // Tail + re-redact can only shrink or stay; if still over (marker expansion
-      // is not expected to grow past max), trim once more without re-expanding.
-      if (Buffer.byteLength(text, "utf8") > this.maxBytes) {
-        text = utf8SafeTail(text, this.maxBytes);
+      segment = redactStderr(utf8SafeTail(segment, this.maxBytes));
+      if (segment.length === 0) return;
+      if (Buffer.byteLength(segment, "utf8") > this.maxBytes) {
+        segment = utf8SafeTail(segment, this.maxBytes);
       }
     }
 
-    this.chunks.push(text);
-    this.bytes += Buffer.byteLength(text, "utf8");
+    this.chunks.push(segment);
+    this.bytes += Buffer.byteLength(segment, "utf8");
 
     // Newest-biased multi-chunk eviction: drop oldest whole chunks first.
     while (this.bytes > this.maxBytes && this.chunks.length > 1) {
@@ -417,17 +501,19 @@ export function redactStderr(input: string): string {
   text = text.replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]");
   // Explicit key/token assignments and JSON fields
   text = text.replace(
-    /((?:api[_-]?key|access[_-]?token|secret|password|token)\s*[:=]\s*)(["']?)[^\s"',;]+/gi,
+    /((?:api[_-]?key|access[_-]?token|secret|password|token|openai_api_key|anthropic_api_key)\s*[:=]\s*)(["']?)[^\s"',;]+/gi,
     "$1$2[REDACTED]",
   );
   // sk-/rk-/pk- provider tokens (also when a prior chunk cut the leading boundary)
   text = text.replace(/(?:^|[^A-Za-z0-9])(?:sk|rk|pk)[-_][A-Za-z0-9_\-]{8,}/g, (m) => {
     const lead = m[0] !== "s" && m[0] !== "r" && m[0] !== "p" ? m[0]! : "";
-    const token = lead ? m.slice(1) : m;
     return `${lead}[REDACTED]`;
   });
   // Long base64-ish blobs that often encode secrets (keep short identifiers)
   text = text.replace(/\b[A-Za-z0-9_\-]{40,}\b/g, "[REDACTED]");
+  // Conservative credential-fragment cleanup: a redaction marker followed by more
+  // token body (utf8SafeTail / forced pending flush can leave a mid-token tail).
+  text = text.replace(/\[REDACTED\][A-Za-z0-9_\-]{4,}/g, "[REDACTED]");
   // Absolute POSIX / Windows paths — also when the chunk starts mid-path after a cut.
   text = text.replace(/(?:^|[\s"'`=(])(\/(?:Users|home|var|tmp|private|opt|etc|root)\/[^\s"'`)]+)/g, (match, path) =>
     match.replace(path, "[PATH]"),
