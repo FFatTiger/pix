@@ -53,7 +53,7 @@ bin/pi-web.js
 | `packages/protocol` | `integration-v1@e3508e2`，tree `16c9144c085111c4d947f969b75fe5161a2554b8` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `DONE`：`ea7e207`；源码字节一致；Protocol 109/109；GPT PASS |
 | `packages/host` boot surface | `integration-v1@e3508e2`，source tree `207e9446378a0e8586ae17659b905d3310d05875` | H0A/H1B 旧验证通过 | Hono app/server、gate/security/static、health、WS guard 基础 | 未使用的旧兼容装配；M1 可暂不挂 files/git/worktree | `IN_REVIEW`：`c65d2df`；Host 132/132、真实静态托管 PASS |
 | `packages/client` boot surface | `client-data@d9f0be7`，source tree `bb2bc86d6c9890d4a35f30b44f1b278e8397e796` | 实现已提交、旧独立验证未完成 | Vite shell、正式 Protocol、HTTP/gate/health/capability 基础 | demo sessions、Runtime no-op 作为产品实现、未挂 Host API 的资源 UI | `IN_REVIEW`：`c65d2df`；Client 82/82、demo已删除、bootstrap真实消费 |
-| `packages/sessiond` | 未提交目录 | 候选代码，不能视为 DONE | `package.json`, `scripts/**`, `src/**`, `test/**`, `tsconfig*.json` | `dist`, `dist-test`, `*.tsbuildinfo`, `node_modules` | `IN_PROGRESS`：`5dc9469`；GPT FAIL，原子secret/crash-safe启动修复中 |
+| `packages/sessiond` | 未提交目录 | 候选代码，不能视为 DONE | `package.json`, `scripts/**`, `src/**`, `test/**`, `tsconfig*.json` | `dist`, `dist-test`, `*.tsbuildinfo`, `node_modules` | `DONE`：`5dc9469` + `44529c3`；GPT复验PASS；38/38 |
 | `packages/pi-sdk-adapter` Agent 路径 | `ed34415` | 有 4 个旧计划未关闭问题 | M2 只取 Agent Factory、Runtime、Mapper、sanitizer、必要 internal | sessions/models/credentials/resources/trust 延后 | `DEFERRED_M2` |
 | `packages/agent-worker` | 无 | 不存在 | 新实现 | — | `NEW_M2` |
 | `packages/cli` | 无新架构实现 | 不存在 | 新实现 | 旧 Next bin | `NEW_M1` |
@@ -104,8 +104,10 @@ bin/pi-web.js
 - npm test: PASS（sessiond 29/29；其余公共包全绿）
 - npm run build: PASS
 - git diff --check: PASS
-独立验证 verdict：FAIL（GPT）
-阻塞发现：首次 secret 创建先建立空 final 再写入；极早 SIGINT/SIGTERM、SIGKILL或I/O中断可留下0字节 `sessiond.secret`，后续启动永久 `invalid sessiond secret` 且不自愈。启动窗口探针2/40复现，确定性brick探针复现。必须改为并发安全的原子发布并补既有0字节安全恢复；建议同时把信号handler前移。修复中，B4编码暂缓。
+独立验证 verdict：PASS（GPT复验）
+修复 commit：44529c3
+复验证据：原启动窗口探针40/40；0-byte legacy secret自愈；SIGKILL secret窗口12/12恢复；原回归探针118/118；新专项探针24/24；并发发布收敛且不覆盖；live-owner temp不删除；signal handler无泄漏；sessiond 38/38。B3可DONE，B4可启动。
+残余非阻塞边界：不支持硬链接的特殊文件系统会fail closed；Windows权限/信号语义仍按既有平台限制；低概率PID复用风险保留。
 残余平台风险：Windows named-pipe/socket权限覆盖有限；PID复用探测为低概率已知限制；down --all 属B4
 ```
 

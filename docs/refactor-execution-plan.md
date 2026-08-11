@@ -244,8 +244,8 @@ npm run cli -- status
 | `B0` | Pix Product Workspace | `DONE` | 无 | `e087bf0`；独立 npm workspace、根 scripts、TS 配置、架构检查、零 Next；根脚本 40/40 |
 | `B1` | Core + Protocol Migration | `DONE` | `B0` | `ea7e207`；来源 tree 字节一致；GPT 独立验证 PASS；scripts 40/40、Protocol 109/109、Contract 75/75、Core 3/3 |
 | `B2` | Host + Client Boot Surface | `IN_REVIEW` | `B0`, `B1` | `c65d2df` + root lockfile；Client 82/82、Host 132/132、真实Client dist托管 smoke PASS；最终随M1启动链统一GPT验证 |
-| `B3` | sessiond Daemon Bootstrap | `IN_PROGRESS` | `B0`, `B1` | `5dc9469` + root lockfile；GPT验证 FAIL：首次secret发布非原子可留下0字节永久brick；原实现者修复中 |
-| `B4` | Production Composition + CLI | `BLOCKED` | `B2`, `B3` | `pi-web`、`pi-host`、`pi-sessiond`、ensure/reuse、`down --all` |
+| `B3` | sessiond Daemon Bootstrap | `DONE` | `B0`, `B1` | `5dc9469` + `44529c3`；GPT复验 PASS；sessiond 38/38，启动信号40/40、回归118/118、专项24/24 |
+| `B4` | Production Composition + CLI | `READY` | `B2`, `B3` | `pi-web`、`pi-host`、`pi-sessiond`、ensure/reuse、`down --all` |
 | `B5` | Startup E2E | `BLOCKED` | `B4` | build/start/browser/API/PID/lifecycle E2E |
 
 依赖图：
@@ -472,12 +472,9 @@ git diff --check
 ```text
 1. B0：DONE（`e087bf0`）
 2. B1：DONE（`ea7e207`，GPT 独立验证 PASS）
-3. 当前并行：
-   - B2：Host + Client Boot Surface
-   - B3：sessiond source-only + daemon bootstrap
-4. B4：统一完成 production composition 和 CLI
-5. B5：Startup E2E，达到 M1
-6. 达到 M1 后再启动 M2 Runtime Vertical Slice
+3. 当前：B3 DONE；启动 B4 Production Composition + CLI
+4. B4 完成后执行 B5 Startup E2E，达到 M1
+5. 达到 M1 后再启动 M2 Runtime Vertical Slice
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。
