@@ -285,9 +285,9 @@ runtime.queue             runtime.stats
 | `ACL0` | Runtime Core + Pi ACL Contracts | `DONE` | `fattiger` + `acl0-fix-v4` | `refactor/acl0-runtime-core` | `W0` | 最终 commit `9deb267`；5.6-sol 独立复验 PASS；runtime-core 3/3、contract 75/75（19 suites）；已完整 fast-forward 合入集成分支并由 `b690826` 归一化 root lockfile/发布排除，Node 22.19 门禁通过 |
 | `P0` | Runtime Protocol v1 | `IN_PROGRESS` | `p0-protocol-v4` | `refactor/protocol-base`；[PR #15](https://github.com/FFatTiger/pi-web/pull/15)；[pix #1](https://github.com/FFatTiger/pix/issues/1) | `W0`, `ACL0` | 已恢复；保留 commit `478ca71` 后未提交严格 schema 修复，正在 rebase 到 `b690826` 并按最终 Runtime Core 语义修复首轮验证问题 |
 | `V-P0` | Protocol v1 独立验证 | `BLOCKED` | 5.6-sol verifier | 只读验证 `refactor/protocol-base` | `P0` | 等待本轮 P0 实现提交后复验；首轮 4 个阻塞类契约问题必须逐项回归 |
-| `C0` | Vite Client Shell | `DONE` | `client-shell-impl` / `c0-integrate-v4` | `refactor/client-shell` / `pi-web-worktrees/client-shell` | 无 | commit `d8978b5` 已独立验证；正在仅做基线 rebase/机械集成适配，保留 protocol shim，待合入集成分支 |
+| `C0` | Vite Client Shell | `DONE` | `client-shell-impl` / `c0-integrate-v4` | `refactor/client-shell` / `pi-web-worktrees/client-shell` | 无 | 最终 Client tree `3c8047d2...`；5.6-sol 对 W0 严格适配 `adb6691` 独立复验 PASS；以 `306f4a6` + `a8a47c1` + `1c916cb` 无冲突合入，并由 `e6432b9` 归一化 root lockfile 后推送；Node 22 Client 50/50，保留 protocol shim |
 | `V-C0` | Client Shell 独立验证 | `DONE` | `client-shell-verifier` + 集成负责人复跑 | 只读验证 `refactor/client-shell` | `C0` | 首轮 HIGH 已关闭；主会话复跑 typecheck、50 tests、build、boundaries、diff check 全部 PASS |
-| `I0` | 归一化集成分支和 root lockfile | `IN_PROGRESS` | `FFatTiger` | `refactor/architecture-v1`（已推送） | `W0`, `ACL0`, `V-P0`, `V-C0` | ACL0 阶段完成：集成 HEAD `b690826`，root lockfile/生产发布排除已归一化并推送；当前并行协调 P0、ACL1、C0，P0 验证通过后完成 M0 归一化 |
+| `I0` | 归一化集成分支和 root lockfile | `IN_PROGRESS` | `FFatTiger` | `refactor/architecture-v1`（已推送） | `W0`, `ACL0`, `V-P0`, `V-C0` | W0、ACL0、H0A、C0 阶段已完成；集成 HEAD `e6432b9`，root lockfile/生产发布内容持续归一化并推送；当前协调 P0、ACL1、H1B，P0 验证通过后完成 M0 归一化 |
 
 ### 5.2 Wave 1：Runtime、Host、Client 数据层并行
 
@@ -337,7 +337,7 @@ H0A ─────────────────────────�
 C0 ─▶ V-C0 ─────────────────────────▶ I0 ─▶ C1 ─▶ C2
 ```
 
-当前进度（2026-08-11 10:42 CST）：项目已恢复。`W0`、`ACL0`、`C0`、`V-C0`、`H0A` 已完成独立验证；`ACL0` 与 `H0A` 已合入并推送集成分支，当前 HEAD `1432ca5`，Node 22.19 workspace/Host 门禁通过。当前 `P0`、`ACL1`、`H1B` 与 C0 基线集成按独立目录并行推进。
+当前进度（2026-08-11 10:42 CST）：项目已恢复。`W0`、`ACL0`、`C0`、`V-C0`、`H0A` 已完成独立验证并进入集成分支，当前 HEAD `e6432b9`；Node 22.19 workspace/Runtime/Host/Client 门禁通过。当前 `P0`、`ACL1`、`H1B` 按独立目录并行推进；`C1` 继续等待 P0，不越过依赖启动。
 
 ---
 
@@ -1466,6 +1466,7 @@ AGENTS.md
 
 | 日期 | 变更 |
 |---|---|
+| 2026-08-11 | C0 W0 严格适配经 5.6-sol 独立复验 PASS（`adb6691`），Client tree 无冲突、字节一致合入；`e6432b9` 完成 root lockfile 并推送，Node 22 Client 50/50、Host 81/81、Runtime contracts 75/75 |
 | 2026-08-11 | H0A 经 5.6-sol 最终安全复验 PASS（`b8e150d`，Node 22/24 81/81），已以 `ad2bde8` + `89e9d05` 合入并由 `1432ca5` 完成 Host root lockfile/发布归一化、推送集成分支；解锁并启动 H1B `refactor/host-files-git` |
 | 2026-08-11 | 项目恢复 ACTIVE：ACL0 经多轮 5.6-sol 独立复验最终 PASS（`9deb267`），完整合入并由 `b690826` 归一化 root lockfile/发布排除，Node 22.19 门禁通过并推送；并行恢复 P0、启动 ACL1 与 C0 基线集成；H0A `b8e150d` 等待最终安全复验 |
 | 2026-08-11 | 暂停并盘点：W0 DONE（`8a32502`+`a8d4e3e`，最终 v4flash 复验 PASS，已 fast-forward 合入并推送 `refactor/architecture-v1`）；ACL0/H0A/P0/I0 标记 PAUSED 并记录确切进度（ACL0 实现完成待独立复验、H0A 未提交 WIP、P0 未提交严格 schema 修复）；C0/V-C0 DONE（`d8978b5`）；所有 subagent 已停止，无后台任务；main `f6a163d`，集成分支 `a8d4e3e` |
