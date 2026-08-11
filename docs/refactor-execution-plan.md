@@ -272,7 +272,7 @@ B0
 
 | ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
-| `R0` | Protocol Process Corrections | `READY` | `M1` | create/open、epoch、interrupt commandId、stream/bash 语义修正 |
+| `R0` | Protocol Process Corrections | `IN_PROGRESS` | `M1` | 语义已冻结；隔离worktree实现create/open mode、epoch所有权、interrupt commandId、stream/bash契约 |
 | `R1` | Agent Worker Controller + Mapper | `BLOCKED` | `R0` | Worker IPC、显式 Mapper、create/open/prompt/abort/snapshot/shutdown |
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
 | `A1` | Pi SDK Agent Adapter | `READY` | `B1` | 迁 Agent 路径，修 custom UI/sanitizer，最小 capability |
@@ -473,7 +473,7 @@ git diff --check
 
 ```text
 1. M1：DONE（B0–B5；最终集成 `a7e9e29`；GPT 独立对抗验证 PASS）
-2. 当前并行调研 `R0` Protocol Process Corrections 与 `A1` Pi SDK Agent Adapter
+2. `R0` 已完成调研并进入隔离worktree实现；`A1` Pi SDK Agent Adapter继续并行调研
 3. R0完成后并行启动R1 Worker Controller与H1 Runtime WS Gateway
 4. R1完成后启动R2 Child Process Worker Factory
 5. H1完成后启动C1 RuntimeSocket + SessionStore，最终由X1验收M2
