@@ -208,7 +208,23 @@ CLI：只读secret，缺失/unsafe fail closed；注入gateway；保留36e81d4 t
 独立验证 verdict：PASS（GPT最终复验；原165MB普通队列与50k interrupt并发耗尽均关闭；NaN/Infinity/0/负数/unsafe integer无法再禁用inbound/outbound bound；Host172/172、全仓tests、build/typecheck/architecture/boundaries/startup E2E全部PASS；无剩余H1 finding。）
 ```
 
-## 11. 后续迁移时必须记录的校验
+## 11. C1 — Client RuntimeSocket + SessionStore 记录
+
+```text
+实现 commit：08f0362
+测试清理 commit：d06db38
+Protocol：新增共享纯projection reducer；sessiond SnapshotProjection委托共享实现，避免Client/sessiond语义漂移
+Client Runtime：RuntimeSocket + SessionStore + correlation/lifecycle/protocol-wire；严格handshake/attach generation关联；连续eventId应用，gap/epoch/session不匹配触发reattach
+恢复与去重：同epoch仅重发未确认commandId；epoch改变拒绝旧command歧义重发；getSnapshot只替换projection、不推进cursor
+H1约束：运行中stop先发送并等待correlated interrupt（带有界超时）再stop；abort合并为最多1个in-flight；无大容量出站队列
+UI：RuntimeProvider、连接状态、真实create/open入口、Composer send/abort、Transcript committed+partial；删除runtime stubs；无agent capability时诚实禁用
+边界：Client生产代码只允许兄弟包@fffattiger/pix-protocol；新增可测试boundary rules
+本地验证：architecture/build/typecheck/root tests/startup E2E/client+sessiond boundaries PASS；Client140/140、Host172/172、Protocol114/114、sessiond42/42、Adapter92、Contract75、Core3
+残余：真实Browser→Host→Worker prompt/stream/abort留待R2与X1；stop帧当前optimistic fire-and-forget；createSession暂以projectRoot作为cwd
+独立验证 verdict：IN_REVIEW（等待GPT）
+```
+
+## 12. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
