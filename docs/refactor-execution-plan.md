@@ -276,7 +276,7 @@ B0
 | `R1` | Agent Worker Controller + Mapper | `IN_PROGRESS` | `R0` | 审计完成；隔离worktree实现Worker IPC、状态Mapper、create/open/prompt/abort/snapshot/shutdown |
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
 | `A1` | Pi SDK Agent Adapter | `DONE` | `B1` | `526b19e` + `fd4612b`；GPT独立验证PASS；SDK0.84真实create/open smoke、92/92、显式prompt+abort capability |
-| `H1` | Runtime WS Gateway | `IN_PROGRESS` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390`；GPT功能验证通过但PARTIAL；补普通入站队列与interrupt并发上限 |
+| `H1` | Runtime WS Gateway | `IN_REVIEW` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390` + `976c4c6`；修复GPT发现的入站队列/interrupt并发耗尽；Host170；等待复验 |
 | `C1` | RuntimeSocket + SessionStore | `IN_PROGRESS` | `B2`, `R0`, `H1` | H1协议已集成；隔离worktree实现socket状态机、共享projection、resume/at-most-once与最小UI |
 | `X1` | Minimal Runtime E2E | `BLOCKED` | `R2`, `A1`, `H1`, `C1`, `B4` | prompt、stream、abort、Host restart/resume、去重、隔离 |
 
@@ -474,7 +474,7 @@ git diff --check
 ```text
 1. M1：DONE（B0–B5；最终集成 `a7e9e29`；GPT 独立对抗验证 PASS）
 2. `R0`：DONE（`2672c5c`，GPT PASS）；`A1`：DONE（`526b19e` + `fd4612b`，GPT PASS）
-3. R1继续隔离worktree实现；H1针对GPT发现的两项中等资源耗尽问题补有界入站控制
+3. R1继续隔离worktree实现；H1资源上限修复已集成，等待GPT复验
 4. R1完成后启动R2 Child Process Worker Factory
 5. C1已基于集成后的H1协议启动隔离worktree实现；最终由X1验收M2
 ```
