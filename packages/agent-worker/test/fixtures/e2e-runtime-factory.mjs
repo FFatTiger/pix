@@ -1,0 +1,208 @@
+// X1 E2E test-only AgentRuntimeFactory.
+//
+// Loaded by worker-main through the PIX_AGENT_WORKER_FACTORY injection seam
+// (never used in production). Network-free, deterministic streaming, and
+// controllable long-prompt/abort behavior for the real-process runtime path:
+// Browser → Host → sessiond → R2 child → R1 worker-main → this fixture.
+//
+// Control surface (prompt message):
+//   - default / ordinary text  → cumulative "Hello" → "Hello world" stream
+//   - message starts with "__block__" → hold until interrupt/abort or timeout
+//   - message starts with "__crash__" → exit the worker process (new epoch)
+//   - message starts with "__count__" → settle immediately; count only
+//
+// Protocol/Runtime Core separation is preserved: this module only implements
+// the Runtime Core AgentRuntimeFactory / AgentRuntimePort surface.
+
+import { randomUUID } from "node:crypto";
+
+const CAPABILITIES = {
+  capabilities: ["runtime.prompt", "runtime.abort"],
+  version: 1,
+};
+
+export default {
+  async create(input) {
+    const sessionId = `e2e-created-${randomUUID().slice(0, 8)}`;
+    return makePort({
+      cwd: input.cwd,
+      sessionId,
+      mode: "create",
+    });
+  },
+  async open(input) {
+    return makePort({
+      cwd: input.cwd,
+      sessionId: input.sessionId,
+      mode: "open",
+    });
+  },
+};
+
+function makePort({ cwd, sessionId, mode }) {
+  const listeners = new Set();
+  let closed = false;
+  let executeCount = 0;
+  let interruptCount = 0;
+  /** @type {{ resolve: (v: unknown) => void, reject: (e: unknown) => void, timer?: ReturnType<typeof setTimeout> } | null} */
+  let blocked = null;
+  let isPromptRunning = false;
+
+  const identity = {
+    sessionId,
+    sessionFile: `/sessions/${sessionId}.jsonl`,
+  };
+
+  function emit(event) {
+    if (closed) return;
+    for (const fn of [...listeners]) {
+      try {
+        fn(structuredClone(event));
+      } catch {
+        // listener errors must not break the fixture
+      }
+    }
+  }
+
+  function baseState() {
+    return {
+      sessionId,
+      isStreaming: false,
+      isPromptRunning,
+      isBashRunning: false,
+      isCompacting: false,
+      model: null,
+      messageCount: 0,
+    };
+  }
+
+  return {
+    identity,
+    getCapabilities() {
+      return structuredClone(CAPABILITIES);
+    },
+    async getSnapshot() {
+      return {
+        sessionId,
+        state: baseState(),
+        capabilities: structuredClone(CAPABILITIES),
+      };
+    },
+    subscribe(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    async execute(command) {
+      executeCount += 1;
+      if (command.type !== "prompt") {
+        return { ok: true, type: command.type };
+      }
+
+      const message = typeof command.message === "string" ? command.message : "";
+      if (message.startsWith("__crash__")) {
+        // Fail the worker process so sessiond opens a new epoch.
+        setTimeout(() => process.exit(17), 20);
+        // Hang the command until the process dies.
+        return await new Promise(() => {});
+      }
+      if (message.startsWith("__count__")) {
+        return { ok: true, type: "prompt" };
+      }
+
+      isPromptRunning = true;
+      emit({ type: "agent_start", sessionId });
+
+      if (message.startsWith("__block__")) {
+        // Controllable long prompt: wait for interrupt (or hard timeout).
+        const holdMs = 30_000;
+        const result = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            blocked = null;
+            resolve({ kind: "timeout" });
+          }, holdMs);
+          blocked = {
+            resolve: (value) => {
+              clearTimeout(timer);
+              blocked = null;
+              resolve(value);
+            },
+            reject: (error) => {
+              clearTimeout(timer);
+              blocked = null;
+              reject(error);
+            },
+            timer,
+          };
+        });
+
+        isPromptRunning = false;
+        if (result?.kind === "aborted") {
+          emit({
+            type: "prompt_error",
+            sessionId,
+            errorMessage: "interrupted",
+            error: { code: "interrupted", message: "interrupted", retryable: false },
+          });
+          return {
+            ok: false,
+            type: "prompt",
+            error: { code: "interrupted", message: "interrupted", retryable: false },
+          };
+        }
+        // Timeout fallback: still settle so the E2E does not hang forever.
+        emit({ type: "prompt_done", sessionId });
+        return { ok: true, type: "prompt" };
+      }
+
+      // Deterministic cumulative partial stream. Mapper diffs into wire deltas.
+      emit({
+        type: "message_update",
+        sessionId,
+        message: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
+      });
+      // Small yield so the stream is multi-frame on the wire.
+      await delay(5);
+      emit({
+        type: "message_update",
+        sessionId,
+        message: { role: "assistant", content: [{ type: "text", text: "Hello world" }] },
+      });
+      await delay(5);
+      emit({
+        type: "message_end",
+        sessionId,
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hello world" }],
+          model: "e2e-fixture",
+          provider: "e2e",
+        },
+      });
+      emit({ type: "prompt_done", sessionId });
+      isPromptRunning = false;
+      return { ok: true, type: "prompt" };
+    },
+    async interrupt(interrupt) {
+      interruptCount += 1;
+      if (interrupt.type === "abort" && blocked) {
+        blocked.resolve({ kind: "aborted" });
+      }
+      return { ok: true, type: interrupt.type };
+    },
+    async close() {
+      closed = true;
+      if (blocked) {
+        blocked.resolve({ kind: "closed" });
+      }
+      listeners.clear();
+    },
+    // Diagnostics for tests that inspect the port (not used over the wire).
+    get __e2e() {
+      return { executeCount, interruptCount, cwd, mode, sessionId };
+    },
+  };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
