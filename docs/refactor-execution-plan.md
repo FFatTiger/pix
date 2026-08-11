@@ -275,7 +275,7 @@ B0
 | `R0` | Protocol Process Corrections | `IN_PROGRESS` | `M1` | 语义已冻结；隔离worktree实现create/open mode、epoch所有权、interrupt commandId、stream/bash契约 |
 | `R1` | Agent Worker Controller + Mapper | `BLOCKED` | `R0` | Worker IPC、显式 Mapper、create/open/prompt/abort/snapshot/shutdown |
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
-| `A1` | Pi SDK Agent Adapter | `IN_PROGRESS` | `B1` | 来源已审计；隔离worktree迁Agent路径、SDK smoke、sanitizer与显式M2最小capability |
+| `A1` | Pi SDK Agent Adapter | `IN_REVIEW` | `B1` | `526b19e` + `fd4612b`；Agent-only迁移、Pi SDK 0.84真实smoke、92/92、显式prompt+abort capability；等待GPT验证 |
 | `H1` | Runtime WS Gateway | `BLOCKED` | `B2`, `B3`, `R0` | Host WS ↔ sessiond RPC |
 | `C1` | RuntimeSocket + SessionStore | `BLOCKED` | `B2`, `R0`, `H1` | handshake/create/attach/prompt/abort/reconnect/snapshot |
 | `X1` | Minimal Runtime E2E | `BLOCKED` | `R2`, `A1`, `H1`, `C1`, `B4` | prompt、stream、abort、Host restart/resume、去重、隔离 |
@@ -473,7 +473,7 @@ git diff --check
 
 ```text
 1. M1：DONE（B0–B5；最终集成 `a7e9e29`；GPT 独立对抗验证 PASS）
-2. `R0` 与 `A1` 均已完成调研，正在两个隔离worktree并行实现
+2. `R0` 正在隔离worktree收尾；`A1` 已集成并进入GPT独立验证
 3. R0完成后并行启动R1 Worker Controller与H1 Runtime WS Gateway
 4. R1完成后启动R2 Child Process Worker Factory
 5. H1完成后启动C1 RuntimeSocket + SessionStore，最终由X1验收M2
