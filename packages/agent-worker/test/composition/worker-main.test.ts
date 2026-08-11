@@ -291,4 +291,297 @@ describe("worker-main composition (real child process)", () => {
     const exitCode = await waitForExit(child);
     assert.equal(exitCode, 1);
   });
+
+  it("live-parent stdin.end still exits 0 (graceful EOF contract)", async () => {
+    const child = spawnWorker({ PIX_AGENT_WORKER_FACTORY: fixturePath });
+    const ndjson = new ChildNdjson(child);
+    writeFrame(child.stdin, {
+      type: "worker.init",
+      id: "init-live",
+      protocolVersion: 1,
+      payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
+    });
+    await ndjson.waitFor((f) => f.type === "worker.ready");
+    child.stdin.end();
+    const exitCode = await waitForExit(child, 5_000);
+    assert.equal(exitCode, 0);
+  });
 });
+
+/**
+ * Real-process orphan hardening: when a parent dies (normal exit / throw /
+ * SIGKILL) the worker child must observe stdin EOF and exit within a bounded
+ * window even though stdout/stderr close at the same time. Live-parent
+ * stdin.end remains the graceful path (exit 0).
+ *
+ * Each scenario is repeated ≥5 times. Worker PIDs are captured and asserted
+ * dead; afterEach / finally always SIGKILL residual children.
+ */
+describe("worker-main parent-death orphan hardening (real process)", () => {
+  before(() => {
+    if (!existsSync(resolveWorkerMainEntry())) {
+      throw new Error(`worker-main dist entry missing: ${resolveWorkerMainEntry()}`);
+    }
+    if (!existsSync(fixturePath)) {
+      throw new Error(`child factory fixture missing: ${fixturePath}`);
+    }
+  });
+
+  afterEach(() => {
+    for (const child of [...liveChildren]) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already dead
+      }
+      liveChildren.delete(child);
+    }
+  });
+
+  const ROUNDS = 5;
+  /** Parent death must kill the worker well under the 1s broken-stdio watchdog. */
+  const ORPHAN_DEADLINE_MS = 3_000;
+
+  async function assertWorkerDiesAfterParent(
+    mode: "exit0" | "crash" | "sigkill",
+    rounds: number,
+  ): Promise<void> {
+    for (let round = 0; round < rounds; round += 1) {
+      const result = await runParentDeathProbe(mode, ORPHAN_DEADLINE_MS);
+      assert.equal(
+        result.workerAlive,
+        false,
+        `round ${round + 1}/${rounds} mode=${mode}: worker pid=${result.workerPid} still alive after parent death ` +
+          `(waited ${result.waitedMs}ms). stderr=${JSON.stringify(result.parentStderr)}`,
+      );
+      assert.ok(result.workerPid > 0, "expected a real worker pid");
+    }
+  }
+
+  it("parent normal exit (process.exit 0) does not orphan the worker (≥5 rounds)", async () => {
+    await assertWorkerDiesAfterParent("exit0", ROUNDS);
+  });
+
+  it("parent throw/crash does not orphan the worker (≥5 rounds)", async () => {
+    await assertWorkerDiesAfterParent("crash", ROUNDS);
+  });
+
+  it("parent SIGKILL does not orphan the worker (≥5 rounds)", async () => {
+    await assertWorkerDiesAfterParent("sigkill", ROUNDS);
+  });
+
+  it("broken stderr alone (parent still alive) still allows clean stdin.end exit", async () => {
+    // Parent keeps stdout open but destroys its stderr reader so the child's
+    // stderr pipe breaks; stdin.end from the live parent must still exit 0.
+    const child = spawnWorker({ PIX_AGENT_WORKER_FACTORY: fixturePath });
+    const ndjson = new ChildNdjson(child);
+    writeFrame(child.stdin, {
+      type: "worker.init",
+      id: "init-br-err",
+      protocolVersion: 1,
+      payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
+    });
+    await ndjson.waitFor((f) => f.type === "worker.ready");
+    try {
+      child.stderr.destroy();
+    } catch {
+      // ignore
+    }
+    child.stdin.end();
+    const code = await waitForExit(child, 5_000);
+    assert.equal(code, 0);
+  });
+
+  it("broken stdout alone (parent still alive) still exits on stdin.end", async () => {
+    const child = spawnWorker({ PIX_AGENT_WORKER_FACTORY: fixturePath });
+    // Don't attach stdout consumers beyond what's needed — destroy after ready.
+    const ndjson = new ChildNdjson(child);
+    writeFrame(child.stdin, {
+      type: "worker.init",
+      id: "init-br-out",
+      protocolVersion: 1,
+      payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
+    });
+    await ndjson.waitFor((f) => f.type === "worker.ready");
+    try {
+      child.stdout.destroy();
+    } catch {
+      // ignore
+    }
+    child.stdin.end();
+    // Exit code may be 0 (ordered) or 1 (flush/watchdog under broken stdout);
+    // the contract is that the process terminates, not that it stays at 0.
+    const code = await waitForExit(child, 5_000);
+    assert.ok(code === 0 || code === 1, `expected exit 0|1, got ${code}`);
+  });
+
+  it("broken stdout+stderr together (simulating parent death pipes) still exits on stdin.end", async () => {
+    const child = spawnWorker({ PIX_AGENT_WORKER_FACTORY: fixturePath });
+    const ndjson = new ChildNdjson(child);
+    writeFrame(child.stdin, {
+      type: "worker.init",
+      id: "init-br-both",
+      protocolVersion: 1,
+      payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
+    });
+    await ndjson.waitFor((f) => f.type === "worker.ready");
+    try {
+      child.stdout.destroy();
+    } catch {
+      // ignore
+    }
+    try {
+      child.stderr.destroy();
+    } catch {
+      // ignore
+    }
+    child.stdin.end();
+    const code = await waitForExit(child, 5_000);
+    assert.ok(code === 0 || code === 1, `expected exit 0|1, got ${code}`);
+  });
+});
+
+interface ParentDeathResult {
+  workerPid: number;
+  workerAlive: boolean;
+  waitedMs: number;
+  parentStderr: string;
+}
+
+/**
+ * Spawn a short-lived parent that itself spawns the real worker-main, prints
+ * the worker pid, then dies according to `mode`. The test process then polls
+ * whether the worker pid is still alive.
+ */
+function runParentDeathProbe(
+  mode: "exit0" | "crash" | "sigkill",
+  deadlineMs: number,
+): Promise<ParentDeathResult> {
+  return new Promise((resolvePromise, reject) => {
+    const workerEntry = resolveWorkerMainEntry();
+    // Inline parent script: spawns worker, prints WORKER_PID, then dies.
+    // Uses only node builtins so no build step is required.
+    const parentSource = `
+const { spawn } = require("node:child_process");
+const worker = spawn(process.execPath, ${JSON.stringify([workerEntry])}, {
+  env: { ...process.env, PIX_AGENT_WORKER_FACTORY: ${JSON.stringify(fixturePath)} },
+  stdio: ["pipe", "pipe", "pipe"],
+  detached: false,
+});
+if (!worker.pid) {
+  console.error("no worker pid");
+  process.exit(2);
+}
+process.stdout.write("WORKER_PID=" + worker.pid + "\\n");
+// Keep pipes alive briefly so the worker boots, then die as requested.
+setTimeout(() => {
+  const mode = ${JSON.stringify(mode)};
+  if (mode === "exit0") {
+    process.exit(0);
+  } else if (mode === "crash") {
+    throw new Error("parent intentional crash");
+  } else if (mode === "sigkill") {
+    // Self-SIGKILL: no finally / no stdin.end — pure hard death.
+    process.kill(process.pid, "SIGKILL");
+  }
+}, 150);
+`;
+    const parent = spawn(process.execPath, ["-e", parentSource], {
+      cwd: workspaceRoot,
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    liveChildren.add(parent as unknown as ChildProcessWithoutNullStreams);
+
+    let stdout = "";
+    let stderr = "";
+    parent.stdout?.setEncoding("utf8");
+    parent.stdout?.on("data", (c: string) => {
+      stdout += c;
+    });
+    parent.stderr?.setEncoding("utf8");
+    parent.stderr?.on("data", (c: string) => {
+      stderr += c;
+    });
+
+    let workerPid = 0;
+    const started = Date.now();
+    const finish = (workerAlive: boolean) => {
+      try {
+        parent.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      liveChildren.delete(parent as unknown as ChildProcessWithoutNullStreams);
+      resolvePromise({
+        workerPid,
+        workerAlive,
+        waitedMs: Date.now() - started,
+        parentStderr: stderr.slice(0, 500),
+      });
+    };
+
+    const deadline = setTimeout(() => {
+      // Timed out waiting for parent/worker lifecycle — treat worker as alive if pid known.
+      finish(workerPid > 0 ? isPidAlive(workerPid) : true);
+    }, deadlineMs + 2_000);
+
+    parent.on("error", (err) => {
+      clearTimeout(deadline);
+      reject(err);
+    });
+
+    // Wait until we learn the worker pid, then wait for parent death, then poll.
+    const pollForPid = () => {
+      const match = /WORKER_PID=(\d+)/.exec(stdout);
+      if (match) {
+        workerPid = Number(match[1]);
+        waitForParentThenWorker();
+        return;
+      }
+      if (Date.now() - started > 2_000) {
+        clearTimeout(deadline);
+        finish(true);
+        return;
+      }
+      setTimeout(pollForPid, 20);
+    };
+
+    const waitForParentThenWorker = () => {
+      const onParentGone = () => {
+        const pollStart = Date.now();
+        const poll = () => {
+          if (!isPidAlive(workerPid)) {
+            clearTimeout(deadline);
+            finish(false);
+            return;
+          }
+          if (Date.now() - pollStart > deadlineMs) {
+            clearTimeout(deadline);
+            finish(true);
+            return;
+          }
+          setTimeout(poll, 25);
+        };
+        poll();
+      };
+      if (parent.exitCode !== null || parent.signalCode !== null) {
+        onParentGone();
+        return;
+      }
+      parent.once("exit", onParentGone);
+    };
+
+    pollForPid();
+  });
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

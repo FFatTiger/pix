@@ -19,3 +19,4 @@ export * from "./mapper/snapshot-mapper.js";
 export * from "./controller/worker-controller.js";
 export * from "./transport/serial-stdout-writer.js";
 export * from "./transport/ndjson-transport.js";
+export * from "./transport/safe-stdio.js";

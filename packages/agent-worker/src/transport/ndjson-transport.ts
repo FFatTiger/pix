@@ -30,18 +30,25 @@ import type {
 import { WorkerToSessiondPushSchema, safeParseSessiondToWorkerMessage } from "@fffattiger/pix-protocol";
 import { protocolError } from "../mapper/protocol-error.js";
 import { SerialStdoutWriter, type SerialStdoutWriterOptions } from "./serial-stdout-writer.js";
+import {
+  createSafeStderrLogger,
+  DEFAULT_EXIT_FLUSH_TIMEOUT_MS,
+  installProcessStdioGuards,
+} from "./safe-stdio.js";
 
 export const DEFAULT_MAX_FRAME_BYTES = 2 * 1024 * 1024;
 
 export interface NdjsonTransportOptions extends SerialStdoutWriterOptions {
   readonly stdin?: Readable;
   readonly stdout?: NodeWritableStream;
-  /** stderr logger (defaults to writing one line per call to process.stderr). */
+  /** stderr logger (defaults to the never-throwing process.stderr writer). */
   readonly stderr?: (line: string) => void;
   /** Max encoded bytes of a single inbound/outbound frame. */
   readonly maxFrameBytes?: number;
   /** Process exit override (tests). Defaults to process.exit. */
   readonly exit?: (code: number) => void;
+  /** Cap on stdout flush wait before raw exit (parent death / broken pipe). */
+  readonly exitFlushTimeoutMs?: number;
   /** Invoked for each parsed inbound frame, in arrival order. */
   readonly onMessage: (message: SessiondToWorkerMessage) => void;
   /** Invoked when stdin reaches EOF / closes (ordered shutdown). */
@@ -54,6 +61,7 @@ export class NdjsonStdioTransport {
   private readonly stderr: (line: string) => void;
   private readonly maxFrameBytes: number;
   private readonly exit: (code: number) => void;
+  private readonly exitFlushTimeoutMs: number;
   private readonly onMessage: (message: SessiondToWorkerMessage) => void;
   private readonly onInputClosed: () => void;
 
@@ -65,10 +73,13 @@ export class NdjsonStdioTransport {
   private fatalSent = false;
 
   constructor(options: NdjsonTransportOptions) {
+    // Guard process pipes early so any default-logger EPIPE is swallowed.
+    installProcessStdioGuards();
     this.stdin = options.stdin ?? process.stdin;
-    this.stderr = options.stderr ?? ((line) => process.stderr.write(`${line}\n`));
+    this.stderr = options.stderr ?? createSafeStderrLogger();
     this.maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
     this.exit = options.exit ?? ((code) => process.exit(code));
+    this.exitFlushTimeoutMs = options.exitFlushTimeoutMs ?? DEFAULT_EXIT_FLUSH_TIMEOUT_MS;
     this.onMessage = options.onMessage;
     this.onInputClosed = options.onInputClosed;
     this.writer = new SerialStdoutWriter(options.stdout ?? process.stdout, options);
@@ -128,16 +139,43 @@ export class NdjsonStdioTransport {
 
   /**
    * Flush all pending frames, then exit. Idempotent: the first exit code wins.
+   * Flush is bounded so a broken stdout (parent death) cannot hang the process.
    */
   requestExit(code: number): void {
     if (this.exitRequested) return;
     this.exitRequested = true;
     this.exitRequestedCode = code;
     this.stop();
+    let settled = false;
+    const finish = (exitCode: number): void => {
+      if (settled) return;
+      settled = true;
+      if (flushTimer !== undefined) clearTimeout(flushTimer);
+      try {
+        this.exit(exitCode);
+      } catch {
+        try {
+          process.exit(exitCode);
+        } catch {
+          // exhausted
+        }
+      }
+    };
+    const flushTimer = setTimeout(() => {
+      this.stderr(`[transport] exit flush timed out after ${this.exitFlushTimeoutMs}ms; raw exit`);
+      // Writer may still be waiting on drain of a dead pipe — force-close it.
+      try {
+        this.writer.close(new Error("exit flush timed out"));
+      } catch {
+        // ignore
+      }
+      finish(code);
+    }, this.exitFlushTimeoutMs);
+    flushTimer.unref?.();
     void this.writer
       .flush()
-      .then(() => this.exit(code))
-      .catch(() => this.exit(1));
+      .then(() => finish(code))
+      .catch(() => finish(1));
   }
 
   /** Send worker.fatal (once) then exit with the given code. */

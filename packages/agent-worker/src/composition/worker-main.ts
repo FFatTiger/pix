@@ -11,10 +11,13 @@
  *   a module exporting a factory as `default` or `createFactory`) used by the
  *   no-network composition smoke; it is never set in production.
  * - stdio: strict NDJSON frames in/out, logs to stderr (see
- *   {@link NdjsonStdioTransport}).
+ *   {@link NdjsonStdioTransport}). Logger is EPIPE-safe and never throws.
  * - Signals: SIGINT/SIGTERM perform an ordered shutdown. Uncaught exceptions /
- *   unhandled rejections fail closed with `worker.fatal` + exit(1).
+ *   unhandled rejections fail closed with `worker.fatal` + exit(1) via an
+ *   idempotent safe handler (no recursive stderr writes).
  * - On stdin EOF the transport triggers an ordered shutdown and process exit.
+ *   A hard exit watchdog guarantees termination even when the parent dies and
+ *   stdout/stderr close together (broken-pipe parent-death case).
  *
  * Direct execution (`node dist/composition/worker-main.js`) is detected by
  * argv[1] matching this module; importing `runWorkerMain` from tests does not
@@ -33,6 +36,15 @@ import type { ProtocolError } from "@fffattiger/pix-protocol";
 import { WorkerController } from "../controller/worker-controller.js";
 import { NdjsonStdioTransport } from "../transport/ndjson-transport.js";
 import { protocolError, toProtocolError } from "../mapper/protocol-error.js";
+import {
+  BROKEN_STDIO_EOF_WATCHDOG_MS,
+  createExitWatchdog,
+  createSafeStderrLogger,
+  DEFAULT_EOF_WATCHDOG_MS,
+  installProcessStdioGuards,
+  isProcessStdioBroken,
+  type ExitWatchdog,
+} from "../transport/safe-stdio.js";
 
 export interface WorkerMainOptions {
   /** Override the factory (tests). Defaults to the PIX_AGENT_BACKEND selection. */
@@ -41,6 +53,10 @@ export interface WorkerMainOptions {
   readonly stdout?: NodeWritableStream;
   readonly stderr?: (line: string) => void;
   readonly exit?: (code: number) => void;
+  /** Override the EOF hard-exit budget (tests). */
+  readonly eofWatchdogMs?: number;
+  /** Override the broken-stdio EOF budget (tests). */
+  readonly brokenStdioWatchdogMs?: number;
 }
 
 export interface WorkerMainHandle {
@@ -59,12 +75,30 @@ function deferred<T>() {
 
 /** Build the composition: transport + controller, and start the transport. */
 export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<WorkerMainHandle> {
-  const stderr = options.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+  installProcessStdioGuards();
+  const stderr = options.stderr ?? createSafeStderrLogger();
   const closed = deferred<number>();
   const rawExit = options.exit ?? ((code: number) => process.exit(code));
+  // Watchdog is independent of the Promise chain so a stuck runtime.close /
+  // logger / stdout flush still terminates the process under parent death.
+  // Holder lets the exit wrapper cancel the timer once the watchdog exists.
+  const watchdogHolder: { current: ExitWatchdog | null } = { current: null };
   const exit = (code: number): void => {
+    try {
+      watchdogHolder.current?.cancel();
+    } catch {
+      // ignore
+    }
     closed.resolve(code);
     rawExit(code);
+  };
+  watchdogHolder.current = createExitWatchdog(exit);
+  const armEofWatchdog = (): void => {
+    const broken = isProcessStdioBroken();
+    const budget = broken
+      ? (options.brokenStdioWatchdogMs ?? BROKEN_STDIO_EOF_WATCHDOG_MS)
+      : (options.eofWatchdogMs ?? DEFAULT_EOF_WATCHDOG_MS);
+    watchdogHolder.current?.arm(budget, broken ? 1 : 0);
   };
 
   let factory = options.factory;
@@ -78,7 +112,7 @@ export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<Wo
   const transportOptions = {
     ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
     ...(options.stdout === undefined ? {} : { stdout: options.stdout }),
-    ...(options.stderr === undefined ? {} : { stderr }),
+    stderr,
     exit,
   };
 
@@ -88,7 +122,10 @@ export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<Wo
     const transport = new NdjsonStdioTransport({
       ...transportOptions,
       onMessage: () => {},
-      onInputClosed: () => transport.requestExit(0),
+      onInputClosed: () => {
+        armEofWatchdog();
+        transport.requestExit(0);
+      },
     });
     transport.start();
     void transport.fatal(
@@ -105,7 +142,23 @@ export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<Wo
       void controller.handleMessage(message);
     },
     onInputClosed: () => {
-      void controller.onInputClosed();
+      // Arm first so even a synchronous throw in onInputClosed cannot orphan us.
+      armEofWatchdog();
+      void controller.onInputClosed().catch((error) => {
+        try {
+          stderr(
+            `[worker-main] onInputClosed failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        } catch {
+          // safe logger should never throw; belt-and-suspenders
+        }
+        // Prefer ordered exit request; watchdog is the backstop.
+        try {
+          transport.requestExit(1);
+        } catch {
+          exit(1);
+        }
+      });
     },
   });
   controller = new WorkerController({
@@ -184,27 +237,87 @@ function isMainModule(metaUrl: string): boolean {
   }
 }
 
-// Auto-run when executed directly as `node dist/composition/worker-main.js`.
-if (isMainModule(import.meta.url)) {
-  void runWorkerMain().then((handle) => {
-    const stderr = (line: string) => process.stderr.write(`${line}\n`);
-    const onFatal = (error: unknown): void => {
+/**
+ * Install auto-run process handlers once the composition is ready. Fatal and
+ * signal paths use the safe logger and are idempotent so a broken stderr pipe
+ * cannot recurse through uncaughtException.
+ */
+function installAutoRunHandlers(handle: WorkerMainHandle, stderr: (line: string) => void): void {
+  installProcessStdioGuards();
+  let fatalInFlight = false;
+  const onFatal = (error: unknown): void => {
+    if (fatalInFlight) return;
+    fatalInFlight = true;
+    try {
       const message = error instanceof Error ? error.message : String(error);
       stderr(`[worker-main] fatal: ${message}`);
+    } catch {
+      // ignore — never rethrow from the fatal path
+    }
+    try {
       if (handle.controller === null) {
         handle.transport.requestExit(1);
       } else {
         void handle.transport.fatal(protocolError("internal", "worker crashed"), 1);
       }
-    };
-    const onSignal = (signal: NodeJS.Signals): void => {
+    } catch {
+      try {
+        process.exit(1);
+      } catch {
+        // exhausted
+      }
+    }
+  };
+  const onSignal = (signal: NodeJS.Signals): void => {
+    try {
       stderr(`[worker-main] received ${signal}; shutting down`);
+    } catch {
+      // ignore
+    }
+    try {
       if (handle.controller === null) handle.transport.requestExit(0);
       else void handle.controller.onInputClosed();
-    };
-    process.on("SIGINT", () => onSignal("SIGINT"));
-    process.on("SIGTERM", () => onSignal("SIGTERM"));
-    process.on("uncaughtException", onFatal);
-    process.on("unhandledRejection", onFatal);
-  });
+    } catch {
+      try {
+        process.exit(0);
+      } catch {
+        // exhausted
+      }
+    }
+  };
+  process.on("SIGINT", () => onSignal("SIGINT"));
+  process.on("SIGTERM", () => onSignal("SIGTERM"));
+  process.on("uncaughtException", onFatal);
+  process.on("unhandledRejection", onFatal);
 }
+
+// Auto-run when executed directly as `node dist/composition/worker-main.js`.
+if (isMainModule(import.meta.url)) {
+  installProcessStdioGuards();
+  const stderr = createSafeStderrLogger();
+  void runWorkerMain({ stderr })
+    .then((handle) => {
+      installAutoRunHandlers(handle, stderr);
+    })
+    .catch((error) => {
+      try {
+        stderr(
+          `[worker-main] boot failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      } catch {
+        // ignore
+      }
+      try {
+        process.exit(1);
+      } catch {
+        // exhausted
+      }
+    });
+}
+
+// Re-export watchdog constants for tests that assert budgets without hardcoding.
+export {
+  BROKEN_STDIO_EOF_WATCHDOG_MS,
+  DEFAULT_EOF_WATCHDOG_MS,
+  type ExitWatchdog,
+};
