@@ -39,6 +39,12 @@ export interface DaemonOptions {
   sessionMutation?: SessionMutationPort;
   /** Forwarded to {@link SessiondService}. */
   serviceOptions?: SessiondOptions;
+  /**
+   * @internal Test-only: inserts a delay at the very start of startup (after
+   * {@link runDaemon} has installed its signal handlers) so a regression test
+   * can deliver a signal mid-bootstrap. Has no effect in production.
+   */
+  __testStartupDelayMs?: number;
 }
 
 /** A running daemon handle. {@link shutdown} is idempotent and tear-down ordered. */
@@ -79,6 +85,9 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
  * Never calls `process.exit`; the caller (see {@link main}) owns process exit.
  */
 export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHandle> {
+  if (options.__testStartupDelayMs && options.__testStartupDelayMs > 0) {
+    await new Promise<void>((resolve) => setTimeout(resolve, options.__testStartupDelayMs));
+  }
   const directory = resolveRuntimeDir(options.directory);
   const paths = sessiondPaths(directory);
   const lock = await acquireInstanceLock(paths);
@@ -120,24 +129,30 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
 }
 
 /**
- * Run the daemon until shutdown is requested. Wires `SIGINT`/`SIGTERM` to an
- * idempotent shutdown and resolves with an exit code once tear-down completes.
+ * Run the daemon until shutdown is requested. Signal handlers are installed
+ * BEFORE startup so a `SIGINT`/`SIGTERM` arriving mid-bootstrap is recorded as
+ * pending and applied the instant startup completes — never ignored (which
+ * would let the default disposition terminate the process and leave a stale
+ * lock). If startup fails, the handlers are removed and the error propagates.
  * Never calls `process.exit` itself.
  */
 export async function runDaemon(options: DaemonOptions = {}, signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"]): Promise<number> {
-  const handle = await startDaemon(options);
-  let triggered = false;
-  const trigger = (): void => {
-    if (triggered) return;
-    triggered = true;
-    void handle.shutdown();
+  let pendingSignal: NodeJS.Signals | undefined;
+  let handle: DaemonHandle | undefined;
+  const onSignal = (signal: NodeJS.Signals): void => {
+    if (pendingSignal === undefined) pendingSignal = signal;
+    // Once the daemon is up, begin idempotent shutdown immediately; otherwise
+    // just record the pending signal and apply it after startup completes.
+    if (handle) void handle.shutdown();
   };
-  for (const signal of signals) process.on(signal, trigger);
+  for (const signal of signals) process.on(signal, onSignal);
   try {
+    handle = await startDaemon(options);
+    if (pendingSignal !== undefined) await handle.shutdown();
     await handle.closed;
     return 0;
   } finally {
-    for (const signal of signals) process.off(signal, trigger);
+    for (const signal of signals) process.off(signal, onSignal);
   }
 }
 

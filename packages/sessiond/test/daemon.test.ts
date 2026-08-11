@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -150,6 +150,38 @@ test("control surface reports liveness tied to the lock", async () => {
     assert.equal(await instanceAlive(paths), true);
     await handle.shutdown();
     assert.equal(await instanceAlive(paths), false);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("a very-early signal during startup shuts down gracefully and leaves no brick", async (t) => {
+  if (isWindows) return t.skip("unix signal delivery during startup");
+  const dir = await tempDir();
+  // The child imports the compiled composition root, installs runDaemon's signal
+  // handlers, then SIGINTs itself on the next tick while startup is delayed.
+  const moduleUrl = new URL("../src/composition/index.js", import.meta.url).href;
+  const childScript = `import { runDaemon } from ${JSON.stringify(moduleUrl)};
+setImmediate(() => process.kill(process.pid, "SIGINT"));
+const code = await runDaemon({ directory: process.argv[2], __testStartupDelayMs: 100, serviceOptions: { idleTimeoutMs: 0 } });
+process.exitCode = code;
+`;
+  const scriptPath = join(dir, "child.mjs");
+  try {
+    await writeFile(scriptPath, childScript);
+    const child = spawn(process.execPath, [scriptPath, dir], { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    const code = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("daemon child did not exit in time")); }, 5_000);
+      child.once("exit", (c) => { clearTimeout(timer); resolve(c ?? -1); });
+    });
+    assert.equal(code, 0, `daemon child exited ${code}; stderr: ${stderr}`);
+    // No brick: the instance lock was released by graceful shutdown.
+    assert.equal(await instanceAlive(sessiondPaths(dir)), false);
+    // Recovery: a fresh start on the same directory succeeds.
+    const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+    await handle.shutdown();
   } finally {
     await cleanup(dir);
   }

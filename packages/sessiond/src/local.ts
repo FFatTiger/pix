@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, link, lstat, mkdir, open, readdir, readFile, rm } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { SessiondError } from "./errors.js";
 
@@ -114,34 +114,129 @@ export async function acquireInstanceLock(paths: SessiondPaths): Promise<Instanc
   throw new SessiondError("conflict", "could not acquire sessiond lock");
 }
 
-export async function loadOrCreateLocalSecret(paths: SessiondPaths): Promise<string> {
+/** Minimum secret entropy, in bytes, before base64url encoding. */
+const SECRET_MIN_BYTES = 32;
+/** Suffix (and naming pattern) for in-progress publish temps. */
+const SECRET_TEMP_SUFFIX = ".tmp";
+
+/**
+ * Test-only hooks for {@link loadOrCreateLocalSecret}. `beforePublish` fires
+ * after the temp is fully written and fsynced, immediately before the atomic
+ * link publish — throw from it to deterministically simulate a crash between
+ * write and publish.
+ */
+export interface LocalSecretTestHooks {
+  beforePublish?: () => void | Promise<void>;
+}
+
+/**
+ * Load the local sessiond secret, creating it atomically on first use.
+ *
+ * Crash-safety / race-safety guarantees:
+ *   - `final` is published only via `link(temp, final)`, which is atomic and
+ *     refuses to replace an existing file (EEXIST). So `final` is always either
+ *     absent or complete — never a 0-byte / partial file. (The legacy code
+ *     opened `final` with O_CREAT|O_EXCL and then wrote into it, which left a
+ *     0-byte `final` on interruption and permanently bricked the daemon.)
+ *   - The full secret is written to a unique temp (`wx`, 0o600) and fsynced for
+ *     durability before publishing.
+ *   - Concurrent creators converge: the loser of the `link` race adopts the
+ *     winner's already-published secret instead of overwriting it.
+ *   - On entry, stale temps from dead processes (this naming pattern only) are
+ *     swept; a live owner's temp is left untouched.
+ *   - Self-heal: a 0-byte `final` can only be legacy-publish debris (this code
+ *     never writes `final` directly). When the daemon holds the instance lock it
+ *     is sole owner, so a 0-byte regular non-symlink `final` is removed and
+ *     rebuilt. Any other malformed `final` (non-zero, unreadable) is fail-closed.
+ */
+export async function loadOrCreateLocalSecret(paths: SessiondPaths, hooks: LocalSecretTestHooks = {}): Promise<string> {
   await ensurePrivateDirectory(dirname(paths.secretFile));
-  try {
-    const info = await lstat(paths.secretFile);
-    if (!info.isFile() || info.isSymbolicLink()) throw new SessiondError("forbidden", "unsafe sessiond secret file");
-    const secret = (await readFile(paths.secretFile, "utf8")).trim();
-    if (secret.length < 32) throw new SessiondError("internal", "invalid sessiond secret");
-    await chmod(paths.secretFile, 0o600);
-    return secret;
-  } catch (error) {
-    if (error instanceof SessiondError) throw error;
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  await sweepStaleSecretTemps(paths);
+  for (let attempt = 0; ; attempt += 1) {
+    const existing = await readExistingSecret(paths);
+    if (existing !== undefined) return existing;
+    if (attempt > 8) throw new SessiondError("conflict", "sessiond secret publish did not converge");
+    const secret = randomBytes(SECRET_MIN_BYTES).toString("base64url");
+    const temp = `${paths.secretFile}.${process.pid}.${randomUUID()}${SECRET_TEMP_SUFFIX}`;
+    try {
+      const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
+      try {
+        await handle.writeFile(`${secret}\n`);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await hooks.beforePublish?.();
+      try {
+        await link(temp, paths.secretFile);
+        return secret; // published; temp removed in finally (hard link → final keeps the inode)
+      } catch (error) {
+        // Lost the race: another process published a complete secret first.
+        // Loop and adopt theirs rather than overwriting.
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+    } finally {
+      // Temp removal must never disrupt a successful publish (or mask its error);
+      // force:true already ignores ENOENT, so this only swallows exotic failures.
+      await rm(temp, { force: true }).catch(() => {});
+    }
   }
-  const secret = randomBytes(32).toString("base64url");
-  const temporary = `${paths.secretFile}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${secret}\n`, { mode: 0o600, flag: "wx" });
-  try {
-    await open(paths.secretFile, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600).then(async (handle) => {
-      try { await handle.writeFile(`${secret}\n`); await handle.sync(); }
-      finally { await handle.close(); }
-    });
-    await chmod(paths.secretFile, 0o600);
-    return secret;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return (await readFile(paths.secretFile, "utf8")).trim();
+}
+
+/**
+ * Read and validate an existing `final`. Returns the secret, or `undefined`
+ * when no secret exists yet (caller should create). Self-heals a 0-byte
+ * legacy-debris `final`; fails closed on symlinks, non-regular files, and
+ * non-zero malformed content.
+ */
+async function readExistingSecret(paths: SessiondPaths): Promise<string | undefined> {
+  const info = await lstat(paths.secretFile).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
     throw error;
-  } finally {
-    await rm(temporary, { force: true });
+  });
+  if (info === undefined) return undefined;
+  if (info.isSymbolicLink() || !info.isFile()) throw new SessiondError("forbidden", "unsafe sessiond secret file");
+  if (info.size === 0) {
+    // Legacy non-atomic publish debris; safe to rebuild under the instance lock.
+    await rm(paths.secretFile, { force: true });
+    return undefined;
+  }
+  const secret = (await readFile(paths.secretFile, "utf8")).trim();
+  if (secret.length < SECRET_MIN_BYTES) throw new SessiondError("internal", "invalid sessiond secret");
+  await chmod(paths.secretFile, 0o600);
+  return secret;
+}
+
+/**
+ * Best-effort sweep of in-progress publish temps that match this module's
+ * naming pattern (`<secretFile>.<pid>.<uuid>.tmp`) and whose owning pid is no
+ * longer alive. A live owner's temp (same or recycled pid) is always left in
+ * place, so concurrent publishers never disrupt each other.
+ */
+async function sweepStaleSecretTemps(paths: SessiondPaths): Promise<void> {
+  const dir = dirname(paths.secretFile);
+  const prefix = `${basename(paths.secretFile)}.`;
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(SECRET_TEMP_SUFFIX)) continue;
+    const middle = entry.slice(prefix.length, entry.length - SECRET_TEMP_SUFFIX.length);
+    const pid = Number(middle.split(".")[0]);
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue; // not our pattern
+    if (pidAlive(pid)) continue; // owner may still be writing/publishing
+    const candidate = join(dir, entry);
+    try {
+      const info = await lstat(candidate);
+      if (!info.isFile() || info.isSymbolicLink()) continue; // only sweep regular files
+      await rm(candidate, { force: true });
+    } catch {
+      /* best-effort; a concurrent sweeper may have removed it */
+    }
   }
 }
 
