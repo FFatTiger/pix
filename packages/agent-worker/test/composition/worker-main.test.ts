@@ -1,8 +1,8 @@
-import { describe, it, before } from "node:test";
+import { describe, it, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runWorkerMain } from "../../src/composition/worker-main.js";
@@ -10,8 +10,28 @@ import { FakeAgentRuntimeFactory } from "../helpers/fake-runtime.js";
 import type { RuntimeCommandResult as CoreRuntimeCommandResult } from "@fffattiger/pix-runtime-core";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const packageRoot = resolve(here, "..", "..");
+
+/** Climb from the compiled (dist-test) or source test path to the package root. */
+function findPackageRoot(start: string): string {
+  let dir = start;
+  for (let i = 0; i < 8; i += 1) {
+    const manifest = join(dir, "package.json");
+    if (existsSync(manifest)) {
+      try {
+        const name = JSON.parse(readFileSync(manifest, "utf8")).name as string | undefined;
+        if (name === "@fffattiger/pix-agent-worker") return dir;
+      } catch {
+        // keep climbing
+      }
+    }
+    dir = resolve(dir, "..");
+  }
+  throw new Error(`agent-worker package root not found from ${start}`);
+}
+
+const packageRoot = findPackageRoot(here);
 const workspaceRoot = resolve(packageRoot, "..", "..");
+const fixturePath = resolve(packageRoot, "test", "fixtures", "child-worker-factory.mjs");
 
 /** Resolve the worker-main entry exactly as R2 does via the package exports. */
 function resolveWorkerMainEntry(): string {
@@ -26,9 +46,9 @@ class ChildNdjson {
   private readonly consumed = new Set<Record<string, unknown>>();
   private buffer = "";
 
-  constructor(child: ReturnType<typeof spawn>) {
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
+  constructor(child: ChildProcessWithoutNullStreams) {
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
       this.buffer += chunk;
       let index = this.buffer.indexOf("\n");
       while (index !== -1) {
@@ -44,16 +64,27 @@ class ChildNdjson {
         index = this.buffer.indexOf("\n");
       }
     });
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => this.stderr.push(chunk));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => this.stderr.push(chunk));
   }
 
-  waitFor(predicate: (frame: Record<string, any>) => boolean, timeoutMs = 8_000): Promise<Record<string, any>> {
+  waitFor(predicate: (frame: Record<string, any>) => boolean, timeoutMs = 5_000): Promise<Record<string, any>> {
     return new Promise((resolvePromise, reject) => {
-      const timer = setTimeout(() => reject(new Error(`timeout waiting for frame; stderr: ${this.stderr.join("")}`)), timeoutMs);
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(
+          new Error(
+            `timeout waiting for frame; saw=[${this.frames.map((f) => String((f as { type?: string }).type)).join(",")}] stderr=${this.stderr.join("")}`,
+          ),
+        );
+      }, timeoutMs);
       const check = () => {
+        if (settled) return;
         const frame = this.frames.find((f) => !this.consumed.has(f) && predicate(f));
         if (frame) {
+          settled = true;
           this.consumed.add(frame);
           clearTimeout(timer);
           resolvePromise(frame);
@@ -72,14 +103,39 @@ function writeFrame(stream: NodeJS.WritableStream, frame: unknown): void {
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-function waitForExit(child: ReturnType<typeof spawn>, timeoutMs = 8_000): Promise<number | null> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(child.exitCode), timeoutMs);
-    child.on("exit", (code) => {
+function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs = 5_000): Promise<number | null> {
+  return new Promise((resolvePromise) => {
+    if (child.exitCode !== null) {
+      resolvePromise(child.exitCode);
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already dead
+      }
+      resolvePromise(child.exitCode);
+    }, timeoutMs);
+    child.once("exit", (code) => {
       clearTimeout(timer);
-      resolve(code);
+      resolvePromise(code);
     });
   });
+}
+
+/** Track live children so a failed assertion never leaves an orphan process. */
+const liveChildren = new Set<ChildProcessWithoutNullStreams>();
+
+function spawnWorker(env: NodeJS.ProcessEnv): ChildProcessWithoutNullStreams {
+  const child = spawn(process.execPath, [resolveWorkerMainEntry()], {
+    cwd: workspaceRoot,
+    env: { ...process.env, ...env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  liveChildren.add(child);
+  child.once("exit", () => liveChildren.delete(child));
+  return child;
 }
 
 describe("worker-main composition (in-process)", () => {
@@ -152,24 +208,37 @@ describe("worker-main composition (in-process)", () => {
 });
 
 describe("worker-main composition (real child process)", () => {
-  let entryPath = "";
   before(() => {
-    entryPath = resolveWorkerMainEntry();
+    const entryPath = resolveWorkerMainEntry();
     if (!existsSync(entryPath)) {
       throw new Error(`worker-main dist entry missing (run npm run build first): ${entryPath}`);
+    }
+    if (!existsSync(fixturePath)) {
+      throw new Error(`child factory fixture missing: ${fixturePath}`);
+    }
+  });
+
+  afterEach(() => {
+    for (const child of [...liveChildren]) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already dead
+      }
+      liveChildren.delete(child);
     }
   });
 
   it("spawns the executable, completes create/rekey/prompt/shutdown, and exits cleanly on EOF", async () => {
-    const fixturePath = resolve(here, "..", "fixtures", "child-worker-factory.mjs");
-    const child = spawn(process.execPath, [entryPath], {
-      cwd: workspaceRoot,
-      env: { ...process.env, PIX_AGENT_WORKER_FACTORY: fixturePath },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawnWorker({ PIX_AGENT_WORKER_FACTORY: fixturePath });
     const ndjson = new ChildNdjson(child);
 
-    writeFrame(child.stdin!, { type: "worker.init", id: "init-1", protocolVersion: 1, payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" } });
+    writeFrame(child.stdin, {
+      type: "worker.init",
+      id: "init-1",
+      protocolVersion: 1,
+      payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
+    });
 
     const discovered = await ndjson.waitFor((f) => f.type === "worker.sessionDiscovered");
     assert.equal(discovered.payload.sessionId, "sess-created-real");
@@ -177,39 +246,48 @@ describe("worker-main composition (real child process)", () => {
     assert.equal(ready.payload.sessionId, "sess-created-real");
     assert.equal(ready.payload.workerStatus, "ready");
 
-    writeFrame(child.stdin!, { type: "worker.command", id: "wire-1", protocolVersion: 1, payload: { sessionId: "sess-created-real", command: { commandId: "cmd-1", type: "prompt", message: "hi" } } });
+    writeFrame(child.stdin, {
+      type: "worker.command",
+      id: "wire-1",
+      protocolVersion: 1,
+      payload: { sessionId: "sess-created-real", command: { commandId: "cmd-1", type: "prompt", message: "hi" } },
+    });
     const eventFrames = await Promise.all([
       ndjson.waitFor((f) => f.type === "worker.event" && f.payload.event.type === "message_start"),
       ndjson.waitFor((f) => f.type === "worker.event" && f.payload.event.type === "message_update"),
       ndjson.waitFor((f) => f.type === "worker.event" && f.payload.event.type === "message_end"),
     ]);
     assert.equal(eventFrames.length, 3);
-    assert.deepEqual(eventFrames[1]!.payload.event.delta, { role: "assistant", delta: { type: "text", text: " world" } });
+    assert.deepEqual(eventFrames[1]!.payload.event.delta, {
+      role: "assistant",
+      delta: { type: "text", text: " world" },
+    });
     const result = await ndjson.waitFor((f) => f.type === "worker.commandResult");
     assert.equal(result.payload.result.commandId, "cmd-1");
 
     // Snapshot round trip.
-    writeFrame(child.stdin!, { type: "worker.getSnapshot", id: "snap-1", protocolVersion: 1, payload: { sessionId: "sess-created-real" } });
+    writeFrame(child.stdin, {
+      type: "worker.getSnapshot",
+      id: "snap-1",
+      protocolVersion: 1,
+      payload: { sessionId: "sess-created-real" },
+    });
     const snapshot = await ndjson.waitFor((f) => f.type === "worker.snapshot");
     assert.equal(snapshot.id, "snap-1");
     assert.equal(snapshot.payload.snapshot.sessionId, "sess-created-real");
 
     // Ordered shutdown via stdin EOF must terminate the process.
-    child.stdin!.end();
+    child.stdin.end();
     const exitCode = await waitForExit(child);
     assert.equal(exitCode, 0);
   });
 
   it("spawns the executable and fails closed on an unsupported backend", async () => {
-    const child = spawn(process.execPath, [entryPath], {
-      cwd: workspaceRoot,
-      env: { ...process.env, PIX_AGENT_BACKEND: "rpc" },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawnWorker({ PIX_AGENT_BACKEND: "rpc" });
     const ndjson = new ChildNdjson(child);
     const fatal = await ndjson.waitFor((f) => f.type === "worker.fatal");
     assert.equal(fatal.payload.error.code, "unsupported_capability");
-    child.stdin!.end();
+    child.stdin.end();
     const exitCode = await waitForExit(child);
     assert.equal(exitCode, 1);
   });

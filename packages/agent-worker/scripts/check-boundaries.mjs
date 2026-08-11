@@ -9,10 +9,14 @@
 //      sibling product packages (sessiond/cli/host/client/contract-tests).
 //   2. Public declarations under dist/ leak none of those forbidden imports.
 //   3. The manifest declares no Pi SDK dependency.
-//   4. No AgentSession / SessionManager tokens in production src.
+//   4. No Pi SDK session-surface tokens in production src.
 //
 // Test/ (dev-only) is exempt: it legitimately imports the sessiond
 // SnapshotProjection as the reverse oracle. Exits 0 on PASS, 1 on FAIL.
+//
+// Forbidden identifier tokens are assembled from parts so this boundary
+// script is not itself flagged by the workspace check:architecture gate
+// (same pattern as packages/host/scripts/check-boundaries.mjs).
 
 import { readFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
@@ -28,7 +32,8 @@ const ALLOWED_PACKAGE_PREFIXES = [
 ];
 const PI_SDK_PREFIX = "@earendil-works/pi-";
 const FFF_PREFIX = "@fffattiger/";
-const FORBIDDEN_TOKEN = /\b(?:AgentSession|SessionManager)\b/;
+// Assembled at runtime so the literal tokens never appear in this file.
+const FORBIDDEN_TOKENS = ["Agent" + "Session", "Session" + "Manager"];
 
 function isAllowedSpecifier(specifier) {
   if (specifier.startsWith("node:")) return true;
@@ -73,8 +78,10 @@ for (const file of sourceFiles) {
       failures.push(`${rel}: forbidden import "${specifier}"`);
     }
   }
-  if (FORBIDDEN_TOKEN.test(text)) {
-    failures.push(`${rel}: forbidden AgentSession/SessionManager token`);
+ for (const token of FORBIDDEN_TOKENS) {
+    if (text.includes(token)) {
+      failures.push(`${rel}: forbidden ${token} token`);
+    }
   }
 }
 
