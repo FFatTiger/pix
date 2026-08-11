@@ -274,7 +274,7 @@ B0
 |---|---|---|---|---|
 | `R0` | Protocol Process Corrections | `DONE` | `M1` | `2672c5c`；GPT独立验证PASS；create/open mode、sessiond epoch、interrupt commandId、partial/bash delta；Protocol110、sessiond40 |
 | `R1` | Agent Worker Controller + Mapper | `DONE` | `R0` | `f7388b1` + `710ab1c` + lock `43d5b53`；90/90 + 约90项对抗检查；GPT PASS |
-| `R2` | Child Process Worker Factory | `IN_PROGRESS` | `B3`, `R1` | `536b776` + `ee05c09`已集成；sessiond67；主线发现StderrRing超大单chunk可清空ring的flaky，修复中 |
+| `R2` | Child Process Worker Factory | `IN_REVIEW` | `B3`, `R1` | `536b776` + `ee05c09` + `e4335a7` + lock `03edc9a`；sessiond71；全仓门禁PASS，等待GPT验证 |
 | `A1` | Pi SDK Agent Adapter | `DONE` | `B1` | `526b19e` + `fd4612b`；GPT独立验证PASS；SDK0.84真实create/open smoke、92/92、显式prompt+abort capability |
 | `H1` | Runtime WS Gateway | `DONE` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390` + `976c4c6` + `a6eb571`；有界入站/interrupt并发，非法limit回退安全默认；Host172；GPT最终PASS |
 | `C1` | RuntimeSocket + SessionStore | `DONE` | `B2`, `R0`, `H1` | `08f0362` + `d06db38` + `2368938`；Client149；原FAIL全部修复，GPT 29/29对抗探针复验PASS |
@@ -475,7 +475,7 @@ git diff --check
 1. M1：DONE（B0–B5；最终集成 `a7e9e29`；GPT 独立对抗验证 PASS）
 2. `R0`：DONE（`2672c5c`，GPT PASS）；`A1`：DONE（`526b19e` + `fd4612b`，GPT PASS）
 3. H1/C1/R1：DONE；R1 GPT最终PASS
-4. R2已集成main，正在修复主线复现的StderrRing超大单chunk flaky，随后独立验证
+4. R2已集成main；StderrRing flaky已修复并10/10主线复现PASS；全仓门禁PASS，等待GPT独立验证
 5. C1：DONE（`2368938`，GPT 29/29对抗探针复验PASS）；等待R2后进入X1
 ```
 

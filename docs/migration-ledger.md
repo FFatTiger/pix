@@ -223,7 +223,24 @@ Composition：仅通过@fffattiger/pix-pi-sdk-adapter/agent接真实SDK；M2 cap
 独立验证 verdict：PASS（GPT；Agent Worker90/90 + 约90项独立对抗检查，真实worker-main/SDK无网络create与prompt、Controller correlation、Mapper projection oracle、2MiB NDJSON、stderr/stdout、stdin EOF及R2 wire contract全部PASS。P3观察：fast shutdown的5s timer未清、seen command/interrupt sets按Worker lifetime增长；均不阻塞R1/R2，留后续hardening。）
 ```
 
-## 12. C1 — Client RuntimeSocket + SessionStore 记录
+## 12. R2 — Child Process Worker Factory 记录
+
+```text
+实现 commits：536b776 + ee05c09
+StderrRing hardening commit：e4335a7
+lockfile commit：03edc9a
+Factory：每session一个non-detached Node child；绝对解析@fffattiger/pix-agent-worker/worker-main；spawn前安装listener并buffer early message/exit
+Wire：2MiB UTF-8 NDJSON；split/coalesced/CRLF；严格Protocol schema；bounded serial stdin writer；stderr持续drain到bounded redacted ring
+Close：stdin.end→SIGTERM→SIGKILL三段有界deadline；仅等待OS child exit；PID reuse guard；幂等；不forge worker.shutdown
+Env：不spread process.env；强制PIX_AGENT_BACKEND=sdk；仅PATH/HOME/PI_CODING_AGENT_DIR/provider allowlist；拒绝sessiond secrets与任意PIX_透传
+Daemon：默认ProductionWorkerProcessFactory；显式workerFactory override优先；Host agent capability继续[]直到X1
+主线发现并修复：单个stderr chunk大于ring上限时旧whole-chunk eviction会清空snapshot；改为保留UTF-8安全最新tail、再次redact；失败测试finally关闭child
+本地验证：sessiond71/71；stderr flood Grok40/40 + main10/10；Agent Worker90；全仓architecture/build/typecheck/tests/startup E2E/boundaries PASS
+残余：真实Browser→Host→sessiond→SDK prompt/stream/abort与restart/resume留待X1；独立R2对抗验证进行中
+独立验证 verdict：IN_REVIEW（等待GPT）
+```
+
+## 13. C1 — Client RuntimeSocket + SessionStore 记录
 
 ```text
 实现 commit：08f0362
@@ -241,7 +258,7 @@ UI：RuntimeProvider、连接状态、真实create/open入口、Composer send/ab
 独立验证 verdict：PASS（GPT复验；29/29对抗探针通过。首轮6项blocker全部关闭：attach failure可恢复、create跨reconnect原promise settle、one-shot无泄漏、prompt stop明确reject、stop发送/ack诚实且有界、并发create/stop去重；新增double-settle/deadlock/timer-Map leak/wrong-id stop ack探针均PASS。C1可标记DONE。）
 ```
 
-## 13. 后续迁移时必须记录的校验
+## 14. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -259,7 +276,7 @@ UI：RuntimeProvider、连接状态、真实create/open入口、Composer send/ab
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 14. sessiond 特别保护
+## 15. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -292,7 +309,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 15. 旧结果可用性摘要
+## 16. 旧结果可用性摘要
 
 ### 可复用
 
@@ -316,7 +333,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 16. 完成条件
+## 17. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -327,7 +344,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 17. 命名决策（历史证据说明）
+## 18. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 
