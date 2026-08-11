@@ -48,9 +48,9 @@ bin/pi-web.js
 
 | 目标包 | 来源 | 来源状态 | 迁移范围 | 排除项 | pix 状态 |
 |---|---|---|---|---|---|
-| `packages/runtime-core` | `integration-v1@e3508e2` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `PENDING` |
-| `packages/runtime-contract-tests` | `integration-v1@e3508e2` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `PENDING` |
-| `packages/protocol` | `integration-v1@e3508e2` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `PENDING` |
+| `packages/runtime-core` | `integration-v1@e3508e2`，tree `1debd7e020d0495a27f4e044a27bb72c2fcf45a4` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `IN_REVIEW`：源码字节一致；Core 3/3，本地门禁 PASS |
+| `packages/runtime-contract-tests` | `integration-v1@e3508e2`，tree `899aa8a188979867336f75985a0fb56eaa408a69` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `IN_REVIEW`：源码字节一致；Contract 75/75，本地门禁 PASS |
+| `packages/protocol` | `integration-v1@e3508e2`，tree `16c9144c085111c4d947f969b75fe5161a2554b8` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `IN_REVIEW`：源码字节一致；Protocol 109/109，本地门禁 PASS |
 | `packages/host` boot surface | `integration-v1@e3508e2` | H0A/H1B 旧验证通过 | Hono app/server、gate/security/static、health、WS guard 基础 | 未使用的旧兼容装配；M1 可暂不挂 files/git/worktree | `PENDING` |
 | `packages/client` boot surface | `client-data@d9f0be7` | 实现已提交、旧独立验证未完成 | Vite shell、正式 Protocol、HTTP/gate/health/capability 基础 | demo sessions、Runtime no-op 作为产品实现、未挂 Host API 的资源 UI | `PENDING` |
 | `packages/sessiond` | 未提交目录 | 候选代码，不能视为 DONE | `package.json`, `scripts/**`, `src/**`, `test/**`, `tsconfig*.json` | `dist`, `dist-test`, `*.tsbuildinfo`, `node_modules` | `PENDING` |
@@ -58,7 +58,35 @@ bin/pi-web.js
 | `packages/agent-worker` | 无 | 不存在 | 新实现 | — | `NEW_M2` |
 | `packages/cli` | 无新架构实现 | 不存在 | 新实现 | 旧 Next bin | `NEW_M1` |
 
-## 4. 迁移时必须记录的校验
+## 4. 已完成迁移记录
+
+### B1 — Core + Protocol Migration
+
+```text
+来源绝对路径：/Users/proxy/Documents/program/pi-web-worktrees/integration-v1
+来源 commit：e3508e28f3099987780c1f8e95636fbc98284705
+来源 tree hash：
+- runtime-core: 1debd7e020d0495a27f4e044a27bb72c2fcf45a4
+- runtime-contract-tests: 899aa8a188979867336f75985a0fb56eaa408a69
+- protocol: 16c9144c085111c4d947f969b75fe5161a2554b8
+迁移方式：git archive 精确抽取来源 commit 中三个 package tree
+有意修改文件：无 package 源码修改
+仓库适配：新增根 .npmrc include=dev，抵消执行环境 NODE_ENV=production 对源码构建 devDependencies 的省略
+排除文件：dist/**, dist-test/**, node_modules/**, *.tsbuildinfo
+本地验证：
+- npm ci: PASS
+- npm run check:architecture: PASS
+- npm run typecheck: PASS
+- 根 scripts tests: 40/40
+- Protocol: 109/109
+- Runtime Contract Tests: 75/75
+- Runtime Core: 3/3
+- npm run build: PASS
+- git diff --check: PASS
+独立验证 verdict：PENDING
+```
+
+## 5. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -76,7 +104,7 @@ bin/pi-web.js
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 5. sessiond 特别保护
+## 6. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -109,7 +137,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 6. 旧结果可用性摘要
+## 7. 旧结果可用性摘要
 
 ### 可复用
 
@@ -133,7 +161,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 7. 完成条件
+## 8. 完成条件
 
 迁移阶段完成必须同时满足：
 

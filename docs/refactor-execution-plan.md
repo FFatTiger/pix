@@ -241,8 +241,8 @@ npm run cli -- status
 
 | ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
-| `B0` | Pix Product Workspace | `READY` | 无 | 独立 npm workspace、根 scripts、TS 配置、架构检查、零 Next |
-| `B1` | Core + Protocol Migration | `BLOCKED` | `B0` | 迁 Runtime Core、Contract Tests、Protocol，在 `pix` 重验 |
+| `B0` | Pix Product Workspace | `DONE` | 无 | `e087bf0`；独立 npm workspace、根 scripts、TS 配置、架构检查、零 Next；根脚本 40/40 |
+| `B1` | Core + Protocol Migration | `IN_REVIEW` | `B0` | 来源 tree 字节一致迁入；Protocol 109/109、Contract 75/75、Core 3/3；等待必要独立验证 |
 | `B2` | Host + Client Boot Surface | `BLOCKED` | `B0`, `B1` | Hono/Vite、gate、health、capabilities、bootstrap、静态托管 |
 | `B3` | sessiond Daemon Bootstrap | `BLOCKED` | `B0`, `B1` | source-only 迁移、daemon main、lock/secret/socket、ping/shutdown |
 | `B4` | Production Composition + CLI | `BLOCKED` | `B2`, `B3` | `pi-web`、`pi-host`、`pi-sessiond`、ensure/reuse、`down --all` |
@@ -470,9 +470,9 @@ git diff --check
 ## 10. 当前立即执行顺序
 
 ```text
-1. B0：在 pix 建立零 Next 的独立 workspace
-2. B1：迁移 Runtime Core、Contract Tests、Protocol，并在 pix 重验
-3. 并行：
+1. B0：DONE（`e087bf0`）
+2. B1：IN_REVIEW；公共包已迁移并通过本地门禁，等待必要独立验证
+3. B1 PASS 后立即并行：
    - B2：Host + Client Boot Surface
    - B3：sessiond source-only + daemon bootstrap
 4. B4：统一完成 production composition 和 CLI
@@ -480,7 +480,7 @@ git diff --check
 6. 达到 M1 后再启动 M2 Runtime Vertical Slice
 ```
 
-在 `B0` 和 `B1` 完成前，不继续旧 worktree 中的 ACL1/C1/R1 功能开发，避免继续在错误仓库积累成果。
+旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。
 
 ---
 
