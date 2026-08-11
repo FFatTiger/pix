@@ -101,6 +101,14 @@ export class NdjsonStdioTransport {
       this.stderr(`[transport] stdin error: ${error instanceof Error ? error.message : String(error)}`);
       this.onEof();
     });
+    // Late-listener race guard: if stdin already reached EOF / was destroyed /
+    // closed during the async composition boot gap (parent died before we
+    // attached), the end/close events will not re-fire. Trigger ordered
+    // shutdown immediately. Buffered complete frames are still delivered via
+    // the `data` event that fires when flowing begins, so nothing is lost.
+    if (this.stdin.readableEnded || this.stdin.destroyed || this.stdin.closed) {
+      this.onEof();
+    }
   }
 
   /** Detach stdin listeners (tests / cleanup). */

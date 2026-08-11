@@ -13,6 +13,8 @@
  *   runtime.close / logger / stdout flush misbehave.
  */
 
+import type { Readable } from "node:stream";
+
 const GUARD_FLAG = Symbol.for("pix.agentWorker.stdioGuards");
 
 type GuardedProcess = NodeJS.Process & {
@@ -140,3 +142,124 @@ export const DEFAULT_EOF_WATCHDOG_MS = 8_000;
 export const BROKEN_STDIO_EOF_WATCHDOG_MS = 1_000;
 /** Max time requestExit will wait on stdout flush before raw exit. */
 export const DEFAULT_EXIT_FLUSH_TIMEOUT_MS = 500;
+
+// ---------------------------------------------------------------------------
+// parent-death watchdog (ppid reparenting)
+// ---------------------------------------------------------------------------
+
+export interface ParentDeathWatchdog {
+  /** Stop polling. Idempotent. */
+  cancel(): void;
+  /** True while the poll timer is still active. */
+  readonly armed: boolean;
+}
+
+export interface ParentDeathWatchdogOptions {
+  /** Override process exit (tests). Defaults to `process.exit`. */
+  readonly exit?: (code: number) => void;
+  /** Poll interval ms (default 250). */
+  readonly pollMs?: number;
+}
+
+/**
+ * Detect parent-process death via ppid reparenting and force a bounded exit.
+ *
+ * Installed **synchronously before any async composition work** so a worker
+ * whose parent (sessiond) dies during factory resolution / transport boot
+ * cannot become an orphan reparented to PID 1. The check is independent of
+ * stdin EOF (which Node defers until a `data` consumer attaches) and of
+ * stdout/stderr pipes (which break together on parent death).
+ *
+ * On Unix, when the parent dies the child is reparented to init/launchd (PID 1
+ * or a subreaper), so `process.ppid` changes from the recorded initial value.
+ * PID reuse within the short poll window is astronomically unlikely and is
+ * further covered by the stdin EOF path once the transport boots.
+ *
+ * IMPORTANT: never logs or flushes on fire — stderr may already be broken.
+ * Directly calls `exit(1)`.
+ */
+export function installParentDeathWatchdog(
+  options: ParentDeathWatchdogOptions = {},
+): ParentDeathWatchdog {
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const pollMs = options.pollMs ?? 250;
+  const initialPpid = process.ppid;
+  let cancelled = false;
+  let timer: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+    if (cancelled) return;
+    // Parent died → child reparented (ppid changed, typically to 1).
+    if (process.ppid !== initialPpid) {
+      if (timer !== undefined) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+      try {
+        exit(1);
+      } catch {
+        try {
+          process.exit(1);
+        } catch {
+          // exhausted
+        }
+      }
+    }
+  }, pollMs);
+  return {
+    get armed() {
+      return timer !== undefined;
+    },
+    cancel() {
+      cancelled = true;
+      if (timer !== undefined) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// early stdin EOF latch
+// ---------------------------------------------------------------------------
+
+export interface StdinEofLatch {
+  /** True if EOF/close/error was observed OR the stream is already ended/destroyed. */
+  readonly eofSeen: boolean;
+  /** Remove the early listeners once the transport owns stdin. */
+  release(): void;
+}
+
+/**
+ * Synchronously latch stdin end/close/error so an EOF arriving during the
+ * async composition boot gap (before the transport attaches its consumer) is
+ * never lost. Node defers pipe EOF until a `data` consumer attaches, so the
+ * getter also reports `readableEnded / destroyed / closed` directly as a
+ * fallback for streams that already reached a terminal state.
+ */
+export function createStdinEofLatch(stdin: Readable = process.stdin): StdinEofLatch {
+  let eventSeen = false;
+  let released = false;
+  const mark = (): void => {
+    eventSeen = true;
+  };
+  stdin.once("end", mark);
+  stdin.once("close", mark);
+  stdin.once("error", mark);
+  return {
+    get eofSeen(): boolean {
+      return (
+        eventSeen ||
+        stdin.readableEnded ||
+        stdin.destroyed ||
+        stdin.closed
+      );
+    },
+    release(): void {
+      if (released) return;
+      released = true;
+      stdin.off("end", mark);
+      stdin.off("close", mark);
+      stdin.off("error", mark);
+    },
+  };
+}

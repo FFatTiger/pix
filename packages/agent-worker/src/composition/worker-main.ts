@@ -40,7 +40,9 @@ import {
   BROKEN_STDIO_EOF_WATCHDOG_MS,
   createExitWatchdog,
   createSafeStderrLogger,
+  createStdinEofLatch,
   DEFAULT_EOF_WATCHDOG_MS,
+  installParentDeathWatchdog,
   installProcessStdioGuards,
   isProcessStdioBroken,
   type ExitWatchdog,
@@ -295,11 +297,37 @@ function installAutoRunHandlers(handle: WorkerMainHandle, stderr: (line: string)
 if (isMainModule(import.meta.url)) {
   installProcessStdioGuards();
   const stderr = createSafeStderrLogger();
+  // Install the parent-death watchdog SYNCHRONOUSLY, before any async work, so
+  // a parent that dies during factory resolution / transport boot cannot leave
+  // an orphan. It never logs on fire (stderr may be broken) and is independent
+  // of stdin EOF (which Node defers until a consumer attaches). The ref'd
+  // interval is cleaned up by process.exit() on any normal/ordered exit path.
+  installParentDeathWatchdog();
+  // Latch stdin EOF synchronously so an early close during the boot gap is not
+  // lost before the transport attaches its consumer.
+  const eofLatch = createStdinEofLatch();
   void runWorkerMain({ stderr })
     .then((handle) => {
+      eofLatch.release();
       installAutoRunHandlers(handle, stderr);
+      // If EOF arrived during the boot gap (parent died while we were booting),
+      // trigger ordered shutdown now. The transport's own EOF path also covers
+      // this, but this guarantees it even if the race beat transport.start().
+      if (eofLatch.eofSeen) {
+        try {
+          if (handle.controller === null) handle.transport.requestExit(0);
+          else void handle.controller.onInputClosed();
+        } catch {
+          try {
+            process.exit(0);
+          } catch {
+            // exhausted
+          }
+        }
+      }
     })
     .catch((error) => {
+      eofLatch.release();
       try {
         stderr(
           `[worker-main] boot failed: ${error instanceof Error ? error.message : String(error)}`,

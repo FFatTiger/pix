@@ -1,7 +1,7 @@
 import { describe, it, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,6 +126,8 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs = 5_000): 
 
 /** Track live children so a failed assertion never leaves an orphan process. */
 const liveChildren = new Set<ChildProcessWithoutNullStreams>();
+/** Track worker grandchild PIDs (spawned by probe parent scripts) for cleanup. */
+const liveWorkerPids = new Set<number>();
 
 function spawnWorker(env: NodeJS.ProcessEnv): ChildProcessWithoutNullStreams {
   const child = spawn(process.execPath, [resolveWorkerMainEntry()], {
@@ -336,22 +338,35 @@ describe("worker-main parent-death orphan hardening (real process)", () => {
       }
       liveChildren.delete(child);
     }
+    // Kill any residual worker grandchild PIDs that were reparented and thus
+    // not reached by killing the parent ChildProcess.
+    for (const pid of [...liveWorkerPids]) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already dead
+      }
+      liveWorkerPids.delete(pid);
+    }
   });
 
   const ROUNDS = 5;
   /** Parent death must kill the worker well under the 1s broken-stdio watchdog. */
   const ORPHAN_DEADLINE_MS = 3_000;
+  /** Parent delays cycled across rounds to cover the pre-transport race. */
+  const PARENT_DELAYS_MS = [0, 50, 150, 0, 50];
 
   async function assertWorkerDiesAfterParent(
     mode: "exit0" | "crash" | "sigkill",
     rounds: number,
   ): Promise<void> {
     for (let round = 0; round < rounds; round += 1) {
-      const result = await runParentDeathProbe(mode, ORPHAN_DEADLINE_MS);
+      const delay = PARENT_DELAYS_MS[round % PARENT_DELAYS_MS.length]!;
+      const result = await runParentDeathProbe(mode, ORPHAN_DEADLINE_MS, delay);
       assert.equal(
         result.workerAlive,
         false,
-        `round ${round + 1}/${rounds} mode=${mode}: worker pid=${result.workerPid} still alive after parent death ` +
+        `round ${round + 1}/${rounds} mode=${mode} delay=${delay}ms: worker pid=${result.workerPid} still alive after parent death ` +
           `(waited ${result.waitedMs}ms). stderr=${JSON.stringify(result.parentStderr)}`,
       );
       assert.ok(result.workerPid > 0, "expected a real worker pid");
@@ -452,10 +467,15 @@ interface ParentDeathResult {
  * Spawn a short-lived parent that itself spawns the real worker-main, prints
  * the worker pid, then dies according to `mode`. The test process then polls
  * whether the worker pid is still alive.
+ *
+ * `parentDelayMs` controls how long the parent lives before dying — 0/50ms
+ * exercises the pre-transport race (parent dead before transport.start),
+ * 150ms exercises the running-worker case.
  */
 function runParentDeathProbe(
   mode: "exit0" | "crash" | "sigkill",
   deadlineMs: number,
+  parentDelayMs = 150,
 ): Promise<ParentDeathResult> {
   return new Promise((resolvePromise, reject) => {
     const workerEntry = resolveWorkerMainEntry();
@@ -484,7 +504,7 @@ setTimeout(() => {
     // Self-SIGKILL: no finally / no stdin.end — pure hard death.
     process.kill(process.pid, "SIGKILL");
   }
-}, 150);
+}, ${parentDelayMs});
 `;
     const parent = spawn(process.execPath, ["-e", parentSource], {
       cwd: workspaceRoot,
@@ -506,7 +526,21 @@ setTimeout(() => {
 
     let workerPid = 0;
     const started = Date.now();
+    const killWorker = (): void => {
+      // Always clean up the worker grandchild PID — killing the parent
+      // ChildProcess does NOT reach a reparented grandchild. This prevents
+      // machine pollution on any failure.
+      if (workerPid > 0) {
+        liveWorkerPids.delete(workerPid);
+        try {
+          process.kill(workerPid, "SIGKILL");
+        } catch {
+          // already dead
+        }
+      }
+    };
     const finish = (workerAlive: boolean) => {
+      killWorker();
       try {
         parent.kill("SIGKILL");
       } catch {
@@ -536,6 +570,7 @@ setTimeout(() => {
       const match = /WORKER_PID=(\d+)/.exec(stdout);
       if (match) {
         workerPid = Number(match[1]);
+        liveWorkerPids.add(workerPid);
         waitForParentThenWorker();
         return;
       }
@@ -578,9 +613,17 @@ setTimeout(() => {
 
 function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
+  // kill(pid, 0) succeeds for zombies too (they still occupy a PID until reaped),
+  // which would make a dying worker look alive. Use `ps -o stat=` to confirm a
+  // truly-running process whose STAT does not start with 'Z' (zombie).
   try {
-    process.kill(pid, 0);
-    return true;
+    const result = spawnSync("ps", ["-p", String(pid), "-o", "stat="], {
+      encoding: "utf8",
+      timeout: 1_000,
+    });
+    if (result.status !== 0 || result.error) return false;
+    const stat = result.stdout.trim();
+    return stat.length > 0 && !stat.startsWith("Z");
   } catch {
     return false;
   }

@@ -4,6 +4,8 @@ import { PassThrough } from "node:stream";
 import {
   createExitWatchdog,
   createSafeStderrLogger,
+  createStdinEofLatch,
+  installParentDeathWatchdog,
   installProcessStdioGuards,
   isProcessStdioBroken,
   safeStderrWrite,
@@ -69,5 +71,36 @@ describe("safe-stdio", () => {
       }
       safeStderrWrite("still-safe");
     });
+  });
+
+  it("installParentDeathWatchdog is armed and cancel stops polling", () => {
+    const dog = installParentDeathWatchdog({ exit: () => {} });
+    assert.equal(dog.armed, true);
+    dog.cancel();
+    assert.equal(dog.armed, false);
+    // Cancel is idempotent.
+    dog.cancel();
+    assert.equal(dog.armed, false);
+  });
+
+  it("createStdinEofLatch latches end and reports stream-terminal state", async () => {
+    const stream = new PassThrough();
+    const latch = createStdinEofLatch(stream);
+    assert.equal(latch.eofSeen, false);
+    // A `data` consumer (like transport.start) triggers flowing so `end` fires.
+    stream.on("data", () => {});
+    stream.end("payload");
+    await tick(10);
+    assert.equal(latch.eofSeen, true);
+    // Release removes listeners without throwing.
+    assert.doesNotThrow(() => latch.release());
+  });
+
+  it("createStdinEofLatch reports true for an already-destroyed stream", () => {
+    const stream = new PassThrough();
+    stream.destroy();
+    const latch = createStdinEofLatch(stream);
+    assert.equal(latch.eofSeen, true);
+    latch.release();
   });
 });
