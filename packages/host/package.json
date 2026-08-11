@@ -1,0 +1,37 @@
+{
+  "name": "@fffattiger/pi-web-host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Protocol-independent Hono host foundation for pi-web: gate, request security, static client hosting and WS upgrade seam",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "test": "npm run build && node --test 'test/*.test.mjs'",
+    "check:boundaries": "node ./scripts/check-boundaries.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.0",
+    "@hono/node-ws": "^1.1.0",
+    "@types/ws": "^8.18.1",
+    "hono": "^4.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25",
+    "typescript": "^5"
+  }
+}
