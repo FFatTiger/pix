@@ -19,7 +19,7 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "pretypecheck": "npm run build:deps",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "prebuild:test": "npm run build:deps",
+    "prebuild:test": "npm run build:deps && npm run build",
     "build:test": "rm -rf dist-test && tsc -p tsconfig.test.json",
     "test": "npm run build:test && node --test 'dist-test/**/*.test.js'",
     "precheck:boundaries": "npm run build",
