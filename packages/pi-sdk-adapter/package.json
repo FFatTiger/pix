@@ -1,0 +1,35 @@
+{
+  "name": "@fffattiger/pix-pi-sdk-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js" }
+  },
+  "scripts": {
+    "build:deps": "node ./scripts/build-deps.mjs",
+    "pretypecheck": "npm run build:deps",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prebuild": "npm run build:deps",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "prebuild:test": "npm run build:deps && npm run build",
+    "build:test": "node -e \"require('node:fs').rmSync('dist-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json",
+    "test": "npm run build:test && node --test \"dist-test/**/*.test.js\"",
+    "check:boundaries": "node ./scripts/check-boundaries.mjs",
+    "check:commands": "node ./scripts/check-command-coverage.mjs",
+    "clean": "node -e \"for (const p of ['dist','dist-test']) require('node:fs').rmSync(p,{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.0",
+    "@earendil-works/pi-ai": "0.84.0",
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@fffattiger/pix-runtime-core": "file:../runtime-core"
+  },
+  "devDependencies": {
+    "@fffattiger/pix-runtime-contract-tests": "file:../runtime-contract-tests",
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}
