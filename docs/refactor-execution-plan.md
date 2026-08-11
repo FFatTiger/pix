@@ -276,7 +276,7 @@ B0
 | `R1` | Agent Worker Controller + Mapper | `IN_PROGRESS` | `R0` | 审计完成；隔离worktree实现Worker IPC、状态Mapper、create/open/prompt/abort/snapshot/shutdown |
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
 | `A1` | Pi SDK Agent Adapter | `DONE` | `B1` | `526b19e` + `fd4612b`；GPT独立验证PASS；SDK0.84真实create/open smoke、92/92、显式prompt+abort capability |
-| `H1` | Runtime WS Gateway | `IN_PROGRESS` | `B2`, `B3`, `R0` | 审计完成；隔离worktree实现Host WS↔sessiond RPC、attach push、close/detach与bounded backpressure |
+| `H1` | Runtime WS Gateway | `IN_REVIEW` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390`；真实WS↔sessiond、attach/open/resume、bounded backpressure；Host163/Protocol114/sessiond42/CLI32；等待GPT验证 |
 | `C1` | RuntimeSocket + SessionStore | `BLOCKED` | `B2`, `R0`, `H1` | handshake/create/attach/prompt/abort/reconnect/snapshot |
 | `X1` | Minimal Runtime E2E | `BLOCKED` | `R2`, `A1`, `H1`, `C1`, `B4` | prompt、stream、abort、Host restart/resume、去重、隔离 |
 
@@ -474,9 +474,9 @@ git diff --check
 ```text
 1. M1：DONE（B0–B5；最终集成 `a7e9e29`；GPT 独立对抗验证 PASS）
 2. `R0`：DONE（`2672c5c`，GPT PASS）；`A1`：DONE（`526b19e` + `fd4612b`，GPT PASS）
-3. R1与H1均已完成审计，正在两个隔离worktree并行实现
+3. R1继续隔离worktree实现；H1已集成并进入GPT独立验证
 4. R1完成后启动R2 Child Process Worker Factory
-5. H1完成后启动C1 RuntimeSocket + SessionStore，最终由X1验收M2
+5. H1验证通过后启动C1 RuntimeSocket + SessionStore，最终由X1验收M2
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。
