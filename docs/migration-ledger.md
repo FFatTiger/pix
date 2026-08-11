@@ -237,7 +237,7 @@ Daemon：默认ProductionWorkerProcessFactory；显式workerFactory override优�
 主线发现并修复：单个stderr chunk大于ring上限时旧whole-chunk eviction会清空snapshot；改为保留UTF-8安全最新tail、再次redact；失败测试finally关闭child
 本地验证：sessiond71/71；stderr flood Grok40/40 + main10/10；Agent Worker90；全仓architecture/build/typecheck/tests/startup E2E/boundaries PASS
 残余：真实Browser→Host→sessiond→SDK prompt/stream/abort与restart/resume留待X1；独立R2对抗验证进行中
-独立验证 verdict：IN_REVIEW（等待GPT）
+独立验证 verdict：FAIL（GPT；大部分spawn/wire/backpressure/close/env/crash-reactivate均PASS，但有两项blocker：sessiond异常退出或SIGKILL时真实worker-main在broken stderr/stdout条件下未完成stdin EOF shutdown并成为PID1 orphan；stderr credential跨chunk分割时suffix可绕过per-chunk redaction并进入exit diagnostic。`r2-verifier-fixes`以safe stdio/watchdog exit和stateful跨chunk redaction修复中。）
 ```
 
 ## 13. C1 — Client RuntimeSocket + SessionStore 记录
