@@ -203,7 +203,7 @@ Host：SessiondRuntimeGateway完成handshake/create/cold-open attach/detach/comm
 CLI：只读secret，缺失/unsafe fail closed；注入gateway；保留36e81d4 trusted host合并；agent capability继续[]直到R2/X1
 本地验证：architecture/build/typecheck/root tests/startup E2E/boundaries PASS；Host163/163、Protocol114/114、sessiond42/42、CLI32/32、A192、Client82、Contract75、Core3、scripts44
 残余：真实Worker尚未由R2接通，故gateway已可用但create/activate仍会诚实返回worker_unavailable；getSnapshot/stop当前在长command后串行，C1需先interrupt再stop。
-独立验证 verdict：IN_REVIEW（首次GPT为PARTIAL：功能、协议、gate、安全、生命周期与真实RPC集成PASS，但发现普通入站队列和interrupt并发耗尽。修复commit `976c4c6`：每socket普通队列256帧/4MiB、interrupt并发16，overflow分别1009/1008 fail closed；Host170/170及全仓回归PASS，等待GPT复验。）
+独立验证 verdict：IN_REVIEW（首次GPT为PARTIAL：功能/协议/gate/生命周期/真实RPC均PASS，但发现普通入站队列和interrupt并发耗尽。`976c4c6`加入每socket 256帧/4MiB与interrupt16上限；GPT复验确认原165MB/50k并发复现已关闭。其后发现NaN options可禁用bound，`a6eb571`将inbound/outbound非有限、非正、非safe integer统一回退安全默认；Host172/172，等待最终快速复验。）
 ```
 
 ## 11. 后续迁移时必须记录的校验
