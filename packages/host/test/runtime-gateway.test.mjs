@@ -543,3 +543,114 @@ test("command commandId is forwarded unchanged (at-most-once owned by sessiond)"
   assert.equal(res.id, "ws-1");
   assert.equal(res.payload.result.commandId, "cmd-orig");
 });
+
+// --- F1/F2 adversarial: bounded inbound serial queue + interrupt concurrency ---
+
+const hang = () => new Promise(() => {});
+const cmdFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "prompt", message: "hi" } } });
+const interruptFrame = (id) => JSON.stringify({ type: "interrupt", id, payload: { sessionId: "s1", commandId: id, interrupt: { type: "abort" } } });
+const okCommand = (p) => ({ commandId: p.command.commandId, result: { ok: true, type: "prompt" } });
+const okInterrupt = (p) => ({ commandId: p.commandId, result: { ok: true, type: "abort" } });
+
+test("F1: hung command queue count overflow fails closed 1009 and opens no extra RPC", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 2, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+  session.receive(cmdFrame("c1"));
+  await wait(); // c1 dispatches and its RPC hangs
+  session.receive(cmdFrame("c2")); // queued behind the hung c1 (pending = 2)
+  await wait();
+  session.receive(cmdFrame("c3")); // 3rd pending frame → overflow
+  await wait();
+  assert.equal(session.closed.code, 1009);
+  // only c1 dispatched (its RPC hung); c2 was queued and short-circuited, c3 rejected — neither opened an RPC
+  const cmds = client.calls.filter((c) => c.method === "runtime.command");
+  assert.equal(cmds.length, 1);
+});
+
+test("F1: inbound byte overflow fails closed 1009 and opens no RPC", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = okCommand;
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 256, maxSerialBytes: 64, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+  session.receive(cmdFrame("c1")); // frame is well over 64 bytes
+  await wait();
+  assert.equal(session.closed.code, 1009);
+  assert.equal(client.calls.filter((c) => c.method === "runtime.command").length, 0);
+});
+
+test("F1: queued task after browser close does not dispatch", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 4, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+  session.receive(cmdFrame("c1")); // dispatches, RPC hangs
+  session.receive(cmdFrame("c2")); // queued behind c1
+  await wait();
+  session.close(); // browser disconnects
+  await wait();
+  // c2 must never dispatch — only c1 opened an RPC
+  assert.equal(client.calls.filter((c) => c.method === "runtime.command").length, 1);
+});
+
+test("F1: serial counter recovers after tasks settle (new frames accepted)", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = okCommand;
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 2, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+  session.receive(cmdFrame("c1"));
+  session.receive(cmdFrame("c2"));
+  await wait(); // both settle, counter returns to 0
+  session.receive(cmdFrame("c3"));
+  session.receive(cmdFrame("c4"));
+  await wait();
+  assert.ok(!session.closed, "socket must not have closed");
+  assert.equal(client.calls.filter((c) => c.method === "runtime.command").length, 4);
+  assert.equal(session.sent.filter((f) => JSON.parse(f).type === "response").length, 4);
+});
+
+test("F2: in-flight interrupts are capped; N+1 closes 1008 and opens no RPC", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.interrupt"] = () => hang();
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 256, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 2 } });
+  const session = await connect(gw);
+  session.receive(interruptFrame("i1"));
+  session.receive(interruptFrame("i2"));
+  session.receive(interruptFrame("i3")); // 3rd in-flight → cap
+  await wait();
+  assert.equal(session.closed.code, 1008);
+  // only 2 interrupt RPCs opened; the 3rd did NOT open an RPC
+  assert.equal(client.calls.filter((c) => c.method === "runtime.interrupt").length, 2);
+});
+
+test("F2: interrupt slots recover after completion (new interrupts accepted)", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.interrupt"] = okInterrupt;
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 256, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 2 } });
+  const session = await connect(gw);
+  session.receive(interruptFrame("i1"));
+  session.receive(interruptFrame("i2"));
+  await wait(); // both resolve, slots free
+  session.receive(interruptFrame("i3"));
+  session.receive(interruptFrame("i4"));
+  await wait();
+  assert.ok(!session.closed);
+  assert.equal(client.calls.filter((c) => c.method === "runtime.interrupt").length, 4);
+  assert.equal(session.sent.filter((f) => JSON.parse(f).type === "interrupt_result").length, 4);
+});
+
+test("F2: browser close / late completion sends no interrupt_result", async () => {
+  const client = new FakeClient();
+  let resolveRpc;
+  client.handlers["runtime.interrupt"] = () => new Promise((resolve) => { resolveRpc = resolve; });
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 256, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 4 } });
+  const session = await connect(gw);
+  session.receive(interruptFrame("i1")); // RPC in flight
+  await wait();
+  session.close(); // browser disconnects while RPC pending
+  await wait();
+  resolveRpc({ commandId: "i1", result: { ok: true, type: "abort" } }); // late completion
+  await wait();
+  assert.equal(session.sent.filter((f) => JSON.parse(f).type === "interrupt_result").length, 0);
+});

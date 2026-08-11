@@ -80,6 +80,7 @@ export type {
   SessiondRuntimeGatewayOptions,
   SessiondRuntimeGatewayLimits,
   SessiondRuntimeGatewayOutboundLimits,
+  SessiondRuntimeGatewayInboundLimits,
 } from "./composition/runtime-gateway.js";
 
 export {

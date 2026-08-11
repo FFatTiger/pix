@@ -52,6 +52,15 @@ export interface SessiondRuntimeGatewayOutboundLimits {
   readonly maxBufferedAmount?: number;
 }
 
+export interface SessiondRuntimeGatewayInboundLimits {
+  /** Max pending non-interrupt frames in the inbound serial queue (default 256). */
+  readonly maxSerialFrames?: number;
+  /** Max pending non-interrupt bytes in the inbound serial queue (default 4 MiB). */
+  readonly maxSerialBytes?: number;
+  /** Max concurrently in-flight interrupts per socket (default 16). */
+  readonly maxInflightInterrupts?: number;
+}
+
 export interface SessiondRuntimeGatewayOptions {
   /** sessiond RPC endpoint. Required unless {@link client} is injected. */
   readonly endpoint?: string;
@@ -66,6 +75,7 @@ export interface SessiondRuntimeGatewayOptions {
   readonly clientFactory?: () => SessiondRuntimeClient;
   readonly limits?: SessiondRuntimeGatewayLimits;
   readonly outbound?: SessiondRuntimeGatewayOutboundLimits;
+  readonly inbound?: SessiondRuntimeGatewayInboundLimits;
   /** Per-RPC timeout passed to a created client (default 10_000 ms). */
   readonly timeoutMs?: number;
   /** Testable clock for serverTime (default Date.now). */
@@ -77,6 +87,9 @@ const DEFAULT_MAX_FRAMES = 256;
 const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_BUFFERED = 4 * 1024 * 1024;
 const DEFAULT_MAX_OPEN_SESSIONS = 4;
+const DEFAULT_MAX_SERIAL_FRAMES = 256;
+const DEFAULT_MAX_SERIAL_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_INFLIGHT_INTERRUPTS = 16;
 
 const CLOSE_PROTOCOL_ERROR = 1008;
 const CLOSE_MESSAGE_TOO_BIG = 1009;
@@ -110,16 +123,52 @@ function rpcErrorCode(error: unknown): string | undefined {
   return undefined;
 }
 
-/** Minimal FIFO async serializer so attach/command never interleave per socket. */
-class SerialExecutor {
+/**
+ * Bounded FIFO inbound serial queue. Tasks run one at a time so attach/command
+ * never interleave per socket; pending frames + bytes are capped so a flood of
+ * frames (e.g. commands whose RPC never settles) cannot grow memory unbounded.
+ * Overflow is reported to the caller (fail-closed close). Each task releases
+ * its reserved slot/bytes in `finally`, and after {@link close} queued tasks
+ * short-circuit without dispatching.
+ */
+class BoundedSerialQueue {
+  private pending = 0;
+  private pendingBytes = 0;
+  private closed = false;
   private tail: Promise<void> = Promise.resolve();
-  run<T>(task: () => Promise<T> | T): Promise<T> {
-    const result = this.tail.then(() => task());
-    this.tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
+
+  constructor(
+    private readonly maxFrames: number,
+    private readonly maxBytes: number,
+  ) {}
+
+  /** Current pending tasks (queued + running). For diagnostics. */
+  get depth(): number {
+    return this.pending;
+  }
+
+  /** Reserve `bytes` for a task. Returns false on overflow (caller fail-closes); true when accepted or already closed. */
+  enqueue(task: () => Promise<void> | void, bytes: number): boolean {
+    if (this.closed) return true;
+    if (this.pending + 1 > this.maxFrames) return false;
+    if (this.pendingBytes + bytes > this.maxBytes) return false;
+    this.pending += 1;
+    this.pendingBytes += bytes;
+    const run = async (): Promise<void> => {
+      try {
+        if (this.closed) return; // short-circuit queued-after-close: no dispatch
+        await task();
+      } finally {
+        this.pending -= 1;
+        this.pendingBytes -= bytes;
+      }
+    };
+    this.tail = this.tail.then(run).catch(() => undefined);
+    return true;
+  }
+
+  close(): void {
+    this.closed = true;
   }
 }
 
@@ -208,6 +257,7 @@ interface GatewayConfig {
   readonly client: SessiondRuntimeClient;
   readonly handshakeResponse: ProtocolHandshakeResponse;
   readonly outboundLimits: SessiondRuntimeGatewayOutboundLimits;
+  readonly inboundLimits: Required<SessiondRuntimeGatewayInboundLimits>;
   readonly logger: HostLogger;
 }
 
@@ -243,6 +293,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
   private readonly client: SessiondRuntimeClient;
   private readonly handshakeResponse: ProtocolHandshakeResponse;
   private readonly outboundLimits: SessiondRuntimeGatewayOutboundLimits;
+  private readonly inboundLimits: Required<SessiondRuntimeGatewayInboundLimits>;
   private readonly logger: HostLogger;
 
   constructor(options: SessiondRuntimeGatewayOptions) {
@@ -271,6 +322,11 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       serverTime: (options.now ?? Date.now)(),
     };
     this.outboundLimits = options.outbound ?? {};
+    this.inboundLimits = {
+      maxSerialFrames: options.inbound?.maxSerialFrames ?? DEFAULT_MAX_SERIAL_FRAMES,
+      maxSerialBytes: options.inbound?.maxSerialBytes ?? DEFAULT_MAX_SERIAL_BYTES,
+      maxInflightInterrupts: options.inbound?.maxInflightInterrupts ?? DEFAULT_MAX_INFLIGHT_INTERRUPTS,
+    };
     this.logger = options.logger ?? {};
   }
 
@@ -294,6 +350,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       client: this.client,
       handshakeResponse: this.handshakeResponse,
       outboundLimits: this.outboundLimits,
+      inboundLimits: this.inboundLimits,
       logger: this.logger,
     };
     void new GatewayConnection(config, session).start();
@@ -318,14 +375,18 @@ function safeJson(text: string): unknown {
  * subscription and lifecycle cleanup.
  */
 class GatewayConnection {
-  private readonly serial = new SerialExecutor();
   private readonly outbound: BoundedOutbound;
+  private readonly serial: BoundedSerialQueue;
+  private readonly maxInflightInterrupts: number;
+  private inflightInterrupts = 0;
   private generation = 0;
   private active: ActiveAttach | undefined;
   private browserClosed = false;
 
   constructor(private readonly config: GatewayConfig, private readonly session: WsSession) {
     this.outbound = new BoundedOutbound(session, config.outboundLimits, () => this.onOutboundOverflow());
+    this.serial = new BoundedSerialQueue(config.inboundLimits.maxSerialFrames, config.inboundLimits.maxSerialBytes);
+    this.maxInflightInterrupts = config.inboundLimits.maxInflightInterrupts;
   }
 
   start(): void {
@@ -353,7 +414,15 @@ class GatewayConnection {
       void this.handleInterrupt(message);
       return;
     }
-    void this.serial.run(() => this.handleParsed(message));
+    // Bounded inbound serial queue: reserve raw UTF-8 bytes before enqueuing
+    // so a flood of frames (e.g. commands whose RPC never settles) cannot grow
+    // memory unbounded. Overflow fails closed without dispatching.
+    const bytes = Buffer.byteLength(raw, "utf8");
+    if (!this.serial.enqueue(() => this.handleParsed(message), bytes)) {
+      this.config.logger.warn?.("runtime gateway inbound overflow; closing", { bytes, pending: this.serial.depth });
+      this.closeBrowser(CLOSE_MESSAGE_TOO_BIG, "inbound queue overflow");
+      return;
+    }
   }
 
   private async handleParsed(message: WsClientMessage): Promise<void> {
@@ -472,14 +541,33 @@ class GatewayConnection {
   }
 
   private async handleInterrupt(message: Extract<WsClientMessage, { type: "interrupt" }>): Promise<void> {
-    const { sessionId, commandId, interrupt } = message.payload;
-    const interruptType = interrupt.type;
+    // Bounded concurrency: a socket may hold at most maxInflightInterrupts
+    // interrupts in flight. The (N+1)th fails closed WITHOUT opening an RPC.
+    if (this.inflightInterrupts >= this.maxInflightInterrupts) {
+      this.config.logger.warn?.("runtime gateway interrupt cap exceeded; closing", { inflight: this.inflightInterrupts });
+      this.closeBrowser(CLOSE_PROTOCOL_ERROR, "too many concurrent interrupts");
+      return;
+    }
+    this.inflightInterrupts += 1;
     try {
-      const rpc = await this.config.client.call("runtime.interrupt", { sessionId, commandId, interrupt });
+      if (this.browserClosed) return; // closed while waiting for a slot
+      const { sessionId, commandId, interrupt } = message.payload;
+      const interruptType = interrupt.type;
+      let rpc;
+      try {
+        rpc = await this.config.client.call("runtime.interrupt", { sessionId, commandId, interrupt });
+      } catch (error) {
+        // late failure after browser close: drop the result, counter still releases in finally
+        if (this.browserClosed) return;
+        const mapped = mapRpcError(error);
+        this.send({ type: "interrupt_result", id: message.id, payload: { sessionId, commandId, interruptType, result: { ok: false, type: interruptType, error: mapped } } });
+        return;
+      }
+      // late success after browser close: drop, do not send
+      if (this.browserClosed) return;
       this.send({ type: "interrupt_result", id: message.id, payload: { sessionId, commandId, interruptType, result: rpc.result } });
-    } catch (error) {
-      const mapped = mapRpcError(error);
-      this.send({ type: "interrupt_result", id: message.id, payload: { sessionId, commandId, interruptType, result: { ok: false, type: interruptType, error: mapped } } });
+    } finally {
+      this.inflightInterrupts -= 1;
     }
   }
 
@@ -524,6 +612,7 @@ class GatewayConnection {
     if (this.browserClosed) return;
     this.browserClosed = true;
     this.outbound.close();
+    this.serial.close(); // queued inbound tasks short-circuit without dispatching
     // Best-effort detach only; NEVER runtime.stop on a browser disconnect.
     this.closeActive(true, true);
   }
@@ -570,6 +659,7 @@ class GatewayConnection {
 
   private closeBrowser(code: number, reason: string): void {
     this.outbound.close();
+    this.serial.close(); // stop dispatching any queued inbound frames
     try {
       this.session.close(code, reason);
     } catch {
