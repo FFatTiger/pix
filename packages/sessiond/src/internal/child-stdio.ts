@@ -329,16 +329,80 @@ export class StderrRing {
     return this.chunks.join("");
   }
 
+  /**
+   * Test/helper entry: push already-decoded text through the same redaction +
+   * eviction path as stream `data` events.
+   */
+  pushText(raw: string): void {
+    this.push(raw);
+  }
+
   private push(raw: string): void {
     if (this.stopped || raw.length === 0) return;
-    const text = redactStderr(raw);
+    // Redact first so secrets never enter the ring, even briefly.
+    let text = redactStderr(raw);
+    if (text.length === 0) return;
+
+    // A single redacted chunk may itself exceed the ring. Keep only its newest
+    // UTF-8-safe tail so snapshot() is never emptied by eviction of the only
+    // remaining chunk (that race made the flood test flaky under coalesced writes).
+    // Re-redact after the cut: a byte-tail can start mid-line and re-expose
+    // patterns that only match with a left context on the full line.
+    const textBytes = Buffer.byteLength(text, "utf8");
+    if (textBytes > this.maxBytes) {
+      text = redactStderr(utf8SafeTail(text, this.maxBytes));
+      if (text.length === 0) return;
+      // Tail + re-redact can only shrink or stay; if still over (marker expansion
+      // is not expected to grow past max), trim once more without re-expanding.
+      if (Buffer.byteLength(text, "utf8") > this.maxBytes) {
+        text = utf8SafeTail(text, this.maxBytes);
+      }
+    }
+
     this.chunks.push(text);
     this.bytes += Buffer.byteLength(text, "utf8");
-    while (this.bytes > this.maxBytes && this.chunks.length > 0) {
+
+    // Newest-biased multi-chunk eviction: drop oldest whole chunks first.
+    while (this.bytes > this.maxBytes && this.chunks.length > 1) {
       const dropped = this.chunks.shift();
       if (dropped !== undefined) this.bytes -= Buffer.byteLength(dropped, "utf8");
     }
+
+    // If a single retained chunk still overshoots, trim to a UTF-8-safe tail and
+    // re-redact so a mid-line cut cannot reintroduce secrets into the snapshot.
+    if (this.bytes > this.maxBytes && this.chunks.length === 1) {
+      const only = this.chunks[0]!;
+      let trimmed = redactStderr(utf8SafeTail(only, this.maxBytes));
+      if (Buffer.byteLength(trimmed, "utf8") > this.maxBytes) {
+        trimmed = utf8SafeTail(trimmed, this.maxBytes);
+      }
+      this.chunks[0] = trimmed;
+      this.bytes = Buffer.byteLength(trimmed, "utf8");
+    }
   }
+}
+
+/**
+ * Return the newest portion of `text` whose UTF-8 byte length is ≤ `maxBytes`.
+ * Never splits a multi-byte code point: walks backward from the byte budget
+ * until `Buffer.from(slice, "utf8").toString("utf8")` round-trips cleanly, which
+ * is guaranteed when the start index lands on a code-unit boundary that begins
+ * a character (we step by code units via string index after finding a safe byte offset).
+ */
+export function utf8SafeTail(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  if (text.length === 0) return "";
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) return text;
+
+  // Start at the first byte that may be kept, then advance past any continuation
+  // bytes (10xxxxxx) so we never open mid-character.
+  let start = buf.length - maxBytes;
+  while (start < buf.length && (buf[start]! & 0xc0) === 0x80) {
+    start += 1;
+  }
+  if (start >= buf.length) return "";
+  return buf.subarray(start).toString("utf8");
 }
 
 /**
@@ -347,21 +411,28 @@ export class StderrRing {
  */
 export function redactStderr(input: string): string {
   let text = input;
-  // Bearer / Authorization headers
+  // Bearer tokens — with or without an Authorization header (chunk splits may
+  // drop the header while leaving `Bearer <secret>` intact).
   text = text.replace(/(Authorization:\s*Bearer\s+)\S+/gi, "$1[REDACTED]");
+  text = text.replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]");
   // Explicit key/token assignments and JSON fields
   text = text.replace(
     /((?:api[_-]?key|access[_-]?token|secret|password|token)\s*[:=]\s*)(["']?)[^\s"',;]+/gi,
     "$1$2[REDACTED]",
   );
-  // sk-... style provider tokens
-  text = text.replace(/\b(?:sk|rk|pk)[-_][A-Za-z0-9_\-]{8,}\b/g, "[REDACTED]");
+  // sk-/rk-/pk- provider tokens (also when a prior chunk cut the leading boundary)
+  text = text.replace(/(?:^|[^A-Za-z0-9])(?:sk|rk|pk)[-_][A-Za-z0-9_\-]{8,}/g, (m) => {
+    const lead = m[0] !== "s" && m[0] !== "r" && m[0] !== "p" ? m[0]! : "";
+    const token = lead ? m.slice(1) : m;
+    return `${lead}[REDACTED]`;
+  });
   // Long base64-ish blobs that often encode secrets (keep short identifiers)
   text = text.replace(/\b[A-Za-z0-9_\-]{40,}\b/g, "[REDACTED]");
-  // Absolute POSIX / Windows paths
+  // Absolute POSIX / Windows paths — also when the chunk starts mid-path after a cut.
   text = text.replace(/(?:^|[\s"'`=(])(\/(?:Users|home|var|tmp|private|opt|etc|root)\/[^\s"'`)]+)/g, (match, path) =>
     match.replace(path, "[PATH]"),
   );
+  text = text.replace(/(?:^|\/)((?:Users|home)\/[^\s"'`)]+)/g, (match, path) => match.replace(path, "[PATH]"));
   text = text.replace(/(?:^|[\s"'`=(])([A-Za-z]:\\[^\s"'`)]+)/g, (match, path) => match.replace(path, "[PATH]"));
   return text;
 }

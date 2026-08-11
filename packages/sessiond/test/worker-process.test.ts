@@ -13,7 +13,13 @@ import {
   resolveWorkerMainPath,
   WORKER_ENV_KEY_ALLOWLIST,
 } from "../src/composition/worker-process.js";
-import { redactStderr } from "../src/internal/child-stdio.js";
+import { PassThrough } from "node:stream";
+import {
+  DEFAULT_STDERR_RING_BYTES,
+  redactStderr,
+  StderrRing,
+  utf8SafeTail,
+} from "../src/internal/child-stdio.js";
 import { UnavailableWorkerFactory, startDaemon } from "../src/composition/index.js";
 import { SessiondError } from "../src/errors.js";
 import { SessiondRpcClient } from "../src/rpc.js";
@@ -147,6 +153,75 @@ test("redactStderr strips secrets and paths", () => {
   assert.ok(redacted.includes("[REDACTED]") || redacted.includes("[PATH]"));
 });
 
+test("utf8SafeTail never splits multi-byte code points and respects byte budget", () => {
+  // "é" is 2 UTF-8 bytes; "🙂" is 4. Build a string whose raw UTF-8 length exceeds budget.
+  const text = `aa${"é".repeat(10)}🙂${"x".repeat(20)}`;
+  const budget = 17;
+  const tail = utf8SafeTail(text, budget);
+  const bytes = Buffer.byteLength(tail, "utf8");
+  assert.ok(bytes <= budget, `tail bytes ${bytes} > budget ${budget}`);
+  // Round-trip: decoding the tail buffer must equal the string (no replacement chars from a torn code point).
+  assert.equal(Buffer.from(tail, "utf8").toString("utf8"), tail);
+  assert.ok(tail.length > 0);
+  // Empty / oversized-zero budgets.
+  assert.equal(utf8SafeTail(text, 0), "");
+  assert.equal(utf8SafeTail("", 16), "");
+  // Under budget returns identity.
+  assert.equal(utf8SafeTail("hello", 64), "hello");
+});
+
+test("StderrRing keeps newest UTF-8-safe tail when a single chunk exceeds maxBytes", () => {
+  const stream = new PassThrough();
+  const ring = new StderrRing(stream, { maxBytes: 64 });
+  ring.start();
+  // Single chunk well over 64 bytes. Use spaced short tokens so redactStderr does not
+  // collapse the body into one [REDACTED] blob (long base64-ish runs are redacted).
+  const payload = `${"word ".repeat(80)}TAILMARK`;
+  assert.ok(Buffer.byteLength(payload, "utf8") > 64);
+  ring.pushText(payload);
+  const snap = ring.snapshot();
+  assert.ok(snap.length > 0, "snapshot must not be empty after oversize single chunk");
+  assert.ok(Buffer.byteLength(snap, "utf8") <= 64, `bytes=${Buffer.byteLength(snap, "utf8")}`);
+  assert.ok(snap.endsWith("TAILMARK") || snap.includes("TAILMARK"), `expected newest tail, got ${JSON.stringify(snap)}`);
+  assert.equal(Buffer.from(snap, "utf8").toString("utf8"), snap);
+  ring.stop();
+  stream.destroy();
+});
+
+test("StderrRing multi-chunk eviction is newest-biased and stays within maxBytes", () => {
+  const stream = new PassThrough();
+  const ring = new StderrRing(stream, { maxBytes: 32 });
+  ring.start();
+  ring.pushText("aaaaaaaaaaaaaaaa"); // 16
+  ring.pushText("bbbbbbbbbbbbbbbb"); // 16 → total 32
+  ring.pushText("ccccccccCCCCMARK"); // 16 → should drop oldest a's
+  const snap = ring.snapshot();
+  assert.ok(Buffer.byteLength(snap, "utf8") <= 32);
+  assert.equal(snap.includes("aaaaaaaa"), false);
+  assert.ok(snap.includes("CCCCMARK"));
+  ring.stop();
+  stream.destroy();
+});
+
+test("StderrRing single multi-byte oversize chunk trims without tearing code points", () => {
+  const stream = new PassThrough();
+  const maxBytes = 20;
+  const ring = new StderrRing(stream, { maxBytes });
+  ring.start();
+  // Each "中" is 3 bytes; build > maxBytes then assert clean UTF-8 tail.
+  const payload = `中`.repeat(40);
+  assert.ok(Buffer.byteLength(payload, "utf8") > maxBytes);
+  ring.pushText(payload);
+  const snap = ring.snapshot();
+  assert.ok(snap.length > 0);
+  assert.ok(Buffer.byteLength(snap, "utf8") <= maxBytes);
+  assert.equal(Buffer.from(snap, "utf8").toString("utf8"), snap);
+  // Every remaining char should still be 中 (no U+FFFD / torn fragment).
+  assert.ok([...snap].every((ch) => ch === "中"));
+  ring.stop();
+  stream.destroy();
+});
+
 test("early message is buffered until subscribe", async () => {
   const factory = factoryWithArgvMode("early-message");
   const connection = await factory.start(startInput);
@@ -231,16 +306,39 @@ test("oversize frame fails closed", async () => {
 test("stderr flood is drained, bounded, and redacted", async () => {
   const factory = factoryWithArgvMode("stderr-flood");
   const connection = await factory.start(startInput);
-  await wait(100);
-  // Access diagnostic ring via duck-type (test-only).
-  const snapFn = (connection as unknown as { stderrSnapshot?: () => string }).stderrSnapshot;
-  const snap = typeof snapFn === "function" ? snapFn.call(connection) : "";
-  assert.ok(snap.length > 0);
-  assert.ok(snap.length <= 64 * 1024 + 1024, `ring should be bounded, got ${snap.length}`);
-  assert.equal(snap.includes("sk-secretvalue"), false);
-  assert.equal(snap.includes("supersecrettokenvalue"), false);
-  assert.equal(snap.includes("/Users/proxy"), false);
-  await connection.close();
+  try {
+    const readSnap = (): string => {
+      const snapFn = (connection as unknown as { stderrSnapshot?: () => string }).stderrSnapshot;
+      return typeof snapFn === "function" ? snapFn.call(connection) : "";
+    };
+    // Poll until the ring has observed stderr (chunk scheduling is non-deterministic).
+    const deadline = Date.now() + 2_000;
+    let snap = "";
+    while (Date.now() < deadline) {
+      snap = readSnap();
+      if (snap.length > 0) break;
+      await wait(20);
+    }
+    assert.ok(snap.length > 0, "stderr ring stayed empty after flood");
+    const bytes = Buffer.byteLength(snap, "utf8");
+    assert.ok(
+      bytes <= DEFAULT_STDERR_RING_BYTES,
+      `ring should be bounded to ${DEFAULT_STDERR_RING_BYTES} bytes, got ${bytes}`,
+    );
+    // Full credential phrases / path prefixes from the fixture must not survive.
+    // (Partial pipe splits can leave short fragments; redaction targets full shapes.)
+    assert.equal(snap.includes("OPENAI_API_KEY=sk-secretvalue"), false);
+    assert.equal(snap.includes("Bearer supersecrettokenvalue"), false);
+    assert.equal(snap.includes("sk-secretvalueABCDEFGHIJKLMNOPQRSTUVWX"), false);
+    assert.equal(snap.includes("/Users/proxy/.pi/secrets"), false);
+    assert.ok(
+      snap.includes("[REDACTED]") || snap.includes("[PATH]"),
+      "expected redaction markers in drained stderr ring",
+    );
+  } finally {
+    // Always close so a failed assert never leaves a live child holding the test runner.
+    await connection.close().catch(() => {});
+  }
 });
 
 test("echo fixture: init → ready, stdin EOF exits, close idempotent", async () => {
