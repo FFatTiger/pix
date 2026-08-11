@@ -277,7 +277,7 @@ B0
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
 | `A1` | Pi SDK Agent Adapter | `DONE` | `B1` | `526b19e` + `fd4612b`；GPT独立验证PASS；SDK0.84真实create/open smoke、92/92、显式prompt+abort capability |
 | `H1` | Runtime WS Gateway | `IN_PROGRESS` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390`；GPT功能验证通过但PARTIAL；补普通入站队列与interrupt并发上限 |
-| `C1` | RuntimeSocket + SessionStore | `BLOCKED` | `B2`, `R0`, `H1` | handshake/create/attach/prompt/abort/reconnect/snapshot |
+| `C1` | RuntimeSocket + SessionStore | `IN_PROGRESS` | `B2`, `R0`, `H1` | H1协议已集成；隔离worktree实现socket状态机、共享projection、resume/at-most-once与最小UI |
 | `X1` | Minimal Runtime E2E | `BLOCKED` | `R2`, `A1`, `H1`, `C1`, `B4` | prompt、stream、abort、Host restart/resume、去重、隔离 |
 
 依赖图：
@@ -476,7 +476,7 @@ git diff --check
 2. `R0`：DONE（`2672c5c`，GPT PASS）；`A1`：DONE（`526b19e` + `fd4612b`，GPT PASS）
 3. R1继续隔离worktree实现；H1针对GPT发现的两项中等资源耗尽问题补有界入站控制
 4. R1完成后启动R2 Child Process Worker Factory
-5. H1验证通过后启动C1 RuntimeSocket + SessionStore，最终由X1验收M2
+5. C1已基于集成后的H1协议启动隔离worktree实现；最终由X1验收M2
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。
