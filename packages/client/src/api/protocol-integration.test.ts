@@ -19,7 +19,8 @@ describe("Protocol integration", () => {
     expect(typeof runtime.SessionStore).toBe("function");
     expect(typeof runtime.RuntimeSocket).toBe("function");
     expect(typeof runtime.buildRuntimeWsUrl).toBe("function");
-    // The runtime never imports the daemon/runtime-core/Pi SDK (boundary enforced separately).
-    expect(runtime.buildRuntimeWsUrl({ href: "https://host/app/" })).toBe("wss://host/app/v1/runtime");
+    // Host serves /v1/runtime at ROOT; path-independent URL (slash / no-slash identical).
+    expect(runtime.buildRuntimeWsUrl({ href: "https://host/app/" })).toBe("wss://host/v1/runtime");
+    expect(runtime.buildRuntimeWsUrl({ href: "https://host/app" })).toBe("wss://host/v1/runtime");
   });
 });

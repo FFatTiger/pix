@@ -10,14 +10,17 @@ import {
 import { FATAL_HANDSHAKE_CODES } from "./lifecycle";
 
 describe("buildRuntimeWsUrl", () => {
-  it("derives wss from https and preserves base path", () => {
-    expect(buildRuntimeWsUrl({ href: "https://pix.local/app/" })).toBe("wss://pix.local/app/v1/runtime");
+  it("derives wss from https at the root /v1/runtime route", () => {
+    expect(buildRuntimeWsUrl({ href: "https://pix.local/" })).toBe("wss://pix.local/v1/runtime");
   });
-  it("derives ws from http and resolves relative to the directory", () => {
-    expect(buildRuntimeWsUrl({ href: "http://host:8080/index.html" })).toBe("ws://host:8080/v1/runtime");
+  it("derives ws from http", () => {
+    expect(buildRuntimeWsUrl({ href: "http://host:8080/" })).toBe("ws://host:8080/v1/runtime");
   });
-  it("preserves a nested base path", () => {
-    expect(buildRuntimeWsUrl({ href: "https://host/workstation/" })).toBe("wss://host/workstation/v1/runtime");
+  it("is independent of document base path (trailing-slash invariant)", () => {
+    // Host serves /v1/runtime at root; slash vs no-slash must yield the same url.
+    expect(buildRuntimeWsUrl({ href: "https://host/app/" })).toBe("wss://host/v1/runtime");
+    expect(buildRuntimeWsUrl({ href: "https://host/app" })).toBe("wss://host/v1/runtime");
+    expect(buildRuntimeWsUrl({ href: "https://host/app/index.html" })).toBe("wss://host/v1/runtime");
   });
 });
 

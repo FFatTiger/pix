@@ -131,6 +131,18 @@ describe("RuntimeSocket", () => {
     expect(sockets).toHaveLength(1); // no reconnect after dispose
   });
 
+  it("pre-ack runtime_unavailable fails closed (no data before handshake ack)", () => {
+    const sockets: FakeWebSocket[] = [];
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(makeDeps(sockets), makeHandler(rec));
+    socket.connect();
+    sockets[0]!.serverOpen();
+    // Before handshake_ack, runtime_unavailable is a protocol violation → fail closed.
+    sockets[0]!.serverSend({ type: "runtime_unavailable", payload: { sessionId: "s1", error: { code: "runtime_unavailable", message: "down", retryable: true } } });
+    expect(socket.connectionState).toBe("stopped");
+    expect(rec.messages).toHaveLength(0);
+  });
+
   it("generation drops late frames from a superseded socket", async () => {
     const sockets: FakeWebSocket[] = [];
     const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };

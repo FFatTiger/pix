@@ -86,6 +86,8 @@ describe("SessionStore — create → attach id correlation", () => {
     ws.serverSend({ type: "response", id: attachFrame.id, payload: { ok: false, error: { code: "not_found", message: "no such session", retryable: false } } });
     await expect(openP).rejects.toMatchObject({ code: "not_found" });
     expect(h.store.getSnapshot().attached).toBe(false);
+    // HIGH-1: store recovers to ready so a subsequent open proceeds immediately.
+    expect(h.store.getSnapshot().connection).toBe("ready");
   });
 
   it("cold open = fresh attach (no create)", async () => {
@@ -208,18 +210,26 @@ describe("SessionStore — abort-before-stop HOL rule", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  async function promptRunning(h: RuntimeHarness): Promise<FakeWebSocket> {
+  async function promptRunning(h: RuntimeHarness): Promise<{ ws: FakeWebSocket; promptP: Promise<unknown> }> {
     const ws = await openAndAttach(h);
-    void h.store.sendPrompt("hi");
+    const promptP = h.store.sendPrompt("hi");
+    // Prevent unhandled rejection when stop settles the pending prompt.
+    promptP.catch(() => undefined);
     await flush();
     ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
     await flush();
-    return ws;
+    return { ws, promptP };
+  }
+
+  /** Ack a stop frame with a valid RuntimeStopResult. */
+  function ackStop(ws: FakeWebSocket, sessionId = "s1"): void {
+    const stop = lastFrame<{ type: string; id: string }>(ws, "stop")!;
+    ws.serverSend({ type: "response", id: stop.id, payload: { ok: true, result: { sessionId, stopped: true } } });
   }
 
   it("stop while running FIRST aborts + awaits interrupt result, THEN stops", async () => {
     const h = createHarness();
-    const ws = await promptRunning(h);
+    const { ws, promptP } = await promptRunning(h);
     expect(h.store.getSnapshot().snapshot?.state.isPromptRunning).toBe(true);
     const stopP = h.store.stop("done");
     await flush();
@@ -229,19 +239,25 @@ describe("SessionStore — abort-before-stop HOL rule", () => {
     ws.serverSend({ type: "interrupt_result", id: interrupt!.id, payload: { sessionId: "s1", commandId: interrupt!.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
     await flush();
     expect(lastFrame(ws, "stop")).toBeDefined();
+    ackStop(ws);
+    await flush();
     await expect(stopP).resolves.toBeUndefined();
     expect(h.store.getSnapshot().sessionStopped).toBe(true);
+    // MEDIUM-4: pending prompt is settled on stop.
+    await expect(promptP).rejects.toMatchObject({ code: "interrupted" });
   });
 
   it("stop proceeds even if the abort result never arrives (bounded timeout)", async () => {
     const h = createHarness({ storeOptions: { abortTimeoutMs: 1_000 } });
-    const ws = await promptRunning(h);
+    const { ws } = await promptRunning(h);
     const stopP = h.store.stop();
     await flush();
     expect(lastFrame(ws, "interrupt")).toBeDefined();
     vi.advanceTimersByTime(1_000);
     await flush();
     expect(lastFrame(ws, "stop")).toBeDefined();
+    ackStop(ws);
+    await flush();
     await expect(stopP).resolves.toBeUndefined();
   });
 });
@@ -321,5 +337,194 @@ describe("SessionStore — dispose / unavailable / strict result union", () => {
     ws.serverSend({ type: "response", id: "x", payload: { ok: true, result: { bogus: true } } });
     await flush();
     expect(h.store.getSnapshot().connection).toBe("stopped");
+  });
+});
+
+describe("SessionStore — verifier regressions (PROBE-1/2/3/5/9/12/14/15/16)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  async function reconnectReady(h: RuntimeHarness): Promise<FakeWebSocket> {
+    vi.advanceTimersByTime(250);
+    const ws2 = h.lastSocket();
+    ws2.serverOpen();
+    ws2.serverSend(ack());
+    return ws2;
+  }
+
+  function ackStop(ws: FakeWebSocket, sessionId = "s1"): void {
+    const stop = lastFrame<{ type: string; id: string }>(ws, "stop")!;
+    ws.serverSend({ type: "response", id: stop.id, payload: { ok: true, result: { sessionId, stopped: true } } });
+  }
+
+  // PROBE-1 / PROBE-12 / PROBE-15: attach failure recovers to ready; second open settles on same socket.
+  it("PROBE-1/12/15: attach failure recovers to ready; second open on same socket settles", async () => {
+    const h = createHarness();
+    h.store.connect();
+    const ws = openReady(h);
+    const open1 = h.store.openSession("missing");
+    await flush();
+    const attach1 = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "response", id: attach1.id, payload: { ok: false, error: { code: "not_found", message: "gone", retryable: false } } });
+    await expect(open1).rejects.toMatchObject({ code: "not_found" });
+    expect(h.store.getSnapshot().connection).toBe("ready");
+
+    const open2 = h.store.openSession("s1");
+    await flush();
+    const attach2 = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    expect(attach2.id).not.toBe(attach1.id);
+    ws.serverSend({ type: "snapshot", id: attach2.id, payload: snapshotPayload({ sessionId: "s1" }) });
+    await flush();
+    await expect(open2).resolves.toBeUndefined();
+    expect(h.store.getSnapshot().attached).toBe(true);
+    expect(h.store.getSnapshot().connection).toBe("attached");
+  });
+
+  // PROBE-2: create → attach interrupted by socket close → original create promise settles via resume.
+  it("PROBE-2: create→attach across reconnect settles the original create promise", async () => {
+    const h = createHarness();
+    h.store.connect();
+    let ws = openReady(h);
+    const createP = h.store.createSession({ cwd: "/x", projectRoot: "/x" });
+    await flush();
+    const createFrame = lastFrame<{ type: string; id: string }>(ws, "create")!;
+    ws.serverSend({ type: "response", id: createFrame.id, payload: { ok: true, result: { sessionId: "s1", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x" } } });
+    await flush();
+    expect(lastFrame(ws, "attach")).toBeDefined();
+    // Drop the socket mid-attach: original create promise must survive via stable deferred.
+    ws.serverClose(1006);
+    ws = await reconnectReady(h);
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
+    await flush();
+    await expect(createP).resolves.toEqual({ sessionId: "s1" });
+    expect(h.store.getSnapshot().attached).toBe(true);
+  });
+
+  // PROBE-3: prompt promise settles after abort+stop.
+  it("PROBE-3: sendPrompt promise settles after abort+stop", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    const promptP = h.store.sendPrompt("hi");
+    await flush();
+    ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
+    await flush();
+    const stopP = h.store.stop();
+    await flush();
+    const interrupt = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    ws.serverSend({ type: "interrupt_result", id: interrupt.id, payload: { sessionId: "s1", commandId: interrupt.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await flush();
+    ackStop(ws);
+    await flush();
+    await expect(stopP).resolves.toBeUndefined();
+    await expect(promptP).rejects.toMatchObject({ code: "interrupted" });
+  });
+
+  // PROBE-5: concurrent create — second is busy-rejected; only one create frame.
+  it("PROBE-5: concurrent create rejects second as busy and sends one frame", async () => {
+    const h = createHarness();
+    h.store.connect();
+    const ws = openReady(h);
+    const a = h.store.createSession({ cwd: "/x", projectRoot: "/x" });
+    const b = h.store.createSession({ cwd: "/y", projectRoot: "/y" });
+    await flush();
+    await expect(b).rejects.toMatchObject({ code: "session_busy" });
+    const creates = (ws.sent as { type: string }[]).filter((f) => f.type === "create");
+    expect(creates.length).toBe(1);
+    // First create still proceeds to attach.
+    const createFrame = lastFrame<{ type: string; id: string }>(ws, "create")!;
+    ws.serverSend({ type: "response", id: createFrame.id, payload: { ok: true, result: { sessionId: "s1", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x" } } });
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1" }) });
+    await flush();
+    await expect(a).resolves.toEqual({ sessionId: "s1" });
+  });
+
+  // PROBE-9: stop while socket not sendable must NOT claim success without sending.
+  it("PROBE-9: stop during backoff does not claim sessionStopped without a stop frame", async () => {
+    const h = createHarness({ storeOptions: { stopSendTimeoutMs: 500, stopAckTimeoutMs: 500 } });
+    const ws = await openAndAttach(h);
+    // Force transport loss → unavailable/reconnecting; stop must wait, then fail honestly.
+    ws.serverClose(1006);
+    await flush();
+    expect(["unavailable", "reconnecting"]).toContain(h.store.getSnapshot().connection);
+    const stopP = h.store.stop();
+    await flush();
+    // No stop frame can have been sent on the dead socket.
+    expect(lastFrame(ws, "stop")).toBeUndefined();
+    // Bound the wait so the test does not hang; reject keeps resume eligibility.
+    vi.advanceTimersByTime(500);
+    await flush();
+    await expect(stopP).rejects.toMatchObject({ code: "timeout" });
+    expect(h.store.getSnapshot().sessionStopped).toBe(false);
+  });
+
+  // PROBE-14: one-shot getSnapshot rejects on transport loss (no Map/promise leak).
+  it("PROBE-14: getSnapshot pending is rejected on reconnect; Map does not leak", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    const snapP = h.store.fetchSnapshot();
+    await flush();
+    expect(lastFrame(ws, "getSnapshot")).toBeDefined();
+    ws.serverClose(1006);
+    await flush();
+    await expect(snapP).rejects.toMatchObject({ code: "unavailable" });
+    // Late response on new generation must not resurrect the settled promise.
+    const ws2 = await reconnectReady(h);
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws2, "attach")!;
+    ws2.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1" }) });
+    await flush();
+    // Promise already rejected; no hang / no double settle.
+    await expect(snapP).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  // PROBE-16: concurrent stop merges into a single promise / single stop frame.
+  it("PROBE-16: concurrent stop merges into one frame and one promise", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    // Start a prompt so interrupt path is exercised, then stop twice concurrently.
+    const promptP = h.store.sendPrompt("hi");
+    promptP.catch(() => undefined);
+    await flush();
+    ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
+    await flush();
+    const stopA = h.store.stop();
+    const stopB = h.store.stop();
+    expect(stopA).toBe(stopB); // same merged promise
+    await flush();
+    const interrupt = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    ws.serverSend({ type: "interrupt_result", id: interrupt.id, payload: { sessionId: "s1", commandId: interrupt.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await flush();
+    const stops = (ws.sent as { type: string }[]).filter((f) => f.type === "stop");
+    expect(stops.length).toBe(1);
+    ackStop(ws);
+    await flush();
+    await expect(stopA).resolves.toBeUndefined();
+    await expect(stopB).resolves.toBeUndefined();
+    expect(h.store.getSnapshot().sessionStopped).toBe(true);
+  });
+
+  it("malicious wrong-id response does not resolve a pending open", async () => {
+    const h = createHarness();
+    h.store.connect();
+    const ws = openReady(h);
+    const openP = h.store.openSession("s1");
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    // Wrong-id success response must not attach or settle.
+    ws.serverSend({ type: "response", id: "not-the-attach-id", payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await flush();
+    expect(h.store.getSnapshot().attached).toBe(false);
+    // Wrong-id snapshot must not attach either.
+    ws.serverSend({ type: "snapshot", id: "other", payload: snapshotPayload({ sessionId: "s1" }) });
+    await flush();
+    expect(h.store.getSnapshot().attached).toBe(false);
+    // Correlated snapshot settles.
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1" }) });
+    await flush();
+    await expect(openP).resolves.toBeUndefined();
   });
 });

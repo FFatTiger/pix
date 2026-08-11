@@ -23,16 +23,16 @@ export interface RuntimeLocation {
 }
 
 /**
- * Derive the runtime WebSocket URL from the current location, preserving any
- * base path: http→ws, https→wss, same host, path `<base>/v1/runtime`.
- *
- * `new URL("v1/runtime", href)` resolves relative to the location's directory,
- * so an app served at `/app/` yields `wss://host/app/v1/runtime`.
+ * Derive the runtime WebSocket URL from the current location. The host serves
+ * the runtime WS at the ROOT path `/v1/runtime` (matching the HTTP client's
+ * root `/v1` surface), so the URL is origin-relative and independent of the
+ * document's base path: http→ws, https→wss, same host, path `/v1/runtime`.
+ * This makes no-trailing-slash and trailing-slash inputs produce the SAME url.
  */
 export function buildRuntimeWsUrl(location: RuntimeLocation): string {
-  const http = new URL("v1/runtime", location.href);
-  const wsProto = http.protocol === "https:" ? "wss:" : "ws:";
-  return `${wsProto}//${http.host}${http.pathname}`;
+  const base = new URL(location.href);
+  const wsProto = base.protocol === "https:" ? "wss:" : "ws:";
+  return `${wsProto}//${base.host}/v1/runtime`;
 }
 
 /**

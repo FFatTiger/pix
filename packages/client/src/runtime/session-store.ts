@@ -1,7 +1,7 @@
 /**
  * SessionStore — the client-side Runtime brain.
  *
- * It owns the {@link RuntimeSocket} (transport) and, on top of it:
+ * Owns the {@link RuntimeSocket} (transport) and, on top of it:
  *  - the projection {@link RuntimeSnapshot} (reduced through the SHARED Protocol
  *    `reduceRuntimeEventData`, identical semantics to the sessiond authority);
  *  - the resume cursor (sessionId / epoch / lastEventId) and per-generation
@@ -12,15 +12,20 @@
  *  - the reactive {@link RuntimeView} exposed to React via useSyncExternalStore
  *    (realtime state NEVER goes through TanStack Query).
  *
- * Honesty rules enforced here (M2 C1 spec §C/D/E):
- *  - `attached` is only true after a strictly correlated initial snapshot
- *    (snapshot.id === attach request id, same generation, sessionId match).
- *  - events are applied only when eventId === lastEventId + 1 within the matched
- *    epoch/session; duplicates drop; gaps / epoch / session mismatch → reattach.
- *  - getSnapshot replaces projection state WITHOUT advancing the cursor.
- *  - browser unload / dispose only closes/detaches; NEVER runtime.stop.
- *  - stopping a running prompt first aborts (await interrupt result w/ timeout)
- *    because H1 stop head-of-lines behind a long command.
+ * Pending-state ownership invariants (verifier fixes):
+ *  - The logical attach is a SINGLE stable deferred that survives reconnect
+ *    (HIGH-2): resume re-uses the same deferred, so create/open promises always
+ *    settle. An attach FAILURE clears awaiting + resets to `ready` so a second
+ *    open proceeds immediately (HIGH-1).
+ *  - One-shot envelope requests (getSnapshot/detach/stop) are REJECTED on
+ *    transport loss so they never leak across a generation (MEDIUM-3); create /
+ *    command / interrupt / attach are retried on reconnect.
+ *  - stop() is honest: abort-first (HOL, bounded), then wait until sendable
+ *    (bounded), send stop and AWAIT the ack (bounded); sessionStopped is set
+ *    ONLY on confirmed ack, otherwise it rejects and keeps resume eligibility
+ *    (MEDIUM-5). Concurrent stops merge into one promise/one frame (LOW). A
+ *    pending prompt is always settled on stop (MEDIUM-4).
+ *  - Concurrent create is rejected as busy (both promises settle) (MEDIUM-6).
  */
 import {
   reduceRuntimeEventData,
@@ -45,7 +50,7 @@ import {
   type RuntimeSocketDeps,
   type RuntimeSocketHandler,
 } from "./socket.js";
-import { type ConnectionState } from "./lifecycle.js";
+import { canSend, type ConnectionState } from "./lifecycle.js";
 import {
   createDefaultIdFactory,
   decideCommandRetry,
@@ -91,13 +96,21 @@ export interface SessionStoreOptions {
   readonly id?: IdFactory;
   readonly setTimeout?: (fn: () => void, ms: number) => unknown;
   readonly clearTimeout?: (handle: unknown) => void;
-  /** Timeout for awaiting an abort interrupt result before a forced stop (HOL rule). */
+  /** Bounded wait for the abort interrupt result before a forced stop (HOL rule). */
   readonly abortTimeoutMs?: number;
+  /** Bounded wait for the socket to become sendable before issuing stop. */
+  readonly stopSendTimeoutMs?: number;
+  /** Bounded wait for the stop ack response. */
+  readonly stopAckTimeoutMs?: number;
 }
 
-interface ReadyWaiter {
+interface Waiter {
   resolve(): void;
   reject(error: unknown): void;
+}
+
+interface TimedWaiter extends Waiter {
+  handle: unknown;
 }
 
 interface EnvelopePending {
@@ -116,12 +129,19 @@ interface CreatePending {
   reject(error: unknown): void;
 }
 
-interface AttachPending {
+/** Per-attempt wire correlation for an attach (envelope id + generation). */
+interface AttachAttempt {
   readonly envelopeId: string;
   readonly generation: number;
   readonly sessionId: string;
+}
+
+/** Stable, logical attach deferred — survives reconnect handoff (HIGH-2). */
+interface AttachDeferred {
+  readonly sessionId: string;
   resolve(): void;
   reject(error: unknown): void;
+  promise: Promise<void>;
 }
 
 interface CommandPending {
@@ -145,6 +165,8 @@ interface InterruptPending {
 }
 
 const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
+const DEFAULT_STOP_SEND_TIMEOUT_MS = 10_000;
+const DEFAULT_STOP_ACK_TIMEOUT_MS = 10_000;
 
 export class SessionStore implements RuntimeSocketHandler {
   private readonly socket: RuntimeSocket;
@@ -152,6 +174,8 @@ export class SessionStore implements RuntimeSocketHandler {
   private readonly setTimeoutFn: (fn: () => void, ms: number) => unknown;
   private readonly clearTimeoutFn: (handle: unknown) => void;
   private readonly abortTimeoutMs: number;
+  private readonly stopSendTimeoutMs: number;
+  private readonly stopAckTimeoutMs: number;
 
   // reactive state
   private connection: ConnectionState = "idle";
@@ -167,20 +191,24 @@ export class SessionStore implements RuntimeSocketHandler {
 
   // attach / cursor gating
   private intendedSession: { sessionId: string } | null = null;
+  private attach: AttachDeferred | null = null;
+  private attachAttempt: AttachAttempt | null = null;
   private attachGen: number | null = null;
   private awaitingSnapshot = false;
-  private resuming = false;
 
   // pending requests
   private pendingByEnvelope = new Map<string, EnvelopePending>();
   private pendingCreate: CreatePending | null = null;
-  private pendingAttach: AttachPending | null = null;
   private pendingCommand: CommandPending | null = null;
   private pendingInterrupt: InterruptPending | null = null;
   /** At most ONE interrupt in flight (well under H1's 16-interrupt cap). */
   private pendingInterruptPromise: Promise<unknown> | null = null;
-  private readyWaiters: ReadyWaiter[] = [];
+  /** At most ONE stop in flight (LOW: concurrent stops merge into one frame). */
+  private stopPromise: Promise<void> | null = null;
+  private stopping = false;
 
+  private readyWaiters: Waiter[] = [];
+  private sendableWaiters: TimedWaiter[] = [];
   private readonly listeners = new Set<() => void>();
   private view: RuntimeView = INITIAL_VIEW;
 
@@ -190,16 +218,20 @@ export class SessionStore implements RuntimeSocketHandler {
     this.setTimeoutFn = options.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimeoutFn = options.clearTimeout ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.abortTimeoutMs = options.abortTimeoutMs ?? DEFAULT_ABORT_TIMEOUT_MS;
+    this.stopSendTimeoutMs = options.stopSendTimeoutMs ?? DEFAULT_STOP_SEND_TIMEOUT_MS;
+    this.stopAckTimeoutMs = options.stopAckTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
   }
 
   // --- public transport --------------------------------------------------
 
   connect(): void { this.socket.connect(); }
 
-  /** Idempotent teardown: closes the socket + detaches. NEVER runtime.stop. */
+  /** Idempotent teardown: closes the socket + settles all pending. NEVER runtime.stop. */
   dispose(): void {
-    this.rejectReadyWaiters({ code: "unavailable", message: "runtime disposed", retryable: false });
-    this.failAllPending({ code: "unavailable", message: "runtime disposed", retryable: false });
+    const error: ProtocolError = { code: "unavailable", message: "runtime disposed", retryable: false };
+    this.rejectReadyWaiters(error);
+    this.rejectSendableWaiters(error);
+    this.failAllPending(error);
     this.socket.dispose();
   }
 
@@ -216,10 +248,18 @@ export class SessionStore implements RuntimeSocketHandler {
     name?: string;
   }): Promise<{ sessionId: string }> {
     this.sessionStopped = false;
+    // MEDIUM-6: a second concurrent create is rejected as busy (both settle, one frame).
+    if (this.pendingCreate) {
+      return Promise.reject({ code: "session_busy", message: "a session create is already in progress", retryable: false } satisfies ProtocolError);
+    }
     this.ensureConnecting();
     return new Promise((resolve, reject) => {
       this.whenReady().then(
         () => {
+          if (this.pendingCreate) {
+            reject({ code: "session_busy", message: "a session create is already in progress", retryable: false } satisfies ProtocolError);
+            return;
+          }
           const createRequestId = this.id();
           const payload: RuntimeCreateParams = {
             createRequestId,
@@ -235,7 +275,10 @@ export class SessionStore implements RuntimeSocketHandler {
             envelopeId,
             generation: this.socket.currentGeneration,
             payload,
-            resolve,
+            resolve: (result) => {
+              // create ok → fresh attach; settle createSession with the attach outcome.
+              this.startAttach(result.sessionId, "fresh").then(() => resolve({ sessionId: result.sessionId }), reject);
+            },
             reject,
           };
           this.send({ type: "create", id: envelopeId, payload });
@@ -251,10 +294,7 @@ export class SessionStore implements RuntimeSocketHandler {
     this.ensureConnecting();
     return new Promise<void>((resolve, reject) => {
       this.whenReady().then(
-        () => {
-          this.resuming = false;
-          void this.attachSession(sessionId, "fresh").then(resolve, reject);
-        },
+        () => { void this.startAttach(sessionId, "fresh").then(resolve, reject); },
         (error) => reject(error),
       );
     });
@@ -267,34 +307,59 @@ export class SessionStore implements RuntimeSocketHandler {
       this.attached = false;
       this.awaitingSnapshot = false;
       this.intendedSession = null;
+      this.rejectAttach({ code: "interrupted", message: "detached", retryable: false });
       this.setConnection(this.socket.connectionState === "stopped" ? "stopped" : "ready");
       this.notify();
     });
   }
 
   /**
-   * Authoritative stop. If a prompt is currently running, FIRST abort it and
-   * await the interrupt result (with a timeout) before stopping — H1 stop
-   * head-of-lines behind a long-running command, so we must interrupt first.
+   * Authoritative stop. Honest semantics (MEDIUM-4/5, LOW):
+   *  1. HOL: if a prompt is running, FIRST abort and await the interrupt result
+   *     (bounded) — H1 stop head-of-lines behind a long command.
+   *  2. Settle the pending prompt promise exactly once (MEDIUM-4).
+   *  3. Wait until the socket is sendable (bounded); send stop and AWAIT the ack
+   *     (bounded). Only on confirmed ack do we mark sessionStopped; on any failure
+   *     we reject and KEEP resume eligibility (intendedSession untouched).
+   * Concurrent stops merge into a single promise / single stop frame (LOW).
    */
-  async stop(reason?: string): Promise<void> {
-    // HOL rule: H1 stop head-of-lines behind a long-running command, so if a
-    // prompt is running we FIRST abort it and await the interrupt result (with a
-    // bounded timeout) before issuing the authoritative stop.
-    if (this.attached && this.isPromptRunning()) {
-      await this.boundedAbort();
+  stop(reason?: string): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this.runStop(reason).finally(() => { this.stopPromise = null; });
+    return this.stopPromise;
+  }
+
+  private async runStop(reason?: string): Promise<void> {
+    this.stopping = true;
+    try {
+      if (this.attached && this.isPromptRunning()) {
+        await this.boundedAbort();
+      }
+      // MEDIUM-4: settle the in-flight prompt promise exactly once.
+      this.settlePendingCommand({ code: "interrupted", message: "session stopped", retryable: false });
+      const sessionId = this.sessionId;
+      if (!sessionId) return;
+      // MEDIUM-5: honest stop — wait until sendable (bounded), then send + await ack (bounded).
+      try {
+        await this.whenSendable(this.stopSendTimeoutMs);
+        await this.sendEnvelope(
+          { type: "stop", id: this.id(), payload: { sessionId, ...(reason === undefined ? {} : { reason }) } },
+          this.stopAckTimeoutMs,
+        );
+      } catch (error) {
+        // Could not confirm stop: do NOT mark stopped; keep resume eligibility.
+        this.notify();
+        throw error;
+      }
+      this.attached = false;
+      this.awaitingSnapshot = false;
+      this.sessionStopped = true;
+      this.intendedSession = null;
+      this.rejectAttach({ code: "interrupted", message: "stopped", retryable: false });
+      this.notify();
+    } finally {
+      this.stopping = false;
     }
-    const sessionId = this.sessionId;
-    if (!sessionId) return;
-    // Authoritative stop frame is fire-and-forget: the host also tears down the
-    // attach subscription, and we must not hang on a lost stop response.
-    this.send({ type: "stop", id: this.id(), payload: { sessionId, ...(reason === undefined ? {} : { reason }) } });
-    this.attached = false;
-    this.awaitingSnapshot = false;
-    this.sessionStopped = true;
-    this.intendedSession = null;
-    this.pendingCommand = null;
-    this.notify();
   }
 
   /** Await an abort interrupt result, but never longer than {@link abortTimeoutMs}. */
@@ -307,18 +372,8 @@ export class SessionStore implements RuntimeSocketHandler {
         continueStop();
       }, this.abortTimeoutMs);
       this.abort().then(
-        () => {
-          if (done) return;
-          done = true;
-          this.clearTimeoutFn(handle);
-          continueStop();
-        },
-        () => {
-          if (done) return;
-          done = true;
-          this.clearTimeoutFn(handle);
-          continueStop();
-        },
+        () => { if (done) return; done = true; this.clearTimeoutFn(handle); continueStop(); },
+        () => { if (done) return; done = true; this.clearTimeoutFn(handle); continueStop(); },
       );
     });
   }
@@ -358,8 +413,7 @@ export class SessionStore implements RuntimeSocketHandler {
   /** Abort the running prompt via the INDEPENDENT interrupt path (not queued). */
   abort(): Promise<unknown> {
     if (!this.sessionId) return Promise.reject(this.notAttachedError());
-    // Coalesce concurrent aborts: at most one interrupt is ever in flight, so the
-    // client can never approach H1's 16-in-flight-interrupt hard cap.
+    // Coalesce concurrent aborts: at most one interrupt is ever in flight.
     if (this.pendingInterrupt && this.pendingInterruptPromise) return this.pendingInterruptPromise;
     const sessionId = this.sessionId;
     const commandId = this.id();
@@ -389,26 +443,30 @@ export class SessionStore implements RuntimeSocketHandler {
   // --- RuntimeSocketHandler ---------------------------------------------
 
   onConnectionState(state: ConnectionState): void {
+    const wasReady = canSend(this.connection);
     this.connection = state;
     // Socket-driven states never include attached/attaching (those are
     // store-driven), so any socket transition means we are no longer attached.
-    // Essential for reconnect: when transport is restored to `ready`, `!attached`
-    // triggers the resume re-attach.
     this.attached = false;
     if (state === "ready") {
       this.resolveReadyWaiters();
-      // Reconnect resync: a lost create response can be re-sent idempotently.
+      this.resolveSendableWaiters();
+      // Reconnect resync: a lost create response is resent idempotently.
       if (this.pendingCreate) {
         this.resendCreate();
-        return;
+      } else if (this.intendedSession && !this.sessionStopped && !this.stopping) {
+        // Reconnect resync: resume the intended session's attach (reuses deferred).
+        this.resumeAttach();
       }
-      // Reconnect resync: resume the intended session if we were attached.
-      if (this.intendedSession && !this.attached && !this.sessionStopped) {
-        void this.resumeAttach();
-      }
+    } else if (state === "unavailable" || state === "reconnecting") {
+      // MEDIUM-3: one-shot envelope requests cannot survive a generation boundary.
+      this.onTransportLoss();
     } else if (state === "stopped") {
-      this.rejectReadyWaiters({ code: "unavailable", message: "runtime connection stopped", retryable: false });
+      const error: ProtocolError = { code: "unavailable", message: "runtime connection stopped", retryable: false };
+      this.rejectReadyWaiters(error);
+      this.rejectSendableWaiters(error);
     }
+    if (canSend(state) && !wasReady) this.resolveSendableWaiters();
     this.notify();
   }
 
@@ -421,6 +479,7 @@ export class SessionStore implements RuntimeSocketHandler {
     this.fatal = true;
     this.error = error;
     this.rejectReadyWaiters(error);
+    this.rejectSendableWaiters(error);
     this.failAllPending(error);
     this.notify();
   }
@@ -440,22 +499,22 @@ export class SessionStore implements RuntimeSocketHandler {
 
   private handleSnapshot(message: WsSnapshotMessage, generation: number): void {
     const payload = message.payload;
-    // Initial attach snapshot: strictly correlated by (generation, request id, sessionId).
+    // Initial attach snapshot: strictly correlated by (generation, attempt id, sessionId).
     if (
-      this.pendingAttach &&
-      message.id === this.pendingAttach.envelopeId &&
-      generation === this.pendingAttach.generation &&
-      payload.sessionId === this.pendingAttach.sessionId
+      this.attachAttempt &&
+      message.id === this.attachAttempt.envelopeId &&
+      generation === this.attachAttempt.generation &&
+      payload.sessionId === this.attachAttempt.sessionId
     ) {
-      const pending = this.pendingAttach;
-      this.pendingAttach = null;
+      this.attachAttempt = null;
       this.applySnapshot(payload);
       this.attachGen = generation;
       this.awaitingSnapshot = false;
       this.attached = true;
       this.error = null;
       this.setConnection("attached");
-      pending.resolve();
+      const attach = this.attach;
+      if (attach) { this.attach = null; attach.resolve(); }
       this.resyncAfterAttach(payload.resumeStatus, payload.epoch);
       return;
     }
@@ -483,13 +542,12 @@ export class SessionStore implements RuntimeSocketHandler {
         this.snapshot = reduceRuntimeEventData(this.snapshot, event as RuntimeEventData);
         this.lastEventId = event.eventId;
       } catch {
-        // Projection inconsistency (e.g. a stream event out of order): the
-        // authoritative snapshot is stale — re-attach to resynchronize.
-        this.reattach("resume");
+        // Projection inconsistency (stream event out of order): re-attach.
+        this.reattach();
       }
       this.notify();
     } else if (decision.decision === "reattach") {
-      this.reattach("resume");
+      this.reattach();
     }
     // "drop" (duplicate / awaiting-snapshot): ignore.
   }
@@ -497,14 +555,22 @@ export class SessionStore implements RuntimeSocketHandler {
   private handleResponse(message: WsResponseMessage, generation: number): void {
     const ok = message.payload.ok;
     // attach failure: success arrives as a snapshot, so any `response` matching a
-    // pending attach id is a failure (ok:false) → reject.
-    if (this.pendingAttach && message.id === this.pendingAttach.envelopeId && generation === this.pendingAttach.generation) {
-      const pending = this.pendingAttach;
-      this.pendingAttach = null;
+    // pending attach attempt is a failure → reject the stable deferred (HIGH-1/2).
+    if (this.attachAttempt && message.id === this.attachAttempt.envelopeId && generation === this.attachAttempt.generation) {
+      const attemptSessionId = this.attachAttempt.sessionId;
+      this.attachAttempt = null;
+      this.awaitingSnapshot = false;
       const error: ProtocolError = ok
         ? { code: "internal", message: "attach response without snapshot", retryable: false }
         : message.payload.error;
-      pending.reject(error);
+      const attach = this.attach;
+      this.attach = null;
+      // Fresh open/create attach failure: drop intendedSession so reconnect does not
+      // auto-retry a known-bad session. Keep it only when re-attaching a previously
+      // live session (sessionId already set) so resume can try again.
+      if (this.sessionId !== attemptSessionId) this.intendedSession = null;
+      this.setConnection("ready"); // HIGH-1: reset so a subsequent open proceeds immediately.
+      if (attach) attach.reject(error);
       this.setError(error);
       return;
     }
@@ -515,11 +581,7 @@ export class SessionStore implements RuntimeSocketHandler {
       if (!ok) { pending.reject(message.payload.error); this.setError(message.payload.error); return; }
       const result = message.payload.result as { sessionId: string };
       // create optional snapshot is IGNORED; the attach snapshot is authoritative.
-      this.intendedSession = { sessionId: result.sessionId };
-      void this.attachSession(result.sessionId, "fresh").then(
-        () => pending.resolve({ sessionId: result.sessionId }),
-        (error) => pending.reject(error),
-      );
+      pending.resolve({ sessionId: result.sessionId });
       return;
     }
     // command
@@ -538,7 +600,7 @@ export class SessionStore implements RuntimeSocketHandler {
       else { entry.reject(message.payload.error); this.setError(message.payload.error); }
       return;
     }
-    // late / unknown response: drop (generation guard / superseded).
+    // late / unknown response (incl. stale generation): drop — never resolves new pending.
   }
 
   private handleInterruptResult(message: WsInterruptResultMessage, generation: number): void {
@@ -556,48 +618,69 @@ export class SessionStore implements RuntimeSocketHandler {
     this.setError(message.payload.error);
   }
 
-  // --- attach / resync ---------------------------------------------------
+  // --- attach lifecycle (stable deferred) --------------------------------
 
-  private attachSession(sessionId: string, mode: "fresh" | "resume"): Promise<void> {
+  /**
+   * Begin (or resume) the logical attach for `sessionId`. The returned promise
+   * is a STABLE deferred: a reconnect re-uses it so the original create/open
+   * caller always settles (HIGH-2). Each (re)send mints a fresh envelope attempt.
+   */
+  private startAttach(sessionId: string, mode: "fresh" | "resume"): Promise<void> {
     this.intendedSession = { sessionId };
     this.attached = false;
     this.awaitingSnapshot = true;
-    if (mode === "resume") this.resuming = true;
+    if (this.attach && this.attach.sessionId === sessionId) {
+      // Reuse the in-flight deferred (reconnect handoff) and send a new attempt.
+      this.sendAttachAttempt(sessionId, mode);
+      return this.attach.promise;
+    }
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+    const deferred: AttachDeferred = { sessionId, resolve, reject, promise };
+    this.attach = deferred;
+    this.sendAttachAttempt(sessionId, mode);
+    return promise;
+  }
+
+  private sendAttachAttempt(sessionId: string, mode: "fresh" | "resume"): void {
     const envelopeId = this.id();
     const params: RuntimeAttachParams = mode === "resume" && this.epoch !== null
       ? { sessionId, epoch: this.epoch, lastEventId: this.lastEventId }
       : { sessionId };
+    this.attachAttempt = { envelopeId, generation: this.socket.currentGeneration, sessionId };
     this.setConnection("attaching");
-    return new Promise<void>((resolve, reject) => {
-      this.pendingAttach = { envelopeId, generation: this.socket.currentGeneration, sessionId, resolve, reject };
-      this.send({ type: "attach", id: envelopeId, payload: params });
-    });
+    this.send({ type: "attach", id: envelopeId, payload: params });
   }
 
-  /** Reconnect resume: re-attach with the atomic epoch + lastEventId cursor. */
-  private resumeAttach(): Promise<void> {
-    if (!this.intendedSession) return Promise.resolve();
-    return this.attachSession(this.intendedSession.sessionId, "resume").catch(() => {
-      // Resume failed; the socket backoff will retry and `ready` will re-trigger.
+  /** Reconnect resume: re-attach the intended session, reusing any deferred. */
+  private resumeAttach(): void {
+    if (!this.intendedSession) return;
+    void this.startAttach(this.intendedSession.sessionId, "resume").catch(() => {
+      // Resume failed; socket backoff retries and `ready` re-triggers resume.
     });
   }
 
   /** Re-attach after a cursor violation (gap / epoch / session mismatch). */
-  private reattach(mode: "fresh" | "resume"): void {
+  private reattach(): void {
     if (!this.sessionId) return;
     this.attached = false;
     this.awaitingSnapshot = true;
-    void this.attachSession(this.sessionId, mode).catch(() => undefined);
+    void this.startAttach(this.sessionId, "resume").catch(() => undefined);
+  }
+
+  /** Reject + clear any in-flight attach deferred (detach / stop / dispose). */
+  private rejectAttach(error: ProtocolError): void {
+    if (this.attach) { this.attach.reject(error); this.attach = null; }
+    this.attachAttempt = null;
   }
 
   /**
-   * After a reconnect delivers its initial snapshot, re-send any pending
-   * command/interrupt ONLY when the epoch survived (snapshot/gap). On
-   * epoch_changed the prior command's effect is ambiguous → reject, never resend.
+   * After an initial snapshot, re-send pending command/interrupt ONLY when the
+   * epoch survived (snapshot/gap). On epoch_changed the prior command's effect is
+   * ambiguous → reject, never resend. No-op when nothing is pending (fresh attach).
    */
   private resyncAfterAttach(resumeStatus: "snapshot" | "gap" | "epoch_changed", snapshotEpoch: string): void {
-    if (!this.resuming) return;
-    this.resuming = false;
     const epochSurvived = resumeStatus !== "epoch_changed" && (this.epoch === null || this.epoch === snapshotEpoch);
     if (this.pendingCommand) {
       const decision = decideCommandRetry(epochSurvived ? resumeStatus : "epoch_changed");
@@ -663,19 +746,31 @@ export class SessionStore implements RuntimeSocketHandler {
 
   /**
    * Track + send a one-shot envelope request (getSnapshot / detach / stop),
-   * resolved/rejected by the matching {@link WsResponseMessage}. Type-safe:
-   * the caller constructs the full discriminated-union client message.
+   * resolved/rejected by the matching {@link WsResponseMessage}. An optional
+   * bounded ack timeout rejects (and removes) the entry if no response arrives.
    */
-  private sendEnvelope(message: WsClientMessage): Promise<unknown> {
+  private sendEnvelope(message: WsClientMessage, ackTimeoutMs?: number): Promise<unknown> {
     const id = message.id;
     if (id === undefined) return Promise.reject(new Error("envelope request requires an id"));
     return new Promise((resolve, reject) => {
+      let handle: unknown = undefined;
+      const finish = (fn: () => void): void => {
+        if (handle !== undefined) this.clearTimeoutFn(handle);
+        fn();
+      };
       this.pendingByEnvelope.set(id, {
         kind: message.type === "getSnapshot" ? "getSnapshot" : message.type === "detach" ? "detach" : "stop",
         generation: this.socket.currentGeneration,
-        resolve,
-        reject,
+        resolve: (value) => finish(() => resolve(value)),
+        reject: (error) => finish(() => reject(error)),
       });
+      if (ackTimeoutMs !== undefined) {
+        handle = this.setTimeoutFn(() => {
+          if (!this.pendingByEnvelope.has(id)) return; // already settled
+          this.pendingByEnvelope.delete(id);
+          reject({ code: "timeout", message: "response timed out", retryable: true } satisfies ProtocolError);
+        }, ackTimeoutMs);
+      }
       this.send(message);
     });
   }
@@ -684,7 +779,6 @@ export class SessionStore implements RuntimeSocketHandler {
     try {
       this.socket.send(message);
     } catch (error) {
-      // Not sendable: fail the matching pending promise (if any).
       this.routeSendFailure(message, error);
     }
   }
@@ -702,13 +796,25 @@ export class SessionStore implements RuntimeSocketHandler {
       this.pendingInterrupt.reject(error);
       this.pendingInterrupt = null;
       this.pendingInterruptPromise = null;
-    } else if (this.pendingAttach?.envelopeId === id) {
-      this.pendingAttach.reject(error);
-      this.pendingAttach = null;
     } else if (this.pendingCreate?.envelopeId === id) {
       this.pendingCreate.reject(error);
       this.pendingCreate = null;
+    } else if (this.attachAttempt?.envelopeId === id) {
+      this.attachAttempt = null;
+      this.rejectAttach(error as ProtocolError);
     }
+  }
+
+  /** Reject one-shot envelope requests on transport loss (MEDIUM-3). */
+  private onTransportLoss(): void {
+    const error: ProtocolError = { code: "unavailable", message: "runtime connection lost", retryable: true };
+    for (const [, entry] of this.pendingByEnvelope) entry.reject(error);
+    this.pendingByEnvelope.clear();
+  }
+
+  /** Reject the in-flight prompt promise exactly once (MEDIUM-4). */
+  private settlePendingCommand(error: ProtocolError): void {
+    if (this.pendingCommand) { this.pendingCommand.reject(error); this.pendingCommand = null; }
   }
 
   private ensureConnecting(): void {
@@ -720,8 +826,21 @@ export class SessionStore implements RuntimeSocketHandler {
     if (this.fatal || this.connection === "stopped") {
       return Promise.reject(this.error ?? { code: "unavailable", message: "runtime not ready", retryable: false });
     }
+    return new Promise<void>((resolve, reject) => { this.readyWaiters.push({ resolve, reject }); });
+  }
+
+  /** Resolve when the socket is sendable (ready/attaching/attached), bounded. */
+  private whenSendable(timeoutMs: number): Promise<void> {
+    if (canSend(this.connection)) return Promise.resolve();
+    if (this.fatal || this.connection === "stopped") {
+      return Promise.reject(this.error ?? { code: "unavailable", message: "runtime not sendable", retryable: false });
+    }
     return new Promise<void>((resolve, reject) => {
-      this.readyWaiters.push({ resolve, reject });
+      const handle = this.setTimeoutFn(() => {
+        this.sendableWaiters = this.sendableWaiters.filter((w) => w.handle !== handle);
+        reject({ code: "timeout", message: "runtime not sendable in time", retryable: true } satisfies ProtocolError);
+      }, timeoutMs);
+      this.sendableWaiters.push({ resolve, reject, handle });
     });
   }
 
@@ -737,13 +856,23 @@ export class SessionStore implements RuntimeSocketHandler {
     for (const w of waiters) w.reject(error);
   }
 
+  private resolveSendableWaiters(): void {
+    const waiters = this.sendableWaiters;
+    this.sendableWaiters = [];
+    for (const w of waiters) { this.clearTimeoutFn(w.handle); w.resolve(); }
+  }
+
+  private rejectSendableWaiters(error: unknown): void {
+    const waiters = this.sendableWaiters;
+    this.sendableWaiters = [];
+    for (const w of waiters) { this.clearTimeoutFn(w.handle); w.reject(error); }
+  }
+
   private failAllPending(error: ProtocolError): void {
     this.pendingCreate?.reject(error);
     this.pendingCreate = null;
-    this.pendingAttach?.reject(error);
-    this.pendingAttach = null;
-    this.pendingCommand?.reject(error);
-    this.pendingCommand = null;
+    this.rejectAttach(error);
+    this.settlePendingCommand(error);
     this.pendingInterrupt?.reject(error);
     this.pendingInterrupt = null;
     this.pendingInterruptPromise = null;
@@ -794,4 +923,3 @@ export class SessionStore implements RuntimeSocketHandler {
     for (const listener of this.listeners) listener();
   }
 }
-

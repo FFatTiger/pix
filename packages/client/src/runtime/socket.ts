@@ -216,13 +216,9 @@ export class RuntimeSocket {
       this.setState("stopped");
       return;
     }
-    if (message.type === "runtime_unavailable") {
-      // Surface to store, then the impending close schedules backoff reconnect.
-      this.handler.onMessage(message, gen);
-      return;
-    }
     if (this.state === "handshaking" || this.state === "connecting") {
-      // No data frames are permitted before the handshake ack.
+      // No data frames (including runtime_unavailable) are permitted before the
+      // handshake ack — fail closed per the handshake protocol (LOW).
       this.failClosed("data frame before handshake ack");
       return;
     }
