@@ -1,0 +1,33 @@
+{
+  "name": "@fffattiger/pi-web-sessiond",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Authoritative local runtime daemon for pi-web sessions",
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./testing": { "types": "./dist/testing/index.d.ts", "import": "./dist/testing/index.js" },
+    "./daemon": { "types": "./dist/composition/index.d.ts", "import": "./dist/composition/index.js" },
+    "./control": { "types": "./dist/control.d.ts", "import": "./dist/control.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "clean": "rm -rf dist dist-test",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "npm run build:test && node --test 'dist-test/**/*.test.js'",
+    "build:test": "rm -rf dist-test && tsc -p tsconfig.test.json",
+    "check:boundaries": "node ./scripts/check-boundaries.mjs"
+  },
+  "dependencies": {
+    "@fffattiger/pi-web-protocol": "0.1.0",
+    "@fffattiger/pi-web-runtime-core": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}
