@@ -1,14 +1,14 @@
 # pi-web 架构重构执行与协作手册
 
-> **全局状态：`PAUSED`（项目负责人于 2026-08-10 要求暂停所有工作）。**
-> 在收到明确恢复通知前：不得继续开发、提交、推送、合并、认领新任务或启动自动化实现；保留现有分支、worktree、Draft PR 和本地未提交进度。
+> **全局状态：`ACTIVE`（项目负责人于 2026-08-11 明确恢复验证、修复和并行实现）。**
+> 当前按依赖门槛继续推进：已实现任务必须先经独立验证并集成；其后只并行启动依赖满足且文件所有权不冲突的任务。
 >
 > **本文件是本轮重构的执行单一事实源（Execution SSOT）。**
 > 架构原则与目标见 [`refactor-architecture.md`](./refactor-architecture.md)；所有任务认领、依赖、文件所有权、状态同步、验收和合并顺序以本文件为准。  
 > 新同事加入项目时，先阅读本文件，再阅读 `AGENTS.md` 和自己任务涉及的源码。
 
-- 最后更新：2026-08-11 09:25 CST
-- 项目状态：`PAUSED`
+- 最后更新：2026-08-11 10:42 CST
+- 项目状态：`ACTIVE`
 - 目标主线：Vite Client + Hono Host + `pi-sessiond` + 每会话 Worker + Agent Runtime Port + Pi 防腐层 + Protocol v1
 - 当前交付：浏览器 / PWA；不交付 Tauri/Electron
 - 集成负责人：`FFatTiger`（当前会话）
@@ -282,18 +282,18 @@ runtime.queue             runtime.stats
 |---|---|---|---|---|---|---|
 | `G0` | 执行与协作手册 | `DONE` | 当前会话 | `main` | 无 | `docs/refactor-execution-plan.md` |
 | `W0` | npm Workspace Foundation | `DONE` | `FFatTiger` | `refactor/w0-workspace-foundation` | 无 | commit `8a32502` + `a8d4e3e`；最终独立 v4flash 复验 PASS；已 fast-forward 合入并推送 `refactor/architecture-v1`，集成分支 HEAD `a8d4e3e`；纯 workspace/package 基线，不包含 Protocol schema |
-| `ACL0` | Runtime Core + Pi ACL Contracts | `PAUSED`（implementation complete / verification interrupted） | `fattiger`（实现已完成） | `refactor/acl0-runtime-core` | `W0` | commit `8dd9b31`；37 files / +4730；实现自测 runtime-core 3/3、contract 60/60、19 suites；独立审查被 parent_shutdown 中断，无最终 verdict；恢复时先清理 ignored `node_modules`/`dist`/`dist-test` 再复验；尚未合入集成分支 |
-| `P0` | Runtime Protocol v1 | `PAUSED` | `FFatTiger` / `protocol-base-impl` | `refactor/protocol-base`；[PR #15](https://github.com/FFatTiger/pi-web/pull/15)；[pix #1](https://github.com/FFatTiger/pix/issues/1) | `W0`, `ACL0` | commit `478ca71` 后有未提交严格 schema 修复，完整保留；现有 Protocol 需按 Runtime Core 规范语义重审；依赖 ACL0 验证/集成后继续 |
-| `V-P0` | Protocol v1 独立验证 | `PAUSED` | `protocol-base-verifier` | 只读验证 `refactor/protocol-base` | `P0` | 首轮 FAIL：4 个阻塞类契约问题；等待修复后由同一验证者复验 |
-| `C0` | Vite Client Shell | `DONE` | `client-shell-impl` | `refactor/client-shell` / `pi-web-worktrees/client-shell` | 无 | commit `d8978b5`；登录 deep-link 修复；7 files / 50 tests、typecheck/build/boundaries 通过 |
+| `ACL0` | Runtime Core + Pi ACL Contracts | `DONE` | `fattiger` + `acl0-fix-v4` | `refactor/acl0-runtime-core` | `W0` | 最终 commit `9deb267`；5.6-sol 独立复验 PASS；runtime-core 3/3、contract 75/75（19 suites）；已完整 fast-forward 合入集成分支并由 `b690826` 归一化 root lockfile/发布排除，Node 22.19 门禁通过 |
+| `P0` | Runtime Protocol v1 | `IN_PROGRESS` | `p0-protocol-v4` | `refactor/protocol-base`；[PR #15](https://github.com/FFatTiger/pi-web/pull/15)；[pix #1](https://github.com/FFatTiger/pix/issues/1) | `W0`, `ACL0` | 已恢复；保留 commit `478ca71` 后未提交严格 schema 修复，正在 rebase 到 `b690826` 并按最终 Runtime Core 语义修复首轮验证问题 |
+| `V-P0` | Protocol v1 独立验证 | `BLOCKED` | 5.6-sol verifier | 只读验证 `refactor/protocol-base` | `P0` | 等待本轮 P0 实现提交后复验；首轮 4 个阻塞类契约问题必须逐项回归 |
+| `C0` | Vite Client Shell | `DONE` | `client-shell-impl` / `c0-integrate-v4` | `refactor/client-shell` / `pi-web-worktrees/client-shell` | 无 | commit `d8978b5` 已独立验证；正在仅做基线 rebase/机械集成适配，保留 protocol shim，待合入集成分支 |
 | `V-C0` | Client Shell 独立验证 | `DONE` | `client-shell-verifier` + 集成负责人复跑 | 只读验证 `refactor/client-shell` | `C0` | 首轮 HIGH 已关闭；主会话复跑 typecheck、50 tests、build、boundaries、diff check 全部 PASS |
-| `I0` | 归一化集成分支和 root lockfile | `PAUSED` | `FFatTiger` | `refactor/architecture-v1`（已创建并推送） | `W0`, `ACL0`, `V-P0`, `V-C0` | W0 阶段已完成（已合入 `a8d4e3e`）；下一步：ACL0 完成独立验证并适配 W0 shared tsconfig 后合入，然后 P0/ACL1 |
+| `I0` | 归一化集成分支和 root lockfile | `IN_PROGRESS` | `FFatTiger` | `refactor/architecture-v1`（已推送） | `W0`, `ACL0`, `V-P0`, `V-C0` | ACL0 阶段完成：集成 HEAD `b690826`，root lockfile/生产发布排除已归一化并推送；当前并行协调 P0、ACL1、C0，P0 验证通过后完成 M0 归一化 |
 
 ### 5.2 Wave 1：Runtime、Host、Client 数据层并行
 
 | ID | 工作包 | 状态 | 负责人 | 建议分支 | 依赖 | 主要目录 |
 |---|---|---|---|---|---|---|
-| `ACL1` | Pi SDK Adapter | `BLOCKED` | 待认领 | `refactor/pi-sdk-adapter` | `W0`, `ACL0` | 可与 P0 并行；`packages/pi-sdk-adapter/**`，通过共享 Adapter contract suite；合并由 I0 统一协调 |
+| `ACL1` | Pi SDK Adapter | `IN_PROGRESS` | `acl1-adapter-v4` | `refactor/pi-sdk-adapter` | `W0`, `ACL0` | 已从 `b690826` 创建独立 worktree；与 P0 并行，仅修改 `packages/pi-sdk-adapter/**`，完成后交 5.6-sol 独立验证 |
 | `ACL2` | Pi RPC Agent Adapter（未来） | `BACKLOG` | 待认领 | `refactor/pi-rpc-adapter` | `ACL0`, `ACL1` contract baseline | 本轮不实现；未来只改 `packages/pi-rpc-adapter/**` 和 composition config，通过同一 contract suite |
 | `R1` | pi-sessiond Core | `BLOCKED` | 待认领 | `refactor/sessiond-core` | `ACL0`, `P0`, `I0` | `packages/sessiond/**`；依赖 Runtime Ports/fakes，不 import Pi SDK |
 | `R2` | agent-worker Application Shell | `BLOCKED` | 待认领 | `refactor/agent-worker-core` | `ACL0`, `ACL1`, `P0`, `I0` | `packages/agent-worker/**`；Protocol Mapper + Controller + Adapter composition，不 import Pi SDK |
@@ -337,7 +337,7 @@ H0A ─────────────────────────�
 C0 ─▶ V-C0 ─────────────────────────▶ I0 ─▶ C1 ─▶ C2
 ```
 
-当前进度（2026-08-11 盘点）：`W0`、`C0`、`V-C0` 已完成；`ACL0` 实现完成、独立复验待恢复后执行；`P0` 依赖 ACL0 验证/集成；`I0` 的 W0 阶段已完成，下一步是 ACL0 复验并适配 W0 shared tsconfig 后合入。
+当前进度（2026-08-11 10:42 CST）：项目已恢复。`W0`、`ACL0`、`C0`、`V-C0` 已完成独立验证；`ACL0` 已合入并推送集成分支 `b690826`，Node 22.19 workspace 门禁通过。当前 `P0`、`ACL1` 与 C0 基线集成按独立目录并行推进；`H0A` 已完成第二轮安全修复，等待 5.6-sol 最终复验。
 
 ---
 
@@ -1466,6 +1466,7 @@ AGENTS.md
 
 | 日期 | 变更 |
 |---|---|
+| 2026-08-11 | 项目恢复 ACTIVE：ACL0 经多轮 5.6-sol 独立复验最终 PASS（`9deb267`），完整合入并由 `b690826` 归一化 root lockfile/发布排除，Node 22.19 门禁通过并推送；并行恢复 P0、启动 ACL1 与 C0 基线集成；H0A `b8e150d` 等待最终安全复验 |
 | 2026-08-11 | 暂停并盘点：W0 DONE（`8a32502`+`a8d4e3e`，最终 v4flash 复验 PASS，已 fast-forward 合入并推送 `refactor/architecture-v1`）；ACL0/H0A/P0/I0 标记 PAUSED 并记录确切进度（ACL0 实现完成待独立复验、H0A 未提交 WIP、P0 未提交严格 schema 修复）；C0/V-C0 DONE（`d8978b5`）；所有 subagent 已停止，无后台任务；main `f6a163d`，集成分支 `a8d4e3e` |
 | 2026-08-11 | ACL 方案语义收口：新增 W0、ACL2、capability/映射矩阵、composition root 规则和可替换性验收；Protocol 正式命名为 pi-web Runtime Protocol v1 |
 | 2026-08-10 | 暂停期间修订架构：新增 `runtime-core` Ports 与 Pi 防腐层；当前 `pi-sdk-adapter`、未来 `pi-rpc-adapter`；Protocol 与 Runtime Model 分离；Host/sessiond/Worker Controller 禁止直接依赖 Pi 类型 |
