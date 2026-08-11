@@ -175,7 +175,22 @@ lock/build-order修正：fd4612b
 独立验证 verdict：PENDING（GPT）
 ```
 
-## 9. 后续迁移时必须记录的校验
+## 9. R0 — Protocol Process Corrections 记录
+
+```text
+实现 commit：2672c5c
+worker.init：必填mode=create|open；sessiond create/activate分别透传
+worker.ready：移除epoch；epoch只由sessiond生成和拥有
+interrupt：browser commandId贯穿sessiond RPC、worker IPC与correlated result；同ID同type去重，同ID异type非重试拒绝；wire ID/commandId/type严格匹配
+streaming：Runtime Core message_update仍为累计partial；Protocol为delta；有状态转换明确归R1 Mapper
+bash：bash_update.output冻结为delta；sessiond SnapshotProjection为唯一累加器
+本地验证：architecture/build/typecheck/root tests/startup E2E/boundaries PASS；Protocol 110/110、sessiond 40/40、A1 92/92、Contract75、Core3
+兼容：Protocol version仍为1；M2尚未发布，无旧消费者兼容alias
+残余：Host WS需在H1将RPC correlated interrupt result翻译为WS interrupt_result；result cache eviction专项可在R1/H1压力测试补强
+独立验证 verdict：PENDING（GPT）
+```
+
+## 10. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -193,7 +208,7 @@ lock/build-order修正：fd4612b
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 10. sessiond 特别保护
+## 11. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -226,7 +241,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 11. 旧结果可用性摘要
+## 12. 旧结果可用性摘要
 
 ### 可复用
 
@@ -250,7 +265,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 12. 完成条件
+## 13. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -261,7 +276,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 13. 命名决策（历史证据说明）
+## 14. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 
