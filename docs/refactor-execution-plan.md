@@ -276,7 +276,7 @@ B0
 | `R1` | Agent Worker Controller + Mapper | `IN_PROGRESS` | `R0` | 审计完成；隔离worktree实现Worker IPC、状态Mapper、create/open/prompt/abort/snapshot/shutdown |
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
 | `A1` | Pi SDK Agent Adapter | `DONE` | `B1` | `526b19e` + `fd4612b`；GPT独立验证PASS；SDK0.84真实create/open smoke、92/92、显式prompt+abort capability |
-| `H1` | Runtime WS Gateway | `IN_REVIEW` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390` + `976c4c6` + `a6eb571`；有界入站/interrupt并发且limit非有限值回退安全默认；Host172；等待最终复验 |
+| `H1` | Runtime WS Gateway | `DONE` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390` + `976c4c6` + `a6eb571`；有界入站/interrupt并发，非法limit回退安全默认；Host172；GPT最终PASS |
 | `C1` | RuntimeSocket + SessionStore | `IN_PROGRESS` | `B2`, `R0`, `H1` | H1协议已集成；隔离worktree实现socket状态机、共享projection、resume/at-most-once与最小UI |
 | `X1` | Minimal Runtime E2E | `BLOCKED` | `R2`, `A1`, `H1`, `C1`, `B4` | prompt、stream、abort、Host restart/resume、去重、隔离 |
 
