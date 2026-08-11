@@ -241,7 +241,7 @@ Daemon：默认ProductionWorkerProcessFactory；显式workerFactory override优�
 修复 commits：9b59801 + 0a7d21e + GLM c593070；测试自足修复cb2d2c7
 修复语义：auto-run同步ppid death watchdog、early stdin EOF latch、transport terminal-state guard；broken stdio有界exit；StderrRing按完整line跨chunk redaction并限制8KiB pending raw；snapshot/exit diagnostic无secret fragment
 修复验证：从rm -rf dist/dist-test开始Agent Worker105/105；sessiond76/76；root713/713；typecheck/architecture/startup PASS；无遗留Worker PID。原GPT验证器复验中
-独立验证 verdict：IN_REVIEW
+独立验证 verdict：PASS（GPT复验；parent exit/crash/SIGKILL × factory/direct × delay0/50/150及death-before-startup共36/36无orphan/zombie；daemon SIGKILL Worker死亡；redaction matrix308/308及真实WorkerExit.error无泄漏；clean-dist Agent Worker105/105、sessiond76/76、root713/713。）
 ```
 
 ## 13. C1 — Client RuntimeSocket + SessionStore 记录
@@ -262,7 +262,20 @@ UI：RuntimeProvider、连接状态、真实create/open入口、Composer send/ab
 独立验证 verdict：PASS（GPT复验；29/29对抗探针通过。首轮6项blocker全部关闭：attach failure可恢复、create跨reconnect原promise settle、one-shot无泄漏、prompt stop明确reject、stop发送/ack诚实且有界、并发create/stop去重；新增double-settle/deadlock/timer-Map leak/wrong-id stop ack探针均PASS。C1可标记DONE。）
 ```
 
-## 14. 后续迁移时必须记录的校验
+## 14. X1 — Minimal Runtime E2E 记录
+
+```text
+实现 commits：34d2a3a + f711ab2
+真实链路：Browser-like WS → Hono Host → sessiond RPC → R2 OS child → R1 worker-main/controller/mapper → test-only deterministic RuntimeFactory
+场景：create→attach→prompt cumulative stream/delta projection；abort independent interrupt；Host restart/resume；epoch change；command/interrupt dedup与type conflict；双session隔离；cold attach；detach/stop/daemon orphan cleanup
+压力：PIX_E2E_ROUNDS=5，5/5 PASS；最终projection严格Hello world；abort约1–2ms；每轮Worker PID清理
+Capability：production full仅["agent"]，readonly=[]；sessiond up时health/bootstrap/handshake为agent，down时[]；不声明files/sessions/models
+主线验证：runtime E2E5/5；完整build后startup E2E PASS且capabilities=["agent"]；root713/713、Worker105、sessiond76、Client149、Host172、typecheck/architecture/boundaries PASS
+残余：真实provider网络prompt不由确定性X1覆盖（A1/R1已有无网络SDK create与correlated failure smoke）；X1独立GPT验证进行中
+独立验证 verdict：IN_REVIEW
+```
+
+## 15. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -280,7 +293,7 @@ UI：RuntimeProvider、连接状态、真实create/open入口、Composer send/ab
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 15. sessiond 特别保护
+## 16. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -313,7 +326,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 16. 旧结果可用性摘要
+## 17. 旧结果可用性摘要
 
 ### 可复用
 
@@ -337,7 +350,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 17. 完成条件
+## 18. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -348,7 +361,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 18. 命名决策（历史证据说明）
+## 19. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 
