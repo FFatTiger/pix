@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { RuntimeProvider, useRuntimeStore, useRuntime } from "./runtime-provider";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { HttpClientProvider } from "@/app/http-context";
@@ -74,21 +74,33 @@ function ack(caps: string[] = ["agent"]) {
 
 async function driveReady(): Promise<FakeWebSocket> {
   const store = capturedStore!;
-  store.connect();
-  const ws = SOCKETS[SOCKETS.length - 1]!;
-  ws.serverOpen();
-  ws.serverSend(ack());
-  await flush();
-  return ws;
+  let ws: FakeWebSocket | undefined;
+  await act(async () => {
+    store.connect();
+    ws = SOCKETS[SOCKETS.length - 1]!;
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+  });
+  return ws!;
 }
 
 async function driveAttach(ws: FakeWebSocket, sessionId = "s1"): Promise<void> {
   const store = capturedStore!;
-  void store.openSession(sessionId);
-  await flush();
-  const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
-  ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId }) });
-  await flush();
+  await act(async () => {
+    void store.openSession(sessionId);
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId }) });
+    await flush();
+  });
+}
+
+async function serverSend(ws: FakeWebSocket, message: unknown): Promise<void> {
+  await act(async () => {
+    ws.serverSend(message);
+    await flush();
+  });
 }
 
 describe("RuntimeProvider / useSyncExternalStore", () => {
@@ -126,8 +138,7 @@ describe("Composer — capability honesty + send/abort", () => {
     const cmd = lastFrame<{ type: string; payload: { command: { type: string; message: string } } }>(ws, "command")!;
     expect(cmd.payload.command.message).toBe("hello world");
     // start streaming → Abort control appears
-    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
-    await flush();
+    await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
     const abortBtn = screen.getByLabelText("Abort the running response");
     fireEvent.click(abortBtn);
     await flush();
@@ -145,9 +156,8 @@ describe("TranscriptList — runtime messages", () => {
     const ws = await driveReady();
     await driveAttach(ws);
     // full stream lifecycle commits a user message
-    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "user", content: "hi there" }, eventId: 1, epoch: "e1" } });
-    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "user", content: "hi there" }, eventId: 2, epoch: "e1" } });
-    await flush();
+    await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "user", content: "hi there" }, eventId: 1, epoch: "e1" } });
+    await serverSend(ws, { type: "event", payload: { type: "message_end", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "user", content: "hi there" }, eventId: 2, epoch: "e1" } });
     expect(screen.getByText("hi there")).toBeTruthy();
   });
 
@@ -155,8 +165,7 @@ describe("TranscriptList — runtime messages", () => {
     mount(<TranscriptList sessionId="s1" />);
     const ws = await driveReady();
     await driveAttach(ws);
-    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", content: [{ type: "text", text: "part" }], model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
-    await flush();
+    await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", content: [{ type: "text", text: "part" }], model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
     expect(screen.getByText("part")).toBeTruthy();
   });
 });
