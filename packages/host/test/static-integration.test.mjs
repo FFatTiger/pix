@@ -28,10 +28,10 @@ before(async () => {
       '<body><div id="root"></div>' +
       '<script type="module" src="/assets/index-deadbeef.js"></script></body></html>',
   );
-  write("assets/index-deadbeef.js", 'console.log("pi-web client boot");');
+  write("assets/index-deadbeef.js", 'console.log("pix client boot");');
   write("assets/index-deadbeef.css", "body{font-family:sans-serif}");
   write("sw.js", "self.addEventListener('install',()=>{});");
-  write("manifest.webmanifest", '{"name":"pi-web","start_url":"/"}');
+  write("manifest.webmanifest", '{"name":"pix","start_url":"/"}');
   write("offline.html", "<html><body>offline</body></html>");
   write("icons/icon-192.png", "PNGDATA");
 
@@ -67,7 +67,7 @@ test("hashed Vite asset is served with immutable cache", async () => {
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type"), "text/javascript; charset=utf-8");
   assert.equal(res.headers.get("cache-control"), "public, max-age=31536000, immutable");
-  assert.match(await res.text(), /pi-web client boot/);
+  assert.match(await res.text(), /pix client boot/);
 });
 
 test("service worker / manifest / offline are served with no-cache", async () => {
@@ -84,7 +84,7 @@ test("/v1/health is available over HTTP", async () => {
   assert.equal(res.headers.get("cache-control"), "no-store");
   const body = await res.json();
   assert.equal(body.ok, true);
-  assert.equal(body.service, "pi-web-host");
+  assert.equal(body.service, "pix-host");
   assert.deepEqual(body.capabilities, []);
 });
 
@@ -102,7 +102,7 @@ test("/v1/bootstrap is available over HTTP and aggregates the boot surface", asy
   assert.equal(res.headers.get("cache-control"), "no-store");
   const body = await res.json();
   assert.equal(body.ok, true);
-  assert.equal(body.service, "pi-web-host");
+  assert.equal(body.service, "pix-host");
   assert.equal(body.protocolVersion, 1);
   assert.equal(body.sessiond, "unknown");
   assert.deepEqual(body.capabilities, []);

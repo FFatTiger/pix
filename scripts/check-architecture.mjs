@@ -15,6 +15,7 @@
 //   7. protocol has no runtime-core / Pi SDK / Hono / React import or dependency
 //   8. host / sessiond / agent-worker have no AgentSession / SessionManager usage
 //   9. production bin targets exist for every manifest that declares a bin
+//  10. no legacy product name in production source, manifests, README or docs
 //
 // Only Node builtins; runs with zero installed dependencies.
 
@@ -25,12 +26,23 @@ import { fileURLToPath } from "node:url";
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mjs", ".js", ".jsx", ".cjs", ".mts", ".cts"]);
+const TEXT_EXTENSIONS = new Set([
+  ...SOURCE_EXTENSIONS,
+  ".json",
+  ".html",
+  ".htm",
+  ".webmanifest",
+  ".md",
+  ".markdown",
+  ".css",
+  ".txt",
+]);
 const EXCLUDED_DIRS = new Set(["node_modules", ".git", "dist", "dist-test", "coverage"]);
 
 const NEXT_DEPS = new Set(["next", "eslint-config-next"]);
 const PI_SDK_PREFIX = "@earendil-works/pi-";
-const PROTOCOL_SPECIFIERS = ["@fffattiger/pi-web-protocol"];
-const RUNTIME_CORE_SPECIFIERS = ["@fffattiger/pi-web-runtime-core"];
+const PROTOCOL_SPECIFIERS = ["@fffattiger/pix-protocol"];
+const RUNTIME_CORE_SPECIFIERS = ["@fffattiger/pix-runtime-core"];
 
 /** True when a specifier targets a sibling package by name or by repo path. */
 function matchesSiblingPackage(specifier, packageNames, packageDirName) {
@@ -367,6 +379,58 @@ export function checkBinTargets(manifests) {
 }
 
 // ---------------------------------------------------------------------------
+// No legacy product name
+// ---------------------------------------------------------------------------
+
+// The legacy brand tokens this gate forbids, assembled from parts so this
+// file's own source is not flagged by the contiguous-string scan below. The
+// space form covers every casing of the spaced brand name.
+const LEGACY_PRODUCT_TOKENS = ["pi" + "-web", "pi" + "_web", "pi" + " web"];
+
+/**
+ * Files that are allowed to keep the old brand as historical evidence or are
+ * generated artifacts: the migration ledger (old source paths / commits), the
+ * regenerated dependency lockfile, and this gate's own adversarial self-test.
+ */
+function legacyProductNameSkipSet(rootDir) {
+  return new Set(
+    [
+      join(rootDir, "docs", "migration-ledger.md"),
+      join(rootDir, "package-lock.json"),
+      join(rootDir, "scripts", "check-architecture.test.mjs"),
+    ].map((p) => realpathIfExists(p) ?? p),
+  );
+}
+
+function realpathIfExists(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+export function checkNoLegacyProductName({ files, rootDir = ROOT_DIR }) {
+  const skip = legacyProductNameSkipSet(rootDir);
+  const offenders = [];
+  for (const file of files) {
+    if (!TEXT_EXTENSIONS.has(extname(file))) continue;
+    if (skip.has(file) || skip.has(realpathIfExists(file) ?? file)) continue;
+    const lowered = readFileSync(file, "utf8").toLowerCase();
+    for (const token of LEGACY_PRODUCT_TOKENS) {
+      if (lowered.includes(token)) {
+        const rel = file.startsWith(rootDir) ? file.slice(rootDir.length).replace(/^[\\/]+/, "") : file;
+        offenders.push(`${rel}: legacy product name "${token.trim()}"`);
+        break;
+      }
+    }
+  }
+  return offenders.length === 0
+    ? { ok: true, details: "no legacy product name in source, manifests, README or docs" }
+    : { ok: false, details: offenders.join("; ") };
+}
+
+// ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
@@ -394,6 +458,7 @@ export function runChecks(rootDir = ROOT_DIR) {
       result: checkNoAgentSession(sourceFiles),
     },
     { name: "production bin targets exist", result: checkBinTargets(manifests) },
+    { name: "no legacy product name", result: checkNoLegacyProductName({ files, rootDir }) },
   ];
   const failed = checks.filter((c) => !c.result.ok);
   return { ok: failed.length === 0, checks, failed };

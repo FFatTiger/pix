@@ -4,7 +4,7 @@ import type {
   RuntimeState,
   StreamingAgentMessage,
   StreamingMessageDelta,
-} from "@fffattiger/pi-web-protocol";
+} from "@fffattiger/pix-protocol";
 
 const clone = <T>(value: T): T => structuredClone(value);
 

@@ -6,9 +6,9 @@ import type {
   RuntimeCommandResult,
   SessiondToWorkerMessage,
   WorkerToSessiondMessage,
-} from "@fffattiger/pi-web-protocol";
-import type { ProtocolError } from "@fffattiger/pi-web-protocol";
-import type { SessionLocation } from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-protocol";
+import type { ProtocolError } from "@fffattiger/pix-protocol";
+import type { SessionLocation } from "@fffattiger/pix-runtime-core";
 
 export interface WorkerStartInput {
   activationId: string;

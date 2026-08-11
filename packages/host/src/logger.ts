@@ -12,7 +12,7 @@ export const consoleLogger: HostLogger = {
     console.error(fields ? `${message} ${formatFields(fields)}` : message);
   },
   debug(message, fields) {
-    if (process.env.PI_WEB_DEBUG) {
+    if (process.env.PIX_DEBUG) {
       console.debug(fields ? `${message} ${formatFields(fields)}` : message);
     }
   },

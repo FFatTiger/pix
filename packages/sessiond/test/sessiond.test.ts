@@ -3,8 +3,8 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { RuntimeSnapshot, SessiondRpcRequest } from "@fffattiger/pi-web-protocol";
-import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pi-web-runtime-core";
+import type { RuntimeSnapshot, SessiondRpcRequest } from "@fffattiger/pix-protocol";
+import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondApplication } from "../src/application.js";
 import { EventJournal } from "../src/journal.js";
 import { acquireInstanceLock, loadOrCreateLocalSecret, sessiondPaths } from "../src/local.js";

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pi-web-runtime-core";
+import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import type { ActivationContextProvider } from "../service.js";
 
 /**

@@ -5,7 +5,7 @@ import type {
   RuntimeSnapshot,
   SessiondToWorkerMessage,
   WorkerToSessiondMessage,
-} from "@fffattiger/pi-web-protocol";
+} from "@fffattiger/pix-protocol";
 import type { WorkerConnection, WorkerExit, WorkerProcessFactory, WorkerStartInput } from "../worker.js";
 
 export interface FakeWorkerOptions {

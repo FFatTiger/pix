@@ -260,7 +260,7 @@ test("createNodeServer rejects exposure/bind mismatches", async () => {
 });
 
 test("client dist fixture is optional; API-only host still works", async () => {
-  const distDir = mkdtempSync(join(tmpdir(), "pi-web-host-api-only-"));
+  const distDir = mkdtempSync(join(tmpdir(), "pix-host-api-only-"));
   const host = createHostApp({
     logger: {},
     clientDist: distDir,

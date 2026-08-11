@@ -6,7 +6,7 @@ import {
   type HostCapability,
   type HostInfo,
   type HostMode,
-} from "@fffattiger/pi-web-protocol";
+} from "@fffattiger/pix-protocol";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 

@@ -183,7 +183,7 @@ test("public PWA allowlist is exact-match with icons prefix", () => {
 });
 
 test("resolveClientFile contains paths within root", () => {
-  const root = join(tmpdir(), "pi-web-host-root");
+  const root = join(tmpdir(), "pix-host-root");
   assert.equal(resolveClientFile(root, "/index.html"), join(root, "index.html"));
   assert.equal(resolveClientFile(root, "/a/b/c.js"), join(root, "a/b/c.js"));
   assert.equal(resolveClientFile(root, "/../etc/passwd"), null);

@@ -119,7 +119,7 @@ test("significant whitespace passwords are not trimmed or reinterpreted", async 
     body: JSON.stringify({ password: " secret " }),
   });
   assert.equal(exact.status, 200);
-  assert.match(exact.headers.get("set-cookie") ?? "", /pi_web_session=/);
+  assert.match(exact.headers.get("set-cookie") ?? "", /pix_session=/);
 });
 
 test("public PWA assets are exact-match allowlisted", async () => {
@@ -189,7 +189,7 @@ test("login flow sets an httpOnly SameSite=Lax cookie and grants access", async 
   });
   assert.equal(login.status, 200);
   const setCookie = login.headers.get("set-cookie") ?? "";
-  assert.match(setCookie, /pi_web_session=[^;]+/);
+  assert.match(setCookie, /pix_session=[^;]+/);
   assert.match(setCookie, /HttpOnly/i);
   assert.match(setCookie, /SameSite=Lax/i);
   const cookie = setCookie.split(";")[0];
@@ -233,7 +233,7 @@ test("logout clears the session cookie", async () => {
     headers: { host: "localhost", cookie },
   });
   assert.equal(logout.status, 200);
-  assert.match(logout.headers.get("set-cookie") ?? "", /pi_web_session=;/);
+  assert.match(logout.headers.get("set-cookie") ?? "", /pix_session=;/);
   assert.match(logout.headers.get("set-cookie") ?? "", /Max-Age=0/);
 
   const replay = await app.request("http://localhost/v1/capabilities", {

@@ -1,11 +1,11 @@
 /**
- * Pi Web client service worker (Vite / host static assets).
+ * pix client service worker (Vite / host static assets).
  * Rules:
  * - /v1/* is never cached (live protocol traffic)
  * - Vite /assets/* may be cache-first
  * - Navigation is network-first with offline fallback
  */
-const CACHE_PREFIX = "pi-web-client";
+const CACHE_PREFIX = "pix-client";
 const CACHE_VERSION =
   new URL(self.location.href).searchParams.get("v") || "dev";
 const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_VERSION}`;

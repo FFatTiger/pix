@@ -1,7 +1,7 @@
 import { useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { AgentMessage, SessionEntry } from "@fffattiger/pi-web-protocol";
+import type { AgentMessage, SessionEntry } from "@fffattiger/pix-protocol";
 import { buildTranscriptRows, estimateRowHeight, getTranscriptRowKey, type TranscriptMessageInput, type TranscriptRow } from "./row-model";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { createQueryOptions } from "@/api/query-keys";

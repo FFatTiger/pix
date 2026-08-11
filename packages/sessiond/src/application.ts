@@ -2,12 +2,12 @@ import type {
   SessiondMethodParams,
   SessiondMethodResult,
   SessiondRpcMethod,
-} from "@fffattiger/pi-web-protocol";
+} from "@fffattiger/pix-protocol";
 import {
   PROTOCOL_VERSION,
   SessionContextSchema,
   type SessiondRuntimeAttachParams,
-} from "@fffattiger/pi-web-protocol";
+} from "@fffattiger/pix-protocol";
 import { SessiondError } from "./errors.js";
 import type { SessiondRpcContext, SessiondRpcHandler } from "./rpc.js";
 import { SessiondService } from "./service.js";

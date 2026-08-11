@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { SessiondApplication } from "../application.js";
 import type { ActivationContextProvider, SessiondDependencies, SessiondOptions, SessionMutationPort } from "../service.js";
 import { SessiondService } from "../service.js";
-import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pi-web-runtime-core";
+import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondRpcServer } from "../rpc.js";
 import {
   acquireInstanceLock,
@@ -25,7 +25,7 @@ import { resolveRuntimeDir } from "./locator.js";
 
 /** Optional overrides for the daemon bootstrap. All default to M1 stubs. */
 export interface DaemonOptions {
-  /** Runtime directory (defaults to `PI_WEB_SESSIOND_DIR` then `~/.pi/agent/sessiond`). */
+  /** Runtime directory (defaults to `PIX_SESSIOND_DIR` then `~/.pi/pix/sessiond`). */
   directory?: string;
   /** Worker factory. Defaults to {@link UnavailableWorkerFactory} (M1: no worker). */
   workerFactory?: WorkerProcessFactory;

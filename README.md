@@ -1,8 +1,8 @@
 # pix
 
-独立的新一代 pi-web 产品仓库。
+独立的新一代 pix 产品仓库。
 
-目标架构：Vite Client + Hono Host + 独立 `pi-sessiond` + 每会话 Worker + Runtime Protocol + Pi 防腐层。旧 Next.js 产品树只作为迁移来源，不进入本仓库的产品路径。
+目标架构：Vite Client + Hono Host + 独立 `pix-sessiond` + 每会话 Worker + Runtime Protocol + Pi 防腐层。旧 Next.js 产品树只作为迁移来源，不进入本仓库的产品路径。
 
 ## 当前里程碑
 

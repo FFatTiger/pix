@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RuntimeCommandResult } from "@fffattiger/pi-web-protocol";
-import type { SessionLocatorPort } from "@fffattiger/pi-web-runtime-core";
+import type { RuntimeCommandResult } from "@fffattiger/pix-protocol";
+import type { SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondService } from "../src/service.js";
 import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
 

@@ -1,4 +1,4 @@
-import type { ProtocolError, RuntimeCommandResult, RuntimeInterruptResult } from "@fffattiger/pi-web-protocol";
+import type { ProtocolError, RuntimeCommandResult, RuntimeInterruptResult } from "@fffattiger/pix-protocol";
 
 export class SessiondError extends Error {
   constructor(

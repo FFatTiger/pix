@@ -11,7 +11,7 @@ import {
   type SessiondRpcResponse,
   type SessiondMethodParams,
   type SessiondMethodResult,
-} from "@fffattiger/pi-web-protocol";
+} from "@fffattiger/pix-protocol";
 import { SessiondError } from "./errors.js";
 import { SerialSocketWriter, type SerialSocketWriterOptions } from "./internal/serial-writer.js";
 import type { PreparedAttachment } from "./service.js";
@@ -125,7 +125,7 @@ export class SessiondRpcServer {
     return this.write(writer, { id, ok: false, method, error } as SessiondRpcResponse);
   }
 
-  private writePush(writer: SerialSocketWriter, push: import("@fffattiger/pi-web-protocol").SessiondPush): Promise<void> {
+  private writePush(writer: SerialSocketWriter, push: import("@fffattiger/pix-protocol").SessiondPush): Promise<void> {
     const parsed = SessiondPushSchema.parse(push);
     return writer.enqueue(`${JSON.stringify(parsed)}\n`);
   }
@@ -163,7 +163,7 @@ export interface SessiondRpcSubscription<T> { response: T; close(): void }
 export class SessiondRpcClient {
   constructor(private readonly options: SessiondRpcClientOptions) {}
 
-  async attach(params: SessiondMethodParams["runtime.attach"], onPush: (push: import("@fffattiger/pi-web-protocol").SessiondPush) => void | Promise<void>): Promise<SessiondRpcSubscription<SessiondMethodResult["runtime.attach"]>> {
+  async attach(params: SessiondMethodParams["runtime.attach"], onPush: (push: import("@fffattiger/pix-protocol").SessiondPush) => void | Promise<void>): Promise<SessiondRpcSubscription<SessiondMethodResult["runtime.attach"]>> {
     const id = crypto.randomUUID();
     const request = SessiondRpcRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, id, method: "runtime.attach", params });
     return new Promise((resolve, reject) => {
@@ -172,7 +172,7 @@ export class SessiondRpcClient {
       let authenticated = false;
       let attached = false;
       let deliveryReady = false;
-      const pendingPushes: import("@fffattiger/pi-web-protocol").SessiondPush[] = [];
+      const pendingPushes: import("@fffattiger/pix-protocol").SessiondPush[] = [];
       let settled = false;
       const timer = setTimeout(() => { socket.destroy(); if (!settled) reject(new SessiondError("timeout", "sessiond attach timed out", true)); }, this.options.timeoutMs ?? 10_000);
       const fail = (error: Error) => { clearTimeout(timer); socket.destroy(); if (!settled) { settled = true; reject(error); } };

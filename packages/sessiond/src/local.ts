@@ -54,7 +54,7 @@ export async function instanceAlive(paths: SessiondPaths): Promise<boolean> {
 export function sessiondPaths(directory: string): SessiondPaths {
   return {
     directory,
-    endpoint: process.platform === "win32" ? `\\\\.\\pipe\\pi-web-sessiond-${Buffer.from(directory).toString("hex").slice(0, 24)}` : join(directory, "sessiond.sock"),
+    endpoint: process.platform === "win32" ? `\\\\.\\pipe\\pix-sessiond-${Buffer.from(directory).toString("hex").slice(0, 24)}` : join(directory, "sessiond.sock"),
     lockFile: join(directory, "sessiond.lock"),
     secretFile: join(directory, "sessiond.secret"),
   };

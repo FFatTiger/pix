@@ -28,7 +28,7 @@ export function AppShell({ search }: AppShellProps) {
             ☰
           </button>
           <Link to="/" className="brand" search={{}}>
-            Pi Web
+            pix
           </Link>
           <span className="topbar-badge" title={`Host mode: ${mode}`}>
             {mode}

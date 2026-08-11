@@ -1,5 +1,5 @@
 /**
- * pi-web Hono Host Foundation (H0A) — protocol-independent.
+ * pix Hono Host Foundation (H0A) — protocol-independent.
  *
  * Owns gate, request security (Host/Origin/DNS-rebinding), static client
  * hosting, health/capabilities and the WebSocket upgrade seam. Runtime

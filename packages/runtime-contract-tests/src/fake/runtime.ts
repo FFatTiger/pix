@@ -35,7 +35,7 @@ import type {
   ToolInfo,
   TokenUsage,
   UserMessage,
-} from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-runtime-core";
 import {
   createCapabilitySet,
   emptyQueuedMessages,
@@ -43,7 +43,7 @@ import {
   requiredCapabilityForCommand,
   requiredCapabilityForInterrupt,
   unsupportedCapabilityError,
-} from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-runtime-core";
 import type { ReferenceSessionStore, StoredSession } from "./store.js";
 
 export const KNOWN_TOOLS = ["read", "write", "failing_tool"] as const;

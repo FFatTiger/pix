@@ -4,7 +4,7 @@ import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PROTOCOL_VERSION } from "@fffattiger/pi-web-protocol";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import { SessiondError } from "../src/errors.js";
 import { instanceAlive, readInstanceLock, sessiondPaths } from "../src/control.js";
 import { SessiondRpcClient } from "../src/rpc.js";

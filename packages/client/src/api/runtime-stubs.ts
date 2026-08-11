@@ -1,4 +1,4 @@
-import type { RuntimeAttachParams } from "@fffattiger/pi-web-protocol";
+import type { RuntimeAttachParams } from "@fffattiger/pix-protocol";
 
 /**
  * M2 placeholder. This is NOT a product implementation and is intentionally NOT

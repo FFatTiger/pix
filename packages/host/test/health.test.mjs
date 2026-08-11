@@ -24,7 +24,7 @@ test("health reports sessiond up with full capabilities", async () => {
   assert.equal(res.headers.get("cache-control"), "no-store");
   const body = await res.json();
   assert.equal(body.ok, true);
-  assert.equal(body.service, "pi-web-host");
+  assert.equal(body.service, "pix-host");
   assert.equal(body.sessiond, "up");
   assert.deepEqual(body.capabilities, ["agent", "files", "files.write", "git", "worktree"]);
 });

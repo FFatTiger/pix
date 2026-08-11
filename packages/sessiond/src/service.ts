@@ -18,10 +18,10 @@ import type {
   SnapshotDeliveryReason,
   WorkerStatus,
   WorkerToSessiondMessage,
-} from "@fffattiger/pi-web-protocol";
-import { PROTOCOL_VERSION, RuntimeCloseReasonSchema } from "@fffattiger/pi-web-protocol";
-import type { RuntimeCloseReason } from "@fffattiger/pi-web-protocol";
-import type { SessionCatalogPort, SessionLocation, SessionLocatorPort } from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-protocol";
+import { PROTOCOL_VERSION, RuntimeCloseReasonSchema } from "@fffattiger/pix-protocol";
+import type { RuntimeCloseReason } from "@fffattiger/pix-protocol";
+import type { SessionCatalogPort, SessionLocation, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondError, duplicateResultUnavailable, rejectedCommand, unavailableCommand, unavailableInterrupt } from "./errors.js";
 import { EventJournal, type EventJournalOptions } from "./journal.js";
 import { AsyncMutex } from "./internal/mutex.js";
@@ -495,12 +495,12 @@ export class SessiondService {
     }
   }
 
-  private handleWorkerExit(record: RecordState, activationId: string, exit: { error?: import("@fffattiger/pi-web-protocol").ProtocolError }): void {
+  private handleWorkerExit(record: RecordState, activationId: string, exit: { error?: import("@fffattiger/pix-protocol").ProtocolError }): void {
     if (record.activationId !== activationId || this.records.get(record.sessionId) !== record || record.expectedExitReason !== undefined) return;
     this.crash(record, exit.error);
   }
 
-  private crash(record: RecordState, error?: import("@fffattiger/pi-web-protocol").ProtocolError): void {
+  private crash(record: RecordState, error?: import("@fffattiger/pix-protocol").ProtocolError): void {
     if (record.status === "crashed") return;
     const eventData: RuntimeEventData = { type: "worker_crashed", sessionId: record.sessionId, ...(error === undefined ? {} : { error }) };
     this.acceptEvent(record, eventData);

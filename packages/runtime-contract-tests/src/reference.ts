@@ -2,7 +2,7 @@
  * Reference harness — wires the in-memory reference fake into the contract
  * suite and provides all optional ports so the full suite runs for real.
  */
-import type { AgentRuntimeFactory } from "@fffattiger/pi-web-runtime-core";
+import type { AgentRuntimeFactory } from "@fffattiger/pix-runtime-core";
 import type { AdapterContractHarness, AdapterPortBundle, HarnessFactoryOptions } from "./harness.js";
 import { ReferenceRuntimeFactory } from "./fake/factory.js";
 import {

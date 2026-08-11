@@ -1,10 +1,10 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const DEFAULT_GATE_COOKIE_NAME = "pi_web_session";
+export const DEFAULT_GATE_COOKIE_NAME = "pix_session";
 export const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 const TOKEN_VERSION = "v1";
-const SESSION_KEY_CONTEXT = "pi-web-session-v1";
+const SESSION_KEY_CONTEXT = "pix-session-v1";
 
 function safeEqual(left: Buffer, right: Buffer): boolean {
   if (left.length !== right.length) return false;

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { HttpClientProvider } from "@/app/http-context";
 import { ErrorBoundary } from "@/app/ErrorBoundary";
-import type { HostInfo } from "@fffattiger/pi-web-protocol";
+import type { HostInfo } from "@fffattiger/pix-protocol";
 
 export interface AppProvidersProps {
   children: ReactNode;

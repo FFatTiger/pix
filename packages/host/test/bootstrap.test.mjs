@@ -22,7 +22,7 @@ test("bootstrap is served with no-store and aggregates the boot surface", async 
   assert.equal(res.headers.get("cache-control"), "no-store");
   const body = await res.json();
   assert.equal(body.ok, true);
-  assert.equal(body.service, "pi-web-host");
+  assert.equal(body.service, "pix-host");
   assert.equal(body.protocolVersion, HOST_PROTOCOL_VERSION);
   assert.equal(body.protocolVersion, 1);
   assert.equal(body.sessiond, "unknown");

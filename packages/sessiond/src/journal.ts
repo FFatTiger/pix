@@ -1,7 +1,7 @@
 import type {
   RuntimeEvent,
   RuntimeEventData,
-} from "@fffattiger/pi-web-protocol";
+} from "@fffattiger/pix-protocol";
 
 export interface EventJournalOptions {
   maxEvents?: number;

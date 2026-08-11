@@ -1,5 +1,5 @@
 /**
- * Reusable adapter contract suite for the pi-web agent runtime ports.
+ * Reusable adapter contract suite for the pix agent runtime ports.
  *
  * Register it with any conforming harness (`AdapterContractHarness`) — the
  * Pi SDK adapter, a future Pi RPC adapter, and the reference fake must all
@@ -18,7 +18,7 @@ import type {
   RuntimeInterruptResult,
   RuntimeEvent,
   RuntimeSnapshot,
-} from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-runtime-core";
 import {
   isRuntimeError,
   RUNTIME_CAPABILITIES,
@@ -26,7 +26,7 @@ import {
   RUNTIME_COMMAND_TYPES,
   RUNTIME_INTERRUPT_CAPABILITIES,
   RUNTIME_INTERRUPT_TYPES,
-} from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-runtime-core";
 import type { AdapterContractHarness, HarnessFactoryOptions } from "./harness.js";
 
 /* ------------------------------------------------------------------ */
@@ -1540,7 +1540,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const skills = await ports.resourceCatalog.listSkills();
         assert.ok(skills.some((skill) => skill.name === "frontend"));
         const plugins = await ports.resourceCatalog.listPlugins();
-        assert.ok(plugins.some((plugin) => plugin.name === "pi-web-side-chat"));
+        assert.ok(plugins.some((plugin) => plugin.name === "pix-side-chat"));
         const commands = await ports.resourceCatalog.listCommands();
         assert.ok(commands.some((command) => command.name === "compact"));
 

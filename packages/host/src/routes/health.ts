@@ -67,7 +67,7 @@ export function registerHealthRoutes(app: Hono<HostEnv>, deps: HostDeps): void {
   app.get("/v1/health", async (c) => {
     c.header("Cache-Control", "no-store");
     const { sessiond, capabilities } = await resolveCapabilities(deps);
-    return c.json({ ok: true, service: "pi-web-host", sessiond, capabilities });
+    return c.json({ ok: true, service: "pix-host", sessiond, capabilities });
   });
 
   app.get("/v1/capabilities", async (c) => {
@@ -124,7 +124,7 @@ export function registerBootstrapRoutes(
     const { sessiond, capabilities } = await resolveCapabilities(deps);
     return c.json({
       ok: true,
-      service: "pi-web-host",
+      service: "pix-host",
       protocolVersion: HOST_PROTOCOL_VERSION,
       sessiond,
       capabilities,

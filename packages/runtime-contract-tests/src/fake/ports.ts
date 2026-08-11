@@ -28,8 +28,8 @@ import type {
   SlashCommandInfo,
   TrustGateResult,
   TrustLevel,
-} from "@fffattiger/pi-web-runtime-core";
-import { makeRuntimeError } from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-runtime-core";
+import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
 import type { ReferenceSessionStore } from "./store.js";
 
 /* ------------------------------------------------------------------ */
@@ -214,7 +214,7 @@ export class ReferenceResourceCatalog implements ResourceCatalogPort {
     { name: "rust", description: "Rust project guidance", enabled: false },
   ];
   private plugins: PluginInfo[] = [
-    { name: "pi-web-side-chat", version: "0.1.0", enabled: true },
+    { name: "pix-side-chat", version: "0.1.0", enabled: true },
   ];
   private commands: SlashCommandInfo[] = [
     { name: "compact", description: "Compact the conversation", source: "prompt" },

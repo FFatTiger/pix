@@ -55,8 +55,8 @@ describe("formatCwdLabel", () => {
   });
 
   it("shortens deep paths", () => {
-    expect(formatCwdLabel("/Users/proxy/Documents/program/pi-web")).toBe(
-      "…/program/pi-web",
+    expect(formatCwdLabel("/Users/proxy/Documents/program/pix")).toBe(
+      "…/program/pix",
     );
   });
 

@@ -119,7 +119,7 @@ async function writeUploadedFile(
   const authorizedParent = await roots.authorizeExisting(directory, "directory");
   const parent = authorizedParent.canonicalPath;
   if (dirname(target.requestedPath) !== parent) throw new HttpError(403, "PATH_FORBIDDEN", "Upload target parent changed");
-  const temp = join(parent, `.pi-web-upload-${randomUUID()}.tmp`);
+  const temp = join(parent, `.pix-upload-${randomUUID()}.tmp`);
   if (!overwrite) {
     const handle = await open(target.requestedPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "EEXIST") throw new HttpError(409, "FILE_EXISTS", `File already exists: ${file.name}`);

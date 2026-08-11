@@ -1,9 +1,9 @@
 /**
- * @fffattiger/pi-web-runtime-core
+ * @fffattiger/pix-runtime-core
  *
- * Pi-web agent runtime ports, canonical models and structured errors.
+ * pix agent runtime ports, canonical models and structured errors.
  *
- * This package is the anti-corruption boundary between pi-web and Pi
+ * This package is the anti-corruption boundary between pix and Pi
  * backends. It has zero runtime dependencies: no Protocol, Zod, Pi SDK, Pi
  * RPC, React, Hono or Node process management. Backends (Pi SDK adapter,
  * future Pi RPC adapter) implement these ports; the rest of the system only

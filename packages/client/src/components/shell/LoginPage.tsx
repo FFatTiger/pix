@@ -55,7 +55,7 @@ export function LoginPage({ next = "/" }: LoginPageProps) {
   return (
     <div className="login-page">
       <form className="login-card" onSubmit={onSubmit}>
-        <h1>Pi Web Gate</h1>
+        <h1>pix Gate</h1>
         <p className="login-lead">
           Authenticate to the host. LAN deployments require gate credentials.
         </p>

@@ -7,12 +7,12 @@ import type {
   AgentRuntimePort,
   RuntimeOpenInput,
   RuntimeStartInput,
-} from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-runtime-core";
 import {
   createCapabilitySet,
   makeRuntimeError,
   RUNTIME_CAPABILITIES,
-} from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-runtime-core";
 import type { HarnessFactoryOptions } from "../harness.js";
 import { ReferenceModelCatalog } from "./ports.js";
 import { ReferenceAgentRuntime } from "./runtime.js";

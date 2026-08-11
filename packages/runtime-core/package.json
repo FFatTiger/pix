@@ -1,8 +1,8 @@
 {
-  "name": "@fffattiger/pi-web-runtime-core",
+  "name": "@fffattiger/pix-runtime-core",
   "version": "0.1.0",
   "private": true,
-  "description": "Pi-web agent runtime ports, canonical models, and structured errors — zero Protocol/Pi SDK/Pi RPC/UI dependencies",
+  "description": "pix agent runtime ports, canonical models, and structured errors — zero Protocol/Pi SDK/Pi RPC/UI dependencies",
   "type": "module",
   "exports": {
     ".": {

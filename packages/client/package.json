@@ -1,12 +1,12 @@
 {
-  "name": "@fffattiger/pi-web-client",
+  "name": "@fffattiger/pix-client",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Vite React client shell for pi-web (protocol-aware workstation UI)",
+  "description": "Vite React client shell for pix (protocol-aware workstation UI)",
   "scripts": {
     "dev": "vite",
-    "build:protocol": "npm run build --workspace @fffattiger/pi-web-protocol",
+    "build:protocol": "npm run build --workspace @fffattiger/pix-protocol",
     "prebuild": "npm run build:protocol",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
@@ -21,7 +21,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@fffattiger/pi-web-protocol": "0.1.0",
+    "@fffattiger/pix-protocol": "0.1.0",
     "@tanstack/react-query": "^5.90.2",
     "@tanstack/react-router": "^1.132.47",
     "@tanstack/react-virtual": "^3.13.12",

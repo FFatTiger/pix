@@ -50,8 +50,8 @@ export function sanitizeNextPath(value: string | null | undefined): string {
   if (/[\\\r\n\u0000-\u001f\u007f]/.test(value)) return "/";
   // Reject encoded protocol-relative shapes before the URL parser normalizes them.
   if (/%2f%2f/i.test(value)) return "/";
-  const parsed = new URL(value, "http://pi-web.local");
-  if (parsed.origin !== "http://pi-web.local") return "/";
+  const parsed = new URL(value, "http://pix.local");
+  if (parsed.origin !== "http://pix.local") return "/";
   if (parsed.pathname === "/login") return "/";
   if (parsed.pathname.startsWith("//") || parsed.pathname.includes("\\")) return "/";
   return `${parsed.pathname}${parsed.search}${parsed.hash}`;

@@ -15,8 +15,8 @@ const srcRoot = join(packageRoot, "src");
 const FORBIDDEN_IMPORT_PREFIXES = [
   "@earendil-works/",
   "next/",
-  "@fffattiger/pi-web-protocol",
-  "@fffattiger/pi-web-runtime-core",
+  "@fffattiger/pix-protocol",
+  "@fffattiger/pix-runtime-core",
   "react",
   "react-dom",
 ];

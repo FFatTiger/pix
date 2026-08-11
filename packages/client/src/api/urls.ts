@@ -5,7 +5,7 @@ function encodedSegment(value: string): string {
 }
 
 function resource(path: string, query?: Record<string, string | number | boolean | undefined>): string {
-  const url = new URL(`${API_ROOT}/${path.replace(/^\/+/, "")}`, "http://pi-web.local");
+  const url = new URL(`${API_ROOT}/${path.replace(/^\/+/, "")}`, "http://pix.local");
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -84,8 +84,8 @@ export const urls = {
 
 export function assertV1Path(path: string): void {
   if (!path.startsWith("/")) throw new Error(`Only /v1 same-origin paths are allowed, got: ${path}`);
-  const parsed = new URL(path, "http://pi-web.local");
-  if (parsed.origin !== "http://pi-web.local" || (parsed.pathname !== API_ROOT && !parsed.pathname.startsWith(`${API_ROOT}/`))) {
+  const parsed = new URL(path, "http://pix.local");
+  if (parsed.origin !== "http://pix.local" || (parsed.pathname !== API_ROOT && !parsed.pathname.startsWith(`${API_ROOT}/`))) {
     throw new Error(`Only /v1 same-origin paths are allowed, got: ${path}`);
   }
 }

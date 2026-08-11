@@ -14,6 +14,7 @@ import {
   checkNoNextDependency,
   checkNoNextImport,
   checkNoNextProductPath,
+  checkNoLegacyProductName,
   checkPiSdkBoundary,
   checkProtocolBoundary,
   checkRuntimeCoreBoundary,
@@ -183,12 +184,12 @@ test("checkRuntimeCoreBoundary forbids Protocol/Pi SDK/Hono/React", (t) => {
   const dir = makeRoot();
   t.after(() => cleanup(dir));
   const sourceFiles = [
-    write(dir, "packages/runtime-core/src/a.ts", `import { p } from "@fffattiger/pi-web-protocol";`),
+    write(dir, "packages/runtime-core/src/a.ts", `import { p } from "@fffattiger/pix-protocol";`),
     write(dir, "packages/runtime-core/src/b.ts", `import { p } from "hono";`),
     write(dir, "packages/runtime-core/src/c.ts", `import { p } from "react";`),
     write(dir, "packages/runtime-core/src/d.ts", `import { p } from "@earendil-works/pi-ai";`),
     write(dir, "packages/runtime-core/src/ok.ts", `import { Port } from "./port";`),
-    write(dir, "packages/protocol/src/ok.ts", `import { p } from "@fffattiger/pi-web-protocol";`),
+    write(dir, "packages/protocol/src/ok.ts", `import { p } from "@fffattiger/pix-protocol";`),
   ];
   const result = checkRuntimeCoreBoundary({ manifests: [], sourceFiles });
   assert.equal(result.ok, false);
@@ -205,7 +206,7 @@ test("checkProtocolBoundary forbids Runtime Core/Pi SDK/Hono/React", (t) => {
     write(
       dir,
       "packages/protocol/src/a.ts",
-      `import { p } from "@fffattiger/pi-web-runtime-core";`,
+      `import { p } from "@fffattiger/pix-runtime-core";`,
     ),
     write(dir, "packages/protocol/src/b.ts", `import { p } from "hono";`),
     write(dir, "packages/protocol/src/c.ts", `import { p } from "react-dom";`),
@@ -231,7 +232,7 @@ test("boundary checks also flag offending package.json dependencies", (t) => {
     {
       path: join(dir, "packages/protocol/package.json"),
       dir: join(dir, "packages/protocol"),
-      manifest: { devDependencies: { "@fffattiger/pi-web-runtime-core": "0.1.0" } },
+      manifest: { devDependencies: { "@fffattiger/pix-runtime-core": "0.1.0" } },
     },
   ];
   assert.equal(checkRuntimeCoreBoundary({ manifests, sourceFiles: [] }).ok, false);
@@ -274,7 +275,7 @@ test("checkBinTargets verifies declared production bins exist", (t) => {
   mkdirSync(join(good, "bin"), { recursive: true });
   writeFileSync(join(good, "bin", "cli.js"), "#!/usr/bin/env node\n");
   const manifests = [
-    { dir: good, manifest: { bin: { "pi-web": "bin/cli.js" } } },
+    { dir: good, manifest: { bin: { "pix": "bin/cli.js" } } },
     { dir: good, manifest: { bin: "bin/cli.js" } },
     { dir: good, manifest: { bin: { missing: "bin/nope.js" } } },
     { dir: good, manifest: {} },
@@ -283,6 +284,70 @@ test("checkBinTargets verifies declared production bins exist", (t) => {
   assert.equal(result.ok, false);
   assert.match(result.details, /missing/);
   assert.equal(checkBinTargets(manifests.slice(0, 2).concat(manifests[3])).ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// no legacy product name
+// ---------------------------------------------------------------------------
+
+// Forbidden brand tokens are assembled from parts so this self-test file does
+// not itself contain the contiguous strings the production gate scans for.
+const LEGACY_HYPHEN = "pi" + "-web";
+const LEGACY_UNDER = "pi" + "_web";
+const LEGACY_SPACE_TITLE = "Pi" + " Web";
+const LEGACY_SPACE_UPPER = "PI" + " WEB";
+
+test("checkNoLegacyProductName flags every legacy brand casing", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  const files = [
+    write(dir, "packages/host/src/a.ts", `// brand: ${LEGACY_HYPHEN} host`),
+    write(dir, "packages/host/src/b.ts", `const cookie = "${LEGACY_UNDER}_session";`),
+    write(dir, "packages/client/src/c.tsx", `const title = "${LEGACY_SPACE_TITLE}";`),
+    write(dir, "README.md", `# ${LEGACY_SPACE_UPPER} is legacy`),
+    write(dir, "packages/protocol/package.json", `{"name":"@fffattiger/${LEGACY_HYPHEN}-protocol"}`),
+    write(dir, "packages/client/public/manifest.webmanifest", `{"name":"${LEGACY_SPACE_TITLE}"}`),
+  ];
+  const result = checkNoLegacyProductName({ files, rootDir: dir });
+  assert.equal(result.ok, false);
+  for (const f of ["a.ts", "b.ts", "c.tsx", "README.md", "protocol/package.json", "manifest.webmanifest"]) {
+    assert.match(result.details, new RegExp(f));
+  }
+});
+
+test("checkNoLegacyProductName does not flag upstream Pi concepts", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  const files = [
+    write(dir, "packages/pi-sdk-adapter/src/a.ts", `import { x } from "@earendil-works/pi-coding-agent";`),
+    write(dir, "packages/host/src/config.ts", `const dir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi");`),
+    write(dir, "packages/runtime-core/src/ports.ts", `// anti-corruption boundary against Pi SDK`),
+    write(dir, "docs/notes.md", `Sessiond lives under ~/.pi/pix/sessiond. The adapter dir is packages/pi-sdk-adapter.`),
+  ];
+  const result = checkNoLegacyProductName({ files, rootDir: dir });
+  assert.equal(result.ok, true, result.details);
+});
+
+test("checkNoLegacyProductName excludes migration-ledger and the gate self-test", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  const files = [
+    write(dir, "docs/migration-ledger.md", `# legacy source: ${LEGACY_HYPHEN} worktrees`),
+    write(dir, "scripts/check-architecture.test.mjs", `const t = "${LEGACY_HYPHEN}";`),
+    write(dir, "package-lock.json", `"${LEGACY_HYPHEN}": {}`),
+    write(dir, "packages/host/src/clean.ts", `export const ok = 1;`),
+  ];
+  const result = checkNoLegacyProductName({ files, rootDir: dir });
+  assert.equal(result.ok, true, result.details);
+});
+
+test("runChecks includes the legacy product name gate", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  write(dir, "scripts/placeholder.mjs", `console.log("x");\n`);
+  const result = runChecks(dir);
+  const names = result.checks.map((c) => c.name);
+  assert.ok(names.includes("no legacy product name"), JSON.stringify(names));
 });
 
 // ---------------------------------------------------------------------------
@@ -309,7 +374,7 @@ test("runChecks fails when a workspace package imports next", (t) => {
   write(
     dir,
     "packages/client/package.json",
-    JSON.stringify({ name: "@fffattiger/pi-web-client", private: true }),
+    JSON.stringify({ name: "@fffattiger/pix-client", private: true }),
   );
   const result = runChecks(dir);
   assert.equal(result.ok, false);

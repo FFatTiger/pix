@@ -1,8 +1,8 @@
 {
-  "name": "@fffattiger/pi-web-sessiond",
+  "name": "@fffattiger/pix-sessiond",
   "version": "0.1.0",
   "private": true,
-  "description": "Authoritative local runtime daemon for pi-web sessions",
+  "description": "Authoritative local runtime daemon for pix sessions",
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "main": "./dist/index.js",
@@ -23,8 +23,8 @@
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },
   "dependencies": {
-    "@fffattiger/pi-web-protocol": "0.1.0",
-    "@fffattiger/pi-web-runtime-core": "0.1.0"
+    "@fffattiger/pix-protocol": "0.1.0",
+    "@fffattiger/pix-runtime-core": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22",

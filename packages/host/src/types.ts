@@ -1,5 +1,5 @@
 /**
- * Shared types for the pi-web Hono host foundation.
+ * Shared types for the pix Hono host foundation.
  *
  * This package is protocol-independent by design: it owns gate, request
  * security, static client hosting and the WebSocket upgrade seam. Runtime
@@ -102,9 +102,9 @@ export interface SessionRevocationStore {
 }
 
 export interface GateDeps {
-  /** Credential source; defaults to env + ~/.pi/pi-web.json when omitted. */
+  /** Credential source; defaults to env + ~/.pi/pix.json when omitted. */
   config: GateConfigSource;
-  /** Session cookie name (default "pi_web_session"). */
+  /** Session cookie name (default "pix_session"). */
   cookieName?: string;
   /** Session lifetime in ms (default 30 days). */
   sessionTtlMs?: number;
@@ -168,7 +168,7 @@ export interface HostDeps {
   clientDist?: string;
   /**
    * Extra trusted Host header values (DNS-rebinding allowlist). Defaults to
-   * PI_WEB_HOSTNAME + PI_WEB_ALLOWED_HOSTS from the environment.
+   * PIX_HOSTNAME + PIX_ALLOWED_HOSTS from the environment.
    */
   allowedHosts?: readonly string[];
   logger?: HostLogger;
@@ -191,7 +191,7 @@ export interface HostDeps {
 /**
  * Minimal session handle handed to the runtime protocol seam after a
  * successful upgrade + auth + hello. Deliberately protocol-independent:
- * H0B wires the real pi-web Runtime Protocol on top of this.
+ * H0B wires the real pix Runtime Protocol on top of this.
  */
 export interface WsSession {
   readonly url: string;

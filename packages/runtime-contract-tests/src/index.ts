@@ -1,7 +1,7 @@
 /**
- * @fffattiger/pi-web-runtime-contract-tests
+ * @fffattiger/pix-runtime-contract-tests
  *
- * Reusable adapter contract suite + reference fake for the pi-web agent
+ * Reusable adapter contract suite + reference fake for the pix agent
  * runtime ports. Production packages never ship this; adapters (Pi SDK today,
  * Pi RPC later) run the same suite to prove canonical behavior.
  */

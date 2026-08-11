@@ -20,7 +20,7 @@ function bootstrapResponse(overrides: Record<string, unknown> = {}) {
   return new Response(
     JSON.stringify({
       ok: true,
-      service: "pi-web-host",
+      service: "pix-host",
       protocolVersion: 1,
       sessiond: "up",
       capabilities: ["agent", "files"],

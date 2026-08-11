@@ -2,15 +2,15 @@
 
 > **执行单一事实源（SSOT）**
 >
-> 当前目标不是继续维护旧 `pi-web` Next.js 单体，而是在独立的 `pix` 仓库中交付新架构产品。
+> 当前目标不是继续维护旧 Next.js 单体，而是在独立的 `pix` 仓库中交付新架构产品。
 > 第一里程碑必须是一个可以实际构建和启动的独立应用。
 
 - 最后更新：2026-08-11
 - 项目状态：`ACTIVE`
 - 当前里程碑：`M1 — Bootable Standalone App`
 - 当前仓库：`/Users/proxy/Documents/program/pix`
-- 旧成果来源：`/Users/proxy/Documents/program/pi-web-worktrees/*`，迁移完成前只读保留
-- 产品主线：Vite Client + Hono Host + 独立 `pi-sessiond` + 每会话 Worker + Runtime Protocol + Pi 防腐层
+- 旧成果来源：旧 Next 单体 worktree（精确路径与来源 commit 见 `migration-ledger.md`），迁移完成前只读保留
+- 产品主线：Vite Client + Hono Host + 独立 `pix-sessiond` + 每会话 Worker + Runtime Protocol + Pi 防腐层
 
 ---
 
@@ -34,7 +34,7 @@ Browser / PWA
 Hono Host（可随时重启）
       │ 本机 RPC
       ▼
-pi-sessiond（常驻会话权威）
+pix-sessiond（常驻会话权威）
       │ Node IPC
       ▼
 agent-worker × N（每会话一个进程）
@@ -45,7 +45,7 @@ PiSdkAdapter（当前）/ PiRpcAdapter（未来）
 
 ### 1.1 不可变约束
 
-1. `pix` 是独立产品仓库，不以旧 `pi-web` 为运行时或构建时依赖。
+1. `pix` 是独立产品仓库，不以旧 Next.js 单体为运行时或构建时依赖。
 2. `pix` 不包含 Next.js 产品路径：无根 `app/`、无 `next.config.*`、无 Next CLI、无 `.next`。
 3. Client 使用 Vite + React + TanStack。
 4. Host 使用 Hono，在同一端口提供 `/v1`、WebSocket 和 Client 静态资源。
@@ -64,7 +64,7 @@ PiSdkAdapter（当前）/ PiRpcAdapter（未来）
 ### 1.2 当前明确不做
 
 - 迁移旧 `app/**`、`components/**`、`hooks/**`、`lib/**`
-- 迁移旧 Next API routes 或旧 `bin/pi-web.js`
+- 迁移旧 Next API routes 或旧 CLI 入口（`bin/`）
 - 保持旧 Next 产品在 `pix` 中可运行
 - Tauri / Electron
 - 手机本地运行 Agent
@@ -107,7 +107,7 @@ M1 不要求 Agent prompt 已经可用；最小 Runtime happy path 属于 M2。�
    - `GET /v1/bootstrap`
 7. Client 从真实 Host API 读取状态，不使用硬编码 demo session。
 8. Host 退出后 sessiond PID 保持不变。
-9. 只有显式 `pi-web down --all` 才停止 sessiond。
+9. 只有显式 `pix down --all` 才停止 sessiond。
 10. 未接通的 Agent/files/sessions 能力不得出现在 capability 中。
 
 ### 2.2 M1 不要求
@@ -217,7 +217,7 @@ npm run cli -- status
 ### 4.2 已废弃的旧决策
 
 - 废弃“旧 Next 应用在迁移期间保持可运行”。
-- 废弃旧 `I0`：不再维护旧 `pi-web` 架构集成分支作为产品主线。
+- 废弃旧 `I0`：不再维护旧架构集成分支作为产品主线。
 - 废弃旧 `L1`：Next 不进入 `pix`，因此不存在最后再移除 Next 的阶段。
 - 废弃“CLI 必须等 R1/R2/H0B 全部完成后才能开始”。
 - 旧验证只记录为来源证据，不自动继承 `DONE`。
@@ -245,7 +245,7 @@ npm run cli -- status
 | `B1` | Core + Protocol Migration | `DONE` | `B0` | `ea7e207`；来源 tree 字节一致；GPT 独立验证 PASS；scripts 40/40、Protocol 109/109、Contract 75/75、Core 3/3 |
 | `B2` | Host + Client Boot Surface | `IN_REVIEW` | `B0`, `B1` | `c65d2df` + root lockfile；Client 82/82、Host 132/132、真实Client dist托管 smoke PASS；最终随M1启动链统一GPT验证 |
 | `B3` | sessiond Daemon Bootstrap | `DONE` | `B0`, `B1` | `5dc9469` + `44529c3`；GPT复验 PASS；sessiond 38/38，启动信号40/40、回归118/118、专项24/24 |
-| `B4` | Production Composition + CLI | `READY` | `B2`, `B3` | `pi-web`、`pi-host`、`pi-sessiond`、ensure/reuse、`down --all` |
+| `B4` | Production Composition + CLI | `READY` | `B2`, `B3` | `pix`、`pix-host`、`pix-sessiond`、ensure/reuse、`down --all` |
 | `B5` | Startup E2E | `BLOCKED` | `B4` | build/start/browser/API/PID/lifecycle E2E |
 
 依赖图：
@@ -371,7 +371,7 @@ pix/
     fixtures/
 ```
 
-包名暂时保留 `@fffattiger/pi-web-*`，避免无价值的 import churn；仓库名改为 `pix` 不要求第一阶段同步改完 npm package 名。
+产品命名已统一为 `pix`：npm 包为 `@fffattiger/pix-*`（client / host / protocol / runtime-core / runtime-contract-tests / sessiond），CLI 产物为 `pix` / `pix-host` / `pix-sessiond`，不提供旧品牌 alias。上游 Pi SDK 概念（`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`）属于 Pi 上游，保持原名。旧品牌名仅作为历史证据保留在 `migration-ledger.md`。
 
 ---
 
@@ -422,7 +422,7 @@ pix/
 - Host 可以依赖 Protocol 和 sessiond client，但不能依赖 Runtime Core Model、Pi SDK 或 AgentSession。
 - sessiond client/server 应提供窄子路径导出。
 - Worker Controller 不 import Pi SDK。
-- `PI_WEB_AGENT_BACKEND` 只在 Worker composition root 读取。
+- `PIX_AGENT_BACKEND` 只在 Worker composition root 读取。
 - Composition Root 只做依赖装配和环境读取，不承载业务规则。
 
 ---
@@ -524,3 +524,4 @@ Base：<hash>
 | `N-006` | CLI/composition 是 M1 核心，不再后置 | 冻结 |
 | `N-007` | 旧测试结果不自动继承，迁入 `pix` 后重新验证 | 冻结 |
 | `N-008` | capability 只声明完整接通且已验证的能力 | 冻结 |
+| `N-009` | 产品命名统一为 `pix`：包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`；不保留旧品牌 alias，上游 Pi SDK 概念保持原名（历史证据仅存 `migration-ledger.md`） | 冻结 |

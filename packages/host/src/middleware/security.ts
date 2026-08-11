@@ -8,7 +8,7 @@ import { apiErrorBody, isV1Path } from "../errors.js";
 export interface SecurityOptions {
   /**
    * Extra trusted hostnames (beyond loopback names and IP literals).
-   * Defaults to PI_WEB_HOSTNAME + PI_WEB_ALLOWED_HOSTS from the environment.
+   * Defaults to PIX_HOSTNAME + PIX_ALLOWED_HOSTS from the environment.
    */
   allowedHosts?: readonly string[];
   /** Trusted server exposure; LAN mode cannot be downgraded by Host spoofing. */
@@ -174,8 +174,8 @@ function isLoopbackAddress(ip: string): boolean {
 
 function configuredHostnamesFromEnvironment(): string[] {
   return [
-    process.env.PI_WEB_HOSTNAME,
-    ...(process.env.PI_WEB_ALLOWED_HOSTS?.split(",") ?? []),
+    process.env.PIX_HOSTNAME,
+    ...(process.env.PIX_ALLOWED_HOSTS?.split(",") ?? []),
   ].filter((value): value is string => Boolean(value?.trim()));
 }
 

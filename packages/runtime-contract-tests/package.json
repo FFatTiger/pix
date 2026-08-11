@@ -1,5 +1,5 @@
 {
-  "name": "@fffattiger/pi-web-runtime-contract-tests",
+  "name": "@fffattiger/pix-runtime-contract-tests",
   "version": "0.1.0",
   "private": true,
   "description": "TEST-ONLY reusable adapter contract suite and reference fake; excluded from production package allowlists",
@@ -25,7 +25,7 @@
     "dist"
   ],
   "scripts": {
-    "build:core": "npm run build --workspace @fffattiger/pi-web-runtime-core",
+    "build:core": "npm run build --workspace @fffattiger/pix-runtime-core",
     "prebuild": "npm run build:core",
     "build": "tsc -p tsconfig.json",
     "pretypecheck": "npm run build:core",
@@ -39,7 +39,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@fffattiger/pi-web-runtime-core": "file:../runtime-core"
+    "@fffattiger/pix-runtime-core": "file:../runtime-core"
   },
   "devDependencies": {
     "@types/node": "^22",

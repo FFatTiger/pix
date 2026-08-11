@@ -15,10 +15,10 @@ function writeFixture(file, content) {
 }
 
 beforeEach(() => {
-  distDir = mkdtempSync(join(tmpdir(), "pi-web-host-static-"));
-  writeFixture("index.html", "<html><body>PI WEB SPA</body></html>");
+  distDir = mkdtempSync(join(tmpdir(), "pix-host-static-"));
+  writeFixture("index.html", "<html><body>PIX SPA</body></html>");
   writeFixture("sw.js", "self.addEventListener('install', () => {});");
-  writeFixture("manifest.webmanifest", '{"name":"pi-web"}');
+  writeFixture("manifest.webmanifest", '{"name":"pix"}');
   writeFixture("offline.html", "<html>offline</html>");
   writeFixture("assets/app-abc123.js", "console.log('app');");
   writeFixture("icons/icon-192.png", "PNGDATA");
@@ -100,7 +100,7 @@ test("API 404 returns JSON, never index.html", async () => {
   const body = JSON.parse(text);
   assert.equal(body.code, "NOT_FOUND");
   assert.equal(body.message, "Not Found");
-  assert.ok(!text.includes("PI WEB SPA"));
+  assert.ok(!text.includes("PIX SPA"));
 });
 
 test("SPA fallback serves index.html for HTML-accepting GETs", async () => {
@@ -108,7 +108,7 @@ test("SPA fallback serves index.html for HTML-accepting GETs", async () => {
     headers: { host: "localhost", accept: "text/html" },
   });
   assert.equal(res.status, 200);
-  assert.match(await res.text(), /PI WEB SPA/);
+  assert.match(await res.text(), /PIX SPA/);
 });
 
 test("SPA fallback is restricted to GET and HEAD", async () => {
@@ -118,7 +118,7 @@ test("SPA fallback is restricted to GET and HEAD", async () => {
       headers: { host: "localhost", accept: "text/html" },
     });
     assert.equal(res.status, 404, method);
-    assert.ok(!(await res.text()).includes("PI WEB SPA"));
+    assert.ok(!(await res.text()).includes("PIX SPA"));
   }
   const head = await app.request("http://localhost/workstation/session/abc", {
     method: "HEAD",
@@ -152,7 +152,7 @@ test("path traversal attempts are rejected", async () => {
 });
 
 test("static server rejects symlink escapes, broken symlinks, and symlinked index", async () => {
-  const outside = mkdtempSync(join(tmpdir(), "pi-web-host-outside-"));
+  const outside = mkdtempSync(join(tmpdir(), "pix-host-outside-"));
   try {
     writeFileSync(join(outside, "secret.txt"), "DO NOT SERVE");
     symlinkSync(join(outside, "secret.txt"), join(distDir, "assets", "secret.txt"));
@@ -188,7 +188,7 @@ test("unknown static file falls through to SPA/404, never a directory listing", 
     headers: { host: "localhost", accept: "text/html" },
   });
   assert.equal(res.status, 200); // SPA fallback for HTML accept
-  assert.match(await res.text(), /PI WEB SPA/);
+  assert.match(await res.text(), /PIX SPA/);
 });
 
 test("HEAD requests work without a body", async () => {

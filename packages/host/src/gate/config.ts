@@ -54,7 +54,7 @@ export function createNormalizedGateConfigSource(source: GateConfigSource): Gate
 
 export interface ReadGateConfigOptions {
   env?: NodeJS.ProcessEnv;
-  /** Override the pi-web.json path (default: $PI_CODING_AGENT_DIR or ~/.pi). */
+  /** Override the pix.json path (default: $PI_CODING_AGENT_DIR or ~/.pi). */
   configPath?: string;
   /** Test seam for file reads. */
   readFile?: (path: string, encoding: "utf8") => string;
@@ -70,7 +70,7 @@ export function defaultAgentDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export function defaultGateConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(defaultAgentDir(env), "pi-web.json");
+  return join(defaultAgentDir(env), "pix.json");
 }
 
 function parseDisabled(value: string | undefined): boolean | undefined | "invalid" {
@@ -82,7 +82,7 @@ function parseDisabled(value: string | undefined): boolean | undefined | "invali
 }
 
 /**
- * Read the gate config from env + ~/.pi/pi-web.json. Semantics mirror the
+ * Read the gate config from env + ~/.pi/pix.json. Semantics mirror the
  * legacy `lib/web-auth-config.ts` (referenced, never imported):
  * env overrides file; blank password is "unconfigured"; explicit disable wins.
  */
@@ -139,18 +139,18 @@ export function readGateConfig(options: ReadGateConfigOptions = {}): GateConfig 
     }
   }
 
-  const envDisabled = parseDisabled(env.PI_WEB_AUTH_DISABLED);
+  const envDisabled = parseDisabled(env.PIX_AUTH_DISABLED);
   if (envDisabled === "invalid") {
     return {
       status: "error",
       source: "env",
-      logMessage: "PI_WEB_AUTH_DISABLED must be true or false",
+      logMessage: "PIX_AUTH_DISABLED must be true or false",
     };
   }
 
   const disabled = envDisabled ?? fileAuth.disabled ?? false;
   const password =
-    env.PI_WEB_PASSWORD !== undefined ? env.PI_WEB_PASSWORD : fileAuth.password;
+    env.PIX_PASSWORD !== undefined ? env.PIX_PASSWORD : fileAuth.password;
 
   if (disabled) return { status: "disabled", source: configPath };
   if (typeof password === "string" && password.length > 0) {

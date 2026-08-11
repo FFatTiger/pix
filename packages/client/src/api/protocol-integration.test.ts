@@ -4,7 +4,7 @@ import {
   PROTOCOL_VERSION,
   RuntimeAttachParamsSchema,
   SessionHeaderSchema,
-} from "@fffattiger/pi-web-protocol";
+} from "@fffattiger/pix-protocol";
 
 describe("Protocol integration", () => {
   it("uses final Protocol schemas and strict resume cursor semantics", () => {

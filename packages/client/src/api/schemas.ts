@@ -9,7 +9,7 @@ import {
   SessionDetailSchema,
   SessionHeaderSchema,
   SkillInfoSchema,
-} from "@fffattiger/pi-web-protocol";
+} from "@fffattiger/pix-protocol";
 
 export const SuccessSchema = z.strictObject({ success: z.boolean() });
 export const OkSchema = z.strictObject({ ok: z.boolean() });

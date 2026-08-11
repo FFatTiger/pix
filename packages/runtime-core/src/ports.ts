@@ -1,8 +1,8 @@
 /**
- * Pi-web agent runtime ports — the anti-corruption boundary against Pi
+ * pix agent runtime ports — the anti-corruption boundary against Pi
  * backends (currently the Pi SDK, later Pi RPC).
  *
- * These ports express what pi-web needs, never how a backend provides it.
+ * These ports express what pix needs, never how a backend provides it.
  * No backend session, manager, SDK model/event/error or RPC method/frame
  * type appears in this surface.
  */

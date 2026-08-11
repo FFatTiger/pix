@@ -1,4 +1,4 @@
-# pi-web 重构方案
+# pix 重构方案
 
 > 状态：定稿（目标架构）；执行顺序已按独立仓库首个可启动里程碑重排
 > 当前仓库：`pix`（独立产品仓库，不继承旧 Next.js 产品树）
@@ -8,7 +8,7 @@
 
 ## 1. 目标
 
-将 pi-web 从「Next.js 进程内嵌 AgentSession」重构为「协议中心的本机 Agent 工作站」：
+将 pix 从「Next.js 进程内嵌 AgentSession」重构为「协议中心的本机 Agent 工作站」：
 
 - Web 进程可随时重启，**不杀死**正在运行的会话
 - 一份 Client，支持浏览器 / 安装式 PWA（电脑 + 手机）
@@ -17,7 +17,7 @@
 
 ## 2. 一句话定案
 
-**Vite + React + TanStack（Client） + Hono 薄 Web/API + 独立 `pi-sessiond` + 每会话 Worker + Agent Runtime Port + Pi 防腐层 + WebSocket + SQLite 索引**
+**Vite + React + TanStack（Client） + Hono 薄 Web/API + 独立 `pix-sessiond` + 每会话 Worker + Agent Runtime Port + Pi 防腐层 + WebSocket + SQLite 索引**
 
 ## 3. 目标架构
 
@@ -29,11 +29,11 @@ Web 进程（可随时重启）
   Hono：门禁 · HTTP API · WS 网关 · 文件/git
         │  本机 IPC / localhost RPC
         ▼
-pi-sessiond（常驻守护进程，会话权威）
+pix-sessiond（常驻守护进程，会话权威）
   会话注册表 · Worker 调度 · 事件总线 · 空闲回收
         │
 agent-worker × N（每会话一个进程，承载应用运行时）
-        │  AgentRuntimePort（pi-web 自有语义）
+        │  AgentRuntimePort（pix 自有语义）
         ▼
 Pi 防腐层（ACL）
   ├─ PiSdkAdapter（当前：@earendil-works/pi-*）
@@ -43,20 +43,20 @@ Pi 防腐层（ACL）
 | 进程/模块 | 职责 | 重启影响 |
 |------|------|----------|
 | **Web** | UI、HTTP、WS 网关、门禁、文件/git | 可重启；客户端重连即可 |
-| **pi-sessiond** | Runtime/Worker 的唯一生命周期权威 | **不**随 Web 退出 |
+| **pix-sessiond** | Runtime/Worker 的唯一生命周期权威 | **不**随 Web 退出 |
 | **agent-worker** | 单会话应用运行时、Protocol ↔ Runtime Core 映射、承载后端 Adapter | 仅会话结束 / 空闲回收 / 显式停止时退出 |
-| **Pi ACL** | 将 pi-web 自有 Port 翻译为 Pi SDK 或 Pi RPC；归一化事件、错误、工具与资源 | Adapter 可替换；上层协议和业务保持稳定 |
+| **Pi ACL** | 将 pix 自有 Port 翻译为 Pi SDK 或 Pi RPC；归一化事件、错误、工具与资源 | Adapter 可替换；上层协议和业务保持稳定 |
 
 ### 硬规则
 
-1. `pix` 是独立产品仓库；旧 `pi-web` 只作为迁移来源，不是运行时、构建时或发布依赖
+1. `pix` 是独立产品仓库；旧 Next.js 单体只作为迁移来源，不是运行时、构建时或发布依赖
 2. `pix` 从第一天起不存在 Next.js 产品路径；不迁入根 `app/`、Next Route Handlers、`next.config.*`、Next CLI 或 `.next`
 3. UI、Host、sessiond 和 Worker Controller **永不**直接 import pi SDK，也不解析 Pi RPC 原始帧
-4. `packages/runtime-core` 定义 pi-web 自有的 Runtime/Resource Ports 和规范化模型；它不依赖 Protocol、Pi SDK 或 Pi RPC
+4. `packages/runtime-core` 定义 pix 自有的 Runtime/Resource Ports 和规范化模型；它不依赖 Protocol、Pi SDK 或 Pi RPC
 5. `packages/pi-sdk-adapter` 是当前 Pi SDK 防腐层，也是唯一可 import `@earendil-works/pi-*` 的包
 6. 未来的 `packages/pi-rpc-adapter` 是 Pi RPC 防腐层，也是唯一可启动/解析 `pi --mode rpc` 的包
 7. Protocol 是进程/网络边界；Runtime Port 是进程内应用边界；两者通过显式 Mapper 转换，不共享同一个类型作为捷径
-8. `pi-sessiond` 是 Session **唯一权威**；Web 只做代理与附着（attach）
+8. `pix-sessiond` 是 Session **唯一权威**；Web 只做代理与附着（attach）
 9. 只读浏览历史 → **0 Worker**
 10. 实时状态只走 **WebSocket + snapshot/resume**，不用轮询冒充
 11. `jsonl` / `~/.pi` 仍是真相源
@@ -69,7 +69,7 @@ Pi 防腐层（ACL）
 Pi ACL 使用 Port/Adapter 结构隔离 Pi 的接入方式：
 
 ```text
-pi-web Runtime Protocol（跨进程/网络 DTO）
+pix Runtime Protocol（跨进程/网络 DTO）
       │  Protocol Mapper
       ▼
 agent-worker application controller
@@ -100,7 +100,7 @@ ProjectTrustPort                         # 项目信任与资源 reload 边界
 
 防腐层负责：
 
-- SDK/RPC 命令、事件、错误、模型、工具名和参数到 pi-web 规范模型的双向翻译
+- SDK/RPC 命令、事件、错误、模型、工具名和参数到 pix 规范模型的双向翻译
 - `AgentSession`、SDK `Model`、SDK Event、Pi RPC method/frame 等外部类型的封装
 - SDK/RPC 能力差异的 capability 投影；上层只处理规范化的 `UNSUPPORTED_CAPABILITY`
 - session id/file、extension UI、tool result、usage、thinking、compaction、fork 等语义归一化
@@ -109,15 +109,15 @@ ProjectTrustPort                         # 项目信任与资源 reload 边界
 Adapter 选择只发生在各进程的 composition root。当前所有 Port 默认由 SDK/文件系统 Adapter 实现；未来可以只把 Agent Runtime 切到 RPC，其他 Port 继续使用现有实现：
 
 ```text
-PI_WEB_AGENT_BACKEND=sdk   # 当前默认：PiSdkAgentRuntimeAdapter
-PI_WEB_AGENT_BACKEND=rpc   # 未来：PiRpcAgentRuntimeAdapter
+PIX_AGENT_BACKEND=sdk   # 当前默认：PiSdkAgentRuntimeAdapter
+PIX_AGENT_BACKEND=rpc   # 未来：PiRpcAgentRuntimeAdapter
 ```
 
-sessiond、Host、Client、pi-web Runtime Protocol 和应用服务不得出现 `if (backend === "sdk")` 之类的供应商分支。Adapter 的 capability 决定可用功能。
+sessiond、Host、Client、pix Runtime Protocol 和应用服务不得出现 `if (backend === "sdk")` 之类的供应商分支。Adapter 的 capability 决定可用功能。
 
 ### Port 形态（伪代码）
 
-`runtime-core` 中的接口表达 pi-web 需要什么，不表达 Pi SDK/RPC 怎么提供：
+`runtime-core` 中的接口表达 pix 需要什么，不表达 Pi SDK/RPC 怎么提供：
 
 ```ts
 interface AgentRuntimeFactory {
@@ -147,10 +147,10 @@ interface AgentRuntimePort {
 `pi-sdk-adapter` 使用子路径导出隔离不同进程的依赖：
 
 ```text
-@fffattiger/pi-web-pi-sdk-adapter/agent      # Worker composition root
-@fffattiger/pi-web-pi-sdk-adapter/sessions   # Host/session locator/catalog
-@fffattiger/pi-web-pi-sdk-adapter/models     # Host model application service
-@fffattiger/pi-web-pi-sdk-adapter/resources  # Host skills/plugins/trust service
+@fffattiger/pix-pi-sdk-adapter/agent      # Worker composition root
+@fffattiger/pix-pi-sdk-adapter/sessions   # Host/session locator/catalog
+@fffattiger/pix-pi-sdk-adapter/models     # Host model application service
+@fffattiger/pix-pi-sdk-adapter/resources  # Host skills/plugins/trust service
 ```
 
 各子路径不得通过聚合 barrel 提前加载其它 Adapter。未来 `pi-rpc-adapter` 可以先只实现 `/agent`，其余 Port 继续注入现有 SDK/文件系统实现，实现按 Port 渐进替换。
@@ -164,12 +164,12 @@ interface AgentRuntimePort {
 | 前端工程 | **TanStack Router / Query / Virtual** | 路由、HTTP 资源缓存、长列表 |
 | 客户端运行时状态 | **SessionStore（事件投影）** | 只消费 WS，不走 Query 轮询 |
 | Web/API | **Hono（Node 22）** | 薄网关，不持有会话权威状态 |
-| 会话管理 | **独立 `pi-sessiond`** | 与 Web 进程解耦，保证会话保活 |
+| 会话管理 | **独立 `pix-sessiond`** | 与 Web 进程解耦，保证会话保活 |
 | Agent 运行时 | **每会话 child_process Worker** | 崩溃隔离、可回收、并发上限可配 |
-| Runtime 应用边界 | **`AgentRuntimePort`** | pi-web 自有命令、状态、事件和错误语义 |
+| Runtime 应用边界 | **`AgentRuntimePort`** | pix 自有命令、状态、事件和错误语义 |
 | Pi 接入 | **防腐层 + Adapter** | 当前 `PiSdkAdapter`；未来可加 `PiRpcAdapter`，上层不变 |
-| Runtime 线协议 | **pi-web Runtime Protocol v1** | 产品级命令、事件、snapshot/resume；不表达 SDK/RPC 类型 |
-| 实时通道 | **WebSocket 主通道** | 承载 pi-web Runtime Protocol 命令、事件和 resume |
+| Runtime 线协议 | **pix Runtime Protocol v1** | 产品级命令、事件、snapshot/resume；不表达 SDK/RPC 类型 |
+| 实时通道 | **WebSocket 主通道** | 承载 pix Runtime Protocol 命令、事件和 resume |
 | 运行时 | **Node 22 LTS** | 对齐 pi SDK |
 | 桌面原生壳 | **仅架构预留** | 协议/Host 可被 Tauri 挂载；当前不交付 |
 
@@ -206,13 +206,13 @@ AgentSession 活在 Web/Next 进程内。重启 Web（或热更新拖垮进程�
 ### 单实例约定
 
 - sessiond 使用锁文件 + 固定本机 endpoint  
-  例如：`~/.pi/web/sessiond.sock` 或 `127.0.0.1:<固定/协商端口>` + `~/.pi/web/sessiond.lock`
+  例如：`~/.pi/pix/sessiond.sock` 或 `127.0.0.1:<固定/协商端口>` + `~/.pi/pix/sessiond.lock`
 - Web 启动：
   1. 发现已有 sessiond → 接入  
   2. 否则拉起 sessiond 再接入  
-- Web 关闭：只断连接，**不** SIGTERM sessiond（可用显式 CLI/`pi-web down --all` 收全套）
+- Web 关闭：只断连接，**不** SIGTERM sessiond（可用显式 CLI/`pix down --all` 收全套）
 
-## 6. 协议：pi-web Runtime Protocol v1
+## 6. 协议：pix Runtime Protocol v1
 
 ### 传输
 
@@ -272,7 +272,7 @@ Client 按 `capabilities` 显隐功能：
   UI → TanStack Query → HTTP /v1 → Web(Hono) → SQLite / FS / git
 
 跑 Agent:
-  UI → WS command → Web 网关 → pi-sessiond → worker application controller
+  UI → WS command → Web 网关 → pix-sessiond → worker application controller
      → AgentRuntimePort → PiSdkAdapter（当前）/ PiRpcAdapter（未来） → Pi
   UI ← SessionStore ← WS events/snapshot ← sessiond ← normalized runtime events ← Pi ACL
 ```
@@ -289,7 +289,7 @@ Client 按 `capabilities` 显隐功能：
 ```
 packages/
   protocol/        # 网络/进程线协议：zod schema、版本、共享 DTO
-  runtime-core/    # pi-web 自有 Ports、规范化模型和应用错误；零 Pi 依赖
+  runtime-core/    # pix 自有 Ports、规范化模型和应用错误；零 Pi 依赖
   pi-sdk-adapter/  # 当前 Pi SDK 防腐层；唯一可 import @earendil-works/pi-* 的包
   pi-rpc-adapter/  # 未来 Pi RPC 防腐层；当前只保留架构位置，不交付
   runtime-contract-tests/ # Adapter 共享行为契约测试（测试包，不进入生产产物）
@@ -297,7 +297,7 @@ packages/
   agent-worker/    # 单会话进程壳：Protocol mapper + application controller + Adapter composition
   host/            # Hono 薄 Web/API + WS 网关 + 静态资源
   client/          # Vite React + TanStack
-  cli/             # pi-web / pi-host / sessiond 启停入口
+  cli/             # pix / pix-host / sessiond 启停入口
   shell-tauri/     # 预留，当前不交付
 ```
 
@@ -305,8 +305,8 @@ packages/
 
 | 产物 | 内容 |
 |------|------|
-| `pi-web` | CLI：确保 sessiond + 启 Web（兼容现有 npx 心智） |
-| `pi-sessiond` | 可独立运行的会话守护进程 |
+| `pix` | CLI：确保 sessiond + 启 Web（兼容现有 npx 心智） |
+| `pix-sessiond` | 可独立运行的会话守护进程 |
 | Web UI | `client` 构建的静态资源，由 host 托管 |
 | PWA | manifest + service worker，挂在 host 静态资源上 |
 
@@ -334,7 +334,7 @@ packages/
 未来（不在当前交付）:
   Tauri Shell → 同一 Client dist → 本机 Web/host 或直连协议
                      │
-                     └── 仍附着同一 pi-sessiond
+                     └── 仍附着同一 pix-sessiond
 ```
 
 当前约束：
@@ -380,7 +380,7 @@ M1 是当前唯一活动里程碑。它允许 Agent runtime 暂不可用，但�
 |------|-------------------|------|
 | 页面框架 | Next App Router | Vite + React + TanStack |
 | API | `app/api/*` Route Handlers | Hono `/v1/*` |
-| Agent 生命周期 | `lib/rpc-manager.ts` 进 Web 进程并直接调用 SDK | `pi-sessiond` 常驻；Worker 只认 Runtime Port；Pi ACL 负责 SDK/RPC |
+| Agent 生命周期 | `lib/rpc-manager.ts` 进 Web 进程并直接调用 SDK | `pix-sessiond` 常驻；Worker 只认 Runtime Port；Pi ACL 负责 SDK/RPC |
 | 实时 | SSE + POST + 轮询对账 | WebSocket + snapshot |
 | 会话列表 | `SessionManager.listAll` + 短缓存 | Host SQLite 投影 + `SessionCatalogPort` 回源 |
 | 跨端 | 偏桌面浏览器；PWA 基础存在 | PWA 为第一跨端形态 |
@@ -392,7 +392,7 @@ M1 是当前唯一活动里程碑。它允许 Agent runtime 暂不可用，但�
 |------|------|
 | 页面用什么？ | Vite + React + TanStack Router/Query/Virtual |
 | Web 后端用什么？ | Hono（薄，可重启） |
-| 会话跑哪？ | **独立 pi-sessiond** 管生命周期；具体 Pi runtime 存在于 Worker Adapter 内 |
+| 会话跑哪？ | **独立 pix-sessiond** 管生命周期；具体 Pi runtime 存在于 Worker Adapter 内 |
 | Agent 跑哪？ | sessiond 调度的每会话 Node Worker；Worker 通过 `AgentRuntimePort` 调用 Pi ACL |
 | 当前怎么接 Pi？ | `PiSdkAgentRuntimeAdapter`；Pi SDK 类型只存在于 `pi-sdk-adapter` |
 | 以后改 Pi RPC？ | 增加 `PiRpcAgentRuntimeAdapter` 并通过同一 Adapter contract suite；上层协议和业务无需改造 |
@@ -401,4 +401,4 @@ M1 是当前唯一活动里程碑。它允许 Agent runtime 暂不可用，但�
 | 桌面客户端？ | 架构预留，**现在不做** |
 | Next？ | **不进入 `pix` 产品路径**；旧 Next 仓库只作为选择性迁移来源 |
 
-切换接入方式只影响 Pi ACL Adapter 和各进程 composition root，不改变 pi-web Runtime Protocol、Runtime Core、sessiond 调度、Host 网关或 Client 状态模型。
+切换接入方式只影响 Pi ACL Adapter 和各进程 composition root，不改变 pix Runtime Protocol、Runtime Core、sessiond 调度、Host 网关或 Client 状态模型。

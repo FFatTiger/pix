@@ -14,7 +14,7 @@ import type {
   SessionDetail,
   SessionHeader,
   SessionLocation,
-} from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-runtime-core";
 
 export interface StoredEntry {
   entryId: string;

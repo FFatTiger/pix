@@ -6,16 +6,16 @@ import { join } from "node:path";
  * daemon uses {@link DEFAULT_SESSIOND_DIRECTORY}. B4 supervision reads the same
  * variable so ensure/reuse/down-all agree with a running daemon.
  */
-export const SESSIOND_DIR_ENV = "PI_WEB_SESSIOND_DIR";
+export const SESSIOND_DIR_ENV = "PIX_SESSIOND_DIR";
 
-/** Default runtime directory: `~/.pi/agent/sessiond`. */
-export const DEFAULT_SESSIOND_DIRECTORY = join(homedir(), ".pi", "agent", "sessiond");
+/** Default runtime directory: `~/.pi/pix/sessiond`. */
+export const DEFAULT_SESSIOND_DIRECTORY = join(homedir(), ".pi", "pix", "sessiond");
 
 /**
  * Resolve the daemon runtime directory. Precedence:
  *   1. explicit `override` (tests / programmatic callers)
- *   2. `PI_WEB_SESSIOND_DIR`
- *   3. {@link DEFAULT_SESSIOND_DIRECTORY}
+ *   2. `PIX_SESSIOND_DIR`
+ *   3. {@link DEFAULT_SESSIOND_DIRECTORY} (`~/.pi/pix/sessiond`)
  *
  * Pure and side-effect free so it stays usable from the narrow control surface.
  */

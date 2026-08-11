@@ -1,9 +1,9 @@
 {
-  "name": "@fffattiger/pi-web-host",
+  "name": "@fffattiger/pix-host",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Protocol-independent Hono host foundation for pi-web: gate, request security, static client hosting and WS upgrade seam",
+  "description": "Protocol-independent Hono host foundation for pix: gate, request security, static client hosting and WS upgrade seam",
   "engines": {
     "node": ">=22.19.0"
   },

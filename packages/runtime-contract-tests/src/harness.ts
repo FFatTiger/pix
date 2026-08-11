@@ -16,7 +16,7 @@ import type {
   SessionCatalogPort,
   SessionLocatorPort,
   SideChatMainSnapshot,
-} from "@fffattiger/pi-web-runtime-core";
+} from "@fffattiger/pix-runtime-core";
 
 export interface HarnessFactoryOptions {
   /** Restrict the capability set reported by created runtimes. */
