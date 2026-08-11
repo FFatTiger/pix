@@ -51,8 +51,8 @@ bin/pi-web.js
 | `packages/runtime-core` | `integration-v1@e3508e2`，tree `1debd7e020d0495a27f4e044a27bb72c2fcf45a4` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `DONE`：`ea7e207`；源码字节一致；Core 3/3；GPT PASS |
 | `packages/runtime-contract-tests` | `integration-v1@e3508e2`，tree `899aa8a188979867336f75985a0fb56eaa408a69` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `DONE`：`ea7e207`；源码字节一致；Contract 75/75；GPT PASS |
 | `packages/protocol` | `integration-v1@e3508e2`，tree `16c9144c085111c4d947f969b75fe5161a2554b8` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `DONE`：`ea7e207`；源码字节一致；Protocol 109/109；GPT PASS |
-| `packages/host` boot surface | `integration-v1@e3508e2` | H0A/H1B 旧验证通过 | Hono app/server、gate/security/static、health、WS guard 基础 | 未使用的旧兼容装配；M1 可暂不挂 files/git/worktree | `PENDING` |
-| `packages/client` boot surface | `client-data@d9f0be7` | 实现已提交、旧独立验证未完成 | Vite shell、正式 Protocol、HTTP/gate/health/capability 基础 | demo sessions、Runtime no-op 作为产品实现、未挂 Host API 的资源 UI | `PENDING` |
+| `packages/host` boot surface | `integration-v1@e3508e2`，source tree `207e9446378a0e8586ae17659b905d3310d05875` | H0A/H1B 旧验证通过 | Hono app/server、gate/security/static、health、WS guard 基础 | 未使用的旧兼容装配；M1 可暂不挂 files/git/worktree | `IN_REVIEW`：`c65d2df`；Host 132/132、真实静态托管 PASS |
+| `packages/client` boot surface | `client-data@d9f0be7`，source tree `bb2bc86d6c9890d4a35f30b44f1b278e8397e796` | 实现已提交、旧独立验证未完成 | Vite shell、正式 Protocol、HTTP/gate/health/capability 基础 | demo sessions、Runtime no-op 作为产品实现、未挂 Host API 的资源 UI | `IN_REVIEW`：`c65d2df`；Client 82/82、demo已删除、bootstrap真实消费 |
 | `packages/sessiond` | 未提交目录 | 候选代码，不能视为 DONE | `package.json`, `scripts/**`, `src/**`, `test/**`, `tsconfig*.json` | `dist`, `dist-test`, `*.tsbuildinfo`, `node_modules` | `IN_REVIEW`：`5dc9469`；source-only迁移、daemon/control实现；29/29；等待GPT验证 |
 | `packages/pi-sdk-adapter` Agent 路径 | `ed34415` | 有 4 个旧计划未关闭问题 | M2 只取 Agent Factory、Runtime、Mapper、sanitizer、必要 internal | sessions/models/credentials/resources/trust 延后 | `DEFERRED_M2` |
 | `packages/agent-worker` | 无 | 不存在 | 新实现 | — | `NEW_M2` |
@@ -108,7 +108,29 @@ bin/pi-web.js
 残余平台风险：Windows named-pipe/socket权限覆盖有限；PID复用探测为低概率已知限制；down --all 属B4
 ```
 
-## 6. 后续迁移时必须记录的校验
+## 6. B2 — Host + Client Boot Surface 记录
+
+```text
+Host来源：/Users/proxy/Documents/program/pi-web-worktrees/integration-v1@e3508e2，tree 207e9446378a0e8586ae17659b905d3310d05875
+Client来源：/Users/proxy/Documents/program/pi-web-worktrees/client-data@d9f0be7，tree bb2bc86d6c9890d4a35f30b44f1b278e8397e796
+迁移 commit：c65d2df
+有意修改：
+- Host新增 /v1/bootstrap、no-store、gate/mode/sessiond/capability投影
+- capability在未挂资源/runtime时默认为空，不误报agent/files
+- Client消费真实bootstrap，删除demo transcript，未连sessiond时不请求sessions/context
+- Client clean build显式先构建Protocol
+- 新增bootstrap与真实静态托管集成测试
+本地验证：
+- Client 82/82
+- Host 132/132
+- 根scripts 40/40、Protocol 109/109、Contract 75/75、Core 3/3、sessiond 29/29
+- typecheck/build/architecture/host+client boundaries/git diff-check PASS
+- Host指向真实Client dist：index/hash asset/bootstrap/health/SPA fallback PASS
+独立验证 verdict：PENDING（按用户要求减少中间verify，随B4/B5 M1启动链统一验证）
+依赖审计：2 moderate，来自 @hono/node-server <2.0.5 的Windows encoded-backslash serve-static公告；当前无fixAvailable。本项目不使用其serve-static，使用自有static实现且已有路径遍历/符号链接测试；记录但不阻塞M1。
+```
+
+## 7. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -126,7 +148,7 @@ bin/pi-web.js
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 7. sessiond 特别保护
+## 8. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -159,7 +181,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 8. 旧结果可用性摘要
+## 9. 旧结果可用性摘要
 
 ### 可复用
 
@@ -183,7 +205,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 9. 完成条件
+## 10. 完成条件
 
 迁移阶段完成必须同时满足：
 
