@@ -297,7 +297,7 @@ runtime.queue             runtime.stats
 | `ACL2` | Pi RPC Agent Adapter（未来） | `BACKLOG` | 待认领 | `refactor/pi-rpc-adapter` | `ACL0`, `ACL1` contract baseline | 本轮不实现；未来只改 `packages/pi-rpc-adapter/**` 和 composition config，通过同一 contract suite |
 | `R1` | pi-sessiond Core | `BLOCKED` | 待认领 | `refactor/sessiond-core` | `ACL0`, `P0`, `I0` | `packages/sessiond/**`；依赖 Runtime Ports/fakes，不 import Pi SDK |
 | `R2` | agent-worker Application Shell | `BLOCKED` | 待认领 | `refactor/agent-worker-core` | `ACL0`, `ACL1`, `P0`, `I0` | `packages/agent-worker/**`；Protocol Mapper + Controller + Adapter composition，不 import Pi SDK |
-| `H0A` | Protocol-independent Hono Host Foundation | `PAUSED`（uncommitted WIP） | `h0a-host-foundation-agent` | `refactor/h0a-host-foundation-agent` | 无（禁止 runtime wiring） | 源码位于 `packages/host/**`，未提交，git 显示 `?? packages/`；typecheck/build 已通过；测试中发现并修复 `/login` public path ordering 和 tampered cookie；代理被 parent_shutdown 停止，无最终全套结果；ignored `node_modules`/`dist` 保留，恢复时先清理再跑全套；原 Pililink issue/branch 属早期协作安排，当前 WIP 以 agent branch 为准 |
+| `H0A` | Protocol-independent Hono Host Foundation | `DONE` | `h0a-host-foundation-agent` + `h0a-fix-v4` | `refactor/h0a-host-foundation-agent` | 无（禁止 runtime wiring） | 最终 `b8e150d`；5.6-sol 独立安全复验 PASS；Node 22/24 均 81/81；已以 `ad2bde8` + `89e9d05` 合入，并由 `1432ca5` 归一化 root lockfile/发布内容后推送集成分支 |
 | `H0B` | Hono Host Protocol/runtime wiring | `BLOCKED` | 待认领 | `refactor/host-runtime-wiring` | `P0`, `I0`, `H0A`, `R1` | 后续接正式 Protocol/sessiond；不得由 H0A 自行发明协议 |
 | `C1` | Client Protocol + HTTP Query | `BLOCKED` | 待认领 | `refactor/client-data` | `P0`, `C0`, `I0` | `packages/client/src/api/**` 等 |
 | `CLI0` | CLI / sessiond single-instance 启动 | `BLOCKED` | 待认领 | `refactor/cli-runtime` | `R1`, `R2`, `H0A`, `H0B` | `packages/cli/**`, `bin/**` |
@@ -307,7 +307,7 @@ runtime.queue             runtime.stats
 | ID | 工作包 | 状态 | 负责人 | 依赖 | 主要目录 |
 |---|---|---|---|---|---|
 | `H1A` | Sessions read model / export | `BLOCKED` | 待认领 | `H0A`, `ACL0`, `ACL1` | Host service 依赖 `SessionCatalogPort`；Pi/JSONL 解析实现留在 Adapter |
-| `H1B` | Files / git / cwd / worktree | `BLOCKED` | 待认领 | `H0A` | Host 对应 services/routes |
+| `H1B` | Files / git / cwd / worktree | `IN_PROGRESS` | `h1b-files-git-v4` | `refactor/host-files-git` | `H0A` | 已从集成 HEAD `1432ca5` 创建独立 worktree；仅修改 Host services/routes，完成后交 5.6-sol 独立安全验证 |
 | `H1C` | Models / auth / plugins / skills | `BLOCKED` | 待认领 | `H0A`, `ACL0`, `ACL1` | Host application services 依赖 Model/Credential/Resource/Trust Ports |
 | `H2` | WS Runtime Gateway | `BLOCKED` | 待认领 | `H0A`, `H0B`, `R1` | `packages/host/src/runtime/**` |
 | `R3` | Side Chat + 跨边界 mutation | `BLOCKED` | 待认领 | `R1`, `R2` | sessiond/worker Side Chat 模块 |
@@ -337,7 +337,7 @@ H0A ─────────────────────────�
 C0 ─▶ V-C0 ─────────────────────────▶ I0 ─▶ C1 ─▶ C2
 ```
 
-当前进度（2026-08-11 10:42 CST）：项目已恢复。`W0`、`ACL0`、`C0`、`V-C0` 已完成独立验证；`ACL0` 已合入并推送集成分支 `b690826`，Node 22.19 workspace 门禁通过。当前 `P0`、`ACL1` 与 C0 基线集成按独立目录并行推进；`H0A` 已完成第二轮安全修复，等待 5.6-sol 最终复验。
+当前进度（2026-08-11 10:42 CST）：项目已恢复。`W0`、`ACL0`、`C0`、`V-C0`、`H0A` 已完成独立验证；`ACL0` 与 `H0A` 已合入并推送集成分支，当前 HEAD `1432ca5`，Node 22.19 workspace/Host 门禁通过。当前 `P0`、`ACL1`、`H1B` 与 C0 基线集成按独立目录并行推进。
 
 ---
 
@@ -1466,6 +1466,7 @@ AGENTS.md
 
 | 日期 | 变更 |
 |---|---|
+| 2026-08-11 | H0A 经 5.6-sol 最终安全复验 PASS（`b8e150d`，Node 22/24 81/81），已以 `ad2bde8` + `89e9d05` 合入并由 `1432ca5` 完成 Host root lockfile/发布归一化、推送集成分支；解锁并启动 H1B `refactor/host-files-git` |
 | 2026-08-11 | 项目恢复 ACTIVE：ACL0 经多轮 5.6-sol 独立复验最终 PASS（`9deb267`），完整合入并由 `b690826` 归一化 root lockfile/发布排除，Node 22.19 门禁通过并推送；并行恢复 P0、启动 ACL1 与 C0 基线集成；H0A `b8e150d` 等待最终安全复验 |
 | 2026-08-11 | 暂停并盘点：W0 DONE（`8a32502`+`a8d4e3e`，最终 v4flash 复验 PASS，已 fast-forward 合入并推送 `refactor/architecture-v1`）；ACL0/H0A/P0/I0 标记 PAUSED 并记录确切进度（ACL0 实现完成待独立复验、H0A 未提交 WIP、P0 未提交严格 schema 修复）；C0/V-C0 DONE（`d8978b5`）；所有 subagent 已停止，无后台任务；main `f6a163d`，集成分支 `a8d4e3e` |
 | 2026-08-11 | ACL 方案语义收口：新增 W0、ACL2、capability/映射矩阵、composition root 规则和可替换性验收；Protocol 正式命名为 pi-web Runtime Protocol v1 |
