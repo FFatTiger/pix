@@ -7,7 +7,7 @@
 
 - 最后更新：2026-08-11
 - 项目状态：`ACTIVE`
-- 当前里程碑：`M1 — Bootable Standalone App`
+- 当前里程碑：`M2 — Minimal Runtime Happy Path`（M1 已于 2026-08-11 完成）
 - 当前仓库：`/Users/proxy/Documents/program/pix`
 - 旧成果来源：旧 Next 单体 worktree（精确路径与来源 commit 见 `migration-ledger.md`），迁移完成前只读保留
 - 产品主线：Vite Client + Hono Host + 独立 `pix-sessiond` + 每会话 Worker + Runtime Protocol + Pi 防腐层
@@ -77,7 +77,9 @@ PiSdkAdapter（当前）/ PiRpcAdapter（未来）
 
 ## 2. 第一里程碑定义
 
-## M1 — Bootable Standalone App
+## M1 — Bootable Standalone App（`DONE`）
+
+完成证据：`a7e9e29`；GPT 最终独立对抗验证 `PASS`，B2/B4/B5 全部验收通过，M2 已解锁。
 
 M1 的含义是：**新架构在独立 `pix` 仓库中成为一个真实、可安装、可构建、可启动的应用。**
 
@@ -243,10 +245,10 @@ npm run cli -- status
 |---|---|---|---|---|
 | `B0` | Pix Product Workspace | `DONE` | 无 | `e087bf0`；独立 npm workspace、根 scripts、TS 配置、架构检查、零 Next；根脚本 40/40 |
 | `B1` | Core + Protocol Migration | `DONE` | `B0` | `ea7e207`；来源 tree 字节一致；GPT 独立验证 PASS；scripts 40/40、Protocol 109/109、Contract 75/75、Core 3/3 |
-| `B2` | Host + Client Boot Surface | `IN_REVIEW` | `B0`, `B1` | `c65d2df` + root lockfile；Client 82/82、Host 132/132、真实Client dist托管 smoke PASS；最终随M1启动链统一GPT验证 |
+| `B2` | Host + Client Boot Surface | `DONE` | `B0`, `B1` | `c65d2df` + root lockfile；Client 82/82、Host 132/132、真实Client托管与LAN fail-closed；M1 GPT最终验证PASS |
 | `B3` | sessiond Daemon Bootstrap | `DONE` | `B0`, `B1` | `5dc9469` + `44529c3`；GPT复验 PASS；sessiond 38/38，启动信号40/40、回归118/118、专项24/24 |
-| `B4` | Production Composition + CLI | `IN_REVIEW` | `B2`, `B3` | `8f918a9`；`pix`/`pix-host`/`pix-sessiond`、ensure/reuse、RPC probe、`down --all`；CLI 29/29、真实生命周期 PASS |
-| `B5` | Startup E2E | `IN_REVIEW` | `B4` | 自动化 build/start/API/Client asset/Host restart/PID reuse/down cleanup PASS；等待GPT最终M1验证 |
+| `B4` | Production Composition + CLI | `DONE` | `B2`, `B3` | `8f918a9`；`pix`/`pix-host`/`pix-sessiond`、ensure/reuse、RPC probe、`down --all`；CLI 29/29；M1 GPT最终验证PASS |
+| `B5` | Startup E2E | `DONE` | `B4` | `a7e9e29`；build/start/API/Client asset/Host restart/PID reuse/down cleanup；独立4/4 PASS；M1 GPT最终验证PASS |
 
 依赖图：
 
@@ -270,10 +272,10 @@ B0
 
 | ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
-| `R0` | Protocol Process Corrections | `BLOCKED` | `M1` | create/open、epoch、interrupt commandId、stream/bash 语义修正 |
+| `R0` | Protocol Process Corrections | `READY` | `M1` | create/open、epoch、interrupt commandId、stream/bash 语义修正 |
 | `R1` | Agent Worker Controller + Mapper | `BLOCKED` | `R0` | Worker IPC、显式 Mapper、create/open/prompt/abort/snapshot/shutdown |
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
-| `A1` | Pi SDK Agent Adapter | `BLOCKED` | `B1` | 迁 Agent 路径，修 custom UI/sanitizer，最小 capability |
+| `A1` | Pi SDK Agent Adapter | `READY` | `B1` | 迁 Agent 路径，修 custom UI/sanitizer，最小 capability |
 | `H1` | Runtime WS Gateway | `BLOCKED` | `B2`, `B3`, `R0` | Host WS ↔ sessiond RPC |
 | `C1` | RuntimeSocket + SessionStore | `BLOCKED` | `B2`, `R0`, `H1` | handshake/create/attach/prompt/abort/reconnect/snapshot |
 | `X1` | Minimal Runtime E2E | `BLOCKED` | `R2`, `A1`, `H1`, `C1`, `B4` | prompt、stream、abort、Host restart/resume、去重、隔离 |
@@ -470,11 +472,11 @@ git diff --check
 ## 10. 当前立即执行顺序
 
 ```text
-1. B0：DONE（`e087bf0`）
-2. B1：DONE（`ea7e207`，GPT 独立验证 PASS）
-3. B4：IN_REVIEW（`8f918a9`），CLI 29/29与真实生命周期PASS
-4. B5：IN_REVIEW，自动化Startup E2E PASS；等待GPT最终M1验证
-5. GPT PASS后将B2/B4/B5与M1标DONE，并启动M2 Runtime Vertical Slice
+1. M1：DONE（B0–B5；最终集成 `a7e9e29`；GPT 独立对抗验证 PASS）
+2. 当前并行调研 `R0` Protocol Process Corrections 与 `A1` Pi SDK Agent Adapter
+3. R0完成后并行启动R1 Worker Controller与H1 Runtime WS Gateway
+4. R1完成后启动R2 Child Process Worker Factory
+5. H1完成后启动C1 RuntimeSocket + SessionStore，最终由X1验收M2
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。

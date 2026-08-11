@@ -51,12 +51,12 @@ bin/pi-web.js
 | `packages/runtime-core` | `integration-v1@e3508e2`，tree `1debd7e020d0495a27f4e044a27bb72c2fcf45a4` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `DONE`：`ea7e207`；源码字节一致；Core 3/3；GPT PASS |
 | `packages/runtime-contract-tests` | `integration-v1@e3508e2`，tree `899aa8a188979867336f75985a0fb56eaa408a69` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `DONE`：`ea7e207`；源码字节一致；Contract 75/75；GPT PASS |
 | `packages/protocol` | `integration-v1@e3508e2`，tree `16c9144c085111c4d947f969b75fe5161a2554b8` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `DONE`：`ea7e207`；源码字节一致；Protocol 109/109；GPT PASS |
-| `packages/host` boot surface | `integration-v1@e3508e2`，source tree `207e9446378a0e8586ae17659b905d3310d05875` | H0A/H1B 旧验证通过 | Hono app/server、gate/security/static、health、WS guard 基础 | 未使用的旧兼容装配；M1 可暂不挂 files/git/worktree | `IN_REVIEW`：`c65d2df`；Host 132/132、真实静态托管 PASS |
-| `packages/client` boot surface | `client-data@d9f0be7`，source tree `bb2bc86d6c9890d4a35f30b44f1b278e8397e796` | 实现已提交、旧独立验证未完成 | Vite shell、正式 Protocol、HTTP/gate/health/capability 基础 | demo sessions、Runtime no-op 作为产品实现、未挂 Host API 的资源 UI | `IN_REVIEW`：`c65d2df`；Client 82/82、demo已删除、bootstrap真实消费 |
+| `packages/host` boot surface | `integration-v1@e3508e2`，source tree `207e9446378a0e8586ae17659b905d3310d05875` | H0A/H1B 旧验证通过 | Hono app/server、gate/security/static、health、WS guard 基础 | 未使用的旧兼容装配；M1 可暂不挂 files/git/worktree | `DONE`：`c65d2df`；Host 132/132、真实静态托管、LAN fail-closed；M1 GPT PASS |
+| `packages/client` boot surface | `client-data@d9f0be7`，source tree `bb2bc86d6c9890d4a35f30b44f1b278e8397e796` | 实现已提交、旧独立验证未完成 | Vite shell、正式 Protocol、HTTP/gate/health/capability 基础 | demo sessions、Runtime no-op 作为产品实现、未挂 Host API 的资源 UI | `DONE`：`c65d2df`；Client 82/82、demo已删除、bootstrap真实消费；M1 GPT PASS |
 | `packages/sessiond` | 未提交目录 | 候选代码，不能视为 DONE | `package.json`, `scripts/**`, `src/**`, `test/**`, `tsconfig*.json` | `dist`, `dist-test`, `*.tsbuildinfo`, `node_modules` | `DONE`：`5dc9469` + `44529c3`；GPT复验PASS；38/38 |
 | `packages/pi-sdk-adapter` Agent 路径 | `ed34415` | 有 4 个旧计划未关闭问题 | M2 只取 Agent Factory、Runtime、Mapper、sanitizer、必要 internal | sessions/models/credentials/resources/trust 延后 | `DEFERRED_M2` |
 | `packages/agent-worker` | 无 | 不存在 | 新实现 | — | `NEW_M2` |
-| `packages/cli` | 无新架构实现 | 不存在 | 新实现 | 旧 Next bin | `IN_REVIEW`：`8f918a9`；pix lifecycle CLI与production composition完成，等待M1最终验证 |
+| `packages/cli` | 无新架构实现 | 不存在 | 新实现 | 旧 Next bin | `DONE`：`8f918a9`；pix lifecycle CLI与production composition；CLI 29/29；M1 GPT PASS |
 
 ## 4. 已完成迁移记录
 
@@ -129,7 +129,7 @@ Client来源：/Users/proxy/Documents/program/pi-web-worktrees/client-data@d9f0b
 - 根scripts 40/40、Protocol 109/109、Contract 75/75、Core 3/3、sessiond 29/29
 - typecheck/build/architecture/host+client boundaries/git diff-check PASS
 - Host指向真实Client dist：index/hash asset/bootstrap/health/SPA fallback PASS
-独立验证 verdict：PENDING（按用户要求减少中间verify，随B4/B5 M1启动链统一验证）
+独立验证 verdict：PASS（随B4/B5完整M1启动链统一GPT验证）
 依赖审计：2 moderate，来自 @hono/node-server <2.0.5 的Windows encoded-backslash serve-static公告；当前无fixAvailable。本项目不使用其serve-static，使用自有static实现且已有路径遍历/符号链接测试；记录但不阻塞M1。
 ```
 
@@ -148,8 +148,11 @@ CLI：pix、pix-host、pix-sessiond
 - pix-host重启复用同一PID
 - down --all停止daemon并清理lock/socket
 B5自动化：tests/e2e/startup.mjs；npm run test:e2e:startup PASS
-全仓门禁：architecture/build/typecheck/tests/boundaries/diff-check PASS
-独立验证 verdict：PENDING（GPT最终M1验证）
+B5 commit：a7e9e29
+全仓门禁：fresh npm ci、architecture/build/typecheck/tests/boundaries/diff-check PASS；测试精确为scripts44、CLI29、Client82、Host132、Protocol109、Contract75、Core3、sessiond38
+独立验证 verdict：PASS（GPT最终M1对抗验证；B5独立4/4；occupied port、daemon复用、missing dist、host-only、stale/hung lock、LAN fail-closed均PASS）
+M1 verdict：DONE；M2 UNLOCKED
+非阻塞：Hono 2 moderate来自未使用的serve-static；本项目使用自有static实现并有路径/符号链接测试。
 ```
 
 ## 8. 后续迁移时必须记录的校验

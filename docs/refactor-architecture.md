@@ -359,7 +359,7 @@ packages/
 
 建议优先顺序：**M1 → M2 → M3 → M4 → M5**。
 
-M1 是当前唯一活动里程碑。它允许 Agent runtime 暂不可用，但不允许产品仍由 Next 启动；M2 才要求真实 Agent 最小 happy path。
+M1 已完成并通过GPT最终独立对抗验证。当前唯一活动里程碑是 M2：接通真实 Agent 最小 happy path，同时继续保持M1的独立启动、daemon保活、零Next产品路径不变量。
 
 ## 12. 验收指标
 

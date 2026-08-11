@@ -6,7 +6,7 @@
 
 ## 当前里程碑
 
-**M1 — Bootable Standalone App**：在本仓库中完成可构建、可启动的新架构应用。一个命令启动 Hono、真实 Vite Client 和独立 `pix-sessiond`；Host 退出不终止 `pix-sessiond`。
+**M2 — Minimal Runtime Happy Path**：M1 可启动独立应用已完成并通过GPT最终验证。当前接通 agent-worker、Pi SDK Agent Adapter、Host Runtime WebSocket 与 Client RuntimeStore，实现 create/open、prompt、stream、abort 和 snapshot/resume。
 
 ## 从这里开始
 
