@@ -293,13 +293,13 @@ runtime.queue             runtime.stats
 
 | ID | 工作包 | 状态 | 负责人 | 建议分支 | 依赖 | 主要目录 |
 |---|---|---|---|---|---|---|
-| `ACL1` | Pi SDK Adapter | `IN_PROGRESS` | `acl1-adapter-v4` | `refactor/pi-sdk-adapter` | `W0`, `ACL0` | 已从 `b690826` 创建独立 worktree；与 P0 并行，仅修改 `packages/pi-sdk-adapter/**`，完成后交 5.6-sol 独立验证 |
+| `ACL1` | Pi SDK Adapter | `IN_REVIEW` | `acl1-adapter-v4` | `refactor/pi-sdk-adapter` | `W0`, `ACL0` | 实现 `c2e2eb7` + 生产路径修复 `ed34415`（107/107）；5.6-sol 两次复验 FAIL：首轮 scripted 掩盖 8 项，修复后二次复验确认 4/8 PASS（writtenFiles、fork provenance、API-key 持久化、prompt outcome），剩 4 项：production custom UI 增量输入丢弃、skill root symlink 拒绝前外部写入、sanitizer 漏 whitespace secrets、plugin 跨 .js/.ts 同名冲突。v4flash 第三轮修复中；root lockfile 尚未纳入 workspace |
 | `ACL2` | Pi RPC Agent Adapter（未来） | `BACKLOG` | 待认领 | `refactor/pi-rpc-adapter` | `ACL0`, `ACL1` contract baseline | 本轮不实现；未来只改 `packages/pi-rpc-adapter/**` 和 composition config，通过同一 contract suite |
-| `R1` | pi-sessiond Core | `IN_PROGRESS` | `r1-sessiond-v4` | `refactor/sessiond-core` | `ACL0`, `P0`, `I0` | 已从集成 HEAD `4a47a05` 创建独立 worktree；仅修改 `packages/sessiond/**`，完成后交 5.6-sol 独立验证 |
+| `R1` | pi-sessiond Core | `IN_PROGRESS` | `r1-sessiond-v4` | `refactor/sessiond-core` | `ACL0`, `P0`, `I0` | 已从 `4a47a05` 创建；主链 15/15；正在收口 attach 语义：journal 只保存单一 base snapshot，淘汰事件时推进 base；有效 resume 从 base 重建 cursor snapshot 再 replay；gap/epoch/fresh 直接给 boundary snapshot；commandId at-most-once 上限=拒绝新 ID 而非淘汰旧 ID，epoch 更换才清空；工作树未提交 |
 | `R2` | agent-worker Application Shell | `BLOCKED` | 待认领 | `refactor/agent-worker-core` | `ACL0`, `ACL1`, `P0`, `I0` | `packages/agent-worker/**`；Protocol Mapper + Controller + Adapter composition，不 import Pi SDK |
 | `H0A` | Protocol-independent Hono Host Foundation | `DONE` | `h0a-host-foundation-agent` + `h0a-fix-v4` | `refactor/h0a-host-foundation-agent` | 无（禁止 runtime wiring） | 最终 `b8e150d`；5.6-sol 独立安全复验 PASS；Node 22/24 均 81/81；已以 `ad2bde8` + `89e9d05` 合入，并由 `1432ca5` 归一化 root lockfile/发布内容后推送集成分支 |
 | `H0B` | Hono Host Protocol/runtime wiring | `BLOCKED` | 待认领 | `refactor/host-runtime-wiring` | `P0`, `I0`, `H0A`, `R1` | 后续接正式 Protocol/sessiond；不得由 H0A 自行发明协议 |
-| `C1` | Client Protocol + HTTP Query | `IN_PROGRESS` | `c1-client-data-v4` | `refactor/client-data` | `P0`, `C0`, `I0` | 已从 `4a47a05` 启动；删除 protocol shim、接正式 Protocol 与 typed `/v1` Query；不提前实现 C2 RuntimeSocket |
+| `C1` | Client Protocol + HTTP Query | `IN_REVIEW` | `c1-client-data-v4` | `refactor/client-data` | `P0`, `C0`, `I0` | 实现 `d9f0be7`（Node22 83/83、typecheck/build/boundaries 42 files、shim 已删）；等待独立验证；注意：5.6-sol 与 v4flash 验证器多次因 provider 不稳定启动失败（400 tool_call 格式 / Stream ended），尚未获得正式 verdict；C2 未提前实现 |
 | `CLI0` | CLI / sessiond single-instance 启动 | `BLOCKED` | 待认领 | `refactor/cli-runtime` | `R1`, `R2`, `H0A`, `H0B` | `packages/cli/**`, `bin/**` |
 
 ### 5.3 Wave 2：可继续横向拆分
@@ -337,7 +337,7 @@ H0A ─────────────────────────�
 C0 ─▶ V-C0 ─────────────────────────▶ I0 ─▶ C1 ─▶ C2
 ```
 
-当前进度（2026-08-11 10:42 CST）：项目已恢复。`W0`、`ACL0`、`C0`、`V-C0`、`H0A`、`P0`、`V-P0`、`H1B` 已完成独立验证并进入集成分支，当前 HEAD `e3508e2`；Node 22.19 workspace/Runtime/Protocol/Host/Client 门禁通过。当前 `R1`、`C1`、`ACL1` 按独立目录并行推进；H1B 后续消费者仍等待各自其他依赖，不越过 H1C/C1 等门槛。
+当前进度（2026-08-11 会话交接）：已集成 `e3508e2`（W0/ACL0/H0A/C0/P0/H1B 全部独立验证 DONE 并推送）。在途：ACL1 `ed34415` 待第三轮修复+复验；C1 `d9f0be7` 待独立验证（provider 不稳定曾中断，需重跑）；R1 sessiond 开发中未提交。新会话恢复指引：先读本文档 5.x 看板与 14 变更记录；ACL1/C1 完成独立验证 PASS 后再合入集成分支并更新 root lockfile；随后可解锁 ACL1→R2、C1→C2、H1B→H1C/C3C 等依赖任务。
 
 ---
 
@@ -1466,7 +1466,7 @@ AGENTS.md
 
 | 日期 | 变更 |
 |---|---|
-| 2026-08-11 | H1B 经多轮 5.6-sol 安全/并发复验最终 PASS（`c007a72`，Node 22/24 117/117），四提交零冲突合入；集成 HEAD `e3508e2`，Host tree `207e9446...` 与验证版本字节一致并推送 |
+| 2026-08-11 | 会话交接：ACL1 二次复验 4/8 PASS、剩 4 项由 v4flash 三修中；C1 `d9f0be7` 待验证（验证器 provider 不稳定，需新会话重跑）；R1 未提交。集成 `e3508e2` 不变 |
 | 2026-08-11 | P0 多轮 5.6-sol V-P0 最终 PASS（`ba8a208`，Protocol 109/109、攻击矩阵60/60），tree `16c9144c...` 无冲突合入；`4a47a05` 完成 root lockfile并推送，解锁并并行启动 R1 `refactor/sessiond-core` 与 C1 `refactor/client-data` |
 | 2026-08-11 | C0 W0 严格适配经 5.6-sol 独立复验 PASS（`adb6691`），Client tree 无冲突、字节一致合入；`e6432b9` 完成 root lockfile 并推送，Node 22 Client 50/50、Host 81/81、Runtime contracts 75/75 |
 | 2026-08-11 | H0A 经 5.6-sol 最终安全复验 PASS（`b8e150d`，Node 22/24 81/81），已以 `ad2bde8` + `89e9d05` 合入并由 `1432ca5` 完成 Host root lockfile/发布归一化、推送集成分支；解锁并启动 H1B `refactor/host-files-git` |
