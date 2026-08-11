@@ -244,7 +244,7 @@ npm run cli -- status
 | `B0` | Pix Product Workspace | `DONE` | 无 | `e087bf0`；独立 npm workspace、根 scripts、TS 配置、架构检查、零 Next；根脚本 40/40 |
 | `B1` | Core + Protocol Migration | `DONE` | `B0` | `ea7e207`；来源 tree 字节一致；GPT 独立验证 PASS；scripts 40/40、Protocol 109/109、Contract 75/75、Core 3/3 |
 | `B2` | Host + Client Boot Surface | `READY` | `B0`, `B1` | Hono/Vite、gate、health、capabilities、bootstrap、静态托管 |
-| `B3` | sessiond Daemon Bootstrap | `READY` | `B0`, `B1` | source-only 迁移、daemon main、lock/secret/socket、ping/shutdown |
+| `B3` | sessiond Daemon Bootstrap | `IN_REVIEW` | `B0`, `B1` | `5dc9469` + root lockfile；sessiond 29/29、全量门禁 PASS；等待 GPT daemon/single-instance 验证 |
 | `B4` | Production Composition + CLI | `BLOCKED` | `B2`, `B3` | `pi-web`、`pi-host`、`pi-sessiond`、ensure/reuse、`down --all` |
 | `B5` | Startup E2E | `BLOCKED` | `B4` | build/start/browser/API/PID/lifecycle E2E |
 

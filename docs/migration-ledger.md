@@ -53,7 +53,7 @@ bin/pi-web.js
 | `packages/protocol` | `integration-v1@e3508e2`，tree `16c9144c085111c4d947f969b75fe5161a2554b8` | 旧验证通过 | 整包源码、测试、manifest、tsconfig | `dist`, `dist-test`, `node_modules` | `DONE`：`ea7e207`；源码字节一致；Protocol 109/109；GPT PASS |
 | `packages/host` boot surface | `integration-v1@e3508e2` | H0A/H1B 旧验证通过 | Hono app/server、gate/security/static、health、WS guard 基础 | 未使用的旧兼容装配；M1 可暂不挂 files/git/worktree | `PENDING` |
 | `packages/client` boot surface | `client-data@d9f0be7` | 实现已提交、旧独立验证未完成 | Vite shell、正式 Protocol、HTTP/gate/health/capability 基础 | demo sessions、Runtime no-op 作为产品实现、未挂 Host API 的资源 UI | `PENDING` |
-| `packages/sessiond` | 未提交目录 | 候选代码，不能视为 DONE | `package.json`, `scripts/**`, `src/**`, `test/**`, `tsconfig*.json` | `dist`, `dist-test`, `*.tsbuildinfo`, `node_modules` | `PENDING` |
+| `packages/sessiond` | 未提交目录 | 候选代码，不能视为 DONE | `package.json`, `scripts/**`, `src/**`, `test/**`, `tsconfig*.json` | `dist`, `dist-test`, `*.tsbuildinfo`, `node_modules` | `IN_REVIEW`：`5dc9469`；source-only迁移、daemon/control实现；29/29；等待GPT验证 |
 | `packages/pi-sdk-adapter` Agent 路径 | `ed34415` | 有 4 个旧计划未关闭问题 | M2 只取 Agent Factory、Runtime、Mapper、sanitizer、必要 internal | sessions/models/credentials/resources/trust 延后 | `DEFERRED_M2` |
 | `packages/agent-worker` | 无 | 不存在 | 新实现 | — | `NEW_M2` |
 | `packages/cli` | 无新架构实现 | 不存在 | 新实现 | 旧 Next bin | `NEW_M1` |
@@ -88,7 +88,27 @@ bin/pi-web.js
 验证说明：验证器在临时目录 fresh build/typecheck/test；tree hash、lockfile、架构边界、实际测试数量和对抗 consumer probe 全部通过。唯一非阻塞观察是 `.npmrc include=dev` 会影响未来 production-only install，留到 REL1 定义发布安装策略。
 ```
 
-## 5. 后续迁移时必须记录的校验
+## 5. B3 — sessiond Daemon Bootstrap 记录
+
+```text
+来源绝对路径：/Users/proxy/Documents/program/pi-web-worktrees/sessiond-core/packages/sessiond
+来源状态：refactor/sessiond-core@4a47a05 下未跟踪目录
+迁移方式：source-only，排除 dist/dist-test/node_modules/tsbuildinfo
+迁移 commit：5dc9469
+来源修复：service.ts 未定义 closeReason 改为 Protocol RuntimeCloseReasonSchema 规范化
+新增：daemon composition、M1 unavailable worker、locator/context stubs、control API、stale socket清理、signal shutdown、daemon tests
+本地验证：
+- npm ci: PASS
+- npm run check:architecture: PASS
+- npm run typecheck: PASS
+- npm test: PASS（sessiond 29/29；其余公共包全绿）
+- npm run build: PASS
+- git diff --check: PASS
+独立验证 verdict：PENDING（GPT daemon/single-instance/lifecycle）
+残余平台风险：Windows named-pipe/socket权限覆盖有限；PID复用探测为低概率已知限制；down --all 属B4
+```
+
+## 6. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -106,7 +126,7 @@ bin/pi-web.js
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 6. sessiond 特别保护
+## 7. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -139,7 +159,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 7. 旧结果可用性摘要
+## 8. 旧结果可用性摘要
 
 ### 可复用
 
@@ -163,7 +183,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 8. 完成条件
+## 9. 完成条件
 
 迁移阶段完成必须同时满足：
 
