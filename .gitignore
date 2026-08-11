@@ -1,3 +1,25 @@
+# macOS / editor noise
 .DS_Store
 *.swp
 *.tmp
+
+# dependencies (npm workspaces hoist to the root; this matches at any depth)
+node_modules/
+
+# build output
+dist/
+dist-test/
+coverage/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# environment files (keep tracked .env.example if we ever add one)
+.env
+.env.*
+!.env.example
+
+# local runtime state: sockets, pids, secrets
+*.sock
+*.pid
+*.secret
