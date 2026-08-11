@@ -13,6 +13,7 @@
  * Environment is a strict allowlist — never `...process.env`.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -356,8 +357,10 @@ class ProductionWorkerConnection implements WorkerConnection {
   }
 
   private async runClose(): Promise<void> {
-    // Already dead — just clean up streams.
-    if (this.exitEmitted || this.child.exitCode !== null || this.child.signalCode !== null) {
+    // Wait for the real child process, not merely exit-listener emission.
+    // Framing/write failures may emitExit while the OS process is still alive;
+    // close must still escalate so sessiond never leaves orphans.
+    if (this.hasExited()) {
       this.cleanupStreams();
       return;
     }
@@ -370,8 +373,7 @@ class ProductionWorkerConnection implements WorkerConnection {
       // ignore
     }
 
-    const exited = await this.waitForExit(this.stdinEndMs);
-    if (exited) {
+    if (await this.waitForExit(this.stdinEndMs)) {
       this.cleanupStreams();
       return;
     }
@@ -384,8 +386,7 @@ class ProductionWorkerConnection implements WorkerConnection {
         // ESRCH — already gone
       }
     }
-    const afterTerm = await this.waitForExit(this.sigtermMs);
-    if (afterTerm) {
+    if (await this.waitForExit(this.sigtermMs)) {
       this.cleanupStreams();
       return;
     }
@@ -402,10 +403,14 @@ class ProductionWorkerConnection implements WorkerConnection {
     this.cleanupStreams();
   }
 
+  private hasExited(): boolean {
+    return this.child.exitCode !== null || this.child.signalCode !== null;
+  }
+
   private isSameProcess(): boolean {
     if (this.spawnedPid === undefined || this.child.pid === undefined) return false;
     if (this.child.pid !== this.spawnedPid) return false;
-    if (this.child.exitCode !== null || this.child.signalCode !== null) return false;
+    if (this.hasExited()) return false;
     try {
       process.kill(this.spawnedPid, 0);
       return true;
@@ -414,10 +419,13 @@ class ProductionWorkerConnection implements WorkerConnection {
     }
   }
 
+  /**
+   * Bounded wait for the OS child to exit. Early buffered messages/exits never
+   * affect this — only `child.exitCode` / `signalCode` / the `exit` event.
+   * Each deadline resolves false on timeout so escalation always progresses.
+   */
   private waitForExit(timeoutMs: number): Promise<boolean> {
-    if (this.exitEmitted || this.child.exitCode !== null || this.child.signalCode !== null) {
-      return Promise.resolve(true);
-    }
+    if (this.hasExited()) return Promise.resolve(true);
     return new Promise<boolean>((resolveWait) => {
       let settled = false;
       const done = (value: boolean) => {
@@ -428,8 +436,10 @@ class ProductionWorkerConnection implements WorkerConnection {
         resolveWait(value);
       };
       const onExit = () => done(true);
-      const timer = setTimeout(() => done(false), timeoutMs);
+      const timer = setTimeout(() => done(false), Math.max(0, timeoutMs));
       this.child.once("exit", onExit);
+      // Re-check after attaching in case exit raced with the listener install.
+      if (this.hasExited()) done(true);
     });
   }
 
@@ -437,6 +447,15 @@ class ProductionWorkerConnection implements WorkerConnection {
     this.stdin.close();
     this.stdout.stop();
     this.stderr.stop();
+    // Destroy pipes so the parent event loop is not held open by open stdio
+    // handles after the child has exited (or after we gave up waiting).
+    for (const stream of [this.child.stdin, this.child.stdout, this.child.stderr]) {
+      try {
+        stream?.destroy?.();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private handleFrame(line: string): void {
@@ -528,7 +547,14 @@ export class ProductionWorkerProcessFactory implements WorkerProcessFactory {
     }
     if (this.options.extraEnv !== undefined) envInput.extraEnv = this.options.extraEnv;
     const env = buildWorkerEnv(envInput);
-    const cwd = this.options.spawnCwd ?? dirname(workerMain);
+    // Prefer an explicit spawn cwd; otherwise use dirname(workerMain) only when
+    // that directory exists. Falling back to process.cwd() avoids ENOENT when
+    // tests point at a not-yet-copied fixture path. Real session cwd is always
+    // delivered via worker.init, never via spawn cwd.
+    const mainDir = dirname(workerMain);
+    const cwd =
+      this.options.spawnCwd ??
+      (existsSync(mainDir) ? mainDir : process.cwd());
     const stdinEndMs = this.options.stdinEndMs ?? DEFAULT_STDIN_END_MS;
     const sigtermMs = this.options.sigtermMs ?? DEFAULT_SIGTERM_MS;
     const sigkillMs = this.options.sigkillMs ?? DEFAULT_SIGKILL_MS;
