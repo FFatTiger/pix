@@ -95,6 +95,11 @@ const CLOSE_PROTOCOL_ERROR = 1008;
 const CLOSE_MESSAGE_TOO_BIG = 1009;
 const CLOSE_INTERNAL_ERROR = 1011;
 
+/** Invalid operator/test limits fall back to safe defaults, never disable a bound. */
+function positiveSafeInteger(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
 /** Map a sessiond RPC exception into a structured, sanitized ProtocolError. */
 export function mapRpcError(error: unknown): ProtocolError {
   if (error !== null && typeof error === "object" && "code" in error) {
@@ -193,9 +198,9 @@ class BoundedOutbound {
     options: SessiondRuntimeGatewayOutboundLimits,
     private readonly onOverflow: () => void,
   ) {
-    this.maxFrames = options.maxFrames ?? DEFAULT_MAX_FRAMES;
-    this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-    this.maxBufferedAmount = options.maxBufferedAmount ?? DEFAULT_MAX_BUFFERED;
+    this.maxFrames = positiveSafeInteger(options.maxFrames, DEFAULT_MAX_FRAMES);
+    this.maxBytes = positiveSafeInteger(options.maxBytes, DEFAULT_MAX_BYTES);
+    this.maxBufferedAmount = positiveSafeInteger(options.maxBufferedAmount, DEFAULT_MAX_BUFFERED);
   }
 
   /** Returns false on enqueue-time overflow (frame/byte bound); the connection
@@ -323,9 +328,9 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     };
     this.outboundLimits = options.outbound ?? {};
     this.inboundLimits = {
-      maxSerialFrames: options.inbound?.maxSerialFrames ?? DEFAULT_MAX_SERIAL_FRAMES,
-      maxSerialBytes: options.inbound?.maxSerialBytes ?? DEFAULT_MAX_SERIAL_BYTES,
-      maxInflightInterrupts: options.inbound?.maxInflightInterrupts ?? DEFAULT_MAX_INFLIGHT_INTERRUPTS,
+      maxSerialFrames: positiveSafeInteger(options.inbound?.maxSerialFrames, DEFAULT_MAX_SERIAL_FRAMES),
+      maxSerialBytes: positiveSafeInteger(options.inbound?.maxSerialBytes, DEFAULT_MAX_SERIAL_BYTES),
+      maxInflightInterrupts: positiveSafeInteger(options.inbound?.maxInflightInterrupts, DEFAULT_MAX_INFLIGHT_INTERRUPTS),
     };
     this.logger = options.logger ?? {};
   }

@@ -654,3 +654,54 @@ test("F2: browser close / late completion sends no interrupt_result", async () =
   await wait();
   assert.equal(session.sent.filter((f) => JSON.parse(f).type === "interrupt_result").length, 0);
 });
+
+test("non-finite inbound limits fall back to safe defaults", async () => {
+  const commandClient = new FakeClient();
+  commandClient.handlers["runtime.command"] = () => hang();
+  const commandSession = await connect(makeGateway(commandClient, {
+    inbound: { maxSerialFrames: Number.NaN, maxSerialBytes: Number.POSITIVE_INFINITY, maxInflightInterrupts: 16 },
+  }));
+  for (let i = 0; i < 257; i += 1) commandSession.receive(cmdFrame(`nan-c${i}`));
+  await wait();
+  assert.equal(commandSession.closed.code, 1009);
+  // The synchronous flood closes the queue before its first microtask runs,
+  // so every reserved command safely short-circuits without opening an RPC.
+  assert.equal(commandClient.calls.filter((c) => c.method === "runtime.command").length, 0);
+
+  const interruptClient = new FakeClient();
+  interruptClient.handlers["runtime.interrupt"] = () => hang();
+  const interruptSession = await connect(makeGateway(interruptClient, {
+    inbound: { maxSerialFrames: 256, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: Number.NaN },
+  }));
+  for (let i = 0; i < 17; i += 1) interruptSession.receive(interruptFrame(`nan-i${i}`));
+  await wait();
+  assert.equal(interruptSession.closed.code, 1008);
+  assert.equal(interruptClient.calls.filter((c) => c.method === "runtime.interrupt").length, 16);
+});
+
+test("non-finite byte and bufferedAmount limits cannot disable fail-closed bounds", async () => {
+  const inboundClient = new FakeClient();
+  inboundClient.handlers["runtime.command"] = okCommand;
+  const inboundSession = await connect(makeGateway(inboundClient, {
+    inbound: { maxSerialFrames: 256, maxSerialBytes: Number.NaN, maxInflightInterrupts: 16 },
+  }));
+  const oversized = JSON.stringify({
+    type: "command",
+    id: "large",
+    payload: { sessionId: "s1", command: { commandId: "large", type: "prompt", message: "x".repeat(4 * 1024 * 1024) } },
+  });
+  inboundSession.receive(oversized);
+  await wait();
+  assert.equal(inboundSession.closed.code, 1009);
+  assert.equal(inboundClient.calls.filter((c) => c.method === "runtime.command").length, 0);
+
+  const outboundClient = new FakeClient();
+  outboundClient.handlers["runtime.command"] = okCommand;
+  const outboundSession = await connect(makeGateway(outboundClient, {
+    outbound: { maxBufferedAmount: Number.NaN },
+  }));
+  outboundSession.bufferedAmount = 4 * 1024 * 1024 + 1;
+  outboundSession.receive(cmdFrame("buffered"));
+  await wait();
+  assert.equal(outboundSession.closed.code, 1009);
+});
