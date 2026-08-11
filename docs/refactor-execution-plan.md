@@ -273,7 +273,7 @@ B0
 | ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
 | `R0` | Protocol Process Corrections | `DONE` | `M1` | `2672c5c`；GPT独立验证PASS；create/open mode、sessiond epoch、interrupt commandId、partial/bash delta；Protocol110、sessiond40 |
-| `R1` | Agent Worker Controller + Mapper | `IN_PROGRESS` | `R0` | 审计完成；隔离worktree实现Worker IPC、状态Mapper、create/open/prompt/abort/snapshot/shutdown |
+| `R1` | Agent Worker Controller + Mapper | `IN_REVIEW` | `R0` | `f7388b1` + `710ab1c` + lock `43d5b53`；Worker Controller/Mapper/NDJSON/worker-main；90/90与全仓门禁PASS，等待GPT验证 |
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
 | `A1` | Pi SDK Agent Adapter | `DONE` | `B1` | `526b19e` + `fd4612b`；GPT独立验证PASS；SDK0.84真实create/open smoke、92/92、显式prompt+abort capability |
 | `H1` | Runtime WS Gateway | `DONE` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390` + `976c4c6` + `a6eb571`；有界入站/interrupt并发，非法limit回退安全默认；Host172；GPT最终PASS |
@@ -474,8 +474,8 @@ git diff --check
 ```text
 1. M1：DONE（B0–B5；最终集成 `a7e9e29`；GPT 独立对抗验证 PASS）
 2. `R0`：DONE（`2672c5c`，GPT PASS）；`A1`：DONE（`526b19e` + `fd4612b`，GPT PASS）
-3. H1：DONE（有界资源与非法limit hardening，GPT最终PASS）；R1继续隔离worktree实现
-4. R1完成后启动R2 Child Process Worker Factory
+3. H1：DONE（有界资源与非法limit hardening，GPT最终PASS）；R1已集成main并等待GPT独立验证
+4. R1验证PASS后立即启动R2 Child Process Worker Factory
 5. C1首轮GPT blockers已在`2368938`修复，Client149与全仓门禁PASS；等待原GPT探针复验后进入X1
 ```
 

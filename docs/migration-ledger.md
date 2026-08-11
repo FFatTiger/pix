@@ -208,7 +208,22 @@ CLI：只读secret，缺失/unsafe fail closed；注入gateway；保留36e81d4 t
 独立验证 verdict：PASS（GPT最终复验；原165MB普通队列与50k interrupt并发耗尽均关闭；NaN/Infinity/0/负数/unsafe integer无法再禁用inbound/outbound bound；Host172/172、全仓tests、build/typecheck/architecture/boundaries/startup E2E全部PASS；无剩余H1 finding。）
 ```
 
-## 11. C1 — Client RuntimeSocket + SessionStore 记录
+## 11. R1 — Agent Worker Controller + Stateful Mapper 记录
+
+```text
+实现 commits：f7388b1 + 710ab1c
+lockfile commit：43d5b53
+包：@fffattiger/pix-agent-worker；公开worker-main export解析到dist/composition/worker-main.js
+Controller：worker.init create/open；prompt/abort/snapshot/shutdown；correlated result exactly-once；不生成epoch/eventId
+Mapper：累计partial按前缀diff为Protocol delta；非前缀/role变化开新stream；bash delta原样；sessiond projection作为逆向oracle
+Transport：2MiB NDJSON；严格schema；stdout串行背压；stdin EOF有序退出；malformed/oversize发送worker.fatal并exit(1)
+Composition：仅通过@fffattiger/pix-pi-sdk-adapter/agent接真实SDK；M2 capability严格prompt+abort；production stdout仅协议帧
+本地验证：Agent Worker90/90、boundary 12 src/12 declarations、architecture/build/typecheck/root tests/startup E2E PASS
+残余：sessiond侧Child Process Worker Factory由R2接通；真实Browser→Host→sessiond→child→SDK链路留待X1
+独立验证 verdict：IN_REVIEW（等待GPT）
+```
+
+## 12. C1 — Client RuntimeSocket + SessionStore 记录
 
 ```text
 实现 commit：08f0362
@@ -226,7 +241,7 @@ UI：RuntimeProvider、连接状态、真实create/open入口、Composer send/ab
 独立验证 verdict：IN_REVIEW（原GPT验证器正在复跑首轮PROBE-1/2/3/5/9/12/14/15/16及资源/竞态探针。）
 ```
 
-## 12. 后续迁移时必须记录的校验
+## 13. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -244,7 +259,7 @@ UI：RuntimeProvider、连接状态、真实create/open入口、Composer send/ab
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 12. sessiond 特别保护
+## 14. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -277,7 +292,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 13. 旧结果可用性摘要
+## 15. 旧结果可用性摘要
 
 ### 可复用
 
@@ -301,7 +316,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 14. 完成条件
+## 16. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -312,7 +327,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 15. 命名决策（历史证据说明）
+## 17. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 
