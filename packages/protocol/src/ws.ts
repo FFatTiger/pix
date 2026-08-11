@@ -144,6 +144,23 @@ export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckM
 export type WsHostMessage = z.infer<typeof WsHostMessageSchema>;
 export const WsEnvelopeSchema = z.union([WsClientMessageSchema, WsHostMessageSchema]);
 export type WsEnvelope = z.infer<typeof WsEnvelopeSchema>;
+
+// Individual message types (additive; derived from the frozen schemas above).
+export type WsHandshakeMessage = z.infer<typeof WsHandshakeMessageSchema>;
+export type WsHandshakeAckMessage = z.infer<typeof WsHandshakeAckMessageSchema>;
+export type WsHandshakeRejectMessage = z.infer<typeof WsHandshakeRejectMessageSchema>;
+export type WsCreateMessage = z.infer<typeof WsCreateMessageSchema>;
+export type WsAttachMessage = z.infer<typeof WsAttachMessageSchema>;
+export type WsDetachMessage = z.infer<typeof WsDetachMessageSchema>;
+export type WsCommandMessage = z.infer<typeof WsCommandMessageSchema>;
+export type WsInterruptMessage = z.infer<typeof WsInterruptMessageSchema>;
+export type WsGetSnapshotMessage = z.infer<typeof WsGetSnapshotMessageSchema>;
+export type WsStopMessage = z.infer<typeof WsStopMessageSchema>;
+export type WsResponseMessage = z.infer<typeof WsResponseMessageSchema>;
+export type WsInterruptResultMessage = z.infer<typeof WsInterruptResultMessageSchema>;
+export type WsSnapshotMessage = z.infer<typeof WsSnapshotMessageSchema>;
+export type WsEventMessage = z.infer<typeof WsEventMessageSchema>;
+export type WsRuntimeUnavailableMessage = z.infer<typeof WsRuntimeUnavailableMessageSchema>;
 export function parseWsClientMessage(input: unknown): WsClientMessage { return WsClientMessageSchema.parse(input); }
 export function parseWsHostMessage(input: unknown): WsHostMessage { return WsHostMessageSchema.parse(input); }
 export function safeParseWsClientMessage(input: unknown) { return WsClientMessageSchema.safeParse(input); }

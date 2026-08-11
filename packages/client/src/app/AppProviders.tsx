@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { HttpClientProvider } from "@/app/http-context";
+import { RuntimeProvider } from "@/runtime";
 import { ErrorBoundary } from "@/app/ErrorBoundary";
 import type { HostInfo } from "@fffattiger/pix-protocol";
 
@@ -30,7 +31,7 @@ export function AppProviders({ children, host }: AppProvidersProps) {
       <QueryClientProvider client={queryClient}>
         <HttpClientProvider>
           <CapabilityProvider {...(host === undefined ? {} : { host })}>
-            {children}
+            <RuntimeProvider>{children}</RuntimeProvider>
           </CapabilityProvider>
         </HttpClientProvider>
       </QueryClientProvider>

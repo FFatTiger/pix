@@ -17,6 +17,7 @@ export * from "./semantic-mapping.js";
 export * from "./commands.js";
 export * from "./events.js";
 export * from "./snapshot.js";
+export * from "./projection.js";
 export * from "./handshake.js";
 export * from "./ws.js";
 export * from "./sessiond.js";

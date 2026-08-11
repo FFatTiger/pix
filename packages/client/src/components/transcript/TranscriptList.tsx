@@ -1,32 +1,62 @@
 import { useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { AgentMessage, SessionEntry } from "@fffattiger/pix-protocol";
+import type { AgentMessage, SessionEntry, StreamingAgentMessage } from "@fffattiger/pix-protocol";
 import { buildTranscriptRows, estimateRowHeight, getTranscriptRowKey, type TranscriptMessageInput, type TranscriptRow } from "./row-model";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
+import { useRuntime } from "@/runtime";
 
 export interface TranscriptListProps { sessionId?: string; rows?: TranscriptRow[]; overscan?: number }
+
+type AssistantBlock = Extract<AgentMessage, { role: "assistant" }>["content"][number];
+
+function assistantBlocksText(content: AssistantBlock): string {
+  switch (content.type) {
+    case "text": return content.text;
+    case "thinking": return content.thinking;
+    case "toolCall": return `${content.toolName}(${JSON.stringify(content.input)})`;
+    case "image": return "[image]";
+    default: return "";
+  }
+}
 
 function textOf(message: AgentMessage): string {
   if (message.role === "bashExecution") return message.output;
   if (typeof message.content === "string") return message.content;
   if (!Array.isArray(message.content)) return "";
-  return message.content.flatMap((block) => {
-    if (block.type === "text") return [block.text];
-    if (block.type === "thinking") return [block.thinking];
-    if (block.type === "toolCall") return [`${block.toolName}(${JSON.stringify(block.input)})`];
-    return ["[image]"];
-  }).join("\n");
+  return message.content.map((block) => assistantBlocksText(block)).join("\n");
+}
+
+function streamingTextOf(message: StreamingAgentMessage): string {
+  if (message.role === "bashExecution") return message.output ?? "";
+  if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content)) return "";
+  return message.content.map((block) => assistantBlocksText(block)).join("\n");
+}
+
+function roleOf(message: AgentMessage | StreamingAgentMessage): TranscriptMessageInput["role"] {
+  if (message.role === "toolResult") return "tool";
+  if (message.role === "custom" || message.role === "bashExecution") return "system";
+  return message.role;
 }
 
 function toTranscript(entry: SessionEntry): TranscriptMessageInput {
   const message = entry.message;
-  const role = message.role === "toolResult" ? "tool" : message.role === "custom" || message.role === "bashExecution" ? "system" : message.role;
   return {
     id: entry.entryId,
-    role,
+    role: roleOf(message),
+    text: textOf(message),
+    ...(message.role === "toolResult" && message.toolName ? { toolName: message.toolName } : {}),
+    ...(message.timestamp === undefined ? {} : { createdAt: new Date(message.timestamp).toISOString() }),
+  };
+}
+
+function runtimeMessageToInput(message: AgentMessage, index: number): TranscriptMessageInput {
+  return {
+    id: `row:msg:${index}`,
+    role: roleOf(message),
     text: textOf(message),
     ...(message.role === "toolResult" && message.toolName ? { toolName: message.toolName } : {}),
     ...(message.timestamp === undefined ? {} : { createdAt: new Date(message.timestamp).toISOString() }),
@@ -37,16 +67,25 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8 }: Tran
   const parentRef = useRef<HTMLDivElement>(null);
   const http = useHttpClient();
   const { isReadonly, canBrowseSessions } = useCapabilities();
+  const runtime = useRuntime();
   // Only fetch session history when the host actually serves it (sessiond
-  // connected). In M1 no sessions endpoint exists, so this never fires and the
-  // console stays free of expected 404s.
-  const sessionsEnabled = rowsProp === undefined && Boolean(sessionId) && canBrowseSessions;
+  // connected) AND no live runtime stream is attached.
+  const sessionsEnabled = rowsProp === undefined && Boolean(sessionId) && canBrowseSessions && !runtime.attached;
   const context = useQuery({ ...createQueryOptions(http).sessions.context(sessionId ?? ""), enabled: sessionsEnabled });
+
   const rows = useMemo(() => {
     if (rowsProp) return rowsProp;
+    if (runtime.attached) {
+      // Live runtime: rows come from the SessionStore projection + active partial.
+      const inputs = runtime.messages.map(runtimeMessageToInput);
+      if (runtime.streamingPartial) {
+        inputs.push({ id: "row:partial", role: roleOf(runtime.streamingPartial), text: streamingTextOf(runtime.streamingPartial) });
+      }
+      return buildTranscriptRows(inputs, { readonlyBanner: false });
+    }
     const messages = context.data ? context.data.context.entries.map(toTranscript) : [];
     return buildTranscriptRows(messages, { readonlyBanner: isReadonly });
-  }, [rowsProp, context.data, isReadonly]);
+  }, [rowsProp, runtime.attached, runtime.messages, runtime.streamingPartial, context.data, isReadonly]);
 
   const virtualizer = useVirtualizer({ count: rows.length, getScrollElement: () => parentRef.current, estimateSize: (index) => estimateRowHeight(rows[index]!), overscan, getItemKey: (index) => getTranscriptRowKey(rows[index]!) });
   return (
@@ -57,7 +96,7 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8 }: Tran
           return <div key={item.key} data-index={item.index} data-row-id={row.id} ref={virtualizer.measureElement} className={`transcript-row transcript-row--${row.kind}`} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${item.start}px)` }}><TranscriptRowView row={row} /></div>;
         })}
       </div>
-      {context.isError && sessionId ? <div className="transcript-empty">Session history unavailable</div> : rows.length === 0 ? <div className="transcript-empty">{sessionId ? "No messages" : "Select a session or open a deep link with ?session=…"}</div> : null}
+      {runtime.attached ? null : context.isError && sessionId ? <div className="transcript-empty">Session history unavailable</div> : rows.length === 0 ? <div className="transcript-empty">{sessionId ? "No messages" : "Select a session or open a deep link with ?session=…"}</div> : null}
     </div>
   );
 }

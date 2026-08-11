@@ -14,12 +14,12 @@ describe("Protocol integration", () => {
     expect(RuntimeAttachParamsSchema.safeParse({ sessionId: "s", epoch: "e" }).success).toBe(false);
   });
 
-  it("keeps the runtime transport as a non-product placeholder until M2", async () => {
-    const runtimeModule = await import("./runtime-stubs");
-    const runtime = runtimeModule.createRuntimeClientStub();
-    await runtime.attach({ sessionId: "s" });
-    // The stub is network-free and not wired into any product path; it never
-    // reaches the "open" state.
-    expect(runtime.state).toBe("closed");
+  it("ships the real M2 client runtime (SessionStore + RuntimeSocket) instead of a stub", async () => {
+    const runtime = await import("@/runtime");
+    expect(typeof runtime.SessionStore).toBe("function");
+    expect(typeof runtime.RuntimeSocket).toBe("function");
+    expect(typeof runtime.buildRuntimeWsUrl).toBe("function");
+    // The runtime never imports the daemon/runtime-core/Pi SDK (boundary enforced separately).
+    expect(runtime.buildRuntimeWsUrl({ href: "https://host/app/" })).toBe("wss://host/app/v1/runtime");
   });
 });

@@ -1,40 +1,20 @@
 #!/usr/bin/env node
 /**
  * Boundary checks for packages/client source.
- * Fails if client sources reference forbidden Next/SDK/legacy API surface.
+ * Fails if client sources reference forbidden Next/SDK/daemon/runtime-core
+ * surface. The client may depend ONLY on @fffattiger/pix-protocol among the
+ * pix sibling packages (M2 C1 spec §H). Pure rules live in boundary-rules.mjs.
  */
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { detectFileViolations } from "./boundary-rules.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_ROOT = path.resolve(__dirname, "..");
 const SRC_ROOT = path.join(CLIENT_ROOT, "src");
 
-const FORBIDDEN = [
-  {
-    id: "next-import",
-    // next/react, next/font, next/navigation, etc.
-    re: /from\s+["']next\/|import\s*\(\s*["']next\/|["']next\/font|["']next\/navigation|["']next\/link|["']next\/image/,
-  },
-  { id: "pi-sdk", re: /@earendil-works\/pi-/ },
-  // Literal legacy path segments in source (avoid dynamic joins in production).
-  { id: "legacy-api", re: /["'`]\/api\// },
-  { id: "event-source", re: /\bEventSource\b/ },
-];
-
-const TEXT_EXT = new Set([
-  ".ts",
-  ".tsx",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".cjs",
-  ".css",
-  ".html",
-  ".json",
-  ".md",
-]);
+const TEXT_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".html", ".json", ".md"]);
 
 async function walk(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -74,28 +54,7 @@ async function main() {
   for (const file of files) {
     const content = await readFile(file, "utf8");
     const rel = path.relative(CLIENT_ROOT, file);
-    if (/\.tsx?$/.test(rel) && /\bfetch\s*\(/.test(content) && !rel.startsWith("src/api/")) {
-      violations.push({ rule: "direct-fetch", file: rel, line: 1, text: "fetch() is only allowed inside src/api" });
-    }
-    if (rel.includes("protocol-shim")) {
-      violations.push({ rule: "protocol-shim", file: rel, line: 1, text: "temporary Protocol shim must be removed" });
-    }
-    for (const rule of FORBIDDEN) {
-      if (rule.re.test(content)) {
-        // Find line numbers for report
-        const lines = content.split(/\r?\n/);
-        lines.forEach((line, idx) => {
-          if (rule.re.test(line)) {
-            violations.push({
-              rule: rule.id,
-              file: rel,
-              line: idx + 1,
-              text: line.trim().slice(0, 120),
-            });
-          }
-        });
-      }
-    }
+    violations.push(...detectFileViolations(content, rel));
   }
 
   if (violations.length > 0) {
