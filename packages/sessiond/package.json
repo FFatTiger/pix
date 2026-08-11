@@ -17,13 +17,19 @@
   "files": ["dist"],
   "scripts": {
     "clean": "rm -rf dist dist-test",
+    "build:deps": "node ./scripts/build-deps.mjs",
+    "prebuild": "npm run build:deps",
     "build": "npm run clean && tsc -p tsconfig.json",
+    "pretypecheck": "npm run build:deps",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "prebuild:test": "npm run build:deps",
     "test": "npm run build:test && node --test 'dist-test/**/*.test.js'",
     "build:test": "rm -rf dist-test && tsc -p tsconfig.test.json",
+    "precheck:boundaries": "npm run build",
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },
   "dependencies": {
+    "@fffattiger/pix-agent-worker": "0.1.0",
     "@fffattiger/pix-protocol": "0.1.0",
     "@fffattiger/pix-runtime-core": "0.1.0"
   },

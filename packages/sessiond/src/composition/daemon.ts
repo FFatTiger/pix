@@ -15,7 +15,10 @@ import {
   type SessiondPaths,
 } from "../local.js";
 import type { WorkerProcessFactory } from "../worker.js";
-import { UnavailableWorkerFactory } from "./unavailable-worker.js";
+import {
+  createProductionWorkerProcessFactory,
+  type ProductionWorkerProcessOptions,
+} from "./worker-process.js";
 import {
   createStubActivationContext,
   createStubSessionCatalog,
@@ -23,12 +26,21 @@ import {
 } from "./stubs.js";
 import { resolveRuntimeDir } from "./locator.js";
 
-/** Optional overrides for the daemon bootstrap. All default to M1 stubs. */
+/** Optional overrides for the daemon bootstrap. */
 export interface DaemonOptions {
   /** Runtime directory (defaults to `PIX_SESSIOND_DIR` then `~/.pi/pix/sessiond`). */
   directory?: string;
-  /** Worker factory. Defaults to {@link UnavailableWorkerFactory} (M1: no worker). */
+  /**
+   * Worker factory. Defaults to the production child-process factory (R2).
+   * Tests that need the M1 unavailable surface must inject
+   * {@link UnavailableWorkerFactory} explicitly.
+   */
   workerFactory?: WorkerProcessFactory;
+  /**
+   * Options for the default production worker factory. Ignored when
+   * {@link workerFactory} is provided.
+   */
+  workerOptions?: ProductionWorkerProcessOptions;
   /** Override the session locator stub. */
   sessionLocator?: SessionLocatorPort;
   /** Override the activation context stub. */
@@ -60,9 +72,10 @@ export interface DaemonHandle {
   shutdown(): Promise<void>;
 }
 
-/** Build M1 service dependencies, applying any caller overrides. */
+/** Build service dependencies, applying any caller overrides. */
 function buildDependencies(directory: string, options: DaemonOptions): SessiondDependencies {
-  const workerFactory: WorkerProcessFactory = options.workerFactory ?? new UnavailableWorkerFactory();
+  const workerFactory: WorkerProcessFactory =
+    options.workerFactory ?? createProductionWorkerProcessFactory(options.workerOptions ?? {});
   const catalog = options.sessionCatalog === undefined ? createStubSessionCatalog() : options.sessionCatalog;
   const deps: SessiondDependencies = {
     sessionLocator: options.sessionLocator ?? createStubSessionLocator(directory),

@@ -1,0 +1,626 @@
+/**
+ * ProductionWorkerProcessFactory — R2 child-process Worker factory.
+ *
+ * Spawns one non-detached Node child per session via
+ * `process.execPath` + the absolute dist path of
+ * `@fffattiger/pix-agent-worker/worker-main`. Wire is NDJSON on stdio
+ * (2 MiB/frame). Listeners are installed before spawn settles so early
+ * stdout messages and exit/error events are buffered and delivered
+ * exactly-once to later subscribers.
+ *
+ * Factory never forges business commands (no synthetic worker.shutdown).
+ * Close is graceful: stdin.end() → SIGTERM → SIGKILL, with PID reuse guards.
+ * Environment is a strict allowlist — never `...process.env`.
+ */
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  SessiondToWorkerMessageSchema,
+  safeParseWorkerToSessiondMessage,
+  type ProtocolError,
+  type SessiondToWorkerMessage,
+  type WorkerToSessiondMessage,
+} from "@fffattiger/pix-protocol";
+import { SessiondError } from "../errors.js";
+import {
+  DEFAULT_MAX_FRAME_BYTES,
+  NdjsonStdoutReader,
+  SerialStdinWriter,
+  StderrRing,
+} from "../internal/child-stdio.js";
+import type {
+  WorkerConnection,
+  WorkerExit,
+  WorkerProcessFactory,
+  WorkerStartInput,
+} from "../worker.js";
+
+const requireFromHere = createRequire(import.meta.url);
+
+/** Default close escalation deadlines (ms). */
+export const DEFAULT_STDIN_END_MS = 2_000;
+export const DEFAULT_SIGTERM_MS = 2_000;
+export const DEFAULT_SIGKILL_MS = 2_000;
+
+/**
+ * Explicit provider credential names allowed into the worker env.
+ * Never spread process.env; only these known keys pass through when present.
+ */
+export const WORKER_ENV_KEY_ALLOWLIST = [
+  // Anthropic / OpenAI / Google / OpenRouter / Groq / Mistral / DeepSeek / xAI / Azure
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "OPENAI_API_KEY",
+  "OPENAI_API_BASE",
+  "OPENAI_BASE_URL",
+  "OPENAI_ORG_ID",
+  "OPENAI_ORGANIZATION",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "GROQ_API_KEY",
+  "MISTRAL_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "XAI_API_KEY",
+  "TOGETHER_API_KEY",
+  "FIREWORKS_API_KEY",
+  "PERPLEXITY_API_KEY",
+  "COHERE_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "AZURE_API_KEY",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_REGION",
+  "AWS_DEFAULT_REGION",
+] as const;
+
+export interface ProductionWorkerProcessOptions {
+  /**
+   * Absolute path to the worker-main entry. Production resolves via package
+   * exports; tests may inject a fixture script. Never read from untrusted env
+   * unless the caller intentionally opts in through this option.
+   */
+  workerMainPath?: string;
+  /**
+   * Absolute path for the R1 test-only factory injection seam
+   * (`PIX_AGENT_WORKER_FACTORY`). Production leaves this unset so the worker
+   * uses the SDK backend. Never auto-forwarded from process.env.
+   */
+  workerFactoryModulePath?: string;
+  /** Override Node executable (defaults to `process.execPath`). */
+  execPath?: string;
+  /** Parent env snapshot used as the allowlist source (defaults to process.env). */
+  env?: NodeJS.ProcessEnv;
+  /** Override PI_CODING_AGENT_DIR default (`~/.pi`). */
+  defaultPiCodingAgentDir?: string;
+  /** Close escalation: wait after stdin.end() before SIGTERM. */
+  stdinEndMs?: number;
+  /** Close escalation: wait after SIGTERM before SIGKILL. */
+  sigtermMs?: number;
+  /** Close escalation: wait after SIGKILL before giving up. */
+  sigkillMs?: number;
+  /** Max NDJSON frame size in UTF-8 bytes (default 2 MiB). */
+  maxFrameBytes?: number;
+  /** Spawn cwd (neutral; real cwd is carried by worker.init). Defaults to dirname(workerMain). */
+  spawnCwd?: string;
+  /**
+   * Extra env keys merged AFTER the allowlist (test injection only).
+   * Never used to smuggle sessiond secrets in production — callers must not
+   * put PIX_SESSIOND_DIR / secrets here. Production composition leaves this
+   * unset.
+   */
+  extraEnv?: NodeJS.ProcessEnv;
+}
+
+export interface WorkerEnvBuildInput {
+  sourceEnv?: NodeJS.ProcessEnv;
+  /** Explicit test-only factory module path → PIX_AGENT_WORKER_FACTORY. */
+  workerFactoryModulePath?: string;
+  defaultPiCodingAgentDir?: string;
+  /** Merged last; see {@link ProductionWorkerProcessOptions.extraEnv}. */
+  extraEnv?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Build the minimal worker environment. Never spreads process.env.
+ * Always sets PIX_AGENT_BACKEND=sdk. Forwards PATH/HOME, PI_CODING_AGENT_DIR
+ * (default ~/.pi), and an explicit provider credential allowlist. Rejects
+ * sessiond secrets and any other PIX_* keys.
+ */
+export function buildWorkerEnv(input: WorkerEnvBuildInput = {}): NodeJS.ProcessEnv {
+  const source = input.sourceEnv ?? process.env;
+  const env: NodeJS.ProcessEnv = {
+    PIX_AGENT_BACKEND: "sdk",
+  };
+  if (typeof source.PATH === "string" && source.PATH.length > 0) env.PATH = source.PATH;
+  if (typeof source.HOME === "string" && source.HOME.length > 0) env.HOME = source.HOME;
+  // Windows Node looks up USERPROFILE for homedir-equivalent paths.
+  if (typeof source.USERPROFILE === "string" && source.USERPROFILE.length > 0) {
+    env.USERPROFILE = source.USERPROFILE;
+  }
+  if (typeof source.LANG === "string" && source.LANG.length > 0) env.LANG = source.LANG;
+  if (typeof source.LC_ALL === "string" && source.LC_ALL.length > 0) env.LC_ALL = source.LC_ALL;
+  if (typeof source.TMPDIR === "string" && source.TMPDIR.length > 0) env.TMPDIR = source.TMPDIR;
+  if (typeof source.TEMP === "string" && source.TEMP.length > 0) env.TEMP = source.TEMP;
+  if (typeof source.TMP === "string" && source.TMP.length > 0) env.TMP = source.TMP;
+
+  const piDir =
+    typeof source.PI_CODING_AGENT_DIR === "string" && source.PI_CODING_AGENT_DIR.length > 0
+      ? source.PI_CODING_AGENT_DIR
+      : (input.defaultPiCodingAgentDir ?? resolve(homedir(), ".pi"));
+  env.PI_CODING_AGENT_DIR = piDir;
+
+  for (const key of WORKER_ENV_KEY_ALLOWLIST) {
+    const value = source[key];
+    if (typeof value === "string" && value.length > 0) env[key] = value;
+  }
+
+  // Test-only injection: only when the factory options explicitly request it.
+  if (
+    typeof input.workerFactoryModulePath === "string" &&
+    input.workerFactoryModulePath.length > 0
+  ) {
+    env.PIX_AGENT_WORKER_FACTORY = input.workerFactoryModulePath;
+  }
+
+  // Optional explicit extras (tests). Still refuse to forward sessiond secrets
+  // even if a caller tries.
+  if (input.extraEnv) {
+    for (const [key, value] of Object.entries(input.extraEnv)) {
+      if (value === undefined) continue;
+      if (key === "PIX_SESSIOND_DIR" || key === "PIX_PASSWORD" || key === "SESSIOND_SECRET") continue;
+      if (key.startsWith("PIX_") && key !== "PIX_AGENT_BACKEND" && key !== "PIX_AGENT_WORKER_FACTORY" && key !== "PIX_FIXTURE_MODE") {
+        continue;
+      }
+      env[key] = value;
+    }
+  }
+
+  return env;
+}
+
+/** Resolve the absolute dist path of the worker-main package export. */
+export function resolveWorkerMainPath(): string {
+  // Prefer package exports resolution (matches R1's own test pattern).
+  try {
+    const url = import.meta.resolve("@fffattiger/pix-agent-worker/worker-main");
+    return fileURLToPath(url);
+  } catch {
+    // Fallback for environments where import.meta.resolve is unavailable.
+    return requireFromHere.resolve("@fffattiger/pix-agent-worker/worker-main");
+  }
+}
+
+function toProtocolError(message: string, code: ProtocolError["code"] = "worker_unavailable"): ProtocolError {
+  return { code, message, retryable: true };
+}
+
+// ---------------------------------------------------------------------------
+// Connection
+// ---------------------------------------------------------------------------
+
+class ProductionWorkerConnection implements WorkerConnection {
+  readonly pid?: number;
+
+  private readonly messageListeners = new Set<(message: WorkerToSessiondMessage) => void>();
+  private readonly exitListeners = new Set<(exit: WorkerExit) => void>();
+  private readonly earlyMessages: WorkerToSessiondMessage[] = [];
+  private earlyExit: WorkerExit | undefined;
+  private exitEmitted = false;
+  private closed = false;
+  private closePromise: Promise<void> | undefined;
+  private fatalFraming = false;
+  private readonly spawnedPid: number | undefined;
+  private readonly stdin: SerialStdinWriter;
+  private readonly stdout: NdjsonStdoutReader;
+  private readonly stderr: StderrRing;
+  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly stdinEndMs: number;
+  private readonly sigtermMs: number;
+  private readonly sigkillMs: number;
+
+  constructor(
+    child: ChildProcessWithoutNullStreams,
+    options: {
+      stdinEndMs: number;
+      sigtermMs: number;
+      sigkillMs: number;
+      maxFrameBytes: number;
+    },
+  ) {
+    this.child = child;
+    this.spawnedPid = typeof child.pid === "number" ? child.pid : undefined;
+    if (typeof child.pid === "number") {
+      (this as { pid: number }).pid = child.pid;
+    }
+    this.stdinEndMs = options.stdinEndMs;
+    this.sigtermMs = options.sigtermMs;
+    this.sigkillMs = options.sigkillMs;
+
+    this.stdin = new SerialStdinWriter(child.stdin);
+    this.stderr = new StderrRing(child.stderr);
+    this.stdout = new NdjsonStdoutReader(child.stdout, {
+      maxFrameBytes: options.maxFrameBytes,
+      onFrame: (line) => this.handleFrame(line),
+      onFatal: (reason) => this.handleFatalFraming(reason),
+    });
+
+    // Install ALL lifecycle listeners BEFORE the caller can race with early
+    // stdout / immediate exit. start() only resolves after spawn succeeds, but
+    // a child can exit or print before the awaiter attaches subscribe/onExit.
+    this.stderr.start();
+    this.stdout.start();
+    child.once("error", (error) => {
+      this.emitExit({
+        error: toProtocolError(
+          `worker process error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      });
+    });
+    child.once("exit", (code, signal) => {
+      const exit: WorkerExit = {};
+      if (code !== null && code !== undefined) exit.code = code;
+      if (signal !== null && signal !== undefined) exit.signal = signal;
+      if (this.fatalFraming && exit.error === undefined) {
+        exit.error = toProtocolError("worker framing failure", "invalid_request");
+      } else if (code !== 0 && code !== null && exit.error === undefined) {
+        // Non-zero exit without a prior worker.fatal still surfaces as an error
+        // so sessiond can mark the session crashed. Expected closes (stdin EOF
+        // / SIGTERM after close) typically exit 0.
+        const detail = this.stderr.snapshot().trim().slice(0, 400);
+        exit.error = toProtocolError(
+          detail.length > 0
+            ? `worker exited with code ${code}: ${detail}`
+            : `worker exited with code ${code}`,
+        );
+      }
+      this.emitExit(exit);
+    });
+  }
+
+  async send(message: SessiondToWorkerMessage): Promise<void> {
+    if (this.closed || this.exitEmitted) {
+      throw new SessiondError("worker_unavailable", "worker connection is closed", true);
+    }
+    const parsed = SessiondToWorkerMessageSchema.safeParse(message);
+    if (!parsed.success) {
+      const detail = parsed.error.issues
+        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .join("; ")
+        .slice(0, 300);
+      throw new SessiondError("invalid_request", `invalid worker frame: ${detail || "schema violation"}`, false);
+    }
+    const frame = JSON.stringify(parsed.data);
+    if (Buffer.byteLength(frame, "utf8") > DEFAULT_MAX_FRAME_BYTES) {
+      throw new SessiondError("invalid_request", "worker frame exceeds the size limit", false);
+    }
+    try {
+      await this.stdin.enqueue(frame);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.emitExit({ error: toProtocolError(`worker stdin write failed: ${err.message}`) });
+      throw new SessiondError("worker_unavailable", `worker stdin write failed: ${err.message}`, true);
+    }
+  }
+
+  subscribe(listener: (message: WorkerToSessiondMessage) => void): () => void {
+    this.messageListeners.add(listener);
+    // Replay anything that arrived before the first subscriber (service
+    // registers subscribe only after factory.start resolves).
+    if (this.earlyMessages.length > 0) {
+      const pending = this.earlyMessages.splice(0);
+      for (const message of pending) {
+        try {
+          listener(message);
+        } catch {
+          // listener errors must not break the connection
+        }
+      }
+    }
+    return () => {
+      this.messageListeners.delete(listener);
+    };
+  }
+
+  onExit(listener: (exit: WorkerExit) => void): () => void {
+    this.exitListeners.add(listener);
+    if (this.earlyExit !== undefined) {
+      const exit = this.earlyExit;
+      this.earlyExit = undefined;
+      try {
+        listener(exit);
+      } catch {
+        // ignore
+      }
+    }
+    return () => {
+      this.exitListeners.delete(listener);
+    };
+  }
+
+  async close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closed = true;
+    this.closePromise = this.runClose();
+    return this.closePromise;
+  }
+
+  /** Diagnostic stderr snapshot (redacted). */
+  stderrSnapshot(): string {
+    return this.stderr.snapshot();
+  }
+
+  private async runClose(): Promise<void> {
+    // Already dead — just clean up streams.
+    if (this.exitEmitted || this.child.exitCode !== null || this.child.signalCode !== null) {
+      this.cleanupStreams();
+      return;
+    }
+
+    // 1) Graceful: stdin EOF. R1 worker exits on stdin end; factory never
+    //    forges worker.shutdown (service owns business commands).
+    try {
+      this.stdin.end();
+    } catch {
+      // ignore
+    }
+
+    const exited = await this.waitForExit(this.stdinEndMs);
+    if (exited) {
+      this.cleanupStreams();
+      return;
+    }
+
+    // 2) SIGTERM (only if this is still the same process).
+    if (this.isSameProcess()) {
+      try {
+        this.child.kill("SIGTERM");
+      } catch {
+        // ESRCH — already gone
+      }
+    }
+    const afterTerm = await this.waitForExit(this.sigtermMs);
+    if (afterTerm) {
+      this.cleanupStreams();
+      return;
+    }
+
+    // 3) SIGKILL last resort.
+    if (this.isSameProcess()) {
+      try {
+        this.child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    await this.waitForExit(this.sigkillMs);
+    this.cleanupStreams();
+  }
+
+  private isSameProcess(): boolean {
+    if (this.spawnedPid === undefined || this.child.pid === undefined) return false;
+    if (this.child.pid !== this.spawnedPid) return false;
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return false;
+    try {
+      process.kill(this.spawnedPid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private waitForExit(timeoutMs: number): Promise<boolean> {
+    if (this.exitEmitted || this.child.exitCode !== null || this.child.signalCode !== null) {
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>((resolveWait) => {
+      let settled = false;
+      const done = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.child.off("exit", onExit);
+        resolveWait(value);
+      };
+      const onExit = () => done(true);
+      const timer = setTimeout(() => done(false), timeoutMs);
+      this.child.once("exit", onExit);
+    });
+  }
+
+  private cleanupStreams(): void {
+    this.stdin.close();
+    this.stdout.stop();
+    this.stderr.stop();
+  }
+
+  private handleFrame(line: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      this.handleFatalFraming("malformed frame: not valid JSON");
+      return;
+    }
+    const result = safeParseWorkerToSessiondMessage(parsed);
+    if (!result.success) {
+      this.handleFatalFraming("malformed frame: schema violation");
+      return;
+    }
+    this.dispatchMessage(result.data);
+  }
+
+  private handleFatalFraming(reason: string): void {
+    if (this.fatalFraming) return;
+    this.fatalFraming = true;
+    this.emitExit({ error: toProtocolError(reason, "invalid_request") });
+    // Best-effort terminate; do not await (exit handler will settle close).
+    if (this.isSameProcess()) {
+      try {
+        this.child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private dispatchMessage(message: WorkerToSessiondMessage): void {
+    if (this.messageListeners.size === 0) {
+      this.earlyMessages.push(message);
+      return;
+    }
+    for (const listener of [...this.messageListeners]) {
+      try {
+        listener(message);
+      } catch {
+        // isolate listener failures
+      }
+    }
+  }
+
+  private emitExit(exit: WorkerExit): void {
+    if (this.exitEmitted) return;
+    this.exitEmitted = true;
+    this.cleanupStreams();
+    if (this.exitListeners.size === 0) {
+      this.earlyExit = exit;
+      return;
+    }
+    for (const listener of [...this.exitListeners]) {
+      try {
+        listener(exit);
+      } catch {
+        // isolate
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export class ProductionWorkerProcessFactory implements WorkerProcessFactory {
+  private readonly options: ProductionWorkerProcessOptions;
+
+  constructor(options: ProductionWorkerProcessOptions = {}) {
+    this.options = options;
+  }
+
+  async start(_input: WorkerStartInput): Promise<WorkerConnection> {
+    const workerMain =
+      this.options.workerMainPath !== undefined && this.options.workerMainPath.length > 0
+        ? this.options.workerMainPath
+        : resolveWorkerMainPath();
+    const execPath = this.options.execPath ?? process.execPath;
+    const envInput: WorkerEnvBuildInput = {};
+    if (this.options.env !== undefined) envInput.sourceEnv = this.options.env;
+    if (this.options.workerFactoryModulePath !== undefined) {
+      envInput.workerFactoryModulePath = this.options.workerFactoryModulePath;
+    }
+    if (this.options.defaultPiCodingAgentDir !== undefined) {
+      envInput.defaultPiCodingAgentDir = this.options.defaultPiCodingAgentDir;
+    }
+    if (this.options.extraEnv !== undefined) envInput.extraEnv = this.options.extraEnv;
+    const env = buildWorkerEnv(envInput);
+    const cwd = this.options.spawnCwd ?? dirname(workerMain);
+    const stdinEndMs = this.options.stdinEndMs ?? DEFAULT_STDIN_END_MS;
+    const sigtermMs = this.options.sigtermMs ?? DEFAULT_SIGTERM_MS;
+    const sigkillMs = this.options.sigkillMs ?? DEFAULT_SIGKILL_MS;
+    const maxFrameBytes = this.options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
+
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(execPath, [workerMain], {
+        cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        // Frozen process model: one non-detached Node child per session.
+        detached: false,
+        windowsHide: true,
+      }) as ChildProcessWithoutNullStreams;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new SessiondError("worker_unavailable", `failed to spawn worker: ${message}`, true);
+    }
+
+    // Spawn returned a ChildProcess. Attach connection immediately so early
+    // stdout/exit are buffered. Reject if the child fails to launch (error
+    // before spawn is fully ready — e.g. missing binary).
+    const connection = new ProductionWorkerConnection(child, {
+      stdinEndMs,
+      sigtermMs,
+      sigkillMs,
+      maxFrameBytes,
+    });
+
+    // If spawn itself emitted an error synchronously (ENOENT on execPath),
+    // wait a tick for the error event and surface it as start() rejection.
+    const spawnFailure = await waitForSpawnSettlement(child, 50);
+    if (spawnFailure !== undefined) {
+      await connection.close().catch(() => {});
+      throw new SessiondError(
+        "worker_unavailable",
+        `failed to spawn worker: ${spawnFailure}`,
+        true,
+      );
+    }
+
+    // start() resolves only after a successful spawn. Service then registers
+    // subscribe/onExit and sends worker.init — early messages stay buffered.
+    return connection;
+  }
+}
+
+/**
+ * Brief window to catch synchronous spawn failures (ENOENT). Resolves with an
+ * error message when the child errors before producing a pid / exit, else
+ * undefined once the process looks alive or has already exited cleanly.
+ */
+function waitForSpawnSettlement(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    // Immediate exit can be legitimate (fixture that prints and quits); do not
+    // treat as spawn failure — connection buffers the exit for onExit.
+    return Promise.resolve(undefined);
+  }
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const finish = (value: string | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("error", onError);
+      child.off("spawn", onSpawn);
+      resolvePromise(value);
+    };
+    const onError = (error: Error) => finish(error.message);
+    const onSpawn = () => finish(undefined);
+    const timer = setTimeout(() => finish(undefined), timeoutMs);
+    child.once("error", onError);
+    child.once("spawn", onSpawn);
+    // Node may have already emitted 'spawn' before we attached.
+    if (typeof child.pid === "number" && child.pid > 0) {
+      // Defer so a same-tick error still wins if both fire.
+      queueMicrotask(() => {
+        if (!settled && (child as { spawnargs?: unknown }).spawnargs !== undefined) {
+          // pid assigned is a strong signal; only wait out the timer for late errors
+        }
+      });
+    }
+  });
+}
+
+/** Default factory used by the daemon composition root. */
+export function createProductionWorkerProcessFactory(
+  options: ProductionWorkerProcessOptions = {},
+): ProductionWorkerProcessFactory {
+  return new ProductionWorkerProcessFactory(options);
+}
