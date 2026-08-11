@@ -139,6 +139,27 @@ test("WS hello delegates to the injected runtime seam (H0B) and frames flow", as
   });
 });
 
+test("WS onClose fires exactly once when the raw socket closes", async () => {
+  const onCloseCalls = { count: 0 };
+  const runtimeWs = {
+    attach(session) {
+      session.onClose(() => {
+        onCloseCalls.count += 1;
+      });
+    },
+  };
+  await withServer({ runtimeWs, helloTimeoutMs: 500 }, async (handle) => {
+    const ws = await connect(handle.port);
+    ws.send("hello");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    ws.close();
+    await waitClose(ws);
+    // allow the close event to propagate
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(onCloseCalls.count, 1);
+  });
+});
+
 test("WS runtime attach sync throw and async rejection close with 1011", async () => {
   for (const runtimeWs of [
     { attach() { throw new Error("sync boom"); } },

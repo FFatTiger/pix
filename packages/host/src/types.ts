@@ -199,6 +199,14 @@ export interface WsSession {
   close(code?: number, reason?: string): void;
   /** Register a listener for subsequent (non-hello) frames; returns unsubscribe. */
   onMessage(listener: (data: string) => void): () => void;
+  /**
+   * Register a listener fired exactly once when the underlying socket closes
+   * (remote close, local close, or error). Registering after close fires it
+   * immediately. Returns an unsubscribe function.
+   */
+  onClose(listener: () => void): () => void;
+  /** Bytes buffered on the raw socket (for bounded-sender backpressure checks). */
+  readonly bufferedAmount: number;
 }
 
 export interface RuntimeWsSeam {

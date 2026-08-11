@@ -5,6 +5,7 @@ import {
   consoleLogger,
   EMPTY_HOST_CAPABILITIES,
   createEnvGateConfigSource,
+  SessiondRuntimeGateway,
   type NodeServerHandle,
   type GateConfig,
   type GateConfigSource,
@@ -14,6 +15,7 @@ import type { BindOptions } from "../args.js";
 import type { SessiondLocation } from "../supervise.js";
 import { createSessiondProbe } from "../probe.js";
 import { resolveClientDist } from "../paths.js";
+import { readLocalSecret } from "../secret.js";
 import { pixLog, pixErr } from "../log.js";
 
 /** Best-effort browser launch; never fatal — `--no-open` is the safe default. */
@@ -71,9 +73,10 @@ export function resolveAllowedHosts(
 
 /**
  * Boot the Hono Host bound to `options.hostname:options.port`, serving the
- * built Vite client and a real sessiond capability probe. Capabilities are
- * honestly empty for M1 (no agent/files/resources wired), so the host never
- * advertises a capability it has not mounted.
+ * built Vite client and the sessiond-backed runtime WS gateway. Capabilities
+ * are honestly empty for M2 H1 (no agent/files/resources wired): the runtime
+ * gateway is connected but no agent capability is advertised until a real
+ * Worker (R2) is verified.
  *
  * Only the Host is torn down on SIGINT/SIGTERM: the sessiond is a separate
  * (detached or pre-existing) process and must survive a Host restart.
@@ -85,6 +88,30 @@ export async function runHost(
   const exposureMode = exposureModeForBind(options.hostname);
   const clientDist = resolveClientDist();
 
+  // Read the sessiond local secret strictly read-only and fail closed when it
+  // is missing or unsafe: a Host that cannot authenticate to its own sessiond
+  // must not silently advertise a runtime gateway.
+  let secret: string | undefined;
+  try {
+    secret = await readLocalSecret(location.paths.secretFile);
+  } catch (error) {
+    pixErr(`sessiond secret unavailable (fail closed): ${(error as Error).message}`);
+    return 1;
+  }
+  if (secret === undefined) {
+    pixErr(`sessiond secret not published yet (fail closed): ${location.paths.secretFile}`);
+    return 1;
+  }
+  const runtimeWs = new SessiondRuntimeGateway({
+    endpoint: location.paths.endpoint,
+    secret,
+    mode: exposureMode,
+    // M2 H1: the runtime gateway is wired, but no agent capability is
+    // advertised until a real Worker (R2) is connected and verified.
+    capabilities: [],
+    logger: consoleLogger,
+  });
+
   const host = createHostApp({
     exposureMode,
     clientDist,
@@ -93,6 +120,7 @@ export async function runHost(
     sessiond: createSessiondProbe(location.paths),
     gate: { config: createBootGateConfigSource() },
     logger: consoleLogger,
+    runtimeWs,
   });
 
   const handle: NodeServerHandle = await createNodeServer(host, {
@@ -102,7 +130,7 @@ export async function runHost(
   const url = `http://${options.hostname}:${handle.port}`;
   pixLog(`host listening on ${url}`);
   pixLog(`sessiond at ${location.directory} (endpoint ${location.endpoint})`);
-  pixLog(`capabilities: [] (M1 boot composition) — press Ctrl+C to stop the host`);
+  pixLog(`runtime gateway wired (capabilities: [] — agent capability pending R2 worker); press Ctrl+C to stop the host`);
 
   if (options.open) openBrowser(url);
 

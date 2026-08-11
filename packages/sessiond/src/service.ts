@@ -700,6 +700,7 @@ export class SessiondService {
       lastEventId: boundary,
       cwd: record.cwd,
       projectRoot: record.projectRoot,
+      workerStatus: record.status,
       resumeStatus: reason,
       snapshot: boundarySnapshot,
     };

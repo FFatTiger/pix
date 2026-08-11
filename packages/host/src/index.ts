@@ -74,6 +74,14 @@ export type { SpaFallbackOptions } from "./static/spa.js";
 export { createRuntimeWsRoute, DEFAULT_HELLO_TIMEOUT_MS } from "./ws/guard.js";
 export type { WsGuardOptions } from "./ws/guard.js";
 
+export { SessiondRuntimeGateway, mapRpcError } from "./composition/runtime-gateway.js";
+export type {
+  SessiondRuntimeClient,
+  SessiondRuntimeGatewayOptions,
+  SessiondRuntimeGatewayLimits,
+  SessiondRuntimeGatewayOutboundLimits,
+} from "./composition/runtime-gateway.js";
+
 export {
   ALL_HOST_CAPABILITIES,
   READONLY_HOST_CAPABILITIES,

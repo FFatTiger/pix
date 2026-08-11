@@ -192,6 +192,7 @@ export const SessiondRuntimeAttachResultSchema = z.strictObject({
   lastEventId: LastEventIdSchema,
   cwd: NonEmptyStringSchema,
   projectRoot: NonEmptyStringSchema,
+  workerStatus: WorkerStatusSchema,
   resumeStatus: SnapshotDeliveryReasonSchema,
   snapshot: RuntimeSnapshotSchema,
 }).superRefine((value, ctx) => {

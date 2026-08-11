@@ -22,6 +22,12 @@ import {
   RuntimeInterruptSchema,
 } from "./results.js";
 import { RuntimeSnapshotSchema } from "./snapshot.js";
+import {
+  RuntimeCreateResultSchema,
+  RuntimeDetachResultSchema,
+  RuntimeGetSnapshotResultSchema,
+  RuntimeStopResultSchema,
+} from "./sessiond.js";
 
 export const WsHandshakeMessageSchema = z.strictObject({ type: z.literal("handshake"), id: NonEmptyStringSchema.optional(), payload: ProtocolHandshakeRequestSchema });
 export const WsHandshakeAckMessageSchema = z.strictObject({ type: z.literal("handshake_ack"), id: NonEmptyStringSchema.optional(), payload: ProtocolHandshakeResponseSchema });
@@ -52,11 +58,40 @@ export const WsInterruptMessageSchema = z.strictObject({
   }),
 });
 
+/** Read-only snapshot fetch (no worker activation). */
+export const WsGetSnapshotMessageSchema = z.strictObject({
+  type: z.literal("getSnapshot"),
+  id: NonEmptyStringSchema,
+  payload: z.strictObject({ sessionId: NonEmptyStringSchema }),
+});
+
+/** Authoritative session stop; also closes the matching attach subscription. */
+export const WsStopMessageSchema = z.strictObject({
+  type: z.literal("stop"),
+  id: NonEmptyStringSchema,
+  payload: z.strictObject({ sessionId: NonEmptyStringSchema, reason: z.string().optional() }),
+});
+
+/**
+ * Strict success-result union for a correlated WS response. Each member maps
+ * to a host verb: command (CorrelatedRuntimeCommandResult), create, detach,
+ * getSnapshot (RuntimeSnapshot) and stop. `unknown` is never accepted — the
+ * result is always a known, validated protocol result.
+ */
+export const WsResponseResultSchema = z.union([
+  CorrelatedRuntimeCommandResultSchema,
+  RuntimeCreateResultSchema,
+  RuntimeDetachResultSchema,
+  RuntimeGetSnapshotResultSchema,
+  RuntimeStopResultSchema,
+]);
+export type WsResponseResult = z.infer<typeof WsResponseResultSchema>;
+
 export const WsResponseMessageSchema = z.strictObject({
   type: z.literal("response"),
   id: NonEmptyStringSchema,
   payload: z.discriminatedUnion("ok", [
-    z.strictObject({ sessionId: NonEmptyStringSchema.optional(), ok: z.literal(true), result: CorrelatedRuntimeCommandResultSchema }),
+    z.strictObject({ sessionId: NonEmptyStringSchema.optional(), ok: z.literal(true), result: WsResponseResultSchema }),
     z.strictObject({ sessionId: NonEmptyStringSchema.optional(), ok: z.literal(false), error: ProtocolErrorSchema }),
   ]),
 });
@@ -103,7 +138,7 @@ export const WsInterruptExchangeSchema = z
   });
 export type WsInterruptExchange = z.infer<typeof WsInterruptExchangeSchema>;
 
-export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema]);
+export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema, WsGetSnapshotMessageSchema, WsStopMessageSchema]);
 export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
 export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckMessageSchema, WsHandshakeRejectMessageSchema, WsResponseMessageSchema, WsInterruptResultMessageSchema, WsSnapshotMessageSchema, WsEventMessageSchema, WsRuntimeUnavailableMessageSchema]);
 export type WsHostMessage = z.infer<typeof WsHostMessageSchema>;

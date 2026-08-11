@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Protocol-independent Hono host foundation for pix: gate, request security, static client hosting and WS upgrade seam",
+  "description": "Hono host foundation + runtime WS gateway for pix: gate, request security, static client hosting, WS upgrade seam and sessiond-backed runtime gateway",
   "engines": {
     "node": ">=22.19.0"
   },
@@ -19,12 +19,17 @@
     "dist"
   ],
   "scripts": {
+    "prebuild": "node scripts/prebuild-deps.mjs",
     "build": "tsc -p tsconfig.json",
+    "pretypecheck": "node scripts/prebuild-deps.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "pretest": "node scripts/prebuild-deps.mjs",
     "test": "npm run build && node --test 'test/*.test.mjs'",
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },
   "dependencies": {
+    "@fffattiger/pix-protocol": "0.1.0",
+    "@fffattiger/pix-sessiond": "0.1.0",
     "@hono/node-server": "^1.19.0",
     "@hono/node-ws": "^1.1.0",
     "@types/ws": "^8.18.1",

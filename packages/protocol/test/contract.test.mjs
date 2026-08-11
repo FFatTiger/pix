@@ -691,6 +691,65 @@ describe("WS envelopes", () => {
       false,
     );
   });
+
+  it("parses getSnapshot and stop client messages", () => {
+    const get = roundTrip(WsClientMessageSchema, {
+      type: "getSnapshot",
+      id: "req-1",
+      payload: { sessionId: "s-1" },
+    });
+    assert.equal(get.type, "getSnapshot");
+    const stop = roundTrip(WsClientMessageSchema, {
+      type: "stop",
+      id: "req-2",
+      payload: { sessionId: "s-1", reason: "user" },
+    });
+    assert.equal(stop.type, "stop");
+    const stopNoReason = roundTrip(WsClientMessageSchema, {
+      type: "stop",
+      id: "req-3",
+      payload: { sessionId: "s-1" },
+    });
+    assert.equal(stopNoReason.type, "stop");
+  });
+
+  it("rejects getSnapshot/stop missing id or sessionId", () => {
+    assert.equal(safeParseWsClientMessage({ type: "getSnapshot", payload: { sessionId: "s-1" } }).success, false);
+    assert.equal(safeParseWsClientMessage({ type: "getSnapshot", id: "r", payload: {} }).success, false);
+    assert.equal(safeParseWsClientMessage({ type: "stop", payload: { sessionId: "s-1" } }).success, false);
+    assert.equal(safeParseWsClientMessage({ type: "stop", id: "r", payload: { sessionId: "s-1", extra: 1 } }).success, false);
+  });
+
+  it("accepts each member of the strict response result union and rejects unknown", () => {
+    const snapshot = {
+      sessionId: "s-1",
+      cwd: "/tmp/p",
+      projectRoot: "/tmp/p",
+      state: baseSnapshotState,
+      capabilities: { capabilities: [], version: 0 },
+    };
+    const cases = [
+      { ok: true, result: { commandId: "c-1", result: { ok: true, type: "abort" } } },
+      { ok: true, result: { sessionId: "s-1", epoch: "e1", created: true, cwd: "/tmp/p", projectRoot: "/tmp/p", workerStatus: "ready" } },
+      { ok: true, result: { sessionId: "s-1", detached: true } },
+      { ok: true, result: snapshot },
+      { ok: true, result: { sessionId: "s-1", stopped: true } },
+    ];
+    for (const result of cases) {
+      const msg = roundTrip(WsHostMessageSchema, { type: "response", id: "r-1", payload: result });
+      assert.equal(msg.type, "response");
+    }
+    // unknown result shape is rejected (no `unknown` accepted)
+    assert.equal(
+      WsHostMessageSchema.safeParse({ type: "response", id: "r-1", payload: { ok: true, result: { wat: true } } }).success,
+      false,
+    );
+    // error branch still accepted
+    assert.equal(
+      WsHostMessageSchema.safeParse({ type: "response", id: "r-1", payload: { ok: false, error: { code: "internal", message: "x", retryable: false } } }).success,
+      true,
+    );
+  });
 });
 
 describe("sessiond RPC", () => {
@@ -851,6 +910,7 @@ describe("sessiond RPC", () => {
         lastEventId: 0,
         cwd: "/tmp/p",
         projectRoot: "/tmp/p",
+        workerStatus: "ready",
         resumeStatus: "snapshot",
         snapshot: {
           sessionId: "s-1",
@@ -902,6 +962,24 @@ describe("sessiond RPC", () => {
       const parsed = parseSessiondMethodResult(method, results[method]);
       assert.ok(parsed);
     }
+  });
+
+  it("runtime.attach result requires workerStatus", () => {
+    const schema = SessiondMethodResultSchemas["runtime.attach"];
+    const ok = {
+      sessionId: "s-1",
+      epoch: "e1",
+      lastEventId: 0,
+      cwd: "/tmp/p",
+      projectRoot: "/tmp/p",
+      workerStatus: "ready",
+      resumeStatus: "snapshot",
+      snapshot: { sessionId: "s-1", cwd: "/tmp/p", projectRoot: "/tmp/p", state: baseSnapshotState, capabilities: { capabilities: [], version: 0 } },
+    };
+    assert.equal(schema.safeParse(ok).success, true);
+    const { workerStatus, ...missing } = ok;
+    void workerStatus;
+    assert.equal(schema.safeParse(missing).success, false);
   });
 });
 

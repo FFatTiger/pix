@@ -69,6 +69,7 @@ describe("A: cwd authority and create/attach separation", () => {
       projectRoot: value.projectRoot,
       epoch: value.epoch,
       lastEventId: value.lastEventId,
+      workerStatus: value.workerStatus,
       snapshot: value.snapshot,
       ...(value.resumeStatus === undefined ? {} : { resumeStatus: value.resumeStatus }),
     });

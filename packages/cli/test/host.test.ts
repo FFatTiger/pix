@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +14,8 @@ import { sessiondPaths } from "@fffattiger/pix-sessiond/control";
 import { resolveAllowedHosts } from "../src/commands/host-runner.js";
 import { createSessiondProbe } from "../src/probe.js";
 import { inspectSessiond } from "../src/supervise.js";
+import { runHost } from "../src/commands/host-runner.js";
+import type { SessiondLocation } from "../src/supervise.js";
 
 const tempDir = (prefix: string): string => mkdtempSync(join(tmpdir(), prefix));
 
@@ -141,6 +143,34 @@ test("closing the Host leaves the sessiond running on the same pid", async () =>
     if (handle) await handle.close();
     if (daemon) await daemon.shutdown();
     rmSync(fixture, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runHost fails closed (exit 1) when the sessiond secret is missing", async () => {
+  const dir = tempDir("pix-host-nosecret-");
+  const paths = sessiondPaths(dir);
+  const location: SessiondLocation = { directory: dir, endpoint: paths.endpoint, paths };
+  try {
+    const code = await runHost(location, { hostname: "127.0.0.1", port: 0, open: false });
+    assert.equal(code, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runHost fails closed (exit 1) when the sessiond secret is unsafe (symlink)", async () => {
+  const dir = tempDir("pix-host-badsecret-");
+  const paths = sessiondPaths(dir);
+  mkdirSync(dir, { recursive: true });
+  // A symlink secret is rejected read-only by readLocalSecret (fail closed).
+  writeFileSync(join(dir, "target"), "x".repeat(64));
+  symlinkSync(join(dir, "target"), paths.secretFile);
+  const location: SessiondLocation = { directory: dir, endpoint: paths.endpoint, paths };
+  try {
+    const code = await runHost(location, { hostname: "127.0.0.1", port: 0, open: false });
+    assert.equal(code, 1);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

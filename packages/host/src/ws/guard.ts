@@ -114,8 +114,26 @@ function createWsSession(
   ws: import("hono/ws").WSContext<import("ws").WebSocket>,
 ): WsSession {
   const raw = ws.raw;
+  const closeListeners = new Set<() => void>();
+  let closed = false;
+  const notifyClose = (): void => {
+    if (closed) return;
+    closed = true;
+    for (const listener of closeListeners) {
+      try {
+        listener();
+      } catch {
+        // a listener must not suppress close notification for the others
+      }
+    }
+    closeListeners.clear();
+  };
+  if (raw) raw.on("close", notifyClose);
   return {
     url,
+    get bufferedAmount(): number {
+      return raw?.bufferedAmount ?? 0;
+    },
     send: (data: string) => ws.send(data),
     close: (code?: number, reason?: string) => ws.close(code, reason),
     onMessage: (listener: (data: string) => void) => {
@@ -126,6 +144,20 @@ function createWsSession(
       raw.on("message", handler);
       return () => {
         raw.off("message", handler);
+      };
+    },
+    onClose: (listener: () => void) => {
+      if (closed) {
+        try {
+          listener();
+        } catch {
+          // ignore late-listener error
+        }
+        return () => {};
+      }
+      closeListeners.add(listener);
+      return () => {
+        closeListeners.delete(listener);
       };
     },
   };

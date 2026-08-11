@@ -158,7 +158,7 @@ async function dispatchHandler(handler: SessiondRpcHandler, request: SessiondRpc
 }
 
 export interface SessiondRpcClientOptions { endpoint: string; secret: string; timeoutMs?: number }
-export interface SessiondRpcSubscription<T> { response: T; close(): void }
+export interface SessiondRpcSubscription<T> { response: T; close(): void; /** Settles exactly once when the attach stream ends (remote close/error or local close()). */ closed: Promise<void> }
 
 export class SessiondRpcClient {
   constructor(private readonly options: SessiondRpcClientOptions) {}
@@ -174,7 +174,15 @@ export class SessiondRpcClient {
       let deliveryReady = false;
       const pendingPushes: import("@fffattiger/pix-protocol").SessiondPush[] = [];
       let settled = false;
-      const timer = setTimeout(() => { socket.destroy(); if (!settled) reject(new SessiondError("timeout", "sessiond attach timed out", true)); }, this.options.timeoutMs ?? 10_000);
+      let closedResolve: (() => void) | undefined;
+      const closed = new Promise<void>((settle) => { closedResolve = settle; });
+      const settleClosed = () => {
+        pendingPushes.length = 0;
+        const resolve = closedResolve;
+        closedResolve = undefined;
+        if (resolve) resolve();
+      };
+      const timer = setTimeout(() => { socket.destroy(); if (!settled) { settled = true; reject(new SessiondError("timeout", "sessiond attach timed out", true)); } }, this.options.timeoutMs ?? 10_000);
       const fail = (error: Error) => { clearTimeout(timer); socket.destroy(); if (!settled) { settled = true; reject(error); } };
       socket.on("connect", () => socket.write(`AUTH ${this.options.secret}\n`));
       socket.on("data", (chunk) => {
@@ -192,9 +200,9 @@ export class SessiondRpcClient {
           if (!attached) {
             const response = SessiondRpcResponseSchema.safeParse(value);
             if (!response.success || response.data.id !== id || response.data.method !== "runtime.attach") return fail(new SessiondError("invalid_request", "mismatched attach response"));
-            if (!response.data.ok) return fail(new SessiondError(response.data.error.code, response.data.error.message, response.data.error.retryable));
+            if (!response.data.ok) return fail(new SessiondError(response.data.error.code, response.data.error.message, response.data.error.retryable, response.data.error.details));
             attached = true; settled = true; clearTimeout(timer);
-            resolve({ response: response.data.result, close: () => socket.destroy() });
+            resolve({ response: response.data.result, closed, close: () => { settleClosed(); socket.destroy(); } });
             queueMicrotask(() => {
               deliveryReady = true;
               for (const push of pendingPushes.splice(0)) Promise.resolve(onPush(push)).catch(() => socket.destroy());
@@ -202,13 +210,13 @@ export class SessiondRpcClient {
             continue;
           }
           const push = SessiondPushSchema.safeParse(value);
-          if (!push.success) return fail(new SessiondError("invalid_request", "invalid sessiond push"));
+          if (!push.success) { socket.destroy(); return; }
           if (!deliveryReady) pendingPushes.push(push.data);
           else Promise.resolve(onPush(push.data)).catch(() => socket.destroy());
         }
       });
-      socket.on("error", (error) => { if (!settled) fail(error); });
-      socket.on("close", () => { if (!settled) fail(new SessiondError("unavailable", "sessiond attach closed", true)); });
+      socket.on("error", (error) => { if (!settled) fail(error); else settleClosed(); });
+      socket.on("close", () => { if (!settled) fail(new SessiondError("unavailable", "sessiond attach closed", true)); else settleClosed(); });
     });
   }
 

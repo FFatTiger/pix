@@ -289,3 +289,50 @@ test("RPC authenticates locally and rejects the wrong secret", async (t) => {
   await assert.rejects(bad.call("system.ping", {}));
   await server.close(); await rm(directory, { recursive: true, force: true });
 });
+
+test("RPC attach subscription closed settles exactly once on local and remote close", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  // local close() settles closed
+  {
+    const directory = await mkdtemp(join(tmpdir(), "sessiond-closed-local-"));
+    const endpoint = join(directory, "rpc.sock");
+    const { service } = harness();
+    const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
+    await server.listen();
+    const good = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+    await good.call("system.ping", {});
+    const active = await good.call("runtime.activate", { sessionId: "s-local" });
+    const subscription = await good.attach({ sessionId: "s-local", epoch: active.epoch, lastEventId: 0 }, async () => {});
+    subscription.close();
+    await subscription.closed; // resolves without error
+    await server.close(); await rm(directory, { recursive: true, force: true });
+  }
+  // unexpected server-side close settles closed
+  {
+    const directory = await mkdtemp(join(tmpdir(), "sessiond-closed-remote-"));
+    const endpoint = join(directory, "rpc.sock");
+    const { service } = harness();
+    const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
+    await server.listen();
+    const good = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+    await good.call("system.ping", {});
+    const active = await good.call("runtime.activate", { sessionId: "s-remote" });
+    const subscription = await good.attach({ sessionId: "s-remote", epoch: active.epoch, lastEventId: 0 }, async () => {});
+    await server.close(); // destroys the socket unexpectedly
+    await subscription.closed; // resolves without error
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC attach rejects before the attach response arrives", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-closed-reject-"));
+  const endpoint = join(directory, "rpc.sock");
+  const { service } = harness();
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
+  await server.listen();
+  const wrong = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+  // attach to an unknown session → worker_unavailable/worker error before response
+  await assert.rejects(wrong.attach({ sessionId: "never" }, async () => {}));
+  await server.close(); await rm(directory, { recursive: true, force: true });
+});

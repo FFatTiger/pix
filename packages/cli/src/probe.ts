@@ -1,4 +1,4 @@
-import { SessiondRpcClient } from "@fffattiger/pix-sessiond";
+import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
 import type { SessiondProbe } from "@fffattiger/pix-host";
 import type { SessiondPaths } from "@fffattiger/pix-sessiond/control";
 import { readLocalSecret } from "./secret.js";
