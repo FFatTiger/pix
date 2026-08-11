@@ -221,7 +221,7 @@ UI：RuntimeProvider、连接状态、真实create/open入口、Composer send/ab
 边界：Client生产代码只允许兄弟包@fffattiger/pix-protocol；新增可测试boundary rules
 本地验证：architecture/build/typecheck/root tests/startup E2E/client+sessiond boundaries PASS；Client140/140、Host172/172、Protocol114/114、sessiond42/42、Adapter92、Contract75、Core3
 残余：真实Browser→Host→Worker prompt/stream/abort留待R2与X1；stop帧当前optimistic fire-and-forget；createSession暂以projectRoot作为cwd
-独立验证 verdict：IN_REVIEW（等待GPT）
+独立验证 verdict：FAIL（GPT首轮；attach失败后connection卡在attaching；create→attach跨reconnect覆盖deferred导致promise悬挂；one-shot pending跨generation泄漏；stop遗弃prompt promise且socket不可发送时伪报成功；并发create覆盖single slot。隔离worktree修复并补对抗回归中。）
 ```
 
 ## 12. 后续迁移时必须记录的校验

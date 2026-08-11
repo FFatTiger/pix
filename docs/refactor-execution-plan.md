@@ -277,7 +277,7 @@ B0
 | `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
 | `A1` | Pi SDK Agent Adapter | `DONE` | `B1` | `526b19e` + `fd4612b`；GPT独立验证PASS；SDK0.84真实create/open smoke、92/92、显式prompt+abort capability |
 | `H1` | Runtime WS Gateway | `DONE` | `B2`, `B3`, `R0` | `e9e7d49` + `f960390` + `976c4c6` + `a6eb571`；有界入站/interrupt并发，非法limit回退安全默认；Host172；GPT最终PASS |
-| `C1` | RuntimeSocket + SessionStore | `IN_REVIEW` | `B2`, `R0`, `H1` | `08f0362` + `d06db38`；共享projection、socket/store、resume/at-most-once、Provider与最小UI；Client140；全仓门禁PASS，等待GPT验证 |
+| `C1` | RuntimeSocket + SessionStore | `IN_PROGRESS` | `B2`, `R0`, `H1` | `08f0362` + `d06db38`；首轮GPT FAIL：attach/reconnect promise ownership、pending清理与stop诚实性；隔离worktree修复中 |
 | `X1` | Minimal Runtime E2E | `BLOCKED` | `R2`, `A1`, `H1`, `C1`, `B4` | prompt、stream、abort、Host restart/resume、去重、隔离 |
 
 依赖图：
@@ -476,7 +476,7 @@ git diff --check
 2. `R0`：DONE（`2672c5c`，GPT PASS）；`A1`：DONE（`526b19e` + `fd4612b`，GPT PASS）
 3. H1：DONE（有界资源与非法limit hardening，GPT最终PASS）；R1继续隔离worktree实现
 4. R1完成后启动R2 Child Process Worker Factory
-5. C1已集成main并完成全仓门禁，等待GPT独立验证；最终由X1验收M2
+5. C1首轮GPT验证FAIL，正在修复attach/reconnect promise ownership、pending清理与stop诚实性；修复复验后再进入X1
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。
