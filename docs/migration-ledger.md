@@ -202,8 +202,8 @@ Host：SessiondRuntimeGateway完成handshake/create/cold-open attach/detach/comm
 安全与生命周期：原Host/Origin/Origin/LAN gate在upgrade前不变；browser close只detach不stop；unexpected stream close发送runtime_unavailable并1011；outbound 256 frames/4MiB + bufferedAmount fail closed
 CLI：只读secret，缺失/unsafe fail closed；注入gateway；保留36e81d4 trusted host合并；agent capability继续[]直到R2/X1
 本地验证：architecture/build/typecheck/root tests/startup E2E/boundaries PASS；Host163/163、Protocol114/114、sessiond42/42、CLI32/32、A192、Client82、Contract75、Core3、scripts44
-残余：真实Worker尚未由R2接通，故gateway已可用但create/activate仍会诚实返回worker_unavailable；C1等待此WS契约
-独立验证 verdict：PENDING（GPT）
+残余：真实Worker尚未由R2接通，故gateway已可用但create/activate仍会诚实返回worker_unavailable；getSnapshot/stop当前在长command后串行，C1需先interrupt再stop。
+独立验证 verdict：PARTIAL（GPT；功能、协议、gate、安全、生命周期与真实RPC集成均PASS；发现普通入站SerialExecutor无界队列与interrupt无界并发，可被已认证/本地客户端用于Host内存/RPC连接耗尽。修复中，未标DONE。）
 ```
 
 ## 11. 后续迁移时必须记录的校验
