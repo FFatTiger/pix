@@ -56,6 +56,19 @@ export function createBootGateConfigSource(): GateConfigSource {
   };
 }
 
+/** Merge the bind address with operator-configured trusted hostnames. */
+export function resolveAllowedHosts(
+  bindHostname: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const candidates = [
+    bindHostname,
+    env.PIX_HOSTNAME,
+    ...(env.PIX_ALLOWED_HOSTS?.split(",") ?? []),
+  ];
+  return [...new Set(candidates.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
+}
+
 /**
  * Boot the Hono Host bound to `options.hostname:options.port`, serving the
  * built Vite client and a real sessiond capability probe. Capabilities are
@@ -75,7 +88,7 @@ export async function runHost(
   const host = createHostApp({
     exposureMode,
     clientDist,
-    allowedHosts: [options.hostname],
+    allowedHosts: resolveAllowedHosts(options.hostname),
     capabilities: { full: EMPTY_HOST_CAPABILITIES, readonly: EMPTY_HOST_CAPABILITIES },
     sessiond: createSessiondProbe(location.paths),
     gate: { config: createBootGateConfigSource() },

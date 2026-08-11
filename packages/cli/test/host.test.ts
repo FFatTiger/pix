@@ -11,10 +11,19 @@ import {
 } from "@fffattiger/pix-host";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
 import { sessiondPaths } from "@fffattiger/pix-sessiond/control";
+import { resolveAllowedHosts } from "../src/commands/host-runner.js";
 import { createSessiondProbe } from "../src/probe.js";
 import { inspectSessiond } from "../src/supervise.js";
 
 const tempDir = (prefix: string): string => mkdtempSync(join(tmpdir(), prefix));
+
+test("trusted hosts merge the bind address with operator configuration", () => {
+  assert.deepEqual(resolveAllowedHosts("0.0.0.0", {
+    PIX_HOSTNAME: " test-pi.huu.im ",
+    PIX_ALLOWED_HOSTS: "test-pi.huu.im, pix.lan, ,192.168.31.77",
+  }), ["0.0.0.0", "test-pi.huu.im", "pix.lan", "192.168.31.77"]);
+  assert.deepEqual(resolveAllowedHosts("127.0.0.1", {}), ["127.0.0.1"]);
+});
 
 function buildClientFixture(): string {
   const dist = tempDir("pix-host-fixture-");
