@@ -18,6 +18,14 @@ import { resolveClientDist } from "../paths.js";
 import { readLocalSecret } from "../secret.js";
 import { pixLog, pixErr } from "../log.js";
 
+/**
+ * Honest production capability projection after X1/R2:
+ * - full: `agent` when sessiond is up (R2 factory is the production composition).
+ * - readonly: still empty (no files/git/worktree services mounted in M2 boot).
+ * Never advertise files/sessions/models/etc. until those services are real.
+ */
+export const PRODUCTION_HOST_CAPABILITIES = ["agent"] as const;
+
 /** Best-effort browser launch; never fatal — `--no-open` is the safe default. */
 function openBrowser(url: string): void {
   try {
@@ -73,10 +81,12 @@ export function resolveAllowedHosts(
 
 /**
  * Boot the Hono Host bound to `options.hostname:options.port`, serving the
- * built Vite client and the sessiond-backed runtime WS gateway. Capabilities
- * are honestly empty for M2 H1 (no agent/files/resources wired): the runtime
- * gateway is connected but no agent capability is advertised until a real
- * Worker (R2) is verified.
+ * built Vite client and the sessiond-backed runtime WS gateway.
+ *
+ * After X1/R2 the production composition honestly advertises `agent` when
+ * sessiond is healthy (R2 ProductionWorkerProcessFactory is the default daemon
+ * worker factory). Read-only capabilities stay empty until files/git services
+ * are mounted. Health/bootstrap still project `[]` when sessiond is down.
  *
  * Only the Host is torn down on SIGINT/SIGTERM: the sessiond is a separate
  * (detached or pre-existing) process and must survive a Host restart.
@@ -106,9 +116,8 @@ export async function runHost(
     endpoint: location.paths.endpoint,
     secret,
     mode: exposureMode,
-    // M2 H1: the runtime gateway is wired, but no agent capability is
-    // advertised until a real Worker (R2) is connected and verified.
-    capabilities: [],
+    // X1: agent capability is real — R2 factory is production composition.
+    capabilities: [...PRODUCTION_HOST_CAPABILITIES],
     logger: consoleLogger,
   });
 
@@ -116,7 +125,11 @@ export async function runHost(
     exposureMode,
     clientDist,
     allowedHosts: resolveAllowedHosts(options.hostname),
-    capabilities: { full: EMPTY_HOST_CAPABILITIES, readonly: EMPTY_HOST_CAPABILITIES },
+    // full=["agent"] when sessiond up; readonly=[] (no files service in M2 boot).
+    capabilities: {
+      full: [...PRODUCTION_HOST_CAPABILITIES],
+      readonly: EMPTY_HOST_CAPABILITIES,
+    },
     sessiond: createSessiondProbe(location.paths),
     gate: { config: createBootGateConfigSource() },
     logger: consoleLogger,
@@ -130,7 +143,7 @@ export async function runHost(
   const url = `http://${options.hostname}:${handle.port}`;
   pixLog(`host listening on ${url}`);
   pixLog(`sessiond at ${location.directory} (endpoint ${location.endpoint})`);
-  pixLog(`runtime gateway wired (capabilities: [] — agent capability pending R2 worker); press Ctrl+C to stop the host`);
+  pixLog(`runtime gateway wired (capabilities: ["agent"]); press Ctrl+C to stop the host`);
 
   if (options.open) openBrowser(url);
 

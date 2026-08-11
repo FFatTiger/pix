@@ -157,18 +157,19 @@ async function main() {
       ok: true,
       service: "pix-host",
       sessiond: "up",
-      capabilities: [],
+      // X1: agent is honest when sessiond is healthy (R2 production factory).
+      capabilities: ["agent"],
     });
 
     const capabilities = await fetchJson(`${origin}/v1/capabilities`);
-    assert.deepEqual(capabilities, { ok: true, sessiond: "up", capabilities: [] });
+    assert.deepEqual(capabilities, { ok: true, sessiond: "up", capabilities: ["agent"] });
 
     const bootstrap = await fetchJson(`${origin}/v1/bootstrap`);
     assert.equal(bootstrap.ok, true);
     assert.equal(bootstrap.service, "pix-host");
     assert.equal(bootstrap.protocolVersion, 1);
     assert.equal(bootstrap.sessiond, "up");
-    assert.deepEqual(bootstrap.capabilities, []);
+    assert.deepEqual(bootstrap.capabilities, ["agent"]);
 
     const indexResponse = await fetch(`${origin}/`, { headers: { accept: "text/html" } });
     assert.equal(indexResponse.status, 200);
@@ -206,7 +207,7 @@ async function main() {
     ], env);
     const restartedHealth = await waitForHealthy(origin, secondHost);
     assert.equal(restartedHealth.sessiond, "up");
-    assert.deepEqual(restartedHealth.capabilities, []);
+    assert.deepEqual(restartedHealth.capabilities, ["agent"]);
     assert.equal((await readLock(lockFile)).pid, sessiondPid, "Host restart must reuse sessiond PID");
 
     await stopHost(secondHost);
@@ -236,7 +237,7 @@ async function main() {
       port,
       sessiondPid,
       hostRestartReusedSessiond: true,
-      capabilities: [],
+      capabilities: ["agent"],
       asset,
     }));
   } finally {
