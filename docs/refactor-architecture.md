@@ -1,7 +1,8 @@
 # pi-web 重构方案
 
-> 状态：定稿（架构；2026-08-11 增补 Pi 防腐层）
-> 主线：PWA 跨端
+> 状态：定稿（目标架构）；执行顺序已按独立仓库首个可启动里程碑重排
+> 当前仓库：`pix`（独立产品仓库，不继承旧 Next.js 产品树）
+> 主线：先交付可启动的新架构应用，再完成 Runtime vertical slice，之后扩展到 PWA 跨端
 > 桌面原生壳：仅预留，当前不交付
 > 任务认领、进度看板、文件所有权和协作规则：[`refactor-execution-plan.md`](./refactor-execution-plan.md)
 
@@ -48,17 +49,20 @@ Pi 防腐层（ACL）
 
 ### 硬规则
 
-1. UI、Host、sessiond 和 Worker Controller **永不**直接 import pi SDK，也不解析 Pi RPC 原始帧
-2. `packages/runtime-core` 定义 pi-web 自有的 Runtime/Resource Ports 和规范化模型；它不依赖 Protocol、Pi SDK 或 Pi RPC
-3. `packages/pi-sdk-adapter` 是当前 Pi SDK 防腐层，也是唯一可 import `@earendil-works/pi-*` 的包
-4. 未来的 `packages/pi-rpc-adapter` 是 Pi RPC 防腐层，也是唯一可启动/解析 `pi --mode rpc` 的包
-5. Protocol 是进程/网络边界；Runtime Port 是进程内应用边界；两者通过显式 Mapper 转换，不共享同一个类型作为捷径
-6. `pi-sessiond` 是 Session **唯一权威**；Web 只做代理与附着（attach）
-7. 只读浏览历史 → **0 Worker**
-8. 实时状态只走 **WebSocket + snapshot/resume**，不用轮询冒充
-9. `jsonl` / `~/.pi` 仍是真相源
-10. 对外 Client/Host 只认 Protocol；进程内应用服务只认 Runtime/Resource Ports；按 **capabilities** 降级
-11. Web 退出/崩溃：**不**终止 sessiond，不杀 worker
+1. `pix` 是独立产品仓库；旧 `pi-web` 只作为迁移来源，不是运行时、构建时或发布依赖
+2. `pix` 从第一天起不存在 Next.js 产品路径；不迁入根 `app/`、Next Route Handlers、`next.config.*`、Next CLI 或 `.next`
+3. UI、Host、sessiond 和 Worker Controller **永不**直接 import pi SDK，也不解析 Pi RPC 原始帧
+4. `packages/runtime-core` 定义 pi-web 自有的 Runtime/Resource Ports 和规范化模型；它不依赖 Protocol、Pi SDK 或 Pi RPC
+5. `packages/pi-sdk-adapter` 是当前 Pi SDK 防腐层，也是唯一可 import `@earendil-works/pi-*` 的包
+6. 未来的 `packages/pi-rpc-adapter` 是 Pi RPC 防腐层，也是唯一可启动/解析 `pi --mode rpc` 的包
+7. Protocol 是进程/网络边界；Runtime Port 是进程内应用边界；两者通过显式 Mapper 转换，不共享同一个类型作为捷径
+8. `pi-sessiond` 是 Session **唯一权威**；Web 只做代理与附着（attach）
+9. 只读浏览历史 → **0 Worker**
+10. 实时状态只走 **WebSocket + snapshot/resume**，不用轮询冒充
+11. `jsonl` / `~/.pi` 仍是真相源
+12. 对外 Client/Host 只认 Protocol；进程内应用服务只认 Runtime/Resource Ports；按 **capabilities** 降级
+13. Web 退出/崩溃：**不**终止 sessiond，不杀 worker
+14. capability 只声明已经完整接通并验证的能力
 
 ### Pi 防腐层（ACL）
 
@@ -341,18 +345,21 @@ packages/
 
 这样以后上桌面壳是加 Shell，不是翻架构。
 
-## 11. 落地阶段
+## 11. 落地里程碑
 
-| 阶段 | 交付 | 完成标准 |
+执行不再按技术层横向堆叠，而是按可验收的纵向产品切片推进。
+
+| 里程碑 | 交付 | 完成标准 |
 |------|------|----------|
-| **A 会话拆出** | `runtime-core` + Pi ACL + `pi-sessiond` + attach/resume + 每会话 Worker | Web 重启不杀运行中会话；浏览历史 0 worker；SDK Adapter contract tests 通过 |
-| **B 新 Web 骨架** | Hono 薄网关 + Vite Client + pi-web Runtime Protocol v1 | 单端口可用；WS 为主通道 |
-| **C 体验** | SQLite 索引、TanStack Virtual、Query 管资源、去轮询 | 千级会话 list 快；长会话可滚动 |
-| **D PWA 跨端** | LAN、gate/配对、capability 降级、断线 resume | 手机可看/轻控；桌面跑 Agent |
-| **E 以后** | 桌面原生壳（Tauri）等 | 同协议换壳，不改 sessiond |
+| **M1 可启动独立应用** | 独立 `pix` workspace、Vite Client、Hono Host、sessiond daemon、production composition、CLI | `npm run build` 后可用一个命令启动；Host 托管真实 Client；`/v1/health`、capabilities、bootstrap 可用；Host 退出后 sessiond PID 不变；仓库内无 Next 产品路径 |
+| **M2 最小 Runtime Slice** | agent-worker、Pi SDK Agent Adapter、Host WS Gateway、Client RuntimeSocket/SessionStore | create/open → attach → prompt → stream → done；支持 abort、snapshot/resume、commandId 去重；Host 重启不杀 Worker |
+| **M3 日常使用切片** | 历史会话、完整 Runtime 命令、files/git/worktree、models/auth/resources、跨边界 mutation | 历史浏览 0 Worker；主要现有功能通过新架构可用 |
+| **M4 Scale + PWA** | SQLite 投影、长列表虚拟化、LAN gate/配对、移动端恢复 | 千级会话与长聊天指标达标；手机可安全连接电脑 Host |
+| **M5 Release** | 安装、升级、卸载和发布验证 | 发布物只包含新架构 Client/Host/sessiond/Worker/Adapter/CLI，不包含 Next 产品路径 |
 
-建议优先顺序：**A → B → C → D**。  
-A 是现网最大痛点（重启杀会话）；D 是当前产品主线（PWA 跨端）。
+建议优先顺序：**M1 → M2 → M3 → M4 → M5**。
+
+M1 是当前唯一活动里程碑。它允许 Agent runtime 暂不可用，但不允许产品仍由 Next 启动；M2 才要求真实 Agent 最小 happy path。
 
 ## 12. 验收指标
 
@@ -392,6 +399,6 @@ A 是现网最大痛点（重启杀会话）；D 是当前产品主线（PWA 跨
 | 实时怎么做？ | WebSocket + resume |
 | 当前跨端？ | **PWA**（本机完整能力，手机连 Host） |
 | 桌面客户端？ | 架构预留，**现在不做** |
-| Next？ | 过渡可留，**不作终局** |
+| Next？ | **不进入 `pix` 产品路径**；旧 Next 仓库只作为选择性迁移来源 |
 
 切换接入方式只影响 Pi ACL Adapter 和各进程 composition root，不改变 pi-web Runtime Protocol、Runtime Core、sessiond 调度、Host 网关或 Client 状态模型。

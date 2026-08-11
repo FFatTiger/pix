@@ -1,1480 +1,529 @@
-# pi-web 架构重构执行与协作手册
+# pix 新架构执行计划
 
-> **全局状态：`ACTIVE`（项目负责人于 2026-08-11 明确恢复验证、修复和并行实现）。**
-> 当前按依赖门槛继续推进：已实现任务必须先经独立验证并集成；其后只并行启动依赖满足且文件所有权不冲突的任务。
+> **执行单一事实源（SSOT）**
 >
-> **本文件是本轮重构的执行单一事实源（Execution SSOT）。**
-> 架构原则与目标见 [`refactor-architecture.md`](./refactor-architecture.md)；所有任务认领、依赖、文件所有权、状态同步、验收和合并顺序以本文件为准。  
-> 新同事加入项目时，先阅读本文件，再阅读 `AGENTS.md` 和自己任务涉及的源码。
+> 当前目标不是继续维护旧 `pi-web` Next.js 单体，而是在独立的 `pix` 仓库中交付新架构产品。
+> 第一里程碑必须是一个可以实际构建和启动的独立应用。
 
-- 最后更新：2026-08-11 10:42 CST
+- 最后更新：2026-08-11
 - 项目状态：`ACTIVE`
-- 目标主线：Vite Client + Hono Host + `pi-sessiond` + 每会话 Worker + Agent Runtime Port + Pi 防腐层 + Protocol v1
-- 当前交付：浏览器 / PWA；不交付 Tauri/Electron
-- 集成负责人：`FFatTiger`（当前会话）
-- 集成分支：`refactor/architecture-v1`
+- 当前里程碑：`M1 — Bootable Standalone App`
+- 当前仓库：`/Users/proxy/Documents/program/pix`
+- 旧成果来源：`/Users/proxy/Documents/program/pi-web-worktrees/*`，迁移完成前只读保留
+- 产品主线：Vite Client + Hono Host + 独立 `pi-sessiond` + 每会话 Worker + Runtime Protocol + Pi 防腐层
 
 ---
 
-## 1. 怎么使用这份文档
+## 1. 当前目标
 
-### 1.1 项目负责人分派任务
+把旧的：
 
-1. 查看[当前任务看板](#5-当前任务看板)。
-2. 只分派状态为 `READY` 的任务；`BLOCKED` 任务不得提前实现其依赖部分。
-3. 在看板中填写负责人、分支、worktree 和开始日期。
-4. 把对应[工作包说明](#6-工作包说明)直接发给开发者。
-5. 开发者提交交接信息后，将任务改为 `IN_REVIEW`。
-6. 独立验证通过且已进入集成分支后，才能改为 `DONE`。
+```text
+Next.js 页面/API/静态资源
+└── Web 进程内 AgentSession
+```
 
-### 1.2 开发者认领任务
+替换为：
 
-1. 找到任务 ID，例如 `R1`、`H1B`、`C2`。
-2. 确认依赖已是 `DONE`，任务状态是 `READY`。
-3. 从最新集成分支创建独立 branch/worktree。
-4. 只修改任务声明的文件范围。
-5. 如需修改共享契约或他人所有文件，先在本文件的[决策记录](#4-已冻结的架构决策)中提出变更，不得私自跨界修改。
-6. 完成后按[交接模板](#103-任务交接模板)提交。
+```text
+Browser / PWA
+      │
+      ├── HTTP /v1/*
+      └── WS /v1/runtime
+      ▼
+Hono Host（可随时重启）
+      │ 本机 RPC
+      ▼
+pi-sessiond（常驻会话权威）
+      │ Node IPC
+      ▼
+agent-worker × N（每会话一个进程）
+      │ AgentRuntimePort
+      ▼
+PiSdkAdapter（当前）/ PiRpcAdapter（未来）
+```
 
-### 1.3 状态定义
+### 1.1 不可变约束
+
+1. `pix` 是独立产品仓库，不以旧 `pi-web` 为运行时或构建时依赖。
+2. `pix` 不包含 Next.js 产品路径：无根 `app/`、无 `next.config.*`、无 Next CLI、无 `.next`。
+3. Client 使用 Vite + React + TanStack。
+4. Host 使用 Hono，在同一端口提供 `/v1`、WebSocket 和 Client 静态资源。
+5. Host 可以退出或重启，但不得因此停止 sessiond 或 Worker。
+6. sessiond 是运行时唯一权威；Host 只做代理和 attach。
+7. 一个 Agent Session 对应一个独立 Worker 进程。
+8. Worker Controller 只依赖 `AgentRuntimePort`，不依赖具体 Pi 后端。
+9. Pi SDK import 只允许存在于 `packages/pi-sdk-adapter/**`。
+10. Runtime Core Model 与 Protocol DTO 分离，通过显式 Mapper 转换。
+11. JSONL / `~/.pi` 继续是真相源；SQLite 只能是可重建投影。
+12. 只读历史浏览不得启动 Worker。
+13. 浏览器实时主通道只有 `WS /v1/runtime`，不新增 SSE 或运行态轮询。
+14. capability 只能声明已经完整接通并验证的产品能力。
+15. 不为保留旧 Next 兼容性引入桥接代码。
+
+### 1.2 当前明确不做
+
+- 迁移旧 `app/**`、`components/**`、`hooks/**`、`lib/**`
+- 迁移旧 Next API routes 或旧 `bin/pi-web.js`
+- 保持旧 Next 产品在 `pix` 中可运行
+- Tauri / Electron
+- 手机本地运行 Agent
+- 用 SQLite 取代 JSONL
+- Pi RPC Adapter 实现
+- sessiond 无停机升级
+- Worker 崩溃后自动重放 prompt
+
+---
+
+## 2. 第一里程碑定义
+
+## M1 — Bootable Standalone App
+
+M1 的含义是：**新架构在独立 `pix` 仓库中成为一个真实、可安装、可构建、可启动的应用。**
+
+M1 不要求 Agent prompt 已经可用；最小 Runtime happy path 属于 M2。但 M1 不能只是单包 demo 或开发服务器。
+
+### 2.1 M1 必须交付
+
+1. 所有源码、构建配置和依赖都位于 `pix`。
+2. 根 workspace 不包含 Next 依赖和 Next 产品入口。
+3. 以下命令成立：
+
+   ```bash
+   npm ci
+   npm run build
+   npm run start -- --hostname 127.0.0.1 --port 30141 --no-open
+   ```
+
+4. 启动命令会：
+   - 发现并复用已有 sessiond，或启动独立 sessiond；
+   - 启动 Hono Host；
+   - 由 Host 托管构建后的 Vite Client；
+   - 使用绝对路径定位 Client dist，不依赖启动 cwd。
+5. 浏览器访问 `/` 能加载真实 Client JavaScript/CSS 并渲染应用状态。
+6. 以下端点真实可用：
+   - `GET /v1/health`
+   - `GET /v1/capabilities`
+   - `GET /v1/bootstrap`
+7. Client 从真实 Host API 读取状态，不使用硬编码 demo session。
+8. Host 退出后 sessiond PID 保持不变。
+9. 只有显式 `pi-web down --all` 才停止 sessiond。
+10. 未接通的 Agent/files/sessions 能力不得出现在 capability 中。
+
+### 2.2 M1 不要求
+
+- 创建 Agent Session
+- prompt、streaming、abort
+- Worker 进程
+- 历史会话列表
+- models/auth/skills/plugins
+- files/git/worktree
+- PWA/LAN
+- SQLite
+
+### 2.3 M1 验收
+
+```bash
+cd /Users/proxy/Documents/program/pix
+npm ci
+npm run check:architecture
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e:startup
+```
+
+手工生命周期验收：
+
+```bash
+npm run start -- --hostname 127.0.0.1 --port 30141 --no-open
+curl -fsS http://127.0.0.1:30141/v1/health
+curl -fsS http://127.0.0.1:30141/v1/capabilities
+curl -fsS http://127.0.0.1:30141/v1/bootstrap
+curl -fsS -H 'Accept: text/html' http://127.0.0.1:30141/
+npm run cli -- status
+```
+
+停止 Host 后，`status` 必须报告相同 sessiond PID。最后：
+
+```bash
+npm run cli -- down --all
+npm run cli -- status
+```
+
+---
+
+## 3. 现有成果重新评估
+
+旧成果只能标记为迁移来源，不能因为旧分支通过过测试就直接在 `pix` 中标记 `DONE`。迁移、重建 lockfile 和 composition 后必须重新验证。
+
+| 成果 | 来源 | 评估 | 新计划 |
+|---|---|---|---|
+| Runtime Core | `integration-v1/packages/runtime-core` | 规范模型、Ports、边界测试完整；可复用 | 迁入 `B1`，重新 build/test |
+| Runtime Contract Tests | `integration-v1/packages/runtime-contract-tests` | 契约矩阵和 reference fake 完整；可复用 | 迁入 `B1` |
+| Protocol v1 | `integration-v1/packages/protocol` | HTTP/WS/sessiond/Worker schema 较完整；可复用 | 迁入 `B1`；M2 前执行 `R0` 修正 |
+| Hono Host | `integration-v1/packages/host` | gate/security/static/server 完整；RuntimeWsSeam 和 production composition 缺失 | M1 迁基础；M2 补 Runtime Gateway |
+| Vite Client | `client-data/packages/client` | 可构建，已接正式 Protocol/typed HTTP；RuntimeSocket 仍是 stub | M1 迁 boot surface；M2 补 RuntimeStore |
+| Pi SDK Adapter | `pi-sdk-adapter/packages/pi-sdk-adapter` | Agent/data/resource 能力较完整，但旧计划仍记录 4 个未关闭问题 | M2 拆出 Agent Adapter；数据/resource 后移 |
+| sessiond Core | `sessiond-core/packages/sessiond` | service/RPC/journal/attach 逻辑已有；全部未提交，缺 daemon 与真实 Worker factory | M1 迁 source-only 并完成 daemon；M2 补 Worker factory |
+| Agent Worker | 无 | 完全缺失 | M2 新建 |
+| CLI / Composition | 无新架构实现 | 旧入口仍启动 Next | M1 新建，属于里程碑核心 |
+| Host Runtime Wiring | 只有 seam | 未接 sessiond | M2 新建 |
+| Client RuntimeSocket | no-op stub | 不可用于 Runtime | M2 新建 |
+
+### 3.1 迁移可用性结论
+
+**可直接作为候选迁移：**
+
+- `runtime-core`
+- `runtime-contract-tests`
+- `protocol`
+- Host 的 gate/security/static/server 基础
+- Client 的 Vite shell、gate、health/capability HTTP 基础
+- sessiond 的 service/RPC/journal/source tests
+- Pi SDK Adapter 的 Agent 路径
+
+**需要补齐后才构成产品：**
+
+- 独立 root workspace
+- production composition root
+- sessiond daemon main
+- CLI 和 single-instance 生命周期
+- Host 对 Client dist 的生产装配
+- Startup E2E
+
+**M2 才补：**
+
+- agent-worker
+- child-process Worker factory
+- Host Runtime WS Gateway
+- Client RuntimeSocket / SessionStore
+- Pi SDK Agent Adapter 真实装配
+
+---
+
+## 4. 原计划问题与修正
+
+### 4.1 原计划的问题
+
+1. 把旧 Next 应用“迁移期间继续可运行”冻结成约束，导致新包一直堆在旧仓库。
+2. 按 Runtime Core、Protocol、Host、Client 横向分层交付，没有早期纵向启动路径。
+3. CLI 和 composition 被放到 Runtime/WS/Worker 全部完成之后。
+4. 每个包都有单元测试，但没有生产入口调用 `createHostApp`、`SessiondService` 等实现。
+5. H0A 被要求与 Protocol/sessiond 完全隔离，只留下未实现 seam。
+6. C0/C1 留下 demo 数据和 Runtime stub，没有产品级启动验收。
+7. 旧分支的验证状态与 `pix` 独立仓库中的可用状态混为一谈。
+
+### 4.2 已废弃的旧决策
+
+- 废弃“旧 Next 应用在迁移期间保持可运行”。
+- 废弃旧 `I0`：不再维护旧 `pi-web` 架构集成分支作为产品主线。
+- 废弃旧 `L1`：Next 不进入 `pix`，因此不存在最后再移除 Next 的阶段。
+- 废弃“CLI 必须等 R1/R2/H0B 全部完成后才能开始”。
+- 旧验证只记录为来源证据，不自动继承 `DONE`。
+
+---
+
+## 5. 新任务看板
+
+状态定义：
 
 | 状态 | 含义 |
 |---|---|
-| `BACKLOG` | 已定义，但当前波次不执行 |
-| `BLOCKED` | 依赖未完成，禁止开始 |
-| `READY` | 依赖满足，可立即认领 |
-| `IN_PROGRESS` | 已有负责人，正在开发 |
-| `IN_REVIEW` | 开发完成，等待独立验证或集成 |
-| `PAUSED` | 主动暂停，必须写明原因 |
-| `DONE` | 已验证并进入集成分支 |
+| `BACKLOG` | 当前不执行 |
+| `BLOCKED` | 依赖未满足 |
+| `READY` | 可开始 |
+| `IN_PROGRESS` | 正在实现 |
+| `IN_REVIEW` | 等待独立验证 |
+| `DONE` | 已在 `pix` 中验证并集成 |
 
-> 一个 commit 已存在不等于 `DONE`；必须经过独立验证并合入集成分支。
+## Wave 1 — 独立仓库与可启动应用
 
----
-
-## 2. 交付目标和边界
-
-### 2.1 本轮必须实现
-
-1. Web/Host 重启时，运行中的 sessiond 和 Worker 不退出。
-2. 一个 Agent Session 对应一个独立 Worker 进程；Worker 只通过 `AgentRuntimePort` 使用 Agent 后端。
-3. Pi 相关操作统一经过防腐层；当前使用 `PiSdkAdapter`，未来可增加 `PiRpcAdapter`。
-4. 只读浏览历史不创建 Worker。
-5. Client 实时状态使用一条 `WS /v1/runtime`，支持 `snapshot + resume`。
-6. HTTP 资源接口统一为 `/v1/*`。
-7. Client、Host、sessiond 和 Worker Controller 不 import Pi SDK，也不解析 Pi RPC 原始帧。
-8. Host 不创建、不持有 `AgentSession`。
-9. JSONL 和 `~/.pi` 继续是真相源。
-10. Hono 同一端口托管 `/v1`、WebSocket 和 Vite 静态资源。
-11. PWA 支持电脑本机和手机连接电脑 Host；LAN 模式强制 gate。
-
-### 2.2 本轮不做
-
-- Tauri / Electron 安装包
-- 手机本地运行 Agent
-- 用 SQLite 取代 JSONL
-- Pi RPC Adapter 实现（本轮只冻结 Ports、Mapper 责任和共享契约测试）
-- sessiond 无停机滚动升级
-- sessiond 重启后继续恢复正在执行的 prompt
-- Worker 崩溃后自动重放 prompt
-- Go 后端
-- 新功能继续堆叠到旧 Next runtime
-
-### 2.3 成功指标
-
-| 指标 | 验收标准 |
-|---|---|
-| Host 重启 | sessiond PID 和 Worker PID 不变 |
-| 历史浏览 | Worker 数量增加 0 |
-| Worker 隔离 | 一个 Worker 崩溃不影响其他会话 |
-| Resume | Client 刷新/后台恢复后通过 snapshot 恢复状态 |
-| 会话列表 | 千级会话索引命中 P95 `< 50ms` |
-| 长聊天 | 约一万条消息时 DOM 保持有界、输入可交互 |
-| 网络入口 | 默认只对外暴露 Host 一个端口 |
-| 后端可替换性 | 同一规范场景切换 SDK/RPC Adapter 时，Runtime/Protocol fixture 一致；差异只通过 capability 表达 |
-| 依赖边界 | `@earendil-works/pi-*` 仅出现在 `pi-sdk-adapter`；Host/sessiond/Worker Controller 为 0 |
-
----
-
-## 3. 目标进程与包边界
-
-```text
-packages/
-  protocol/       网络/进程线协议：Zod schema、版本、共享 DTO
-  runtime-core/   pi-web 自有 Runtime/Resource Ports、规范化模型、应用错误
-  pi-sdk-adapter/ 当前 Pi SDK 防腐层；唯一允许 SDK imports
-  pi-rpc-adapter/ 未来 Pi RPC 防腐层；当前不交付实现
-  runtime-contract-tests/ Adapter 共享行为契约测试（测试包）
-  sessiond/       会话权威、Worker 调度、事件日志、resume
-  agent-worker/   单会话进程壳：Protocol Mapper + Controller + Adapter composition
-  host/           Hono HTTP、WS 网关、gate、文件/git、静态资源
-  client/         Vite React + TanStack + PWA
-  cli/            pi-web / pi-host / pi-sessiond 启停入口
-```
-
-### 3.1 依赖方向
-
-```text
-client ───────────────▶ protocol
-host ─────────────────▶ protocol + runtime-core ports
-sessiond ─────────────▶ protocol + runtime-core ports
-agent-worker ─────────▶ protocol + runtime-core ports
-pi-sdk-adapter ───────▶ runtime-core ports + @earendil-works/pi-*
-pi-rpc-adapter ───────▶ runtime-core ports + pi --mode rpc（未来）
-cli ──────────────────▶ host/sessiond 启动入口
-
-host ──本机 RPC───────▶ sessiond ──Node IPC──────▶ agent-worker
-agent-worker controller ──▶ AgentRuntimePort ──▶ selected Pi Adapter
-```
-
-禁止出现：
-
-```text
-client ──▶ Pi SDK / Node fs / sessiond 内部模块
-host ────▶ AgentSession / SessionManager / Pi SDK / Pi RPC frame
-sessiond ▶ AgentSession / SessionManager / Pi SDK / Pi RPC frame
-worker controller ▶ Pi SDK / Pi RPC frame / Host cache / React / Hono
-protocol ▶ React / Next / Hono / Pi SDK / Pi RPC / runtime-core
-runtime-core ▶ Protocol / React / Hono / Pi SDK / Pi RPC / Node 进程管理
-pi-sdk-adapter 之外的模块 ▶ @earendil-works/pi-*
-pi-rpc-adapter 之外的模块 ▶ Pi RPC method/frame parser
-```
-
-### 3.2 数据所有权
-
-| 数据 | 权威所有者 | 说明 |
-|---|---|---|
-| 活跃 Agent Runtime | sessiond + 对应 Worker | sessiond 管生命周期；Worker Controller 持有 `AgentRuntimePort`，具体 Adapter 封装 Pi 实例/进程 |
-| Runtime eventId/epoch | sessiond | Host 和 Adapter 不生成对外事件编号 |
-| Runtime UI 投影 | sessiond snapshot + Client SessionStore | Query 不轮询实时状态 |
-| Runtime 内部规范模型 | `runtime-core` | 与 Protocol DTO 通过 Mapper 转换；与 SDK/RPC 类型隔离 |
-| Pi SDK/RPC 语义翻译 | `pi-sdk-adapter` / `pi-rpc-adapter` | 工具、事件、错误、usage、extension UI、模型与能力归一化 |
-| 历史 JSONL | `~/.pi` 文件 | 与 pi CLI 共用真相源；Host 通过 `SessionCatalogPort` 访问 |
-| 会话列表索引 | Host SQLite 投影 | 可重建，不替代 JSONL |
-| 文件/git/worktree | Host | 受 allow-root 和 gate 保护 |
-| models/auth/plugins/skills | Host application services + 注入 Port | Pi 具体实现位于防腐层 |
-| UI 本地偏好 | Client localStorage/IndexedDB | theme、面板、草稿等 |
-
-### 3.3 Composition Root 与装配规则
-
-| 进程 | Composition Root | 可装配内容 | 禁止 |
-|---|---|---|---|
-| Worker | `packages/agent-worker/src/composition/*` | `AgentRuntimeFactory` 的 SDK/RPC 实现 | Controller 直接 new `AgentSession` 或 spawn Pi RPC |
-| sessiond | `packages/sessiond/src/composition/*` | `SessionLocatorPort`、Worker process factory | registry/supervisor import Pi 类 |
-| Host | `packages/host/src/composition/*` | Session/Model/Credential/Resource/Trust Ports | route/service import Pi 类或根据 backend 分支 |
-| CLI | `packages/cli/src/composition/*` | 启动 Host/sessiond、选择配置 | 将 Adapter 细节传播给 Client |
-
-规则：
-
-1. Composition Root 只负责选择实现、读取环境配置和构造依赖图，不承载业务规则。
-2. Adapter 包使用子路径 exports，确保 Worker 不加载 Host 专用 Pi 资源代码，Host 也不加载 Agent runtime。
-3. `PI_WEB_AGENT_BACKEND` 只允许在 Worker composition root 读取。
-4. sessiond registry 和 Host capability 响应只存规范化 capability，不存后端名称。
-5. 测试默认注入 fake Port；真实 SDK/RPC 仅在 Adapter contract/integration tests 中加载。
-
----
-
-## 4. 已冻结的架构决策
-
-修改以下决策必须先更新本节，并通知所有受影响任务负责人。
-
-| ID | 决策 | 状态 |
-|---|---|---|
-| `D-001` | pi-web Runtime Protocol v1 使用 Zod；公开 wire 类型从 schema 推导 | 已冻结 |
-| `D-002` | Client、Host、sessiond 通过 Protocol DTO 交互；Worker 的 Protocol Mapper 与 Runtime Core 显式转换 | 已冻结 |
-| `D-003` | sessiond 是运行时唯一权威；Host 只代理和 attach | 已冻结 |
-| `D-004` | 一个 Worker 只承载一个 `AgentRuntimePort` 实例 | 已冻结 |
-| `D-005` | `runtime-core` 定义 pi-web 自有 Ports/模型，不依赖 Protocol、Pi SDK 或 Pi RPC | 已冻结 |
-| `D-006` | `pi-sdk-adapter` 是唯一可 import Pi SDK 的生产包；SDK 类型不得越过 Adapter 边界 | 已冻结 |
-| `D-007` | 未来 `pi-rpc-adapter` 是唯一可解析 Pi RPC 帧的生产包；切换 Adapter 不修改 Protocol/业务层 | 已冻结 |
-| `D-008` | Protocol DTO 与 Runtime Core Model 分离，通过显式 Mapper 转换 | 已冻结 |
-| `D-009` | Host/sessiond 通过 `SessionCatalogPort`/`SessionLocatorPort` 等窄 Port 使用 Pi 资源，不直接 import `SessionManager` 或 Pi 配置类 | 已冻结 |
-| `D-010` | HTTP 历史浏览与 SQLite read model 归 Host；sessiond 只保留激活所需 locator 和 mutation 协调 | 已冻结 |
-| `D-011` | 浏览器实时主通道只有 `WS /v1/runtime`；不保留 Agent SSE/运行态轮询作为新架构主路径 | 已冻结 |
-| `D-012` | 每个命令带 `commandId`；sessiond 在 session/epoch 内 at-most-once | 已冻结 |
-| `D-013` | attach 使用 `epoch + lastEventId`；gap 或 epoch 变化时回完整 snapshot | 已冻结 |
-| `D-014` | 首期事件日志仅在 sessiond 内存保存；默认每会话最多 2,000 条或 10 MiB，任一先到即淘汰，可配置 | 已冻结 |
-| `D-015` | Worker 崩溃不自动重放 prompt；标记 crashed，用户显式重新激活 | 已冻结 |
-| `D-016` | JSONL 是真相源；SQLite 损坏后必须可从 JSONL 重建 | 已冻结 |
-| `D-017` | Runtime snapshot 必须包含 partial streaming message、队列、extension UI、compaction/bash/model/tools 等可恢复状态 | 已冻结 |
-| `D-018` | fork 的规范语义由 Runtime Port 定义；SDK/RPC Adapter 都必须创建独立 JSONL 和 `parentSession`，并在返回结果后结束旧 runtime | 已冻结 |
-| `D-019` | all-tools-off 的规范语义是 `toolNames=[]` 且 system prompt 为空；由 Adapter 保证 | 已冻结 |
-| `D-020` | LAN 模式强制 gate；sessiond 永远只监听本机，不直接暴露到 LAN | 已冻结 |
-| `D-021` | capability 降级按 Adapter/Host 能力值判断，不按后端类型或外壳判断 | 已冻结 |
-| `D-022` | 开发期间禁止运行 `next build` | 已冻结 |
-| `D-023` | 旧 Next 应用在迁移期间保持可运行；新架构不为旧 SSE/轮询继续扩展供应商耦合 | 已冻结 |
-
-### 4.1 pi-web Runtime Protocol v1 必须覆盖的命令
-
-```text
-prompt                 steer                   follow_up
-abort                  get_state               set_model
-fork                   navigate_tree           set_thinking_level
-compact                abort_compaction        set_session_name
-get_session_stats      get_last_assistant_text set_auto_compaction
-set_auto_retry         clear_queue             get_tools
-set_tools              get_commands            reload
-extension_ui_response  extension_ui_input      bash
-abort_bash             generate_session_title
-```
-
-### 4.2 pi-web Runtime Protocol v1 最低事件集合
-
-```text
-agent_start             agent_end               agent_settled
-prompt_done             prompt_error            message_start
-message_update          message_end             tool_execution_start
-tool_execution_end      queue_update            retry_start
-retry_end               compaction_start        compaction_end
-bash_update             extension_error         extension_ui_request
-session_changed         runtime_state_changed   worker_crashed
-running_sessions_changed runtime_unavailable
-```
-
-### 4.3 Runtime Capability 与 Adapter 一致性
-
-Runtime capability 属于 `runtime-core`，表达规范能力，不表达 SDK/RPC 后端名称。最低集合：
-
-```text
-runtime.prompt            runtime.steer             runtime.follow_up
-runtime.abort             runtime.model.set         runtime.thinking.set
-runtime.tools.read        runtime.tools.write       runtime.compact
-runtime.compact.abort     runtime.fork              runtime.navigate
-runtime.bash              runtime.bash.abort        runtime.reload
-runtime.extension_ui      runtime.auto_name         runtime.session.rename
-runtime.queue             runtime.stats
-```
-
-规则：
-
-1. Adapter 创建 runtime 时返回 capability snapshot；reload 后允许 capability 更新并发规范事件。
-2. Worker 在调用 Adapter 前执行 capability gate；Adapter 仍做防御校验。
-3. Protocol/Host 把 Runtime capability 投影为对外 capability；Client 不接收 `sdk`、`rpc` 等后端标识。
-4. 缺失能力返回 `UNSUPPORTED_CAPABILITY`，不得伪造成功或静默降级为另一命令。
-5. `runtime-contract-tests` 对每个 capability 运行共享用例；未声明的 capability 不要求实现对应命令。
-
-### 4.4 SDK / RPC 语义映射责任
-
-| 规范语义 | Pi SDK Adapter | Pi RPC Adapter（未来） | 上层看到的结果 |
-|---|---|---|---|
-| runtime identity | `AgentSession.sessionId/sessionFile` | RPC state/session metadata | `RuntimeIdentity` |
-| prompt/steer/follow-up | SDK methods | RPC methods/queue | 规范 command result + events |
-| abort/interrupt | SDK abort APIs | RPC abort / process control | 独立 interrupt 语义 |
-| message streaming | SDK events | RPC JSONL events | 规范 message start/update/end |
-| tool call/result | SDK message/event shapes | RPC tool frames | 统一工具名、参数、result、isError |
-| model/thinking/tools | SDK model/tool APIs | RPC capability/methods | 规范状态；缺失则 capability false |
-| extension UI | SDK UI context | RPC 支持时映射 | 规范 request/response；缺失则 capability false |
-| fork/navigate | SDK/session file semantics | RPC 原生命令或 ACL 组合实现 | 相同 JSONL/parentSession 结果 |
-| usage/context | SDK usage/context API | RPC usage/token frames | 规范 usage/context model |
-| errors | SDK Error | RPC error frame/exit | 规范 `RuntimeError` |
-
-任何新增 Pi SDK/RPC 字段先在 Adapter 内评估；只有成为稳定产品语义后，才按顺序修改 Runtime Core → Mapper → Protocol。禁止为了透传外部字段直接扩展 Protocol。
-
----
-
-## 5. 当前任务看板
-
-> 本表由集成负责人维护。状态发生变化时，在同一个提交中更新本表。
-
-### 5.1 Wave 0：共享基线
-
-| ID | 工作包 | 状态 | 负责人 | 分支 / Worktree | 依赖 | 当前结果 |
-|---|---|---|---|---|---|---|
-| `G0` | 执行与协作手册 | `DONE` | 当前会话 | `main` | 无 | `docs/refactor-execution-plan.md` |
-| `W0` | npm Workspace Foundation | `DONE` | `FFatTiger` | `refactor/w0-workspace-foundation` | 无 | commit `8a32502` + `a8d4e3e`；最终独立 v4flash 复验 PASS；已 fast-forward 合入并推送 `refactor/architecture-v1`，集成分支 HEAD `a8d4e3e`；纯 workspace/package 基线，不包含 Protocol schema |
-| `ACL0` | Runtime Core + Pi ACL Contracts | `DONE` | `fattiger` + `acl0-fix-v4` | `refactor/acl0-runtime-core` | `W0` | 最终 commit `9deb267`；5.6-sol 独立复验 PASS；runtime-core 3/3、contract 75/75（19 suites）；已完整 fast-forward 合入集成分支并由 `b690826` 归一化 root lockfile/发布排除，Node 22.19 门禁通过 |
-| `P0` | Runtime Protocol v1 | `DONE` | `p0-protocol-v4` | `refactor/protocol-base`；[PR #15](https://github.com/FFatTiger/pi-web/pull/15)；[pix #1](https://github.com/FFatTiger/pix/issues/1) | `W0`, `ACL0` | 最终 `ba8a208`，Protocol tree `16c9144c...`；5.6-sol V-P0 最终 PASS，Node 22/24 109/109、攻击矩阵 60/60；已无冲突合入为 `9334a87`～`90a5c72` 并由 `4a47a05` 归一化 root lockfile后推送 |
-| `V-P0` | Protocol v1 独立验证 | `DONE` | 5.6-sol verifier | 只读验证 `refactor/protocol-base` | `P0` | 多轮对抗复验最终 PASS；method/result、cwd recovery、stream lifecycle、extension exchange、image、safe cursor、WS interrupt 均通过 |
-| `C0` | Vite Client Shell | `DONE` | `client-shell-impl` / `c0-integrate-v4` | `refactor/client-shell` / `pi-web-worktrees/client-shell` | 无 | 最终 Client tree `3c8047d2...`；5.6-sol 对 W0 严格适配 `adb6691` 独立复验 PASS；以 `306f4a6` + `a8a47c1` + `1c916cb` 无冲突合入，并由 `e6432b9` 归一化 root lockfile 后推送；Node 22 Client 50/50，保留 protocol shim |
-| `V-C0` | Client Shell 独立验证 | `DONE` | `client-shell-verifier` + 集成负责人复跑 | 只读验证 `refactor/client-shell` | `C0` | 首轮 HIGH 已关闭；主会话复跑 typecheck、50 tests、build、boundaries、diff check 全部 PASS |
-| `I0` | 归一化集成分支和 root lockfile | `IN_PROGRESS` | `FFatTiger` | `refactor/architecture-v1`（已推送） | `W0`, `ACL0`, `V-P0`, `V-C0` | M0 基础包均已验证并集成；当前 HEAD `4a47a05`，W0/ACL0/H0A/C0/P0 与 root lockfile/发布内容已归一化并推送；继续协调 ACL1、H1B 与 Wave 1 集成 |
-
-### 5.2 Wave 1：Runtime、Host、Client 数据层并行
-
-| ID | 工作包 | 状态 | 负责人 | 建议分支 | 依赖 | 主要目录 |
-|---|---|---|---|---|---|---|
-| `ACL1` | Pi SDK Adapter | `IN_REVIEW` | `acl1-adapter-v4` | `refactor/pi-sdk-adapter` | `W0`, `ACL0` | 实现 `c2e2eb7` + 生产路径修复 `ed34415`（107/107）；5.6-sol 两次复验 FAIL：首轮 scripted 掩盖 8 项，修复后二次复验确认 4/8 PASS（writtenFiles、fork provenance、API-key 持久化、prompt outcome），剩 4 项：production custom UI 增量输入丢弃、skill root symlink 拒绝前外部写入、sanitizer 漏 whitespace secrets、plugin 跨 .js/.ts 同名冲突。v4flash 第三轮修复中；root lockfile 尚未纳入 workspace |
-| `ACL2` | Pi RPC Agent Adapter（未来） | `BACKLOG` | 待认领 | `refactor/pi-rpc-adapter` | `ACL0`, `ACL1` contract baseline | 本轮不实现；未来只改 `packages/pi-rpc-adapter/**` 和 composition config，通过同一 contract suite |
-| `R1` | pi-sessiond Core | `IN_PROGRESS` | `r1-sessiond-v4` | `refactor/sessiond-core` | `ACL0`, `P0`, `I0` | 已从 `4a47a05` 创建；主链 15/15；正在收口 attach 语义：journal 只保存单一 base snapshot，淘汰事件时推进 base；有效 resume 从 base 重建 cursor snapshot 再 replay；gap/epoch/fresh 直接给 boundary snapshot；commandId at-most-once 上限=拒绝新 ID 而非淘汰旧 ID，epoch 更换才清空；工作树未提交 |
-| `R2` | agent-worker Application Shell | `BLOCKED` | 待认领 | `refactor/agent-worker-core` | `ACL0`, `ACL1`, `P0`, `I0` | `packages/agent-worker/**`；Protocol Mapper + Controller + Adapter composition，不 import Pi SDK |
-| `H0A` | Protocol-independent Hono Host Foundation | `DONE` | `h0a-host-foundation-agent` + `h0a-fix-v4` | `refactor/h0a-host-foundation-agent` | 无（禁止 runtime wiring） | 最终 `b8e150d`；5.6-sol 独立安全复验 PASS；Node 22/24 均 81/81；已以 `ad2bde8` + `89e9d05` 合入，并由 `1432ca5` 归一化 root lockfile/发布内容后推送集成分支 |
-| `H0B` | Hono Host Protocol/runtime wiring | `BLOCKED` | 待认领 | `refactor/host-runtime-wiring` | `P0`, `I0`, `H0A`, `R1` | 后续接正式 Protocol/sessiond；不得由 H0A 自行发明协议 |
-| `C1` | Client Protocol + HTTP Query | `IN_REVIEW` | `c1-client-data-v4` | `refactor/client-data` | `P0`, `C0`, `I0` | 实现 `d9f0be7`（Node22 83/83、typecheck/build/boundaries 42 files、shim 已删）；等待独立验证；注意：5.6-sol 与 v4flash 验证器多次因 provider 不稳定启动失败（400 tool_call 格式 / Stream ended），尚未获得正式 verdict；C2 未提前实现 |
-| `CLI0` | CLI / sessiond single-instance 启动 | `BLOCKED` | 待认领 | `refactor/cli-runtime` | `R1`, `R2`, `H0A`, `H0B` | `packages/cli/**`, `bin/**` |
-
-### 5.3 Wave 2：可继续横向拆分
-
-| ID | 工作包 | 状态 | 负责人 | 依赖 | 主要目录 |
-|---|---|---|---|---|---|
-| `H1A` | Sessions read model / export | `BLOCKED` | 待认领 | `H0A`, `ACL0`, `ACL1` | Host service 依赖 `SessionCatalogPort`；Pi/JSONL 解析实现留在 Adapter |
-| `H1B` | Files / git / cwd / worktree | `DONE` | `h1b-files-git-v4` | `refactor/host-files-git` | `H0A` | 最终 `c007a72`；5.6-sol 多轮安全/并发复验 PASS，Node 22/24 117/117；已以 `e8e5bef`～`e3508e2` 零冲突合入，Host tree `207e9446...` 字节一致并推送 |
-| `H1C` | Models / auth / plugins / skills | `BLOCKED` | 待认领 | `H0A`, `ACL0`, `ACL1` | Host application services 依赖 Model/Credential/Resource/Trust Ports |
-| `H2` | WS Runtime Gateway | `BLOCKED` | 待认领 | `H0A`, `H0B`, `R1` | `packages/host/src/runtime/**` |
-| `R3` | Side Chat + 跨边界 mutation | `BLOCKED` | 待认领 | `R1`, `R2` | sessiond/worker Side Chat 模块 |
-| `C2` | RuntimeSocket + SessionStore | `BLOCKED` | 待认领 | `C1`, `H2`, `R1` | `packages/client/src/runtime/**` |
-| `C3A` | Chat/Minimap/Side Chat Virtual | `BLOCKED` | 待认领 | `C2` | Client transcript 组件 |
-| `C3B` | Session Sidebar Virtual | `BLOCKED` | 待认领 | `C1`, `C2` | Client sidebar 组件 |
-| `C3C` | Files / Models / Skills / Plugins UI | `BLOCKED` | 待认领 | `C1`, `H1B`, `H1C` | Client 资源 UI |
-| `DB0` | SQLite Session Index | `BLOCKED` | 待认领 | `H1A` | Host index/repository |
-
-### 5.4 Wave 3：整合、PWA 和清理
-
-| ID | 工作包 | 状态 | 负责人 | 依赖 |
+| ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
-| `X1` | Runtime 跨进程 E2E | `BLOCKED` | 待认领 | `R1`, `R2`, `H2`, `C2`, `CLI0` |
-| `PWA1` | LAN gate / 配对 / capability 降级 | `BLOCKED` | 待认领 | `H0A`, `H0B`, `C1`, `C2` |
-| `M1` | Session rename/delete/trust/worktree 协调 | `BLOCKED` | 待认领 | `R1`, `H1A`, `H1B`, `H1C` |
-| `L1` | 旧 Next runtime/SSE/轮询移除 | `BLOCKED` | 待认领 | `X1`, `PWA1`, 功能对等验收 |
-| `REL1` | 发布/安装/升级验证 | `BLOCKED` | 待认领 | `L1`, 全量验证 |
+| `B0` | Pix Product Workspace | `READY` | 无 | 独立 npm workspace、根 scripts、TS 配置、架构检查、零 Next |
+| `B1` | Core + Protocol Migration | `BLOCKED` | `B0` | 迁 Runtime Core、Contract Tests、Protocol，在 `pix` 重验 |
+| `B2` | Host + Client Boot Surface | `BLOCKED` | `B0`, `B1` | Hono/Vite、gate、health、capabilities、bootstrap、静态托管 |
+| `B3` | sessiond Daemon Bootstrap | `BLOCKED` | `B0`, `B1` | source-only 迁移、daemon main、lock/secret/socket、ping/shutdown |
+| `B4` | Production Composition + CLI | `BLOCKED` | `B2`, `B3` | `pi-web`、`pi-host`、`pi-sessiond`、ensure/reuse、`down --all` |
+| `B5` | Startup E2E | `BLOCKED` | `B4` | build/start/browser/API/PID/lifecycle E2E |
 
-### 5.5 当前关键路径
+依赖图：
 
 ```text
-W0 ─▶ ACL0 ─┬─▶ P0 ─▶ V-P0 ─▶ I0 ─▶ R1 ─▶ H0B/H2 ─▶ C2 ─▶ X1
-             └─▶ ACL1 ────────────────▶ R2 ────────────┘
-
-H0A ────────────────────────────────▶ H1A/B/C
-C0 ─▶ V-C0 ─────────────────────────▶ I0 ─▶ C1 ─▶ C2
+B0
+└── B1
+    ├── B2
+    └── B3
+        B2 + B3 ──▶ B4 ──▶ B5 ──▶ M1
 ```
 
-当前进度（2026-08-11 会话交接）：已集成 `e3508e2`（W0/ACL0/H0A/C0/P0/H1B 全部独立验证 DONE 并推送）。在途：ACL1 `ed34415` 待第三轮修复+复验；C1 `d9f0be7` 待独立验证（provider 不稳定曾中断，需重跑）；R1 sessiond 开发中未提交。新会话恢复指引：先读本文档 5.x 看板与 14 变更记录；ACL1/C1 完成独立验证 PASS 后再合入集成分支并更新 root lockfile；随后可解锁 ACL1→R2、C1→C2、H1B→H1C/C3C 等依赖任务。
+并行规则：
+
+- `B0` 完成后，`B1` 先建立公共包基线。
+- `B1` 完成后，`B2` 与 `B3` 可并行。
+- `B4` 由集成负责人统一完成，避免 CLI/Host/sessiond composition 相互冲突。
+
+## Wave 2 — 最小 Runtime Vertical Slice
+
+目标：`M2 — Minimal Runtime Happy Path`。
+
+| ID | 工作包 | 状态 | 依赖 | 交付 |
+|---|---|---|---|---|
+| `R0` | Protocol Process Corrections | `BLOCKED` | `M1` | create/open、epoch、interrupt commandId、stream/bash 语义修正 |
+| `R1` | Agent Worker Controller + Mapper | `BLOCKED` | `R0` | Worker IPC、显式 Mapper、create/open/prompt/abort/snapshot/shutdown |
+| `R2` | Child Process Worker Factory | `BLOCKED` | `B3`, `R1` | sessiond 每会话启动一个 Worker |
+| `A1` | Pi SDK Agent Adapter | `BLOCKED` | `B1` | 迁 Agent 路径，修 custom UI/sanitizer，最小 capability |
+| `H1` | Runtime WS Gateway | `BLOCKED` | `B2`, `B3`, `R0` | Host WS ↔ sessiond RPC |
+| `C1` | RuntimeSocket + SessionStore | `BLOCKED` | `B2`, `R0`, `H1` | handshake/create/attach/prompt/abort/reconnect/snapshot |
+| `X1` | Minimal Runtime E2E | `BLOCKED` | `R2`, `A1`, `H1`, `C1`, `B4` | prompt、stream、abort、Host restart/resume、去重、隔离 |
+
+依赖图：
+
+```text
+M1 ──▶ R0 ──┬──▶ R1 ──▶ R2 ──┐
+             ├──▶ H1 ──────────┤
+             └──▶ C1 ──────────┤
+B1 ──▶ A1 ─────────────────────┤
+B4 ────────────────────────────┘
+                               ▼
+                              X1 ──▶ M2
+```
+
+### 5.1 M2 最小能力范围
+
+只开放并验证：
+
+```text
+create/open
+attach/detach
+prompt
+abort
+getSnapshot
+stop
+```
+
+其余 Protocol 命令可以保留 schema，但 capability 不得宣称可用。
+
+### 5.2 R0 必须重新确认的协议点
+
+1. Worker init 显式携带 `mode: "create" | "open"`。
+2. epoch 只由 sessiond 生成和拥有。
+3. interrupt 保留浏览器端 `commandId`，实现端到端 at-most-once。
+4. Runtime Core 完整 partial message 到 Protocol delta 必须由有状态 Mapper 转换。
+5. `bash_update` 必须统一为 delta 或累计输出，禁止 Adapter 与 projection 重复拼接。
+
+## Wave 3 — 可日常使用的产品切片
+
+目标：`M3 — Read and Operate`。
+
+| ID | 工作包 | 依赖 | 交付 |
+|---|---|---|---|
+| `D1` | Sessions Read Path | `M2`, Session Catalog Adapter | list/detail/context/export；历史浏览 0 Worker |
+| `D2` | Runtime Command Expansion | `M2` | model/thinking/tools/bash/compact/fork/navigate/reload |
+| `D3A` | Files/Git/Worktree | `M2`, `B2` | 迁 H1B、安全策略、busy preflight、Client UI |
+| `D3B` | Models/Auth/Skills/Plugins/Trust | `M2`, Data/Resource Adapter | 修安全问题后接 Host/Client |
+| `D4` | Mutations + Side Chat | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
+
+## Wave 4 — Scale、PWA、Release
+
+| ID | 工作包 | 依赖 |
+|---|---|---|
+| `SCALE1` | SQLite JSONL Projection | `D1` |
+| `UX1` | Chat/Sidebar Virtualization | `D1`, `D2` |
+| `PWA1` | LAN Gate、配对、后台 Resume | `M2`, `D3A` |
+| `REL1` | 安装、升级、卸载、发布验证 | 发布范围功能完成 |
+
+`PiRpcAdapter` 保持 `BACKLOG`，不进入当前关键路径。
 
 ---
 
-## 6. 工作包说明
-
-## W0 — npm Workspace Foundation
-
-### 目标
-
-建立不含业务契约的 monorepo/build 基线，供 Runtime Core、Protocol、Adapter、Host 和 Client 独立开发。
-
-### 独占文件
+## 6. 新仓库目标结构
 
 ```text
-package.json
-package-lock.json
-tsconfig.json
-.gitignore
-packages/*/package.json 的集成归一化（由集成负责人执行）
+pix/
+  package.json
+  package-lock.json
+  tsconfig.base.json
+  README.md
+
+  docs/
+    refactor-architecture.md
+    refactor-execution-plan.md
+    migration-ledger.md
+
+  packages/
+    client/
+    host/
+    protocol/
+    runtime-core/
+    runtime-contract-tests/
+    sessiond/
+    agent-worker/
+    pi-sdk-adapter/
+    cli/
+
+  scripts/
+    check-architecture.mjs
+
+  tests/
+    e2e/
+    fixtures/
 ```
 
-### 交付
-
-- `workspaces: ["packages/*"]`
-- 统一 Node 22 / ESM / TypeScript 构建约定
-- workspace build/typecheck/test 脚本命名
-- 根 Next tsc 与各 package 独立 typecheck 的边界
-- 发布文件策略和 dist 忽略策略
-
-### 验收
-
-- 不包含 Runtime/Protocol/Pi 业务 schema
-- 现有 Next TypeScript 检查继续通过
-- 新 workspace 可以单独安装、构建和测试
-- 根 lockfile 是唯一 lockfile
+包名暂时保留 `@fffattiger/pi-web-*`，避免无价值的 import churn；仓库名改为 `pix` 不要求第一阶段同步改完 npm package 名。
 
 ---
 
-## ACL0 — Runtime Core + 防腐层契约
+## 7. 迁移规则
 
-### 目标
+1. 禁止 merge/cherry-pick 整个旧重构分支到 `pix`。
+2. 只迁移 `packages/**` 中的新架构成果及必要的通用配置思想。
+3. 不迁旧根 `package.json`、lockfile、tsconfig；这些文件在 `pix` 重新建立。
+4. sessiond 只迁：
 
-先定义 pi-web 自有的应用语义，再设计 Protocol 和具体 Pi Adapter。Runtime Core 是稳定的内核边界，Pi SDK/RPC 只是外部实现。
+   ```text
+   package.json
+   scripts/**
+   src/**
+   test/**
+   tsconfig.json
+   tsconfig.test.json
+   ```
 
-### 独占文件
+5. sessiond 不迁：
 
-```text
-packages/runtime-core/**
-packages/runtime-contract-tests/**
-```
+   ```text
+   dist/**
+   dist-test/**
+   *.tsbuildinfo
+   node_modules/**
+   ```
 
-### 必须定义的 Ports
-
-```text
-AgentRuntimeFactory / AgentRuntimePort
-SessionCatalogPort / SessionLocatorPort
-ModelCatalogPort
-CredentialStorePort
-ResourceCatalogPort
-ProjectTrustPort
-```
-
-### 必须定义的规范模型
-
-- Runtime command/state/event/error/capability
-- message/content/tool call/tool result
-- model/thinking/usage/context
-- extension UI/status/widget
-- session locator/header/context
-- model/auth/resource/trust DTO
-
-### 硬规则
-
-- 不 import Protocol、Zod、Pi SDK、Pi RPC、React、Hono 或 Node 进程管理
-- Port 接口不出现 `AgentSession`、`SessionManager`、SDK `Model/Event/Error` 或 RPC method/frame
-- Runtime Core Model 与 Protocol DTO 分开；Mapper 属于进程 adapter/application shell
-- 外部后端缺能力时返回规范化 capability/error，不暴露后端类型
-- `runtime-contract-tests` 导出可复用 suite；生产包不包含测试代码
-
-### Adapter Contract Suite 最低矩阵
-
-| 领域 | 必测行为 |
-|---|---|
-| lifecycle | create/open、identity、subscribe/unsubscribe、close reason、重复 close |
-| command | 支持能力的成功路径、缺能力错误、非法输入、command correlation |
-| interrupt | prompt/bash/compact 运行中可抢占；重复 interrupt 幂等 |
-| streaming | start/update/end 顺序、partial snapshot、断流后的最终状态 |
-| tools | 规范工具名/参数、tool result、`isError`、written files |
-| model | set/get、无效模型、thinking pins、capability update |
-| queue | steer/follow-up、clear、snapshot 恢复 |
-| extension UI | pending request、response/cancel、重连 snapshot |
-| compaction | manual/auto reason、start/end、abort |
-| fork | 新 JSONL、parentSession、fork point、旧 runtime 结束顺序 |
-| usage | input/output/cache/cost/context 规范化，0 值保留 |
-| errors | 外部错误映射、敏感信息清理、retryable 分类 |
-
-### 验收
-
-- 架构依赖测试证明 Runtime Core 零 Pi/Protocol imports
-- fake Adapter 通过完整 contract suite
-- 明确 SDK/RPC 必须一致的语义和允许 capability 降级的语义
-- fork、all-tools-off、abort、partial streaming、extension UI、tool result、usage 均有契约测试
+6. 旧 worktree 在迁移和 hash 校验完成前保持只读，不删除。
+7. 每个迁入包记录来源 commit/path/tree hash，见 `migration-ledger.md`。
+8. 迁入后重新生成唯一 root lockfile。
+9. 迁入后必须重新运行 package tests；旧 PASS 只作参考。
+10. 不允许为了通过构建从旧 `app/lib/components/hooks` 拷贝依赖。
 
 ---
 
-## P0 — Runtime Protocol v1
+## 8. Composition Root 规则
 
-### 目标
+| 进程 | Composition Root | 允许依赖 |
+|---|---|---|
+| Host | `packages/host/src/composition/**` | Protocol、sessiond client、Client dist、Host services |
+| sessiond | `packages/sessiond/src/composition/**` | Sessiond core、WorkerProcessFactory、locator |
+| Worker | `packages/agent-worker/src/composition/**` | Worker Controller、选定的 Agent Adapter |
+| CLI | `packages/cli/src/**` | Host/sessiond 启停入口和进程发现 |
 
-建立网络/进程边界契约。Protocol 以 ACL0 的规范语义为输入，但维护独立 wire schema，不直接导出 Runtime Core Model。
+规则：
 
-### 独占文件
-
-```text
-packages/protocol/**
-```
-
-### 交付
-
-- Protocol v1 Zod schemas 和推导类型
-- capabilities、errors、handshake
-- 26 个 RuntimeCommand
-- RuntimeEvent、RuntimeSnapshot
-- 浏览器 WS envelope
-- Host ↔ sessiond RPC envelope
-- sessiond ↔ Worker IPC envelope
-- contract tests
-- Protocol 与 Runtime Core 的字段映射矩阵和双向 fixture（Mapper 实现在 Worker/Host application boundary）
-
-### 验收
-
-- 不 import React、Next、Hono、Runtime Core、Pi SDK/RPC 或 Node 进程模块
-- 所有 wire DTO 都可独立版本化；不得直接 re-export Runtime Core 类型
-- 对 Runtime Core 的共同语义使用 fixture/mapping matrix 校验，Protocol 包自身保持零 Runtime Core dependency
-- 非法版本、命令、模型、图片和工具参数可被拒绝
-- 全部命令和事件 round-trip 测试
-- Protocol build/typecheck/test 通过
-- 根 Next TypeScript 检查不回退
-- `git diff --check` 通过
+- Host 可以依赖 Protocol 和 sessiond client，但不能依赖 Runtime Core Model、Pi SDK 或 AgentSession。
+- sessiond client/server 应提供窄子路径导出。
+- Worker Controller 不 import Pi SDK。
+- `PI_WEB_AGENT_BACKEND` 只在 Worker composition root 读取。
+- Composition Root 只做依赖装配和环境读取，不承载业务规则。
 
 ---
 
-## C0 — Vite Client Shell
+## 9. 质量门槛
 
-### 当前结果
-
-已完成 commit：
-
-```text
-d8978b5ebcdcaa4b6775537c2ea0e663f7de677a
-```
-
-已包括：
-
-- Vite + React 19
-- TanStack Router / Query / Virtual
-- `/`、`/login`、`session/cwd` search
-- `/v1` HTTP client 和 gate flow
-- capability 只读模式
-- 虚拟化 transcript 骨架
-- PWA manifest/SW/offline
-- Client 边界检查
-- 50 个测试
-
-### 合并时必须处理
-
-1. `V-C0` 已完成并通过。
-2. 合到集成分支后，将 `src/protocol-shim.ts` 替换为 Protocol 包导入。
-3. 根目录执行一次 `npm install`，把 Client workspace 依赖归一化进根 lockfile。
-4. 不提交 Client 自己的 lockfile 或 `node_modules`。
-
----
-
-## R1 — pi-sessiond Core
-
-### 目标
-
-实现独立、常驻、唯一权威的多会话守护进程。
-
-### 独占文件
-
-```text
-packages/sessiond/**
-```
-
-### 交付
-
-- 本机 endpoint、lock、instance ID、local secret
-- RPC server/client
-- Session registry 和并发启动去重
-- Worker supervisor
-- 新 session `createRequestId` 幂等
-- 真实 session ID re-key
-- command correlation 和 `commandId` 去重
-- per-session epoch/event journal
-- snapshot projection
-- attach/detach/resume 原子边界
-- running session 集合
-- idle reaper
-- Worker crash 隔离
-- graceful stop / delete / sessiond shutdown reason
-- 激活所需 session locator
-- fake Worker 集成测试
-
-### 关键限制
-
-- 不创建或 import `AgentSession`/`SessionManager`
-- 只依赖 Protocol、Runtime Core 中 sessiond 所需的 Port，以及 fake implementations
-- 不把 socket 暴露到 LAN
-- Web/Host 断开不停止 Worker
-- 长命令不能阻塞 `abort`、`abort_bash`、`abort_compaction`
-- `getSnapshot` 和只读查询不得启动 Worker
-
-### 验收
-
-- 同 session 并发 activate 只启动一个 Worker
-- 两个并发 create 不合并
-- 一个 Worker crash 不影响其他 Worker
-- Client socket 断开后 Worker 存活
-- journal gap/epoch mismatch 返回 snapshot
-- idle 到期 graceful shutdown
-
----
-
-## ACL1 — Pi SDK Adapter
-
-### 目标
-
-在唯一的 Pi SDK 防腐层中实现 ACL0 的 Ports，并把现有 `lib/rpc-manager.ts` 等代码里的 Pi 语义归一化。未来 Pi RPC Adapter 必须通过相同 contract suite。
-
-### 独占文件
-
-```text
-packages/pi-sdk-adapter/**
-```
-
-### 建议结构
-
-```text
-packages/pi-sdk-adapter/src/
-  agent/        # AgentRuntimeFactory/Port
-  sessions/     # SessionCatalog/Locator
-  models/       # ModelCatalog
-  credentials/  # CredentialStore
-  resources/    # Skills/plugins/commands
-  trust/        # ProjectTrust
-  mappers/      # SDK type ↔ Runtime Core Model
-  internal/     # SDK-only helpers，禁止从 exports 暴露
-```
-
-每个公开子路径只导出 Runtime Core Port 的实现工厂；声明文件中不得出现 SDK 类型。
-
-### 可参考但首轮不要删除的旧文件
-
-```text
-lib/rpc-manager.ts
-lib/pi-types.ts
-lib/custom-ui-terminal.ts
-lib/startup-preferences.ts
-lib/model-scope.ts
-lib/session-reader.ts
-lib/provider-listing-runtime.ts
-lib/skills-service.ts
-lib/side-chat-extension.ts
-```
-
-### 交付
-
-- `PiSdkAgentRuntimeFactory` / `PiSdkAgentRuntimeAdapter`
-- SDK command/event/error/message/tool/usage mapper
-- SDK extension UI/headless widget adapter
-- SDK session catalogue/locator adapter
-- SDK model/auth/resource/trust adapters
-- fork、bash-only session、startup/model/tools/reload 语义
-- Adapter capability projection
-- 共享 Adapter contract suite 全量通过；测试通过 factory fixture 注入 Adapter，contract test kit 不 import 具体实现
-
-### 必须保持的 SDK 初始化顺序
-
-1. `SessionManager.open/create`
-2. 取得真实 cwd
-3. 初始化 theme
-4. project trust gate
-5. extension/Side Chat 模式处理
-6. 创建 AgentSession services
-7. 解析 visible models
-8. 读取默认 model
-9. 判断 continuation
-10. 选择初始 model scope
-11. 构造 AgentSession
-12. 持久化显式启动偏好
-13. 设置 active tools
-14. all-tools-off 时强制空 system prompt
-15. bind extensions
-16. 产生规范化 ready state
-
-### 验收
-
-- `@earendil-works/pi-*` imports 只存在于本包
-- SDK 类型从任何公开 Port/Protocol 声明中消失
-- 26 个规范命令映射完整
-- abort 类命令可打断长操作
-- fork、reload、extension shutdown 和 tool result/usage 通过契约测试
-- capability 不支持项返回规范化错误
-
----
-
-## ACL2 — Pi RPC Agent Adapter（未来）
-
-### 目标
-
-在不修改 Runtime Core、pi-web Runtime Protocol、sessiond、Host、Client 和 Worker Controller 的前提下，为 `AgentRuntimeFactory/Port` 增加 Pi RPC 实现。
-
-### 允许修改
-
-```text
-packages/pi-rpc-adapter/**
-packages/agent-worker/src/composition/**（仅注册/选择 Adapter）
-配置与发布清单（由集成负责人修改）
-```
-
-### 禁止修改
-
-```text
-packages/runtime-core/**
-packages/protocol/**
-packages/sessiond/**
-packages/host/**
-packages/client/**
-packages/agent-worker/src/controller/**
-```
-
-如果实现 RPC 时必须修改上述禁止范围，说明 ACL0 的规范语义或 capability 设计存在缺口；先提交架构决策变更，不能直接穿透修补。
-
-### 验收
-
-- `PiRpcAgentRuntimeAdapter` 通过与 SDK Adapter 相同的 contract suite
-- SDK/RPC 对共同 capability 产生相同 Runtime fixtures
-- RPC 缺失能力只反映在 capability/error
-- SDK/RPC 切换只改 composition config，业务代码 diff 为 0
-- RPC 子进程退出、stderr、坏 JSONL、request correlation、abort/kill 均有测试
-
----
-
-## R2 — agent-worker Application Shell
-
-### 目标
-
-实现单会话进程壳：接收 Worker IPC，映射 Protocol DTO 与 Runtime Core Model，调用注入的 `AgentRuntimeFactory`。Worker Controller 不知道当前后端来自 SDK 或 RPC。
-
-### 独占文件
-
-```text
-packages/agent-worker/**
-```
-
-### 交付
-
-- Worker IPC server
-- Protocol ↔ Runtime Core mapper
-- 单 Session application controller
-- typed command dispatcher
-- runtime snapshot/event forwarding
-- Adapter composition root（只在这里读取 `PI_WEB_AGENT_BACKEND` 并动态加载对应 Adapter 包）
-- graceful shutdown
-- Worker lifecycle tests（使用 fake `AgentRuntimePort`）
-
-### 验收
-
-- Worker 源码不 import `@earendil-works/pi-*`，不解析 Pi RPC frame
-- Controller tests 全部使用 fake Runtime Port
-- 26 个命令 exhaustive dispatch
-- abort 类控制命令不会被长命令队列阻塞
-- Adapter 选择逻辑只存在于 composition root
-- Runtime Event 通过 Mapper 转成 Protocol Event，外部类型不会泄漏
-
----
-
-## H0A — Hono Host Foundation
-
-### 目标
-
-建立可重启的薄 Host，单端口提供 HTTP、WS upgrade 和 Client 静态资源。
-
-### 独占文件
-
-```text
-packages/host/**
-```
-
-### 交付
-
-- `createHostApp(deps)` 依赖注入
-- Node 22 Hono server
-- request ID / logging / unified errors
-- Host、Origin、DNS-rebinding 防护
-- gate status/login/logout
-- 静态 Vite assets
-- SPA fallback
-- SW/manifest cache headers
-- health/capabilities
-- sessiond 不可用时只读降级
-- WebSocket upgrade 骨架和认证入口
-
-### 中间件顺序
-
-1. request ID / logging
-2. Host/Origin protection
-3. public PWA asset 白名单
-4. gate
-5. `/v1/*`
-6. static assets
-7. SPA fallback
-8. error mapping
-
-### 验收
-
-- Host 不 import `AgentSession`、`SessionManager`、Pi SDK 或 Pi RPC parser
-- API 404 不返回 `index.html`
-- `/assets/*` immutable
-- `sw.js`/manifest no-cache
-- WS upgrade 同样经过 Host/Origin/gate
-- sessiond 不可用时 Host 仍可浏览只读资源
-
----
-
-## H1A — Sessions Read Model / Export
-
-### 目标
-
-让 Client 通过 HTTP 浏览历史，且 Worker 数量保持 0。Host application service 只依赖 `SessionCatalogPort`；当前 JSONL/SDK 读取实现在 `pi-sdk-adapter`。
-
-### 交付
-
-- `GET /v1/sessions`
-- `GET /v1/sessions/:id`
-- context / thinking / bash-output / export
-- `SessionRepository` / `SessionCatalogPort` application adapter
-- 注入 `SessionCatalogPort`，不直接 import `SessionManager`
-- SQLite projection adapter seam
-- running 状态与 sessiond snapshot 合并接口
-
-### 关键规则
-
-- Host 源码不 import Pi SDK、`SessionManager` 或 Pi RPC parser
-- 只读请求不 attach、不 activate Worker
-- 活跃 session rename/delete 必须先经 sessiond
-- export 保留深树迭代 patch
-
----
-
-## H1B — Files / Git / CWD / Worktree
-
-### 目标
-
-迁移 Host 本机资源能力并保留安全边界。
-
-### 交付
-
-- AllowedRootService
-- `/v1/files`
-- upload/range/preview/watch
-- `/v1/file-index`
-- `/v1/git/status`、`/v1/git/diff`
-- `/v1/cwd/*`
-- `/v1/worktrees`
-
-### 关键规则
-
-- 防 symlink escape
-- LAN 下禁止任意目录扩权，除非 capability/policy 明确允许
-- worktree 删除前接入 sessiond busy preflight
-- `force` 只覆盖 dirty git，不等于强杀 Agent
-
----
-
-## H1C — Models / Auth / Plugins / Skills
-
-### 目标
-
-迁移配置和资源管理 HTTP API。Host application service 只依赖 `ModelCatalogPort`、`CredentialStorePort`、`ResourceCatalogPort` 和 `ProjectTrustPort`。
-
-### 交付
-
-- models/models-config/catalog/discover/test
-- provider API key/OAuth/logout
-- plugins read/write
-- skills list/search/install/update/toggle
-- project trust HTTP 部分
-
-### 关键规则
-
-- Host 源码不 import Pi SDK、Pi 配置类或 Pi RPC parser
-- status API 永不返回原始 key
-- credential 文件修改保留锁
-- dual-auth provider 不能重复显示
-- project scope 必须 allowed-root + trust
-- 插件/技能安装是高权限操作，按 capability 降级
-
----
-
-## H2 — WebSocket Runtime Gateway
-
-### 目标
-
-把浏览器 Protocol WS 安全地代理到 sessiond，不在 Host 复制运行时状态。
-
-### 交付
-
-- `WS /v1/runtime`
-- handshake timeout/version validation
-- attach/detach/create/command
-- snapshot/event forwarding
-- sessiond reconnect
-- per-client bounded queue/backpressure
-- runtime unavailable/capability downgrade
-
-### 关键规则
-
-- eventId/epoch 由 sessiond 生成
-- Host shutdown 只断连接，不 stop sessiond
-- 慢 Client 队列超限时断开，要求重新 snapshot，不得阻塞 sessiond
-
----
-
-## C1 — Client Protocol + HTTP Query
-
-### 目标
-
-将 C0 的 shim/stub 接到正式 Protocol 和 `/v1` HTTP 资源层。
-
-### 交付
-
-- 删除 `protocol-shim.ts`
-- Protocol 包导入
-- typed HTTP client
-- Query keys/options/mutations
-- sessions/models/files/git/skills/plugins/worktrees/auth
-- capability provider 接 Host handshake/status
-- 401 统一跳转 login
-- 组件中不直接写网络请求
-
-### 验收
-
-Client 源码中以下检查均无结果：
+### 9.1 根检查
 
 ```bash
-grep -R 'from "next/' packages/client/src
-grep -R '@earendil-works/pi-' packages/client/src
-grep -R '"/api/' packages/client/src
-grep -R 'new EventSource' packages/client/src
-```
-
----
-
-## C2 — RuntimeSocket + SessionStore
-
-### 目标
-
-替换旧 `useAgentSession.ts` 中的 SSE、POST 和轮询恢复逻辑。
-
-### 交付
-
-- 单 Runtime WebSocket
-- handshake/capabilities
-- 多 session attach/detach
-- reconnect/backoff
-- epoch/eventId 去重
-- command result correlation
-- command timeout
-- snapshot hydration
-- SessionStore/event projection
-- running session IDs
-- Query baseline + runtime overlay bridge
-- visibility/online resume
-
-### 关键规则
-
-- Query 不轮询 agent state
-- snapshot 与 replay 顺序不能丢事件
-- final event 后只 invalidate 对应 session Query
-- partial streaming message 在 Host 重启后可恢复
-- command 响应丢失后不能重复 prompt
-
----
-
-## C3A / C3B / C3C — Client 体验迁移
-
-### C3A：聊天、Minimap、Side Chat
-
-- Chat row model 与 view 分离
-- TanStack Virtual 动态测量
-- streaming pinned-to-bottom
-- 用户上滚后不强制拉回
-- Minimap 使用 virtual index，不依赖全部 DOM refs
-- Side Chat 复用虚拟 transcript
-
-### C3B：Session Sidebar
-
-- Query session list
-- running IDs 来自 SessionStore
-- tree 展平为 row model
-- 千级 session virtual
-- rename/delete mutation
-- DnD 基于 row ID，不依赖所有 DOM 存在
-
-### C3C：资源 UI
-
-- File Explorer/Viewer
-- Worktree
-- Models/Skills/Plugins
-- file watch 事件只 invalidate Query
-- capability 隐藏/禁用写操作
-
----
-
-## DB0 — SQLite Session Index
-
-### 目标
-
-加速会话列表，但不改变真相源。
-
-### 交付
-
-- SQLite schema/migration owner
-- JSONL watcher/invalidation
-- session/cwd/projectRoot/parentSession 索引
-- 增量更新
-- 全量重建命令
-- corruption recovery
-- 性能基准
-
-### 验收
-
-- 删除数据库后可从 JSONL 重建
-- 千级会话索引命中 P95 `< 50ms`
-- JSONL 与 DB 不一致时以 JSONL 为准
-
----
-
-## R3 / M1 — Side Chat 和跨边界 mutation
-
-### Side Chat
-
-- 生命周期归 sessiond
-- Side Worker 继续执行 extension
-- main snapshot 改成可序列化 DTO
-- main Worker 不存在时从 JSONL 读取，不为查看 Side Chat 启动 main Worker
-
-### Mutation
-
-以下操作必须由 sessiond 协调 Worker 后再改 JSONL/文件系统：
-
-- session rename/delete
-- auto-name
-- project trust reload
-- worktree remove
-- active session reparent
-
----
-
-## CLI0 — CLI 和 single-instance
-
-### 交付
-
-- `pi-web`
-- `pi-host`
-- `pi-sessiond`
-- 发现已有 sessiond 则复用
-- 没有则 detached spawn
-- stale socket/lock 处理
-- Unix socket / Windows named pipe
-- Web 退出不杀 sessiond
-- `down --all` 等显式全停入口
-
----
-
-## X1 — 跨进程 E2E
-
-必须真实启动：
-
-1. sessiond
-2. 至少两个 Worker/fake Worker
-3. Host
-4. WS Client
-
-必测：
-
-- create → prompt → streaming
-- prompt 中重启 Host，sessiond/Worker PID 不变
-- Client attach snapshot + replay
-- 一个 Worker crash 不影响另一个
-- 只读 sessions/detail/context 不创建 Worker
-- duplicate commandId 不重复执行
-- epoch mismatch/full snapshot
-- delete 先 quiesce 后 unlink
-- busy trust/worktree remove 返回 409
-
----
-
-## 7. 文件所有权与冲突控制
-
-### 7.1 集成负责人独占
-
-```text
-package.json
-package-lock.json
-tsconfig.json
-bin/**
-next.config.ts
-本文件的任务状态表
-```
-
-`W0` 在首个基线提交中由集成负责人独占根 package/lockfile。后续所有根 workspace 和 lockfile 修改继续由集成负责人统一落地；各包负责人只修改自己的 package manifest，并在交接中列出所需依赖。
-
-### 7.2 各团队目录
-
-| 团队 | 可修改 |
-|---|---|
-| Runtime Core | `packages/runtime-core/**`、`packages/runtime-contract-tests/**` |
-| Pi SDK Adapter | `packages/pi-sdk-adapter/**` |
-| Pi RPC Adapter（未来） | `packages/pi-rpc-adapter/**` |
-| Protocol | `packages/protocol/**` |
-| sessiond | `packages/sessiond/**` |
-| Worker | `packages/agent-worker/**` |
-| Host | `packages/host/**` |
-| Client | `packages/client/**` |
-| CLI | `packages/cli/**`，但根 `bin/**` 由集成负责人落地 |
-
-### 7.3 旧代码限制
-
-第一阶段默认不得修改：
-
-```text
-app/**
-components/**
-hooks/**
-lib/rpc-manager.ts
-```
-
-这些文件保持当前 Next 产品可运行。只有被明确分派的迁移/清理任务可以修改，且必须列出精确路径。
-
-### 7.4 跨目录改动规则
-
-如果一个任务需要跨两个团队目录：
-
-1. 先定义或修订 Runtime/Resource Port；跨进程字段再定义 Protocol schema。
-2. Pi 具体实现只在 Adapter 团队目录修改。
-3. 各团队分别提交自己的实现。
-4. 由集成负责人提交最后 wiring 和根 lockfile。
-5. 禁止一个开发者顺手修改另一个团队正在开发的文件。
-
----
-
-## 8. 分支、Worktree 和合并规则
-
-### 8.1 当前已有 worktree
-
-```text
-main
-pi-web-worktrees/integration-v1            -> refactor/architecture-v1（HEAD a8d4e3e）
-pi-web-worktrees/w0-workspace-foundation   -> refactor/w0-workspace-foundation（HEAD a8d4e3e）
-pi-web-worktrees/acl0-runtime-core         -> refactor/acl0-runtime-core（HEAD 8dd9b31）
-pi-web-worktrees/protocol-base             -> refactor/protocol-base（HEAD 478ca71，含未提交严格 schema 修复）
-pi-web-worktrees/h0a-host-foundation-agent -> refactor/h0a-host-foundation-agent（HEAD f6a163d，含未提交 `packages/` WIP）
-pi-web-worktrees/client-shell              -> refactor/client-shell（HEAD d8978b5）
-```
-
-### 8.2 集成基线建立
-
-W0、ACL0 和 C0 验收、P0 按 ACL0 重审后：
-
-1. 从 `main` 创建或更新 `refactor/architecture-v1`。
-2. 合并/拣选 W0。
-3. 合并/拣选 ACL0。
-4. 合并/拣选 P0 和 ACL1（目录隔离）。
-5. 合并/拣选 C0。
-6. 根目录执行 `npm install`，统一 workspace lockfile。
-7. 运行基线 typecheck/test/lint/client build，禁止 `next build`。
-8. 后续所有任务从该集成 commit 创建分支/worktree。
-
-### 8.3 分支命名
-
-```text
-refactor/<task-id>-<short-name>
-```
-
-示例：
-
-```text
-refactor/w0-workspace
-refactor/acl0-runtime-core
-refactor/acl1-pi-sdk-adapter
-refactor/r1-sessiond-core
-refactor/r2-agent-worker
-refactor/h1b-host-files
-refactor/c2-runtime-store
-```
-
-### 8.4 提交要求
-
-- 一个 commit/提交序列只解决一个工作包。
-- 不提交 `node_modules`、`.next`、临时 socket、运行日志和本地 credential。
-- 生成文件必须注明生成方式。
-- Commit message 建议：
-
-```text
-refactor(workspace): establish package build baseline
-refactor(runtime-core): define agent runtime ports
-refactor(pi-adapter): implement Pi SDK runtime adapter
-refactor(protocol): define runtime protocol v1
-refactor(sessiond): add worker supervisor and event journal
-refactor(client): add runtime session store
-```
-
-### 8.5 合并顺序
-
-```text
-W0
-→ ACL0
-→ P0 + ACL1（共享 Runtime 语义，目录隔离，可并行）
-→ C0
-→ R1 + H0A + C1（目录隔离，可并行评审）
-→ R2 + H0B
-→ H1A/H1B/H1C + H2 + R3
-→ C2
-→ C3A/C3B/C3C + DB0
-→ CLI0 + M1
-→ X1 + PWA1
-→ L1
-→ REL1
-```
-
----
-
-## 9. 验证与质量门槛
-
-### 9.1 所有任务最低要求
-
-```bash
+npm run check:architecture
+npm run typecheck
+npm test
+npm run build
 git diff --check
 ```
 
-并运行本工作包的：
+### 9.2 `check:architecture` 最低检查
 
-- typecheck
-- unit tests
-- lint（适用时）
-- build（适用时）
+- 无 `next`、`eslint-config-next` 依赖。
+- 无 `next/` import。
+- 无根 `app/`、`next.config.*`、`.next`。
+- Pi SDK import 只存在于 `packages/pi-sdk-adapter/**`。
+- Host/sessiond/Worker Controller 无 `AgentSession`、`SessionManager`。
+- Runtime Core 无 Protocol/Pi SDK/Hono/React import。
+- Protocol 无 Runtime Core/Pi SDK/Hono/React import。
+- 所有生产 bin target 存在。
+- Client dist 进入 production build/package 布局。
 
-### 9.2 根项目
+### 9.3 独立验证
 
-```bash
-node_modules/.bin/tsc --noEmit --incremental false
-npm test
-npm run lint
-```
+以下工作必须由非实现者验证：
 
-> 开发期间永远不要运行 `next build`。
+- 迁移后的 Runtime Core / Protocol
+- sessiond daemon 与 single-instance
+- Host security/gate/static/WS
+- Agent Worker / Pi SDK Adapter
+- CLI lifecycle
+- Startup E2E 和 Runtime E2E
+- 三个以上文件的核心 Client Runtime
 
-### 9.3 Client
-
-```bash
-npm run typecheck --workspace packages/client
-npm run test --workspace packages/client
-npm run build --workspace packages/client
-npm run check:boundaries --workspace packages/client
-```
-
-### 9.4 Protocol / Runtime Core / Adapter / Runtime 包
-
-目标脚本：
-
-```bash
-npm run build --workspace packages/runtime-core
-npm run test --workspace packages/runtime-core
-npm run test --workspace packages/runtime-contract-tests
-npm run build --workspace packages/protocol
-npm run test --workspace packages/protocol
-npm run typecheck --workspace packages/pi-sdk-adapter
-npm run test --workspace packages/pi-sdk-adapter
-npm run typecheck --workspace packages/sessiond
-npm run test --workspace packages/sessiond
-npm run typecheck --workspace packages/agent-worker
-npm run test --workspace packages/agent-worker
-```
-
-增加架构边界检查：
-
-- `packages/runtime-core/**` 无 Protocol/Pi SDK/Pi RPC import
-- `packages/pi-sdk-adapter/**` 之外无 `@earendil-works/pi-*` import
-- `packages/pi-rpc-adapter/**` 之外无 Pi RPC frame/method parser
-- Host/sessiond/Worker Controller 无 `AgentSession`、`SessionManager`、SDK Model/Event import
-
-### 9.5 独立验证要求
-
-以下改动必须由非实现者执行 `verification`：
-
-- Runtime Core Ports / Adapter contract suite
-- Protocol 契约
-- Pi SDK/RPC Adapter
-- sessiond/Worker
-- Host security/gate/WS
-- SQLite/migration
-- CLI/single-instance
-- 跨进程 lifecycle
-- 修改 3 个以上文件的核心 Client runtime
-
-验证结果只能是：
-
-- `PASS`
-- `FAIL`
-- `PARTIAL`（环境限制必须明确）
-
-`FAIL` 后由原实现者修复，再由同一个验证者复验。
+结果只能是：`PASS`、`FAIL` 或说明环境限制的 `PARTIAL`。
 
 ---
 
-## 10. 协作和同步格式
-
-### 10.1 开始任务时
-
-在任务看板填写，并发送：
+## 10. 当前立即执行顺序
 
 ```text
-任务：ACL0 Runtime Core + Pi ACL Contracts
-负责人：<name>
-状态：IN_PROGRESS
-Base commit：<integration commit>
-Branch：refactor/acl0-runtime-core
-Worktree：<absolute path>
-修改范围：packages/runtime-core/**, packages/runtime-contract-tests/**
-预计交付：<date/milestone>
-已知依赖：W0 DONE
+1. B0：在 pix 建立零 Next 的独立 workspace
+2. B1：迁移 Runtime Core、Contract Tests、Protocol，并在 pix 重验
+3. 并行：
+   - B2：Host + Client Boot Surface
+   - B3：sessiond source-only + daemon bootstrap
+4. B4：统一完成 production composition 和 CLI
+5. B5：Startup E2E，达到 M1
+6. 达到 M1 后再启动 M2 Runtime Vertical Slice
 ```
 
-### 10.2 每日/阶段同步
+在 `B0` 和 `B1` 完成前，不继续旧 worktree 中的 ACL1/C1/R1 功能开发，避免继续在错误仓库积累成果。
+
+---
+
+## 11. 任务交接格式
 
 ```text
-任务：<TASK-ID>
-状态：IN_PROGRESS / BLOCKED / IN_REVIEW
-已完成：
-- ...
-
-下一步：
-- ...
-
-阻塞：
-- 无 / 具体依赖、接口或错误
-
-契约变化：
-- 无 / 需要修改的 Protocol schema 和原因
-
-验证：
-- 已运行命令及结果
-```
-
-### 10.3 任务交接模板
-
-```text
-任务：<TASK-ID + 名称>
+任务：<ID + 名称>
 状态：IN_REVIEW
 Branch：<branch>
 Commit：<hash>
-Base commit：<hash>
+Base：<hash>
 
-修改文件：
-- path
+修改范围：
+- ...
 
 实现摘要：
 - ...
 
-契约/API：
-- 新增/修改的 schema、method、route、event
+来源迁移：
+- 旧路径/commit/tree hash
+- 明确排除项
 
-验证结果：
+验证：
 - command: PASS/FAIL
 
-未完成/残余风险：
+残余风险：
 - ...
 
 集成步骤：
 1. ...
-2. ...
-
-禁止遗漏：
-- 是否改了 root package/lockfile
-- 是否生成 migration/build artifact
-- 是否需要环境变量
-```
-
-### 10.4 阻塞升级规则
-
-以下情况不要自行猜测，立即标记 `BLOCKED`：
-
-- Runtime Core Port 无法表达所需规范语义
-- Protocol 无法表达所需 wire 字段
-- 需要把 SDK/RPC 类型带出 Adapter 边界
-- 需要在 Host/sessiond/Worker Controller 中判断具体后端类型
-- 需要修改其他团队独占文件
-- snapshot 无法恢复某类运行态
-- Host 与 sessiond 对同一 mutation 所有权不清
-- JSONL 写入可能与活跃 Worker 竞争
-- LAN 文件权限可能扩大
-- 需要改变已冻结决策
-
----
-
-## 11. Milestone 验收门
-
-## M0 — Foundation
-
-完成条件：
-
-- `W0 DONE`
-- `ACL0 DONE`
-- `P0 DONE`
-- `C0 DONE`
-- 集成分支建立
-- 根 workspace/lockfile 正常
-- Runtime Core/Protocol/Client 各自 build/test 通过
-
-## M1 — Runtime Separated
-
-完成条件：
-
-- `ACL1`, `R1`, `R2`, `CLI0` 基础完成
-- 每 session 一个 Worker
-- Worker Controller 只依赖 `AgentRuntimePort`
-- SDK imports 只存在于 `pi-sdk-adapter`
-- Host/Web 断开不杀 Worker
-- 只读查询不创建 Worker
-- event journal/snapshot/attach 工作
-- SDK Adapter 通过共享 contract suite
-- 使用 fake `AgentRuntimePort` 可完成 Worker/sessiond 集成测试
-
-## M2 — Read-only Vertical Slice
-
-完成条件：
-
-- Hono 托管 Vite Client
-- Client 可登录并浏览 sessions/detail/context
-- capability 无 `agent` 时只读 UI 正常
-- 历史浏览 Worker 数为 0
-
-## M3 — Runtime Vertical Slice
-
-完成条件：
-
-- Client 通过 WS create/attach/prompt/abort
-- streaming snapshot 可恢复
-- Host 重启后继续 attach
-- duplicate commandId 不重复 prompt
-- Worker crash 隔离
-
-## M4 — Feature Parity
-
-完成条件：
-
-- model/thinking/tools/compact/fork/navigate/bash/reload
-- files/git/worktree
-- models/auth/plugins/skills
-- Side Chat
-- rename/delete/auto-name/trust
-- 核心现有功能无回退
-
-## M5 — Scale + PWA
-
-完成条件：
-
-- SQLite 指标达标
-- Chat/Sidebar Virtual 达标
-- LAN 强制 gate
-- 手机 PWA 后台恢复
-- capability 降级完整
-
-## M6 — Legacy Removal
-
-完成条件：
-
-- 删除旧 Agent SSE/运行态轮询
-- Next 不再承载最终产品路径
-- 发布包包含 Host/Client/sessiond/Worker/Runtime Core/Pi SDK Adapter/CLI
-- 安装、升级、卸载和 `down --all` 验证完成
-
----
-
-## 12. 已知风险
-
-| 风险 | 对策 |
-|---|---|
-| Pi SDK/RPC 接入细节越过 ACL | 依赖检查 + package boundary tests；只有对应 Adapter 包允许外部类型/import |
-| SDK/RPC 行为不一致 | 两种 Adapter 运行同一 `runtime-contract-tests`；差异通过 capability 显式表达 |
-| Protocol 与 Runtime Core 锁死 | 保持独立模型和 Mapper；分别版本化、分别测试 |
-| partial assistant 尚未写 JSONL | sessiond snapshot 保存 Runtime Core streaming message 投影 |
-| snapshot 和订阅之间丢事件 | sessiond 内原子建立 boundary + subscription + replay |
-| 长 compact/bash 阻塞 abort | 控制类命令允许并发下发，不进同一串行队列 |
-| fork 后旧 wrapper 状态污染 | fork 返回后关闭旧 Worker，重新激活旧 session 时重读原文件 |
-| Side Chat 的 SDK snapshot 含不可序列化对象 | Runtime Core 定义 `SideChatMainSnapshot` DTO；Adapter 负责从 SDK/RPC 构造，Worker/sessiond 只传规范 DTO |
-| Host 与 Worker 同时写 JSONL | active mutation 必须由 sessiond quiesce/协调 |
-| 慢浏览器阻塞 sessiond | Host 每连接有界队列，超限断开并重新 snapshot |
-| SQLite 与 JSONL 不一致 | JSONL 优先，索引可删除重建 |
-| Client Query 与 RuntimeStore 双写 | Query 是持久化基线，SessionStore 是实时 overlay，以 revision/cursor 对齐 |
-| 外部 pi CLI 同时写同一 JSONL | 首期记录为已知限制，不宣称已解决；后续再评估锁策略 |
-| 多 worktree 同改 lockfile | root package/lockfile 仅集成负责人修改 |
-| 开发运行 Next build 污染 `.next` | 明确禁止，CI/文档持续提醒 |
-
----
-
-## 13. 给新同事的最短说明
-
-可以直接把下面这段发给新加入的同事：
-
-> 请先阅读 `docs/refactor-execution-plan.md`。它是本次 pi-web 重构的任务和协作单一事实源。找到状态为 `READY` 的任务，确认依赖和文件范围后认领；从 `refactor/architecture-v1` 最新集成 commit 创建独立 worktree。不要跨任务修改其他团队目录，也不要直接修改根 `package.json`/lockfile。完成后按文档中的交接模板提交 commit、验证结果和残余风险。
-
-架构背景需要进一步了解时，再阅读：
-
-```text
-docs/refactor-architecture.md
-AGENTS.md
 ```
 
 ---
 
-## 14. 变更记录
+## 12. 决策记录
 
-| 日期 | 变更 |
-|---|---|
-| 2026-08-11 | 会话交接：ACL1 二次复验 4/8 PASS、剩 4 项由 v4flash 三修中；C1 `d9f0be7` 待验证（验证器 provider 不稳定，需新会话重跑）；R1 未提交。集成 `e3508e2` 不变 |
-| 2026-08-11 | P0 多轮 5.6-sol V-P0 最终 PASS（`ba8a208`，Protocol 109/109、攻击矩阵60/60），tree `16c9144c...` 无冲突合入；`4a47a05` 完成 root lockfile并推送，解锁并并行启动 R1 `refactor/sessiond-core` 与 C1 `refactor/client-data` |
-| 2026-08-11 | C0 W0 严格适配经 5.6-sol 独立复验 PASS（`adb6691`），Client tree 无冲突、字节一致合入；`e6432b9` 完成 root lockfile 并推送，Node 22 Client 50/50、Host 81/81、Runtime contracts 75/75 |
-| 2026-08-11 | H0A 经 5.6-sol 最终安全复验 PASS（`b8e150d`，Node 22/24 81/81），已以 `ad2bde8` + `89e9d05` 合入并由 `1432ca5` 完成 Host root lockfile/发布归一化、推送集成分支；解锁并启动 H1B `refactor/host-files-git` |
-| 2026-08-11 | 项目恢复 ACTIVE：ACL0 经多轮 5.6-sol 独立复验最终 PASS（`9deb267`），完整合入并由 `b690826` 归一化 root lockfile/发布排除，Node 22.19 门禁通过并推送；并行恢复 P0、启动 ACL1 与 C0 基线集成；H0A `b8e150d` 等待最终安全复验 |
-| 2026-08-11 | 暂停并盘点：W0 DONE（`8a32502`+`a8d4e3e`，最终 v4flash 复验 PASS，已 fast-forward 合入并推送 `refactor/architecture-v1`）；ACL0/H0A/P0/I0 标记 PAUSED 并记录确切进度（ACL0 实现完成待独立复验、H0A 未提交 WIP、P0 未提交严格 schema 修复）；C0/V-C0 DONE（`d8978b5`）；所有 subagent 已停止，无后台任务；main `f6a163d`，集成分支 `a8d4e3e` |
-| 2026-08-11 | ACL 方案语义收口：新增 W0、ACL2、capability/映射矩阵、composition root 规则和可替换性验收；Protocol 正式命名为 pi-web Runtime Protocol v1 |
-| 2026-08-10 | 暂停期间修订架构：新增 `runtime-core` Ports 与 Pi 防腐层；当前 `pi-sdk-adapter`、未来 `pi-rpc-adapter`；Protocol 与 Runtime Model 分离；Host/sessiond/Worker Controller 禁止直接依赖 Pi 类型 |
-| 2026-08-10 | 项目负责人要求暂停所有工作：停止 Protocol 实现代理；P0/I0/H0A 标记 PAUSED；pix Issues #1/#2 已留言通知；Draft PR #14/#15 保留且不合并 |
-| 2026-08-10 | 分工落地：`FFatTiger` 负责 P0/I0；`Pililink` 分派 H0A，可立即从 `refactor/h0-host-foundation` 开始；创建 pix Issues #1/#2 和 pi-web Draft PR #14/#15 |
-| 2026-08-10 | Protocol `478ca71` 独立验证 FAIL；P0 退回修复：RPC/IPC method-payload 强绑定、cwd lifecycle、streaming message、extension response、整数 event cursor |
-| 2026-08-10 | 创建执行与协作手册；记录 P0、C0 当前进度；冻结 Wave 0～3、文件所有权、验收和同步规则 |
+| ID | 决策 | 状态 |
+|---|---|---|
+| `N-001` | `pix` 是新架构独立产品仓库 | 冻结 |
+| `N-002` | M1 必须交付可构建、可启动的新架构应用 | 冻结 |
+| `N-003` | Next.js 不进入 `pix` 产品路径 | 冻结 |
+| `N-004` | 旧成果按包迁移，不整体合并旧分支 | 冻结 |
+| `N-005` | M1 启动 Hono + Vite Client + 独立 sessiond；最小 Agent Runtime 属于 M2 | 冻结 |
+| `N-006` | CLI/composition 是 M1 核心，不再后置 | 冻结 |
+| `N-007` | 旧测试结果不自动继承，迁入 `pix` 后重新验证 | 冻结 |
+| `N-008` | capability 只声明完整接通且已验证的能力 | 冻结 |
