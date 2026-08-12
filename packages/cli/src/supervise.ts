@@ -2,10 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
   instanceAlive,
-  readInstanceLock,
+  listPrivateSocketAliases,
+  probeSocket,
+  readInstanceLockStrict,
   resolveRuntimeDir,
   sessiondPaths,
-  type InstanceLockRecord,
+  type InstanceLockRead,
   type SessiondPaths,
 } from "@fffattiger/pix-sessiond/control";
 import { readLocalSecret } from "./secret.js";
@@ -37,6 +39,14 @@ export interface SessiondStatus {
   alive: boolean;
   /** That live instance also answers an RPC ping. */
   pingable: boolean;
+  /**
+   * When true, a daemon must NOT be spawned for this directory: some live or
+   * unsafe state blocks ownership (a live listener without a lock, an unsafe
+   * lock, or a live-but-unreachable pid).
+   */
+  obstructed: boolean;
+  /** Human-readable reason when {@link obstructed} is true. */
+  obstruction: string | undefined;
   pid: number | undefined;
   instanceId: string | undefined;
   directory: string;
@@ -78,20 +88,79 @@ function sleep(ms: number): Promise<void> {
  * Inspect a (possibly running) sessiond without side effects. Reuse decisions
  * must NOT rely on pid-aliveness alone: a recycled pid or a hung daemon would
  * look "alive" but be unusable, so reachability is confirmed by a real ping.
+ * Fail-closed for spawn decisions: an unsafe lock, a live listener without a
+ * lock, or a live-but-unreachable pid marks the directory as obstructed so
+ * callers never spawn a second daemon over it.
  */
 export async function inspectSessiond(directory?: string): Promise<SessiondStatus> {
   const { directory: dir, endpoint, paths } = locateSessiond(directory);
-  const lock: InstanceLockRecord | undefined = await readInstanceLock(paths);
-  if (lock === undefined) {
-    return { alive: false, pingable: false, pid: undefined, instanceId: undefined, directory: dir, endpoint };
+  const lock: InstanceLockRead = await readInstanceLockStrict(paths);
+  if (lock.kind === "unsafe") {
+    // Never treat an unsafe lock as absent and never auto-remove it.
+    return {
+      alive: false,
+      pingable: false,
+      obstructed: true,
+      obstruction: lock.reason,
+      pid: undefined,
+      instanceId: undefined,
+      directory: dir,
+      endpoint,
+    };
   }
-  const alive = pidAlive(lock.pid);
+  if (lock.kind === "missing") {
+    // No lock: a live public/private listener is an orphan that lost its lock;
+    // spawning another daemon would create a second authority over it.
+    if (await anyLiveSocket(paths)) {
+      return {
+        alive: false,
+        pingable: false,
+        obstructed: true,
+        obstruction: "a live sessiond socket exists without an instance lock",
+        pid: undefined,
+        instanceId: undefined,
+        directory: dir,
+        endpoint,
+      };
+    }
+    return { alive: false, pingable: false, obstructed: false, obstruction: undefined, pid: undefined, instanceId: undefined, directory: dir, endpoint };
+  }
+  const alive = pidAlive(lock.record.pid);
   if (!alive) {
-    return { alive: false, pingable: false, pid: lock.pid, instanceId: lock.instanceId, directory: dir, endpoint };
+    return {
+      alive: false,
+      pingable: false,
+      obstructed: false,
+      obstruction: undefined,
+      pid: lock.record.pid,
+      instanceId: lock.record.instanceId,
+      directory: dir,
+      endpoint,
+    };
   }
   const secret = await readLocalSecret(paths.secretFile);
   const pingable = secret !== undefined ? await pingSessiond(endpoint, secret) : false;
-  return { alive: true, pingable, pid: lock.pid, instanceId: lock.instanceId, directory: dir, endpoint };
+  // A live pid that is unreachable is authoritative until it dies or is
+  // explicitly downed: never spawn a replacement over it.
+  return {
+    alive: true,
+    pingable,
+    obstructed: !pingable,
+    obstruction: !pingable ? "sessiond pid is alive but not reachable" : undefined,
+    pid: lock.record.pid,
+    instanceId: lock.record.instanceId,
+    directory: dir,
+    endpoint,
+  };
+}
+
+/** True when any Pix-named Unix socket in the directory answers a connect. */
+async function anyLiveSocket(paths: SessiondPaths): Promise<boolean> {
+  if ((await probeSocket(paths.endpoint)) === "live") return true;
+  for (const alias of await listPrivateSocketAliases(paths.directory)) {
+    if ((await probeSocket(alias)) === "live") return true;
+  }
+  return false;
 }
 
 /**
@@ -166,15 +235,21 @@ export async function ensureSessiond(
     log(`reusing sessiond (pid ${existing.pid}) at ${dir}`);
     return { directory: dir, endpoint, pid: existing.pid, instanceId: existing.instanceId, reused: true };
   }
+  if (existing.obstructed) {
+    // Fail closed: never spawn over a live listener without a lock, an unsafe
+    // lock, or a live-but-unreachable pid.
+    throw new Error(`[pix] cannot start sessiond: ${existing.obstruction ?? "sessiond state is unsafe"}`);
+  }
   log(`starting sessiond at ${dir}`);
   const child = spawnSessiond(dir);
   const readiness = await waitForReadiness(paths, child);
   if (!readiness.ok) {
     throw readiness.error ?? new Error("[pix] sessiond did not become ready");
   }
-  const lock = await readInstanceLock(paths);
-  log(`sessiond ready (pid ${lock?.pid}) at ${dir}`);
-  return { directory: dir, endpoint, pid: lock?.pid, instanceId: lock?.instanceId, reused: false };
+  const lock = await readInstanceLockStrict(paths);
+  const record = lock.kind === "ok" ? lock.record : undefined;
+  log(`sessiond ready (pid ${record?.pid}) at ${dir}`);
+  return { directory: dir, endpoint, pid: record?.pid, instanceId: record?.instanceId, reused: false };
 }
 
 /**
@@ -189,12 +264,13 @@ export async function shutdownSessiond(
   options: ShutdownOptions = {},
 ): Promise<ShutdownResult> {
   const { paths } = locateSessiond(directory);
-  const lock = await readInstanceLock(paths);
-  if (lock === undefined || !pidAlive(lock.pid)) {
-    return { action: "already-down", pid: lock?.pid };
+  const lock = await readInstanceLockStrict(paths);
+  const record = lock.kind === "ok" ? lock.record : undefined;
+  if (record === undefined || !pidAlive(record.pid)) {
+    return { action: "already-down", pid: record?.pid };
   }
   try {
-    process.kill(lock.pid, "SIGTERM");
+    process.kill(record.pid, "SIGTERM");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
@@ -203,9 +279,9 @@ export async function shutdownSessiond(
     // instanceAlive reads the lock each poll; once the daemon releases it the
     // lock file is gone and instanceAlive returns false.
     if (!(await instanceAlive(paths)) && !existsSync(paths.endpoint)) {
-      return { action: "terminated", pid: lock.pid };
+      return { action: "terminated", pid: record.pid };
     }
     await sleep(50);
   }
-  return { action: "failed", pid: lock.pid, reason: "timeout" };
+  return { action: "failed", pid: record.pid, reason: "timeout" };
 }

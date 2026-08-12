@@ -85,14 +85,16 @@ test("ensureSessiond spawns a detached daemon when none is running", async () =>
   }
 });
 
-test("ensureSessiond detects early child exit and fails fast", async () => {
-  // A regular file where a private directory is required makes the daemon's
-  // bootstrap fail immediately, so the spawned child exits before readiness.
+test("ensureSessiond fails fast (without spawning) when the runtime dir is broken", async () => {
+  // A regular file where a private directory is required makes the lock
+  // unreadable and the bootstrap impossible; the new fail-closed inspection
+  // refuses to spawn a doomed child at all (previously it spawned and then
+  // reported the early child exit).
   const parent = await tempDir();
   const dir = join(parent, "blocker");
   try {
     await writeFile(dir, "i am a file, not a directory");
-    await assert.rejects(() => ensureSessiond(dir), /exited early|did not become ready/);
+    await assert.rejects(() => ensureSessiond(dir), /cannot start sessiond/);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
