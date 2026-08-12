@@ -317,7 +317,7 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
           );
         })}
       </div>
-      {isLive ? null : !canBrowseSessions ? (
+      {isLive || rowsProp !== undefined ? null : !canBrowseSessions ? (
         <div className="transcript-empty">Session history unavailable until the runtime connects.</div>
       ) : context.isError && sessionId ? (
         <div className="transcript-empty">Session history unavailable</div>

@@ -514,7 +514,12 @@ describe("TranscriptList — selection boundary (no A→B thinking leak)", () =>
 });
 
 describe("TranscriptList — rows prop path", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+  });
   afterEach(() => {
+    globalThis.fetch = previousFetch;
     cleanup();
   });
 
@@ -534,6 +539,38 @@ describe("TranscriptList — rows prop path", () => {
     expect(screen.getByText("answer")).toBeTruthy();
     const details = screen.getByText("Thinking").closest("details");
     expect(details?.open).toBe(false);
+  });
+
+  it("explicit rows ignore the sessions capability: shows only rows, no history-unavailable / No messages, and issues no context fetch", () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("unexpected context fetch");
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const rows = buildTranscriptRows([
+      { id: "explicit-1", role: "assistant", text: "explicit answer" },
+    ]);
+    // No sessions capability — explicit rows are not session history, so they
+    // must render and never show the history-unavailable overlay.
+    mount(<TranscriptList rows={rows} />, { mode: "local", capabilities: ["agent"] });
+
+    expect(screen.getByText("explicit answer")).toBeTruthy();
+    expect(screen.queryByText("Session history unavailable until the runtime connects.")).toBeNull();
+    expect(screen.queryByText("No messages")).toBeNull();
+    expect(document.querySelectorAll(".transcript-empty")).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("explicit empty rows show no overlay even without sessions capability", () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("unexpected context fetch");
+    }) as unknown as typeof fetch;
+
+    mount(<TranscriptList rows={[]} />, { mode: "local", capabilities: ["agent"] });
+
+    expect(screen.queryByText("Session history unavailable until the runtime connects.")).toBeNull();
+    expect(screen.queryByText("No messages")).toBeNull();
+    expect(document.querySelectorAll(".transcript-empty")).toHaveLength(0);
   });
 });
 
