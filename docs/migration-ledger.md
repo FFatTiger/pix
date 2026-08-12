@@ -329,7 +329,7 @@ D1B-5 Transcript history capability fail-closed：5244e44。仅改`packages/clie
 Hardening 65c33c0：empty-state capability分支仅在`rowsProp===undefined`时生效（保持live优先），显式prebuilt rows不是sessions history，故无cap时只显示rows、不叠加history-unavailable/No messages也不fetch。
 验证：定向29/29覆盖true→false撤回(同QueryClient缓存立即隐藏+unavailable+无新fetch)、pending撤回晚到成功不显示、初始无cap零context fetch+unavailable非No messages、有cap+empty No messages、live=true无sessions cap live消息正常且不fetch context、explicit rows无cap只显示rows无overlay不fetch、现有history回归；Client375/375、typecheck/build/boundary/architecture/diff-check PASS。环境说明：worktree交付缺node_modules，`tsc -p packages/protocol`在基线b6bea16即复现`Cannot find module 'zod'`/`structuredClone`/implicit-any(环境阻塞，非代码)；symlink同commit main的node_modules后基线与with-changes的typecheck/build均PASS。仅Client两文件、低风险Client-only只读节点，按协作规则未单独启动verifier。
 边界：testing子路径仅E2E使用；SDK import仍限adapter internal；D1B-3不是archive、all branches或raw JSONL导出。
-独立验证 verdict：D1A PASS；D1B-1/2/3为低风险Client-only节点，由父审查与门禁验收
+独立验证 verdict：D1A PASS；D1B-1/2/3/4/5为低风险Client-only节点，由父审查与门禁验收
 ```
 
 ## 19. D3B-R1A/R1B — 只读 Domain Catalog 与 Host API 记录
