@@ -270,8 +270,9 @@ UI：RuntimeProvider、连接状态、真实create/open入口、Composer send/ab
 场景：create→attach→prompt cumulative stream/delta projection；abort independent interrupt；Host restart/resume；epoch change；command/interrupt dedup与type conflict；双session隔离；cold attach；detach/stop/daemon orphan cleanup
 压力：PIX_E2E_ROUNDS=5，5/5 PASS；最终projection严格Hello world；abort约1–2ms；每轮Worker PID清理
 Capability：production full仅["agent"]，readonly=[]；sessiond up时health/bootstrap/handshake为agent，down时[]；不声明files/sessions/models
-主线验证：runtime E2E5/5；完整build后startup E2E PASS且capabilities=["agent"]；root713/713、Worker105、sessiond76、Client149、Host172、typecheck/architecture/boundaries PASS
+主线验证：runtime E2E5/5；完整build后startup E2E PASS且capabilities=["agent"]；Node tests718/718、Client149/149、Worker105、sessiond76、Host177、typecheck/architecture/boundaries PASS
 残余：真实provider网络prompt不由确定性X1覆盖（A1/R1已有无网络SDK create与correlated failure smoke）；X1独立GPT验证进行中
+X1唯一GPT blocker 修复 commit：f87dea4（WS /v1/runtime handshake capability与HTTP动态投影一致：sessiond healthy=>["agent"]；down/unknown/probe error=>[]。SessiondRuntimeGateway增加可选异步capability resolver（静态capabilities作默认），每连接在合法hello后解析一次并烘焙连接专属handshakeResponse，resolver throw/reject时固定sanitized warn且fail-closed []；host-runner只创建一个createSessiondProbe同时驱动HTTP投影与gateway resolver。Host单测5项（healthy=>agent / down=>[] / throw=>[]+warn无泄漏 / 每连接一次+重复handshake不漂移 / 无resolver静态不变）；startup E2E真实回归PASS：sessiond up时WS ack [agent]，Host运行中down --all后HTTP health/bootstrap/capabilities全[]，新WS握手[]；fix后Runtime E2E3/3、全仓Node718+Client149、typecheck/architecture/boundaries PASS）。唯一blocker closed；X1保持IN_REVIEW待GPT最终验证
 独立验证 verdict：IN_REVIEW
 ```
 
