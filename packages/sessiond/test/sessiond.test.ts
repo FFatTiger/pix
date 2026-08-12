@@ -14,6 +14,7 @@ import { EventJournal } from "../src/journal.js";
 import { acquireInstanceLock, loadOrCreateLocalSecret, sessiondPaths } from "../src/local.js";
 import { SnapshotProjection } from "../src/projection.js";
 import { SessiondRpcClient, SessiondRpcServer, type SessiondRpcHandler } from "../src/rpc.js";
+import { SessiondError } from "../src/errors.js";
 import { SessiondService } from "../src/service.js";
 import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
 
@@ -714,6 +715,146 @@ test("RPC invalid schema then immediate close settles without crashing", async (
     await wait(50);
     const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
     assert.equal((await client.call("system.ping", {})).pong, true, "server must survive a schema-invalid frame followed by immediate close");
+  } finally {
+    await server.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC live schema-invalid ping result returns a sanitized internal failure, not a timeout", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-schema-invalid-"));
+  const endpoint = join(directory, "rpc.sock");
+  const handler = {
+    async handle(method: string): Promise<unknown> {
+      if (method === "system.ping") return { pong: false }; // schema-invalid result
+      return { ok: true };
+    },
+  } as unknown as SessiondRpcHandler;
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler, logger: () => {} });
+  await server.listen();
+  try {
+    const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 800 });
+    await assert.rejects(
+      client.call("system.ping", {}),
+      (error: unknown) => error instanceof SessiondError && error.code === "internal" && error.retryable === false,
+    );
+  } finally {
+    await server.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC runtime.attach without a handler.attach fallback returns a sanitized internal failure, not a timeout", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-attach-noattach-"));
+  const endpoint = join(directory, "rpc.sock");
+  // handler with NO attach(): runtime.attach falls through to dispatchHandler,
+  // whose generic result is not a valid attach result -> schema validation fails
+  // on the live connection and must surface as a sanitized internal failure.
+  const handler = {
+    async handle(method: string): Promise<unknown> {
+      if (method === "system.ping") return { pong: true };
+      return { ok: true };
+    },
+  } as unknown as SessiondRpcHandler;
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler, logger: () => {} });
+  await server.listen();
+  try {
+    const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 800 });
+    await assert.rejects(
+      client.attach({ sessionId: "s" }, async () => {}),
+      (error: unknown) => error instanceof SessiondError && error.code === "internal" && error.retryable === false,
+    );
+  } finally {
+    await server.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC schema-invalid result on a closed writer is safely dropped without unhandled rejection", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-schema-closed-"));
+  const endpoint = join(directory, "rpc.sock");
+  let resolveCommand!: () => void;
+  const gate = new Promise<void>((resolvePromise) => { resolveCommand = resolvePromise; });
+  const handler = {
+    async handle(method: string): Promise<unknown> {
+      if (method === "system.ping") return { pong: true };
+      if (method === "runtime.command") {
+        await gate;
+        return { pong: false }; // schema-invalid command result
+      }
+      return { ok: true };
+    },
+  } as unknown as SessiondRpcHandler;
+  const logs: string[] = [];
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler, logger: (line) => logs.push(line) });
+    await server.listen();
+    const socket = createConnection(endpoint);
+    await new Promise<void>((resolvePromise) => socket.once("connect", () => resolvePromise()));
+    const reader = collectLines(socket);
+    socket.write(`AUTH ${"a".repeat(40)}\n`);
+    assert.equal(await reader.waitFor((line) => line === "OK"), "OK");
+    socket.write(`${JSON.stringify(commandEnvelope("cc-schema"))}\n`);
+    await wait(40); // server received and gated the command
+    socket.destroy(); // peer gone -> writer closes
+    await wait(60); // server observes close
+    resolveCommand(); // handler completes with a schema-invalid result on the CLOSED writer
+    await wait(80);
+    assert.ok(logs.some((line) => line.includes("dropped")), "closed-writer schema failure must be logged as a drop");
+    const ping = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+    assert.equal((await ping.call("system.ping", {})).pong, true, "server must stay responsive");
+    await server.close();
+    assert.deepEqual(unhandled, [], "closed-writer schema failure must not produce an unhandled rejection");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC logs never echo dynamic SessiondError messages (secret marker probe)", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-secret-"));
+  const endpoint = join(directory, "rpc.sock");
+  const secretMarker = "TOP-SECRET-MARKER-7f3a9c";
+  let resolveCommand!: () => void;
+  const gate = new Promise<void>((resolvePromise) => { resolveCommand = resolvePromise; });
+  const handler = {
+    async handle(method: string): Promise<unknown> {
+      if (method === "system.ping") return { pong: true };
+      if (method === "runtime.command") {
+        await gate;
+        throw new SessiondError("internal", `command failed with ${secretMarker}`, false);
+      }
+      return { ok: true };
+    },
+  } as unknown as SessiondRpcHandler;
+  const logs: string[] = [];
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler, logger: (line) => logs.push(line) });
+  await server.listen();
+  try {
+    const socket = createConnection(endpoint);
+    await new Promise<void>((resolvePromise) => socket.once("connect", () => resolvePromise()));
+    const reader = collectLines(socket);
+    socket.write(`AUTH ${"a".repeat(40)}\n`);
+    assert.equal(await reader.waitFor((line) => line === "OK"), "OK");
+    socket.write(`${JSON.stringify(commandEnvelope("cc-secret"))}\n`);
+    await wait(40); // server received and gated the command
+    socket.destroy(); // peer gone -> writer closes
+    await wait(60);
+    resolveCommand(); // handler throws a dynamic-message internal error on the CLOSED writer
+    await wait(80);
+    assert.ok(logs.some((line) => line.includes("dropped")), "drop must be logged");
+    for (const line of logs) {
+      assert.equal(line.includes(secretMarker), false, `log leaked dynamic SessiondError message: ${line}`);
+    }
+    const ping = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+    assert.equal((await ping.call("system.ping", {})).pong, true, "server must stay responsive");
   } finally {
     await server.close().catch(() => {});
     await rm(directory, { recursive: true, force: true });

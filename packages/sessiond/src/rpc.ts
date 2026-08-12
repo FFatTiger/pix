@@ -155,9 +155,17 @@ export class SessiondRpcServer {
     try {
       await this.write(writer, { id: request.id, ok: true, method: request.method, result } as SessiondRpcResponse);
     } catch (error) {
-      // Connection died before the late result could be delivered. The response
-      // is intentionally discarded — never re-fail and never escape.
-      this.logDrop("response", error);
+      // Distinguish two distinct failure classes here:
+      //  - writer closed (peer gone): the late/schema-invalid response is
+      //    intentionally discarded and logged — never re-fail, never escape;
+      //  - live connection: the schema/validation failure is a programming
+      //    error and must surface to the client as a sanitized internal
+      //    failure immediately (never silently dropped, never a client timeout).
+      if (writer.isClosed) {
+        this.logDrop("response", error);
+      } else {
+        await this.writeFailureSafely(writer, request.id, request.method, toBoundaryProtocolError(error), error);
+      }
     }
   }
 
@@ -172,11 +180,11 @@ export class SessiondRpcServer {
     }
   }
 
-  /** Log a dropped response. SessiondError text is canonical/author-controlled; other causes are type-only, so logs never echo request bodies or secrets. */
+  /** Log a dropped response. Only the SessiondError CODE (never its dynamic message), Error name, or type — so logs stay diagnosable without echoing request bodies or secrets. */
   private logDrop(context: string, cause?: unknown): void {
     const detail = cause === undefined
       ? ""
-      : `: ${cause instanceof SessiondError ? cause.message : cause instanceof Error ? cause.name : typeof cause}`;
+      : `: ${cause instanceof SessiondError ? `SessiondError(${cause.code})` : cause instanceof Error ? cause.name : typeof cause}`;
     this.log(`[sessiond] rpc ${context} dropped (connection closed)${detail}`);
   }
 
