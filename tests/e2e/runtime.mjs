@@ -357,8 +357,25 @@ async function startRuntimeStack(tempDir) {
     ? CLIENT_DIST
     : await makeMinimalClientDist(tempDir);
 
+  // The deterministic fixture owns ephemeral sessions in memory and does not
+  // persist Pi JSONL. Keep the E2E activation locator explicit rather than
+  // relying on the production read-only JSONL locator introduced by D1A-2.
+  const fixtureLocator = {
+    async locate(sessionId) {
+      return {
+        sessionId,
+        sessionFile: join(tempDir, "fixture-sessions", `${sessionId}.jsonl`),
+        exists: true,
+      };
+    },
+    async resolveLeafId(_sessionId, targetId) {
+      return targetId ?? "fixture-leaf";
+    },
+  };
+
   const daemon = await startDaemon({
     directory: tempDir,
+    sessionLocator: fixtureLocator,
     workerOptions: {
       workerFactoryModulePath: FIXTURE,
       // Tight close so E2E cleanup is bounded.
