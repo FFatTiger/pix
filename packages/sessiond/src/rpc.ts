@@ -12,7 +12,7 @@ import {
   type SessiondMethodParams,
   type SessiondMethodResult,
 } from "@fffattiger/pix-protocol";
-import { SessiondError } from "./errors.js";
+import { SessiondError, toBoundaryProtocolError } from "./errors.js";
 import { SerialSocketWriter, type SerialSocketWriterOptions } from "./internal/serial-writer.js";
 import type { PreparedAttachment } from "./service.js";
 
@@ -116,7 +116,7 @@ export class SessiondRpcServer {
       const result = await dispatchHandler(this.options.handler, request);
       await this.write(writer, { id: request.id, ok: true, method: request.method, result } as SessiondRpcResponse);
     } catch (error) {
-      const protocolError = error instanceof SessiondError ? error.toProtocolError() : { code: "internal" as const, message: "sessiond request failed", retryable: false };
+      const protocolError = toBoundaryProtocolError(error);
       await this.writeFailure(writer, request.id, request.method, protocolError);
     }
   }

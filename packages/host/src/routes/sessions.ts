@@ -61,8 +61,15 @@ function boundedInt(
   if (raw === undefined) return undefined;
   // Empty string is treated as "not provided" so a stray `?limit=` is not a 400.
   if (raw === "") return undefined;
+  // Only canonical unsigned decimal digit strings are accepted. `Number()` /
+  // `Number.isInteger` would otherwise coerce `1e3`, `0x10`, signs, decimals and
+  // surrounding whitespace into valid integers; reject them explicitly so a
+  // query value is what it claims to be, byte for byte.
+  if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
+    throw new HttpError(400, "INVALID_QUERY", `${field} must be an integer in [${min}, ${max}]`);
+  }
   const value = Number(raw);
-  if (!Number.isInteger(value) || value < min || value > max) {
+  if (value < min || value > max) {
     throw new HttpError(400, "INVALID_QUERY", `${field} must be an integer in [${min}, ${max}]`);
   }
   return value;

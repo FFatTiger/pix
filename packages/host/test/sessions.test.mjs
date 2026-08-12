@@ -296,6 +296,39 @@ test("offset out of range / negative → 400", async () => {
   assert.equal(ok.status, 200);
 });
 
+test("non-canonical integer forms are rejected (1e3 / 0x10 / sign / decimal / whitespace / leading zero)", async () => {
+  let captured;
+  const app = appWith(
+    fakeClient({
+      async list(params) {
+        captured = params;
+        return { sessions: [] };
+      },
+      async read() {
+        return { ...header() };
+      },
+      async context() {
+        return { sessionId: "s1", entries: [] };
+      },
+    }),
+  );
+  // Each of these is rejected as 400 (no coercion to a valid integer).
+  for (const value of ["1e3", "0x10", "+5", "-1", "1.5", " 5 ", "5 ", " 5", "007", "01"]) {
+    const res = await call(app, `/v1/sessions?limit=${encodeURIComponent(value)}`);
+    assert.equal(res.status, 400, `expected 400 for limit=${value}`);
+    assert.equal((await res.json()).code, "INVALID_QUERY");
+  }
+  // Empty string remains "absent" (documented empty-as-absent behavior).
+  const empty = await call(app, "/v1/sessions?limit=");
+  assert.equal(empty.status, 200);
+  assert.deepEqual(captured, {});
+  // Canonical unsigned decimal strings are still accepted (incl. single 0 for offset).
+  const okLimit = await call(app, "/v1/sessions?limit=10");
+  assert.equal(okLimit.status, 200);
+  const okOffset = await call(app, "/v1/sessions?offset=0");
+  assert.equal(okOffset.status, 200);
+});
+
 test("sessions routes are not mounted when deps.sessions is absent", async () => {
   const app = createHostApp({ logger: {}, gate: { config: DISABLED_GATE } }).app;
   const res = await call(app, "/v1/sessions");

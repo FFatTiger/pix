@@ -266,6 +266,35 @@ async function main() {
     const childrenAfterDeepLink = await listChildPids(process.pid);
     assert.deepEqual(childrenAfterDeepLink, childrenAfterReads, "no new worker child after read-only deep link");
 
+    // 4b. A nonexistent session read AND context return a sanitized 404
+    //     SESSION_NOT_FOUND through the REAL stack (catalog not_found →
+    //     sessiond boundary → Host), with no id/path/endpoint/secret/stack
+    //     leakage, and without starting a worker.
+    const ghost = "nonexistent-session-00000000-deadbeef";
+    const ghostRead = await get(`/v1/sessions/${ghost}`);
+    assert.equal(ghostRead.status, 404, "missing session read must be 404");
+    assert.equal(ghostRead.body.code, "SESSION_NOT_FOUND");
+    assert.equal(ghostRead.body.message, "Session not found");
+    const ghostContext = await get(`/v1/sessions/${ghost}/context`);
+    assert.equal(ghostContext.status, 404, "missing session context must be 404");
+    assert.equal(ghostContext.body.code, "SESSION_NOT_FOUND");
+    assert.equal(ghostContext.body.message, "Session not found");
+    // No leakage: the response bodies must never echo the session id, the
+    // sessiond socket endpoint path, the shared secret, or any stack trace.
+    for (const body of [ghostRead.body, ghostContext.body]) {
+      const json = JSON.stringify(body);
+      assert.ok(!json.includes(ghost), `404 body must not echo the session id: ${json}`);
+      assert.ok(!json.includes(stack.daemon.endpoint), `404 body must not leak the sessiond endpoint: ${json}`);
+      assert.ok(!json.includes(stack.daemon.secret), `404 body must not leak the sessiond secret: ${json}`);
+      assert.ok(!json.includes(sessiondDir), `404 body must not leak the stack path: ${json}`);
+      assert.ok(!/\bat\b.*\(/.test(json) && !json.includes("stack"), `404 body must not leak a stack trace: ${json}`);
+    }
+    // A 404 read path stays read-only: still zero workers, no new worker child.
+    const runningAfter404 = await rpc.call("runtime.listRunning", {});
+    assert.deepEqual(runningAfter404.sessions, [], "a missing-session 404 must not start a worker");
+    const childrenAfter404 = await listChildPids(process.pid);
+    assert.deepEqual(childrenAfter404, childrenAfterDeepLink, "no new worker child after missing-session 404");
+
     // 5. Continue live (WS attach) is the ONLY path that starts a worker.
     const outcome = await attachViaWs(stack.wsUrl, sessionId);
     assert.equal(outcome.type, "snapshot", "continue-live attach must deliver an initial snapshot");
