@@ -6,8 +6,10 @@ import {
   createEnvGateConfigSource,
   SessiondRuntimeGateway,
   createProductionResources,
+  createProductionCatalogs,
   createSessiondSessionsClient,
   InvalidAllowedRootsError,
+  InvalidCatalogAgentDirError,
   PRODUCTION_MAX_UPLOAD_BYTES,
   PRODUCTION_FULL_CAPABILITIES,
   RESOURCE_DEGRADED_CAPABILITIES,
@@ -16,11 +18,29 @@ import {
   type GateConfigSource,
 } from "@fffattiger/pix-host";
 import { spawn } from "node:child_process";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import type { BindOptions } from "../args.js";
 import type { SessiondLocation } from "../supervise.js";
 import { resolveClientDist } from "../paths.js";
 import { readLocalSecret } from "../secret.js";
 import { pixLog, pixErr } from "../log.js";
+
+/**
+ * Resolve the agent config directory for production catalogs (D3B-R1B).
+ * Prefer `PI_CODING_AGENT_DIR`; otherwise `~/.pi/agent`. Validates absolute /
+ * non-empty only — never reads the real configuration contents.
+ */
+export function resolveCatalogAgentDir(env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env.PI_CODING_AGENT_DIR;
+  if (typeof fromEnv === "string" && fromEnv.length > 0) {
+    if (fromEnv.includes("\0") || !isAbsolute(fromEnv)) {
+      throw new InvalidCatalogAgentDirError("PI_CODING_AGENT_DIR must be a non-empty absolute path");
+    }
+    return fromEnv;
+  }
+  return join(homedir(), ".pi", "agent");
+}
 
 /**
  * Honest production capability projection (D3A-1 + D1A-2 phase 2).
@@ -152,6 +172,24 @@ export async function runHost(
     return 1;
   }
 
+  // D3B-R1B: mount production read-only catalogs. agentDir is path-shape only
+  // (never reads config contents). Logs never print agentDir or secrets.
+  let catalogs;
+  try {
+    const agentDir = resolveCatalogAgentDir();
+    catalogs = createProductionCatalogs({
+      agentDir,
+      roots: production.deps.allowedRoots,
+    });
+  } catch (error) {
+    pixErr(
+      error instanceof InvalidCatalogAgentDirError
+        ? error.message
+        : `catalog configuration failed: ${(error as Error).message}`,
+    );
+    return 1;
+  }
+
   const runtimeWs = new SessiondRuntimeGateway({
     endpoint: location.paths.endpoint,
     secret,
@@ -180,6 +218,9 @@ export async function runHost(
     // D3A-1 production resource services: files/git/watch/upload + worktree
     // safety (busy preflight + mutation guard wired from the shared adapter).
     resources: production.deps,
+    // D3B-R1B: read-only catalogs (models/auth/skills/plugins/commands/trust).
+    // Catalog capability tokens stay advertised even when sessiond is down.
+    catalogs,
     // D1A-2 phase 2: read-only session history (/v1/sessions*) backed by the
     // fixed sessiond catalog. The capability token is driven by the resolver
     // above (sessions only while up); while down these routes answer 503.
@@ -199,7 +240,7 @@ export async function runHost(
   const url = `http://${options.hostname}:${handle.port}`;
   pixLog(`host listening on ${url}`);
   pixLog(`sessiond at ${location.directory} (endpoint ${location.endpoint})`);
-  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); sessions history read-only routes mounted; press Ctrl+C to stop the host`);
+  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); sessions history read-only routes mounted; catalog surface mounted; press Ctrl+C to stop the host`);
 
   if (options.open) openBrowser(url);
 

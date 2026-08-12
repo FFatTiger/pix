@@ -11,11 +11,13 @@ import {
 } from "@fffattiger/pix-host";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
 import { sessiondPaths } from "@fffattiger/pix-sessiond/control";
-import { resolveAllowedHosts } from "../src/commands/host-runner.js";
+import { resolveAllowedHosts, resolveCatalogAgentDir } from "../src/commands/host-runner.js";
 import { createSessiondProbe } from "../src/probe.js";
 import { inspectSessiond } from "../src/supervise.js";
 import { runHost } from "../src/commands/host-runner.js";
 import type { SessiondLocation } from "../src/supervise.js";
+import { homedir } from "node:os";
+import { InvalidCatalogAgentDirError } from "@fffattiger/pix-host";
 
 const tempDir = (prefix: string): string => mkdtempSync(join(tmpdir(), prefix));
 
@@ -25,6 +27,25 @@ test("trusted hosts merge the bind address with operator configuration", () => {
     PIX_ALLOWED_HOSTS: "test-pi.huu.im, pix.lan, ,192.168.31.77",
   }), ["0.0.0.0", "test-pi.huu.im", "pix.lan", "192.168.31.77"]);
   assert.deepEqual(resolveAllowedHosts("127.0.0.1", {}), ["127.0.0.1"]);
+});
+
+test("resolveCatalogAgentDir prefers PI_CODING_AGENT_DIR and falls back to ~/.pi/agent", () => {
+  assert.equal(
+    resolveCatalogAgentDir({ PI_CODING_AGENT_DIR: "/abs/agent" }),
+    "/abs/agent",
+  );
+  assert.equal(
+    resolveCatalogAgentDir({}),
+    join(homedir(), ".pi", "agent"),
+  );
+  assert.throws(
+    () => resolveCatalogAgentDir({ PI_CODING_AGENT_DIR: "relative/agent" }),
+    InvalidCatalogAgentDirError,
+  );
+  assert.throws(
+    () => resolveCatalogAgentDir({ PI_CODING_AGENT_DIR: "/abs\0x" }),
+    InvalidCatalogAgentDirError,
+  );
 });
 
 function buildClientFixture(): string {
