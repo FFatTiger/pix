@@ -6,7 +6,7 @@
 
 ## 当前里程碑
 
-**M3 — Read and Operate**：M2 Minimal Runtime Happy Path 已完成并通过独立验证。当前 `main` 已包含真实对话、只读历史、History/Live Thinking 语义展示、Files/Git/Worktrees 只读工作区，以及 Models/Auth Providers/Skills/Plugins/Commands/Trust 的端到端只读 Domain Catalog。OAuth、配置写入、安装、资源重载、Trust 修改和 Extension 执行仍明确后置。
+**M3 — Read and Operate**：M2 Minimal Runtime Happy Path 已完成并通过独立验证。当前 `main` 已包含真实对话、只读历史、History/Live Thinking/Bash 语义展示、selected history visible-branch normalized JSON 导出、Files/Git/Worktrees 只读工作区，以及 Models/Auth Providers/Skills/Plugins/Commands/Trust 的端到端只读 Domain Catalog。OAuth、配置写入、安装、资源重载、Trust 修改和 Extension 执行仍明确后置。
 
 ## 从这里开始
 
@@ -18,8 +18,9 @@
 
 ### 当前协作基线
 
-- `main@83a3859`：稳定 checkpoint；D1B Thinking/Bash 展示与 D3A Worktrees 只读列表已合入。
+- `main@665e31a`：稳定 checkpoint；D1B Thinking/Bash 展示、visible-branch export 与 D3A Worktrees 只读列表已合入。
 - History 与 Live 共用结构化 Transcript projector；Thinking 安全折叠，Bash 显示 command/output/status 且不渲染 `fullOutputPath`；二者均不新增执行能力或 Worker 激活。
+- Visible-branch export 仅对 selected history SessionContext 可见，在 Client 本地生成 normalized JSON；不是 archive、raw JSONL 或全分支导出，不新增 Host API、Worker 或 Runtime 命令。
 - Workspace Dock 已提供 Files/Git/Worktrees Tabs；`worktree` 仅代表 GET/list，sessiond down 时仍可读取，Client 无创建、删除、切换或 promotion 控件。
 - D3B 端到端只读 Catalog 仍保持完成；不得恢复聚合 `sdk-data`、Catalog Mutation/OAuth 路由或隐式 `process.cwd`。
 

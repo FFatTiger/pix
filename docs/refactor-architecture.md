@@ -219,7 +219,7 @@ AgentSession 活在 Web/Next 进程内。重启 Web（或热更新拖垮进程�
 | 通道 | 用途 |
 |------|------|
 | `WS /v1/runtime` | prompt / steer / follow_up / abort / set_model / compact / fork… + 事件流 |
-| `HTTP /v1/*` | sessions、files、git、models、skills、plugins、gate、export |
+| `HTTP /v1/*` | sessions、files、git、models、skills、plugins、gate 等资源 API；selected history visible-branch export 当前复用 sessions context 并在 Client 本地生成，不设专用 export endpoint |
 | Web ↔ sessiond | 本机 IPC/RPC（实现细节可演进；对外仍表现为上述协议） |
 
 ### 握手
@@ -359,7 +359,7 @@ packages/
 
 建议优先顺序：**M1 → M2 → M3 → M4 → M5**。
 
-M1 已完成并通过GPT最终独立对抗验证。当前唯一活动里程碑是 M2：接通真实 Agent 最小 happy path，同时继续保持M1的独立启动、daemon保活、零Next产品路径不变量。
+M1、M2 已完成并通过GPT最终独立对抗验证。当前唯一活动里程碑是 M3：扩展只读历史、Runtime命令、工作区和领域资源能力，同时继续保持独立启动、daemon保活、0 Worker历史浏览、能力诚实与零Next产品路径不变量。
 
 ## 12. 验收指标
 

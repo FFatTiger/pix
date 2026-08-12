@@ -321,8 +321,10 @@ D1B-1 Thinking展示：723fac4。Session JSONL已有assistant thinking block，C
 验证：Client281/281、定向37/37、typecheck/build/boundary/architecture PASS；无Protocol/Adapter/sessiond/Host改动，无新capability、写入或Worker激活，按协作规则未单独启动verifier。
 D1B-2 Bash展示：83a3859。History bashExecution与live `snapshot.state.bash`统一投影为专用bash row，显示command/output/exit/cancelled/truncated；空输出固定`(no output)`，live状态行固定`row:state:bash`，snapshot替换后稳定恢复。`fullOutputPath`从view-model和DOM隔离，`excludeFromContext`不隐藏用户可见记录；不新增bash output API，不发runtime.bash/abort命令。message与state无共享execution ID，因此冻结为绝不猜测去重：可能重复显示，但不吞掉不同执行。
 验证：父审查修复危险位置去重后，定向71/71、Client314/314、typecheck/build/boundary/architecture PASS；仅改Client六文件，无新capability/Host路由/执行能力，按协作规则未单独启动verifier。
-边界：testing子路径仅E2E使用；SDK import仍限adapter internal；D1B visible-branch export未实现。
-独立验证 verdict：D1A PASS；D1B-1/2为低风险Client-only节点，由父审查与门禁验收
+D1B-3 visible-branch export：665e31a。仅selected history且sessions capability可用、selection不匹配attached live时显示；复用SessionContext query，在Client本地导出`pix.visible-branch` v1 normalized JSON，不调用export/raw/thinking/bash-output endpoint，不启动Worker或发送Runtime命令。输出只含当前可见branch；entry顺序和parent关系保留，image变placeholder，Bash role固定`bashExecution`，`fullOutputPath`和非白名单字段省略。JSON边界仅接受primitive/array/plain或null-prototype object；cycle、accessor、Date/Map/Set/RegExp/class instance及Proxy trap均固定失败且不泄漏raw error；共享引用允许独立复制，own `__proto__`/`constructor`安全保留且零原型污染。Object URL remove/revoke/schedule清理never-throw；busyRef跨macrotask；A→B晚到context不改变B导出。
+验证：父会话复核实现与race/security tests；Client354/354、typecheck/build/boundary/architecture、architecture gate tests19/19、diff-check PASS。仅Client七文件，无新capability、Host route、持久化、权限或执行边界，按协作规则未单独启动verifier。
+边界：testing子路径仅E2E使用；SDK import仍限adapter internal；D1B-3不是archive、all branches或raw JSONL导出。
+独立验证 verdict：D1A PASS；D1B-1/2/3为低风险Client-only节点，由父审查与门禁验收
 ```
 
 ## 19. D3B-R1A/R1B — 只读 Domain Catalog 与 Host API 记录
