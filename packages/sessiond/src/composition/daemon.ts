@@ -8,10 +8,18 @@ import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-run
 import { SessiondRpcServer } from "../rpc.js";
 import {
   acquireInstanceLock,
-  clearStaleSocket,
+  assertSocketPathLength,
   loadOrCreateLocalSecret,
+  makePrivateEndpointPath,
+  needsUnixSocketPublication,
+  publishPublicEndpoint,
+  recoverStalePrivateAliases,
+  recoverStalePublicSocket,
+  releaseOwnedPublicEndpoint,
+  removeOwnedPrivateSocket,
   sessiondPaths,
   type InstanceLock,
+  type OwnedSocketPublication,
   type SessiondPaths,
 } from "../local.js";
 import type { WorkerProcessFactory } from "../worker.js";
@@ -68,11 +76,18 @@ export interface DaemonHandle {
   readonly directory: string;
   readonly paths: SessiondPaths;
   readonly instanceId: string;
+  /** Stable public endpoint every client should connect to (may be a hard link to the private socket). */
   readonly endpoint: string;
+  /**
+   * Unix only: the private per-instance socket path the RPC server actually
+   * bound. `undefined` on Windows (named pipes bind the public endpoint
+   * directly). Exposed for tests/observability; clients must use {@link endpoint}.
+   */
+  readonly privateEndpoint: string | undefined;
   readonly secret: string;
   /** Resolves once shutdown has fully completed (signal or explicit). */
   readonly closed: Promise<void>;
-  /** Idempotent tear-down: server → service → socket → lock. */
+  /** Idempotent tear-down: owned-public → server → service → private → lock. */
   shutdown(): Promise<void>;
 }
 
@@ -106,9 +121,12 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
 
 /**
  * Boot a standalone sessiond daemon in `directory` (resolved via
- * {@link resolveRuntimeDir}). Order: private dir → instance lock → stale socket
- * sweep → local secret → service/application → RPC listen. Returns a handle
- * whose {@link DaemonHandle.shutdown} performs the reverse, idempotent tear-down.
+ * {@link resolveRuntimeDir}). Order (Unix): private dir → instance lock →
+ * fail-closed stale public/private socket recovery → private socket path +
+ * length check → local secret → service/application → RPC listen on the
+ * *private* path → atomic hard-link publish of the stable public endpoint.
+ * Returns a handle whose {@link DaemonHandle.shutdown} performs the reverse,
+ * idempotent, owner-safe tear-down.
  *
  * Never calls `process.exit`; the caller (see {@link main}) owns process exit.
  */
@@ -121,15 +139,31 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   const lock = await acquireInstanceLock(paths);
   const teardown: Array<() => Promise<void>> = [];
   let server: SessiondRpcServer | undefined;
+  let publication: OwnedSocketPublication | undefined;
+  let privatePath: string | undefined;
   try {
-    await clearStaleSocket(paths);
+    // Fail-closed stale recovery BEFORE publishing anything new: an old orphan
+    // daemon's debris must never be removed unconditionally, and a live orphan
+    // (lost lock/public but still serving) must block this start.
+    await recoverStalePublicSocket(paths);
+    await recoverStalePrivateAliases(paths);
+    if (needsUnixSocketPublication()) {
+      privatePath = makePrivateEndpointPath(directory);
+      assertSocketPathLength(privatePath);
+    }
     const secret = await loadOrCreateLocalSecret(paths);
     const service = new SessiondService(buildDependencies(directory, options), options.serviceOptions);
     teardown.push(() => service.shutdown());
     const application = new SessiondApplication(service);
-    server = new SessiondRpcServer({ endpoint: paths.endpoint, secret, handler: application });
+    // Unix: libuv binds the private per-instance path (never the stable public
+    // one), so a close can never unlink another daemon's public endpoint.
+    // Windows: named pipes leave no files; bind the public pipe directly.
+    server = new SessiondRpcServer({ endpoint: privatePath ?? paths.endpoint, secret, handler: application });
     await server.listen();
     teardown.push(() => server!.close());
+    if (needsUnixSocketPublication()) {
+      publication = await publishPublicEndpoint(paths, privatePath!, lock.instanceId);
+    }
 
     let shutdownPromise: Promise<void> | undefined;
     let resolveClosed!: () => void;
@@ -139,18 +173,37 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     const shutdown = async (): Promise<void> => {
       if (shutdownPromise) return shutdownPromise;
       shutdownPromise = (async () => {
-        // Idempotent, ordered tear-down: server → service → socket → lock.
+        // 1) Owned public unlink while the server is still alive. Only removes
+        //    the public when the lock still names this instance AND the public
+        //    is still our socket inode; a replaced public/lock is left alone
+        //    (the incident fix).
+        if (publication) await releaseOwnedPublicEndpoint(paths, publication).catch(() => {});
+        // 2) server → service teardown (libuv unlinks the private path).
         for (const step of teardown.splice(0).reverse()) await step().catch(() => {});
-        await clearStaleSocket(paths).catch(() => {});
+        // 3) Defensive residue removal of our own private path.
+        if (privatePath) await removeOwnedPrivateSocket(privatePath).catch(() => {});
+        // 4) Lock release.
         await lock.release().catch(() => {});
         resolveClosed();
       })();
       return shutdownPromise;
     };
 
-    return { directory, paths, instanceId: lock.instanceId, endpoint: paths.endpoint, secret, closed, shutdown };
+    return {
+      directory,
+      paths,
+      instanceId: lock.instanceId,
+      endpoint: paths.endpoint,
+      privateEndpoint: privatePath,
+      secret,
+      closed,
+      shutdown,
+    };
   } catch (error) {
+    // Startup rollback must never leave our own published paths behind.
+    if (publication) await releaseOwnedPublicEndpoint(paths, publication).catch(() => {});
     for (const step of teardown.splice(0).reverse()) await step().catch(() => {});
+    if (privatePath) await removeOwnedPrivateSocket(privatePath).catch(() => {});
     await lock.release().catch(() => {});
     throw error;
   }
