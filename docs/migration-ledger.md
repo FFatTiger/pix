@@ -304,6 +304,9 @@ Canonical修复：root独立cwd list取得Host canonical path；目录进入和�
 Host follow-up：a983cfd支持100% pure staged rename metadata（无@@ hunk也supported=true）。
 独立验证：fresh clone真实npm ci；latest main+a983cfd与bb5aba2 clean merge；Client207/207、Host210/210、全仓tests、typecheck/build/boundaries PASS；真实Host canonical root/nested 9探针、stale A/B race、cap revocation、pure rename API均PASS。VERDICT: PASS。
 集成验证：全仓build/typecheck/tests；startup E2E；runtime E2E3轮；architecture；Client/Host boundaries均PASS。一次startup 401来自主会话为公网临时创建~/.pi/pix.json密码，清理临时dev/sessiond/config后复测PASS，不是代码回归。
+Worktrees只读列表：b79b54c。production full/degraded均广告`worktree`作为GET/list token；Workspace Dock增加Worktrees Tab，展示main/linked、branch/detached和AllowedRoot authorized状态。无create/delete/force/open/switch/promotion/session控件，不调用Client已有mutation helper。sessiond down时真实GET仍返回授权main worktree，POST仍在Git副作用前固定503。
+验证：Client297/297、Host260/260、CLI46/46；Client/Host typecheck/build/boundaries、architecture与使用当前分支生产产物的Startup E2E PASS。隔离worktree依赖overlay仅用于验证并在提交前删除；30144未触碰。该只读节点按协作规则未单独启动verifier。
+边界：`authorized`不等于pix-owned/managed/deletable；创建/删除、cwd切换、projectRoot协调和Host重启后trusted claim恢复仍后置，开放这些能力前需要重要节点verification。
 产品优先级：当前UI仅要求可用、能力诚实、错误清晰；后续重心回到基础架构重构，不在本阶段投入视觉精修。
 ```
 
@@ -314,8 +317,10 @@ Host follow-up：a983cfd支持100% pure staged rename metadata（无@@ hunk也su
 0 Worker：真实JSONL list/read/context/deep-link/missing404前后runtime.listRunning为空且无子Worker；Continue live唯一启动路径；sessiond down后四端capability撤回且route固定503。
 Error边界：Adapter plain RuntimeError在sessiond RPC由toBoundaryProtocolError受控映射；known code固定消息/retryable，raw message/cause/details丢弃；unknown/malformed/raw Error固定internal。真实missing read/context为404 SESSION_NOT_FOUND，不回显id/path/endpoint/secret/stack。分页仅canonical unsigned decimal，拒绝1e3/0x10/sign/decimal/whitespace/leading-zero。
 验证：GPT首轮除真实404映射外全部PASS；修复后fresh re-verification PASS。集成后全仓build/typecheck/tests、startup、runtime E2E3轮、sessions E2E、architecture、sessiond/host/client/adapter boundaries均PASS。sessiond90、Host225。
-边界：testing子路径仅E2E使用；SDK import仍限adapter internal；D1B thinking/bash/export未实现。
-独立验证 verdict：PASS
+D1B-1 Thinking展示：723fac4。Session JSONL已有assistant thinking block，Client将History、live completed与streaming partial统一投影为稳定顶级row内的有序parts；Thinking使用原生details/summary纯文本展示，streaming默认展开且允许手动折叠，completed默认收起；空thinking省略，HTML按文本转义；不调用未挂载`/thinking` endpoint，selected B不显示attached A的live thinking。
+验证：Client281/281、定向37/37、typecheck/build/boundary/architecture PASS；无Protocol/Adapter/sessiond/Host改动，无新capability、写入或Worker激活，按协作规则未单独启动verifier。
+边界：testing子路径仅E2E使用；SDK import仍限adapter internal；D1B bash/export未实现。
+独立验证 verdict：D1A PASS；D1B-1为低风险Client-only节点，由父审查与门禁验收
 ```
 
 ## 19. D3B-R1A/R1B — 只读 Domain Catalog 与 Host API 记录
