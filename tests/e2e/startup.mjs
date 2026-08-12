@@ -15,12 +15,13 @@ const STOP_TIMEOUT_MS = 10_000;
 const STEP_TIMEOUT_MS = 12_000;
 const PROD_MAX_UPLOAD = 25 * 1024 * 1024;
 
-// D3A-1 frozen capability surfaces. The resource layer (files/git/watch/upload)
-// is mounted on the Host and stays advertised in BOTH states; `agent` (the
-// runtime) and `sessions` (read-only history catalog) are added only while
-// sessiond is up. `worktree` is never advertised.
-const FULL_CAPS = ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git"];
-const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git"];
+// D3A-1 + D3B-R1B frozen capability surfaces. The resource layer
+// (files/git/watch/upload) and the four catalog tokens are mounted on the Host
+// and stay advertised in BOTH states; `agent` (the runtime) and `sessions`
+// (read-only history catalog) are added only while sessiond is up. `worktree`
+// is never advertised.
+const FULL_CAPS = ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "models", "auth.providers", "skills", "plugins"];
+const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "models", "auth.providers", "skills", "plugins"];
 
 function delay(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
