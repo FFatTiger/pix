@@ -728,8 +728,15 @@ test("RPC server survives late completion in a child process under Node default 
     let stdout = ""; let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
-    const settle = (code: number | null) => { child.kill(); resolvePromise({ code, stdout, stderr }); };
-    child.on("error", (error) => settle(-1));
+    let settled = false;
+    const settle = (code: number | null, diagnostic?: string): void => {
+      if (settled) return; // close may follow error; settle exactly once
+      settled = true;
+      if (diagnostic) stderr += `\n${diagnostic}`;
+      child.kill(); // safety no-op: the child has already exited (or failed to spawn)
+      resolvePromise({ code, stdout, stderr });
+    };
+    child.on("error", (error) => settle(-1, String(error)));
     child.on("close", (code) => settle(code));
   });
   assert.equal(result.code, 0, `child exited ${result.code} (unhandled rejection escaped); stderr=${result.stderr}; stdout=${result.stdout}`);
