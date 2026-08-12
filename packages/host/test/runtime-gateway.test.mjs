@@ -175,6 +175,86 @@ test("handshake rejects bad JSON / version mismatch with close 1008", async () =
   }
 });
 
+// --- X1: dynamic capability resolver (WS == HTTP projection) -----------------
+
+const repeatHello = JSON.stringify({
+  type: "handshake",
+  payload: { protocolVersion: 1, client: { shell: "web", platform: "mac" }, features: [] },
+});
+
+test("capability resolver: healthy sessiond → handshake advertises [\"agent\"]", async () => {
+  const gw = makeGateway(new FakeClient(), {
+    resolveCapabilities: async () => ["agent"],
+  });
+  const session = await connect(gw);
+  const ack = session.jsonAt(0);
+  assert.equal(ack.type, "handshake_ack");
+  assert.deepEqual(ack.payload.host.capabilities, ["agent"]);
+});
+
+test("capability resolver: sessiond down → handshake advertises []", async () => {
+  const gw = makeGateway(new FakeClient(), {
+    resolveCapabilities: async () => [],
+  });
+  const session = await connect(gw);
+  const ack = session.jsonAt(0);
+  assert.deepEqual(ack.payload.host.capabilities, []);
+});
+
+test("capability resolver: throw → [] with sanitized warn and no client-facing leak", async () => {
+  const warned = [];
+  const gw = makeGateway(new FakeClient(), {
+    resolveCapabilities: async () => {
+      throw new Error("ECONNREFUSED /Users/secret/.pi/sessiond.sock");
+    },
+    logger: { warn: (msg, fields) => warned.push({ msg, fields }) },
+  });
+  const session = await connect(gw);
+  const ack = session.jsonAt(0);
+  // fail closed: no capabilities advertised
+  assert.deepEqual(ack.payload.host.capabilities, []);
+  // a single sanitized warning was logged without resolver details
+  assert.equal(warned.length, 1);
+  assert.match(warned[0].msg, /capability resolver failed/);
+  assert.equal(warned[0].fields, undefined);
+  assert.equal(JSON.stringify(warned).includes("/Users/secret"), false);
+  // the ack frame sent to the client must NOT carry the secret/path
+  assert.equal(JSON.stringify(ack).includes("/Users/secret"), false);
+});
+
+test("capability resolver runs once per connection; repeated handshake reuses the result (no drift)", async () => {
+  let calls = 0;
+  const gw = makeGateway(new FakeClient(), {
+    resolveCapabilities: async () => {
+      calls += 1;
+      return ["agent"];
+    },
+  });
+  const session1 = await connect(gw);
+  assert.equal(calls, 1);
+  assert.deepEqual(session1.jsonAt(0).payload.host.capabilities, ["agent"]);
+
+  // a second connection resolves again (per-connection, not per-gateway)
+  const session2 = await connect(gw);
+  assert.equal(calls, 2);
+
+  // a repeated handshake WITHIN session1 must NOT re-resolve and must echo the
+  // same connection-scoped answer (no static-then-async correction, no drift).
+  session1.receive(repeatHello);
+  await wait();
+  assert.equal(calls, 2, "repeated handshake must not re-invoke the resolver");
+  const reAck = session1.lastJson();
+  assert.equal(reAck.type, "handshake_ack");
+  assert.deepEqual(reAck.payload.host.capabilities, ["agent"]);
+});
+
+test("no capability resolver → static capabilities advertised unchanged (back-compat)", async () => {
+  const gw = makeGateway(new FakeClient(), { capabilities: ["agent", "files"] });
+  const session = await connect(gw);
+  const ack = session.jsonAt(0);
+  assert.deepEqual(ack.payload.host.capabilities, ["agent", "files"]);
+});
+
 test("malformed subsequent frame closes 1008", async () => {
   const gw = makeGateway(new FakeClient());
   const session = await connect(gw);

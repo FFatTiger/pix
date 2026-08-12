@@ -6,10 +6,12 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WebSocket } from "ws";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const START_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 10_000;
+const STEP_TIMEOUT_MS = 12_000;
 
 function delay(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -94,6 +96,85 @@ async function fetchJson(url) {
   const response = await fetch(url);
   assert.equal(response.status, 200, `${url} should return 200`);
   return await response.json();
+}
+
+// X1 honest-capability regression: open a real WS /v1/runtime handshake and
+// resolve with the handshake_ack payload (bounded + robustly closed).
+async function runtimeAck(origin, { timeoutMs = STEP_TIMEOUT_MS } = {}) {
+  const url = origin.replace(/^http/, "ws") + "/v1/runtime";
+  return await new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        // already closing
+      }
+      fn(value);
+    };
+    const timer = setTimeout(
+      () => finish(reject, new Error(`runtime WS handshake timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    ws.on("open", () => {
+      ws.send(
+        JSON.stringify({
+          type: "handshake",
+          payload: { protocolVersion: 1, client: { shell: "web", platform: "mac" }, features: [] },
+        }),
+      );
+    });
+    ws.on("message", (data) => {
+      let msg;
+      try {
+        msg = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      if (msg.type === "handshake_ack") {
+        finish(resolve, msg.payload);
+      } else if (msg.type === "handshake_reject") {
+        finish(reject, new Error(`handshake rejected: ${JSON.stringify(msg.payload)}`));
+      }
+    });
+    ws.on("error", (error) => finish(reject, error));
+  });
+}
+
+// Wait until health/capabilities/bootstrap all project [] after sessiond goes
+// down while the Host keeps running.
+async function waitForEmptyCapabilities(origin, running) {
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  let last;
+  while (Date.now() < deadline) {
+    if (running.child.exitCode !== null || running.child.signalCode !== null) {
+      throw new Error(
+        `Host exited while waiting for empty capabilities\n${running.output().stdout}\n${running.output().stderr}`,
+      );
+    }
+    try {
+      const [health, caps, bootstrap] = await Promise.all([
+        fetchJson(`${origin}/v1/health`),
+        fetchJson(`${origin}/v1/capabilities`),
+        fetchJson(`${origin}/v1/bootstrap`),
+      ]);
+      const allEmpty =
+        health.sessiond === "down" &&
+        Array.isArray(health.capabilities) && health.capabilities.length === 0 &&
+        Array.isArray(caps.capabilities) && caps.capabilities.length === 0 &&
+        Array.isArray(bootstrap.capabilities) && bootstrap.capabilities.length === 0;
+      if (allEmpty) return;
+      last = { health, caps, bootstrap };
+    } catch (error) {
+      last = error;
+    }
+    await delay(100);
+  }
+  throw new Error(`Host did not project [] capabilities after sessiond down: ${JSON.stringify(last)}`);
 }
 
 async function stopHost(running) {
@@ -210,13 +291,26 @@ async function main() {
     assert.deepEqual(restartedHealth.capabilities, ["agent"]);
     assert.equal((await readLock(lockFile)).pid, sessiondPid, "Host restart must reuse sessiond PID");
 
-    await stopHost(secondHost);
-    secondHost = undefined;
-    assert.equal(pidAlive(sessiondPid), true);
+    // X1 honest-capability regression: the WS /v1/runtime handshake must agree
+    // with the HTTP projection. sessiond up → a real WS handshake acks ["agent"].
+    const upAck = await runtimeAck(origin);
+    assert.deepEqual(upAck.host.capabilities, ["agent"]);
 
+    // Stop sessiond WHILE the Host keeps running (the Host only tears down on a
+    // signal). The Host stays alive and must now honestly project [] over HTTP.
     const down = await runProcess(["scripts/product-entry.mjs", "cli", "down", "--all"], env);
     assert.equal(down.code, 0, `${down.stdout}\n${down.stderr}`);
     assert.match(down.stdout, new RegExp(`terminated \\(pid ${sessiondPid}\\)`));
+
+    await waitForEmptyCapabilities(origin, secondHost);
+
+    // A NEW WS handshake, with sessiond down, must honestly ack [] — never ["agent"].
+    const downAck = await runtimeAck(origin);
+    assert.deepEqual(downAck.host.capabilities, []);
+
+    // Now stop the Host; sessiond is already down.
+    await stopHost(secondHost);
+    secondHost = undefined;
 
     const deadline = Date.now() + STOP_TIMEOUT_MS;
     while (Date.now() < deadline && (existsSync(lockFile) || pidAlive(sessiondPid))) {
@@ -237,7 +331,8 @@ async function main() {
       port,
       sessiondPid,
       hostRestartReusedSessiond: true,
-      capabilities: ["agent"],
+      wsAckUp: upAck.host.capabilities,
+      wsAckDown: downAck.host.capabilities,
       asset,
     }));
   } finally {

@@ -68,8 +68,21 @@ export interface SessiondRuntimeGatewayOptions {
   readonly secret?: string;
   /** Trusted exposure mode advertised in the handshake. */
   readonly mode: HostMode;
-  /** Capabilities advertised in the handshake (M2: agent capability pending R2). */
+  /**
+   * Static capabilities advertised in the handshake when no {@link resolveCapabilities}
+   * resolver is wired (M2: agent capability pending R2). Used as the default so
+   * generic tests / injection keep working unchanged.
+   */
   readonly capabilities?: readonly HostCapability[];
+  /**
+   * Optional async capability resolver invoked once per connection after a
+   * valid hello. Lets the production composition project capabilities
+   * consistently with the HTTP projection (sessiond healthy ⇒ agent; otherwise
+   * none) instead of baking a static answer at construction time. When the
+   * resolver rejects/throws, the gateway logs a sanitized warning and fails
+   * closed to an empty capability set (never leaks the error to the client).
+   */
+  readonly resolveCapabilities?: () => Promise<readonly HostCapability[]>;
   /** Inject a narrow client (or factory) for tests. */
   readonly client?: SessiondRuntimeClient;
   readonly clientFactory?: () => SessiondRuntimeClient;
@@ -296,7 +309,11 @@ type SnapshotPayload = {
  */
 export class SessiondRuntimeGateway implements RuntimeWsSeam {
   private readonly client: SessiondRuntimeClient;
-  private readonly handshakeResponse: ProtocolHandshakeResponse;
+  private readonly mode: HostMode;
+  private readonly defaultCapabilities: readonly HostCapability[];
+  private readonly resolveCapabilitiesField: (() => Promise<readonly HostCapability[]>) | undefined;
+  private readonly limits: SessiondRuntimeGatewayLimits;
+  private readonly now: () => number;
   private readonly outboundLimits: SessiondRuntimeGatewayOutboundLimits;
   private readonly inboundLimits: Required<SessiondRuntimeGatewayInboundLimits>;
   private readonly logger: HostLogger;
@@ -316,16 +333,14 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
         options.timeoutMs !== undefined ? { endpoint, secret, timeoutMs: options.timeoutMs } : { endpoint, secret },
       );
     }
-    this.handshakeResponse = {
-      protocolVersion: PROTOCOL_VERSION,
-      host: { mode: options.mode, capabilities: [...(options.capabilities ?? [])] },
-      limits: {
-        maxUpload: options.limits?.maxUpload ?? 0,
-        maxOpenSessions: options.limits?.maxOpenSessions ?? DEFAULT_MAX_OPEN_SESSIONS,
-      },
-      sessionSnapshotSupport: true,
-      serverTime: (options.now ?? Date.now)(),
-    };
+    // Capabilities are NOT baked into a handshake response here: when a resolver
+    // is wired, each connection resolves it once after a valid hello so the WS
+    // projection matches the HTTP projection instead of being fixed at boot.
+    this.mode = options.mode;
+    this.defaultCapabilities = [...(options.capabilities ?? [])];
+    this.resolveCapabilitiesField = options.resolveCapabilities;
+    this.limits = options.limits ?? {};
+    this.now = options.now ?? Date.now;
     this.outboundLimits = options.outbound ?? {};
     this.inboundLimits = {
       maxSerialFrames: positiveSafeInteger(options.inbound?.maxSerialFrames, DEFAULT_MAX_SERIAL_FRAMES),
@@ -333,6 +348,36 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       maxInflightInterrupts: positiveSafeInteger(options.inbound?.maxInflightInterrupts, DEFAULT_MAX_INFLIGHT_INTERRUPTS),
     };
     this.logger = options.logger ?? {};
+  }
+
+  /** Build a per-connection handshake response (serverTime is fresh per connection). */
+  private buildHandshakeResponse(capabilities: readonly HostCapability[]): ProtocolHandshakeResponse {
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      host: { mode: this.mode, capabilities: [...capabilities] },
+      limits: {
+        maxUpload: this.limits.maxUpload ?? 0,
+        maxOpenSessions: this.limits.maxOpenSessions ?? DEFAULT_MAX_OPEN_SESSIONS,
+      },
+      sessionSnapshotSupport: true,
+      serverTime: this.now(),
+    };
+  }
+
+  /**
+   * Resolve advertised capabilities for a single connection. Falls back to the
+   * static default when no resolver is wired. A resolver that rejects/throws is
+   * fail-closed to an empty set with a sanitized warning; the error is never
+   * forwarded to the client (it carries no capabilities, no message).
+   */
+  private async resolveConnectionCapabilities(): Promise<readonly HostCapability[]> {
+    if (this.resolveCapabilitiesField === undefined) return this.defaultCapabilities;
+    try {
+      return [...(await this.resolveCapabilitiesField())];
+    } catch {
+      this.logger.warn?.("runtime gateway capability resolver failed; advertising no capabilities");
+      return [];
+    }
   }
 
   async attach(session: WsSession, hello: string): Promise<void> {
@@ -346,14 +391,18 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       return;
     }
     const handshake = parsed.data;
+    // Resolve capabilities once for this connection AFTER a valid hello, then
+    // bake a connection-specific response that both this initial ack and any
+    // subsequent repeated handshake reuse (no static-then-async correction).
+    const handshakeResponse = this.buildHandshakeResponse(await this.resolveConnectionCapabilities());
     this.write(session, {
       type: "handshake_ack",
       ...(handshake.id !== undefined ? { id: handshake.id } : {}),
-      payload: this.handshakeResponse,
+      payload: handshakeResponse,
     });
     const config: GatewayConfig = {
       client: this.client,
-      handshakeResponse: this.handshakeResponse,
+      handshakeResponse,
       outboundLimits: this.outboundLimits,
       inboundLimits: this.inboundLimits,
       logger: this.logger,

@@ -98,6 +98,11 @@ export async function runHost(
   const exposureMode = exposureModeForBind(options.hostname);
   const clientDist = resolveClientDist();
 
+  // A single production sessiond probe drives BOTH the HTTP projection
+  // (health/bootstrap/capabilities) and the WS /v1/runtime handshake, so the
+  // two stay consistent: sessiond healthy ⇒ agent, otherwise none.
+  const sessiondProbe = createSessiondProbe(location.paths);
+
   // Read the sessiond local secret strictly read-only and fail closed when it
   // is missing or unsafe: a Host that cannot authenticate to its own sessiond
   // must not silently advertise a runtime gateway.
@@ -116,8 +121,11 @@ export async function runHost(
     endpoint: location.paths.endpoint,
     secret,
     mode: exposureMode,
-    // X1: agent capability is real — R2 factory is production composition.
-    capabilities: [...PRODUCTION_HOST_CAPABILITIES],
+    // X1: WS handshake capability is projected dynamically from the same probe
+    // as HTTP. Healthy ⇒ fresh ["agent"] copy; down ⇒ []. A probe error is also
+    // fail-closed to [] by the gateway resolver.
+    resolveCapabilities: async () =>
+      (await sessiondProbe.isAvailable()) ? [...PRODUCTION_HOST_CAPABILITIES] : EMPTY_HOST_CAPABILITIES,
     logger: consoleLogger,
   });
 
@@ -130,7 +138,7 @@ export async function runHost(
       full: [...PRODUCTION_HOST_CAPABILITIES],
       readonly: EMPTY_HOST_CAPABILITIES,
     },
-    sessiond: createSessiondProbe(location.paths),
+    sessiond: sessiondProbe,
     gate: { config: createBootGateConfigSource() },
     logger: consoleLogger,
     runtimeWs,
