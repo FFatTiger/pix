@@ -598,6 +598,20 @@ describe("SessionStore — runtime capability authority + generic command", () =
     await expect(cmdP).resolves.toEqual({ commandId: "cmd-1", result: { ok: true, type: "prompt" } });
   });
 
+  it("concurrent sendCommand fails fast instead of overwriting the first waiter", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    const first = h.store.sendCommand({ commandId: "cmd-1", type: "prompt", message: "first" });
+    const second = h.store.sendCommand({ commandId: "cmd-2", type: "prompt", message: "second" });
+    await expect(second).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    await flush();
+    const commands = (ws.sent as { type: string; id?: string; payload?: { command?: { commandId?: string } } }[]).filter((frame) => frame.type === "command");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.payload?.command?.commandId).toBe("cmd-1");
+    ws.serverSend({ type: "response", id: commands[0]!.id!, payload: { ok: true, result: { commandId: "cmd-1", result: { ok: true, type: "prompt" } } } });
+    await expect(first).resolves.toEqual({ commandId: "cmd-1", result: { ok: true, type: "prompt" } });
+  });
+
   it("sendCommand resolves to an unsupported_capability result without throwing", async () => {
     const h = createHarness();
     const ws = await openAndAttach(h);

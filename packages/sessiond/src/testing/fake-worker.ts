@@ -14,6 +14,8 @@ export interface FakeWorkerOptions {
   failStart?: boolean;
   discoveredSessionId?: string;
   snapshot?: RuntimeSnapshot;
+  /** Test-only malformed inner snapshot session id; outer payload remains correct. */
+  snapshotSessionIdOverride?: string;
   /** Drop worker.getSnapshot requests during startup so sessiond fails closed. */
   ignoreSnapshot?: boolean;
 }
@@ -94,8 +96,8 @@ export class FakeWorkerConnection implements WorkerConnection {
           const snap = this.options.snapshot
             ? structuredClone(this.options.snapshot)
             : fakeDefaultSnapshot(message.payload.sessionId, this.input.cwd, this.input.projectRoot);
-          snap.sessionId = message.payload.sessionId;
-          snap.state.sessionId = message.payload.sessionId;
+          snap.sessionId = this.options.snapshotSessionIdOverride ?? message.payload.sessionId;
+          snap.state.sessionId = snap.sessionId;
           this.emit({ type: "worker.snapshot", id: message.id, payload: { sessionId: message.payload.sessionId, snapshot: snap } });
         });
         return;

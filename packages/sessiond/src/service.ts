@@ -396,8 +396,13 @@ export class SessiondService {
             record.startupReject?.(error instanceof SessiondError ? error : new SessiondError("worker_unavailable", "worker startup snapshot failed", true));
           }
         };
-        if (message.payload.sessionId !== record.sessionId) void this.rekey(record, message.payload.sessionId).then(() => void settleReady());
-        else void settleReady();
+        if (message.payload.sessionId !== record.sessionId) {
+          void this.rekey(record, message.payload.sessionId)
+            .then(() => void settleReady())
+            .catch((error) => {
+              record.startupReject?.(error instanceof SessiondError ? error : new SessiondError("worker_unavailable", "worker session rekey failed", true));
+            });
+        } else void settleReady();
         break;
       }
       case "worker.sessionDiscovered":
@@ -405,12 +410,26 @@ export class SessiondService {
         break;
       case "worker.snapshot": {
         if (message.payload.sessionId !== record.sessionId) return;
+        const pending = message.id === undefined ? undefined : record.pendingSnapshots.get(message.id);
+        if (message.payload.snapshot.sessionId !== record.sessionId) {
+          if (pending) {
+            clearTimeout(pending.timer);
+            record.pendingSnapshots.delete(message.id!);
+            pending.reject(new SessiondError("worker_unavailable", "worker snapshot session mismatch", false));
+          }
+          return;
+        }
         try {
           record.projection.replace(message.payload.snapshot);
           if (record.journal.lastEventId === 0) record.journalBaseSnapshot = record.projection.snapshot();
-          const pending = message.id === undefined ? undefined : record.pendingSnapshots.get(message.id);
           if (pending) { clearTimeout(pending.timer); record.pendingSnapshots.delete(message.id!); pending.resolve(record.projection.snapshot()); }
-        } catch { /* malformed state is dropped at authority boundary */ }
+        } catch (error) {
+          if (pending) {
+            clearTimeout(pending.timer);
+            record.pendingSnapshots.delete(message.id!);
+            pending.reject(error instanceof SessiondError ? error : new SessiondError("worker_unavailable", "worker snapshot was rejected", false));
+          }
+        }
         break;
       }
       case "worker.event":

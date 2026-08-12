@@ -248,6 +248,17 @@ test("startup snapshot failure fails closed and rolls back the worker", async ()
   await service.shutdown();
 });
 
+test("startup rejects a snapshot whose inner sessionId mismatches the active record", async () => {
+  const { service } = harness({ worker: { snapshotSessionIdOverride: "wrong-session" } });
+  await assert.rejects(
+    service.activate("s"),
+    (error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === "worker_unavailable",
+  );
+  assert.equal(service.diagnostics().sessions, 0);
+  assert.throws(() => service.getSnapshot("s"));
+  await service.shutdown();
+});
+
 test("runtime_capabilities_changed updates the projected capability set", async () => {
   const { service, workers } = harness();
   await service.activate("s");

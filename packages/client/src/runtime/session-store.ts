@@ -430,6 +430,13 @@ export class SessionStore implements RuntimeSocketHandler {
     if (!this.attached || !this.sessionId) {
       return Promise.reject(this.notAttachedError());
     }
+    if (this.pendingCommand) {
+      return Promise.reject({
+        code: "session_busy",
+        message: "a runtime command is already in progress",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
     const sessionId = this.sessionId;
     const envelopeId = this.id();
     const message: WsClientMessage = {
