@@ -121,6 +121,8 @@ export function registerGitRoutes(app: Hono<HostEnv>, deps: GitDeps): void {
     }
     const paths = entry.originalPath && entry.originalPath !== relativePath ? [entry.originalPath, relativePath] : [relativePath];
     const patch = await runChecked(runner, { command: "git", args: ["-C", root, "diff", "--no-color", "--no-ext-diff", "--unified=3", "HEAD", "--", ...paths], maxOutputBytes: previewLimit * 4 });
-    return c.json(patch.includes("\n@@ ") ? { supported: true, status: statusValue, patch } : { supported: false });
+    const hasTextHunk = patch.includes("\n@@ ");
+    const hasRenameMetadata = /(?:^|\n)rename from .+\nrename to .+(?:\n|$)/.test(patch);
+    return c.json(hasTextHunk || hasRenameMetadata ? { supported: true, status: statusValue, patch } : { supported: false });
   });
 }

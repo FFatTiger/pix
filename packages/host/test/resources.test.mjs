@@ -220,6 +220,17 @@ test("git status/diff are repo-contained and handle untracked patches", async ()
   const denied = await app.request(`http://localhost/v1/git/diff?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(join(root, "..", "escape"))}`, { headers: headers() }); assert.equal(denied.status, 403);
 });
 
+test("git diff returns rename metadata for a pure staged rename", async () => {
+  const { root, app } = await fixture(); initRepo(root);
+  git(root, ["mv", "tracked.txt", "renamed.txt"]);
+  const response = await app.request(`http://localhost/v1/git/diff?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(join(root, "renamed.txt"))}`, { headers: headers() });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.supported, true);
+  assert.equal(body.status, "renamed");
+  assert.match(body.patch, /(?:^|\n)rename from tracked\.txt\nrename to renamed\.txt(?:\n|$)/);
+});
+
 test("GET worktrees is absolutely read-only for local/LAN and external worktrees stay unauthorized", async () => {
   const root = temp("pi-worktree-readonly-"); initRepo(root); const externalBase = temp("pi-worktree-external-"); const external = join(externalBase, "existing"); git(root, ["worktree", "add", "-b", "external-existing", "--", external]); const externalCanonical = await import("node:fs/promises").then(({ realpath }) => realpath(external));
   for (const exposureMode of ["local", "lan"]) {
