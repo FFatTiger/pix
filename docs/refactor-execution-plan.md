@@ -322,7 +322,7 @@ stop
 | ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
 | `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A-1 `a38c3c8` DONE（Adapter105/105，0 Worker/ModelRuntime/network）；D1A-2 branch `pi-agent-904890ed` 接sessiond/Host/Client历史只读链；D1B后续 |
-| `D2` | Runtime Command Expansion | `IN_REVIEW` | `M2` | P0 `c4a2f76` 已集成：权威snapshot capability传播、Client typed command API；sessiond79/Client156/E2E3轮PASS，等待GPT gate；后续分批开放命令 |
+| `D2` | Runtime Command Expansion | `IN_REVIEW` | `M2` | P0 `c4a2f76` + fix `5a96fd4`：权威snapshot capability传播、Client typed command API；GPT首轮PARTIAL的并发command挂起与inner snapshot sessionId缺口已fail-closed修复；sessiond80/Client157/E2E3轮PASS，等待复验 |
 | `D3A` | Files/Git/Worktree | `IN_REVIEW` | `M2`, `B2` | D3A-1 `1c7a848` 已推送 `m3/d3a1-production-resources`：production roots/busy-preflight/dynamic capability/真实startup E2E；等待GPT安全gate，随后集成与Client UI |
 | `D3B` | Models/Auth/Skills/Plugins/Trust | `BLOCKED` | `M2`, Data/Resource Adapter | 等D1领域化Adapter地基；models/resources/auth只读优先，trust/OAuth后置 |
 | `D4` | Mutations + Side Chat | `BLOCKED` | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
@@ -330,7 +330,7 @@ stop
 ### 5.2 M3 Wave 1 冻结切片
 
 1. `D1A-1`：DONE（`a38c3c8`）；独立、纯只读 `pi-sdk-adapter/sessions` Catalog/Locator；仅JSONL/SessionManager，零Worker、零ModelRuntime、零网络。`D1A-2` 负责真实历史链路与只读UI。
-2. `D2-P0`：IN_REVIEW（`c4a2f76`）；sessiond在Worker ready后先取权威snapshot再对外ready；Client消费runtime capabilities并提供通用typed command API；未开放新能力。
+2. `D2-P0`：IN_REVIEW（`c4a2f76` + `5a96fd4`）；第二条并发command明确session_busy、snapshot内外sessionId不一致启动rollback、rekey rejection有界处理；未开放新能力，等待GPT复验。
 3. `D3A-1`：IN_REVIEW（`1c7a848` / `m3/d3a1-production-resources`）；Host204、CLI32、startup/runtime E2E、typecheck/architecture/boundary PASS；等待GPT安全验证后集成。
 4. Adapter内部按sessions/models/credentials/resources/trust领域拆分，只共享canonical path与安全文件原语；禁止恢复旧`sdk-data.ts`单体。
 5. 协作分支：`pi-agent-904890ed`（D1A-2）与 `d3a-1-production-resources`（D3A-1）。分支基线可能落后main，集成前由负责人rebase或由主会话cherry-pick并解决冲突。
