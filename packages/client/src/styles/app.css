@@ -334,6 +334,40 @@ html.dark .topbar-badge--ok {
   color: var(--text-muted);
 }
 
+.project-open-form {
+  margin-top: 12px;
+  max-width: 680px;
+}
+.project-open-form label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.project-open-row {
+  display: flex;
+  gap: 8px;
+}
+.project-open-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text);
+  padding: 7px 9px;
+  font: inherit;
+}
+.project-open-row input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.project-open-error {
+  margin: 5px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
 /* —— Transcript (virtualized) —— */
 
 .transcript-scroll {

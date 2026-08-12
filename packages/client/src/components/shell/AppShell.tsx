@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { formatCwdLabel, type WorkspaceSearch } from "@/lib/search-params";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
@@ -27,7 +27,10 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
 export function AppShell({ search }: AppShellProps) {
   const { canAgent, mode, capabilities, unavailable } = useCapabilities();
   const runtime = useRuntime();
+  const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [projectPath, setProjectPath] = useState("");
+  const [projectError, setProjectError] = useState<string | null>(null);
   const initiatedRef = useRef<string | null>(null);
 
   // Deep-link open: when a session id is present and the agent capability is
@@ -48,6 +51,19 @@ export function AppShell({ search }: AppShellProps) {
     // M2: the workspace cwd is treated as the project root. Worktree/project
     // selection (D3A) will refine this later; we never hardcode a fallback.
     void runtime.createSession({ cwd: search.cwd, projectRoot: search.cwd }).catch(() => undefined);
+  };
+
+  const handleOpenProject = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    const cwd = projectPath;
+    const absolute = cwd.startsWith("/") || /^[A-Za-z]:[\\/]/.test(cwd);
+    if (!absolute) {
+      setProjectError("Enter an absolute project path.");
+      return;
+    }
+    setProjectError(null);
+    void navigate({ to: "/", search: { cwd } });
+    void runtime.createSession({ cwd, projectRoot: cwd }).catch(() => undefined);
   };
 
   const subtitle = !canAgent
@@ -127,6 +143,29 @@ export function AppShell({ search }: AppShellProps) {
           <div className="workspace-header">
             <h1 className="workspace-title">{runtime.attached ? "Session" : search.session ? "Session" : "Workstation"}</h1>
             <p className="workspace-subtitle">{subtitle}</p>
+            {canAgent && !hasProject && !runtime.attached ? (
+              <form className="project-open-form" onSubmit={handleOpenProject}>
+                <label htmlFor="project-path">Project path</label>
+                <div className="project-open-row">
+                  <input
+                    id="project-path"
+                    type="text"
+                    value={projectPath}
+                    onChange={(event) => {
+                      setProjectPath(event.target.value);
+                      if (projectError) setProjectError(null);
+                    }}
+                    placeholder="/absolute/path/to/project"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button type="submit" className="text-btn" disabled={projectPath.length === 0}>
+                    Open project
+                  </button>
+                </div>
+                {projectError ? <p className="project-open-error" role="alert">{projectError}</p> : null}
+              </form>
+            ) : null}
           </div>
 
           <TranscriptList
