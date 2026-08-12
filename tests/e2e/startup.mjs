@@ -313,6 +313,48 @@ async function main() {
     assert.equal(gitStatus.isGitRepository, true);
     assert.equal(gitStatus.repositoryRoot, project);
 
+    // ---- D3B catalog surface (Client Catalog dock contract) --------------
+    // Project-scoped endpoints require cwd; shapes are strict Host projectors.
+    // Providers are global. Catalog stays available independent of sessiond
+    // (caps remain in DEGRADED_CAPS); we assert the happy GET surface here.
+    const models = await fetchJson(`${origin}/v1/models?cwd=${encodeURIComponent(project)}`);
+    assert.equal(Array.isArray(models.models), true, "models must be an array");
+    assert.ok("defaultModel" in models, "models response includes defaultModel");
+    assert.equal(models.modelList, undefined, "legacy modelList must not appear");
+
+    const providers = await fetchJson(`${origin}/v1/auth/providers`);
+    assert.equal(Array.isArray(providers.providers), true);
+
+    if (providers.providers.length > 0) {
+      const providerId = providers.providers[0].id;
+      const status = await fetchJson(`${origin}/v1/auth/providers/${encodeURIComponent(providerId)}/status`);
+      assert.ok(status.status && typeof status.status.providerId === "string");
+      assert.equal(typeof status.configured, "boolean");
+    }
+
+    const skills = await fetchJson(`${origin}/v1/skills?cwd=${encodeURIComponent(project)}`);
+    assert.equal(Array.isArray(skills.skills), true);
+    const plugins = await fetchJson(`${origin}/v1/plugins?cwd=${encodeURIComponent(project)}`);
+    assert.equal(Array.isArray(plugins.plugins), true);
+    const commands = await fetchJson(`${origin}/v1/commands?cwd=${encodeURIComponent(project)}`);
+    assert.equal(Array.isArray(commands.commands), true);
+
+    const trust = await fetchJson(`${origin}/v1/trust?cwd=${encodeURIComponent(project)}`);
+    assert.equal(trust.cwd, project);
+    assert.ok(["unknown", "trusted", "denied"].includes(trust.level));
+    assert.equal(typeof trust.trusted, "boolean");
+    assert.equal(typeof trust.canReloadResources?.allowed, "boolean");
+
+    // Missing cwd is rejected (Client project tabs depend on this honesty).
+    const missingCwd = await fetch(`${origin}/v1/models`);
+    assert.equal(missingCwd.status, 400);
+    assert.equal((await missingCwd.json()).code, "CWD_REQUIRED");
+
+    // Client dist must ship the Catalog dock affordance.
+    const clientJs = join(ROOT, "packages", "client", "dist", "assets");
+    assert.equal(existsSync(clientIndex), true);
+    assert.equal(existsSync(clientJs), true);
+
     await readWatchConnected(origin, readme);
 
     // status CLI reflects a healthy sessiond on the captured pid.

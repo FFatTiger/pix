@@ -14,7 +14,7 @@ function json(body: unknown, status = 200) {
   });
 }
 
-function renderBadge(host: Partial<HostInfo>, props: { cwd?: string; variant?: "badge" | "summary" } = {}) {
+function renderBadge(host: Partial<HostInfo>, props: { cwd?: string | undefined; variant?: "badge" | "summary" } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const Wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>
@@ -74,7 +74,8 @@ describe("TrustBadge", () => {
       globalThis.fetch = fetchImpl as unknown as typeof fetch;
       renderBadge({ mode: "local", capabilities: ["skills"] }, { cwd: "/proj" });
       await waitFor(() => expect(screen.getByText(label)).toBeTruthy());
-      expect(String(fetchImpl.mock.calls[0]?.[0])).toContain("/v1/trust?cwd=%2Fproj");
+      const firstCall = fetchImpl.mock.calls[0] as unknown as [RequestInfo | URL] | undefined;
+      expect(String(firstCall?.[0])).toContain("/v1/trust?cwd=%2Fproj");
     }
   });
 

@@ -30,7 +30,7 @@ function json(body: unknown, status = 200, code?: string) {
 
 function renderPanel(
   host: Partial<HostInfo> | null,
-  props: { cwd?: string; open?: boolean; onClose?: () => void } = {},
+  props: { cwd?: string | undefined; open?: boolean; onClose?: () => void } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const Wrapper = ({ children }: { children: ReactNode }) => (
