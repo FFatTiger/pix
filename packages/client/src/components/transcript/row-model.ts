@@ -10,12 +10,34 @@ export type TranscriptRowKind =
   | "system"
   | "divider";
 
+/**
+ * Ordered content parts for an assistant (or multi-block) row.
+ * History and live projections share this shape so interleaving is preserved.
+ */
+export type TranscriptPart =
+  | { type: "text"; text: string }
+  | {
+      type: "thinking";
+      /** Raw thinking body — never trimmed/rewritten by the projector. */
+      thinking: string;
+      /** True while this part belongs to the live streaming partial. */
+      streaming?: boolean;
+    }
+  | { type: "toolCall"; text: string }
+  | { type: "image"; text: string };
+
 export interface TranscriptRow {
   /** Stable identity for virtualizer keys (never index). */
   id: string;
   kind: TranscriptRowKind;
-  /** Plain text body for shell preview / a11y. */
+  /** Plain text body for height estimate / a11y / fallback. */
   text: string;
+  /**
+   * Structured, order-preserving content blocks. Present for assistant rows
+   * (and any message that projects multi-block content). The virtualizer still
+   * keys the top-level row by `id` — parts are never independent list rows.
+   */
+  parts?: TranscriptPart[];
   /** Optional estimated height hint; virtualizer still measures dynamically. */
   estimateHeight?: number;
   meta?: {
@@ -73,6 +95,7 @@ export function buildTranscriptRows(
       id: message.id,
       kind: message.role,
       text: message.text,
+      ...(message.parts === undefined ? {} : { parts: message.parts }),
       ...(message.estimateHeight === undefined
         ? {}
         : { estimateHeight: message.estimateHeight }),
@@ -87,6 +110,8 @@ export interface TranscriptMessageInput {
   id: string;
   role: Exclude<TranscriptRowKind, "divider" | "system"> | "system";
   text: string;
+  /** Structured parts when the source message carries content blocks. */
+  parts?: TranscriptPart[];
   createdAt?: string;
   toolName?: string;
   estimateHeight?: number;
@@ -95,4 +120,25 @@ export interface TranscriptMessageInput {
 /** Stable key extractor for virtualizer. */
 export function getTranscriptRowKey(row: TranscriptRow): string {
   return row.id;
+}
+
+/** Flatten structured parts into the plain-text fallback used by estimate/a11y. */
+export function flattenTranscriptParts(parts: readonly TranscriptPart[]): string {
+  return parts
+    .map((part) => {
+      switch (part.type) {
+        case "text":
+          return part.text;
+        case "thinking":
+          return part.thinking;
+        case "toolCall":
+        case "image":
+          return part.text;
+        default: {
+          const _exhaustive: never = part;
+          return _exhaustive;
+        }
+      }
+    })
+    .join("\n");
 }
