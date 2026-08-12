@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { formatCwdLabel, type WorkspaceSearch } from "@/lib/search-params";
@@ -26,6 +26,14 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
   stopped: "stopped",
 };
 
+function describeError(cause: unknown): string {
+  if (cause && typeof cause === "object" && "message" in cause) {
+    const message = (cause as { message: unknown }).message;
+    if (typeof message === "string" && message.length > 0) return message;
+  }
+  return String(cause);
+}
+
 export function AppShell({ search }: AppShellProps) {
   const { canAgent, mode, capabilities, unavailable } = useCapabilities();
   const runtime = useRuntime();
@@ -37,30 +45,97 @@ export function AppShell({ search }: AppShellProps) {
   const [openingLive, setOpeningLive] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
 
+  // History/live coordination (D1A-2 phase 2 + history-switching fix).
+  //
+  // The selected session is `search.session`. The runtime may be attached to a
+  // DIFFERENT session (e.g. the user was live on A and then clicked B in the
+  // sidebar without going through Continue live). The page must then fail-closed
+  // to the selected session's HISTORY view — never render A's live transcript,
+  // never enable the Composer, never show SessionActions — and detach A so the
+  // stale runtime stops streaming. The mismatch effect below owns that detach:
+  // it fires once per (attached, selected) pair (no loops), is fire-and-forget
+  // (errors are surfaced but the page stays fail-closed), and a generation
+  // counter drops stale detach rejections so a quick B→C switch or a Continue
+  // live takeover never lets an old promise clobber the new selection.
+  const selectionMatchesLive =
+    runtime.attached && (!search.session || search.session === runtime.sessionId);
+  const isMismatched =
+    runtime.attached && Boolean(search.session) && search.session !== runtime.sessionId;
+
+  const mountedRef = useRef(true);
+  const detachGenRef = useRef(0);
+  const mismatchKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    const mismatched = runtime.attached && Boolean(search.session) && search.session !== runtime.sessionId;
+    const key = mismatched ? `${runtime.sessionId ?? ""}:${search.session ?? ""}` : null;
+    if (key === mismatchKeyRef.current) return; // same pair already handled
+    mismatchKeyRef.current = key;
+    if (!mismatched) return;
+    setLiveError(null);
+    const gen = ++detachGenRef.current;
+    void runtime.detach().catch((error) => {
+      // A newer detach (or a Continue-live takeover) superseded this one, or the
+      // shell unmounted: never surface a stale error or touch a dead component.
+      if (!mountedRef.current || gen !== detachGenRef.current) return;
+      setLiveError(describeError(error));
+    });
+  }, [runtime.attached, runtime.sessionId, search.session]);
+
   // Read-only deep link (D1A-2 phase 2): a `?session=` link renders history via
   // the read-only context GET and NEVER auto-activates a Worker. The user must
   // explicitly Continue live (and only when the `agent` capability is present)
-  // before openSession attaches a runtime. Homepage Open project / New session
-  // remain explicit create actions and are unaffected.
+  // before openSession attaches a runtime. When the runtime is attached to a
+  // DIFFERENT session, Continue live first awaits detach (never stop), then
+  // opens the selected session; only an actual attach to the selection is live.
   const handleContinueLive = (): void => {
-    if (!canAgent || !search.session || runtime.attached || openingLive) return;
+    if (!canAgent || !search.session || openingLive) return;
+    const sessionId = search.session; // narrowed to string; stable for this action
     setLiveError(null);
+    detachGenRef.current += 1; // hand error ownership to this explicit action
     setOpeningLive(true);
-    void runtime
-      .openSession(search.session)
-      .catch((error) => {
-        setLiveError(error instanceof Error && error.message ? error.message : "Could not open a live runtime for this session.");
-      })
-      .finally(() => setOpeningLive(false));
+    void (async () => {
+      try {
+        // If a stale runtime is still attached to another session, fail-closed
+        // detach it before opening the selected session (double-click/race safe:
+        // detach() is idempotent and this runs under the openingLive guard).
+        if (runtime.attached && runtime.sessionId && runtime.sessionId !== sessionId) {
+          await runtime.detach();
+        }
+        await runtime.openSession(sessionId);
+      } catch (error) {
+        setLiveError(describeError(error));
+      } finally {
+        setOpeningLive(false);
+      }
+    })();
   };
 
   const connection = runtime.connection;
   const hasProject = Boolean(search.cwd);
   const canCreate = canAgent && hasProject && !runtime.attached && !runtime.sessionStopped;
   const hasWorkspaceCap = capabilities.includes("files") || capabilities.includes("git");
+  // Topbar always shows the SELECTED session (search.session first) so it never
+  // claims live B while the runtime is still attached to A; a detached-to-history
+  // view falls back to the live session id only when nothing is selected.
+  const shownSessionId = search.session ?? runtime.sessionId;
+  const connectionLabel = isMismatched ? "attached" : CONNECTION_LABEL[connection];
+  const connectionTitle = isMismatched
+    ? `Runtime attached to ${runtime.sessionId?.slice(0, 8) ?? "?"}…; detaching to show the selected session`
+    : `Runtime connection: ${connection}`;
 
   const handleCreate = (): void => {
     if (!search.cwd) return;
+    // New session is an explicit create. Clear any stale ?session= selection so
+    // the fresh live session becomes the page's session — otherwise the mismatch
+    // effect would immediately detach the just-created session. navigate()
+    // updates the router store synchronously, well before createSession's
+    // attach round-trip completes, so no mismatch window opens.
+    void navigate({ to: "/", search: { cwd: search.cwd } });
     // M2: the workspace cwd is treated as the project root. Worktree/project
     // selection (D3A) will refine this later; we never hardcode a fallback.
     void runtime.createSession({ cwd: search.cwd, projectRoot: search.cwd }).catch(() => undefined);
@@ -75,8 +150,9 @@ export function AppShell({ search }: AppShellProps) {
       return;
     }
     setProjectError(null);
+    // Open project ONLY sets the workspace cwd — it must never implicitly create
+    // a session. Starting a runtime is an explicit New session / Continue live.
     void navigate({ to: "/", search: { cwd } });
-    void runtime.createSession({ cwd, projectRoot: cwd }).catch(() => undefined);
   };
 
   const subtitle = !canAgent
@@ -85,15 +161,17 @@ export function AppShell({ search }: AppShellProps) {
       : "Read-only shell — host has no agent capability."
     : runtime.fatal
       ? "Runtime handshake rejected — connection stopped."
-      : runtime.attached
-        ? "Live runtime attached — send a prompt to begin."
-        : search.session
-          ? openingLive
-            ? `Opening live session ${search.session.slice(0, 8)}…`
-            : "Read-only session history — Continue live to attach a runtime."
-          : hasProject
-            ? "Select a project to start a runtime session."
-            : "Open a project to start a runtime session.";
+      : isMismatched
+        ? `Detaching live session ${runtime.sessionId?.slice(0, 8) ?? "?"}… — showing selected session history.`
+        : runtime.attached
+          ? "Live runtime attached — send a prompt to begin."
+          : search.session
+            ? openingLive
+              ? `Opening live session ${search.session.slice(0, 8)}…`
+              : "Read-only session history — Continue live to attach a runtime."
+            : hasProject
+              ? "Select a project to start a runtime session."
+              : "Open a project to start a runtime session.";
 
   return (
     <div className={`app-shell${sidebarOpen ? "" : " app-shell--sidebar-collapsed"}`}>
@@ -114,23 +192,18 @@ export function AppShell({ search }: AppShellProps) {
           <span className="topbar-badge" title={`Host mode: ${mode}`}>
             {mode}
           </span>
-          <span className={`topbar-badge topbar-badge--${runtime.attached ? "ok" : connection === "unavailable" || runtime.fatal ? "warn" : "muted"}`} title={`Runtime connection: ${connection}`} aria-live="polite">
-            rt:{CONNECTION_LABEL[connection]}
+          <span className={`topbar-badge topbar-badge--${isMismatched ? "warn" : runtime.attached ? "ok" : connection === "unavailable" || runtime.fatal ? "warn" : "muted"}`} title={connectionTitle} aria-live="polite">
+            rt:{connectionLabel}
           </span>
         </div>
         <div className="app-topbar-center">
           <span className="topbar-cwd" title={search.cwd ?? ""}>
             {formatCwdLabel(search.cwd)}
           </span>
-          {runtime.sessionId ? (
-            <span className="topbar-session" title={runtime.sessionId}>
-              session:{runtime.sessionId.slice(0, 8)}
-              {runtime.sessionId.length > 8 ? "…" : ""}
-            </span>
-          ) : search.session ? (
-            <span className="topbar-session" title={search.session}>
-              session:{search.session.slice(0, 8)}
-              {search.session.length > 8 ? "…" : ""}
+          {shownSessionId ? (
+            <span className="topbar-session" title={shownSessionId}>
+              session:{shownSessionId.slice(0, 8)}
+              {shownSessionId.length > 8 ? "…" : ""}
             </span>
           ) : (
             <span className="topbar-session topbar-session--muted">no session</span>
@@ -192,7 +265,7 @@ export function AppShell({ search }: AppShellProps) {
                 {projectError ? <p className="project-open-error" role="alert">{projectError}</p> : null}
               </form>
             ) : null}
-            {canAgent && search.session && !runtime.attached ? (
+            {canAgent && search.session && !selectionMatchesLive ? (
               <div className="continue-live">
                 <button
                   type="button"
@@ -210,13 +283,14 @@ export function AppShell({ search }: AppShellProps) {
             ) : null}
           </div>
 
-          <SessionActions />
+          <SessionActions live={selectionMatchesLive} />
 
           <TranscriptList
+            live={selectionMatchesLive}
             {...(search.session === undefined ? {} : { sessionId: search.session })}
           />
 
-          <Composer />
+          <Composer live={selectionMatchesLive} />
         </main>
 
         <WorkspacePanel cwd={search.cwd} open={workspaceOpen} onClose={() => setWorkspaceOpen(false)} />

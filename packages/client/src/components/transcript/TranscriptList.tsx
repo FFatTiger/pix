@@ -8,7 +8,19 @@ import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 import { useRuntime } from "@/runtime";
 
-export interface TranscriptListProps { sessionId?: string; rows?: TranscriptRow[]; overscan?: number }
+export interface TranscriptListProps {
+  sessionId?: string;
+  rows?: TranscriptRow[];
+  overscan?: number;
+  /**
+   * Explicit selection gate (history-switching fix). When `true` the SELECTED
+   * session is the attached runtime, so rows come from the live SessionStore
+   * projection. When `false` rows come from session history even if some OTHER
+   * session happens to be attached (never show a non-selected live stream). When
+   * omitted the legacy behavior applies: live whenever the runtime is attached.
+   */
+  live?: boolean;
+}
 
 type AssistantBlock = Extract<AgentMessage, { role: "assistant" }>["content"][number];
 
@@ -63,19 +75,24 @@ function runtimeMessageToInput(message: AgentMessage, index: number): Transcript
   };
 }
 
-export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8 }: TranscriptListProps) {
+export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: liveProp }: TranscriptListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const http = useHttpClient();
   const { isReadonly, canBrowseSessions } = useCapabilities();
   const runtime = useRuntime();
-  // Only fetch session history when the host actually serves it (sessiond
-  // connected) AND no live runtime stream is attached.
-  const sessionsEnabled = rowsProp === undefined && Boolean(sessionId) && canBrowseSessions && !runtime.attached;
+  // The live projection is shown ONLY when the caller explicitly gates it (the
+  // selected session IS the attached runtime). Without the prop, fall back to
+  // the legacy behavior (live whenever attached) so standalone mounts keep
+  // working. A non-selected attached session never contributes rows here.
+  const isLive = (liveProp ?? runtime.attached) && rowsProp === undefined;
+  // Fetch session history only when the host actually serves it (sessiond
+  // connected) AND the selected session is not the live projection.
+  const sessionsEnabled = rowsProp === undefined && Boolean(sessionId) && canBrowseSessions && !isLive;
   const context = useQuery({ ...createQueryOptions(http).sessions.context(sessionId ?? ""), enabled: sessionsEnabled });
 
   const rows = useMemo(() => {
     if (rowsProp) return rowsProp;
-    if (runtime.attached) {
+    if (isLive) {
       // Live runtime: rows come from the SessionStore projection + active partial.
       const inputs = runtime.messages.map(runtimeMessageToInput);
       if (runtime.streamingPartial) {
@@ -85,7 +102,7 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8 }: Tran
     }
     const messages = context.data ? context.data.context.entries.map(toTranscript) : [];
     return buildTranscriptRows(messages, { readonlyBanner: isReadonly });
-  }, [rowsProp, runtime.attached, runtime.messages, runtime.streamingPartial, context.data, isReadonly]);
+  }, [rowsProp, isLive, runtime.messages, runtime.streamingPartial, context.data, isReadonly]);
 
   const virtualizer = useVirtualizer({ count: rows.length, getScrollElement: () => parentRef.current, estimateSize: (index) => estimateRowHeight(rows[index]!), overscan, getItemKey: (index) => getTranscriptRowKey(rows[index]!) });
   return (
@@ -96,7 +113,7 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8 }: Tran
           return <div key={item.key} data-index={item.index} data-row-id={row.id} ref={virtualizer.measureElement} className={`transcript-row transcript-row--${row.kind}`} style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${item.start}px)` }}><TranscriptRowView row={row} /></div>;
         })}
       </div>
-      {runtime.attached ? null : context.isError && sessionId ? <div className="transcript-empty">Session history unavailable</div> : rows.length === 0 ? <div className="transcript-empty">{sessionId ? "No messages" : "Select a session or open a deep link with ?session=…"}</div> : null}
+      {isLive ? null : context.isError && sessionId ? <div className="transcript-empty">Session history unavailable</div> : rows.length === 0 ? <div className="transcript-empty">{sessionId ? "No messages" : "Select a session or open a deep link with ?session=…"}</div> : null}
     </div>
   );
 }

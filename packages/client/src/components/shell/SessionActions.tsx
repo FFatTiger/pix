@@ -22,12 +22,28 @@ function describeError(cause: unknown): string {
   return String(cause);
 }
 
-export function SessionActions() {
+export interface SessionActionsProps {
+  /**
+   * Explicit selection gate (history-switching fix). When `false` the selected
+   * session is NOT the attached runtime (viewing history or a stale live
+   * session), so the panel is HIDDEN — runtime actions never apply to a
+   * non-selected session. When omitted the legacy behavior applies (shown
+   * whenever the runtime is attached, otherwise a hint).
+   */
+  live?: boolean;
+}
+
+export function SessionActions({ live }: SessionActionsProps) {
   const runtime = useRuntime();
   const [busy, setBusy] = useState<string | null>(null);
   const [output, setOutput] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
+
+  // Selection gate AFTER all hooks (Rules of Hooks): never offer runtime actions
+  // for a session that is not the one being viewed (e.g. still attached to A
+  // while showing B), or on a read-only history view.
+  if (live === false) return null;
 
   const capabilities = runtime.capabilities?.capabilities ?? [];
   const hasStats = capabilities.includes("runtime.stats");

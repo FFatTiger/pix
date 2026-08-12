@@ -11,21 +11,36 @@ import { useRuntime } from "@/runtime";
  * The composer is honestly disabled (with a reason) when capability/attach is
  * missing — it does not fabricate a usable agent surface.
  */
-export function Composer() {
+export interface ComposerProps {
+  /**
+   * Explicit selection gate (history-switching fix). When `false` the selected
+   * session is NOT the attached runtime (viewing history or a stale live
+   * session), so the composer is honestly disabled even though a runtime may
+   * still be attached to some OTHER session. When omitted the legacy behavior
+   * applies: usable whenever the runtime is attached.
+   */
+  live?: boolean;
+}
+
+export function Composer({ live: liveProp }: ComposerProps) {
   const { canAgent } = useCapabilities();
   const runtime = useRuntime();
   const [text, setText] = useState("");
 
+  // `live` is true only when the selected session IS the attached runtime.
+  const live = liveProp ?? runtime.attached;
   const streaming = runtime.streaming;
-  const canSend = canAgent && runtime.attached && !streaming && text.trim().length > 0 && !runtime.sessionStopped;
+  const canSend = canAgent && live && !streaming && text.trim().length > 0 && !runtime.sessionStopped;
   const disabledReason = runtime.sessionStopped
     ? "session stopped"
     : !canAgent
       ? "host has no agent capability"
-      : !runtime.attached
-        ? runtime.connection === "idle"
-          ? "no project selected"
-          : "runtime not attached"
+      : !live
+        ? runtime.attached
+          ? "selected session is not live"
+          : runtime.connection === "idle"
+            ? "no project selected"
+            : "runtime not attached"
         : streaming
           ? "agent is responding"
           : "";
@@ -55,14 +70,14 @@ export function Composer() {
               handleSend();
             }
           }}
-          placeholder={canAgent && runtime.attached ? "Message the agent…" : "Composer disabled"}
-          disabled={!canAgent || !runtime.attached || streaming || runtime.sessionStopped}
-          aria-disabled={!canAgent || !runtime.attached}
+          placeholder={canAgent && live ? "Message the agent…" : "Composer disabled"}
+          disabled={!canAgent || !live || streaming || runtime.sessionStopped}
+          aria-disabled={!canAgent || !live}
           aria-label="Message the agent"
         />
         <div className="composer-toolbar">
           <span className="composer-status" aria-live="polite">
-            {streaming ? "streaming" : runtime.attached ? "ready" : disabledReason || "readonly"}
+            {streaming ? "streaming" : live ? "ready" : disabledReason || "readonly"}
           </span>
           {streaming ? (
             <button type="button" className="composer-abort" onClick={handleAbort} aria-label="Abort the running response">

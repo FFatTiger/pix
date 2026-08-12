@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, act, fireEvent, waitFor } from "@testing-library/react";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { HttpClientProvider } from "@/app/http-context";
 import { RuntimeProvider, useRuntimeStore } from "@/runtime";
 import { AppShell } from "./AppShell";
 import { ErrorBoundary } from "@/app/ErrorBoundary";
-import { FakeWebSocket } from "@/runtime/testing/harness";
+import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "@/runtime/testing/harness";
 import type { RuntimeSocketDeps } from "@/runtime/socket";
 import type { HostInfo } from "@fffattiger/pix-protocol";
 import type { SessionStore } from "@/runtime";
@@ -52,34 +52,87 @@ function Capture(): null {
   return null;
 }
 
-function contextResponse(sessionId: string) {
+function contextResponse(sessionId: string, text = "hello history") {
   return new Response(
     JSON.stringify({
       context: {
         sessionId,
-        entries: [{ entryId: "e1", message: { role: "user", content: "hello history" } }],
+        entries: [{ entryId: "e1", message: { role: "user", content: text } }],
       },
     }),
     { status: 200, headers: { "content-type": "application/json" } },
   );
 }
 
-function mount(search: WorkspaceSearch, host: Partial<HostInfo> | null): void {
+function ack(caps: string[] = ["agent"]) {
+  return { type: "handshake_ack", payload: { protocolVersion: 1, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
+}
+
+function mount(search: WorkspaceSearch, host: Partial<HostInfo> | null): { view: ReturnType<typeof render>; rerender: (s: WorkspaceSearch) => void } {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  const build = (s: WorkspaceSearch) => (
     <ErrorBoundary>
       <QueryClientProvider client={qc}>
         <HttpClientProvider>
           <CapabilityProvider {...(host === undefined ? {} : { host })}>
             <RuntimeProvider deps={fakeDeps()}>
               <Capture />
-              <AppShell search={search} />
+              <AppShell search={s} />
             </RuntimeProvider>
           </CapabilityProvider>
         </HttpClientProvider>
       </QueryClientProvider>
-    </ErrorBoundary>,
+    </ErrorBoundary>
   );
+  const view = render(build(search));
+  return { view, rerender: (s: WorkspaceSearch) => { view.rerender(build(s)); } };
+}
+
+/** Open + handshake the first socket so the store is ready. */
+async function driveReady(): Promise<FakeWebSocket> {
+  const store = capturedStore!;
+  await act(async () => {
+    store.connect();
+    const ws = SOCKETS[SOCKETS.length - 1]!;
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+  });
+  return SOCKETS[SOCKETS.length - 1]!;
+}
+
+/** Attach to `sessionId` and commit one user message into the runtime projection. */
+async function driveLiveOnA(ws: FakeWebSocket, sessionId = "s-a", message = "live message from A"): Promise<void> {
+  const store = capturedStore!;
+  await act(async () => {
+    void store.openSession(sessionId);
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId }) });
+    await flush();
+    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId, streamId: "st", messageId: "m", message: { role: "user", content: message }, eventId: 1, epoch: "e1" } });
+    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId, streamId: "st", messageId: "m", message: { role: "user", content: message }, eventId: 2, epoch: "e1" } });
+    await flush();
+  });
+}
+
+async function serverSend(ws: FakeWebSocket, message: unknown): Promise<void> {
+  await act(async () => {
+    ws.serverSend(message);
+    await flush();
+  });
+}
+
+/** Ack every outstanding detach frame (the mismatch effect + Continue live may both fire). */
+async function ackAllDetaches(ws: FakeWebSocket): Promise<void> {
+  const frames = (ws.sent as { type: string; id: string }[]).filter((frame) => frame.type === "detach");
+  for (const frame of frames) {
+    await serverSend(ws, {
+      type: "response",
+      id: frame.id,
+      payload: { ok: true, result: { sessionId: "s-a", detached: true } },
+    });
+  }
 }
 
 describe("AppShell read-only deep link + Continue live", () => {
@@ -130,5 +183,157 @@ describe("AppShell read-only deep link + Continue live", () => {
     mount({}, { mode: "local", capabilities: ["agent", "sessions"] });
     expect(screen.getByLabelText("Project path")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open project" })).toBeTruthy();
+  });
+});
+
+describe("AppShell history/live coordination", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+  });
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    cleanup();
+  });
+
+  it("Open project submit only navigates — it never implicitly creates a session", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    mount({}, { mode: "local", capabilities: ["agent", "sessions"] });
+    const createSpy = vi.spyOn(capturedStore!, "createSession");
+    const input = screen.getByLabelText("Project path") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/proj" } });
+    fireEvent.click(screen.getByRole("button", { name: "Open project" }));
+    await flush();
+    // No runtime socket / create: Open project only sets the workspace cwd.
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(SOCKETS.length).toBe(0);
+  });
+
+  it("switching from live A to selected B fail-closes immediately: no A transcript, Composer disabled, SessionActions hidden, detach called, B context shown", async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("s-b")) return contextResponse("s-b", "hello history");
+      if (url.includes("s-a")) return contextResponse("s-a", "hello from A history");
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const { rerender } = mount({ session: "s-a", cwd: "/proj" }, { mode: "local", capabilities: ["agent", "sessions"] });
+
+    // Live on A with a committed runtime message.
+    const ws = await driveReady();
+    await driveLiveOnA(ws, "s-a");
+    expect(screen.getByText("live message from A")).toBeTruthy();
+    expect((screen.getByLabelText("Message the agent") as HTMLTextAreaElement).disabled).toBe(false);
+    expect(screen.getByRole("button", { name: "State" })).toBeTruthy();
+
+    // Select B in the sidebar (a plain search navigation — no Continue live).
+    rerender({ session: "s-b", cwd: "/proj" });
+    await flush();
+
+    // IMMEDIATELY fail-closed, before the detach has been acked:
+    expect(screen.queryByText("live message from A")).toBeNull();
+    expect((screen.getByLabelText("Message the agent") as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "State" })).toBeNull();
+    const detachFrame = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
+    expect(detachFrame.payload.sessionId).toBe("s-a");
+    // B history is visible while the detach is still pending.
+    expect(await screen.findByText("hello history")).toBeTruthy();
+
+    // After detach settles the view stays fail-closed (still B history, never A).
+    await ackAllDetaches(ws);
+    expect(screen.queryByText("live message from A")).toBeNull();
+    expect((screen.getByLabelText("Message the agent") as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "State" })).toBeNull();
+    expect(screen.getByText("hello history")).toBeTruthy();
+  });
+
+  it("Continue live on selected B (while A is still attached) awaits detach, then opens B", async () => {
+    globalThis.fetch = vi.fn(async () => contextResponse("s-b")) as unknown as typeof fetch;
+    const { rerender } = mount({ session: "s-a", cwd: "/proj" }, { mode: "local", capabilities: ["agent", "sessions"] });
+    const ws = await driveReady();
+    await driveLiveOnA(ws, "s-a");
+
+    rerender({ session: "s-b", cwd: "/proj" });
+    await flush();
+    // The Continue live affordance is available while the runtime is stale.
+    expect(screen.getByRole("button", { name: "Continue live" })).toBeTruthy();
+
+    const openSpy = vi.spyOn(capturedStore!, "openSession");
+    screen.getByRole("button", { name: "Continue live" }).click();
+    // Detach is awaited before the open: ack the outstanding detaches, then B is opened.
+    await ackAllDetaches(ws);
+    await waitFor(() => expect(openSpy).toHaveBeenCalledWith("s-b"));
+    await waitFor(() => expect(lastFrame<{ type: string; payload: { sessionId: string } }>(ws, "attach")?.payload.sessionId).toBe("s-b"));
+  });
+
+  it("selecting the same live session never detaches", async () => {
+    globalThis.fetch = vi.fn(async () => contextResponse("s-a")) as unknown as typeof fetch;
+    const { rerender } = mount({ session: "s-a", cwd: "/proj" }, { mode: "local", capabilities: ["agent", "sessions"] });
+    const ws = await driveReady();
+    await driveLiveOnA(ws, "s-a");
+    expect(lastFrame(ws, "detach")).toBeUndefined();
+    // Re-selecting the same live session (e.g. sidebar re-click) still no detach.
+    rerender({ session: "s-a", cwd: "/proj" });
+    await flush();
+    expect(lastFrame(ws, "detach")).toBeUndefined();
+    expect(screen.getByText("live message from A")).toBeTruthy();
+  });
+
+  it("detach rejection keeps the page fail-closed and surfaces an honest error (no detach loop)", async () => {
+    globalThis.fetch = vi.fn(async () => contextResponse("s-b")) as unknown as typeof fetch;
+    const { rerender } = mount({ session: "s-a", cwd: "/proj" }, { mode: "local", capabilities: ["agent", "sessions"] });
+    const ws = await driveReady();
+    await driveLiveOnA(ws, "s-a");
+
+    rerender({ session: "s-b", cwd: "/proj" });
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    await serverSend(ws, { type: "response", id: detachFrame.id, payload: { ok: false, error: { code: "unavailable", message: "cannot detach right now", retryable: true } } });
+
+    // Honest error is surfaced…
+    expect((await screen.findByRole("alert")).textContent).toBe("cannot detach right now");
+    // …and the page remains fail-closed on B (never A, no usable live surface).
+    expect(screen.queryByText("live message from A")).toBeNull();
+    expect((screen.getByLabelText("Message the agent") as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "State" })).toBeNull();
+    expect(screen.getByText("hello history")).toBeTruthy();
+    // The guarded effect fired exactly one detach — no retry loop while the
+    // (attached, selected) pair is unchanged.
+    expect((ws.sent as { type: string }[]).filter((frame) => frame.type === "detach")).toHaveLength(1);
+  });
+
+  it("New session from a history view clears the stale selection so the fresh session is never detached", async () => {
+    globalThis.fetch = vi.fn(async () => contextResponse("s-b")) as unknown as typeof fetch;
+    const { rerender } = mount({ session: "s-b", cwd: "/proj" }, { mode: "local", capabilities: ["agent", "sessions"] });
+    await screen.findByText("hello history");
+
+    const createSpy = vi.spyOn(capturedStore!, "createSession");
+    fireEvent.click(screen.getByRole("button", { name: "New session" }));
+    expect(createSpy).toHaveBeenCalledWith({ cwd: "/proj", projectRoot: "/proj" });
+    // handleCreate clears the stale ?session= (navigate commits synchronously,
+    // well before the create/attach round-trip below) — simulate that commit.
+    rerender({ cwd: "/proj" });
+
+    const ws = SOCKETS[SOCKETS.length - 1]!;
+    await act(async () => {
+      ws.serverOpen();
+      ws.serverSend(ack());
+      await flush();
+    });
+    // Complete RuntimeCreateResult (protocol-valid) so parseHostFrame accepts it.
+    const createFrame = lastFrame<{ type: string; id: string }>(ws, "create")!;
+    await serverSend(ws, {
+      type: "response",
+      id: createFrame.id,
+      payload: { ok: true, result: { sessionId: "s-new", epoch: "e1", created: true, cwd: "/proj", projectRoot: "/proj" } },
+    });
+    await waitFor(() => expect(lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")?.payload.sessionId).toBe("s-new"));
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    await serverSend(ws, { type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s-new" }) });
+
+    // The fresh live session stays attached: never detach-called, live in topbar.
+    expect(lastFrame(ws, "detach")).toBeUndefined();
+    expect(screen.getByText(/session:s-new/)).toBeTruthy();
   });
 });
