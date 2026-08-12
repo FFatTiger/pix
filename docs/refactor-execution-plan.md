@@ -5,7 +5,7 @@
 > 当前目标不是继续维护旧 Next.js 单体，而是在独立的 `pix` 仓库中交付新架构产品。
 > 第一里程碑必须是一个可以实际构建和启动的独立应用。
 
-- 最后更新：2026-08-12
+- 最后更新：2026-08-13
 - 项目状态：`ACTIVE`
 - 当前里程碑：`M3 — Read and Operate`（M1、M2 已完成并通过 GPT 最终验证）
 - 当前仓库：`/Users/proxy/Documents/program/pix`
@@ -324,7 +324,7 @@ stop
 | `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A DONE：phase2 `5570d69` + error hardening `429274f` 已进main（GPT PASS）：Host GET、Client只读历史、Continue live、0 Worker E2E；D1B thinking/bash/export后续 |
 | `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 DONE；P1 `ed1b867` + hardening `9bfaf68` DONE（GPT PASS）：state/commands/last-text/stats/rename与SessionActions已进main；后续thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate |
 | `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | D3A-1 DONE；D3A-2 Files/Git只读工作区 `6972479` + canonical fix `bb5aba2` 已进main（fresh GPT PASS）；pure rename diff `a983cfd` DONE；Worktree UI与可信重启恢复后续 |
-| `D3B` | Models/Auth/Skills/Plugins/Trust | `IN_PROGRESS` | `M2`, D1领域化Adapter | R1A DONE（`773d3f2`）：read/mutation ports拆分与四个独立Adapter子路径；R1B DONE（`4668658`）：Host只读API、canonical cwd、能力诚实与严格DTO投影，独立对抗验证PASS。下一切片：Client只读目录UI；OAuth/写入/安装/reload/Trust修改/执行extension后置 |
+| `D3B` | Models/Auth/Skills/Plugins/Trust | `DONE` | `M2`, D1领域化Adapter | R1A `773d3f2` + R1B `4668658` + Client `f9151b7`/`4b1e9d9`/`9603aa8`/`8001fa4`：独立只读Ports、Host GET API、canonical cwd、严格DTO、capability-gated Catalog Dock与Trust状态；独立验证PASS。OAuth/写入/安装/reload/Trust修改/执行extension后置 |
 | `D4` | Mutations + Side Chat | `BLOCKED` | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
 
 ### 5.2 M3 Wave 1 冻结切片
@@ -334,7 +334,8 @@ stop
 3. `D3A-1`：DONE（main `95ee707`，原branch `1c7a848`；GPT安全验证PASS）；Host204、CLI32、全仓tests、startup/runtime E2E、typecheck/architecture/boundaries PASS。
 4. `D3B-R1A`：DONE（main `773d3f2`）。Runtime Core read/mutation ports分离；Protocol只读tokens；Adapter以`models`/`credentials`/`resources`/`trust`四个独立子路径提供离线、零写入、零Extension执行的目录读取。Skill真实路径 containment 覆盖子目录和整根符号链接逃逸；正常与clean env Adapter 164/164；独立安全验证PASS。禁止恢复聚合`sdk-data.ts`。
 5. `D3B-R1B`：DONE（main `4668658`）。Host按挂载Port条件注册只读Models/Auth/Skills/Plugins/Commands/Trust API；项目读取使用AllowedRoot授权后的canonical cwd；full/degraded均诚实广告Catalog能力。Host严格投影DTO，Trust异常、恶意getter/proxy/cyclic/toJSON、额外Secret字段和稀疏数组均fail closed且日志不泄漏；Host256/256、CLI46/46、三条E2E与独立28/28对抗验证PASS。
-6. D1A-2 phase1、D3A-1、D3A-2、D3B-R1A与D3B-R1B均已合并。D3B下一切片只做Client只读目录UI与capability gating；Mutation/OAuth/Trust设置仍留在D4或后续显式切片。
+6. `D3B-Client`：DONE（main `f9151b7` + `4b1e9d9` + `9603aa8` + `8001fa4`）。Client使用Protocol item schemas与本地strict envelope；提供独立Catalog Dock、五个capability-gated Tabs及只读Trust状态，与Files/Git互斥。无capability、Dock关闭或项目Catalog无cwd时零请求；query key隔离CWD竞态；Provider状态逐行失败隔离；错误与Trust reason不泄漏自由文本；不存在Catalog Mutation/OAuth控件或调用面。Client268/268、Host260/260、typecheck/build/boundary/architecture及Startup/Runtime/Sessions E2E全部PASS，独立验证PASS。
+7. D1A-2、D3A-1、D3A-2与D3B端到端只读链均已合并。Mutation/OAuth/Trust设置仍留在D4或后续显式切片。
 
 ## Wave 4 — Scale、PWA、Release
 
@@ -486,7 +487,7 @@ git diff --check
 3. H1/C1/R1：DONE；R1 GPT最终PASS
 4. R2：DONE（GPT orphan36/36、redaction308/308、clean build与全仓门禁PASS）
 5. X1：DONE（`34d2a3a` + `f711ab2` + `f87dea4`；GPT最终复验PASS）
-6. M2：DONE；M3 checkpoint：D1A-1 DONE，D2-P0 IN_REVIEW，D1A-2与D3A-1在独立分支继续；首次项目入口 `94e6b81` 已可创建真实对话
+6. M2：DONE；M3 当前 checkpoint：D1A 只读历史、D2-P0/P1轻命令、D3A Files/Git只读工作区、D3B端到端只读Catalog均已合并；下一纵向切片在D1B、D2后续命令或D3A Worktree UI中按依赖与风险选择
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。

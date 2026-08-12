@@ -333,7 +333,12 @@ D3B-R1B main：4668658
 路径：所有项目级API强制?cwd=，通过AllowedRootService authorizeExisting(directory)后仅把canonical path传给Port；relative、out-of-root、symlink escape与ROOT_REPLACED均fail closed。
 安全修复：Trust isTrusted/forCwd/list/projection统一固定503边界；Host严格字段投影，移除apiKey/token/path/stack/sourceInfo与额外字段；Trust reason固定；Proxy/getter/cyclic/toJSON异常不进入通用500日志；Capability override按实际挂载校正；显式空PI_CODING_AGENT_DIR拒绝；稀疏Catalog数组拒绝而非wire null。
 验证：Host 256/256；CLI 46/46；Host boundary/architecture/typecheck PASS；Startup/Runtime/Sessions E2E使用当前生产CLI dist全部PASS；独立对抗套件28/28 PASS；30144未触碰且保持健康。
-后续：Client只读Catalog UI；OAuth、配置写入、安装、reload、Trust设置和Extension执行不在R1范围。
+D3B-Client main：f9151b7 + 4b1e9d9 + 9603aa8 + 8001fa4
+范围：Client严格只读Catalog API与query options；独立右侧Catalog Dock；Models/Providers/Skills/Plugins/Commands capability-gated Tabs；Sidebar与Dock内只读Trust状态；与Files/Git Dock双向互斥。
+读取语义：项目Catalog必须有cwd；无capability、Dock关闭或无cwd时零隐藏请求；Provider列表为全局读取并按provider并行status；query key按cwd/providerId隔离，A→B迟到响应不覆盖当前项目；capability撤销关闭Dock，恢复后不自动重开。
+安全边界：删除旧Catalog Mutation/OAuth Client调用面与UI控件；Host body/path/secret/stack只映射为固定错误文案；Provider单行失败隔离；Trust响应自由文本reason不渲染；越界expiresAt不显示Invalid Date；严格schema拒绝旧Next shape和额外字段。
+验证：独立验证PASS；Client268/268、Host260/260；Client typecheck/build/boundary、root architecture、production CLI/Client build及Startup/Runtime/Sessions E2E全部PASS。E2E使用随机端口与临时PI_CODING_AGENT_DIR，未触碰30144或真实Agent配置。
+D3B结论：端到端只读链DONE。OAuth、配置写入、安装、reload、Trust设置和Extension执行不在本切片范围。
 ```
 
 ## 20. 后续迁移时必须记录的校验
