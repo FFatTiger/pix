@@ -533,10 +533,19 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
     assert.equal(snap.payload.epoch, created.epoch);
     assert.ok(typeof snap.payload.lastEventId === "number");
     // Authoritative runtime capability set is primed from the worker snapshot
-    // (NOT the Host `agent` capability): precisely runtime.prompt + runtime.abort.
+    // (NOT the Host `agent` capability): D2-P1 production surface =
+    // runtime.prompt + runtime.abort + runtime.stats + runtime.session.rename.
     assert.deepEqual(
       snap.payload.snapshot.capabilities,
-      { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 },
+      {
+        capabilities: [
+          "runtime.prompt",
+          "runtime.abort",
+          "runtime.stats",
+          "runtime.session.rename",
+        ],
+        version: 1,
+      },
       `attach capabilities=${JSON.stringify(snap.payload.snapshot.capabilities)}`,
     );
 
@@ -664,7 +673,10 @@ async function scenarioHostRestartResume(stack, projectDir) {
     epoch = snap.payload.epoch;
     lastEventId = snap.payload.lastEventId;
     // Resume attach still carries the authoritative runtime capability set.
-    assert.deepEqual(snap.payload.snapshot.capabilities, { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 });
+    assert.deepEqual(snap.payload.snapshot.capabilities, {
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename"],
+      version: 1,
+    });
 
     commandId = `resume-prompt-${Date.now()}`;
     const cmdRes = await client1.command(sessionId, {
@@ -812,7 +824,10 @@ async function scenarioEpochChangeNoAutoResend(stack, projectDir) {
     const newEpoch = snap2.payload.epoch;
     // After an epoch change (stop+reactivate), the freshly primed attach snapshot
     // still carries the authoritative runtime capability set.
-    assert.deepEqual(snap2.payload.snapshot.capabilities, { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 });
+    assert.deepEqual(snap2.payload.snapshot.capabilities, {
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename"],
+      version: 1,
+    });
     // epoch may equal if makeEpoch collides (UUID); force assert via status if needed.
     // After stop+reactivate, command cache is per-record and cleared — a retry of
     // the old commandId in the NEW epoch is a NEW admission (allowed to execute).
@@ -1034,6 +1049,84 @@ async function scenarioCreateThenColdAttach(stack, projectDir) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// D2-P1 light commands: the frozen 5-command surface over the real process path
+// ---------------------------------------------------------------------------
+
+async function scenarioD2P1LightCommands(stack, projectDir) {
+  const client = new RuntimeWsClient(stack.host.wsUrl);
+  await client.connect();
+  try {
+    await client.handshake();
+    const created = await client.create({
+      cwd: projectDir,
+      projectRoot: projectDir,
+      createRequestId: `cr-light-${Date.now()}`,
+    });
+    const sessionId = created.sessionId;
+    const snap = await client.attach(sessionId);
+    assert.equal(snap.type, "snapshot");
+    // Attach snapshot carries the D2-P1 production capability surface.
+    assert.deepEqual(snap.payload.snapshot.capabilities, {
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename"],
+      version: 1,
+    });
+
+    // 1. get_state — baseline query (always available).
+    const stateRes = await client.command(sessionId, { commandId: `light-state-${Date.now()}`, type: "get_state" });
+    assert.equal(stateRes.payload.ok, true, JSON.stringify(stateRes.payload));
+    const stateOutcome = stateRes.payload.result.result;
+    assert.equal(stateOutcome.ok, true);
+    assert.equal(stateOutcome.type, "get_state");
+    assert.equal(stateOutcome.state.sessionId, sessionId);
+
+    // 2. get_commands — baseline query (always available).
+    const cmdsRes = await client.command(sessionId, { commandId: `light-cmds-${Date.now()}`, type: "get_commands" });
+    assert.equal(cmdsRes.payload.ok, true, JSON.stringify(cmdsRes.payload));
+    const cmdsOutcome = cmdsRes.payload.result.result;
+    assert.equal(cmdsOutcome.ok, true);
+    assert.equal(cmdsOutcome.type, "get_commands");
+    assert.ok(Array.isArray(cmdsOutcome.commands) && cmdsOutcome.commands.length >= 1, JSON.stringify(cmdsOutcome.commands));
+
+    // 3. get_last_assistant_text — baseline query; "" before any turn.
+    const lastBefore = await client.command(sessionId, { commandId: `light-last-${Date.now()}`, type: "get_last_assistant_text" });
+    assert.equal(lastBefore.payload.result.result.ok, true);
+    assert.equal(lastBefore.payload.result.result.text, "");
+
+    // Produce one real assistant turn, then last text reflects it.
+    await client.command(sessionId, { commandId: `light-prompt-${Date.now()}`, type: "prompt", message: "hello light" });
+    await client.waitFor(
+      (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "prompt_done",
+      { label: "light prompt_done" },
+    );
+    const lastAfter = await client.command(sessionId, { commandId: `light-last2-${Date.now()}`, type: "get_last_assistant_text" });
+    assert.equal(lastAfter.payload.result.result.ok, true);
+    assert.equal(lastAfter.payload.result.result.text, "Hello world");
+
+    // 4. get_session_stats — capability-gated (runtime.stats, present).
+    const statsRes = await client.command(sessionId, { commandId: `light-stats-${Date.now()}`, type: "get_session_stats" });
+    assert.equal(statsRes.payload.ok, true, JSON.stringify(statsRes.payload));
+    const statsOutcome = statsRes.payload.result.result;
+    assert.equal(statsOutcome.ok, true);
+    assert.equal(statsOutcome.type, "get_session_stats");
+    assert.equal(statsOutcome.stats.messageCount, 1);
+
+    // 5. set_session_name — capability-gated (runtime.session.rename, present).
+    const renameRes = await client.command(sessionId, { commandId: `light-rename-${Date.now()}`, type: "set_session_name", name: "Light Commands" });
+    assert.equal(renameRes.payload.ok, true, JSON.stringify(renameRes.payload));
+    assert.equal(renameRes.payload.result.result.ok, true);
+    assert.equal(renameRes.payload.result.result.type, "set_session_name");
+    // get_state reflects the rename immediately (no client-side catalog write).
+    const stateAfter = await client.command(sessionId, { commandId: `light-state2-${Date.now()}`, type: "get_state" });
+    assert.equal(stateAfter.payload.result.result.ok, true);
+    assert.equal(stateAfter.payload.result.result.state.sessionName, "Light Commands");
+
+    return { sessionId, messageCount: statsOutcome.stats.messageCount, renamedTo: "Light Commands" };
+  } finally {
+    client.close();
+  }
+}
+
 async function scenarioShutdownCleanup(stack, projectDir) {
   const { readFile } = await import("node:fs/promises");
   const lock = JSON.parse(
@@ -1176,6 +1269,9 @@ async function runRound(round) {
     results.coldAttach = await scenarioCreateThenColdAttach(stack, projectA);
     log(`round ${round}: cold attach after host restart OK`);
 
+    results.lightCommands = await scenarioD2P1LightCommands(stack, projectA);
+    log(`round ${round}: D2-P1 light commands OK session=${results.lightCommands.sessionId}`);
+
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
 
@@ -1235,6 +1331,7 @@ async function main() {
           "commandId at-most-once + interrupt dedup + type conflict",
           "session isolation",
           "create then host-restart cold attach",
+          "D2-P1 light commands (state/commands/last-text/stats/rename)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {
@@ -1243,6 +1340,7 @@ async function main() {
           daemonPid: all.at(-1)?.shutdown?.daemonPid,
           projectionText: "Hello world",
           capabilities: ["agent"],
+          lightCommands: all.at(-1)?.lightCommands,
         },
       },
       null,

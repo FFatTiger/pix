@@ -6,7 +6,7 @@
  * `PIX_AGENT_BACKEND` and assembles dependencies; it holds no business rules.
  *
  * - Backend selection: M2 supports only `sdk` (Pi SDK Agent Adapter via
- *   `createPiSdkAgentRuntimeFactory({ capabilities: M2_AGENT_CAPABILITIES })`).
+ *   `createPiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES })`).
  *   `PIX_AGENT_WORKER_FACTORY` is a test-only injection seam (absolute path to
  *   a module exporting a factory as `default` or `createFactory`) used by the
  *   no-network composition smoke; it is never set in production.
@@ -30,7 +30,7 @@ import type { Readable, Writable as NodeWritableStream } from "node:stream";
 import type { AgentRuntimeFactory } from "@fffattiger/pix-runtime-core";
 import {
   createPiSdkAgentRuntimeFactory,
-  M2_AGENT_CAPABILITIES,
+  PRODUCTION_AGENT_CAPABILITIES,
 } from "@fffattiger/pix-pi-sdk-adapter/agent";
 import type { ProtocolError } from "@fffattiger/pix-protocol";
 import { WorkerController } from "../controller/worker-controller.js";
@@ -207,7 +207,7 @@ async function resolveFactoryFromEnvironment(): Promise<
   }
   return {
     ok: true,
-    factory: createPiSdkAgentRuntimeFactory({ capabilities: M2_AGENT_CAPABILITIES }),
+    factory: createPiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES }),
   };
 }
 

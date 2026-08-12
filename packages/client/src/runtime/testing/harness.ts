@@ -141,7 +141,7 @@ export async function flush(rounds = 6): Promise<void> {
 }
 
 /** A valid initial attach snapshot payload builder. */
-export function snapshotPayload(overrides: Partial<{ sessionId: string; epoch: string; lastEventId: number; cwd: string; projectRoot: string; workerStatus: string; resumeStatus: string }> = {}): {
+export function snapshotPayload(overrides: Partial<{ sessionId: string; epoch: string; lastEventId: number; cwd: string; projectRoot: string; workerStatus: string; resumeStatus: string; capabilities: string[] }> = {}): {
   sessionId: string; cwd: string; projectRoot: string; epoch: string; lastEventId: number; workerStatus: string; snapshot: unknown; resumeStatus: string;
 } {
   const sessionId = overrides.sessionId ?? "s1";
@@ -166,7 +166,7 @@ export function snapshotPayload(overrides: Partial<{ sessionId: string; epoch: s
         model: null,
         messageCount: overrides.lastEventId ?? 0,
       },
-      capabilities: { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 },
+      capabilities: { capabilities: overrides.capabilities ?? ["runtime.prompt", "runtime.abort"], version: 1 },
       streaming: { active: false, phase: "idle" },
       messages: [],
     },

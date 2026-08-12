@@ -24,6 +24,8 @@
   --text-dim: color-mix(in srgb, #1a1c1f 45%, transparent);
   --accent: #0169cc;
   --accent-hover: #0285ff;
+  --ok: #1a7f37;
+  --danger: #d1242f;
   --user-bg: #eff6ff;
   --assistant-bg: #ffffff;
   --tool-bg: #f9fafb;
@@ -56,6 +58,8 @@ html.dark {
   --text-dim: color-mix(in srgb, #ededed 45%, transparent);
   --accent: #0285ff;
   --accent-hover: #4da3ff;
+  --ok: #3fb950;
+  --danger: #f85149;
   --user-bg: #1e293b;
   --assistant-bg: #181818;
   --tool-bg: #212121;
@@ -366,6 +370,61 @@ html.dark .topbar-badge--ok {
   margin: 5px 0 0;
   color: var(--danger);
   font-size: 12px;
+}
+
+/* —— Session actions (D2-P1) —— */
+
+.session-actions {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.session-actions-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.session-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.session-actions-rename {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  max-width: 420px;
+}
+.session-actions-rename input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.session-actions-rename input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.session-actions-status {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.session-actions-ok {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--ok);
+}
+.session-actions-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--danger);
 }
 
 /* —— Transcript (virtualized) —— */

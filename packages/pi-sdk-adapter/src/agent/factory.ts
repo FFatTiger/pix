@@ -16,7 +16,7 @@ export interface PiSdkAgentRuntimeFactoryOptions {
    * Canonical capability set the created runtime advertises. REQUIRED: the
    * factory never silently falls back to the full RUNTIME_CAPABILITIES set —
    * composition (R1/R2) and tests must explicitly choose a capability surface
-   * (e.g. M2_AGENT_CAPABILITIES for the production happy path, or the full
+   * (e.g. PRODUCTION_AGENT_CAPABILITIES for the production happy path, or the full
    * RUNTIME_CAPABILITIES for contract-suite coverage).
    */
   readonly capabilities: readonly RuntimeCapability[];

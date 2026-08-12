@@ -4,6 +4,7 @@ import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { formatCwdLabel, type WorkspaceSearch } from "@/lib/search-params";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
+import { SessionActions } from "@/components/shell/SessionActions";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { useRuntime } from "@/runtime";
 import type { ConnectionState } from "@/runtime";
@@ -167,6 +168,8 @@ export function AppShell({ search }: AppShellProps) {
               </form>
             ) : null}
           </div>
+
+          <SessionActions />
 
           <TranscriptList
             {...(search.session === undefined ? {} : { sessionId: search.session })}
