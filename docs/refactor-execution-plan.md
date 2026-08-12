@@ -321,9 +321,9 @@ stop
 
 | ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
-| `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A-1 `a38c3c8` DONE；D1A-2 phase1 `6acd4f5` + E2E fix `3f75dc0` 已集成（sessions token、真实Catalog/Locator默认、offset/leafId）；phase2剩Host GET路由+Client只读历史+0 Worker E2E；D1B后续 |
-| `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 `c4a2f76` + `5a96fd4` DONE（GPT复验PASS；sessiond80/Client157/E2E）；后续P1–P7按thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate分批开放 |
-| `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | D3A-1 `95ee707` DONE（原`1c7a848`，GPT安全验证PASS）：production roots/busy-preflight/dynamic capability/真实startup E2E已进main；后续Files/Git/Worktree Client UI与worktree可信重启恢复 |
+| `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A-1与phase1已进main；phase2从`3127807`并行开工：Host GET路由+Client只读历史+Continue live+0 Worker E2E；D1B后续 |
+| `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 DONE；P1轻量命令从`3127807`并行开工（state/commands/last-text查询 + stats/rename，小步诚实解锁）；后续thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate |
+| `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | D3A-1 DONE；Client Files/Git只读工作区从`3127807`并行开工；Worktree UI与可信重启恢复后续 |
 | `D3B` | Models/Auth/Skills/Plugins/Trust | `BLOCKED` | `M2`, Data/Resource Adapter | 等D1领域化Adapter地基；models/resources/auth只读优先，trust/OAuth后置 |
 | `D4` | Mutations + Side Chat | `BLOCKED` | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
 
