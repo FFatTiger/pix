@@ -37,7 +37,22 @@ export interface SessiondRpcServerOptions {
   handler: SessiondRpcHandler;
   maxFrameBytes?: number;
   writer?: SerialSocketWriterOptions;
+  /**
+   * Diagnostic line logger (defaults to a never-throwing stderr line writer).
+   * Receives pre-formatted `[sessiond] ...` lines that never contain request
+   * bodies or secrets.
+   */
+  logger?: (line: string) => void;
 }
+
+/** Never-throwing default logger: one line to stderr, matching daemon diagnostics. */
+const defaultRpcLogger = (line: string): void => {
+  try {
+    console.error(line);
+  } catch {
+    // A broken/closed stderr must never take down the RPC path.
+  }
+};
 
 export class SessiondRpcServer {
   private server: Server | undefined;
@@ -80,7 +95,10 @@ export class SessiondRpcServer {
           continue;
         }
         if (line.length === 0) continue;
-        void this.process(socket, writer, line, (next) => { attachment?.close(); attachment = next; });
+        // Fire-and-forget with an explicit terminating catch: a late handler
+        // failure must never become an unhandled rejection that kills the daemon.
+        void this.process(socket, writer, line, (next) => { attachment?.close(); attachment = next; })
+          .catch((error) => this.log(`[sessiond] rpc request process failed: ${describeSafe(error)}`));
       }
     });
     socket.on("close", () => { attachment?.close(); writer.close(); this.sockets.delete(socket); });
@@ -90,39 +108,97 @@ export class SessiondRpcServer {
   private async process(socket: Socket, writer: SerialSocketWriter, line: string, setAttach: (attachment: PreparedAttachment) => void): Promise<void> {
     let input: unknown;
     try { input = JSON.parse(line); }
-    catch { await this.writeFailure(writer, "invalid", "system.ping", { code: "invalid_request", message: "invalid JSON", retryable: false }); return; }
+    catch {
+      await this.writeFailureSafely(writer, "invalid", "system.ping", { code: "invalid_request", message: "invalid JSON", retryable: false });
+      return;
+    }
     const parsed = SessiondRpcRequestSchema.safeParse(input);
     if (!parsed.success) {
       const candidate = input as { id?: unknown; method?: unknown };
       const method = typeof candidate.method === "string" && isMethod(candidate.method) ? candidate.method : "system.ping";
-      await this.writeFailure(writer, typeof candidate.id === "string" ? candidate.id : "invalid", method, { code: "invalid_request", message: "invalid RPC request", retryable: false });
+      await this.writeFailureSafely(writer, typeof candidate.id === "string" ? candidate.id : "invalid", method, { code: "invalid_request", message: "invalid RPC request", retryable: false });
       return;
     }
     const request = parsed.data;
-    try {
-      if (request.method === "runtime.attach" && this.options.handler.attach) {
-        const attached = this.options.handler.attach(request.params);
-        setAttach(attached);
-        try {
-          // The response is the first queued frame. Replay/buffer flush cannot overtake it.
-          await this.write(writer, { id: request.id, ok: true, method: request.method, result: attached.result });
-          await attached.flushTo((push) => this.writePush(writer, push));
-        } catch (error) {
-          attached.close();
-          socket.destroy(error as Error);
-        }
+    if (request.method === "runtime.attach" && this.options.handler.attach) {
+      let attached: PreparedAttachment;
+      try {
+        attached = this.options.handler.attach(request.params);
+      } catch (error) {
+        // attach() may fail synchronously (e.g. unknown session): deliver the
+        // sanitized failure response while the connection is alive.
+        await this.writeFailureSafely(writer, request.id, request.method, toBoundaryProtocolError(error), error);
         return;
       }
-      const result = await dispatchHandler(this.options.handler, request);
+      setAttach(attached);
+      try {
+        // The response is the first queued frame. Replay/buffer flush cannot overtake it.
+        await this.write(writer, { id: request.id, ok: true, method: request.method, result: attached.result });
+        await attached.flushTo((push) => this.writePush(writer, push));
+      } catch (error) {
+        // Connection died mid-attach: tear down locally without letting the write
+        // failure escape or double-writing a failure frame.
+        attached.close();
+        socket.destroy(error as Error);
+      }
+      return;
+    }
+    let result: SessiondMethodResult[SessiondRpcMethod];
+    try {
+      result = await dispatchHandler(this.options.handler, request);
+    } catch (error) {
+      // Deliver the failure response only if the connection is still alive; a
+      // write failure here must never re-fail (peer already gone) or escape.
+      await this.writeFailureSafely(writer, request.id, request.method, toBoundaryProtocolError(error), error);
+      return;
+    }
+    try {
       await this.write(writer, { id: request.id, ok: true, method: request.method, result } as SessiondRpcResponse);
     } catch (error) {
-      const protocolError = toBoundaryProtocolError(error);
-      await this.writeFailure(writer, request.id, request.method, protocolError);
+      // Connection died before the late result could be delivered. The response
+      // is intentionally discarded — never re-fail and never escape.
+      this.logDrop("response", error);
     }
   }
 
-  private writeFailure(writer: SerialSocketWriter, id: string, method: SessiondRpcMethod, error: ProtocolError): Promise<void> {
-    return this.write(writer, { id, ok: false, method, error } as SessiondRpcResponse);
+  private log(line: string): void {
+    // Never throws: a throwing custom/default logger must not re-enter the RPC
+    // path (e.g. from inside the fire-and-forget `.catch`) and must never turn
+    // into an unhandled rejection.
+    try {
+      (this.options.logger ?? defaultRpcLogger)(line);
+    } catch {
+      // A broken/closed stderr or a throwing caller-supplied logger is swallowed.
+    }
+  }
+
+  /** Log a dropped response. SessiondError text is canonical/author-controlled; other causes are type-only, so logs never echo request bodies or secrets. */
+  private logDrop(context: string, cause?: unknown): void {
+    const detail = cause === undefined
+      ? ""
+      : `: ${cause instanceof SessiondError ? cause.message : cause instanceof Error ? cause.name : typeof cause}`;
+    this.log(`[sessiond] rpc ${context} dropped (connection closed)${detail}`);
+  }
+
+  /**
+   * Write a failure frame without ever escaping. When the writer is already
+   * closed the response is discarded (the peer is gone) and the drop is logged.
+   * When the mapped response is a sanitized `internal` error (an unexpected
+   * thrown value) the original cause is surfaced type-only so programming
+   * errors are not silently swallowed.
+   */
+  private async writeFailureSafely(writer: SerialSocketWriter, id: string, method: SessiondRpcMethod, error: ProtocolError, cause?: unknown): Promise<void> {
+    const unexpected = error.code === "internal";
+    if (writer.isClosed) {
+      this.logDrop("failure response", unexpected ? cause : undefined);
+      return;
+    }
+    try {
+      await this.write(writer, { id, ok: false, method, error } as SessiondRpcResponse);
+    } catch (writeError) {
+      // Writer closed between the check and the enqueue — the peer is gone.
+      this.logDrop("failure response", unexpected ? cause : writeError);
+    }
   }
 
   private writePush(writer: SerialSocketWriter, push: import("@fffattiger/pix-protocol").SessiondPush): Promise<void> {
@@ -144,6 +220,13 @@ export class SessiondRpcServer {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
+
+/** Safe, leak-free description of an unexpected failure for logs. */
+const describeSafe = (error: unknown): string => {
+  if (error instanceof SessiondError) return `SessiondError(${error.code})`;
+  if (error instanceof Error) return error.name;
+  return typeof error;
+};
 
 const methods = new Set<SessiondRpcMethod>([
   "system.ping", "system.hello", "runtime.create", "runtime.activate", "runtime.attach", "runtime.detach",

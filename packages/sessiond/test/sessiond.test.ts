@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
-import type { RuntimeCapabilitySet, RuntimeSnapshot, SessiondRpcRequest } from "@fffattiger/pix-protocol";
+import type { RuntimeCapabilitySet, RuntimeSnapshot, SessiondMethodParams, SessiondRpcRequest, SessiondRuntimeAttachResult } from "@fffattiger/pix-protocol";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondApplication } from "../src/application.js";
 import { EventJournal } from "../src/journal.js";
 import { acquireInstanceLock, loadOrCreateLocalSecret, sessiondPaths } from "../src/local.js";
 import { SnapshotProjection } from "../src/projection.js";
-import { SessiondRpcClient, SessiondRpcServer } from "../src/rpc.js";
+import { SessiondRpcClient, SessiondRpcServer, type SessiondRpcHandler } from "../src/rpc.js";
 import { SessiondService } from "../src/service.js";
 import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 const snapshot = (sessionId: string, cwd = "/workspace", projectRoot = cwd): RuntimeSnapshot => ({
@@ -413,4 +419,288 @@ test("RPC attach rejects before the attach response arrives", async (t) => {
   // attach to an unknown session → worker_unavailable/worker error before response
   await assert.rejects(wrong.attach({ sessionId: "never" }, async () => {}));
   await server.close(); await rm(directory, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// RPC disconnect crash-safety (regression for the production fatal chain:
+// slow valid RPC > client timeout > late handler completion > server writes on
+// a closed writer > fire-and-forget `process` rejection kills the daemon).
+// ---------------------------------------------------------------------------
+
+const gatedHandler = (gate: Promise<void>): SessiondRpcHandler => {
+  const handler = {
+    async handle(method: string, params: unknown): Promise<unknown> {
+      if (method === "system.ping") return { pong: true };
+      if (method === "runtime.command") {
+        await gate;
+        const command = (params as { command: { commandId: string } }).command;
+        return { commandId: command.commandId, result: { ok: true, type: "set_thinking_level" } };
+      }
+      return { ok: true };
+    },
+  } as unknown as SessiondRpcHandler;
+  return handler;
+};
+
+const commandParams = (id: string): SessiondMethodParams["runtime.command"] => ({
+  sessionId: "s",
+  command: { commandId: id, type: "prompt", message: "hello" },
+});
+
+const commandEnvelope = (id: string): SessiondRpcRequest => ({
+  protocolVersion: PROTOCOL_VERSION,
+  id,
+  method: "runtime.command",
+  params: commandParams(id),
+});
+
+function collectLines(socket: import("node:net").Socket): { lines: string[]; waitFor(predicate: (line: string) => boolean, timeoutMs?: number): Promise<string> } {
+  const lines: string[] = [];
+  let buffer = "";
+  const waiters: Array<{ pred: (line: string) => boolean; resolve: (line: string) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> = [];
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    let index: number;
+    while ((index = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, index);
+      buffer = buffer.slice(index + 1);
+      lines.push(line);
+      for (let i = 0; i < waiters.length; i += 1) {
+        if (waiters[i]!.pred(line)) {
+          const waiter = waiters.splice(i, 1)[0]!;
+          clearTimeout(waiter.timer);
+          waiter.resolve(line);
+          i -= 1;
+        }
+      }
+    }
+  });
+  return {
+    lines,
+    waitFor(predicate, timeoutMs = 2_000) {
+      const existing = lines.find(predicate);
+      if (existing !== undefined) return Promise.resolve(existing);
+      return new Promise((resolvePromise, reject) => {
+        const waiter = {
+          pred: predicate,
+          resolve: resolvePromise,
+          reject,
+          timer: setTimeout(() => {
+            const idx = waiters.indexOf(waiter);
+            if (idx >= 0) waiters.splice(idx, 1);
+            reject(new Error(`timeout waiting for line; saw=${lines.join("|")}`));
+          }, timeoutMs),
+        };
+        waiters.push(waiter);
+      });
+    },
+  };
+}
+
+test("RPC server survives client timeout + late command completion without unhandled rejection", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-late-"));
+  const endpoint = join(directory, "rpc.sock");
+  let resolveCommand!: () => void;
+  const gate = new Promise<void>((resolvePromise) => { resolveCommand = resolvePromise; });
+  const logs: string[] = [];
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: gatedHandler(gate), logger: (line) => logs.push(line) });
+    await server.listen();
+    const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 120 });
+    const late = client.call("runtime.command", commandParams("cc1")).then(
+      () => ({ ok: true }),
+      () => ({ ok: false }),
+    );
+    await wait(220); // client timeout fires, socket destroyed; server still gated on the command
+    resolveCommand(); // handler completes long after the client gave up → server writes on closed writer
+    assert.equal((await late).ok, false, "client must have observed the timeout");
+    await wait(60);
+    assert.equal((await client.call("system.ping", {})).pong, true, "server must still answer a fresh command");
+    assert.ok(logs.some((line) => line.includes("dropped")), "late response must be dropped and logged, not crash");
+    await server.close();
+    assert.deepEqual(unhandled, [], "no unhandled rejection may escape the server");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC throwing logger never produces an unhandled rejection (late drop + outer process catch)", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-logger-throws-"));
+  const endpoint = join(directory, "rpc.sock");
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const logs: string[] = [];
+    const throwingLogger = (line: string): void => { logs.push(line); throw new Error("logger boom"); };
+    const closeBoom = new Error("attach close boom");
+    const flushBoom = new Error("attach flush boom");
+    let resolveCommand!: () => void;
+    const gate = new Promise<void>((resolvePromise) => { resolveCommand = resolvePromise; });
+    const handler: SessiondRpcHandler = {
+      async handle(method: string, params: unknown): Promise<unknown> {
+        if (method === "system.ping") return { pong: true };
+        if (method === "runtime.command") {
+          await gate;
+          const command = (params as { command: { commandId: string } }).command;
+          return { commandId: command.commandId, result: { ok: true, type: "set_thinking_level" } };
+        }
+        return { ok: true };
+      },
+      attach() {
+        let closeCalls = 0;
+        // Attachment whose flush fails AND whose FIRST close() throws: the close()
+        // throw escapes the attach catch, so `process` rejects and the fire-and-forget
+        // `.catch(error => this.log(...))` runs — with a throwing logger. Later
+        // close() calls (socket teardown) are a no-op.
+        return {
+          result: {
+            sessionId: "s", epoch: "e1", lastEventId: 0, cwd: "/w", projectRoot: "/w",
+            workerStatus: "ready", resumeStatus: "snapshot", snapshot: snapshot("s", "/w", "/w"),
+          } as SessiondRuntimeAttachResult,
+          replay: [],
+          async flushTo() { throw flushBoom; },
+          close() {
+            closeCalls += 1;
+            if (closeCalls === 1) throw closeBoom;
+          },
+        };
+      },
+    } as unknown as SessiondRpcHandler;
+    const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler, logger: throwingLogger });
+    await server.listen();
+    const lateClient = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 120 });
+    // (a) late-response drop path: client times out, command completes late → logDrop invokes the throwing logger.
+    const late = lateClient.call("runtime.command", commandParams("cc-throw")).then(
+      () => ({ ok: true }),
+      () => ({ ok: false }),
+    );
+    await wait(200); // client timeout (120ms) fires, socket destroyed; server still gated
+    resolveCommand();
+    await late;
+    await wait(60);
+    // (b) outer process-catch path: attach flush fails AND attachment.close() throws → process rejects → .catch logs with throwing logger.
+    const socket = createConnection(endpoint);
+    await new Promise<void>((resolvePromise) => socket.once("connect", () => resolvePromise()));
+    const reader = collectLines(socket);
+    socket.write(`AUTH ${"a".repeat(40)}\n`);
+    assert.equal(await reader.waitFor((line) => line === "OK"), "OK");
+    socket.write(`${JSON.stringify({ protocolVersion: PROTOCOL_VERSION, id: "att-throw", method: "runtime.attach", params: { sessionId: "s" } })}\n`);
+    await reader.waitFor((line) => line.includes("att-throw")); // attach response written; then flush fails and close() throws
+    await wait(80);
+    socket.destroy();
+    // The server must still answer a fresh command.
+    const pingClient = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+    assert.equal((await pingClient.call("system.ping", {})).pong, true, "server must survive a throwing logger on every log path");
+    assert.ok(logs.length >= 2, `both log paths must have invoked the logger; got ${logs.length}`);
+    await server.close();
+    assert.deepEqual(unhandled, [], "a throwing logger must never surface an unhandled rejection");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC server survives a peer closing mid-flight and the late handler completion", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-midflight-"));
+  const endpoint = join(directory, "rpc.sock");
+  let resolveCommand!: () => void;
+  const gate = new Promise<void>((resolvePromise) => { resolveCommand = resolvePromise; });
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: gatedHandler(gate), logger: () => {} });
+  await server.listen();
+  const socket = createConnection(endpoint);
+  await new Promise<void>((resolvePromise) => socket.once("connect", () => resolvePromise()));
+  const reader = collectLines(socket);
+  socket.write(`AUTH ${"a".repeat(40)}\n`);
+  assert.equal(await reader.waitFor((line) => line === "OK"), "OK");
+  socket.write(`${JSON.stringify(commandEnvelope("mid-1"))}\n`);
+  await wait(40); // server received and gated the command
+  socket.destroy(); // peer vanishes mid-flight
+  await wait(40);
+  resolveCommand(); // handler completes after the peer is gone
+  await wait(60);
+  const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+  assert.equal((await client.call("system.ping", {})).pong, true, "server must survive and stay responsive");
+  await server.close();
+  await rm(directory, { recursive: true, force: true });
+});
+
+test("RPC invalid JSON with a live connection still delivers invalid_request", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-invalid-live-"));
+  const endpoint = join(directory, "rpc.sock");
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: gatedHandler(Promise.resolve()), logger: () => {} });
+  await server.listen();
+  const socket = createConnection(endpoint);
+  await new Promise<void>((resolvePromise) => socket.once("connect", () => resolvePromise()));
+  const reader = collectLines(socket);
+  socket.write(`AUTH ${"a".repeat(40)}\n`);
+  assert.equal(await reader.waitFor((line) => line === "OK"), "OK");
+  socket.write("this is not json\n");
+  const response = JSON.parse(await reader.waitFor((line) => line.includes("invalid_request")));
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, "invalid_request");
+  socket.destroy();
+  await server.close();
+  await rm(directory, { recursive: true, force: true });
+});
+
+test("RPC invalid JSON then immediate close settles without crashing", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-invalid-close-"));
+  const endpoint = join(directory, "rpc.sock");
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: gatedHandler(Promise.resolve()), logger: () => {} });
+  await server.listen();
+  const socket = createConnection(endpoint);
+  await new Promise<void>((resolvePromise) => socket.once("connect", () => resolvePromise()));
+  socket.write(`AUTH ${"a".repeat(40)}\n`);
+  await wait(30);
+  socket.write("this is not json\n");
+  socket.destroy(); // close before the invalid-input failure write is processed
+  await wait(50);
+  const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+  assert.equal((await client.call("system.ping", {})).pong, true, "server must survive an invalid frame followed by immediate close");
+  await server.close();
+  await rm(directory, { recursive: true, force: true });
+});
+
+test("RPC invalid schema then immediate close settles without crashing", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-schema-close-"));
+  const endpoint = join(directory, "rpc.sock");
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: gatedHandler(Promise.resolve()), logger: () => {} });
+  await server.listen();
+  const socket = createConnection(endpoint);
+  await new Promise<void>((resolvePromise) => socket.once("connect", () => resolvePromise()));
+  socket.write(`AUTH ${"a".repeat(40)}\n`);
+  await wait(30);
+  socket.write(`${JSON.stringify({ id: "x", method: "system.ping" })}\n`); // missing protocolVersion/params → schema fail
+  socket.destroy();
+  await wait(50);
+  const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+  assert.equal((await client.call("system.ping", {})).pong, true, "server must survive a schema-invalid frame followed by immediate close");
+  await server.close();
+  await rm(directory, { recursive: true, force: true });
+});
+
+test("RPC server survives late completion in a child process under Node default throw", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const fixture = resolve(here, "fixtures/fixture-rpc-late-crash.mjs");
+  const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
+    const child = spawn(process.execPath, [fixture], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = ""; let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.on("error", (error) => resolvePromise({ code: -1, stdout, stderr: stderr + String(error) }));
+    child.on("close", (code) => resolvePromise({ code, stdout, stderr }));
+  });
+  assert.equal(result.code, 0, `child exited ${result.code} (unhandled rejection escaped); stderr=${result.stderr}; stdout=${result.stdout}`);
+  assert.match(result.stdout, /SURVIVED/);
 });
