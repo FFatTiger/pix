@@ -12,6 +12,7 @@ import type { HostInfo } from "@fffattiger/pix-protocol";
 import { useEffect, type ReactNode } from "react";
 import { TranscriptList, projectAssistantBlocks } from "./TranscriptList";
 import { buildTranscriptRows } from "./row-model";
+import { LIVE_BASH_ROW_ID, projectBashViewModel } from "./bash-view-model";
 
 // jsdom gives the scroll container 0 height, so the real virtualizer renders no
 // rows. Stub it to render every row so runtime→row integration is testable.
@@ -503,5 +504,457 @@ describe("TranscriptList — rows prop path", () => {
     expect(screen.getByText("answer")).toBeTruthy();
     const details = screen.getByText("Thinking").closest("details");
     expect(details?.open).toBe(false);
+  });
+});
+
+function bashHistoryResponse(
+  sessionId: string,
+  message: {
+    command: string;
+    output: string;
+    exitCode?: number;
+    cancelled?: boolean;
+    truncated?: boolean;
+    fullOutputPath?: string;
+    excludeFromContext?: boolean;
+  },
+) {
+  return new Response(
+    JSON.stringify({
+      context: {
+        sessionId,
+        entries: [
+          {
+            entryId: "e-bash",
+            message: {
+              role: "bashExecution",
+              command: message.command,
+              output: message.output,
+              ...(message.exitCode === undefined ? {} : { exitCode: message.exitCode }),
+              ...(message.cancelled === undefined ? {} : { cancelled: message.cancelled }),
+              ...(message.truncated === undefined ? {} : { truncated: message.truncated }),
+              ...(message.fullOutputPath === undefined ? {} : { fullOutputPath: message.fullOutputPath }),
+              ...(message.excludeFromContext === undefined
+                ? {}
+                : { excludeFromContext: message.excludeFromContext }),
+            },
+          },
+        ],
+      },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+describe("TranscriptList — history bash display", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+  });
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    cleanup();
+  });
+
+  it("renders command, output, exit code; empty output; cancelled; truncated", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      bashHistoryResponse("s-bash", {
+        command: "echo hi",
+        output: "hi\n",
+        exitCode: 0,
+        truncated: true,
+      }),
+    ) as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-bash" live={false} />);
+    expect(await screen.findByText("$ echo hi")).toBeTruthy();
+    expect(document.querySelector(".transcript-bash-output")?.textContent).toBe("hi\n");
+    expect(screen.getByText("exit 0")).toBeTruthy();
+    expect(screen.getByText("truncated")).toBeTruthy();
+    expect(document.querySelectorAll(".transcript-row--bash")).toHaveLength(1);
+  });
+
+  it("shows fixed (no output) sentinel for empty output", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      bashHistoryResponse("s-bash", { command: "true", output: "" }),
+    ) as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-bash" live={false} />);
+    expect(await screen.findByText("$ true")).toBeTruthy();
+    expect(screen.getByText("(no output)")).toBeTruthy();
+  });
+
+  it("renders cancelled status without inventing exit", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      bashHistoryResponse("s-bash", {
+        command: "sleep 99",
+        output: "partial",
+        cancelled: true,
+      }),
+    ) as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-bash" live={false} />);
+    expect(await screen.findByText("cancelled")).toBeTruthy();
+    expect(screen.queryByText(/^exit /)).toBeNull();
+  });
+
+  it("never puts fullOutputPath in the DOM and ignores excludeFromContext for hide", async () => {
+    const secretPath = "/var/secret/bash-full-output-xyz";
+    globalThis.fetch = vi.fn(async () =>
+      bashHistoryResponse("s-bash", {
+        command: "cat secret",
+        output: "ok",
+        exitCode: 0,
+        fullOutputPath: secretPath,
+        excludeFromContext: true,
+      }),
+    ) as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-bash" live={false} />);
+    expect(await screen.findByText("$ cat secret")).toBeTruthy();
+    // Row is still shown despite excludeFromContext.
+    expect(document.querySelectorAll(".transcript-row--bash")).toHaveLength(1);
+    expect(document.body.innerHTML).not.toContain(secretPath);
+    expect(document.body.innerHTML).not.toContain("fullOutputPath");
+    // No title / data attributes carrying the path.
+    for (const el of Array.from(document.querySelectorAll("*"))) {
+      for (const attr of Array.from(el.attributes)) {
+        expect(attr.value).not.toContain(secretPath);
+      }
+    }
+  });
+
+  it("renders HTML/script bash output as pure text", async () => {
+    const payload = '<script>alert("xss")</script>';
+    globalThis.fetch = vi.fn(async () =>
+      bashHistoryResponse("s-bash", {
+        command: "echo xss",
+        output: payload,
+        exitCode: 0,
+      }),
+    ) as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-bash" live={false} />);
+    expect(await screen.findByText(payload)).toBeTruthy();
+    expect(document.querySelectorAll("script")).toHaveLength(0);
+    const pre = document.querySelector(".transcript-bash-output");
+    expect(pre?.textContent).toBe(payload);
+    expect(pre?.innerHTML).toContain("&lt;script&gt;");
+  });
+
+  it("does not fetch bash-output API and does not send runtime commands", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("bash-output") || url.includes("/bash/")) {
+        throw new Error(`unexpected bash fetch: ${url}`);
+      }
+      return bashHistoryResponse("s-bash", {
+        command: "ls",
+        output: "a",
+        exitCode: 0,
+      });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-bash" live={false} />);
+    expect(await screen.findByText("$ ls")).toBeTruthy();
+
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.every((url) => !url.includes("bash-output"))).toBe(true);
+    expect(urls.every((url) => !url.includes("/thinking"))).toBe(true);
+    // History path must not open a websocket runtime command frame.
+    expect(SOCKETS).toHaveLength(0);
+  });
+});
+
+describe("TranscriptList — live state.bash display", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    SOCKETS.length = 0;
+    capturedStore = null;
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("keeps one stable state row across output/status updates and reconnect", async () => {
+    mount(<TranscriptList sessionId="s1" live />);
+    const ws = await driveReady();
+    await driveAttach(ws);
+
+    await serverSend(ws, {
+      type: "event",
+      payload: {
+        type: "bash_update",
+        sessionId: "s1",
+        command: "echo live",
+        output: "Hello ",
+        eventId: 1,
+        epoch: "e1",
+      },
+    });
+
+    expect(screen.getByText("$ echo live")).toBeTruthy();
+    expect(document.querySelector(".transcript-bash-output")?.textContent).toBe("Hello ");
+    expect(screen.getByText("running")).toBeTruthy();
+    expect(document.querySelectorAll(`[data-row-id="${LIVE_BASH_ROW_ID}"]`)).toHaveLength(1);
+
+    await serverSend(ws, {
+      type: "event",
+      payload: {
+        type: "bash_update",
+        sessionId: "s1",
+        output: "World",
+        eventId: 2,
+        epoch: "e1",
+      },
+    });
+
+    // Still a single stable row; content updated in place.
+    expect(document.querySelectorAll(`[data-row-id="${LIVE_BASH_ROW_ID}"]`)).toHaveLength(1);
+    expect(document.querySelectorAll(".transcript-row--bash")).toHaveLength(1);
+    expect(document.querySelector(".transcript-bash-output")?.textContent).toBe("Hello World");
+
+    await serverSend(ws, {
+      type: "event",
+      payload: {
+        type: "bash_update",
+        sessionId: "s1",
+        exitCode: 0,
+        truncated: true,
+        eventId: 3,
+        epoch: "e1",
+      },
+    });
+
+    expect(document.querySelectorAll(`[data-row-id="${LIVE_BASH_ROW_ID}"]`)).toHaveLength(1);
+    expect(screen.getByText("exit 0")).toBeTruthy();
+    expect(screen.getByText("truncated")).toBeTruthy();
+    expect(screen.queryByText("running")).toBeNull();
+
+    // Snapshot replace (reconnect) restores the same stable row id.
+    // Prefer a mid-stream snapshot frame (no openSession) so cleanup does not
+    // race a pending attach promise after the store is disposed.
+    await act(async () => {
+      ws.serverSend({
+        type: "snapshot",
+        payload: {
+          ...snapshotPayload({ sessionId: "s1", resumeStatus: "gap" }),
+          snapshot: {
+            sessionId: "s1",
+            cwd: "/x",
+            projectRoot: "/x",
+            state: {
+              sessionId: "s1",
+              isStreaming: false,
+              isPromptRunning: false,
+              isBashRunning: false,
+              isCompacting: false,
+              model: null,
+              messageCount: 0,
+              bash: {
+                command: "echo live",
+                output: "Hello World",
+                excludeFromContext: false,
+                truncated: true,
+                cancelled: false,
+                completed: true,
+                exitCode: 0,
+                updateCount: 3,
+              },
+            },
+            capabilities: { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 },
+            streaming: { active: false, phase: "idle" },
+            messages: [],
+          },
+        },
+      });
+      await flush();
+    });
+
+    expect(document.querySelectorAll(`[data-row-id="${LIVE_BASH_ROW_ID}"]`)).toHaveLength(1);
+    expect(screen.getByText("$ echo live")).toBeTruthy();
+    expect(document.querySelector(".transcript-bash-output")?.textContent).toBe("Hello World");
+  });
+
+  it("shows both message and state bash rows when both are present (no identity => no hide)", async () => {
+    mount(<TranscriptList sessionId="s1" live />);
+    const ws = await driveReady();
+    await driveAttach(ws);
+
+    // Full snapshot replace carrying both completed bashExecution + state.bash
+    // with distinct command/output so we prove neither side is swallowed.
+    await act(async () => {
+      ws.serverSend({
+        type: "snapshot",
+        payload: {
+          ...snapshotPayload({ sessionId: "s1", resumeStatus: "gap" }),
+          snapshot: {
+            sessionId: "s1",
+            cwd: "/x",
+            projectRoot: "/x",
+            state: {
+              sessionId: "s1",
+              isStreaming: false,
+              isPromptRunning: false,
+              isBashRunning: false,
+              isCompacting: false,
+              model: null,
+              messageCount: 1,
+              bash: {
+                command: "echo state-cmd",
+                output: "state-output",
+                excludeFromContext: false,
+                truncated: false,
+                cancelled: false,
+                completed: true,
+                exitCode: 0,
+                updateCount: 1,
+                fullOutputPath: "/secret/live.out",
+              },
+            },
+            capabilities: { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 },
+            streaming: { active: false, phase: "idle" },
+            messages: [
+              {
+                role: "bashExecution",
+                command: "echo msg-cmd",
+                output: "msg-output",
+                exitCode: 0,
+                fullOutputPath: "/secret/msg.out",
+              },
+            ],
+          },
+        },
+      });
+      await flush();
+    });
+
+    // Both bash rows visible: message command/output + state command/output.
+    // No authoritative execution id => never hide either side.
+    expect(document.querySelectorAll(".transcript-row--bash")).toHaveLength(2);
+    expect(document.querySelectorAll(`[data-row-id="${LIVE_BASH_ROW_ID}"]`)).toHaveLength(1);
+    expect(screen.getByText("$ echo msg-cmd")).toBeTruthy();
+    expect(screen.getByText("msg-output")).toBeTruthy();
+    expect(screen.getByText("$ echo state-cmd")).toBeTruthy();
+    expect(screen.getByText("state-output")).toBeTruthy();
+    expect(document.body.innerHTML).not.toContain("/secret/live.out");
+    expect(document.body.innerHTML).not.toContain("/secret/msg.out");
+  });
+
+  it("does not emit runtime.bash / abort_bash frames from transcript display", async () => {
+    mount(<TranscriptList sessionId="s1" live />);
+    const ws = await driveReady();
+    await driveAttach(ws);
+
+    await serverSend(ws, {
+      type: "event",
+      payload: {
+        type: "bash_update",
+        sessionId: "s1",
+        command: "pwd",
+        output: "/tmp\n",
+        exitCode: 0,
+        eventId: 1,
+        epoch: "e1",
+      },
+    });
+
+    expect(screen.getByText("$ pwd")).toBeTruthy();
+    const commandFrames = ws.sent.filter((frame) => {
+      const f = frame as { type?: string; payload?: { command?: { type?: string } } };
+      return f.type === "command";
+    });
+    // Only attach/handshake lifecycle — no bash command frames from the transcript.
+    for (const frame of commandFrames) {
+      const type = (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type;
+      expect(type).not.toBe("bash");
+      expect(type).not.toBe("abort_bash");
+    }
+  });
+});
+
+describe("TranscriptList — selection boundary (no A→B bash leak)", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+  });
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    cleanup();
+  });
+
+  it("selected B history never shows attached A's live bash state", async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/sessions/s-b/") || url.includes("sessions/s-b")) {
+        return bashHistoryResponse("s-b", {
+          command: "echo B",
+          output: "B history bash",
+          exitCode: 0,
+        });
+      }
+      return bashHistoryResponse("s-a", { command: "echo A", output: "A", exitCode: 0 });
+    }) as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-b" live={false} />);
+    expect(await screen.findByText("B history bash")).toBeTruthy();
+
+    vi.useFakeTimers();
+    try {
+      const ws = await driveReady();
+      await driveAttach(ws, "s-a");
+      await serverSend(ws, {
+        type: "event",
+        payload: {
+          type: "bash_update",
+          sessionId: "s-a",
+          command: "echo SECRET-A-BASH",
+          output: "SECRET-A-OUTPUT",
+          eventId: 1,
+          epoch: "e1",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(screen.getByText("B history bash")).toBeTruthy();
+    expect(screen.queryByText("SECRET-A-OUTPUT")).toBeNull();
+    expect(screen.queryByText("$ echo SECRET-A-BASH")).toBeNull();
+    expect(document.querySelectorAll(`[data-row-id="${LIVE_BASH_ROW_ID}"]`)).toHaveLength(0);
+  });
+});
+
+describe("projectBashViewModel integration via prebuilt rows", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("renders shared bash view-model on prebuilt rows", () => {
+    const bash = projectBashViewModel({
+      command: "prebuilt",
+      output: "out",
+      exitCode: 2,
+      fullOutputPath: "/nope",
+    });
+    const rows = buildTranscriptRows([
+      {
+        id: "bash-pre",
+        role: "bash",
+        text: `$ prebuilt\nout\nexit 2`,
+        bash,
+      },
+    ]);
+    mount(<TranscriptList rows={rows} />);
+    expect(screen.getByText("$ prebuilt")).toBeTruthy();
+    expect(screen.getByText("out")).toBeTruthy();
+    expect(screen.getByText("exit 2")).toBeTruthy();
+    expect(document.body.innerHTML).not.toContain("/nope");
   });
 });

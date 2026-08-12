@@ -1,7 +1,12 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { AgentMessage, SessionEntry, StreamingAgentMessage } from "@fffattiger/pix-protocol";
+import type {
+  AgentMessage,
+  BashProjection,
+  SessionEntry,
+  StreamingAgentMessage,
+} from "@fffattiger/pix-protocol";
 import {
   buildTranscriptRows,
   estimateRowHeight,
@@ -11,6 +16,12 @@ import {
   type TranscriptPart,
   type TranscriptRow,
 } from "./row-model";
+import {
+  flattenBashViewModel,
+  LIVE_BASH_ROW_ID,
+  projectBashViewModel,
+  type BashViewModel,
+} from "./bash-view-model";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
@@ -111,7 +122,9 @@ function assistantBlocksText(content: AssistantBlock): string {
 }
 
 function textOf(message: AgentMessage): string {
-  if (message.role === "bashExecution") return message.output;
+  if (message.role === "bashExecution") {
+    return flattenBashViewModel(projectBashViewModel(message));
+  }
   if (typeof message.content === "string") return message.content;
   if (!Array.isArray(message.content)) return "";
   if (message.role === "assistant") {
@@ -121,7 +134,14 @@ function textOf(message: AgentMessage): string {
 }
 
 function streamingTextOf(message: StreamingAgentMessage): string {
-  if (message.role === "bashExecution") return message.output ?? "";
+  if (message.role === "bashExecution") {
+    return flattenBashViewModel(
+      projectBashViewModel(message, {
+        running: message.exitCode === undefined && message.cancelled !== true,
+        completed: message.exitCode !== undefined || message.cancelled === true,
+      }),
+    );
+  }
   if (typeof message.content === "string") return message.content;
   if (!Array.isArray(message.content)) return "";
   if (message.role === "assistant") {
@@ -132,7 +152,8 @@ function streamingTextOf(message: StreamingAgentMessage): string {
 
 function roleOf(message: AgentMessage | StreamingAgentMessage): TranscriptMessageInput["role"] {
   if (message.role === "toolResult") return "tool";
-  if (message.role === "custom" || message.role === "bashExecution") return "system";
+  if (message.role === "custom") return "system";
+  if (message.role === "bashExecution") return "bash";
   return message.role;
 }
 
@@ -145,14 +166,32 @@ function partsOf(
   return projectAssistantBlocks(message.content, options);
 }
 
+function bashOf(message: AgentMessage | StreamingAgentMessage): BashViewModel | undefined {
+  if (message.role !== "bashExecution") return undefined;
+  // History / completed runtime messages are settled; live lifecycle comes from state.bash.
+  return projectBashViewModel(message);
+}
+
+function projectLiveBashState(
+  bash: BashProjection,
+  isBashRunning: boolean,
+): BashViewModel {
+  return projectBashViewModel(bash, {
+    running: isBashRunning || bash.completed === false,
+    completed: bash.completed === true,
+  });
+}
+
 function toTranscript(entry: SessionEntry): TranscriptMessageInput {
   const message = entry.message;
   const parts = partsOf(message);
+  const bash = bashOf(message);
   return {
     id: entry.entryId,
     role: roleOf(message),
     text: textOf(message),
     ...(parts === undefined ? {} : { parts }),
+    ...(bash === undefined ? {} : { bash }),
     ...(message.role === "toolResult" && message.toolName ? { toolName: message.toolName } : {}),
     ...(message.timestamp === undefined ? {} : { createdAt: new Date(message.timestamp).toISOString() }),
   };
@@ -160,11 +199,13 @@ function toTranscript(entry: SessionEntry): TranscriptMessageInput {
 
 function runtimeMessageToInput(message: AgentMessage, index: number): TranscriptMessageInput {
   const parts = partsOf(message);
+  const bash = bashOf(message);
   return {
     id: `row:msg:${index}`,
     role: roleOf(message),
     text: textOf(message),
     ...(parts === undefined ? {} : { parts }),
+    ...(bash === undefined ? {} : { bash }),
     ...(message.role === "toolResult" && message.toolName ? { toolName: message.toolName } : {}),
     ...(message.timestamp === undefined ? {} : { createdAt: new Date(message.timestamp).toISOString() }),
   };
@@ -172,11 +213,26 @@ function runtimeMessageToInput(message: AgentMessage, index: number): Transcript
 
 function streamingMessageToInput(message: StreamingAgentMessage): TranscriptMessageInput {
   const parts = partsOf(message, { streaming: true });
+  const bash = bashOf(message);
   return {
     id: "row:partial",
     role: roleOf(message),
     text: streamingTextOf(message),
     ...(parts === undefined ? {} : { parts }),
+    ...(bash === undefined ? {} : { bash }),
+  };
+}
+
+function liveBashStateToInput(
+  bash: BashProjection,
+  isBashRunning: boolean,
+): TranscriptMessageInput {
+  const view = projectLiveBashState(bash, isBashRunning);
+  return {
+    id: LIVE_BASH_ROW_ID,
+    role: "bash",
+    text: flattenBashViewModel(view),
+    bash: view,
   };
 }
 
@@ -192,24 +248,42 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
   const isLive = (liveProp ?? runtime.attached) && rowsProp === undefined;
   // Fetch session history only when the host actually serves it (sessiond
   // connected) AND the selected session is not the live projection.
-  // Intentionally uses sessions.context only — never the unmounted /thinking endpoint.
+  // Intentionally uses sessions.context only — never bash-output or /thinking.
   const sessionsEnabled = rowsProp === undefined && Boolean(sessionId) && canBrowseSessions && !isLive;
   const context = useQuery({ ...createQueryOptions(http).sessions.context(sessionId ?? ""), enabled: sessionsEnabled });
+
+  const liveBash = isLive ? runtime.snapshot?.state.bash : undefined;
+  const liveIsBashRunning = isLive ? runtime.snapshot?.state.isBashRunning === true : false;
 
   const rows = useMemo(() => {
     if (rowsProp) return rowsProp;
     if (isLive) {
-      // Live runtime: rows come from the SessionStore projection + active partial.
-      // Same block-aware projector as history so text/thinking order is identical.
-      const inputs = runtime.messages.map(runtimeMessageToInput);
+      // Live runtime: keep every runtime.messages entry (no role/position hide).
+      // If state.bash is present, also append the stable row:state:bash.
+      // No authoritative execution id => NEVER dedupe/hide (duplicates ok).
+      const inputs: TranscriptMessageInput[] = runtime.messages.map((message, index) =>
+        runtimeMessageToInput(message, index),
+      );
       if (runtime.streamingPartial) {
         inputs.push(streamingMessageToInput(runtime.streamingPartial));
+      }
+      if (liveBash) {
+        inputs.push(liveBashStateToInput(liveBash, liveIsBashRunning));
       }
       return buildTranscriptRows(inputs, { readonlyBanner: false });
     }
     const messages = context.data ? context.data.context.entries.map(toTranscript) : [];
     return buildTranscriptRows(messages, { readonlyBanner: isReadonly });
-  }, [rowsProp, isLive, runtime.messages, runtime.streamingPartial, context.data, isReadonly]);
+  }, [
+    rowsProp,
+    isLive,
+    runtime.messages,
+    runtime.streamingPartial,
+    liveBash,
+    liveIsBashRunning,
+    context.data,
+    isReadonly,
+  ]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -249,6 +323,9 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
 }
 
 function TranscriptRowView({ row }: { row: TranscriptRow }) {
+  if (row.kind === "bash" && row.bash) {
+    return <BashRowView bash={row.bash} />;
+  }
   const label = row.kind === "tool" && row.meta?.toolName ? row.meta.toolName : row.kind;
   return (
     <article className="transcript-row-card">
@@ -262,6 +339,27 @@ function TranscriptRowView({ row }: { row: TranscriptRow }) {
           row.text
         )}
       </div>
+    </article>
+  );
+}
+
+/**
+ * Dedicated bash card. React pure-text only — command/output never placed in
+ * attributes, titles, data-*, or logs. fullOutputPath is never on the view-model.
+ */
+function BashRowView({ bash }: { bash: BashViewModel }) {
+  return (
+    <article className="transcript-row-card transcript-bash">
+      <header className="transcript-row-meta">
+        <span className="transcript-row-kind">bash</span>
+        {bash.statusLabels.map((label) => (
+          <span key={label} className="transcript-bash-status">
+            {label}
+          </span>
+        ))}
+      </header>
+      <div className="transcript-bash-command">{`$ ${bash.command}`}</div>
+      <pre className="transcript-bash-output">{bash.output}</pre>
     </article>
   );
 }

@@ -531,6 +531,39 @@ html.dark .topbar-badge--ok {
   line-height: 1.5;
   color: var(--text-muted);
 }
+/* Bash history/live card — restrained status chips, pure-text command/output. */
+.transcript-row--bash .transcript-row-card {
+  background: var(--bg-subtle);
+  border-style: solid;
+}
+.transcript-bash-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.transcript-bash-command {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.transcript-bash-output {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--text-muted);
+}
 .transcript-empty {
   color: var(--text-dim);
   text-align: center;

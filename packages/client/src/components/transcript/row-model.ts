@@ -3,11 +3,14 @@
  * Virtualization consumes this model; view components map row → UI.
  */
 
+import type { BashViewModel } from "./bash-view-model";
+
 export type TranscriptRowKind =
   | "user"
   | "assistant"
   | "tool"
   | "system"
+  | "bash"
   | "divider";
 
 /**
@@ -38,6 +41,11 @@ export interface TranscriptRow {
    * keys the top-level row by `id` — parts are never independent list rows.
    */
   parts?: TranscriptPart[];
+  /**
+   * Shared bash view-model for history BashExecutionMessage and live state.bash.
+   * Never carries fullOutputPath.
+   */
+  bash?: BashViewModel;
   /** Optional estimated height hint; virtualizer still measures dynamically. */
   estimateHeight?: number;
   meta?: {
@@ -56,6 +64,7 @@ const DEFAULT_ESTIMATE: Record<TranscriptRowKind, number> = {
   assistant: 96,
   tool: 56,
   system: 40,
+  bash: 112,
   divider: 28,
 };
 
@@ -96,6 +105,7 @@ export function buildTranscriptRows(
       kind: message.role,
       text: message.text,
       ...(message.parts === undefined ? {} : { parts: message.parts }),
+      ...(message.bash === undefined ? {} : { bash: message.bash }),
       ...(message.estimateHeight === undefined
         ? {}
         : { estimateHeight: message.estimateHeight }),
@@ -112,6 +122,8 @@ export interface TranscriptMessageInput {
   text: string;
   /** Structured parts when the source message carries content blocks. */
   parts?: TranscriptPart[];
+  /** Shared bash view-model (history + live completed). */
+  bash?: BashViewModel;
   createdAt?: string;
   toolName?: string;
   estimateHeight?: number;
