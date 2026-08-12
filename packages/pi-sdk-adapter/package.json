@@ -10,6 +10,8 @@
     "./sessions": { "types": "./dist/sessions/index.d.ts", "import": "./dist/sessions/index.js" },
     "./models": { "types": "./dist/models/index.d.ts", "import": "./dist/models/index.js" },
     "./credentials": { "types": "./dist/credentials/index.d.ts", "import": "./dist/credentials/index.js" },
+    "./trust": { "types": "./dist/trust/index.d.ts", "import": "./dist/trust/index.js" },
+    "./resources": { "types": "./dist/resources/index.d.ts", "import": "./dist/resources/index.js" },
     "./testing": { "types": "./dist/internal/testing.d.ts", "import": "./dist/internal/testing.js" }
   },
   "scripts": {

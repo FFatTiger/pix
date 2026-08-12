@@ -5,10 +5,17 @@ const packageRoot = new URL("../", import.meta.url).pathname;
 const srcRoot = join(packageRoot, "src");
 const distRoot = join(packageRoot, "dist");
 // The agent runtime surface (A1), the read-only sessions catalog/locator
-// (D1A-1), and the read-only model/credential catalogs (D3B-R1A) are public.
-// Other resource/trust ports remain deferred, so `agent`, `sessions`, `models`,
-// `credentials` (plus the root `index.ts`) are the public source dirs.
-const publicSourceDirs = new Set(["agent", "sessions", "models", "credentials"]);
+// (D1A-1), and the read-only model/credential/trust/resource catalogs
+// (D3B-R1A) are public. So `agent`, `sessions`, `models`, `credentials`,
+// `trust`, `resources` (plus the root `index.ts`) are the public source dirs.
+const publicSourceDirs = new Set([
+  "agent",
+  "sessions",
+  "models",
+  "credentials",
+  "trust",
+  "resources",
+]);
 const sdkImport = /@earendil-works\/pi-/;
 const sdkNames = /\b(?:AgentSession|SessionManager|ModelRuntime|DefaultResourceLoader|ProjectTrustStore|AuthStorage)\b/;
 
