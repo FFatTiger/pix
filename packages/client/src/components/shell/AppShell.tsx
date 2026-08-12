@@ -6,6 +6,7 @@ import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
 import { SessionActions } from "@/components/shell/SessionActions";
 import { Sidebar } from "@/components/shell/Sidebar";
+import { VisibleBranchExportButton } from "@/components/shell/VisibleBranchExportButton";
 import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
 import { CatalogPanel, hasCatalogCapability } from "@/features/catalog/CatalogPanel";
 import { useRuntime } from "@/runtime";
@@ -318,6 +319,12 @@ export function AppShell({ search }: AppShellProps) {
                   <p className="project-open-error" role="alert">{liveError}</p>
                 ) : null}
               </div>
+            ) : null}
+            {search.session ? (
+              <VisibleBranchExportButton
+                sessionId={search.session}
+                selectionMatchesLive={selectionMatchesLive}
+              />
             ) : null}
           </div>
 

@@ -462,3 +462,48 @@ describe("AppShell Catalog / Workspace mutual exclusion", () => {
     expect(screen.queryByRole("tab", { name: "Worktrees" })).toBeNull();
   });
 });
+
+describe("AppShell visible-branch export gate (D1B-3)", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+  });
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    cleanup();
+  });
+
+  it("shows Export visible branch for history selection and hides it when selection matches live", async () => {
+    globalThis.fetch = vi.fn(async () => contextResponse("s-a")) as unknown as typeof fetch;
+    const { rerender } = mount({ session: "s-a", cwd: "/proj" }, { mode: "local", capabilities: ["agent", "sessions"] });
+
+    // History view: export affordance is present (shares context GET with Transcript).
+    expect(await screen.findByRole("button", { name: "Export visible branch" })).toBeTruthy();
+    expect(screen.getByText(/Selected context branch only/i)).toBeTruthy();
+
+    // Attach live to the same session → selectionMatchesLive hides the button.
+    const ws = await driveReady();
+    await driveLiveOnA(ws, "s-a");
+    expect(screen.queryByRole("button", { name: "Export visible branch" })).toBeNull();
+
+    // Switch selection to B while A is still attached → export returns for B only.
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("s-b")) return contextResponse("s-b", "hello history");
+      return contextResponse("s-a");
+    }) as unknown as typeof fetch;
+    rerender({ session: "s-b", cwd: "/proj" });
+    await flush();
+    expect(await screen.findByRole("button", { name: "Export visible branch" })).toBeTruthy();
+    expect(screen.queryByText("live message from A")).toBeNull();
+  });
+
+  it("does not show export without sessions capability", async () => {
+    globalThis.fetch = vi.fn(async () => contextResponse("s-abc")) as unknown as typeof fetch;
+    mount({ session: "s-abc", cwd: "/proj" }, { mode: "local", capabilities: ["agent"] });
+    await flush();
+    expect(screen.queryByRole("button", { name: "Export visible branch" })).toBeNull();
+  });
+});
