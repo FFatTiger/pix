@@ -204,11 +204,12 @@ test("production catalogs: models/auth/resources/trust real adapter, no-store, z
 
 test("production catalogs: trusted project exposes project skill; escape still filtered", async () => {
   const { root, agentDir, project, markerPath, app } = await productionFixture();
-  // Record an explicit trusted decision via the Pi SDK trust store file shape.
-  // The adapter reads agentDir/trust.json offline.
+  // Seed the real Pi SDK trust.json shape (path → boolean). Verified offline
+  // against ProjectTrustStore serialization; host tests never import @earendil.
+  const canonicalProject = await realpath(project);
   writeFileSync(
     join(agentDir, "trust.json"),
-    JSON.stringify({ version: 1, projects: { [await realpath(project)]: true } }),
+    JSON.stringify({ [canonicalProject]: true }),
     "utf8",
   );
 
@@ -216,19 +217,18 @@ test("production catalogs: trusted project exposes project skill; escape still f
   const trustRes = await call(app, `/v1/trust?cwd=${encodeURIComponent(project)}`);
   assert.equal(trustRes.status, 200);
   const trustBody = await trustRes.json();
-  // Accept either trusted (if file shape matches SDK) or unknown (fail closed).
-  // When trusted, project skill must be visible; when not, it must stay withheld.
+  assert.equal(trustBody.level, "trusted");
+  assert.equal(trustBody.trusted, true);
+  assert.equal(trustBody.canReloadResources.allowed, true);
+  assert.equal(trustBody.canReloadResources.level, "trusted");
+  assert.equal(trustBody.canReloadResources.reason, undefined);
+
   const skillsRes = await call(app, `/v1/skills?cwd=${encodeURIComponent(project)}`);
   assert.equal(skillsRes.status, 200);
   const names = (await skillsRes.json()).skills.map((s) => s.name);
   assert.ok(names.includes("global-skill"));
+  assert.ok(names.includes("proj-skill"), "project skill visible when trusted");
   assert.ok(!names.includes("escaped-skill"), "symlink escape skill still filtered");
-  if (trustBody.trusted === true) {
-    assert.ok(names.includes("proj-skill"), "project skill visible when trusted");
-  } else {
-    // Fail-closed is acceptable if trust.json shape is not recognized.
-    assert.ok(!names.includes("proj-skill"));
-  }
   assert.equal(existsSync(markerPath), false);
   assert.equal(release(), false);
   void root;

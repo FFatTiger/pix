@@ -38,6 +38,11 @@ test("resolveCatalogAgentDir prefers PI_CODING_AGENT_DIR and falls back to ~/.pi
     resolveCatalogAgentDir({}),
     join(homedir(), ".pi", "agent"),
   );
+  // Explicit empty string is a set value — must NOT fall back to home.
+  assert.throws(
+    () => resolveCatalogAgentDir({ PI_CODING_AGENT_DIR: "" }),
+    InvalidCatalogAgentDirError,
+  );
   assert.throws(
     () => resolveCatalogAgentDir({ PI_CODING_AGENT_DIR: "relative/agent" }),
     InvalidCatalogAgentDirError,

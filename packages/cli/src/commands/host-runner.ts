@@ -28,13 +28,16 @@ import { pixLog, pixErr } from "../log.js";
 
 /**
  * Resolve the agent config directory for production catalogs (D3B-R1B).
- * Prefer `PI_CODING_AGENT_DIR`; otherwise `~/.pi/agent`. Validates absolute /
- * non-empty only — never reads the real configuration contents.
+ * Prefer `PI_CODING_AGENT_DIR` when the variable is present (including empty);
+ * otherwise `~/.pi/agent`. Any explicit value must be non-empty absolute with
+ * no NUL — empty/relative/NUL never fall back to home. Never reads the real
+ * configuration contents.
  */
 export function resolveCatalogAgentDir(env: NodeJS.ProcessEnv = process.env): string {
-  const fromEnv = env.PI_CODING_AGENT_DIR;
-  if (typeof fromEnv === "string" && fromEnv.length > 0) {
-    if (fromEnv.includes("\0") || !isAbsolute(fromEnv)) {
+  // `!== undefined` means the operator set the variable (even to "").
+  if (env.PI_CODING_AGENT_DIR !== undefined) {
+    const fromEnv = env.PI_CODING_AGENT_DIR;
+    if (typeof fromEnv !== "string" || fromEnv === "" || fromEnv.includes("\0") || !isAbsolute(fromEnv)) {
       throw new InvalidCatalogAgentDirError("PI_CODING_AGENT_DIR must be a non-empty absolute path");
     }
     return fromEnv;

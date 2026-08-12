@@ -32,6 +32,7 @@ import {
   createNodeServer,
   SessiondRuntimeGateway,
   createProductionResources,
+  createProductionCatalogs,
   createProductionCapabilityResolver,
   createSessiondSessionsClient,
   PRODUCTION_FULL_CAPABILITIES,
@@ -183,6 +184,12 @@ async function bootStack({ agentDir, sessiondDir, projectCwd }) {
     secret: daemon.secret,
     logger: {},
   });
+  // Catalogs use the same temp PI_CODING_AGENT_DIR the E2E already isolates;
+  // honesty rewrite keeps catalog tokens only while this seam is mounted.
+  const catalogs = createProductionCatalogs({
+    agentDir: process.env.PI_CODING_AGENT_DIR ?? join(projectCwd, ".pi", "agent"),
+    roots: production.deps.allowedRoots,
+  });
   const app = createHostApp({
     exposureMode: "local",
     clientDist,
@@ -191,6 +198,7 @@ async function bootStack({ agentDir, sessiondDir, projectCwd }) {
     capabilities: { full: [...PRODUCTION_FULL_CAPABILITIES], readonly: [...RESOURCE_DEGRADED_CAPABILITIES] },
     sessions: { client: createSessiondSessionsClient({ endpoint: daemon.endpoint, secret: daemon.secret, timeoutMs: 5_000 }) },
     resources: production.deps,
+    catalogs,
     gate: { config: { read: () => ({ status: "disabled", source: "e2e" }) } },
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     runtimeWs,

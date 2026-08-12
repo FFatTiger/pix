@@ -81,12 +81,35 @@ export function defaultReadonlyCapabilities(
  * host never advertises agent/files/sessions just because sessiond is up. Pass
  * explicit full/readonly sets from production composition.
  */
+/**
+ * Normalize an explicit capability list so catalog tokens always match mounted
+ * seams: strip every catalog token, then append the ones for seams that are
+ * actually present (canonical CATALOG_CAPABILITIES order). Non-catalog tokens
+ * keep their original relative order. Unmounted seams cannot be advertised;
+ * mounted seams cannot be omitted by a stale override.
+ */
+export function normalizeCatalogCapabilities(
+  listed: readonly HostCapability[],
+  catalogs: CatalogDeps | undefined,
+): readonly HostCapability[] {
+  const catalogSet = new Set<string>(CATALOG_CAPABILITIES);
+  const nonCatalog = listed.filter((token) => !catalogSet.has(token));
+  return [...nonCatalog, ...catalogCapabilitiesFromDeps(catalogs)];
+}
+
 export async function resolveCapabilities(
   deps: HostDeps,
 ): Promise<ResolvedCapabilities> {
   const mounted = defaultMountedCapabilities(deps);
-  const full = deps.capabilities?.full ?? mounted;
-  const readonly = deps.capabilities?.readonly ?? mounted;
+  // Explicit overrides still have catalog tokens rewritten from mounted seams.
+  const full = normalizeCatalogCapabilities(
+    deps.capabilities?.full ?? mounted,
+    deps.catalogs,
+  );
+  const readonly = normalizeCatalogCapabilities(
+    deps.capabilities?.readonly ?? mounted,
+    deps.catalogs,
+  );
   if (!deps.sessiond) return { sessiond: "unknown", capabilities: readonly };
   const timeoutMs = deps.sessiondProbeTimeoutMs ?? 2_000;
   let timeout: ReturnType<typeof setTimeout> | undefined;

@@ -46,6 +46,7 @@ export {
   defaultReadonlyCapabilities,
   defaultMountedCapabilities,
   catalogCapabilitiesFromDeps,
+  normalizeCatalogCapabilities,
   registerHealthRoutes,
   registerBootstrapRoutes,
   resolveBootstrapGateStatus,
@@ -70,6 +71,16 @@ export {
   mapCatalogError,
   requireAuthorizedCwd,
   CATALOG_UNAVAILABLE_MESSAGE,
+  TRUST_NOT_TRUSTED_REASON,
+  projectModelInfo,
+  projectDefaultModel,
+  projectAuthProviderInfo,
+  projectAuthProviderStatus,
+  projectSkillInfo,
+  projectPluginInfo,
+  projectSlashCommandInfo,
+  projectTrustLevel,
+  projectCanReloadResources,
 } from "./routes/catalogs.js";
 export { createAllowedRootService, pathContainment } from "./resources/allowed-roots.js";
 export type { AllowedRootPolicy, AllowedRootService, AuthorizedPath, RootExpansionPlan, RootExpansionResult } from "./resources/allowed-roots.js";

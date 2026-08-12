@@ -404,3 +404,301 @@ test("resources without trust defaults trusted=false for skill listing", async (
   await call(app, `/v1/skills?cwd=${encodeURIComponent(root)}`);
   assert.equal(resources.seen[0].trusted, false);
 });
+
+// ---------------------------------------------------------------------------
+// Strict projectors: strip extras / reject malicious success payloads
+// ---------------------------------------------------------------------------
+
+const SECRET = "sk-live-SUPERSECRET-marker";
+const PATH_MARKER = "/Users/secret/agent-dir/leak";
+const STACK_MARKER = "at Object.catalog (/secret/stack.js:1:1)";
+
+function assertNoMarkers(body) {
+  const payload = JSON.stringify(body);
+  assert.ok(!payload.includes(SECRET), "secret marker leaked");
+  assert.ok(!payload.includes(PATH_MARKER), "path marker leaked");
+  assert.ok(!payload.includes(STACK_MARKER), "stack marker leaked");
+  assert.ok(!payload.includes("apiKey"), "apiKey field leaked");
+  assert.ok(!payload.includes("Bearer "), "Bearer token leaked");
+  assert.ok(!payload.includes("sourceInfo"), "sourceInfo leaked");
+}
+
+test("projectors keep only allowed model fields and drop extras", async () => {
+  const root = temp("pix-cat-proj-model-");
+  const roots = await rootsFor(root);
+  const models = fakeModels({
+    listModels: async () => [
+      {
+        id: "m1",
+        provider: "p",
+        displayName: "M",
+        thinking: true,
+        contextWindow: 128,
+        apiKey: SECRET,
+        path: PATH_MARKER,
+        nested: { token: SECRET },
+      },
+    ],
+    getDefaultModel: async () => ({
+      id: "m1",
+      provider: "p",
+      apiKey: SECRET,
+      toJSON() {
+        return { id: "m1", provider: "p", secret: SECRET };
+      },
+    }),
+  });
+  const app = appWithCatalogs({ roots, models });
+  const res = await call(app, `/v1/models?cwd=${encodeURIComponent(root)}`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body.models, [
+    { id: "m1", provider: "p", displayName: "M", thinking: true, contextWindow: 128 },
+  ]);
+  assert.deepEqual(body.defaultModel, { id: "m1", provider: "p" });
+  assertNoMarkers(body);
+});
+
+test("projectors drop sourceInfo and reject invalid command source", async () => {
+  const root = temp("pix-cat-proj-cmd-");
+  const roots = await rootsFor(root);
+  const resources = fakeResources({
+    listCommands: async () => [
+      {
+        name: "ok",
+        source: "prompt",
+        description: "d",
+        sourceInfo: { path: PATH_MARKER, token: SECRET, stack: STACK_MARKER },
+      },
+    ],
+  });
+  const app = appWithCatalogs({ roots, resources });
+  const res = await call(app, `/v1/commands?cwd=${encodeURIComponent(root)}`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body.commands, [{ name: "ok", source: "prompt", description: "d" }]);
+  assertNoMarkers(body);
+
+  const bad = appWithCatalogs({
+    roots,
+    resources: fakeResources({
+      listCommands: async () => [{ name: "x", source: "evil", sourceInfo: { path: PATH_MARKER } }],
+    }),
+  });
+  const badRes = await call(bad, `/v1/commands?cwd=${encodeURIComponent(root)}`);
+  assert.equal(badRes.status, 503);
+  assertNoMarkers(await badRes.json());
+});
+
+test("malicious success shapes (proxy/getter/cyclic/nested) map to fixed 503", async () => {
+  const root = temp("pix-cat-mal-");
+  const roots = await rootsFor(root);
+  const logs = [];
+  const logger = {
+    error(message) {
+      logs.push(String(message));
+    },
+    warn(message) {
+      logs.push(String(message));
+    },
+  };
+
+  const cyclic = { id: "m", provider: "p" };
+  cyclic.self = cyclic;
+
+  const getterModel = {};
+  Object.defineProperty(getterModel, "id", {
+    enumerable: true,
+    get() {
+      throw new Error(`boom ${SECRET} ${PATH_MARKER}\n${STACK_MARKER}`);
+    },
+  });
+  Object.defineProperty(getterModel, "provider", { enumerable: true, value: "p" });
+
+  const proxyModel = new Proxy(
+    { id: "m", provider: "p" },
+    {
+      get(target, prop) {
+        if (prop === "apiKey") return SECRET;
+        if (prop === "id" || prop === "provider") return target[prop];
+        throw new Error(`proxy leak ${PATH_MARKER}`);
+      },
+      ownKeys() {
+        return ["id", "provider", "apiKey"];
+      },
+      getOwnPropertyDescriptor(target, prop) {
+        if (prop === "apiKey") return { configurable: true, enumerable: true, value: SECRET };
+        return Object.getOwnPropertyDescriptor(target, prop);
+      },
+    },
+  );
+
+  // Extras / cyclic / nested secrets: projector keeps only allowed fields (200, clean).
+  for (const [label, payload] of [
+    ["cyclic", [cyclic]],
+    ["nested-secret", [{ id: "m", provider: "p", headers: { Authorization: `Bearer ${SECRET}` }, path: PATH_MARKER }]],
+  ]) {
+    const app = createHostApp({
+      logger,
+      gate: { config: DISABLED_GATE },
+      catalogs: {
+        roots,
+        models: fakeModels({ listModels: async () => payload, getDefaultModel: async () => null }),
+      },
+    }).app;
+    const res = await call(app, `/v1/models?cwd=${encodeURIComponent(root)}`);
+    assert.equal(res.status, 200, label);
+    const body = await res.json();
+    assert.deepEqual(body.models, [{ id: "m", provider: "p" }], label);
+    assertNoMarkers(body);
+  }
+
+  // Getter throw / proxy throw on optional probe / invalid type / toJSON-only → fixed 503.
+  for (const [label, payload] of [
+    ["getter", [getterModel]],
+    ["proxy", [proxyModel]],
+    ["invalid-context", [{ id: "m", provider: "p", contextWindow: -1 }]],
+    ["toJSON-only-junk", [{ toJSON: () => ({ id: "m", provider: "p", apiKey: SECRET }) }]],
+  ]) {
+    const app = createHostApp({
+      logger,
+      gate: { config: DISABLED_GATE },
+      catalogs: {
+        roots,
+        models: fakeModels({ listModels: async () => payload, getDefaultModel: async () => null }),
+      },
+    }).app;
+    const res = await call(app, `/v1/models?cwd=${encodeURIComponent(root)}`);
+    assert.equal(res.status, 503, label);
+    const body = await res.json();
+    assert.equal(body.code, "CATALOG_UNAVAILABLE");
+    assertNoMarkers(body);
+  }
+
+  const joined = logs.join("\n");
+  assert.ok(!joined.includes(SECRET), "logger saw secret");
+  assert.ok(!joined.includes(PATH_MARKER), "logger saw path");
+  assert.ok(!joined.includes(STACK_MARKER), "logger saw stack");
+});
+
+test("provider status drops extra secret fields; configured must be boolean", async () => {
+  const root = temp("pix-cat-status-");
+  const roots = await rootsFor(root);
+  const credentials = fakeCredentials({
+    getProviderStatus: async (id) => ({
+      providerId: id,
+      authorized: true,
+      accountName: "a",
+      expiresAt: 1,
+      apiKey: SECRET,
+      token: SECRET,
+      headers: { Authorization: `Bearer ${SECRET}` },
+      path: PATH_MARKER,
+    }),
+    isConfigured: async () => true,
+  });
+  const app = appWithCatalogs({ roots, credentials });
+  const res = await call(app, "/v1/auth/providers/anthropic/status");
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body, {
+    status: { providerId: "anthropic", authorized: true, accountName: "a", expiresAt: 1 },
+    configured: true,
+  });
+  assertNoMarkers(body);
+});
+
+test("trust reason is fixed; free-form backend reason never forwarded", async () => {
+  const root = temp("pix-cat-trust-reason-");
+  const roots = await rootsFor(root);
+  const trust = fakeTrust({
+    getProjectTrustState: async () => "denied",
+    isTrusted: async () => false,
+    canReloadResources: async () => ({
+      allowed: false,
+      level: "denied",
+      reason: `raw ${SECRET} at ${PATH_MARKER}`,
+    }),
+  });
+  const app = appWithCatalogs({ roots, trust });
+  const res = await call(app, `/v1/trust?cwd=${encodeURIComponent(root)}`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.level, "denied");
+  assert.equal(body.canReloadResources.allowed, false);
+  assert.equal(body.canReloadResources.reason, "Project resources are not trusted");
+  assertNoMarkers(body);
+});
+
+test("trust.isTrusted throw on skills/plugins/commands → 503; logger has no raw", async () => {
+  const root = temp("pix-cat-trust-throw-");
+  const roots = await rootsFor(root);
+  const logs = [];
+  const logger = {
+    error(message) {
+      logs.push(String(message));
+    },
+  };
+  const trust = fakeTrust({
+    isTrusted: async () => {
+      throw new Error(`trust fail ${SECRET} ${PATH_MARKER}\n${STACK_MARKER}`);
+    },
+  });
+  const resources = fakeResources();
+  const app = createHostApp({
+    logger,
+    gate: { config: DISABLED_GATE },
+    catalogs: { roots, resources, trust },
+  }).app;
+  for (const path of ["/v1/skills", "/v1/plugins", "/v1/commands"]) {
+    const res = await call(app, `${path}?cwd=${encodeURIComponent(root)}`);
+    assert.equal(res.status, 503, path);
+    const body = await res.json();
+    assert.equal(body.code, "CATALOG_UNAVAILABLE");
+    assertNoMarkers(body);
+  }
+  const joined = logs.join("\n");
+  assert.ok(!joined.includes(SECRET));
+  assert.ok(!joined.includes(PATH_MARKER));
+  assert.ok(!joined.includes(STACK_MARKER));
+});
+
+// ---------------------------------------------------------------------------
+// Capability honesty: explicit overrides cannot lie about catalog seams
+// ---------------------------------------------------------------------------
+
+test("explicit full override advertising catalog tokens without seams is stripped", async () => {
+  const { capabilities } = await resolveCapabilities({
+    sessiond: { isAvailable: async () => true },
+    capabilities: {
+      full: ["agent", "models", "auth.providers", "skills", "plugins"],
+      readonly: [],
+    },
+    // no catalogs mounted
+  });
+  assert.deepEqual([...capabilities], ["agent"]);
+  assert.ok(!capabilities.includes("models"));
+  assert.ok(!capabilities.includes("skills"));
+});
+
+test("explicit override omitting catalog tokens still advertises mounted seams", async () => {
+  const root = temp("pix-cat-override-");
+  const roots = await rootsFor(root);
+  const { capabilities } = await resolveCapabilities({
+    catalogs: {
+      roots,
+      models: fakeModels(),
+      credentials: fakeCredentials(),
+      resources: fakeResources(),
+    },
+    sessiond: { isAvailable: async () => true },
+    capabilities: {
+      full: ["agent", "files"], // deliberately omits catalog tokens
+      readonly: ["files"],
+    },
+  });
+  assert.deepEqual(
+    [...capabilities],
+    ["agent", "files", "models", "auth.providers", "skills", "plugins"],
+  );
+});

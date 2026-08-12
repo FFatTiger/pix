@@ -96,11 +96,17 @@ test("capability projection advertises files+git but not agent/worktree while se
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.sessiond, "down");
-  assert.deepEqual([...body.capabilities].sort(), [...RESOURCE_DEGRADED_CAPABILITIES].sort());
+  // Catalog tokens in RESOURCE_DEGRADED_CAPABILITIES are stripped when catalogs
+  // are not mounted (normalizeCatalogCapabilities honesty).
+  const expected = [...RESOURCE_DEGRADED_CAPABILITIES].filter(
+    (t) => !["models", "auth.providers", "skills", "plugins"].includes(t),
+  );
+  assert.deepEqual([...body.capabilities].sort(), expected.sort());
   assert.ok(body.capabilities.includes("files"), "files capability advertised");
   assert.ok(body.capabilities.includes("git"), "git capability advertised");
   assert.ok(!body.capabilities.includes("agent"), "agent not advertised while sessiond is down");
   assert.ok(!body.capabilities.includes("worktree"), "worktree is never advertised (D3A-1)");
+  assert.ok(!body.capabilities.includes("models"), "catalog tokens not advertised without catalogs");
 });
 
 test("Files read-only surface lists, reads and meta-inspects within the root", async () => {
