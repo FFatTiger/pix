@@ -205,12 +205,16 @@ test("resolver: up ⇒ PRODUCTION_FULL_CAPABILITIES, down ⇒ RESOURCE_DEGRADED_
     });
     assert.equal(await resolver.isAvailable(), true);
     assert.deepEqual(await resolver.resolve(), [...PRODUCTION_FULL_CAPABILITIES]);
-    assert.deepEqual([...PRODUCTION_FULL_CAPABILITIES], ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "models", "auth.providers", "skills", "plugins"]);
+    assert.deepEqual([...PRODUCTION_FULL_CAPABILITIES], ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"]);
     // sessions history requires the up authority; degraded never advertises it.
     assert.ok([...RESOURCE_DEGRADED_CAPABILITIES].includes("files"));
     assert.ok(![...RESOURCE_DEGRADED_CAPABILITIES].includes("sessions"));
-    // worktree is never advertised, even when up.
-    assert.ok(!(await resolver.resolve()).includes("worktree"));
+    // worktree is the read-only list token — present in both up and degraded.
+    assert.ok((await resolver.resolve()).includes("worktree"));
+    assert.ok([...RESOURCE_DEGRADED_CAPABILITIES].includes("worktree"));
+    // No write token is negotiated; POST/DELETE stay sessiond-guarded.
+    assert.ok(!(await resolver.resolve()).includes("worktree.write"));
+    assert.ok(![...RESOURCE_DEGRADED_CAPABILITIES].includes("worktree.write"));
   });
 });
 

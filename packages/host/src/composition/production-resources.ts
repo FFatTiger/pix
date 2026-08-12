@@ -55,15 +55,16 @@ export const PRODUCTION_RESOURCE_LIMITS: Readonly<ResourceLimits> = Object.freez
 });
 
 /**
- * Resource capabilities offered while sessiond is unavailable (degraded). The
- * resource services (files/git) remain structurally wired; individual writes
- * are still runtime-guarded (503) — these tokens describe the mounted service
- * surface, not per-request write availability. worktree is deliberately absent.
- */
-/**
  * Resource + catalog capabilities offered while sessiond is unavailable
- * (degraded). Catalog tokens (D3B-R1B) are independent of sessiond and stay
- * advertised. worktree is deliberately absent.
+ * (degraded). Resource services (files/git/worktree list) remain structurally
+ * wired; individual writes are still runtime-guarded (503) — these tokens
+ * describe the mounted service surface, not per-request write availability.
+ * Catalog tokens (D3B-R1B) are independent of sessiond and stay advertised.
+ *
+ * `worktree` is the read-only list capability (GET /v1/worktrees). It does not
+ * depend on sessiond, so it stays advertised in degraded. POST/DELETE remain
+ * guarded by the mutation/busy adapter and are NOT a separate write token
+ * (no `worktree.write`).
  */
 export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
   "files",
@@ -71,6 +72,7 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
   "files.watch",
   "files.upload",
   "git",
+  "worktree",
   "models",
   "auth.providers",
   "skills",
@@ -79,12 +81,15 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
 
 /**
  * Full capabilities when sessiond is up: agent first, then the read-only
- * sessions history surface, then the resource surface, then the four catalog
- * tokens (D3B-R1B; independent of sessiond). Order is frozen.
+ * sessions history surface, then the resource surface (including read-only
+ * `worktree` list), then the four catalog tokens (D3B-R1B; independent of
+ * sessiond). Order is frozen.
  * `sessions` (read-only history) requires the sessiond-backed catalog and is
- * advertised ONLY while the authority is up — D1A-2 phase 2. worktree is NOT
- * advertised (D3A-1): worktree creation works while the authority is up but is
- * not yet a negotiated capability.
+ * advertised ONLY while the authority is up — D1A-2 phase 2.
+ * `worktree` is the read-only list token (D3A Worktrees UI); GET does not
+ * depend on sessiond so the token is also present in degraded. No
+ * `worktree.write` token exists — create/remove stay sessiond-guarded writes
+ * without a negotiated write capability.
  */
 export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "agent",
@@ -94,6 +99,7 @@ export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "files.watch",
   "files.upload",
   "git",
+  "worktree",
   "models",
   "auth.providers",
   "skills",

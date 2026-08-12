@@ -46,16 +46,16 @@ export function resolveCatalogAgentDir(env: NodeJS.ProcessEnv = process.env): st
 }
 
 /**
- * Honest production capability projection (D3A-1 + D1A-2 phase 2).
+ * Honest production capability projection (D3A-1 + D1A-2 phase 2 + D3A Worktrees).
  *
- * The resource surface (files/git/watch/upload) is mounted on the Host and
- * stays advertised in BOTH states; `agent` (the runtime) and `sessions`
- * (read-only session history) are added only while sessiond is up, since both
- * depend on the sessiond-backed catalog/runtime. `worktree` is deliberately
- * never advertised (D3A-1): worktree creation works while the authority is up
- * but is not yet a negotiated token. These two lists are shared by the HTTP
- * probe and the WS handshake via the single production resolver, so the four
- * capability surfaces never disagree.
+ * The resource surface (files/git/watch/upload + read-only worktree list) is
+ * mounted on the Host and stays advertised in BOTH states; `agent` (the
+ * runtime) and `sessions` (read-only session history) are added only while
+ * sessiond is up, since both depend on the sessiond-backed catalog/runtime.
+ * `worktree` is the read-only list token (GET /v1/worktrees) and does not
+ * depend on sessiond — there is no `worktree.write`. These two lists are
+ * shared by the HTTP probe and the WS handshake via the single production
+ * resolver, so the four capability surfaces never disagree.
  */
 
 /** Best-effort browser launch; never fatal — `--no-open` is the safe default. */
@@ -212,7 +212,7 @@ export async function runHost(
     allowedHosts: resolveAllowedHosts(options.hostname),
     // HTTP/bootstrap projection: full when sessiond is up, degraded (resource
     // surface only) when down. `agent` + `sessions` are added only while up;
-    // `worktree` is never advertised (D3A-1).
+    // `worktree` (read-only list) is advertised in both states.
     sessiond: production.resolver,
     capabilities: {
       full: [...PRODUCTION_FULL_CAPABILITIES],

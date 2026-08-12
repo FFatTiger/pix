@@ -120,13 +120,20 @@ export function AppShell({ search }: AppShellProps) {
   const connection = runtime.connection;
   const hasProject = Boolean(search.cwd);
   const canCreate = canAgent && hasProject && !runtime.attached && !runtime.sessionStopped;
-  const hasWorkspaceCap = capabilities.includes("files") || capabilities.includes("git");
+  const hasWorkspaceCap =
+    capabilities.includes("files") ||
+    capabilities.includes("git") ||
+    capabilities.includes("worktree");
   const hasCatalogCap = hasCatalogCapability((cap) => capabilities.includes(cap));
 
   // Cap revocation: hide Catalog button and close the dock so no stale UI stays open.
+  // A later re-grant does NOT auto-reopen (same contract as Catalog).
   useEffect(() => {
     if (!hasCatalogCap && catalogOpen) setCatalogOpen(false);
   }, [hasCatalogCap, catalogOpen]);
+  useEffect(() => {
+    if (!hasWorkspaceCap && workspaceOpen) setWorkspaceOpen(false);
+  }, [hasWorkspaceCap, workspaceOpen]);
   // Topbar always shows the SELECTED session (search.session first) so it never
   // claims live B while the runtime is still attached to A; a detached-to-history
   // view falls back to the live session id only when nothing is selected.
@@ -235,7 +242,7 @@ export function AppShell({ search }: AppShellProps) {
                 });
               }}
             >
-              Files/Git
+              Workspace
             </button>
           ) : null}
           {hasCatalogCap ? (

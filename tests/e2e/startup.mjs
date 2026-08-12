@@ -15,13 +15,13 @@ const STOP_TIMEOUT_MS = 10_000;
 const STEP_TIMEOUT_MS = 12_000;
 const PROD_MAX_UPLOAD = 25 * 1024 * 1024;
 
-// D3A-1 + D3B-R1B frozen capability surfaces. The resource layer
-// (files/git/watch/upload) and the four catalog tokens are mounted on the Host
-// and stay advertised in BOTH states; `agent` (the runtime) and `sessions`
-// (read-only history catalog) are added only while sessiond is up. `worktree`
-// is never advertised.
-const FULL_CAPS = ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "models", "auth.providers", "skills", "plugins"];
-const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "models", "auth.providers", "skills", "plugins"];
+// D3A-1 + D3B-R1B + D3A Worktrees frozen capability surfaces. The resource
+// layer (files/git/watch/upload + read-only worktree list) and the four catalog
+// tokens are mounted on the Host and stay advertised in BOTH states; `agent`
+// (the runtime) and `sessions` (read-only history catalog) are added only
+// while sessiond is up. `worktree` is the read-only list token (no write token).
+const FULL_CAPS = ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"];
+const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"];
 
 function delay(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -396,7 +396,8 @@ async function main() {
     assert.equal(down.code, 0, `${down.stdout}\n${down.stderr}`);
     assert.match(down.stdout, new RegExp(`terminated \\(pid ${sessiondPid}\\)`));
 
-    // Four surfaces degrade to the resource-only surface (no agent, no worktree).
+    // Four surfaces degrade to the resource-only surface (no agent/sessions;
+    // worktree read-only list stays advertised).
     const downAck = await waitForCaps(origin, secondHost, { sessiond: "down", caps: DEGRADED_CAPS });
     assert.equal(downAck.limits.maxUpload, PROD_MAX_UPLOAD, "degraded WS still advertises the 25 MiB upload ceiling");
 
@@ -408,6 +409,16 @@ async function main() {
     downForm.append("files", new Blob(["uploaded while down\n"]), "e2e-down-upload.txt");
     const downUpload = await fetch(`${origin}/v1/files?path=${encodeURIComponent(project)}`, { method: "POST", body: downForm });
     assert.equal(downUpload.status, 201, "file upload must remain available while sessiond is down");
+
+    // `worktree` is a read-only list token: the real GET remains available
+    // while sessiond is down and returns the main repository topology.
+    const downWorktrees = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
+    assert.equal(downWorktrees.isGit, true, "worktree GET must remain available while sessiond is down");
+    assert.equal(downWorktrees.projectRoot, project);
+    assert.ok(
+      downWorktrees.worktrees.some((entry) => entry.path === project && entry.isMain === true && entry.authorized === true),
+      "degraded worktree list must include the authorized main worktree",
+    );
 
     // A sessiond-dependent worktree write must 503 BEFORE touching the repo,
     // regardless of `force`. This is the mutation guard.

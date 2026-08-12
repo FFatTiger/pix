@@ -403,7 +403,7 @@ describe("AppShell Catalog / Workspace mutual exclusion", () => {
     expect(screen.getByRole("button", { name: "Show catalog panel" })).toBeTruthy();
   });
 
-  it("opening Catalog closes Files/Git and vice versa", async () => {
+  it("opening Catalog closes Workspace and vice versa", async () => {
     mount({ cwd: "/proj" }, { mode: "local", capabilities: ["files", "models"] });
     fireEvent.click(screen.getByRole("button", { name: "Show workspace panel" }));
     expect(await screen.findByRole("tab", { name: "Files" })).toBeTruthy();
@@ -430,5 +430,35 @@ describe("AppShell Catalog / Workspace mutual exclusion", () => {
     rerender({ cwd: "/proj" }, { mode: "local", capabilities: ["files", "models"] });
     await waitFor(() => expect(screen.getByRole("button", { name: "Show catalog panel" })).toBeTruthy());
     expect(screen.queryByRole("tab", { name: "Models" })).toBeNull();
+  });
+
+  it("shows Workspace button for only-worktree and labels it Workspace", () => {
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: ["worktree"] });
+    const btn = screen.getByRole("button", { name: "Show workspace panel" });
+    expect(btn).toBeTruthy();
+    expect(btn.textContent).toMatch(/Workspace/);
+    expect(btn.textContent).not.toMatch(/Files\/Git/);
+  });
+
+  it("opens and closes the Worktrees-only workspace dock", async () => {
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: ["worktree"] });
+    fireEvent.click(screen.getByRole("button", { name: "Show workspace panel" }));
+    expect(await screen.findByRole("tab", { name: "Worktrees" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide workspace panel" }));
+    expect(screen.queryByRole("tab", { name: "Worktrees" })).toBeNull();
+  });
+
+  it("cap revocation closes Workspace and a later grant does not reopen it", async () => {
+    const { rerender } = mount({ cwd: "/proj" }, { mode: "local", capabilities: ["worktree"] });
+    fireEvent.click(screen.getByRole("button", { name: "Show workspace panel" }));
+    expect(await screen.findByRole("tab", { name: "Worktrees" })).toBeTruthy();
+
+    rerender({ cwd: "/proj" }, { mode: "local", capabilities: ["models"] });
+    expect(screen.queryByRole("button", { name: /workspace panel/i })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Worktrees" })).toBeNull();
+
+    rerender({ cwd: "/proj" }, { mode: "local", capabilities: ["worktree", "models"] });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show workspace panel" })).toBeTruthy());
+    expect(screen.queryByRole("tab", { name: "Worktrees" })).toBeNull();
   });
 });

@@ -6,8 +6,9 @@
 // app + allowed-roots authority:
 //
 //   1. the production capability projection (sessiond down) advertises exactly
-//      the degraded resource surface — `files` + `git`, never `agent`/`worktree`
-//      — so the Client's capability gating is backed by what the Host serves;
+//      the degraded resource surface — `files` + `git` + read-only `worktree`,
+//      never `agent` — so the Client's capability gating is backed by what the
+//      Host serves;
 //   2. the read-only GET surface the Client calls (files list/read/meta, git
 //      status/diff) behaves correctly inside the project root;
 //   3. no privilege escalation: every path the Client could conceivably hand
@@ -90,7 +91,7 @@ async function fixture() {
   return { root, outside, app: host.app };
 }
 
-test("capability projection advertises files+git but not agent/worktree while sessiond is down", async () => {
+test("capability projection advertises files+git+worktree but not agent while sessiond is down", async () => {
   const { app } = await fixture();
   const res = await app.request("http://localhost/v1/capabilities", { headers: headers() });
   assert.equal(res.status, 200);
@@ -104,8 +105,9 @@ test("capability projection advertises files+git but not agent/worktree while se
   assert.deepEqual([...body.capabilities].sort(), expected.sort());
   assert.ok(body.capabilities.includes("files"), "files capability advertised");
   assert.ok(body.capabilities.includes("git"), "git capability advertised");
+  assert.ok(body.capabilities.includes("worktree"), "worktree read-only list advertised even when sessiond is down");
   assert.ok(!body.capabilities.includes("agent"), "agent not advertised while sessiond is down");
-  assert.ok(!body.capabilities.includes("worktree"), "worktree is never advertised (D3A-1)");
+  assert.ok(!body.capabilities.includes("worktree.write"), "no worktree write token");
   assert.ok(!body.capabilities.includes("models"), "catalog tokens not advertised without catalogs");
 });
 

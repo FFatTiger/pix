@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { FilesPanel } from "./FilesPanel";
 import { GitPanel } from "./GitPanel";
+import { WorktreePanel } from "./WorktreePanel";
 
-export type WorkspaceTab = "files" | "git";
+export type WorkspaceTab = "files" | "git" | "worktrees";
 
 export interface WorkspacePanelProps {
   /** Workspace project root (the current cwd), shared with the main session. */
@@ -14,55 +15,68 @@ export interface WorkspacePanelProps {
   onClose: () => void;
 }
 
+const TAB_ORDER: readonly WorkspaceTab[] = ["files", "git", "worktrees"];
+
+const TAB_LABEL: Record<WorkspaceTab, string> = {
+  files: "Files",
+  git: "Git",
+  worktrees: "Worktrees",
+};
+
 /**
- * Capability-gated Files/Git workspace. Only tabs backed by an honestly
- * negotiated host capability are offered, and a panel with no capability at all
- * renders nothing — it never issues an API request.
+ * Capability-gated Files/Git/Worktrees workspace. Only tabs backed by an
+ * honestly negotiated host capability are offered, and a panel with no
+ * capability at all renders nothing — it never issues an API request.
  *
- * The two tabs are independent read-only surfaces that share the workspace
- * `cwd`; the main chat session remains fully usable underneath.
+ * Tabs are independent read-only surfaces that share the workspace `cwd`; the
+ * main chat session remains fully usable underneath. Inactive tabs are not
+ * mounted and therefore never fetch.
  */
 export function WorkspacePanel({ cwd, open, onClose }: WorkspacePanelProps) {
   const { can } = useCapabilities();
   const canFiles = can("files");
   const canGit = can("git");
+  const canWorktree = can("worktree");
 
-  const [tab, setTab] = useState<WorkspaceTab>(canFiles ? "files" : "git");
+  const availableTabs = useMemo(() => {
+    const tabs: WorkspaceTab[] = [];
+    if (canFiles) tabs.push("files");
+    if (canGit) tabs.push("git");
+    if (canWorktree) tabs.push("worktrees");
+    return tabs;
+  }, [canFiles, canGit, canWorktree]);
 
-  // Keep the active tab valid as capabilities change (e.g. host goes away).
+  const defaultTab = availableTabs[0] ?? "files";
+  const [tab, setTab] = useState<WorkspaceTab>(defaultTab);
+
+  // Keep the active tab valid as capabilities change (e.g. host goes away or
+  // shrinks the surface). Prefer the current tab when still available; otherwise
+  // fall back to the first remaining tab.
   useEffect(() => {
-    if (tab === "files" && !canFiles && canGit) setTab("git");
-    if (tab === "git" && !canGit && canFiles) setTab("files");
-  }, [tab, canFiles, canGit]);
+    if (availableTabs.length === 0) return;
+    if (!availableTabs.includes(tab)) setTab(availableTabs[0]!);
+  }, [tab, availableTabs]);
 
-  if (!canFiles && !canGit) return null;
+  if (availableTabs.length === 0) return null;
   if (!open) return null;
+
+  const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0]!;
 
   return (
     <aside className={`workspace-panel`} aria-label="Workspace">
       <div className="workspace-panel-tabs" role="tablist">
-        {canFiles ? (
+        {TAB_ORDER.filter((id) => availableTabs.includes(id)).map((id) => (
           <button
+            key={id}
             type="button"
             role="tab"
-            aria-selected={tab === "files"}
-            className={`workspace-panel-tab${tab === "files" ? " workspace-panel-tab--active" : ""}`}
-            onClick={() => setTab("files")}
+            aria-selected={activeTab === id}
+            className={`workspace-panel-tab${activeTab === id ? " workspace-panel-tab--active" : ""}`}
+            onClick={() => setTab(id)}
           >
-            Files
+            {TAB_LABEL[id]}
           </button>
-        ) : null}
-        {canGit ? (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "git"}
-            className={`workspace-panel-tab${tab === "git" ? " workspace-panel-tab--active" : ""}`}
-            onClick={() => setTab("git")}
-          >
-            Git
-          </button>
-        ) : null}
+        ))}
         <button
           type="button"
           className="icon-btn workspace-panel-close"
@@ -73,8 +87,11 @@ export function WorkspacePanel({ cwd, open, onClose }: WorkspacePanelProps) {
         </button>
       </div>
       <div className="workspace-panel-body">
-        {tab === "files" && canFiles ? <FilesPanel cwd={cwd} canFiles={canFiles} /> : null}
-        {tab === "git" && canGit ? <GitPanel cwd={cwd} canGit={canGit} /> : null}
+        {activeTab === "files" && canFiles ? <FilesPanel cwd={cwd} canFiles={canFiles} /> : null}
+        {activeTab === "git" && canGit ? <GitPanel cwd={cwd} canGit={canGit} /> : null}
+        {activeTab === "worktrees" && canWorktree ? (
+          <WorktreePanel cwd={cwd} canWorktree={canWorktree} />
+        ) : null}
       </div>
     </aside>
   );

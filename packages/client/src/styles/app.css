@@ -668,7 +668,7 @@ html.dark .login-error {
   max-width: 480px;
 }
 
-/* —— Workspace panel (Files/Git) —— */
+/* —— Workspace panel (Files/Git/Worktrees) —— */
 
 .workspace-panel {
   width: 360px;
@@ -1063,6 +1063,58 @@ html.dark .git-status-badge--deleted {
   max-height: 360px;
 }
 
+/* —— Worktrees (read-only topology) —— */
+
+.worktree-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.worktree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.worktree-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  min-width: 0;
+}
+.worktree-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.worktree-branch {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.worktree-path {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 
 /* —— Catalog dock (reuses workspace-panel shell) —— */
 
