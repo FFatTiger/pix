@@ -18,6 +18,7 @@
     "start": "node scripts/product-entry.mjs start",
     "cli": "node scripts/product-entry.mjs cli",
     "test:e2e:startup": "node tests/e2e/startup.mjs",
-    "test:e2e:runtime": "node tests/e2e/runtime.mjs"
+    "test:e2e:runtime": "node tests/e2e/runtime.mjs",
+    "test:e2e:sessions": "node tests/e2e/sessions-history.mjs"
   }
 }

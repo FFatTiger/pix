@@ -7,7 +7,8 @@
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js" },
-    "./sessions": { "types": "./dist/sessions/index.d.ts", "import": "./dist/sessions/index.js" }
+    "./sessions": { "types": "./dist/sessions/index.d.ts", "import": "./dist/sessions/index.js" },
+    "./testing": { "types": "./dist/internal/testing.d.ts", "import": "./dist/internal/testing.js" }
   },
   "scripts": {
     "build:deps": "node ./scripts/build-deps.mjs",

@@ -53,7 +53,6 @@ export function CapabilityProvider({ children, host }: CapabilityProviderProps) 
       : undefined;
   const mode: HostMode = resolved?.mode ?? "local";
   const capabilities = resolved?.capabilities ?? DEFAULT_READONLY_CAPABILITIES;
-  const sessiondUp = host === undefined ? query.data?.sessiond === "up" : resolved?.sessiond === "up";
   const canAgent = isAgentEnabled(capabilities);
   const value: CapabilityContextValue = {
     mode,
@@ -61,10 +60,11 @@ export function CapabilityProvider({ children, host }: CapabilityProviderProps) 
     canAgent,
     isReadonly: !canAgent,
     unavailable: host === undefined && (query.isError || query.data?.sessiond !== "up"),
-    // Session history is only reachable when sessiond (the session authority)
-    // is connected. M1 wires no sessiond, so the client never requests the
-    // unimplemented /v1/sessions and the console stays free of expected 404s.
-    canBrowseSessions: sessiondUp,
+    // Session history (read-only catalog) is reachable ONLY when the host
+    // advertises the negotiated `sessions` capability token — never inferred
+    // from sessiond liveness alone. While down the token is retracted, the
+    // sidebar stays disabled, and the client never requests /v1/sessions.
+    canBrowseSessions: hasCapability(capabilities, "sessions"),
     can: (capability) => hasCapability(capabilities, capability),
     host: { mode, capabilities: [...capabilities] },
   };

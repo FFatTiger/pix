@@ -40,11 +40,11 @@ describe("CapabilityProvider", () => {
   it("loads capabilities and LAN mode from the real bootstrap surface", async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const path = String(input);
-      if (path.includes("bootstrap")) return bootstrapResponse();
+      if (path.includes("bootstrap")) return bootstrapResponse({ capabilities: ["agent", "sessions", "files"] });
       return new Response("{}", { status: 200 });
     }) as unknown as typeof fetch;
     renderProvider();
-    await waitFor(() => expect(screen.getByText("lan:true:false:false:true:agent,files")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("lan:true:false:false:true:agent,sessions,files")).toBeTruthy());
     // Backend-neutral: no SDK/RPC leakage in the negotiated capabilities.
     expect(screen.getByText(/lan:/).textContent).not.toMatch(/sdk|rpc/i);
   });
@@ -55,7 +55,17 @@ describe("CapabilityProvider", () => {
     await waitFor(() => expect(screen.getByText("local:false:true:true:false:")).toBeTruthy());
   });
 
-  it("disables session browsing until sessiond is up", async () => {
+  it("canBrowseSessions follows the `sessions` token, not sessiond liveness: up but no token → false", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const path = String(input);
+      if (path.includes("bootstrap")) return bootstrapResponse({ sessiond: "up", capabilities: ["agent", "files"], mode: "local" });
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    renderProvider();
+    await waitFor(() => expect(screen.getByText("local:true:false:false:false:agent,files")).toBeTruthy());
+  });
+
+  it("canBrowseSessions is false when sessiond is down (token retracted)", async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const path = String(input);
       if (path.includes("bootstrap")) return bootstrapResponse({ sessiond: "down", capabilities: [], mode: "local" });

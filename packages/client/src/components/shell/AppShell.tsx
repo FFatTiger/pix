@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { formatCwdLabel, type WorkspaceSearch } from "@/lib/search-params";
@@ -34,16 +34,25 @@ export function AppShell({ search }: AppShellProps) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [projectPath, setProjectPath] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
-  const initiatedRef = useRef<string | null>(null);
+  const [openingLive, setOpeningLive] = useState(false);
+  const [liveError, setLiveError] = useState<string | null>(null);
 
-  // Deep-link open: when a session id is present and the agent capability is
-  // available, cold-open it once (H1 activates the worker).
-  useEffect(() => {
-    if (!canAgent || !search.session) return;
-    if (initiatedRef.current === `open:${search.session}`) return;
-    initiatedRef.current = `open:${search.session}`;
-    void runtime.openSession(search.session).catch(() => undefined);
-  }, [canAgent, search.session, runtime]);
+  // Read-only deep link (D1A-2 phase 2): a `?session=` link renders history via
+  // the read-only context GET and NEVER auto-activates a Worker. The user must
+  // explicitly Continue live (and only when the `agent` capability is present)
+  // before openSession attaches a runtime. Homepage Open project / New session
+  // remain explicit create actions and are unaffected.
+  const handleContinueLive = (): void => {
+    if (!canAgent || !search.session || runtime.attached || openingLive) return;
+    setLiveError(null);
+    setOpeningLive(true);
+    void runtime
+      .openSession(search.session)
+      .catch((error) => {
+        setLiveError(error instanceof Error && error.message ? error.message : "Could not open a live runtime for this session.");
+      })
+      .finally(() => setOpeningLive(false));
+  };
 
   const connection = runtime.connection;
   const hasProject = Boolean(search.cwd);
@@ -79,7 +88,9 @@ export function AppShell({ search }: AppShellProps) {
       : runtime.attached
         ? "Live runtime attached — send a prompt to begin."
         : search.session
-          ? `Opening session ${search.session.slice(0, 8)}…`
+          ? openingLive
+            ? `Opening live session ${search.session.slice(0, 8)}…`
+            : "Read-only session history — Continue live to attach a runtime."
           : hasProject
             ? "Select a project to start a runtime session."
             : "Open a project to start a runtime session.";
@@ -180,6 +191,22 @@ export function AppShell({ search }: AppShellProps) {
                 </div>
                 {projectError ? <p className="project-open-error" role="alert">{projectError}</p> : null}
               </form>
+            ) : null}
+            {canAgent && search.session && !runtime.attached ? (
+              <div className="continue-live">
+                <button
+                  type="button"
+                  className="text-btn continue-live-btn"
+                  onClick={handleContinueLive}
+                  disabled={openingLive}
+                  aria-busy={openingLive}
+                >
+                  {openingLive ? "Connecting…" : "Continue live"}
+                </button>
+                {liveError ? (
+                  <p className="project-open-error" role="alert">{liveError}</p>
+                ) : null}
+              </div>
             ) : null}
           </div>
 

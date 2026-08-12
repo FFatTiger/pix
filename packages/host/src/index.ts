@@ -57,6 +57,12 @@ export { registerFileRoutes, parseSingleRange } from "./routes/files.js";
 export { registerFileIndexRoutes } from "./routes/file-index.js";
 export { registerGitRoutes } from "./routes/git.js";
 export { registerWorktreeRoutes } from "./routes/worktrees.js";
+export {
+  registerSessionRoutes,
+  mapSessionCatalogError,
+  SESSIONS_MAX_LIMIT,
+  SESSIONS_MAX_OFFSET,
+} from "./routes/sessions.js";
 export { createAllowedRootService, pathContainment } from "./resources/allowed-roots.js";
 export type { AllowedRootPolicy, AllowedRootService, AuthorizedPath, RootExpansionPlan, RootExpansionResult } from "./resources/allowed-roots.js";
 export { createProcessRunner, runChecked } from "./resources/process-runner.js";
@@ -95,6 +101,10 @@ export {
   PRODUCTION_FULL_CAPABILITIES,
   RESOURCE_DEGRADED_CAPABILITIES,
 } from "./composition/production-resources.js";
+export {
+  createSessiondSessionsClient,
+} from "./composition/sessions-client.js";
+export type { SessiondSessionsClientOptions } from "./composition/sessions-client.js";
 export type {
   ProductionResources,
   ProductionResourcesOptions,
@@ -122,6 +132,7 @@ export type {
   RuntimeWsSeam,
   SessionRevocationStore,
   SessiondProbe,
+  SessionHistoryReadClient,
   TrustedProxyOptions,
   WsSession,
 } from "./types.js";

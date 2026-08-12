@@ -6,6 +6,7 @@ import {
   createEnvGateConfigSource,
   SessiondRuntimeGateway,
   createProductionResources,
+  createSessiondSessionsClient,
   InvalidAllowedRootsError,
   PRODUCTION_MAX_UPLOAD_BYTES,
   PRODUCTION_FULL_CAPABILITIES,
@@ -22,14 +23,16 @@ import { readLocalSecret } from "../secret.js";
 import { pixLog, pixErr } from "../log.js";
 
 /**
- * D3A-1 honest production capability projection.
+ * Honest production capability projection (D3A-1 + D1A-2 phase 2).
  *
  * The resource surface (files/git/watch/upload) is mounted on the Host and
- * stays advertised in BOTH states; `agent` (the runtime) is added only while
- * sessiond is up. `worktree` is deliberately never advertised (D3A-1): worktree
- * creation works while the authority is up but is not yet a negotiated token.
- * These two lists are shared by the HTTP probe and the WS handshake via the
- * single production resolver, so the four capability surfaces never disagree.
+ * stays advertised in BOTH states; `agent` (the runtime) and `sessions`
+ * (read-only session history) are added only while sessiond is up, since both
+ * depend on the sessiond-backed catalog/runtime. `worktree` is deliberately
+ * never advertised (D3A-1): worktree creation works while the authority is up
+ * but is not yet a negotiated token. These two lists are shared by the HTTP
+ * probe and the WS handshake via the single production resolver, so the four
+ * capability surfaces never disagree.
  */
 
 /** Best-effort browser launch; never fatal — `--no-open` is the safe default. */
@@ -167,8 +170,8 @@ export async function runHost(
     clientDist,
     allowedHosts: resolveAllowedHosts(options.hostname),
     // HTTP/bootstrap projection: full when sessiond is up, degraded (resource
-    // surface only) when down. `agent` is added only while up; `worktree` is
-    // never advertised (D3A-1).
+    // surface only) when down. `agent` + `sessions` are added only while up;
+    // `worktree` is never advertised (D3A-1).
     sessiond: production.resolver,
     capabilities: {
       full: [...PRODUCTION_FULL_CAPABILITIES],
@@ -177,6 +180,10 @@ export async function runHost(
     // D3A-1 production resource services: files/git/watch/upload + worktree
     // safety (busy preflight + mutation guard wired from the shared adapter).
     resources: production.deps,
+    // D1A-2 phase 2: read-only session history (/v1/sessions*) backed by the
+    // fixed sessiond catalog. The capability token is driven by the resolver
+    // above (sessions only while up); while down these routes answer 503.
+    sessions: { client: createSessiondSessionsClient({ endpoint: location.paths.endpoint, secret }) },
     gate: { config: createBootGateConfigSource() },
     logger: consoleLogger,
     runtimeWs,
@@ -192,7 +199,7 @@ export async function runHost(
   const url = `http://${options.hostname}:${handle.port}`;
   pixLog(`host listening on ${url}`);
   pixLog(`sessiond at ${location.directory} (endpoint ${location.endpoint})`);
-  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); press Ctrl+C to stop the host`);
+  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); sessions history read-only routes mounted; press Ctrl+C to stop the host`);
 
   if (options.open) openBrowser(url);
 
