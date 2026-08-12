@@ -23,6 +23,11 @@ export async function downCommand(argv: string[]): Promise<number> {
   const result = await shutdownSessiond();
   if (result.action === "already-down") {
     pixLog("sessiond: already down");
+  } else if (result.action === "obstructed") {
+    // An unsafe lock, a live listener without a lock, or a live-but-unreachable
+    // pid is not "already down": report the obstruction and refuse to touch it.
+    pixErr(`sessiond: refusing to stop (obstructed): ${result.reason}`);
+    return 1;
   } else if (result.action === "terminated") {
     pixLog(`sessiond: terminated (pid ${result.pid})`);
   } else {

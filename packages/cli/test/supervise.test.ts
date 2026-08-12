@@ -13,6 +13,7 @@ import {
   shutdownSessiond,
   locateSessiond,
 } from "../src/supervise.js";
+import { resolveCliPackageRoot } from "../src/paths.js";
 
 const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "pix-supervise-"));
 
@@ -134,27 +135,82 @@ test("shutdownSessiond SIGTERMs a running daemon and clears lock + socket", asyn
   }
 });
 
-test("shutdownSessiond returns failed (timeout) when the daemon ignores SIGTERM", async (t) => {
+test("shutdownSessiond refuses (obstructed) a live-but-unreachable pid without signalling it", async (t) => {
   if (process.platform === "win32") return t.skip("SIGTERM semantics differ on Windows");
   const dir = await tempDir();
   let child: ChildProcess | undefined;
   try {
-    // A stubborn process: publishes a lock naming itself, then ignores SIGTERM.
+    // A live process that claims the lock but publishes no secret/socket: S1
+    // treats it as an authoritative live-but-unreachable pid, so down must
+    // refuse instead of SIGTERM-ing a pid it cannot confirm is ours.
     const script =
       `const fs=require('node:fs'),p=require('node:path');` +
       `fs.writeFileSync(p.join(${JSON.stringify(dir)},'sessiond.lock'),` +
-      `JSON.stringify({pid:process.pid,instanceId:'stubborn',createdAt:Date.now()}));` +
-      `process.on('SIGTERM',()=>{});setInterval(()=>{},60000);process.stdout.write('ready');`;
+      `JSON.stringify({pid:process.pid,instanceId:'ghost',createdAt:Date.now()}));` +
+      `process.on('SIGTERM',()=>{process.exit(0);});setInterval(()=>{},60000);process.stdout.write('ready');`;
     child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "inherit"] });
     const proc = child;
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("stubborn child did not signal ready")), 2_000);
+      const timer = setTimeout(() => reject(new Error("child did not signal ready")), 2_000);
       proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
       proc.on("error", reject);
     });
     const result = await shutdownSessiond(dir, { timeoutMs: 300 });
+    assert.equal(result.action, "obstructed");
+    assert.match(result.reason, /alive but not reachable/);
+    // Refused: the live pid must NOT have been signalled, and nothing deleted.
+    assert.equal(proc.exitCode, null);
+    assert.equal(proc.signalCode, null);
+    assert.equal(existsSync(sessiondPaths(dir).lockFile), true);
+  } finally {
+    if (child) {
+      const proc = child;
+      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("shutdownSessiond returns failed (timeout) when a reachable daemon ignores SIGTERM", async (t) => {
+  if (process.platform === "win32") return t.skip("SIGTERM semantics differ on Windows");
+  const dir = await tempDir();
+  let child: ChildProcess | undefined;
+  try {
+    // A controlled fixture: real lock + secret + public socket served by the
+    // real SessiondRpcServer (so inspect reports healthy), but the process
+    // ignores SIGTERM — shutdown must report failed(timeout), never success.
+    const script =
+      `import { mkdirSync, writeFileSync } from 'node:fs';` +
+      `import { join } from 'node:path';` +
+      `import { SessiondRpcServer } from '@fffattiger/pix-sessiond';` +
+      `const dir=${JSON.stringify(dir)};` +
+      `mkdirSync(dir,{recursive:true});` +
+      `const secret='s'.repeat(43);` +
+      `writeFileSync(join(dir,'sessiond.lock'),JSON.stringify({pid:process.pid,instanceId:'stubborn',createdAt:Date.now()}));` +
+      `writeFileSync(join(dir,'sessiond.secret'),secret);` +
+      `const server=new SessiondRpcServer({endpoint:join(dir,'sessiond.sock'),secret,handler:{handle:async(m)=>(m==='system.ping'?{pong:true,serverTime:Date.now()}:{pong:true})}});` +
+      `await server.listen();` +
+      `process.on('SIGTERM',()=>{});process.stdout.write('ready');setInterval(()=>{},60000);`;
+    child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: resolveCliPackageRoot(),
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const proc = child;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("stubborn child did not signal ready")), 5_000);
+      proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
+      proc.on("error", reject);
+    });
+    // The fixture must be genuinely reachable, so the failure is a timeout on
+    // a healthy-but-stubborn daemon, not an obstructed classification.
+    const status = await inspectSessiond(dir);
+    assert.equal(status.pingable, true);
+    assert.equal(status.obstructed, false);
+    const result = await shutdownSessiond(dir, { timeoutMs: 300 });
     assert.equal(result.action, "failed");
     assert.equal(result.reason, "timeout");
+    assert.equal(proc.exitCode, null); // SIGTERM ignored; process still alive
   } finally {
     if (child) {
       const proc = child;

@@ -8,6 +8,15 @@ import { pixLog } from "../log.js";
  */
 export async function statusCommand(): Promise<number> {
   const status = await inspectSessiond();
+  if (status.obstructed) {
+    // A live listener without a lock, an unsafe lock, or a live-but-unreachable
+    // pid is an authoritative obstacle, never "not running" — report it
+    // honestly and exit non-zero so scripts do not treat the directory as down.
+    pixLog("sessiond: obstructed");
+    pixLog(`  reason: ${status.obstruction ?? "sessiond state is unsafe"}`);
+    pixLog(`  directory: ${status.directory}`);
+    return 1;
+  }
   if (status.pid === undefined) {
     pixLog("sessiond: not running");
   } else if (!status.alive) {

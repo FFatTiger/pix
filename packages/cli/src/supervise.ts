@@ -25,6 +25,7 @@ export interface ShutdownOptions {
 
 export type ShutdownResult =
   | { action: "already-down"; pid: number | undefined }
+  | { action: "obstructed"; pid: number | undefined; reason: string }
   | { action: "terminated"; pid: number }
   | { action: "failed"; pid: number; reason: "timeout" };
 
@@ -258,19 +259,30 @@ export async function ensureSessiond(
  * a no-op returning "already-down". If the process does not clean up within the
  * timeout it returns `{ action: "failed", reason: "timeout" }` rather than
  * pretending success — a stuck authority must be visible to the operator.
+ *
+ * Fail-closed: an unsafe lock, a live listener without a lock, or a
+ * live-but-unreachable pid is never SIGTERM'd — the daemon state is not safely
+ * owned, so the caller is told it is obstructed instead of being reported as
+ * already-down (which would hide a live authority from the operator).
  */
 export async function shutdownSessiond(
   directory?: string,
   options: ShutdownOptions = {},
 ): Promise<ShutdownResult> {
   const { paths } = locateSessiond(directory);
-  const lock = await readInstanceLockStrict(paths);
-  const record = lock.kind === "ok" ? lock.record : undefined;
-  if (record === undefined || !pidAlive(record.pid)) {
-    return { action: "already-down", pid: record?.pid };
+  const status = await inspectSessiond(directory);
+  if (status.obstructed) {
+    return {
+      action: "obstructed",
+      pid: status.pid,
+      reason: status.obstruction ?? "sessiond state is unsafe",
+    };
+  }
+  if (status.pid === undefined || !status.alive) {
+    return { action: "already-down", pid: status.pid };
   }
   try {
-    process.kill(record.pid, "SIGTERM");
+    process.kill(status.pid, "SIGTERM");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
@@ -279,9 +291,9 @@ export async function shutdownSessiond(
     // instanceAlive reads the lock each poll; once the daemon releases it the
     // lock file is gone and instanceAlive returns false.
     if (!(await instanceAlive(paths)) && !existsSync(paths.endpoint)) {
-      return { action: "terminated", pid: record.pid };
+      return { action: "terminated", pid: status.pid };
     }
     await sleep(50);
   }
-  return { action: "failed", pid: record.pid, reason: "timeout" };
+  return { action: "failed", pid: status.pid, reason: "timeout" };
 }
