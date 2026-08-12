@@ -157,7 +157,7 @@ describe("FilesPanel", () => {
 
     rerender(<FilesPanel cwd="/proj/broken" canFiles={true} />);
     await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
-    expect(screen.getByRole("alert").textContent).toMatch(/unable to list/i);
+    expect(screen.getByRole("alert").textContent).toMatch(/project path was not found/i);
   });
 
   it("canonicalizes a symlinked cwd and never reports a selected file as outside-root", async () => {
@@ -238,5 +238,68 @@ describe("FilesPanel", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(screen.getByText("b1.txt")).toBeTruthy();
     expect(screen.queryByText("a1.txt")).toBeNull();
+  });
+
+  it.each([
+    ["INVALID_PATH", 400, /invalid project path/i],
+    ["PATH_NOT_FOUND", 404, /project path was not found/i],
+    ["NO_ALLOWED_ROOTS", 404, /no allowed roots are configured/i],
+    ["PATH_FORBIDDEN", 403, /outside the allowed roots/i],
+    ["INTERNAL", 500, /unable to list directory/i],
+  ] as const)(
+    "maps a list %s error to fixed copy and never shows the raw leak",
+    async (code, status, expected) => {
+      globalThis.fetch = vi.fn(async (input) => {
+        const url = new URL(String(input), "http://pix.local");
+        const params = Object.fromEntries(url.searchParams);
+        if (url.pathname === "/v1/files" && params.op === "list") {
+          return json({ code, message: "SECRET=/etc/passwd /Users/x/.agent stack" }, status);
+        }
+        return json({});
+      }) as unknown as typeof fetch;
+
+      renderPanel({ cwd: "/proj" });
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+      const alert = screen.getByRole("alert");
+      expect(alert.textContent).toMatch(expected);
+      expect(alert.textContent).not.toMatch(/SECRET|\/etc\/passwd|\/Users\/x|stack|\.agent/i);
+    },
+  );
+
+  it("maps a network failure on list to fixed copy and never shows the raw leak", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("ECONNREFUSED raw secret /var/key");
+    }) as unknown as typeof fetch;
+
+    renderPanel({ cwd: "/proj" });
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toMatch(/network error — unable to list directory/i);
+    expect(alert.textContent).not.toMatch(/ECONNREFUSED|\/var\/key|secret/i);
+  });
+
+  it("maps an unknown read error to fixed copy and never shows the raw leak", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "http://pix.local");
+      const params = Object.fromEntries(url.searchParams);
+      if (url.pathname === "/v1/files" && params.op === "list") {
+        return json({ path: "/proj", entries: [{ name: "a.ts", isDir: false, isSymlink: false }] });
+      }
+      if (url.pathname === "/v1/files" && params.op === "meta") {
+        return json({ path: "/proj/a.ts", size: 11, modified: "2026-01-01T00:00:00.000Z", isDirectory: false, mime: "text/plain" });
+      }
+      if (url.pathname === "/v1/files" && params.op === "read") {
+        return json({ code: "INTERNAL", message: "SECRET=/var/key stack at /secret" }, 500);
+      }
+      return json({});
+    }) as unknown as typeof fetch;
+
+    renderPanel({ cwd: "/proj" });
+    await waitFor(() => expect(screen.getByText("a.ts")).toBeTruthy());
+    fireEvent.click(screen.getByText("a.ts"));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toMatch(/unable to read file/i);
+    expect(alert.textContent).not.toMatch(/SECRET|\/var\/key|\/secret|stack/i);
   });
 });

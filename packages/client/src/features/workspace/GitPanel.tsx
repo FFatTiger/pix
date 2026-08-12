@@ -21,6 +21,41 @@ const STATUS_LABEL: Record<string, string> = {
   conflict: "Conflict",
 };
 
+/**
+ * Fixed git error copy. Never renders body/stack/path/secret/raw host
+ * messages — maps known codes, then kind for network/timeout, then falls back
+ * to a generic sentence scoped to the operation (status vs diff).
+ */
+export function describeGitError(error: unknown, operation: "status" | "diff"): string {
+  if (error instanceof HttpError) {
+    switch (error.code) {
+      case "CWD_REQUIRED":
+      case "GIT_INPUT_REQUIRED":
+      case "INVALID_PATH":
+      case "INVALID_INPUT":
+        return "Invalid project path.";
+      case "PATH_FORBIDDEN":
+      case "ROOT_REPLACED":
+        return "Project path is outside the allowed roots.";
+      case "PATH_NOT_FOUND":
+        return "Project path was not found.";
+      default:
+        break;
+    }
+    if (error.kind === "network") {
+      return operation === "diff"
+        ? "Network error — unable to load diff."
+        : "Network error — unable to load git status.";
+    }
+    if (error.kind === "timeout") {
+      return operation === "diff"
+        ? "Request timed out — unable to load diff."
+        : "Request timed out — unable to load git status.";
+    }
+  }
+  return operation === "diff" ? "Unable to load diff." : "Unable to load git status.";
+}
+
 function describeStatus(code: string): string {
   return STATUS_LABEL[code] ?? code;
 }
@@ -65,7 +100,7 @@ export function GitPanel({ cwd, canGit }: GitPanelProps) {
     return (
       <div className="git-panel" aria-label="Git">
         <p className="workspace-hint workspace-hint--error" role="alert">
-          Unable to load git status. {status.error instanceof HttpError ? status.error.message : "Host unreachable."}
+          {describeGitError(status.error, "status")}
         </p>
         <button type="button" className="text-btn" onClick={refresh}>Retry</button>
       </div>
@@ -147,7 +182,7 @@ export function GitPanel({ cwd, canGit }: GitPanelProps) {
               {diff.isLoading ? <p className="workspace-hint">Loading diff…</p> : null}
               {diff.isError ? (
                 <p className="workspace-hint workspace-hint--error" role="alert">
-                  Unable to load diff. {diff.error instanceof HttpError ? diff.error.message : "Host unreachable."}
+                  {describeGitError(diff.error, "diff")}
                 </p>
               ) : null}
               {diff.data ? (

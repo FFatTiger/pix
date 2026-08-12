@@ -32,7 +32,7 @@ function formatBytes(size: number): string {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
 }
 
-/** Map a read/meta failure into a single friendly sentence. */
+/** Map a read failure into a single friendly sentence. Never echoes raw host messages. */
 function describeReadError(error: unknown): string {
   if (error instanceof HttpError) {
     switch (error.code) {
@@ -45,12 +45,39 @@ function describeReadError(error: unknown): string {
       case "PATH_NOT_FOUND":
         return "File no longer exists.";
       case "PATH_FORBIDDEN":
+      case "ROOT_REPLACED":
         return "File is outside the project root.";
       default:
-        return `Unable to read file: ${error.message || "host error"}`;
+        break;
     }
+    if (error.kind === "network") return "Network error — unable to read file.";
+    if (error.kind === "timeout") return "Request timed out — unable to read file.";
   }
-  return "Unable to read file: the host is unreachable.";
+  return "Unable to read file.";
+}
+
+/** Fixed directory-listing error copy. Never renders body/stack/path/secret/raw host messages. */
+function describeListError(error: unknown): string {
+  if (error instanceof HttpError) {
+    switch (error.code) {
+      case "CWD_REQUIRED":
+      case "INVALID_PATH":
+      case "INVALID_INPUT":
+        return "Invalid project path.";
+      case "PATH_NOT_FOUND":
+        return "Project path was not found.";
+      case "NO_ALLOWED_ROOTS":
+        return "No allowed roots are configured.";
+      case "PATH_FORBIDDEN":
+      case "ROOT_REPLACED":
+        return "Project path is outside the allowed roots.";
+      default:
+        break;
+    }
+    if (error.kind === "network") return "Network error — unable to list directory.";
+    if (error.kind === "timeout") return "Request timed out — unable to list directory.";
+  }
+  return "Unable to list directory.";
 }
 
 export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
@@ -177,9 +204,7 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
       <div className="files-list-scroll">
         {list.isLoading ? <p className="workspace-hint">Loading directory…</p> : null}
         {list.isError ? (
-          <p className="workspace-hint workspace-hint--error" role="alert">
-            Unable to list directory. {list.error instanceof HttpError ? list.error.message : "Host unreachable."}
-          </p>
+          <p className="workspace-hint workspace-hint--error" role="alert">{describeListError(list.error)}</p>
         ) : null}
         {!list.isLoading && !list.isError && entries.length === 0 ? (
           <p className="workspace-hint">This directory is empty.</p>
