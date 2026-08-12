@@ -81,6 +81,36 @@ function mount(
   );
 }
 
+/**
+ * Mount that allows re-rendering with a different capability host while keeping
+ * the SAME QueryClient and runtime store, so cached query data and in-flight
+ * requests survive a capability transition (true→false revocation). Returns a
+ * `rerender(nextHost)` that only swaps the CapabilityProvider host prop.
+ */
+function mountDynamic(
+  children: ReactNode,
+  host: Partial<HostInfo> | null | undefined,
+): (nextHost: Partial<HostInfo> | null | undefined) => void {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const deps = fakeDeps();
+  const tree = (h: Partial<HostInfo> | null | undefined): ReactNode => (
+    <ErrorBoundary>
+      <QueryClientProvider client={qc}>
+        <HttpClientProvider>
+          <CapabilityProvider {...(h === undefined ? {} : { host: h })}>
+            <RuntimeProvider deps={deps}>
+              <Capture />
+              {children}
+            </RuntimeProvider>
+          </CapabilityProvider>
+        </HttpClientProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
+  );
+  const view = render(tree(host));
+  return (nextHost: Partial<HostInfo> | null | undefined) => view.rerender(tree(nextHost));
+}
+
 function ack(caps: string[] = ["agent"]) {
   return {
     type: "handshake_ack",
@@ -956,5 +986,158 @@ describe("projectBashViewModel integration via prebuilt rows", () => {
     expect(screen.getByText("out")).toBeTruthy();
     expect(screen.getByText("exit 2")).toBeTruthy();
     expect(document.body.innerHTML).not.toContain("/nope");
+  });
+});
+
+describe("TranscriptList — history capability fail-closed", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+  });
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    cleanup();
+  });
+
+  it("hides cached history immediately when the sessions capability is retracted (same QueryClient, no new fetch)", async () => {
+    const fetchMock = vi.fn(async () =>
+      assistantContentResponse("s-rev", [{ type: "text", text: "CACHED HISTORY" }]),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const rerender = mountDynamic(<TranscriptList sessionId="s-rev" live={false} />, {
+      mode: "local",
+      capabilities: ["agent", "sessions"],
+    });
+
+    // History loaded and cached on the shared QueryClient.
+    expect(await screen.findByText("CACHED HISTORY")).toBeTruthy();
+    expect(screen.queryByText("Session history unavailable until the runtime connects.")).toBeNull();
+    const callsBefore = fetchMock.mock.calls.length;
+
+    // Revoke the sessions capability without remounting (same QueryClient + store).
+    rerender({ mode: "local", capabilities: ["agent"] });
+
+    // Stale cached history is hidden immediately; the honest message appears.
+    expect(screen.queryByText("CACHED HISTORY")).toBeNull();
+    expect(screen.getByText("Session history unavailable until the runtime connects.")).toBeTruthy();
+    expect(screen.queryByText("No messages")).toBeNull();
+
+    // No additional context request is triggered by the revocation.
+    await act(async () => {
+      await flush();
+    });
+    expect(fetchMock.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("ignores a late-arriving context response after capability revocation", async () => {
+    let resolveHistory!: (response: Response) => void;
+    const historyPromise = new Promise<Response>((resolve) => {
+      resolveHistory = resolve;
+    });
+    const fetchMock = vi.fn(async () => historyPromise);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const rerender = mountDynamic(<TranscriptList sessionId="s-late" live={false} />, {
+      mode: "local",
+      capabilities: ["agent", "sessions"],
+    });
+
+    // The context request is in flight (pending) and not yet resolved.
+    await act(async () => {
+      await flush();
+    });
+    expect(fetchMock.mock.calls.length).toBe(1);
+    // With-cap + pending keeps the existing loading/empty semantics ("No messages").
+    expect(screen.getByText("No messages")).toBeTruthy();
+
+    // Revoke the capability while the request is still in flight.
+    rerender({ mode: "local", capabilities: ["agent"] });
+    expect(screen.getByText("Session history unavailable until the runtime connects.")).toBeTruthy();
+
+    // The late response now arrives successfully.
+    await act(async () => {
+      resolveHistory(assistantContentResponse("s-late", [{ type: "text", text: "LATE HISTORY" }]));
+      await flush();
+    });
+
+    // Late history must not be restored; the unavailable message persists.
+    expect(screen.queryByText("LATE HISTORY")).toBeNull();
+    expect(screen.getByText("Session history unavailable until the runtime connects.")).toBeTruthy();
+    expect(fetchMock.mock.calls.length).toBe(1);
+  });
+
+  it("renders the unavailable message (not No messages) and issues 0 context requests with no sessions capability", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("unexpected context fetch");
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-nocap" live={false} />, {
+      mode: "local",
+      capabilities: ["agent"],
+    });
+
+    expect(screen.getByText("Session history unavailable until the runtime connects.")).toBeTruthy();
+    expect(screen.queryByText("No messages")).toBeNull();
+
+    await act(async () => {
+      await flush();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows No messages when sessions capability is present but context is empty", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ context: { sessionId: "s-empty", entries: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-empty" live={false} />, {
+      mode: "local",
+      capabilities: ["agent", "sessions"],
+    });
+    expect(await screen.findByText("No messages")).toBeTruthy();
+    expect(screen.queryByText("Session history unavailable until the runtime connects.")).toBeNull();
+  });
+
+  it("renders the live transcript when sessions capability is absent (no unavailable message, no context fetch)", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("unexpected context fetch");
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    mount(<TranscriptList sessionId="s-live" live />, {
+      mode: "local",
+      capabilities: ["agent"],
+    });
+    const ws = await driveReady();
+    await driveAttach(ws, "s-live");
+
+    await serverSend(ws, {
+      type: "event",
+      payload: {
+        type: "message_start",
+        sessionId: "s-live",
+        streamId: "st",
+        messageId: "m",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "LIVE MESSAGE" }],
+          model: "m",
+          provider: "p",
+        },
+        eventId: 1,
+        epoch: "e1",
+      },
+    });
+
+    expect(screen.getByText("LIVE MESSAGE")).toBeTruthy();
+    expect(screen.queryByText("Session history unavailable until the runtime connects.")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

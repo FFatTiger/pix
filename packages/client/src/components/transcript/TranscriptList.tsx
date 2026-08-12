@@ -272,6 +272,11 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
       }
       return buildTranscriptRows(inputs, { readonlyBanner: false });
     }
+    // Fail-closed: while the sessions capability is retracted the transcript
+    // never derives rows from cached context (stale history) and never trusts a
+    // late-arriving response after revocation (context.data is not consulted).
+    // The empty-state JSX renders the honest "history unavailable" message.
+    if (!canBrowseSessions) return [];
     const messages = context.data ? context.data.context.entries.map(toTranscript) : [];
     return buildTranscriptRows(messages, { readonlyBanner: isReadonly });
   }, [
@@ -282,6 +287,7 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
     liveBash,
     liveIsBashRunning,
     context.data,
+    canBrowseSessions,
     isReadonly,
   ]);
 
@@ -311,7 +317,9 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
           );
         })}
       </div>
-      {isLive ? null : context.isError && sessionId ? (
+      {isLive ? null : !canBrowseSessions ? (
+        <div className="transcript-empty">Session history unavailable until the runtime connects.</div>
+      ) : context.isError && sessionId ? (
         <div className="transcript-empty">Session history unavailable</div>
       ) : rows.length === 0 ? (
         <div className="transcript-empty">
