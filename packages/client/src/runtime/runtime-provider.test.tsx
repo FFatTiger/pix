@@ -145,6 +145,21 @@ describe("Composer — capability honesty + send/abort", () => {
     const interrupt = lastFrame<{ type: string; payload: { interrupt: { type: string } } }>(ws, "interrupt")!;
     expect(interrupt.payload.interrupt.type).toBe("abort");
   });
+
+  it("never surfaces a non-selected session's stream: live=false stays disabled/readonly with no Abort", async () => {
+    mount(<Composer live={false} />);
+    const ws = await driveReady();
+    await driveAttach(ws);
+    // The runtime (A) starts streaming…
+    await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
+    // …but the selected session is NOT live, so this composer must stay honest:
+    // no stale streaming state, no Abort for another session, input disabled.
+    const textarea = screen.getByLabelText("Message the agent") as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(true);
+    expect(screen.queryByLabelText("Abort the running response")).toBeNull();
+    expect(screen.queryByText("streaming")).toBeNull();
+    expect(screen.getByText(/selected session is not live/)).toBeTruthy();
+  });
 });
 
 describe("TranscriptList — runtime messages", () => {

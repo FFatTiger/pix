@@ -29,7 +29,10 @@ export function Composer({ live: liveProp }: ComposerProps) {
 
   // `live` is true only when the selected session IS the attached runtime.
   const live = liveProp ?? runtime.attached;
-  const streaming = runtime.streaming;
+  // Only the SELECTED live session's stream controls this composer. When the
+  // selection is not live (viewing history while some other session streams),
+  // never show that stale session's streaming state or Abort control.
+  const streaming = live && runtime.streaming;
   const canSend = canAgent && live && !streaming && text.trim().length > 0 && !runtime.sessionStopped;
   const disabledReason = runtime.sessionStopped
     ? "session stopped"
