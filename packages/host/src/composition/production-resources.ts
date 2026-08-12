@@ -69,12 +69,16 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
 ];
 
 /**
- * Full capabilities when sessiond is up: agent first, then the resource surface.
- * Order is frozen. worktree is NOT advertised (D3A-1): worktree creation works
- * while the authority is up but is not yet a negotiated capability.
+ * Full capabilities when sessiond is up: agent first, then the read-only
+ * sessions history surface, then the resource surface. Order is frozen.
+ * `sessions` (read-only history) requires the sessiond-backed catalog and is
+ * advertised ONLY while the authority is up — D1A-2 phase 2. worktree is NOT
+ * advertised (D3A-1): worktree creation works while the authority is up but is
+ * not yet a negotiated capability.
  */
 export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "agent",
+  "sessions",
   "files",
   "files.write",
   "files.watch",

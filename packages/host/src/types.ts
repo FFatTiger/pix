@@ -22,6 +22,7 @@ export interface TrustedProxyOptions {
 /** Capability tokens negotiated with the client (mirrors client shell tokens). */
 export type HostCapability =
   | "agent"
+  | "sessions"
   | "files"
   | "files.write"
   | "files.watch"
@@ -31,6 +32,7 @@ export type HostCapability =
 
 export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "agent",
+  "sessions",
   "files",
   "files.write",
   "files.watch",
@@ -145,6 +147,18 @@ export interface SessiondProbe {
   isAvailable(): boolean | Promise<boolean>;
 }
 
+/**
+ * Read-only session history port (D1A-2 phase 2). A narrow, protocol-independent
+ * seam: composition wires the real sessiond RPC client (which already schema-
+ * validates results) and tests inject a fake. Methods return `unknown` so this
+ * foundation module stays free of protocol DTO imports; the route narrows.
+ */
+export interface SessionHistoryReadClient {
+  list(params: { cwd?: string; limit?: number; offset?: number }): Promise<unknown>;
+  read(sessionId: string): Promise<unknown>;
+  context(sessionId: string, leafId?: string): Promise<unknown>;
+}
+
 export interface HostCapabilityDeps {
   /** Capabilities offered while sessiond is available (default all). */
   full?: readonly HostCapability[];
@@ -183,6 +197,13 @@ export interface HostDeps {
   logger?: HostLogger;
   /** H1B local files/git/cwd/worktree services. Omitted means routes are unavailable. */
   resources?: ResourceDeps;
+  /**
+   * D1A-2 phase 2: read-only session history routes (/v1/sessions*). Omitted
+   * means the routes are unavailable. The client is the sessiond-backed catalog;
+   * a sessiond outage surfaces as 503 on these routes and retracts the
+   * `sessions` capability token (driven by the capability resolver, not here).
+   */
+  sessions?: { client: SessionHistoryReadClient };
   /** H0B seam: injected runtime protocol WS handler. */
   runtimeWs?: RuntimeWsSeam;
   /** Hello-frame timeout in ms for the WS upgrade seam (default 10_000). */

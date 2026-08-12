@@ -26,7 +26,7 @@ test("health reports sessiond up with full capabilities", async () => {
   assert.equal(body.ok, true);
   assert.equal(body.service, "pix-host");
   assert.equal(body.sessiond, "up");
-  assert.deepEqual(body.capabilities, ["agent", "files", "files.write", "files.watch", "files.upload", "git", "worktree"]);
+  assert.deepEqual(body.capabilities, ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree"]);
 });
 
 test("health reports sessiond down with empty capabilities when nothing is wired (honest M1 default)", async () => {

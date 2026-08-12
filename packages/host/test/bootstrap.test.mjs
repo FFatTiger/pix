@@ -37,7 +37,7 @@ test("bootstrap reflects sessiond up with full capabilities", async () => {
   const res = await app.request("http://localhost/v1/bootstrap", { headers: { host: "localhost" } });
   const body = await res.json();
   assert.equal(body.sessiond, "up");
-  assert.deepEqual(body.capabilities, ["agent", "files", "files.write", "files.watch", "files.upload", "git", "worktree"]);
+  assert.deepEqual(body.capabilities, ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree"]);
 });
 
 test("bootstrap reports gate required when enabled", async () => {
