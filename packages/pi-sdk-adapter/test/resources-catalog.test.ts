@@ -383,3 +383,62 @@ describe("read-only resource catalog (D3B-R1A)", () => {
     );
   });
 });
+
+describe("resource catalog default trust: malformed trust.json fails closed (D3B-R1A)", () => {
+  // The default `trusted` computation shares the corruption-safe logic with the
+  // trust catalog: a malformed/unreadable trust.json yields trusted=false so
+  // project resources are withheld — with NO throw and no raw path/content/stack.
+  it("withholds project resources without throwing when trust.json is corrupt (no `trusted` option)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-res-trust-corrupt-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    await mkdir(join(agentDir, "skills", "global-skill"), { recursive: true });
+    await writeFile(
+      join(agentDir, "skills", "global-skill", "SKILL.md"),
+      "---\nname: global-skill\ndescription: g\n---\n# global-skill",
+      "utf8",
+    );
+    // Trust-requiring project resource (.pi/skills) so the gate is real.
+    await mkdir(join(projectCwd, ".pi", "skills", "proj-skill"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(projectCwd, ".pi", "skills", "proj-skill", "SKILL.md"),
+      "---\nname: proj-skill\ndescription: p\n---\n# proj-skill",
+      "utf8",
+    );
+    // CORRUPT trust.json in the agent dir.
+    await writeFile(
+      join(agentDir, "trust.json"),
+      "{ this is deliberately invalid json {{{",
+      "utf8",
+    );
+    try {
+      // No `trusted` option => default computation reads the corrupt trust.json.
+      const catalog = createPiSdkResourceCatalog({ cwd: projectCwd, agentDir });
+      // Must not throw despite the corrupt trust.json.
+      const skills = await catalog.listSkills();
+      const names = skills.map((s) => s.name);
+      assert.ok(
+        names.includes("global-skill"),
+        "global skill still loads under corrupt trust",
+      );
+      assert.ok(
+        !names.includes("proj-skill"),
+        "project skill withheld when trust.json is corrupt (fail closed)",
+      );
+      // No raw SDK Error, path, file content, or stack may surface.
+      const payload = JSON.stringify(skills);
+      assert.ok(!payload.includes("trust.json"), "trust path leaked");
+      assert.ok(
+        !payload.includes("this is deliberately invalid json"),
+        "corrupt file content leaked",
+      );
+      // Commands + plugins must also not throw under corrupt trust.
+      await catalog.listCommands();
+      await catalog.listPlugins();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

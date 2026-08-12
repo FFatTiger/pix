@@ -1,12 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPiSdkModelCatalog, type PiSdkModelCatalogOptions } from "../src/models/index.js";
 import { createPiSdkModelStore } from "../src/internal/model-store.js";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { readdir } from "node:fs/promises";
+import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
 import type { ModelCatalogPort, ModelInfo } from "@fffattiger/pix-runtime-core";
 
 // Compile-time proof: PiSdkModelCatalogOptions.cwd is REQUIRED — an options
@@ -45,6 +45,60 @@ function installNetworkGuard(): () => boolean {
     globalThis.fetch = original;
     return called;
   };
+}
+
+// Provider env-var keys that can make a provider available without auth.json.
+// Cleared for default/isolation tests so ambient env cannot flip availability;
+// the tests drive availability ONLY through the seeded in-memory store.
+const ENV_KEYS = [
+  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+  "DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY", "XAI_API_KEY",
+];
+
+function withEnv(
+  overrides: Record<string, string | undefined>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of new Set([...ENV_KEYS, ...Object.keys(overrides)])) {
+    saved[key] = process.env[key];
+    if (overrides[key] === undefined) delete process.env[key];
+    else process.env[key] = overrides[key];
+  }
+  return fn().finally(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
+/**
+ * Build an isolated offline ModelRuntime with a CONTROLLED in-memory credential
+ * store (zero writes, no network, no env dependency). The catalog is the
+ * deterministic built-in one; availability is driven ONLY by the seeded
+ * credentials, so the enabled-model scope resolves to KNOWN models regardless
+ * of the ambient environment. An empty `providers` list yields a runtime with
+ * no configured auth (getAvailable() empty in a clean env).
+ */
+async function seededRuntime(
+  agentDir: string,
+  providers: readonly string[],
+): Promise<ModelRuntime> {
+  const creds = new InMemoryCredentialStore();
+  for (const providerId of providers) {
+    await creds.modify(providerId, async () => ({
+      type: "api_key",
+      key: `sk-test-${providerId}`,
+    }));
+  }
+  return ModelRuntime.create({
+    allowModelNetwork: false,
+    credentials: creds,
+    modelsStore: new InMemoryModelsStore(),
+    // Pin models.json to the (empty) injected agentDir => no global fallback.
+    modelsPath: join(agentDir, "models.json"),
+  });
 }
 
 describe("read-only model catalog (D3B-R1A)", () => {
@@ -187,73 +241,132 @@ describe("read-only model catalog (D3B-R1A)", () => {
   });
 });
 
-describe("model default validation + enabled scope (D3B-R1A hardening)", () => {
-  async function tmpCwd(): Promise<string> {
+describe("model default validation + enabled scope (D3B-R1A hardening, env-independent)", () => {
+  async function tmpRoot(): Promise<{ root: string; agentDir: string; cwd: string }> {
     const root = await mkdtemp(join(tmpdir(), "pix-model-default-"));
+    const agentDir = join(root, "agent");
     const cwd = join(root, "cwd");
+    await mkdir(agentDir, { recursive: true });
     await mkdir(cwd, { recursive: true });
-    return cwd;
+    return { root, agentDir, cwd };
   }
 
   it("valid configured default is returned", async () => {
-    const cwd = await tmpCwd();
+    const { root, agentDir, cwd } = await tmpRoot();
     try {
-      const probe = createPiSdkModelCatalog({ cwd, agentDir: cwd });
-      const models = await probe.listModels();
-      assert.ok(models.length > 0, "offline catalog has built-in models");
-      const target = models[0]!;
-      const settings = SettingsManager.inMemory();
-      settings.setDefaultModelAndProvider(target.provider, target.id);
-      const store = createPiSdkModelStore({ cwd, settingsManager: settings });
-      const def = await store.getDefaultModel();
-      assert.deepEqual(def, { provider: target.provider, id: target.id });
+      await withEnv({}, async () => {
+        const runtime = await seededRuntime(agentDir, ["anthropic"]);
+        const anthropicModels = runtime
+          .getModels()
+          .filter((m) => m.provider === "anthropic");
+        assert.ok(anthropicModels.length > 0, "anthropic has catalog models");
+        const target = anthropicModels[0]!;
+        const settings = SettingsManager.inMemory();
+        settings.setDefaultModelAndProvider("anthropic", target.id);
+        const store = createPiSdkModelStore({
+          cwd,
+          settingsManager: settings,
+          modelRuntime: runtime,
+        });
+        const def = await store.getDefaultModel();
+        assert.deepEqual(def, { provider: "anthropic", id: target.id });
+      });
     } finally {
-      await rm(join(cwd, ".."), { recursive: true, force: true }).catch(() => {});
+      await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("nonexistent configured default falls back to first model", async () => {
-    const cwd = await tmpCwd();
+  it("invalid configured default falls back to first enabled model", async () => {
+    const { root, agentDir, cwd } = await tmpRoot();
     try {
-      const settings = SettingsManager.inMemory();
-      settings.setDefaultModelAndProvider("anthropic", "zzz-does-not-exist");
-      const store = createPiSdkModelStore({ cwd, settingsManager: settings });
-      const def = await store.getDefaultModel();
-      assert.ok(def, "invalid default falls back to first enabled model");
+      await withEnv({}, async () => {
+        const runtime = await seededRuntime(agentDir, ["anthropic"]);
+        const first = runtime.getModels()[0]!;
+        const settings = SettingsManager.inMemory();
+        settings.setDefaultModelAndProvider("anthropic", "zzz-does-not-exist");
+        const store = createPiSdkModelStore({
+          cwd,
+          settingsManager: settings,
+          modelRuntime: runtime,
+        });
+        const def = await store.getDefaultModel();
+        // No enabledModels => all catalog models enabled => first catalog model.
+        assert.deepEqual(def, { provider: first.provider, id: first.id });
+      });
     } finally {
-      await rm(join(cwd, ".."), { recursive: true, force: true }).catch(() => {});
+      await rm(root, { recursive: true, force: true });
     }
   });
 
   it("default disabled by enabledModels falls back to first enabled", async () => {
-    const cwd = await tmpCwd();
+    const { root, agentDir, cwd } = await tmpRoot();
     try {
-      const probe = createPiSdkModelCatalog({ cwd, agentDir: cwd });
-      const models = await probe.listModels();
-      const target = models.find((m) => m.provider === "anthropic") ?? models[0]!;
-      const settings = SettingsManager.inMemory();
-      settings.setDefaultModelAndProvider(target.provider, target.id);
-      // Scope excludes the target provider => default disabled, must fall back.
-      settings.setEnabledModels(["openai/*"]);
-      const store = createPiSdkModelStore({ cwd, settingsManager: settings });
-      const def = await store.getDefaultModel();
-      assert.ok(def, "disabled default falls back to first enabled");
-      assert.notDeepEqual(def, { provider: target.provider, id: target.id });
+      await withEnv({}, async () => {
+        const runtime = await seededRuntime(agentDir, ["anthropic", "openai"]);
+        const anthropicModels = runtime
+          .getModels()
+          .filter((m) => m.provider === "anthropic");
+        const target = anthropicModels[0]!;
+        const settings = SettingsManager.inMemory();
+        settings.setDefaultModelAndProvider("anthropic", target.id);
+        // Scope excludes anthropic => default disabled, falls back to first openai.
+        settings.setEnabledModels(["openai/*"]);
+        const store = createPiSdkModelStore({
+          cwd,
+          settingsManager: settings,
+          modelRuntime: runtime,
+        });
+        const def = await store.getDefaultModel();
+        assert.ok(def, "disabled default falls back to first enabled");
+        assert.equal(
+          def!.provider,
+          "openai",
+          "fallback is the first enabled (openai) model",
+        );
+        assert.notDeepEqual(def, { provider: "anthropic", id: target.id });
+      });
     } finally {
-      await rm(join(cwd, ".."), { recursive: true, force: true }).catch(() => {});
+      await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("enabledModels matching nothing => null", async () => {
-    const cwd = await tmpCwd();
+  it("enabledModels with no AVAILABLE match => null", async () => {
+    const { root, agentDir, cwd } = await tmpRoot();
     try {
-      const settings = SettingsManager.inMemory();
-      settings.setEnabledModels(["zzz-no-match-*"]);
-      const store = createPiSdkModelStore({ cwd, settingsManager: settings });
-      const def = await store.getDefaultModel();
-      assert.equal(def, null, "empty enabled scope => null default");
+      await withEnv({}, async () => {
+        const runtime = await seededRuntime(agentDir, ["anthropic"]);
+        const settings = SettingsManager.inMemory();
+        settings.setEnabledModels(["zzz-no-match-*"]);
+        const store = createPiSdkModelStore({
+          cwd,
+          settingsManager: settings,
+          modelRuntime: runtime,
+        });
+        const def = await store.getDefaultModel();
+        assert.equal(def, null, "enabled scope matching nothing available => null");
+      });
     } finally {
-      await rm(join(cwd, ".."), { recursive: true, force: true }).catch(() => {});
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("no enabledModels => deterministic first valid model", async () => {
+    const { root, agentDir, cwd } = await tmpRoot();
+    try {
+      await withEnv({}, async () => {
+        const runtime = await seededRuntime(agentDir, ["anthropic"]);
+        const first = runtime.getModels()[0]!;
+        const settings = SettingsManager.inMemory();
+        const store = createPiSdkModelStore({
+          cwd,
+          settingsManager: settings,
+          modelRuntime: runtime,
+        });
+        const def = await store.getDefaultModel();
+        assert.deepEqual(def, { provider: first.provider, id: first.id });
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });
@@ -265,15 +378,133 @@ describe("model catalog creates zero files (D3B-R1A hardening)", () => {
     const cwd = join(root, "cwd");
     await mkdir(cwd, { recursive: true });
     try {
-      const before = await readdir(root);
-      const catalog = createPiSdkModelCatalog({ cwd, agentDir });
-      await catalog.listModels();
-      await catalog.getDefaultModel();
-      await catalog.resolveModel({ provider: "anthropic", modelId: "sonnet" }).catch(() => {});
-      const after = await readdir(root);
-      assert.deepEqual(after, before, "model catalog reads must create no files/dirs");
+      await withEnv({}, async () => {
+        const before = await readdir(root);
+        const catalog = createPiSdkModelCatalog({ cwd, agentDir });
+        await catalog.listModels();
+        await catalog.getDefaultModel();
+        await catalog
+          .resolveModel({ provider: "anthropic", modelId: "sonnet" })
+          .catch(() => {});
+        const after = await readdir(root);
+        assert.deepEqual(after, before, "model catalog reads must create no files/dirs");
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("concurrent reads on a clean agentDir create no files or directories", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-model-concurrent-"));
+    const agentDir = join(root, "agent"); // intentionally NOT created
+    const cwd = join(root, "cwd");
+    await mkdir(cwd, { recursive: true });
+    try {
+      await withEnv({}, async () => {
+        const before = await readdir(root);
+        const catalog = createPiSdkModelCatalog({ cwd, agentDir });
+        // Many concurrent first-reads must still produce zero side effects.
+        await Promise.all([
+          catalog.listModels(),
+          catalog.listModels(),
+          catalog.getDefaultModel(),
+          catalog.getDefaultModel(),
+          catalog
+            .resolveModel({ provider: "anthropic", modelId: "sonnet" })
+            .catch(() => {}),
+          catalog
+            .resolveModel({ provider: "openai", modelId: "gpt" })
+            .catch(() => {}),
+        ]);
+        const after = await readdir(root);
+        assert.deepEqual(
+          after,
+          before,
+          "concurrent model catalog reads must create no files/dirs",
+        );
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("agentDir isolation: empty injected agentDir never exposes global config (D3B-R1A)", () => {
+  // A built-in provider configured in the GLOBAL models.json with a literal key
+  // would, without the modelsPath pin, leak through getAvailable() into the
+  // default/enabled-scope resolution. Pinning models.json to
+  // join(agentDir, "models.json") ensures an empty injected agentDir exposes
+  // NO global provider status.
+  it("global-only configured provider does not leak into an empty injected agentDir", async () => {
+    const globalRoot = await mkdtemp(join(tmpdir(), "pix-model-global-"));
+    const globalAgentDir = join(globalRoot, "agent");
+    await mkdir(globalAgentDir, { recursive: true });
+    const injectedRoot = await mkdtemp(join(tmpdir(), "pix-model-injected-"));
+    const injectedAgentDir = join(injectedRoot, "agent"); // intentionally NOT created
+    const cwd = join(injectedRoot, "cwd");
+    await mkdir(cwd, { recursive: true });
+    try {
+      await withEnv({}, async () => {
+        // Discover a built-in provider that has catalog models (for the pattern).
+        const providerId = (await seededRuntime(globalAgentDir, [])).getModels()[0]!
+          .provider;
+        // GLOBAL models.json: configure that provider with a literal key (no env).
+        await writeFile(
+          join(globalAgentDir, "models.json"),
+          JSON.stringify({
+            providers: {
+              [providerId]: {
+                baseUrl: "https://global-proxy.example.com/v1",
+                auth: { apiKey: true },
+                apiKey: "sk-GLOBAL-LITERAL-LEAK",
+              },
+            },
+          }),
+          "utf8",
+        );
+
+        // CONTROL: pointing the store at the global agentDir DOES surface the
+        // provider (configured via models_json_key) => the pattern resolves.
+        const ctrlSettings = SettingsManager.inMemory();
+        ctrlSettings.setEnabledModels([`${providerId}/*`]);
+        const ctrlStore = createPiSdkModelStore({
+          cwd,
+          agentDir: globalAgentDir,
+          settingsManager: ctrlSettings,
+        });
+        const ctrlDef = await ctrlStore.getDefaultModel();
+        assert.equal(
+          ctrlDef?.provider,
+          providerId,
+          "control: global config makes the provider available",
+        );
+
+        // ISOLATION: an empty injected agentDir must NOT see the global config.
+        const isoSettings = SettingsManager.inMemory();
+        isoSettings.setEnabledModels([`${providerId}/*`]);
+        const isoStore = createPiSdkModelStore({
+          cwd,
+          agentDir: injectedAgentDir,
+          settingsManager: isoSettings,
+        });
+        const isoDef = await isoStore.getDefaultModel();
+        assert.equal(
+          isoDef,
+          null,
+          "empty injected agentDir must not expose global provider config",
+        );
+
+        // And the empty injected agentDir is still absent (zero writes).
+        const injectedListing = await readdir(injectedRoot);
+        assert.deepEqual(
+          injectedListing,
+          ["cwd"],
+          "injected agentDir must not be created by isolated reads",
+        );
+      });
+    } finally {
+      await rm(globalRoot, { recursive: true, force: true });
+      await rm(injectedRoot, { recursive: true, force: true });
     }
   });
 });

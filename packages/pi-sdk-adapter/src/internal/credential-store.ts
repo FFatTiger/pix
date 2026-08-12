@@ -60,12 +60,13 @@ function toProviderInfo(provider: Provider): AuthProviderInfo {
 }
 
 function isCredential(value: unknown): value is Credential {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as { type?: unknown }).type === "api_key" ||
-    (value as { type?: unknown }).type === "oauth"
-  );
+  // Explicit null/object guard: a null/undefined/non-object entry must be
+  // SKIPPED (return false) — never throw, never abort later credentials. The
+  // earlier `a && b && c || d` form dereferenced null when value was null and
+  // threw inside the seed loop, aborting all remaining entries.
+  if (typeof value !== "object" || value === null) return false;
+  const type = (value as { type?: unknown }).type;
+  return type === "api_key" || type === "oauth";
 }
 
 /**
@@ -113,6 +114,11 @@ export function createPiSdkCredentialStore(
       // status is surfaced; environment/runtime/model-config auth still resolves.
       credentials: await loadInMemoryCredentials(join(agentDir, "auth.json")),
       modelsStore: new InMemoryModelsStore(),
+      // Pin models.json resolution to the (possibly injected) agentDir so the
+      // SDK never falls back to the real ~/.pi/agent/models.json. A literal-key
+      // provider in the real user config would otherwise surface as
+      // configured here even with an empty injected agentDir.
+      modelsPath: join(agentDir, "models.json"),
     });
     return cachedRuntime;
   };

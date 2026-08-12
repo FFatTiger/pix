@@ -14,6 +14,7 @@
 //    Model object, cost/sampling/auth fields, or credential material.
 //  - The canonical cwd is captured once and threaded into SettingsManager; no
 //    method re-reads process.cwd.
+import { join } from "node:path";
 import {
   getAgentDir,
   ModelRuntime,
@@ -97,6 +98,11 @@ export function createPiSdkModelStore(options: PiSdkModelStoreOptions): PiSdkMod
       allowModelNetwork: false,
       credentials: new InMemoryCredentialStore(),
       modelsStore: new InMemoryModelsStore(),
+      // Pin models.json resolution to the (possibly injected) agentDir so the
+      // SDK never falls back to the real ~/.pi/agent/models.json. An
+      // empty/missing injected agentDir yields NO custom provider/model
+      // config — global user config cannot leak into the isolated catalog.
+      modelsPath: join(agentDir, "models.json"),
     });
     return cachedRuntime;
   };

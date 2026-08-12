@@ -337,3 +337,170 @@ describe("credential status consistency + zero-write (D3B-R1A hardening)", () =>
     }
   });
 });
+
+describe("credential catalog agentDir isolation (D3B-R1A): empty injected agentDir never exposes global config", () => {
+  // A built-in provider configured in the GLOBAL models.json with a literal key
+  // would, without the modelsPath pin, surface as configured here even when the
+  // injected agentDir is empty. Pinning models.json to join(agentDir,...)
+  // ensures only the injected agentDir's models.json is consulted.
+  it("global models.json literal-key provider does not leak into an empty injected agentDir", async () => {
+    const globalRoot = await mkdtemp(join(tmpdir(), "pix-cred-global-"));
+    const globalAgentDir = join(globalRoot, "agent");
+    await mkdir(globalAgentDir, { recursive: true });
+    // GLOBAL models.json: configure a built-in provider with a literal key.
+    await writeFile(
+      join(globalAgentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          deepseek: {
+            baseUrl: "https://global-proxy.example.com/v1",
+            auth: { apiKey: true },
+            apiKey: "sk-GLOBAL-DEEPSEEK-LITERAL",
+          },
+        },
+      }),
+      "utf8",
+    );
+    const injectedRoot = await mkdtemp(join(tmpdir(), "pix-cred-injected-"));
+    const injectedAgentDir = join(injectedRoot, "agent"); // intentionally NOT created
+    try {
+      await withEnv({}, async () => {
+        // Simulate the real ~/.pi being the global dir: getAgentDir() resolves
+        // here, so the SDK's internal modelsPath default would read it.
+        const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+        process.env.PI_CODING_AGENT_DIR = globalAgentDir;
+        try {
+          // CONTROL: pointing the catalog at the global agentDir configures it.
+          const ctrl = createPiSdkCredentialCatalog({ agentDir: globalAgentDir });
+          assert.equal(
+            await ctrl.isConfigured("deepseek"),
+            true,
+            "control: global configures deepseek",
+          );
+          // ISOLATION: an empty injected agentDir must NOT see the global config.
+          const iso = createPiSdkCredentialCatalog({ agentDir: injectedAgentDir });
+          assert.equal(
+            await iso.isConfigured("deepseek"),
+            false,
+            "empty injected agentDir must not expose global provider status",
+          );
+          const status = await iso.getProviderStatus("deepseek");
+          assert.equal(status.authorized, false);
+          assertNoSecrets("isolation", JSON.stringify(status));
+          // The injected agentDir is still absent (zero writes).
+          assert.deepEqual(
+            await readdir(injectedRoot),
+            [],
+            "injected agentDir must not be created",
+          );
+        } finally {
+          if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+          else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+        }
+      });
+    } finally {
+      await rm(globalRoot, { recursive: true, force: true });
+      await rm(injectedRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("credential pre-read: malformed auth.json entries skipped independently (D3B-R1A)", () => {
+  // A null/undefined/malformed entry must be SKIPPED without aborting later
+  // credentials. The earlier isCredential form (a && b && c || d) dereferenced
+  // null and threw inside the seed loop, losing every entry after it.
+
+  async function seedAuth(agentDir: string, auth: Record<string, unknown>): Promise<void> {
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(join(agentDir, "auth.json"), JSON.stringify(auth), "utf8");
+  }
+
+  it("null entry before valid credentials does not abort later ones", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-cred-null-before-"));
+    const agentDir = join(root, "agent");
+    // null FIRST, then a valid API-key and OAuth entry.
+    await seedAuth(agentDir, {
+      "bad-null-first": null,
+      anthropic: { type: "api_key", key: SECRETS.apiKey },
+      openai: {
+        type: "oauth",
+        refresh: SECRETS.refreshToken,
+        access: SECRETS.accessToken,
+        expires: Date.now() + 3_600_000,
+      },
+    });
+    try {
+      await withEnv({}, async () => {
+        const catalog = createPiSdkCredentialCatalog({ agentDir });
+        // The null entry is skipped (not aborting), so later credentials load.
+        assert.equal(
+          await catalog.isConfigured("anthropic"),
+          true,
+          "valid API key after a null entry must still load",
+        );
+        assert.equal(
+          await catalog.isConfigured("openai"),
+          true,
+          "valid OAuth after a null entry must still load",
+        );
+        const ant = await catalog.getProviderStatus("anthropic");
+        const oai = await catalog.getProviderStatus("openai");
+        assert.equal(ant.authorized, true);
+        assert.equal(oai.authorized, true);
+        assertNoSecrets("null-before", JSON.stringify(ant), JSON.stringify(oai));
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("malformed entries after valid credentials are skipped independently", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-cred-malformed-after-"));
+    const agentDir = join(root, "agent");
+    // Valid FIRST, then a trailing block of null/wrong-type/empty/non-object
+    // entries, then another valid credential after them.
+    await seedAuth(agentDir, {
+      anthropic: { type: "api_key", key: SECRETS.apiKey },
+      "bad-null": null,
+      "bad-wrong-type": { type: "totally-unknown" },
+      "bad-empty": {},
+      "bad-non-object": "just-a-string",
+      "bad-number": 42,
+      openai: {
+        type: "oauth",
+        refresh: SECRETS.refreshToken,
+        access: SECRETS.accessToken,
+        expires: Date.now() + 3_600_000,
+      },
+    });
+    try {
+      await withEnv({}, async () => {
+        const catalog = createPiSdkCredentialCatalog({ agentDir });
+        // Every malformed entry is skipped; valid entries on both sides load.
+        assert.equal(await catalog.isConfigured("anthropic"), true);
+        assert.equal(await catalog.isConfigured("openai"), true);
+        for (const bad of [
+          "bad-null",
+          "bad-wrong-type",
+          "bad-empty",
+          "bad-non-object",
+          "bad-number",
+        ]) {
+          // None of these are real providers, so they report not configured.
+          assert.equal(
+            await catalog.isConfigured(bad),
+            false,
+            `malformed entry ${bad} must not configure a provider`,
+          );
+        }
+        assertNoSecrets(
+          "malformed-after",
+          JSON.stringify(await catalog.getProviderStatus("anthropic")),
+          JSON.stringify(await catalog.getProviderStatus("openai")),
+        );
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

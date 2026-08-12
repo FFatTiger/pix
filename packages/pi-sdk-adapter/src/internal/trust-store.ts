@@ -36,6 +36,32 @@ function toState(decision: boolean | null): ProjectTrustState {
 }
 
 /**
+ * Read a saved trust decision, failing closed (null) when trust.json is
+ * malformed/unreadable so a raw SDK Error, path, file content, or stack can
+ * never propagate. Shared corruption-safe logic for both the trust and
+ * resource catalogs.
+ */
+function safeTrustDecision(store: ProjectTrustStore, cwd: string): boolean | null {
+  try {
+    return store.get(cwd);
+  } catch {
+    // Malformed/unreadable trust.json: fail closed to "no decision".
+    return null;
+  }
+}
+
+/**
+ * Read the saved trust decision for a cwd directly from the agent-dir trust
+ * store, failing closed (null) on corruption. Shared with the resource catalog
+ * so the default trusted computation applies the identical corruption-safe
+ * logic as the trust catalog — never throwing, never leaking a raw path,
+ * content, or stack.
+ */
+export function readTrustDecision(agentDir: string, cwd: string): boolean | null {
+  return safeTrustDecision(new ProjectTrustStore(agentDir), cwd);
+}
+
+/**
  * Create a read-only trust query store backed by the Pi SDK trust primitives.
  * The trust store is built lazily (on first read); no network, no writes.
  *
@@ -51,14 +77,10 @@ export function createPiSdkTrustStore(
 
   const resolveStore = (): ProjectTrustStore =>
     options.projectTrustStore ?? (cachedStore ??= new ProjectTrustStore(agentDir));
-  const decision = (cwd: string): boolean | null => {
-    try {
-      return resolveStore().get(cwd);
-    } catch {
-      // Malformed/unreadable trust.json: fail closed to "no decision".
-      return null;
-    }
-  };
+  // Shared corruption-safe decision reader: malformed trust.json => null
+  // (never throws, never leaks a raw path/content/stack).
+  const decision = (cwd: string): boolean | null =>
+    safeTrustDecision(resolveStore(), cwd);
 
   return {
     async getProjectTrustState(cwd: string): Promise<ProjectTrustState> {

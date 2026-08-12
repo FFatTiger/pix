@@ -35,7 +35,6 @@ import {
   getAgentDir,
   hasTrustRequiringProjectResources,
   loadSkills,
-  ProjectTrustStore,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { Skill } from "@earendil-works/pi-coding-agent";
@@ -46,6 +45,9 @@ import type {
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
 import type { PiSdkResourceStore } from "../resources/index.js";
+// Shared corruption-safe trust logic (owned by the trust domain): a
+// malformed trust.json fails closed instead of throwing here.
+import { readTrustDecision } from "./trust-store.js";
 
 /** Options for the SDK-backed read-only resource store. */
 export interface PiSdkResourceStoreOptions {
@@ -119,10 +121,14 @@ export function createPiSdkResourceStore(
     );
   }
   const agentDir = options.agentDir ?? getAgentDir();
+  // Default effective trust shares the EXACT corruption-safe logic with the
+  // trust catalog (readTrustDecision): a malformed/unreadable trust.json yields
+  // a null decision => trusted=false => project resources withheld, with NO
+  // throw and no raw path/content/stack leaking into the read.
   const trusted =
     options.trusted ??
     (!hasTrustRequiringProjectResources(options.cwd) ||
-      new ProjectTrustStore(agentDir).get(options.cwd) === true);
+      readTrustDecision(agentDir, options.cwd) === true);
   let cached: LoadedResources | undefined;
 
   // Trust gate at the READ layer: when the project is not trusted, project
