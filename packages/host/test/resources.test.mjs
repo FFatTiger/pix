@@ -298,6 +298,48 @@ test("worktree deletion fails closed without preflight and force never overrides
   removed = await busy.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: target, force: true }) }); assert.equal(removed.status, 409); assert.equal((await removed.json()).code, "WORKTREE_BUSY");
 });
 
+test("mutation guard 503s worktree POST/DELETE before any write while the authority is down", async () => {
+  const root = temp("pi-worktree-guard-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] });
+  // A guard that mimics a down authority (the production SessiondWorktreeSafetyAdapter
+  // throws HttpError 503 on any RPC failure). busyPreflight stays permissive so
+  // the guard is the only thing standing between the request and the repo.
+  const down = { assertAvailable: async () => { throw new HttpError(503, "MUTATION_UNAVAILABLE", "Runtime authority unavailable"); }, check: async () => ({ busy: false }) };
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: down, mutationGuard: down } }).app;
+  // POST create never reaches git: no branch, no worktree base is created.
+  const create = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "should-not-create" }) });
+  assert.equal(create.status, 503); assert.equal((await create.json()).code, "MUTATION_UNAVAILABLE");
+  assert.throws(() => git(root, ["show-ref", "--verify", "refs/heads/should-not-create"]));
+  assert.equal(statSync(`${resolve(root)}-worktrees`, { throwIfNoEntry: false }), undefined, "guard runs before any filesystem side effect");
+  // DELETE also 503s through the guard before the busy preflight runs.
+  const removed = await app.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: join(root, "anything"), force: true }) });
+  assert.equal(removed.status, 503); assert.equal((await removed.json()).code, "MUTATION_UNAVAILABLE");
+});
+
+test("mutation guard runs before the busy preflight; force cannot bypass either", async () => {
+  const root = temp("pi-worktree-order-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] });
+  // First create a worktree with NO guard so we have something to delete.
+  const seed = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => ({ busy: false }) } } }).app;
+  const created = await seed.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "to-remove" }) });
+  assert.equal(created.status, 201); const target = (await created.json()).path;
+  // Now wire a guard that is UP, plus a busy preflight that reports busy.
+  // busyPreflight.check must still be reached (guard passes) and force still cannot bypass busy.
+  const calls = { guard: 0, busy: 0 };
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => { calls.busy += 1; return { busy: true, reason: "active" }; } }, mutationGuard: { assertAvailable: async () => { calls.guard += 1; } } } }).app;
+  const removed = await app.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: target, force: true }) });
+  assert.equal(removed.status, 409); assert.equal((await removed.json()).code, "WORKTREE_BUSY");
+  assert.equal(calls.guard, 1, "guard runs first");
+  assert.equal(calls.busy, 1, "busy preflight still runs after the guard passes");
+});
+
+test("mutation guard is optional: omitting it keeps worktree create/delete working", async () => {
+  const root = temp("pi-worktree-noguard-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] });
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => ({ busy: false }) } } }).app;
+  const create = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "no-guard" }) });
+  assert.equal(create.status, 201); const target = (await create.json()).path;
+  const remove = await app.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: target }) });
+  assert.equal(remove.status, 200);
+});
+
 test("worktree dirty check requires force but clean/forced deletion succeeds", async () => {
   const root = temp("pi-worktree-dirty-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] }); const preflight = { check: async () => ({ busy: false }) };
   const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: preflight } }).app;

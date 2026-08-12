@@ -5,14 +5,14 @@ import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import { registerTrustedCreatedRoot, unregisterTrustedCreatedRoot, type AllowedRootService, type TrustedCreatedRootReceipt } from "../resources/allowed-roots.js";
 import { createProcessRunner, runChecked, type ProcessRunner } from "../resources/process-runner.js";
-import type { ResourceLimits, WorktreeBusyPreflight } from "../resources/types.js";
+import type { ResourceLimits, MutationGuard, WorktreeBusyPreflight } from "../resources/types.js";
 import { readJsonObject } from "../resources/request-body.js";
 import { KeyedMutex } from "../resources/mutex.js";
 
 import type { HostLogger } from "../types.js";
 
 const repositoryMutations = new KeyedMutex();
-interface WorktreeDeps { roots: AllowedRootService; runner?: ProcessRunner; busyPreflight?: WorktreeBusyPreflight; limits?: ResourceLimits; logger?: HostLogger }
+interface WorktreeDeps { roots: AllowedRootService; runner?: ProcessRunner; busyPreflight?: WorktreeBusyPreflight; mutationGuard?: MutationGuard; limits?: ResourceLimits; logger?: HostLogger }
 interface Worktree { path: string; branch: string | null; isMain: boolean }
 interface CreateLedger {
   createdBase: boolean;
@@ -121,6 +121,9 @@ export function registerWorktreeRoutes(app: Hono<HostEnv>, deps: WorktreeDeps): 
   });
 
   app.post("/v1/worktrees", async (c) => {
+    // Production mutation guard: worktree creation is a git write. Assert the
+    // runtime authority is available before any git/filesystem work.
+    await deps.mutationGuard?.assertAvailable();
     const body = await json(c); if (typeof body.cwd !== "string") throw new HttpError(400, "CWD_REQUIRED", "cwd is required");
     const branch = safeBranch(body.branch);
     const authorized = await deps.roots.authorizeExisting(body.cwd, "directory");
@@ -194,6 +197,10 @@ export function registerWorktreeRoutes(app: Hono<HostEnv>, deps: WorktreeDeps): 
   });
 
   app.delete("/v1/worktrees", async (c) => {
+    // Production mutation guard: worktree removal is a git write. Assert
+    // availability first; the busy preflight below still runs (force cannot
+    // bypass either), so a down authority 503s before touching the repo.
+    await deps.mutationGuard?.assertAvailable();
     const body = await json(c); if (typeof body.cwd !== "string" || typeof body.path !== "string") throw new HttpError(400, "WORKTREE_INPUT_REQUIRED", "cwd and path are required");
     const authorized = await deps.roots.authorizeExisting(body.cwd, "directory");
     const initial = await repoIdentity(runner, authorized.canonicalPath, max);

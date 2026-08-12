@@ -20,12 +20,21 @@ export interface TrustedProxyOptions {
 }
 
 /** Capability tokens negotiated with the client (mirrors client shell tokens). */
-export type HostCapability = "agent" | "files" | "files.write" | "git" | "worktree";
+export type HostCapability =
+  | "agent"
+  | "files"
+  | "files.write"
+  | "files.watch"
+  | "files.upload"
+  | "git"
+  | "worktree";
 
 export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "agent",
   "files",
   "files.write",
+  "files.watch",
+  "files.upload",
   "git",
   "worktree",
 ] as const;

@@ -3,9 +3,13 @@ import {
   createNodeServer,
   exposureModeForBind,
   consoleLogger,
-  EMPTY_HOST_CAPABILITIES,
   createEnvGateConfigSource,
   SessiondRuntimeGateway,
+  createProductionResources,
+  InvalidAllowedRootsError,
+  PRODUCTION_MAX_UPLOAD_BYTES,
+  PRODUCTION_FULL_CAPABILITIES,
+  RESOURCE_DEGRADED_CAPABILITIES,
   type NodeServerHandle,
   type GateConfig,
   type GateConfigSource,
@@ -13,18 +17,20 @@ import {
 import { spawn } from "node:child_process";
 import type { BindOptions } from "../args.js";
 import type { SessiondLocation } from "../supervise.js";
-import { createSessiondProbe } from "../probe.js";
 import { resolveClientDist } from "../paths.js";
 import { readLocalSecret } from "../secret.js";
 import { pixLog, pixErr } from "../log.js";
 
 /**
- * Honest production capability projection after X1/R2:
- * - full: `agent` when sessiond is up (R2 factory is the production composition).
- * - readonly: still empty (no files/git/worktree services mounted in M2 boot).
- * Never advertise files/sessions/models/etc. until those services are real.
+ * D3A-1 honest production capability projection.
+ *
+ * The resource surface (files/git/watch/upload) is mounted on the Host and
+ * stays advertised in BOTH states; `agent` (the runtime) is added only while
+ * sessiond is up. `worktree` is deliberately never advertised (D3A-1): worktree
+ * creation works while the authority is up but is not yet a negotiated token.
+ * These two lists are shared by the HTTP probe and the WS handshake via the
+ * single production resolver, so the four capability surfaces never disagree.
  */
-export const PRODUCTION_HOST_CAPABILITIES = ["agent"] as const;
 
 /** Best-effort browser launch; never fatal — `--no-open` is the safe default. */
 function openBrowser(url: string): void {
@@ -81,12 +87,19 @@ export function resolveAllowedHosts(
 
 /**
  * Boot the Hono Host bound to `options.hostname:options.port`, serving the
- * built Vite client and the sessiond-backed runtime WS gateway.
+ * built Vite client, the sessiond-backed runtime WS gateway and the D3A-1
+ * production resource surface (files/git/watch/upload + worktree safety).
  *
- * After X1/R2 the production composition honestly advertises `agent` when
- * sessiond is healthy (R2 ProductionWorkerProcessFactory is the default daemon
- * worker factory). Read-only capabilities stay empty until files/git services
- * are mounted. Health/bootstrap still project `[]` when sessiond is down.
+ * The sessiond secret is read strictly read-only ONCE at startup and bound to
+ * the capability resolver, the runtime WS gateway and the worktree safety
+ * adapter — a secret rotation while the Host keeps running surfaces as an auth
+ * failure (degraded), never a silent re-read. The same resolver drives the HTTP
+ * projection (health/capabilities/bootstrap) and the per-connection WS
+ * handshake, so the four capability surfaces stay consistent.
+ *
+ * `PIX_ALLOWED_ROOTS` is canonicalized before listen: a bad configuration
+ * (empty / non-absolute / missing / not-a-directory) prints ONE safe line and
+ * exits 1 WITHOUT listening or touching the running sessiond.
  *
  * Only the Host is torn down on SIGINT/SIGTERM: the sessiond is a separate
  * (detached or pre-existing) process and must survive a Host restart.
@@ -98,14 +111,10 @@ export async function runHost(
   const exposureMode = exposureModeForBind(options.hostname);
   const clientDist = resolveClientDist();
 
-  // A single production sessiond probe drives BOTH the HTTP projection
-  // (health/bootstrap/capabilities) and the WS /v1/runtime handshake, so the
-  // two stay consistent: sessiond healthy ⇒ agent, otherwise none.
-  const sessiondProbe = createSessiondProbe(location.paths);
-
-  // Read the sessiond local secret strictly read-only and fail closed when it
-  // is missing or unsafe: a Host that cannot authenticate to its own sessiond
-  // must not silently advertise a runtime gateway.
+  // Read the sessiond local secret strictly read-only ONCE and fail closed
+  // when it is missing or unsafe: a Host that cannot authenticate to its own
+  // sessiond must not silently advertise a runtime gateway. The captured secret
+  // is then bound to the resolver, the WS gateway and the worktree adapter.
   let secret: string | undefined;
   try {
     secret = await readLocalSecret(location.paths.secretFile);
@@ -117,15 +126,39 @@ export async function runHost(
     pixErr(`sessiond secret not published yet (fail closed): ${location.paths.secretFile}`);
     return 1;
   }
+
+  // Assemble production ResourceDeps from PIX_ALLOWED_ROOTS + the fixed
+  // sessiond endpoint+secret. This canonicalizes/identity-pins roots BEFORE
+  // listen: any configuration failure exits 1 with a single safe line, leaving
+  // the running sessiond untouched and binding no socket.
+  let production;
+  try {
+    production = await createProductionResources({
+      allowedRootsEnv: process.env.PIX_ALLOWED_ROOTS,
+      cwd: process.cwd(),
+      endpoint: location.paths.endpoint,
+      secret,
+      logger: consoleLogger,
+    });
+  } catch (error) {
+    pixErr(
+      error instanceof InvalidAllowedRootsError
+        ? error.message
+        : `allowed roots configuration failed: ${(error as Error).message}`,
+    );
+    return 1;
+  }
+
   const runtimeWs = new SessiondRuntimeGateway({
     endpoint: location.paths.endpoint,
     secret,
     mode: exposureMode,
-    // X1: WS handshake capability is projected dynamically from the same probe
-    // as HTTP. Healthy ⇒ fresh ["agent"] copy; down ⇒ []. A probe error is also
-    // fail-closed to [] by the gateway resolver.
-    resolveCapabilities: async () =>
-      (await sessiondProbe.isAvailable()) ? [...PRODUCTION_HOST_CAPABILITIES] : EMPTY_HOST_CAPABILITIES,
+    // The SAME resolver drives the per-WS-handshake capability projection as
+    // the HTTP probe (deps.sessiond below): up ⇒ full caps, down ⇒ degraded.
+    resolveCapabilities: () => production.resolver.resolve(),
+    // WS advertised upload ceiling mirrors the resource upload limit so the two
+    // projections can never drift apart.
+    limits: { maxUpload: PRODUCTION_MAX_UPLOAD_BYTES },
     logger: consoleLogger,
   });
 
@@ -133,15 +166,23 @@ export async function runHost(
     exposureMode,
     clientDist,
     allowedHosts: resolveAllowedHosts(options.hostname),
-    // full=["agent"] when sessiond up; readonly=[] (no files service in M2 boot).
+    // HTTP/bootstrap projection: full when sessiond is up, degraded (resource
+    // surface only) when down. `agent` is added only while up; `worktree` is
+    // never advertised (D3A-1).
+    sessiond: production.resolver,
     capabilities: {
-      full: [...PRODUCTION_HOST_CAPABILITIES],
-      readonly: EMPTY_HOST_CAPABILITIES,
+      full: [...PRODUCTION_FULL_CAPABILITIES],
+      readonly: [...RESOURCE_DEGRADED_CAPABILITIES],
     },
-    sessiond: sessiondProbe,
+    // D3A-1 production resource services: files/git/watch/upload + worktree
+    // safety (busy preflight + mutation guard wired from the shared adapter).
+    resources: production.deps,
     gate: { config: createBootGateConfigSource() },
     logger: consoleLogger,
     runtimeWs,
+    // WS transport ceiling matches the advertised maxUpload so a full upload is
+    // actually receivable instead of being rejected at the frame layer.
+    wsMaxPayloadBytes: PRODUCTION_MAX_UPLOAD_BYTES,
   });
 
   const handle: NodeServerHandle = await createNodeServer(host, {
@@ -151,7 +192,7 @@ export async function runHost(
   const url = `http://${options.hostname}:${handle.port}`;
   pixLog(`host listening on ${url}`);
   pixLog(`sessiond at ${location.directory} (endpoint ${location.endpoint})`);
-  pixLog(`runtime gateway wired (capabilities: ["agent"]); press Ctrl+C to stop the host`);
+  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); press Ctrl+C to stop the host`);
 
   if (options.open) openBrowser(url);
 

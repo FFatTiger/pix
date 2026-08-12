@@ -108,7 +108,7 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
     }
     registerFileIndexRoutes(app, { roots: deps.resources.allowedRoots, ...(deps.resources.processRunner ? { runner: deps.resources.processRunner } : {}), ...(deps.resources.limits ? { limits: deps.resources.limits } : {}) });
     registerGitRoutes(app, { roots: deps.resources.allowedRoots, ...(deps.resources.processRunner ? { runner: deps.resources.processRunner } : {}), ...(deps.resources.limits ? { limits: deps.resources.limits } : {}) });
-    registerWorktreeRoutes(app, { roots: deps.resources.allowedRoots, logger, ...(deps.resources.processRunner ? { runner: deps.resources.processRunner } : {}), ...(deps.resources.busyPreflight ? { busyPreflight: deps.resources.busyPreflight } : {}), ...(deps.resources.limits ? { limits: deps.resources.limits } : {}) });
+    registerWorktreeRoutes(app, { roots: deps.resources.allowedRoots, logger, ...(deps.resources.processRunner ? { runner: deps.resources.processRunner } : {}), ...(deps.resources.busyPreflight ? { busyPreflight: deps.resources.busyPreflight } : {}), ...(deps.resources.mutationGuard ? { mutationGuard: deps.resources.mutationGuard } : {}), ...(deps.resources.limits ? { limits: deps.resources.limits } : {}) });
   }
   const wsGuardOptions = {
     logger,

@@ -177,6 +177,11 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
   });
 
   app.post("/v1/files", async (c) => {
+    // File uploads are pure filesystem writes: the resource layer is mounted on
+    // the Host and stays usable while sessiond (the runtime authority) is down,
+    // so files.write/files.upload remain honestly advertised in degraded
+    // capabilities. No mutation guard here — only sessiond-dependent worktree
+    // writes are runtime-guarded (see routes/worktrees.ts).
     const target = requiredPath(c);
     await deps.roots.authorizeExisting(target, "directory");
     const type = c.req.header("content-type") ?? "";

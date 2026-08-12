@@ -84,6 +84,25 @@ export type {
 } from "./composition/runtime-gateway.js";
 
 export {
+  parseAllowedRootsEnv,
+  createProductionResources,
+  createProductionCapabilityResolver,
+  SessiondWorktreeSafetyAdapter,
+  InvalidAllowedRootsError,
+  PRODUCTION_MAX_UPLOAD_BYTES,
+  PRODUCTION_PING_TIMEOUT_MS,
+  PRODUCTION_RESOURCE_LIMITS,
+  PRODUCTION_FULL_CAPABILITIES,
+  RESOURCE_DEGRADED_CAPABILITIES,
+} from "./composition/production-resources.js";
+export type {
+  ProductionResources,
+  ProductionResourcesOptions,
+  ProductionCapabilityResolver,
+  ProductionCapabilityResolverOptions,
+} from "./composition/production-resources.js";
+
+export {
   ALL_HOST_CAPABILITIES,
   READONLY_HOST_CAPABILITIES,
   EMPTY_HOST_CAPABILITIES,
