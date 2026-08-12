@@ -44,6 +44,8 @@ export { loggingMiddleware } from "./middleware/logging.js";
 export {
   resolveCapabilities,
   defaultReadonlyCapabilities,
+  defaultMountedCapabilities,
+  catalogCapabilitiesFromDeps,
   registerHealthRoutes,
   registerBootstrapRoutes,
   resolveBootstrapGateStatus,
@@ -63,6 +65,12 @@ export {
   SESSIONS_MAX_LIMIT,
   SESSIONS_MAX_OFFSET,
 } from "./routes/sessions.js";
+export {
+  registerCatalogRoutes,
+  mapCatalogError,
+  requireAuthorizedCwd,
+  CATALOG_UNAVAILABLE_MESSAGE,
+} from "./routes/catalogs.js";
 export { createAllowedRootService, pathContainment } from "./resources/allowed-roots.js";
 export type { AllowedRootPolicy, AllowedRootService, AuthorizedPath, RootExpansionPlan, RootExpansionResult } from "./resources/allowed-roots.js";
 export { createProcessRunner, runChecked } from "./resources/process-runner.js";
@@ -114,6 +122,7 @@ export type {
 
 export {
   ALL_HOST_CAPABILITIES,
+  CATALOG_CAPABILITIES,
   READONLY_HOST_CAPABILITIES,
   EMPTY_HOST_CAPABILITIES,
   HOST_PROTOCOL_VERSION,
@@ -133,6 +142,11 @@ export type {
   SessionRevocationStore,
   SessiondProbe,
   SessionHistoryReadClient,
+  CatalogDeps,
+  CatalogModelsSeam,
+  CatalogCredentialsSeam,
+  CatalogResourcesSeam,
+  CatalogTrustSeam,
   TrustedProxyOptions,
   WsSession,
 } from "./types.js";

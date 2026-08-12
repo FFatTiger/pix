@@ -32,12 +32,13 @@ test("bootstrap is served with no-store and aggregates the boot surface", async 
   assert.deepEqual(body.gate, { required: false, status: "disabled" });
 });
 
-test("bootstrap reflects sessiond up with full capabilities", async () => {
+test("bootstrap reflects sessiond up with honest empty capabilities when nothing is mounted", async () => {
+  // Generic default is honest: sessiond up alone never invents agent/files/etc.
   const app = appWith({ sessiond: { isAvailable: async () => true } });
   const res = await app.request("http://localhost/v1/bootstrap", { headers: { host: "localhost" } });
   const body = await res.json();
   assert.equal(body.sessiond, "up");
-  assert.deepEqual(body.capabilities, ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree"]);
+  assert.deepEqual(body.capabilities, []);
 });
 
 test("bootstrap reports gate required when enabled", async () => {

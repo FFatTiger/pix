@@ -1,10 +1,11 @@
 import type { Hono } from "hono";
 import type { HostEnv } from "../env.js";
 import {
-  ALL_HOST_CAPABILITIES,
+  CATALOG_CAPABILITIES,
   EMPTY_HOST_CAPABILITIES,
   HOST_PROTOCOL_VERSION,
   READONLY_HOST_CAPABILITIES,
+  type CatalogDeps,
   type GateDeps,
   type GateStatusKind,
   type HostCapability,
@@ -20,27 +21,72 @@ export interface ResolvedCapabilities {
 }
 
 /**
+ * Catalog capability tokens for the seams that are actually mounted. Only the
+ * four negotiated catalog tokens are advertised here; trust/commands have no
+ * independent capability token (routes still mount when their seams exist).
+ */
+export function catalogCapabilitiesFromDeps(
+  catalogs: CatalogDeps | undefined,
+): readonly HostCapability[] {
+  if (!catalogs) return EMPTY_HOST_CAPABILITIES;
+  const tokens: HostCapability[] = [];
+  if (catalogs.models) tokens.push("models");
+  if (catalogs.credentials) tokens.push("auth.providers");
+  if (catalogs.resources) {
+    // skills + plugins share the resources seam; both tokens advertise together.
+    tokens.push("skills", "plugins");
+  }
+  // Defensive: only emit known catalog tokens (order matches CATALOG_CAPABILITIES).
+  return CATALOG_CAPABILITIES.filter((token) => tokens.includes(token));
+}
+
+/**
+ * Honest capability default derived from mounted services only. Never invents
+ * agent/files/sessions just because a probe is present — those require explicit
+ * composition wiring (or an explicit capabilities override).
+ *
+ * - resources mounted → files (read-only)
+ * - catalog seams mounted → their catalog tokens (independent of sessiond)
+ * - nothing mounted → empty (M1 boot)
+ */
+export function defaultMountedCapabilities(
+  deps: HostDeps,
+): readonly HostCapability[] {
+  const tokens: HostCapability[] = [];
+  if (deps.resources) tokens.push(...READONLY_HOST_CAPABILITIES);
+  tokens.push(...catalogCapabilitiesFromDeps(deps.catalogs));
+  return tokens;
+}
+
+/**
  * Honest read-only default: read-only file browsing is only available when
- * the resource services (files/git/cwd) are actually mounted. With nothing
- * wired (the M1 boot composition) the host advertises no capabilities.
+ * the resource services (files/git/cwd) are actually mounted, plus any catalog
+ * tokens for mounted catalog seams. With nothing wired (the M1 boot
+ * composition) the host advertises no capabilities.
  */
 export function defaultReadonlyCapabilities(
   deps: HostDeps,
 ): readonly HostCapability[] {
-  return deps.resources ? READONLY_HOST_CAPABILITIES : EMPTY_HOST_CAPABILITIES;
+  return defaultMountedCapabilities(deps);
 }
 
 /**
  * Capability projection: when sessiond is unavailable (or no probe is wired
- * yet) the host offers read-only capabilities only, and only the ones backed
- * by a mounted service. The probe is deliberately protocol-independent —
- * H0B wires the real sessiond client here.
+ * yet) the host offers read-only / mounted capabilities only, and only the ones
+ * backed by a mounted service. Catalog tokens are independent of sessiond and
+ * remain advertised while their seams are mounted. The probe is deliberately
+ * protocol-independent — H0B wires the real sessiond client here.
+ *
+ * Generic default is honest: without an explicit `capabilities` override the
+ * host never advertises agent/files/sessions just because sessiond is up. Pass
+ * explicit full/readonly sets from production composition.
  */
 export async function resolveCapabilities(
   deps: HostDeps,
 ): Promise<ResolvedCapabilities> {
-  const full = deps.capabilities?.full ?? ALL_HOST_CAPABILITIES;
-  const readonly = deps.capabilities?.readonly ?? defaultReadonlyCapabilities(deps);
+  const mounted = defaultMountedCapabilities(deps);
+  const full = deps.capabilities?.full ?? mounted;
+  const readonly = deps.capabilities?.readonly ?? mounted;
   if (!deps.sessiond) return { sessiond: "unknown", capabilities: readonly };
   const timeoutMs = deps.sessiondProbeTimeoutMs ?? 2_000;
   let timeout: ReturnType<typeof setTimeout> | undefined;

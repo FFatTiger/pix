@@ -21,6 +21,7 @@ import { registerFileIndexRoutes } from "./routes/file-index.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerWorktreeRoutes } from "./routes/worktrees.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerCatalogRoutes } from "./routes/catalogs.js";
 import { createFileWatchManager } from "./resources/file-watch.js";
 
 export interface HostApp {
@@ -99,6 +100,9 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
   registerBootstrapRoutes(app, deps, gateDeps);
   if (deps.sessions) {
     registerSessionRoutes(app, { client: deps.sessions.client });
+  }
+  if (deps.catalogs) {
+    registerCatalogRoutes(app, deps.catalogs);
   }
   if (deps.resources) {
     registerFileRoutes(app, { roots: deps.resources.allowedRoots, ...(deps.resources.limits ? { limits: deps.resources.limits } : {}), ...(deps.resources.defaultCwd ? { defaultCwd: deps.resources.defaultCwd } : {}), ...(deps.resources.defaultCwdFactory ? { defaultCwdFactory: deps.resources.defaultCwdFactory } : {}) });

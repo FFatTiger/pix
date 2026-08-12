@@ -17,7 +17,9 @@ function appWith(extra = {}) {
   }).app;
 }
 
-test("health reports sessiond up with full capabilities", async () => {
+test("health reports sessiond up with honest empty capabilities when nothing is mounted", async () => {
+  // Generic default is honest: sessiond up alone never invents agent/files/etc.
+  // Production composition passes explicit full/readonly capability sets.
   const app = appWith({ sessiond: { isAvailable: async () => true } });
   const res = await app.request("http://localhost/v1/health", { headers: { host: "localhost" } });
   assert.equal(res.status, 200);
@@ -26,7 +28,7 @@ test("health reports sessiond up with full capabilities", async () => {
   assert.equal(body.ok, true);
   assert.equal(body.service, "pix-host");
   assert.equal(body.sessiond, "up");
-  assert.deepEqual(body.capabilities, ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree"]);
+  assert.deepEqual(body.capabilities, []);
 });
 
 test("health reports sessiond down with empty capabilities when nothing is wired (honest M1 default)", async () => {

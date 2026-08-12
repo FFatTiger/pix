@@ -28,7 +28,11 @@ export type HostCapability =
   | "files.watch"
   | "files.upload"
   | "git"
-  | "worktree";
+  | "worktree"
+  | "models"
+  | "auth.providers"
+  | "skills"
+  | "plugins";
 
 export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "agent",
@@ -39,6 +43,21 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "files.upload",
   "git",
   "worktree",
+  "models",
+  "auth.providers",
+  "skills",
+  "plugins",
+] as const;
+
+/**
+ * Catalog capability tokens (D3B-R1B). Advertised only when the corresponding
+ * catalog seam is actually mounted. Independent of sessiond.
+ */
+export const CATALOG_CAPABILITIES: readonly HostCapability[] = [
+  "models",
+  "auth.providers",
+  "skills",
+  "plugins",
 ] as const;
 
 /** Capabilities that remain usable when sessiond is unavailable (read-only). */
@@ -141,6 +160,7 @@ export interface GateDeps {
 // ---------------------------------------------------------------------------
 
 import type { ResourceDeps } from "./resources/types.js";
+import type { AllowedRootService } from "./resources/allowed-roots.js";
 
 /** sessiond availability probe for capability downgrade (protocol-independent). */
 export interface SessiondProbe {
@@ -157,6 +177,72 @@ export interface SessionHistoryReadClient {
   list(params: { cwd?: string; limit?: number; offset?: number }): Promise<unknown>;
   read(sessionId: string): Promise<unknown>;
   context(sessionId: string, leafId?: string): Promise<unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Catalog seams (D3B-R1B) — protocol-independent, return unknown
+// ---------------------------------------------------------------------------
+
+/**
+ * Project-cwd-aware models catalog. Composition creates one per canonical cwd;
+ * foundation routes never import runtime-core/adapter types — results are
+ * `unknown` and narrowed at the route boundary.
+ */
+export interface CatalogModelsSeam {
+  forCwd(cwd: string): {
+    listModels(): Promise<unknown>;
+    getDefaultModel(): Promise<unknown>;
+  };
+}
+
+/** Global credentials/provider catalog (not project-scoped). */
+export interface CatalogCredentialsSeam {
+  listProviders(): Promise<unknown>;
+  getProviderStatus(providerId: string): Promise<unknown>;
+  isConfigured(providerId: string): Promise<boolean>;
+}
+
+/**
+ * Project-cwd-aware resource catalog (skills/plugins/commands). Composition
+ * creates one per canonical cwd after consulting trust; foundation routes pass
+ * the trust-gated `trusted` flag so the resource seam never re-reads a stale
+ * trust cache itself.
+ */
+export interface CatalogResourcesSeam {
+  forCwd(
+    cwd: string,
+    trusted: boolean,
+  ): {
+    listSkills(): Promise<unknown>;
+    listPlugins(): Promise<unknown>;
+    listCommands(): Promise<unknown>;
+  };
+}
+
+/** Project-cwd-aware trust query. */
+export interface CatalogTrustSeam {
+  getProjectTrustState(cwd: string): Promise<unknown>;
+  isTrusted(cwd: string): Promise<boolean>;
+  canReloadResources(cwd: string): Promise<unknown>;
+}
+
+/**
+ * Read-only catalog deps (D3B-R1B). Protocol-independent: every catalog method
+ * returns `unknown`. Production composition reuses the same
+ * {@link AllowedRootService} as resources so project routes share one roots
+ * policy. Sub-seams are independent — omit any seam to leave its routes and
+ * capability tokens unmounted. No mutation/OAuth/install/reload/trust-set.
+ */
+export interface CatalogDeps {
+  /**
+   * Allowed roots for project-scoped routes. Production MUST pass the same
+   * service as `resources.allowedRoots`.
+   */
+  roots: AllowedRootService;
+  models?: CatalogModelsSeam;
+  credentials?: CatalogCredentialsSeam;
+  resources?: CatalogResourcesSeam;
+  trust?: CatalogTrustSeam;
 }
 
 export interface HostCapabilityDeps {
@@ -204,6 +290,13 @@ export interface HostDeps {
    * `sessions` capability token (driven by the capability resolver, not here).
    */
   sessions?: { client: SessionHistoryReadClient };
+  /**
+   * D3B-R1B: read-only catalog routes (models/auth/skills/plugins/commands/trust).
+   * Omitted means the catalog routes are unavailable. Each sub-seam is optional;
+   * routes and capability tokens are registered only for the seams that are
+   * actually mounted.
+   */
+  catalogs?: CatalogDeps;
   /** H0B seam: injected runtime protocol WS handler. */
   runtimeWs?: RuntimeWsSeam;
   /** Hello-frame timeout in ms for the WS upgrade seam (default 10_000). */
