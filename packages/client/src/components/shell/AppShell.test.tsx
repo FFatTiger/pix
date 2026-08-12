@@ -68,13 +68,16 @@ function ack(caps: string[] = ["agent"]) {
   return { type: "handshake_ack", payload: { protocolVersion: 1, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
 }
 
-function mount(search: WorkspaceSearch, host: Partial<HostInfo> | null): { view: ReturnType<typeof render>; rerender: (s: WorkspaceSearch) => void } {
+function mount(search: WorkspaceSearch, host: Partial<HostInfo> | null): {
+  view: ReturnType<typeof render>;
+  rerender: (s: WorkspaceSearch, nextHost?: Partial<HostInfo> | null) => void;
+} {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const build = (s: WorkspaceSearch) => (
+  const build = (s: WorkspaceSearch, currentHost: Partial<HostInfo> | null) => (
     <ErrorBoundary>
       <QueryClientProvider client={qc}>
         <HttpClientProvider>
-          <CapabilityProvider {...(host === undefined ? {} : { host })}>
+          <CapabilityProvider {...(currentHost === undefined ? {} : { host: currentHost })}>
             <RuntimeProvider deps={fakeDeps()}>
               <Capture />
               <AppShell search={s} />
@@ -84,8 +87,11 @@ function mount(search: WorkspaceSearch, host: Partial<HostInfo> | null): { view:
       </QueryClientProvider>
     </ErrorBoundary>
   );
-  const view = render(build(search));
-  return { view, rerender: (s: WorkspaceSearch) => { view.rerender(build(s)); } };
+  const view = render(build(search, host));
+  return {
+    view,
+    rerender: (s: WorkspaceSearch, nextHost = host) => { view.rerender(build(s, nextHost)); },
+  };
 }
 
 /** Open + handshake the first socket so the store is ready. */
@@ -412,13 +418,17 @@ describe("AppShell Catalog / Workspace mutual exclusion", () => {
     expect(screen.queryByRole("tab", { name: "Models" })).toBeNull();
   });
 
-  it("cap revocation removes Catalog button", () => {
-    const { view } = mount({ cwd: "/proj" }, { mode: "local", capabilities: ["models"] });
-    expect(screen.getByRole("button", { name: "Show catalog panel" })).toBeTruthy();
-    // Remount with no catalog caps (CapabilityProvider host override is fixed per mount).
-    cleanup();
-    mount({ cwd: "/proj" }, { mode: "local", capabilities: ["files"] });
+  it("cap revocation closes Catalog and a later grant does not reopen it", async () => {
+    const { rerender } = mount({ cwd: "/proj" }, { mode: "local", capabilities: ["models"] });
+    fireEvent.click(screen.getByRole("button", { name: "Show catalog panel" }));
+    expect(await screen.findByRole("tab", { name: "Models" })).toBeTruthy();
+
+    rerender({ cwd: "/proj" }, { mode: "local", capabilities: ["files"] });
     expect(screen.queryByRole("button", { name: /catalog panel/i })).toBeNull();
-    void view;
+    expect(screen.queryByRole("tab", { name: "Models" })).toBeNull();
+
+    rerender({ cwd: "/proj" }, { mode: "local", capabilities: ["files", "models"] });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show catalog panel" })).toBeTruthy());
+    expect(screen.queryByRole("tab", { name: "Models" })).toBeNull();
   });
 });

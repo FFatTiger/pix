@@ -79,6 +79,26 @@ describe("TrustBadge", () => {
     }
   });
 
+  it("does not render an arbitrary trust denial reason", async () => {
+    const fetchImpl = vi.fn(async () =>
+      json({
+        cwd: "/proj",
+        level: "denied",
+        trusted: false,
+        canReloadResources: {
+          allowed: false,
+          level: "denied",
+          reason: "secret /Users/proxy/.agent key=sk-xyz",
+        },
+      }),
+    );
+    globalThis.fetch = fetchImpl as unknown as typeof fetch;
+    renderBadge({ mode: "local", capabilities: ["skills"] }, { cwd: "/proj", variant: "summary" });
+    await waitFor(() => expect(screen.getByText(/reload denied/)).toBeTruthy());
+    expect(screen.queryByText(/sk-xyz/)).toBeNull();
+    expect(screen.queryByText(/\.agent/)).toBeNull();
+  });
+
   it("sanitizes error — no path/secret/raw body", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ message: "secret /Users/proxy/.agent key=sk-xyz", code: "PATH_FORBIDDEN" }), {

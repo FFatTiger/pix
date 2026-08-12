@@ -35,11 +35,9 @@ function formatContextWindow(value: number | undefined): string | null {
 
 function formatExpiry(expiresAt: number | undefined): string | null {
   if (expiresAt === undefined) return null;
-  try {
-    return new Date(expiresAt).toLocaleString();
-  } catch {
-    return null;
-  }
+  const expiry = new Date(expiresAt);
+  if (!Number.isFinite(expiry.getTime())) return null;
+  return expiry.toLocaleString();
 }
 
 function EmptyState({ message }: { message: string }) {

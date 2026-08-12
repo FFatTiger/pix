@@ -64,11 +64,7 @@ export function TrustBadge({ cwd, variant = "badge" }: TrustBadgeProps) {
         <span className={className}>{label}</span>
         <span className="catalog-trust-detail">
           {data.trusted ? "Project resources trusted" : "Project resources not trusted"}
-          {reload.allowed
-            ? " · reload allowed"
-            : reload.reason
-              ? ` · ${reload.reason}`
-              : " · reload denied"}
+          {reload.allowed ? " · reload allowed" : " · reload denied"}
         </span>
       </div>
     );

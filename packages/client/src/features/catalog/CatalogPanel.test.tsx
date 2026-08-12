@@ -213,6 +213,23 @@ describe("CatalogPanel", () => {
     expect(screen.getByText("user@example.com")).toBeTruthy();
   });
 
+  it("omits an expiry that is finite but outside the JavaScript date range", async () => {
+    const { impl } = makeRouter({
+      "/v1/auth/providers": () => json({ providers: [{ id: "future", methods: ["apiKey"] }] }),
+      "/v1/auth/providers/future/status": () =>
+        json({
+          status: { providerId: "future", authorized: true, expiresAt: Number.MAX_SAFE_INTEGER },
+          configured: true,
+        }),
+    });
+    globalThis.fetch = impl;
+    renderPanel({ mode: "local", capabilities: ["auth.providers"] }, { cwd: "/proj" });
+    await waitFor(() => expect(screen.getByText("future")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("authorized")).toBeTruthy());
+    expect(screen.queryByText(/Invalid Date/)).toBeNull();
+    expect(screen.queryByText(/^exp /)).toBeNull();
+  });
+
   it("sessiond-unavailable host override still serves catalog when caps present", async () => {
     // CapabilityProvider host override does not require bootstrap; sessiond down
     // must not close Catalog — only caps matter.
