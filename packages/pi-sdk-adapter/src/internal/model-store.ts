@@ -5,20 +5,22 @@
 // a SettingsManager read for the configured default/enabled scope.
 //
 // Hard read-only boundary:
-//  - ModelRuntime is created with allowModelNetwork:false (the exact SDK
-//    offline equivalent). create() never refreshes catalogs over the network,
-//    never calls a provider, never tests/configures models.
+//  - ModelRuntime is created with allowModelNetwork:false AND in-memory
+//    credential/models stores, so create()/reads create ZERO files/dirs
+//    (the SDK's file-backed stores write auth.json/models-store.json
+//    placeholders; in-memory stores never touch disk).
 //  - No fetch, no provider calls, no discovery/refresh/test/config writes.
 //  - Returns canonical runtime-core ModelInfo/ModelRef only; never an SDK
 //    Model object, cost/sampling/auth fields, or credential material.
-//  - The canonical cwd is captured once at construction and threaded into
-//    SettingsManager; no method re-reads process.cwd.
-import { join } from "node:path";
+//  - The canonical cwd is captured once and threaded into SettingsManager; no
+//    method re-reads process.cwd.
 import {
   getAgentDir,
   ModelRuntime,
+  resolveModelScopeWithDiagnostics,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
   ModelInfo,
@@ -56,9 +58,25 @@ function toModelInfo(model: Model<Api>): ModelInfo {
 }
 
 /**
- * Create a read-only model store backed by an offline Pi SDK ModelRuntime.
- * The runtime is created lazily (on first read) with allowModelNetwork:false
- * so no network/provider/refresh work happens at construction or during reads.
+ * Resolve the enabled-model scope against the offline catalog. `undefined`/empty
+ * enabledModels means all catalog models are enabled; otherwise the SDK scope
+ * resolver matches the patterns offline (no network).
+ */
+async function enabledModels(
+  manager: SettingsManager,
+  runtime: ModelRuntime,
+): Promise<readonly Model<Api>[]> {
+  const patterns = manager.getEnabledModels();
+  if (!patterns || patterns.length === 0) return runtime.getModels();
+  const result = await resolveModelScopeWithDiagnostics(patterns, runtime);
+  return result.scopedModels.map((entry) => entry.model);
+}
+
+/**
+ * Create a read-only model store backed by an offline Pi SDK ModelRuntime. The
+ * runtime is created lazily (on first read) with allowModelNetwork:false and
+ * in-memory stores, so no network/provider/refresh work and ZERO file writes
+ * happen at construction or during reads.
  */
 export function createPiSdkModelStore(options: PiSdkModelStoreOptions): PiSdkModelStore {
   if (!options.cwd || options.cwd.trim().length === 0) {
@@ -73,12 +91,12 @@ export function createPiSdkModelStore(options: PiSdkModelStoreOptions): PiSdkMod
 
   const runtime = async (): Promise<ModelRuntime> => {
     if (options.modelRuntime) return options.modelRuntime;
-    // Lazy + offline: built once per store; allowModelNetwork:false is the
-    // exact SDK equivalent that forbids network catalog refresh at create().
+    // Lazy + offline + zero-write: in-memory credential/models stores so
+    // create() never writes auth.json/models-store.json placeholders.
     cachedRuntime ??= await ModelRuntime.create({
       allowModelNetwork: false,
-      authPath: join(agentDir, "auth.json"),
-      modelsPath: join(agentDir, "models.json"),
+      credentials: new InMemoryCredentialStore(),
+      modelsStore: new InMemoryModelsStore(),
     });
     return cachedRuntime;
   };
@@ -93,14 +111,27 @@ export function createPiSdkModelStore(options: PiSdkModelStoreOptions): PiSdkMod
     async listModels(): Promise<readonly ModelInfo[]> {
       return (await runtime()).getModels().map(toModelInfo);
     },
-    async getDefaultModel(): Promise<ModelRef> {
+    async getDefaultModel(): Promise<ModelRef | null> {
+      const instance = await runtime();
       const manager = settings();
+      const allModels = instance.getModels();
+      const enabled = await enabledModels(manager, instance);
+      const inEnabled = (provider: string, id: string): boolean =>
+        enabled.some((model) => model.provider === provider && model.id === id);
+
+      // Configured default: valid only if it exists in the catalog AND is in
+      // the enabled scope. Invalid/missing/disabled falls back deterministically.
       const provider = manager.getDefaultProvider();
       const modelId = manager.getDefaultModel();
-      if (provider && modelId) return { provider, id: modelId };
-      const first = (await runtime()).getModels()[0];
-      if (!first) throw makeRuntimeError("not_found", "no models available");
-      return { provider: first.provider, id: first.id };
+      if (provider && modelId && inEnabled(provider, modelId)) {
+        const exists = allModels.some(
+          (model) => model.provider === provider && model.id === modelId,
+        );
+        if (exists) return { provider, id: modelId };
+      }
+      // Fallback: first enabled valid model, else null.
+      const first = enabled[0];
+      return first ? { provider: first.provider, id: first.id } : null;
     },
     async resolveModel(selector: ModelSelector): Promise<ModelInfo> {
       const model = (await runtime()).getModel(selector.provider, selector.modelId);

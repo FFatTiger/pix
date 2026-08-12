@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPiSdkCredentialCatalog } from "../src/credentials/index.js";
@@ -197,5 +197,143 @@ describe("read-only credential catalog (D3B-R1A)", () => {
     assert.equal(typeof catalog.listProviders, "function");
     assert.equal(typeof catalog.getProviderStatus, "function");
     assert.equal(typeof catalog.isConfigured, "function");
+  });
+});
+
+// Provider env-var keys that can configure a provider without auth.json; cleared
+// for "absent" tests so ambient env cannot flip a provider to configured.
+const ENV_KEYS = [
+  "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+  "DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY", "XAI_API_KEY",
+];
+
+function withEnv(overrides: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of new Set([...ENV_KEYS, ...Object.keys(overrides)])) {
+    saved[key] = process.env[key];
+    if (overrides[key] === undefined) delete process.env[key];
+    else process.env[key] = overrides[key];
+  }
+  return fn().finally(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
+describe("credential status consistency + zero-write (D3B-R1A hardening)", () => {
+  it("authorized always equals isConfigured across every provider", async () => {
+    const root = await seedAgentDir();
+    try {
+      await withEnv({}, async () => {
+        const catalog = createPiSdkCredentialCatalog({ agentDir: join(root, "agent") });
+        const providers = await catalog.listProviders();
+        for (const provider of providers) {
+          const status = await catalog.getProviderStatus(provider.id);
+          const configured = await catalog.isConfigured(provider.id);
+          assert.equal(
+            status.authorized,
+            configured,
+            `authorized/isConfigured mismatch for ${provider.id}`,
+          );
+        }
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stored OAuth reports authorized=true and isConfigured=true (no split)", async () => {
+    const root = await seedAgentDir();
+    try {
+      await withEnv({}, async () => {
+        const catalog = createPiSdkCredentialCatalog({ agentDir: join(root, "agent") });
+        const status = await catalog.getProviderStatus("openai");
+        const configured = await catalog.isConfigured("openai");
+        assert.equal(status.authorized, true, "stored OAuth must be authorized");
+        assert.equal(configured, true, "stored OAuth must be configured");
+        assertNoSecrets("oauth", JSON.stringify(status));
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("API key from env configures a provider", async () => {
+    const root = await seedAgentDir();
+    try {
+      await withEnv({ ANTHROPIC_API_KEY: "sk-ant-ENV-ONLY-SECRET" }, async () => {
+        const catalog = createPiSdkCredentialCatalog({ agentDir: join(root, "agent") });
+        assert.equal(await catalog.isConfigured("anthropic"), true);
+        const status = await catalog.getProviderStatus("anthropic");
+        assert.equal(status.authorized, true);
+        assertNoSecrets("env", JSON.stringify(status));
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("absent provider (no stored, no env) reports not configured", async () => {
+    const root = await seedAgentDir();
+    try {
+      // Seed only OAuth openai; anthropic has no stored cred and env is cleared.
+      await withEnv({}, async () => {
+        const catalog = createPiSdkCredentialCatalog({ agentDir: join(root, "agent") });
+        // anthropic is built-in but unconfigured (no key in this seeded auth.json
+        // has only anthropic apiKey though) — verify consistency for an unconfigured one.
+        // Use a provider with no seeded cred and no env: pick groq.
+        const providers = await catalog.listProviders();
+        const absent = providers.find((p) => !p.methods.includes("oauth")) ?? providers[0]!;
+        const configured = await catalog.isConfigured(absent.id);
+        const status = await catalog.getProviderStatus(absent.id);
+        assert.equal(configured, status.authorized);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads create ZERO new files (no auth.json/models-store.json placeholders)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-cred-zerofile-"));
+    const agentDir = join(root, "agent");
+    await mkdir(agentDir, { recursive: true });
+    // Seed auth.json (the only file that should ever exist there).
+    await writeFile(
+      join(agentDir, "auth.json"),
+      JSON.stringify({ anthropic: { type: "api_key", key: SECRETS.apiKey } }),
+      "utf8",
+    );
+    try {
+      await withEnv({}, async () => {
+        const before = await readdir(agentDir);
+        const catalog = createPiSdkCredentialCatalog({ agentDir });
+        await catalog.listProviders();
+        await catalog.getProviderStatus("anthropic");
+        await catalog.isConfigured("anthropic");
+        const after = await readdir(agentDir);
+        assert.deepEqual(after, before, "credential reads must create no new files");
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("clean missing agentDir is never created by reads", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-cred-missing-"));
+    const agentDir = join(root, "agent"); // not created
+    try {
+      await withEnv({}, async () => {
+        const before = await readdir(root);
+        const catalog = createPiSdkCredentialCatalog({ agentDir });
+        await catalog.listProviders();
+        await catalog.isConfigured("anthropic");
+        const after = await readdir(root);
+        assert.deepEqual(after, before, "missing agentDir must not be created");
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

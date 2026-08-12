@@ -317,6 +317,60 @@ describe("read-only resource catalog (D3B-R1A)", () => {
     assert.equal(typeof catalog.listCommands, "function");
   });
 
+  it("untrusted read skips project .pi discovery entirely (no parse of malformed project settings)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-res-gate-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    await mkdir(join(agentDir, "skills", "global-skill"), { recursive: true });
+    await writeFile(
+      join(agentDir, "skills", "global-skill", "SKILL.md"),
+      "---\nname: global-skill\ndescription: g\n---\n# global-skill",
+      "utf8",
+    );
+    await mkdir(join(projectCwd, ".pi", "skills", "proj-skill"), { recursive: true });
+    await writeFile(
+      join(projectCwd, ".pi", "skills", "proj-skill", "SKILL.md"),
+      "---\nname: proj-skill\ndescription: p\n---\n# proj-skill",
+      "utf8",
+    );
+    // MALFORMED project settings.json — if the untrusted read parsed it, this
+    // would surface as an error/diagnostic. It must never be read.
+    await mkdir(join(projectCwd, ".pi"), { recursive: true });
+    await writeFile(
+      join(projectCwd, ".pi", "settings.json"),
+      "{ this is deliberately invalid json {{{",
+      "utf8",
+    );
+    try {
+      const untrusted = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: false,
+      });
+      // Must not throw despite the malformed project settings.json.
+      const skills = await untrusted.listSkills();
+      const names = skills.map((s) => s.name);
+      assert.ok(names.includes("global-skill"), "global skill loads when untrusted");
+      assert.ok(!names.includes("proj-skill"), "project skill skipped when untrusted");
+      await untrusted.listPlugins();
+      await untrusted.listCommands();
+
+      // Trusted discovers the project skill (project .pi is read).
+      const trusted = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const trustedSkills = await trusted.listSkills();
+      assert.ok(
+        trustedSkills.some((s) => s.name === "proj-skill"),
+        "project skill discovered when trusted",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects construction without an explicit canonical cwd (no implicit fallback)", () => {
     assert.throws(
       () =>

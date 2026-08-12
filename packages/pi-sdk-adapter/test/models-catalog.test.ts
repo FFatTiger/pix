@@ -4,6 +4,9 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPiSdkModelCatalog, type PiSdkModelCatalogOptions } from "../src/models/index.js";
+import { createPiSdkModelStore } from "../src/internal/model-store.js";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { readdir } from "node:fs/promises";
 import type { ModelCatalogPort, ModelInfo } from "@fffattiger/pix-runtime-core";
 
 // Compile-time proof: PiSdkModelCatalogOptions.cwd is REQUIRED — an options
@@ -105,6 +108,7 @@ describe("read-only model catalog (D3B-R1A)", () => {
         agentDir: join(root, "agent"),
       });
       const def = await catalog.getDefaultModel();
+      assert.ok(def, "offline catalog must report a default model");
       assert.ok(typeof def.id === "string" && def.id.length > 0);
       assert.ok(typeof def.provider === "string" && def.provider.length > 0);
     } finally {
@@ -180,5 +184,96 @@ describe("read-only model catalog (D3B-R1A)", () => {
       () => createPiSdkModelCatalog({} as PiSdkModelCatalogOptions),
       (error: unknown) => (error as { code?: string }).code === "invalid_input",
     );
+  });
+});
+
+describe("model default validation + enabled scope (D3B-R1A hardening)", () => {
+  async function tmpCwd(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "pix-model-default-"));
+    const cwd = join(root, "cwd");
+    await mkdir(cwd, { recursive: true });
+    return cwd;
+  }
+
+  it("valid configured default is returned", async () => {
+    const cwd = await tmpCwd();
+    try {
+      const probe = createPiSdkModelCatalog({ cwd, agentDir: cwd });
+      const models = await probe.listModels();
+      assert.ok(models.length > 0, "offline catalog has built-in models");
+      const target = models[0]!;
+      const settings = SettingsManager.inMemory();
+      settings.setDefaultModelAndProvider(target.provider, target.id);
+      const store = createPiSdkModelStore({ cwd, settingsManager: settings });
+      const def = await store.getDefaultModel();
+      assert.deepEqual(def, { provider: target.provider, id: target.id });
+    } finally {
+      await rm(join(cwd, ".."), { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("nonexistent configured default falls back to first model", async () => {
+    const cwd = await tmpCwd();
+    try {
+      const settings = SettingsManager.inMemory();
+      settings.setDefaultModelAndProvider("anthropic", "zzz-does-not-exist");
+      const store = createPiSdkModelStore({ cwd, settingsManager: settings });
+      const def = await store.getDefaultModel();
+      assert.ok(def, "invalid default falls back to first enabled model");
+    } finally {
+      await rm(join(cwd, ".."), { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("default disabled by enabledModels falls back to first enabled", async () => {
+    const cwd = await tmpCwd();
+    try {
+      const probe = createPiSdkModelCatalog({ cwd, agentDir: cwd });
+      const models = await probe.listModels();
+      const target = models.find((m) => m.provider === "anthropic") ?? models[0]!;
+      const settings = SettingsManager.inMemory();
+      settings.setDefaultModelAndProvider(target.provider, target.id);
+      // Scope excludes the target provider => default disabled, must fall back.
+      settings.setEnabledModels(["openai/*"]);
+      const store = createPiSdkModelStore({ cwd, settingsManager: settings });
+      const def = await store.getDefaultModel();
+      assert.ok(def, "disabled default falls back to first enabled");
+      assert.notDeepEqual(def, { provider: target.provider, id: target.id });
+    } finally {
+      await rm(join(cwd, ".."), { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("enabledModels matching nothing => null", async () => {
+    const cwd = await tmpCwd();
+    try {
+      const settings = SettingsManager.inMemory();
+      settings.setEnabledModels(["zzz-no-match-*"]);
+      const store = createPiSdkModelStore({ cwd, settingsManager: settings });
+      const def = await store.getDefaultModel();
+      assert.equal(def, null, "empty enabled scope => null default");
+    } finally {
+      await rm(join(cwd, ".."), { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});
+
+describe("model catalog creates zero files (D3B-R1A hardening)", () => {
+  it("reads on a clean/missing agentDir create no files or directories", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-model-zerofile-"));
+    const agentDir = join(root, "agent"); // intentionally NOT created
+    const cwd = join(root, "cwd");
+    await mkdir(cwd, { recursive: true });
+    try {
+      const before = await readdir(root);
+      const catalog = createPiSdkModelCatalog({ cwd, agentDir });
+      await catalog.listModels();
+      await catalog.getDefaultModel();
+      await catalog.resolveModel({ provider: "anthropic", modelId: "sonnet" }).catch(() => {});
+      const after = await readdir(root);
+      assert.deepEqual(after, before, "model catalog reads must create no files/dirs");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

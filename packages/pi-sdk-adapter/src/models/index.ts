@@ -22,7 +22,7 @@ import { createPiSdkModelStore } from "../internal/model-store.js";
  */
 export interface PiSdkModelStore {
   listModels(): Promise<readonly ModelInfo[]>;
-  getDefaultModel(): Promise<ModelRef>;
+  getDefaultModel(): Promise<ModelRef | null>;
   resolveModel(selector: ModelSelector): Promise<ModelInfo>;
 }
 
@@ -45,7 +45,7 @@ class PiSdkModelCatalog implements ModelCatalogPort {
     return this.store.listModels();
   }
 
-  getDefaultModel(): Promise<ModelRef> {
+  getDefaultModel(): Promise<ModelRef | null> {
     return this.store.getDefaultModel();
   }
 

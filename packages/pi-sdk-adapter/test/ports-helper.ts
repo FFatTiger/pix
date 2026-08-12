@@ -42,7 +42,7 @@ export interface PiSdkDataBackend {
   locate(sessionId: string): Promise<SessionLocation>;
   resolveLeafId(sessionId: string, targetId?: string): Promise<string>;
   listModels(): Promise<readonly ModelInfo[]>;
-  getDefaultModel(): Promise<ModelRef>;
+  getDefaultModel(): Promise<ModelRef | null>;
   resolveModel(provider: string, modelId: string): Promise<ModelInfo>;
   listProviders(): Promise<readonly AuthProviderInfo[]>;
   providerStatus(providerId: string): Promise<AuthProviderStatus>;

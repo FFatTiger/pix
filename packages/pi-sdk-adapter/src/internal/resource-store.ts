@@ -125,23 +125,31 @@ export function createPiSdkResourceStore(
       new ProjectTrustStore(agentDir).get(options.cwd) === true);
   let cached: LoadedResources | undefined;
 
-  const settings = (): SettingsManager =>
-    options.settingsManager ?? SettingsManager.create(options.cwd, agentDir);
+  // Trust gate at the READ layer: when the project is not trusted, project
+  // discovery is skipped ENTIRELY (not parsed then filtered) by rooting skill +
+  // settings discovery at the trusted agent dir instead of the project cwd. The
+  // project's .pi/skills and .pi/settings.json are never read or parsed, so a
+  // malformed/permission-trapped/project-local resource cannot affect the
+  // untrusted read. Global/user metadata (agentDir) still loads.
+  const discoveryCwd = trusted ? options.cwd : agentDir;
 
-  /** Keep only resources allowed under the current trust state. */
-  const allowScope = (scope: string): boolean =>
-    trusted || scope !== "project";
+  const settings = (): SettingsManager =>
+    options.settingsManager ??
+    (trusted
+      ? SettingsManager.create(options.cwd, agentDir)
+      : SettingsManager.create(agentDir, agentDir));
 
   const discover = async (): Promise<LoadedResources> => {
     if (cached) return cached;
 
-    // Skills: filesystem metadata only; never an extension import.
+    // Skills: filesystem metadata only; never an extension import. Project
+    // discovery is skipped when untrusted (discoveryCwd === agentDir).
     const loadedSkills = loadSkills({
-      cwd: options.cwd,
+      cwd: discoveryCwd,
       agentDir,
       skillPaths: [],
       includeDefaults: true,
-    }).skills.filter((skill) => allowScope(skill.sourceInfo.scope));
+    }).skills;
     const skills = loadedSkills.map(toSkillInfo);
 
     // Commands: skill commands (skill:name). Prompt-template and extension
@@ -151,15 +159,18 @@ export function createPiSdkResourceStore(
     const commands: SlashCommandInfo[] = loadedSkills.map(skillToCommand);
 
     // Plugins: configured/package static metadata (no module import, no
-    // install). Project-scoped configured packages are trust-gated.
+    // install). Discovery roots at the trusted dir when untrusted, so the
+    // project's .pi/settings.json is never read.
     const packages = new DefaultPackageManager({
-      cwd: options.cwd,
+      cwd: discoveryCwd,
       agentDir,
       settingsManager: settings(),
     }).listConfiguredPackages();
     const plugins: PluginInfo[] = [];
     for (const pkg of packages) {
-      if (!allowScope(pkg.scope)) continue;
+      // Defense-in-depth: withhold any project-scoped package even though
+      // untrusted discovery is already rooted at the trusted agent dir.
+      if (!trusted && pkg.scope === "project") continue;
       const manifest =
         pkg.installedPath === undefined
           ? {}

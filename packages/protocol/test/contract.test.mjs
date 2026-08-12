@@ -8,6 +8,7 @@ import {
   ImageAttachmentSchema,
   LastEventIdSchema,
   ModelRefSchema,
+  ModelInfoSchema,
   NonEmptyStringSchema,
   PROTOCOL_VERSION,
   ProtocolErrorSchema,
@@ -1228,6 +1229,55 @@ describe("DTO guards", () => {
         contextWindow: 1,
       }).success,
       false,
+    );
+  });
+
+  it("ModelInfoSchema accepts positive-integer contextWindow and rejects invalid", () => {
+    // Valid minimal + full positive-integer contextWindow.
+    assert.equal(
+      ModelInfoSchema.safeParse({ id: "m", provider: "p" }).success,
+      true,
+    );
+    const full = ModelInfoSchema.parse({
+      id: "m",
+      provider: "p",
+      displayName: "M",
+      thinking: true,
+      contextWindow: 200000,
+    });
+    assert.equal(full.contextWindow, 200000);
+    // contextWindow invariant: positive integer only.
+    assert.equal(
+      ModelInfoSchema.safeParse({ id: "m", provider: "p", contextWindow: 0 })
+        .success,
+      false,
+      "rejects 0",
+    );
+    assert.equal(
+      ModelInfoSchema.safeParse({ id: "m", provider: "p", contextWindow: -1 })
+        .success,
+      false,
+      "rejects negative",
+    );
+    assert.equal(
+      ModelInfoSchema.safeParse({ id: "m", provider: "p", contextWindow: 1.5 })
+        .success,
+      false,
+      "rejects fractional",
+    );
+    // Backend-neutral: rejects SDK leakage (cost/sampling/api).
+    assert.equal(
+      ModelInfoSchema.safeParse({
+        id: "m",
+        provider: "p",
+        api: "anthropic-messages",
+      }).success,
+      false,
+    );
+    assert.equal(
+      ModelInfoSchema.safeParse({ id: "", provider: "p" }).success,
+      false,
+      "rejects blank id",
     );
   });
 

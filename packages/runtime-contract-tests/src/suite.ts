@@ -1482,6 +1482,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const models = await ports.modelCatalog.listModels();
         assert.ok(models.length >= 2);
         const defaults = await ports.modelCatalog.getDefaultModel();
+        assert.ok(defaults, "default model must exist for the reference catalog");
         assert.ok(defaults.id.length > 0);
         const resolved = await ports.modelCatalog.resolveModel({
           provider: "openai",

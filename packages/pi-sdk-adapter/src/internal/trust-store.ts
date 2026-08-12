@@ -38,6 +38,10 @@ function toState(decision: boolean | null): ProjectTrustState {
 /**
  * Create a read-only trust query store backed by the Pi SDK trust primitives.
  * The trust store is built lazily (on first read); no network, no writes.
+ *
+ * Corruption safety: a malformed/unreadable trust.json is treated as NO
+ * decision (fail closed) — state `unknown`, isTrusted false, resources withheld
+ * — never propagating a raw SDK Error, path, file content, or stack.
  */
 export function createPiSdkTrustStore(
   options: PiSdkTrustStoreOptions = {},
@@ -45,25 +49,32 @@ export function createPiSdkTrustStore(
   const agentDir = options.agentDir ?? getAgentDir();
   let cachedStore: ProjectTrustStore | undefined;
 
-  const store = (): ProjectTrustStore =>
+  const resolveStore = (): ProjectTrustStore =>
     options.projectTrustStore ?? (cachedStore ??= new ProjectTrustStore(agentDir));
+  const decision = (cwd: string): boolean | null => {
+    try {
+      return resolveStore().get(cwd);
+    } catch {
+      // Malformed/unreadable trust.json: fail closed to "no decision".
+      return null;
+    }
+  };
 
   return {
     async getProjectTrustState(cwd: string): Promise<ProjectTrustState> {
-      return toState(store().get(cwd));
+      return toState(decision(cwd));
     },
     async isTrusted(cwd: string): Promise<boolean> {
-      // Exact SDK effective-trust computation: nothing to gate, or saved
-      // decision is explicitly trusted.
-      return !hasTrustRequiringProjectResources(cwd) || store().get(cwd) === true;
+      // Exact SDK effective-trust computation, fail-closed on corruption.
+      return !hasTrustRequiringProjectResources(cwd) || decision(cwd) === true;
     },
     async canReloadResources(cwd: string): Promise<TrustGateResult> {
-      const decision = store().get(cwd);
+      const current = decision(cwd);
       const allowed =
-        !hasTrustRequiringProjectResources(cwd) || decision === true;
+        !hasTrustRequiringProjectResources(cwd) || current === true;
       return {
         allowed,
-        level: toState(decision),
+        level: toState(current),
         ...(allowed ? {} : { reason: "project is not trusted" }),
       };
     },

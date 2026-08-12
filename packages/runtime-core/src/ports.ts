@@ -156,7 +156,11 @@ export interface SessionLocatorPort {
  */
 export interface ModelCatalogPort {
   listModels(): Promise<readonly ModelInfo[]>;
-  getDefaultModel(): Promise<ModelRef>;
+  /**
+   * Configured default model, validated against the catalog and enabled scope,
+   * falling back to the first enabled valid model, or null when none exist.
+   */
+  getDefaultModel(): Promise<ModelRef | null>;
   resolveModel(selector: ModelSelector): Promise<ModelInfo>;
 }
 

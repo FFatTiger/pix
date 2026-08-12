@@ -182,4 +182,27 @@ describe("read-only trust catalog (D3B-R1A)", () => {
     assert.equal(typeof catalog.isTrusted, "function");
     assert.equal(typeof catalog.canReloadResources, "function");
   });
+
+  it("malformed trust.json fails closed to unknown and withholds resources", async () => {
+    const { root, agentDir, projectCwd } = await fixture();
+    try {
+      // Corrupt the trust store so ProjectTrustStore.get would throw.
+      await writeFile(join(agentDir, "trust.json"), "{ this is not valid json ", "utf8");
+      const catalog = createPiSdkTrustCatalog({ agentDir });
+      // Must not throw, and must fail closed.
+      const state = await catalog.getProjectTrustState(projectCwd);
+      assert.equal(state, "unknown");
+      assert.equal(await catalog.isTrusted(projectCwd), false);
+      const gate = await catalog.canReloadResources(projectCwd);
+      assert.equal(gate.allowed, false);
+      assert.equal(gate.level, "unknown");
+      // No raw SDK Error, path, file content, or stack may surface.
+      const payload = JSON.stringify({ state, gate });
+      assert.ok(!payload.includes("trust.json"), "trust path leaked");
+      assert.ok(!payload.includes("Invalid trust store"), "raw SDK error leaked");
+      assert.ok(!payload.includes("this is not valid json"), "file content leaked");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -21,5 +21,6 @@ export interface ModelInfo {
   displayName?: string;
   /** Whether the model supports visible reasoning. */
   thinking?: boolean;
+  /** Positive-integer context window size in tokens (invariant). */
   contextWindow?: number;
 }
