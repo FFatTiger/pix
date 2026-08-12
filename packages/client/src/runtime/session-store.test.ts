@@ -631,3 +631,121 @@ describe("SessionStore — runtime capability authority + generic command", () =
     await expect(h.store.sendCommand({ commandId: "x", type: "prompt", message: "hi" })).rejects.toThrow();
   });
 });
+
+describe("SessionStore — D2-P1 typed command helpers", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function attachWithCaps(h: RuntimeHarness, capabilities: string[], sessionId = "s1"): Promise<FakeWebSocket> {
+    h.store.connect();
+    const ws = openReady(h);
+    const p = h.store.openSession(sessionId);
+    return flush().then(() => {
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, capabilities }) });
+      return flush().then(() => p.then(() => ws));
+    });
+  }
+
+  it("getState/getCommands/getLastAssistantText mint commandId internally and unwrap the correlated result", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+
+    const stateP = h.store.getState();
+    await flush();
+    const stateCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(stateCmd.payload.command.type).toBe("get_state");
+    expect(stateCmd.payload.command.commandId.length).toBeGreaterThan(0);
+    ws.serverSend({ type: "response", id: stateCmd.id, payload: { ok: true, result: { commandId: stateCmd.payload.command.commandId, result: { ok: true, type: "get_state", state: { sessionId: "s1", isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0 } } } } });
+    await expect(stateP).resolves.toMatchObject({ sessionId: "s1", messageCount: 0 });
+
+    const commandsP = h.store.getCommands();
+    await flush();
+    const commandsCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(commandsCmd.payload.command.type).toBe("get_commands");
+    ws.serverSend({ type: "response", id: commandsCmd.id, payload: { ok: true, result: { commandId: commandsCmd.payload.command.commandId, result: { ok: true, type: "get_commands", commands: [{ name: "/help", source: "prompt" }] } } } });
+    await expect(commandsP).resolves.toEqual([{ name: "/help", source: "prompt" }]);
+
+    const lastP = h.store.getLastAssistantText();
+    await flush();
+    const lastCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(lastCmd.payload.command.type).toBe("get_last_assistant_text");
+    ws.serverSend({ type: "response", id: lastCmd.id, payload: { ok: true, result: { commandId: lastCmd.payload.command.commandId, result: { ok: true, type: "get_last_assistant_text", text: "Hello world" } } } });
+    await expect(lastP).resolves.toBe("Hello world");
+  });
+
+  it("getSessionStats and setSessionName unwrap their payloads and resolve", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename"]);
+
+    const statsP = h.store.getSessionStats();
+    await flush();
+    const statsCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(statsCmd.payload.command.type).toBe("get_session_stats");
+    ws.serverSend({ type: "response", id: statsCmd.id, payload: { ok: true, result: { commandId: statsCmd.payload.command.commandId, result: { ok: true, type: "get_session_stats", stats: { messageCount: 3, tokenCount: 12 } } } } });
+    await expect(statsP).resolves.toEqual({ messageCount: 3, tokenCount: 12 });
+
+    const renameP = h.store.setSessionName("  Renamed  ");
+    await flush();
+    const renameCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; name: string } } }>(ws, "command")!;
+    expect(renameCmd.payload.command.type).toBe("set_session_name");
+    // the helper trims the name before sending
+    expect(renameCmd.payload.command.name).toBe("Renamed");
+    ws.serverSend({ type: "response", id: renameCmd.id, payload: { ok: true, result: { commandId: renameCmd.payload.command.commandId, result: { ok: true, type: "set_session_name" } } } });
+    await expect(renameP).resolves.toBeUndefined();
+  });
+
+  it("setSessionName rejects a blank name without sending a command", async () => {
+    const h = createHarness();
+    await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.session.rename"]);
+    await expect(h.store.setSessionName("   ")).rejects.toMatchObject({ code: "invalid_input" });
+  });
+
+  it("concurrent typed helpers share the single-inflight command: the second fails fast as session_busy", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.stats"]);
+    const first = h.store.getState();
+    const second = h.store.getSessionStats();
+    await expect(second).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    await flush();
+    const commands = (ws.sent as { type: string; id?: string; payload?: { command?: { commandId?: string; type?: string } } }[]).filter((frame) => frame.type === "command");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.payload?.command?.type).toBe("get_state");
+    const firstCmd = commands[0]!;
+    ws.serverSend({ type: "response", id: firstCmd.id!, payload: { ok: true, result: { commandId: firstCmd.payload?.command?.commandId, result: { ok: true, type: "get_state", state: { sessionId: "s1", isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0 } } } } });
+    await expect(first).resolves.toMatchObject({ sessionId: "s1" });
+  });
+
+  it("a capability-gated helper rejects honestly with the runtime's unsupported_capability error", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+    // The runtime does NOT advertise runtime.stats; the server answers
+    // unsupported_capability and the helper surfaces it (never fakes a result).
+    const statsP = h.store.getSessionStats();
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "get_session_stats", error: { code: "unsupported_capability", message: "runtime.stats not available", retryable: false } } } } });
+    await expect(statsP).rejects.toMatchObject({ code: "unsupported_capability", message: "runtime.stats not available" });
+    // the client's capability exposure is unchanged
+    expect(h.store.hasRuntimeCapability("runtime.stats")).toBe(false);
+  });
+
+  it("an ok:false response rejects the helper with the runtime error (not a fake success)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+    const stateP = h.store.getState();
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "get_state", error: { code: "external", message: "boom", retryable: true } } } } });
+    await expect(stateP).rejects.toMatchObject({ code: "external", message: "boom" });
+  });
+
+  it("helpers reject when not attached", async () => {
+    const h = createHarness();
+    await expect(h.store.getState()).rejects.toThrow();
+    await expect(h.store.getCommands()).rejects.toThrow();
+    await expect(h.store.getLastAssistantText()).rejects.toThrow();
+    await expect(h.store.getSessionStats()).rejects.toThrow();
+    await expect(h.store.setSessionName("x")).rejects.toThrow();
+  });
+});

@@ -16,8 +16,17 @@
 
 import { randomUUID } from "node:crypto";
 
+// D2-P1: production light-command surface. Baseline queries
+// (get_state / get_commands / get_last_assistant_text) are always available;
+// runtime.stats (get_session_stats) and runtime.session.rename
+// (set_session_name) are the capability-gated unlocks.
 const CAPABILITIES = {
-  capabilities: ["runtime.prompt", "runtime.abort"],
+  capabilities: [
+    "runtime.prompt",
+    "runtime.abort",
+    "runtime.stats",
+    "runtime.session.rename",
+  ],
   version: 1,
 };
 
@@ -47,6 +56,15 @@ function makePort({ cwd, sessionId, mode }) {
   /** @type {{ resolve: (v: unknown) => void, reject: (e: unknown) => void, timer?: ReturnType<typeof setTimeout> } | null} */
   let blocked = null;
   let isPromptRunning = false;
+  let sessionName = "";
+  let messageCount = 0;
+  let lastAssistantText = "";
+
+  const commands = [
+    { name: "/compact", description: "Compact the session", source: "prompt" },
+    { name: "/clear", source: "prompt" },
+    { name: "skill:frontend", description: "Frontend codebase guidance", source: "skill" },
+  ];
 
   const identity = {
     sessionId,
@@ -72,7 +90,8 @@ function makePort({ cwd, sessionId, mode }) {
       isBashRunning: false,
       isCompacting: false,
       model: null,
-      messageCount: 0,
+      messageCount,
+      ...(sessionName === "" ? {} : { sessionName }),
     };
   }
 
@@ -94,6 +113,34 @@ function makePort({ cwd, sessionId, mode }) {
     },
     async execute(command) {
       executeCount += 1;
+      switch (command.type) {
+        case "get_state":
+          return { ok: true, type: "get_state", state: baseState() };
+        case "get_commands":
+          return { ok: true, type: "get_commands", commands };
+        case "get_last_assistant_text":
+          return { ok: true, type: "get_last_assistant_text", text: lastAssistantText };
+        case "get_session_stats":
+          return {
+            ok: true,
+            type: "get_session_stats",
+            stats: {
+              messageCount,
+              pendingMessageCount: 0,
+              tokenCount: messageCount * 12,
+            },
+          };
+        case "set_session_name": {
+          const name = typeof command.name === "string" ? command.name.trim() : "";
+          if (name === "") {
+            return { ok: false, type: "set_session_name", error: { code: "invalid_input", message: "session name cannot be empty", retryable: false } };
+          }
+          sessionName = name;
+          return { ok: true, type: "set_session_name" };
+        }
+        default:
+          break;
+      }
       if (command.type !== "prompt") {
         return { ok: true, type: command.type };
       }
@@ -180,6 +227,8 @@ function makePort({ cwd, sessionId, mode }) {
       });
       emit({ type: "prompt_done", sessionId });
       isPromptRunning = false;
+      messageCount += 1;
+      lastAssistantText = "Hello world";
       return { ok: true, type: "prompt" };
     },
     async interrupt(interrupt) {

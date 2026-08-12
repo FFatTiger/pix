@@ -195,7 +195,9 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           await this.driver.compact(command.customInstructions);
           return { ok: true, type: "compact" };
         case "set_session_name": {
-          if (!command.name.trim()) return this.failure(command.type, makeRuntimeError("invalid_input", "session name cannot be empty"));
+          if (typeof command.name !== "string" || !command.name.trim()) {
+            return this.failure(command.type, makeRuntimeError("invalid_input", "session name must be a non-empty string"));
+          }
           this.driver.setSessionName(command.name);
           this.emitState();
           return { ok: true, type: "set_session_name" };

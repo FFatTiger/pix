@@ -4,7 +4,9 @@ import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { formatCwdLabel, type WorkspaceSearch } from "@/lib/search-params";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
+import { SessionActions } from "@/components/shell/SessionActions";
 import { Sidebar } from "@/components/shell/Sidebar";
+import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
 import { useRuntime } from "@/runtime";
 import type { ConnectionState } from "@/runtime";
 
@@ -29,6 +31,7 @@ export function AppShell({ search }: AppShellProps) {
   const runtime = useRuntime();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [projectPath, setProjectPath] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
   const [openingLive, setOpeningLive] = useState(false);
@@ -54,6 +57,7 @@ export function AppShell({ search }: AppShellProps) {
   const connection = runtime.connection;
   const hasProject = Boolean(search.cwd);
   const canCreate = canAgent && hasProject && !runtime.attached && !runtime.sessionStopped;
+  const hasWorkspaceCap = capabilities.includes("files") || capabilities.includes("git");
 
   const handleCreate = (): void => {
     if (!search.cwd) return;
@@ -136,6 +140,17 @@ export function AppShell({ search }: AppShellProps) {
           <span className="topbar-caps" title={capabilities.join(", ")}>
             caps:{capabilities.length}
           </span>
+          {hasWorkspaceCap ? (
+            <button
+              type="button"
+              className={`text-btn${workspaceOpen ? " text-btn--active" : ""}`}
+              aria-pressed={workspaceOpen}
+              aria-label={workspaceOpen ? "Hide workspace panel" : "Show workspace panel"}
+              onClick={() => setWorkspaceOpen((v) => !v)}
+            >
+              Files/Git
+            </button>
+          ) : null}
           {canCreate ? (
             <button type="button" className="text-btn" onClick={handleCreate}>
               New session
@@ -195,12 +210,16 @@ export function AppShell({ search }: AppShellProps) {
             ) : null}
           </div>
 
+          <SessionActions />
+
           <TranscriptList
             {...(search.session === undefined ? {} : { sessionId: search.session })}
           />
 
           <Composer />
         </main>
+
+        <WorkspacePanel cwd={search.cwd} open={workspaceOpen} onClose={() => setWorkspaceOpen(false)} />
       </div>
     </div>
   );

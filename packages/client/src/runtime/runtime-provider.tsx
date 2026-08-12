@@ -114,6 +114,11 @@ export interface RuntimeApi extends RuntimeView {
   readonly sendCommand: SessionStore["sendCommand"];
   readonly sendPrompt: SessionStore["sendPrompt"];
   readonly abort: SessionStore["abort"];
+  readonly getState: SessionStore["getState"];
+  readonly getCommands: SessionStore["getCommands"];
+  readonly getLastAssistantText: SessionStore["getLastAssistantText"];
+  readonly getSessionStats: SessionStore["getSessionStats"];
+  readonly setSessionName: SessionStore["setSessionName"];
 }
 
 export function useRuntime(): RuntimeApi {
@@ -132,6 +137,11 @@ export function useRuntime(): RuntimeApi {
         sendCommand: (command) => store.sendCommand(command),
         sendPrompt: (message) => store.sendPrompt(message),
         abort: () => store.abort(),
+        getState: () => store.getState(),
+        getCommands: () => store.getCommands(),
+        getLastAssistantText: () => store.getLastAssistantText(),
+        getSessionStats: () => store.getSessionStats(),
+        setSessionName: (name) => store.setSessionName(name),
       }) as RuntimeApi,
     [store, view],
   );

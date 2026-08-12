@@ -30,14 +30,19 @@
 import {
   reduceRuntimeEventData,
   type AgentMessage,
+  type CorrelatedRuntimeCommandResult,
   type ProtocolError,
   type RuntimeAttachParams,
   type RuntimeCapability,
   type RuntimeCapabilitySet,
   type RuntimeCommand,
+  type RuntimeCommandOutcome,
   type RuntimeCreateParams,
   type RuntimeEventData,
   type RuntimeSnapshot,
+  type RuntimeState,
+  type SessionStats,
+  type SlashCommandInfo,
   type StreamingAgentMessage,
   type WsClientMessage,
   type WsEventMessage,
@@ -102,6 +107,15 @@ const INITIAL_VIEW: RuntimeView = {
   canAgent: false,
   capabilities: null,
 };
+
+/**
+ * A `RuntimeCommand` with its transport `commandId` removed, preserving each
+ * variant's own discriminant fields (distributive Omit — a plain
+ * `Omit<RuntimeCommand, "commandId">` collapses the union). Used by the D2-P1
+ * typed command helpers which mint the commandId internally.
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+type RuntimeCommandWithoutId = DistributiveOmit<RuntimeCommand, "commandId">;
 
 export interface SessionStoreOptions {
   readonly id?: IdFactory;
@@ -453,6 +467,88 @@ export class SessionStore implements RuntimeSocketHandler {
   /** Send a prompt (ordinary command). commandId is stable across same-epoch retries. */
   sendPrompt(message: string): Promise<unknown> {
     return this.sendCommand({ commandId: this.id(), type: "prompt", message });
+  }
+
+  // --- D2-P1 typed runtime command helpers -----------------------------------
+  //
+  // Each helper mints its own commandId, reuses the single-inflight
+  // {@link sendCommand} correlation (honest `session_busy` on concurrency) and
+  // unwraps the correlated result: an `ok:false` outcome rejects with its
+  // ProtocolError (including a capability-gated `unsupported_capability`), a
+  // success returns only the command's payload. Callers gate by capability via
+  // {@link hasRuntimeCapability} (the UI does this); the helpers themselves
+  // stay honest and let the runtime answer.
+
+  /** Query the current canonical runtime state. Always available. */
+  getState(): Promise<RuntimeState> {
+    return this.runTypedCommand({ type: "get_state" }, (outcome) => {
+      if (outcome.type !== "get_state") throw new Error("unexpected get_state result");
+      return outcome.state;
+    });
+  }
+
+  /** List the runtime's slash commands. Always available. */
+  getCommands(): Promise<readonly SlashCommandInfo[]> {
+    return this.runTypedCommand({ type: "get_commands" }, (outcome) => {
+      if (outcome.type !== "get_commands") throw new Error("unexpected get_commands result");
+      return outcome.commands;
+    });
+  }
+
+  /** Last assistant text ("" when none yet). Always available. */
+  getLastAssistantText(): Promise<string> {
+    return this.runTypedCommand({ type: "get_last_assistant_text" }, (outcome) => {
+      if (outcome.type !== "get_last_assistant_text") throw new Error("unexpected get_last_assistant_text result");
+      return outcome.text;
+    });
+  }
+
+  /** Session statistics. Requires the `runtime.stats` capability. */
+  getSessionStats(): Promise<SessionStats> {
+    return this.runTypedCommand({ type: "get_session_stats" }, (outcome) => {
+      if (outcome.type !== "get_session_stats") throw new Error("unexpected get_session_stats result");
+      return outcome.stats;
+    });
+  }
+
+  /**
+   * Rename the session. Requires the `runtime.session.rename` capability.
+   * Resolves once the runtime confirms the command; callers refresh the
+   * snapshot (fetchSnapshot) to see the new sessionName. This helper NEVER
+   * writes to a history/catalog projection — persistence is the runtime's job.
+   */
+  setSessionName(name: string): Promise<void> {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "session name cannot be empty",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    return this.runTypedCommand({ type: "set_session_name", name: trimmed }, (outcome) => {
+      if (outcome.type !== "set_session_name") throw new Error("unexpected set_session_name result");
+    });
+  }
+
+  /**
+   * Send a typed command through the single-inflight {@link sendCommand} path
+   * with an internally-minted commandId, then unwrap the correlated result.
+   * `extract` runs only on an `ok:true` outcome (the error path rejects).
+   *
+   * `command` uses a distributive Omit so each RuntimeCommand variant keeps its
+   * own discriminant fields (a plain `Omit<RuntimeCommand, "commandId">` would
+   * collapse the union and reject valid variants like `set_session_name`).
+   */
+  private runTypedCommand<T>(
+    command: RuntimeCommandWithoutId,
+    extract: (outcome: Extract<RuntimeCommandOutcome, { ok: true }>) => T,
+  ): Promise<T> {
+    return this.sendCommand({ ...command, commandId: this.id() } as RuntimeCommand).then((value) => {
+      const correlated = value as CorrelatedRuntimeCommandResult;
+      if (!correlated.result.ok) throw correlated.result.error;
+      return extract(correlated.result);
+    });
   }
 
   /** Abort the running prompt via the INDEPENDENT interrupt path (not queued). */
