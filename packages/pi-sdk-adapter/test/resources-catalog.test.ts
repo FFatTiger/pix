@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPiSdkResourceCatalog, type PiSdkResourceCatalogOptions } from "../src/resources/index.js";
@@ -94,6 +94,154 @@ describe("read-only resource catalog (D3B-R1A)", () => {
       assert.ok(names.includes("proj-skill"), "project skill visible when trusted");
       // noExtensions:true must prevent the malicious extension from importing.
       assert.equal(existsSync(markerPath), false, "malicious extension was executed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a contained project skill when the global skills root is absent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-resources-project-only-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    try {
+      await mkdir(agentDir, { recursive: true });
+      await mkdir(join(projectCwd, ".pi", "skills", "project-only"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(projectCwd, ".pi", "skills", "project-only", "SKILL.md"),
+        "---\nname: project-only\ndescription: Contained project skill\n---\n# project",
+        "utf8",
+      );
+
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      assert.ok(
+        (await catalog.listSkills()).some((skill) => skill.name === "project-only"),
+      );
+      assert.ok(
+        (await catalog.listCommands()).some(
+          (command) => command.name === "skill:project-only",
+        ),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filters project skill symlinks that escape the trusted project root", async (t) => {
+    if (process.platform === "win32") {
+      t.skip("directory symlinks require platform-specific privileges on Windows");
+      return;
+    }
+    const { root, agentDir, projectCwd } = await fixture();
+    try {
+      const outside = join(root, "outside", "escaped-skill");
+      await mkdir(outside, { recursive: true });
+      await writeFile(
+        join(outside, "SKILL.md"),
+        "---\nname: escaped-skill\ndescription: Must remain outside\n---\n# escaped",
+        "utf8",
+      );
+      await symlink(
+        outside,
+        join(projectCwd, ".pi", "skills", "escaped-link"),
+        "dir",
+      );
+
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const skills = await catalog.listSkills();
+      const commands = await catalog.listCommands();
+      const names = skills.map((skill) => skill.name);
+      assert.ok(names.includes("global-skill"));
+      assert.ok(names.includes("proj-skill"));
+      assert.ok(!names.includes("escaped-skill"), "outside skill metadata leaked through symlink");
+      assert.ok(
+        commands.every((command) => command.name !== "skill:escaped-skill"),
+        "outside skill command leaked through symlink",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filters an entire project skills root symlinked outside the project", async (t) => {
+    if (process.platform === "win32") {
+      t.skip("directory symlinks require platform-specific privileges on Windows");
+      return;
+    }
+    const root = await mkdtemp(join(tmpdir(), "pix-resources-root-link-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    const outsideSkills = join(root, "outside-skills");
+    try {
+      await mkdir(join(agentDir, "skills", "global-skill"), { recursive: true });
+      await writeFile(
+        join(agentDir, "skills", "global-skill", "SKILL.md"),
+        "---\nname: global-skill\ndescription: Global\n---\n# global",
+        "utf8",
+      );
+      await mkdir(join(projectCwd, ".pi"), { recursive: true });
+      await mkdir(join(outsideSkills, "escaped-root-skill"), { recursive: true });
+      await writeFile(
+        join(outsideSkills, "escaped-root-skill", "SKILL.md"),
+        "---\nname: escaped-root-skill\ndescription: Must remain outside\n---\n# escaped",
+        "utf8",
+      );
+      await symlink(outsideSkills, join(projectCwd, ".pi", "skills"), "dir");
+
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const names = (await catalog.listSkills()).map((skill) => skill.name);
+      assert.ok(names.includes("global-skill"));
+      assert.ok(!names.includes("escaped-root-skill"));
+      assert.ok(
+        (await catalog.listCommands()).every(
+          (command) => command.name !== "skill:escaped-root-skill",
+        ),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filters an entire global skills root symlinked outside agentDir", async (t) => {
+    if (process.platform === "win32") {
+      t.skip("directory symlinks require platform-specific privileges on Windows");
+      return;
+    }
+    const root = await mkdtemp(join(tmpdir(), "pix-resources-global-link-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    const outsideSkills = join(root, "outside-global-skills");
+    try {
+      await mkdir(agentDir, { recursive: true });
+      await mkdir(projectCwd, { recursive: true });
+      await mkdir(join(outsideSkills, "escaped-global-skill"), { recursive: true });
+      await writeFile(
+        join(outsideSkills, "escaped-global-skill", "SKILL.md"),
+        "---\nname: escaped-global-skill\ndescription: Must remain outside\n---\n# escaped",
+        "utf8",
+      );
+      await symlink(outsideSkills, join(agentDir, "skills"), "dir");
+
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      assert.deepEqual(await catalog.listSkills(), []);
+      assert.deepEqual(await catalog.listCommands(), []);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

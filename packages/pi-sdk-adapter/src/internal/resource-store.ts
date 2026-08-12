@@ -28,8 +28,9 @@
 //
 // The canonical cwd is captured once and threaded into the loaders + settings;
 // no method re-reads process.cwd.
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   DefaultPackageManager,
   getAgentDir,
@@ -84,6 +85,66 @@ function skillToCommand(skill: Skill): SlashCommandInfo {
     ...(skill.description ? { description: skill.description } : {}),
     source: "skill",
   };
+}
+
+interface SkillContainmentRoot {
+  /** Canonical caller-owned base (agentDir or project cwd). */
+  readonly base: string;
+  /** The only subtree from that base allowed to contribute skills. */
+  readonly skills: string;
+}
+
+function isPathWithin(target: string, root: string): boolean {
+  const fromRoot = relative(root, target);
+  return (
+    fromRoot === "" ||
+    (!isAbsolute(fromRoot) && fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`))
+  );
+}
+
+/**
+ * Fail-closed containment check for SDK-discovered skills.
+ *
+ * The SDK intentionally follows symlinks while scanning. Pix catalog reads must
+ * not project metadata from outside the injected agent/project roots, so both
+ * the lexical discovery path and every resolved real path are checked. Checking
+ * the root itself against its base also rejects an entire `skills` directory
+ * that is a symlink outside the caller-owned directory.
+ */
+function isContainedSkill(
+  skill: Skill,
+  allowedRoots: readonly SkillContainmentRoot[],
+): boolean {
+  let lexicalFile: string;
+  let realFile: string;
+  try {
+    lexicalFile = resolve(skill.filePath);
+    realFile = realpathSync(skill.filePath);
+  } catch {
+    // A missing, unreadable, or racing skill path cannot be proven contained.
+    return false;
+  }
+
+  for (const allowed of allowedRoots) {
+    try {
+      const lexicalBase = resolve(allowed.base);
+      const lexicalSkills = resolve(allowed.skills);
+      if (!isPathWithin(lexicalSkills, lexicalBase)) continue;
+      if (!isPathWithin(lexicalFile, lexicalSkills)) continue;
+
+      const realBase = realpathSync(allowed.base);
+      const realSkills = realpathSync(allowed.skills);
+      if (!isPathWithin(realSkills, realBase)) continue;
+      if (!isPathWithin(realFile, realSkills)) continue;
+      if (!isPathWithin(realFile, realBase)) continue;
+      return true;
+    } catch {
+      // One absent/unreadable allowed root must not hide a skill contained by a
+      // different allowed root (for example project-only skills with no global
+      // `agentDir/skills` directory).
+    }
+  }
+  return false;
 }
 
 /** Resolve plugin name/version from a static package.json read (no import). */
@@ -150,12 +211,18 @@ export function createPiSdkResourceStore(
 
     // Skills: filesystem metadata only; never an extension import. Project
     // discovery is skipped when untrusted (discoveryCwd === agentDir).
+    const allowedSkillRoots: SkillContainmentRoot[] = [
+      { base: agentDir, skills: join(agentDir, "skills") },
+      ...(trusted
+        ? [{ base: options.cwd, skills: join(options.cwd, ".pi", "skills") }]
+        : []),
+    ];
     const loadedSkills = loadSkills({
       cwd: discoveryCwd,
       agentDir,
       skillPaths: [],
       includeDefaults: true,
-    }).skills;
+    }).skills.filter((skill) => isContainedSkill(skill, allowedSkillRoots));
     const skills = loadedSkills.map(toSkillInfo);
 
     // Commands: skill commands (skill:name). Prompt-template and extension
