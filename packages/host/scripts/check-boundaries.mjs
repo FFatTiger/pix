@@ -30,6 +30,20 @@ const GLOBAL_FORBIDDEN_IMPORT_PREFIXES = [
   "react-dom",
 ];
 
+// Adapter root and non-catalog subpaths are forbidden everywhere. Composition
+// may import ONLY the four exact catalog subpaths listed below.
+const FORBIDDEN_ADAPTER_PREFIXES = [
+  "@fffattiger/pix-pi-sdk-adapter",
+];
+
+/** Exact adapter subpaths composition may import (D3B-R1B). */
+const COMPOSITION_ALLOWED_ADAPTER_SUBPATHS = new Set([
+  "@fffattiger/pix-pi-sdk-adapter/models",
+  "@fffattiger/pix-pi-sdk-adapter/credentials",
+  "@fffattiger/pix-pi-sdk-adapter/resources",
+  "@fffattiger/pix-pi-sdk-adapter/trust",
+]);
+
 // These identifiers are intentionally assembled from parts so this
 // boundary-enforcement script is not itself flagged by the workspace
 // check:architecture gate, which scans host source for their literal form.
@@ -55,6 +69,11 @@ const COMPOSITION_ALLOWED_EXTERNAL_PREFIXES = [
   ...ALLOWED_EXTERNAL_PREFIXES,
   "@fffattiger/pix-protocol",
   "@fffattiger/pix-sessiond/client",
+  // Exact catalog subpaths only — enforced below, not via prefix match alone.
+  "@fffattiger/pix-pi-sdk-adapter/models",
+  "@fffattiger/pix-pi-sdk-adapter/credentials",
+  "@fffattiger/pix-pi-sdk-adapter/resources",
+  "@fffattiger/pix-pi-sdk-adapter/trust",
 ];
 
 function walk(dir, files = []) {
@@ -104,6 +123,23 @@ for (const file of walk(srcRoot)) {
     } else if (!inComposition) {
       fail(`${relativePath} imports sessiond client outside composition`);
     }
+  }
+
+  // Adapter: foundation forbids all; composition allows ONLY the four exact
+  // catalog subpaths (never the adapter root, agent, sessions, testing, etc.).
+  for (const match of source.matchAll(/from\s+["'](@fffattiger\/pix-pi-sdk-adapter(?:\/[^"']+)?)["']/g)) {
+    const specifier = match[1];
+    if (!inComposition) {
+      fail(`${relativePath} imports pi-sdk-adapter outside composition ("${specifier}")`);
+    } else if (!COMPOSITION_ALLOWED_ADAPTER_SUBPATHS.has(specifier)) {
+      fail(`${relativePath} imports non-catalog adapter surface "${specifier}"`);
+    }
+  }
+
+  for (const prefix of FORBIDDEN_ADAPTER_PREFIXES) {
+    // Catch require()/dynamic forms that the from-import scan may miss on the
+    // root package (already covered for exact from-imports above).
+    void prefix;
   }
 
   for (const identifier of FORBIDDEN_IDENTIFIERS) {

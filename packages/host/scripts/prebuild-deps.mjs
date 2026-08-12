@@ -17,6 +17,8 @@ const targets = [
   "packages/protocol",
   "packages/runtime-core",
   "packages/sessiond",
+  // D3B-R1B: composition imports four pi-sdk-adapter catalog subpaths.
+  "packages/pi-sdk-adapter",
 ];
 
 for (const target of targets) {

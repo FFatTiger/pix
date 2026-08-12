@@ -110,6 +110,13 @@ export {
   RESOURCE_DEGRADED_CAPABILITIES,
 } from "./composition/production-resources.js";
 export {
+  createProductionCatalogs,
+  validateCatalogAgentDir,
+  InvalidCatalogAgentDirError,
+  CATALOG_CAPABILITY_TOKENS,
+} from "./composition/production-catalogs.js";
+export type { ProductionCatalogsOptions } from "./composition/production-catalogs.js";
+export {
   createSessiondSessionsClient,
 } from "./composition/sessions-client.js";
 export type { SessiondSessionsClientOptions } from "./composition/sessions-client.js";

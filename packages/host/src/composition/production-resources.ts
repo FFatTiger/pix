@@ -60,17 +60,27 @@ export const PRODUCTION_RESOURCE_LIMITS: Readonly<ResourceLimits> = Object.freez
  * are still runtime-guarded (503) — these tokens describe the mounted service
  * surface, not per-request write availability. worktree is deliberately absent.
  */
+/**
+ * Resource + catalog capabilities offered while sessiond is unavailable
+ * (degraded). Catalog tokens (D3B-R1B) are independent of sessiond and stay
+ * advertised. worktree is deliberately absent.
+ */
 export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
   "files",
   "files.write",
   "files.watch",
   "files.upload",
   "git",
+  "models",
+  "auth.providers",
+  "skills",
+  "plugins",
 ];
 
 /**
  * Full capabilities when sessiond is up: agent first, then the read-only
- * sessions history surface, then the resource surface. Order is frozen.
+ * sessions history surface, then the resource surface, then the four catalog
+ * tokens (D3B-R1B; independent of sessiond). Order is frozen.
  * `sessions` (read-only history) requires the sessiond-backed catalog and is
  * advertised ONLY while the authority is up — D1A-2 phase 2. worktree is NOT
  * advertised (D3A-1): worktree creation works while the authority is up but is
@@ -84,6 +94,10 @@ export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "files.watch",
   "files.upload",
   "git",
+  "models",
+  "auth.providers",
+  "skills",
+  "plugins",
 ];
 
 /** Single safe error class for any roots configuration/canonicalization failure. */

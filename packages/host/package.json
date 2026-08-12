@@ -28,6 +28,7 @@
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },
   "dependencies": {
+    "@fffattiger/pix-pi-sdk-adapter": "0.1.0",
     "@fffattiger/pix-protocol": "0.1.0",
     "@fffattiger/pix-sessiond": "0.1.0",
     "@hono/node-server": "^1.19.0",
