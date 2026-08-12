@@ -6,7 +6,7 @@
 
 ## 当前里程碑
 
-**M2 — Minimal Runtime Happy Path**：M1 可启动独立应用已完成并通过GPT最终验证。当前接通 agent-worker、Pi SDK Agent Adapter、Host Runtime WebSocket 与 Client RuntimeStore，实现 create/open、prompt、stream、abort 和 snapshot/resume。
+**M3 — Read and Operate**：M2 Minimal Runtime Happy Path 已完成并通过 GPT 最终验证。当前扩展 sessions 只读路径、完整 Runtime commands、Files/Git/Worktree，以及 Models/Auth/Skills/Plugins/Trust 产品切片。
 
 ## 从这里开始
 
