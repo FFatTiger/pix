@@ -324,7 +324,7 @@ stop
 | `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A DONE：phase2 `5570d69` + error hardening `429274f` 已进main（GPT PASS）：Host GET、Client只读历史、Continue live、0 Worker E2E；D1B thinking/bash/export后续 |
 | `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 DONE；P1 `ed1b867` + hardening `9bfaf68` DONE（GPT PASS）：state/commands/last-text/stats/rename与SessionActions已进main；后续thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate |
 | `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | D3A-1 DONE；D3A-2 Files/Git只读工作区 `6972479` + canonical fix `bb5aba2` 已进main（fresh GPT PASS）；pure rename diff `a983cfd` DONE；Worktree UI与可信重启恢复后续 |
-| `D3B` | Models/Auth/Skills/Plugins/Trust | `IN_PROGRESS` | `M2`, D1领域化Adapter | D3B-R1只读Domain Catalog地基开工：read/mutation ports拆分、models/providers/skills/plugins/trust query、Host-mounted能力；OAuth/写入/执行extension后置 |
+| `D3B` | Models/Auth/Skills/Plugins/Trust | `IN_PROGRESS` | `M2`, D1领域化Adapter | R1A DONE（`773d3f2`）：read/mutation ports拆分与四个独立Adapter子路径；R1B DONE（`4668658`）：Host只读API、canonical cwd、能力诚实与严格DTO投影，独立对抗验证PASS。下一切片：Client只读目录UI；OAuth/写入/安装/reload/Trust修改/执行extension后置 |
 | `D4` | Mutations + Side Chat | `BLOCKED` | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
 
 ### 5.2 M3 Wave 1 冻结切片
@@ -332,8 +332,9 @@ stop
 1. `D1A`：DONE。D1A-1 `a38c3c8` 为独立、纯只读 `pi-sdk-adapter/sessions` Catalog/Locator；D1A-2 `5570d69` + `429274f` 完成Host/Client/0 Worker链路。真实missing read/context固定404且无泄漏，unknown固定503，严格十进制分页；GPT复验PASS。
 2. `D2-P0`：DONE（`c4a2f76` + `5a96fd4`；GPT复验PASS）；第二条并发command明确session_busy、snapshot内外sessionId不一致启动rollback、rekey rejection有界处理；未开放新能力。
 3. `D3A-1`：DONE（main `95ee707`，原branch `1c7a848`；GPT安全验证PASS）；Host204、CLI32、全仓tests、startup/runtime E2E、typecheck/architecture/boundaries PASS。
-4. Adapter内部按sessions/models/credentials/resources/trust领域拆分，只共享canonical path与安全文件原语；禁止恢复旧`sdk-data.ts`单体。
-5. D1A-2 phase1、D3A-1与D3A-2均已合并；D3A-2 fresh GPT验证 canonical path/race/cap revocation/pure rename PASS。后续工作以基础架构为主，UI维持可操作与能力诚实即可。
+4. `D3B-R1A`：DONE（main `773d3f2`）。Runtime Core read/mutation ports分离；Protocol只读tokens；Adapter以`models`/`credentials`/`resources`/`trust`四个独立子路径提供离线、零写入、零Extension执行的目录读取。Skill真实路径 containment 覆盖子目录和整根符号链接逃逸；正常与clean env Adapter 164/164；独立安全验证PASS。禁止恢复聚合`sdk-data.ts`。
+5. `D3B-R1B`：DONE（main `4668658`）。Host按挂载Port条件注册只读Models/Auth/Skills/Plugins/Commands/Trust API；项目读取使用AllowedRoot授权后的canonical cwd；full/degraded均诚实广告Catalog能力。Host严格投影DTO，Trust异常、恶意getter/proxy/cyclic/toJSON、额外Secret字段和稀疏数组均fail closed且日志不泄漏；Host256/256、CLI46/46、三条E2E与独立28/28对抗验证PASS。
+6. D1A-2 phase1、D3A-1、D3A-2、D3B-R1A与D3B-R1B均已合并。D3B下一切片只做Client只读目录UI与capability gating；Mutation/OAuth/Trust设置仍留在D4或后续显式切片。
 
 ## Wave 4 — Scale、PWA、Release
 

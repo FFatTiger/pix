@@ -6,7 +6,7 @@
 
 ## 当前里程碑
 
-**M3 — Read and Operate**：M2 Minimal Runtime Happy Path 已完成并通过 GPT 最终验证。当前 checkpoint 已支持从首页输入绝对项目路径创建真实对话；D1 Sessions Adapter 与 D2 Runtime capability 地基已进入主线，历史只读链和 Files/Git/Worktree production wiring 在独立协作分支继续。
+**M3 — Read and Operate**：M2 Minimal Runtime Happy Path 已完成并通过独立验证。当前 `main` 已包含真实对话、只读历史、Files/Git 工作区，以及 Models/Auth Providers/Skills/Plugins/Commands/Trust 的独立只读 Domain Catalog 与 Host API。D3B 下一切片是 Client 只读目录界面；OAuth、配置写入、安装、资源重载、Trust 修改和 Extension 执行仍明确后置。
 
 ## 从这里开始
 
@@ -16,10 +16,10 @@
 
 `docs/refactor-execution-plan.md` 是当前执行单一事实源。
 
-### 当前协作分支
+### 当前协作基线
 
-- `main`：稳定 checkpoint（M2 DONE、D1A-1、D2-P0、first-run project entry）
-- D1A-2 phase 1 已进入 `main`；phase 2（Host routes + Client只读历史 + 0 Worker E2E）应从最新 `main` 新建分支
-- D3A-1 production resource composition 已进入 `main`（`95ee707`，GPT安全验证PASS）；后续 Client Files/Git/Worktree UI 从最新 `main` 新建分支
+- `main@4668658`：稳定 checkpoint；D3B-R1A 只读 Catalog 地基和 D3B-R1B Host-mounted API 已完成并通过独立对抗验证。
+- Host 已开放只读 `/v1/models`、`/v1/auth/providers`、`/v1/skills`、`/v1/plugins`、`/v1/commands`、`/v1/trust`；项目级读取强制授权后的 canonical `cwd`。
+- 下一任务从最新 `main` 新建分支，聚焦 Client 只读 Catalog UI；不得恢复聚合 `sdk-data`、Mutation/OAuth 路由或隐式 `process.cwd`。
 
-新任务默认从最新 `main` 分支创建；需要接续上述进行中任务时，先与对应分支负责人确认并避免重复修改同一文件。
+新任务默认从最新 `main` 分支创建；需要接续进行中任务时，先确认文件范围并避免重复修改同一模块。

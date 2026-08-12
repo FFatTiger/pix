@@ -318,7 +318,25 @@ Error边界：Adapter plain RuntimeError在sessiond RPC由toBoundaryProtocolErro
 独立验证 verdict：PASS
 ```
 
-## 19. 后续迁移时必须记录的校验
+## 19. D3B-R1A/R1B — 只读 Domain Catalog 与 Host API 记录
+
+```text
+D3B-R1A main：773d3f2
+范围：Runtime Core Model/Credential/Resource/Trust read ports与mutation ports分离；Protocol只读capability tokens；pi-sdk-adapter独立models/credentials/resources/trust子路径。
+安全不变量：显式canonical cwd/agentDir；离线零网络；读操作零写入；不返回credential material；不执行Extension；unknown/denied Trust隐藏项目资源；禁止聚合sdk-data。
+关键修复：modelsPath绑定注入agentDir；clean env确定性；损坏trust fail closed；null credential不阻断后续provider；Skill file与skills根目录同时做lexical+realpath containment，阻断项目/全局符号链接逃逸。
+验证：Runtime Core 7/7；Protocol 116/116；Contract 75/75；Adapter 164/164（正常与clean env）；全仓门禁和Startup/Runtime/Sessions E2E PASS；独立安全验证PASS。
+
+D3B-R1B main：4668658
+范围：Host-mounted只读GET API：models、auth providers/status、skills、plugins、commands、trust；CLI生产composition挂载四个Adapter子路径；Catalog capability在sessiond full/degraded状态下诚实保留。
+边界：Host foundation只接protocol-independent unknown seams；只有Host composition允许精确导入adapter/models、credentials、resources、trust；无adapter root、runtime-core或Pi SDK直接依赖；缺Port不注册路由也不广告token。
+路径：所有项目级API强制?cwd=，通过AllowedRootService authorizeExisting(directory)后仅把canonical path传给Port；relative、out-of-root、symlink escape与ROOT_REPLACED均fail closed。
+安全修复：Trust isTrusted/forCwd/list/projection统一固定503边界；Host严格字段投影，移除apiKey/token/path/stack/sourceInfo与额外字段；Trust reason固定；Proxy/getter/cyclic/toJSON异常不进入通用500日志；Capability override按实际挂载校正；显式空PI_CODING_AGENT_DIR拒绝；稀疏Catalog数组拒绝而非wire null。
+验证：Host 256/256；CLI 46/46；Host boundary/architecture/typecheck PASS；Startup/Runtime/Sessions E2E使用当前生产CLI dist全部PASS；独立对抗套件28/28 PASS；30144未触碰且保持健康。
+后续：Client只读Catalog UI；OAuth、配置写入、安装、reload、Trust设置和Extension执行不在R1范围。
+```
+
+## 20. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -336,7 +354,7 @@ Error边界：Adapter plain RuntimeError在sessiond RPC由toBoundaryProtocolErro
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 20. sessiond 特别保护
+## 21. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -369,7 +387,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 21. 旧结果可用性摘要
+## 22. 旧结果可用性摘要
 
 ### 可复用
 
@@ -393,7 +411,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 22. 完成条件
+## 23. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -404,7 +422,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 23. 命名决策（历史证据说明）
+## 24. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 
