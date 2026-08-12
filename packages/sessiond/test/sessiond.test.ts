@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { RuntimeSnapshot, SessiondRpcRequest } from "@fffattiger/pix-protocol";
+import type { RuntimeCapabilitySet, RuntimeSnapshot, SessiondRpcRequest } from "@fffattiger/pix-protocol";
 import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondApplication } from "../src/application.js";
 import { EventJournal } from "../src/journal.js";
@@ -222,6 +222,42 @@ test("worker startup failure rolls back registry", async () => {
   const { service } = harness({ worker: { failStart: true } });
   await assert.rejects(service.activate("s"));
   assert.equal(service.diagnostics().sessions, 0);
+});
+
+test("startup primes authoritative snapshot: attach carries real runtime capabilities", async () => {
+  const workerSnapshot = snapshot("s");
+  const { service, workers } = harness({ worker: { snapshot: workerSnapshot } });
+  await service.activate("s");
+  // sessiond proactively fetched the authoritative snapshot during startup, before attach.
+  const getSnapshotCalls = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot");
+  assert.ok(getSnapshotCalls.length >= 1, "startup must send worker.getSnapshot");
+  // Authoritative capabilities propagate into the projection AND the client attach snapshot.
+  assert.deepEqual(service.getSnapshot("s").capabilities, workerSnapshot.capabilities);
+  const attach = service.attach({ sessionId: "s" });
+  assert.ok(attach.result.snapshot, "attach must carry an initial snapshot");
+  assert.deepEqual(attach.result.snapshot!.capabilities, workerSnapshot.capabilities);
+  await service.shutdown();
+});
+
+test("startup snapshot failure fails closed and rolls back the worker", async () => {
+  const { service } = harness({ worker: { ignoreSnapshot: true } });
+  await assert.rejects(service.activate("s"));
+  // fail-closed: the record never becomes attachable with an empty capability set.
+  assert.equal(service.diagnostics().sessions, 0);
+  assert.throws(() => service.getSnapshot("s"));
+  await service.shutdown();
+});
+
+test("runtime_capabilities_changed updates the projected capability set", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  // primed default snapshot has an empty capability set.
+  assert.deepEqual(service.getSnapshot("s").capabilities, { capabilities: [], version: 0 });
+  const next: RuntimeCapabilitySet = { capabilities: ["runtime.prompt", "runtime.abort", "runtime.bash"], version: 2 };
+  workers.workers[0]!.emitEvent({ type: "runtime_capabilities_changed", sessionId: "s", capabilities: next });
+  await wait();
+  assert.deepEqual(service.getSnapshot("s").capabilities, next);
+  await service.shutdown();
 });
 
 test("read-only snapshot and catalog operations never activate a worker", async () => {

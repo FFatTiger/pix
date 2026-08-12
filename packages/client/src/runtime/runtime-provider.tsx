@@ -111,6 +111,7 @@ export interface RuntimeApi extends RuntimeView {
   readonly detach: SessionStore["detach"];
   readonly stop: SessionStore["stop"];
   readonly fetchSnapshot: SessionStore["fetchSnapshot"];
+  readonly sendCommand: SessionStore["sendCommand"];
   readonly sendPrompt: SessionStore["sendPrompt"];
   readonly abort: SessionStore["abort"];
 }
@@ -128,6 +129,7 @@ export function useRuntime(): RuntimeApi {
         detach: () => store.detach(),
         stop: (reason) => store.stop(reason),
         fetchSnapshot: () => store.fetchSnapshot(),
+        sendCommand: (command) => store.sendCommand(command),
         sendPrompt: (message) => store.sendPrompt(message),
         abort: () => store.abort(),
       }) as RuntimeApi,

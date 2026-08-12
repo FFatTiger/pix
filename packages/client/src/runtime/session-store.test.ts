@@ -528,3 +528,92 @@ describe("SessionStore — verifier regressions (PROBE-1/2/3/5/9/12/14/15/16)", 
     await expect(openP).resolves.toBeUndefined();
   });
 });
+
+describe("SessionStore — runtime capability authority + generic command", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("exposes authoritative runtime capabilities only while attached", async () => {
+    const h = createHarness();
+    // before attach: no runtime capability (never inferred from the Host agent capability)
+    expect(h.store.runtimeCapabilities()).toBeNull();
+    expect(h.store.hasRuntimeCapability("runtime.prompt")).toBe(false);
+    expect(h.store.getSnapshot().capabilities).toBeNull();
+
+    const ws = await openAndAttach(h);
+    // the attach snapshot carried the authoritative runtime.prompt + runtime.abort
+    expect(h.store.runtimeCapabilities()).toEqual({ capabilities: ["runtime.prompt", "runtime.abort"], version: 1 });
+    expect(h.store.hasRuntimeCapability("runtime.prompt")).toBe(true);
+    expect(h.store.hasRuntimeCapability("runtime.abort")).toBe(true);
+    expect(h.store.hasRuntimeCapability("runtime.bash")).toBe(false);
+    expect(h.store.getSnapshot().capabilities).toEqual({ capabilities: ["runtime.prompt", "runtime.abort"], version: 1 });
+    // canAgent is the Host-level gate and is independent of runtime capability
+    expect(h.store.getSnapshot().canAgent).toBe(true);
+    ws;
+  });
+
+  it("a later capabilities event / snapshot updates the exposed capability set", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1", "snapshot", "e1");
+    ws.serverSend({ type: "event", payload: { type: "runtime_capabilities_changed", sessionId: "s1", eventId: 1, epoch: "e1", capabilities: { capabilities: ["runtime.prompt", "runtime.abort", "runtime.bash"], version: 2 } } });
+    await flush();
+    expect(h.store.runtimeCapabilities()).toEqual({ capabilities: ["runtime.prompt", "runtime.abort", "runtime.bash"], version: 2 });
+    expect(h.store.hasRuntimeCapability("runtime.bash")).toBe(true);
+  });
+
+  it("detach clears the runtime capability set", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    expect(h.store.runtimeCapabilities()).not.toBeNull();
+    const detachP = h.store.detach();
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    ws.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await expect(detachP).resolves.toBeUndefined();
+    expect(h.store.runtimeCapabilities()).toBeNull();
+    expect(h.store.getSnapshot().capabilities).toBeNull();
+  });
+
+  it("stop clears the runtime capability set", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    expect(h.store.runtimeCapabilities()).not.toBeNull();
+    const stopP = h.store.stop();
+    await flush();
+    const stopFrame = lastFrame<{ type: string; id: string }>(ws, "stop")!;
+    ws.serverSend({ type: "response", id: stopFrame.id, payload: { ok: true, result: { sessionId: "s1", stopped: true } } });
+    await expect(stopP).resolves.toBeUndefined();
+    expect(h.store.runtimeCapabilities()).toBeNull();
+    expect(h.store.getSnapshot().capabilities).toBeNull();
+  });
+
+  it("sendCommand reuses command correlation and settles on the correlated response", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    const cmdP = h.store.sendCommand({ commandId: "cmd-1", type: "prompt", message: "hi" });
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.commandId).toBe("cmd-1");
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: "cmd-1", result: { ok: true, type: "prompt" } } } });
+    await expect(cmdP).resolves.toEqual({ commandId: "cmd-1", result: { ok: true, type: "prompt" } });
+  });
+
+  it("sendCommand resolves to an unsupported_capability result without throwing", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    // The runtime advertises runtime.prompt + runtime.abort only; a bash command
+    // is unsupported and resolves to a correlated unsupported_capability result.
+    const cmdP = h.store.sendCommand({ commandId: "cmd-bash", type: "bash", command: "ls" });
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string }>(ws, "command")!;
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: "cmd-bash", result: { ok: false, type: "bash", error: { code: "unsupported_capability", message: "runtime.bash not available", retryable: false } } } } });
+    await expect(cmdP).resolves.toEqual({ commandId: "cmd-bash", result: { ok: false, type: "bash", error: { code: "unsupported_capability", message: "runtime.bash not available", retryable: false } } });
+    // capability exposure is unchanged by the unsupported result
+    expect(h.store.hasRuntimeCapability("runtime.bash")).toBe(false);
+  });
+
+  it("sendCommand rejects when not attached", async () => {
+    const h = createHarness();
+    await expect(h.store.sendCommand({ commandId: "x", type: "prompt", message: "hi" })).rejects.toThrow();
+  });
+});

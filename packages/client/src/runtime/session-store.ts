@@ -32,6 +32,9 @@ import {
   type AgentMessage,
   type ProtocolError,
   type RuntimeAttachParams,
+  type RuntimeCapability,
+  type RuntimeCapabilitySet,
+  type RuntimeCommand,
   type RuntimeCreateParams,
   type RuntimeEventData,
   type RuntimeSnapshot,
@@ -74,6 +77,13 @@ export interface RuntimeView {
   readonly error: ProtocolError | null;
   readonly fatal: boolean;
   readonly canAgent: boolean;
+  /**
+   * Authoritative runtime capability set from the latest snapshot
+   * ({@link RuntimeCapabilitySet}), or null before the first attach snapshot.
+   * This is the runtime capability authority — never inferred from the Host
+   * `agent` capability ({@link canAgent}).
+   */
+  readonly capabilities: RuntimeCapabilitySet | null;
 }
 
 const INITIAL_VIEW: RuntimeView = {
@@ -90,6 +100,7 @@ const INITIAL_VIEW: RuntimeView = {
   error: null,
   fatal: false,
   canAgent: false,
+  capabilities: null,
 };
 
 export interface SessionStoreOptions {
@@ -391,23 +402,50 @@ export class SessionStore implements RuntimeSocketHandler {
     });
   }
 
-  /** Send a prompt (ordinary command). commandId is stable across same-epoch retries. */
-  sendPrompt(message: string): Promise<unknown> {
+  /**
+   * The authoritative runtime capability set from the latest attach snapshot
+   * ({@link RuntimeCapabilitySet}). Returns null whenever the store is not
+   * attached (detach / stop / reconnect), so a stale capability set is never
+   * exposed across an attach boundary. This is the runtime capability
+   * authority — never derived from the Host `agent` capability.
+   */
+  runtimeCapabilities(): RuntimeCapabilitySet | null {
+    return this.attached ? (this.snapshot?.capabilities ?? null) : null;
+  }
+
+  /** True when the current runtime advertises `capability` (false before attach). */
+  hasRuntimeCapability(capability: RuntimeCapability): boolean {
+    return this.runtimeCapabilities()?.capabilities.includes(capability) === true;
+  }
+
+  /**
+   * Send an arbitrary runtime command, reusing the at-most-once command
+   * correlation / epoch rules shared with {@link sendPrompt}. The caller owns
+   * the full {@link RuntimeCommand} (including a freshly-minted commandId) and
+   * capability gating (see {@link hasRuntimeCapability}); an unsupported
+   * command resolves to a correlated `unsupported_capability` result rather
+   * than throwing.
+   */
+  sendCommand(command: RuntimeCommand): Promise<unknown> {
     if (!this.attached || !this.sessionId) {
       return Promise.reject(this.notAttachedError());
     }
     const sessionId = this.sessionId;
-    const commandId = this.id();
     const envelopeId = this.id();
-    const command: WsClientMessage = {
+    const message: WsClientMessage = {
       type: "command",
       id: envelopeId,
-      payload: { sessionId, command: { commandId, type: "prompt", message } },
+      payload: { sessionId, command },
     };
     return new Promise((resolve, reject) => {
-      this.pendingCommand = { commandId, envelopeId, generation: this.socket.currentGeneration, sessionId, command, resolve, reject };
-      this.send(command);
+      this.pendingCommand = { commandId: command.commandId, envelopeId, generation: this.socket.currentGeneration, sessionId, command: message, resolve, reject };
+      this.send(message);
     });
+  }
+
+  /** Send a prompt (ordinary command). commandId is stable across same-epoch retries. */
+  sendPrompt(message: string): Promise<unknown> {
+    return this.sendCommand({ commandId: this.id(), type: "prompt", message });
   }
 
   /** Abort the running prompt via the INDEPENDENT interrupt path (not queued). */
@@ -915,6 +953,7 @@ export class SessionStore implements RuntimeSocketHandler {
       error: this.error,
       fatal: this.fatal,
       canAgent: this.host?.capabilities.includes("agent") === true,
+      capabilities: this.attached ? (snapshot?.capabilities ?? null) : null,
     };
   }
 

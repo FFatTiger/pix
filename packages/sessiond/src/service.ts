@@ -382,19 +382,22 @@ export class SessiondService {
     record.lastActivity = this.now();
     switch (message.type) {
       case "worker.ready": {
-        const settleReady = () => {
+        // The authoritative initial projection (state + capabilities together)
+        // is fetched via worker.getSnapshot; worker.ready.state is intentionally
+        // NOT projected separately so there is a SINGLE authority for the
+        // initial snapshot — runtime capabilities can never be inferred from
+        // ready state alone. A snapshot failure fails the startup closed.
+        const settleReady = async (): Promise<void> => {
           record.status = message.payload.workerStatus;
-          if (message.payload.state !== undefined) {
-            const snapshot = record.projection.snapshot();
-            snapshot.state = message.payload.state;
-            snapshot.sessionId = record.sessionId;
-            snapshot.state.sessionId = record.sessionId;
-            record.projection.replace(snapshot);
+          try {
+            await this.primeProjection(record);
+            ready();
+          } catch (error) {
+            record.startupReject?.(error instanceof SessiondError ? error : new SessiondError("worker_unavailable", "worker startup snapshot failed", true));
           }
-          ready();
         };
-        if (message.payload.sessionId !== record.sessionId) void this.rekey(record, message.payload.sessionId).then(settleReady);
-        else settleReady();
+        if (message.payload.sessionId !== record.sessionId) void this.rekey(record, message.payload.sessionId).then(() => void settleReady());
+        else void settleReady();
         break;
       }
       case "worker.sessionDiscovered":
@@ -641,6 +644,32 @@ export class SessiondService {
     });
     if (immediate) return immediate;
     return pending.promise;
+  }
+
+  /**
+   * Authoritative initial projection: after worker.ready/rekey and BEFORE the
+   * record is treated as ready / externally attachable, fetch the worker's
+   * authoritative snapshot via worker.getSnapshot and use it as the initial
+   * projection (capabilities + state together). The existing `worker.snapshot`
+   * handler performs the replace and resolves the pending. Any failure
+   * (timeout / send error / unmatched session) is propagated so the startup
+   * fails closed and the worker is rolled back — the record never becomes
+   * attachable with an empty/default capability set.
+   */
+  private async primeProjection(record: RecordState): Promise<void> {
+    const id = `prime:${record.epoch}:${randomUUID()}`;
+    const wait = deferred<RuntimeSnapshot>();
+    const timer = setTimeout(() => { record.pendingSnapshots.delete(id); wait.reject(new SessiondError("timeout", "worker startup snapshot timed out", true)); }, this.workerStartTimeoutMs);
+    record.pendingSnapshots.set(id, { resolve: wait.resolve, reject: wait.reject, timer });
+    try {
+      await record.worker.send({ type: "worker.getSnapshot", id, protocolVersion: PROTOCOL_VERSION, payload: { sessionId: record.sessionId } });
+      await wait.promise;
+    } catch (error) {
+      record.pendingSnapshots.delete(id);
+      throw error instanceof SessiondError ? error : new SessiondError("worker_unavailable", "worker startup snapshot send failed", true);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async snapshot(sessionId: string): Promise<RuntimeSnapshot> {

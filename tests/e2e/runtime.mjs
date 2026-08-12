@@ -515,6 +515,13 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
     assert.equal(snap.payload.projectRoot, projectDir);
     assert.equal(snap.payload.epoch, created.epoch);
     assert.ok(typeof snap.payload.lastEventId === "number");
+    // Authoritative runtime capability set is primed from the worker snapshot
+    // (NOT the Host `agent` capability): precisely runtime.prompt + runtime.abort.
+    assert.deepEqual(
+      snap.payload.snapshot.capabilities,
+      { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 },
+      `attach capabilities=${JSON.stringify(snap.payload.snapshot.capabilities)}`,
+    );
 
     const commandId = `prompt-${Date.now()}`;
     const cmdRes = await client.command(sessionId, {
@@ -639,6 +646,8 @@ async function scenarioHostRestartResume(stack, projectDir) {
     const snap = await client1.attach(sessionId);
     epoch = snap.payload.epoch;
     lastEventId = snap.payload.lastEventId;
+    // Resume attach still carries the authoritative runtime capability set.
+    assert.deepEqual(snap.payload.snapshot.capabilities, { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 });
 
     commandId = `resume-prompt-${Date.now()}`;
     const cmdRes = await client1.command(sessionId, {
@@ -784,6 +793,9 @@ async function scenarioEpochChangeNoAutoResend(stack, projectDir) {
     const snap2 = await client.attach(sessionId);
     assert.equal(snap2.type, "snapshot");
     const newEpoch = snap2.payload.epoch;
+    // After an epoch change (stop+reactivate), the freshly primed attach snapshot
+    // still carries the authoritative runtime capability set.
+    assert.deepEqual(snap2.payload.snapshot.capabilities, { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 });
     // epoch may equal if makeEpoch collides (UUID); force assert via status if needed.
     // After stop+reactivate, command cache is per-record and cleared — a retry of
     // the old commandId in the NEW epoch is a NEW admission (allowed to execute).

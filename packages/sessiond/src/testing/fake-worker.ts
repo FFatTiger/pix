@@ -14,7 +14,25 @@ export interface FakeWorkerOptions {
   failStart?: boolean;
   discoveredSessionId?: string;
   snapshot?: RuntimeSnapshot;
+  /** Drop worker.getSnapshot requests during startup so sessiond fails closed. */
+  ignoreSnapshot?: boolean;
 }
+
+/**
+ * Default authoritative snapshot a real worker always returns. Empty
+ * capabilities mirror the previous default projection so existing tests that
+ * do not assert capabilities keep their behavior; tests that care pass an
+ * explicit `snapshot` option (with real capabilities).
+ */
+const fakeDefaultSnapshot = (sessionId: string, cwd: string, projectRoot: string): RuntimeSnapshot => ({
+  sessionId,
+  cwd,
+  projectRoot,
+  state: { sessionId, isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0, queuedMessages: { steering: [], followUp: [] }, pendingMessageCount: 0, writtenFiles: [] },
+  capabilities: { capabilities: [], version: 0 },
+  streaming: { active: false, phase: "idle" },
+  messages: [],
+});
 
 export class FakeWorkerConnection implements WorkerConnection {
   readonly pid: number;
@@ -68,7 +86,18 @@ export class FakeWorkerConnection implements WorkerConnection {
         return;
       }
       case "worker.getSnapshot":
-        if (this.options.snapshot) queueMicrotask(() => this.emit({ type: "worker.snapshot", id: message.id, payload: { sessionId: message.payload.sessionId, snapshot: this.options.snapshot! } }));
+        if (this.options.ignoreSnapshot) return;
+        queueMicrotask(() => {
+          // A real worker always answers getSnapshot with its authoritative
+          // snapshot (capabilities + state). Normalize the snapshot session id
+          // to the requested one so sessiond rekey/projection stays consistent.
+          const snap = this.options.snapshot
+            ? structuredClone(this.options.snapshot)
+            : fakeDefaultSnapshot(message.payload.sessionId, this.input.cwd, this.input.projectRoot);
+          snap.sessionId = message.payload.sessionId;
+          snap.state.sessionId = message.payload.sessionId;
+          this.emit({ type: "worker.snapshot", id: message.id, payload: { sessionId: message.payload.sessionId, snapshot: snap } });
+        });
         return;
       case "worker.shutdown": return;
       default: return;
