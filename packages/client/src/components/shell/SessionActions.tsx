@@ -142,6 +142,7 @@ export function SessionActions() {
             placeholder="Rename session…"
             autoComplete="off"
             spellCheck={false}
+            maxLength={200}
           />
           <button
             type="submit"
