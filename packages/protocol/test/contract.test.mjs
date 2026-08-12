@@ -91,18 +91,27 @@ describe("capabilities", () => {
       "session.write",
       "session.delete",
       "models",
-      "models.configure",
       "auth.providers",
       "skills",
-      "skills.manage",
       "plugins",
-      "plugins.manage",
-      "project.trust",
       "export",
     ];
     assert.deepEqual([...ALL_HOST_CAPABILITIES].sort(), [...expected].sort());
     for (const cap of expected) {
       assert.equal(HostCapabilitySchema.parse(cap), cap);
+    }
+  });
+
+  it("rejects mutation/trust-management capability tokens (read-only foundation)", () => {
+    // D3B-R1A freezes the resource/auth/model surface as read-only: there is
+    // no configure/manage/trust-mutation capability.
+    for (const rejected of [
+      "models.configure",
+      "skills.manage",
+      "plugins.manage",
+      "project.trust",
+    ]) {
+      assert.equal(HostCapabilitySchema.safeParse(rejected).success, false);
     }
   });
 

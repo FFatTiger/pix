@@ -11,7 +11,7 @@ import type {
   ModelCatalogPort,
   ModelSelector,
   ProjectTrustPort,
-  ResourceCatalogPort,
+  ResourceCatalogStorePort,
   RuntimeCapability,
   SessionCatalogPort,
   SessionLocatorPort,
@@ -34,7 +34,7 @@ export interface AdapterPortBundle {
   sessionLocator: SessionLocatorPort;
   modelCatalog: ModelCatalogPort;
   credentialStore: CredentialStorePort;
-  resourceCatalog: ResourceCatalogPort;
+  resourceCatalog: ResourceCatalogStorePort;
   projectTrust: ProjectTrustPort;
 }
 

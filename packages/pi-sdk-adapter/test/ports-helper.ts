@@ -18,8 +18,9 @@ import type {
   PluginInfo,
   PluginWriteInput,
   ProjectTrustPort,
+  ProjectTrustState,
   ProjectTrustStatus,
-  ResourceCatalogPort,
+  ResourceCatalogStorePort,
   SessionCatalogPort,
   SessionContext,
   SessionDetail,
@@ -31,7 +32,6 @@ import type {
   SkillInstallInput,
   SlashCommandInfo,
   TrustGateResult,
-  TrustLevel,
 } from "@fffattiger/pix-runtime-core";
 
 export interface PiSdkDataBackend {
@@ -57,8 +57,8 @@ export interface PiSdkDataBackend {
   updateSkill(name: string): Promise<SkillInfo>;
   setSkillEnabled(name: string, enabled: boolean): Promise<SkillInfo>;
   reloadResources(): Promise<void>;
-  getTrust(cwd: string): Promise<{ level: TrustLevel; reason?: string }>;
-  setTrust(cwd: string, level: TrustLevel): Promise<void>;
+  getTrust(cwd: string): Promise<{ level: ProjectTrustState; reason?: string }>;
+  setTrust(cwd: string, level: ProjectTrustState): Promise<void>;
 }
 
 export function createPortsFromBackend(backend: PiSdkDataBackend): {
@@ -66,7 +66,7 @@ export function createPortsFromBackend(backend: PiSdkDataBackend): {
   sessionLocator: SessionLocatorPort;
   modelCatalog: ModelCatalogPort;
   credentialStore: CredentialStorePort;
-  resourceCatalog: ResourceCatalogPort;
+  resourceCatalog: ResourceCatalogStorePort;
   projectTrust: ProjectTrustPort;
 } {
   return {
@@ -110,6 +110,7 @@ export function createPortsFromBackend(backend: PiSdkDataBackend): {
       reload: () => backend.reloadResources(),
     },
     projectTrust: {
+      async getProjectTrustState(cwd): Promise<ProjectTrustState> { return (await backend.getTrust(cwd)).level; },
       async getTrust(cwd): Promise<ProjectTrustStatus> { const status = await backend.getTrust(cwd); return { cwd, ...status }; },
       async isTrusted(cwd) { return (await backend.getTrust(cwd)).level === "trusted"; },
       async setTrust(cwd, level): Promise<ProjectTrustStatus> { await backend.setTrust(cwd, level); const status = await backend.getTrust(cwd); return { cwd, ...status }; },

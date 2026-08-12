@@ -25,7 +25,25 @@ import type {
 } from "./session.js";
 import type { RuntimeSnapshot } from "./state.js";
 import type { PluginInfo, PluginWriteInput, SkillInfo, SkillInstallInput, SlashCommandInfo } from "./resources.js";
-import type { ProjectTrustStatus, TrustGateResult, TrustLevel } from "./trust.js";
+import type { ProjectTrustState, ProjectTrustStatus, TrustGateResult } from "./trust.js";
+
+/* ------------------------------------------------------------------ */
+/* Project catalog context                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Canonical project context for catalog reads.
+ *
+ * Carries the absolute working directory every project-scoped catalog read
+ * applies to. Project-scoped reads (resources, trust) NEVER rely on an
+ * implicit `process.cwd`; the canonical cwd is supplied explicitly via this
+ * context at construction or per-call. Global catalogs (models, credentials)
+ * are not project-scoped and ignore the cwd.
+ */
+export interface ProjectCatalogContext {
+  /** Canonical absolute working directory; never resolved from process.cwd. */
+  readonly cwd: string;
+}
 
 /* ------------------------------------------------------------------ */
 /* Agent runtime                                                       */
@@ -128,9 +146,14 @@ export interface SessionLocatorPort {
 }
 
 /* ------------------------------------------------------------------ */
-/* Model catalog (Host)                                                */
+/* Model catalog (Host read side)                                      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Read-only model catalog. Returns canonical {@link ModelInfo}/{@link ModelRef}
+ * entries and the configured default; never returns a backend SDK Model
+ * object and performs no network discovery/refresh/test/config writes.
+ */
 export interface ModelCatalogPort {
   listModels(): Promise<readonly ModelInfo[]>;
   getDefaultModel(): Promise<ModelRef>;
@@ -138,26 +161,56 @@ export interface ModelCatalogPort {
 }
 
 /* ------------------------------------------------------------------ */
-/* Credential store (Host) — never exposes raw credentials             */
+/* Credential catalog (Host read side) — provider metadata/status only */
 /* ------------------------------------------------------------------ */
 
-export interface CredentialStorePort {
+/**
+ * Read-only credential/provider catalog. Exposes provider metadata and
+ * sanitized configured/authorized status only; never returns raw API keys,
+ * tokens, headers or any credential material, and never calls a
+ * credential-returning/refresh backend API. Mutations (authorize/logout)
+ * live on the separate {@link CredentialStorePort}.
+ */
+export interface CredentialCatalogPort {
   listProviders(): Promise<readonly AuthProviderInfo[]>;
   getProviderStatus(providerId: string): Promise<AuthProviderStatus>;
   isConfigured(providerId: string): Promise<boolean>;
+}
+
+/**
+ * Credential store (Host) — extends the read-only catalog with credential
+ * mutations. Credentials flow in one direction only: they are consumed by the
+ * backend and never returned by any port method.
+ */
+export interface CredentialStorePort extends CredentialCatalogPort {
   /** Consumes credentials; only authorization state is ever returned. */
   authorize(providerId: string, input: AuthInput): Promise<AuthResult>;
   logout(providerId: string): Promise<void>;
 }
 
 /* ------------------------------------------------------------------ */
-/* Resource catalog (Host): skills / plugins / commands                */
+/* Resource catalog (Host read side): skills / plugins / commands      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Read-only resource catalog. Returns canonical skill/plugin/command
+ * metadata only. Project-local resources are gated by project trust at the
+ * caller (see {@link ProjectTrustQueryPort}); unknown/denied projects must
+ * withhold project-local resources. No install/update/toggle/reload/write —
+ * those mutations live on {@link ResourceCatalogStorePort}.
+ */
 export interface ResourceCatalogPort {
   listSkills(): Promise<readonly SkillInfo[]>;
   listPlugins(): Promise<readonly PluginInfo[]>;
   listCommands(): Promise<readonly SlashCommandInfo[]>;
+}
+
+/**
+ * Resource catalog store (Host) — extends the read-only catalog with resource
+ * mutations (write/toggle/install/update/reload). Kept as a separate, declared
+ * mutation contract; there is no combined cross-domain writable factory.
+ */
+export interface ResourceCatalogStorePort extends ResourceCatalogPort {
   writePlugin(input: PluginWriteInput): Promise<PluginInfo>;
   setPluginEnabled(name: string, enabled: boolean): Promise<PluginInfo>;
   installSkill(input: SkillInstallInput): Promise<SkillInfo>;
@@ -168,15 +221,29 @@ export interface ResourceCatalogPort {
 }
 
 /* ------------------------------------------------------------------ */
-/* Project trust (Host): trust + resource-reload boundary              */
+/* Project trust query (Host read side)                                */
 /* ------------------------------------------------------------------ */
 
-export interface ProjectTrustPort {
-  getTrust(cwd: string): Promise<ProjectTrustStatus>;
+/**
+ * Read-only project-trust query. Returns the exact tri-state
+ * {@link ProjectTrustState} and gates resource reloads by trust. Queries are
+ * project-scoped and always take an explicit `cwd`; no write/mutation.
+ */
+export interface ProjectTrustQueryPort {
+  getProjectTrustState(cwd: string): Promise<ProjectTrustState>;
   isTrusted(cwd: string): Promise<boolean>;
-  setTrust(cwd: string, level: TrustLevel): Promise<ProjectTrustStatus>;
   /** Whether loading/reloading resources for `cwd` is allowed. */
   canReloadResources(cwd: string): Promise<TrustGateResult>;
+}
+
+/**
+ * Project trust (Host) — extends the read-only query with the trust-mutation
+ * method. Kept as a separate, declared mutation contract; there is no combined
+ * cross-domain writable factory.
+ */
+export interface ProjectTrustPort extends ProjectTrustQueryPort {
+  getTrust(cwd: string): Promise<ProjectTrustStatus>;
+  setTrust(cwd: string, level: ProjectTrustState): Promise<ProjectTrustStatus>;
 }
 
 /* ------------------------------------------------------------------ */

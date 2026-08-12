@@ -106,6 +106,21 @@ export const ModelSelectorSchema = z.strictObject({
 
 export type ModelSelector = z.infer<typeof ModelSelectorSchema>;
 
+/**
+ * Read-only model catalog entry. Backend-neutral: id/provider identity plus
+ * display + capability hints. Mirrors runtime-core ModelInfo exactly; never
+ * carries a backend SDK `Model` object, auth, cost or sampling fields.
+ */
+export const ModelInfoSchema = z.strictObject({
+  id: NonEmptyStringSchema,
+  provider: NonEmptyStringSchema,
+  displayName: z.string().optional(),
+  /** Whether the model supports visible reasoning. */
+  thinking: z.boolean().optional(),
+  contextWindow: z.number().int().positive().optional(),
+});
+export type ModelInfo = z.infer<typeof ModelInfoSchema>;
+
 export const ContextUsageSchema = z.strictObject({
   percent: z.number(),
   contextWindow: z.number().optional(),

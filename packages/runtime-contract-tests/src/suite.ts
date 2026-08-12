@@ -1573,7 +1573,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const factory = await harness.createFactory();
         const ports = await harness.createPorts!(factory);
         const initial = await ports.projectTrust.getTrust("/workspace");
-        assert.equal(initial.level, "untrusted");
+        assert.equal(initial.level, "unknown");
         const blocked = await ports.projectTrust.canReloadResources("/workspace");
         assert.equal(blocked.allowed, false);
         await ports.projectTrust.setTrust("/workspace", "trusted");

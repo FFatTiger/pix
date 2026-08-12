@@ -15,8 +15,9 @@ import type {
   ModelSelector,
   PluginInfo,
   ProjectTrustPort,
+  ProjectTrustState,
   ProjectTrustStatus,
-  ResourceCatalogPort,
+  ResourceCatalogStorePort,
   SessionCatalogPort,
   SessionContext,
   SessionDetail,
@@ -27,7 +28,6 @@ import type {
   SkillInfo,
   SlashCommandInfo,
   TrustGateResult,
-  TrustLevel,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
 import type { ReferenceSessionStore } from "./store.js";
@@ -208,7 +208,7 @@ export class ReferenceCredentialStore implements CredentialStorePort {
 /* Resource catalog                                                    */
 /* ------------------------------------------------------------------ */
 
-export class ReferenceResourceCatalog implements ResourceCatalogPort {
+export class ReferenceResourceCatalog implements ResourceCatalogStorePort {
   private skills: SkillInfo[] = [
     { name: "frontend", description: "Frontend codebase guidance", enabled: true },
     { name: "rust", description: "Rust project guidance", enabled: false },
@@ -291,24 +291,28 @@ export class ReferenceResourceCatalog implements ResourceCatalogPort {
 /* ------------------------------------------------------------------ */
 
 export class ReferenceProjectTrust implements ProjectTrustPort {
-  private levels = new Map<string, TrustLevel>();
+  private levels = new Map<string, ProjectTrustState>();
+
+  getProjectTrustState(cwd: string): Promise<ProjectTrustState> {
+    return Promise.resolve(this.levels.get(cwd) ?? "unknown");
+  }
 
   getTrust(cwd: string): Promise<ProjectTrustStatus> {
-    const level = this.levels.get(cwd) ?? "untrusted";
+    const level = this.levels.get(cwd) ?? "unknown";
     return Promise.resolve({ cwd, level });
   }
 
   isTrusted(cwd: string): Promise<boolean> {
-    return Promise.resolve((this.levels.get(cwd) ?? "untrusted") === "trusted");
+    return Promise.resolve((this.levels.get(cwd) ?? "unknown") === "trusted");
   }
 
-  setTrust(cwd: string, level: TrustLevel): Promise<ProjectTrustStatus> {
+  setTrust(cwd: string, level: ProjectTrustState): Promise<ProjectTrustStatus> {
     this.levels.set(cwd, level);
     return Promise.resolve({ cwd, level });
   }
 
   canReloadResources(cwd: string): Promise<TrustGateResult> {
-    const level = this.levels.get(cwd) ?? "untrusted";
+    const level = this.levels.get(cwd) ?? "unknown";
     return Promise.resolve({
       allowed: level === "trusted",
       level,

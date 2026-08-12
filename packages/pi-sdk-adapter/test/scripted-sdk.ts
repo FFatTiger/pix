@@ -21,7 +21,7 @@ import type {
   SlashCommandInfo,
   ThinkingLevel,
   ToolInfo,
-  TrustLevel,
+  ProjectTrustState,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError, RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
 import type {
@@ -46,7 +46,7 @@ let globalScriptedSession = 0;
 export class ScriptedSdkStore implements PiSdkDataBackend {
   sessions = new Map<string, Stored>();
   credentials = new Map<string, string>();
-  trust = new Map<string, TrustLevel>();
+  trust = new Map<string, ProjectTrustState>();
   skills: SkillInfo[] = [{ name: "frontend", description: "Frontend codebase guidance", enabled: true }, { name: "rust", enabled: false }];
   plugins: PluginInfo[] = [{ name: "pix-side-chat", version: "0.1.0", enabled: true }];
   commands: SlashCommandInfo[] = [{ name: "compact", description: "Compact", source: "prompt" }, { name: "clear", source: "prompt" }, { name: "frontend-review", source: "skill" }];
@@ -92,8 +92,8 @@ export class ScriptedSdkStore implements PiSdkDataBackend {
   async updateSkill(name: string) { const s = this.skills.find((x) => x.name === name); if (!s) throw makeRuntimeError("not_found", "skill not found"); s.version = "updated"; s.updateAvailable = false; return { ...s }; }
   async setSkillEnabled(name: string, enabled: boolean) { const s = this.skills.find((x) => x.name === name); if (!s) throw makeRuntimeError("not_found", "skill not found"); s.enabled = enabled; return { ...s }; }
   async reloadResources() {}
-  async getTrust(cwd: string) { const level = this.trust.get(cwd) ?? "untrusted"; return { level, ...(level === "trusted" ? {} : { reason: "project is not trusted" }) }; }
-  async setTrust(cwd: string, level: TrustLevel) { this.trust.set(cwd, level); }
+  async getTrust(cwd: string) { const level = this.trust.get(cwd) ?? "unknown"; return { level, ...(level === "trusted" ? {} : { reason: "project is not trusted" }) }; }
+  async setTrust(cwd: string, level: ProjectTrustState) { this.trust.set(cwd, level); }
   need(id: string): Stored { const s = this.sessions.get(id); if (!s) throw makeRuntimeError("not_found", `session not found: ${id}`); return s; }
 }
 

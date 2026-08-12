@@ -1,17 +1,30 @@
 /**
- * Canonical project-trust DTOs for {@link ProjectTrustPort}.
+ * Canonical project-trust DTOs.
+ *
+ * Trust is an exact tri-state: `unknown` (no decision recorded), `trusted`,
+ * or `denied`. The read-only query port
+ * ({@link ProjectTrustQueryPort} in `./ports.js`) surfaces this exact state;
+ * the mutation port ({@link ProjectTrustPort}) records an explicit decision.
+ *
+ * Project-scoped trust reads always take an explicit `cwd` (see
+ * {@link ProjectCatalogContext}) and never rely on implicit process.cwd. The
+ * tri-state mirrors the Protocol trust vocabulary so backends (Pi SDK trust
+ * store: null→unknown, true→trusted, false→denied) project directly onto it.
  */
 
-export type TrustLevel = "trusted" | "untrusted";
+/** Canonical project-trust state (exact tri-state). */
+export type ProjectTrustState = "unknown" | "trusted" | "denied";
 
 export interface ProjectTrustStatus {
   cwd: string;
-  level: TrustLevel;
+  level: ProjectTrustState;
   reason?: string;
+  /** Provenance of the decision (e.g. "saved", "default", "denied"). */
+  source?: string;
 }
 
 export interface TrustGateResult {
   allowed: boolean;
-  level: TrustLevel;
+  level: ProjectTrustState;
   reason?: string;
 }
