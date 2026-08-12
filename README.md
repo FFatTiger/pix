@@ -20,6 +20,6 @@
 
 - `main`：稳定 checkpoint（M2 DONE、D1A-1、D2-P0、first-run project entry）
 - D1A-2 phase 1 已进入 `main`；phase 2（Host routes + Client只读历史 + 0 Worker E2E）应从最新 `main` 新建分支
-- `m3/d3a1-production-resources`：D3A-1 Files/Git/Worktree production composition（`1c7a848`，等待GPT安全验证）
+- D3A-1 production resource composition 已进入 `main`（`95ee707`，GPT安全验证PASS）；后续 Client Files/Git/Worktree UI 从最新 `main` 新建分支
 
 新任务默认从最新 `main` 分支创建；需要接续上述进行中任务时，先与对应分支负责人确认并避免重复修改同一文件。

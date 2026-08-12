@@ -323,7 +323,7 @@ stop
 |---|---|---|---|---|
 | `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A-1 `a38c3c8` DONE；D1A-2 phase1 `6acd4f5` + E2E fix `3f75dc0` 已集成（sessions token、真实Catalog/Locator默认、offset/leafId）；phase2剩Host GET路由+Client只读历史+0 Worker E2E；D1B后续 |
 | `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 `c4a2f76` + `5a96fd4` DONE（GPT复验PASS；sessiond80/Client157/E2E）；后续P1–P7按thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate分批开放 |
-| `D3A` | Files/Git/Worktree | `IN_REVIEW` | `M2`, `B2` | D3A-1 `1c7a848` 已推送 `m3/d3a1-production-resources`：production roots/busy-preflight/dynamic capability/真实startup E2E；等待GPT安全gate，随后集成与Client UI |
+| `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | D3A-1 `95ee707` DONE（原`1c7a848`，GPT安全验证PASS）：production roots/busy-preflight/dynamic capability/真实startup E2E已进main；后续Files/Git/Worktree Client UI与worktree可信重启恢复 |
 | `D3B` | Models/Auth/Skills/Plugins/Trust | `BLOCKED` | `M2`, Data/Resource Adapter | 等D1领域化Adapter地基；models/resources/auth只读优先，trust/OAuth后置 |
 | `D4` | Mutations + Side Chat | `BLOCKED` | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
 
@@ -331,9 +331,9 @@ stop
 
 1. `D1A-1`：DONE（`a38c3c8`）；独立、纯只读 `pi-sdk-adapter/sessions` Catalog/Locator；仅JSONL/SessionManager，零Worker、零ModelRuntime、零网络。`D1A-2` 负责真实历史链路与只读UI。
 2. `D2-P0`：DONE（`c4a2f76` + `5a96fd4`；GPT复验PASS）；第二条并发command明确session_busy、snapshot内外sessionId不一致启动rollback、rekey rejection有界处理；未开放新能力。
-3. `D3A-1`：IN_REVIEW（`1c7a848` / `m3/d3a1-production-resources`）；Host204、CLI32、startup/runtime E2E、typecheck/architecture/boundary PASS；等待GPT安全验证后集成。
+3. `D3A-1`：DONE（main `95ee707`，原branch `1c7a848`；GPT安全验证PASS）；Host204、CLI32、全仓tests、startup/runtime E2E、typecheck/architecture/boundaries PASS。
 4. Adapter内部按sessions/models/credentials/resources/trust领域拆分，只共享canonical path与安全文件原语；禁止恢复旧`sdk-data.ts`单体。
-5. `m3/d1a2-sessions-read-path` phase1已合并，远端分支待删除；后续phase2必须从最新main新建。`m3/d3a1-production-resources`等待GPT PASS后合并。
+5. D1A-2 phase1与D3A-1均已合并并删除功能分支；后续D1A-2 phase2、D3A Client UI必须从最新main新建。
 
 ## Wave 4 — Scale、PWA、Release
 
