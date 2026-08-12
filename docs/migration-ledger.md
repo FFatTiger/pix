@@ -282,7 +282,7 @@ X1唯一GPT blocker 修复 commit：f87dea4（WS /v1/runtime handshake capabilit
 First-run UX：94e6b81；首页增加绝对Project path入口与Open project，解除必须手写?cwd=的死路；Client149/149、typecheck/build PASS。
 D1A-1：a38c3c8（来源pi-sdk-adapter旧sessions/sdk-data的只读子集，重建为领域独立模块）；公开@fffattiger/pix-pi-sdk-adapter/sessions；list/read/context/locate/resolveLeafId；仅SessionManager/getAgentDir + mapMessage；不含ModelRuntime/Agent/network/credentials/resources/trust；只识别pix-fork-provenance，旧custom generic；Adapter105/105、boundary/architecture/typecheck PASS。D1A-2在协作分支pi-agent-904890ed继续接sessiond/Host/Client，目标历史浏览0 Worker。
 D2-P0：c4a2f76；worker.ready/rekey后sessiond主动worker.getSnapshot，以完整snapshot作为初始projection唯一权威，失败rollback；Client暴露runtime capability set/hasRuntimeCapability/typed sendCommand；未开放新command能力；sessiond79、Client156、Runtime E2E3轮、build/typecheck/architecture PASS；独立GPT验证进行中。
-D3A-1：协作分支d3a-1-production-resources；production AllowedRoots、fixed-secret probe、busy/mutation preflight、resource dynamic capability与startup E2E进行中；尚未集成main。
+D3A-1：commit 1c7a848，远端分支m3/d3a1-production-resources；PIX_ALLOWED_ROOTS（unset=>cwd，bad config listen前失败）、local-only expansion、fixed-secret shared resolver、sessiond-backed worktree mutation/busy fail-closed、up/degraded四面capability、25MiB upload与真实startup E2E已完成；Host204、CLI32、全仓tests、runtime/startup E2E、typecheck/architecture/boundary PASS；等待GPT独立安全验证，尚未集成main。
 协作规则：main checkpoint可供新任务基线；进行中分支不得假定已包含main后续commit，合并前必须rebase或由主会话解决冲突。
 ```
 
