@@ -308,6 +308,8 @@ Worktrees只读列表：b79b54c。production full/degraded均广告`worktree`作
 验证：Client297/297、Host260/260、CLI46/46；Client/Host typecheck/build/boundaries、architecture与使用当前分支生产产物的Startup E2E PASS。隔离worktree依赖overlay仅用于验证并在提交前删除；30144未触碰。该只读节点按协作规则未单独启动verifier。
 边界：`authorized`不等于pix-owned/managed/deletable；创建/删除、cwd切换、projectRoot协调和Host重启后trusted claim恢复仍后置，开放这些能力前需要重要节点verification。
 产品优先级：当前UI仅要求可用、能力诚实、错误清晰；后续重心回到基础架构重构，不在本阶段投入视觉精修。
+D3A Client error sanitization：39c07db。仅改四文件`packages/client/src/features/workspace/{GitPanel,FilesPanel}.tsx`与对应`.test.tsx`。GitPanel/FilesPanel此前在status/diff/list/read错误位直接渲染Host自由文本`error.message`（可能含绝对路径/secret/stack）。新增co-located固定文案helper并完全替换raw渲染：GitPanel`describeGitError(error,operation)`按code(CWD_REQUIRED/GIT_INPUT_REQUIRED/INVALID_PATH/INVALID_INPUT→invalid project path；PATH_FORBIDDEN/ROOT_REPLACED→outside allowed roots；PATH_NOT_FOUND)再按kind(network/timeout)，默认按operation区分`Unable to load git status.`/`Unable to load diff.`；FilesPanel`describeReadError`保留PREVIEW_TOO_LARGE/BINARY_FILE/NOT_FILE/PATH_NOT_FOUND固定文案但默认改固定`Unable to read file.`且不再拼`${error.message}`、补network/timeout，新增`describeListError`(CWD_REQUIRED/INVALID_PATH/INVALID_INPUT、PATH_NOT_FOUND、NO_ALLOWED_ROOTS、PATH_FORBIDDEN/ROOT_REPLACED、network/timeout、default)。文案与既有WorktreePanel/Catalog helper同构（code-first→kind→固定fallback）。无新公共模块，不改请求/capability/cache/mutation/CSS/API/protocol。
+验证：定向GitPanel27/27+FilesPanel16/16、Client全量401/401、typecheck/build/boundaries(82 files)/architecture PASS、`git diff 35950f5..HEAD --check`与`rg 'error\.message|error\.body|error\.cause'`两生产文件均零命中。新增参数化code/kind矩阵与含绝对路径+secret的no-leak集成用例（status/diff/list/read），保留既有retry/selection/navigation测试。仅Client四文件、低风险Client-only只读copy hardening，按协作规则未单独启动verifier。
 ```
 
 ## 18. D1A-2 — 只读历史会话链记录
