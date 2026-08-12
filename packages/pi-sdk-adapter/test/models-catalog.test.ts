@@ -3,8 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createPiSdkModelCatalog } from "../src/models/index.js";
+import { createPiSdkModelCatalog, type PiSdkModelCatalogOptions } from "../src/models/index.js";
 import type { ModelCatalogPort, ModelInfo } from "@fffattiger/pix-runtime-core";
+
+// Compile-time proof: PiSdkModelCatalogOptions.cwd is REQUIRED — an options
+// object omitting cwd is NOT assignable to the catalog options type.
+type Assignable<A, B> = A extends B ? true : false;
+const _noImplicitCwd: Assignable<{ agentDir: string }, PiSdkModelCatalogOptions> = false;
 
 // Seeded secrets that MUST NEVER appear in any catalog output, error, or log.
 const SEED_API_KEY = "sk-ant-SECRET-MODEL-CANARY-1234567890";
@@ -162,5 +167,18 @@ describe("read-only model catalog (D3B-R1A)", () => {
     assert.equal(typeof catalog.listModels, "function");
     assert.equal(typeof catalog.getDefaultModel, "function");
     assert.equal(typeof catalog.resolveModel, "function");
+  });
+
+  it("rejects construction without an explicit canonical cwd (no implicit fallback)", () => {
+    // A type-bypassed call with no cwd must throw at runtime; the public factory
+    // never reads process.cwd.
+    assert.throws(
+      () => createPiSdkModelCatalog({ agentDir: "/tmp" } as unknown as PiSdkModelCatalogOptions),
+      (error: unknown) => (error as { code?: string }).code === "invalid_input",
+    );
+    assert.throws(
+      () => createPiSdkModelCatalog({} as PiSdkModelCatalogOptions),
+      (error: unknown) => (error as { code?: string }).code === "invalid_input",
+    );
   });
 });

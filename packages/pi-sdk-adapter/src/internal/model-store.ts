@@ -61,6 +61,12 @@ function toModelInfo(model: Model<Api>): ModelInfo {
  * so no network/provider/refresh work happens at construction or during reads.
  */
 export function createPiSdkModelStore(options: PiSdkModelStoreOptions): PiSdkModelStore {
+  if (!options.cwd || options.cwd.trim().length === 0) {
+    throw makeRuntimeError(
+      "invalid_input",
+      "PiSdkModelStore requires an explicit canonical cwd (no implicit process.cwd)",
+    );
+  }
   const agentDir = options.agentDir ?? getAgentDir();
   let cachedRuntime: ModelRuntime | undefined;
   let cachedSettings: SettingsManager | undefined;

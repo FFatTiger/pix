@@ -4,13 +4,21 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createPiSdkResourceCatalog } from "../src/resources/index.js";
+import { createPiSdkResourceCatalog, type PiSdkResourceCatalogOptions } from "../src/resources/index.js";
 import type {
   PluginInfo,
   ResourceCatalogPort,
   SkillInfo,
   SlashCommandInfo,
 } from "@fffattiger/pix-runtime-core";
+
+// Compile-time proof: PiSdkResourceCatalogOptions.cwd is REQUIRED — an options
+// object omitting cwd is NOT assignable to the catalog options type.
+type Assignable<A, B> = A extends B ? true : false;
+const _noImplicitCwd: Assignable<
+  { agentDir: string; trusted: boolean },
+  PiSdkResourceCatalogOptions
+> = false;
 
 async function fixture(): Promise<{
   root: string;
@@ -307,5 +315,17 @@ describe("read-only resource catalog (D3B-R1A)", () => {
     assert.equal(typeof catalog.listSkills, "function");
     assert.equal(typeof catalog.listPlugins, "function");
     assert.equal(typeof catalog.listCommands, "function");
+  });
+
+  it("rejects construction without an explicit canonical cwd (no implicit fallback)", () => {
+    assert.throws(
+      () =>
+        createPiSdkResourceCatalog({ agentDir: "/tmp", trusted: true } as unknown as PiSdkResourceCatalogOptions),
+      (error: unknown) => (error as { code?: string }).code === "invalid_input",
+    );
+    assert.throws(
+      () => createPiSdkResourceCatalog({} as PiSdkResourceCatalogOptions),
+      (error: unknown) => (error as { code?: string }).code === "invalid_input",
+    );
   });
 });

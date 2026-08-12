@@ -16,8 +16,13 @@
 // Hard read-only + trust boundary:
 //  - No extension module is ever imported/executed (no extension codepath).
 //  - Project-local resources are gated by trust: when the project is not
-//    trusted, project-scope skills/prompts and project-scoped configured
-//    packages are withheld.
+//    trusted, project-scope skills and project-scoped configured packages are
+//    withheld (loadSkills tags cwd/.pi/skills as scope "project"; the package
+//    manager tags settings-configured project sources as scope "project"). This
+//    mirrors the SDK's project-trust gate for project-local resources.
+//  - Settings semantics preserved: package enabled state comes from the
+//    configured/filtered flag in settings (enabled = !filtered); skill enabled
+//    comes from the SKILL.md disableModelInvocation flag.
 //  - No install/update/toggle/reload/package-manager write; no network.
 //  - Per-store lazy cache (not an unsafe global cache).
 //
@@ -39,6 +44,7 @@ import type {
   SkillInfo,
   SlashCommandInfo,
 } from "@fffattiger/pix-runtime-core";
+import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
 import type { PiSdkResourceStore } from "../resources/index.js";
 
 /** Options for the SDK-backed read-only resource store. */
@@ -106,6 +112,12 @@ async function readPackageManifest(
 export function createPiSdkResourceStore(
   options: PiSdkResourceStoreOptions,
 ): PiSdkResourceStore {
+  if (!options.cwd || options.cwd.trim().length === 0) {
+    throw makeRuntimeError(
+      "invalid_input",
+      "PiSdkResourceStore requires an explicit canonical cwd (no implicit process.cwd)",
+    );
+  }
   const agentDir = options.agentDir ?? getAgentDir();
   const trusted =
     options.trusted ??

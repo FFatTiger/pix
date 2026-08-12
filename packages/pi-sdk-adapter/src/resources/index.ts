@@ -32,8 +32,12 @@ export interface PiSdkResourceStore {
 
 /** Options for the default SDK-backed store (ignored when a store is injected). */
 export interface PiSdkResourceCatalogOptions {
-  /** Canonical absolute working directory; never re-read from process.cwd. */
-  readonly cwd?: string;
+  /**
+   * Canonical absolute working directory. REQUIRED — project-scoped resource
+   * discovery never falls back to an implicit working directory; the caller
+   * supplies the canonical cwd.
+   */
+  readonly cwd: string;
   /** Agent config directory; defaults to the SDK agent dir. */
   readonly agentDir?: string;
   /** Effective project trust gating resource discovery. */
@@ -65,27 +69,23 @@ function isResourceStore(value: unknown): value is PiSdkResourceStore {
 }
 
 /**
- * Create a read-only ResourceCatalogPort backed by a no-extension Pi SDK
- * resource loader. Pass an explicit {@link PiSdkResourceStore} for
- * tests/composition, or {@link PiSdkResourceCatalogOptions} (cwd/agentDir/trusted)
- * to build the default SDK-backed store. Reads are metadata discovery only — no
- * extension execution, no write, no network, zero Workers/Agents.
+ * Create a read-only ResourceCatalogPort backed by the Pi SDK standalone
+ * resource loaders + package manager static metadata. The canonical cwd is
+ * REQUIRED (project-scoped discovery never falls back to an implicit working
+ * directory): pass an explicit {@link PiSdkResourceCatalogOptions} with
+ * cwd/agentDir/trusted, or inject a {@link PiSdkResourceStore} for
+ * tests/composition. Reads are metadata discovery only — no extension
+ * execution, no write, no network, zero Workers/Agents.
  */
 export function createPiSdkResourceCatalog(
-  storeOrOptions: PiSdkResourceStore | PiSdkResourceCatalogOptions = {
-    cwd: process.cwd(),
-  },
+  options: PiSdkResourceStore | PiSdkResourceCatalogOptions,
 ): ResourceCatalogPort {
-  const store = isResourceStore(storeOrOptions)
-    ? storeOrOptions
+  const store = isResourceStore(options)
+    ? options
     : createPiSdkResourceStore({
-        cwd: storeOrOptions.cwd ?? process.cwd(),
-        ...(storeOrOptions.agentDir === undefined
-          ? {}
-          : { agentDir: storeOrOptions.agentDir }),
-        ...(storeOrOptions.trusted === undefined
-          ? {}
-          : { trusted: storeOrOptions.trusted }),
+        cwd: options.cwd,
+        ...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
+        ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
       });
   return new PiSdkResourceCatalog(store);
 }

@@ -39,6 +39,12 @@ for (const file of sourceFiles) {
   if ((publicSourceDirs.has(first) || rel === "index.ts") && (sdkImport.test(text) || sdkNames.test(text))) {
     failures.push(`${rel}: public source leaks SDK import/name`);
   }
+  // Project-scoped public catalogs must receive an explicit canonical cwd; no
+  // public path may fall back to process.cwd. Credentials is non-project-scoped
+  // (agent-dir only) and is exempt.
+  if (publicSourceDirs.has(first) && first !== "credentials" && /process\.cwd/.test(text)) {
+    failures.push(`${rel}: public catalog references process.cwd (implicit cwd forbidden)`);
+  }
   if (first !== "internal" && sdkImport.test(text)) {
     failures.push(`${rel}: SDK import must stay in src/internal/**`);
   }

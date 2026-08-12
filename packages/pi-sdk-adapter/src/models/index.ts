@@ -30,10 +30,10 @@ export interface PiSdkModelStore {
 export interface PiSdkModelCatalogOptions {
   /**
    * Canonical absolute working directory for project-scoped settings (default
-   * model / enabled models). Defaults to process.cwd(); captured once at the
-   * boundary and never re-read inside the store.
+   * model / enabled models). REQUIRED — project-scoped reads never fall back to
+   * an implicit working directory; the caller supplies the canonical cwd.
    */
-  readonly cwd?: string;
+  readonly cwd: string;
   /** Agent config directory; defaults to the SDK agent dir. */
   readonly agentDir?: string;
 }
@@ -64,23 +64,20 @@ function isModelStore(value: unknown): value is PiSdkModelStore {
 
 /**
  * Create a read-only ModelCatalogPort backed by the offline Pi SDK model
- * runtime. Pass an explicit {@link PiSdkModelStore} for tests/composition, or
- * {@link PiSdkModelCatalogOptions} (cwd/agentDir) to build the default SDK-backed
- * store. Reads are sync catalog access with zero network and zero
- * Workers/Agents.
+ * runtime. The canonical cwd is REQUIRED (project-scoped settings never fall
+ * back to an implicit working directory): pass an explicit
+ * {@link PiSdkModelCatalogOptions} with cwd/agentDir, or inject a
+ * {@link PiSdkModelStore} for tests/composition. Reads are sync catalog access
+ * with zero network and zero Workers/Agents.
  */
 export function createPiSdkModelCatalog(
-  storeOrOptions: PiSdkModelStore | PiSdkModelCatalogOptions = {
-    cwd: process.cwd(),
-  },
+  options: PiSdkModelStore | PiSdkModelCatalogOptions,
 ): ModelCatalogPort {
-  const store = isModelStore(storeOrOptions)
-    ? storeOrOptions
+  const store = isModelStore(options)
+    ? options
     : createPiSdkModelStore({
-        cwd: storeOrOptions.cwd ?? process.cwd(),
-        ...(storeOrOptions.agentDir === undefined
-          ? {}
-          : { agentDir: storeOrOptions.agentDir }),
+        cwd: options.cwd,
+        ...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
       });
   return new PiSdkModelCatalog(store);
 }
