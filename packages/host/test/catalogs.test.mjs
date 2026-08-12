@@ -581,6 +581,51 @@ test("malicious success shapes (proxy/getter/cyclic/nested) map to fixed 503", a
   assert.ok(!joined.includes(STACK_MARKER), "logger saw stack");
 });
 
+test("sparse catalog arrays fail closed instead of encoding holes as null", async () => {
+  const root = temp("pix-cat-sparse-");
+  const roots = await rootsFor(root);
+
+  const sparseModels = [];
+  sparseModels[1] = { id: "m", provider: "p" };
+  const modelsApp = appWithCatalogs({
+    roots,
+    models: fakeModels({
+      listModels: async () => sparseModels,
+      getDefaultModel: async () => null,
+    }),
+  });
+  const modelsRes = await call(
+    modelsApp,
+    `/v1/models?cwd=${encodeURIComponent(root)}`,
+  );
+  assert.equal(modelsRes.status, 503);
+  assert.equal((await modelsRes.json()).code, "CATALOG_UNAVAILABLE");
+
+  const sparseProviders = new Array(2);
+  const credentialsApp = appWithCatalogs({
+    roots,
+    credentials: fakeCredentials({ listProviders: async () => sparseProviders }),
+  });
+  const providersRes = await call(credentialsApp, "/v1/auth/providers");
+  assert.equal(providersRes.status, 503);
+  assert.equal((await providersRes.json()).code, "CATALOG_UNAVAILABLE");
+
+  const sparseSkills = [];
+  sparseSkills.length = 1;
+  const resourcesApp = appWithCatalogs({
+    roots,
+    resources: fakeResources({ listSkills: async () => sparseSkills }),
+  });
+  const skillsRes = await call(
+    resourcesApp,
+    `/v1/skills?cwd=${encodeURIComponent(root)}`,
+  );
+  assert.equal(skillsRes.status, 503);
+  const skillsBody = await skillsRes.json();
+  assert.equal(skillsBody.code, "CATALOG_UNAVAILABLE");
+  assert.ok(!JSON.stringify(skillsBody).includes("null"));
+});
+
 test("provider status drops extra secret fields; configured must be boolean", async () => {
   const root = temp("pix-cat-status-");
   const roots = await rootsFor(root);

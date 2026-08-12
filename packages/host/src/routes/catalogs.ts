@@ -302,7 +302,17 @@ export function projectCanReloadResources(
 
 function projectArray<T>(raw: unknown, project: (item: unknown) => T): T[] {
   if (!Array.isArray(raw)) throw catalogUnavailable();
-  return raw.map(project);
+  const projected: T[] = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    // Array#map skips sparse holes, which JSON would otherwise encode as null
+    // without ever running the strict DTO projector. Catalog arrays must be
+    // dense: every wire element is either validated or the request fails closed.
+    if (!Object.prototype.hasOwnProperty.call(raw, index)) {
+      throw catalogUnavailable();
+    }
+    projected.push(project(raw[index]));
+  }
+  return projected;
 }
 
 /**
