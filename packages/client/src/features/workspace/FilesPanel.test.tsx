@@ -159,4 +159,84 @@ describe("FilesPanel", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
     expect(screen.getByRole("alert").textContent).toMatch(/unable to list/i);
   });
+
+  it("canonicalizes a symlinked cwd and never reports a selected file as outside-root", async () => {
+    // macOS: /tmp is a symlink to /private/tmp. The Host canonicalizes every
+    // listing's `path`, so cwd="/tmp/proj" comes back as "/private/tmp/proj".
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "http://pix.local");
+      const params = Object.fromEntries(url.searchParams);
+      if (url.pathname === "/v1/files" && params.op === "list") {
+        if (params.path === "/tmp/proj") {
+          return json({ path: "/private/tmp/proj", entries: [{ name: "src", isDir: true, isSymlink: false }, { name: "a.ts", isDir: false, isSymlink: false }] });
+        }
+        if (params.path === "/private/tmp/proj/src") {
+          return json({ path: "/private/tmp/proj/src", entries: [{ name: "b.ts", isDir: false, isSymlink: false }] });
+        }
+      }
+      if (url.pathname === "/v1/files" && params.op === "meta" && params.path === "/private/tmp/proj/src/b.ts") {
+        return json({ path: "/private/tmp/proj/src/b.ts", size: 12, modified: "2026-01-01T00:00:00.000Z", isDirectory: false, mime: "text/plain" });
+      }
+      if (url.pathname === "/v1/files" && params.op === "read" && params.path === "/private/tmp/proj/src/b.ts") {
+        return json({ content: "nested body", language: "typescript", size: 11 });
+      }
+      return json({});
+    }) as unknown as typeof fetch;
+
+    renderPanel({ cwd: "/tmp/proj" });
+    // Root listing canonicalizes; navigation derives from the canonical path.
+    await waitFor(() => expect(screen.getByText("src")).toBeTruthy());
+    fireEvent.click(screen.getByText("src"));
+    await waitFor(() => expect(screen.getByText("b.ts")).toBeTruthy());
+    // The breadcrumb chain reflects the canonical root, not the raw cwd.
+    expect(screen.getByRole("button", { name: "proj" })).toBeTruthy();
+
+    // Select and read the file: succeeds and must NOT raise the outside-root warning.
+    fireEvent.click(screen.getByText("b.ts"));
+    await waitFor(() => expect(screen.getByText(/nested body/)).toBeTruthy());
+    expect(screen.queryByText(/outside the project root/i)).toBeNull();
+  });
+
+  it("ignores a stale directory-listing response after navigating away", async () => {
+    // Drive a real navigation race: enter A (slow list), go back, enter B (fast),
+    // then let A's delayed response land. The view must stay on B because the
+    // current directory query is keyed by currentDir, not by arrival order.
+    let resolveSlowA: (value: Response) => void = () => undefined;
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "http://pix.local");
+      const params = Object.fromEntries(url.searchParams);
+      if (url.pathname === "/v1/files" && params.op === "list") {
+        if (params.path === "/proj") {
+          return json({ path: "/proj", entries: [{ name: "A", isDir: true, isSymlink: false }, { name: "B", isDir: true, isSymlink: false }] });
+        }
+        if (params.path === "/proj/A") {
+          return new Promise<Response>((resolve) => { resolveSlowA = resolve; });
+        }
+        if (params.path === "/proj/B") {
+          return json({ path: "/proj/B", entries: [{ name: "b1.txt", isDir: false, isSymlink: false }] });
+        }
+      }
+      return json({});
+    }) as unknown as typeof fetch;
+
+    renderPanel({ cwd: "/proj" });
+    await waitFor(() => expect(screen.getByText("A")).toBeTruthy());
+
+    // Enter A — its listing stays pending.
+    fireEvent.click(screen.getByText("A"));
+    await waitFor(() => expect(screen.getByText(/loading directory/i)).toBeTruthy());
+
+    // Navigate back to the root via the breadcrumb, then into B.
+    fireEvent.click(screen.getByRole("button", { name: "proj" }));
+    await waitFor(() => expect(screen.getByText("B")).toBeTruthy());
+    fireEvent.click(screen.getByText("B"));
+    await waitFor(() => expect(screen.getByText("b1.txt")).toBeTruthy());
+
+    // A's stale response finally lands — it must NOT replace the current view.
+    resolveSlowA(json({ path: "/proj/A", entries: [{ name: "a1.txt", isDir: false, isSymlink: false }] }));
+    // Yield so any (incorrect) state update would flush.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(screen.getByText("b1.txt")).toBeTruthy();
+    expect(screen.queryByText("a1.txt")).toBeNull();
+  });
 });

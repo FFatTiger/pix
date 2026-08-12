@@ -57,29 +57,37 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
   const http = useHttpClient();
   const options = createQueryOptions(http);
   const [currentDir, setCurrentDir] = useState<string | null>(cwd ?? null);
-  const [root, setRoot] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   // Reset navigation when the project root (URL cwd) changes.
   useEffect(() => {
     setCurrentDir(cwd ?? null);
-    setRoot(null);
     setSelectedFile(null);
   }, [cwd]);
+
+  // Canonical project root: a dedicated, navigation-independent listing of the
+  // workspace cwd. The Host canonicalizes the returned `path`, so this is the
+  // authoritative root even when cwd is a symlinked prefix (/tmp → /private/tmp
+  // on macOS). TanStack Query de-dupes this against the navigation `list` query
+  // while currentDir === cwd (identical key); once the user navigates they
+  // split, and this query keeps observing cwd — so `root` stays stable and
+  // canonical regardless of navigation timing or a stale cwd-list response.
+  const rootList = useQuery({
+    ...options.files.list(cwd ?? ""),
+    enabled: canFiles && Boolean(cwd),
+  });
+  const root = rootList.data?.path ?? null;
 
   const list = useQuery({
     ...options.files.list(currentDir ?? ""),
     enabled: canFiles && Boolean(currentDir),
   });
-
-  // The Host canonicalizes the listing path; capture it as the navigation root
-  // once so a symlinked macOS prefix (/var → /private/var) cannot split a
-  // canonical child away from its own canonical root.
-  useEffect(() => {
-    if (root === null && list.data?.path) setRoot(list.data.path);
-  }, [root, list.data?.path]);
-
+  // Navigation authority derives from the canonical response path, never from
+  // the (possibly non-canonical) requested `currentDir`. joinChild therefore
+  // produces a canonical-prefixed path, so a symlinked cwd prefix can never
+  // leak into a navigated directory or a selected file path.
   const canonicalCurrent = list.data?.path ?? currentDir ?? null;
+
   const crumbs = root && canonicalCurrent ? breadcrumbs(canonicalCurrent, root) : [];
   const upTarget =
     root && canonicalCurrent ? parentWithinRoot(canonicalCurrent, root) : null;
@@ -92,6 +100,11 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
     ...options.files.read(selectedFile ?? ""),
     enabled: canFiles && Boolean(selectedFile),
   });
+  // Canonical selected path: the Host returns the realpath in the `meta`
+  // response. Used for display and the defense-in-depth root check so that,
+  // even if a file was selected before the directory listing canonicalized,
+  // the raw cwd prefix is never compared against the canonical root.
+  const canonicalSelected = meta.data?.path ?? selectedFile;
 
   if (!canFiles) {
     return <p className="workspace-hint">File browsing is not available on this host.</p>;
@@ -102,14 +115,16 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
 
   const entries = list.data?.entries ?? [];
 
+  // All navigation/selection joins derive from the canonical current path, so
+  // every produced path shares the canonical prefix the Host returned.
   const handleEnter = (name: string, isDir: boolean): void => {
-    if (!currentDir) return;
+    if (!canonicalCurrent) return;
+    const next = joinChild(canonicalCurrent, name);
     if (isDir) {
       setSelectedFile(null);
-      // joinChild guards against traversal/separator escapes client-side.
-      setCurrentDir(joinChild(currentDir, name));
+      setCurrentDir(next);
     } else {
-      setSelectedFile(joinChild(currentDir, name));
+      setSelectedFile(next);
     }
   };
 
@@ -117,7 +132,7 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
     <div className="files-panel" aria-label="Files">
       <nav className="files-breadcrumbs" aria-label="Directory path">
         {crumbs.length === 0 ? (
-          <span className="files-crumb files-crumb--muted">{baseName(currentDir ?? "") || "root"}</span>
+          <span className="files-crumb files-crumb--muted">{baseName(canonicalCurrent ?? "") || "root"}</span>
         ) : (
           crumbs.map((crumb, index) => {
             const isLast = index === crumbs.length - 1;
@@ -171,8 +186,8 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
         ) : null}
         <ul className="files-list" role="listbox" aria-label="Directory entries">
           {entries.map((entry) => {
-            const entryPath = currentDir ? joinChild(currentDir, entry.name) : entry.name;
-            const active = selectedFile === entryPath || (entry.isDir && canonicalCurrent === entryPath);
+            const entryPath = canonicalCurrent ? joinChild(canonicalCurrent, entry.name) : entry.name;
+            const active = canonicalSelected === entryPath;
             return (
               <li key={entry.name}>
                 <button
@@ -196,7 +211,7 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
       {selectedFile ? (
         <section className="files-detail" aria-label="File preview">
           <div className="files-detail-header">
-            <span className="files-detail-name" title={selectedFile}>{baseName(selectedFile)}</span>
+            <span className="files-detail-name" title={canonicalSelected ?? selectedFile}>{baseName(canonicalSelected ?? selectedFile)}</span>
             <button type="button" className="icon-btn files-detail-close" aria-label="Close preview" onClick={() => setSelectedFile(null)}>×</button>
           </div>
           {meta.data ? (
@@ -215,7 +230,7 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
               <code>{read.data.content}</code>
             </pre>
           ) : null}
-          {read.data && isWithinRoot(selectedFile, root ?? selectedFile) === false ? (
+          {read.data && isWithinRoot(canonicalSelected ?? "", root ?? canonicalSelected ?? "") === false ? (
             <p className="workspace-hint workspace-hint--error">Selected path is outside the project root.</p>
           ) : null}
         </section>
