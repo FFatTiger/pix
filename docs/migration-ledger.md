@@ -276,7 +276,17 @@ X1唯一GPT blocker 修复 commit：f87dea4（WS /v1/runtime handshake capabilit
 独立验证 verdict：PASS（GPT对修复HEAD `6746a51` fresh clone复验；原真实产品probe由sessiond-down WS `["agent"]`修正为`[]`；throw/reject无日志或ack泄漏；per-connection once、重复handshake稳定、多连接agent→[]、production 2s bound、startup/runtime E2E、LAN gate、全仓Node718+Client149全部PASS。X1 DONE；M2 DONE。）
 ```
 
-## 15. 后续迁移时必须记录的校验
+## 15. M3 Wave 1 Checkpoint 记录
+
+```text
+First-run UX：94e6b81；首页增加绝对Project path入口与Open project，解除必须手写?cwd=的死路；Client149/149、typecheck/build PASS。
+D1A-1：a38c3c8（来源pi-sdk-adapter旧sessions/sdk-data的只读子集，重建为领域独立模块）；公开@fffattiger/pix-pi-sdk-adapter/sessions；list/read/context/locate/resolveLeafId；仅SessionManager/getAgentDir + mapMessage；不含ModelRuntime/Agent/network/credentials/resources/trust；只识别pix-fork-provenance，旧custom generic；Adapter105/105、boundary/architecture/typecheck PASS。D1A-2在协作分支pi-agent-904890ed继续接sessiond/Host/Client，目标历史浏览0 Worker。
+D2-P0：c4a2f76；worker.ready/rekey后sessiond主动worker.getSnapshot，以完整snapshot作为初始projection唯一权威，失败rollback；Client暴露runtime capability set/hasRuntimeCapability/typed sendCommand；未开放新command能力；sessiond79、Client156、Runtime E2E3轮、build/typecheck/architecture PASS；独立GPT验证进行中。
+D3A-1：协作分支d3a-1-production-resources；production AllowedRoots、fixed-secret probe、busy/mutation preflight、resource dynamic capability与startup E2E进行中；尚未集成main。
+协作规则：main checkpoint可供新任务基线；进行中分支不得假定已包含main后续commit，合并前必须rebase或由主会话解决冲突。
+```
+
+## 16. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -294,7 +304,7 @@ X1唯一GPT blocker 修复 commit：f87dea4（WS /v1/runtime handshake capabilit
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 16. sessiond 特别保护
+## 17. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -327,7 +337,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 17. 旧结果可用性摘要
+## 18. 旧结果可用性摘要
 
 ### 可复用
 
@@ -351,7 +361,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 18. 完成条件
+## 19. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -362,7 +372,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 19. 命名决策（历史证据说明）
+## 20. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 
