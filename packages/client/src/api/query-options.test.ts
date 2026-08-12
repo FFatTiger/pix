@@ -15,10 +15,18 @@ function invalidationHarness(body: unknown) {
 }
 
 describe("query keys and options", () => {
-  it("uses stable hierarchical keys", () => {
+  it("uses stable hierarchical keys including cwd and provider id", () => {
     expect(queryKeys.sessions.list("/repo")).toEqual(queryKeys.sessions.list("/repo"));
     expect(queryKeys.sessions.detail("s").slice(0, 4)).toEqual(queryKeys.sessions.byId("s"));
     expect(queryKeys.files.read("/a")).not.toEqual(queryKeys.files.read("/b"));
+    expect(queryKeys.models.list("/a")).toEqual(["pix", "models", "list", "/a"]);
+    expect(queryKeys.models.list("/a")).not.toEqual(queryKeys.models.list("/b"));
+    expect(queryKeys.skills.list("/repo")).toEqual(["pix", "skills", "list", "/repo"]);
+    expect(queryKeys.plugins.list("/repo")).toEqual(["pix", "plugins", "list", "/repo"]);
+    expect(queryKeys.commands.list("/repo")).toEqual(["pix", "commands", "list", "/repo"]);
+    expect(queryKeys.trust.get("/repo")).toEqual(["pix", "trust", "get", "/repo"]);
+    expect(queryKeys.auth.providerStatus("openai")).toEqual(["pix", "auth", "provider-status", "openai"]);
+    expect(queryKeys.auth.providerStatus("a")).not.toEqual(queryKeys.auth.providerStatus("b"));
   });
 
   it("parses Protocol session DTOs and rejects a deep mismatch", async () => {
@@ -27,6 +35,61 @@ describe("query keys and options", () => {
     const option = createQueryOptions(http).sessions.list("/repo");
     await expect(option.queryFn!({ signal: new AbortController().signal } as never)).resolves.toEqual({ sessions: [session], revision: 4 });
     await expect(option.queryFn!({ signal: new AbortController().signal } as never)).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
+  it("catalog options require cwd, pass signal, set staleTime 15s and retry false", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({
+      models: [{ id: "m", provider: "p" }],
+      defaultModel: null,
+    }));
+    const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const options = createQueryOptions(http);
+
+    const models = options.models.list("/repo");
+    expect(models.enabled).toBe(true);
+    expect(models.staleTime).toBe(15_000);
+    expect(models.retry).toBe(false);
+    expect(options.models.list("").enabled).toBe(false);
+
+    const signal = new AbortController().signal;
+    await models.queryFn!({ signal } as never);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/models?cwd=%2Frepo",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+
+    const skills = options.skills.list("/repo");
+    expect(skills.enabled).toBe(true);
+    expect(skills.staleTime).toBe(15_000);
+    expect(skills.retry).toBe(false);
+    expect(options.skills.list("").enabled).toBe(false);
+
+    const plugins = options.plugins.list("/x");
+    expect(plugins.staleTime).toBe(15_000);
+    expect(plugins.retry).toBe(false);
+
+    const commands = options.commands.list("/x");
+    expect(commands.staleTime).toBe(15_000);
+    expect(commands.retry).toBe(false);
+
+    const trust = options.trust.get("/x");
+    expect(trust.staleTime).toBe(15_000);
+    expect(trust.retry).toBe(false);
+    expect(options.trust.get("").enabled).toBe(false);
+
+    const providers = options.auth.providers();
+    expect(providers.staleTime).toBe(15_000);
+    expect(providers.retry).toBe(false);
+
+    const status = options.auth.providerStatus("openai");
+    expect(status.enabled).toBe(true);
+    expect(status.staleTime).toBe(15_000);
+    expect(status.retry).toBe(false);
+    expect(options.auth.providerStatus("").enabled).toBe(false);
+
+    // No placeholderData that would cross cwd boundaries.
+    expect(models.placeholderData).toBeUndefined();
+    expect(skills.placeholderData).toBeUndefined();
   });
 });
 
@@ -63,33 +126,24 @@ describe("table-driven mutation invalidation", () => {
     ]);
   });
 
-  it("audits the remaining mutation domains with precise invalidation plans", async () => {
+  it("retains gate/cwd invalidation and has no D3B catalog mutation domains", async () => {
     const { options, invalidate } = invalidationHarness({ ok: true });
-    const cases = [
-      { run: () => options.gate.login().onSuccess(), expected: [queryKeys.gate.all, queryKeys.capabilities.all] },
-      { run: () => options.models.saveConfig().onSuccess(), expected: [queryKeys.models.all] },
-      { run: () => options.cwd.validate().onSuccess(), expected: [queryKeys.cwd.all] },
-      { run: () => options.skills.toggle().onSuccess(), expected: [queryKeys.skills.all] },
-      { run: () => options.plugins.mutate().onSuccess(), expected: [queryKeys.plugins.all] },
-      { run: () => options.auth.logout().onSuccess(), expected: [queryKeys.auth.statuses(), queryKeys.models.lists] },
-    ];
-    for (const entry of cases) {
-      invalidate.mockClear();
-      await entry.run();
-      expect(invalidate.mock.calls.map((call) => call[0])).toEqual(entry.expected.map((queryKey) => ({ queryKey })));
-    }
-  });
-
-  it("auth mutation invalidates statuses and model lists without caching secrets", async () => {
-    const { options, invalidate } = invalidationHarness({ ok: true });
-    const input = { provider: "p", apiKey: "sk-secret" };
-    const mutation = options.auth.apiKey();
-    await mutation.mutationFn(input); await mutation.onSuccess();
+    await options.gate.login().onSuccess();
     expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
-      { queryKey: queryKeys.auth.statuses() },
-      { queryKey: queryKeys.models.lists },
+      { queryKey: queryKeys.gate.all },
+      { queryKey: queryKeys.capabilities.all },
     ]);
-    expect(JSON.stringify(mutation.mutationKey)).not.toContain(input.apiKey);
-    expect(JSON.stringify(queryKeys)).not.toContain(input.apiKey);
+
+    invalidate.mockClear();
+    await options.cwd.validate().onSuccess();
+    expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
+      { queryKey: queryKeys.cwd.all },
+    ]);
+
+    // Frozen: no models/skills/plugins/auth catalog mutations.
+    expect(options).not.toHaveProperty("models");
+    expect(options).not.toHaveProperty("skills");
+    expect(options).not.toHaveProperty("plugins");
+    expect(options).not.toHaveProperty("auth");
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createHttpClient } from "./http-client";
 import { createResourcesApi } from "./resources";
 import { createConfigurationApi } from "./configuration";
+import { createModelsApi } from "./models";
 
 function json(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }); }
 
@@ -39,17 +40,52 @@ describe("resource APIs", () => {
   });
 });
 
-describe("configuration APIs", () => {
-  it("never places API keys or OAuth codes in URLs", async () => {
+describe("catalog configuration APIs", () => {
+  it("encodes cwd and provider id for read-only catalog GETs", async () => {
     const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(json({ ok: true }))
-      .mockResolvedValueOnce(json({ ok: true }));
-    const api = createConfigurationApi(createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch }));
-    await api.auth.apiKey("a/b", "sk-secret");
-    await api.auth.finishLogin("a/b", "oauth-code");
-    const urls = fetchImpl.mock.calls.map((call) => String(call[0]));
-    expect(urls).toEqual(["/v1/auth/api-key/a%2Fb", "/v1/auth/login/a%2Fb"]);
-    expect(urls.join(" ")).not.toMatch(/secret|oauth-code/);
-    expect((fetchImpl.mock.calls[0]?.[1] as RequestInit).body).toBe('{"apiKey":"sk-secret"}');
+      .mockResolvedValueOnce(json({ models: [], defaultModel: null }))
+      .mockResolvedValueOnce(json({ skills: [] }))
+      .mockResolvedValueOnce(json({ plugins: [] }))
+      .mockResolvedValueOnce(json({ commands: [] }))
+      .mockResolvedValueOnce(json({
+        cwd: "/repo a",
+        level: "unknown",
+        trusted: false,
+        canReloadResources: { allowed: false, level: "unknown", reason: "Project resources are not trusted" },
+      }))
+      .mockResolvedValueOnce(json({ providers: [] }))
+      .mockResolvedValueOnce(json({
+        status: { providerId: "a/b", authorized: false },
+        configured: false,
+      }));
+    const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const models = createModelsApi(http);
+    const config = createConfigurationApi(http);
+    await models.list("/repo a");
+    await config.skills.list("/repo a");
+    await config.plugins.list("/repo a");
+    await config.commands.list("/repo a");
+    await config.trust.get("/repo a");
+    await config.auth.providers();
+    await config.auth.providerStatus("a/b");
+    expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual([
+      "/v1/models?cwd=%2Frepo+a",
+      "/v1/skills?cwd=%2Frepo+a",
+      "/v1/plugins?cwd=%2Frepo+a",
+      "/v1/commands?cwd=%2Frepo+a",
+      "/v1/trust?cwd=%2Frepo+a",
+      "/v1/auth/providers",
+      "/v1/auth/providers/a%2Fb/status",
+    ]);
+  });
+
+  it("has no secret-bearing mutation call surface", () => {
+    const config = createConfigurationApi(createHttpClient({ fetchImpl: vi.fn() as unknown as typeof fetch }));
+    expect(config.auth).not.toHaveProperty("apiKey");
+    expect(config.auth).not.toHaveProperty("startLogin");
+    expect(config.auth).not.toHaveProperty("finishLogin");
+    expect(config.auth).not.toHaveProperty("logout");
+    expect(config.skills).not.toHaveProperty("install");
+    expect(config.plugins).not.toHaveProperty("mutate");
   });
 });

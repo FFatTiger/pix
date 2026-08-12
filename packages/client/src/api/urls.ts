@@ -36,11 +36,8 @@ export const urls = {
     autoName: (id: string) => resource(`sessions/${encodedSegment(id)}/auto-name`),
   },
   models: {
-    list: (cwd?: string) => resource("models", { cwd }),
-    config: () => resource("models-config"),
-    catalog: (input?: { q?: string; provider?: string; baseUrl?: string; limit?: number }) => resource("models-config/catalog", input),
-    discover: () => resource("models-config/discover"),
-    test: () => resource("models-config/test"),
+    /** Project-scoped model catalog. Host requires absolute authorized cwd. */
+    list: (cwd: string) => resource("models", { cwd }),
   },
   files: {
     resource: (path: string, op?: "list" | "meta" | "read" | "preview" | "raw" | "download") => resource("files", { path, op }),
@@ -62,22 +59,26 @@ export const urls = {
     mutate: () => resource("worktrees"),
   },
   skills: {
-    list: (cwd?: string) => resource("skills", { cwd }),
-    search: (q: string) => resource("skills/search", { q }),
-    install: () => resource("skills/install"),
-    update: () => resource("skills/update"),
-    toggle: () => resource("skills"),
+    /** Project-scoped skills catalog. Host requires absolute authorized cwd. */
+    list: (cwd: string) => resource("skills", { cwd }),
   },
   plugins: {
-    list: (cwd?: string) => resource("plugins", { cwd }),
-    mutate: () => resource("plugins"),
+    /** Project-scoped plugins catalog. Host requires absolute authorized cwd. */
+    list: (cwd: string) => resource("plugins", { cwd }),
+  },
+  commands: {
+    /** Project-scoped slash-command catalog. Host requires absolute authorized cwd. */
+    list: (cwd: string) => resource("commands", { cwd }),
+  },
+  trust: {
+    /** Project trust summary. Host requires absolute authorized cwd. */
+    get: (cwd: string) => resource("trust", { cwd }),
   },
   auth: {
+    /** Global auth provider list (no cwd). */
     providers: () => resource("auth/providers"),
-    allProviders: () => resource("auth/all-providers"),
-    apiKey: (provider: string) => resource(`auth/api-key/${encodedSegment(provider)}`),
-    login: (provider: string) => resource(`auth/login/${encodedSegment(provider)}`),
-    logout: (provider: string) => resource(`auth/logout/${encodedSegment(provider)}`),
+    /** Per-provider status + configured flag (no cwd). */
+    providerStatus: (providerId: string) => resource(`auth/providers/${encodedSegment(providerId)}/status`),
   },
   runtime: { ws: () => resource("runtime") },
 } as const;

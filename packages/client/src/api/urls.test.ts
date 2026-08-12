@@ -14,6 +14,42 @@ describe("v1 URL builders", () => {
     expect(urls.git.diff("/repo x", "/repo x/a&b")).toBe("/v1/git/diff?cwd=%2Frepo+x&path=%2Frepo+x%2Fa%26b");
     expect(urls.worktrees.list("/repo?a=b")).toBe("/v1/worktrees?cwd=%2Frepo%3Fa%3Db");
   });
+
+  it("builds D3B catalog URLs with required cwd and encoded provider id", () => {
+    expect(urls.models.list("/repo a")).toBe("/v1/models?cwd=%2Frepo+a");
+    expect(urls.skills.list("/repo?x=1")).toBe("/v1/skills?cwd=%2Frepo%3Fx%3D1");
+    expect(urls.plugins.list("/tmp/a b")).toBe("/v1/plugins?cwd=%2Ftmp%2Fa+b");
+    expect(urls.commands.list("/proj#1")).toBe("/v1/commands?cwd=%2Fproj%231");
+    expect(urls.trust.get("/proj/x")).toBe("/v1/trust?cwd=%2Fproj%2Fx");
+    expect(urls.auth.providers()).toBe("/v1/auth/providers");
+    expect(urls.auth.providerStatus("a/b ?#")).toBe("/v1/auth/providers/a%2Fb%20%3F%23/status");
+  });
+
+  it("does not export removed catalog mutation paths", () => {
+    const catalog = urls as Record<string, unknown>;
+    expect(catalog).not.toHaveProperty("models-config");
+    // models is read-only list only
+    expect(Object.keys(urls.models)).toEqual(["list"]);
+    expect(Object.keys(urls.skills)).toEqual(["list"]);
+    expect(Object.keys(urls.plugins)).toEqual(["list"]);
+    expect(Object.keys(urls.auth)).toEqual(["providers", "providerStatus"]);
+    expect(urls).toHaveProperty("commands");
+    expect(urls).toHaveProperty("trust");
+    // legacy mutation builders must not exist
+    expect(urls.models).not.toHaveProperty("config");
+    expect(urls.models).not.toHaveProperty("catalog");
+    expect(urls.models).not.toHaveProperty("discover");
+    expect(urls.models).not.toHaveProperty("test");
+    expect(urls.skills).not.toHaveProperty("search");
+    expect(urls.skills).not.toHaveProperty("install");
+    expect(urls.skills).not.toHaveProperty("update");
+    expect(urls.skills).not.toHaveProperty("toggle");
+    expect(urls.plugins).not.toHaveProperty("mutate");
+    expect(urls.auth).not.toHaveProperty("allProviders");
+    expect(urls.auth).not.toHaveProperty("apiKey");
+    expect(urls.auth).not.toHaveProperty("login");
+    expect(urls.auth).not.toHaveProperty("logout");
+  });
 });
 
 describe("assertV1Path", () => {

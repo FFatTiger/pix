@@ -4,11 +4,15 @@ import {
   AuthProviderStatusSchema,
   HostCapabilitiesSchema,
   HostModeSchema,
+  ModelInfoSchema,
+  ModelRefSchema,
   PluginInfoSchema,
   SessionContextSchema,
   SessionDetailSchema,
   SessionHeaderSchema,
   SkillInfoSchema,
+  SlashCommandInfoSchema,
+  TrustLevelSchema,
 } from "@fffattiger/pix-protocol";
 
 export const SuccessSchema = z.strictObject({ success: z.boolean() });
@@ -64,33 +68,64 @@ export const BootstrapResponseSchema = z.strictObject({
 });
 export type BootstrapResponse = z.infer<typeof BootstrapResponseSchema>;
 
-export const ModelRefResponseSchema = z.strictObject({ id: z.string(), name: z.string(), provider: z.string() });
+/* —— D3B Host catalog response wrappers (strict; no legacy Next unions) —— */
+
+/** GET /v1/models?cwd= — Host projector shape. */
 export const ModelsResponseSchema = z.strictObject({
-  models: z.record(z.string(), z.string()),
-  modelList: z.array(ModelRefResponseSchema),
-  defaultModel: z.strictObject({ provider: z.string(), modelId: z.string() }).nullable(),
-  thinkingLevels: z.record(z.string(), z.array(z.string())),
-  thinkingLevelMaps: z.record(z.string(), z.record(z.string(), z.string().nullable())),
-  thinkingLevelPins: z.record(z.string(), z.string()),
-  modelError: z.string().optional(),
-  modelScopeWarnings: z.array(z.string()).optional(),
+  models: z.array(ModelInfoSchema),
+  defaultModel: ModelRefSchema.nullable(),
 });
-export const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
-  z.string(), z.number(), z.boolean(), z.null(), z.array(JsonValueSchema), z.record(z.string(), JsonValueSchema),
-]));
-export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-export const ModelsConfigSchema = z.record(z.string(), JsonValueSchema);
-export const ModelCatalogEntrySchema = z.strictObject({
-  id: z.string(), provider: z.string(), name: z.string().optional(), family: z.string().optional(), contextWindow: z.number().positive().optional(),
+export type ModelsResponse = z.infer<typeof ModelsResponseSchema>;
+
+/** GET /v1/auth/providers */
+export const AuthProvidersResponseSchema = z.strictObject({
+  providers: z.array(AuthProviderInfoSchema),
 });
-export const ModelRecommendationSchema = z.strictObject({ provider: z.string(), modelId: z.string(), baseUrl: z.string().optional() });
-export const ModelCatalogResponseSchema = z.strictObject({
-  models: z.array(ModelCatalogEntrySchema),
-  recommendation: ModelRecommendationSchema.nullable().optional(),
-  source: z.string(),
+export type AuthProvidersResponse = z.infer<typeof AuthProvidersResponseSchema>;
+
+/** GET /v1/auth/providers/:id/status */
+export const AuthProviderStatusResponseSchema = z.strictObject({
+  status: AuthProviderStatusSchema,
+  configured: z.boolean(),
 });
-export const ModelDiscoverResponseSchema = z.strictObject({ models: z.array(ModelCatalogEntrySchema), warnings: z.array(z.string()).optional() });
-export const ModelTestResponseSchema = z.strictObject({ ok: z.boolean(), message: z.string().optional() });
+export type AuthProviderStatusResponse = z.infer<typeof AuthProviderStatusResponseSchema>;
+
+/** GET /v1/skills?cwd= */
+export const SkillsResponseSchema = z.strictObject({
+  skills: z.array(SkillInfoSchema),
+});
+export type SkillsResponse = z.infer<typeof SkillsResponseSchema>;
+
+/** GET /v1/plugins?cwd= */
+export const PluginsResponseSchema = z.strictObject({
+  plugins: z.array(PluginInfoSchema),
+});
+export type PluginsResponse = z.infer<typeof PluginsResponseSchema>;
+
+/** GET /v1/commands?cwd= */
+export const CommandsResponseSchema = z.strictObject({
+  commands: z.array(SlashCommandInfoSchema),
+});
+export type CommandsResponse = z.infer<typeof CommandsResponseSchema>;
+
+/**
+ * GET /v1/trust?cwd= — Host projector shape.
+ * Do NOT reuse ProjectTrustStatusSchema (different product DTO).
+ */
+export const CanReloadResourcesSchema = z.strictObject({
+  allowed: z.boolean(),
+  level: TrustLevelSchema,
+  reason: z.string().optional(),
+});
+export const TrustResponseSchema = z.strictObject({
+  cwd: z.string().min(1),
+  level: TrustLevelSchema,
+  trusted: z.boolean(),
+  canReloadResources: CanReloadResourcesSchema,
+});
+export type TrustResponse = z.infer<typeof TrustResponseSchema>;
+
+/* —— Workspace / files / git (unchanged non-catalog domains) —— */
 
 export const FileEntrySchema = z.strictObject({ name: z.string(), isDir: z.boolean(), isSymlink: z.boolean() });
 export const FileListResponseSchema = z.strictObject({ path: z.string(), entries: z.array(FileEntrySchema) });
@@ -124,37 +159,3 @@ export const WorktreeInfoSchema = z.strictObject({
 });
 export const WorktreeListResponseSchema = z.strictObject({ projectRoot: z.string(), isGit: z.boolean(), isTopLevel: z.boolean(), worktrees: z.array(WorktreeInfoSchema) });
 export const WorktreeCreateResponseSchema = z.strictObject({ path: z.string(), branch: z.string() });
-
-export const ResourceDiagnosticSchema = z.strictObject({ type: z.enum(["warning", "error"]), message: z.string(), source: z.string().optional(), path: z.string().optional() });
-export const SkillsResponseSchema = z.union([
-  z.array(SkillInfoSchema),
-  z.strictObject({ skills: z.array(SkillInfoSchema), diagnostics: z.array(ResourceDiagnosticSchema).optional(), projectResourcesLoaded: z.boolean().optional() }),
-]).transform((value) => Array.isArray(value) ? { skills: value } : value);
-export const SkillSearchItemSchema = z.strictObject({ package: z.string(), installs: z.string(), url: z.string() });
-export const SkillSearchResponseSchema = z.strictObject({ results: z.array(SkillSearchItemSchema) });
-export const SkillMutationResponseSchema = z.union([SkillInfoSchema, SuccessSchema, OkSchema]);
-
-export const PluginResourceCountsSchema = z.strictObject({ extensions: z.number().int().nonnegative(), skills: z.number().int().nonnegative(), prompts: z.number().int().nonnegative(), themes: z.number().int().nonnegative() });
-export const PluginResourceSchema = z.strictObject({ kind: z.enum(["extension", "skill", "prompt", "theme"]), name: z.string(), path: z.string(), relativePath: z.string() });
-export const PluginPackageSchema = z.strictObject({
-  source: z.string(), scope: z.enum(["global", "project"]), filtered: z.boolean(), disabled: z.boolean(), installedPath: z.string().optional(), packageName: z.string().optional(), version: z.string().optional(), configuredVersion: z.string().optional(), counts: PluginResourceCountsSchema, resources: z.array(PluginResourceSchema), status: z.enum(["loaded", "installed", "missing", "disabled"]),
-});
-export const PluginsResponseSchema = z.union([
-  z.array(PluginInfoSchema).transform((plugins) => ({ plugins })),
-  z.strictObject({ plugins: z.array(PluginInfoSchema) }),
-  z.strictObject({ packages: z.array(PluginPackageSchema), totals: PluginResourceCountsSchema, diagnostics: z.array(ResourceDiagnosticSchema), projectResourcesLoaded: z.boolean() }),
-]);
-export const PluginMutationResponseSchema = z.union([PluginInfoSchema, SuccessSchema, OkSchema]);
-
-export const AuthProvidersResponseSchema = z.union([
-  z.array(AuthProviderInfoSchema),
-  z.strictObject({ providers: z.array(AuthProviderInfoSchema) }),
-]).transform((value) => Array.isArray(value) ? { providers: value } : value);
-export const AuthStatusesResponseSchema = z.union([
-  z.array(AuthProviderStatusSchema),
-  z.strictObject({ providers: z.array(AuthProviderStatusSchema) }),
-]).transform((value) => Array.isArray(value) ? { providers: value } : value);
-export const AuthMutationResponseSchema = z.union([
-  AuthProviderStatusSchema,
-  z.strictObject({ ok: z.boolean(), providerId: z.string().optional(), authorized: z.boolean().optional(), pending: z.boolean().optional(), message: z.string().optional() }),
-]);

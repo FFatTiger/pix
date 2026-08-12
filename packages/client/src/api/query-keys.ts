@@ -8,6 +8,8 @@ import { createConfigurationApi } from "./configuration";
 import { BootstrapResponseSchema, CapabilitiesResponseSchema, HealthResponseSchema } from "./schemas";
 import { urls } from "./urls";
 
+const CATALOG_STALE_MS = 15_000;
+
 export const queryKeys = {
   root: ["pix"] as const,
   gate: { all: ["pix", "gate"] as const, status: () => ["pix", "gate", "status"] as const },
@@ -22,14 +24,36 @@ export const queryKeys = {
     thinking: (id: string, entryId: string) => ["pix", "sessions", "session", id, "thinking", entryId] as const,
     bash: (id: string, entryId: string) => ["pix", "sessions", "session", id, "bash", entryId] as const,
   },
-  models: { all: ["pix", "models"] as const, lists: ["pix", "models", "list"] as const, list: (cwd?: string) => ["pix", "models", "list", cwd ?? null] as const, config: () => ["pix", "models", "config"] as const, catalog: (input?: object) => ["pix", "models", "catalog", input ?? {}] as const },
+  models: {
+    all: ["pix", "models"] as const,
+    lists: ["pix", "models", "list"] as const,
+    list: (cwd: string) => ["pix", "models", "list", cwd] as const,
+  },
   files: { all: ["pix", "files"] as const, list: (path: string) => ["pix", "files", "list", path] as const, meta: (path: string) => ["pix", "files", "meta", path] as const, read: (path: string) => ["pix", "files", "read", path] as const, indexRoot: (cwd: string) => ["pix", "files", "index", cwd] as const, index: (cwd: string, q?: string) => ["pix", "files", "index", cwd, q ?? ""] as const },
   git: { all: ["pix", "git"] as const, status: (cwd: string) => ["pix", "git", "status", cwd] as const, diff: (cwd: string, path: string) => ["pix", "git", "diff", cwd, path] as const },
   cwd: { all: ["pix", "cwd"] as const, browse: (path?: string) => ["pix", "cwd", "browse", path ?? null] as const, roots: () => ["pix", "cwd", "roots"] as const },
   worktrees: { all: ["pix", "worktrees"] as const, list: (cwd: string) => ["pix", "worktrees", "list", cwd] as const },
-  skills: { all: ["pix", "skills"] as const, list: (cwd?: string) => ["pix", "skills", "list", cwd ?? null] as const, search: (q: string) => ["pix", "skills", "search", q] as const },
-  plugins: { all: ["pix", "plugins"] as const, list: (cwd?: string) => ["pix", "plugins", "list", cwd ?? null] as const },
-  auth: { all: ["pix", "auth"] as const, providers: () => ["pix", "auth", "providers"] as const, statuses: () => ["pix", "auth", "statuses"] as const },
+  skills: {
+    all: ["pix", "skills"] as const,
+    list: (cwd: string) => ["pix", "skills", "list", cwd] as const,
+  },
+  plugins: {
+    all: ["pix", "plugins"] as const,
+    list: (cwd: string) => ["pix", "plugins", "list", cwd] as const,
+  },
+  commands: {
+    all: ["pix", "commands"] as const,
+    list: (cwd: string) => ["pix", "commands", "list", cwd] as const,
+  },
+  trust: {
+    all: ["pix", "trust"] as const,
+    get: (cwd: string) => ["pix", "trust", "get", cwd] as const,
+  },
+  auth: {
+    all: ["pix", "auth"] as const,
+    providers: () => ["pix", "auth", "providers"] as const,
+    providerStatus: (providerId: string) => ["pix", "auth", "provider-status", providerId] as const,
+  },
 } as const;
 
 export function createQueryOptions(http: HttpClient) {
@@ -53,9 +77,14 @@ export function createQueryOptions(http: HttpClient) {
       bash: (id: string, entryId: string) => queryOptions({ queryKey: queryKeys.sessions.bash(id, entryId), queryFn: ({ signal }) => sessions.bashOutput(id, entryId, signal), enabled: Boolean(id && entryId) }),
     },
     models: {
-      list: (cwd?: string) => queryOptions({ queryKey: queryKeys.models.list(cwd), queryFn: ({ signal }) => models.list(cwd, signal) }),
-      config: () => queryOptions({ queryKey: queryKeys.models.config(), queryFn: ({ signal }) => models.config(signal) }),
-      catalog: (input?: { q?: string; provider?: string; baseUrl?: string; limit?: number }) => queryOptions({ queryKey: queryKeys.models.catalog(input), queryFn: ({ signal }) => models.catalog({ ...input, signal }) }),
+      list: (cwd: string) =>
+        queryOptions({
+          queryKey: queryKeys.models.list(cwd),
+          queryFn: ({ signal }) => models.list(cwd, signal),
+          enabled: Boolean(cwd),
+          staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
     },
     files: {
       list: (path: string) => queryOptions({ queryKey: queryKeys.files.list(path), queryFn: ({ signal }) => resources.files.list(path, signal), enabled: Boolean(path) }),
@@ -73,13 +102,61 @@ export function createQueryOptions(http: HttpClient) {
     },
     worktrees: { list: (cwd: string) => queryOptions({ queryKey: queryKeys.worktrees.list(cwd), queryFn: ({ signal }) => resources.worktrees.list(cwd, signal), enabled: Boolean(cwd) }) },
     skills: {
-      list: (cwd?: string) => queryOptions({ queryKey: queryKeys.skills.list(cwd), queryFn: ({ signal }) => configuration.skills.list(cwd, signal) }),
-      search: (q: string) => queryOptions({ queryKey: queryKeys.skills.search(q), queryFn: ({ signal }) => configuration.skills.search(q, signal), enabled: Boolean(q) }),
+      list: (cwd: string) =>
+        queryOptions({
+          queryKey: queryKeys.skills.list(cwd),
+          queryFn: ({ signal }) => configuration.skills.list(cwd, signal),
+          enabled: Boolean(cwd),
+          staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
     },
-    plugins: { list: (cwd?: string) => queryOptions({ queryKey: queryKeys.plugins.list(cwd), queryFn: ({ signal }) => configuration.plugins.list(cwd, signal) }) },
+    plugins: {
+      list: (cwd: string) =>
+        queryOptions({
+          queryKey: queryKeys.plugins.list(cwd),
+          queryFn: ({ signal }) => configuration.plugins.list(cwd, signal),
+          enabled: Boolean(cwd),
+          staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
+    },
+    commands: {
+      list: (cwd: string) =>
+        queryOptions({
+          queryKey: queryKeys.commands.list(cwd),
+          queryFn: ({ signal }) => configuration.commands.list(cwd, signal),
+          enabled: Boolean(cwd),
+          staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
+    },
+    trust: {
+      get: (cwd: string) =>
+        queryOptions({
+          queryKey: queryKeys.trust.get(cwd),
+          queryFn: ({ signal }) => configuration.trust.get(cwd, signal),
+          enabled: Boolean(cwd),
+          staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
+    },
     auth: {
-      providers: () => queryOptions({ queryKey: queryKeys.auth.providers(), queryFn: ({ signal }) => configuration.auth.providers(signal) }),
-      statuses: () => queryOptions({ queryKey: queryKeys.auth.statuses(), queryFn: ({ signal }) => configuration.auth.statuses(signal) }),
+      providers: () =>
+        queryOptions({
+          queryKey: queryKeys.auth.providers(),
+          queryFn: ({ signal }) => configuration.auth.providers(signal),
+          staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
+      providerStatus: (providerId: string) =>
+        queryOptions({
+          queryKey: queryKeys.auth.providerStatus(providerId),
+          queryFn: ({ signal }) => configuration.auth.providerStatus(providerId, signal),
+          enabled: Boolean(providerId),
+          staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
     },
   };
 }
