@@ -296,7 +296,18 @@ Hardening：adapter非字符串/空rename返回invalid_input；UI rename maxLeng
 独立验证 verdict：PASS
 ```
 
-## 17. 后续迁移时必须记录的校验
+## 17. D3A-2 — Files/Git 只读工作区记录
+
+```text
+实现：6972479 + canonical修复bb5aba2；集成merge9c71bcc。Client增加Files/Git辅助工作区，严格按negotiated files/git能力门控；无能力零请求，撤回能力隐藏旧内容；Files list/read/meta只读，Git status/diff只读，无上传/写入/shell/worktree mutation UI。
+Canonical修复：root独立cwd list取得Host canonical path；目录进入和文件选择全部从canonicalCurrent构造；meta canonicalSelected用于范围检查；/tmp→/private/tmp根/子目录无误报；query key隔离stale response。
+Host follow-up：a983cfd支持100% pure staged rename metadata（无@@ hunk也supported=true）。
+独立验证：fresh clone真实npm ci；latest main+a983cfd与bb5aba2 clean merge；Client207/207、Host210/210、全仓tests、typecheck/build/boundaries PASS；真实Host canonical root/nested 9探针、stale A/B race、cap revocation、pure rename API均PASS。VERDICT: PASS。
+集成验证：全仓build/typecheck/tests；startup E2E；runtime E2E3轮；architecture；Client/Host boundaries均PASS。一次startup 401来自主会话为公网临时创建~/.pi/pix.json密码，清理临时dev/sessiond/config后复测PASS，不是代码回归。
+产品优先级：当前UI仅要求可用、能力诚实、错误清晰；后续重心回到基础架构重构，不在本阶段投入视觉精修。
+```
+
+## 18. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -314,7 +325,7 @@ Hardening：adapter非字符串/空rename返回invalid_input；UI rename maxLeng
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 18. sessiond 特别保护
+## 19. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -347,7 +358,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 19. 旧结果可用性摘要
+## 20. 旧结果可用性摘要
 
 ### 可复用
 
@@ -371,7 +382,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 20. 完成条件
+## 21. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -382,7 +393,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 21. 命名决策（历史证据说明）
+## 22. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 

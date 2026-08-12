@@ -323,7 +323,7 @@ stop
 |---|---|---|---|---|
 | `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A-1与phase1已进main；phase2从`3127807`并行开工：Host GET路由+Client只读历史+Continue live+0 Worker E2E；D1B后续 |
 | `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 DONE；P1 `ed1b867` + hardening `9bfaf68` DONE（GPT PASS）：state/commands/last-text/stats/rename与SessionActions已进main；后续thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate |
-| `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | D3A-1 DONE；Client Files/Git只读工作区从`3127807`并行开工；Worktree UI与可信重启恢复后续 |
+| `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | D3A-1 DONE；D3A-2 Files/Git只读工作区 `6972479` + canonical fix `bb5aba2` 已进main（fresh GPT PASS）；pure rename diff `a983cfd` DONE；Worktree UI与可信重启恢复后续 |
 | `D3B` | Models/Auth/Skills/Plugins/Trust | `BLOCKED` | `M2`, Data/Resource Adapter | 等D1领域化Adapter地基；models/resources/auth只读优先，trust/OAuth后置 |
 | `D4` | Mutations + Side Chat | `BLOCKED` | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
 
@@ -333,7 +333,7 @@ stop
 2. `D2-P0`：DONE（`c4a2f76` + `5a96fd4`；GPT复验PASS）；第二条并发command明确session_busy、snapshot内外sessionId不一致启动rollback、rekey rejection有界处理；未开放新能力。
 3. `D3A-1`：DONE（main `95ee707`，原branch `1c7a848`；GPT安全验证PASS）；Host204、CLI32、全仓tests、startup/runtime E2E、typecheck/architecture/boundaries PASS。
 4. Adapter内部按sessions/models/credentials/resources/trust领域拆分，只共享canonical path与安全文件原语；禁止恢复旧`sdk-data.ts`单体。
-5. D1A-2 phase1与D3A-1均已合并并删除功能分支；后续D1A-2 phase2、D3A Client UI必须从最新main新建。
+5. D1A-2 phase1、D3A-1与D3A-2均已合并；D3A-2 fresh GPT验证 canonical path/race/cap revocation/pure rename PASS。后续工作以基础架构为主，UI维持可操作与能力诚实即可。
 
 ## Wave 4 — Scale、PWA、Release
 
