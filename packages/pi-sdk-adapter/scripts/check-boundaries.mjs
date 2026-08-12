@@ -4,10 +4,11 @@ import { join, relative } from "node:path";
 const packageRoot = new URL("../", import.meta.url).pathname;
 const srcRoot = join(packageRoot, "src");
 const distRoot = join(packageRoot, "dist");
-// A1 ships only the agent runtime surface. Session/model/credential/resource/
-// trust ports are deferred, so only `agent` (plus the root `index.ts`) is a
-// public source dir.
-const publicSourceDirs = new Set(["agent"]);
+// The agent runtime surface (A1) and the read-only sessions catalog/locator
+// (D1A-1) are public. Other session/model/credential/resource/trust ports
+// remain deferred, so `agent` and `sessions` (plus the root `index.ts`)
+// are the public source dirs.
+const publicSourceDirs = new Set(["agent", "sessions"]);
 const sdkImport = /@earendil-works\/pi-/;
 const sdkNames = /\b(?:AgentSession|SessionManager|ModelRuntime|DefaultResourceLoader|ProjectTrustStore|AuthStorage)\b/;
 

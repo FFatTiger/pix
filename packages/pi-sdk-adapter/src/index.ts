@@ -1,7 +1,9 @@
-// Public surface of the pix Pi SDK Agent Adapter (A1).
+// Public surface of the pix Pi SDK Agent Adapter.
 //
-// A1 ships only the agent runtime surface: the AgentRuntimeFactory backed by
-// the Pi SDK and the M2 capability constant. Session/model/credential/
+// The root entry ships the agent runtime surface (A1): the
+// AgentRuntimeFactory backed by the Pi SDK and the M2 capability constant.
+// The read-only sessions catalog/locator (D1A-1) is published as its own
+// subpath `@fffattiger/pix-pi-sdk-adapter/sessions`. Model/credential/
 // resource/trust ports are deferred to later milestones and are intentionally
-// NOT re-exported here.
+// NOT re-exported from the root entry.
 export * from "./agent/index.js";

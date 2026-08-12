@@ -6,7 +6,8 @@
   "engines": { "node": ">=22.19.0" },
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js" }
+    "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js" },
+    "./sessions": { "types": "./dist/sessions/index.d.ts", "import": "./dist/sessions/index.js" }
   },
   "scripts": {
     "build:deps": "node ./scripts/build-deps.mjs",
