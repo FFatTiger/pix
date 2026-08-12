@@ -321,7 +321,7 @@ stop
 
 | ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
-| `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A DONE；D1B-1 `723fac4` Thinking、D1B-2 `83a3859` Bash History/Live、D1B-3 `665e31a` selected history visible-branch normalized JSON export、D1B-4 `1a5d28f` Sidebar 只读会话元数据、D1B-5 `5244e44` Transcript history capability fail-closed DONE；后续为更完整只读会话能力 |
+| `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A DONE；D1B-1 `723fac4` Thinking、D1B-2 `83a3859` Bash History/Live、D1B-3 `665e31a` selected history visible-branch normalized JSON export、D1B-4 `1a5d28f` Sidebar 只读会话元数据、D1B-5 `5244e44`+`65c33c0` Transcript history capability fail-closed DONE；后续为更完整只读会话能力 |
 | `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 DONE；P1 `ed1b867` + hardening `9bfaf68` DONE（GPT PASS）：state/commands/last-text/stats/rename与SessionActions已进main；后续thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate |
 | `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | D3A-1 DONE；D3A-2 Files/Git只读工作区 DONE；Worktrees只读列表 `b79b54c` DONE：full/degraded均广告list token、无Mutation UI。创建/删除、切换cwd与可信重启恢复后续 |
 | `D3B` | Models/Auth/Skills/Plugins/Trust | `DONE` | `M2`, D1领域化Adapter | R1A `773d3f2` + R1B `4668658` + Client `f9151b7`/`4b1e9d9`/`9603aa8`/`8001fa4`：独立只读Ports、Host GET API、canonical cwd、严格DTO、capability-gated Catalog Dock与Trust状态；独立验证PASS。OAuth/写入/安装/reload/Trust修改/执行extension后置 |
