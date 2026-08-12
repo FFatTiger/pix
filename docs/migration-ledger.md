@@ -286,7 +286,17 @@ D3A-1：main commit 95ee707（原branch 1c7a848）；PIX_ALLOWED_ROOTS（unset=>
 协作规则：main checkpoint可供新任务基线；进行中分支不得假定已包含main后续commit，合并前必须rebase或由主会话解决冲突。
 ```
 
-## 16. 后续迁移时必须记录的校验
+## 16. D2-P1 — Light Runtime Commands 记录
+
+```text
+实现：ed1b867（原branch577a1dd）+ hardening9bfaf68；生产capability精确prompt/abort/stats/session.rename，旧M2常量删除；Client typed helpers state/commands/last-text/stats/rename；SessionActions按runtime snapshot能力门控；rename command成功后fetchSnapshot，不写history catalog。
+验证：GPT独立PASS；真实SDK exact-cap/no-network/未开放命令unsupported；Client correlation/singleflight/epoch/stop/wrong-result；UI rapid click/fetch失败/zero-cap/XSS；Runtime E2E5轮五命令链、restart/epoch/no orphan；集成main后全仓tests、build/typecheck/startup E2E/runtime E2E3轮、architecture/boundaries PASS。
+Hardening：adapter非字符串/空rename返回invalid_input；UI rename maxLength=200；过时M2注释修正。
+残余：历史catalog标题持久化/auto_name不在P1范围；thinking/model/tools/bash等仍关闭。
+独立验证 verdict：PASS
+```
+
+## 17. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -304,7 +314,7 @@ D3A-1：main commit 95ee707（原branch 1c7a848）；PIX_ALLOWED_ROOTS（unset=>
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 17. sessiond 特别保护
+## 18. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -337,7 +347,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 18. 旧结果可用性摘要
+## 19. 旧结果可用性摘要
 
 ### 可复用
 
@@ -361,7 +371,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 19. 完成条件
+## 20. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -372,7 +382,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 20. 命名决策（历史证据说明）
+## 21. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 
