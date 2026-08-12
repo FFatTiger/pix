@@ -4,11 +4,11 @@ import { join, relative } from "node:path";
 const packageRoot = new URL("../", import.meta.url).pathname;
 const srcRoot = join(packageRoot, "src");
 const distRoot = join(packageRoot, "dist");
-// The agent runtime surface (A1) and the read-only sessions catalog/locator
-// (D1A-1) are public. Other session/model/credential/resource/trust ports
-// remain deferred, so `agent` and `sessions` (plus the root `index.ts`)
-// are the public source dirs.
-const publicSourceDirs = new Set(["agent", "sessions"]);
+// The agent runtime surface (A1), the read-only sessions catalog/locator
+// (D1A-1), and the read-only model/credential catalogs (D3B-R1A) are public.
+// Other resource/trust ports remain deferred, so `agent`, `sessions`, `models`,
+// `credentials` (plus the root `index.ts`) are the public source dirs.
+const publicSourceDirs = new Set(["agent", "sessions", "models", "credentials"]);
 const sdkImport = /@earendil-works\/pi-/;
 const sdkNames = /\b(?:AgentSession|SessionManager|ModelRuntime|DefaultResourceLoader|ProjectTrustStore|AuthStorage)\b/;
 
@@ -34,6 +34,14 @@ for (const file of sourceFiles) {
   }
   if (first !== "internal" && sdkImport.test(text)) {
     failures.push(`${rel}: SDK import must stay in src/internal/**`);
+  }
+  // Cross-domain independence: a public domain dir must not import a sibling
+  // public domain dir (models must not import credentials/sessions/agent, etc.).
+  if (publicSourceDirs.has(first)) {
+    const sibling = new RegExp(`from\\s+["']\\.\\./(?:${[...publicSourceDirs].filter((d) => d !== first).join("|")})/`);
+    if (sibling.test(text)) {
+      failures.push(`${rel}: public domain imports a sibling domain (cross-domain coupling)`);
+    }
   }
 }
 

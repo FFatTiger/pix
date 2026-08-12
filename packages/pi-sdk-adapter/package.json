@@ -8,6 +8,8 @@
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js" },
     "./sessions": { "types": "./dist/sessions/index.d.ts", "import": "./dist/sessions/index.js" },
+    "./models": { "types": "./dist/models/index.d.ts", "import": "./dist/models/index.js" },
+    "./credentials": { "types": "./dist/credentials/index.d.ts", "import": "./dist/credentials/index.js" },
     "./testing": { "types": "./dist/internal/testing.d.ts", "import": "./dist/internal/testing.js" }
   },
   "scripts": {
