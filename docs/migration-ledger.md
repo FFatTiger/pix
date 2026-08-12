@@ -307,7 +307,18 @@ Host follow-up：a983cfd支持100% pure staged rename metadata（无@@ hunk也su
 产品优先级：当前UI仅要求可用、能力诚实、错误清晰；后续重心回到基础架构重构，不在本阶段投入视觉精修。
 ```
 
-## 18. 后续迁移时必须记录的校验
+## 18. D1A-2 — 只读历史会话链记录
+
+```text
+实现：5570d69；合入最新main13499e4；error hardening429274f；最终merge43d390a。Host GET /v1/sessions、/:id、/:id/context；sessions capability仅sessiond healthy时存在；Client deep-link只读历史不自动attach，显式Continue live才启动Worker。
+0 Worker：真实JSONL list/read/context/deep-link/missing404前后runtime.listRunning为空且无子Worker；Continue live唯一启动路径；sessiond down后四端capability撤回且route固定503。
+Error边界：Adapter plain RuntimeError在sessiond RPC由toBoundaryProtocolError受控映射；known code固定消息/retryable，raw message/cause/details丢弃；unknown/malformed/raw Error固定internal。真实missing read/context为404 SESSION_NOT_FOUND，不回显id/path/endpoint/secret/stack。分页仅canonical unsigned decimal，拒绝1e3/0x10/sign/decimal/whitespace/leading-zero。
+验证：GPT首轮除真实404映射外全部PASS；修复后fresh re-verification PASS。集成后全仓build/typecheck/tests、startup、runtime E2E3轮、sessions E2E、architecture、sessiond/host/client/adapter boundaries均PASS。sessiond90、Host225。
+边界：testing子路径仅E2E使用；SDK import仍限adapter internal；D1B thinking/bash/export未实现。
+独立验证 verdict：PASS
+```
+
+## 19. 后续迁移时必须记录的校验
 
 每个包迁移时补充：
 
@@ -325,7 +336,7 @@ Host follow-up：a983cfd支持100% pure staged rename metadata（无@@ hunk也su
 
 若迁移后 tree hash 不同，必须逐项说明差异，不能只写“适配新仓库”。
 
-## 19. sessiond 特别保护
+## 20. sessiond 特别保护
 
 `packages/sessiond` 是唯一没有提交保护的重构成果。迁移前不得清理旧 worktree。
 
@@ -358,7 +369,7 @@ packages/sessiond/**/*.tsbuildinfo
 - single-instance/lock/socket 生命周期验证
 - 独立 verification
 
-## 20. 旧结果可用性摘要
+## 21. 旧结果可用性摘要
 
 ### 可复用
 
@@ -382,7 +393,7 @@ packages/sessiond/**/*.tsbuildinfo
 - Agent Worker
 - 完整产品启动链
 
-## 21. 完成条件
+## 22. 完成条件
 
 迁移阶段完成必须同时满足：
 
@@ -393,7 +404,7 @@ packages/sessiond/**/*.tsbuildinfo
 5. M1 Startup E2E 通过。
 6. 旧 worktree 在确认备份策略前仍不删除。
 
-## 22. 命名决策（历史证据说明）
+## 23. 命名决策（历史证据说明）
 
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 
