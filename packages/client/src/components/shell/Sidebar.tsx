@@ -5,6 +5,7 @@ import { formatCwdLabel } from "@/lib/search-params";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
+import { TrustBadge } from "@/features/catalog/TrustBadge";
 
 export interface SidebarProps { open: boolean; search: WorkspaceSearch }
 
@@ -20,6 +21,9 @@ export function Sidebar({ open, search }: SidebarProps) {
       <div className="sidebar-section">
         <div className="sidebar-section-title">Project</div>
         <div className="sidebar-cwd" title={search.cwd ?? ""}>{formatCwdLabel(search.cwd)}</div>
+        <div className="sidebar-trust">
+          <TrustBadge cwd={search.cwd} variant="badge" />
+        </div>
       </div>
       <div className="sidebar-section sidebar-section--grow">
         <div className="sidebar-section-title">Sessions</div>

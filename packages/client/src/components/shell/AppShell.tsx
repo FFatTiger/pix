@@ -7,6 +7,7 @@ import { Composer } from "@/components/shell/Composer";
 import { SessionActions } from "@/components/shell/SessionActions";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
+import { CatalogPanel, hasCatalogCapability } from "@/features/catalog/CatalogPanel";
 import { useRuntime } from "@/runtime";
 import type { ConnectionState } from "@/runtime";
 
@@ -40,6 +41,7 @@ export function AppShell({ search }: AppShellProps) {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const [projectPath, setProjectPath] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
   const [openingLive, setOpeningLive] = useState(false);
@@ -119,6 +121,12 @@ export function AppShell({ search }: AppShellProps) {
   const hasProject = Boolean(search.cwd);
   const canCreate = canAgent && hasProject && !runtime.attached && !runtime.sessionStopped;
   const hasWorkspaceCap = capabilities.includes("files") || capabilities.includes("git");
+  const hasCatalogCap = hasCatalogCapability((cap) => capabilities.includes(cap));
+
+  // Cap revocation: hide Catalog button and close the dock so no stale UI stays open.
+  useEffect(() => {
+    if (!hasCatalogCap && catalogOpen) setCatalogOpen(false);
+  }, [hasCatalogCap, catalogOpen]);
   // Topbar always shows the SELECTED session (search.session first) so it never
   // claims live B while the runtime is still attached to A; a detached-to-history
   // view falls back to the live session id only when nothing is selected.
@@ -219,9 +227,32 @@ export function AppShell({ search }: AppShellProps) {
               className={`text-btn${workspaceOpen ? " text-btn--active" : ""}`}
               aria-pressed={workspaceOpen}
               aria-label={workspaceOpen ? "Hide workspace panel" : "Show workspace panel"}
-              onClick={() => setWorkspaceOpen((v) => !v)}
+              onClick={() => {
+                setWorkspaceOpen((v) => {
+                  const next = !v;
+                  if (next) setCatalogOpen(false);
+                  return next;
+                });
+              }}
             >
               Files/Git
+            </button>
+          ) : null}
+          {hasCatalogCap ? (
+            <button
+              type="button"
+              className={`text-btn${catalogOpen ? " text-btn--active" : ""}`}
+              aria-pressed={catalogOpen}
+              aria-label={catalogOpen ? "Hide catalog panel" : "Show catalog panel"}
+              onClick={() => {
+                setCatalogOpen((v) => {
+                  const next = !v;
+                  if (next) setWorkspaceOpen(false);
+                  return next;
+                });
+              }}
+            >
+              Catalog
             </button>
           ) : null}
           {canCreate ? (
@@ -294,6 +325,7 @@ export function AppShell({ search }: AppShellProps) {
         </main>
 
         <WorkspacePanel cwd={search.cwd} open={workspaceOpen} onClose={() => setWorkspaceOpen(false)} />
+        <CatalogPanel cwd={search.cwd} open={catalogOpen} onClose={() => setCatalogOpen(false)} />
       </div>
     </div>
   );

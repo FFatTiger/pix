@@ -1022,6 +1022,143 @@ html.dark .git-status-badge--deleted {
   max-height: 360px;
 }
 
+
+/* —— Catalog dock (reuses workspace-panel shell) —— */
+
+.catalog-panel-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.catalog-trust-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.catalog-trust-detail {
+  color: var(--text-muted);
+  min-width: 0;
+}
+.catalog-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.catalog-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  min-width: 0;
+}
+.catalog-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.catalog-row-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.catalog-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.catalog-meta-item {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.catalog-meta-item--wrap {
+  font-family: var(--font-sans);
+  white-space: normal;
+  word-break: break-word;
+}
+.catalog-meta-item--error {
+  color: #b91c1c;
+}
+html.dark .catalog-meta-item--error {
+  color: #fca5a5;
+}
+.catalog-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.catalog-chip--ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+}
+.catalog-chip--accent {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+/* —— Trust badge (sidebar + panel) —— */
+
+.sidebar-trust {
+  margin-top: 8px;
+}
+.trust-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}
+.trust-badge--ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+}
+.trust-badge--danger {
+  color: #b91c1c;
+  border-color: color-mix(in srgb, #b91c1c 35%, var(--border));
+}
+.trust-badge--error {
+  color: #b45309;
+  border-color: color-mix(in srgb, #b45309 35%, var(--border));
+}
+.trust-badge--muted {
+  color: var(--text-dim);
+}
+html.dark .trust-badge--danger {
+  color: #fca5a5;
+}
+html.dark .trust-badge--error {
+  color: #fbbf24;
+}
+
 /* —— Responsive —— */
 
 @media (max-width: 768px) {

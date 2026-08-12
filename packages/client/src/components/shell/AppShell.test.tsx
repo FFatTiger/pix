@@ -337,3 +337,88 @@ describe("AppShell history/live coordination", () => {
     expect(screen.getByText(/session:s-new/)).toBeTruthy();
   });
 });
+
+describe("AppShell Catalog / Workspace mutual exclusion", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://pix.local");
+      if (url.pathname === "/v1/files" && url.searchParams.get("op") === "list") {
+        return new Response(JSON.stringify({ path: url.searchParams.get("path"), entries: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.pathname === "/v1/models") {
+        return new Response(JSON.stringify({ models: [], defaultModel: null }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.pathname === "/v1/auth/providers") {
+        return new Response(JSON.stringify({ providers: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.pathname === "/v1/skills" || url.pathname === "/v1/plugins" || url.pathname === "/v1/commands") {
+        return new Response(JSON.stringify({ skills: [], plugins: [], commands: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.pathname === "/v1/trust") {
+        return new Response(
+          JSON.stringify({
+            cwd: url.searchParams.get("cwd"),
+            level: "unknown",
+            trusted: false,
+            canReloadResources: { allowed: false, level: "unknown", reason: "Project resources are not trusted" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    cleanup();
+  });
+
+  it("shows Catalog button only when a catalog cap is present", () => {
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: ["files"] });
+    expect(screen.queryByRole("button", { name: /catalog panel/i })).toBeNull();
+    cleanup();
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: ["models"] });
+    expect(screen.getByRole("button", { name: "Show catalog panel" })).toBeTruthy();
+  });
+
+  it("opening Catalog closes Files/Git and vice versa", async () => {
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: ["files", "models"] });
+    fireEvent.click(screen.getByRole("button", { name: "Show workspace panel" }));
+    expect(await screen.findByRole("tab", { name: "Files" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Models" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show catalog panel" }));
+    expect(await screen.findByRole("tab", { name: "Models" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Files" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show workspace panel" }));
+    expect(await screen.findByRole("tab", { name: "Files" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Models" })).toBeNull();
+  });
+
+  it("cap revocation removes Catalog button", () => {
+    const { view } = mount({ cwd: "/proj" }, { mode: "local", capabilities: ["models"] });
+    expect(screen.getByRole("button", { name: "Show catalog panel" })).toBeTruthy();
+    // Remount with no catalog caps (CapabilityProvider host override is fixed per mount).
+    cleanup();
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: ["files"] });
+    expect(screen.queryByRole("button", { name: /catalog panel/i })).toBeNull();
+    void view;
+  });
+});
