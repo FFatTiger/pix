@@ -18,8 +18,8 @@
 
 ### 当前协作基线
 
-- `main@b79b54c`：稳定 checkpoint；D1B-1 Thinking 展示与 D3A Worktrees 只读列表已合入。
-- History 与 Live 共用结构化 Transcript projector；Thinking 使用安全、可折叠的纯文本展示，不新增 `/thinking` 请求或 Worker 激活。
+- `main@83a3859`：稳定 checkpoint；D1B Thinking/Bash 展示与 D3A Worktrees 只读列表已合入。
+- History 与 Live 共用结构化 Transcript projector；Thinking 安全折叠，Bash 显示 command/output/status 且不渲染 `fullOutputPath`；二者均不新增执行能力或 Worker 激活。
 - Workspace Dock 已提供 Files/Git/Worktrees Tabs；`worktree` 仅代表 GET/list，sessiond down 时仍可读取，Client 无创建、删除、切换或 promotion 控件。
 - D3B 端到端只读 Catalog 仍保持完成；不得恢复聚合 `sdk-data`、Catalog Mutation/OAuth 路由或隐式 `process.cwd`。
 

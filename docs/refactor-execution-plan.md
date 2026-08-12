@@ -321,7 +321,7 @@ stop
 
 | ID | 工作包 | 状态 | 依赖 | 交付 |
 |---|---|---|---|---|
-| `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A DONE；D1B-1 `723fac4` DONE：History/Live assistant Thinking 共用结构化投影与安全折叠展示，Client281/281。D1B bash/export后续 |
+| `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A DONE；D1B-1 `723fac4` Thinking、D1B-2 `83a3859` Bash History/Live 展示DONE。D1B visible-branch export后续 |
 | `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 DONE；P1 `ed1b867` + hardening `9bfaf68` DONE（GPT PASS）：state/commands/last-text/stats/rename与SessionActions已进main；后续thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate |
 | `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | D3A-1 DONE；D3A-2 Files/Git只读工作区 DONE；Worktrees只读列表 `b79b54c` DONE：full/degraded均广告list token、无Mutation UI。创建/删除、切换cwd与可信重启恢复后续 |
 | `D3B` | Models/Auth/Skills/Plugins/Trust | `DONE` | `M2`, D1领域化Adapter | R1A `773d3f2` + R1B `4668658` + Client `f9151b7`/`4b1e9d9`/`9603aa8`/`8001fa4`：独立只读Ports、Host GET API、canonical cwd、严格DTO、capability-gated Catalog Dock与Trust状态；独立验证PASS。OAuth/写入/安装/reload/Trust修改/执行extension后置 |
@@ -336,8 +336,9 @@ stop
 5. `D3B-R1B`：DONE（main `4668658`）。Host按挂载Port条件注册只读Models/Auth/Skills/Plugins/Commands/Trust API；项目读取使用AllowedRoot授权后的canonical cwd；full/degraded均诚实广告Catalog能力。Host严格投影DTO，Trust异常、恶意getter/proxy/cyclic/toJSON、额外Secret字段和稀疏数组均fail closed且日志不泄漏；Host256/256、CLI46/46、三条E2E与独立28/28对抗验证PASS。
 6. `D3B-Client`：DONE（main `f9151b7` + `4b1e9d9` + `9603aa8` + `8001fa4`）。Client使用Protocol item schemas与本地strict envelope；提供独立Catalog Dock、五个capability-gated Tabs及只读Trust状态，与Files/Git互斥。无capability、Dock关闭或项目Catalog无cwd时零请求；query key隔离CWD竞态；Provider状态逐行失败隔离；错误与Trust reason不泄漏自由文本；不存在Catalog Mutation/OAuth控件或调用面。Client268/268、Host260/260、typecheck/build/boundary/architecture及Startup/Runtime/Sessions E2E全部PASS，独立验证PASS。
 7. `D1B-1`：DONE（main `723fac4`）。History、live completed与streaming partial使用同一个block-aware projector；Thinking/text交错顺序保留，streaming默认展开且可手动折叠，completed默认收起；不新增API或`/thinking`请求，不泄漏attached A到selected B。Client281/281、typecheck/build/boundary/architecture PASS。
-8. `D3A-Worktrees-Read`：DONE（main `b79b54c`）。`worktree`冻结为GET/list token，production full/degraded与HTTP/WS一致；Workspace Dock新增Worktrees只读Tab，展示main/linked、branch/detached及AllowedRoot授权状态。无create/delete/open/switch/promotion UI；sessiond down真实GET仍可用，POST仍在Git副作用前503。Client297/297、Host260/260、CLI46/46、Startup E2E与门禁PASS。
-9. D1A-2、D1B-1、D3A只读工作区与D3B端到端只读链均已合并。Mutation/OAuth/Trust设置仍留在D4或后续显式切片。
+8. `D1B-2`：DONE（main `83a3859`）。History bashExecution与live `state.bash`使用共享view-model，显示command/output/exit/cancelled/truncated；空输出固定文案，live row使用稳定ID。`fullOutputPath`不进入view-model或DOM，不发Bash命令/API。无权威execution ID时绝不猜测去重，message与state并存可重复但不吞数据。Client314/314、typecheck/build/boundary/architecture PASS。
+9. `D3A-Worktrees-Read`：DONE（main `b79b54c`）。`worktree`冻结为GET/list token，production full/degraded与HTTP/WS一致；Workspace Dock新增Worktrees只读Tab，展示main/linked、branch/detached及AllowedRoot授权状态。无create/delete/open/switch/promotion UI；sessiond down真实GET仍可用，POST仍在Git副作用前503。Client297/297、Host260/260、CLI46/46、Startup E2E与门禁PASS。
+10. D1A-2、D1B Thinking/Bash、D3A只读工作区与D3B端到端只读链均已合并。Mutation/OAuth/Trust设置仍留在D4或后续显式切片。
 
 ## Wave 4 — Scale、PWA、Release
 
@@ -489,7 +490,7 @@ git diff --check
 3. H1/C1/R1：DONE；R1 GPT最终PASS
 4. R2：DONE（GPT orphan36/36、redaction308/308、clean build与全仓门禁PASS）
 5. X1：DONE（`34d2a3a` + `f711ab2` + `f87dea4`；GPT最终复验PASS）
-6. M2：DONE；M3 当前 checkpoint：D1A只读历史、D1B-1 Thinking展示、D2-P0/P1轻命令、D3A Files/Git/Worktrees只读工作区、D3B端到端只读Catalog均已合并；下一纵向切片优先D1B Bash展示，其后再评估D2 capability扩张或D3A Mutation
+6. M2：DONE；M3 当前 checkpoint：D1A只读历史、D1B Thinking/Bash展示、D2-P0/P1轻命令、D3A Files/Git/Worktrees只读工作区、D3B端到端只读Catalog均已合并；下一纵向切片优先D1B visible-branch export，其后进入D2 capability扩张或D3A Mutation重要节点
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。

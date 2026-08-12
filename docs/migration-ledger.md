@@ -319,8 +319,10 @@ Error边界：Adapter plain RuntimeError在sessiond RPC由toBoundaryProtocolErro
 验证：GPT首轮除真实404映射外全部PASS；修复后fresh re-verification PASS。集成后全仓build/typecheck/tests、startup、runtime E2E3轮、sessions E2E、architecture、sessiond/host/client/adapter boundaries均PASS。sessiond90、Host225。
 D1B-1 Thinking展示：723fac4。Session JSONL已有assistant thinking block，Client将History、live completed与streaming partial统一投影为稳定顶级row内的有序parts；Thinking使用原生details/summary纯文本展示，streaming默认展开且允许手动折叠，completed默认收起；空thinking省略，HTML按文本转义；不调用未挂载`/thinking` endpoint，selected B不显示attached A的live thinking。
 验证：Client281/281、定向37/37、typecheck/build/boundary/architecture PASS；无Protocol/Adapter/sessiond/Host改动，无新capability、写入或Worker激活，按协作规则未单独启动verifier。
-边界：testing子路径仅E2E使用；SDK import仍限adapter internal；D1B bash/export未实现。
-独立验证 verdict：D1A PASS；D1B-1为低风险Client-only节点，由父审查与门禁验收
+D1B-2 Bash展示：83a3859。History bashExecution与live `snapshot.state.bash`统一投影为专用bash row，显示command/output/exit/cancelled/truncated；空输出固定`(no output)`，live状态行固定`row:state:bash`，snapshot替换后稳定恢复。`fullOutputPath`从view-model和DOM隔离，`excludeFromContext`不隐藏用户可见记录；不新增bash output API，不发runtime.bash/abort命令。message与state无共享execution ID，因此冻结为绝不猜测去重：可能重复显示，但不吞掉不同执行。
+验证：父审查修复危险位置去重后，定向71/71、Client314/314、typecheck/build/boundary/architecture PASS；仅改Client六文件，无新capability/Host路由/执行能力，按协作规则未单独启动verifier。
+边界：testing子路径仅E2E使用；SDK import仍限adapter internal；D1B visible-branch export未实现。
+独立验证 verdict：D1A PASS；D1B-1/2为低风险Client-only节点，由父审查与门禁验收
 ```
 
 ## 19. D3B-R1A/R1B — 只读 Domain Catalog 与 Host API 记录
