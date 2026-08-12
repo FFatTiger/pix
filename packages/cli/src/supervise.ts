@@ -10,7 +10,7 @@ import {
   type InstanceLockRead,
   type SessiondPaths,
 } from "@fffattiger/pix-sessiond/control";
-import { readLocalSecret } from "./secret.js";
+import { readLocalSecret, UnsafeSecretError } from "./secret.js";
 import { pingSessiond } from "./probe.js";
 import { resolveSessiondBin } from "./paths.js";
 
@@ -90,8 +90,8 @@ function sleep(ms: number): Promise<void> {
  * must NOT rely on pid-aliveness alone: a recycled pid or a hung daemon would
  * look "alive" but be unusable, so reachability is confirmed by a real ping.
  * Fail-closed for spawn decisions: an unsafe lock, a live listener without a
- * lock, or a live-but-unreachable pid marks the directory as obstructed so
- * callers never spawn a second daemon over it.
+ * lock, an unsafe secret file, or a live-but-unreachable pid marks the
+ * directory as obstructed so callers never spawn a second daemon over it.
  */
 export async function inspectSessiond(directory?: string): Promise<SessiondStatus> {
   const { directory: dir, endpoint, paths } = locateSessiond(directory);
@@ -139,7 +139,25 @@ export async function inspectSessiond(directory?: string): Promise<SessiondStatu
       endpoint,
     };
   }
-  const secret = await readLocalSecret(paths.secretFile);
+  // An unsafe secret (symlink / non-regular / too-short) means this live pid
+  // cannot be confirmed as ours: classify as obstructed with a fixed reason
+  // instead of letting the read error escape to the CLI as a stack trace.
+  let secret: string | undefined;
+  try {
+    secret = await readLocalSecret(paths.secretFile);
+  } catch (error) {
+    if (!(error instanceof UnsafeSecretError)) throw error;
+    return {
+      alive: true,
+      pingable: false,
+      obstructed: true,
+      obstruction: "sessiond secret file is unsafe",
+      pid: lock.record.pid,
+      instanceId: lock.record.instanceId,
+      directory: dir,
+      endpoint,
+    };
+  }
   const pingable = secret !== undefined ? await pingSessiond(endpoint, secret) : false;
   // A live pid that is unreachable is authoritative until it dies or is
   // explicitly downed: never spawn a replacement over it.

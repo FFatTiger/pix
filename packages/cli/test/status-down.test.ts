@@ -114,6 +114,8 @@ async function expectObstructed(
   assert.ok(st.out.some((l) => reasonPattern.test(l)), `expected reason ${reasonPattern}; got ${st.out.join(" | ")}`);
   assert.ok(st.out.some((l) => l.includes(`directory: ${dir}`)), `expected directory shown; got ${st.out.join(" | ")}`);
   assert.ok(!st.out.some((l) => l.includes("not running")), "obstructed must not claim not running");
+  assert.equal(st.err.length, 0, `status must not write a stack to stderr: ${st.err.join(" | ")}`);
+  assert.ok(!st.out.some((l) => /UnsafeSecretError|Error:|\s+at\s/.test(l)), `status must not leak a stack: ${st.out.join(" | ")}`);
 
   const down = await withDir(dir, () => capture(() => downCommand(["--all"])));
   assert.equal(down.code, 1, `down must exit non-zero for obstructed; got ${down.out.join(" | ")} / ${down.err.join(" | ")}`);
@@ -121,6 +123,7 @@ async function expectObstructed(
   assert.ok(down.err.some((l) => reasonPattern.test(l)), `expected reason ${reasonPattern}; got ${down.err.join(" | ")}`);
   assert.ok(!down.out.some((l) => l.includes("already down")), "obstructed must not claim already down");
   assert.ok(!down.err.some((l) => l.includes("already down")), "obstructed must not claim already down");
+  assert.ok(!down.err.some((l) => /UnsafeSecretError|Error:|\s+at\s/.test(l)), `down must not leak a stack: ${down.err.join(" | ")}`);
 
   await assertUnchanged();
 }
@@ -230,6 +233,84 @@ test("status/down report obstructed for a live pid that is unreachable, leaving 
       try { proc.kill("SIGKILL"); } catch { /* already gone */ }
       await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
     }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A live pid with an unsafe secret file (symlink / non-regular / too-short)
+ * cannot be confirmed as ours: status/down must report the fixed obstruction
+ * reason without leaking a stack trace, and must not touch pid/lock/secret.
+ */
+async function expectUnsafeSecretWithLivePid(
+  dir: string,
+  setupSecret: () => Promise<void>,
+  assertSecretUnchanged: () => Promise<void> | void,
+): Promise<void> {
+  const paths = sessiondPaths(dir);
+  const pidFile = join(dir, "pid");
+  const child = spawnLiveChild(pidFile);
+  try {
+    await waitFor(pidFile);
+    const pid = Number(await readFile(pidFile, "utf8"));
+    const lockContent = JSON.stringify({ pid, instanceId: "ghost", createdAt: Date.now() });
+    await writeFile(paths.lockFile, lockContent);
+    await setupSecret();
+    assert.equal(pidAlive(pid), true);
+    await expectObstructed(dir, /sessiond secret file is unsafe/, async () => {
+      assert.equal(pidAlive(pid), true, "down must not kill a live pid whose secret is unsafe");
+      assert.equal(await readFile(paths.lockFile, "utf8"), lockContent);
+      await assertSecretUnchanged();
+    });
+  } finally {
+    const proc = child;
+    try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+    await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+  }
+}
+
+test("status/down report obstructed for a live pid with a symlink secret and leave it untouched", async () => {
+  const dir = await tempDir();
+  try {
+    const paths = sessiondPaths(dir);
+    await expectUnsafeSecretWithLivePid(dir, async () => {
+      await writeFile(join(dir, "target"), "x".repeat(64));
+      await symlink(join(dir, "target"), paths.secretFile);
+    }, async () => {
+      const info = await lstat(paths.secretFile);
+      assert.equal(info.isSymbolicLink(), true);
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status/down report obstructed for a live pid with a non-regular (directory) secret and leave it untouched", async () => {
+  const dir = await tempDir();
+  try {
+    const paths = sessiondPaths(dir);
+    await expectUnsafeSecretWithLivePid(dir, async () => {
+      await mkdir(paths.secretFile);
+    }, async () => {
+      const info = await lstat(paths.secretFile);
+      assert.equal(info.isDirectory(), true);
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status/down report obstructed for a live pid with an invalid (too-short) secret and leave it untouched", async () => {
+  const dir = await tempDir();
+  try {
+    const paths = sessiondPaths(dir);
+    const tooShort = "not-long-enough";
+    await expectUnsafeSecretWithLivePid(dir, async () => {
+      await writeFile(paths.secretFile, tooShort);
+    }, async () => {
+      assert.equal(await readFile(paths.secretFile, "utf8"), tooShort);
+    });
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
