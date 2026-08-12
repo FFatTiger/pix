@@ -6,6 +6,7 @@ import { z } from "zod";
  */
 export const HostCapabilitySchema = z.enum([
   "agent",
+  "sessions",
   "files",
   "files.write",
   "files.watch",

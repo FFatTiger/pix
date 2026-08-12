@@ -25,6 +25,10 @@ import {
   createStubSessionLocator,
 } from "./stubs.js";
 import { resolveRuntimeDir } from "./locator.js";
+import {
+  createPiSdkSessionCatalog,
+  createPiSdkSessionLocator,
+} from "@fffattiger/pix-pi-sdk-adapter/sessions";
 
 /** Optional overrides for the daemon bootstrap. */
 export interface DaemonOptions {
@@ -72,13 +76,24 @@ export interface DaemonHandle {
   shutdown(): Promise<void>;
 }
 
-/** Build service dependencies, applying any caller overrides. */
+/**
+ * Build service dependencies, applying any caller overrides.
+ *
+ * Production default: the catalog and locator are backed by the Pi SDK
+ * adapter's read-only JSONL surface (`createPiSdkSessionCatalog` /
+ * `createPiSdkSessionLocator`). Constructing them does NOT spawn a worker or
+ * open the network — they are lazy stores that only touch the SDK read-only
+ * JSONL API when a method is called, and list/read/context/locate run
+ * with zero workers. Test overrides (`sessionCatalog`, including `null` to run
+ * with no catalog, and `sessionLocator`) always take priority so unit tests stay
+ * deterministic.
+ */
 function buildDependencies(directory: string, options: DaemonOptions): SessiondDependencies {
   const workerFactory: WorkerProcessFactory =
     options.workerFactory ?? createProductionWorkerProcessFactory(options.workerOptions ?? {});
-  const catalog = options.sessionCatalog === undefined ? createStubSessionCatalog() : options.sessionCatalog;
+  const catalog = options.sessionCatalog === undefined ? createPiSdkSessionCatalog() : options.sessionCatalog;
   const deps: SessiondDependencies = {
-    sessionLocator: options.sessionLocator ?? createStubSessionLocator(directory),
+    sessionLocator: options.sessionLocator ?? createPiSdkSessionLocator(),
     activationContext: options.activationContext ?? createStubActivationContext(),
     workerFactory,
   };

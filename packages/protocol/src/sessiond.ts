@@ -105,10 +105,17 @@ export const RuntimeStopByCwdParamsSchema = z.strictObject({
 });
 export type RuntimeStopByCwdParams = z.infer<typeof RuntimeStopByCwdParamsSchema>;
 
-/** Optional historical / read-path RPCs (not runtime lifecycle). */
+/**
+ * Optional historical / read-path RPCs (not runtime lifecycle).
+ *
+ * `list` mirrors the runtime-core SessionCatalogPort filter (cwd + bounded
+ * limit + non-negative offset). `context` carries an optional `leafId` so a
+ * branch/view can be selected without activating a worker. Both are read-only.
+ */
 export const SessionsListParamsSchema = z.strictObject({
   cwd: NonEmptyStringSchema.optional(),
-  limit: z.number().int().positive().optional(),
+  limit: z.number().int().positive().max(1000).optional(),
+  offset: z.number().int().nonnegative().max(100_000).optional(),
 });
 export type SessionsListParams = z.infer<typeof SessionsListParamsSchema>;
 
@@ -126,6 +133,7 @@ export type SessionsReadParams = z.infer<typeof SessionsReadParamsSchema>;
 
 export const SessionsContextParamsSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
+  leafId: NonEmptyStringSchema.optional(),
 });
 export type SessionsContextParams = z.infer<typeof SessionsContextParamsSchema>;
 

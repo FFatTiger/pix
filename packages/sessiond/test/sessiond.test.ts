@@ -279,6 +279,37 @@ test("read-only snapshot and catalog operations never activate a worker", async 
   assert.equal(workers.starts, 0);
 });
 
+test("sessions.list forwards cwd/limit/offset and sessions.context forwards leafId to the catalog", async () => {
+  const listCalls: Array<Record<string, unknown>> = [];
+  const contextCalls: Array<{ sessionId: string; leafId?: string }> = [];
+  const catalog: SessionCatalogPort = {
+    async listSessions(filter) {
+      listCalls.push({ ...(filter?.cwd === undefined ? {} : { cwd: filter.cwd }), ...(filter?.limit === undefined ? {} : { limit: filter.limit }), ...(filter?.offset === undefined ? {} : { offset: filter.offset }) });
+      return [];
+    },
+    async readSession(sessionId) { return { sessionId, cwd: "/workspace", projectRoot: "/workspace", entries: [] }; },
+    async readSessionContext(sessionId, options) {
+      contextCalls.push({ sessionId, ...(options?.leafId === undefined ? {} : { leafId: options.leafId }) });
+      return { sessionId, entries: [] };
+    },
+    async deleteSession() {},
+  };
+  const service = new SessiondService(
+    { sessionLocator: { async locate(sessionId) { return { sessionId, sessionFile: `/s/${sessionId}.jsonl`, exists: true }; }, async resolveLeafId() { return "leaf"; } }, activationContext: { async resolve(_id, _loc, cwd) { return { cwd: cwd ?? "/w", projectRoot: cwd ?? "/w" }; } }, workerFactory: new FakeWorkerFactory(), sessionCatalog: catalog },
+    { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 },
+  );
+  const app = new SessiondApplication(service);
+  try {
+    await app.handle("sessions.list", { cwd: "/proj", limit: 5, offset: 10 });
+    await app.handle("sessions.context", { sessionId: "s-1", leafId: "entry-7" });
+    await app.handle("sessions.context", { sessionId: "s-2" });
+    assert.deepEqual(listCalls, [{ cwd: "/proj", limit: 5, offset: 10 }]);
+    assert.deepEqual(contextCalls, [{ sessionId: "s-1", leafId: "entry-7" }, { sessionId: "s-2" }]);
+  } finally {
+    await service.shutdown();
+  }
+});
+
 test("slow subscribers are bounded and removed without blocking authority", async () => {
   const { service, workers } = harness({ service: { subscriberQueueLimit: 2 } });
   await service.activate("s");

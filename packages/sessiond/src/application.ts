@@ -67,7 +67,7 @@ export class SessiondApplication implements SessiondRpcHandler {
         const catalog = this.service.sessionCatalog();
         if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable");
         const input = params as SessiondMethodParams["sessions.list"];
-        const sessions = await catalog.listSessions({ ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.limit === undefined ? {} : { limit: input.limit }) });
+        const sessions = await catalog.listSessions({ ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.limit === undefined ? {} : { limit: input.limit }), ...(input.offset === undefined ? {} : { offset: input.offset }) });
         return { sessions: sessions.map((item) => ({ ...item })) };
       }
       case "sessions.resolve": {
@@ -85,7 +85,8 @@ export class SessiondApplication implements SessiondRpcHandler {
       case "sessions.context": {
         const catalog = this.service.sessionCatalog();
         if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable");
-        const context = await catalog.readSessionContext((params as SessiondMethodParams["sessions.context"]).sessionId);
+        const input = params as SessiondMethodParams["sessions.context"];
+        const context = await catalog.readSessionContext(input.sessionId, input.leafId === undefined ? undefined : { leafId: input.leafId });
         return SessionContextSchema.parse(context);
       }
       case "sessions.rename": {

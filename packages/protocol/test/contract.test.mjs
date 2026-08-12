@@ -81,6 +81,7 @@ describe("capabilities", () => {
   it("covers the full negotiated capability set", () => {
     const expected = [
       "agent",
+      "sessions",
       "files",
       "files.write",
       "files.watch",
@@ -794,6 +795,9 @@ describe("sessiond RPC", () => {
       rpc("runtime.stop", { sessionId: "s-1" }),
       rpc("runtime.hasBusyCwd", { cwd: "/tmp/project" }),
       rpc("runtime.stopByCwd", { cwd: "/tmp/project" }),
+      rpc("sessions.list", { cwd: "/tmp/project", limit: 10, offset: 20 }),
+      rpc("sessions.read", { sessionId: "s-1" }),
+      rpc("sessions.context", { sessionId: "s-1", leafId: "entry-7" }),
     ];
     for (const input of cases) {
       const parsed = SessiondRpcRequestSchema.parse(input);
@@ -845,6 +849,38 @@ describe("sessiond RPC", () => {
         method: "worker.status",
         params: {},
       }).success,
+      false,
+    );
+    // sessions.list bounds: limit must be positive int; offset non-negative int.
+    assert.equal(
+      safeParseSessiondRpcRequest(
+        rpc("sessions.list", { limit: 0 }),
+      ).success,
+      false,
+    );
+    assert.equal(
+      safeParseSessiondRpcRequest(
+        rpc("sessions.list", { offset: -1 }),
+      ).success,
+      false,
+    );
+    assert.equal(
+      safeParseSessiondRpcRequest(
+        rpc("sessions.list", { limit: 1.5 }),
+      ).success,
+      false,
+    );
+    // sessions.context leafId must be non-blank.
+    assert.equal(
+      safeParseSessiondRpcRequest(
+        rpc("sessions.context", { sessionId: "s", leafId: "  " }),
+      ).success,
+      false,
+    );
+    assert.equal(
+      safeParseSessiondRpcRequest(
+        rpc("sessions.context", { leafId: "e" }),
+      ).success,
       false,
     );
   });
