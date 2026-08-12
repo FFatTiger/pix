@@ -323,7 +323,7 @@ stop
 |---|---|---|---|---|
 | `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A-1 Sessions Adapter实现中；后续list/detail/context与0 Worker Client路径；D1B export/thinking/bash-output |
 | `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 runtime capability权威传播实现中；后续按thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate分批开放 |
-| `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | H1B Host服务已存在；D3A-1 production roots/busy-preflight/capability接线规划中，随后Client UI |
+| `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | H1B Host服务已存在；D3A-1 production roots/busy-preflight/dynamic capability接线实现中，随后Client UI |
 | `D3B` | Models/Auth/Skills/Plugins/Trust | `BLOCKED` | `M2`, Data/Resource Adapter | 等D1领域化Adapter地基；models/resources/auth只读优先，trust/OAuth后置 |
 | `D4` | Mutations + Side Chat | `BLOCKED` | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
 
@@ -485,7 +485,7 @@ git diff --check
 3. H1/C1/R1：DONE；R1 GPT最终PASS
 4. R2：DONE（GPT orphan36/36、redaction308/308、clean build与全仓门禁PASS）
 5. X1：DONE（`34d2a3a` + `f711ab2` + `f87dea4`；GPT最终复验PASS）
-6. M2：DONE；M3来源/边界调查已完成；Wave 1并行推进D1A-1 Sessions Adapter、D2-P0 runtime capability传播，D3A-1先完成安全composition定案
+6. M2：DONE；M3来源/边界调查已完成；Wave 1并行实现D1A-1 Sessions Adapter、D2-P0 runtime capability传播、D3A-1安全production resource composition
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。
