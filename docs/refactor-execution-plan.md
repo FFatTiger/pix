@@ -319,13 +319,21 @@ stop
 
 目标：`M3 — Read and Operate`。
 
-| ID | 工作包 | 依赖 | 交付 |
-|---|---|---|---|
-| `D1` | Sessions Read Path | `M2`, Session Catalog Adapter | list/detail/context/export；历史浏览 0 Worker |
-| `D2` | Runtime Command Expansion | `M2` | model/thinking/tools/bash/compact/fork/navigate/reload |
-| `D3A` | Files/Git/Worktree | `M2`, `B2` | 迁 H1B、安全策略、busy preflight、Client UI |
-| `D3B` | Models/Auth/Skills/Plugins/Trust | `M2`, Data/Resource Adapter | 修安全问题后接 Host/Client |
-| `D4` | Mutations + Side Chat | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
+| ID | 工作包 | 状态 | 依赖 | 交付 |
+|---|---|---|---|---|
+| `D1` | Sessions Read Path | `IN_PROGRESS` | `M2`, Session Catalog Adapter | D1A-1 Sessions Adapter实现中；后续list/detail/context与0 Worker Client路径；D1B export/thinking/bash-output |
+| `D2` | Runtime Command Expansion | `IN_PROGRESS` | `M2` | P0 runtime capability权威传播实现中；后续按thinking/queue→model/tools/reload→bash→compact→extension UI→fork/navigate分批开放 |
+| `D3A` | Files/Git/Worktree | `IN_PROGRESS` | `M2`, `B2` | H1B Host服务已存在；D3A-1 production roots/busy-preflight/capability接线规划中，随后Client UI |
+| `D3B` | Models/Auth/Skills/Plugins/Trust | `BLOCKED` | `M2`, Data/Resource Adapter | 等D1领域化Adapter地基；models/resources/auth只读优先，trust/OAuth后置 |
+| `D4` | Mutations + Side Chat | `BLOCKED` | `D1`, `D2`, `D3A`, `D3B` | rename/delete/trust/worktree 协调、Side Chat |
+
+### 5.2 M3 Wave 1 冻结切片
+
+1. `D1A-1`：新增独立、纯只读 `pi-sdk-adapter/sessions` Catalog/Locator；仅JSONL/SessionManager，零Worker、零ModelRuntime、零网络。
+2. `D2-P0`：sessiond在Worker ready后先取权威snapshot再对外ready；Client消费runtime capabilities并提供通用typed command API；不开放任何新能力。
+3. `D3A-1`：冻结allowed roots与local/LAN策略后接生产ResourceDeps、`runtime.hasBusyCwd` preflight及诚实capability；UI另切。
+4. Adapter内部按sessions/models/credentials/resources/trust领域拆分，只共享canonical path与安全文件原语；禁止恢复旧`sdk-data.ts`单体。
+5. Wave 1 三项分别在隔离worktree实现/规划；主线逐项验证后集成，跨包冲突由主会话处理。
 
 ## Wave 4 — Scale、PWA、Release
 
@@ -477,7 +485,7 @@ git diff --check
 3. H1/C1/R1：DONE；R1 GPT最终PASS
 4. R2：DONE（GPT orphan36/36、redaction308/308、clean build与全仓门禁PASS）
 5. X1：DONE（`34d2a3a` + `f711ab2` + `f87dea4`；GPT最终复验PASS）
-6. M2：DONE；当前进入M3，先并行完成D1/D2/D3A/D3B来源与边界调查，再冻结实现切片
+6. M2：DONE；M3来源/边界调查已完成；Wave 1并行推进D1A-1 Sessions Adapter、D2-P0 runtime capability传播，D3A-1先完成安全composition定案
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。
