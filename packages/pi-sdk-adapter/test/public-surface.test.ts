@@ -37,19 +37,21 @@ describe("public agent factory surface", () => {
     });
   });
 
-  it("PRODUCTION_AGENT_CAPABILITIES is exactly prompt+abort+stats+rename and leaks no broader surface", () => {
+  it("PRODUCTION_AGENT_CAPABILITIES is exactly prompt+abort+stats+rename+thinking.set and leaks no broader surface", () => {
     assert.deepEqual([...PRODUCTION_AGENT_CAPABILITIES], [
       "runtime.prompt",
       "runtime.abort",
       "runtime.stats",
       "runtime.session.rename",
+      "runtime.thinking.set",
     ]);
-    // Still-forbidden: model/tools/bash/fork/extension-UI/queue/auto_name must
-    // NOT leak through the production surface. `runtime.stats` and
-    // `runtime.session.rename` are the D2-P1 unlocks and ARE allowed here.
+    // Still-forbidden: model/tools/bash/fork/extension-UI/queue/auto_name/reload
+    // must NOT leak through the production surface. `runtime.stats` +
+    // `runtime.session.rename` (D2-P1) and `runtime.thinking.set` (D2-P2) ARE
+    // allowed here.
     const leaked = [...PRODUCTION_AGENT_CAPABILITIES].filter((capability) =>
       /model|tools|bash|fork|extension_ui|navigate|compact|reload|queue|auto_name/.test(capability),
     );
-    assert.deepEqual(leaked, [], "production surface must not leak model/tools/bash/fork/extension-UI/queue/auto_name capabilities");
+    assert.deepEqual(leaked, [], "production surface must not leak model/tools/bash/fork/extension-UI/queue/auto_name/reload capabilities");
   });
 });

@@ -49,7 +49,7 @@ describe("public production SDK factory smoke", () => {
     });
   });
 
-  it("production runtime serves the D2-P1 light commands with no network", async () => {
+  it("production runtime serves the D2-P1/D2-P2 light commands with no network", async () => {
     await withAgentDir(async (root) => {
       const cwd = join(root, "workspace");
       await mkdir(cwd, { recursive: true });
@@ -58,7 +58,7 @@ describe("public production SDK factory smoke", () => {
         toolNames: [],
         thinkingLevel: "off",
         thinkingLevelPinned: true,
-        name: "D2-P1 Smoke",
+        name: "D2-P2 Smoke",
       });
       try {
         assert.deepEqual(port.getCapabilities().capabilities, [
@@ -66,15 +66,21 @@ describe("public production SDK factory smoke", () => {
           "runtime.abort",
           "runtime.stats",
           "runtime.session.rename",
+          "runtime.thinking.set",
         ]);
 
         // Baseline query: get_state (always available, no capability gate).
+        // Real SDK may report a model-default thinking level other than the
+        // create input (e.g. "minimal" instead of "off"); pin honesty is the
+        // D2-P2 contract, not a specific absolute level at create time.
         const state = await port.execute({ type: "get_state" });
         assert.equal(state.ok, true);
         if (state.ok) {
           assert.equal(state.type, "get_state");
-          assert.equal(state.state.sessionName, "D2-P1 Smoke");
+          assert.equal(state.state.sessionName, "D2-P2 Smoke");
           assert.equal(state.state.messageCount, 0);
+          assert.equal(state.state.thinkingLevelPinned, true);
+          assert.ok(typeof state.state.thinkingLevel === "string");
         }
 
         // Baseline query: get_commands (always available).
@@ -112,6 +118,21 @@ describe("public production SDK factory smoke", () => {
         if (afterRename.ok && afterRename.type === "get_state") {
           assert.equal(afterRename.state.sessionName, "Renamed");
         }
+
+        // Capability-gated: set_thinking_level (runtime.thinking.set).
+        // Real SDK may clamp unsupported levels for the active model; "minimal"
+        // is accepted by the no-network production smoke path and pins the level.
+        const thinking = await port.execute({ type: "set_thinking_level", level: "minimal" });
+        assert.equal(thinking.ok, true);
+        if (thinking.ok) {
+          assert.equal(thinking.type, "set_thinking_level");
+        }
+        const afterThinking = await port.execute({ type: "get_state" });
+        assert.equal(afterThinking.ok, true);
+        if (afterThinking.ok && afterThinking.type === "get_state") {
+          assert.equal(afterThinking.state.thinkingLevel, "minimal");
+          assert.equal(afterThinking.state.thinkingLevelPinned, true);
+        }
       } finally {
         await port.close("user");
       }
@@ -143,12 +164,33 @@ describe("public production SDK factory smoke", () => {
           assert.equal(bash.error.code, "unsupported_capability");
           assert.match(bash.error.message, /runtime\.bash/);
         }
-        // runtime.auto_name is explicitly NOT unlocked in D2-P1.
+        // runtime.auto_name is explicitly NOT unlocked in D2-P1/D2-P2.
         const autoName = await port.execute({ type: "generate_session_title" });
         assert.equal(autoName.ok, false);
         if (!autoName.ok) {
           assert.equal(autoName.error.code, "unsupported_capability");
           assert.match(autoName.error.message, /runtime\.auto_name/);
+        }
+        // runtime.tools.write is NOT in the production surface.
+        const tools = await port.execute({ type: "set_tools", toolNames: [] });
+        assert.equal(tools.ok, false);
+        if (!tools.ok) {
+          assert.equal(tools.error.code, "unsupported_capability");
+          assert.match(tools.error.message, /runtime\.tools\.write/);
+        }
+        // runtime.reload is NOT in the production surface.
+        const reload = await port.execute({ type: "reload" });
+        assert.equal(reload.ok, false);
+        if (!reload.ok) {
+          assert.equal(reload.error.code, "unsupported_capability");
+          assert.match(reload.error.message, /runtime\.reload/);
+        }
+        // runtime.queue is NOT in the production surface.
+        const queue = await port.execute({ type: "clear_queue" });
+        assert.equal(queue.ok, false);
+        if (!queue.ok) {
+          assert.equal(queue.error.code, "unsupported_capability");
+          assert.match(queue.error.message, /runtime\.queue/);
         }
       } finally {
         await port.close("user");

@@ -119,6 +119,7 @@ export interface RuntimeApi extends RuntimeView {
   readonly getLastAssistantText: SessionStore["getLastAssistantText"];
   readonly getSessionStats: SessionStore["getSessionStats"];
   readonly setSessionName: SessionStore["setSessionName"];
+  readonly setThinkingLevel: SessionStore["setThinkingLevel"];
 }
 
 export function useRuntime(): RuntimeApi {
@@ -142,6 +143,7 @@ export function useRuntime(): RuntimeApi {
         getLastAssistantText: () => store.getLastAssistantText(),
         getSessionStats: () => store.getSessionStats(),
         setSessionName: (name) => store.setSessionName(name),
+        setThinkingLevel: (level) => store.setThinkingLevel(level),
       }) as RuntimeApi,
     [store, view],
   );

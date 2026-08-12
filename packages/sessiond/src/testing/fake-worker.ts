@@ -18,6 +18,16 @@ export interface FakeWorkerOptions {
   snapshotSessionIdOverride?: string;
   /** Drop worker.getSnapshot requests during startup so sessiond fails closed. */
   ignoreSnapshot?: boolean;
+  /**
+   * Delay answering worker.getSnapshot after the first (startup/prime) response
+   * has been delivered. Used to hold set_thinking_level authority finalization
+   * open so concurrent same-id callers can join the singleflight.
+   */
+  postCommandSnapshotDelayMs?: number;
+  /** Drop post-startup worker.getSnapshot responses (refresh never arrives). */
+  dropPostCommandSnapshots?: boolean;
+  /** After the first snapshot, answer subsequent getSnapshot with a mismatched session id. */
+  postCommandSnapshotMismatch?: boolean;
 }
 
 /**
@@ -43,8 +53,18 @@ export class FakeWorkerConnection implements WorkerConnection {
   private readonly exitListeners = new Set<(exit: WorkerExit) => void>();
   private closed = false;
   private runningPrompt: { id: string; commandId: string; sessionId: string; timer: ReturnType<typeof setTimeout> } | undefined;
+  /** Mutable authoritative snapshot (mirrors real worker getSnapshot source). */
+  private liveSnapshot: RuntimeSnapshot;
+  /** Count of worker.getSnapshot responses already emitted (prime is first). */
+  private snapshotResponses = 0;
+  private readonly pendingSnapshotTimers = new Set<ReturnType<typeof setTimeout>>();
 
-  constructor(readonly input: WorkerStartInput, private readonly options: FakeWorkerOptions, pid: number) { this.pid = pid; }
+  constructor(readonly input: WorkerStartInput, private readonly options: FakeWorkerOptions, pid: number) {
+    this.pid = pid;
+    this.liveSnapshot = options.snapshot
+      ? structuredClone(options.snapshot)
+      : fakeDefaultSnapshot(input.sessionId, input.cwd, input.projectRoot);
+  }
 
   async send(message: SessiondToWorkerMessage): Promise<void> {
     if (this.closed) throw new Error("worker closed");
@@ -56,7 +76,7 @@ export class FakeWorkerConnection implements WorkerConnection {
           const discovered = this.options.discoveredSessionId;
           if (discovered) this.emit({ type: "worker.sessionDiscovered", payload: { sessionId: discovered, sessionFile: `/sessions/${discovered}.jsonl`, cwd: message.payload.cwd } });
           this.emit({ type: "worker.ready", id: message.id, payload: { sessionId: discovered ?? message.payload.sessionId, workerStatus: "ready" } });
-          if (this.options.snapshot) this.emit({ type: "worker.snapshot", payload: { sessionId: discovered ?? message.payload.sessionId, snapshot: this.options.snapshot } });
+          if (this.options.snapshot) this.emit({ type: "worker.snapshot", payload: { sessionId: discovered ?? message.payload.sessionId, snapshot: this.liveSnapshot } });
         }, this.options.readyDelayMs ?? 0);
         return;
       case "worker.command": {
@@ -70,6 +90,18 @@ export class FakeWorkerConnection implements WorkerConnection {
           }, this.options.commandDelayMs);
           this.runningPrompt = { id: message.id, commandId: command.commandId, sessionId: message.payload.sessionId, timer };
           return;
+        }
+        // D2-P2: set_thinking_level mutates the authoritative snapshot so a
+        // subsequent worker.getSnapshot (sessiond post-success refresh) sees pin.
+        if (command.type === "set_thinking_level" && typeof command.level === "string") {
+          this.liveSnapshot = {
+            ...this.liveSnapshot,
+            state: {
+              ...this.liveSnapshot.state,
+              thinkingLevel: command.level as RuntimeSnapshot["state"]["thinkingLevel"],
+              thinkingLevelPinned: true,
+            },
+          };
         }
         setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, outcome(command.type)), this.options.commandDelayMs ?? 0);
         return;
@@ -89,26 +121,55 @@ export class FakeWorkerConnection implements WorkerConnection {
       }
       case "worker.getSnapshot":
         if (this.options.ignoreSnapshot) return;
-        queueMicrotask(() => {
-          // A real worker always answers getSnapshot with its authoritative
-          // snapshot (capabilities + state). Normalize the snapshot session id
-          // to the requested one so sessiond rekey/projection stays consistent.
-          const snap = this.options.snapshot
-            ? structuredClone(this.options.snapshot)
-            : fakeDefaultSnapshot(message.payload.sessionId, this.input.cwd, this.input.projectRoot);
-          snap.sessionId = this.options.snapshotSessionIdOverride ?? message.payload.sessionId;
-          snap.state.sessionId = snap.sessionId;
-          this.emit({ type: "worker.snapshot", id: message.id, payload: { sessionId: message.payload.sessionId, snapshot: snap } });
-        });
+        this.scheduleSnapshotResponse(message.id, message.payload.sessionId);
         return;
       case "worker.shutdown": return;
       default: return;
     }
   }
 
+  private scheduleSnapshotResponse(id: string | undefined, sessionId: string): void {
+    const isPostCommand = this.snapshotResponses > 0;
+    if (isPostCommand && this.options.dropPostCommandSnapshots) return;
+
+    const emit = (): void => {
+      if (this.closed) return;
+      // A real worker always answers getSnapshot with its authoritative
+      // snapshot (capabilities + state). Normalize the snapshot session id
+      // to the requested one so sessiond rekey/projection stays consistent.
+      const snap = structuredClone(this.liveSnapshot);
+      if (isPostCommand && this.options.postCommandSnapshotMismatch) {
+        snap.sessionId = `mismatch:${sessionId}`;
+        snap.state.sessionId = snap.sessionId;
+      } else {
+        snap.sessionId = this.options.snapshotSessionIdOverride ?? sessionId;
+        snap.state.sessionId = snap.sessionId;
+      }
+      this.snapshotResponses += 1;
+      this.emit({ type: "worker.snapshot", id, payload: { sessionId, snapshot: snap } });
+    };
+
+    const delayMs = isPostCommand ? (this.options.postCommandSnapshotDelayMs ?? 0) : 0;
+    if (delayMs > 0) {
+      const timer = setTimeout(() => {
+        this.pendingSnapshotTimers.delete(timer);
+        emit();
+      }, delayMs);
+      this.pendingSnapshotTimers.add(timer);
+      return;
+    }
+    queueMicrotask(emit);
+  }
+
   subscribe(listener: (message: WorkerToSessiondMessage) => void): () => void { this.messageListeners.add(listener); return () => this.messageListeners.delete(listener); }
   onExit(listener: (exit: WorkerExit) => void): () => void { this.exitListeners.add(listener); return () => this.exitListeners.delete(listener); }
-  async close(): Promise<void> { if (this.closed) return; this.closed = true; if (this.runningPrompt) clearTimeout(this.runningPrompt.timer); }
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.runningPrompt) clearTimeout(this.runningPrompt.timer);
+    for (const timer of this.pendingSnapshotTimers) clearTimeout(timer);
+    this.pendingSnapshotTimers.clear();
+  }
   emit(message: WorkerToSessiondMessage): void { if (!this.closed) for (const listener of [...this.messageListeners]) listener(structuredClone(message)); }
   emitEvent(event: RuntimeEventData): void { this.emit({ type: "worker.event", payload: { sessionId: event.sessionId, event } }); }
   crash(error = { code: "worker_unavailable" as const, message: "fake crash", retryable: true }): void { if (this.closed) return; for (const listener of [...this.exitListeners]) listener({ code: 1, error }); }

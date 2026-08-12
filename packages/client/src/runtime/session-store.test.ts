@@ -695,6 +695,19 @@ describe("SessionStore — D2-P1 typed command helpers", () => {
     await expect(renameP).resolves.toBeUndefined();
   });
 
+  it("setThinkingLevel sends set_thinking_level and resolves on ok", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.thinking.set"]);
+
+    const thinkingP = h.store.setThinkingLevel("high");
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.type).toBe("set_thinking_level");
+    expect(cmd.payload.command.level).toBe("high");
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "set_thinking_level" } } } });
+    await expect(thinkingP).resolves.toBeUndefined();
+  });
+
   it("setSessionName rejects a blank name without sending a command", async () => {
     const h = createHarness();
     await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.session.rename"]);
@@ -703,7 +716,7 @@ describe("SessionStore — D2-P1 typed command helpers", () => {
 
   it("concurrent typed helpers share the single-inflight command: the second fails fast as session_busy", async () => {
     const h = createHarness();
-    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.stats"]);
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.thinking.set"]);
     const first = h.store.getState();
     const second = h.store.getSessionStats();
     await expect(second).rejects.toMatchObject({ code: "session_busy", retryable: false });
@@ -714,6 +727,18 @@ describe("SessionStore — D2-P1 typed command helpers", () => {
     const firstCmd = commands[0]!;
     ws.serverSend({ type: "response", id: firstCmd.id!, payload: { ok: true, result: { commandId: firstCmd.payload?.command?.commandId, result: { ok: true, type: "get_state", state: { sessionId: "s1", isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0 } } } } });
     await expect(first).resolves.toMatchObject({ sessionId: "s1" });
+
+    // Concurrent setThinkingLevel also fails fast as session_busy while another
+    // typed command is in flight.
+    const thinkingFirst = h.store.setThinkingLevel("medium");
+    const thinkingSecond = h.store.setThinkingLevel("high");
+    await expect(thinkingSecond).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    await flush();
+    const thinkingCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
+    expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
+    expect(thinkingCmd.payload.command.level).toBe("medium");
+    ws.serverSend({ type: "response", id: thinkingCmd.id, payload: { ok: true, result: { commandId: thinkingCmd.payload.command.commandId, result: { ok: true, type: "set_thinking_level" } } } });
+    await expect(thinkingFirst).resolves.toBeUndefined();
   });
 
   it("a capability-gated helper rejects honestly with the runtime's unsupported_capability error", async () => {
@@ -728,6 +753,19 @@ describe("SessionStore — D2-P1 typed command helpers", () => {
     await expect(statsP).rejects.toMatchObject({ code: "unsupported_capability", message: "runtime.stats not available" });
     // the client's capability exposure is unchanged
     expect(h.store.hasRuntimeCapability("runtime.stats")).toBe(false);
+  });
+
+  it("setThinkingLevel rejects honestly with unsupported_capability when the runtime gates it", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+    const thinkingP = h.store.setThinkingLevel("low");
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.type).toBe("set_thinking_level");
+    expect(cmd.payload.command.level).toBe("low");
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "set_thinking_level", error: { code: "unsupported_capability", message: "runtime.thinking.set not available", retryable: false } } } } });
+    await expect(thinkingP).rejects.toMatchObject({ code: "unsupported_capability", message: "runtime.thinking.set not available" });
+    expect(h.store.hasRuntimeCapability("runtime.thinking.set")).toBe(false);
   });
 
   it("an ok:false response rejects the helper with the runtime error (not a fake success)", async () => {
@@ -747,5 +785,6 @@ describe("SessionStore — D2-P1 typed command helpers", () => {
     await expect(h.store.getLastAssistantText()).rejects.toThrow();
     await expect(h.store.getSessionStats()).rejects.toThrow();
     await expect(h.store.setSessionName("x")).rejects.toThrow();
+    await expect(h.store.setThinkingLevel("off")).rejects.toThrow();
   });
 });

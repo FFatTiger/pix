@@ -44,6 +44,7 @@ import {
   type SessionStats,
   type SlashCommandInfo,
   type StreamingAgentMessage,
+  type ThinkingLevel,
   type WsClientMessage,
   type WsEventMessage,
   type WsHostMessage,
@@ -528,6 +529,19 @@ export class SessionStore implements RuntimeSocketHandler {
     }
     return this.runTypedCommand({ type: "set_session_name", name: trimmed }, (outcome) => {
       if (outcome.type !== "set_session_name") throw new Error("unexpected set_session_name result");
+    });
+  }
+
+  /**
+   * Set the session thinking level. Requires the `runtime.thinking.set`
+   * capability. Resolves once the runtime confirms the command; callers
+   * refresh the snapshot (fetchSnapshot) to see the new thinkingLevel and
+   * thinkingLevelPinned. Level is typed from Protocol {@link ThinkingLevel}
+   * — never a free-form string.
+   */
+  setThinkingLevel(level: ThinkingLevel): Promise<void> {
+    return this.runTypedCommand({ type: "set_thinking_level", level }, (outcome) => {
+      if (outcome.type !== "set_thinking_level") throw new Error("unexpected set_thinking_level result");
     });
   }
 

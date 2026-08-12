@@ -85,6 +85,7 @@ interface Subscriber {
 interface PendingCommand {
   commandId: string;
   commandType: RuntimeCommand["type"];
+  epoch: string;
   promise: Promise<CorrelatedRuntimeCommandResult>;
   resolve: (result: CorrelatedRuntimeCommandResult) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -127,6 +128,14 @@ interface RecordState {
   /** commandId -> cached correlated result so retries return the same result. */
   interruptResults: Map<string, CorrelatedRuntimeInterruptResult>;
   pendingSnapshots: Map<string, PendingSnapshot>;
+  /**
+   * Per-commandId singleflight for post-success set_thinking_level snapshot
+   * authority finalization. Original callers, same-id dedup waiters, and
+   * same-id retries all await the same promise before observing a terminal
+   * result. Exact-once / safe join; never issues a second unbounded getSnapshot
+   * for the same commandId.
+   */
+  thinkingAuthorityFinalizations: Map<string, Promise<CorrelatedRuntimeCommandResult>>;
   unsubscribeWorker: () => void;
   unsubscribeExit: () => void;
   expectedExitReason?: string;
@@ -327,6 +336,7 @@ export class SessiondService {
         acceptedInterrupts: new Map(),
         interruptResults: new Map(),
         pendingSnapshots: new Map(),
+        thinkingAuthorityFinalizations: new Map(),
         unsubscribeWorker: () => {},
         unsubscribeExit: () => {},
         lastActivity: this.now(),
@@ -438,12 +448,36 @@ export class SessiondService {
         break;
       case "worker.commandResult": {
         if (message.payload.sessionId !== record.sessionId) return;
+        const result = message.payload.result;
         const pending = record.pendingCommands.get(message.id);
-        if (!pending || pending.resolve === undefined) return;
+        // Accept only when wire id, inner commandId AND result type all match
+        // the pending admission (same triple association as interruptResult).
+        // A mismatch is dropped without clearing the timer, deleting pending,
+        // caching, or starting thinking finalization — the original waiter
+        // keeps waiting for a legitimate frame or times out.
+        if (
+          !pending ||
+          pending.resolve === undefined ||
+          pending.commandId !== result.commandId ||
+          pending.commandType !== result.result.type
+        ) {
+          return;
+        }
         clearTimeout(pending.timer);
         record.pendingCommands.delete(message.id);
-        this.cacheCommandResult(record, message.payload.result);
-        pending.resolve(message.payload.result);
+        // set_thinking_level success must not be cached or returned until the
+        // projection has converged via a bounded worker.getSnapshot refresh.
+        // Defer cache + resolve through the per-commandId singleflight so
+        // same-id retries cannot observe a pre-authority success.
+        if (result.result.ok && result.result.type === "set_thinking_level") {
+          const finalized = this.ensureThinkingAuthorityFinalized(record, result);
+          void finalized.then((finalResult) => {
+            pending.resolve(finalResult);
+          });
+          break;
+        }
+        this.cacheCommandResult(record, result);
+        pending.resolve(result);
         break;
       }
       case "worker.interruptResult": {
@@ -492,6 +526,7 @@ export class SessiondService {
       record.acceptedCommands.clear();
       record.acceptedInterrupts.clear();
       record.interruptResults.clear();
+      record.thinkingAuthorityFinalizations.clear();
       record.projection.rekey(realId);
       const snapshot = record.projection.snapshot();
       snapshot.cwd = record.cwd;
@@ -562,6 +597,7 @@ export class SessiondService {
     const record = this.requireActive(sessionId);
     let immediate: CorrelatedRuntimeCommandResult | undefined;
     let pending!: PendingCommand;
+    let finalization: Promise<CorrelatedRuntimeCommandResult> | undefined;
     await record.lifecycle.runExclusive(async () => {
       if (this.records.get(sessionId) !== record || ["crashed", "stopped", "stopping"].includes(record.status)) {
         immediate = unavailableCommand(command.commandId, command.type, "runtime stopped before command admission");
@@ -572,6 +608,11 @@ export class SessiondService {
         immediate = rejectedCommand(command.commandId, command.type, `commandId was already accepted as ${acceptedType}`);
         return;
       }
+      // Join in-flight thinking authority finalization before the result cache so
+      // same-id retries never observe a pre-refresh success (and never start a
+      // second worker.command / getSnapshot for this commandId).
+      const finalizing = record.thinkingAuthorityFinalizations.get(command.commandId);
+      if (finalizing) { finalization = finalizing; return; }
       const cached = record.commandResults.get(command.commandId);
       if (cached) { immediate = cached; return; }
       const wireId = `command:${record.epoch}:${command.commandId}`;
@@ -588,7 +629,7 @@ export class SessiondService {
         record.pendingCommands.delete(wireId);
         wait.resolve(unavailableCommand(command.commandId, command.type, "worker command timed out"));
       }, this.commandTimeoutMs);
-      pending = { commandId: command.commandId, commandType: command.type, promise: wait.promise, resolve: wait.resolve, timer };
+      pending = { commandId: command.commandId, commandType: command.type, epoch: record.epoch, promise: wait.promise, resolve: wait.resolve, timer };
       record.pendingCommands.set(wireId, pending);
       this.touch(record);
       try {
@@ -602,9 +643,103 @@ export class SessiondService {
       }
     });
     if (immediate) return immediate;
+    if (finalization) return finalization;
     const result = await pending.promise;
-    this.cacheCommandResult(record, result);
+    // Terminal results are cached by the worker.commandResult handler (ordinary
+    // commands) or by thinking authority finalization (set_thinking_level).
+    // Cache only when still absent and this record/epoch still owns the admission
+    // so timeout paths stay at-most-once without cross-rekey writes.
+    if (
+      this.records.get(record.sessionId) === record &&
+      record.epoch === pending.epoch &&
+      !record.commandResults.has(result.commandId)
+    ) {
+      this.cacheCommandResult(record, result);
+    }
     return result;
+  }
+
+  /**
+   * D2-P2 authority: `set_thinking_level` mutates runtime state that is NOT
+   * carried on the wire `runtime_state_changed` event (signal-only). Sessiond
+   * projection is the attach/resume authority, so a successful thinking set
+   * must refresh via worker.getSnapshot and only then publish a terminal
+   * success. Refresh failure is fail-closed: every observer receives the same
+   * fixed `ok:false` unavailable result (type still `set_thinking_level`, same
+   * commandId, no raw error text from the transport), which is cached so
+   * retries do not re-enter the worker or claim a stale-success pin.
+   */
+  private ensureThinkingAuthorityFinalized(
+    record: RecordState,
+    successResult: CorrelatedRuntimeCommandResult,
+  ): Promise<CorrelatedRuntimeCommandResult> {
+    const commandId = successResult.commandId;
+    const existing = record.thinkingAuthorityFinalizations.get(commandId);
+    if (existing) return existing;
+
+    const epochAtStart = record.epoch;
+    const failClosed = (message: string): CorrelatedRuntimeCommandResult =>
+      unavailableCommand(commandId, "set_thinking_level", message);
+    const cacheIfStillOwned = (result: CorrelatedRuntimeCommandResult): void => {
+      if (this.records.get(record.sessionId) === record && record.epoch === epochAtStart) {
+        this.cacheCommandResult(record, result);
+      }
+    };
+
+    // Defer execution by one microtask so the singleflight map is installed
+    // before any early lifecycle failure can settle. Cleanup is attached only
+    // after `operation` exists, preventing a synchronously-completed promise
+    // from being inserted into the map after its cleanup already ran.
+    const execution = Promise.resolve().then(async (): Promise<CorrelatedRuntimeCommandResult> => {
+      if (
+        this.records.get(record.sessionId) !== record ||
+        record.epoch !== epochAtStart ||
+        ["crashed", "stopped", "stopping"].includes(record.status)
+      ) {
+        const failed = failClosed("runtime stopped before snapshot authority converged");
+        cacheIfStillOwned(failed);
+        return failed;
+      }
+
+      try {
+        await this.snapshot(record.sessionId);
+      } catch (error) {
+        const failed = failClosed(
+          error instanceof SessiondError && error.code === "timeout"
+            ? "worker snapshot timed out during thinking authority refresh"
+            : "snapshot authority refresh failed after set_thinking_level",
+        );
+        cacheIfStillOwned(failed);
+        return failed;
+      }
+
+      if (
+        this.records.get(record.sessionId) !== record ||
+        record.epoch !== epochAtStart ||
+        ["crashed", "stopped", "stopping"].includes(record.status)
+      ) {
+        // Identity/lifecycle changed during refresh: never write across records/epochs.
+        return failClosed("runtime stopped before snapshot authority converged");
+      }
+
+      this.cacheCommandResult(record, successResult);
+      return successResult;
+    }).catch(() => {
+      // Defensive bound: authority finalization must never reject into the RPC
+      // or worker-message callback even if an unexpected local operation throws.
+      const failed = failClosed("snapshot authority refresh failed after set_thinking_level");
+      cacheIfStillOwned(failed);
+      return failed;
+    });
+
+    let operation!: Promise<CorrelatedRuntimeCommandResult>;
+    operation = execution.finally(() => {
+      if (record.thinkingAuthorityFinalizations.get(commandId) === operation) {
+        record.thinkingAuthorityFinalizations.delete(commandId);
+      }
+    });
+    record.thinkingAuthorityFinalizations.set(commandId, operation);
+    return operation;
   }
 
   /**
@@ -954,7 +1089,7 @@ export class SessiondService {
 
   private isBusy(record: RecordState): boolean {
     const state = record.projection.snapshot().state;
-    return state.isPromptRunning || state.isBashRunning || state.isCompacting || record.pendingCommands.size > 0;
+    return state.isPromptRunning || state.isBashRunning || state.isCompacting || record.pendingCommands.size > 0 || record.thinkingAuthorityFinalizations.size > 0;
   }
 
   private requireActive(sessionId: string): RecordState {

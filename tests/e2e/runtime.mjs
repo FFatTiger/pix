@@ -292,6 +292,16 @@ class RuntimeWsClient {
     return res;
   }
 
+  async getSnapshot(sessionId) {
+    const id = `snap-${sessionId.slice(0, 12)}-${Date.now()}`;
+    this.send({ type: "getSnapshot", id, payload: { sessionId } });
+    const res = await this.waitFor(
+      (m) => m.type === "response" && m.id === id,
+      { label: `getSnapshot ${id}` },
+    );
+    return res;
+  }
+
   close() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.close(1000, "client done");
@@ -533,8 +543,9 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
     assert.equal(snap.payload.epoch, created.epoch);
     assert.ok(typeof snap.payload.lastEventId === "number");
     // Authoritative runtime capability set is primed from the worker snapshot
-    // (NOT the Host `agent` capability): D2-P1 production surface =
-    // runtime.prompt + runtime.abort + runtime.stats + runtime.session.rename.
+    // (NOT the Host `agent` capability): D2-P1/D2-P2 production surface =
+    // runtime.prompt + runtime.abort + runtime.stats + runtime.session.rename +
+    // runtime.thinking.set.
     assert.deepEqual(
       snap.payload.snapshot.capabilities,
       {
@@ -543,6 +554,7 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
           "runtime.abort",
           "runtime.stats",
           "runtime.session.rename",
+          "runtime.thinking.set",
         ],
         version: 1,
       },
@@ -674,7 +686,7 @@ async function scenarioHostRestartResume(stack, projectDir) {
     lastEventId = snap.payload.lastEventId;
     // Resume attach still carries the authoritative runtime capability set.
     assert.deepEqual(snap.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set"],
       version: 1,
     });
 
@@ -825,7 +837,7 @@ async function scenarioEpochChangeNoAutoResend(stack, projectDir) {
     // After an epoch change (stop+reactivate), the freshly primed attach snapshot
     // still carries the authoritative runtime capability set.
     assert.deepEqual(snap2.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set"],
       version: 1,
     });
     // epoch may equal if makeEpoch collides (UUID); force assert via status if needed.
@@ -1050,7 +1062,7 @@ async function scenarioCreateThenColdAttach(stack, projectDir) {
 }
 
 // ---------------------------------------------------------------------------
-// D2-P1 light commands: the frozen 5-command surface over the real process path
+// D2-P1/D2-P2 light commands: frozen production surface over the real process path
 // ---------------------------------------------------------------------------
 
 async function scenarioD2P1LightCommands(stack, projectDir) {
@@ -1066,9 +1078,9 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     const sessionId = created.sessionId;
     const snap = await client.attach(sessionId);
     assert.equal(snap.type, "snapshot");
-    // Attach snapshot carries the D2-P1 production capability surface.
+    // Attach snapshot carries the D2-P1/D2-P2 production capability surface.
     assert.deepEqual(snap.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set"],
       version: 1,
     });
 
@@ -1121,7 +1133,73 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     assert.equal(stateAfter.payload.result.result.ok, true);
     assert.equal(stateAfter.payload.result.result.state.sessionName, "Light Commands");
 
-    return { sessionId, messageCount: statsOutcome.stats.messageCount, renamedTo: "Light Commands" };
+    // 6. set_thinking_level — capability-gated (runtime.thinking.set, present).
+    // Use "high" which the fixture always accepts; real-SDK model limits are
+    // covered by production-smoke with "off".
+    const thinkingRes = await client.command(sessionId, {
+      commandId: `light-thinking-${Date.now()}`,
+      type: "set_thinking_level",
+      level: "high",
+    });
+    assert.equal(thinkingRes.payload.ok, true, JSON.stringify(thinkingRes.payload));
+    assert.equal(thinkingRes.payload.result.result.ok, true);
+    assert.equal(thinkingRes.payload.result.result.type, "set_thinking_level");
+    // Live runtime state reflects the pin immediately.
+    const stateThinking = await client.command(sessionId, { commandId: `light-state3-${Date.now()}`, type: "get_state" });
+    assert.equal(stateThinking.payload.result.result.ok, true);
+    assert.equal(stateThinking.payload.result.result.state.thinkingLevel, "high");
+    assert.equal(stateThinking.payload.result.result.state.thinkingLevelPinned, true);
+
+    // sessiond authority: getSnapshot must already carry the pin (sessiond
+    // refreshes worker.getSnapshot after a successful set_thinking_level before
+    // resolving the command). This is the attach/resume authority — not a
+    // client-optimistic field.
+    const snapThinking = await client.getSnapshot(sessionId);
+    assert.equal(snapThinking.payload.ok, true, JSON.stringify(snapThinking.payload));
+    const snapResult = snapThinking.payload.result;
+    const snapState = snapResult?.snapshot?.state ?? snapResult?.state;
+    assert.equal(snapState?.thinkingLevel, "high", JSON.stringify(snapResult));
+    assert.equal(snapState?.thinkingLevelPinned, true, JSON.stringify(snapResult));
+
+    // Survive detach → reattach: the next attach snapshot must still report the pin.
+    await client.detach(sessionId);
+    const reattach = await client.attach(sessionId);
+    assert.equal(reattach.type, "snapshot");
+    assert.equal(reattach.payload.snapshot.state.thinkingLevel, "high", JSON.stringify(reattach.payload.snapshot.state));
+    assert.equal(reattach.payload.snapshot.state.thinkingLevelPinned, true, JSON.stringify(reattach.payload.snapshot.state));
+    assert.deepEqual(reattach.payload.snapshot.capabilities, {
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set"],
+      version: 1,
+    });
+
+    // Closed capabilities must remain unsupported on the production surface.
+    // Note: clear_queue is an interrupt-only wire type (cannot go via command
+    // envelope); cover queue via set_auto_retry instead.
+    for (const [type, extra, token] of [
+      ["set_model", { provider: "anthropic", modelId: "claude" }, "runtime.model.set"],
+      ["set_tools", { toolNames: [] }, "runtime.tools.write"],
+      ["reload", {}, "runtime.reload"],
+      ["set_auto_retry", { enabled: false }, "runtime.queue"],
+    ]) {
+      const closed = await client.command(sessionId, {
+        commandId: `light-closed-${type}-${Date.now()}`,
+        type,
+        ...extra,
+      });
+      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
+      const outcome = closed.payload.result.result;
+      assert.equal(outcome.ok, false, `${type} must be closed`);
+      assert.equal(outcome.error.code, "unsupported_capability");
+      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
+    }
+
+    return {
+      sessionId,
+      messageCount: statsOutcome.stats.messageCount,
+      renamedTo: "Light Commands",
+      thinkingLevel: "high",
+      thinkingLevelPinned: true,
+    };
   } finally {
     client.close();
   }
@@ -1331,7 +1409,7 @@ async function main() {
           "commandId at-most-once + interrupt dedup + type conflict",
           "session isolation",
           "create then host-restart cold attach",
-          "D2-P1 light commands (state/commands/last-text/stats/rename)",
+          "D2-P1/D2-P2 light commands (state/commands/last-text/stats/rename/thinking + closed caps)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {

@@ -16,19 +16,22 @@
 
 import { randomUUID } from "node:crypto";
 
-// D2-P1: production light-command surface. Baseline queries
+// D2-P1/D2-P2: production light-command surface. Baseline queries
 // (get_state / get_commands / get_last_assistant_text) are always available;
-// runtime.stats (get_session_stats) and runtime.session.rename
-// (set_session_name) are the capability-gated unlocks.
+// runtime.stats (get_session_stats), runtime.session.rename (set_session_name)
+// and runtime.thinking.set (set_thinking_level) are the capability-gated unlocks.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
     "runtime.abort",
     "runtime.stats",
     "runtime.session.rename",
+    "runtime.thinking.set",
   ],
   version: 1,
 };
+
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 export default {
   async create(input) {
@@ -59,6 +62,8 @@ function makePort({ cwd, sessionId, mode }) {
   let sessionName = "";
   let messageCount = 0;
   let lastAssistantText = "";
+  let thinkingLevel = "off";
+  let thinkingLevelPinned = false;
 
   const commands = [
     { name: "/compact", description: "Compact the session", source: "prompt" },
@@ -91,6 +96,8 @@ function makePort({ cwd, sessionId, mode }) {
       isCompacting: false,
       model: null,
       messageCount,
+      thinkingLevel,
+      thinkingLevelPinned,
       ...(sessionName === "" ? {} : { sessionName }),
     };
   }
@@ -138,6 +145,31 @@ function makePort({ cwd, sessionId, mode }) {
           sessionName = name;
           return { ok: true, type: "set_session_name" };
         }
+        case "set_thinking_level": {
+          const level = command.level;
+          if (typeof level !== "string" || !THINKING_LEVELS.has(level)) {
+            return {
+              ok: false,
+              type: "set_thinking_level",
+              error: { code: "invalid_input", message: `unknown thinking level: ${String(level)}`, retryable: false },
+            };
+          }
+          thinkingLevel = level;
+          thinkingLevelPinned = true;
+          return { ok: true, type: "set_thinking_level" };
+        }
+        // Closed production surface: model/tools/reload/queue must stay unsupported.
+        case "set_model":
+          return { ok: false, type: "set_model", error: { code: "unsupported_capability", message: "runtime.model.set not available", retryable: false } };
+        case "set_tools":
+          return { ok: false, type: "set_tools", error: { code: "unsupported_capability", message: "runtime.tools.write not available", retryable: false } };
+        // keep toolNames accepted by protocol shape but still closed by capability
+        case "reload":
+          return { ok: false, type: "reload", error: { code: "unsupported_capability", message: "runtime.reload not available", retryable: false } };
+        case "clear_queue":
+          return { ok: false, type: "clear_queue", error: { code: "unsupported_capability", message: "runtime.queue not available", retryable: false } };
+        case "set_auto_retry":
+          return { ok: false, type: "set_auto_retry", error: { code: "unsupported_capability", message: "runtime.queue not available", retryable: false } };
         default:
           break;
       }

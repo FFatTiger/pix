@@ -278,6 +278,468 @@ test("runtime_capabilities_changed updates the projected capability set", async 
   await service.shutdown();
 });
 
+test("set_thinking_level success refreshes authoritative snapshot before command returns", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const before = service.getSnapshot("s");
+  assert.equal(before.state.thinkingLevelPinned, undefined);
+  const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const result = await service.command("s", { type: "set_thinking_level", commandId: "think-1", level: "high" });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "set_thinking_level");
+
+  // sessiond must have issued a post-success worker.getSnapshot refresh.
+  const snapshotsAfter = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.ok(snapshotsAfter > snapshotsBefore, "expected post-success worker.getSnapshot refresh");
+
+  const snap = service.getSnapshot("s");
+  assert.equal(snap.state.thinkingLevel, "high");
+  assert.equal(snap.state.thinkingLevelPinned, true);
+
+  // Attach boundary also carries the pin (sessiond projection authority).
+  const attach = service.attach({ sessionId: "s" });
+  assert.equal(attach.result.snapshot?.state.thinkingLevel, "high");
+  assert.equal(attach.result.snapshot?.state.thinkingLevelPinned, true);
+  await service.shutdown();
+});
+
+test("set_thinking_level same-id second caller waits for deferred authority refresh with one worker.command", async () => {
+  const { service, workers } = harness({
+    worker: { postCommandSnapshotDelayMs: 80 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_thinking_level" as const, commandId: "think-same", level: "high" as const };
+
+  const first = service.command("s", command);
+  // Wait until the worker command result path has started the refresh (pending gone).
+  await wait(30);
+  let firstSettled = false;
+  void first.then(() => { firstSettled = true; });
+  await wait(0);
+  assert.equal(firstSettled, false, "original caller must not settle while refresh is deferred");
+
+  const second = service.command("s", command);
+  let secondSettled = false;
+  void second.then(() => { secondSettled = true; });
+  await wait(20);
+  assert.equal(firstSettled, false);
+  assert.equal(secondSettled, false, "same-id caller must join finalization, not settle early");
+
+  const workerCommands = worker.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 1, "exactly one worker.command for same commandId");
+
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.deepEqual(a, b);
+  assert.equal(service.getSnapshot("s").state.thinkingLevel, "high");
+  assert.equal(service.getSnapshot("s").state.thinkingLevelPinned, true);
+  await service.shutdown();
+});
+
+test("set_thinking_level successful finalization cleans singleflight and cached retry does not refresh again", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const command = { type: "set_thinking_level" as const, commandId: "think-cleanup", level: "medium" as const };
+  const first = await service.command("s", command);
+  assert.equal(first.result.ok, true);
+  const snapshotsAfterSuccess = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  // A completed finalization must be gone: the retry comes from the terminal
+  // result cache and cannot issue another snapshot refresh or leave cwd busy.
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, first);
+  assert.equal(
+    workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length,
+    snapshotsAfterSuccess,
+  );
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, false);
+  await service.shutdown();
+});
+
+test("set_thinking_level finalization cleans singleflight when worker crashes before its first microtask", async () => {
+  const { service, workers } = harness({
+    worker: { commandDelayMs: 5_000 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_thinking_level" as const, commandId: "think-early-crash", level: "high" as const };
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+
+  // Deliver a valid worker success, which registers authority finalization, then
+  // crash synchronously before its deferred body runs. The final result must be
+  // bounded and the singleflight must not remain as permanent busy state.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: { commandId: command.commandId, result: { ok: true, type: "set_thinking_level" } },
+    },
+  });
+  worker.crash();
+
+  const result = await pending;
+  assert.equal(result.commandId, command.commandId);
+  assert.equal(result.result.ok, false);
+  assert.equal(result.result.type, "set_thinking_level");
+  if (!result.result.ok) assert.equal(result.result.error.code, "unavailable");
+  await wait(0);
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, false, "settled finalization must be removed after early crash");
+  await service.shutdown();
+});
+
+test("set_thinking_level concurrent same-id callers share success after authority refresh", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const command = { type: "set_thinking_level" as const, commandId: "think-join", level: "medium" as const };
+  const [a, b] = await Promise.all([
+    service.command("s", command),
+    service.command("s", command),
+  ]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.deepEqual(a, b);
+  assert.equal(a.result.type, "set_thinking_level");
+  assert.equal(service.getSnapshot("s").state.thinkingLevel, "medium");
+  assert.equal(service.getSnapshot("s").state.thinkingLevelPinned, true);
+  const workerCommands = workers.workers[0]!.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 1);
+  await service.shutdown();
+});
+
+test("set_thinking_level refresh failure fail-closes all observers and cached retry", async () => {
+  const { service, workers } = harness({
+    worker: { dropPostCommandSnapshots: true },
+    service: { commandTimeoutMs: 80 },
+  });
+  await service.activate("s");
+  const command = { type: "set_thinking_level" as const, commandId: "think-fail", level: "high" as const };
+
+  const first = service.command("s", command);
+  await wait(10);
+  const second = service.command("s", command);
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, false);
+  assert.equal(b.result.ok, false);
+  assert.equal(a.result.type, "set_thinking_level");
+  assert.equal(b.result.type, "set_thinking_level");
+  assert.equal(a.commandId, "think-fail");
+  assert.deepEqual(a, b);
+  if (!a.result.ok) {
+    assert.equal(a.result.error.code, "unavailable");
+    assert.equal(typeof a.result.error.message, "string");
+    // Fixed message — no raw transport dump.
+    assert.match(a.result.error.message, /snapshot|thinking|timed out|authority/i);
+  }
+
+  // Projection must not claim the pin after fail-closed authority refresh.
+  assert.notEqual(service.getSnapshot("s").state.thinkingLevelPinned, true);
+
+  const commandsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length;
+  const snapshotsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, a);
+  assert.equal(retry.result.ok, false);
+  const commandsAfterRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length;
+  const snapshotsAfterRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.equal(commandsAfterRetry, commandsBeforeRetry, "cached failure must not re-send worker.command");
+  assert.equal(snapshotsAfterRetry, snapshotsBeforeRetry, "cached failure must not re-refresh snapshot");
+  await service.shutdown();
+});
+
+test("set_thinking_level different commandIds remain independent", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const [a, b] = await Promise.all([
+    service.command("s", { type: "set_thinking_level", commandId: "think-a", level: "low" }),
+    service.command("s", { type: "set_thinking_level", commandId: "think-b", level: "high" }),
+  ]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.equal(a.commandId, "think-a");
+  assert.equal(b.commandId, "think-b");
+  const workerCommands = workers.workers[0]!.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 2);
+  // Last successful refresh wins on the projection (both applied on worker).
+  assert.equal(service.getSnapshot("s").state.thinkingLevelPinned, true);
+  await service.shutdown();
+});
+
+test("ordinary rename does not issue extra post-command snapshot refresh", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  const result = await service.command("s", { type: "set_session_name", commandId: "rename-1", name: "Renamed" });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "set_session_name");
+  const snapshotsAfter = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.equal(snapshotsAfter, snapshotsBefore, "non-thinking commands must not refresh snapshot");
+  await service.shutdown();
+});
+
+test("commandResult with wrong inner commandId is dropped; legitimate frame still completes once", async () => {
+  const { service, workers } = harness({
+    worker: { commandDelayMs: 80 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_session_name" as const, commandId: "rename-ok", name: "Final" };
+
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+  const wireId = wire.id;
+
+  // Correct wire id, wrong inner commandId — must not clear pending / cache / resolve.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wireId,
+    payload: {
+      sessionId: "s",
+      result: {
+        commandId: "evil-other-id",
+        result: { ok: true, type: "set_session_name" },
+      },
+    },
+  });
+  await wait(10);
+
+  let settled = false;
+  void pending.then(() => { settled = true; });
+  await wait(0);
+  assert.equal(settled, false, "malformed inner commandId must not resolve the waiter");
+
+  const result = await pending;
+  assert.equal(result.commandId, "rename-ok");
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "set_session_name");
+
+  // Cached retry returns the legitimate result exactly once at the worker.
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, result);
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, 1);
+  await service.shutdown();
+});
+
+test("commandResult with wrong inner result.type is dropped; legitimate frame still completes once", async () => {
+  const { service, workers } = harness({
+    worker: { commandDelayMs: 80 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_session_name" as const, commandId: "rename-type", name: "Typed" };
+
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+
+  // Correct wire id + commandId, wrong result.type.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: {
+        commandId: "rename-type",
+        result: { ok: true, type: "prompt" },
+      },
+    },
+  });
+  await wait(10);
+
+  let settled = false;
+  void pending.then(() => { settled = true; });
+  await wait(0);
+  assert.equal(settled, false, "malformed inner result.type must not resolve the waiter");
+
+  const result = await pending;
+  assert.equal(result.commandId, "rename-type");
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "set_session_name");
+
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, result);
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, 1);
+  await service.shutdown();
+});
+
+test("only malformed commandResult frames time out unavailable without caching wrong result", async () => {
+  const { service, workers } = harness({
+    worker: { commandDelayMs: 5_000 },
+    service: { commandTimeoutMs: 80 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_session_name" as const, commandId: "rename-timeout", name: "Never" };
+
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: {
+        commandId: "wrong-id",
+        result: {
+          ok: false,
+          type: "set_session_name",
+          error: { code: "unavailable", message: "RAW_TRANSPORT_LEAK_SHOULD_NOT_SURFACE", retryable: true },
+        },
+      },
+    },
+  });
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: {
+        commandId: "rename-timeout",
+        result: { ok: true, type: "prompt" },
+      },
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.commandId, "rename-timeout");
+  assert.equal(result.result.ok, false);
+  assert.equal(result.result.type, "set_session_name");
+  if (!result.result.ok) {
+    assert.equal(result.result.error.code, "unavailable");
+    assert.match(result.result.error.message, /timed out/i);
+    assert.doesNotMatch(result.result.error.message, /RAW_TRANSPORT_LEAK/);
+  }
+
+  // Timeout is cached as unavailable so retries do not re-send; never the malformed payload.
+  const commandsBefore = worker.sent.filter((item) => item.type === "worker.command").length;
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, result);
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, commandsBefore);
+  await service.shutdown();
+});
+
+test("malformed thinking success does not start snapshot authority or pollute cache/projection", async () => {
+  const { service, workers } = harness({
+    worker: { commandDelayMs: 5_000 },
+    service: { commandTimeoutMs: 100 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const snapshotsBefore = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  const before = service.getSnapshot("s");
+  assert.notEqual(before.state.thinkingLevelPinned, true);
+
+  const command = { type: "set_thinking_level" as const, commandId: "think-malformed", level: "high" as const };
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+
+  // Wrong inner commandId pretending to be a thinking success.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: {
+        commandId: "forged-think",
+        result: { ok: true, type: "set_thinking_level" },
+      },
+    },
+  });
+  // Correct commandId but wrong type (still looks "successful" for another command).
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: {
+        commandId: "think-malformed",
+        result: { ok: true, type: "set_session_name" },
+      },
+    },
+  });
+  await wait(20);
+
+  const snapshotsMid = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.equal(snapshotsMid, snapshotsBefore, "malformed thinking success must not issue getSnapshot");
+  assert.notEqual(service.getSnapshot("s").state.thinkingLevelPinned, true);
+
+  const result = await pending;
+  assert.equal(result.commandId, "think-malformed");
+  assert.equal(result.result.ok, false);
+  assert.equal(result.result.type, "set_thinking_level");
+  if (!result.result.ok) {
+    assert.equal(result.result.error.code, "unavailable");
+    assert.match(result.result.error.message, /timed out/i);
+  }
+
+  const snapshotsAfter = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.equal(snapshotsAfter, snapshotsBefore, "timeout path must not refresh thinking projection");
+  assert.notEqual(service.getSnapshot("s").state.thinkingLevelPinned, true);
+  assert.notEqual(service.getSnapshot("s").state.thinkingLevel, "high");
+
+  const commandsBefore = worker.sent.filter((item) => item.type === "worker.command").length;
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, result);
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, commandsBefore);
+  await service.shutdown();
+});
+
+test("late commandResult after timeout is dropped and does not overwrite timeout cache", async () => {
+  const { service, workers } = harness({
+    worker: { commandDelayMs: 5_000 },
+    service: { commandTimeoutMs: 60 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_session_name" as const, commandId: "late-frame", name: "Late" };
+
+  const result = await service.command("s", command);
+  assert.equal(result.result.ok, false);
+  if (!result.result.ok) assert.equal(result.result.error.code, "unavailable");
+
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+
+  // Late legitimate-looking frame after timeout cleared pending — must be dropped.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: {
+        commandId: "late-frame",
+        result: { ok: true, type: "set_session_name" },
+      },
+    },
+  });
+  await wait(10);
+
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, result);
+  assert.equal(retry.result.ok, false);
+  if (!retry.result.ok) assert.equal(retry.result.error.code, "unavailable");
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, 1);
+  await service.shutdown();
+});
+
 test("read-only snapshot and catalog operations never activate a worker", async () => {
   const { service, workers } = harness();
   assert.throws(() => service.getSnapshot("missing"));
