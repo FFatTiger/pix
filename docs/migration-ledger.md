@@ -479,3 +479,30 @@ packages/sessiond/**/*.tsbuildinfo
 ## 26. 实现模型说明
 
 本分支实现模型按用户要求使用 DeepSeek，全部实现、测试与文档更新在独立 worktree `fix/sessiond-activation-cwd` 完成，未改 main、未新建其他 worktree、未 merge/push。
+
+`fix/host-node24-file-types` 分支同样按用户要求使用 DeepSeek 实现，全部实现、测试与文档更新在独立 worktree 完成，未改 main、未新建其他 worktree、未 merge/push。
+
+## 27. Host files route Node v24 / @types-node 类型兼容 fix 记录
+
+```text
+实现：785c88a（branch fix/host-node24-file-types，base 2cfa98a）
+范围：仅 packages/host/src/routes/files.ts + packages/host/test/resources.test.mjs。不改 package.json/package-lock/tsconfig/依赖、AllowedRoot、Host middleware/security、Protocol/Client/sessiond/Adapter/E2E 源码。未用 any / as unknown as File / 未关 strict。运行时与安全语义不变。
+
+缺陷（base 2cfa98a 即复现，Node v24.18.0 + @types/node 22.20.1，此前阻塞 root build 与 Startup E2E）：
+- files.ts ~line103：fs.ReadStream `data` 回调显式 `Buffer` 过窄，@types/node 现声明 `string | Buffer<ArrayBufferLike>`，TS2345。
+- files.ts ~line191：global/Node/undici `File` 名义类型冲突（buffer.File 与 undici File 的 `[Symbol.toStringTag]` 不一致），`value is File` 谓词非法（TS2677），后续 name/size/arrayBuffer 无法收窄（TS2339）。
+
+修复：
+- Stream：`createReadStream({ ..., encoding: null })` 明确 Buffer 模式（类型安全，兼容 Node24 声明，运行时为默认行为）；`data` 回调类型改为 `string | Buffer`，string 用 TextEncoder 按 UTF-8 编码（绝不走 UTF-16 数值路径），Buffer/Uint8Array 用 `new Uint8Array(chunk)` 拷贝入队——只覆盖逻辑字节，不暴露底层（可能池化）ArrayBuffer 的 byteOffset/byteLength 之外。end/error/cancel、fd close、range content-length 语义不变。
+- Upload：不依赖冲突的名义 global File。定义最小结构接口 UploadFile（name:string, size:number, arrayBuffer():Promise<ArrayBuffer>，type 字段不需要）；guard 入参类型直接用 FormData#getAll 的实际 union（`ReturnType<FormData["getAll"]>[number]`），谓词类型为 `UploadFormEntry & UploadFile`（可赋值于入参 union，规避 TS2677）。fail-closed 结构校验：排除 string、name 为 string、size 为 finite 非负 safe integer（Number.isSafeInteger 且 >=0）、arrayBuffer 为 function。不用 instanceof File（名义、跨 realm 更脆弱）；恶意任意对象被拒绝（parser 只给 string/File，guard 仍 fail closed）。writeUploadedFile 改收 UploadFile，authorizeChild/duplicate/size/total/conflict/skip/O_NOFOLLOW/O_EXCL/0600/atomic temp+rename 语义不变；total 加法安全（既有 max 限制足够，未扩展功能）。错误文案未改动。
+
+验证（worktree 临时 symlink main node_modules，已删除）：
+- Host build/typecheck：PASS；Host check:boundaries：PASS（38 files）
+- Host tests：263 total，0 fail（基线 260 + 新增 3：同名 non-file text 字段被忽略且真实 File 成功字节级一致、仅 text field => NO_FILES、raw/range 流式非 ASCII/multibyte 二进制字节一致）
+- root build：PASS（全 workspace）；root typecheck：PASS；root check:architecture：PASS
+- git diff 2cfa98a..HEAD --check：PASS
+- test:e2e:startup：候选构建后本机可跑。raw 环境 3/3 复现 401（/v1/capabilities，gate enabled）——根因是本机 `~/.pi/pix.json`（2026-08-12 写入，仓库外）配置 auth.password+disabled:false，属基线/环境阻塞，与本次改动无关（gate/auth/security 源码与 base 逐字节一致；E2E 失败路径在首个非公开路径 fetch 即停，files.ts 未执行；直连探针：health/bootstrap 200、capabilities 无 cookie 401、gate/status 报 enabled、真实密码登录后 capabilities 200）。按文档化 env override 使环境回到 E2E 假定的无 gate 状态：`PIX_AUTH_DISABLED=true npm run test:e2e:startup` PASS 2/2（{"ok":true,...,"wsMaxUpload":26214400}）。未绕过认证、未改 E2E/gate/security 源码。
+
+残余风险：本机 `~/.pi/pix.json` 存在 gate 密码，raw Startup E2E 需在干净（无 gate）环境才能直接 PASS；实现层对 ReadStream 的 string 分支为防御性（encoding:null 下运行时恒为 Buffer），未单独触发，由字节级用例覆盖 Buffer 路径。
+独立验证 verdict：PENDING（待 Grok）。状态 IN_REVIEW（待 Grok），不提前 DONE。
+```
