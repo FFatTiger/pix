@@ -23,7 +23,7 @@
     "pretypecheck": "node scripts/prebuild-deps.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "pretest": "node scripts/prebuild-deps.mjs",
-    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\"",
+    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\" --test-concurrency=1",
     "build:test": "node ../../scripts/remove-paths.mjs dist-test && tsc -p tsconfig.test.json"
   },
   "dependencies": {

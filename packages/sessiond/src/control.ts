@@ -7,8 +7,10 @@
  * runtime-directory resolution. It performs no I/O side effects beyond reads.
  */
 export {
+  readInstanceLock,
   readInstanceLockStrict,
   instanceAlive,
+  legacyWindowsSessiondEndpoint,
   sessiondPaths,
   probeSocket,
   listPrivateSocketAliases,

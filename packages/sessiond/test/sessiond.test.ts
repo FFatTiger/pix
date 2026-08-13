@@ -11,7 +11,7 @@ import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondApplication } from "../src/application.js";
 import { EventJournal } from "../src/journal.js";
-import { acquireInstanceLock, loadOrCreateLocalSecret, sessiondPaths } from "../src/local.js";
+import { acquireInstanceLock, legacyWindowsSessiondEndpoint, loadOrCreateLocalSecret, readInstanceLock, sessiondPaths } from "../src/local.js";
 import { SnapshotProjection } from "../src/projection.js";
 import { SessiondRpcClient, SessiondRpcServer, type SessiondRpcHandler } from "../src/rpc.js";
 import { SessiondError } from "../src/errors.js";
@@ -49,6 +49,19 @@ function harness(options: { worker?: ConstructorParameters<typeof FakeWorkerFact
   }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0, ...options.service });
   return { service, workers, locations, locator };
 }
+
+test("readInstanceLock compatibility view returns valid records and collapses unsafe state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pix-lock-compat-"));
+  const paths = sessiondPaths(dir);
+  try {
+    await writeFile(paths.lockFile, JSON.stringify({ pid: 123, instanceId: "compat", createdAt: 456 }));
+    assert.deepEqual(await readInstanceLock(paths), { pid: 123, instanceId: "compat", createdAt: 456 });
+    await writeFile(paths.lockFile, "not-json");
+    assert.equal(await readInstanceLock(paths), undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("20 concurrent activations start exactly one worker", async () => {
   const { service, workers } = harness({ worker: { readyDelayMs: 5 } });
@@ -347,10 +360,13 @@ test("sessiond endpoints are stable per directory and distinct across siblings",
   const first = sessiondPaths(join(parent, "instance-a"));
   const same = sessiondPaths(join(parent, ".", "instance-a"));
   const second = sessiondPaths(join(parent, "instance-b"));
+  const legacy = legacyWindowsSessiondEndpoint(join(parent, "instance-a"));
   assert.equal(first.endpoint, same.endpoint);
   assert.notEqual(first.endpoint, second.endpoint);
   if (process.platform === "win32") {
     assert.match(first.endpoint, /^\\\\\.\\pipe\\pix-sessiond-[a-f0-9]{32}$/);
+    assert.match(legacy, /^\\\\\.\\pipe\\pix-sessiond-[a-f0-9]{1,24}$/);
+    assert.notEqual(first.endpoint, legacy);
   }
 });
 

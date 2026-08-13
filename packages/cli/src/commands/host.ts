@@ -26,6 +26,13 @@ export async function hostCommand(argv: string[]): Promise<number> {
     return 1;
   }
   pixLog(`sessiond reachable (pid ${status.pid}); starting host`);
-  const location = locateSessiond();
+  const located = locateSessiond();
+  const location = status.endpoint === located.endpoint
+    ? located
+    : {
+        ...located,
+        endpoint: status.endpoint,
+        paths: { ...located.paths, endpoint: status.endpoint },
+      };
   return runHost(location, options);
 }

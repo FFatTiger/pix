@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
-import { sessiondPaths } from "@fffattiger/pix-sessiond/control";
+import {
+  legacyWindowsSessiondEndpoint,
+  sessiondPaths,
+} from "@fffattiger/pix-sessiond/control";
 import {
   ensureSessiond,
   inspectSessiond,
@@ -16,6 +19,304 @@ import {
 import { resolveCliPackageRoot } from "../src/paths.js";
 
 const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "pix-supervise-"));
+
+test("inspectSessiond detects an authenticated legacy Windows daemon", { skip: process.platform !== "win32" }, async () => {
+  const dir = await tempDir();
+  let child: ChildProcess | undefined;
+  try {
+    const legacyEndpoint = legacyWindowsSessiondEndpoint(dir);
+    const script = [
+      `import { mkdirSync, writeFileSync } from "node:fs";`,
+      `import { join } from "node:path";`,
+      `import { SessiondRpcServer } from "@fffattiger/pix-sessiond";`,
+      `const dir=${JSON.stringify(dir)};mkdirSync(dir,{recursive:true});`,
+      `const secret="s".repeat(43),instanceId="legacy-instance";`,
+      `writeFileSync(join(dir,"sessiond.lock"),JSON.stringify({pid:process.pid,instanceId,createdAt:Date.now()}));`,
+      `writeFileSync(join(dir,"sessiond.secret"),secret);`,
+      `const server=new SessiondRpcServer({endpoint:${JSON.stringify(legacyEndpoint)},secret,handler:{handle:async(method)=>method==="system.ping"?{pong:true,serverTime:Date.now()}:method==="system.hello"?{protocolVersion:1,capabilities:["runtime.authority"]}:(()=>{throw new Error("unsupported")})()}});`,
+      `await server.listen();process.stdout.write("ready");setInterval(()=>{},60000);`,
+    ].join("");
+    child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: resolveCliPackageRoot(),
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const proc = child;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("legacy daemon did not signal ready")), 5_000);
+      proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
+      proc.on("error", reject);
+    });
+    const status = await inspectSessiond(dir);
+    assert.equal(status.alive, true);
+    assert.equal(status.pingable, true);
+    assert.equal(status.obstructed, false);
+    assert.equal(status.endpointKind, "legacy-windows");
+    assert.equal(status.endpoint, legacyEndpoint);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const proc = child;
+      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureSessiond reuses an authenticated legacy Windows daemon without disrupting it", { skip: process.platform !== "win32" }, async () => {
+  const dir = await tempDir();
+  let legacy: ChildProcess | undefined;
+  try {
+    const legacyEndpoint = legacyWindowsSessiondEndpoint(dir);
+    const script = [
+      `import { mkdirSync, writeFileSync } from "node:fs";`,
+      `import { join } from "node:path";`,
+      `import { SessiondRpcServer } from "@fffattiger/pix-sessiond";`,
+      `const dir=${JSON.stringify(dir)};mkdirSync(dir,{recursive:true});`,
+      `const secret="s".repeat(43),instanceId="legacy-instance";`,
+      `writeFileSync(join(dir,"sessiond.lock"),JSON.stringify({pid:process.pid,instanceId,createdAt:Date.now()}));`,
+      `writeFileSync(join(dir,"sessiond.secret"),secret);`,
+      `const server=new SessiondRpcServer({endpoint:${JSON.stringify(legacyEndpoint)},secret,handler:{handle:async(method)=>method==="system.ping"?{pong:true,serverTime:Date.now()}:method==="system.hello"?{protocolVersion:1,capabilities:["runtime.authority"]}:(()=>{throw new Error("unsupported")})()}});`,
+      `await server.listen();process.stdout.write("ready");setInterval(()=>{},60000);`,
+    ].join("");
+    legacy = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: resolveCliPackageRoot(),
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const proc = legacy;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("legacy daemon did not signal ready")), 5_000);
+      proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
+      proc.on("error", reject);
+    });
+    const legacyPid = proc.pid;
+    assert.equal(typeof legacyPid, "number");
+    const ensured = await ensureSessiond(dir);
+    assert.equal(ensured.reused, true);
+    assert.equal(ensured.pid, legacyPid);
+    assert.equal(ensured.endpoint, legacyEndpoint);
+    assert.equal(proc.exitCode, null);
+    assert.equal(proc.signalCode, null);
+    const status = await inspectSessiond(dir);
+    assert.equal(status.pingable, true);
+    assert.equal(status.endpointKind, "legacy-windows");
+    assert.equal(status.pid, legacyPid);
+  } finally {
+    if (legacy && legacy.exitCode === null && legacy.signalCode === null) {
+      const proc = legacy;
+      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("shutdownSessiond terminates only the authenticated legacy Windows pipe owner", { skip: process.platform !== "win32" }, async () => {
+  const dir = await tempDir();
+  let legacy: ChildProcess | undefined;
+  try {
+    const paths = sessiondPaths(dir);
+    const legacyEndpoint = legacyWindowsSessiondEndpoint(dir);
+    const script = [
+      `import { mkdirSync, writeFileSync } from "node:fs";`,
+      `import { join } from "node:path";`,
+      `import { SessiondRpcServer } from "@fffattiger/pix-sessiond";`,
+      `const dir=${JSON.stringify(dir)};mkdirSync(dir,{recursive:true});`,
+      `const secret="s".repeat(43),instanceId="legacy-instance";`,
+      `writeFileSync(join(dir,"sessiond.lock"),JSON.stringify({pid:process.pid,instanceId,createdAt:Date.now()}));`,
+      `writeFileSync(join(dir,"sessiond.secret"),secret);`,
+      `const server=new SessiondRpcServer({endpoint:${JSON.stringify(legacyEndpoint)},secret,handler:{handle:async(method)=>method==="system.ping"?{pong:true,serverTime:Date.now()}:method==="system.hello"?{protocolVersion:1,capabilities:["runtime.authority"]}:(()=>{throw new Error("unsupported")})()}});`,
+      `await server.listen();process.stdout.write("ready");setInterval(()=>{},60000);`,
+    ].join("");
+    legacy = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: resolveCliPackageRoot(),
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const proc = legacy;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("legacy daemon did not signal ready")), 5_000);
+      proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
+      proc.on("error", reject);
+    });
+    const result = await shutdownSessiond(dir, { timeoutMs: 5_000 });
+    assert.deepEqual(result, { action: "terminated", pid: proc.pid });
+    if (proc.exitCode === null && proc.signalCode === null) {
+      await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    }
+    assert.equal(existsSync(paths.lockFile), false);
+  } finally {
+    if (legacy && legacy.exitCode === null && legacy.signalCode === null) {
+      const proc = legacy;
+      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy Windows shutdown refuses a lock whose createdAt proves PID reuse", { skip: process.platform !== "win32" }, async () => {
+  const dir = await tempDir();
+  let child: ChildProcess | undefined;
+  try {
+    const paths = sessiondPaths(dir);
+    const legacyEndpoint = legacyWindowsSessiondEndpoint(dir);
+    const script = [
+      `import { mkdirSync, writeFileSync } from "node:fs";`,
+      `import { join } from "node:path";`,
+      `import { SessiondRpcServer } from "@fffattiger/pix-sessiond";`,
+      `const dir=${JSON.stringify(dir)};mkdirSync(dir,{recursive:true});`,
+      `const secret="s".repeat(43),instanceId="legacy-reused-pid";`,
+      `writeFileSync(join(dir,"sessiond.lock"),JSON.stringify({pid:process.pid,instanceId,createdAt:1}));`,
+      `writeFileSync(join(dir,"sessiond.secret"),secret);`,
+      `const server=new SessiondRpcServer({endpoint:${JSON.stringify(legacyEndpoint)},secret,handler:{handle:async(method)=>method==="system.ping"?{pong:true}:method==="system.hello"?{protocolVersion:1,capabilities:["runtime.authority"]}:(()=>{throw new Error("unsupported")})()}});`,
+      `await server.listen();process.stdout.write("ready");setInterval(()=>{},60000);`,
+    ].join("");
+    child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: resolveCliPackageRoot(),
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const proc = child;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("legacy PID-reuse fixture did not signal ready")), 5_000);
+      proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
+      proc.on("error", reject);
+    });
+    const before = await readFile(paths.lockFile, "utf8");
+    const result = await shutdownSessiond(dir, { timeoutMs: 1_000 });
+    assert.equal(result.action, "obstructed");
+    assert.match(result.reason, /PID was reused/);
+    assert.equal(proc.exitCode, null);
+    assert.equal(proc.signalCode, null);
+    assert.equal(await readFile(paths.lockFile, "utf8"), before);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const proc = child;
+      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy Windows shutdown refuses a valid Pix pipe whose server does not own the lock PID", { skip: process.platform !== "win32" }, async () => {
+  const dir = await tempDir();
+  let server: ChildProcess | undefined;
+  let victim: ChildProcess | undefined;
+  try {
+    const paths = sessiondPaths(dir);
+    const legacyEndpoint = legacyWindowsSessiondEndpoint(dir);
+    victim = spawn(process.execPath, ["-e", "setInterval(()=>{},60000)"], { stdio: "ignore" });
+    assert.equal(typeof victim.pid, "number");
+    const script = [
+      `import { mkdirSync, writeFileSync } from "node:fs";`,
+      `import { join } from "node:path";`,
+      `import { SessiondRpcServer } from "@fffattiger/pix-sessiond";`,
+      `const dir=${JSON.stringify(dir)};mkdirSync(dir,{recursive:true});`,
+      `const secret="s".repeat(43),instanceId="legacy-mismatch";`,
+      `writeFileSync(join(dir,"sessiond.lock"),JSON.stringify({pid:${victim.pid},instanceId,createdAt:Date.now()}));`,
+      `writeFileSync(join(dir,"sessiond.secret"),secret);`,
+      `const server=new SessiondRpcServer({endpoint:${JSON.stringify(legacyEndpoint)},secret,handler:{handle:async(method)=>method==="system.ping"?{pong:true}:method==="system.hello"?{protocolVersion:1,capabilities:["runtime.authority"]}:(()=>{throw new Error("unsupported")})()}});`,
+      `await server.listen();process.stdout.write("ready");setInterval(()=>{},60000);`,
+    ].join("");
+    server = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: resolveCliPackageRoot(),
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const proc = server;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("mismatched legacy server did not signal ready")), 5_000);
+      proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
+      proc.on("error", reject);
+    });
+    const before = await readFile(paths.lockFile, "utf8");
+    const result = await shutdownSessiond(dir, { timeoutMs: 1_000 });
+    assert.equal(result.action, "obstructed");
+    assert.match(result.reason, /pipe server does not own the sessiond lock|PID was reused/);
+    assert.equal(victim.exitCode, null);
+    assert.equal(victim.signalCode, null);
+    assert.equal(server.exitCode, null);
+    assert.equal(server.signalCode, null);
+    assert.equal(await readFile(paths.lockFile, "utf8"), before);
+  } finally {
+    for (const child of [server, victim]) {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        const proc = child;
+        try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+        await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+      }
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy Windows migration refuses an endpoint that only answers ping", { skip: process.platform !== "win32" }, async () => {
+  const dir = await tempDir();
+  let child: ChildProcess | undefined;
+  try {
+    const paths = sessiondPaths(dir);
+    const legacyEndpoint = legacyWindowsSessiondEndpoint(dir);
+    const script = [
+      `import { mkdirSync, writeFileSync } from "node:fs";`,
+      `import { join } from "node:path";`,
+      `import { SessiondRpcServer } from "@fffattiger/pix-sessiond";`,
+      `const dir=${JSON.stringify(dir)};mkdirSync(dir,{recursive:true});`,
+      `const secret="s".repeat(43),instanceId="legacy-impostor";`,
+      `writeFileSync(join(dir,"sessiond.lock"),JSON.stringify({pid:process.pid,instanceId,createdAt:Date.now()}));`,
+      `writeFileSync(join(dir,"sessiond.secret"),secret);`,
+      `const server=new SessiondRpcServer({endpoint:${JSON.stringify(legacyEndpoint)},secret,handler:{handle:async(method)=>method==="system.ping"?{pong:true,serverTime:Date.now()}:(()=>{throw new Error("unsupported")})()}});`,
+      `await server.listen();process.stdout.write("ready");setInterval(()=>{},60000);`,
+    ].join("");
+    child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: resolveCliPackageRoot(),
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const proc = child;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("legacy impostor did not signal ready")), 5_000);
+      proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
+      proc.on("error", reject);
+    });
+    const before = await readFile(paths.lockFile, "utf8");
+    const result = await shutdownSessiond(dir, { timeoutMs: 250 });
+    assert.equal(result.action, "obstructed");
+    assert.match(result.reason, /alive but not reachable/);
+    assert.equal(proc.exitCode, null);
+    assert.equal(proc.signalCode, null);
+    assert.equal(await readFile(paths.lockFile, "utf8"), before);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const proc = child;
+      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("inspectSessiond treats a legacy Windows listener without a lock as obstructed", { skip: process.platform !== "win32" }, async () => {
+  const dir = await tempDir();
+  let child: ChildProcess | undefined;
+  try {
+    const legacyEndpoint = legacyWindowsSessiondEndpoint(dir);
+    const script = `const{createServer}=require("node:net");const s=createServer(()=>{});s.listen(${JSON.stringify(legacyEndpoint)},()=>process.stdout.write("ready"));setInterval(()=>{},60000);`;
+    child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+    const proc = child;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("legacy listener did not signal ready")), 5_000);
+      proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
+      proc.on("error", reject);
+    });
+    const status = await inspectSessiond(dir);
+    assert.equal(status.obstructed, true);
+    assert.match(status.obstruction ?? "", /live sessiond socket exists without an instance lock/);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const proc = child;
+      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+      await new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("inspectSessiond reports not running when no lock exists", async () => {
   const dir = await tempDir();

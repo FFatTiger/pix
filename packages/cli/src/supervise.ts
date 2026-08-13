@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync } from "node:fs";
 import {
-  instanceAlive,
+  legacyWindowsSessiondEndpoint,
   listPrivateSocketAliases,
   probeSocket,
   readInstanceLockStrict,
@@ -11,8 +11,9 @@ import {
   type SessiondPaths,
 } from "@fffattiger/pix-sessiond/control";
 import { readLocalSecret, UnsafeSecretError } from "./secret.js";
-import { pingSessiond, requestSessiondShutdown } from "./probe.js";
+import { identifySessiond, pingSessiond, requestSessiondShutdown } from "./probe.js";
 import { resolveSessiondBin } from "./paths.js";
+import { terminateLegacyWindowsSessiond } from "./windows-legacy-sessiond.js";
 
 const READINESS_TIMEOUT_MS = 10_000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -35,6 +36,8 @@ export interface SessiondLocation {
   paths: SessiondPaths;
 }
 
+export type SessiondEndpointKind = "current" | "legacy-windows";
+
 export interface SessiondStatus {
   /** A lock file names a live pid. */
   alive: boolean;
@@ -51,7 +54,9 @@ export interface SessiondStatus {
   pid: number | undefined;
   instanceId: string | undefined;
   directory: string;
+  /** The endpoint actually authenticated: current hash or legacy Windows name. */
   endpoint: string;
+  endpointKind: SessiondEndpointKind;
 }
 
 export interface EnsureResult {
@@ -95,6 +100,7 @@ function sleep(ms: number): Promise<void> {
  */
 export async function inspectSessiond(directory?: string): Promise<SessiondStatus> {
   const { directory: dir, endpoint, paths } = locateSessiond(directory);
+  const current = { endpoint, endpointKind: "current" as const };
   const lock: InstanceLockRead = await readInstanceLockStrict(paths);
   if (lock.kind === "unsafe") {
     // Never treat an unsafe lock as absent and never auto-remove it.
@@ -106,7 +112,7 @@ export async function inspectSessiond(directory?: string): Promise<SessiondStatu
       pid: undefined,
       instanceId: undefined,
       directory: dir,
-      endpoint,
+      ...current,
     };
   }
   if (lock.kind === "missing") {
@@ -121,10 +127,10 @@ export async function inspectSessiond(directory?: string): Promise<SessiondStatu
         pid: undefined,
         instanceId: undefined,
         directory: dir,
-        endpoint,
+        ...current,
       };
     }
-    return { alive: false, pingable: false, obstructed: false, obstruction: undefined, pid: undefined, instanceId: undefined, directory: dir, endpoint };
+    return { alive: false, pingable: false, obstructed: false, obstruction: undefined, pid: undefined, instanceId: undefined, directory: dir, ...current };
   }
   const alive = pidAlive(lock.record.pid);
   if (!alive) {
@@ -136,7 +142,7 @@ export async function inspectSessiond(directory?: string): Promise<SessiondStatu
       pid: lock.record.pid,
       instanceId: lock.record.instanceId,
       directory: dir,
-      endpoint,
+      ...current,
     };
   }
   // An unsafe secret (symlink / non-regular / too-short) means this live pid
@@ -155,27 +161,62 @@ export async function inspectSessiond(directory?: string): Promise<SessiondStatu
       pid: lock.record.pid,
       instanceId: lock.record.instanceId,
       directory: dir,
-      endpoint,
+      ...current,
     };
   }
-  const pingable = secret !== undefined ? await pingSessiond(endpoint, secret) : false;
+  if (secret !== undefined && await pingSessiond(endpoint, secret)) {
+    return {
+      alive: true,
+      pingable: true,
+      obstructed: false,
+      obstruction: undefined,
+      pid: lock.record.pid,
+      instanceId: lock.record.instanceId,
+      directory: dir,
+      ...current,
+    };
+  }
+  // Compatibility migration: releases before the full-path hash bound a
+  // different Windows pipe name. Authenticate that endpoint with the same
+  // protected secret before classifying it as a legacy Pix daemon. Never use
+  // the legacy endpoint on Unix and never infer ownership from the lock PID
+  // alone.
+  if (process.platform === "win32" && secret !== undefined) {
+    const legacyEndpoint = legacyWindowsSessiondEndpoint(dir);
+    if (legacyEndpoint !== endpoint && await identifySessiond(legacyEndpoint, secret)) {
+      return {
+        alive: true,
+        pingable: true,
+        obstructed: false,
+        obstruction: undefined,
+        pid: lock.record.pid,
+        instanceId: lock.record.instanceId,
+        directory: dir,
+        endpoint: legacyEndpoint,
+        endpointKind: "legacy-windows",
+      };
+    }
+  }
   // A live pid that is unreachable is authoritative until it dies or is
   // explicitly downed: never spawn a replacement over it.
   return {
     alive: true,
-    pingable,
-    obstructed: !pingable,
-    obstruction: !pingable ? "sessiond pid is alive but not reachable" : undefined,
+    pingable: false,
+    obstructed: true,
+    obstruction: "sessiond pid is alive but not reachable",
     pid: lock.record.pid,
     instanceId: lock.record.instanceId,
     directory: dir,
-    endpoint,
+    ...current,
   };
 }
 
 /** True when any Pix-named Unix socket in the directory answers a connect. */
 async function anyLiveSocket(paths: SessiondPaths): Promise<boolean> {
   if ((await probeSocket(paths.endpoint)) === "live") return true;
+  if (process.platform === "win32") {
+    return (await probeSocket(legacyWindowsSessiondEndpoint(paths.directory))) === "live";
+  }
   for (const alias of await listPrivateSocketAliases(paths.directory)) {
     if ((await probeSocket(alias)) === "live") return true;
   }
@@ -250,11 +291,24 @@ export async function ensureSessiond(
 ): Promise<EnsureResult> {
   const { directory: dir, endpoint, paths } = locateSessiond(directory);
   const existing = await inspectSessiond(dir);
-  if (existing.pingable) {
+  if (existing.pingable && existing.endpointKind === "current") {
     log(`reusing sessiond (pid ${existing.pid}) at ${dir}`);
     return { directory: dir, endpoint, pid: existing.pid, instanceId: existing.instanceId, reused: true };
   }
-  if (existing.obstructed) {
+  if (existing.pingable && existing.endpointKind === "legacy-windows") {
+    // Old Windows daemons speak the current runtime/session RPC contract but
+    // use the pre-hash pipe name and do not implement system.shutdown. Reuse
+    // them without disruption; explicit `pix down --all` performs the
+    // native-handle-verified upgrade boundary.
+    log(`reusing legacy sessiond (pid ${existing.pid}) at ${dir}`);
+    return {
+      directory: dir,
+      endpoint: existing.endpoint,
+      pid: existing.pid,
+      instanceId: existing.instanceId,
+      reused: true,
+    };
+  } else if (existing.obstructed) {
     // Fail closed: never spawn over a live listener without a lock, an unsafe
     // lock, or a live-but-unreachable pid.
     throw new Error(`[pix] cannot start sessiond: ${existing.obstruction ?? "sessiond state is unsafe"}`);
@@ -298,7 +352,7 @@ export async function shutdownSessiond(
   directory?: string,
   options: ShutdownOptions = {},
 ): Promise<ShutdownResult> {
-  const { paths, endpoint } = locateSessiond(directory);
+  const { paths } = locateSessiond(directory);
   const status = await inspectSessiond(directory);
   if (status.obstructed) {
     return {
@@ -318,9 +372,32 @@ export async function shutdownSessiond(
   }
   let accepted = false;
   if (secret && status.instanceId) {
-    accepted = await requestSessiondShutdown(endpoint, secret, status.instanceId);
+    accepted = await requestSessiondShutdown(status.endpoint, secret, status.instanceId);
   }
-  if (!accepted && process.platform !== "win32") {
+  if (!accepted && status.endpointKind === "legacy-windows") {
+    // Discovery authenticates the endpoint but does not bind it to the lock
+    // PID. A Windows-only native helper performs the destructive proof through
+    // stable pipe, process and lock handles; there is deliberately no PID-only
+    // fallback here.
+    if (!secret || !status.instanceId) {
+      return {
+        action: "obstructed",
+        pid: status.pid,
+        reason: "legacy sessiond identity cannot be verified",
+      };
+    }
+    const terminated = await terminateLegacyWindowsSessiond({
+      endpoint: status.endpoint,
+      lockFile: paths.lockFile,
+      expectedPid: status.pid,
+      expectedInstanceId: status.instanceId,
+      secret,
+      timeoutMs: options.timeoutMs ?? SHUTDOWN_TIMEOUT_MS,
+    });
+    if (!terminated.ok) {
+      return { action: "obstructed", pid: status.pid, reason: terminated.reason };
+    }
+  } else if (!accepted && process.platform !== "win32") {
     try {
       process.kill(status.pid, "SIGTERM");
     } catch (error) {
@@ -329,9 +406,11 @@ export async function shutdownSessiond(
   }
   const deadline = Date.now() + (options.timeoutMs ?? SHUTDOWN_TIMEOUT_MS);
   while (Date.now() < deadline) {
-    const gone = !(await instanceAlive(paths));
+    const processGone = !pidAlive(status.pid);
+    const lock = await readInstanceLockStrict(paths);
+    const lockGone = lock.kind === "missing";
     const socketGone = process.platform === "win32" ? true : !existsSync(paths.endpoint);
-    if (gone && socketGone) return { action: "terminated", pid: status.pid };
+    if (processGone && lockGone && socketGone) return { action: "terminated", pid: status.pid };
     await sleep(50);
   }
   return { action: "failed", pid: status.pid, reason: "timeout" };

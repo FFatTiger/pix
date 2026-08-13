@@ -17,12 +17,18 @@ export async function startCommand(argv: string[]): Promise<number> {
     return 2;
   }
   try {
-    await ensureSessiond(undefined, pixLog);
+    const ensured = await ensureSessiond(undefined, pixLog);
+    const located = locateSessiond(ensured.directory);
+    const location = ensured.endpoint === located.endpoint
+      ? located
+      : {
+          ...located,
+          endpoint: ensured.endpoint,
+          paths: { ...located.paths, endpoint: ensured.endpoint },
+        };
+    return runHost(location, options);
   } catch (error) {
     pixErr((error as Error).message);
     return 1;
   }
-  // After ensure, the resolved location matches the daemon's directory.
-  const location = locateSessiond();
-  return runHost(location, options);
 }

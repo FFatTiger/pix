@@ -23,6 +23,21 @@ export async function requestSessiondShutdown(
   }
 }
 
+export async function identifySessiond(
+  endpoint: string,
+  secret: string,
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  const client = new SessiondRpcClient({ endpoint, secret, timeoutMs });
+  try {
+    const hello = await client.call("system.hello", {});
+    return hello.protocolVersion === 1
+      && hello.capabilities?.includes("runtime.authority") === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function pingSessiond(
   endpoint: string,
   secret: string,

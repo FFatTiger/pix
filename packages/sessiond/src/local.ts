@@ -76,10 +76,24 @@ export async function readInstanceLockStrict(paths: SessiondPaths): Promise<Inst
   }
 }
 
+/**
+ * Compatibility view of the on-disk lock. Unsafe state is collapsed to
+ * `undefined`; supervisors and security-sensitive callers must use
+ * {@link readInstanceLockStrict} instead.
+ */
+export async function readInstanceLock(paths: SessiondPaths): Promise<InstanceLockRecord | undefined> {
+  const result = await readInstanceLockStrict(paths);
+  return result.kind === "ok" ? result.record : undefined;
+}
+
 /** True when a strict lock names a process that is still alive. Unsafe locks are not collapsed into ordinary liveness. */
 export async function instanceAlive(paths: SessiondPaths): Promise<boolean> {
   const lock = await readInstanceLockStrict(paths);
   return lock.kind === "ok" && pidAlive(lock.record.pid);
+}
+
+export function legacyWindowsSessiondEndpoint(directory: string): string {
+  return `\\\\.\\pipe\\pix-sessiond-${Buffer.from(directory).toString("hex").slice(0, 24)}`;
 }
 
 export function sessiondPaths(directory: string): SessiondPaths {
