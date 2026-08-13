@@ -38,6 +38,23 @@ describe("resource APIs", () => {
     await expect(api.files.preview("/tmp/a")).resolves.toMatchObject({ size: 7 });
     expect((fetchImpl.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({ Range: "bytes=0-2" });
   });
+
+  it("encodes cwd + q for the file index, enforces the strict matches shape and passes signal", async () => {
+    const signal = new AbortController().signal;
+    const ok = json({ matches: [{ path: "src/a.ts", isDir: false }], truncated: false });
+    const bad = json({ matches: [{ path: "a.ts", isDir: true }], truncated: false });
+    const fetchImpl = vi.fn().mockResolvedValueOnce(ok).mockResolvedValueOnce(bad);
+    const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const api = createResourcesApi(http);
+    await expect(api.files.index("/proj a", "foo bar", signal)).resolves.toEqual({
+      matches: [{ path: "src/a.ts", isDir: false }],
+      truncated: false,
+    });
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("/v1/file-index?cwd=%2Fproj+a&q=foo+bar");
+    expect((fetchImpl.mock.calls[0]?.[1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    // The schema is strict: isDir must be literal false (files only, no dirs).
+    await expect(api.files.index("/proj", "x", signal)).rejects.toMatchObject({ kind: "decode", code: "INVALID_RESPONSE" });
+  });
 });
 
 describe("catalog configuration APIs", () => {

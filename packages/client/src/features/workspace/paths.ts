@@ -81,6 +81,32 @@ export function joinChild(parent: string, name: string): string {
 }
 
 /**
+ * Join the canonical project root with a Host-returned *relative* POSIX file
+ * path (e.g. `sub/a.ts`) from a file-index match. The Host produces these
+ * relative to the authorized root, but the client still validates every
+ * segment defensively: empty/`.`/`..` segments, NUL, backslash, a leading
+ * slash (absolute) and repeated/trailing slashes are all rejected with `null`.
+ * The joined result is then re-checked with `isWithinRoot` so a crafted match
+ * can never resolve to a path outside the canonical root. Uses the existing
+ * pure path helpers — never URL/path library platform differences.
+ *
+ * @returns the absolute joined path, or `null` when `rel` is hostile/malformed.
+ */
+export function joinRelative(root: string, rel: string): string | null {
+  if (!rel) return null;
+  if (rel.includes("\0") || rel.includes("\\")) return null;
+  if (rel.startsWith("/") || rel.endsWith("/")) return null;
+  const segments = rel.split("/");
+  for (const segment of segments) {
+    if (segment === "" || segment === "." || segment === "..") return null;
+  }
+  const base = stripTrailing(normalizeSeparators(root));
+  if (base === "") return null;
+  const joined = base === "/" ? `/${rel}` : `${base}/${rel}`;
+  return isWithinRoot(joined, base) ? joined : null;
+}
+
+/**
  * Parent of `dir`, clamped to `root`. Returns `null` when `dir` is already at
  * the root or its parent would escape the root — so the breadcrumb "up" button
  * can never offer a path outside the project root.

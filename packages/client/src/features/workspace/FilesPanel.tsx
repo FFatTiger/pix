@@ -8,8 +8,12 @@ import {
   breadcrumbs,
   isWithinRoot,
   joinChild,
+  joinRelative,
   parentWithinRoot,
 } from "./paths";
+
+/** Debounce for the file search input. Keeps the network off keystroke noise. */
+export const SEARCH_DEBOUNCE_MS = 250;
 
 export interface FilesPanelProps {
   /** Workspace project root (the current cwd). Undefined ⇒ panel is idle. */
@@ -80,17 +84,87 @@ function describeListError(error: unknown): string {
   return "Unable to list directory.";
 }
 
+/**
+ * Fixed file-search (file-index) error copy, code-first then kind, with a fixed
+ * fallback. Aborts are treated as a cancelled search, never a user-facing
+ * failure — a cancelled index is the normal result of typing a new query.
+ * Never renders body/stack/path/secret/raw host messages.
+ */
+function describeIndexError(error: unknown): string {
+  if (error instanceof HttpError) {
+    switch (error.code) {
+      case "CWD_REQUIRED":
+      case "INVALID_PATH":
+      case "INVALID_INPUT":
+      case "NOT_DIRECTORY":
+        return "Invalid project path for search.";
+      case "PATH_NOT_FOUND":
+        return "Project path was not found.";
+      case "NO_ALLOWED_ROOTS":
+        return "No allowed roots are configured.";
+      case "PATH_FORBIDDEN":
+      case "ROOT_REPLACED":
+        return "Project path is outside the allowed roots.";
+      case "INDEX_TIMEOUT":
+      case "TIMEOUT":
+        return "Search timed out — try a more specific query.";
+      case "INDEX_ABORTED":
+      case "ABORTED":
+        return "Search cancelled.";
+      default:
+        break;
+    }
+    if (error.kind === "network") return "Network error — unable to search files.";
+    if (error.kind === "timeout") return "Search timed out — try a more specific query.";
+  }
+  return "Unable to search files.";
+}
+
 export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
   const http = useHttpClient();
   const options = createQueryOptions(http);
   const [currentDir, setCurrentDir] = useState<string | null>(cwd ?? null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [raw, setRaw] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [invalidSearchResult, setInvalidSearchResult] = useState(false);
 
-  // Reset navigation when the project root (URL cwd) changes.
+  // Reset navigation, search and selection when the project root (URL cwd)
+  // changes. cwd switching immediately drops any in-flight/in-progress query:
+  // raw is cleared and the pending debounce timer is torn down by the debounce
+  // effect's cleanup, so a cwd B can never render results keyed to cwd A.
   useEffect(() => {
     setCurrentDir(cwd ?? null);
     setSelectedFile(null);
+    setRaw("");
+    setDebouncedQuery("");
+    setInvalidSearchResult(false);
   }, [cwd]);
+
+  // Debounce the trimmed query. Below 2 characters we never request an empty-q
+  // full index; the query stays "" (disabled). Any raw change also clears the
+  // stale "Invalid search result." message and hides previous results.
+  useEffect(() => {
+    setInvalidSearchResult(false);
+    const trimmed = raw.trim();
+    if (trimmed.length < 2) {
+      setDebouncedQuery("");
+      return;
+    }
+    const handle = window.setTimeout(() => setDebouncedQuery(trimmed), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [raw]);
+
+  // When the files capability is withdrawn the panel early-returns below; reset
+  // search/selection so restoring the capability never flashes stale results.
+  useEffect(() => {
+    if (!canFiles) {
+      setSelectedFile(null);
+      setRaw("");
+      setDebouncedQuery("");
+      setInvalidSearchResult(false);
+    }
+  }, [canFiles]);
 
   // Canonical project root: a dedicated, navigation-independent listing of the
   // workspace cwd. The Host canonicalizes the returned `path`, so this is the
@@ -133,6 +207,16 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
   // the raw cwd prefix is never compared against the canonical root.
   const canonicalSelected = meta.data?.path ?? selectedFile;
 
+  // File search: only the canonical root's index is queried, keyed by
+  // (cwd, debouncedQuery) so a late q1 response can never render as q2 — the
+  // query data we render below belongs only to the current debounced query.
+  // Enabled only when the canonical root is ready, the files capability is
+  // present, and the trimmed query is at least 2 characters.
+  const search = useQuery({
+    ...options.files.index(cwd ?? "", debouncedQuery),
+    enabled: canFiles && Boolean(root) && debouncedQuery.length >= 2,
+  });
+
   if (!canFiles) {
     return <p className="workspace-hint">File browsing is not available on this host.</p>;
   }
@@ -141,6 +225,38 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
   }
 
   const entries = list.data?.entries ?? [];
+  // The index schema is a union (empty-q `files` shape vs `matches` shape); we
+  // only ever query with a non-empty q so the Host returns `matches`, but the
+  // client still narrows explicitly — never treating a `files` payload as hits.
+  const searchData = search.data;
+  const matches = searchData && "matches" in searchData ? searchData.matches : [];
+  const truncated = searchData?.truncated ?? false;
+
+  const trimmed = raw.trim();
+  const searchMode = trimmed.length >= 1;
+  const validSearch = trimmed.length >= 2;
+  // Only when the debounce has settled for the current raw value do we render
+  // that query's results — typing a new query immediately hides the old ones.
+  const querySettled = trimmed === debouncedQuery;
+  const searchActive = validSearch && querySettled && Boolean(root);
+
+  let searchStatus = "";
+  if (searchMode) {
+    if (!validSearch) {
+      searchStatus = "Type at least 2 characters to search.";
+    } else if (!querySettled || !root) {
+      searchStatus = "Searching…";
+    } else if (search.isError) {
+      searchStatus = ""; // reported via role="alert" below
+    } else if (search.isLoading || search.data === undefined) {
+      searchStatus = "Searching…";
+    } else if (matches.length === 0) {
+      searchStatus = "No matches found.";
+    } else {
+      searchStatus = `${matches.length} ${matches.length === 1 ? "match" : "matches"} found.`;
+      if (truncated) searchStatus += " Results truncated.";
+    }
+  }
 
   // All navigation/selection joins derive from the canonical current path, so
   // every produced path shares the canonical prefix the Host returned.
@@ -155,83 +271,143 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
     }
   };
 
+  // Search result selection: join the Host's relative match path onto the
+  // canonical root. A null join (malformed/hostile path) shows a fixed message
+  // and never issues meta/read requests — no leaked path reaches the DOM.
+  const handleSearchSelect = (matchPath: string): void => {
+    const path = root ? joinRelative(root, matchPath) : null;
+    if (path === null) {
+      setInvalidSearchResult(true);
+      setSelectedFile(null);
+      return;
+    }
+    setInvalidSearchResult(false);
+    setSelectedFile(path);
+  };
+
   return (
     <div className="files-panel" aria-label="Files">
-      <nav className="files-breadcrumbs" aria-label="Directory path">
-        {crumbs.length === 0 ? (
-          <span className="files-crumb files-crumb--muted">{baseName(canonicalCurrent ?? "") || "root"}</span>
-        ) : (
-          crumbs.map((crumb, index) => {
-            const isLast = index === crumbs.length - 1;
-            return (
-              <span key={crumb.path} className="files-crumb-wrap">
-                <button
-                  type="button"
-                  className={`files-crumb${isLast ? " files-crumb--current" : ""}`}
-                  onClick={() => {
-                    setSelectedFile(null);
-                    setCurrentDir(crumb.path);
-                  }}
-                  disabled={isLast}
-                  title={crumb.path}
-                >
-                  {crumb.label}
-                </button>
-                {!isLast ? <span className="files-crumb-sep" aria-hidden="true">/</span> : null}
-              </span>
-            );
-          })
-        )}
-      </nav>
-      <div className="files-toolbar">
-        <button
-          type="button"
-          className="text-btn files-up"
-          disabled={!upTarget}
-          onClick={() => {
-            if (upTarget) {
-              setSelectedFile(null);
-              setCurrentDir(upTarget);
-            }
-          }}
-          title={upTarget ? `Up to ${upTarget}` : "Already at project root"}
-        >
-          ↑ Up
-        </button>
-        <span className="files-count">{entries.length} entr{entries.length === 1 ? "y" : "ies"}</span>
-      </div>
+      <form className="files-search-form" role="search" onSubmit={(event) => event.preventDefault()}>
+        <input
+          type="search"
+          className="files-search-input"
+          aria-label="Search files"
+          placeholder="Search files…"
+          value={raw}
+          onChange={(event) => setRaw(event.target.value)}
+        />
+      </form>
 
-      <div className="files-list-scroll">
-        {list.isLoading ? <p className="workspace-hint">Loading directory…</p> : null}
-        {list.isError ? (
-          <p className="workspace-hint workspace-hint--error" role="alert">{describeListError(list.error)}</p>
-        ) : null}
-        {!list.isLoading && !list.isError && entries.length === 0 ? (
-          <p className="workspace-hint">This directory is empty.</p>
-        ) : null}
-        <ul className="files-list" role="listbox" aria-label="Directory entries">
-          {entries.map((entry) => {
-            const entryPath = canonicalCurrent ? joinChild(canonicalCurrent, entry.name) : entry.name;
-            const active = canonicalSelected === entryPath;
-            return (
-              <li key={entry.name}>
-                <button
-                  type="button"
-                  className={`files-entry${active ? " files-entry--active" : ""}`}
-                  role="option"
-                  aria-selected={active}
-                  onClick={() => handleEnter(entry.name, entry.isDir)}
-                  title={entry.isDir ? `Open ${entry.name}` : `Preview ${entry.name}`}
-                >
-                  <span className="files-entry-icon" aria-hidden="true">{entry.isDir ? "📁" : entry.isSymlink ? "↪" : "📄"}</span>
-                  <span className="files-entry-name">{entry.name}</span>
-                  {entry.isDir ? <span className="files-entry-tag">dir</span> : null}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
+      {searchMode ? (
+        <section className="files-search" aria-label="Search results">
+          {searchActive && search.isError ? (
+            <p className="workspace-hint workspace-hint--error" role="alert">{describeIndexError(search.error)}</p>
+          ) : null}
+          {searchActive && !search.isError && matches.length > 0 ? (
+            <ul className="files-search-results" aria-label="Search results">
+              {matches.map((match) => {
+                const path = root ? joinRelative(root, match.path) : null;
+                const active = path !== null && canonicalSelected === path;
+                return (
+                  <li key={match.path}>
+                    <button
+                      type="button"
+                      className={`files-entry${active ? " files-entry--active" : ""}`}
+                      onClick={() => handleSearchSelect(match.path)}
+                      title={match.path}
+                    >
+                      <span className="files-entry-icon" aria-hidden="true">📄</span>
+                      <span className="files-entry-name">{match.path}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+          {invalidSearchResult ? (
+            <p className="workspace-hint workspace-hint--error" role="alert">Invalid search result.</p>
+          ) : null}
+          <p className="files-search-status" aria-live="polite">{searchStatus}</p>
+        </section>
+      ) : (
+        <>
+          <nav className="files-breadcrumbs" aria-label="Directory path">
+            {crumbs.length === 0 ? (
+              <span className="files-crumb files-crumb--muted">{baseName(canonicalCurrent ?? "") || "root"}</span>
+            ) : (
+              crumbs.map((crumb, index) => {
+                const isLast = index === crumbs.length - 1;
+                return (
+                  <span key={crumb.path} className="files-crumb-wrap">
+                    <button
+                      type="button"
+                      className={`files-crumb${isLast ? " files-crumb--current" : ""}`}
+                      onClick={() => {
+                        setSelectedFile(null);
+                        setCurrentDir(crumb.path);
+                      }}
+                      disabled={isLast}
+                      title={crumb.path}
+                    >
+                      {crumb.label}
+                    </button>
+                    {!isLast ? <span className="files-crumb-sep" aria-hidden="true">/</span> : null}
+                  </span>
+                );
+              })
+            )}
+          </nav>
+          <div className="files-toolbar">
+            <button
+              type="button"
+              className="text-btn files-up"
+              disabled={!upTarget}
+              onClick={() => {
+                if (upTarget) {
+                  setSelectedFile(null);
+                  setCurrentDir(upTarget);
+                }
+              }}
+              title={upTarget ? `Up to ${upTarget}` : "Already at project root"}
+            >
+              ↑ Up
+            </button>
+            <span className="files-count">{entries.length} entr{entries.length === 1 ? "y" : "ies"}</span>
+          </div>
+
+          <div className="files-list-scroll">
+            {list.isLoading ? <p className="workspace-hint">Loading directory…</p> : null}
+            {list.isError ? (
+              <p className="workspace-hint workspace-hint--error" role="alert">{describeListError(list.error)}</p>
+            ) : null}
+            {!list.isLoading && !list.isError && entries.length === 0 ? (
+              <p className="workspace-hint">This directory is empty.</p>
+            ) : null}
+            <ul className="files-list" role="listbox" aria-label="Directory entries">
+              {entries.map((entry) => {
+                const entryPath = canonicalCurrent ? joinChild(canonicalCurrent, entry.name) : entry.name;
+                const active = canonicalSelected === entryPath;
+                return (
+                  <li key={entry.name}>
+                    <button
+                      type="button"
+                      className={`files-entry${active ? " files-entry--active" : ""}`}
+                      role="option"
+                      aria-selected={active}
+                      onClick={() => handleEnter(entry.name, entry.isDir)}
+                      title={entry.isDir ? `Open ${entry.name}` : `Preview ${entry.name}`}
+                    >
+                      <span className="files-entry-icon" aria-hidden="true">{entry.isDir ? "📁" : entry.isSymlink ? "↪" : "📄"}</span>
+                      <span className="files-entry-name">{entry.name}</span>
+                      {entry.isDir ? <span className="files-entry-tag">dir</span> : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </>
+      )}
 
       {selectedFile ? (
         <section className="files-detail" aria-label="File preview">

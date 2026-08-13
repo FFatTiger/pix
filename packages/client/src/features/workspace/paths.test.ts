@@ -4,6 +4,7 @@ import {
   breadcrumbs,
   isWithinRoot,
   joinChild,
+  joinRelative,
   parentWithinRoot,
   relativePath,
 } from "./paths";
@@ -85,6 +86,44 @@ describe("breadcrumbs", () => {
       { label: "/", path: "/" },
       { label: "home", path: "/home" },
     ]);
+  });
+});
+
+describe("joinRelative", () => {
+  it("joins valid nested relative POSIX paths onto the root", () => {
+    expect(joinRelative("/proj", "a.ts")).toBe("/proj/a.ts");
+    expect(joinRelative("/proj", "sub/a.ts")).toBe("/proj/sub/a.ts");
+    expect(joinRelative("/proj", "src/deep/nested file (2).ts")).toBe("/proj/src/deep/nested file (2).ts");
+    expect(joinRelative("/", "a/b.ts")).toBe("/a/b.ts");
+  });
+
+  it("rejects absolute paths and traversal segments", () => {
+    expect(joinRelative("/proj", "/etc/passwd")).toBeNull();
+    expect(joinRelative("/proj", "../etc/passwd")).toBeNull();
+    expect(joinRelative("/proj", "sub/../../etc")).toBeNull();
+    expect(joinRelative("/proj", ".")).toBeNull();
+    expect(joinRelative("/proj", "..")).toBeNull();
+    expect(joinRelative("/proj", "sub/.")).toBeNull();
+  });
+
+  it("rejects empty, repeated and trailing segments plus backslash and NUL", () => {
+    expect(joinRelative("/proj", "")).toBeNull();
+    expect(joinRelative("/proj", "a//b")).toBeNull();
+    expect(joinRelative("/proj", "a/b/")).toBeNull();
+    expect(joinRelative("/proj", "a/ b")).toBe("/proj/a/ b");
+    expect(joinRelative("/proj", "a\\b")).toBeNull();
+    expect(joinRelative("/proj", "a\u0000b")).toBeNull();
+  });
+
+  it("keeps the result inside the canonical root (defense-in-depth)", () => {
+    const joined = joinRelative("/private/tmp/proj", "src/b.ts");
+    expect(joined).toBe("/private/tmp/proj/src/b.ts");
+    expect(isWithinRoot(joined ?? "", "/private/tmp/proj")).toBe(true);
+    // A crafted result is never allowed to walk above root even when segments are odd.
+    expect(joinRelative("/proj", "..%2fetc")).toBe("/proj/..%2fetc");
+    expect(isWithinRoot(joinRelative("/proj", "..%2fetc") ?? "", "/proj")).toBe(true);
+    // Empty root cannot be joined onto.
+    expect(joinRelative("", "a.ts")).toBeNull();
   });
 });
 

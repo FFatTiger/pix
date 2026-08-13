@@ -29,6 +29,27 @@ describe("query keys and options", () => {
     expect(queryKeys.auth.providerStatus("a")).not.toEqual(queryKeys.auth.providerStatus("b"));
   });
 
+  it("file index options key by cwd + q with cwd/q isolation and pass signal", async () => {
+    expect(queryKeys.files.index("/a", "foo")).toEqual(["pix", "files", "index", "/a", "foo"]);
+    expect(queryKeys.files.index("/a", "foo")).not.toEqual(queryKeys.files.index("/b", "foo"));
+    expect(queryKeys.files.index("/a", "foo")).not.toEqual(queryKeys.files.index("/a", "bar"));
+
+    const fetchImpl = vi.fn().mockResolvedValue(json({ matches: [{ path: "a.ts", isDir: false }], truncated: false }));
+    const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const options = createQueryOptions(http);
+    const option = options.files.index("/repo", "foo");
+    expect(option.queryKey).toEqual(["pix", "files", "index", "/repo", "foo"]);
+    expect(option.enabled).toBe(true);
+    expect(options.files.index("/repo", "").enabled).toBe(true); // cwd-gated; component adds q-length gate
+
+    const signal = new AbortController().signal;
+    await option.queryFn!({ signal } as never);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/file-index?cwd=%2Frepo&q=foo",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("parses Protocol session DTOs and rejects a deep mismatch", async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(json({ sessions: [session], revision: 4 })).mockResolvedValueOnce(json({ sessions: [{ ...session, messageCount: -1 }] }));
     const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
