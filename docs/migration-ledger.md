@@ -472,8 +472,8 @@ packages/sessiond/**/*.tsbuildinfo
 - git diff b9374e6..HEAD --check：PASS
 - test:e2e:startup：本机未能复跑——根 build 在 packages/host/src/routes/files.ts 存在 base b9374e6 即复现的预存编译失败（Node v24.18.0 与 @types/node/lib 类型不匹配；父会话用同样 Node v24.18.0 + main node_modules 复现相同 host files.ts TS errors，确认 base/environment blocker）。host 不在本任务范围，无法补齐 CLI 产物，属环境/基线阻塞，非本次改动引入。
 
-残余风险：catalog 是 runtime-core port，其具体实现（Pi SDK JSONL store）返回的 cwd 假定为绝对路径，composition 已防御验证；startup E2E 由父会话 Grok 独立验证。
-独立验证 verdict：PENDING（Grok）
+残余风险：catalog 是 runtime-core port，其具体实现（Pi SDK JSONL store）返回的 cwd 假定为绝对路径，composition 已防御验证。root build/Startup E2E 在当前 Node v24.18.0 + @types/node 组合下被未修改的 Host `files.ts` 类型错误阻塞；Grok 独立确认 candidate/base Host blob 相同，属于基线覆盖缺口。
+独立验证 verdict：PARTIAL（Grok；候选范围无 F1/F2并明确建议合入。独立复验 daemon 15/15、sessiond 134 total=133 pass+1 Windows skip、真实 Pi SDK catalog production probe、并发cold-open 1 read/1 worker、null/malformed/not_found零worker与错误净化、typecheck/build/boundary/architecture/diff-check均PASS；唯一缺口为上述base Host构建阻塞导致Startup E2E不可运行。）
 ```
 
 ## 26. 实现模型说明
