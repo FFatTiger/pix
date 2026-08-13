@@ -545,7 +545,7 @@ root `npm test` runner 本机实测 stall：`npm run test` 触发的 `node scrip
 ## 30. D3A-Files-Search-UI — Client 文件搜索 记录
 
 ```text
-实现：DeepSeek；独立 worktree d3a-files-search-ui，branch feat/d3a-files-search-ui，base main@4f508b1a52c014fa060be17f7381fa364c77849f。纯 Client 只读切片，未改 Host/Protocol/runtime/sessiond/adapter/package-lock/D3A-P0；未改 main、未 merge/push、未另建 worktree。状态 IN_REVIEW（待 Fresh DeepSeek 独立验证）。
+实现：DeepSeek；独立 worktree d3a-files-search-ui，branch feat/d3a-files-search-ui，base main@4f508b1a52c014fa060be17f7381fa364c77849f。纯 Client 只读切片，未改 Host/Protocol/runtime/sessiond/adapter/package-lock/D3A-P0；实现阶段未改 main、未 merge/push、未另建 worktree。状态 DONE（Fresh DeepSeek 独立验证 PASS）。
 
 背景/勘察：Host `GET /v1/file-index?cwd&q` 已 production 挂载，files capability 覆盖；带 q 返回 `{matches:[{path,isDir:false}],truncated}` cap 200（`node_modules`/`.git`/dist 等忽略，git ls-files 优先），q 空返回 legacy `{files}` 全量 shape（Client 永不带 q 请求）。Client 的 schema/resources/urls/queryKeys/options 均已存在（`FileIndexResponseSchema` union、`urls.files.index`、`queryKeys.files.index(cwd,q)`、`options.files.index` 已透传 signal）。真正缺口只在 Client FilesPanel 与安全 relative path helper。
 
@@ -571,5 +571,7 @@ FilesPanel 搜索集成（冻结交互）：
 - 测试模式说明：debounce/搜索 UI 用例用 vitest fake timers，分步 `act`（debounce 推进 → 微任务冲刷 fetch 链 → 非零 timer tick 触发 TanStack notifyManager `setTimeout(0)` → 再次冲刷），单 act 会推迟 query 创建导致假失败（已注释）。
 - 无浏览器视觉验收（DeepSeek 无视觉能力），仅 DOM/a11y 测试（aria-label/aria-live/role=alert/原生键盘语义）覆盖并诚实记录。
 
-残余风险：搜索词最小长度 2、cap 200、Host 侧排序（精确→前缀→basename 前缀→包含）为既有行为，本切片不改变。UI 仅要求可用、能力诚实、错误清晰、搜索立即响应；后续 D3A Mutation（创建/删除/上传）或搜索结果目录联动仍后置。视觉精修不在本阶段。root `npm test` 单命令 runner 本机已知 stall（§29），本切片以 Client 全量 + root build/typecheck/architecture/boundaries 覆盖，未重跑 root runner。
+独立验证 verdict：PASS（Fresh DeepSeek；无 F1/F2，建议合入）。独立使用 worktree candidate source 完成定向 59/59 与 Client 428/428、strict changed-files typecheck、architecture/client boundary/diff-check；额外 `joinRelative` 恶意路径探针 57/57，无任何输入可逃出 canonical root；DOM/race 对抗 9/9 覆盖 StrictMode单请求、capability pending撤回/恢复无闪旧、cwd A→B pending/timer隔离、root未就绪零请求、trim+2字符边界、401固定copy、form submit preventDefault、带q却返回legacy `{files}` union时fail closed。raw error/secret scan与动画diff均零问题，scope精确9文件、工作区clean。独立验证 worktree 无 node_modules，故以 `/tmp` 只读工具链 harness 运行并未改repo；实现者此前已在同一candidate完成官方root build/typecheck/root tests全PASS。
+
+残余风险：搜索词最小长度 2、cap 200、Host 侧排序（精确→前缀→basename 前缀→包含）为既有行为，本切片不改变。UI 仅要求可用、能力诚实、错误清晰、搜索立即响应；后续 D3A Mutation（创建/删除/上传）或搜索结果目录联动仍后置。DeepSeek无视觉能力，本节点无浏览器视觉观感验收，只完成DOM/a11y验证；不夸大视觉质量。
 ```
