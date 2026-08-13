@@ -575,10 +575,10 @@ FilesPanel 搜索集成（冻结交互）：
 
 残余风险：搜索词最小长度 2、cap 200、Host 侧排序（精确→前缀→basename 前缀→包含）为既有行为，本切片不改变。UI 仅要求可用、能力诚实、错误清晰、搜索立即响应；后续 D3A Mutation（创建/删除/上传）或搜索结果目录联动仍后置。DeepSeek无视觉能力，本节点无浏览器视觉观感验收，只完成DOM/a11y验证；不夸大视觉质量。
 ```
-## 31. D2-P3 — Runtime Model Control 记录（IN_REVIEW）
+## 31. D2-P3 — Runtime Model Control 记录（DONE）
 
 ```text
-实现：DeepSeek；独立 worktree d2p3-model-control，branch feat/d2p3-model-control，base main@27cf29890fac429f9605c37f4d554fdfd83f217b。仅解锁真实 `set_model` vertical slice；未做 queue/tools/reload/steer/follow_up/bash/compact/fork，未碰 D3A-P0/Files Search/D1B/package-lock/Protocol/runtime-core/daemon/gateway。未改 main、未 merge/push、未另建 worktree。状态 IN_REVIEW（待 Fresh DeepSeek 独立验证），未标 DONE/PASS。
+实现：DeepSeek；独立 worktree d2p3-model-control，branch feat/d2p3-model-control，base main@27cf29890fac429f9605c37f4d554fdfd83f217b，候选 `79c84ac3cb4e38c533faedc4d166c709f6eb038a`。仅解锁真实 `set_model` vertical slice；未做 queue/tools/reload/steer/follow_up/bash/compact/fork，未碰 D3A-P0/Files Search/D1B/package-lock/Protocol/runtime-core/daemon/gateway。实现阶段未改 main、未 merge/push、未另建 worktree。状态 DONE（Fresh DeepSeek 独立验证 PASS）。
 
 范围（生产 6 文件 + 测试/fixture 7 + docs 1）：
 - Adapter：PRODUCTION_AGENT_CAPABILITIES 精确追加 `runtime.model.set`（保持 prompt/abort/stats/session.rename/thinking.set 顺序与 version 稳定）；真实 adapter internal `set_model` 未重写（sdk-runtime.ts 原实现：catalog resolveModel 后 session.setModel，随后 reapplyPinnedThinking）。未知模型经既有 mapDriverError/sanitizer → 结构化 `invalid_input`（实测 `{code:"invalid_input",message:"unknown model: …",retryable:false,cause:{kind:"model"},details:{sanitized:true}}`，无 raw secret）。无网络生产路径实测：set_model 到有效模型（openai/gpt-5）ok:true 且模型改变、thinkingLevelPinned 保持 true（SDK re-clamp + adapter 重应用 pinned thinking）。
@@ -597,5 +597,7 @@ FilesPanel 搜索集成（冻结交互）：
 
 关键环境根因记录：最初 Runtime E2E 失败（set_thinking_level 后 getSnapshot 仍显示 thinking off，`'off' !== 'high'`）根因不是代码回归——worktree 的 node_modules 是指向主仓 node_modules 的 symlink，E2E 通过 `@fffattiger/pix-*` 解析到主仓 packages/sessiond 的 **陈旧 dist（D2-P2 之前的构建，无 post-success snapshot authority finalization）**，故 set_thinking_level 返回 ok 但 sessiond projection 从不刷新。修复：将 symlink 替换为真实 node_modules（d2p2 worktree 的 known-good 完整安装 hardlink 复制，@fffattiger/* 相对符号链接自动指向本 worktree 的 packages），使 E2E 使用本 worktree 的 fresh dist（含 D2-P3 sessiond 泛化 + set_model finalization）；临时 debug 证实 set_thinking_level 与 set_model 均完成 `finalize ok snapshotThinking=high pinned=true` 后移除。另移除 blank-provider E2E 断言（wire Protocol schema 要求 provider/modelId 为 NonEmptyString，空值在 WS 边界被拒连接，到不了 fixture；fixture 非空校验仅 defense-in-depth）。
 
-残余风险：root `npm run build`/`typecheck` 并行 runner 本机 stall（同 §29），以分包等价覆盖替代并记录。UI 无浏览器视觉验收（DeepSeek 无视觉能力），仅 DOM/a11y 测试（aria-label/aria-live/role=alert、select 原生语义）覆盖并诚实记录。Models 查询仅当 Host `models` capability 存在才发；真实生产 no-network set_model 不需要 auth（SDK setModel 仅模型指针），故 auth 错误 sanitize 由 mapper/UI 层覆盖而非 SDK no-network 路径实测。set_model 的 thinking 绝对档位由 SDK clamp（production-smoke 用 gpt-5 实测 pinned 保持，未断言绝对档位）。
+独立验证 verdict：PASS（Fresh DeepSeek；无 F1/F2，建议合入）。独立构建 candidate-local `node_modules` 解析层并以 realpath/import.meta.resolve 证明 sessiond/adapter/protocol/runtime-core/worker 全部加载 candidate dist，排除 stale-main-dist 假验证。Adapter165、sessiond152 pass/1 Windows skip、Client449、Worker105、Protocol116、Core7、Contract75、Host263、CLI46 全 PASS；Runtime E2E 2轮、Startup、Sessions全PASS。另设计9组sessiond对抗probe：snapshot sessionId mismatch、timeout、不同commandId并发、same-id不同payload、wrong/malformed/inner-id帧、finalization期间get_state、非authority命令0刷新、stop during finalization、连续21次cleanup/busy，全部PASS。确认AUTHORITY_COMMAND_TYPES严格仅thinking/model，错误固定且缓存，epoch/ownership/cleanup无跨写或deadlock。Client 85项定向+449全量覆盖live+双cap/runtime cwd查询、catalog缺失零请求、collision-safe value、无乐观更新、固定错误、cap/cwd/A→B/unmount晚到守卫、Thinking共存。工作区clean、无依赖/进程残留。
+
+残余风险：root `npm run build`/`typecheck` 并行 runner 本机 stall（同 §29），以分包等价覆盖替代并记录。UI 无浏览器视觉验收（DeepSeek 无视觉能力），仅 DOM/a11y 测试（aria-label/aria-live/role=alert、select 原生语义）覆盖并诚实记录。Models 查询仅当 Host `models` capability 存在才发；真实生产 no-network set_model 不需要 auth（SDK setModel 仅模型指针），故 auth 错误 sanitize 由 mapper/UI 层覆盖而非 SDK no-network 路径实测。set_model 的 thinking 绝对档位由 SDK clamp（production-smoke 用 gpt-5 实测 pinned 保持，未断言绝对档位）。独立验证另有一个非阻塞F3：SessionActions测试fetch mock使用test-only `as unknown as typeof fetch`，生产代码不受影响；模型option使用位置index，目录若在选择后、提交前重排可能改变目标，当前目录稳定且select会显示实际待提交项，后续若catalog mutation成为真实场景可改稳定key。
 ```
