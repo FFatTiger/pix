@@ -1,11 +1,12 @@
 import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessiondApplication } from "../application.js";
 import type { ActivationContextProvider, SessiondDependencies, SessiondOptions, SessionMutationPort } from "../service.js";
 import { SessiondService } from "../service.js";
 import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondRpcServer } from "../rpc.js";
+import { SessiondError } from "../errors.js";
 import {
   acquireInstanceLock,
   assertSocketPathLength,
@@ -27,11 +28,6 @@ import {
   createProductionWorkerProcessFactory,
   type ProductionWorkerProcessOptions,
 } from "./worker-process.js";
-import {
-  createStubActivationContext,
-  createStubSessionCatalog,
-  createStubSessionLocator,
-} from "./stubs.js";
 import { resolveRuntimeDir } from "./locator.js";
 import {
   createPiSdkSessionCatalog,
@@ -55,9 +51,16 @@ export interface DaemonOptions {
   workerOptions?: ProductionWorkerProcessOptions;
   /** Override the session locator stub. */
   sessionLocator?: SessionLocatorPort;
-  /** Override the activation context stub. */
+  /**
+   * Override the activation context resolver. Takes priority over the
+   * catalog-derived production default (see {@link createCatalogActivationContext}).
+   */
   activationContext?: ActivationContextProvider;
-  /** Override the catalog stub (pass `null` to run with no catalog). */
+  /**
+   * Override the catalog (pass `null` to run with no catalog). Also controls
+   * the default activation resolver: with no explicit `activationContext` and
+   * no requested cwd, a `null` catalog makes activation fail closed.
+   */
   sessionCatalog?: SessionCatalogPort | null;
   /** Override the session mutation stub. */
   sessionMutation?: SessionMutationPort;
@@ -92,6 +95,52 @@ export interface DaemonHandle {
 }
 
 /**
+ * Validate a catalog-derived working directory used for activation. It must be
+ * a non-empty absolute path with no NUL byte. Relative paths, empty values and
+ * NUL-containing values fail closed with a fixed canonical {@link SessiondError}
+ * that never echoes the offending value. Deliberately NO realpath: a historical
+ * cwd may not currently exist and the Worker/SDK own the open semantics.
+ */
+const assertValidCatalogCwd = (value: string, which: "cwd" | "projectRoot"): void => {
+  if (typeof value !== "string" || value.length === 0 || value.includes("\0") || !isAbsolute(value)) {
+    throw new SessiondError("internal", `session catalog returned an invalid ${which}`);
+  }
+};
+
+/**
+ * Production activation-context resolver, fixed to the cold-open semantics:
+ *
+ * - Explicit `requestedCwd` keeps the override behavior: cwd and projectRoot
+ *   both mirror the requested value. Only `undefined` means "not provided" —
+ *   the RPC schema (`NonEmptyStringSchema.optional()`) already rejects
+ *   blank/empty strings before this resolver is reached, so no truthiness
+ *   guesswork is performed here.
+ * - No `requestedCwd`: derive cwd/projectRoot from the SAME catalog instance
+ *   backing the {@link SessiondDependencies.sessionCatalog} dependency via
+ *   `catalog.readSession` — never a second store, never a spawned worker. The
+ *   catalog is mandatory: a null or missing catalog fails activation closed
+ *   rather than falling back to `/workspace` or `process.cwd()`. The returned
+ *   cwd/projectRoot must be non-empty absolute paths; anything else fails
+ *   closed with a fixed canonical error that never echoes the offending value.
+ */
+function createCatalogActivationContext(catalog: SessionCatalogPort | null | undefined): ActivationContextProvider {
+  return {
+    async resolve(sessionId, _location, requestedCwd) {
+      if (requestedCwd !== undefined) {
+        return { cwd: requestedCwd, projectRoot: requestedCwd };
+      }
+      if (catalog == null) {
+        throw new SessiondError("unavailable", "session catalog is unavailable");
+      }
+      const detail = await catalog.readSession(sessionId);
+      assertValidCatalogCwd(detail.cwd, "cwd");
+      assertValidCatalogCwd(detail.projectRoot, "projectRoot");
+      return { cwd: detail.cwd, projectRoot: detail.projectRoot };
+    },
+  };
+}
+
+/**
  * Build service dependencies, applying any caller overrides.
  *
  * Production default: the catalog and locator are backed by the Pi SDK
@@ -99,9 +148,15 @@ export interface DaemonHandle {
  * `createPiSdkSessionLocator`). Constructing them does NOT spawn a worker or
  * open the network — they are lazy stores that only touch the SDK read-only
  * JSONL API when a method is called, and list/read/context/locate run
- * with zero workers. Test overrides (`sessionCatalog`, including `null` to run
- * with no catalog, and `sessionLocator`) always take priority so unit tests stay
- * deterministic.
+ * with zero workers. The production activation context (see
+ * {@link createCatalogActivationContext}) derives an opened session's
+ * cwd/projectRoot from the SAME catalog instance: an explicit requested cwd
+ * keeps its override, otherwise the recorded session cwd/projectRoot are used,
+ * and a missing catalog fails activation closed instead of falling back to
+ * `/workspace`. Test overrides (`sessionCatalog`, including `null` to run with
+ * no catalog, and `sessionLocator`) always take priority so unit tests stay
+ * deterministic; an explicit `activationContext` override keeps priority and
+ * decouples activation resolution from the catalog.
  */
 function buildDependencies(directory: string, options: DaemonOptions): SessiondDependencies {
   const workerFactory: WorkerProcessFactory =
@@ -109,7 +164,7 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
   const catalog = options.sessionCatalog === undefined ? createPiSdkSessionCatalog() : options.sessionCatalog;
   const deps: SessiondDependencies = {
     sessionLocator: options.sessionLocator ?? createPiSdkSessionLocator(),
-    activationContext: options.activationContext ?? createStubActivationContext(),
+    activationContext: options.activationContext ?? createCatalogActivationContext(catalog),
     workerFactory,
   };
   if (catalog) deps.sessionCatalog = catalog;

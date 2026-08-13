@@ -5,9 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
+import { makeRuntimeError, type SessionCatalogPort, type SessionDetail, type SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondError } from "../src/errors.js";
 import { instanceAlive, readInstanceLock, sessiondPaths } from "../src/control.js";
 import { SessiondRpcClient } from "../src/rpc.js";
+import type { ActivationContextProvider } from "../src/service.js";
+import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
 import { UnavailableWorkerFactory, startDaemon } from "../src/composition/index.js";
 
 const isWindows = process.platform === "win32";
@@ -184,5 +187,228 @@ process.exitCode = code;
     await handle.shutdown();
   } finally {
     await cleanup(dir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Production cold-open activation cwd resolution (fix/sessiond-activation-cwd)
+//
+// The production composition derives an open session's cwd/projectRoot from the
+// SAME catalog instance backing the sessionCatalog dependency. These tests go
+// through the real RPC server + daemon with a recording fake worker factory so
+// they exercise the composition path (buildDependencies -> SessiondService ->
+// RPC), not just the resolver helper in isolation.
+// ---------------------------------------------------------------------------
+
+interface ActivationHarness {
+  handle: Awaited<ReturnType<typeof startDaemon>>;
+  rpc: SessiondRpcClient;
+  workers: FakeWorkerFactory;
+  readCalls: () => number;
+  dir: string;
+}
+
+/** startDaemon with a recording worker, an always-existing locator and an injectable catalog. */
+async function activationHarness(options: {
+  catalog?: SessionCatalogPort | null;
+  readSession?: (sessionId: string) => SessionDetail;
+  activationContext?: ActivationContextProvider;
+} = {}): Promise<ActivationHarness> {
+  const dir = await tempDir();
+  let readCalls = 0;
+  const defaultCatalog: SessionCatalogPort = {
+    async listSessions() { return []; },
+    async readSession(sessionId) {
+      readCalls += 1;
+      return options.readSession
+        ? options.readSession(sessionId)
+        : { sessionId, cwd: "/real/project", projectRoot: "/real/project", entries: [] };
+    },
+    async readSessionContext() { return { sessionId: "", entries: [] }; },
+    async deleteSession() {},
+  };
+  const locator: SessionLocatorPort = {
+    async locate(sessionId) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: true }; },
+    async resolveLeafId() { return "leaf"; },
+  };
+  const workers = new FakeWorkerFactory({ readyDelayMs: 0 });
+  const handle = await startDaemon({
+    directory: dir,
+    workerFactory: workers,
+    sessionLocator: locator,
+    sessionCatalog: options.catalog === undefined ? defaultCatalog : options.catalog,
+    ...(options.activationContext === undefined ? {} : { activationContext: options.activationContext }),
+    serviceOptions: { idleTimeoutMs: 0 },
+  });
+  return { handle, rpc: client(handle), workers, readCalls: () => readCalls, dir };
+}
+
+test("runtime.activate cold-open derives worker cwd/projectRoot from the session catalog", async () => {
+  const h = await activationHarness();
+  try {
+    const result = await h.rpc.call("runtime.activate", { sessionId: "cold" });
+    assert.equal(result.cwd, "/real/project");
+    assert.equal(result.projectRoot, "/real/project");
+    assert.equal(h.workers.starts, 1);
+    const started = h.workers.workers[0]!;
+    assert.equal(started.input.mode, "open");
+    assert.equal(started.input.cwd, "/real/project");
+    assert.equal(started.input.projectRoot, "/real/project");
+    const init = started.sent.find((message) => message.type === "worker.init");
+    assert.equal(init?.type, "worker.init");
+    if (init?.type === "worker.init") {
+      assert.equal(init.payload.cwd, "/real/project");
+      assert.equal(init.payload.projectRoot, "/real/project");
+    }
+    assert.equal(h.readCalls(), 1, "readSession must be consulted exactly once");
+  } finally {
+    await h.handle.shutdown();
+    await cleanup(h.dir);
+  }
+});
+
+test("runtime.activate with an explicit cwd overrides the catalog and skips readSession", async () => {
+  const h = await activationHarness();
+  try {
+    const result = await h.rpc.call("runtime.activate", { sessionId: "cold", cwd: "/override" });
+    assert.equal(result.cwd, "/override");
+    assert.equal(result.projectRoot, "/override");
+    assert.equal(h.workers.starts, 1);
+    assert.equal(h.workers.workers[0]!.input.cwd, "/override");
+    assert.equal(h.workers.workers[0]!.input.projectRoot, "/override");
+    assert.equal(h.readCalls(), 0, "explicit cwd must not consult the catalog");
+  } finally {
+    await h.handle.shutdown();
+    await cleanup(h.dir);
+  }
+});
+
+test("sessionCatalog:null fails activation closed with a fixed error and no worker", async () => {
+  const h = await activationHarness({ catalog: null });
+  try {
+    await assert.rejects(
+      h.rpc.call("runtime.activate", { sessionId: "cold-secret" }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessiondError);
+        assert.equal(error.code, "unavailable");
+        assert.equal(error.message, "session catalog is unavailable");
+        assert.ok(!error.message.includes("cold-secret"), "must not echo the session id");
+        assert.ok(!error.message.includes("/"), "must not echo any path");
+        return true;
+      },
+    );
+    assert.equal(h.workers.starts, 0, "fail-closed activation must not start a worker");
+  } finally {
+    await h.handle.shutdown();
+    await cleanup(h.dir);
+  }
+});
+
+test("catalog not_found survives the RPC boundary sanitized and starts no worker", async () => {
+  const h = await activationHarness({
+    readSession(sessionId) {
+      throw makeRuntimeError("not_found", `session not found: ${sessionId}@secret/path`);
+    },
+  });
+  try {
+    await assert.rejects(
+      h.rpc.call("runtime.activate", { sessionId: "victim-id" }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessiondError);
+        assert.equal(error.code, "not_found", "canonical not_found must survive the boundary");
+        assert.equal(error.message, "session not found", "message must be the fixed sanitized canonical message");
+        assert.ok(!error.message.includes("victim-id"));
+        assert.ok(!error.message.includes("secret"));
+        assert.ok(!error.message.includes("/"));
+        return true;
+      },
+    );
+    assert.equal(h.workers.starts, 0);
+  } finally {
+    await h.handle.shutdown();
+    await cleanup(h.dir);
+  }
+});
+
+test("catalog returning a relative/empty/NUL cwd or projectRoot fails activation closed with no echo", async () => {
+  const cases = [
+    { field: "cwd", value: "rel/path" },
+    { field: "cwd", value: "" },
+    { field: "cwd", value: "/abs\0path" },
+    { field: "projectRoot", value: "relative" },
+    { field: "projectRoot", value: "" },
+    { field: "projectRoot", value: "/abs\0root" },
+  ] as const;
+  for (const { field, value } of cases) {
+    const h = await activationHarness({
+      readSession(sessionId) {
+        const detail: SessionDetail = { sessionId, cwd: "/abs", projectRoot: "/abs", entries: [] };
+        if (field === "cwd") detail.cwd = value;
+        else detail.projectRoot = value;
+        return detail;
+      },
+    });
+    try {
+      await assert.rejects(
+        h.rpc.call("runtime.activate", { sessionId: "cold" }),
+        (error: unknown) => {
+          assert.ok(error instanceof SessiondError);
+          assert.equal(error.code, "internal");
+          assert.equal(
+            error.message,
+            field === "cwd" ? "session catalog returned an invalid cwd" : "session catalog returned an invalid projectRoot",
+          );
+          if (value !== "") {
+            assert.ok(!error.message.includes(value), `must not echo the offending ${field} value`);
+          }
+          return true;
+        },
+      );
+      assert.equal(h.workers.starts, 0, `invalid ${field} must fail closed with no worker`);
+    } finally {
+      await h.handle.shutdown();
+      await cleanup(h.dir);
+    }
+  }
+});
+
+test("explicit activationContext override wins even when sessionCatalog is null", async () => {
+  const h = await activationHarness({
+    catalog: null,
+    activationContext: { async resolve() { return { cwd: "/override-root", projectRoot: "/override-root" }; } },
+  });
+  try {
+    const result = await h.rpc.call("runtime.activate", { sessionId: "cold" });
+    assert.equal(result.cwd, "/override-root");
+    assert.equal(result.projectRoot, "/override-root");
+    assert.equal(h.workers.starts, 1);
+    assert.equal(h.workers.workers[0]!.input.cwd, "/override-root");
+    assert.equal(h.readCalls(), 0);
+  } finally {
+    await h.handle.shutdown();
+    await cleanup(h.dir);
+  }
+});
+
+test("sessions.resolve and runtime.activate share the catalog-derived resolver (resolve is zero-worker)", async () => {
+  const h = await activationHarness();
+  try {
+    const resolved = await h.rpc.call("sessions.resolve", { sessionId: "cold" });
+    assert.equal(resolved.sessionId, "cold");
+    assert.equal(resolved.sessionFile, "/sessions/cold.jsonl");
+    assert.equal(resolved.cwd, "/real/project");
+    assert.equal(resolved.projectRoot, "/real/project");
+    assert.equal(h.workers.starts, 0, "sessions.resolve must never start a worker");
+    assert.equal(h.readCalls(), 1);
+
+    const activated = await h.rpc.call("runtime.activate", { sessionId: "cold" });
+    assert.equal(activated.cwd, "/real/project");
+    assert.equal(activated.projectRoot, "/real/project");
+    assert.equal(h.workers.starts, 1);
+    assert.equal(h.workers.workers[0]!.input.cwd, "/real/project");
+    assert.equal(h.readCalls(), 2, "one readSession per resolution path");
+  } finally {
+    await h.handle.shutdown();
+    await cleanup(h.dir);
   }
 });
