@@ -503,6 +503,6 @@ packages/sessiond/**/*.tsbuildinfo
 - git diff 2cfa98a..HEAD --check：PASS
 - test:e2e:startup：候选构建后本机可跑。raw 环境 3/3 复现 401（/v1/capabilities，gate enabled）——根因是本机 `~/.pi/pix.json`（2026-08-12 写入，仓库外）配置 auth.password+disabled:false，属基线/环境阻塞，与本次改动无关（gate/auth/security 源码与 base 逐字节一致；E2E 失败路径在首个非公开路径 fetch 即停，files.ts 未执行；直连探针：health/bootstrap 200、capabilities 无 cookie 401、gate/status 报 enabled、真实密码登录后 capabilities 200）。按文档化 env override 使环境回到 E2E 假定的无 gate 状态：`PIX_AUTH_DISABLED=true npm run test:e2e:startup` PASS 2/2（{"ok":true,...,"wsMaxUpload":26214400}）。未绕过认证、未改 E2E/gate/security 源码。
 
-残余风险：本机 `~/.pi/pix.json` 存在 gate 密码，raw Startup E2E 需在干净（无 gate）环境才能直接 PASS；实现层对 ReadStream 的 string 分支为防御性（encoding:null 下运行时恒为 Buffer），未单独触发，由字节级用例覆盖 Buffer 路径。
-独立验证 verdict：PENDING（待 Grok）。状态 IN_REVIEW（待 Grok），不提前 DONE。
+残余风险：本机 `~/.pi/pix.json` 存在已启用 Gate，raw Startup E2E 需在干净（无 gate）环境才能直接 PASS；实现层对 ReadStream 的 string 分支为防御性（encoding:null 下运行时恒为 Buffer），Buffer路径已由字节级用例覆盖。
+独立验证 verdict：PASS（Grok；无 F1/F2，建议合入。独立复现base在@types/node 22.20.1的TS2345/TS2677/TS2339，candidate在22/25均编译；Host263/263、boundary/architecture/diff-check、二进制70KiB raw/range/suffix/416、multipart string/File/duplicate/overflow/arrayBuffer rejection/symlink/0600/temp cleanup/no-leak对抗均PASS；`PIX_AUTH_DISABLED=true` Startup E2E 2/2 PASS。父会话另以官方worktree依赖完成root build、9 workspace官方tsconfig等价typecheck与Startup E2E 2/2。）状态 DONE。
 ```
