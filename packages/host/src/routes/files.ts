@@ -27,6 +27,37 @@ interface FileRouteDeps {
   defaultCwdFactory?: DefaultCwdFactory;
 }
 
+/**
+ * Minimal structural shape of an uploaded multipart file. Deliberately not the
+ * nominal global `File`: Node's `buffer.File` and undici's `File` disagree on
+ * `[Symbol.toStringTag]`, which makes `value instanceof File` an invalid type
+ * predicate under Node v24 / @types/node. Only the members the upload path
+ * needs are declared (the `type` field is not required).
+ */
+interface UploadFile {
+  name: string;
+  size: number;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+/** Actual union type yielded by `FormData#getAll` (string | File). */
+type UploadFormEntry = ReturnType<FormData["getAll"]>[number];
+
+/**
+ * Fail-closed guard: excludes string and accepts only objects that structurally
+ * satisfy the minimal UploadFile shape. The multipart parser only ever yields
+ * string | File, but an arbitrary object is never trusted. `instanceof File` is
+ * deliberately avoided because it is nominal per-realm and breaks cross-realm
+ * uploads.
+ */
+function isUploadFile(value: UploadFormEntry): value is UploadFormEntry & UploadFile {
+  if (typeof value === "string") return false;
+  if (typeof value.name !== "string") return false;
+  if (typeof value.size !== "number" || !Number.isSafeInteger(value.size) || value.size < 0) return false;
+  if (typeof value.arrayBuffer !== "function") return false;
+  return true;
+}
+
 function requiredPath(c: Context<HostEnv>): string {
   const value = c.req.query("path");
   if (!value) throw new HttpError(400, "PATH_REQUIRED", "path query parameter is required");
@@ -97,10 +128,20 @@ async function streamAuthorizedFile(
     await handle.close();
     return new Response(null, { status: 416, headers: { ...baseHeaders, "Content-Range": `bytes */${info.size}` } });
   }
-  const stream = handle.createReadStream(range ? { start: range.start, end: range.end } : {});
+  // encoding: null keeps ReadStream emitting Buffers (the default) and is the
+  // type-safe option under the Node24 declarations. The "data" event is still
+  // typed as string | Buffer, so accept both: strings are UTF-8 encoded with
+  // TextEncoder (never via the UTF-16 numeric path), Buffers are copied with
+  // new Uint8Array(chunk) so the enqueued bytes never expose the Buffer's
+  // underlying (possibly pooled) ArrayBuffer beyond byteLength.
+  const stream = handle.createReadStream(range ? { start: range.start, end: range.end, encoding: null } : { encoding: null });
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      stream.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+      const encoder = new TextEncoder();
+      stream.on("data", (chunk: string | Buffer) => {
+        const bytes = typeof chunk === "string" ? encoder.encode(chunk) : new Uint8Array(chunk);
+        controller.enqueue(bytes);
+      });
       stream.once("end", () => controller.close());
       stream.once("error", (error) => controller.error(error));
     },
@@ -113,7 +154,7 @@ async function streamAuthorizedFile(
 }
 
 async function writeUploadedFile(
-  roots: AllowedRootService, directory: string, file: File, overwrite: boolean,
+  roots: AllowedRootService, directory: string, file: UploadFile, overwrite: boolean,
 ): Promise<void> {
   const target = await roots.authorizeChild(directory, file.name);
   const authorizedParent = await roots.authorizeExisting(directory, "directory");
@@ -188,7 +229,7 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
     if (!type.toLowerCase().startsWith("multipart/form-data;")) throw new HttpError(415, "UNSUPPORTED_MEDIA_TYPE", "multipart/form-data is required");
     const bytes = await readBoundedBody(c.req.raw, maxTotal + 1024 * 1024);
     const parsed = await new Request(c.req.url, { method: "POST", headers: { "content-type": type }, body: bytes }).formData();
-    const files = parsed.getAll("files").filter((value): value is File => value instanceof File);
+    const files = parsed.getAll("files").filter(isUploadFile);
     if (files.length === 0) throw new HttpError(400, "NO_FILES", "No files selected");
     const names = new Set<string>();
     let total = 0;

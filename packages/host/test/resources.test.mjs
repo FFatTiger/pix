@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, renameSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, renameSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AsyncMutex, KeyedMutex } from "../dist/resources/mutex.js";
@@ -147,6 +147,49 @@ test("uploads enforce names, size, conflicts and never follow symlink targets", 
   res = await upload([["big", "123456"]]); assert.equal(res.status, 413);
   const outside = temp("pi-upload-outside-"); const secret = join(outside, "secret"); writeFileSync(secret, "safe"); symlinkSync(secret, join(root, "linked"));
   res = await upload([["linked", "owned"]], "overwrite"); assert.equal(res.status, 409); assert.equal(readFileSync(secret, "utf8"), "safe");
+});
+
+test("uploads ignore non-file text fields sharing the files name and still write real files byte-exactly", async () => {
+  const { root, app } = await fixture();
+  const form = new FormData();
+  form.append("files", "plain-text-field-value"); // non-file text entry under the same "files" name
+  form.append("files", new File(["héllo—wörld ✓", Buffer.from([0x00, 0xff, 0x80, 0xc3, 0x28, 0x00, 0x1b])], "bin.dat"));
+  const res = await app.request(`http://localhost/v1/files?path=${encodeURIComponent(root)}`, { method: "POST", headers: headers(), body: form });
+  assert.equal(res.status, 201);
+  assert.deepEqual((await res.json()).uploaded, ["bin.dat"]);
+  assert.deepEqual([...readFileSync(join(root, "bin.dat"))], [0x68, 0xc3, 0xa9, 0x6c, 0x6c, 0x6f, 0xe2, 0x80, 0x94, 0x77, 0xc3, 0xb6, 0x72, 0x6c, 0x64, 0x20, 0xe2, 0x9c, 0x93, 0x00, 0xff, 0x80, 0xc3, 0x28, 0x00, 0x1b]);
+  assert.equal(readdirSync(root).filter((entry) => entry.startsWith(".pix-upload-")).length, 0, "no leftover temp files");
+});
+
+test("uploads reject a form whose only files entry is a text field (NO_FILES)", async () => {
+  const { root, app } = await fixture();
+  const form = new FormData();
+  form.append("files", "just a text field");
+  const res = await app.request(`http://localhost/v1/files?path=${encodeURIComponent(root)}`, { method: "POST", headers: headers(), body: form });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).code, "NO_FILES");
+  assert.equal(readdirSync(root).filter((entry) => entry.startsWith(".pix-upload-")).length, 0);
+});
+
+test("file raw and range streaming preserve exact bytes including multibyte binary", async () => {
+  const { root, app } = await fixture();
+  const bytes = Buffer.concat([
+    Buffer.from("héllo—wörld ✓ 日本語", "utf8"), // multibyte non-ASCII text
+    Buffer.from([0x00, 0xff, 0xfe, 0x80, 0xc3, 0x28, 0x00, 0x1b, 0x9c, 0x00]), // bytes unsafe as decoded text
+  ]);
+  writeFileSync(join(root, "blob.bin"), bytes);
+  const raw = await app.request(`http://localhost/v1/files?op=raw&path=${encodeURIComponent(join(root, "blob.bin"))}`, { headers: headers() });
+  assert.equal(raw.status, 200);
+  assert.equal(raw.headers.get("content-length"), String(bytes.length));
+  assert.deepEqual([...Buffer.from(await raw.arrayBuffer())], [...bytes]);
+  const mid = Math.floor(bytes.length / 2);
+  const range = await app.request(`http://localhost/v1/files?op=raw&path=${encodeURIComponent(join(root, "blob.bin"))}`, { headers: headers({ range: `bytes=${mid}-${bytes.length - 1}` }) });
+  assert.equal(range.status, 206);
+  assert.equal(range.headers.get("content-range"), `bytes ${mid}-${bytes.length - 1}/${bytes.length}`);
+  assert.equal(range.headers.get("content-length"), String(bytes.length - mid));
+  assert.deepEqual([...Buffer.from(await range.arrayBuffer())], [...bytes.subarray(mid)]);
+  const suffix = await app.request(`http://localhost/v1/files?op=raw&path=${encodeURIComponent(join(root, "blob.bin"))}`, { headers: headers({ range: "bytes=-4" }) });
+  assert.deepEqual([...Buffer.from(await suffix.arrayBuffer())], [...bytes.subarray(bytes.length - 4)]);
 });
 
 test("cwd expansion is local-policy only and LAN cannot self-authorize", async () => {
