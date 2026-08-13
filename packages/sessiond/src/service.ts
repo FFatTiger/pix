@@ -130,7 +130,7 @@ interface RecordState {
   pendingSnapshots: Map<string, PendingSnapshot>;
   /**
    * Per-commandId singleflight for post-success snapshot authority
-   * finalization (set_thinking_level / set_model). These commands mutate
+   * finalization (set_thinking_level / set_model / set_auto_retry). These commands mutate
    * runtime state that is NOT carried on the wire `runtime_state_changed`
    * event (signal-only), so sessiond must refresh via a bounded
    * worker.getSnapshot and only then publish a terminal result.
@@ -152,7 +152,7 @@ interface RecordState {
 
 /**
  * Commands whose success requires an authoritative snapshot refresh before a
- * terminal result may be published/cached (D2-P2/P3). The projection is the
+ * terminal result may be published/cached (D2-P2/P3/P4). The projection is the
  * attach/resume authority; the wire `runtime_state_changed` event is
  * signal-only. Extend only for commands that mutate state absent from the
  * wire event.
@@ -160,6 +160,7 @@ interface RecordState {
 const AUTHORITY_COMMAND_TYPES = new Set<RuntimeCommand["type"]>([
   "set_thinking_level",
   "set_model",
+  "set_auto_retry",
 ]);
 
 /**
@@ -480,7 +481,7 @@ export class SessiondService {
         }
         clearTimeout(pending.timer);
         record.pendingCommands.delete(message.id);
-        // set_thinking_level / set_model success must not be cached or returned
+        // set_thinking_level / set_model / set_auto_retry success must not be cached or returned
         // until the projection has converged via a bounded worker.getSnapshot
         // refresh. Defer cache + resolve through the per-commandId singleflight
         // so same-id retries cannot observe a pre-authority success.
@@ -675,7 +676,7 @@ export class SessiondService {
   }
 
   /**
-   * D2-P2/P3 authority: `set_thinking_level` / `set_model` mutate runtime
+   * D2-P2/P3/P4 authority: `set_thinking_level` / `set_model` / `set_auto_retry` mutate runtime
    * state that is NOT carried on the wire `runtime_state_changed` event
    * (signal-only). Sessiond projection is the attach/resume authority, so a
    * successful authority command must refresh via worker.getSnapshot and only

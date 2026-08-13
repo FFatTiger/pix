@@ -785,3 +785,141 @@ test("non-finite byte and bufferedAmount limits cannot disable fail-closed bound
   await wait();
   assert.equal(outboundSession.closed.code, 1009);
 });
+
+// --- D2-P4: independent queued-turn lane (steer/follow_up) --------------------
+
+const steerFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "steer", message: "steer" } } });
+const followFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "follow_up", message: "follow" } } });
+const promptFrame = (id) => cmdFrame(id);
+const getSnapshotFrame = (id) => JSON.stringify({ type: "getSnapshot", id, payload: { sessionId: "s1" } });
+const createFrame = (id) => JSON.stringify({ type: "create", id, payload: { createRequestId: id, cwd: "/p", projectRoot: "/p" } });
+const okByType = (p) => ({ commandId: p.command.commandId, result: { ok: true, type: p.command.type } });
+const commandCalls = (client) => client.calls.filter((c) => c.method === "runtime.command");
+const responseIds = (session) => session.sent.map((f) => JSON.parse(f)).filter((m) => m.type === "response").map((m) => m.id);
+
+test("D2-P4: steer/follow_up dispatch on the queued-turn lane while a prompt HOLs the serial lane; responses in FIFO order", async () => {
+  const client = new FakeClient();
+  // prompt hangs forever on the serial lane; steer/follow resolve immediately.
+  client.handlers["runtime.command"] = (p) => (p.command.type === "prompt" ? hang() : okByType(p));
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+
+  session.receive(promptFrame("p1")); // serial lane dispatches + RPC hangs
+  await wait();
+  session.receive(steerFrame("s1")); // queued-turn lane → must NOT be HOL-blocked
+  await wait();
+  session.receive(followFrame("f1")); // queued-turn lane FIFO after s1
+  await wait();
+
+  // steer + follow both opened an RPC while the prompt is still hanging.
+  const cmds = commandCalls(client);
+  assert.equal(cmds.length, 3, "prompt + steer + follow must each open an RPC");
+  assert.deepEqual(cmds.map((c) => c.params.command.type).sort(), ["follow_up", "prompt", "steer"]);
+  // responses for steer + follow arrived (prompt's response is still pending).
+  const ids = responseIds(session);
+  assert.ok(ids.includes("s1"), `responses=${ids.join(",")}`);
+  assert.ok(ids.includes("f1"), `responses=${ids.join(",")}`);
+  assert.ok(!ids.includes("p1"), "hung prompt must not have a response");
+  // queued-turn lane is FIFO: s1 response before f1 response.
+  assert.ok(ids.indexOf("s1") < ids.indexOf("f1"), `order=${ids.join(",")}`);
+  assert.ok(!session.closed, "socket must stay open");
+});
+
+test("D2-P4: ordinary getSnapshot still HOLs behind a long prompt on the serial lane", async () => {
+  const client = new FakeClient();
+  let resolvePrompt;
+  client.handlers["runtime.command"] = (p) => {
+    if (p.command.type === "prompt") return new Promise((res) => { resolvePrompt = res; });
+    return okByType(p);
+  };
+  client.handlers["runtime.getSnapshot"] = { snapshot: snapshot("s1") };
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+
+  session.receive(promptFrame("p1")); // serial lane dispatches + RPC pending
+  await wait();
+  session.receive(getSnapshotFrame("g1")); // serial lane → queued behind p1
+  await wait();
+  // getSnapshot must NOT open an RPC while the prompt is pending.
+  assert.equal(client.calls.filter((c) => c.method === "runtime.getSnapshot").length, 0);
+
+  resolvePrompt({ commandId: "p1", result: { ok: true, type: "prompt" } }); // prompt settles
+  await wait();
+  // only now does the queued getSnapshot dispatch.
+  assert.equal(client.calls.filter((c) => c.method === "runtime.getSnapshot").length, 1);
+  assert.ok(responseIds(session).includes("g1"));
+  assert.ok(!session.closed);
+});
+
+test("D2-P4: queued-turn lane overflow fails closed 1009 and opens no extra RPC", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 2, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+  session.receive(steerFrame("s1")); // queued-turn lane dispatches + RPC hangs
+  await wait();
+  session.receive(steerFrame("s2")); // queued behind s1 (pending = 2)
+  await wait();
+  session.receive(steerFrame("s3")); // 3rd pending queued-turn frame → overflow
+  await wait();
+  assert.equal(session.closed.code, 1009);
+  // only s1 dispatched (its RPC hung); s2 short-circuited, s3 rejected — no extra RPC.
+  assert.equal(commandCalls(client).length, 1);
+});
+
+test("D2-P4: lane overflow logs lane + count + bytes, never the raw frame", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  const warned = [];
+  const gw = makeGateway(client, {
+    inbound: { maxSerialFrames: 2, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 },
+    logger: { warn: (msg, fields) => warned.push({ msg, fields }) },
+  });
+  const session = await connect(gw);
+  session.receive(steerFrame("s1"));
+  await wait();
+  session.receive(steerFrame("s2"));
+  await wait();
+  session.receive(steerFrame("s3")); // overflow
+  await wait();
+  assert.equal(session.closed.code, 1009);
+  assert.equal(warned.length, 1);
+  assert.match(warned[0].msg, /inbound overflow/);
+  assert.equal(warned[0].fields.lane, "queued-turn");
+  assert.ok(Number.isInteger(warned[0].fields.pending));
+  assert.ok(Number.isInteger(warned[0].fields.bytes));
+  // no raw frame body (the steer message text / frame id) leaks into the log.
+  assert.equal(JSON.stringify(warned).includes("steer me"), false);
+  assert.equal(JSON.stringify(warned).includes("s3"), false);
+});
+
+test("D2-P4: browser close short-circuits queued tasks on BOTH lanes (no RPC)", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+  session.receive(promptFrame("p1")); // serial: dispatched + RPC hangs
+  session.receive(steerFrame("s1")); // queued-turn: dispatched + RPC hangs
+  session.receive(promptFrame("p2")); // serial: queued behind p1
+  session.receive(steerFrame("s2")); // queued-turn: queued behind s1
+  await wait();
+  session.close(); // browser disconnect
+  await wait();
+  // Only the two dispatched commands opened RPCs; queued p2/s2 short-circuit.
+  assert.equal(commandCalls(client).length, 2);
+});
+
+test("D2-P4: create stays on the serial lane and never runs concurrently with a pending prompt", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  client.handlers["runtime.create"] = { sessionId: "new", epoch: "e1", created: true, cwd: "/p", projectRoot: "/p", workerStatus: "ready" };
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+  session.receive(promptFrame("p1")); // serial lane dispatched + RPC hangs
+  await wait();
+  session.receive(createFrame("cr1")); // serial lane → queued behind p1
+  await wait();
+  // create must NOT dispatch concurrently with the hanging prompt.
+  assert.equal(client.calls.filter((c) => c.method === "runtime.create").length, 0);
+  assert.ok(!session.closed, "socket stays open (create is queued, not rejected)");
+});

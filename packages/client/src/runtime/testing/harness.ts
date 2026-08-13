@@ -153,6 +153,8 @@ export function snapshotPayload(overrides: Partial<{
   thinkingLevel?: string;
   thinkingLevelPinned?: boolean;
   model?: { provider: string; id: string } | null;
+  autoRetryEnabled?: boolean;
+  queuedMessages?: { steering: { message: string; images?: { type: "image"; data: string; mimeType: "image/png" }[] }[]; followUp: { message: string; images?: { type: "image"; data: string; mimeType: "image/png" }[] }[] };
 }> = {}): {
   sessionId: string; cwd: string; projectRoot: string; epoch: string; lastEventId: number; workerStatus: string; snapshot: unknown; resumeStatus: string;
 } {
@@ -179,6 +181,8 @@ export function snapshotPayload(overrides: Partial<{
         messageCount: overrides.lastEventId ?? 0,
         ...(overrides.thinkingLevel === undefined ? {} : { thinkingLevel: overrides.thinkingLevel }),
         ...(overrides.thinkingLevelPinned === undefined ? {} : { thinkingLevelPinned: overrides.thinkingLevelPinned }),
+        ...(overrides.autoRetryEnabled === undefined ? {} : { autoRetryEnabled: overrides.autoRetryEnabled }),
+        ...(overrides.queuedMessages === undefined ? {} : { queuedMessages: overrides.queuedMessages }),
       },
       capabilities: { capabilities: overrides.capabilities ?? ["runtime.prompt", "runtime.abort"], version: 1 },
       streaming: { active: false, phase: "idle" },

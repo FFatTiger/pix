@@ -68,6 +68,9 @@ describe("public production SDK factory smoke", () => {
           "runtime.session.rename",
           "runtime.thinking.set",
           "runtime.model.set",
+          "runtime.steer",
+          "runtime.follow_up",
+          "runtime.queue",
         ]);
 
         // Baseline query: get_state (always available, no capability gate).
@@ -233,12 +236,59 @@ describe("public production SDK factory smoke", () => {
           assert.equal(reload.error.code, "unsupported_capability");
           assert.match(reload.error.message, /runtime\.reload/);
         }
-        // runtime.queue is NOT in the production surface.
-        const queue = await port.execute({ type: "clear_queue" });
-        assert.equal(queue.ok, false);
-        if (!queue.ok) {
-          assert.equal(queue.error.code, "unsupported_capability");
-          assert.match(queue.error.message, /runtime\.queue/);
+      } finally {
+        await port.close("user");
+      }
+    });
+  });
+
+  it("production queue control: steer/follow_up enqueue, clear_queue empties, set_auto_retry updates state (no network)", async () => {
+    await withAgentDir(async (root) => {
+      const cwd = join(root, "workspace");
+      await mkdir(cwd, { recursive: true });
+      const port = await new PiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES }).create({
+        cwd,
+        toolNames: [],
+        thinkingLevel: "off",
+        thinkingLevelPinned: true,
+        name: "D2-P4 Smoke",
+      });
+      try {
+        // Steering / following-up while idle still enqueues: the SDK exposes
+        // getSteeringMessages()/getFollowUpMessages() and emits queue_update,
+        // which the adapter reconciles into snapshot.state.queuedMessages.
+        const steer = await port.execute({ type: "steer", message: "steer while idle" });
+        assert.equal(steer.ok, true, JSON.stringify(steer));
+        const follow = await port.execute({ type: "follow_up", message: "follow while idle" });
+        assert.equal(follow.ok, true, JSON.stringify(follow));
+
+        const queued = await port.execute({ type: "get_state" });
+        assert.equal(queued.ok, true);
+        if (queued.ok && queued.type === "get_state") {
+          const texts = [...(queued.state.queuedMessages?.steering ?? []), ...(queued.state.queuedMessages?.followUp ?? [])]
+            .map((turn) => turn.message);
+          assert.ok(texts.includes("steer while idle"), `steering=${JSON.stringify(queued.state.queuedMessages?.steering)}`);
+          assert.ok(texts.includes("follow while idle"), `followUp=${JSON.stringify(queued.state.queuedMessages?.followUp)}`);
+        }
+
+        // clear_queue empties both queues (no network; the driver clearQueue is local).
+        const cleared = await port.execute({ type: "clear_queue" });
+        assert.equal(cleared.ok, true, JSON.stringify(cleared));
+        const afterClear = await port.execute({ type: "get_state" });
+        assert.equal(afterClear.ok, true);
+        if (afterClear.ok && afterClear.type === "get_state") {
+          assert.equal(afterClear.state.queuedMessages?.steering?.length ?? 0, 0);
+          assert.equal(afterClear.state.queuedMessages?.followUp?.length ?? 0, 0);
+          assert.equal(afterClear.state.pendingMessageCount, 0);
+        }
+
+        // set_auto_retry is a pure local setting (no network); state reflects it.
+        const retry = await port.execute({ type: "set_auto_retry", enabled: true });
+        assert.equal(retry.ok, true, JSON.stringify(retry));
+        const afterRetry = await port.execute({ type: "get_state" });
+        assert.equal(afterRetry.ok, true);
+        if (afterRetry.ok && afterRetry.type === "get_state") {
+          assert.equal(afterRetry.state.autoRetryEnabled, true);
         }
       } finally {
         await port.close("user");

@@ -91,9 +91,9 @@ export class FakeWorkerConnection implements WorkerConnection {
           this.runningPrompt = { id: message.id, commandId: command.commandId, sessionId: message.payload.sessionId, timer };
           return;
         }
-        // D2-P2/P3: set_thinking_level / set_model mutate the authoritative
+        // D2-P2/P3/P4: set_thinking_level / set_model / set_auto_retry mutate the authoritative
         // snapshot so a subsequent worker.getSnapshot (sessiond post-success
-        // refresh) sees the pin / new model.
+        // refresh) sees the pin / new model / auto-retry flag.
         if (command.type === "set_thinking_level" && typeof command.level === "string") {
           this.liveSnapshot = {
             ...this.liveSnapshot,
@@ -114,6 +114,15 @@ export class FakeWorkerConnection implements WorkerConnection {
             state: {
               ...this.liveSnapshot.state,
               model: { provider: command.provider, id: command.modelId },
+            },
+          };
+        }
+        if (command.type === "set_auto_retry" && typeof command.enabled === "boolean") {
+          this.liveSnapshot = {
+            ...this.liveSnapshot,
+            state: {
+              ...this.liveSnapshot.state,
+              autoRetryEnabled: command.enabled,
             },
           };
         }

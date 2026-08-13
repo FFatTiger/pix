@@ -603,6 +603,9 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
           "runtime.session.rename",
           "runtime.thinking.set",
           "runtime.model.set",
+          "runtime.steer",
+          "runtime.follow_up",
+          "runtime.queue",
         ],
         version: 1,
       },
@@ -734,7 +737,7 @@ async function scenarioHostRestartResume(stack, projectDir) {
     lastEventId = snap.payload.lastEventId;
     // Resume attach still carries the authoritative runtime capability set.
     assert.deepEqual(snap.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
       version: 1,
     });
 
@@ -885,7 +888,7 @@ async function scenarioEpochChangeNoAutoResend(stack, projectDir) {
     // After an epoch change (stop+reactivate), the freshly primed attach snapshot
     // still carries the authoritative runtime capability set.
     assert.deepEqual(snap2.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
       version: 1,
     });
     // epoch may equal if makeEpoch collides (UUID); force assert via status if needed.
@@ -1128,7 +1131,7 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     assert.equal(snap.type, "snapshot");
     // Attach snapshot carries the D2-P1/D2-P2 production capability surface.
     assert.deepEqual(snap.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
       version: 1,
     });
 
@@ -1216,7 +1219,7 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     assert.equal(reattach.payload.snapshot.state.thinkingLevel, "high", JSON.stringify(reattach.payload.snapshot.state));
     assert.equal(reattach.payload.snapshot.state.thinkingLevelPinned, true, JSON.stringify(reattach.payload.snapshot.state));
     assert.deepEqual(reattach.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
       version: 1,
     });
 
@@ -1277,18 +1280,18 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     assert.equal(reattachModel.payload.snapshot.state.thinkingLevel, "high");
     assert.equal(reattachModel.payload.snapshot.state.thinkingLevelPinned, true);
     assert.deepEqual(reattachModel.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
       version: 1,
     });
 
     // Closed capabilities must remain unsupported on the production surface.
     // Note: clear_queue is an interrupt-only wire type (cannot go via command
-    // envelope); cover queue via set_auto_retry instead. set_model is now open;
-    // tools/reload/queue stay closed.
+    // envelope). set_model is now open (D2-P3) and queue (D2-P4) is now open
+    // (steer/follow_up commands + clear_queue interrupt + set_auto_retry);
+    // tools/reload stay closed.
     for (const [type, extra, token] of [
       ["set_tools", { toolNames: [] }, "runtime.tools.write"],
       ["reload", {}, "runtime.reload"],
-      ["set_auto_retry", { enabled: false }, "runtime.queue"],
     ]) {
       const closed = await client.command(sessionId, {
         commandId: `light-closed-${type}-${Date.now()}`,
@@ -1310,6 +1313,130 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
       thinkingLevelPinned: true,
       model: { provider: "openai", id: "gpt-5" },
     };
+  } finally {
+    client.close();
+  }
+}
+
+async function scenarioD2P4QueueControl(stack, projectDir) {
+  // Single browser connection (RuntimeWsClient), real chain:
+  //   Browser WS → Host gateway (dual-lane: serial + queued-turn) → sessiond →
+  //   R2 child → R1 worker-main → fixture.
+  // A long (__block__) prompt runs on the gateway's serial lane; steer/follow_up
+  // commands are routed to the independent queued-turn lane (D2-P4) so they are
+  // NOT HOL-blocked behind the running prompt. Interrupts (clear_queue / abort)
+  // bypass both lanes. getSnapshot/set_auto_retry stay on the serial lane, so
+  // they run after the block prompt settles (abort first).
+  const client = new RuntimeWsClient(stack.host.wsUrl);
+  await client.connect();
+  try {
+    await client.handshake();
+    const created = await client.create({
+      cwd: projectDir,
+      projectRoot: projectDir,
+      createRequestId: `cr-queue-${Date.now()}`,
+    });
+    const sessionId = created.sessionId;
+    const snap = await client.attach(sessionId);
+    assert.equal(snap.type, "snapshot");
+    // D2-P4 production surface = prompt/abort/stats/rename/thinking/model + steer/follow_up/queue.
+    assert.deepEqual(snap.payload.snapshot.capabilities, {
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
+      version: 1,
+    });
+    // Base state: empty queue + pendingMessageCount 0.
+    assert.deepEqual(snap.payload.snapshot.state.queuedMessages, { steering: [], followUp: [] });
+    assert.equal(snap.payload.snapshot.state.pendingMessageCount, 0);
+
+    // Start a long (block) prompt that keeps running while we steer/follow.
+    const promptId = `queue-long-${Date.now()}`;
+    const promptPromise = client.command(sessionId, {
+      commandId: promptId,
+      type: "prompt",
+      message: "__block__ queue control",
+    });
+    await client.waitFor(
+      (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "agent_start",
+      { label: "queue agent_start" },
+    );
+
+    // steer + follow_up dispatch on the queued-turn lane WHILE the prompt runs.
+    const steerRes = await client.command(sessionId, { commandId: `queue-steer-${Date.now()}`, type: "steer", message: "steer me" });
+    assert.equal(steerRes.payload.ok, true, JSON.stringify(steerRes.payload));
+    assert.equal(steerRes.payload.result.result.ok, true);
+    const followRes = await client.command(sessionId, { commandId: `queue-follow-${Date.now()}`, type: "follow_up", message: "follow me" });
+    assert.equal(followRes.payload.ok, true, JSON.stringify(followRes.payload));
+    assert.equal(followRes.payload.result.result.ok, true);
+
+    // queue_update events converge on the wire while the prompt is still running.
+    await client.waitFor(
+      (m) => m.type === "event" && m.payload?.type === "queue_update" && (m.payload?.steering?.length ?? 0) > 0 && (m.payload?.followUp?.length ?? 0) > 0,
+      { label: "queue_update both types" },
+    );
+
+    // Abort the block prompt (interrupt bypasses both lanes). The queued turns
+    // are NOT cleared by abort, so the post-abort snapshot shows both types.
+    const ir = await client.interrupt(sessionId, `queue-abort-${Date.now()}`, { type: "abort" });
+    assert.equal(ir.payload.result.ok, true, JSON.stringify(ir.payload));
+    await promptPromise;
+    assert.equal(ir.type, "interrupt_result");
+    await delay(50);
+
+    // getSnapshot authority: both queue types + pendingMessageCount 2.
+    const qsnap = await client.getSnapshot(sessionId);
+    const qstate = qsnap.payload.result?.snapshot?.state ?? qsnap.payload.result?.state;
+    assert.equal(qstate.queuedMessages.steering.length, 1, JSON.stringify(qstate.queuedMessages));
+    assert.equal(qstate.queuedMessages.followUp.length, 1, JSON.stringify(qstate.queuedMessages));
+    assert.equal(qstate.pendingMessageCount, 2);
+    assert.equal(qstate.queuedMessages.steering[0].message, "steer me");
+    assert.equal(qstate.queuedMessages.followUp[0].message, "follow me");
+
+    // clear_queue interrupt empties the queue and emits queue_update.
+    const clearRes = await client.interrupt(sessionId, `queue-clear-${Date.now()}`, { type: "clear_queue" });
+    assert.equal(clearRes.payload.result.ok, true, JSON.stringify(clearRes.payload));
+    await client.waitFor(
+      (m) => m.type === "event" && m.payload?.type === "queue_update" && (m.payload?.steering?.length ?? 0) === 0 && (m.payload?.followUp?.length ?? 0) === 0,
+      { label: "queue_update cleared" },
+    );
+    const qsnap2 = await client.getSnapshot(sessionId);
+    const qstate2 = qsnap2.payload.result?.snapshot?.state ?? qsnap2.payload.result?.state;
+    assert.equal(qstate2.queuedMessages.steering.length, 0);
+    assert.equal(qstate2.queuedMessages.followUp.length, 0);
+    assert.equal(qstate2.pendingMessageCount, 0);
+
+    // set_auto_retry → authoritative autoRetryEnabled true (sessiond refresh).
+    const retryRes = await client.command(sessionId, { commandId: `queue-retry-${Date.now()}`, type: "set_auto_retry", enabled: true });
+    assert.equal(retryRes.payload.ok, true, JSON.stringify(retryRes.payload));
+    assert.equal(retryRes.payload.result.result.ok, true);
+    const retrySnap = await client.getSnapshot(sessionId);
+    const retryState = retrySnap.payload.result?.snapshot?.state ?? retrySnap.payload.result?.state;
+    assert.equal(retryState.autoRetryEnabled, true, JSON.stringify(retrySnap.payload));
+
+    // detach → reattach preserves autoRetryEnabled and empty queue.
+    await client.detach(sessionId);
+    const reattach = await client.attach(sessionId);
+    assert.equal(reattach.type, "snapshot");
+    assert.equal(reattach.payload.snapshot.state.autoRetryEnabled, true, JSON.stringify(reattach.payload.snapshot.state));
+    assert.deepEqual(reattach.payload.snapshot.state.queuedMessages, { steering: [], followUp: [] });
+    assert.deepEqual(reattach.payload.snapshot.capabilities, {
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
+      version: 1,
+    });
+
+    // Closed caps still unsupported: tools/reload (queue is now open).
+    for (const [type, extra, token] of [
+      ["set_tools", { toolNames: [] }, "runtime.tools.write"],
+      ["reload", {}, "runtime.reload"],
+    ]) {
+      const closed = await client.command(sessionId, { commandId: `queue-closed-${type}-${Date.now()}`, type, ...extra });
+      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
+      const outcome = closed.payload.result.result;
+      assert.equal(outcome.ok, false, `${type} must be closed`);
+      assert.equal(outcome.error.code, "unsupported_capability");
+      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\\.")));
+    }
+
+    return { sessionId, promptId };
   } finally {
     client.close();
   }
@@ -1460,6 +1587,9 @@ async function runRound(round) {
     results.lightCommands = await scenarioD2P1LightCommands(stack, projectA);
     log(`round ${round}: D2-P1 light commands OK session=${results.lightCommands.sessionId}`);
 
+    results.queueControl = await scenarioD2P4QueueControl(stack, projectA);
+    log(`round ${round}: D2-P4 queue control OK session=${results.queueControl.sessionId}`);
+
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
 
@@ -1520,6 +1650,7 @@ async function main() {
           "session isolation",
           "create then host-restart cold attach",
           "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + closed caps)",
+          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed tools/reload)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {

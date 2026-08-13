@@ -667,6 +667,182 @@ test("set_model finalization during rekey never writes across epochs and new ses
   await service.shutdown();
 });
 
+test("set_auto_retry success refreshes authoritative snapshot before command returns (D2-P4)", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const before = service.getSnapshot("s");
+  assert.equal(before.state.autoRetryEnabled, undefined);
+  const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const result = await service.command("s", { type: "set_auto_retry", commandId: "retry-1", enabled: true });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "set_auto_retry");
+
+  // sessiond must issue a post-success worker.getSnapshot refresh so the
+  // projection converges on autoRetryEnabled=true BEFORE the command returns.
+  const snapshotsAfter = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.ok(snapshotsAfter > snapshotsBefore, "expected post-success worker.getSnapshot refresh");
+
+  const snap = service.getSnapshot("s");
+  assert.equal(snap.state.autoRetryEnabled, true);
+
+  // Attach boundary also carries the new flag (sessiond projection authority).
+  const attach = service.attach({ sessionId: "s" });
+  assert.equal(attach.result.snapshot?.state.autoRetryEnabled, true);
+  await service.shutdown();
+});
+
+test("set_auto_retry same-id second caller waits for deferred authority refresh with one worker.command", async () => {
+  const { service, workers } = harness({
+    worker: { postCommandSnapshotDelayMs: 80 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_auto_retry" as const, commandId: "retry-same", enabled: true };
+
+  const first = service.command("s", command);
+  await wait(30);
+  let firstSettled = false;
+  void first.then(() => { firstSettled = true; });
+  await wait(0);
+  assert.equal(firstSettled, false, "original caller must not settle while refresh is deferred");
+
+  const second = service.command("s", command);
+  let secondSettled = false;
+  void second.then(() => { secondSettled = true; });
+  await wait(20);
+  assert.equal(firstSettled, false);
+  assert.equal(secondSettled, false, "same-id caller must join finalization, not settle early");
+
+  const workerCommands = worker.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 1, "exactly one worker.command for same commandId");
+
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.deepEqual(a, b);
+  assert.equal(service.getSnapshot("s").state.autoRetryEnabled, true);
+  await service.shutdown();
+});
+
+test("set_auto_retry successful finalization cleans singleflight and cached retry does not refresh again", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const command = { type: "set_auto_retry" as const, commandId: "retry-cleanup", enabled: true };
+  const first = await service.command("s", command);
+  assert.equal(first.result.ok, true);
+  const snapshotsAfterSuccess = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, first);
+  assert.equal(
+    workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length,
+    snapshotsAfterSuccess,
+  );
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, false);
+  await service.shutdown();
+});
+
+test("set_auto_retry refresh failure fail-closes all observers and cached retry", async () => {
+  const { service, workers } = harness({
+    worker: { dropPostCommandSnapshots: true },
+    service: { commandTimeoutMs: 80 },
+  });
+  await service.activate("s");
+  const command = { type: "set_auto_retry" as const, commandId: "retry-fail", enabled: true };
+
+  const first = service.command("s", command);
+  await wait(10);
+  const second = service.command("s", command);
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, false);
+  assert.equal(b.result.ok, false);
+  assert.equal(a.result.type, "set_auto_retry");
+  assert.equal(b.result.type, "set_auto_retry");
+  assert.equal(a.commandId, "retry-fail");
+  assert.deepEqual(a, b);
+  if (!a.result.ok) {
+    assert.equal(a.result.error.code, "unavailable");
+    assert.match(a.result.error.message, /snapshot|authority|timed out/i);
+  }
+
+  // Projection must not claim the flag after fail-closed authority refresh.
+  assert.notEqual(service.getSnapshot("s").state.autoRetryEnabled, true);
+
+  const commandsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length;
+  const snapshotsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, a);
+  assert.equal(retry.result.ok, false);
+  const commandsAfterRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length;
+  const snapshotsAfterRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.equal(commandsAfterRetry, commandsBeforeRetry, "cached failure must not re-send worker.command");
+  assert.equal(snapshotsAfterRetry, snapshotsBeforeRetry, "cached failure must not re-refresh snapshot");
+  await service.shutdown();
+});
+
+test("set_auto_retry wrong result type does not finalize; legitimate frame completes once", async () => {
+  const { service, workers } = harness({
+    worker: { commandDelayMs: 80 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_auto_retry" as const, commandId: "retry-wrongtype", enabled: true };
+
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+  const wireId = wire.id;
+
+  // Correct wire id + inner commandId but WRONG result type — triple match fails,
+  // so no finalization, no cache, no resolve: the waiter keeps waiting.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wireId,
+    payload: {
+      sessionId: "s",
+      result: { commandId: command.commandId, result: { ok: true, type: "set_thinking_level" } },
+    },
+  });
+  await wait(10);
+  const snapshotsDuring = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  let settled = false;
+  void pending.then(() => { settled = true; });
+  await wait(0);
+  assert.equal(settled, false, "wrong result type must not resolve or start finalization");
+
+  const result = await pending;
+  assert.equal(result.commandId, "retry-wrongtype");
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "set_auto_retry");
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, 1);
+  assert.equal(worker.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsDuring + 1);
+  assert.equal(service.getSnapshot("s").state.autoRetryEnabled, true);
+  await service.shutdown();
+});
+
+test("steer/follow_up/clear_queue never trigger an authority snapshot refresh (D2-P4)", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const snapshotsBefore = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const steer = await service.command("s", { type: "steer", commandId: "steer-1", message: "steer now" });
+  assert.equal(steer.result.ok, true);
+  const followUp = await service.command("s", { type: "follow_up", commandId: "follow-1", message: "follow now" });
+  assert.equal(followUp.result.ok, true);
+  const clear = await service.interrupt("s", "clear-1", { type: "clear_queue" });
+  assert.equal(clear.result.ok, true);
+
+  // queue_update is the authoritative convergence for the queue; NO post-success
+  // snapshot refresh for steer / follow_up / clear_queue (unlike authority commands).
+  assert.equal(worker.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsBefore);
+  await service.shutdown();
+});
+
 test("ordinary rename does not issue extra post-command snapshot refresh", async () => {
   const { service, workers } = harness();
   await service.activate("s");

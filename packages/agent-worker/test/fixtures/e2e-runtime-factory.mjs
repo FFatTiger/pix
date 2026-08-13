@@ -16,11 +16,12 @@
 
 import { randomUUID } from "node:crypto";
 
-// D2-P1/D2-P2/P3: production light-command surface. Baseline queries
+// D2-P1/D2-P2/P3/P4: production light-command surface. Baseline queries
 // (get_state / get_commands / get_last_assistant_text) are always available;
 // runtime.stats (get_session_stats), runtime.session.rename (set_session_name),
-// runtime.thinking.set (set_thinking_level) and runtime.model.set (set_model)
-// are the capability-gated unlocks.
+// runtime.thinking.set (set_thinking_level), runtime.model.set (set_model),
+// runtime.steer (steer), runtime.follow_up (follow_up) and runtime.queue
+// (clear_queue interrupt + set_auto_retry) are the capability-gated unlocks.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
@@ -29,6 +30,9 @@ const CAPABILITIES = {
     "runtime.session.rename",
     "runtime.thinking.set",
     "runtime.model.set",
+    "runtime.steer",
+    "runtime.follow_up",
+    "runtime.queue",
   ],
   version: 1,
 };
@@ -75,6 +79,8 @@ function makePort({ cwd, sessionId, mode }) {
   let thinkingLevel = "off";
   let thinkingLevelPinned = false;
   let model = { provider: "anthropic", id: "claude-sonnet-4" };
+  let autoRetryEnabled = false;
+  let queued = { steering: [], followUp: [] };
 
   const commands = [
     { name: "/compact", description: "Compact the session", source: "prompt" },
@@ -109,6 +115,9 @@ function makePort({ cwd, sessionId, mode }) {
       messageCount,
       thinkingLevel,
       thinkingLevelPinned,
+      autoRetryEnabled,
+      queuedMessages: queued,
+      pendingMessageCount: queued.steering.length + queued.followUp.length,
       ...(sessionName === "" ? {} : { sessionName }),
     };
   }
@@ -199,16 +208,37 @@ function makePort({ cwd, sessionId, mode }) {
           }
           return { ok: true, type: "set_model" };
         }
-        // Closed production surface: tools/reload/queue must stay unsupported.
+        // Closed production surface: tools/reload must stay unsupported.
         case "set_tools":
           return { ok: false, type: "set_tools", error: { code: "unsupported_capability", message: "runtime.tools.write not available", retryable: false } };
         // keep toolNames accepted by protocol shape but still closed by capability
         case "reload":
           return { ok: false, type: "reload", error: { code: "unsupported_capability", message: "runtime.reload not available", retryable: false } };
-        case "clear_queue":
-          return { ok: false, type: "clear_queue", error: { code: "unsupported_capability", message: "runtime.queue not available", retryable: false } };
-        case "set_auto_retry":
-          return { ok: false, type: "set_auto_retry", error: { code: "unsupported_capability", message: "runtime.queue not available", retryable: false } };
+        case "steer": {
+          const steerText = typeof command.message === "string" ? command.message.trim() : "";
+          if (steerText === "") {
+            return { ok: false, type: "steer", error: { code: "invalid_input", message: "message cannot be empty", retryable: false } };
+          }
+          queued = { ...queued, steering: [...queued.steering, { message: steerText }] };
+          emit({ type: "queue_update", sessionId, steering: queued.steering, followUp: queued.followUp });
+          return { ok: true, type: "steer" };
+        }
+        case "follow_up": {
+          const followText = typeof command.message === "string" ? command.message.trim() : "";
+          if (followText === "") {
+            return { ok: false, type: "follow_up", error: { code: "invalid_input", message: "message cannot be empty", retryable: false } };
+          }
+          queued = { ...queued, followUp: [...queued.followUp, { message: followText }] };
+          emit({ type: "queue_update", sessionId, steering: queued.steering, followUp: queued.followUp });
+          return { ok: true, type: "follow_up" };
+        }
+        case "set_auto_retry": {
+          if (typeof command.enabled !== "boolean") {
+            return { ok: false, type: "set_auto_retry", error: { code: "invalid_input", message: "enabled must be a boolean", retryable: false } };
+          }
+          autoRetryEnabled = command.enabled;
+          return { ok: true, type: "set_auto_retry" };
+        }
         default:
           break;
       }
@@ -306,6 +336,10 @@ function makePort({ cwd, sessionId, mode }) {
       interruptCount += 1;
       if (interrupt.type === "abort" && blocked) {
         blocked.resolve({ kind: "aborted" });
+      }
+      if (interrupt.type === "clear_queue") {
+        queued = { steering: [], followUp: [] };
+        emit({ type: "queue_update", sessionId, steering: [], followUp: [] });
       }
       return { ok: true, type: interrupt.type };
     },

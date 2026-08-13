@@ -17,6 +17,13 @@
  *    (HIGH-2): resume re-uses the same deferred, so create/open promises always
  *    settle. An attach FAILURE clears awaiting + resets to `ready` so a second
  *    open proceeds immediately (HIGH-1).
+ *  - D2-P4 dual-slot: steer/follow_up run in {@link QueuedTurnPending}, an
+ *    INDEPENDENT slot from the ordinary prompt slot, so a long-running prompt
+ *    never blocks steering/following-up. At most ONE queued turn in flight
+ *    (second → session_busy); cleared on send-failure / stop / detach /
+ *    dispose / session-switch / epoch_changed, resent with the SAME commandId
+ *    on snapshot/gap. clear_queue uses typed interrupt admission (never
+ *    coalesces with abort; different interrupt type → session_busy).
  *  - One-shot envelope requests (getSnapshot/detach/stop) are REJECTED on
  *    transport loss so they never leak across a generation (MEDIUM-3); create /
  *    command / interrupt / attach are retried on reconnect.
@@ -31,6 +38,7 @@ import {
   reduceRuntimeEventData,
   type AgentMessage,
   type CorrelatedRuntimeCommandResult,
+  type ImageAttachment,
   type ProtocolError,
   type RuntimeAttachParams,
   type RuntimeCapability,
@@ -39,6 +47,7 @@ import {
   type RuntimeCommandOutcome,
   type RuntimeCreateParams,
   type RuntimeEventData,
+  type RuntimeInterrupt,
   type RuntimeSnapshot,
   type RuntimeState,
   type SessionStats,
@@ -84,6 +93,14 @@ export interface RuntimeView {
   readonly fatal: boolean;
   readonly canAgent: boolean;
   /**
+   * True while a queued turn (steer / follow_up) is in flight in the D2-P4
+   * dual-slot. The ordinary prompt slot ({@link pendingCommand}) is NOT
+   * blocked by a running prompt, but only ONE queued turn may be in flight
+   * at a time. Used by the Composer to disable Send/Steer during the
+   * pending queued-turn window.
+   */
+  readonly queuedTurnPending: boolean;
+  /**
    * Authoritative runtime capability set from the latest snapshot
    * ({@link RuntimeCapabilitySet}), or null before the first attach snapshot.
    * This is the runtime capability authority — never inferred from the Host
@@ -106,6 +123,7 @@ const INITIAL_VIEW: RuntimeView = {
   error: null,
   fatal: false,
   canAgent: false,
+  queuedTurnPending: false,
   capabilities: null,
 };
 
@@ -180,6 +198,24 @@ interface CommandPending {
   reject(error: unknown): void;
 }
 
+/**
+ * D2-P4 dual-slot queued turn (steer / follow_up only). Independent of
+ * {@link CommandPending} so a long-running prompt never blocks steering or
+ * following-up. At most ONE queued turn in flight; the second is
+ * `session_busy`. commandId is stable across same-epoch resends so the
+ * runtime dedups by (sessionId, commandId).
+ */
+interface QueuedTurnPending {
+  readonly commandId: string;
+  envelopeId: string;
+  generation: number;
+  readonly sessionId: string;
+  readonly command: WsClientMessage;
+  readonly type: "steer" | "follow_up";
+  resolve(value: unknown): void;
+  reject(error: unknown): void;
+}
+
 interface InterruptPending {
   readonly commandId: string;
   envelopeId: string;
@@ -226,6 +262,8 @@ export class SessionStore implements RuntimeSocketHandler {
   private pendingByEnvelope = new Map<string, EnvelopePending>();
   private pendingCreate: CreatePending | null = null;
   private pendingCommand: CommandPending | null = null;
+  /** D2-P4 dual-slot: at most ONE queued turn (steer/follow_up) in flight, independent of prompt. */
+  private pendingQueuedTurn: QueuedTurnPending | null = null;
   private pendingInterrupt: InterruptPending | null = null;
   /** At most ONE interrupt in flight (well under H1's 16-interrupt cap). */
   private pendingInterruptPromise: Promise<unknown> | null = null;
@@ -333,6 +371,9 @@ export class SessionStore implements RuntimeSocketHandler {
       this.attached = false;
       this.awaitingSnapshot = false;
       this.intendedSession = null;
+      // D2-P4: a queued turn is bound to the live streaming session; detaching
+      // invalidates it (fixed error, never overwrites a prompt promise).
+      this.settlePendingQueuedTurn({ code: "interrupted", message: "detached", retryable: false });
       this.rejectAttach({ code: "interrupted", message: "detached", retryable: false });
       this.setConnection(this.socket.connectionState === "stopped" ? "stopped" : "ready");
       this.notify();
@@ -363,6 +404,8 @@ export class SessionStore implements RuntimeSocketHandler {
       }
       // MEDIUM-4: settle the in-flight prompt promise exactly once.
       this.settlePendingCommand({ code: "interrupted", message: "session stopped", retryable: false });
+      // D2-P4: settle any in-flight queued turn exactly once (stop invalidates it).
+      this.settlePendingQueuedTurn({ code: "interrupted", message: "session stopped", retryable: false });
       const sessionId = this.sessionId;
       if (!sessionId) return;
       // MEDIUM-5: honest stop — wait until sendable (bounded), then send + await ack (bounded).
@@ -465,9 +508,95 @@ export class SessionStore implements RuntimeSocketHandler {
     });
   }
 
+  /**
+   * D2-P4 dual-slot queued turn send (steer / follow_up). Independent of the
+   * ordinary {@link sendCommand} single slot so a running prompt never blocks
+   * it. At most ONE queued turn in flight; the second is `session_busy` (and
+   * NEVER overwrites the first waiter). commandId is stable across same-epoch
+   * resends; the runtime dedups by (sessionId, commandId). Message is strictly
+   * trimmed and must be non-empty.
+   */
+  private sendQueuedTurn(type: "steer" | "follow_up", message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
+    const trimmed = message.trim();
+    if (trimmed.length === 0) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "message cannot be empty",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    if (!this.attached || !this.sessionId) {
+      return Promise.reject(this.notAttachedError());
+    }
+    if (this.pendingQueuedTurn) {
+      return Promise.reject({
+        code: "session_busy",
+        message: "a queued turn is already in progress",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    const commandId = this.id();
+    const imagePayload = images === undefined || images.length === 0 ? {} : { images: [...images] as ImageAttachment[] };
+    const command: RuntimeCommand = type === "steer"
+      ? { commandId, type: "steer", message: trimmed, ...imagePayload }
+      : { commandId, type: "follow_up", message: trimmed, ...imagePayload };
+    const sessionId = this.sessionId;
+    const envelopeId = this.id();
+    const wsMessage: WsClientMessage = {
+      type: "command",
+      id: envelopeId,
+      payload: { sessionId, command },
+    };
+    return new Promise((resolve, reject) => {
+      this.pendingQueuedTurn = { commandId: command.commandId, envelopeId, generation: this.socket.currentGeneration, sessionId, command: wsMessage, type, resolve, reject };
+      this.notify();
+      this.send(wsMessage);
+    });
+  }
+
   /** Send a prompt (ordinary command). commandId is stable across same-epoch retries. */
   sendPrompt(message: string): Promise<unknown> {
     return this.sendCommand({ commandId: this.id(), type: "prompt", message });
+  }
+
+  // --- D2-P4 queued-turn / queue-control API ---------------------------------
+  //
+  // steer / follow_up use the INDEPENDENT dual-slot {@link pendingQueuedTurn}
+  // so a long-running prompt never blocks them (unlike {@link sendCommand},
+  // which is `session_busy` while a prompt is in flight). A queued turn is
+  // still a `RuntimeCommand` on the ordinary command envelope and the runtime
+  // answers with a correlated result, so an unsupported capability resolves
+  // honestly as `unsupported_capability` (the UI gates by capability).
+  // clear_queue is an INTERRUPT (independent non-queued control path) with
+  // typed admission: at most one interrupt type in flight — a different type
+  // returns `session_busy`, the same type coalesces like abort.
+
+  /**
+   * Queue a steering message. Requires `runtime.steer` at the runtime.
+   * Message is strictly trimmed and must be non-empty (`invalid_input`
+   * otherwise). Images pass through but this UI only sends text.
+   */
+  steer(message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
+    return this.sendQueuedTurn("steer", message, images);
+  }
+
+  /**
+   * Queue a follow-up message. Requires `runtime.follow_up` at the runtime.
+   * Message is strictly trimmed and must be non-empty (`invalid_input`
+   * otherwise). Images pass through but this UI only sends text.
+   */
+  followUp(message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
+    return this.sendQueuedTurn("follow_up", message, images);
+  }
+
+  /**
+   * Clear the runtime's queued steering/follow-up turns via the independent
+   * clear_queue interrupt. Requires `runtime.queue` at the runtime. Never
+   * coalesces with a pending abort — typed interrupt admission returns
+   * `session_busy` when a DIFFERENT interrupt type is already in flight.
+   */
+  clearQueue(): Promise<unknown> {
+    return this.sendInterrupt({ type: "clear_queue" });
   }
 
   // --- D2-P1 typed runtime command helpers -----------------------------------
@@ -588,16 +717,38 @@ export class SessionStore implements RuntimeSocketHandler {
 
   /** Abort the running prompt via the INDEPENDENT interrupt path (not queued). */
   abort(): Promise<unknown> {
+    return this.sendInterrupt({ type: "abort" });
+  }
+
+  /**
+   * D2-P4 typed interrupt admission (safe clear-vs-abort isolation). At most
+   * ONE interrupt type is ever in flight:
+   *  - same type as the in-flight interrupt → coalesce to the existing promise
+   *    (existing abort policy preserved);
+   *  - a DIFFERENT type → `session_busy`, never串线 into the other's promise.
+   * The pending interrupt is correlated by (envelopeId, generation, commandId,
+   * interrupt type) so a clear_queue result can never resolve an abort caller
+   * or vice versa.
+   */
+  private sendInterrupt(interrupt: RuntimeInterrupt): Promise<unknown> {
     if (!this.sessionId) return Promise.reject(this.notAttachedError());
-    // Coalesce concurrent aborts: at most one interrupt is ever in flight.
-    if (this.pendingInterrupt && this.pendingInterruptPromise) return this.pendingInterruptPromise;
+    if (this.pendingInterrupt) {
+      if (this.pendingInterrupt.message.payload.interrupt.type === interrupt.type && this.pendingInterruptPromise) {
+        return this.pendingInterruptPromise;
+      }
+      return Promise.reject({
+        code: "session_busy",
+        message: "another interrupt is already in progress",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
     const sessionId = this.sessionId;
     const commandId = this.id();
     const envelopeId = this.id();
     const wsMessage: WsInterruptMessage = {
       type: "interrupt",
       id: envelopeId,
-      payload: { sessionId, commandId, interrupt: { type: "abort" } },
+      payload: { sessionId, commandId, interrupt },
     };
     const promise = new Promise<unknown>((resolve, reject) => {
       this.pendingInterrupt = { commandId, envelopeId, generation: this.socket.currentGeneration, sessionId, message: wsMessage, resolve, reject };
@@ -768,6 +919,15 @@ export class SessionStore implements RuntimeSocketHandler {
       else { pending.reject(message.payload.error); this.setError(message.payload.error); }
       return;
     }
+    // D2-P4 dual-slot queued turn (steer / follow_up), correlated by envelope+generation.
+    if (this.pendingQueuedTurn && message.id === this.pendingQueuedTurn.envelopeId && generation === this.pendingQueuedTurn.generation) {
+      const pending = this.pendingQueuedTurn;
+      this.pendingQueuedTurn = null;
+      this.notify();
+      if (ok) pending.resolve(message.payload.result);
+      else { pending.reject(message.payload.error); this.setError(message.payload.error); }
+      return;
+    }
     // envelope-keyed one-shots: getSnapshot / detach / stop
     const entry = this.pendingByEnvelope.get(message.id);
     if (entry && entry.generation === generation) {
@@ -780,7 +940,15 @@ export class SessionStore implements RuntimeSocketHandler {
   }
 
   private handleInterruptResult(message: WsInterruptResultMessage, generation: number): void {
-    if (this.pendingInterrupt && message.id === this.pendingInterrupt.envelopeId && generation === this.pendingInterrupt.generation) {
+    if (
+      this.pendingInterrupt &&
+      message.id === this.pendingInterrupt.envelopeId &&
+      generation === this.pendingInterrupt.generation &&
+      // response id / commandId / interrupt type triple match — a clear_queue
+      // result can never resolve an abort caller or vice versa (D2-P4).
+      message.payload.commandId === this.pendingInterrupt.commandId &&
+      message.payload.interruptType === this.pendingInterrupt.message.payload.interrupt.type
+    ) {
       const pending = this.pendingInterrupt;
       this.pendingInterrupt = null;
       this.pendingInterruptPromise = null;
@@ -803,6 +971,11 @@ export class SessionStore implements RuntimeSocketHandler {
    */
   private startAttach(sessionId: string, mode: "fresh" | "resume"): Promise<void> {
     this.intendedSession = { sessionId };
+    // D2-P4 session-switch cleanup: a queued turn bound to a DIFFERENT session
+    // must not resolve into the new session's context (fixed error).
+    if (this.pendingQueuedTurn && this.sessionId !== null && this.sessionId !== sessionId) {
+      this.settlePendingQueuedTurn({ code: "interrupted", message: "session switched", retryable: false });
+    }
     this.attached = false;
     this.awaitingSnapshot = true;
     if (this.attach && this.attach.sessionId === sessionId) {
@@ -868,6 +1041,19 @@ export class SessionStore implements RuntimeSocketHandler {
         this.setError(decision.error);
       }
     }
+    // D2-P4 dual-slot queued turn: same-epoch snapshot/gap → resend with the
+    // SAME commandId on a fresh envelope; epoch_changed → reject, never resend.
+    if (this.pendingQueuedTurn) {
+      const decision = decideCommandRetry(epochSurvived ? resumeStatus : "epoch_changed");
+      if (decision.decision === "resend") {
+        this.resendQueuedTurn();
+      } else {
+        this.pendingQueuedTurn.reject(decision.error);
+        this.pendingQueuedTurn = null;
+        this.notify();
+        this.setError(decision.error);
+      }
+    }
     if (this.pendingInterrupt) {
       if (epochSurvived) {
         this.resendInterrupt();
@@ -897,6 +1083,16 @@ export class SessionStore implements RuntimeSocketHandler {
     const envelopeId = this.id();
     const command: WsClientMessage = { ...pending.command, id: envelopeId };
     this.pendingCommand = { ...pending, envelopeId, generation: this.socket.currentGeneration, command };
+    this.send(command);
+  }
+
+  /** Re-send a pending queued turn with the SAME commandId (at-most-once per epoch). */
+  private resendQueuedTurn(): void {
+    const pending = this.pendingQueuedTurn;
+    if (!pending) return;
+    const envelopeId = this.id();
+    const command: WsClientMessage = { ...pending.command, id: envelopeId };
+    this.pendingQueuedTurn = { ...pending, envelopeId, generation: this.socket.currentGeneration, command };
     this.send(command);
   }
 
@@ -968,6 +1164,10 @@ export class SessionStore implements RuntimeSocketHandler {
     } else if (this.pendingCommand?.envelopeId === id) {
       this.pendingCommand.reject(error);
       this.pendingCommand = null;
+    } else if (this.pendingQueuedTurn?.envelopeId === id) {
+      this.pendingQueuedTurn.reject(error);
+      this.pendingQueuedTurn = null;
+      this.notify();
     } else if (this.pendingInterrupt?.envelopeId === id) {
       this.pendingInterrupt.reject(error);
       this.pendingInterrupt = null;
@@ -991,6 +1191,15 @@ export class SessionStore implements RuntimeSocketHandler {
   /** Reject the in-flight prompt promise exactly once (MEDIUM-4). */
   private settlePendingCommand(error: ProtocolError): void {
     if (this.pendingCommand) { this.pendingCommand.reject(error); this.pendingCommand = null; }
+  }
+
+  /** Reject the in-flight queued turn exactly once (D2-P4 stop/detach/dispose/session switch). */
+  private settlePendingQueuedTurn(error: ProtocolError): void {
+    if (this.pendingQueuedTurn) {
+      this.pendingQueuedTurn.reject(error);
+      this.pendingQueuedTurn = null;
+      this.notify();
+    }
   }
 
   private ensureConnecting(): void {
@@ -1049,6 +1258,7 @@ export class SessionStore implements RuntimeSocketHandler {
     this.pendingCreate = null;
     this.rejectAttach(error);
     this.settlePendingCommand(error);
+    this.settlePendingQueuedTurn(error);
     this.pendingInterrupt?.reject(error);
     this.pendingInterrupt = null;
     this.pendingInterruptPromise = null;
@@ -1091,6 +1301,7 @@ export class SessionStore implements RuntimeSocketHandler {
       error: this.error,
       fatal: this.fatal,
       canAgent: this.host?.capabilities.includes("agent") === true,
+      queuedTurnPending: this.pendingQueuedTurn !== null,
       capabilities: this.attached ? (snapshot?.capabilities ?? null) : null,
     };
   }

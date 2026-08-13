@@ -866,3 +866,338 @@ describe("SessionStore — D2-P3 setModel typed helper", () => {
     await expect(modelP).rejects.toMatchObject({ code: "external", message: "unknown model backend boom" });
   });
 });
+
+describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clear_queue interrupt", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function attachWithCaps(h: RuntimeHarness, capabilities: string[], sessionId = "s1"): Promise<FakeWebSocket> {
+    h.store.connect();
+    const ws = openReady(h);
+    const p = h.store.openSession(sessionId);
+    return flush().then(() => {
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, capabilities }) });
+      return flush().then(() => p.then(() => ws));
+    });
+  }
+
+  function commandFrame(ws: FakeWebSocket): { id: string; payload: { command: { commandId: string; type: string; message?: string } } } {
+    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message?: string } } }>(ws, "command")!;
+    expect(frame).toBeTruthy();
+    return frame;
+  }
+
+  function respondOk(ws: FakeWebSocket, id: string, commandId: string, type: string): void {
+    ws.serverSend({ type: "response", id, payload: { ok: true, result: { commandId, result: { ok: true, type } } } });
+  }
+
+  it("steer sends a trimmed steer command on the queued-turn slot and toggles queuedTurnPending", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.steer", "runtime.follow_up"]);
+    const p = h.store.steer("  hello steer  ");
+    await flush();
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(true);
+    const cmd = commandFrame(ws);
+    expect(cmd.payload.command.type).toBe("steer");
+    expect(cmd.payload.command.message).toBe("hello steer");
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "steer");
+    await expect(p).resolves.toEqual({ commandId: cmd.payload.command.commandId, result: { ok: true, type: "steer" } });
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
+  it("followUp sends a follow_up command and resolves on ok", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.follow_up"]);
+    const p = h.store.followUp("hello follow");
+    await flush();
+    const cmd = commandFrame(ws);
+    expect(cmd.payload.command.type).toBe("follow_up");
+    expect(cmd.payload.command.message).toBe("hello follow");
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "follow_up");
+    await expect(p).resolves.toBeTruthy();
+  });
+
+  it("steer/followUp reject blank messages without sending (invalid_input)", async () => {
+    const h = createHarness();
+    await attachWithCaps(h, ["runtime.steer", "runtime.follow_up"]);
+    await expect(h.store.steer("   ")).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+    await expect(h.store.followUp(" \n ")).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
+  it("reject when not attached (steer/followUp/clearQueue)", async () => {
+    const h = createHarness();
+    await expect(h.store.steer("hi")).rejects.toMatchObject({ code: "unavailable" });
+    await expect(h.store.followUp("hi")).rejects.toMatchObject({ code: "unavailable" });
+    await expect(h.store.clearQueue()).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("prompt + steer run CONCURRENTLY (dual slot) and both settle independently", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.steer"]);
+    const promptP = h.store.sendPrompt("long running prompt");
+    await flush();
+    const steerP = h.store.steer("steer during prompt");
+    await flush();
+    const cmds = (ws.sent as { type: string; id?: string; payload?: { command?: { type?: string; commandId?: string } } }[]).filter((f) => f.type === "command");
+    expect(cmds.length).toBe(2);
+    const steerCmd = commandFrame(ws);
+    expect(steerCmd.payload.command.type).toBe("steer");
+    // Settle steer first; the prompt promise must remain pending.
+    respondOk(ws, steerCmd.id, steerCmd.payload.command.commandId, "steer");
+    await flush();
+    let promptSettled = false;
+    void promptP.then(() => { promptSettled = true; });
+    await flush();
+    expect(promptSettled).toBe(false);
+    const promptCmd = cmds.find((f) => f.payload?.command?.type === "prompt");
+    respondOk(ws, promptCmd!.id!, promptCmd!.payload!.command!.commandId!, "prompt");
+    await expect(promptP).resolves.toBeTruthy();
+    await expect(steerP).resolves.toBeTruthy();
+  });
+
+  it("second queued turn is session_busy and never overwrites the first waiter", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.steer", "runtime.follow_up"]);
+    const first = h.store.steer("first");
+    await flush();
+    const second = h.store.followUp("second");
+    await expect(second).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    await flush();
+    const cmds = (ws.sent as { type: string; payload?: { command?: { message?: string } } }[]).filter((f) => f.type === "command");
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0]?.payload?.command?.message).toBe("first");
+    const cmd = commandFrame(ws);
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "steer");
+    await expect(first).resolves.toBeTruthy();
+    // Slot freed: a follow-up can now go out.
+    const next = h.store.followUp("after first");
+    await flush();
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(true);
+    const cmd2 = commandFrame(ws);
+    expect(cmd2.payload.command.type).toBe("follow_up");
+    respondOk(ws, cmd2.id, cmd2.payload.command.commandId, "follow_up");
+    await expect(next).resolves.toBeTruthy();
+  });
+
+  it("send throw rejects the queued turn and clears the slot", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.steer"]);
+    (ws as unknown as { send: (data: string) => void }).send = () => { throw new Error("boom"); };
+    const p = h.store.steer("x");
+    await flush();
+    await expect(p).rejects.toThrow("boom");
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
+  it("wrong envelope does NOT clear a pending queued turn; the legit frame resolves once", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.steer"]);
+    const p = h.store.steer("steer me");
+    await flush();
+    const cmd = commandFrame(ws);
+    // A response with the WRONG envelope id must be dropped.
+    ws.serverSend({ type: "response", id: "some-other-envelope", payload: { ok: true, result: { commandId: "wrong", result: { ok: true, type: "steer" } } } });
+    await flush();
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(true);
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "steer");
+    await expect(p).resolves.toBeTruthy();
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
+  it("resync after a reconnect snapshot resends the SAME commandId on a fresh envelope", async () => {
+    const h = createHarness();
+    let ws = await attachWithCaps(h, ["runtime.steer"]);
+    const p = h.store.steer("steer me");
+    await flush();
+    const cmd1 = commandFrame(ws);
+    const commandId = cmd1.payload.command.commandId;
+    const envelope1 = cmd1.id;
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
+    await flush();
+    const cmd2 = commandFrame(ws);
+    expect(cmd2.payload.command.commandId).toBe(commandId);
+    expect(cmd2.id).not.toBe(envelope1);
+    respondOk(ws, cmd2.id, cmd2.payload.command.commandId, "steer");
+    await expect(p).resolves.toBeTruthy();
+  });
+
+  it("epoch_changed NEVER re-sends the queued turn; rejects as ambiguous", async () => {
+    const h = createHarness();
+    let ws = await attachWithCaps(h, ["runtime.steer"]);
+    const p = h.store.steer("steer me");
+    await flush();
+    const cmd1 = commandFrame(ws);
+    const commandId = cmd1.payload.command.commandId;
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2", resumeStatus: "epoch_changed" }) });
+    await flush();
+    await expect(p).rejects.toMatchObject({ code: "epoch_changed" });
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+    // Only ONE steer envelope was ever sent (the resend never happened).
+    const steers = h.sockets.flatMap((sock) => sock.sent).filter((f) => (f as { type: string; payload?: { command?: { type?: string } } }).type === "command" && (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "steer");
+    expect(steers.length).toBe(1);
+    expect(commandId).toBeTruthy();
+  });
+
+  it("stop settles the in-flight queued turn", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.steer"]);
+    const p = h.store.steer("steer me");
+    await flush();
+    const stopP = h.store.stop();
+    await flush();
+    const stopFrame = lastFrame<{ type: string; id: string }>(ws, "stop")!;
+    ws.serverSend({ type: "response", id: stopFrame.id, payload: { ok: true, result: { sessionId: "s1", stopped: true } } });
+    await expect(stopP).resolves.toBeUndefined();
+    await expect(p).rejects.toMatchObject({ code: "interrupted", message: "session stopped" });
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
+  it("detach (the AppShell session-switch path: detach-then-open) settles the in-flight queued turn", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.steer"]);
+    const p = h.store.steer("steer me");
+    await flush();
+    const detachP = h.store.detach();
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    ws.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await expect(detachP).resolves.toBeUndefined();
+    await expect(p).rejects.toMatchObject({ code: "interrupted", message: "detached" });
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+    // Slot freed: after switching to a new session, a fresh steer goes out.
+    const openP = h.store.openSession("s2");
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s2", capabilities: ["runtime.steer"] }) });
+    await flush();
+    await openP;
+    const next = h.store.steer("after switch");
+    await flush();
+    const cmd2 = commandFrame(ws);
+    expect(cmd2.payload.command.message).toBe("after switch");
+    respondOk(ws, cmd2.id, cmd2.payload.command.commandId, "steer");
+    await expect(next).resolves.toBeTruthy();
+  });
+
+  it("dispose settles the in-flight queued turn", async () => {
+    const h = createHarness();
+    await attachWithCaps(h, ["runtime.steer"]);
+    const p = h.store.steer("steer me");
+    await flush();
+    h.store.dispose();
+    await expect(p).rejects.toMatchObject({ code: "unavailable" });
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
+  it("steer resolves honestly to unsupported_capability when the runtime gates it", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+    const p = h.store.steer("steer me");
+    await flush();
+    const cmd = commandFrame(ws);
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "steer", error: { code: "unsupported_capability", message: "runtime.steer not available", retryable: false } } } } });
+    await expect(p).resolves.toEqual({ commandId: cmd.payload.command.commandId, result: { ok: false, type: "steer", error: { code: "unsupported_capability", message: "runtime.steer not available", retryable: false } } });
+    expect(h.store.hasRuntimeCapability("runtime.steer")).toBe(false);
+  });
+
+  it("clearQueue sends the clear_queue interrupt and resolves on ok", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.queue"]);
+    const p = h.store.clearQueue();
+    await flush();
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
+    expect(intr).toBeTruthy();
+    expect(intr.payload.interrupt.type).toBe("clear_queue");
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
+    await expect(p).resolves.toEqual({ ok: true, type: "clear_queue" });
+  });
+
+  it("abort while clear_queue is in flight is session_busy (typed admission, no串线)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.queue"]);
+    const clearP = h.store.clearQueue();
+    await flush();
+    // Different interrupt type → session_busy, never coalesced into clear's promise.
+    const abortP = h.store.abort();
+    await expect(abortP).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    // Only ONE interrupt frame (clear_queue) was sent.
+    const interrupts = (ws.sent as { type: string; payload?: { interrupt?: { type?: string } } }[]).filter((f) => f.type === "interrupt");
+    expect(interrupts).toHaveLength(1);
+    expect(interrupts[0]?.payload?.interrupt?.type).toBe("clear_queue");
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
+    await expect(clearP).resolves.toBeTruthy();
+  });
+
+  it("clear_queue while abort is in flight is session_busy; abort regression unchanged", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.queue"]);
+    const abortP = h.store.abort();
+    await flush();
+    const clearP = h.store.clearQueue();
+    await expect(clearP).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
+    expect(intr.payload.interrupt.type).toBe("abort");
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await expect(abortP).resolves.toBeTruthy();
+  });
+
+  it("concurrent aborts still coalesce to one in-flight interrupt", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+    const a1 = h.store.abort();
+    await flush();
+    const a2 = h.store.abort();
+    await flush();
+    const interrupts = (ws.sent as { type: string }[]).filter((f) => f.type === "interrupt");
+    expect(interrupts).toHaveLength(1);
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await expect(a1).resolves.toBeTruthy();
+    await expect(a2).resolves.toBeTruthy();
+  });
+
+  it("interrupt result with wrong commandId / interruptType is dropped (triple match), legit frame resolves", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.queue"]);
+    const p = h.store.clearQueue();
+    await flush();
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
+    // Wrong commandId on the right envelope.
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: "other-cmd", interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
+    await flush();
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    // Right envelope + commandId but WRONG interrupt type.
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await flush();
+    void p.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    // Legit triple-matched frame resolves exactly once.
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
+    await expect(p).resolves.toEqual({ ok: true, type: "clear_queue" });
+  });
+});

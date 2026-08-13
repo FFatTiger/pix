@@ -13,13 +13,14 @@ export {
  * (`runtime.prompt` + `runtime.abort`). D2-P2 precisely adds
  * `runtime.thinking.set` (set_thinking_level). D2-P3 precisely adds
  * `runtime.model.set` (set_model) — the single real `set_model` vertical slice.
- * Tool configuration, bash, fork, extension UI, compaction, navigation,
- * reload, the queue/retry knobs and `runtime.auto_name`
+ * D2-P4 precisely adds `runtime.steer` (steer), `runtime.follow_up`
+ * (follow_up) and `runtime.queue` (clear_queue interrupt + set_auto_retry) —
+ * the single real queue-control vertical slice. Tool configuration, bash,
+ * fork, extension UI, compaction, navigation, reload and `runtime.auto_name`
  * (generate_session_title) are all implemented by the adapter but gated out by
  * this set so composition (R1/R2) must explicitly opt into broader
  * capabilities. The constant is intentionally narrow and MUST NOT grow to
- * leak tools/bash/fork/extension-UI/queue/auto_name/reload capabilities by
- * default.
+ * leak tools/bash/fork/extension-UI/reload/auto_name capabilities by default.
  */
 export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.prompt",
@@ -28,4 +29,7 @@ export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.session.rename",
   "runtime.thinking.set",
   "runtime.model.set",
+  "runtime.steer",
+  "runtime.follow_up",
+  "runtime.queue",
 ] as const;

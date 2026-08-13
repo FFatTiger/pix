@@ -153,6 +153,70 @@ describe("RuntimeProvider — D2-P3 setModel exposure", () => {
   });
 });
 
+describe("RuntimeProvider — D2-P4 steer/followUp/clearQueue exposure", () => {
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("exposes steer/followUp/clearQueue on the RuntimeApi", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    expect(typeof exposed.steer).toBe("function");
+    expect(typeof exposed.followUp).toBe("function");
+    expect(typeof exposed.clearQueue).toBe("function");
+  });
+
+  it("steer sends an exact steer command and followUp an exact follow_up command", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    const ws = await driveReady();
+    const store = capturedStore!;
+    await act(async () => {
+      void store.openSession("s1");
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.steer", "runtime.follow_up", "runtime.queue"] }) });
+      await flush();
+    });
+
+    let steerSettled = false;
+    const steerP = exposed.steer("steer now");
+    steerP.then(() => { steerSettled = true; }, () => {});
+    await flush();
+    const steerCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(steerCmd.payload.command.type).toBe("steer");
+    expect(steerCmd.payload.command.message).toBe("steer now");
+    await serverSend(ws, { type: "response", id: steerCmd.id, payload: { ok: true, result: { commandId: steerCmd.payload.command.commandId, result: { ok: true, type: "steer" } } } });
+    expect(steerSettled).toBe(true);
+
+    let followSettled = false;
+    const followP = exposed.followUp("follow now");
+    followP.then(() => { followSettled = true; }, () => {});
+    await flush();
+    const followCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(followCmd.payload.command.type).toBe("follow_up");
+    expect(followCmd.payload.command.message).toBe("follow now");
+    await serverSend(ws, { type: "response", id: followCmd.id, payload: { ok: true, result: { commandId: followCmd.payload.command.commandId, result: { ok: true, type: "follow_up" } } } });
+    expect(followSettled).toBe(true);
+
+    let clearSettled = false;
+    const clearP = exposed.clearQueue();
+    clearP.then(() => { clearSettled = true; }, () => {});
+    await flush();
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
+    expect(intr.payload.interrupt.type).toBe("clear_queue");
+    await serverSend(ws, { type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
+    expect(clearSettled).toBe(true);
+  });
+});
+
 describe("Composer — capability honesty + send/abort", () => {
   beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
