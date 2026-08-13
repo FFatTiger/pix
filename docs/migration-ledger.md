@@ -448,3 +448,33 @@ packages/sessiond/**/*.tsbuildinfo
 产品命名已一次性统一为 `pix`（决策 `N-009`）：npm 包 `@fffattiger/pix-*`、CLI `pix`/`pix-host`/`pix-sessiond`、env `PIX_*`、运行目录 `~/.pi/pix/sessiond`。生产代码、manifest、CLI、服务字段、env、PWA/UI、测试与当前文档均不再使用旧品牌名，也不提供兼容 alias。上游 Pi SDK 概念保持原名：`@earendil-works/pi-*`、`PI_CODING_AGENT_DIR`、`~/.pi`、`packages/pi-sdk-adapter`。
 
 本台账上方出现的旧名（如仓库路径 `/Users/proxy/Documents/program/pi-web`、worktree 根 `pi-web-worktrees`、来源子路径 `bin/pi-web.js`、旧包名 `@fffattiger/pi-web-*`、来源 commit 与 tree hash）属于迁移来源的**历史证据**，按要求原样保留，用于追溯来源与审计；它们不代表当前产品命名。架构门禁 `no legacy product name` 明确排除本文件，使这些历史路径可作为证据留存。
+
+## 25. sessiond production cold-open activation cwd fix 记录
+
+```text
+实现：8086770（branch fix/sessiond-activation-cwd，base b9374e6）
+范围：仅 packages/sessiond/src/composition/daemon.ts + packages/sessiond/test/daemon.test.ts。不新增 Adapter API、不改 Protocol/Host/Client/sessiond service/application/rpc/worker-process/e2e/package-lock。
+
+缺陷：production composition buildDependencies 的默认 catalog/locator 已用 Pi SDK 只读 JSONL（createPiSdkSessionCatalog/createPiSdkSessionLocator），但 activationContext 仍默认 createStubActivationContext()，无 requestedCwd 时返回 /workspace。Client Continue live cold-open 不传 cwd，导致 Worker 在错误项目启动。
+
+修复：新增私有 createCatalogActivationContext(catalog)，复用 buildDependencies 里同一个 SessionCatalogPort 实例作为默认 activation resolver——
+- 显式 requestedCwd：仅 undefined 表示缺失（RPC NonEmptyStringSchema.optional 已在 schema 层拒绝 blank/空串，无 truthiness 误判），保持 cwd=projectRoot=requestedCwd 既有语义，不扩大验证边界。
+- 无 requestedCwd：catalog 必须存在（null/missing 抛固定 SessiondError(unavailable, "session catalog is unavailable") fail closed，绝不回退 /workspace 或 process.cwd）；catalog.readSession(sessionId) 返回的 cwd/projectRoot 必须为非空绝对路径（node path.isAbsolute，拒绝空/NUL），否则抛固定 SessiondError(internal, "session catalog returned an invalid cwd|projectRoot") 且不回显值；不 realpath（历史 cwd 可能当前不存在，Worker/SDK 负责 open 语义）。
+- catalog 抛出的 structured RuntimeError not_found 由既有 toBoundaryProtocolError 映射为固定 "session not found"，不泄漏 id/path/secret，worker 零启动。
+- options.activationContext override 优先级不变；options.sessionCatalog（含 null）同时控制默认 resolver：注入 fake catalog 可测试，null+无 activation override 时 activation fail closed，显式 activation override 时 null catalog 仍可工作。
+- sessions.resolve 与 runtime.activate 共用同一 resolver 语义（sessions.resolve 零 worker）。
+- 移除 daemon.ts 对 stubs 的 import（production 不再默认 stub）；createStubActivationContext 仍从 composition 导出作为测试 stub。
+
+验证（worktree 临时 symlink main node_modules，已删除）：
+- sessiond typecheck：PASS（tsc tsconfig + tsconfig.test --noEmit）
+- sessiond tests：134/134（基线 126 + 新增 7 个 daemon 级 RPC 用例），0 fail，1 skip（Windows 平台）；daemon.test.js 15/15
+- sessiond build：PASS；sessiond check:boundaries：PASS；root check:architecture：PASS
+- git diff b9374e6..HEAD --check：PASS
+- test:e2e:startup：本机未能复跑——根 build 在 packages/host/src/routes/files.ts 存在 base b9374e6 即复现的预存编译失败（Node v24.18.0 与 @types/node/lib 类型不匹配，main@b9374e6 同错），host 不在本任务范围，无法补齐 CLI 产物；属环境/基线阻塞，非本次改动引入。
+
+残余风险：catalog 是 runtime-core port，其具体实现（Pi SDK JSONL store）返回的 cwd 假定为绝对路径，composition 已防御验证；startup E2E 由父会话 Grok 独立验证。
+```
+
+## 26. 实现模型说明
+
+本分支实现模型按用户要求使用 DeepSeek，全部实现、测试与文档更新在独立 worktree `fix/sessiond-activation-cwd` 完成，未改 main、未新建其他 worktree、未 merge/push。

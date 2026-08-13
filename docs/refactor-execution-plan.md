@@ -492,6 +492,7 @@ git diff --check
 4. R2：DONE（GPT orphan36/36、redaction308/308、clean build与全仓门禁PASS）
 5. X1：DONE（`34d2a3a` + `f711ab2` + `f87dea4`；GPT最终复验PASS）
 6. M2：DONE；M3 当前 checkpoint：D1A只读历史、D1B Thinking/Bash展示与selected history visible-branch normalized JSON export、D1B-4 Sidebar 只读会话目录元数据与 capability 撤回 fail-closed、D1B-5 Transcript history capability fail-closed、D2-P0/P1轻命令、D3A Files/Git/Worktrees只读工作区、D3B端到端只读Catalog均已合并；下一纵向切片进入D2 capability扩张或D3A Mutation重要节点
+7. `sessiond cold-open activation cwd`：DONE（`8086770`，branch `fix/sessiond-activation-cwd`，base `b9374e6`）。production composition 默认 activation context 不再用 M1 stub（无 requestedCwd 时 `/workspace` 导致 Client Continue live cold-open 在错误项目启动 Worker）：新增私有 `createCatalogActivationContext(catalog)` 复用与 sessionCatalog 同实例的 Pi SDK 只读 catalog，无显式 cwd 时从 `catalog.readSession` 取 cwd/projectRoot 并防御验证为非空绝对路径（`node path.isAbsolute`，拒绝空/NUL/相对，不 realpath），catalog 缺失 fail closed，structured RuntimeError `not_found` 由既有 RPC boundary sanitize/preserve；显式 requestedCwd 与 `activationContext` override 优先级不变，`sessionCatalog: null` 同时使默认 resolver fail closed。仅改 sessiond `daemon.ts` + `daemon.test.ts`，无 Adapter API/Protocol/Host/Client 改动。sessiond 134/134、typecheck/build/boundary/architecture PASS。
 ```
 
 旧 worktree 中的 ACL1/C1/R1 不再继续开发；后续实现必须在 `pix` 中进行。
