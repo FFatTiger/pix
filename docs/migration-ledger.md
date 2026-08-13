@@ -541,3 +541,35 @@ base/candidate 对照与 pre-existing blocker：Runtime E2E scenarioEpochChangeN
 本分支实现按用户要求使用 DeepSeek，全部实现、测试与文档更新在独立 worktree `d2p2-thinking-integration` 完成（branch `integrate/d2p2-thinking-control`），未改 main、未新建其他 worktree、未 merge/push。
 
 root `npm test` runner 本机实测 stall：`npm run test` 触发的 `node scripts/run-workspaces.mjs test` 进程链在约 20 分钟内 0% CPU、无进展（/tmp/root-test.log 与 runtime-contract dist mtime 停在同一时间点），已按协作规则终止该任务启动的进程树（未触碰其他 worktree / 30144）。为获得等价覆盖，改为按 workspace 顺序逐一运行官方 `npm run test --workspace <pkg>`（protocol/runtime-core/runtime-contract-tests/adapter/sessiond/agent-worker/host/cli/client 均各自 prebuild→build:test→官方 node --test/vitest），结果见 §28。typecheck 经官方 `run-workspaces.mjs typecheck` 单跑 EXIT 0（等价 9 workspace 官方 tsconfig）。该 stall 与本次改动无关（包测试、build、typecheck、E2E 全部独立 PASS），但已诚实记录，避免误报 root 全量通过。
+
+## 30. D3A-Files-Search-UI — Client 文件搜索 记录
+
+```text
+实现：DeepSeek；独立 worktree d3a-files-search-ui，branch feat/d3a-files-search-ui，base main@4f508b1a52c014fa060be17f7381fa364c77849f。纯 Client 只读切片，未改 Host/Protocol/runtime/sessiond/adapter/package-lock/D3A-P0；未改 main、未 merge/push、未另建 worktree。状态 IN_REVIEW（待 Fresh DeepSeek 独立验证）。
+
+背景/勘察：Host `GET /v1/file-index?cwd&q` 已 production 挂载，files capability 覆盖；带 q 返回 `{matches:[{path,isDir:false}],truncated}` cap 200（`node_modules`/`.git`/dist 等忽略，git ls-files 优先），q 空返回 legacy `{files}` 全量 shape（Client 永不带 q 请求）。Client 的 schema/resources/urls/queryKeys/options 均已存在（`FileIndexResponseSchema` union、`urls.files.index`、`queryKeys.files.index(cwd,q)`、`options.files.index` 已透传 signal）。真正缺口只在 Client FilesPanel 与安全 relative path helper。
+
+新增 `joinRelative(root, rel)`（paths.ts，纯函数）：接受 Host 相对 POSIX file path（如 `sub/a.ts`），逐段拒绝空/`.`/`..`/NUL/反斜杠/绝对/重复/尾斜线，结果用既有 normalize（stripTrailing+normalizeSeparators）与 isWithinRoot 复核保证落在 canonical root 内；不用 URL/path 库避免平台差异。Host `isDir:false`，只处理文件。
+
+FilesPanel 搜索集成（冻结交互）：
+1) breadcrumbs/内容上方 compact search form：`<form role=search>` + `<input type=search aria-label="Search files">`；无动画/transition:all，仅复用现有 focus/hover 语言（focus-visible outline var(--accent)、hover bg-hover），touch 目标 min-height 30px。
+2) raw 本地 state；trim 后 ≥2 字符才可能请求；250ms debounce（`window.setTimeout` + effect cleanup）。空 → 目录浏览；1 字符 → 固定提示 `Type at least 2 characters to search.` 进入 search mode；清空恢复目录浏览且 currentDir 保留（当前目录 query 不因搜索变化）。
+3) query 只用 `options.files.index(cwd, debouncedQuery)`，额外 `enabled: canFiles && Boolean(root) && debouncedQuery.length>=2`；queryFn signal 保留（TanStack key `[pix,files,index,cwd,q]` 隔离 cwd/q）。cwd 切换立即清 raw/debounced/selected/current（既有 reset 扩展），debounce timer 由 effect cleanup 拆除。capability 撤回整面板早退（零请求/结果不可见）+ 单独 effect 清 raw/debounced/selected，恢复不闪旧结果。
+4) 渲染只引用当前 debounced query：`querySettled = raw.trim() === debouncedQuery`；raw 变化时立即隐藏旧结果（显示 Searching…）避免 250ms 旧 q。迟到 q1 结果靠 key + data 隔离，绝不显示为 q2。
+5) 结果列表 `ul`+buttons（非伪 listbox，无箭头键声称，原生 Tab/Enter/Space），每个 button 显示 relative path、title 同 relative path（不暴露绝对 root）；`aria-live=polite` 状态区报告 Searching…/No matches found./N matches found./Results truncated。点击先 `joinRelative(root, match.path)`，null → 固定 `Invalid search result.`（role=alert，不发 meta/read）；valid → `setSelectedFile(joined)` 复用 meta/read preview。capability 撤回零请求。
+6) loading/empty/error 固定文案；新增 code-first `describeIndexError`（CWD_REQUIRED/INVALID_PATH/INVALID_INPUT/NOT_DIRECTORY→invalid project path for search；PATH_NOT_FOUND→not found；NO_ALLOWED_ROOTS；PATH_FORBIDDEN/ROOT_REPLACED→outside allowed roots；INDEX_TIMEOUT/TIMEOUT→timed out；INDEX_ABORTED/ABORTED→Search cancelled；kind network/timeout；default→Unable to search files.），不渲染 error.message/body/cause/stack/path。truncated 明确提示。
+7) 不做 content grep/fuzzy/ranking/worker/mutation/upload/搜索结果目录联动/D3A-P0。
+
+允许文件（仅这些生产文件改动）：`packages/client/src/features/workspace/paths.ts` + `paths.test.ts`、`FilesPanel.tsx` + `FilesPanel.test.tsx`、`packages/client/src/styles/app.css`、`packages/client/src/api/resources.test.ts` + `query-options.test.ts`（仅补 API 覆盖）、`docs/refactor-execution-plan.md` + `migration-ledger.md`。其余生产文件零改动。
+
+验证（本机 Node v24.18.0）：
+- 定向：paths 18/18（新增 joinRelative 4）、FilesPanel 27/27（新增搜索 11，保留既有 16）、resources 6/6（新增 index URL encode/strict matches shape/signal）、query-options 8/8（新增 index key cwd-q isolation/enabled/signal）。
+- Client 全量：33 文件 428/428 PASS（基线 411 + 新增 17）。
+- root `npm run build` EXIT 0（9 workspace 全 build）；root `npm run typecheck` EXIT 0。
+- `npm run check:architecture` PASS；client `npm run check:boundaries` 82 files OK；`git diff --check` OK。
+- `rg 'error\.(message|body|cause)|\.stack' packages/client/src/features/workspace/FilesPanel.tsx` 零命中（helper 内部 code/kind 可读，不渲染 raw）。
+- 测试模式说明：debounce/搜索 UI 用例用 vitest fake timers，分步 `act`（debounce 推进 → 微任务冲刷 fetch 链 → 非零 timer tick 触发 TanStack notifyManager `setTimeout(0)` → 再次冲刷），单 act 会推迟 query 创建导致假失败（已注释）。
+- 无浏览器视觉验收（DeepSeek 无视觉能力），仅 DOM/a11y 测试（aria-label/aria-live/role=alert/原生键盘语义）覆盖并诚实记录。
+
+残余风险：搜索词最小长度 2、cap 200、Host 侧排序（精确→前缀→basename 前缀→包含）为既有行为，本切片不改变。UI 仅要求可用、能力诚实、错误清晰、搜索立即响应；后续 D3A Mutation（创建/删除/上传）或搜索结果目录联动仍后置。视觉精修不在本阶段。root `npm test` 单命令 runner 本机已知 stall（§29），本切片以 Client 全量 + root build/typecheck/architecture/boundaries 覆盖，未重跑 root runner。
+```
