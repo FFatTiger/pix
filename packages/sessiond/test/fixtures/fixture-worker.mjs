@@ -76,16 +76,20 @@ switch (mode) {
     break;
   }
   case "hang": {
-    // Ignore stdin EOF; exit only on SIGTERM/SIGKILL.
+    // Ignore stdin EOF; keep the event loop alive and exit only on
+    // SIGTERM/SIGKILL. Signal listeners alone do not keep Node alive on Unix.
     process.stdin.resume();
+    setInterval(() => {}, 1_000);
     onSignal((signal) => {
       process.stderr.write(`fixture got ${signal}\n`);
       process.exit(0);
     });
+    ready("hang-ready", "sess-hang");
     break;
   }
   case "hang-term": {
     process.stdin.resume();
+    setInterval(() => {}, 1_000);
     // Swallow SIGTERM; only SIGKILL works.
     try {
       process.on("SIGTERM", () => {
@@ -94,6 +98,7 @@ switch (mode) {
     } catch {
       // ignore
     }
+    ready("hang-term-ready", "sess-hang-term");
     break;
   }
   case "stderr-flood": {

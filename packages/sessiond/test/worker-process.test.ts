@@ -38,21 +38,20 @@ const startInput: WorkerStartInput = {
   projectRoot: "/tmp/project",
 };
 
-/** Spawn fixture with mode via trampoline + extraEnv (test-only injection). */
-function factoryWithArgvMode(
+/** Spawn the fixture directly with its mode in the allowlisted test-only env. */
+function fixtureFactory(
   mode: string,
   extra: ConstructorParameters<typeof ProductionWorkerProcessFactory>[0] = {},
 ) {
-  const trampoline = resolve(here, "fixtures/fixture-trampoline.mjs");
   const { extraEnv: callerExtra, ...rest } = extra;
   return new ProductionWorkerProcessFactory({
-    workerMainPath: trampoline,
+    workerMainPath: fixtureWorker,
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
     stdinEndMs: 300,
     sigtermMs: 300,
     sigkillMs: 300,
     ...rest,
-    extraEnv: { FIXTURE_MODE: mode, ...(callerExtra ?? {}) },
+    extraEnv: { PIX_FIXTURE_MODE: mode, ...(callerExtra ?? {}) },
   });
 }
 
@@ -64,16 +63,22 @@ function onceMessage(
   timeoutMs = 3_000,
 ): Promise<WorkerToSessiondMessage> {
   return new Promise((resolvePromise, reject) => {
+    let unsubscribe: () => void = () => {};
+    let subscriptionReady = false;
+    let deliveredSynchronously = false;
     const timer = setTimeout(() => {
-      unsub();
+      unsubscribe();
       reject(new Error("timeout waiting for worker message"));
     }, timeoutMs);
-    const unsub = connection.subscribe((message) => {
+    unsubscribe = connection.subscribe((message) => {
       if (!predicate(message)) return;
       clearTimeout(timer);
-      unsub();
+      if (subscriptionReady) unsubscribe();
+      else deliveredSynchronously = true;
       resolvePromise(message);
     });
+    subscriptionReady = true;
+    if (deliveredSynchronously) unsubscribe();
   });
 }
 
@@ -82,15 +87,21 @@ function onceExit(
   timeoutMs = 5_000,
 ): Promise<WorkerExit> {
   return new Promise((resolvePromise, reject) => {
+    let unsubscribe: () => void = () => {};
+    let subscriptionReady = false;
+    let deliveredSynchronously = false;
     const timer = setTimeout(() => {
-      unsub();
+      unsubscribe();
       reject(new Error("timeout waiting for worker exit"));
     }, timeoutMs);
-    const unsub = connection.onExit((exit) => {
+    unsubscribe = connection.onExit((exit) => {
       clearTimeout(timer);
-      unsub();
+      if (subscriptionReady) unsubscribe();
+      else deliveredSynchronously = true;
       resolvePromise(exit);
     });
+    subscriptionReady = true;
+    if (deliveredSynchronously) unsubscribe();
   });
 }
 
@@ -383,7 +394,7 @@ test("StderrRing 40-round flood stays bounded and redacted", () => {
 });
 
 test("early message is buffered until subscribe", async () => {
-  const factory = factoryWithArgvMode("early-message");
+  const factory = fixtureFactory("early-message");
   const connection = await factory.start(startInput);
   // Wait long enough that the child has printed BEFORE any listener attaches.
   // (Manual probe shows ready arrives within ~50ms; 150ms is generous.)
@@ -403,7 +414,7 @@ test("early message is buffered until subscribe", async () => {
 });
 
 test("early exit is buffered until onExit", async () => {
-  const factory = factoryWithArgvMode("early-exit");
+  const factory = fixtureFactory("early-exit");
   const connection = await factory.start(startInput);
   await wait(50);
   const exit = await onceExit(connection);
@@ -412,7 +423,7 @@ test("early exit is buffered until onExit", async () => {
 });
 
 test("split frames across chunks reassemble", async () => {
-  const factory = factoryWithArgvMode("split-frames");
+  const factory = fixtureFactory("split-frames");
   const connection = await factory.start(startInput);
   const message = await onceMessage(connection, (m) => m.type === "worker.ready", 5_000);
   assert.equal(message.type, "worker.ready");
@@ -420,7 +431,7 @@ test("split frames across chunks reassemble", async () => {
 });
 
 test("coalesced frames deliver both messages", async () => {
-  const factory = factoryWithArgvMode("coalesced");
+  const factory = fixtureFactory("coalesced");
   const connection = await factory.start(startInput);
   const seen: string[] = [];
   const done = new Promise<void>((resolveDone, reject) => {
@@ -438,7 +449,7 @@ test("coalesced frames deliver both messages", async () => {
 });
 
 test("CRLF framed ready is accepted", async () => {
-  const factory = factoryWithArgvMode("crlf");
+  const factory = fixtureFactory("crlf");
   const connection = await factory.start(startInput);
   const message = await onceMessage(connection, (m) => m.type === "worker.ready");
   assert.equal(message.type, "worker.ready");
@@ -446,7 +457,7 @@ test("CRLF framed ready is accepted", async () => {
 });
 
 test("malformed stdout fails closed via onExit", async () => {
-  const factory = factoryWithArgvMode("malformed");
+  const factory = fixtureFactory("malformed");
   const connection = await factory.start(startInput);
   const exit = await onceExit(connection);
   assert.ok(exit.error, "expected framing error");
@@ -455,7 +466,7 @@ test("malformed stdout fails closed via onExit", async () => {
 });
 
 test("oversize frame fails closed", async () => {
-  const factory = factoryWithArgvMode("oversize", { maxFrameBytes: 2 * 1024 * 1024 });
+  const factory = fixtureFactory("oversize", { maxFrameBytes: 2 * 1024 * 1024 });
   const connection = await factory.start(startInput);
   const exit = await onceExit(connection, 10_000);
   assert.ok(exit.error, "expected oversize error");
@@ -464,7 +475,7 @@ test("oversize frame fails closed", async () => {
 });
 
 test("stderr flood is drained, bounded, and redacted", async () => {
-  const factory = factoryWithArgvMode("stderr-flood");
+  const factory = fixtureFactory("stderr-flood");
   const connection = await factory.start(startInput);
   try {
     const readSnap = (): string => {
@@ -502,7 +513,7 @@ test("stderr flood is drained, bounded, and redacted", async () => {
 });
 
 test("stderr split-secret: ring snapshot and worker exit error never surface secret fragments", async () => {
-  const factory = factoryWithArgvMode("stderr-split-secret");
+  const factory = fixtureFactory("stderr-split-secret");
   let connection: Awaited<ReturnType<ProductionWorkerProcessFactory["start"]>> | undefined;
   try {
     connection = await factory.start(startInput);
@@ -531,7 +542,7 @@ test("stderr split-secret: ring snapshot and worker exit error never surface sec
 });
 
 test("echo fixture: init → ready, stdin EOF exits, close idempotent", async () => {
-  const factory = factoryWithArgvMode("echo");
+  const factory = fixtureFactory("echo");
   const connection = await factory.start(startInput);
   assert.ok(typeof connection.pid === "number" && connection.pid! > 0);
   const readyPromise = onceMessage(connection, (m) => m.type === "worker.ready");
@@ -556,8 +567,9 @@ test("echo fixture: init → ready, stdin EOF exits, close idempotent", async ()
 });
 
 test("close escalates hang → SIGTERM", async () => {
-  const factory = factoryWithArgvMode("hang", { stdinEndMs: 50, sigtermMs: 500, sigkillMs: 500 });
+  const factory = fixtureFactory("hang", { stdinEndMs: 50, sigtermMs: 500, sigkillMs: 500 });
   const connection = await factory.start(startInput);
+  await onceMessage(connection, (message) => message.type === "worker.ready");
   const pid = connection.pid;
   assert.ok(pid);
   const exitPromise = onceExit(connection);
@@ -581,8 +593,9 @@ test("close escalates hang → SIGTERM", async () => {
 
 test("close escalates hang-term → SIGKILL", async () => {
   if (process.platform === "win32") return;
-  const factory = factoryWithArgvMode("hang-term", { stdinEndMs: 30, sigtermMs: 30, sigkillMs: 500 });
+  const factory = fixtureFactory("hang-term", { stdinEndMs: 30, sigtermMs: 30, sigkillMs: 500 });
   const connection = await factory.start(startInput);
+  await onceMessage(connection, (message) => message.type === "worker.ready");
   const pid = connection.pid!;
   const exitPromise = onceExit(connection, 5_000);
   await connection.close();
@@ -612,7 +625,7 @@ test("spawn error (missing binary) rejects start", async () => {
 });
 
 test("send rejects invalid schema and closed connection", async () => {
-  const factory = factoryWithArgvMode("echo");
+  const factory = fixtureFactory("echo");
   const connection = await factory.start(startInput);
   await assert.rejects(
     connection.send({ type: "worker.ping" } as never),
