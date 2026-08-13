@@ -15,10 +15,15 @@ test("discoverTestFiles matches recursive globs without depending on the shell",
   mkdirSync(join(root, "scripts"), { recursive: true });
   mkdirSync(join(root, "scripts", "nested"), { recursive: true });
   writeFileSync(join(root, "scripts", "a.test.mjs"), "");
+  writeFileSync(join(root, "scripts", "a.spec.mjs"), "");
   writeFileSync(join(root, "scripts", "nested", "b.test.mjs"), "");
   writeFileSync(join(root, "scripts", "skip.mjs"), "");
-  const files = discoverTestFiles(root, "scripts/**/*.test.mjs");
-  assert.equal(files.length, 2);
+  const files = discoverTestFiles(root, "scripts/**/*.{test,spec}.mjs");
+  assert.deepEqual(files, [
+    join(root, "scripts", "a.spec.mjs"),
+    join(root, "scripts", "a.test.mjs"),
+    join(root, "scripts", "nested", "b.test.mjs"),
+  ]);
 });
 
 test("main forwards extra node test arguments before explicit files", () => {

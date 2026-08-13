@@ -71,6 +71,11 @@ export interface DaemonOptions {
   __testStartupDelayMs?: number;
 }
 
+export interface DaemonDiagnostics {
+  /** Active production worker PIDs from the authoritative in-process registry. */
+  workerPids(): number[];
+}
+
 /** A running daemon handle. {@link shutdown} is idempotent and tear-down ordered. */
 export interface DaemonHandle {
   readonly directory: string;
@@ -85,8 +90,8 @@ export interface DaemonHandle {
    */
   readonly privateEndpoint: string | undefined;
   readonly secret: string;
-  /** Active production worker PIDs from the authoritative in-process registry. */
-  workerPids(): number[];
+  /** @internal Read-only process diagnostics for in-process tests/observers; never exposed over RPC. */
+  readonly diagnostics: DaemonDiagnostics;
   /** Resolves once shutdown has fully completed (signal or explicit). */
   readonly closed: Promise<void>;
   /** Idempotent tear-down: owned-public → server → service → private → lock. */
@@ -203,7 +208,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       endpoint: paths.endpoint,
       privateEndpoint: privatePath,
       secret,
-      workerPids: () => service.workerPids(),
+      diagnostics: { workerPids: () => service.workerPids() },
       closed,
       shutdown,
     };

@@ -11,9 +11,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "node scripts/run-workspaces.mjs build",
-    "typecheck": "node scripts/run-workspaces.mjs typecheck",
-    "test": "node scripts/run-node-test.mjs \"scripts/**/*.test.mjs\" && node scripts/run-workspaces.mjs test",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "node scripts/run-node-test.mjs \"scripts/**/*.test.mjs\" && npm run test --workspaces --if-present",
     "check:architecture": "node scripts/check-architecture.mjs",
     "start": "node scripts/product-entry.mjs start",
     "cli": "node scripts/product-entry.mjs cli",

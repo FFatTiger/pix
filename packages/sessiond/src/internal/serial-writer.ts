@@ -35,6 +35,8 @@ export class SerialSocketWriter {
   private failure: Error | undefined;
   /** Frame currently being flushed (removed from the queue). Settled by {@link fail} on close. */
   private current: Frame | undefined;
+  /** Resolves the pending socket-write callback wait so close cannot hang the current frame. */
+  private resolveWriteWait: (() => void) | undefined;
   /** Resolves the pending backpressure wait so a concurrent close cannot hang the current frame. */
   private resolveDrainWait: (() => void) | undefined;
   private readonly maxQueuedFrames: number;
@@ -75,6 +77,12 @@ export class SerialSocketWriter {
     this.fail(error);
   }
 
+  private endWriteWait(): void {
+    const resolveWriteWait = this.resolveWriteWait;
+    this.resolveWriteWait = undefined;
+    if (resolveWriteWait) resolveWriteWait();
+  }
+
   private endDrainWait(): void {
     const resolveDrainWait = this.resolveDrainWait;
     this.resolveDrainWait = undefined;
@@ -89,11 +97,22 @@ export class SerialSocketWriter {
         this.queuedBytes -= frame.bytes;
         this.current = frame;
         try {
-          if (!this.socket.write(frame.data)) {
-            // Backpressure: wait for a real drain or for the writer to close.
-            // A concurrent close rejects `frame` via `fail` and resolves this
-            // wait, so the frame settles exactly once and never hangs.
-            await this.waitForDrainOrClose();
+          // `socket.write()` returning true only means the chunk was accepted
+          // into Node's writable queue. Resolve the frame only after its write
+          // callback fires; shutdown relies on this promise before destroying
+          // sockets. When backpressured, also wait for `drain` before writing
+          // the next frame so queue ordering stays bounded.
+          const writeComplete = new Promise<void>((resolve) => {
+            this.resolveWriteWait = resolve;
+          });
+          const accepted = this.socket.write(frame.data, (error?: Error | null) => {
+            if (error) this.fail(error);
+            this.endWriteWait();
+          });
+          if (accepted) {
+            await writeComplete;
+          } else {
+            await Promise.all([writeComplete, this.waitForDrainOrClose()]);
           }
           if (!this.closed) frame.resolve();
           // else: `fail` already rejected `frame` (the current frame) exactly once.
@@ -119,8 +138,10 @@ export class SerialSocketWriter {
     if (this.closed) return;
     this.closed = true;
     this.failure = error;
-    // Unblock a pending backpressure wait so the current frame is settled (below)
-    // instead of hanging on a `drain` that will never arrive.
+    // Unblock pending write-callback and backpressure waits so the current
+    // frame is rejected instead of hanging on callbacks/events that will never
+    // arrive after socket teardown.
+    this.endWriteWait();
     this.endDrainWait();
     const current = this.current;
     this.current = undefined;

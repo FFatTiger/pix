@@ -7,14 +7,46 @@ import { SerialSocketWriter } from "../src/internal/serial-writer.js";
 class FakeSocket extends EventEmitter {
   destroyed = false;
   readonly writes: string[] = [];
+  readonly pendingWriteCallbacks: Array<(error?: Error | null) => void> = [];
   block = false;
-  write(data: string): boolean {
+  deferWriteCallbacks = false;
+
+  constructor() {
+    super();
+    this.on("drain", () => this.completeWrites());
+  }
+
+  write(data: string, callback?: (error?: Error | null) => void): boolean {
     if (this.destroyed) throw new Error("closed");
     this.writes.push(data);
+    if (callback) {
+      if (this.block || this.deferWriteCallbacks) this.pendingWriteCallbacks.push(callback);
+      else queueMicrotask(() => callback());
+    }
     return !this.block;
   }
+
+  completeWrites(error?: Error): void {
+    for (const callback of this.pendingWriteCallbacks.splice(0)) callback(error);
+  }
+
   destroy(error?: Error): this { this.destroyed = true; if (error) this.emit("error", error); this.emit("close"); return this; }
 }
+
+test("serial writer resolves only after the socket write callback", async () => {
+  const socket = new FakeSocket();
+  socket.deferWriteCallbacks = true;
+  const writer = new SerialSocketWriter(socket as never);
+  const frame = writer.enqueue("ack\n");
+  let settled = false;
+  frame.finally(() => { settled = true; }).catch(() => {});
+  await Promise.resolve();
+  assert.deepEqual(socket.writes, ["ack\n"]);
+  assert.equal(settled, false, "enqueue must not resolve merely because socket.write returned true");
+  socket.completeWrites();
+  await frame;
+  assert.equal(settled, true);
+});
 
 test("serial writer preserves order across backpressure", async () => {
   const socket = new FakeSocket();

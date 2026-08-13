@@ -248,29 +248,42 @@ export async function runHost(
   if (options.open) openBrowser(url);
 
   let closing = false;
+  let settleShutdown!: () => void;
+  const shutdownComplete = new Promise<void>((resolve) => {
+    settleShutdown = resolve;
+  });
   const shutdown = async (source: NodeJS.Signals | "IPC_SHUTDOWN"): Promise<void> => {
-    if (closing) return;
+    if (closing) return shutdownComplete;
     closing = true;
     pixLog(`${source} received — closing host (sessiond keeps running)`);
     try {
       await handle.close();
     } catch (error) {
       pixErr(`host close error: ${(error as Error).message}`);
+    } finally {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      if (onMessage) process.off("message", onMessage);
+      settleShutdown();
     }
-    process.exit(0);
   };
-  process.on("SIGINT", (signal) => void shutdown(signal));
-  process.on("SIGTERM", (signal) => void shutdown(signal));
+  const onSignal = (signal: NodeJS.Signals): void => {
+    void shutdown(signal);
+  };
+  const onMessage = typeof process.send === "function"
+    ? (message: unknown): void => {
+        if (message === "pix.host.shutdown") void shutdown("IPC_SHUTDOWN");
+      }
+    : undefined;
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   // Cross-platform parent-process control for E2E/supervisors that explicitly
   // create a Node IPC channel. Ordinary product launches have no IPC channel,
   // so this does not add a remotely reachable shutdown surface.
-  if (typeof process.send === "function") {
-    process.on("message", (message) => {
-      if (message === "pix.host.shutdown") void shutdown("IPC_SHUTDOWN");
-    });
-  }
+  if (onMessage) process.on("message", onMessage);
 
-  // The listening server keeps the event loop alive; block until shutdown.
-  await new Promise<void>(() => {});
+  // The listening server keeps the event loop alive. Return normally after
+  // teardown so the outer CLI/bin entry point remains the sole exit-code owner.
+  await shutdownComplete;
   return 0;
 }

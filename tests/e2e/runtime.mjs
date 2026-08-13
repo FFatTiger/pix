@@ -396,7 +396,7 @@ async function startRuntimeStack(tempDir) {
     clientDist,
   });
 
-  return { daemon, host, clientDist, workerPids: () => daemon.workerPids() };
+  return { daemon, host, clientDist, workerPids: () => daemon.diagnostics.workerPids() };
 }
 
 async function bootHost({ endpoint, secret, clientDist, capabilities = ["agent"] }) {
@@ -469,7 +469,7 @@ async function makeMinimalClientDist(tempDir) {
 }
 
 function collectWorkerPids(daemon) {
-  const pids = daemon.workerPids();
+  const pids = daemon.diagnostics.workerPids();
   assert.ok(Array.isArray(pids), "daemon worker PID observer must return an array");
   for (const pid of pids) {
     assert.ok(Number.isSafeInteger(pid) && pid > 0, `invalid worker pid: ${pid}`);

@@ -28,7 +28,7 @@ test("resolveTscInvocation fails closed when typescript is not installed", () =>
   );
 });
 
-test("resolveNpmInvocation prefers npm_execpath from the invoking npm", (t) => {
+test("resolveNpmInvocation uses npm_execpath from the invoking npm", (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const cli = join(root, "npm-cli.js");
@@ -40,4 +40,11 @@ test("resolveNpmInvocation prefers npm_execpath from the invoking npm", (t) => {
   assert.equal(inv.command, "/usr/bin/node");
   assert.deepEqual(inv.args, [cli]);
   assert.equal(inv.shell, false);
+});
+
+test("resolveNpmInvocation rejects direct execution outside npm", () => {
+  assert.throws(
+    () => resolveNpmInvocation({ execPath: "/usr/bin/node", env: {} }),
+    /run this script through npm/,
+  );
 });

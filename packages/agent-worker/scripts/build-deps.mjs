@@ -2,8 +2,8 @@
 //
 // Build this package's workspace dependencies in dependency order by invoking
 // `tsc` directly against each dependency's tsconfig — WITHOUT re-entering the
-// npm workspace runner. The root run-workspaces runner iterates packages in
-// glob (alphabetical) order, so agent-worker (a) is built before protocol (p),
+// npm's root workspace runner iterates packages in manifest/glob order, so
+// agent-worker (a) is built before protocol (p), pi-sdk-adapter (p) and
 // pi-sdk-adapter (p) and runtime-core (r); this script ensures every
 // dependency's dist/ exists first, in the right order, using a single tsc
 // invocation per package.

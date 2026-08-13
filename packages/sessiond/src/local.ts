@@ -25,11 +25,10 @@ export interface InstanceLockRecord {
 }
 
 /**
- * Strict, side-effect-free view of the on-disk instance lock. Unlike
- * {@link readInstanceLock}, this distinguishes "absent" from "present but
- * unsafe" (symlink, non-regular, unreadable, corrupt, malformed payload) so
- * owners and supervisors can fail closed instead of treating an unsafe lock as
- * a missing one and auto-removing it.
+ * Strict, side-effect-free view of the on-disk instance lock. It distinguishes
+ * "absent" from "present but unsafe" (symlink, non-regular, unreadable,
+ * corrupt, or malformed payload), so owners and supervisors can fail closed
+ * instead of treating an unsafe lock as missing and auto-removing it.
  */
 export type InstanceLockRead =
   | { kind: "missing" }
@@ -77,26 +76,18 @@ export async function readInstanceLockStrict(paths: SessiondPaths): Promise<Inst
   }
 }
 
-/**
- * Backward-compatible wrapper for B4 supervision: reads the lock but collapses
- * "unsafe" onto "absent" (`undefined`). Callers that need to distinguish an
- * unsafe lock from a missing one must use {@link readInstanceLockStrict}.
- */
-export async function readInstanceLock(paths: SessiondPaths): Promise<InstanceLockRecord | undefined> {
-  const result = await readInstanceLockStrict(paths);
-  return result.kind === "ok" ? result.record : undefined;
-}
-
-/** True when the lock names a process that is still alive (pid 0 probe). */
+/** True when a strict lock names a process that is still alive. Unsafe locks are not collapsed into ordinary liveness. */
 export async function instanceAlive(paths: SessiondPaths): Promise<boolean> {
-  const lock = await readInstanceLock(paths);
-  return lock !== undefined && pidAlive(lock.pid);
+  const lock = await readInstanceLockStrict(paths);
+  return lock.kind === "ok" && pidAlive(lock.record.pid);
 }
 
 export function sessiondPaths(directory: string): SessiondPaths {
   // Named Pipes are global to the Windows machine, not scoped by directory.
   // Hash the complete native absolute directory identity: truncating a hex
   // encoding of the path prefix made every %TEMP% test directory collide.
+  // The default runtime path is per-user; custom shared paths still rely on the
+  // authenticated secret and inherited Windows DACL, not the pipe name itself.
   const pipeIdentity = process.platform === "win32"
     ? createHash("sha256").update(resolve(directory).toLowerCase()).digest("hex").slice(0, 32)
     : undefined;
@@ -110,9 +101,40 @@ export function sessiondPaths(directory: string): SessiondPaths {
 
 async function ensurePrivateDirectory(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
-  const info = await lstat(directory);
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new SessiondError("forbidden", "sessiond directory is not a private directory");
+  const initial = await lstat(directory, { bigint: true });
+  if (!initial.isDirectory() || initial.isSymbolicLink()) {
+    throw new SessiondError("forbidden", "sessiond directory is not a private directory");
+  }
+
+  // Windows confidentiality is provided by the selected per-user directory's
+  // inherited DACL, not POSIX mode bits (Node cannot express an equivalent
+  // owner-only DACL through chmod). The leaf shape check above still rejects
+  // files and reparse-point links before any secret or lock is created.
+  if (process.platform === "win32") return;
+
+  // Open the verified directory itself without following a replaced leaf, then
+  // chmod the handle rather than the pathname. This prevents a pre-existing or
+  // concurrently substituted symlink from causing chmod to mutate its target.
+  const flags = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0);
+  let handle;
+  try {
+    handle = await open(directory, flags);
+  } catch {
+    throw new SessiondError("forbidden", "sessiond directory is not a private directory");
+  }
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isDirectory() || opened.dev !== initial.dev || opened.ino !== initial.ino) {
+      throw new SessiondError("forbidden", "sessiond directory identity changed during validation");
+    }
+    await handle.chmod(0o700);
+    const current = await lstat(directory, { bigint: true });
+    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== opened.dev || current.ino !== opened.ino) {
+      throw new SessiondError("forbidden", "sessiond directory identity changed during validation");
+    }
+  } finally {
+    await handle.close();
+  }
 }
 
 function pidAlive(pid: number): boolean {
@@ -179,6 +201,9 @@ export interface LocalSecretTestHooks {
 
 /**
  * Load the local sessiond secret, creating it atomically on first use.
+ * POSIX confidentiality additionally relies on a 0700 parent and 0600 file.
+ * Windows relies on the per-user runtime directory's inherited DACL; Node's
+ * chmod mode bits are not treated as an ACL-equivalent security assertion.
  *
  * Crash-safety / race-safety guarantees:
  *   - `final` is published only via `link(temp, final)`, which is atomic and

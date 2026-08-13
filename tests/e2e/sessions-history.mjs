@@ -69,7 +69,7 @@ async function freePort() {
   });
 }
 function observedWorkerPids(daemon) {
-  const pids = daemon.workerPids();
+  const pids = daemon.diagnostics.workerPids();
   assert.ok(Array.isArray(pids), "daemon worker PID observer must return an array");
   for (const pid of pids) assert.ok(Number.isSafeInteger(pid) && pid > 0, `invalid worker pid: ${pid}`);
   return pids;

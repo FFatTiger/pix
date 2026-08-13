@@ -6,7 +6,7 @@
 // paths that contain spaces.
 
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 /**
  * Launch TypeScript's JS CLI with the current Node. `workspaceRoot` is the
@@ -21,30 +21,20 @@ export function resolveTscInvocation(workspaceRoot, { execPath = process.execPat
 }
 
 /**
- * The npm CLI paired with the current Node, as `{ command, args, shell }`.
- * Always `shell: false`. Prefer `npm-cli.js` over `.cmd` / PATH shims.
+ * The npm CLI that invoked the current lifecycle script. All production callers
+ * run from npm hooks, so require the documented `npm_execpath` contract rather
+ * than guessing Node/npm installation layouts. Always launch the JS CLI through
+ * the current Node with `shell: false`.
  */
 export function resolveNpmInvocation({
   execPath = process.execPath,
   env = process.env,
 } = {}) {
-  const npmExecPath = env.npm_execpath;
-  if (npmExecPath && /npm-cli\.js$/i.test(npmExecPath) && existsSync(npmExecPath)) {
-    return { command: execPath, args: [npmExecPath], shell: false };
-  }
-  const nodeDir = dirname(execPath);
-  const candidates = [
-    join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"),
-    join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
-  ];
-  for (const cli of candidates) {
-    if (existsSync(cli)) return { command: execPath, args: [cli], shell: false };
-  }
-  const sibling = join(nodeDir, "npm");
-  if (existsSync(sibling)) {
-    return { command: sibling, args: [], shell: false };
+  const cli = env.npm_execpath;
+  if (cli && /npm-cli\.js$/i.test(cli) && existsSync(cli)) {
+    return { command: execPath, args: [cli], shell: false };
   }
   throw new Error(
-    `[pix] cannot resolve npm-cli.js next to ${execPath}; run via npm or install Node with a bundled npm`,
+    "[pix] npm_execpath does not name an installed npm-cli.js; run this script through npm",
   );
 }

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import { SessiondError } from "../src/errors.js";
-import { instanceAlive, readInstanceLock, sessiondPaths } from "../src/control.js";
+import { instanceAlive, readInstanceLockStrict, sessiondPaths } from "../src/control.js";
 import { SessiondRpcClient } from "../src/rpc.js";
 import { UnavailableWorkerFactory, startDaemon } from "../src/composition/index.js";
 
@@ -174,9 +174,12 @@ test("control surface reports liveness tied to the lock", async () => {
   try {
     assert.equal(await instanceAlive(paths), false);
     const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
-    const lock = await readInstanceLock(paths);
-    assert.equal(lock?.instanceId, handle.instanceId);
-    assert.equal(typeof lock?.pid, "number");
+    const lock = await readInstanceLockStrict(paths);
+    assert.equal(lock.kind, "ok");
+    if (lock.kind === "ok") {
+      assert.equal(lock.record.instanceId, handle.instanceId);
+      assert.equal(typeof lock.record.pid, "number");
+    }
     assert.equal(await instanceAlive(paths), true);
     await handle.shutdown();
     assert.equal(await instanceAlive(paths), false);

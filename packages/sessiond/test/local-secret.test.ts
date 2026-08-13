@@ -122,6 +122,25 @@ test("an existing valid secret is returned unchanged", async () => {
   }
 });
 
+test("rejecting a symlinked runtime directory never chmods its target", { skip: process.platform === "win32" }, async () => {
+  const root = await tempDir();
+  const target = join(root, "target");
+  const alias = join(root, "alias");
+  try {
+    await mkdir(target, { mode: 0o755 });
+    await symlink(target, alias, "dir");
+    const before = (await stat(target)).mode & 0o777;
+    await assert.rejects(
+      loadOrCreateLocalSecret(sessiondPaths(alias)),
+      isSessiondError(/private directory/),
+    );
+    assert.equal((await stat(target)).mode & 0o777, before, "validation must not mutate the symlink target");
+    assert.deepEqual(await readdir(target), [], "validation must not create secret state through the symlink");
+  } finally {
+    await cleanup(root);
+  }
+});
+
 test("a symlink final is rejected (fail-closed)", async (t) => {
   const dir = await tempDir();
   const paths = sessiondPaths(dir);

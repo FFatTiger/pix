@@ -3,7 +3,7 @@
 // Build this package's workspace dependencies in dependency order by invoking
 // `tsc` directly against each dependency's tsconfig — WITHOUT re-entering the
 // npm workspace runner (`npm run build --workspace …`). The root
-// run-workspaces runner iterates packages in glob (alphabetical) order, so
+// npm's root workspace runner iterates packages in manifest/glob order, so
 // pi-sdk-adapter is built before runtime-core and runtime-contract-tests;
 // this script ensures both dependencies' dist/ exist first, in the right
 // order, using a single tsc invocation per package.
