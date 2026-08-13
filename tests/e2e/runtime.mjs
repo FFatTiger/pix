@@ -590,9 +590,9 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
     assert.equal(snap.payload.epoch, created.epoch);
     assert.ok(typeof snap.payload.lastEventId === "number");
     // Authoritative runtime capability set is primed from the worker snapshot
-    // (NOT the Host `agent` capability): D2-P1/D2-P2 production surface =
+    // (NOT the Host `agent` capability): D2-P1/P2/P3 production surface =
     // runtime.prompt + runtime.abort + runtime.stats + runtime.session.rename +
-    // runtime.thinking.set.
+    // runtime.thinking.set + runtime.model.set.
     assert.deepEqual(
       snap.payload.snapshot.capabilities,
       {
@@ -602,6 +602,7 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
           "runtime.stats",
           "runtime.session.rename",
           "runtime.thinking.set",
+          "runtime.model.set",
         ],
         version: 1,
       },
@@ -733,7 +734,7 @@ async function scenarioHostRestartResume(stack, projectDir) {
     lastEventId = snap.payload.lastEventId;
     // Resume attach still carries the authoritative runtime capability set.
     assert.deepEqual(snap.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
       version: 1,
     });
 
@@ -884,7 +885,7 @@ async function scenarioEpochChangeNoAutoResend(stack, projectDir) {
     // After an epoch change (stop+reactivate), the freshly primed attach snapshot
     // still carries the authoritative runtime capability set.
     assert.deepEqual(snap2.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
       version: 1,
     });
     // epoch may equal if makeEpoch collides (UUID); force assert via status if needed.
@@ -1109,7 +1110,7 @@ async function scenarioCreateThenColdAttach(stack, projectDir) {
 }
 
 // ---------------------------------------------------------------------------
-// D2-P1/D2-P2 light commands: frozen production surface over the real process path
+// D2-P1/D2-P2/D2-P3 light commands: frozen production surface over the real process path
 // ---------------------------------------------------------------------------
 
 async function scenarioD2P1LightCommands(stack, projectDir) {
@@ -1127,7 +1128,7 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     assert.equal(snap.type, "snapshot");
     // Attach snapshot carries the D2-P1/D2-P2 production capability surface.
     assert.deepEqual(snap.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
       version: 1,
     });
 
@@ -1215,15 +1216,76 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     assert.equal(reattach.payload.snapshot.state.thinkingLevel, "high", JSON.stringify(reattach.payload.snapshot.state));
     assert.equal(reattach.payload.snapshot.state.thinkingLevelPinned, true, JSON.stringify(reattach.payload.snapshot.state));
     assert.deepEqual(reattach.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set"],
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
+      version: 1,
+    });
+
+    // 7. set_model — capability-gated (runtime.model.set, D2-P3). Switch to a
+    // different provider/model; the pin from step 6 must be preserved (the
+    // adapter reapplies pinned thinking after a model change).
+    const modelRes = await client.command(sessionId, {
+      commandId: `light-model-${Date.now()}`,
+      type: "set_model",
+      provider: "openai",
+      modelId: "gpt-5",
+    });
+    assert.equal(modelRes.payload.ok, true, JSON.stringify(modelRes.payload));
+    assert.equal(modelRes.payload.result.result.ok, true, JSON.stringify(modelRes.payload.result));
+    assert.equal(modelRes.payload.result.result.type, "set_model");
+    // Live runtime state reflects the new model AND the preserved thinking pin.
+    const stateModel = await client.command(sessionId, { commandId: `light-state4-${Date.now()}`, type: "get_state" });
+    assert.equal(stateModel.payload.result.result.ok, true);
+    assert.equal(stateModel.payload.result.result.state.model?.provider, "openai");
+    assert.equal(stateModel.payload.result.result.state.model?.id, "gpt-5");
+    assert.equal(stateModel.payload.result.result.state.thinkingLevel, "high");
+    assert.equal(stateModel.payload.result.result.state.thinkingLevelPinned, true);
+
+    // sessiond authority: getSnapshot already carries the new model (post-success
+    // worker.getSnapshot refresh before the command resolves).
+    const snapModel = await client.getSnapshot(sessionId);
+    assert.equal(snapModel.payload.ok, true, JSON.stringify(snapModel.payload));
+    const snapModelResult = snapModel.payload.result;
+    const snapModelState = snapModelResult?.snapshot?.state ?? snapModelResult?.state;
+    assert.equal(snapModelState?.model?.provider, "openai", JSON.stringify(snapModelResult));
+    assert.equal(snapModelState?.model?.id, "gpt-5", JSON.stringify(snapModelResult));
+    assert.equal(snapModelState?.thinkingLevel, "high", JSON.stringify(snapModelResult));
+    assert.equal(snapModelState?.thinkingLevelPinned, true, JSON.stringify(snapModelResult));
+
+    // Strict non-empty validation is enforced by the wire Protocol schema
+    // (provider/modelId are NonEmptyString), so a blank provider cannot reach
+    // the fixture over the real WS path (boundary rejects with a close). The
+    // fixture keeps its own non-empty check as defense-in-depth.
+
+    // Unknown model is a structured invalid_input (no raw leak).
+    const unknownModel = await client.command(sessionId, {
+      commandId: `light-model-unknown-${Date.now()}`,
+      type: "set_model",
+      provider: "anthropic",
+      modelId: "does-not-exist",
+    });
+    assert.equal(unknownModel.payload.ok, true, JSON.stringify(unknownModel.payload));
+    const unknownOutcome = unknownModel.payload.result.result;
+    assert.equal(unknownOutcome.ok, false, "unknown model must be invalid_input");
+    assert.equal(unknownOutcome.error.code, "invalid_input");
+
+    // Survive detach → reattach: the new model AND the thinking pin persist.
+    await client.detach(sessionId);
+    const reattachModel = await client.attach(sessionId);
+    assert.equal(reattachModel.type, "snapshot");
+    assert.equal(reattachModel.payload.snapshot.state.model?.provider, "openai", JSON.stringify(reattachModel.payload.snapshot.state));
+    assert.equal(reattachModel.payload.snapshot.state.model?.id, "gpt-5", JSON.stringify(reattachModel.payload.snapshot.state));
+    assert.equal(reattachModel.payload.snapshot.state.thinkingLevel, "high");
+    assert.equal(reattachModel.payload.snapshot.state.thinkingLevelPinned, true);
+    assert.deepEqual(reattachModel.payload.snapshot.capabilities, {
+      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set"],
       version: 1,
     });
 
     // Closed capabilities must remain unsupported on the production surface.
     // Note: clear_queue is an interrupt-only wire type (cannot go via command
-    // envelope); cover queue via set_auto_retry instead.
+    // envelope); cover queue via set_auto_retry instead. set_model is now open;
+    // tools/reload/queue stay closed.
     for (const [type, extra, token] of [
-      ["set_model", { provider: "anthropic", modelId: "claude" }, "runtime.model.set"],
       ["set_tools", { toolNames: [] }, "runtime.tools.write"],
       ["reload", {}, "runtime.reload"],
       ["set_auto_retry", { enabled: false }, "runtime.queue"],
@@ -1246,6 +1308,7 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
       renamedTo: "Light Commands",
       thinkingLevel: "high",
       thinkingLevelPinned: true,
+      model: { provider: "openai", id: "gpt-5" },
     };
   } finally {
     client.close();
@@ -1456,7 +1519,7 @@ async function main() {
           "commandId at-most-once + interrupt dedup + type conflict",
           "session isolation",
           "create then host-restart cold attach",
-          "D2-P1/D2-P2 light commands (state/commands/last-text/stats/rename/thinking + closed caps)",
+          "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + closed caps)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {

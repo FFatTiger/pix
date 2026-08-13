@@ -473,6 +473,200 @@ test("set_thinking_level different commandIds remain independent", async () => {
   await service.shutdown();
 });
 
+test("set_model success refreshes authoritative snapshot before command returns", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const before = service.getSnapshot("s");
+  assert.equal(before.state.model, null);
+  const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const result = await service.command("s", { type: "set_model", commandId: "model-1", provider: "openai", modelId: "gpt-5" });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "set_model");
+
+  // sessiond must have issued a post-success worker.getSnapshot refresh.
+  const snapshotsAfter = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.ok(snapshotsAfter > snapshotsBefore, "expected post-success worker.getSnapshot refresh");
+
+  const snap = service.getSnapshot("s");
+  assert.equal(snap.state.model?.provider, "openai");
+  assert.equal(snap.state.model?.id, "gpt-5");
+
+  // Attach boundary also carries the new model (sessiond projection authority).
+  const attach = service.attach({ sessionId: "s" });
+  assert.equal(attach.result.snapshot?.state.model?.provider, "openai");
+  assert.equal(attach.result.snapshot?.state.model?.id, "gpt-5");
+  await service.shutdown();
+});
+
+test("set_model same-id second caller waits for deferred authority refresh with one worker.command", async () => {
+  const { service, workers } = harness({
+    worker: { postCommandSnapshotDelayMs: 80 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_model" as const, commandId: "model-same", provider: "openai", modelId: "gpt-5" as const };
+
+  const first = service.command("s", command);
+  await wait(30);
+  let firstSettled = false;
+  void first.then(() => { firstSettled = true; });
+  await wait(0);
+  assert.equal(firstSettled, false, "original caller must not settle while refresh is deferred");
+
+  const second = service.command("s", command);
+  let secondSettled = false;
+  void second.then(() => { secondSettled = true; });
+  await wait(20);
+  assert.equal(firstSettled, false);
+  assert.equal(secondSettled, false, "same-id caller must join finalization, not settle early");
+
+  const workerCommands = worker.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 1, "exactly one worker.command for same commandId");
+
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.deepEqual(a, b);
+  assert.equal(service.getSnapshot("s").state.model?.provider, "openai");
+  assert.equal(service.getSnapshot("s").state.model?.id, "gpt-5");
+  await service.shutdown();
+});
+
+test("set_model successful finalization cleans singleflight and cached retry does not refresh again", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const command = { type: "set_model" as const, commandId: "model-cleanup", provider: "anthropic", modelId: "claude-opus-4" as const };
+  const first = await service.command("s", command);
+  assert.equal(first.result.ok, true);
+  const snapshotsAfterSuccess = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, first);
+  assert.equal(
+    workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length,
+    snapshotsAfterSuccess,
+  );
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, false);
+  await service.shutdown();
+});
+
+test("set_model refresh failure fail-closes all observers and cached retry", async () => {
+  const { service, workers } = harness({
+    worker: { dropPostCommandSnapshots: true },
+    service: { commandTimeoutMs: 80 },
+  });
+  await service.activate("s");
+  const command = { type: "set_model" as const, commandId: "model-fail", provider: "openai", modelId: "gpt-5" as const };
+
+  const first = service.command("s", command);
+  await wait(10);
+  const second = service.command("s", command);
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, false);
+  assert.equal(b.result.ok, false);
+  assert.equal(a.result.type, "set_model");
+  assert.equal(b.result.type, "set_model");
+  assert.equal(a.commandId, "model-fail");
+  assert.deepEqual(a, b);
+  if (!a.result.ok) {
+    assert.equal(a.result.error.code, "unavailable");
+    assert.equal(typeof a.result.error.message, "string");
+    // Fixed message — no raw transport dump.
+    assert.match(a.result.error.message, /snapshot|authority|timed out/i);
+  }
+
+  // Projection must not claim the new model after fail-closed authority refresh.
+  assert.equal(service.getSnapshot("s").state.model, null);
+
+  const commandsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length;
+  const snapshotsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, a);
+  assert.equal(retry.result.ok, false);
+  const commandsAfterRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length;
+  const snapshotsAfterRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.equal(commandsAfterRetry, commandsBeforeRetry, "cached failure must not re-send worker.command");
+  assert.equal(snapshotsAfterRetry, snapshotsBeforeRetry, "cached failure must not re-refresh snapshot");
+  await service.shutdown();
+});
+
+test("set_model wrong result type does not finalize; legitimate frame completes once", async () => {
+  const { service, workers } = harness({
+    worker: { commandDelayMs: 80 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_model" as const, commandId: "model-wrongtype", provider: "openai", modelId: "gpt-5" as const };
+
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+  const wireId = wire.id;
+
+  // Correct wire id + inner commandId but WRONG result type — triple match fails,
+  // so no finalization, no cache, no resolve: the waiter keeps waiting.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wireId,
+    payload: {
+      sessionId: "s",
+      result: { commandId: command.commandId, result: { ok: true, type: "set_thinking_level" } },
+    },
+  });
+  await wait(10);
+  const snapshotsDuring = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  let settled = false;
+  void pending.then(() => { settled = true; });
+  await wait(0);
+  assert.equal(settled, false, "wrong result type must not resolve or start finalization");
+
+  const result = await pending;
+  assert.equal(result.commandId, "model-wrongtype");
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "set_model");
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, 1);
+  // The legitimate frame triggered exactly one post-success refresh.
+  assert.equal(worker.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsDuring + 1);
+  assert.equal(service.getSnapshot("s").state.model?.id, "gpt-5");
+  await service.shutdown();
+});
+
+test("set_model finalization during rekey never writes across epochs and new session can re-admit", async () => {
+  const { service, workers } = harness({
+    worker: { postCommandSnapshotDelayMs: 200 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_model" as const, commandId: "model-rekey", provider: "openai", modelId: "gpt-5" as const };
+
+  const pending = service.command("s", command);
+  // Wait until finalization is registered (post-success refresh in flight).
+  await wait(30);
+  worker.emit({ type: "worker.sessionDiscovered", payload: { sessionId: "real-s", sessionFile: "/sessions/real-s.jsonl", cwd: "/cwd/s" } });
+  await wait(10);
+
+  const result = await pending;
+  assert.equal(result.commandId, "model-rekey");
+  assert.equal(result.result.ok, false);
+  if (!result.result.ok) assert.equal(result.result.error.code, "unavailable");
+
+  // Old id is gone; rekeyed record must not carry the fail-closed result across epoch.
+  assert.throws(() => service.getSnapshot("s"));
+  assert.equal(service.getSnapshot("real-s").state.model, null, "no cross-epoch model write");
+
+  // Same commandId can be re-admitted in the new epoch (acceptedCommands cleared).
+  const readmitted = await service.command("real-s", command);
+  assert.equal(readmitted.result.ok, true);
+  assert.equal(service.getSnapshot("real-s").state.model?.provider, "openai");
+  assert.equal(service.getSnapshot("real-s").state.model?.id, "gpt-5");
+  await service.shutdown();
+});
+
 test("ordinary rename does not issue extra post-command snapshot refresh", async () => {
   const { service, workers } = harness();
   await service.activate("s");

@@ -115,6 +115,44 @@ describe("RuntimeProvider / useSyncExternalStore", () => {
   });
 });
 
+describe("RuntimeProvider — D2-P3 setModel exposure", () => {
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("exposes setModel on the RuntimeApi and sends an exact set_model command", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    expect(typeof exposed.setModel).toBe("function");
+
+    const ws = await driveReady();
+    const store = capturedStore!;
+    await act(async () => {
+      void store.openSession("s1");
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.model.set"] }) });
+      await flush();
+    });
+
+    let settled = false;
+    let rejection: unknown = null;
+    const p = exposed.setModel("anthropic", "claude-opus-4");
+    p.then(() => { settled = true; }, (error: unknown) => { rejection = error; });
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.type).toBe("set_model");
+    expect(cmd.payload.command.provider).toBe("anthropic");
+    expect(cmd.payload.command.modelId).toBe("claude-opus-4");
+    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "set_model" } } } });
+    expect(settled).toBe(true);
+    expect(rejection).toBeNull();
+  });
+});
+
 describe("Composer — capability honesty + send/abort", () => {
   beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
   afterEach(() => { cleanup(); vi.useRealTimers(); });

@@ -460,6 +460,33 @@ html.dark .topbar-badge--ok {
   font-size: 12px;
   color: var(--text-muted);
 }
+.session-actions-model {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  align-items: center;
+}
+.session-actions-model-label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.session-actions-model-label select {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.session-actions-model-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
 .session-actions-status {
   margin: 6px 0 0;
   font-size: 12px;

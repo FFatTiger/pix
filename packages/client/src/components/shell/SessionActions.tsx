@@ -1,15 +1,19 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ThinkingLevelSchema, type ThinkingLevel } from "@fffattiger/pix-protocol";
+import { useQuery } from "@tanstack/react-query";
 import { useRuntime } from "@/runtime";
+import { useCapabilities } from "@/features/capability/CapabilityProvider";
+import { useHttpClient } from "@/app/http-context";
+import { createQueryOptions } from "@/api/query-keys";
 
 /**
- * SessionActions — D2-P1/D2-P2 minimal runtime inspection/mutation panel.
+ * SessionActions — D2-P1/P2/P3 minimal runtime inspection/mutation panel.
  *
  * While attached AND the selected session matches the live runtime:
  *  - always-available queries: state / commands / last assistant text;
  *  - capability-gated actions shown ONLY when the runtime advertises them:
  *    session stats (`runtime.stats`), rename (`runtime.session.rename`),
- *    thinking level (`runtime.thinking.set`).
+ *    thinking level (`runtime.thinking.set`), model (`runtime.model.set`).
  *
  * Success / error / loading are surfaced inline. Mutating actions resolve on
  * the runtime command result and then refresh the snapshot (fetchSnapshot) so
@@ -19,7 +23,10 @@ import { useRuntime } from "@/runtime";
  * Race / identity:
  *  - singleflight via `busy` disables concurrent submits;
  *  - request identity is captured at submit; late settles from a previous
- *    session / unmount never update UI or surface errors for the new view.
+ *    session / unmount / capability revoke / cwd switch never update UI or
+ *    surface errors for the new view;
+ *  - render never issues a runtime command (the model control issues only the
+ *    read-only Models HTTP query, gated on Host `models` capability).
  */
 
 /** Protocol-derived thinking levels — never a free-form string union. */
@@ -27,6 +34,26 @@ const THINKING_LEVELS = ThinkingLevelSchema.options;
 
 /** Fixed safe UI copy — never render raw ProtocolError.message for thinking. */
 const THINKING_ERROR_MESSAGE = "Failed to update thinking level.";
+
+/** Fixed safe UI copy — never render raw ProtocolError message/body/cause. */
+const MODEL_ERROR_MESSAGE = "Failed to change model.";
+const MODEL_UNAVAILABLE_MESSAGE = "Model is unavailable.";
+const MODEL_AUTH_MESSAGE = "Provider is not authenticated.";
+
+/**
+ * Model control error copy is structured-code-driven, never raw. Unknown /
+ * not_found / unavailable collapse to a fixed “unavailable”; auth maps to a
+ * fixed auth hint; everything else is the generic fixed failure.
+ */
+function describeModelError(cause: unknown): string {
+  const rec = cause && typeof cause === "object" ? (cause as Record<string, unknown>) : {};
+  const code = typeof rec.code === "string" ? rec.code : "";
+  const causeRec = rec.cause && typeof rec.cause === "object" ? (rec.cause as Record<string, unknown>) : {};
+  const kind = typeof causeRec.kind === "string" ? causeRec.kind : "";
+  if (code === "auth" || kind === "auth") return MODEL_AUTH_MESSAGE;
+  if (code === "invalid_input" || code === "not_found" || code === "unavailable") return MODEL_UNAVAILABLE_MESSAGE;
+  return MODEL_ERROR_MESSAGE;
+}
 
 function describeError(cause: unknown): string {
   if (cause && typeof cause === "object" && "message" in cause) {
@@ -49,17 +76,24 @@ export interface SessionActionsProps {
 
 export function SessionActions({ live }: SessionActionsProps) {
   const runtime = useRuntime();
+  const { can } = useCapabilities();
+  const http = useHttpClient();
   const [busy, setBusy] = useState<string | null>(null);
   const [output, setOutput] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [thinkingDraft, setThinkingDraft] = useState<ThinkingLevel | "">("");
+  const [modelDraft, setModelDraft] = useState("");
 
   // Identity for race-safe late settles: session + mount generation.
   const mountedRef = useRef(true);
   const sessionIdRef = useRef<string | null>(runtime.sessionId);
   const selectionLiveRef = useRef(live !== false);
   const requestGenRef = useRef(0);
+  // Model submit gate (cwd + capability revoke) must be observable from the
+  // in-flight async continuation via a ref — render-scope values are stale by
+  // the time a late settle runs.
+  const modelGateRef = useRef({ live: live !== false, cwd: runtime.snapshot?.cwd ?? null, modelSet: false, canModels: false });
 
   useEffect(() => {
     mountedRef.current = true;
@@ -78,6 +112,7 @@ export function SessionActions({ live }: SessionActionsProps) {
     setError(null);
     setOutput(null);
     setThinkingDraft("");
+    setModelDraft("");
   }, [runtime.sessionId]);
 
   // The selected view can leave the attached runtime without changing
@@ -91,17 +126,62 @@ export function SessionActions({ live }: SessionActionsProps) {
     setError(null);
     setOutput(null);
     setThinkingDraft("");
+    setModelDraft("");
   }, [live]);
-
-  // Selection gate AFTER all hooks (Rules of Hooks): never offer runtime actions
-  // for a session that is not the one being viewed (e.g. still attached to A
-  // while showing B), or on a read-only history view.
-  if (live === false) return null;
 
   const capabilities = runtime.capabilities?.capabilities ?? [];
   const hasStats = capabilities.includes("runtime.stats");
   const hasRename = capabilities.includes("runtime.session.rename");
   const hasThinking = capabilities.includes("runtime.thinking.set");
+  const hasModelSet = capabilities.includes("runtime.model.set");
+
+  // Model control gating: the RUNTIME set capability is distinct from the HOST
+  // `models` catalog capability. Fetch happens only when the Host advertises
+  // `models` (via CapabilityProvider) AND the runtime advertises set AND live.
+  // The models query is keyed on the RUNTIME snapshot cwd — never the selected
+  // history cwd and never hardcoded.
+  const canModels = can("models");
+  const runtimeCwd = runtime.snapshot?.cwd ?? null;
+  const modelsQuery = useQuery({
+    ...createQueryOptions(http).models.list(runtimeCwd ?? ""),
+    enabled: hasModelSet && canModels && live !== false && Boolean(runtimeCwd),
+  });
+  const modelOptions = useMemo(
+    () =>
+      (modelsQuery.data?.models ?? []).map((model, index) => ({
+        // Collision-free option encoding: index key, NOT `provider:model` (a
+        // provider/model id may legally contain a colon). Provider+modelId are
+        // read back from the option by key at submit.
+        key: String(index),
+        provider: model.provider,
+        modelId: model.id,
+      })),
+    [modelsQuery.data],
+  );
+
+  // Keep the draft valid against the current option list (refetch may drop the
+  // previously selected model; a stale key must never be submitted).
+  useEffect(() => {
+    if (modelDraft !== "" && !modelOptions.some((option) => option.key === modelDraft)) setModelDraft("");
+  }, [modelOptions, modelDraft]);
+
+  // Capability/cwd revoke invalidates pending local model UI and keeps the gate
+  // ref in sync for late-settle checks.
+  useLayoutEffect(() => {
+    modelGateRef.current = { live: live !== false, cwd: runtimeCwd, modelSet: hasModelSet, canModels };
+    if (!hasModelSet || !canModels || runtimeCwd === null) {
+      requestGenRef.current += 1;
+      setBusy(null);
+      setError(null);
+      setOutput(null);
+      setModelDraft("");
+    }
+  }, [live, hasModelSet, canModels, runtimeCwd]);
+
+  // Selection gate AFTER all hooks (Rules of Hooks): never offer runtime actions
+  // for a session that is not the one being viewed (e.g. still attached to A
+  // while showing B), or on a read-only history view.
+  if (live === false) return null;
 
   // Snapshot is the authority (sessiond refreshes worker.getSnapshot after a
   // successful set_thinking_level so thinkingLevel/thinkingLevelPinned land
@@ -115,6 +195,29 @@ export function SessionActions({ live }: SessionActionsProps) {
         ? snapshotThinking
         : "";
 
+  // Authoritative current model from the runtime snapshot (never optimistic).
+  const currentModel = runtime.snapshot?.state.model ?? null;
+  const currentKey =
+    currentModel === null
+      ? ""
+      : (modelOptions.find((option) => option.provider === currentModel.provider && option.modelId === currentModel.id)?.key ?? "");
+  const selectedKey = modelDraft !== "" ? modelDraft : currentKey;
+  const selectedOption = modelOptions.find((option) => option.key === selectedKey);
+  const isSameCurrent =
+    selectedOption !== undefined &&
+    currentModel !== null &&
+    selectedOption.provider === currentModel.provider &&
+    selectedOption.modelId === currentModel.id;
+  const modelSelectDisabled =
+    busy !== null ||
+    modelOptions.length === 0 ||
+    modelsQuery.isLoading ||
+    !canModels;
+  const modelSubmitDisabled =
+    busy !== null ||
+    selectedOption === undefined ||
+    isSameCurrent;
+
   /**
    * Identity guard uses only refs — never a closed-over `runtime` snapshot from
    * the render that started the request. A session switch bumps requestGen and
@@ -126,6 +229,14 @@ export function SessionActions({ live }: SessionActionsProps) {
     gen === requestGenRef.current &&
     sessionId !== null &&
     sessionId === sessionIdRef.current;
+
+  // Model submit additionally fails closed when the runtime set capability, Host
+  // models capability or runtime cwd changed after the submit started.
+  const isCurrentModelRequest = (gen: number, sessionId: string | null): boolean =>
+    isCurrentRequest(gen, sessionId) &&
+    modelGateRef.current.modelSet &&
+    modelGateRef.current.canModels &&
+    modelGateRef.current.cwd !== null;
 
   const run = async (
     key: string,
@@ -207,6 +318,37 @@ export function SessionActions({ live }: SessionActionsProps) {
       setError(THINKING_ERROR_MESSAGE);
     } finally {
       if (isCurrentRequest(gen, sessionId)) setBusy(null);
+    }
+  };
+
+  const handleModelSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (busy !== null || selectedOption === undefined || isSameCurrent) return;
+    const provider = selectedOption.provider;
+    const modelId = selectedOption.modelId;
+    const sessionId = sessionIdRef.current;
+    const gen = ++requestGenRef.current;
+    setBusy("model");
+    setError(null);
+    setOutput(null);
+    try {
+      await runtime.setModel(provider, modelId);
+      // Three guards BEFORE fetchSnapshot: mounted/selection/requestGen (via
+      // isCurrentRequest) plus cwd/capability revoke (via modelGateRef) — a late
+      // settle never refreshes, never writes status for the new view.
+      if (!isCurrentModelRequest(gen, sessionId)) return;
+      await runtime.fetchSnapshot();
+      if (!isCurrentModelRequest(gen, sessionId)) return;
+      // The snapshot now carries the authoritative new model AND the re-clamped
+      // thinkingLevel/thinkingLevelPinned (adapter reapplies pinned thinking).
+      setModelDraft("");
+      setOutput(`Model set to "${provider}/${modelId}".`);
+    } catch (cause) {
+      // Fixed structured copy only — never render raw ProtocolError for model.
+      if (!isCurrentModelRequest(gen, sessionId)) return;
+      setError(describeModelError(cause));
+    } finally {
+      if (isCurrentModelRequest(gen, sessionId)) setBusy(null);
     }
   };
 
@@ -327,6 +469,55 @@ export function SessionActions({ live }: SessionActionsProps) {
             disabled={busy !== null || selectedThinking === ""}
           >
             Set thinking
+          </button>
+        </form>
+      ) : null}
+      {hasModelSet ? (
+        <form className="session-actions-model" onSubmit={handleModelSubmit}>
+          <label className="session-actions-model-label">
+            Model
+            <select
+              aria-label="Model"
+              value={selectedKey}
+              disabled={modelSelectDisabled}
+              onChange={(event) => {
+                setModelDraft(event.target.value);
+                if (error) setError(null);
+              }}
+            >
+              {selectedKey === "" ? (
+                <option value="" disabled>
+                  {currentModel === null
+                    ? "Select model…"
+                    : "Current model not listed"}
+                </option>
+              ) : null}
+              {modelOptions.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.provider}/{option.modelId}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="session-actions-model-meta" aria-live="polite">
+            {!canModels
+              ? "Model catalog is unavailable."
+              : modelsQuery.isLoading
+                ? "Loading models…"
+                : modelsQuery.isError
+                  ? "Model list unavailable."
+                  : modelOptions.length === 0
+                    ? "No models available."
+                    : currentModel === null
+                      ? "current: —"
+                      : `current: ${currentModel.provider}/${currentModel.id}`}
+          </span>
+          <button
+            type="submit"
+            className="text-btn"
+            disabled={modelSubmitDisabled}
+          >
+            Set model
           </button>
         </form>
       ) : null}

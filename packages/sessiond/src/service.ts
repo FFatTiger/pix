@@ -129,13 +129,16 @@ interface RecordState {
   interruptResults: Map<string, CorrelatedRuntimeInterruptResult>;
   pendingSnapshots: Map<string, PendingSnapshot>;
   /**
-   * Per-commandId singleflight for post-success set_thinking_level snapshot
-   * authority finalization. Original callers, same-id dedup waiters, and
-   * same-id retries all await the same promise before observing a terminal
-   * result. Exact-once / safe join; never issues a second unbounded getSnapshot
-   * for the same commandId.
+   * Per-commandId singleflight for post-success snapshot authority
+   * finalization (set_thinking_level / set_model). These commands mutate
+   * runtime state that is NOT carried on the wire `runtime_state_changed`
+   * event (signal-only), so sessiond must refresh via a bounded
+   * worker.getSnapshot and only then publish a terminal result.
+   * Original callers, same-id dedup waiters, and same-id retries all await
+   * the same promise before observing a terminal result. Exact-once / safe
+   * join; never issues a second unbounded getSnapshot for the same commandId.
    */
-  thinkingAuthorityFinalizations: Map<string, Promise<CorrelatedRuntimeCommandResult>>;
+  authorityFinalizations: Map<string, Promise<CorrelatedRuntimeCommandResult>>;
   unsubscribeWorker: () => void;
   unsubscribeExit: () => void;
   expectedExitReason?: string;
@@ -146,6 +149,18 @@ interface RecordState {
   closedEventEmitted: boolean;
   idleTimer?: ReturnType<typeof setTimeout>;
 }
+
+/**
+ * Commands whose success requires an authoritative snapshot refresh before a
+ * terminal result may be published/cached (D2-P2/P3). The projection is the
+ * attach/resume authority; the wire `runtime_state_changed` event is
+ * signal-only. Extend only for commands that mutate state absent from the
+ * wire event.
+ */
+const AUTHORITY_COMMAND_TYPES = new Set<RuntimeCommand["type"]>([
+  "set_thinking_level",
+  "set_model",
+]);
 
 /**
  * Safely normalize an arbitrary stop reason into a Protocol
@@ -336,7 +351,7 @@ export class SessiondService {
         acceptedInterrupts: new Map(),
         interruptResults: new Map(),
         pendingSnapshots: new Map(),
-        thinkingAuthorityFinalizations: new Map(),
+        authorityFinalizations: new Map(),
         unsubscribeWorker: () => {},
         unsubscribeExit: () => {},
         lastActivity: this.now(),
@@ -465,12 +480,12 @@ export class SessiondService {
         }
         clearTimeout(pending.timer);
         record.pendingCommands.delete(message.id);
-        // set_thinking_level success must not be cached or returned until the
-        // projection has converged via a bounded worker.getSnapshot refresh.
-        // Defer cache + resolve through the per-commandId singleflight so
-        // same-id retries cannot observe a pre-authority success.
-        if (result.result.ok && result.result.type === "set_thinking_level") {
-          const finalized = this.ensureThinkingAuthorityFinalized(record, result);
+        // set_thinking_level / set_model success must not be cached or returned
+        // until the projection has converged via a bounded worker.getSnapshot
+        // refresh. Defer cache + resolve through the per-commandId singleflight
+        // so same-id retries cannot observe a pre-authority success.
+        if (result.result.ok && AUTHORITY_COMMAND_TYPES.has(result.result.type)) {
+          const finalized = this.ensureAuthorityFinalized(record, result);
           void finalized.then((finalResult) => {
             pending.resolve(finalResult);
           });
@@ -526,7 +541,7 @@ export class SessiondService {
       record.acceptedCommands.clear();
       record.acceptedInterrupts.clear();
       record.interruptResults.clear();
-      record.thinkingAuthorityFinalizations.clear();
+      record.authorityFinalizations.clear();
       record.projection.rekey(realId);
       const snapshot = record.projection.snapshot();
       snapshot.cwd = record.cwd;
@@ -608,10 +623,10 @@ export class SessiondService {
         immediate = rejectedCommand(command.commandId, command.type, `commandId was already accepted as ${acceptedType}`);
         return;
       }
-      // Join in-flight thinking authority finalization before the result cache so
+      // Join in-flight authority finalization before the result cache so
       // same-id retries never observe a pre-refresh success (and never start a
       // second worker.command / getSnapshot for this commandId).
-      const finalizing = record.thinkingAuthorityFinalizations.get(command.commandId);
+      const finalizing = record.authorityFinalizations.get(command.commandId);
       if (finalizing) { finalization = finalizing; return; }
       const cached = record.commandResults.get(command.commandId);
       if (cached) { immediate = cached; return; }
@@ -660,26 +675,28 @@ export class SessiondService {
   }
 
   /**
-   * D2-P2 authority: `set_thinking_level` mutates runtime state that is NOT
-   * carried on the wire `runtime_state_changed` event (signal-only). Sessiond
-   * projection is the attach/resume authority, so a successful thinking set
-   * must refresh via worker.getSnapshot and only then publish a terminal
-   * success. Refresh failure is fail-closed: every observer receives the same
-   * fixed `ok:false` unavailable result (type still `set_thinking_level`, same
-   * commandId, no raw error text from the transport), which is cached so
-   * retries do not re-enter the worker or claim a stale-success pin.
+   * D2-P2/P3 authority: `set_thinking_level` / `set_model` mutate runtime
+   * state that is NOT carried on the wire `runtime_state_changed` event
+   * (signal-only). Sessiond projection is the attach/resume authority, so a
+   * successful authority command must refresh via worker.getSnapshot and only
+   * then publish a terminal success. Refresh failure is fail-closed: every
+   * observer receives the same fixed `ok:false` unavailable result (type still
+   * the original command type, same commandId, no raw error text from the
+   * transport), which is cached so retries do not re-enter the worker or claim
+   * a stale-success state.
    */
-  private ensureThinkingAuthorityFinalized(
+  private ensureAuthorityFinalized(
     record: RecordState,
     successResult: CorrelatedRuntimeCommandResult,
   ): Promise<CorrelatedRuntimeCommandResult> {
     const commandId = successResult.commandId;
-    const existing = record.thinkingAuthorityFinalizations.get(commandId);
+    const commandType = successResult.result.type;
+    const existing = record.authorityFinalizations.get(commandId);
     if (existing) return existing;
 
     const epochAtStart = record.epoch;
     const failClosed = (message: string): CorrelatedRuntimeCommandResult =>
-      unavailableCommand(commandId, "set_thinking_level", message);
+      unavailableCommand(commandId, commandType, message);
     const cacheIfStillOwned = (result: CorrelatedRuntimeCommandResult): void => {
       if (this.records.get(record.sessionId) === record && record.epoch === epochAtStart) {
         this.cacheCommandResult(record, result);
@@ -706,8 +723,8 @@ export class SessiondService {
       } catch (error) {
         const failed = failClosed(
           error instanceof SessiondError && error.code === "timeout"
-            ? "worker snapshot timed out during thinking authority refresh"
-            : "snapshot authority refresh failed after set_thinking_level",
+            ? "worker snapshot timed out during authority refresh"
+            : "snapshot authority refresh failed after successful command",
         );
         cacheIfStillOwned(failed);
         return failed;
@@ -727,18 +744,18 @@ export class SessiondService {
     }).catch(() => {
       // Defensive bound: authority finalization must never reject into the RPC
       // or worker-message callback even if an unexpected local operation throws.
-      const failed = failClosed("snapshot authority refresh failed after set_thinking_level");
+      const failed = failClosed("snapshot authority refresh failed after successful command");
       cacheIfStillOwned(failed);
       return failed;
     });
 
     let operation!: Promise<CorrelatedRuntimeCommandResult>;
     operation = execution.finally(() => {
-      if (record.thinkingAuthorityFinalizations.get(commandId) === operation) {
-        record.thinkingAuthorityFinalizations.delete(commandId);
+      if (record.authorityFinalizations.get(commandId) === operation) {
+        record.authorityFinalizations.delete(commandId);
       }
     });
-    record.thinkingAuthorityFinalizations.set(commandId, operation);
+    record.authorityFinalizations.set(commandId, operation);
     return operation;
   }
 
@@ -1089,7 +1106,7 @@ export class SessiondService {
 
   private isBusy(record: RecordState): boolean {
     const state = record.projection.snapshot().state;
-    return state.isPromptRunning || state.isBashRunning || state.isCompacting || record.pendingCommands.size > 0 || record.thinkingAuthorityFinalizations.size > 0;
+    return state.isPromptRunning || state.isBashRunning || state.isCompacting || record.pendingCommands.size > 0 || record.authorityFinalizations.size > 0;
   }
 
   private requireActive(sessionId: string): RecordState {

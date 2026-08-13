@@ -546,6 +546,27 @@ export class SessionStore implements RuntimeSocketHandler {
   }
 
   /**
+   * Switch the session model. Requires the `runtime.model.set` capability.
+   * Resolves once the runtime confirms the command; callers refresh the
+   * snapshot (fetchSnapshot) to see the authoritative new `model` (and the
+   * re-clamped thinkingLevel / thinkingLevelPinned, since the adapter
+   * reapplies pinned thinking after a model change). `provider`/`modelId`
+   * must both be non-empty — the store never sends a blank model selector.
+   */
+  setModel(provider: string, modelId: string): Promise<void> {
+    if (typeof provider !== "string" || provider.trim().length === 0 || typeof modelId !== "string" || modelId.trim().length === 0) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "model provider and modelId must be non-empty",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    return this.runTypedCommand({ type: "set_model", provider, modelId }, (outcome) => {
+      if (outcome.type !== "set_model") throw new Error("unexpected set_model result");
+    });
+  }
+
+  /**
    * Send a typed command through the single-inflight {@link sendCommand} path
    * with an internally-minted commandId, then unwrap the correlated result.
    * `extract` runs only on an `ok:true` outcome (the error path rejects).

@@ -91,8 +91,9 @@ export class FakeWorkerConnection implements WorkerConnection {
           this.runningPrompt = { id: message.id, commandId: command.commandId, sessionId: message.payload.sessionId, timer };
           return;
         }
-        // D2-P2: set_thinking_level mutates the authoritative snapshot so a
-        // subsequent worker.getSnapshot (sessiond post-success refresh) sees pin.
+        // D2-P2/P3: set_thinking_level / set_model mutate the authoritative
+        // snapshot so a subsequent worker.getSnapshot (sessiond post-success
+        // refresh) sees the pin / new model.
         if (command.type === "set_thinking_level" && typeof command.level === "string") {
           this.liveSnapshot = {
             ...this.liveSnapshot,
@@ -100,6 +101,19 @@ export class FakeWorkerConnection implements WorkerConnection {
               ...this.liveSnapshot.state,
               thinkingLevel: command.level as RuntimeSnapshot["state"]["thinkingLevel"],
               thinkingLevelPinned: true,
+            },
+          };
+        }
+        if (
+          command.type === "set_model" &&
+          typeof command.provider === "string" &&
+          typeof command.modelId === "string"
+        ) {
+          this.liveSnapshot = {
+            ...this.liveSnapshot,
+            state: {
+              ...this.liveSnapshot.state,
+              model: { provider: command.provider, id: command.modelId },
             },
           };
         }

@@ -16,10 +16,11 @@
 
 import { randomUUID } from "node:crypto";
 
-// D2-P1/D2-P2: production light-command surface. Baseline queries
+// D2-P1/D2-P2/P3: production light-command surface. Baseline queries
 // (get_state / get_commands / get_last_assistant_text) are always available;
-// runtime.stats (get_session_stats), runtime.session.rename (set_session_name)
-// and runtime.thinking.set (set_thinking_level) are the capability-gated unlocks.
+// runtime.stats (get_session_stats), runtime.session.rename (set_session_name),
+// runtime.thinking.set (set_thinking_level) and runtime.model.set (set_model)
+// are the capability-gated unlocks.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
@@ -27,11 +28,20 @@ const CAPABILITIES = {
     "runtime.stats",
     "runtime.session.rename",
     "runtime.thinking.set",
+    "runtime.model.set",
   ],
   version: 1,
 };
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+// Deterministic no-network model catalog used by the fixture set_model path.
+const MODELS = [
+  { id: "claude-sonnet-4", provider: "anthropic", displayName: "Claude Sonnet 4", thinking: true },
+  { id: "claude-opus-4", provider: "anthropic", displayName: "Claude Opus 4", thinking: true },
+  { id: "gpt-5", provider: "openai", displayName: "GPT-5", thinking: true },
+  { id: "gpt-5-mini", provider: "openai", displayName: "GPT-5 mini", thinking: false },
+];
 
 export default {
   async create(input) {
@@ -64,6 +74,7 @@ function makePort({ cwd, sessionId, mode }) {
   let lastAssistantText = "";
   let thinkingLevel = "off";
   let thinkingLevelPinned = false;
+  let model = { provider: "anthropic", id: "claude-sonnet-4" };
 
   const commands = [
     { name: "/compact", description: "Compact the session", source: "prompt" },
@@ -94,7 +105,7 @@ function makePort({ cwd, sessionId, mode }) {
       isPromptRunning,
       isBashRunning: false,
       isCompacting: false,
-      model: null,
+      model,
       messageCount,
       thinkingLevel,
       thinkingLevelPinned,
@@ -158,9 +169,37 @@ function makePort({ cwd, sessionId, mode }) {
           thinkingLevelPinned = true;
           return { ok: true, type: "set_thinking_level" };
         }
-        // Closed production surface: model/tools/reload/queue must stay unsupported.
-        case "set_model":
-          return { ok: false, type: "set_model", error: { code: "unsupported_capability", message: "runtime.model.set not available", retryable: false } };
+        case "set_model": {
+          const provider = command.provider;
+          const modelId = command.modelId;
+          // Strictly non-empty: blank provider/modelId is invalid_input, never a
+          // silently-ignored no-op (mirrors the production adapter gate).
+          if (typeof provider !== "string" || provider.trim() === "" || typeof modelId !== "string" || modelId.trim() === "") {
+            return {
+              ok: false,
+              type: "set_model",
+              error: { code: "invalid_input", message: "model provider and modelId must be non-empty", retryable: false },
+            };
+          }
+          const resolved = MODELS.find((m) => m.provider === provider && m.id === modelId);
+          if (!resolved) {
+            return {
+              ok: false,
+              type: "set_model",
+              error: { code: "invalid_input", message: `unknown model: ${provider}/${modelId}`, retryable: false },
+            };
+          }
+          model = { provider: resolved.provider, id: resolved.id };
+          // set_model preserves the pinned thinking (mirrors the production
+          // adapter's reapplyPinnedThinking); the snapshot carries both the new
+          // model and the preserved pin.
+          if (!thinkingLevelPinned) {
+            thinkingLevel = "off";
+            thinkingLevelPinned = false;
+          }
+          return { ok: true, type: "set_model" };
+        }
+        // Closed production surface: tools/reload/queue must stay unsupported.
         case "set_tools":
           return { ok: false, type: "set_tools", error: { code: "unsupported_capability", message: "runtime.tools.write not available", retryable: false } };
         // keep toolNames accepted by protocol shape but still closed by capability

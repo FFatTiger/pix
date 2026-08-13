@@ -120,6 +120,7 @@ export interface RuntimeApi extends RuntimeView {
   readonly getSessionStats: SessionStore["getSessionStats"];
   readonly setSessionName: SessionStore["setSessionName"];
   readonly setThinkingLevel: SessionStore["setThinkingLevel"];
+  readonly setModel: SessionStore["setModel"];
 }
 
 export function useRuntime(): RuntimeApi {
@@ -144,6 +145,7 @@ export function useRuntime(): RuntimeApi {
         getSessionStats: () => store.getSessionStats(),
         setSessionName: (name) => store.setSessionName(name),
         setThinkingLevel: (level) => store.setThinkingLevel(level),
+        setModel: (provider, modelId) => store.setModel(provider, modelId),
       }) as RuntimeApi,
     [store, view],
   );

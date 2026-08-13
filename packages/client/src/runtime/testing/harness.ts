@@ -152,6 +152,7 @@ export function snapshotPayload(overrides: Partial<{
   capabilities: string[];
   thinkingLevel?: string;
   thinkingLevelPinned?: boolean;
+  model?: { provider: string; id: string } | null;
 }> = {}): {
   sessionId: string; cwd: string; projectRoot: string; epoch: string; lastEventId: number; workerStatus: string; snapshot: unknown; resumeStatus: string;
 } {
@@ -174,7 +175,7 @@ export function snapshotPayload(overrides: Partial<{
         isPromptRunning: false,
         isBashRunning: false,
         isCompacting: false,
-        model: null,
+        model: overrides.model === undefined ? null : overrides.model,
         messageCount: overrides.lastEventId ?? 0,
         ...(overrides.thinkingLevel === undefined ? {} : { thinkingLevel: overrides.thinkingLevel }),
         ...(overrides.thinkingLevelPinned === undefined ? {} : { thinkingLevelPinned: overrides.thinkingLevelPinned }),

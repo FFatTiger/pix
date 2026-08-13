@@ -786,5 +786,83 @@ describe("SessionStore — D2-P1 typed command helpers", () => {
     await expect(h.store.getSessionStats()).rejects.toThrow();
     await expect(h.store.setSessionName("x")).rejects.toThrow();
     await expect(h.store.setThinkingLevel("off")).rejects.toThrow();
+    await expect(h.store.setModel("openai", "gpt-5")).rejects.toThrow();
+  });
+});
+
+describe("SessionStore — D2-P3 setModel typed helper", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function attachWithCaps(h: RuntimeHarness, capabilities: string[], sessionId = "s1"): Promise<FakeWebSocket> {
+    h.store.connect();
+    const ws = openReady(h);
+    const p = h.store.openSession(sessionId);
+    return flush().then(() => {
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, capabilities }) });
+      return flush().then(() => p.then(() => ws));
+    });
+  }
+
+  it("setModel sends set_model with exact provider/modelId and resolves on ok", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.model.set"]);
+
+    const modelP = h.store.setModel("openai", "gpt-5");
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.type).toBe("set_model");
+    expect(cmd.payload.command.provider).toBe("openai");
+    expect(cmd.payload.command.modelId).toBe("gpt-5");
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "set_model" } } } });
+    await expect(modelP).resolves.toBeUndefined();
+  });
+
+  it("setModel rejects blank provider/modelId without sending a command", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.model.set"]);
+    await expect(h.store.setModel("", "gpt-5")).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(h.store.setModel("openai", "  ")).rejects.toMatchObject({ code: "invalid_input" });
+    await flush();
+    const commands = (ws.sent as { type: string }[]).filter((frame) => frame.type === "command");
+    expect(commands).toHaveLength(0);
+  });
+
+  it("concurrent setModel fails fast as session_busy while another typed command is in flight", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.model.set"]);
+    const first = h.store.setModel("openai", "gpt-5");
+    const second = h.store.setModel("anthropic", "claude-opus-4");
+    await expect(second).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    await flush();
+    const commands = (ws.sent as { type: string; id?: string; payload?: { command?: { commandId?: string; provider?: string; modelId?: string } } }[]).filter((frame) => frame.type === "command");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.payload?.command?.provider).toBe("openai");
+    const firstCmd = commands[0]!;
+    ws.serverSend({ type: "response", id: firstCmd.id!, payload: { ok: true, result: { commandId: firstCmd.payload?.command?.commandId, result: { ok: true, type: "set_model" } } } });
+    await expect(first).resolves.toBeUndefined();
+  });
+
+  it("setModel rejects honestly with unsupported_capability when the runtime gates it", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+    const modelP = h.store.setModel("openai", "gpt-5");
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.type).toBe("set_model");
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "set_model", error: { code: "unsupported_capability", message: "runtime.model.set not available", retryable: false } } } } });
+    await expect(modelP).rejects.toMatchObject({ code: "unsupported_capability", message: "runtime.model.set not available" });
+    expect(h.store.hasRuntimeCapability("runtime.model.set")).toBe(false);
+  });
+
+  it("setModel rejects an ok:false response with the runtime error (not a fake success)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.model.set"]);
+    const modelP = h.store.setModel("openai", "gpt-5");
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "set_model", error: { code: "external", message: "unknown model backend boom", retryable: false } } } } });
+    await expect(modelP).rejects.toMatchObject({ code: "external", message: "unknown model backend boom" });
   });
 });

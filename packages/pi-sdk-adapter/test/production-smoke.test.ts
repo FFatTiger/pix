@@ -67,6 +67,7 @@ describe("public production SDK factory smoke", () => {
           "runtime.stats",
           "runtime.session.rename",
           "runtime.thinking.set",
+          "runtime.model.set",
         ]);
 
         // Baseline query: get_state (always available, no capability gate).
@@ -133,6 +134,60 @@ describe("public production SDK factory smoke", () => {
           assert.equal(afterThinking.state.thinkingLevel, "minimal");
           assert.equal(afterThinking.state.thinkingLevelPinned, true);
         }
+
+        // Capability-gated: set_model (runtime.model.set, D2-P3). The real SDK
+        // re-clamps thinking for the new model and the adapter reapplies the
+        // pinned level, so the post-set state must carry BOTH the new model and
+        // the preserved pin (level is the authoritative SDK clamp, not asserted
+        // absolutely).
+        const model = await port.execute({ type: "set_model", provider: "openai", modelId: "gpt-5" });
+        assert.equal(model.ok, true);
+        if (model.ok) {
+          assert.equal(model.type, "set_model");
+        }
+        const afterModel = await port.execute({ type: "get_state" });
+        assert.equal(afterModel.ok, true);
+        if (afterModel.ok && afterModel.type === "get_state") {
+          assert.equal(afterModel.state.model?.provider, "openai");
+          assert.equal(afterModel.state.model?.id, "gpt-5");
+          assert.equal(afterModel.state.thinkingLevelPinned, true, "set_model must preserve the pinned thinking pin");
+        }
+      } finally {
+        await port.close("user");
+      }
+    });
+  });
+
+  it("unknown model set_model is a structured sanitized invalid_input with no raw leak", async () => {
+    await withAgentDir(async (root) => {
+      const cwd = join(root, "workspace");
+      await mkdir(cwd, { recursive: true });
+      const port = await new PiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES }).create({
+        cwd,
+        toolNames: [],
+        thinkingLevel: "off",
+        thinkingLevelPinned: true,
+      });
+      try {
+        const result = await port.execute({ type: "set_model", provider: "sk-CANARY-SECRET-provider", modelId: "sk-CANARY-SECRET-model" });
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+          assert.equal(result.type, "set_model");
+          assert.equal(result.error.code, "invalid_input");
+          assert.equal(result.error.retryable, false);
+          assert.equal(typeof result.error.message, "string");
+          // Sanitizer must not leak the raw unknown-model text as a secret; the
+          // fixed message shape keeps provider/id out of raw rendering paths.
+          assert.ok(!result.error.message.includes("sk-CANARY-SECRET-provider"));
+          assert.ok(!result.error.message.includes("sk-CANARY-SECRET-model"));
+          assert.equal((result.error.cause as { kind?: string })?.kind, "model");
+        }
+        // The model was never applied.
+        const state = await port.execute({ type: "get_state" });
+        assert.equal(state.ok, true);
+        if (state.ok && state.type === "get_state") {
+          assert.notEqual(state.state.model?.id, "sk-CANARY-SECRET-model");
+        }
       } finally {
         await port.close("user");
       }
@@ -150,13 +205,6 @@ describe("public production SDK factory smoke", () => {
         thinkingLevelPinned: true,
       });
       try {
-        // runtime.model.set is NOT in the production surface.
-        const model = await port.execute({ type: "set_model", provider: "anthropic", modelId: "claude" });
-        assert.equal(model.ok, false);
-        if (!model.ok) {
-          assert.equal(model.error.code, "unsupported_capability");
-          assert.match(model.error.message, /runtime\.model\.set/);
-        }
         // runtime.bash is NOT in the production surface.
         const bash = await port.execute({ type: "bash", command: "ls" });
         assert.equal(bash.ok, false);
