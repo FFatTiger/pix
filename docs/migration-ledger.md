@@ -506,3 +506,38 @@ packages/sessiond/**/*.tsbuildinfo
 残余风险：本机 `~/.pi/pix.json` 存在已启用 Gate，raw Startup E2E 需在干净（无 gate）环境才能直接 PASS；实现层对 ReadStream 的 string 分支为防御性（encoding:null 下运行时恒为 Buffer），Buffer路径已由字节级用例覆盖。
 独立验证 verdict：PASS（Grok；无 F1/F2，建议合入。独立复现base在@types/node 22.20.1的TS2345/TS2677/TS2339，candidate在22/25均编译；Host263/263、boundary/architecture/diff-check、二进制70KiB raw/range/suffix/416、multipart string/File/duplicate/overflow/arrayBuffer rejection/symlink/0600/temp cleanup/no-leak对抗均PASS；`PIX_AUTH_DISABLED=true` Startup E2E 2/2 PASS。父会话另以官方worktree依赖完成root build、9 workspace官方tsconfig等价typecheck与Startup E2E 2/2。）状态 DONE。
 ```
+
+## 28. D2-P2 — Runtime Thinking Control 记录
+
+```text
+实现：source 79e2e1a1b578930709e9487992e651bc7deffbbb（branch integrate/d2p2-thinking-control，base 4b316b18ea1272336109613d658c9355fc4b2390，cherry-pick 后 integration HEAD 76f7c1b）+ hardening 940610a（仅 tests/e2e/runtime.mjs）。实现模型：DeepSeek。
+范围：原则上仅 source commit 15 文件 + docs。source 15 文件与 base ef246e9..main 最近 16 提交零文件重叠（实测 comm -12 为空），cherry-pick 无文本冲突；语义审查与验证如下。未改 Host files/daemon、Sidebar/Transcript/Files/Git、trusted roots、package-lock/Protocol/runtime-core；未新增 Protocol command（set_thinking_level 已存在，runtime-core 已映射 runtime.thinking.set）。
+
+能力面（Adapter）：PRODUCTION_AGENT_CAPABILITIES 精确新增 `runtime.thinking.set`（保持 prompt/abort/stats/session.rename，model/tools/bash/fork/extension-UI/queue/reload/auto_name 仍关闭）；adapter `set_thinking_level` 实现：level 白名单与 Protocol ThinkingLevelSchema 一致（off/minimal/low/medium/high/xhigh/max，adapter 侧硬编码不引入 SDK 类型），未知 level 返回 invalid_input，成功置 thinkingPinned=true/pinnedThinkingLevel，错误不泄漏 SDK raw；`requiredCapabilityForCommand`（runtime-core）门控 set_thinking_level→runtime.thinking.set，production 面允许执行。
+
+sessiond（service.ts）：set_thinking_level 走普通 command admission（acceptedCommands 同 commandId 去重/type 冲突、commandResultLimit 容量、commandTimeoutMs 超时、worker crash/stop 时 rejectPending）。成功帧不直接缓存/返回——经 per-commandId singleflight ensureThinkingAuthorityFinalized 先执行有界 worker.getSnapshot 刷新，投影收敛后才发布终态成功（sessiond projection 是 attach/resume 权威，wire runtime_state_changed 仅为 signal）；refresh 失败 fail-closed：所有 observer 收到同一固定 ok:false unavailable（type 仍 set_thinking_level、同 commandId、固定文案无 raw transport），并缓存避免重发/伪成功。worker.commandResult 新增三重匹配（wire id + 内层 commandId + result.type 全部一致才接受），malformed/late/wrong-id 帧被丢弃且不清 timer/pending/缓存、不触发 finalization；post-await 缓存增加 record/epoch 所有权守卫（rekey/stop 期间不跨 epoch 写）；rekey 清 thinkingAuthorityFinalizations；isBusy 计入 finalization 使 cwd busy 临时为真。非 thinking 命令不额外发 getSnapshot（普通 rename 用例验证零多余刷新）。
+
+Client（session-store/runtime-provider）：setThinkingLevel 走 runTypedCommand→sendCommand 单 inflight 通道（sessionId+generation 绑定，session_busy 诚实、unsupported_capability 诚实、late/stop 不污染）；success 后 UI fetchSnapshot 观察权威 thinkingLevel/thinkingLevelPinned。
+
+UI（SessionActions）：仅 selection 匹配 attached live（live!==false）且 runtime snapshot 广告 runtime.thinking.set 时显示；level 选项来自 Protocol ThinkingLevelSchema.options（非硬编码假支持）；current/pinned 元数据来自 authoritative snapshot；错误固定文案 `Failed to update thinking level.` 不渲染 raw ProtocolError.message；aria-label/role/aria-live；busy 单飞禁用、mounted/selection/requestGen 三守卫使 unmount/A→B/live true→false 的晚到 settle fail-closed（不发 getSnapshot、不写旧状态）；render 时零命令。fake-worker/e2e fixture 仅测试注入，不影响 production capability 来源。
+
+验证（本机 Node v24.18.0，PIX_AUTH_DISABLED=true 运行 E2E）：
+- 定向：Adapter production-smoke+public-surface、sessiond 新增 9 thinking/malformed/late 用例、Client SessionActions 15 + session-store 43 全 PASS。
+- 分包全量（root `npm test` runner 在此机 stall，见 §29）：protocol 116/116、runtime-core 7/7、runtime-contract-tests 75/75、adapter 164/164、sessiond 146/146（1 Windows-only skip）、agent-worker 105/105、host 263/263、cli 46/46、client 411/411（基线 401 + 新增 10）。
+- root build EXIT 0；root typecheck（run-workspaces typecheck）EXIT 0；check:architecture PASS；check:boundaries：client 82 files / sessiond / adapter / agent-worker 全 PASS。
+- test:e2e:runtime（真实进程链，注入 no-network fixture）：2/2 轮 PASS，含 create→attach→prompt、abort、host restart/resume、epoch change（stop→cold attach 经 catalog）、commandId at-most-once、isolation、cold attach、D2-P1/D2-P2 light commands（get_state/commands/last-text/stats/rename + set_thinking_level→snapshot 权威→detach/reattach pin 持久→closed caps：set_model/set_tools/reload/set_auto_retry unsupported_capability）、shutdown 无孤儿。
+- test:e2e:startup PASS；test:e2e:sessions PASS。
+- git diff 4b316b1..HEAD --check：PASS。
+
+base/candidate 对照与 pre-existing blocker：Runtime E2E scenarioEpochChangeNoAutoResend 在 base 4b316b1 与 candidate 均一致失败（stop 后 cold attach `not_found`）——非 D2-P2 回归。根因：主线 8086770 将 production cold-open activation 改为从 catalog.readSession 派生 cwd/projectRoot，而 E2E fixture 会话仅存内存不持久化 Pi JSONL，startDaemon 又未覆盖 sessionCatalog（沿用 production Pi SDK JSONL catalog）→ readSession not_found。按协作规则仅修复 D2 source 范围内的 tests/e2e/runtime.mjs（hardening 940610a）：注入与既有 fixtureLocator 同一内存注册表的 fixture sessionCatalog 覆盖（RuntimeWsClient.create 记录每会话 cwd/projectRoot，readSession 返回；未知会话抛 canonical RuntimeError 形 not_found 由边界净化）。未改 sessiond daemon/gateway/resolver、未放宽 not_found、未回退 /workspace。resolver 语义不变（仍读 catalog.readSession）。
+
+残余风险：root `npm test` 单命令 runner 本机 stall（~20 分钟 0% CPU，日志停在 pi-sdk-adapter build:deps），以分包顺序等价覆盖替代并记录（§29）。E2E fixture catalog 为内存合成（与既有 fixtureLocator 同构），仅测试路径；生产 catalog 仍为 Pi SDK 只读 JSONL。set_thinking_level 的模型档位上限（真实 SDK 对模型 clamp）由 Adapter production-smoke 以 minimal 档覆盖，未在 E2E 断言具体绝对档位。
+
+独立验证 verdict：IN_REVIEW（待 DeepSeek 独立验证）。尚未 DONE/PASS。
+```
+
+## 29. D2-P2 实现模型与集成验证说明
+
+本分支实现按用户要求使用 DeepSeek，全部实现、测试与文档更新在独立 worktree `d2p2-thinking-integration` 完成（branch `integrate/d2p2-thinking-control`），未改 main、未新建其他 worktree、未 merge/push。
+
+root `npm test` runner 本机实测 stall：`npm run test` 触发的 `node scripts/run-workspaces.mjs test` 进程链在约 20 分钟内 0% CPU、无进展（/tmp/root-test.log 与 runtime-contract dist mtime 停在同一时间点），已按协作规则终止该任务启动的进程树（未触碰其他 worktree / 30144）。为获得等价覆盖，改为按 workspace 顺序逐一运行官方 `npm run test --workspace <pkg>`（protocol/runtime-core/runtime-contract-tests/adapter/sessiond/agent-worker/host/cli/client 均各自 prebuild→build:test→官方 node --test/vitest），结果见 §28。typecheck 经官方 `run-workspaces.mjs typecheck` 单跑 EXIT 0（等价 9 workspace 官方 tsconfig）。该 stall 与本次改动无关（包测试、build、typecheck、E2E 全部独立 PASS），但已诚实记录，避免误报 root 全量通过。
