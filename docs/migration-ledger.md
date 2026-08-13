@@ -533,7 +533,7 @@ base/candidate 对照与 pre-existing blocker：Runtime E2E scenarioEpochChangeN
 
 残余风险：root `npm test` 单命令 runner 本机 stall（~20 分钟 0% CPU，日志停在 pi-sdk-adapter build:deps），以分包顺序等价覆盖替代并记录（§29）。E2E fixture catalog 为内存合成（与既有 fixtureLocator 同构），仅测试路径；生产 catalog 仍为 Pi SDK 只读 JSONL。set_thinking_level 的模型档位上限（真实 SDK 对模型 clamp）由 Adapter production-smoke 以 minimal 档覆盖，未在 E2E 断言具体绝对档位。
 
-独立验证 verdict：IN_REVIEW（待 DeepSeek 独立验证）。尚未 DONE/PASS。
+独立验证 verdict：PASS（DeepSeek；无 F1/F2，建议合入）。独立确认 scope/architecture/Adapter/sessiond/Client/UI/E2E hardening 均符合契约；root `npm test` 本次完整 EXIT 0（1377 workspace tests + Client 411），root build/typecheck、architecture/boundaries、Runtime E2E 2轮、Startup E2E、Sessions E2E 全 PASS。另设计三组实现测试之外的对抗 probe：post-command snapshot sessionId mismatch 固定 unavailable 且不伪 pin；rekey during finalization 不跨 epoch 写且可在新 epoch 重新 admission；finalization 持有期间并发 get_commands 1ms 完成、前后投影诚实且无死锁——全部 PASS。确认 hardening `940610a` 真实经过 daemon `catalog.readSession`，unknown session 仍 canonical not_found，registry 每轮清空且仅测试使用。实现阶段 root runner stall 属非确定性环境/并发争用，不是稳定 runner 缺陷。状态 DONE。
 ```
 
 ## 29. D2-P2 实现模型与集成验证说明
