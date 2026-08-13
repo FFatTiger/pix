@@ -41,6 +41,11 @@ const HOST_START_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 8_000;
 const ROUNDS = Math.max(1, Number(process.env.PIX_E2E_ROUNDS ?? "1") || 1);
 
+// In-memory registry of sessions created through the E2E client, backing both
+// the fixture locator and the fixture catalog overrides passed to startDaemon.
+// Populated by RuntimeWsClient.create(); cleared per stack/round.
+const fixtureSessions = new Map();
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
@@ -215,6 +220,12 @@ class RuntimeWsClient {
       { label: `create ${id}` },
     );
     assert.equal(res.payload.ok, true, JSON.stringify(res.payload));
+    // Record the fixture session so cold-open activation (catalog.readSession)
+    // can resolve its cwd/projectRoot after a stop, mirroring how the
+    // production catalog resolves persisted sessions.
+    if (res.payload.result?.sessionId) {
+      fixtureSessions.set(res.payload.result.sessionId, { sessionId: res.payload.result.sessionId, cwd, projectRoot });
+    }
     return res.payload.result;
   }
 
@@ -370,6 +381,13 @@ async function startRuntimeStack(tempDir) {
   // The deterministic fixture owns ephemeral sessions in memory and does not
   // persist Pi JSONL. Keep the E2E activation locator explicit rather than
   // relying on the production read-only JSONL locator introduced by D1A-2.
+  // The catalog MUST be overridden to match (production cold-open activation
+  // derives cwd/projectRoot from catalog.readSession — see 8086770): with no
+  // override the daemon would use the production Pi SDK JSONL catalog, which
+  // can never find an in-memory fixture session, so a stop → cold-attach would
+  // fail closed with not_found. Both overrides back the SAME in-memory registry
+  // that RuntimeWsClient.create() populates.
+  fixtureSessions.clear();
   const fixtureLocator = {
     async locate(sessionId) {
       return {
@@ -382,10 +400,39 @@ async function startRuntimeStack(tempDir) {
       return targetId ?? "fixture-leaf";
     },
   };
+  // SessionCatalogPort over the same in-memory registry. readSession returns
+  // the cwd/projectRoot the session was created with; unknown sessions fail
+  // closed with a canonical RuntimeError-shaped not_found (the RPC boundary
+  // re-projects it to the fixed sanitized message).
+  const fixtureSessionFile = (sessionId) => join(tempDir, "fixture-sessions", `${sessionId}.jsonl`);
+  const fixtureCatalog = {
+    async listSessions() {
+      return [...fixtureSessions.values()].map(({ sessionId, cwd, projectRoot }) => ({
+        sessionId,
+        sessionFile: fixtureSessionFile(sessionId),
+        cwd,
+        projectRoot,
+        entries: [],
+      }));
+    },
+    async readSession(sessionId) {
+      const session = fixtureSessions.get(sessionId);
+      if (!session) throw { code: "not_found", message: "session not found", retryable: false };
+      return { sessionId, sessionFile: fixtureSessionFile(sessionId), cwd: session.cwd, projectRoot: session.projectRoot, entries: [] };
+    },
+    async readSessionContext(sessionId) {
+      if (!fixtureSessions.has(sessionId)) throw { code: "not_found", message: "session not found", retryable: false };
+      return { sessionId, entries: [] };
+    },
+    async deleteSession(sessionId) {
+      fixtureSessions.delete(sessionId);
+    },
+  };
 
   const daemon = await startDaemon({
     directory: tempDir,
     sessionLocator: fixtureLocator,
+    sessionCatalog: fixtureCatalog,
     workerOptions: {
       workerFactoryModulePath: FIXTURE,
       // Tight close so E2E cleanup is bounded.
