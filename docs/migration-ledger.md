@@ -601,10 +601,10 @@ FilesPanel 搜索集成（冻结交互）：
 
 残余风险：root `npm run build`/`typecheck` 并行 runner 本机 stall（同 §29），以分包等价覆盖替代并记录。UI 无浏览器视觉验收（DeepSeek 无视觉能力），仅 DOM/a11y 测试（aria-label/aria-live/role=alert、select 原生语义）覆盖并诚实记录。Models 查询仅当 Host `models` capability 存在才发；真实生产 no-network set_model 不需要 auth（SDK setModel 仅模型指针），故 auth 错误 sanitize 由 mapper/UI 层覆盖而非 SDK no-network 路径实测。set_model 的 thinking 绝对档位由 SDK clamp（production-smoke 用 gpt-5 实测 pinned 保持，未断言绝对档位）。独立验证另有一个非阻塞F3：SessionActions测试fetch mock使用test-only `as unknown as typeof fetch`，生产代码不受影响；模型option使用位置index，目录若在选择后、提交前重排可能改变目标，当前目录稳定且select会显示实际待提交项，后续若catalog mutation成为真实场景可改稳定key。
 ```
-## 32. D2-P4 — Runtime Queue Control 记录（IN_REVIEW）
+## 32. D2-P4 — Runtime Queue Control 记录（DONE）
 
 ```text
-实现：DeepSeek；独立 worktree d2p4-queue-control，branch feat/d2p4-queue-control，base main@9209105655a52ee51290138e87d8c6346803c4d2。目标：真实贯通 prompt 运行中 steer/follow_up、snapshot queue 显示、clear_queue interrupt；production capability 精确加 runtime.steer / runtime.follow_up / runtime.queue；sessiond AUTHORITY_COMMAND_TYPES 扩为 thinking/model/set_auto_retry。未改 Protocol/runtime-core/daemon/package-lock/D3A；未改 main、未 merge/push、未另建 worktree。状态 IN_REVIEW（待 Fresh 独立验证）。
+实现：DeepSeek；独立 worktree d2p4-queue-control，branch feat/d2p4-queue-control，base main@9209105655a52ee51290138e87d8c6346803c4d2，implementation commit `291cf40`，已 cherry-pick 至 main `e005a42`。目标：真实贯通 prompt 运行中 steer/follow_up、snapshot queue 显示、clear_queue interrupt；production capability 精确加 runtime.steer / runtime.follow_up / runtime.queue；sessiond AUTHORITY_COMMAND_TYPES 扩为 thinking/model/set_auto_retry。未改 Protocol/runtime-core/daemon/package-lock/D3A。状态 DONE（Fresh GPT 独立验证 PASS）。
 
 范围（生产文件）：adapter `agent/index.ts`（9-token capability surface）、sessiond `service.ts`（AUTHORITY_COMMAND_TYPES 加 set_auto_retry）、client `session-store.ts`（双槽 pendingQueuedTurn + typed interrupt admission + steer/followUp/clearQueue）、client `runtime-provider.tsx`（暴露 API）、client `Composer.tsx` + `app.css`（queue 展示 + Steer/Follow-up 行为）、**Host `runtime-gateway.ts`（双 lane 最小修复，父会话正式扩 scope）**。
 
@@ -625,5 +625,7 @@ FilesPanel 搜索集成（冻结交互）：
 - test:e2e:runtime（真实进程链，单连接双 lane）：2/2 轮 PASS——create→attach→prompt、abort、host restart/resume、epoch change、commandId at-most-once、isolation、cold attach、D2-P1/P2/P3 light commands、**D2-P4 queue control（block prompt + 同连接 steer/follow_up + queue_update 事件 + abort 后 snapshot 两类 queue + clear_queue + set_auto_retry 权威 + detach/reattach + closed tools/reload）**、shutdown 无孤儿。test:e2e:startup PASS、test:e2e:sessions PASS。
 - candidate-local module resolution：import.meta.resolve 证明 sessiond/daemon、adapter/agent、protocol、runtime-core、agent-worker、host 全部指向本 worktree packages/dist（排除 stale-main-dist 假验证）。
 
-残余风险：① Host 单连接 serial lane 仍 HOL getSnapshot/set_auto_retry 于运行中 prompt 之后（文档化 LOW，非本 slice 目标）；② Composer queue 展示仅 DOM/a11y 测试覆盖，DeepSeek 无视觉能力、无浏览器视觉验收；③ 双 lane 上限复用 maxSerialFrames/maxSerialBytes 未新增独立配额（按父指令不新增 API）；④ `npm run build`/`typecheck` root 并行 runner 本机 stall（同 §29）。
+独立验证 verdict：PASS（Fresh GPT，review commit `291cf40`）。在不修改候选 worktree 的 `/tmp/pix-d2p4-verify` 镜像中复验 Host 269/269、sessiond 158 pass/1 skip、adapter 166/166、protocol 116/116、agent-worker 105/105、CLI 46/46、contract 75/75、Sessions E2E PASS；Runtime E2E 2/2 轮 PASS，确认 D2-P4 仅使用单一 RuntimeWsClient/WS，长 prompt 运行中同连接 steer/follow_up 均成功。另做 10 组 Host 对抗 probe，覆盖 queued-turn byte overflow、serial 满载时 steer 并发、clear_queue bypass、浏览器关闭时晚响应丢弃、FIFO、overflow 后不再 dispatch、attach 前/stop 后安全拒绝、detach 并发等，全部 PASS。Client D2-P4 定向测试 session-store 67/67、Composer 11/11、provider 2/2 PASS；全量中 12 项失败在 base 镜像完全复现，判定为 React/testing-library fake-timer harness 既有伪影。Fresh protocol build 后 Client/sessiond strict typecheck 0 errors。未发现实现缺陷；main 合并后 architecture PASS、Host 269/269、diff-check PASS、工作区 clean。
+
+残余风险：① Host 单连接 serial lane 仍 HOL getSnapshot/set_auto_retry 于运行中 prompt 之后（文档化 LOW，非本 slice 目标）；② Composer queue 展示仅 DOM/a11y 测试覆盖，无浏览器视觉验收；③ 双 lane 上限复用 maxSerialFrames/maxSerialBytes 未新增独立配额（按父指令不新增 API）；④ root `npm run build`/`typecheck` 并行 runner 本机 stall（同 §29）；⑤ 候选 worktree 的未重建 protocol dist `.d.ts` 陈旧，但 pipeline fresh build 会消除，Protocol 源码未由 D2-P4 修改。
 ```
