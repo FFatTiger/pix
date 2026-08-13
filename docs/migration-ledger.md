@@ -467,12 +467,13 @@ packages/sessiond/**/*.tsbuildinfo
 
 验证（worktree 临时 symlink main node_modules，已删除）：
 - sessiond typecheck：PASS（tsc tsconfig + tsconfig.test --noEmit）
-- sessiond tests：134/134（基线 126 + 新增 7 个 daemon 级 RPC 用例），0 fail，1 skip（Windows 平台）；daemon.test.js 15/15
+- sessiond tests：134 total：133 pass + 1 Windows skip，0 fail（基线 126 + 新增 7 个 daemon 级 RPC 用例）；daemon.test.js 15/15
 - sessiond build：PASS；sessiond check:boundaries：PASS；root check:architecture：PASS
 - git diff b9374e6..HEAD --check：PASS
-- test:e2e:startup：本机未能复跑——根 build 在 packages/host/src/routes/files.ts 存在 base b9374e6 即复现的预存编译失败（Node v24.18.0 与 @types/node/lib 类型不匹配，main@b9374e6 同错），host 不在本任务范围，无法补齐 CLI 产物；属环境/基线阻塞，非本次改动引入。
+- test:e2e:startup：本机未能复跑——根 build 在 packages/host/src/routes/files.ts 存在 base b9374e6 即复现的预存编译失败（Node v24.18.0 与 @types/node/lib 类型不匹配；父会话用同样 Node v24.18.0 + main node_modules 复现相同 host files.ts TS errors，确认 base/environment blocker）。host 不在本任务范围，无法补齐 CLI 产物，属环境/基线阻塞，非本次改动引入。
 
 残余风险：catalog 是 runtime-core port，其具体实现（Pi SDK JSONL store）返回的 cwd 假定为绝对路径，composition 已防御验证；startup E2E 由父会话 Grok 独立验证。
+独立验证 verdict：PENDING（Grok）
 ```
 
 ## 26. 实现模型说明
