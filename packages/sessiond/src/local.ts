@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
 import { chmod, link, lstat, mkdir, open, readdir, readFile, rm } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { basename, dirname, join } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { basename, dirname, join, resolve } from "node:path";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { SessiondError } from "./errors.js";
 
 export interface SessiondPaths {
@@ -94,9 +94,15 @@ export async function instanceAlive(paths: SessiondPaths): Promise<boolean> {
 }
 
 export function sessiondPaths(directory: string): SessiondPaths {
+  // Named Pipes are global to the Windows machine, not scoped by directory.
+  // Hash the complete native absolute directory identity: truncating a hex
+  // encoding of the path prefix made every %TEMP% test directory collide.
+  const pipeIdentity = process.platform === "win32"
+    ? createHash("sha256").update(resolve(directory).toLowerCase()).digest("hex").slice(0, 32)
+    : undefined;
   return {
     directory,
-    endpoint: process.platform === "win32" ? `\\\\.\\pipe\\pix-sessiond-${Buffer.from(directory).toString("hex").slice(0, 24)}` : join(directory, "sessiond.sock"),
+    endpoint: pipeIdentity === undefined ? join(directory, "sessiond.sock") : `\\\\.\\pipe\\pix-sessiond-${pipeIdentity}`,
     lockFile: join(directory, "sessiond.lock"),
     secretFile: join(directory, "sessiond.secret"),
   };

@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildSpawnArgs,
@@ -53,6 +53,10 @@ function cleanup(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+function fixturePath(root, path) {
+  return `/${relative(root, path).split(sep).join("/")}`;
+}
+
 async function capture(target, fn) {
   const original = console[target];
   const logs = [];
@@ -80,7 +84,7 @@ test("discovers only directories that contain a package.json", (t) => {
   addWorkspace(root, "a");
   mkdirSync(join(root, "packages", "b"), { recursive: true }); // no manifest
   addWorkspace(root, "c");
-  const dirs = readWorkspaceConfig(root).dirs.map((d) => d.replace(root, ""));
+  const dirs = readWorkspaceConfig(root).dirs.map((d) => fixturePath(root, d));
   assert.deepEqual(dirs.sort(), ["/packages/a", "/packages/c"]);
 });
 
@@ -94,7 +98,7 @@ test("supports recursive ** and literal workspace patterns", (t) => {
   const meta = join(root, "tools", "meta");
   mkdirSync(meta, { recursive: true });
   writeFileSync(join(meta, "package.json"), JSON.stringify({ name: "meta" }));
-  const dirs = readWorkspaceConfig(root).dirs.map((d) => d.replace(root, ""));
+  const dirs = readWorkspaceConfig(root).dirs.map((d) => fixturePath(root, d));
   assert.deepEqual(dirs.sort(), ["/packages/a", "/packages/nested/deep", "/tools/meta"]);
 });
 
@@ -164,7 +168,6 @@ test("resolveNpmInvocation uses the npm sibling of the node binary", (t) => {
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, "npm"), "");
   const inv = resolveNpmInvocation({
-    platform: "darwin",
     execPath: join(bin, "node"),
     env: {},
   });
@@ -173,17 +176,27 @@ test("resolveNpmInvocation uses the npm sibling of the node binary", (t) => {
   assert.equal(inv.shell, false);
 });
 
-test("resolveNpmInvocation falls back to npm.cmd on Windows and npm elsewhere", () => {
-  const win = resolveNpmInvocation({
-    platform: "win32",
-    execPath: join("C:\\", "nodejs", "node.exe"),
+test("resolveNpmInvocation uses Node's bundled npm-cli.js before PATH shims", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  const bin = join(root, "bin");
+  const cli = join(bin, "node_modules", "npm", "bin", "npm-cli.js");
+  mkdirSync(dirname(cli), { recursive: true });
+  writeFileSync(cli, "");
+  const inv = resolveNpmInvocation({
+    execPath: join(bin, "node.exe"),
     env: {},
   });
-  assert.equal(win.command, "npm.cmd");
-  assert.equal(win.shell, true);
-  const posix = resolveNpmInvocation({ platform: "linux", execPath: "/usr/bin/node", env: {} });
-  assert.equal(posix.command, "npm");
-  assert.equal(posix.shell, false);
+  assert.equal(inv.command, join(bin, "node.exe"));
+  assert.deepEqual(inv.args, [cli]);
+  assert.equal(inv.shell, false);
+});
+
+test("resolveNpmInvocation fails closed when npm-cli.js cannot be resolved", () => {
+  assert.throws(
+    () => resolveNpmInvocation({ execPath: join("C:\\", "missing-node", "node.exe"), env: {} }),
+    /cannot resolve npm-cli\.js/,
+  );
 });
 
 test("buildSpawnArgs always produces npm run <script> --workspaces --if-present", () => {
@@ -387,6 +400,7 @@ test("end-to-end: CLI exits 0 with a note when there are no workspaces", async (
   mkdirSync(join(root, "scripts"), { recursive: true });
   const copy = join(root, "scripts", "run-workspaces.mjs");
   writeFileSync(copy, readFileSync(new URL("./run-workspaces.mjs", import.meta.url), "utf8"));
+  writeFileSync(join(root, "scripts", "tool-invocation.mjs"), readFileSync(new URL("./tool-invocation.mjs", import.meta.url), "utf8"));
   const result = await new Promise((resolvePromise) => {
     const child = spawn(process.execPath, [copy, "typecheck"], { cwd: root });
     let stdout = "";
@@ -404,6 +418,7 @@ test("end-to-end: CLI usage error exits 2", async (t) => {
   mkdirSync(join(root, "scripts"), { recursive: true });
   const copy = join(root, "scripts", "run-workspaces.mjs");
   writeFileSync(copy, readFileSync(new URL("./run-workspaces.mjs", import.meta.url), "utf8"));
+  writeFileSync(join(root, "scripts", "tool-invocation.mjs"), readFileSync(new URL("./tool-invocation.mjs", import.meta.url), "utf8"));
   const result = await new Promise((resolvePromise) => {
     const child = spawn(process.execPath, [copy], { cwd: root });
     let stderr = "";

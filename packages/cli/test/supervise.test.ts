@@ -101,6 +101,20 @@ test("ensureSessiond fails fast (without spawning) when the runtime dir is broke
   }
 });
 
+test("ensureSessiond rejects a symlinked runtime directory", async (t) => {
+  const parent = await tempDir();
+  const target = join(parent, "target");
+  const alias = join(parent, "alias");
+  try {
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(target));
+    const { symlinkOrSkip } = await import("./symlink-support.js");
+    if (!await symlinkOrSkip(t, target, alias, "dir")) return;
+    await assert.rejects(() => ensureSessiond(alias), /runtime directory is not a private directory/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("shutdownSessiond is a no-op when nothing is running", async () => {
   const dir = await tempDir();
   try {
@@ -111,11 +125,11 @@ test("shutdownSessiond is a no-op when nothing is running", async () => {
   }
 });
 
-test("shutdownSessiond SIGTERMs a running daemon and clears lock + socket", async () => {
+test("shutdownSessiond uses the control RPC and clears lock + endpoint", async () => {
   const dir = await tempDir();
   try {
-    // shutdownSessiond stops a *separate* daemon process by pid, so spawn a
-    // detached one (never the in-process test daemon, whose pid is this test).
+    // Spawn a separate detached daemon process so this verifies the real
+    // cross-process control path used by `pix down --all`.
     const ensured = await ensureSessiond(dir);
     const pid = ensured.pid;
     const paths = sessiondPaths(dir);

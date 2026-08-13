@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import {
   checkBinTargets,
   checkNoAgentSession,
@@ -43,6 +43,10 @@ function write(dir, rel, content) {
 
 function cleanup(dir) {
   rmSync(dir, { recursive: true, force: true });
+}
+
+function fixturePath(root, path) {
+  return relative(root, path).split(sep).join("/");
 }
 
 // ---------------------------------------------------------------------------
@@ -310,8 +314,9 @@ test("checkNoLegacyProductName flags every legacy brand casing", (t) => {
   ];
   const result = checkNoLegacyProductName({ files, rootDir: dir });
   assert.equal(result.ok, false);
+  const details = result.details.replaceAll("\\", "/");
   for (const f of ["a.ts", "b.ts", "c.tsx", "README.md", "protocol/package.json", "manifest.webmanifest"]) {
-    assert.match(result.details, new RegExp(f));
+    assert.match(details, new RegExp(f));
   }
 });
 
@@ -403,7 +408,7 @@ test("collectFiles skips node_modules, dist, dist-test, coverage and dot-entries
   write(dir, ".hidden/secret.ts", "x");
   write(dir, "packages/protocol/src/index.ts", "export {};");
   const files = collectFiles(dir);
-  const rel = files.map((f) => f.slice(dir.length + 1));
+  const rel = files.map((f) => fixturePath(dir, f));
   assert.ok(rel.includes("packages/protocol/src/index.ts"));
   for (const bad of [
     "node_modules/next/package.json",

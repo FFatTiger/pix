@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, rm, writeFile, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readLocalSecret, UnsafeSecretError, MIN_SECRET_LENGTH } from "../src/secret.js";
+import { symlinkOrSkip } from "./symlink-support.js";
 
 const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "pix-secret-"));
 
@@ -40,13 +41,13 @@ test("readLocalSecret reads only an existing file (read-only contract)", async (
   }
 });
 
-test("readLocalSecret rejects a symlink", async () => {
+test("readLocalSecret rejects a symlink", async (t) => {
   const dir = await tempDir();
   const target = join(dir, "target");
   const link = join(dir, "sessiond.secret");
   try {
     await writeFile(target, "a".repeat(MIN_SECRET_LENGTH + 5));
-    await symlink(target, link);
+    if (!await symlinkOrSkip(t, target, link, "file")) return;
     await assert.rejects(() => readLocalSecret(link), (e) => e instanceof UnsafeSecretError);
   } finally {
     await rm(dir, { recursive: true, force: true });

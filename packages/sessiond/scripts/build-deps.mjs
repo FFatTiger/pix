@@ -14,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveTscInvocation } from "../../../scripts/tool-invocation.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(here, "..");
@@ -29,11 +30,7 @@ const deps = [
   { name: "@fffattiger/pix-agent-worker", dir: join(workspaceRoot, "packages/agent-worker") },
 ];
 
-function resolveTsc() {
-  const localBin = join(workspaceRoot, "node_modules", ".bin", "tsc");
-  if (existsSync(localBin)) return { command: localBin, shell: false };
-  return { command: "tsc", shell: true };
-}
+const tsc = resolveTscInvocation(workspaceRoot);
 
 for (const dep of deps) {
   const tsconfig = join(dep.dir, "package.json");
@@ -48,13 +45,11 @@ for (const dep of deps) {
   // Always rebuild when missing so typecheck/test stay green after clean.
   if (existsSync(distEntry)) continue;
 
-  const { command, shell } = resolveTsc();
   // agent-worker depends on pi-sdk-adapter/protocol/runtime-core dist; those
   // are earlier in the list. Invoke tsc only — never npm run build.
-  const result = spawnSync(command, ["-p", join(dep.dir, "tsconfig.json")], {
+  const result = spawnSync(tsc.command, [...tsc.args, "-p", join(dep.dir, "tsconfig.json")], {
     cwd: workspaceRoot,
     stdio: "inherit",
-    shell,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {

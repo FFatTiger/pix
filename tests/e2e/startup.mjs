@@ -204,12 +204,17 @@ async function readWatchConnected(origin, filePath, { timeoutMs = 3_000 } = {}) 
   }
 }
 
+function startHostProcess(args, env) {
+  return startProcess(args, env, ["ignore", "pipe", "pipe", "ipc"]);
+}
+
 async function stopHost(running) {
   if (running.child.exitCode === null && running.child.signalCode === null) {
-    running.child.kill("SIGTERM");
+    if (running.child.connected) running.child.send("pix.host.shutdown");
+    else running.child.kill("SIGTERM");
   }
   const result = await waitForExit(running.child);
-  assert.equal(result.code, 0, `Host should exit 0 after SIGTERM (signal=${result.signal})`);
+  assert.equal(result.code, 0, `Host should exit 0 after graceful shutdown (signal=${result.signal})`);
 }
 
 function pidAlive(pid) {
@@ -278,7 +283,7 @@ async function main() {
     const readme = join(project, "README.md");
 
     // ---- phase 1: start product (host + sessiond); sessiond up ------------
-    firstHost = startProcess([
+    firstHost = startHostProcess([
       "scripts/product-entry.mjs",
       "start",
       "--hostname",
@@ -369,7 +374,7 @@ async function main() {
     assert.equal(pidAlive(sessiondPid), true, "sessiond must survive Host exit");
     assert.equal((await readLock(lockFile)).pid, sessiondPid);
 
-    secondHost = startProcess([
+    secondHost = startHostProcess([
       "packages/cli/bin/pix-host.mjs",
       "--hostname",
       "127.0.0.1",
@@ -461,14 +466,15 @@ async function main() {
   } finally {
     for (const running of [firstHost, secondHost]) {
       if (running?.child && running.child.exitCode === null && running.child.signalCode === null) {
-        running.child.kill("SIGTERM");
+        if (running.child.connected) running.child.send("pix.host.shutdown");
+        else running.child.kill("SIGTERM");
         await waitForExit(running.child, 2_000).catch(() => {
           running.child.kill("SIGKILL");
         });
       }
     }
     if (sessiondPid && pidAlive(sessiondPid)) {
-      process.kill(sessiondPid, "SIGTERM");
+      await runProcess(["scripts/product-entry.mjs", "cli", "down", "--all"], env, 3_000).catch(() => undefined);
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline && pidAlive(sessiondPid)) await delay(50);
       if (pidAlive(sessiondPid)) process.kill(sessiondPid, "SIGKILL");

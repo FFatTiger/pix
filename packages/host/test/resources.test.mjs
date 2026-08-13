@@ -3,7 +3,7 @@ import test, { afterEach } from "node:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, renameSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { AsyncMutex, KeyedMutex } from "../dist/resources/mutex.js";
 import { registerTrustedCreatedRoot } from "../dist/resources/allowed-roots.js";
 import {
@@ -97,7 +97,7 @@ test("AllowedRoot promotion migrates deterministic durable/trusted ownership", a
   const configured = temp("pi-owner-configured-"); const parent = temp("pi-owner-parent-"); const childA = join(parent, "a"); const childB = join(parent, "b"); mkdirSync(childA); mkdirSync(childB); const parentCanonical = await import("node:fs/promises").then(({ realpath }) => realpath(parent));
   const trustedChildren = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); const receipts = await Promise.all([registerTrustedCreatedRoot(trustedChildren, childA), registerTrustedCreatedRoot(trustedChildren, childB)]); await trustedChildren.expandRoots([parent], "local"); await Promise.all(receipts.map((receipt) => receipt.rollback())); assert.equal(await trustedChildren.isAuthorized(parent, "directory"), true); assert.equal(trustedChildren.roots().includes(parentCanonical), true); assert.equal(trustedChildren.roots().length, 2);
 
-  const durableChild = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); await durableChild.expandRoots([childA], "local"); const parentReceipt = await registerTrustedCreatedRoot(durableChild, parent); assert.equal(durableChild.roots().includes(parentCanonical), true, "trusted parent may temporarily cover durable child"); await parentReceipt.rollback(); assert.equal(await durableChild.isAuthorized(childA, "directory"), true); assert.equal(await durableChild.isAuthorized(parent, "directory"), false); assert.equal(durableChild.roots().some((root) => root.endsWith("/a")), true);
+  const durableChild = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); await durableChild.expandRoots([childA], "local"); const parentReceipt = await registerTrustedCreatedRoot(durableChild, parent); assert.equal(durableChild.roots().includes(parentCanonical), true, "trusted parent may temporarily cover durable child"); await parentReceipt.rollback(); assert.equal(await durableChild.isAuthorized(childA, "directory"), true); assert.equal(await durableChild.isAuthorized(parent, "directory"), false); assert.equal(durableChild.roots().some((root) => basename(root) === "a"), true);
 });
 
 test("AllowedRoot promotion uses replacement capacity and passes last-slot child-first probe", async () => {

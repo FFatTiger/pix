@@ -1,8 +1,9 @@
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { createPiSdkResourceCatalog, type PiSdkResourceCatalogOptions } from "../src/resources/index.js";
 import type {
@@ -11,6 +12,20 @@ import type {
   SkillInfo,
   SlashCommandInfo,
 } from "@fffattiger/pix-runtime-core";
+
+const UNSUPPORTED_LINK_CODES = new Set(["EPERM", "EACCES", "ENOTSUP", "EINVAL"]);
+async function directoryLinkOrSkip(t: TestContext, target: string, linkPath: string): Promise<boolean> {
+  try {
+    await symlink(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch (error) {
+    if (UNSUPPORTED_LINK_CODES.has((error as NodeJS.ErrnoException).code ?? "")) {
+      t.skip("directory links are unavailable for this user/environment");
+      return false;
+    }
+    throw error;
+  }
+}
 
 // Compile-time proof: PiSdkResourceCatalogOptions.cwd is REQUIRED — an options
 // object omitting cwd is NOT assignable to the catalog options type.
@@ -133,10 +148,6 @@ describe("read-only resource catalog (D3B-R1A)", () => {
   });
 
   it("filters project skill symlinks that escape the trusted project root", async (t) => {
-    if (process.platform === "win32") {
-      t.skip("directory symlinks require platform-specific privileges on Windows");
-      return;
-    }
     const { root, agentDir, projectCwd } = await fixture();
     try {
       const outside = join(root, "outside", "escaped-skill");
@@ -146,11 +157,11 @@ describe("read-only resource catalog (D3B-R1A)", () => {
         "---\nname: escaped-skill\ndescription: Must remain outside\n---\n# escaped",
         "utf8",
       );
-      await symlink(
+      if (!await directoryLinkOrSkip(
+        t,
         outside,
         join(projectCwd, ".pi", "skills", "escaped-link"),
-        "dir",
-      );
+      )) return;
 
       const catalog = createPiSdkResourceCatalog({
         cwd: projectCwd,
@@ -173,10 +184,6 @@ describe("read-only resource catalog (D3B-R1A)", () => {
   });
 
   it("filters an entire project skills root symlinked outside the project", async (t) => {
-    if (process.platform === "win32") {
-      t.skip("directory symlinks require platform-specific privileges on Windows");
-      return;
-    }
     const root = await mkdtemp(join(tmpdir(), "pix-resources-root-link-"));
     const agentDir = join(root, "agent");
     const projectCwd = join(root, "project");
@@ -195,7 +202,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
         "---\nname: escaped-root-skill\ndescription: Must remain outside\n---\n# escaped",
         "utf8",
       );
-      await symlink(outsideSkills, join(projectCwd, ".pi", "skills"), "dir");
+      if (!await directoryLinkOrSkip(t, outsideSkills, join(projectCwd, ".pi", "skills"))) return;
 
       const catalog = createPiSdkResourceCatalog({
         cwd: projectCwd,
@@ -216,10 +223,6 @@ describe("read-only resource catalog (D3B-R1A)", () => {
   });
 
   it("filters an entire global skills root symlinked outside agentDir", async (t) => {
-    if (process.platform === "win32") {
-      t.skip("directory symlinks require platform-specific privileges on Windows");
-      return;
-    }
     const root = await mkdtemp(join(tmpdir(), "pix-resources-global-link-"));
     const agentDir = join(root, "agent");
     const projectCwd = join(root, "project");
@@ -233,7 +236,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
         "---\nname: escaped-global-skill\ndescription: Must remain outside\n---\n# escaped",
         "utf8",
       );
-      await symlink(outsideSkills, join(agentDir, "skills"), "dir");
+      if (!await directoryLinkOrSkip(t, outsideSkills, join(agentDir, "skills"))) return;
 
       const catalog = createPiSdkResourceCatalog({
         cwd: projectCwd,
@@ -373,7 +376,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
           `writeFileSync(${JSON.stringify(markerPath)}, "executed");`,
         "utf8",
       );
-      await import(probe);
+      await import(pathToFileURL(probe).href);
       assert.equal(existsSync(markerPath), true, "control marker must fire on import");
     } finally {
       await rm(root, { recursive: true, force: true });

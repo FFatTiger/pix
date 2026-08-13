@@ -9,6 +9,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveNpmInvocation } from "../../../scripts/tool-invocation.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..", "..", "..");
@@ -21,12 +22,18 @@ const targets = [
   "packages/pi-sdk-adapter",
 ];
 
+const npm = resolveNpmInvocation();
+
 for (const target of targets) {
   const result = spawnSync(
-    process.platform === "win32" ? "npm.cmd" : "npm",
-    ["run", "build", "--workspace", target],
+    npm.command,
+    [...npm.args, "run", "build", "--workspace", target],
     { cwd: root, stdio: "inherit" },
   );
+  if (result.error) {
+    console.error(`[pix-host] failed to start npm for ${target}: ${result.error.message}`);
+    process.exit(1);
+  }
   if (result.status !== 0) {
     console.error(`[pix-host] prebuild failed for ${target}`);
     process.exit(result.status ?? 1);

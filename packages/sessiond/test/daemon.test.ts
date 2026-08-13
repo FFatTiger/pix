@@ -59,6 +59,36 @@ test("daemon serves system.ping and system.hello", async () => {
   }
 });
 
+test("authenticated system.shutdown acknowledges before closing the daemon", async () => {
+  const dir = await tempDir();
+  try {
+    const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+    const rpc = client(handle);
+    const result = await rpc.call("system.shutdown", { instanceId: handle.instanceId });
+    assert.deepEqual(result, { accepted: true, instanceId: handle.instanceId });
+    await handle.closed;
+    assert.equal(await instanceAlive(handle.paths), false);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("system.shutdown rejects a mismatched instanceId without stopping the daemon", async () => {
+  const dir = await tempDir();
+  try {
+    const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+    const rpc = client(handle);
+    await assert.rejects(
+      rpc.call("system.shutdown", { instanceId: "another-instance" }),
+      (error) => error instanceof SessiondError && error.code === "conflict",
+    );
+    assert.equal((await rpc.call("system.ping", {})).pong, true);
+    await handle.shutdown();
+  } finally {
+    await cleanup(dir);
+  }
+});
+
 test("a second daemon on the same directory is rejected as a conflict (single instance)", async () => {
   const dir = await tempDir();
   try {

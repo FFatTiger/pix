@@ -40,6 +40,12 @@ export const SystemHelloParamsSchema = z.strictObject({
 });
 export type SystemHelloParams = z.infer<typeof SystemHelloParamsSchema>;
 
+/** Ask the live daemon to shut itself down. Unix signals remain a human/service entry. */
+export const SystemShutdownParamsSchema = z.strictObject({
+  instanceId: NonEmptyStringSchema,
+});
+export type SystemShutdownParams = z.infer<typeof SystemShutdownParamsSchema>;
+
 export type SessiondRuntimeCreateParams = z.infer<typeof RuntimeCreateParamsSchema>;
 
 export const RuntimeActivateParamsSchema = z.strictObject({
@@ -162,6 +168,12 @@ export const SystemHelloResultSchema = z.strictObject({
   capabilities: z.array(z.string()).optional(),
 });
 export type SystemHelloResult = z.infer<typeof SystemHelloResultSchema>;
+
+export const SystemShutdownResultSchema = z.strictObject({
+  accepted: z.literal(true),
+  instanceId: NonEmptyStringSchema,
+});
+export type SystemShutdownResult = z.infer<typeof SystemShutdownResultSchema>;
 
 export const RuntimeCreateResultSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
@@ -321,6 +333,11 @@ export const SessiondRpcRequestSchema = z.discriminatedUnion("method", [
   }),
   z.strictObject({
     ...rpcEnvelope,
+    method: z.literal("system.shutdown"),
+    params: SystemShutdownParamsSchema,
+  }),
+  z.strictObject({
+    ...rpcEnvelope,
     method: z.literal("runtime.create"),
     params: RuntimeCreateParamsSchema,
   }),
@@ -411,6 +428,7 @@ export type SessiondRpcRequest = z.infer<typeof SessiondRpcRequestSchema>;
 export const SESSIOND_RPC_METHODS = [
   "system.ping",
   "system.hello",
+  "system.shutdown",
   "runtime.create",
   "runtime.activate",
   "runtime.attach",
@@ -436,6 +454,7 @@ export type SessiondRpcMethod = (typeof SESSIOND_RPC_METHODS)[number];
 export type SessiondMethodParams = {
   "system.ping": SystemPingParams;
   "system.hello": SystemHelloParams;
+  "system.shutdown": SystemShutdownParams;
   "runtime.create": SessiondRuntimeCreateParams;
   "runtime.activate": RuntimeActivateParams;
   "runtime.attach": SessiondRuntimeAttachParams;
@@ -458,6 +477,7 @@ export type SessiondMethodParams = {
 export type SessiondMethodResult = {
   "system.ping": SystemPingResult;
   "system.hello": SystemHelloResult;
+  "system.shutdown": SystemShutdownResult;
   "runtime.create": RuntimeCreateResult;
   "runtime.activate": RuntimeActivateResult;
   "runtime.attach": SessiondRuntimeAttachResult;
@@ -480,6 +500,7 @@ export type SessiondMethodResult = {
 export const SessiondMethodResultSchemas = {
   "system.ping": SystemPingResultSchema,
   "system.hello": SystemHelloResultSchema,
+  "system.shutdown": SystemShutdownResultSchema,
   "runtime.create": RuntimeCreateResultSchema,
   "runtime.activate": RuntimeActivateResultSchema,
   "runtime.attach": SessiondRuntimeAttachResultSchema,
@@ -502,6 +523,7 @@ export const SessiondMethodResultSchemas = {
 export const SessiondRpcSuccessSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("system.ping"), result: SystemPingResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("system.hello"), result: SystemHelloResultSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("system.shutdown"), result: SystemShutdownResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("runtime.create"), result: RuntimeCreateResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("runtime.activate"), result: RuntimeActivateResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("runtime.attach"), result: SessiondRuntimeAttachResultSchema }),
@@ -524,6 +546,7 @@ export const SessiondRpcSuccessSchema = z.discriminatedUnion("method", [
 export const SessiondRpcFailureSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("system.ping"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("system.hello"), error: ProtocolErrorSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("system.shutdown"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("runtime.create"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("runtime.activate"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("runtime.attach"), error: ProtocolErrorSchema }),

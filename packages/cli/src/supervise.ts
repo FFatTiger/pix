@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import {
   instanceAlive,
   listPrivateSocketAliases,
@@ -11,7 +11,7 @@ import {
   type SessiondPaths,
 } from "@fffattiger/pix-sessiond/control";
 import { readLocalSecret, UnsafeSecretError } from "./secret.js";
-import { pingSessiond } from "./probe.js";
+import { pingSessiond, requestSessiondShutdown } from "./probe.js";
 import { resolveSessiondBin } from "./paths.js";
 
 const READINESS_TIMEOUT_MS = 10_000;
@@ -19,7 +19,7 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 100;
 
 export interface ShutdownOptions {
-  /** Override the SIGTERM cleanup wait (default 10s). Useful for tests. */
+  /** Override the graceful shutdown cleanup wait (default 10s). Useful for tests. */
   timeoutMs?: number;
 }
 
@@ -259,6 +259,17 @@ export async function ensureSessiond(
     // lock, or a live-but-unreachable pid.
     throw new Error(`[pix] cannot start sessiond: ${existing.obstruction ?? "sessiond state is unsafe"}`);
   }
+  try {
+    const info = lstatSync(dir);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(`[pix] cannot start sessiond: runtime directory is not a private directory`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("[pix] cannot start sessiond:")) throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error(`[pix] cannot start sessiond: runtime directory is not usable`);
+    }
+  }
   log(`starting sessiond at ${dir}`);
   const child = spawnSessiond(dir);
   const readiness = await waitForReadiness(paths, child);
@@ -272,14 +283,14 @@ export async function ensureSessiond(
 }
 
 /**
- * Stop the sessiond named by `directory`'s lock via SIGTERM, then wait until the
- * pid, lock file and socket are all cleared. Idempotent: a missing/stale lock is
- * a no-op returning "already-down". If the process does not clean up within the
- * timeout it returns `{ action: "failed", reason: "timeout" }` rather than
- * pretending success — a stuck authority must be visible to the operator.
+ * Stop the sessiond named by `directory`'s lock via the authenticated
+ * `system.shutdown` control RPC, then wait until the pid and lock are cleared.
+ * Unix supervisors may still send SIGTERM as a fallback after the RPC. A
+ * missing/stale lock is a no-op returning "already-down". If the process does
+ * not clean up within the timeout it returns `{ action: "failed", reason: "timeout" }`.
  *
  * Fail-closed: an unsafe lock, a live listener without a lock, or a
- * live-but-unreachable pid is never SIGTERM'd — the daemon state is not safely
+ * live-but-unreachable pid is never signalled — the daemon state is not safely
  * owned, so the caller is told it is obstructed instead of being reported as
  * already-down (which would hide a live authority from the operator).
  */
@@ -287,7 +298,7 @@ export async function shutdownSessiond(
   directory?: string,
   options: ShutdownOptions = {},
 ): Promise<ShutdownResult> {
-  const { paths } = locateSessiond(directory);
+  const { paths, endpoint } = locateSessiond(directory);
   const status = await inspectSessiond(directory);
   if (status.obstructed) {
     return {
@@ -299,18 +310,28 @@ export async function shutdownSessiond(
   if (status.pid === undefined || !status.alive) {
     return { action: "already-down", pid: status.pid };
   }
+  let secret: string | undefined;
   try {
-    process.kill(status.pid, "SIGTERM");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    secret = await readLocalSecret(paths.secretFile);
+  } catch {
+    secret = undefined;
+  }
+  let accepted = false;
+  if (secret && status.instanceId) {
+    accepted = await requestSessiondShutdown(endpoint, secret, status.instanceId);
+  }
+  if (!accepted && process.platform !== "win32") {
+    try {
+      process.kill(status.pid, "SIGTERM");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
   }
   const deadline = Date.now() + (options.timeoutMs ?? SHUTDOWN_TIMEOUT_MS);
   while (Date.now() < deadline) {
-    // instanceAlive reads the lock each poll; once the daemon releases it the
-    // lock file is gone and instanceAlive returns false.
-    if (!(await instanceAlive(paths)) && !existsSync(paths.endpoint)) {
-      return { action: "terminated", pid: status.pid };
-    }
+    const gone = !(await instanceAlive(paths));
+    const socketGone = process.platform === "win32" ? true : !existsSync(paths.endpoint);
+    if (gone && socketGone) return { action: "terminated", pid: status.pid };
     await sleep(50);
   }
   return { action: "failed", pid: status.pid, reason: "timeout" };

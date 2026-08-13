@@ -14,9 +14,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessiondRpcClient, SessiondRpcServer } from "../../src/rpc.js";
+import { sessiondPaths } from "../../src/local.js";
 
 const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-crash-"));
-const endpoint = join(directory, "rpc.sock");
+const endpoint = sessiondPaths(directory).endpoint;
 const SECRET = "s".repeat(40);
 
 let resolveCommand;

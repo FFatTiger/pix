@@ -784,6 +784,7 @@ describe("sessiond RPC", () => {
     const cases = [
       rpc("system.ping", {}),
       rpc("system.hello", { clientName: "host" }),
+      rpc("system.shutdown", { instanceId: "inst-1" }),
       rpc("runtime.create", {
         createRequestId: "cr-1",
         cwd: "/tmp/project",
@@ -935,6 +936,7 @@ describe("sessiond RPC", () => {
     const results = {
       "system.ping": { pong: true, serverTime: 1 },
       "system.hello": { protocolVersion: 1, sessiondVersion: "0.1.0" },
+      "system.shutdown": { accepted: true, instanceId: "inst-1" },
       "runtime.create": {
         sessionId: "s-1",
         epoch: "e1",

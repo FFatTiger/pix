@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // Real sessiond surface (test-only — never imported by host production code).
 import { SessiondService, SessiondApplication, SessiondRpcServer } from "@fffattiger/pix-sessiond";
+import { sessiondPaths } from "@fffattiger/pix-sessiond/control";
 import { FakeWorkerFactory } from "@fffattiger/pix-sessiond/testing";
 import { SessiondRuntimeGateway } from "../dist/index.js";
 
@@ -106,7 +107,7 @@ const hello = JSON.stringify({ type: "handshake", payload: { protocolVersion: 1,
 
 async function startServer(service) {
   const directory = await mkdtemp(join(tmpdir(), "h1-integ-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const server = new SessiondRpcServer({ endpoint, secret: SECRET, handler: new SessiondApplication(service) });
   await server.listen();
   return { server, endpoint, directory };
@@ -120,7 +121,6 @@ async function connectGateway(endpoint, secret = SECRET) {
 }
 
 test("integration: create → attach (initial snapshot id) → command correlation → getSnapshot → stop", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
   const { service } = harness();
   const { server, endpoint, directory } = await startServer(service);
   try {
@@ -170,7 +170,6 @@ test("integration: create → attach (initial snapshot id) → command correlati
 });
 
 test("integration: cold attach without create activates then attaches", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
   const { service } = harness();
   const { server, endpoint, directory } = await startServer(service);
   try {
@@ -189,7 +188,6 @@ test("integration: cold attach without create activates then attaches", async (t
 });
 
 test("integration: interrupt correlates end-to-end (R0 commandId)", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
   const { service } = harness({ commandDelayMs: 200 });
   const { server, endpoint, directory } = await startServer(service);
   try {
@@ -217,7 +215,6 @@ test("integration: interrupt correlates end-to-end (R0 commandId)", async (t) =>
 });
 
 test("integration: wrong secret fails sanitized (no leak)", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
   const { service } = harness();
   const { server, endpoint, directory } = await startServer(service);
   try {
@@ -237,7 +234,6 @@ test("integration: wrong secret fails sanitized (no leak)", async (t) => {
 });
 
 test("integration: closing the gateway/browser leaves sessiond RPC alive (no daemon stop)", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
   const { service } = harness();
   const { server, endpoint, directory } = await startServer(service);
   try {

@@ -8,6 +8,21 @@ import { readLocalSecret } from "./secret.js";
  * never throws — because callers (readiness polling, capability probes, status)
  * only need to know reachability, not the failure reason.
  */
+export async function requestSessiondShutdown(
+  endpoint: string,
+  secret: string,
+  instanceId: string,
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  const client = new SessiondRpcClient({ endpoint, secret, timeoutMs });
+  try {
+    const result = await client.call("system.shutdown", { instanceId });
+    return result.accepted === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function pingSessiond(
   endpoint: string,
   secret: string,

@@ -68,27 +68,11 @@ async function freePort() {
     });
   });
 }
-function pidAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
-}
-async function listChildPids(parentPid) {
-  if (process.platform === "win32") return [];
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const execFileAsync = promisify(execFile);
-  const { stdout } = await execFileAsync("pgrep", ["-P", String(parentPid)], {
-    timeout: 2_000,
-  }).catch(() => ({ stdout: "" }));
-  return stdout
-    .split("\n")
-    .map((s) => Number(s.trim()))
-    .filter((n) => Number.isSafeInteger(n) && n > 0);
+function observedWorkerPids(daemon) {
+  const pids = daemon.workerPids();
+  assert.ok(Array.isArray(pids), "daemon worker PID observer must return an array");
+  for (const pid of pids) assert.ok(Number.isSafeInteger(pid) && pid > 0, `invalid worker pid: ${pid}`);
+  return pids;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,13 +249,14 @@ async function main() {
     // 3. No worker after reads: runtime.listRunning empty + no worker children.
     const runningAfterReads = await rpc.call("runtime.listRunning", {});
     assert.deepEqual(runningAfterReads.sessions, [], "no worker must be running after read-only requests");
-    const childrenAfterReads = await listChildPids(process.pid);
+    const childrenAfterReads = observedWorkerPids(stack.daemon);
+    assert.deepEqual(childrenAfterReads, [], "read-only requests must spawn zero worker processes");
 
     // 4. A read-only context GET (the deep-link request) does not start a worker.
     await get(`/v1/sessions/${sessionId}/context`);
     const runningAfterDeepLink = await rpc.call("runtime.listRunning", {});
     assert.deepEqual(runningAfterDeepLink.sessions, [], "read-only deep-link GET must not start a worker");
-    const childrenAfterDeepLink = await listChildPids(process.pid);
+    const childrenAfterDeepLink = observedWorkerPids(stack.daemon);
     assert.deepEqual(childrenAfterDeepLink, childrenAfterReads, "no new worker child after read-only deep link");
 
     // 4b. A nonexistent session read AND context return a sanitized 404
@@ -300,7 +285,7 @@ async function main() {
     // A 404 read path stays read-only: still zero workers, no new worker child.
     const runningAfter404 = await rpc.call("runtime.listRunning", {});
     assert.deepEqual(runningAfter404.sessions, [], "a missing-session 404 must not start a worker");
-    const childrenAfter404 = await listChildPids(process.pid);
+    const childrenAfter404 = observedWorkerPids(stack.daemon);
     assert.deepEqual(childrenAfter404, childrenAfterDeepLink, "no new worker child after missing-session 404");
 
     // 5. Continue live (WS attach) is the ONLY path that starts a worker.
@@ -314,9 +299,12 @@ async function main() {
       runningAfterAttach = await rpc.call("runtime.listRunning", {});
     }
     assert.ok(runningAfterAttach.sessions.some((s) => s.sessionId === sessionId), "continue live must start a worker");
+    const workersAfterAttach = observedWorkerPids(stack.daemon);
+    assert.ok(workersAfterAttach.length >= 1, "continue live must spawn a real worker process");
 
     // 6. sessiond down → `sessions` retracted AND routes 503.
     await stack.daemon.shutdown();
+    assert.deepEqual(observedWorkerPids(stack.daemon), [], "daemon shutdown must clear every worker PID");
     let downBoot;
     for (let i = 0; i < 40; i++) {
       downBoot = await get("/v1/bootstrap");
@@ -349,14 +337,8 @@ async function main() {
         /* ignore */
       }
     }
-    // Best-effort cleanup of any worker children spawned by the fixture.
-    for (const pid of await listChildPids(process.pid)) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        /* ignore */
-      }
-    }
+    // Worker cleanup is owned and observed by the in-process daemon handle;
+    // never guess via platform process-listing tools or silently return [].
     await rm(agentDir, { recursive: true, force: true });
     await rm(sessiondDir, { recursive: true, force: true });
     await rm(projectCwd, { recursive: true, force: true });

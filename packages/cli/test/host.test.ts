@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,6 +16,7 @@ import { createSessiondProbe } from "../src/probe.js";
 import { inspectSessiond } from "../src/supervise.js";
 import { runHost } from "../src/commands/host-runner.js";
 import type { SessiondLocation } from "../src/supervise.js";
+import { symlinkOrSkip } from "./symlink-support.js";
 import { homedir } from "node:os";
 import { InvalidCatalogAgentDirError } from "@fffattiger/pix-host";
 
@@ -185,13 +186,16 @@ test("runHost fails closed (exit 1) when the sessiond secret is missing", async 
   }
 });
 
-test("runHost fails closed (exit 1) when the sessiond secret is unsafe (symlink)", async () => {
+test("runHost fails closed (exit 1) when the sessiond secret is unsafe (symlink)", async (t) => {
   const dir = tempDir("pix-host-badsecret-");
   const paths = sessiondPaths(dir);
   mkdirSync(dir, { recursive: true });
   // A symlink secret is rejected read-only by readLocalSecret (fail closed).
   writeFileSync(join(dir, "target"), "x".repeat(64));
-  symlinkSync(join(dir, "target"), paths.secretFile);
+  if (!await symlinkOrSkip(t, join(dir, "target"), paths.secretFile, "file")) {
+    rmSync(dir, { recursive: true, force: true });
+    return;
+  }
   const location: SessiondLocation = { directory: dir, endpoint: paths.endpoint, paths };
   try {
     const code = await runHost(location, { hostname: "127.0.0.1", port: 0, open: false });

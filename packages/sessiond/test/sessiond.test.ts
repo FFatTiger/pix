@@ -328,13 +328,39 @@ test("slow subscribers are bounded and removed without blocking authority", asyn
   await service.shutdown();
 });
 
+test("worker PID observer follows the authoritative registry lifecycle", async () => {
+  const { service } = harness();
+  assert.deepEqual(service.workerPids(), []);
+  const active = await service.activate("pid-observer");
+  assert.equal(active.sessionId, "pid-observer");
+  const pids = service.workerPids();
+  assert.equal(pids.length, 1);
+  const [pid] = pids;
+  assert.ok(pid !== undefined && Number.isSafeInteger(pid) && pid > 0);
+  await service.stop("pid-observer");
+  assert.deepEqual(service.workerPids(), []);
+  await service.shutdown();
+});
+
+test("sessiond endpoints are stable per directory and distinct across siblings", () => {
+  const parent = join(tmpdir(), "sessiond-endpoint-parent");
+  const first = sessiondPaths(join(parent, "instance-a"));
+  const same = sessiondPaths(join(parent, ".", "instance-a"));
+  const second = sessiondPaths(join(parent, "instance-b"));
+  assert.equal(first.endpoint, same.endpoint);
+  assert.notEqual(first.endpoint, second.endpoint);
+  if (process.platform === "win32") {
+    assert.match(first.endpoint, /^\\\\\.\\pipe\\pix-sessiond-[a-f0-9]{32}$/);
+  }
+});
+
 test("instance lock rejects a second live instance and recovers stale locks with private permissions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-lock-"));
   const paths = sessiondPaths(directory);
   const first = await acquireInstanceLock(paths);
   await assert.rejects(acquireInstanceLock(paths));
   const mode = (await stat(paths.lockFile)).mode & 0o777;
-  assert.equal(mode, 0o600);
+  if (process.platform !== "win32") assert.equal(mode, 0o600);
   await first.release();
   await writeFile(paths.lockFile, JSON.stringify({ pid: 999_999_999, instanceId: "stale" }), { mode: 0o600 });
   const recovered = await acquireInstanceLock(paths);
@@ -345,14 +371,14 @@ test("local secret is stable and private", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-secret-"));
   const paths = sessiondPaths(directory);
   const one = await loadOrCreateLocalSecret(paths); const two = await loadOrCreateLocalSecret(paths);
-  assert.equal(one, two); assert.ok(one.length >= 32); assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+  assert.equal(one, two); assert.ok(one.length >= 32);
+  if (process.platform !== "win32") assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
   await rm(directory, { recursive: true, force: true });
 });
 
-test("RPC authenticates locally and rejects the wrong secret", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC authenticates locally and rejects the wrong secret", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const { service } = harness();
   const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
   await server.listen();
@@ -380,12 +406,11 @@ test("RPC authenticates locally and rejects the wrong secret", async (t) => {
   }
 });
 
-test("RPC attach subscription closed settles exactly once on local and remote close", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC attach subscription closed settles exactly once on local and remote close", async () => {
   // local close() settles closed
   {
     const directory = await mkdtemp(join(tmpdir(), "sessiond-closed-local-"));
-    const endpoint = join(directory, "rpc.sock");
+    const endpoint = sessiondPaths(directory).endpoint;
     const { service } = harness();
     const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
     await server.listen();
@@ -405,7 +430,7 @@ test("RPC attach subscription closed settles exactly once on local and remote cl
   // unexpected server-side close settles closed
   {
     const directory = await mkdtemp(join(tmpdir(), "sessiond-closed-remote-"));
-    const endpoint = join(directory, "rpc.sock");
+    const endpoint = sessiondPaths(directory).endpoint;
     const { service } = harness();
     const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
     await server.listen();
@@ -422,10 +447,9 @@ test("RPC attach subscription closed settles exactly once on local and remote cl
   }
 });
 
-test("RPC attach rejects before the attach response arrives", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC attach rejects before the attach response arrives", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-closed-reject-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const { service } = harness();
   const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
   await server.listen();
@@ -516,10 +540,9 @@ function collectLines(socket: import("node:net").Socket): { lines: string[]; wai
   };
 }
 
-test("RPC server survives client timeout + late command completion without unhandled rejection", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC server survives client timeout + late command completion without unhandled rejection", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-late-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   let resolveCommand!: () => void;
   const gate = new Promise<void>((resolvePromise) => { resolveCommand = resolvePromise; });
   const logs: string[] = [];
@@ -548,10 +571,9 @@ test("RPC server survives client timeout + late command completion without unhan
   }
 });
 
-test("RPC throwing logger never produces an unhandled rejection (late drop + outer process catch)", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC throwing logger never produces an unhandled rejection (late drop + outer process catch)", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-logger-throws-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const unhandled: unknown[] = [];
   const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
   process.on("unhandledRejection", onUnhandled);
@@ -626,10 +648,9 @@ test("RPC throwing logger never produces an unhandled rejection (late drop + out
   }
 });
 
-test("RPC server survives a peer closing mid-flight and the late handler completion", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC server survives a peer closing mid-flight and the late handler completion", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-midflight-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   let resolveCommand!: () => void;
   const gate = new Promise<void>((resolvePromise) => { resolveCommand = resolvePromise; });
   const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: gatedHandler(gate), logger: () => {} });
@@ -654,10 +675,9 @@ test("RPC server survives a peer closing mid-flight and the late handler complet
   }
 });
 
-test("RPC invalid JSON with a live connection still delivers invalid_request", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC invalid JSON with a live connection still delivers invalid_request", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-invalid-live-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: gatedHandler(Promise.resolve()), logger: () => {} });
   await server.listen();
   try {
@@ -677,10 +697,9 @@ test("RPC invalid JSON with a live connection still delivers invalid_request", a
   }
 });
 
-test("RPC invalid JSON then immediate close settles without crashing", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC invalid JSON then immediate close settles without crashing", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-invalid-close-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: gatedHandler(Promise.resolve()), logger: () => {} });
   await server.listen();
   try {
@@ -699,10 +718,9 @@ test("RPC invalid JSON then immediate close settles without crashing", async (t)
   }
 });
 
-test("RPC invalid schema then immediate close settles without crashing", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC invalid schema then immediate close settles without crashing", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-schema-close-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: gatedHandler(Promise.resolve()), logger: () => {} });
   await server.listen();
   try {
@@ -721,10 +739,9 @@ test("RPC invalid schema then immediate close settles without crashing", async (
   }
 });
 
-test("RPC live schema-invalid ping result returns a sanitized internal failure, not a timeout", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC live schema-invalid ping result returns a sanitized internal failure, not a timeout", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-schema-invalid-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const handler = {
     async handle(method: string): Promise<unknown> {
       if (method === "system.ping") return { pong: false }; // schema-invalid result
@@ -745,10 +762,9 @@ test("RPC live schema-invalid ping result returns a sanitized internal failure, 
   }
 });
 
-test("RPC runtime.attach without a handler.attach fallback returns a sanitized internal failure, not a timeout", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC runtime.attach without a handler.attach fallback returns a sanitized internal failure, not a timeout", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-attach-noattach-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   // handler with NO attach(): runtime.attach falls through to dispatchHandler,
   // whose generic result is not a valid attach result -> schema validation fails
   // on the live connection and must surface as a sanitized internal failure.
@@ -772,10 +788,9 @@ test("RPC runtime.attach without a handler.attach fallback returns a sanitized i
   }
 });
 
-test("RPC schema-invalid result on a closed writer is safely dropped without unhandled rejection", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC schema-invalid result on a closed writer is safely dropped without unhandled rejection", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-schema-closed-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   let resolveCommand!: () => void;
   const gate = new Promise<void>((resolvePromise) => { resolveCommand = resolvePromise; });
   const handler = {
@@ -817,10 +832,9 @@ test("RPC schema-invalid result on a closed writer is safely dropped without unh
   }
 });
 
-test("RPC logs never echo dynamic SessiondError messages (secret marker probe)", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC logs never echo dynamic SessiondError messages (secret marker probe)", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-secret-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const secretMarker = "TOP-SECRET-MARKER-7f3a9c";
   let resolveCommand!: () => void;
   const gate = new Promise<void>((resolvePromise) => { resolveCommand = resolvePromise; });
@@ -861,8 +875,7 @@ test("RPC logs never echo dynamic SessiondError messages (secret marker probe)",
   }
 });
 
-test("RPC server survives late completion in a child process under Node default throw", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC server survives late completion in a child process under Node default throw", async () => {
   const fixture = resolve(here, "fixtures/fixture-rpc-late-crash.mjs");
   const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
     const child = spawn(process.execPath, [fixture], { stdio: ["ignore", "pipe", "pipe"] });

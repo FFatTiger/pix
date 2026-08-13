@@ -248,10 +248,10 @@ export async function runHost(
   if (options.open) openBrowser(url);
 
   let closing = false;
-  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+  const shutdown = async (source: NodeJS.Signals | "IPC_SHUTDOWN"): Promise<void> => {
     if (closing) return;
     closing = true;
-    pixLog(`${signal} received — closing host (sessiond keeps running)`);
+    pixLog(`${source} received — closing host (sessiond keeps running)`);
     try {
       await handle.close();
     } catch (error) {
@@ -261,8 +261,16 @@ export async function runHost(
   };
   process.on("SIGINT", (signal) => void shutdown(signal));
   process.on("SIGTERM", (signal) => void shutdown(signal));
+  // Cross-platform parent-process control for E2E/supervisors that explicitly
+  // create a Node IPC channel. Ordinary product launches have no IPC channel,
+  // so this does not add a remotely reachable shutdown surface.
+  if (typeof process.send === "function") {
+    process.on("message", (message) => {
+      if (message === "pix.host.shutdown") void shutdown("IPC_SHUTDOWN");
+    });
+  }
 
-  // The listening server keeps the event loop alive; block until a signal.
+  // The listening server keeps the event loop alive; block until shutdown.
   await new Promise<void>(() => {});
   return 0;
 }

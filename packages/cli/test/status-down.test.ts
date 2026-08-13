@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,7 @@ import {
 import { ensureSessiond, shutdownSessiond } from "../src/supervise.js";
 import { statusCommand } from "../src/commands/status.js";
 import { downCommand } from "../src/commands/down.js";
+import { symlinkOrSkip } from "./symlink-support.js";
 
 /**
  * Honest status/stop reporting for S1 obstruction. When `inspectSessiond`
@@ -142,12 +143,12 @@ test("status/down report obstructed for a corrupt lock and leave it untouched", 
   }
 });
 
-test("status/down report obstructed for a symlink lock and leave it untouched", async () => {
+test("status/down report obstructed for a symlink lock and leave it untouched", async (t) => {
   const dir = await tempDir();
   try {
     const paths = sessiondPaths(dir);
     await writeFile(join(dir, "target"), "payload");
-    await symlink(join(dir, "target"), paths.lockFile);
+    if (!await symlinkOrSkip(t, join(dir, "target"), paths.lockFile, "file")) return;
     await expectObstructed(dir, /sessiond lock file is not a regular file/, async () => {
       const info = await lstat(paths.lockFile);
       assert.equal(info.isSymbolicLink(), true);
@@ -269,14 +270,13 @@ async function expectUnsafeSecretWithLivePid(
   }
 }
 
-test("status/down report obstructed for a live pid with a symlink secret and leave it untouched", async () => {
+test("status/down report obstructed for a live pid with a symlink secret and leave it untouched", async (t) => {
   const dir = await tempDir();
   try {
     const paths = sessiondPaths(dir);
-    await expectUnsafeSecretWithLivePid(dir, async () => {
-      await writeFile(join(dir, "target"), "x".repeat(64));
-      await symlink(join(dir, "target"), paths.secretFile);
-    }, async () => {
+    await writeFile(join(dir, "target"), "x".repeat(64));
+    if (!await symlinkOrSkip(t, join(dir, "target"), paths.secretFile, "file")) return;
+    await expectUnsafeSecretWithLivePid(dir, async () => {}, async () => {
       const info = await lstat(paths.secretFile);
       assert.equal(info.isSymbolicLink(), true);
     });

@@ -32,8 +32,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prebuild:test": "npm run build:core",
     "build:test": "tsc -p tsconfig.test.json",
-    "test": "npm run build:test && node --test \"dist-test/**/*.test.js\"",
-    "clean": "rm -rf dist dist-test"
+    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\"",
+    "clean": "node ../../scripts/remove-paths.mjs dist dist-test"
   },
   "engines": {
     "node": ">=22.19.0"

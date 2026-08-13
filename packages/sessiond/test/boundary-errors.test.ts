@@ -9,6 +9,7 @@ import { SessiondApplication } from "../src/application.js";
 import { SessiondError, toBoundaryProtocolError } from "../src/errors.js";
 import { SessiondRpcClient, SessiondRpcServer } from "../src/rpc.js";
 import { SessiondService } from "../src/service.js";
+import { sessiondPaths } from "../src/local.js";
 import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
 
 // ---------------------------------------------------------------------------
@@ -112,10 +113,9 @@ function rpcHarness() {
   return { service };
 }
 
-test("RPC boundary preserves a catalog not_found as a sanitized protocol error (round-trip)", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC boundary preserves a catalog not_found as a sanitized protocol error (round-trip)", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-boundary-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   const { service } = rpcHarness();
   const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
   await server.listen();
@@ -152,10 +152,9 @@ test("RPC boundary preserves a catalog not_found as a sanitized protocol error (
   }
 });
 
-test("RPC boundary sanitizes an arbitrary thrown value to internal (round-trip)", async (t) => {
-  if (process.platform === "win32") return t.skip("unix socket test");
+test("RPC boundary sanitizes an arbitrary thrown value to internal (round-trip)", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sessiond-boundary-internal-"));
-  const endpoint = join(directory, "rpc.sock");
+  const endpoint = sessiondPaths(directory).endpoint;
   // A handler that throws a raw, attacker-shaped object with an unknown code.
   const handler: { handle: () => Promise<never> } = {
     async handle() {

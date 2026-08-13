@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
 import { sessiondPaths } from "@fffattiger/pix-sessiond/control";
-import { pingSessiond, createSessiondProbe } from "../src/probe.js";
+import { pingSessiond, createSessiondProbe, requestSessiondShutdown } from "../src/probe.js";
 
 const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "pix-probe-"));
 
@@ -25,6 +25,20 @@ test("pingSessiond returns false against a dead endpoint", async () => {
   try {
     const paths = sessiondPaths(dir);
     assert.equal(await pingSessiond(paths.endpoint, "wrong-or-dead-secret", 500), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("requestSessiondShutdown requires the live instanceId and acknowledges graceful close", async () => {
+  const dir = await tempDir();
+  try {
+    const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+    assert.equal(await requestSessiondShutdown(handle.endpoint, handle.secret, "wrong-instance"), false);
+    assert.equal(await pingSessiond(handle.endpoint, handle.secret), true);
+    assert.equal(await requestSessiondShutdown(handle.endpoint, handle.secret, handle.instanceId), true);
+    await handle.closed;
+    assert.equal(await pingSessiond(handle.endpoint, handle.secret, 250), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -990,6 +990,15 @@ export class SessiondService {
     await this.deps.sessionCatalog.deleteSession(sessionId);
   }
 
+  /** Read-only process observer for in-process diagnostics/E2E; never exposed over RPC. */
+  workerPids(): number[] {
+    return [...new Set(
+      [...this.records.values()]
+        .map((record) => record.worker.pid)
+        .filter((pid): pid is number => typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0),
+    )].sort((left, right) => left - right);
+  }
+
   /** Test/diagnostic view with no process internals. */
   diagnostics(): { sessions: number; creates: number; activations: number; subscribers: number } {
     return { sessions: this.records.size, creates: this.creates.size, activations: this.activations.size, subscribers: [...this.records.values()].reduce((sum, record) => sum + record.subscribers.size, 0) };

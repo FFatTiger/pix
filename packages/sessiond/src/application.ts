@@ -12,8 +12,24 @@ import { SessiondError } from "./errors.js";
 import type { SessiondRpcContext, SessiondRpcHandler } from "./rpc.js";
 import { SessiondService } from "./service.js";
 
+export interface SessiondApplicationOptions {
+  /** Optional control-plane shutdown. Invoked by `system.shutdown` after auth. */
+  onShutdown?: () => void | Promise<void>;
+  instanceId?: string;
+}
+
 export class SessiondApplication implements SessiondRpcHandler {
-  constructor(private readonly service: SessiondService) {}
+  constructor(
+    private readonly service: SessiondService,
+    private readonly options: SessiondApplicationOptions = {},
+  ) {}
+
+  afterResponse(method: import("@fffattiger/pix-protocol").SessiondRpcMethod): void {
+    if (method !== "system.shutdown" || !this.options.onShutdown) return;
+    setImmediate(() => {
+      void Promise.resolve(this.options.onShutdown!()).catch(() => {});
+    });
+  }
 
   attach(params: SessiondRuntimeAttachParams): import("./service.js").PreparedAttachment {
     return this.service.prepareAttach(params);
@@ -27,6 +43,16 @@ export class SessiondApplication implements SessiondRpcHandler {
     switch (method) {
       case "system.ping": return { pong: true, serverTime: Date.now() };
       case "system.hello": return { protocolVersion: PROTOCOL_VERSION, capabilities: ["runtime.authority", "runtime.resume"] };
+      case "system.shutdown": {
+        const input = params as SessiondMethodParams["system.shutdown"];
+        if (!this.options.instanceId || input.instanceId !== this.options.instanceId) {
+          throw new SessiondError("conflict", "sessiond instanceId does not match");
+        }
+        if (!this.options.onShutdown) {
+          throw new SessiondError("unavailable", "sessiond shutdown control is unavailable");
+        }
+        return { accepted: true as const, instanceId: this.options.instanceId };
+      }
       case "runtime.create": return this.service.create(params as SessiondMethodParams["runtime.create"]);
       case "runtime.activate": {
         const input = params as SessiondMethodParams["runtime.activate"];

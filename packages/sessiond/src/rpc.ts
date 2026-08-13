@@ -2,6 +2,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { timingSafeEqual } from "node:crypto";
 import {
   PROTOCOL_VERSION,
+  SESSIOND_RPC_METHODS,
   SessiondRpcRequestSchema,
   SessiondRpcResponseSchema,
   SessiondPushSchema,
@@ -29,6 +30,8 @@ export interface SessiondRpcContext { requestId: string }
 export interface SessiondRpcHandler {
   handle<M extends SessiondRpcMethod>(method: M, params: SessiondMethodParams[M], context?: SessiondRpcContext): Promise<SessiondMethodResult[M]>;
   attach?(params: SessiondMethodParams["runtime.attach"]): PreparedAttachment;
+  /** Invoked only after a successful response frame has flushed to the socket. */
+  afterResponse?(method: SessiondRpcMethod): void | Promise<void>;
 }
 
 export interface SessiondRpcServerOptions {
@@ -166,6 +169,12 @@ export class SessiondRpcServer {
       } else {
         await this.writeFailureSafely(writer, request.id, request.method, toBoundaryProtocolError(error), error);
       }
+      return;
+    }
+    try {
+      await this.options.handler.afterResponse?.(request.method);
+    } catch (error) {
+      this.log(`[sessiond] rpc after-response hook failed: ${describeSafe(error)}`);
     }
   }
 
@@ -236,12 +245,7 @@ const describeSafe = (error: unknown): string => {
   return typeof error;
 };
 
-const methods = new Set<SessiondRpcMethod>([
-  "system.ping", "system.hello", "runtime.create", "runtime.activate", "runtime.attach", "runtime.detach",
-  "runtime.getSnapshot", "runtime.listRunning", "runtime.command", "runtime.interrupt", "runtime.stop",
-  "runtime.hasBusyCwd", "runtime.stopByCwd", "sessions.list", "sessions.resolve", "sessions.read",
-  "sessions.context", "sessions.rename", "sessions.delete",
-]);
+const methods = new Set<SessiondRpcMethod>(SESSIOND_RPC_METHODS);
 const isMethod = (value: string): value is SessiondRpcMethod => methods.has(value as SessiondRpcMethod);
 
 async function dispatchHandler(handler: SessiondRpcHandler, request: SessiondRpcRequest): Promise<SessiondMethodResult[SessiondRpcMethod]> {

@@ -13,6 +13,10 @@ const cleanup = async (dir: string): Promise<void> => {
 };
 const isSessiondError = (codeOrMessage: RegExp) => (error: unknown): boolean =>
   error instanceof SessiondError && (codeOrMessage.test(error.code) || codeOrMessage.test(error.message));
+const assertPrivateMode = async (path: string): Promise<void> => {
+  if (process.platform === "win32") return;
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+};
 
 test("creates a fresh secret at 0600 when none exists", async () => {
   const dir = await tempDir();
@@ -22,7 +26,7 @@ test("creates a fresh secret at 0600 when none exists", async () => {
     assert.ok(secret.length >= 32);
     const info = await stat(paths.secretFile);
     assert.equal(info.isFile(), true);
-    assert.equal(info.mode & 0o777, 0o600);
+    await assertPrivateMode(paths.secretFile);
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), secret);
   } finally {
     await cleanup(dir);
@@ -41,7 +45,7 @@ test("a zero-byte final from a legacy interrupted publish is rebuilt (self-heal)
     assert.ok(secret.length >= 32);
     const info = await stat(paths.secretFile);
     assert.ok(info.size > 0); // rebuilt, complete
-    assert.equal(info.mode & 0o777, 0o600);
+    await assertPrivateMode(paths.secretFile);
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), secret);
   } finally {
     await cleanup(dir);
@@ -95,7 +99,7 @@ test("concurrent creation converges on the same published secret (no overwrite)"
     const [a, b] = await Promise.all([slow, fast]);
     assert.equal(a, b);
     assert.ok(a.length >= 32);
-    assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+    await assertPrivateMode(paths.secretFile);
   } finally {
     await cleanup(dir);
   }
@@ -112,19 +116,27 @@ test("an existing valid secret is returned unchanged", async () => {
     assert.equal(got, preset);
     // Content untouched (not regenerated/overwritten).
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), preset);
-    assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+    await assertPrivateMode(paths.secretFile);
   } finally {
     await cleanup(dir);
   }
 });
 
-test("a symlink final is rejected (fail-closed)", async () => {
+test("a symlink final is rejected (fail-closed)", async (t) => {
   const dir = await tempDir();
   const paths = sessiondPaths(dir);
   try {
     const target = join(dir, "elsewhere");
     await writeFile(target, "x".repeat(64), { mode: 0o600 });
-    await symlink(target, paths.secretFile);
+    try {
+      await symlink(target, paths.secretFile);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") {
+        t.skip("symlink creation requires Developer Mode or equivalent privileges");
+        return;
+      }
+      throw error;
+    }
     await assert.rejects(loadOrCreateLocalSecret(paths), isSessiondError(/forbidden/));
   } finally {
     await cleanup(dir);

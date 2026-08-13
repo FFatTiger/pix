@@ -85,6 +85,8 @@ export interface DaemonHandle {
    */
   readonly privateEndpoint: string | undefined;
   readonly secret: string;
+  /** Active production worker PIDs from the authoritative in-process registry. */
+  workerPids(): number[];
   /** Resolves once shutdown has fully completed (signal or explicit). */
   readonly closed: Promise<void>;
   /** Idempotent tear-down: owned-public → server → service → private → lock. */
@@ -154,7 +156,11 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     const secret = await loadOrCreateLocalSecret(paths);
     const service = new SessiondService(buildDependencies(directory, options), options.serviceOptions);
     teardown.push(() => service.shutdown());
-    const application = new SessiondApplication(service);
+    let requestedShutdown: () => Promise<void> = async () => {};
+    const application = new SessiondApplication(service, {
+      instanceId: lock.instanceId,
+      onShutdown: () => requestedShutdown(),
+    });
     // Unix: libuv binds the private per-instance path (never the stable public
     // one), so a close can never unlink another daemon's public endpoint.
     // Windows: named pipes leave no files; bind the public pipe directly.
@@ -188,6 +194,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       })();
       return shutdownPromise;
     };
+    requestedShutdown = shutdown;
 
     return {
       directory,
@@ -196,6 +203,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       endpoint: paths.endpoint,
       privateEndpoint: privatePath,
       secret,
+      workerPids: () => service.workerPids(),
       closed,
       shutdown,
     };

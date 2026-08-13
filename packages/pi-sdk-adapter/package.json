@@ -19,14 +19,14 @@
     "pretypecheck": "npm run build:deps",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prebuild": "npm run build:deps",
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "build": "node ../../scripts/remove-paths.mjs dist && tsc -p tsconfig.json",
     "prebuild:test": "npm run build:deps && npm run build",
-    "build:test": "node -e \"require('node:fs').rmSync('dist-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json",
-    "test": "npm run build:test && node --test \"dist-test/**/*.test.js\"",
+    "build:test": "node ../../scripts/remove-paths.mjs dist-test && tsc -p tsconfig.test.json",
+    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\"",
     "precheck:boundaries": "npm run build",
     "check:boundaries": "node ./scripts/check-boundaries.mjs",
     "check:commands": "node ./scripts/check-command-coverage.mjs",
-    "clean": "node -e \"for (const p of ['dist','dist-test']) require('node:fs').rmSync(p,{recursive:true,force:true})\""
+    "clean": "node ../../scripts/remove-paths.mjs dist dist-test"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.0",

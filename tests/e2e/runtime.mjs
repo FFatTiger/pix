@@ -396,7 +396,7 @@ async function startRuntimeStack(tempDir) {
     clientDist,
   });
 
-  return { daemon, host, clientDist, workerPids: () => collectWorkerPids(daemon) };
+  return { daemon, host, clientDist, workerPids: () => daemon.workerPids() };
 }
 
 async function bootHost({ endpoint, secret, clientDist, capabilities = ["agent"] }) {
@@ -469,30 +469,12 @@ async function makeMinimalClientDist(tempDir) {
 }
 
 function collectWorkerPids(daemon) {
-  // sessiond service is private; inspect via /proc-less approach is hard.
-  // We track PIDs observed through listRunning is not available over public API
-  // without RPC. Instead the scenarios that spawn workers record PIDs from
-  // OS-level children of the daemon process when needed.
-  void daemon;
-  return [];
-}
-
-async function listChildPids(parentPid) {
-  if (process.platform === "win32") return [];
-  try {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execFileAsync = promisify(execFile);
-    const { stdout } = await execFileAsync("pgrep", ["-P", String(parentPid)], {
-      timeout: 2_000,
-    }).catch(() => ({ stdout: "" }));
-    return stdout
-      .split("\n")
-      .map((s) => Number(s.trim()))
-      .filter((n) => Number.isSafeInteger(n) && n > 0);
-  } catch {
-    return [];
+  const pids = daemon.workerPids();
+  assert.ok(Array.isArray(pids), "daemon worker PID observer must return an array");
+  for (const pid of pids) {
+    assert.ok(Number.isSafeInteger(pid) && pid > 0, `invalid worker pid: ${pid}`);
   }
+  return pids;
 }
 
 async function waitForPidDead(pid, timeoutMs = CLEANUP_TIMEOUT_MS) {
@@ -712,7 +694,7 @@ async function scenarioHostRestartResume(stack, projectDir) {
   const daemonPid = lock.pid;
   assert.equal(pidAlive(daemonPid), true);
 
-  const childrenBefore = await listChildPids(daemonPid);
+  const childrenBefore = collectWorkerPids(stack.daemon);
   assert.ok(
     childrenBefore.length >= 1,
     `expected at least one worker child of sessiond; got ${childrenBefore.join(",")}`,
@@ -1136,7 +1118,7 @@ async function scenarioShutdownCleanup(stack, projectDir) {
 
   // Snapshot children before this scenario's create so we only assert on the
   // newly spawned worker (earlier scenarios may still hold live workers).
-  const before = new Set(await listChildPids(daemonPid));
+  const before = new Set(collectWorkerPids(stack.daemon));
 
   const client = new RuntimeWsClient(stack.host.wsUrl);
   await client.connect();
@@ -1152,7 +1134,7 @@ async function scenarioShutdownCleanup(stack, projectDir) {
     sessionId = created.sessionId;
     await client.attach(sessionId);
 
-    const after = await listChildPids(daemonPid);
+    const after = collectWorkerPids(stack.daemon);
     workerPids = after.filter((pid) => !before.has(pid));
     assert.ok(
       workerPids.length >= 1,
@@ -1208,13 +1190,13 @@ async function scenarioShutdownCleanup(stack, projectDir) {
   // Daemon shutdown (service.shutdown stops all workers) leaves no orphan children.
   // Note: startDaemon runs in the E2E parent process, so the lock pid is our own
   // PID and must NOT be expected to die — only worker children must exit.
-  const remaining = await listChildPids(daemonPid);
+  const remaining = collectWorkerPids(stack.daemon);
   await stack.daemon.shutdown();
   for (const pid of remaining) {
     const dead = await waitForPidDead(pid, 8_000);
     assert.equal(dead, true, `orphan worker child ${pid} after daemon shutdown`);
   }
-  const leftover = await listChildPids(daemonPid);
+  const leftover = collectWorkerPids(stack.daemon);
   assert.deepEqual(
     leftover,
     [],
