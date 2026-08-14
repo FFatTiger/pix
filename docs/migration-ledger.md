@@ -2104,8 +2104,12 @@ E2E 回归 PASS；root typecheck/build/test PASS；check:architecture PASS；git
 ## 55. Local Authority — `ensurePrivateDirectory` EEXIST/created 分类安全缺陷修复（二轮 Fresh verifier PASS）
 
 ```text
-状态：修复已实现并提交（branch fix/local-authority-eexist-race，base main ef564b7）；本地全量验证绿；
-待独立 verifier 判定（parallel reservations：Host52、Client53、Diagnostics54）。
+状态：DONE。source `14e7ca2`（EEXIST/created 分类修复）+ `772269d`（fd identity 钉住，修复首轮
+verifier CRITICAL）+ `56fa417`（二轮 verifier 要求的残余窗口枚举）；首轮 verifier 对 14e7ca2 FAIL
+（open 前替换真实目录被 fchmod），二轮 Fresh verifier 独立重放原注入对 772269d 给出 PASS 并要求
+枚举第二个同 UID 残余窗口（mkdir→identity 捕获 lstat 之间）；合并 main（merge commit aef1a50，
+仅 ledger 追加冲突），合并后 local-authority 53/53、Host 420/420、architecture、Startup E2E
+（全量重建后）全 PASS；未 push/deploy/live。
 范围：仅 packages/local-authority（src/state/posix.ts、src/state/index.ts、新增
 test/secure-directory-race.test.mjs）+ docs；不碰 Host 策略/API、sessiond 私有目录、
 package-lock/deps、merge/push/deploy/live service。不编辑 refactor-execution-plan。
