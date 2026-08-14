@@ -1780,7 +1780,7 @@ token/radius/type），无渐变/玻璃/弹跳。
   same-epoch resync 同 commandId 重发、epoch_changed 不重发拒绝、detach/stop/dispose/
   session switch/send failure 恰一次 settle、wrong envelope/commandId/type 丢弃 +
   legit 帧一次 settle + 槽恢复、capability loss settle。
-- DOM 21 用例（ExtensionRequests.test.tsx）：5 表单渲染 + defensive noninteractive
+- DOM 23 用例（ExtensionRequests.test.tsx）：5 表单渲染 + defensive noninteractive
   被动 notice、capability/live 门、确定性多请求仅首可操作、默认聚焦、第二请求不抢焦、
   Escape、Enter/CmdEnter、IME、空串显式提交、custom 文本不渲染 HTML、双击单发、
   request close 后 late inert、capability revoke 惰性、固定错误文案、零 incremental 帧、
@@ -1791,7 +1791,7 @@ token/radius/type），无渐变/玻璃/弹跳。
   测试原样通过（无回归）。
 
 验证（本机 Node v24.18.0）：
-- Client 全量 625/625（基线 581 + 新增 44：store 12 + helper 7 + DOM 21 + AppShell 4）；AppShell
+- Client 全量 627/627（基线 581 + 新增 46：store 12 + helper 7 + DOM 23 + AppShell 4）；AppShell
   25/25（既有 21 + 新增 4）。
 - Client typecheck PASS；client build（vite）PASS；check-boundaries PASS。
 - 根 check:architecture PASS；root typecheck PASS；root build PASS；`git diff --check`

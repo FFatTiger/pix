@@ -371,6 +371,47 @@ describe("ExtensionRequests — race/security/lifecycle", () => {
     expect(alert.textContent).toBe("This extension request cannot be answered this way.");
   });
 
+  it("focuses a different-id request after the prior in-flight reply settles", async () => {
+    mount(<ExtensionRequests live />);
+    const ws = await driveAttach();
+    await pushRequest(ws, CONFIRM, 1);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await flush();
+    const replies = extReplies(ws);
+    expect(replies).toHaveLength(1);
+
+    await closeRequest(ws, CONFIRM, 2);
+    await pushRequest(ws, INPUT, 3);
+    const nextCancel = screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(nextCancel.disabled).toBe(true);
+    expect(document.activeElement).toBe(document.body);
+
+    await ackExtReply(ws, replies[0]!);
+    await waitFor(() => expect(nextCancel.disabled).toBe(false));
+    expect(document.activeElement).toBe(nextCancel);
+  });
+
+  it("focuses a byte-identical reused request id after the prior in-flight reply settles", async () => {
+    mount(<ExtensionRequests live />);
+    const ws = await driveAttach();
+    await pushRequest(ws, CONFIRM, 1);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await flush();
+    const replies = extReplies(ws);
+    expect(replies).toHaveLength(1);
+
+    await closeRequest(ws, CONFIRM, 2);
+    await pushRequest(ws, CONFIRM, 3);
+    const reusedCancel = screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(reusedCancel.disabled).toBe(true);
+    expect(document.activeElement).toBe(document.body);
+
+    await ackExtReply(ws, replies[0]!);
+    await waitFor(() => expect(reusedCancel.disabled).toBe(false));
+    expect(document.activeElement).toBe(reusedCancel);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("request close while reply in-flight: card unmounts, focus returns, late error is inert", async () => {
     mount(<ExtensionRequests live />);
     const ws = await driveAttach();

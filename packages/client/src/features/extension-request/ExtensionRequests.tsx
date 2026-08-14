@@ -316,6 +316,7 @@ export function ExtensionRequests({ live, composerTextareaRef }: ExtensionReques
   const cancelRefs = useRef(new Map<string, HTMLButtonElement>());
   const activeRequestIdRef = useRef<string | null>(null);
   const firstRequestId = interactive[0]?.id ?? null;
+  const replyPending = runtime.extensionUiReplyPending;
 
   useLayoutEffect(() => {
     if (!gated) {
@@ -336,17 +337,21 @@ export function ExtensionRequests({ live, composerTextareaRef }: ExtensionReques
       return;
     }
     if (prevActive !== firstRequestId) {
-      // A request became the first/operable target (arrival or the previous one
-      // closed). Focus its safe Cancel control — never stolen on plain re-renders.
+      // Record the new operable identity immediately, even when the prior reply
+      // slot still disables its controls. The replyPending dependency below
+      // gives the safe control a second chance once that slot settles.
       activeRequestIdRef.current = firstRequestId;
-      cancelRefs.current.get(firstRequestId)?.focus();
     }
-  }, [firstRequestId, gated, runtime.sessionId, runtime.attached]);
+    const target = cancelRefs.current.get(firstRequestId);
+    if (target !== undefined && !target.disabled && (prevActive !== firstRequestId || document.activeElement === document.body)) {
+      // Focus a newly operable request, or recover focus that fell back to BODY
+      // while its controls were disabled. Never steal focus from another control.
+      target.focus();
+    }
+  }, [firstRequestId, gated, replyPending, runtime.sessionId, runtime.attached]);
 
   if (!gated) return null;
   if (interactive.length === 0 && noninteractive.length === 0) return null;
-
-  const replyPending = runtime.extensionUiReplyPending;
   const statusText = interactive.length === 0
     ? ""
     : replyPending
