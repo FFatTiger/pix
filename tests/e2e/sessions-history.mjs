@@ -15,6 +15,28 @@
  *   6. After sessiond goes down, the `sessions` token is retracted AND the
  *      read routes answer 503.
  *
+ * D1 WP-3 extensions (real stack, still zero-worker before the attach step):
+ *   7. GET /v1/sessions?limit=&offset= — deterministic newest-first ordering /
+ *      slicing plus byte-exact rejection (1e3, 0x, sign, decimal, whitespace,
+ *      leading-zero, out-of-range) as fixed 400 INVALID_QUERY.
+ *   8. GET context?leafId= — the Host forwards the leaf and the real stack
+ *      returns the selected visible branch (trunk vs side) with no leakage;
+ *      no Worker is spawned.
+ *   9. Session mutation contracts at the correct layer: the Host has no
+ *      mutation routes (read-only, D4) — none are invented here. Delete and
+ *      rename are exercised directly against the sessiond RPC seam this E2E
+ *      already owns. Delete removes the file and the subsequent Host read 404s.
+ *      Non-live rename is fixed-unavailable; LIVE rename is deliberately NOT
+ *      covered: it requires a Worker (set_session_name command) and would
+ *      broaden this slice past zero-worker, so only the non-live contract is
+ *      tested (per the WP-3 assignment).
+ *  10. A repeated list stays correct and spawns no Worker (no timing asserts).
+ *
+ * The branched/pagination fixtures are written as raw JSONL in exactly the
+ * shape the Pi SDK persists (verified byte-for-byte), because importing the Pi
+ * SDK here is forbidden by the architecture gate; the read-only catalog
+ * discovers and reads them with zero workers.
+ *
  * The temp PI_CODING_AGENT_DIR isolates the run from the user's ~/.pi. The
  * Continue-live worker is the same network-free fixture used by the runtime E2E.
  *
@@ -22,7 +44,7 @@
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,6 +120,66 @@ async function listChildPids(parentPid) {
 
 async function seedSession(projectCwd) {
   return seedSessionForTests({ cwd: projectCwd }).sessionId;
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic branched/linear JSONL fixtures (D1 WP-3).
+//
+// The architecture gate forbids importing the Pi SDK outside
+// packages/pi-sdk-adapter, so these fixtures are written here as raw JSONL in
+// exactly the shape the SDK persists (byte-for-byte verified against a real
+// SessionManager.create + appendMessage/branch). The read-only catalog
+// (SessionManager.listAll / open) discovers and reads them with zero workers,
+// and the file's current leaf (the last entry) drives the no-leafId context.
+// ---------------------------------------------------------------------------
+
+const FIXTURE_ENTRY_TS = "2026-08-14T02:07:15.450Z";
+
+/** Mirror the SDK session-dir encoding (getDefaultSessionDirPath). */
+function encodedSessionDir(agentDir, cwd) {
+  const resolvedAgentDir = resolve(agentDir);
+  const resolvedCwd = resolve(cwd);
+  const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+  return join(resolvedAgentDir, "sessions", safePath);
+}
+
+function fixtureMessage(id, parentId, role, text, timestamp) {
+  const message =
+    role === "assistant"
+      ? {
+          role,
+          content: [{ type: "text", text }],
+          api: "anthropic",
+          provider: "anthropic",
+          model: "e2e-model",
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } },
+          stopReason: "stop",
+          timestamp,
+        }
+      : { role, content: text, timestamp };
+  return JSON.stringify({ type: "message", id, parentId: parentId ?? null, timestamp: FIXTURE_ENTRY_TS, message });
+}
+
+/**
+ * Write a deterministic session JSONL file the read-only catalog will
+ * discover. `messages` is an ordered list of { id, parentId, role, text,
+ * timestamp }. Returns the absolute file path.
+ */
+async function writeSessionJsonl(agentDir, cwd, sessionId, messages) {
+  const dir = encodedSessionDir(agentDir, cwd);
+  await mkdir(dir, { recursive: true });
+  const file = join(dir, `${FIXTURE_ENTRY_TS}_${sessionId}.jsonl`);
+  const header = JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: FIXTURE_ENTRY_TS, cwd: resolve(cwd) });
+  await writeFile(file, [header, ...messages.map((m) => fixtureMessage(m.id, m.parentId, m.role, m.text, m.timestamp))].join("\n") + "\n");
+  return file;
+}
+
+/** Extract the display text of a catalog context entry's message. */
+function messageText(entry) {
+  const content = entry?.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map((block) => (typeof block?.text === "string" ? block.text : "")).join("");
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +321,43 @@ async function main() {
     const seeded = (await listSeededSessionIdsForTests()).includes(sessionId);
     assert.equal(seeded, true, "seeded JSONL must be visible to the read-only catalog");
 
+    // D1 WP-3 fixtures: deterministic pagination + branched sessions written
+    // BEFORE the stack boots so the catalog's first scan sees the whole pool.
+    // Timestamps are captured after the seeded session's own messages, so the
+    // list ordering (newest first) is deterministic:
+    //   P1 > P2 > P3 > P4 > BRANCH > seeded
+    const FIXTURE_P1 = "e2e-page-0001";
+    const FIXTURE_P2 = "e2e-page-0002";
+    const FIXTURE_P3 = "e2e-page-0003";
+    const FIXTURE_P4 = "e2e-page-0004";
+    const FIXTURE_BRANCH = "e2e-branch-0001";
+    const FIXTURE_BRANCH_E1 = "branch-root-01";
+    const FIXTURE_BRANCH_E2 = "branch-trunk-02";
+    const FIXTURE_BRANCH_E3 = "branch-trunk-03";
+    const FIXTURE_BRANCH_E4 = "branch-trunk-04";
+    const FIXTURE_BRANCH_E5 = "branch-side-05";
+    const FIXTURE_BRANCH_E6 = "branch-side-06";
+    const FIXTURE_BRANCH_MAIN_LEAF = FIXTURE_BRANCH_E4;
+    const FIXTURE_BRANCH_SIDE_LEAF = FIXTURE_BRANCH_E6;
+    const BASE = Date.now();
+    const linearPair = (id, ts) => [
+      { id: `${id}-m1`, parentId: null, role: "user", text: `${id} q1`, timestamp: ts },
+      { id: `${id}-m2`, parentId: `${id}-m1`, role: "assistant", text: `${id} a1`, timestamp: ts + 1 },
+    ];
+    for (const [id, offset] of [[FIXTURE_P1, 5000], [FIXTURE_P2, 4000], [FIXTURE_P3, 3000], [FIXTURE_P4, 2000]]) {
+      await writeSessionJsonl(agentDir, projectCwd, id, linearPair(id, BASE + offset));
+    }
+    // Branched session: trunk root→E1→E2→E3→E4 and a side branch root→E1→E5→E6.
+    const branchTs = BASE + 1000;
+    await writeSessionJsonl(agentDir, projectCwd, FIXTURE_BRANCH, [
+      { id: FIXTURE_BRANCH_E1, parentId: null, role: "user", text: "main q1", timestamp: branchTs },
+      { id: FIXTURE_BRANCH_E2, parentId: FIXTURE_BRANCH_E1, role: "assistant", text: "main a1", timestamp: branchTs + 1 },
+      { id: FIXTURE_BRANCH_E3, parentId: FIXTURE_BRANCH_E2, role: "user", text: "main q2", timestamp: branchTs + 2 },
+      { id: FIXTURE_BRANCH_E4, parentId: FIXTURE_BRANCH_E3, role: "assistant", text: "main a2", timestamp: branchTs + 3 },
+      { id: FIXTURE_BRANCH_E5, parentId: FIXTURE_BRANCH_E1, role: "user", text: "branch q1", timestamp: branchTs + 4 },
+      { id: FIXTURE_BRANCH_E6, parentId: FIXTURE_BRANCH_E5, role: "assistant", text: "branch a1", timestamp: branchTs + 5 },
+    ]);
+
     stack = await bootStack({ agentDir, sessiondDir, projectCwd });
     const rpc = new SessiondRpcClient({ endpoint: stack.daemon.endpoint, secret: stack.daemon.secret, timeoutMs: 5_000 });
     const get = (path) => fetch(`${stack.origin}${path}`).then(async (r) => ({ status: r.status, body: r.status === 204 ? null : await r.json().catch(() => null) }));
@@ -261,6 +380,113 @@ async function main() {
     assert.equal(context.status, 200);
     assert.equal(context.body.context.sessionId, sessionId);
     assert.ok(context.body.context.entries.length >= 2, "context must map seeded entries");
+
+    // 2b. D1 WP-3 pagination: happy ordering/slice + strict invalid 400s.
+    const idsOf = (res) => res.body.sessions.map((s) => s.sessionId);
+    const fullOrder = [FIXTURE_P1, FIXTURE_P2, FIXTURE_P3, FIXTURE_P4, FIXTURE_BRANCH, sessionId];
+    const page0 = await get("/v1/sessions?limit=2&offset=0");
+    assert.equal(page0.status, 200);
+    assert.deepEqual(idsOf(page0), [FIXTURE_P1, FIXTURE_P2], "limit=2&offset=0 must return the two newest in order");
+    const page1 = await get("/v1/sessions?limit=2&offset=1");
+    assert.equal(page1.status, 200);
+    assert.deepEqual(idsOf(page1), [FIXTURE_P2, FIXTURE_P3], "limit=2&offset=1 must skip one then take two");
+    const page3 = await get("/v1/sessions?limit=3&offset=3");
+    assert.equal(page3.status, 200);
+    assert.deepEqual(idsOf(page3), [FIXTURE_P4, FIXTURE_BRANCH, sessionId], "limit=3&offset=3 must take the tail");
+    const tail = await get("/v1/sessions?offset=5");
+    assert.equal(tail.status, 200);
+    assert.deepEqual(idsOf(tail), [sessionId], "offset=5 must leave the oldest only");
+    const one = await get("/v1/sessions?limit=1&offset=5");
+    assert.equal(one.status, 200);
+    assert.deepEqual(idsOf(one), [sessionId], "limit=1&offset=5 must take the oldest");
+    const all = await get("/v1/sessions?limit=1000&offset=0");
+    assert.equal(all.status, 200);
+    assert.deepEqual(idsOf(all), fullOrder, "limit=1000 must return the whole pool in newest-first order");
+    // Boundary-valid values stay 200.
+    for (const q of ["limit=1", "limit=1000", "offset=0", "offset=100000", "limit=1&offset=100000"]) {
+      const res = await get(`/v1/sessions?${q}`);
+      assert.equal(res.status, 200, `boundary query ${q} must be accepted`);
+    }
+    // Strict invalid values → fixed 400 INVALID_QUERY (byte-exact, no coercion).
+    for (const q of [
+      "limit=1e3", "limit=0x10", "limit=%2B5", "limit=-5", "limit=5.5",
+      "limit=%205", "limit=5%20", "limit=05", "limit=0", "limit=1001",
+      "offset=-1", "offset=1e3", "offset=0x1", "offset=05", "offset=100001",
+    ]) {
+      const res = await get(`/v1/sessions?${q}`);
+      assert.equal(res.status, 400, `query ${q} must be a strict 400`);
+      assert.equal(res.body.code, "INVALID_QUERY", `query ${q} must report INVALID_QUERY`);
+    }
+
+    // 2c. D1 WP-3 GET context with leafId: the Host forwards the leaf and the
+    //     real stack returns the selected visible branch, with no Worker.
+    const ctxMain = await get(`/v1/sessions/${FIXTURE_BRANCH}/context?leafId=${FIXTURE_BRANCH_MAIN_LEAF}`);
+    assert.equal(ctxMain.status, 200);
+    assert.equal(ctxMain.body.context.sessionId, FIXTURE_BRANCH);
+    assert.equal(ctxMain.body.context.leafId, FIXTURE_BRANCH_MAIN_LEAF, "context must echo the requested leafId");
+    assert.deepEqual(ctxMain.body.context.entries.map((e) => e.entryId), [FIXTURE_BRANCH_E1, FIXTURE_BRANCH_E2, FIXTURE_BRANCH_E3, FIXTURE_BRANCH_E4]);
+    assert.deepEqual(ctxMain.body.context.entries.map(messageText), ["main q1", "main a1", "main q2", "main a2"]);
+    const ctxSide = await get(`/v1/sessions/${FIXTURE_BRANCH}/context?leafId=${FIXTURE_BRANCH_SIDE_LEAF}`);
+    assert.equal(ctxSide.status, 200);
+    assert.equal(ctxSide.body.context.leafId, FIXTURE_BRANCH_SIDE_LEAF, "context must echo the requested side leafId");
+    assert.deepEqual(ctxSide.body.context.entries.map((e) => e.entryId), [FIXTURE_BRANCH_E1, FIXTURE_BRANCH_E5, FIXTURE_BRANCH_E6]);
+    assert.deepEqual(ctxSide.body.context.entries.map(messageText), ["main q1", "branch q1", "branch a1"]);
+    // No cross-branch leakage: each visible branch excludes the other's entries.
+    assert.ok(!JSON.stringify(ctxMain.body.context.entries).includes("branch q1"), "main-branch context must not leak side-branch entries");
+    assert.ok(!JSON.stringify(ctxSide.body.context.entries).includes("main q2"), "side-branch context must not leak main-branch entries");
+    // No leafId → the file's current leaf (the side branch, last entry).
+    const ctxDefault = await get(`/v1/sessions/${FIXTURE_BRANCH}/context`);
+    assert.equal(ctxDefault.status, 200);
+    assert.equal(ctxDefault.body.context.leafId, FIXTURE_BRANCH_SIDE_LEAF, "no-leafId context must follow the file's current leaf");
+    assert.deepEqual(ctxDefault.body.context.entries.map((e) => e.entryId), [FIXTURE_BRANCH_E1, FIXTURE_BRANCH_E5, FIXTURE_BRANCH_E6]);
+    const runningAfterLeaf = await rpc.call("runtime.listRunning", {});
+    assert.deepEqual(runningAfterLeaf.sessions, [], "leafId context reads must not start a worker");
+
+    // 2d. D1 WP-3 session mutation contracts at the correct layer. The Host
+    //     exposes no mutation routes (read-only by design, D4) — do not invent
+    //     any. These are exercised against the sessiond RPC seam this E2E
+    //     already owns. Non-live rename is fixed-unavailable (M1 ships no
+    //     mutation backend); live rename requires a Worker (set_session_name
+    //     command) and is deliberately NOT exercised here — this slice stays
+    //     zero-worker, so only the non-live contract is covered.
+    try {
+      await rpc.call("sessions.rename", { sessionId, name: "renamed" });
+      assert.fail("non-live rename must be unavailable");
+    } catch (error) {
+      assert.equal(error.code, "unavailable", "non-live rename must surface code unavailable");
+    }
+    const deleteGhost = "nonexistent-delete-00000000-deadbeef";
+    try {
+      await rpc.call("sessions.delete", { sessionId: deleteGhost });
+      assert.fail("delete of a missing session must reject");
+    } catch (error) {
+      assert.equal(error.code, "not_found", "delete of a missing session must surface not_found");
+    }
+    // Delete removes the file, drops the session from the list, and the Host
+    // read path answers 404 SESSION_NOT_FOUND afterward.
+    const branchBefore = await get(`/v1/sessions/${FIXTURE_BRANCH}`);
+    assert.equal(branchBefore.status, 200);
+    const branchFile = branchBefore.body.session.sessionFile;
+    assert.equal(existsSync(branchFile), true, "branch session file must exist before delete");
+    const deleted = await rpc.call("sessions.delete", { sessionId: FIXTURE_BRANCH });
+    assert.deepEqual(deleted, { sessionId: FIXTURE_BRANCH, deleted: true });
+    assert.equal(existsSync(branchFile), false, "delete must remove the session file");
+    const branchAfter = await get(`/v1/sessions/${FIXTURE_BRANCH}`);
+    assert.equal(branchAfter.status, 404, "deleted session read must be 404");
+    assert.equal(branchAfter.body.code, "SESSION_NOT_FOUND");
+    const listAfterDelete = await get("/v1/sessions");
+    assert.ok(!listAfterDelete.body.sessions.some((s) => s.sessionId === FIXTURE_BRANCH), "deleted session must vanish from the list");
+
+    // 2e. D1 WP-3 repeated list at the real stack: a second list stays correct
+    //     and spawns no Worker (no machine-timing assertions).
+    const againA = await get("/v1/sessions");
+    const againB = await get("/v1/sessions");
+    assert.equal(againA.status, 200);
+    assert.equal(againB.status, 200);
+    assert.deepEqual(idsOf(againA), idsOf(againB), "repeated list must be stable and correct");
+    assert.deepEqual(idsOf(againA), [FIXTURE_P1, FIXTURE_P2, FIXTURE_P3, FIXTURE_P4, sessionId], "repeated list must reflect the post-delete pool in order");
+    const runningAfterRepeat = await rpc.call("runtime.listRunning", {});
+    assert.deepEqual(runningAfterRepeat.sessions, [], "a repeated list must not start a worker");
 
     // 3. No worker after reads: runtime.listRunning empty + no worker children.
     const runningAfterReads = await rpc.call("runtime.listRunning", {});
