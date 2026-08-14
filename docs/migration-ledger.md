@@ -749,7 +749,7 @@ WP3：仅扩 `tests/e2e/sessions-history.mjs`，覆盖limit/offset严格十进�
 ## 38. D3A-P0 — 可持久化 Trusted-Roots Ledger 记录
 
 ```text
-实现：`dfb1759`（branch feat/d3a-p0-ledger-final，base main 811c94e），Fresh GPT 独立验证 PASS。本项为 D3A-P0「可持久化受信根」最终实现：把原先仅存于内存的 Host 创建 worktree 受信根 claim 持久化为 host 目录下的受信根账本，Host 重启后恢复文件授权；绝不扫描/导入任意既有 Git worktree。
+实现：`dfb1759`（branch feat/d3a-p0-ledger-final，base main 811c94e），已 cherry-pick 至 main `f7c9a80`；Fresh GPT 独立验证 PASS。本项为 D3A-P0「可持久化受信根」最终实现：把原先仅存于内存的 Host 创建 worktree 受信根 claim 持久化为 host 目录下的受信根账本，Host 重启后恢复文件授权；绝不扫描/导入任意既有 Git worktree。
 
 父架构/安全决策（必须实现）：
 1) 严格单 Host per PIX_HOST_DIR：openTrustedRootsLedger 在 listen 前获取排它「生命周期」host-dir 锁（O_EXCL 0600，{pid,instanceId,createdAt}），持有至优雅关闭 close()。任何既有锁（存活 OR stale）都以固定 sanitized 错误拒绝启动，绝无自动 stale 回收；SIGKILL 遗留 stale 锁时下次启动 fail closed 且不动账本，operator/test 可在证明旧 pid 已死后显式删除 fixture 锁；close() 只删除自身精确锁身份（dev/ino + instanceId），错误 instance 无法解锁他人目录。
@@ -797,5 +797,5 @@ WP3：仅扩 `tests/e2e/sessions-history.mjs`，覆盖limit/offset严格十进�
 - production fresh boot会写出合法空ledger，而非等首个claim才创建；无安全影响。
 - macOS含symlink路径组件（如`/var`）的PIX_HOST_DIR会严格拒绝，部署应使用realpath。
 - 既有 `WORKTREE_CREATE_FAILED` 仍可能携带raw git stderr，这是base既有问题，本分支只收紧rollback日志，后续单独sanitize。
-- 未部署；合入 main 状态由本段后续记录。
+- 已合入 main `f7c9a80`；未部署，当前 `test-pi.huu.im` 与 live host/sessiond 状态未触碰。
 ```
