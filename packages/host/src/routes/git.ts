@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, stat } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Hono } from "hono";
 import type { HostEnv } from "../env.js";
@@ -46,7 +46,14 @@ function gitPath(value: string): string { return value.split(sep).join("/"); }
 
 async function repositoryRoot(runner: ProcessRunner, cwd: string, max: number): Promise<string | null> {
   const result = await runner.run({ command: "git", args: ["-C", cwd, "rev-parse", "--show-toplevel"], maxOutputBytes: max }).catch(() => null);
-  return result?.exitCode === 0 ? result.stdout.trim() || null : null;
+  if (result?.exitCode !== 0) return null;
+  const reported = result.stdout.trim();
+  if (!reported) return null;
+  try {
+    return await realpath(reported);
+  } catch {
+    return null;
+  }
 }
 
 async function statusEntries(runner: ProcessRunner, root: string, max: number): Promise<PorcelainEntry[]> {

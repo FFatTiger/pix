@@ -294,6 +294,38 @@ test("git status/diff are repo-contained and handle untracked patches", async ()
   const denied = await app.request(`http://localhost/v1/git/diff?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(join(root, "..", "escape"))}`, { headers: headers() }); assert.equal(denied.status, 403);
 });
 
+test("git repository root is canonicalized before authorization and path arithmetic", async () => {
+  const root = temp("pi-git-root-real-");
+  const aliasParent = temp("pi-git-root-alias-");
+  const alias = join(aliasParent, "repo-link");
+  symlinkSync(root, alias, "dir");
+  const canonicalRoot = realpathSync(root);
+  const allowedRoots = await createAllowedRootService({ roots: [root] });
+  const calls = [];
+  const processRunner = {
+    async run(request) {
+      calls.push(request);
+      if (request.args.includes("--show-toplevel")) {
+        return { stdout: `${alias}\n`, stderr: "", exitCode: 0, truncated: false };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, truncated: false };
+    },
+  };
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, processRunner } }).app;
+  const response = await app.request(
+    `http://localhost/v1/git/status?cwd=${encodeURIComponent(root)}`,
+    { headers: headers() },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.isGitRepository, true);
+  assert.equal(body.repositoryRoot, canonicalRoot);
+  const downstreamCwds = calls
+    .filter((request) => !request.args.includes("--show-toplevel"))
+    .map((request) => request.args[1]);
+  assert.deepEqual(downstreamCwds, [canonicalRoot, canonicalRoot]);
+});
+
 test("git diff returns rename metadata for a pure staged rename", async () => {
   const { root, app } = await fixture(); initRepo(root);
   git(root, ["mv", "tracked.txt", "renamed.txt"]);
