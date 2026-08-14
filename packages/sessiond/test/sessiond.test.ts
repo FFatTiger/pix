@@ -869,6 +869,31 @@ const toolsSnapshot = (sessionId: string, cwd = "/workspace", projectRoot = cwd)
 const activeToolNames = (state: RuntimeSnapshot["state"]): string[] =>
   (state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
 
+/**
+ * A post-conversation authoritative snapshot: 5 messages, non-zero context
+ * usage, idle compaction. The fake worker's `compact` mutation trims messages
+ * to the last 3, drops messageCount to 3 and shrinks contextUsage so the
+ * post-success worker.getSnapshot refresh can be asserted to converge ALL
+ * post-compaction fields (the wire compaction_end event only clears activity).
+ */
+const compactSnapshot = (sessionId: string, cwd = "/workspace", projectRoot = cwd): RuntimeSnapshot => ({
+  ...snapshot(sessionId, cwd, projectRoot),
+  state: {
+    ...snapshot(sessionId, cwd, projectRoot).state,
+    messageCount: 5,
+    contextUsage: { percent: 72, contextWindow: 200_000, tokens: 144_000 },
+  },
+  messages: [
+    { role: "user", content: "m1" },
+    { role: "user", content: "m2" },
+    { role: "user", content: "m3" },
+    { role: "user", content: "m4" },
+    { role: "user", content: "m5" },
+  ],
+});
+
+
+
 test("set_tools success refreshes authoritative snapshot before command returns (D2-P6)", async () => {
   const { service, workers } = harness({ worker: { snapshot: toolsSnapshot("s") } });
   await service.activate("s");
@@ -1076,6 +1101,312 @@ test("reload refresh failure fail-closes all observers and cached retry", async 
     assert.equal(a.result.error.code, "unavailable");
     assert.match(a.result.error.message, /snapshot|authority|timed out/i);
   }
+  await service.shutdown();
+});
+
+test("compact success refreshes authoritative snapshot with trimmed messages/contextUsage before command returns (D2-P7)", async () => {
+  const { service, workers } = harness({ worker: { snapshot: compactSnapshot("s") } });
+  await service.activate("s");
+  const before = service.getSnapshot("s");
+  assert.equal(before.state.messageCount, 5);
+  assert.equal(before.state.contextUsage?.percent, 72);
+  assert.equal((before.messages ?? []).length, 5);
+  const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const result = await service.command("s", { type: "compact", commandId: "compact-1", customInstructions: "keep decisions" });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "compact");
+
+  // sessiond must issue a post-success worker.getSnapshot refresh so the
+  // projection converges the FULL post-compaction snapshot (messages,
+  // messageCount, contextUsage) BEFORE the terminal result is released — the
+  // compaction_end event alone only clears activity.
+  const snapshotsAfter = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.ok(snapshotsAfter > snapshotsBefore, "expected post-success worker.getSnapshot refresh after compact");
+
+  const snap = service.getSnapshot("s");
+  assert.equal(snap.state.messageCount, 3, JSON.stringify(snap.state));
+  assert.equal(snap.state.isCompacting, false);
+  assert.equal((snap.messages ?? []).length, 3, "messages must converge to the trimmed history");
+  assert.equal(snap.state.contextUsage?.percent, 32, JSON.stringify(snap.state.contextUsage));
+  assert.equal(snap.state.contextUsage?.tokens, 143_600);
+
+  // Attach boundary also carries the post-compaction projection.
+  const attach = service.attach({ sessionId: "s" });
+  assert.equal(attach.result.snapshot!.state.messageCount, 3);
+  assert.equal((attach.result.snapshot!.messages ?? []).length, 3);
+  await service.shutdown();
+});
+
+test("compact same-id second caller waits for deferred authority refresh with one worker.command", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: compactSnapshot("s"), postCommandSnapshotDelayMs: 80 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "compact" as const, commandId: "compact-same", customInstructions: "keep decisions" };
+
+  const first = service.command("s", command);
+  await wait(30);
+  let firstSettled = false;
+  void first.then(() => { firstSettled = true; });
+  await wait(0);
+  assert.equal(firstSettled, false, "original caller must not settle while refresh is deferred");
+
+  const second = service.command("s", command);
+  let secondSettled = false;
+  void second.then(() => { secondSettled = true; });
+  await wait(20);
+  assert.equal(firstSettled, false);
+  assert.equal(secondSettled, false, "same-id caller must join finalization, not settle early");
+
+  const workerCommands = worker.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 1, "exactly one worker.command for same compact commandId");
+
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.deepEqual(a, b);
+  assert.equal(service.getSnapshot("s").state.messageCount, 3);
+  await service.shutdown();
+});
+
+test("compact refresh failure fail-closes all observers and cached retry", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: compactSnapshot("s"), dropPostCommandSnapshots: true },
+    service: { commandTimeoutMs: 80 },
+  });
+  await service.activate("s");
+  const command = { type: "compact" as const, commandId: "compact-fail" };
+
+  const first = service.command("s", command);
+  await wait(10);
+  const second = service.command("s", command);
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, false);
+  assert.equal(b.result.ok, false);
+  assert.equal(a.result.type, "compact");
+  assert.equal(b.result.type, "compact");
+  assert.equal(a.commandId, "compact-fail");
+  assert.deepEqual(a, b);
+  if (!a.result.ok) {
+    assert.equal(a.result.error.code, "unavailable");
+    assert.match(a.result.error.message, /snapshot|authority|timed out/i);
+  }
+
+  // Projection must NOT claim a compacted (trimmed) state after fail-closed
+  // authority refresh: messageCount stays the pre-command authoritative value.
+  assert.equal(service.getSnapshot("s").state.messageCount, 5, "projection must not claim the failed compaction");
+
+  const commandsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length;
+  const snapshotsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, a);
+  assert.equal(retry.result.ok, false);
+  assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length, commandsBeforeRetry, "cached failure must not re-send worker.command");
+  assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsBeforeRetry, "cached failure must not re-refresh snapshot");
+  await service.shutdown();
+});
+
+test("compact vs set_tools/reload different ids remain independent", async () => {
+  const { service, workers } = harness({ worker: { snapshot: compactSnapshot("s") } });
+  await service.activate("s");
+  const [a, b, c] = await Promise.all([
+    service.command("s", { type: "compact", commandId: "compact-a" }),
+    service.command("s", { type: "set_tools", commandId: "tools-b", toolNames: ["read"] }),
+    service.command("s", { type: "reload", commandId: "reload-c" }),
+  ]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.equal(c.result.ok, true);
+  assert.equal(a.commandId, "compact-a");
+  assert.equal(b.commandId, "tools-b");
+  assert.equal(c.commandId, "reload-c");
+  const workerCommands = workers.workers[0]!.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 3);
+  await service.shutdown();
+});
+
+test("compact wrong result type does not finalize; legitimate frame completes once", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: compactSnapshot("s"), commandDelayMs: 80 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "compact" as const, commandId: "compact-wrongtype" };
+
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+  const wireId = wire.id;
+
+  // Correct wire id + inner commandId but WRONG result type — triple match fails,
+  // so no finalization, no cache, no resolve: the waiter keeps waiting.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wireId,
+    payload: {
+      sessionId: "s",
+      result: { commandId: command.commandId, result: { ok: true, type: "set_tools" } },
+    },
+  });
+  await wait(10);
+  const snapshotsDuring = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  let settled = false;
+  void pending.then(() => { settled = true; });
+  await wait(0);
+  assert.equal(settled, false, "wrong result type must not resolve or start finalization");
+
+  const result = await pending;
+  assert.equal(result.commandId, "compact-wrongtype");
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "compact");
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, 1);
+  // The legitimate frame triggered exactly one post-success refresh.
+  assert.equal(worker.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsDuring + 1);
+  assert.equal(service.getSnapshot("s").state.messageCount, 3);
+  await service.shutdown();
+});
+
+test("failed/interrupted compact does not trigger authority refresh or cache a false success", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: compactSnapshot("s"), commandDelayMs: 80 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "compact" as const, commandId: "compact-interrupted" };
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+  const snapshotsBefore = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  // The worker answers the compact as FAILED (e.g. aborted / nothing to compact)
+  // — this must NOT enter authority finalization, must NOT refresh, and must
+  // cache the failure (retry returns the same failure without re-executing). The
+  // fake worker's delayed default success is a LATE frame and must be dropped.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: { commandId: command.commandId, result: { ok: false, type: "compact", error: { code: "interrupted", message: "compaction aborted", retryable: true } } },
+    },
+  });
+  const result = await pending;
+  assert.equal(result.result.ok, false);
+  if (!result.result.ok) {
+    assert.equal(result.result.type, "compact");
+    assert.equal(result.result.error.code, "interrupted");
+  }
+  assert.equal(worker.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsBefore, "failed compact must NOT trigger an authority snapshot refresh");
+  // Projection stays at the pre-command state (no trimmed claim).
+  assert.equal(service.getSnapshot("s").state.messageCount, 5);
+
+  // Same commandId retry returns the CACHED failure and never re-executes.
+  const commandsBeforeRetry = worker.sent.filter((item) => item.type === "worker.command").length;
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, result);
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, commandsBeforeRetry, "cached interrupted compact must not re-execute");
+  await service.shutdown();
+});
+
+test("compact finalization during rekey never writes across epochs and new session can re-admit", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: compactSnapshot("s"), postCommandSnapshotDelayMs: 200 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "compact" as const, commandId: "compact-rekey" };
+
+  const pending = service.command("s", command);
+  // Wait until finalization is registered (post-success refresh in flight).
+  await wait(30);
+  worker.emit({ type: "worker.sessionDiscovered", payload: { sessionId: "real-s", sessionFile: "/sessions/real-s.jsonl", cwd: "/cwd/s" } });
+  await wait(10);
+
+  const result = await pending;
+  assert.equal(result.commandId, "compact-rekey");
+  assert.equal(result.result.ok, false);
+  if (!result.result.ok) assert.equal(result.result.error.code, "unavailable");
+
+  // Old id is gone; rekeyed record must not carry the fail-closed result across epoch.
+  assert.throws(() => service.getSnapshot("s"));
+  assert.equal(service.getSnapshot("real-s").state.messageCount, 5, "no cross-epoch compaction write");
+
+  // Same commandId can be re-admitted in the new epoch (acceptedCommands cleared).
+  // The fake worker's liveSnapshot is already trimmed to 3 by the first compact,
+  // so the re-admitted compact trims again — the key contract is that the
+  // re-admission SUCCEEDS (not carrying the fail-closed cache) and the projection
+  // is authoritative (trimmed below the pre-command 5).
+  const readmitted = await service.command("real-s", command);
+  assert.equal(readmitted.result.ok, true);
+  assert.ok(service.getSnapshot("real-s").state.messageCount < 5, "re-admitted compact must trim the authoritative snapshot");
+  await service.shutdown();
+});
+
+test("compact successful finalization cleans singleflight when worker crashes before its first microtask", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: compactSnapshot("s"), commandDelayMs: 5_000 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "compact" as const, commandId: "compact-early-crash" };
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+
+  // Deliver a valid worker success (registers authority finalization), then crash
+  // synchronously before its deferred body runs. The final result must be bounded
+  // and the singleflight must not remain as permanent busy state.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: { commandId: command.commandId, result: { ok: true, type: "compact" } },
+    },
+  });
+  worker.crash();
+
+  const result = await pending;
+  assert.equal(result.commandId, command.commandId);
+  assert.equal(result.result.ok, false);
+  assert.equal(result.result.type, "compact");
+  if (!result.result.ok) assert.equal(result.result.error.code, "unavailable");
+  await wait(0);
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, false, "settled finalization must be removed after early crash");
+  await service.shutdown();
+});
+
+test("compaction_end before compact success still converges the full post-compaction snapshot", async () => {
+  const { service, workers } = harness({ worker: { snapshot: compactSnapshot("s"), commandDelayMs: 60 } });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "compact" as const, commandId: "compact-event-before" };
+  const pending = service.command("s", command);
+  await wait(10);
+  // A compaction_start/end pair arrives on the wire BEFORE the command result:
+  // compaction_end only clears activity and does NOT carry messages/messageCount/
+  // contextUsage. The projection must therefore still converge the FULL snapshot
+  // via the post-success worker.getSnapshot refresh before the terminal result.
+  worker.emitEvent({ type: "compaction_start", sessionId: "s", reason: "manual" });
+  worker.emitEvent({ type: "compaction_end", sessionId: "s", aborted: false });
+  await wait(10);
+  const result = await pending;
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "compact");
+  const snap = service.getSnapshot("s");
+  assert.equal(snap.state.isCompacting, false);
+  assert.equal(snap.state.messageCount, 3, "snapshot must converge messageCount after compact (not the event)");
+  assert.equal((snap.messages ?? []).length, 3, "snapshot must converge the trimmed history after compact");
+  assert.equal(snap.state.contextUsage?.percent, 32, "snapshot must converge contextUsage after compact");
   await service.shutdown();
 });
 

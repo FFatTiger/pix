@@ -421,3 +421,56 @@ describe("RuntimeProvider — D2-P6 getTools/setTools/reload exposure", () => {
     expect(reloadSettled).toBe(true);
   });
 });
+
+describe("RuntimeProvider — D2-P7 compact/abortCompaction exposure", () => {
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("exposes compact and abortCompaction on the RuntimeApi", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    expect(typeof exposed.compact).toBe("function");
+    expect(typeof exposed.abortCompaction).toBe("function");
+  });
+
+  it("compact sends an exact compact command and abortCompaction an exact abort_compaction interrupt", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    const ws = await driveReady();
+    const store = capturedStore!;
+    await act(async () => {
+      void store.openSession("s1");
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.compact", "runtime.compact.abort"] }) });
+      await flush();
+    });
+
+    let compactSettled = false;
+    const compactP = exposed.compact("keep decisions");
+    compactP.then(() => { compactSettled = true; }, () => {});
+    await flush();
+    const compactCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; customInstructions?: string } } }>(ws, "command")!;
+    expect(compactCmd.payload.command.type).toBe("compact");
+    expect(compactCmd.payload.command.customInstructions).toBe("keep decisions");
+    await serverSend(ws, { type: "response", id: compactCmd.id, payload: { ok: true, result: { commandId: compactCmd.payload.command.commandId, result: { ok: true, type: "compact" } } } });
+    expect(compactSettled).toBe(true);
+
+    let abortSettled = false;
+    const abortP = exposed.abortCompaction();
+    abortP.then(() => { abortSettled = true; }, () => {});
+    await flush();
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
+    expect(intr.payload.interrupt.type).toBe("abort_compaction");
+    await serverSend(ws, { type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort_compaction", result: { ok: true, type: "abort_compaction" } } });
+    expect(abortSettled).toBe(true);
+  });
+});

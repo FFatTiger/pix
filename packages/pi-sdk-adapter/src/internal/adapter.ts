@@ -184,7 +184,25 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           this.emitState();
           return { ok: true, type: "set_thinking_level" };
         }
-        case "compact":
+        case "compact": {
+          // Defensive compact busy guard (D2-P7) BEFORE any state mutation or
+          // SDK call: a manual compact must never overlap a live prompt stream,
+          // a running bash command, or an already-running compaction (real or
+          // adapter-local). The real SDK auto-aborts a prompt / overlaps bash on
+          // a direct wire compact, so the canonical boundary rejects first with
+          // a structured session_busy and leaves NO partial compaction state or
+          // event behind.
+          const driverState = this.driver.getState();
+          if (
+            driverState.isStreaming ||
+            driverState.isBashRunning ||
+            driverState.isCompacting ||
+            this.promptRunning ||
+            this.bash !== null ||
+            this.compaction !== null
+          ) {
+            return this.failure("compact", makeRuntimeError("session_busy", "a prompt, bash command, or compaction is already in progress", { retryable: true }));
+          }
           this.compaction = {
             reason: "manual",
             status: "running",
@@ -193,8 +211,18 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
               : { customInstructions: command.customInstructions }),
             startedAt: Date.now(),
           };
-          await this.driver.compact(command.customInstructions);
-          return { ok: true, type: "compact" };
+          try {
+            await this.driver.compact(command.customInstructions);
+            return { ok: true, type: "compact" };
+          } finally {
+            // The real SDK emits compaction_end on success/abort (clearing
+            // this.compaction via handleDriverEvent). When it does not (a
+            // thrown failure before any event, or a no-event settle), clear the
+            // local running marker so the snapshot never claims a pending
+            // compaction. isCompacting stays governed by the real driver state.
+            if (this.compaction?.status === "running") this.compaction = null;
+          }
+        }
         case "set_session_name": {
           if (typeof command.name !== "string" || !command.name.trim()) {
             return this.failure(command.type, makeRuntimeError("invalid_input", "session name must be a non-empty string"));

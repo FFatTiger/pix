@@ -41,10 +41,10 @@ const HOST_START_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 8_000;
 const ROUNDS = Math.max(1, Number(process.env.PIX_E2E_ROUNDS ?? "1") || 1);
 
-// D2-P6 production capability surface (14 tokens): the exact set the attach
+// D2-P7 production capability surface (16 tokens): the exact set the attach
 // snapshot must carry. Updating this constant keeps every scenario honest about
-// what is open (bash pair + tools read/write + reload) vs still closed
-// (compact/fork/auto_name/extension UI/navigate).
+// what is open (bash pair + tools read/write + reload + manual-compact pair)
+// vs still closed (fork/auto_name/extension UI/navigate).
 const PRODUCTION_CAPS = [
   "runtime.prompt",
   "runtime.abort",
@@ -60,6 +60,8 @@ const PRODUCTION_CAPS = [
   "runtime.tools.read",
   "runtime.tools.write",
   "runtime.reload",
+  "runtime.compact",
+  "runtime.compact.abort",
 ];
 
 // In-memory registry of sessions created through the E2E client, backing both
@@ -1324,11 +1326,12 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
 
     // Closed capabilities must remain unsupported on the production surface.
     // Note: clear_queue is an interrupt-only wire type (cannot go via command
-    // envelope). set_model (D2-P3), queue (D2-P4), bash pair (D2-P5) and
-    // tools/reload (D2-P6) are now open; compact/fork/auto_name stay closed.
+    // envelope). set_model (D2-P3), queue (D2-P4), bash pair (D2-P5),
+    // tools/reload (D2-P6) and the manual-compact pair (D2-P7) are now open;
+    // fork/navigate/auto_name stay closed.
     for (const [type, extra, token] of [
-      ["compact", {}, "runtime.compact"],
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, {
@@ -1461,10 +1464,11 @@ async function scenarioD2P4QueueControl(stack, projectDir) {
       version: 1,
     });
 
-    // Closed caps still unsupported: compact/fork/auto_name (queue is now open).
+    // Closed caps still unsupported: fork/navigate/auto_name (queue and the
+    // manual-compact pair are now open).
     for (const [type, extra, token] of [
-      ["compact", {}, "runtime.compact"],
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `queue-closed-${type}-${Date.now()}`, type, ...extra });
@@ -1606,11 +1610,11 @@ async function scenarioD2P5BashControl(stack, projectDir) {
       version: 1,
     });
 
-    // 4. Closed caps still unsupported: compact/fork/auto_name (tools/reload
-    //    pair is now OPEN — D2-P6).
+    // 4. Closed caps still unsupported: fork/navigate/auto_name (tools/reload
+    //    pair and the manual-compact pair are now OPEN — D2-P6/D2-P7).
     for (const [type, extra, token] of [
-      ["compact", {}, "runtime.compact"],
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `bash-closed-${type}-${Date.now()}`, type, ...extra });
@@ -1749,10 +1753,11 @@ async function scenarioD2P6ToolsReload(stack, projectDir) {
       version: reloadCapVersion,
     });
 
-    // 7. Closed caps remain unsupported: compact/fork/auto_name.
+    // 7. Closed caps remain unsupported: fork/navigate/auto_name (the
+    //    manual-compact pair is now OPEN — D2-P7).
     for (const [type, extra, token] of [
-      ["compact", {}, "runtime.compact"],
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `tools-closed-${type}-${Date.now()}`, type, ...extra });
@@ -1764,6 +1769,217 @@ async function scenarioD2P6ToolsReload(stack, projectDir) {
     }
 
     return { sessionId, getTools: getOutcome, reloadVersion: reloadCapVersion };
+  } finally {
+    client.close();
+  }
+}
+
+async function scenarioD2P7CompactControl(stack, projectDir) {
+  // Single browser connection (RuntimeWsClient), real chain:
+  //   Browser WS → Host gateway → sessiond → R2 child → R1 worker-main → fixture.
+  // D2-P7 manual compact vertical slice. `compact` is an AUTHORITY command:
+  // sessiond must refresh a bounded worker.getSnapshot after the worker success
+  // so the projection converges the FULL post-compaction snapshot (messages,
+  // messageCount, contextUsage, isCompacting) BEFORE the terminal result is
+  // released. `abort_compaction` is an INDEPENDENT interrupt (non-HOL) that
+  // settles the in-flight compact as `interrupted` with a compaction_end(aborted)
+  // projection and no orphan hold.
+  const client = new RuntimeWsClient(stack.host.wsUrl);
+  await client.connect();
+  try {
+    await client.handshake();
+    const created = await client.create({
+      cwd: projectDir,
+      projectRoot: projectDir,
+      createRequestId: `cr-d2p7-${Date.now()}`,
+      toolNames: [],
+      thinkingLevel: "off",
+      thinkingLevelPinned: true,
+    });
+    const sessionId = created.sessionId;
+    const snap = await client.attach(sessionId);
+    assert.equal(snap.type, "snapshot");
+    assert.deepEqual(snap.payload.snapshot.capabilities, {
+      capabilities: PRODUCTION_CAPS,
+      version: 1,
+    });
+    const bstate = (result) => result?.snapshot?.state ?? result?.state;
+
+    // Build a deterministic history: 4 normal prompts → messageCount 4,
+    // contextUsage > 0, messages length 4 in the authoritative snapshot.
+    for (let i = 0; i < 4; i += 1) {
+      const p = await client.command(sessionId, {
+        commandId: `d2p7-prompt-${i}-${Date.now()}`,
+        type: "prompt",
+        message: `compact-prompt-${i}`,
+      });
+      assert.equal(p.payload.ok, true, JSON.stringify(p.payload));
+      assert.equal(p.payload.result.result.ok, true, JSON.stringify(p.payload));
+      assert.equal(p.payload.result.result.type, "prompt");
+    }
+    // Build a deterministic history: 4 normal prompts → the fixture's live state
+    // has messageCount 4 and contextUsage > 0. The sessiond projection also
+    // accumulates messageCount/history from the message_end events, but
+    // `runtime.getSnapshot` returns the projection WITHOUT a worker fetch, so
+    // contextUsage (which no event carries) stays at the attach-time value until
+    // an authority command (compact) refreshes it. Use get_state for the live
+    // fixture contextUsage BEFORE compact; after compact the projection has been
+    // refreshed so getSnapshot proves the authoritative convergence.
+    const liveBefore = await client.command(sessionId, { commandId: `d2p7-live-before-${Date.now()}`, type: "get_state" });
+    const liveBeforeState = liveBefore.payload.result.result.state;
+    const liveBeforeCount = liveBeforeState.messageCount;
+    const liveBeforeUsage = liveBeforeState.contextUsage?.percent ?? 0;
+    assert.ok(liveBeforeCount >= 4, `expected >=4 messages before compact (got ${liveBeforeCount})`);
+    assert.ok(liveBeforeUsage > 0, `expected non-zero context usage before compact (got ${liveBeforeUsage})`);
+    const before = await client.getSnapshot(sessionId);
+    const beforeCount = bstate(before.payload.result).messageCount;
+    const beforeHistory = (before.payload.result.messages ?? []).length;
+    assert.equal(beforeHistory, beforeCount, "pre-compact snapshot history must match messageCount");
+
+    // 1. Successful compact: compaction_start(manual) → compaction_end(success)
+    //    event sequence; the ack is only released after sessiond's authoritative
+    //    snapshot refresh, and a post-ack getSnapshot shows the trimmed
+    //    messageCount / contextUsage / history with isCompacting:false.
+    const compactId = `d2p7-compact-${Date.now()}`;
+    const compactIndex = client.messages.length;
+    const compactP = client.command(sessionId, {
+      commandId: compactId,
+      type: "compact",
+      customInstructions: "keep decisions",
+    });
+    const startEvt = await client.waitFor(
+      (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "compaction_start",
+      { label: "compaction_start", afterIndex: compactIndex },
+    );
+    assert.equal(startEvt.payload.reason, "manual");
+    const endEvt = await client.waitFor(
+      (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "compaction_end",
+      { label: "compaction_end", afterIndex: compactIndex },
+    );
+    assert.equal(endEvt.payload.aborted, false);
+    const compactRes = await compactP;
+    assert.equal(compactRes.payload.ok, true, JSON.stringify(compactRes.payload));
+    const compactOutcome = compactRes.payload.result.result;
+    assert.equal(compactOutcome.ok, true, JSON.stringify(compactOutcome));
+    assert.equal(compactOutcome.type, "compact");
+
+    const after = await client.getSnapshot(sessionId);
+    const afterState = bstate(after.payload.result);
+    const afterCount = afterState.messageCount;
+    const afterUsage = afterState.contextUsage?.percent ?? 0;
+    assert.ok(afterCount < beforeCount, `compact must trim messageCount (${beforeCount} -> ${afterCount})`);
+    assert.ok(afterUsage < liveBeforeUsage, `compact must shrink context usage (${liveBeforeUsage} -> ${afterUsage})`);
+    assert.equal(afterState.isCompacting, false);
+    assert.equal((after.payload.result.messages ?? []).length, afterCount, "post-compact snapshot history must match trimmed messageCount");
+    // The fixture live state agrees: get_state after compact shows the same trim.
+    const liveAfter = await client.command(sessionId, { commandId: `d2p7-live-after-${Date.now()}`, type: "get_state" });
+    const liveAfterState = liveAfter.payload.result.result.state;
+    assert.equal(liveAfterState.messageCount, afterCount);
+    assert.equal(liveAfterState.contextUsage?.percent ?? 0, afterUsage);
+
+    // 2. Detach/reattach persistence: the post-compaction projection persists.
+    await client.detach(sessionId);
+    const reattach = await client.attach(sessionId);
+    assert.equal(reattach.type, "snapshot");
+    assert.equal(reattach.payload.snapshot.state.messageCount, afterCount);
+    assert.equal((reattach.payload.snapshot.messages ?? []).length, afterCount);
+    assert.deepEqual(reattach.payload.snapshot.capabilities, { capabilities: PRODUCTION_CAPS, version: 1 });
+
+    // 3. Blocking compact + abort_compaction non-HOL + ack/interrupted result +
+    //    aborted projection + no orphan hold.
+    const blockId = `d2p7-block-${Date.now()}`;
+    const blockIndex = client.messages.length;
+    const blockP = client.command(sessionId, {
+      commandId: blockId,
+      type: "compact",
+      customInstructions: "__block__hold",
+    });
+    await client.waitFor(
+      (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "compaction_start",
+      { label: "blocking compaction_start", afterIndex: blockIndex },
+    );
+    // abort_compaction is an INTERRUPT — it must settle quickly (never HOL).
+    const abortStarted = Date.now();
+    const abortRes = await client.interrupt(sessionId, `d2p7-abort-${Date.now()}`, { type: "abort_compaction" });
+    assert.ok(Date.now() - abortStarted < STEP_TIMEOUT_MS, "abort_compaction must not block behind the compact");
+    assert.equal(abortRes.payload.result.ok, true, JSON.stringify(abortRes.payload));
+    assert.equal(abortRes.payload.result.type, "abort_compaction");
+    const abortedEnd = await client.waitFor(
+      (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "compaction_end" && m.payload?.aborted === true,
+      { label: "aborted compaction_end", afterIndex: blockIndex },
+    );
+    assert.equal(abortedEnd.payload.aborted, true);
+    const blockOutcome = await blockP;
+    assert.equal(blockOutcome.payload.ok, true, JSON.stringify(blockOutcome.payload));
+    const blockResult = blockOutcome.payload.result.result;
+    assert.equal(blockResult.ok, false, JSON.stringify(blockResult));
+    assert.equal(blockResult.error.code, "interrupted");
+    const blockSnap = await client.getSnapshot(sessionId);
+    assert.equal(bstate(blockSnap.payload.result).isCompacting, false, "aborted compact must clear compaction state");
+    // No orphan hold: a fresh compact succeeds right after the abort.
+    const fresh = await client.command(sessionId, { commandId: `d2p7-fresh-${Date.now()}`, type: "compact" });
+    assert.equal(fresh.payload.result.result.ok, true, JSON.stringify(fresh.payload));
+    const freshSnap = await client.getSnapshot(sessionId);
+    assert.equal(bstate(freshSnap.payload.result).isCompacting, false);
+
+    // 4. Idle abort idempotent.
+    const idleAbort = await client.interrupt(sessionId, `d2p7-idle-abort-${Date.now()}`, { type: "abort_compaction" });
+    assert.equal(idleAbort.payload.result.ok, true, JSON.stringify(idleAbort.payload));
+
+    // 5. Second ordinary compact while a compact is pending → session_busy. A
+    //    raw wire second command on the SAME connection is queued behind the
+    //    blocking compact by the Host serial lane (production guarantee:
+    //    ordinary commands never overlap). To exercise the fixture's defensive
+    //    compact busy guard over the real chain, use a SECOND browser
+    //    connection — its own serial lane dispatches immediately, sessiond
+    //    admits the new commandId, and the fixture rejects the overlap with
+    //    session_busy (mirroring the production adapter guard: never auto-abort
+    //    a prompt or overlap bash via direct wire).
+    const busyId = `d2p7-busy-${Date.now()}`;
+    const busyIndex = client.messages.length;
+    const busyP = client.command(sessionId, { commandId: busyId, type: "compact", customInstructions: "__block__hold2" });
+    await client.waitFor(
+      (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "compaction_start",
+      { label: "busy compaction_start", afterIndex: busyIndex },
+    );
+    const client2 = new RuntimeWsClient(stack.host.wsUrl);
+    await client2.connect();
+    try {
+      await client2.handshake();
+      const secondDuring = await client2.command(sessionId, { commandId: `d2p7-second-${Date.now()}`, type: "compact" });
+      assert.equal(secondDuring.payload.ok, true, JSON.stringify(secondDuring.payload));
+      const secondOutcome = secondDuring.payload.result.result;
+      assert.equal(secondOutcome.ok, false, JSON.stringify(secondOutcome));
+      assert.equal(secondOutcome.error.code, "session_busy");
+      assert.equal(secondOutcome.error.retryable, true);
+    } finally {
+      client2.close();
+    }
+    // Release the blocking compact via the independent interrupt, then confirm
+    // the interrupted result (no orphan hold).
+    await client.interrupt(sessionId, `d2p7-busy-abort-${Date.now()}`, { type: "abort_compaction" });
+    const busyOutcome = await busyP;
+    assert.equal(busyOutcome.payload.result.result.ok, false);
+    assert.equal(busyOutcome.payload.result.result.error.code, "interrupted");
+    const busySnap = await client.getSnapshot(sessionId);
+    assert.equal(bstate(busySnap.payload.result).isCompacting, false);
+
+    // 6. Closed caps remain unsupported: fork/navigate/auto_name (the
+    //    manual-compact pair is now OPEN — D2-P7).
+    for (const [type, extra, token] of [
+      ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
+      ["generate_session_title", {}, "runtime.auto_name"],
+    ]) {
+      const closed = await client.command(sessionId, { commandId: `d2p7-closed-${type}-${Date.now()}`, type, ...extra });
+      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
+      const outcome = closed.payload.result.result;
+      assert.equal(outcome.ok, false, `${type} must be closed`);
+      assert.equal(outcome.error.code, "unsupported_capability");
+      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
+    }
+
+    return { sessionId, beforeCount, afterCount };
   } finally {
     client.close();
   }
@@ -1923,6 +2139,9 @@ async function runRound(round) {
     results.toolsReload = await scenarioD2P6ToolsReload(stack, projectA);
     log(`round ${round}: D2-P6 tools+reload OK session=${results.toolsReload.sessionId}`);
 
+    results.compactControl = await scenarioD2P7CompactControl(stack, projectA);
+    log(`round ${round}: D2-P7 compact control OK session=${results.compactControl.sessionId} before=${results.compactControl.beforeCount} after=${results.compactControl.afterCount}`);
+
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
 
@@ -1983,9 +2202,10 @@ async function main() {
           "session isolation",
           "create then host-restart cold attach",
           "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + closed caps)",
-          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed compact/fork/auto_name)",
-          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed compact/fork/auto_name)",
-          "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + closed compact/fork/auto_name)",
+          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed fork/navigate/auto_name)",
+          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed fork/navigate/auto_name)",
+          "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + closed fork/navigate/auto_name)",
+          "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + closed fork/navigate/auto_name + no orphan)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {

@@ -16,15 +16,18 @@
 
 import { randomUUID } from "node:crypto";
 
-// D2-P1/D2-P2/P3/P4/P5/P6: production light-command + queue + bash + tools/reload
-// surface. Baseline queries (get_state / get_commands / get_last_assistant_text)
-// are always available; runtime.stats (get_session_stats), runtime.session.rename
-// (set_session_name), runtime.thinking.set (set_thinking_level), runtime.model.set
-// (set_model), runtime.steer (steer), runtime.follow_up (follow_up), runtime.queue
+// D2-P1/D2-P2/P3/P4/P5/P6/P7: production light-command + queue + bash +
+// tools/reload + manual-compact surface. Baseline queries
+// (get_state / get_commands / get_last_assistant_text) are always available;
+// runtime.stats (get_session_stats), runtime.session.rename (set_session_name),
+// runtime.thinking.set (set_thinking_level), runtime.model.set (set_model),
+// runtime.steer (steer), runtime.follow_up (follow_up), runtime.queue
 // (clear_queue interrupt + set_auto_retry), the D2-P5 bash pair
-// runtime.bash (bash) / runtime.bash.abort (abort_bash) and the D2-P6 tools+
+// runtime.bash (bash) / runtime.bash.abort (abort_bash), the D2-P6 tools+
 // reload triple runtime.tools.read (get_tools) / runtime.tools.write (set_tools)
-// / runtime.reload (reload) are the capability-gated unlocks.
+// / runtime.reload (reload) and the D2-P7 manual-compact pair
+// runtime.compact (compact) / runtime.compact.abort (abort_compaction) are the
+// capability-gated unlocks.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
@@ -41,6 +44,8 @@ const CAPABILITIES = {
     "runtime.tools.read",
     "runtime.tools.write",
     "runtime.reload",
+    "runtime.compact",
+    "runtime.compact.abort",
   ],
   version: 1,
 };
@@ -89,6 +94,15 @@ const REQUIRED_CAP = {
 };
 const OPEN_CAPS = new Set(CAPABILITIES.capabilities);
 
+// Fixture interrupt → required capability gate (mirrors the production
+// adapter's RUNTIME_INTERRUPT_CAPABILITIES).
+const INTERRUPT_REQUIRED_CAP = {
+  abort: "runtime.abort",
+  abort_compaction: "runtime.compact.abort",
+  abort_bash: "runtime.bash.abort",
+  clear_queue: "runtime.queue",
+};
+
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 // Deterministic no-network model catalog used by the fixture set_model path.
@@ -129,15 +143,25 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
   let blocked = null;
   let isPromptRunning = false;
   let isBashRunning = false;
+  let isCompacting = false;
+  /** @type {{ reason: string, status: string, customInstructions?: string, startedAt?: number } | null} */
+  let compaction = null;
+  /** @type {{ resolve: (v: unknown) => void, reject: (e: unknown) => void, timer?: ReturnType<typeof setTimeout> } | null} */
+  let blockedCompact = null;
   /** @type {{ resolve: (v: unknown) => void, reject: (e: unknown) => void, timer?: ReturnType<typeof setTimeout> } | null} */
   let blockedBash = null;
   let bashProjection = null;
   let sessionName = "";
   let messageCount = 0;
+  // D2-P7 deterministic message history + context usage (compact trims both).
+  /** @type {{ role: string, content: unknown }[]} */
+  let messages = [];
+  let contextUsage = { percent: 0, contextWindow: 200_000, tokens: 0 };
   let lastAssistantText = "";
   let thinkingLevel = "off";
   let thinkingLevelPinned = false;
   let model = { provider: "anthropic", id: "claude-sonnet-4" };
+  let autoCompactionEnabled = false;
   let autoRetryEnabled = false;
   let queued = { steering: [], followUp: [] };
   // D2-P6 tools state: active tool names (mirrors the SDK getActiveToolNames).
@@ -188,9 +212,12 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
       isStreaming: false,
       isPromptRunning,
       isBashRunning,
-      isCompacting: false,
+      isCompacting,
+      ...(compaction === null ? {} : { compaction: { ...compaction } }),
       model,
       messageCount,
+      ...(contextUsage === null ? {} : { contextUsage: { ...contextUsage } }),
+      autoCompactionEnabled,
       thinkingLevel,
       thinkingLevelPinned,
       autoRetryEnabled,
@@ -213,6 +240,7 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
         sessionId,
         state: baseState(),
         capabilities: structuredClone(CAPABILITIES),
+        messages: structuredClone(messages),
       };
     },
     subscribe(fn) {
@@ -360,6 +388,82 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
           }
           autoRetryEnabled = command.enabled;
           return { ok: true, type: "set_auto_retry" };
+        }
+        case "set_auto_compaction": {
+          if (typeof command.enabled !== "boolean") {
+            return { ok: false, type: "set_auto_compaction", error: { code: "invalid_input", message: "enabled must be a boolean", retryable: false } };
+          }
+          autoCompactionEnabled = command.enabled;
+          return { ok: true, type: "set_auto_compaction" };
+        }
+        case "abort_compaction":
+          if (blockedCompact) {
+            blockedCompact.resolve({ kind: "aborted" });
+          }
+          return { ok: true, type: "abort_compaction" };
+        case "compact": {
+          // D2-P7 deterministic manual compact (mirrors the real SDK contract):
+          // reject while already compacting; otherwise emit compaction_start(manual),
+          // hold when customInstructions starts with __block__ until abort_compaction
+          // (or a hard ≤30s test-infrastructure failsafe — not an acceptance
+          // timeout), then deterministically trim the message/history count and
+          // context usage, emit compaction_end success, and answer ok:true. On an
+          // abort the command answers `interrupted` with a compaction_end(aborted)
+          // event and clears compaction state (no orphan hold).
+          const custom = typeof command.customInstructions === "string" ? command.customInstructions : undefined;
+          if (isCompacting) {
+            return { ok: false, type: "compact", error: { code: "session_busy", message: "a compaction is already running", retryable: true } };
+          }
+          isCompacting = true;
+          compaction = {
+            reason: "manual",
+            status: "running",
+            ...(custom === undefined ? {} : { customInstructions: custom }),
+            startedAt: Date.now(),
+          };
+          emit({ type: "compaction_start", sessionId, reason: "manual" });
+          if (custom !== undefined && custom.startsWith("__block__")) {
+            const holdMs = 30_000;
+            const result = await new Promise((resolve, reject) => {
+              const timer = setTimeout(() => {
+                blockedCompact = null;
+                resolve({ kind: "timeout" });
+              }, holdMs);
+              blockedCompact = {
+                resolve: (value) => {
+                  clearTimeout(timer);
+                  blockedCompact = null;
+                  resolve(value);
+                },
+                reject: (error) => {
+                  clearTimeout(timer);
+                  blockedCompact = null;
+                  reject(error);
+                },
+                timer,
+              };
+            });
+            if (result?.kind === "aborted") {
+              isCompacting = false;
+              compaction = null;
+              emit({ type: "compaction_end", sessionId, reason: "manual", aborted: true });
+              return { ok: false, type: "compact", error: { code: "interrupted", message: "compaction aborted", retryable: true } };
+            }
+            // Hard failsafe timeout: still settle so the E2E never hangs.
+          }
+          // Deterministic trim: remove the first two messages, shrink context usage.
+          const trimmed = messages.length <= 2 ? [] : messages.slice(2);
+          messages = trimmed;
+          messageCount = trimmed.length;
+          contextUsage = {
+            percent: Math.max(0, contextUsage.percent - 30),
+            contextWindow: contextUsage.contextWindow,
+            tokens: Math.max(0, contextUsage.tokens - 40_000),
+          };
+          isCompacting = false;
+          compaction = null;
+          emit({ type: "compaction_end", sessionId, reason: "manual", aborted: false });
+          return { ok: true, type: "compact" };
         }
         case "bash": {
           const bashText = typeof command.command === "string" ? command.command : "";
@@ -530,17 +634,36 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
       });
       emit({ type: "prompt_done", sessionId });
       isPromptRunning = false;
-      messageCount += 1;
+      const completedMessage = {
+        role: "assistant",
+        content: [{ type: "text", text: "Hello world" }],
+        model: "e2e-fixture",
+        provider: "e2e",
+      };
+      messages = [...messages, completedMessage];
+      messageCount = messages.length;
+      contextUsage = {
+        percent: Math.min(100, contextUsage.percent + 10),
+        contextWindow: contextUsage.contextWindow,
+        tokens: contextUsage.tokens + 20_000,
+      };
       lastAssistantText = "Hello world";
       return { ok: true, type: "prompt" };
     },
     async interrupt(interrupt) {
       interruptCount += 1;
+      const requiredCap = INTERRUPT_REQUIRED_CAP[interrupt.type];
+      if (requiredCap !== undefined && !OPEN_CAPS.has(requiredCap)) {
+        return { ok: false, type: interrupt.type, error: { code: "unsupported_capability", message: `${requiredCap} not available`, retryable: false } };
+      }
       if (interrupt.type === "abort" && blocked) {
         blocked.resolve({ kind: "aborted" });
       }
       if (interrupt.type === "abort_bash" && blockedBash) {
         blockedBash.resolve({ kind: "aborted" });
+      }
+      if (interrupt.type === "abort_compaction" && blockedCompact) {
+        blockedCompact.resolve({ kind: "aborted" });
       }
       if (interrupt.type === "clear_queue") {
         queued = { steering: [], followUp: [] };
@@ -555,6 +678,9 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
       }
       if (blockedBash) {
         blockedBash.resolve({ kind: "closed" });
+      }
+      if (blockedCompact) {
+        blockedCompact.resolve({ kind: "closed" });
       }
       listeners.clear();
     },

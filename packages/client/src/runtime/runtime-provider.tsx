@@ -129,6 +129,8 @@ export interface RuntimeApi extends RuntimeView {
   readonly getTools: SessionStore["getTools"];
   readonly setTools: SessionStore["setTools"];
   readonly reload: SessionStore["reload"];
+  readonly compact: SessionStore["compact"];
+  readonly abortCompaction: SessionStore["abortCompaction"];
 }
 
 export function useRuntime(): RuntimeApi {
@@ -162,6 +164,8 @@ export function useRuntime(): RuntimeApi {
         getTools: () => store.getTools(),
         setTools: (names) => store.setTools(names),
         reload: () => store.reload(),
+        compact: (customInstructions) => store.compact(customInstructions),
+        abortCompaction: () => store.abortCompaction(),
       }) as RuntimeApi,
     [store, view],
   );

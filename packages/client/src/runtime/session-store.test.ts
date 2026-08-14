@@ -1595,6 +1595,275 @@ describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", ()
   });
 });
 
+describe("SessionStore — D2-P7 compact runtime control (compact / abortCompaction)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function attachWithCaps(h: RuntimeHarness, capabilities: string[], sessionId = "s1"): Promise<FakeWebSocket> {
+    h.store.connect();
+    const ws = openReady(h);
+    const p = h.store.openSession(sessionId);
+    return flush().then(() => {
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, capabilities }) });
+      return flush().then(() => p.then(() => ws));
+    });
+  }
+
+  function compactFrame(ws: FakeWebSocket): { id: string; payload: { command: { commandId: string; type: string; customInstructions?: string } } } {
+    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; customInstructions?: string } } }>(ws, "command")!;
+    expect(frame).toBeTruthy();
+    expect(frame.payload.command.type).toBe("compact");
+    return frame;
+  }
+
+  function respondOk(ws: FakeWebSocket, id: string, commandId: string, type: string): void {
+    ws.serverSend({ type: "response", id, payload: { ok: true, result: { commandId, result: { ok: true, type } } } });
+  }
+
+  it("compact sends an exact compact command on the ordinary slot and resolves on ok", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact", "runtime.compact.abort"]);
+    const p = h.store.compact("keep decisions");
+    await flush();
+    const cmd = compactFrame(ws);
+    expect(cmd.payload.command.customInstructions).toBe("keep decisions");
+    expect(cmd.payload.command.commandId).toBeTruthy();
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "compact");
+    await expect(p).resolves.toBeUndefined();
+    // Slot freed: a follow-up compact can go out.
+    const next = h.store.compact();
+    await flush();
+    const cmd2 = compactFrame(ws);
+    expect(cmd2.payload.command.customInstructions).toBeUndefined();
+    respondOk(ws, cmd2.id, cmd2.payload.command.commandId, "compact");
+    await expect(next).resolves.toBeUndefined();
+  });
+
+  it("compact forwards customInstructions exactly (no silent trim/reinterpret)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.compact"]);
+    const custom = "  keep decisions  \n  and notes  ";
+    const p = h.store.compact(custom);
+    await flush();
+    const cmd = compactFrame(ws);
+    expect(cmd.payload.command.customInstructions).toBe(custom);
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "compact");
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("compact rejects blank customInstructions without sending (invalid_input)", async () => {
+    const h = createHarness();
+    await attachWithCaps(h, ["runtime.compact"]);
+    await expect(h.store.compact("   ")).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+    await expect(h.store.compact("\n\t")).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+    const frames = h.lastSocket().sent.filter((f) => (f as { type: string }).type === "command");
+    expect(frames).toHaveLength(0);
+  });
+
+  it("second ordinary command while a compact is pending is session_busy and never overwrites the compact waiter", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact", "runtime.tools.write", "runtime.reload"]);
+    const compactP = h.store.compact("keep");
+    await flush();
+    const secondCompact = h.store.compact("again");
+    await expect(secondCompact).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const promptDuringCompact = h.store.sendPrompt("hello");
+    await expect(promptDuringCompact).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const setToolsDuringCompact = h.store.setTools(["read"]);
+    await expect(setToolsDuringCompact).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const reloadDuringCompact = h.store.reload();
+    await expect(reloadDuringCompact).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    await flush();
+    const frames = (ws.sent as { type: string; payload?: { command?: { type?: string } } }[]).filter((f) => f.type === "command");
+    expect(frames).toHaveLength(1);
+    const cmd = compactFrame(ws);
+    expect(cmd.payload.command.customInstructions).toBe("keep");
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "compact");
+    await expect(compactP).resolves.toBeUndefined();
+  });
+
+  it("compact while a prompt is pending is session_busy (compact never overwrites prompt state)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.compact"]);
+    const promptP = h.store.sendPrompt("long running prompt");
+    await flush();
+    const compactP = h.store.compact();
+    await expect(compactP).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(promptCmd.payload.command.type).toBe("prompt");
+    respondOk(ws, promptCmd.id, promptCmd.payload.command.commandId, "prompt");
+    await expect(promptP).resolves.toBeTruthy();
+  });
+
+  it("abortCompaction sends the abort_compaction interrupt and resolves on ok (independent of the compact command)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact", "runtime.compact.abort"]);
+    const compactP = h.store.compact("keep");
+    await flush();
+    const abortP = h.store.abortCompaction();
+    await flush();
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
+    expect(intr).toBeTruthy();
+    expect(intr.payload.interrupt.type).toBe("abort_compaction");
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort_compaction", result: { ok: true, type: "abort_compaction" } } });
+    await expect(abortP).resolves.toEqual({ ok: true, type: "abort_compaction" });
+    // The compact command promise stays pending until its own correlated result.
+    let settled = false;
+    void compactP.then(() => { settled = true; }, () => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    const cmd = compactFrame(ws);
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "compact", error: { code: "interrupted", message: "compaction aborted", retryable: true } } } } });
+    await expect(compactP).rejects.toMatchObject({ code: "interrupted" });
+  });
+
+  it("abortCompaction while another interrupt type is in flight is session_busy; same-type coalesces", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact.abort"]);
+    // Different in-flight type (abort): abortCompaction is session_busy.
+    const abortP = h.store.abort();
+    await flush();
+    const compactAbortP = h.store.abortCompaction();
+    await expect(compactAbortP).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    await flush();
+    const interrupts = (ws.sent as { type: string; payload?: { interrupt?: { type?: string } } }[]).filter((f) => f.type === "interrupt");
+    expect(interrupts).toHaveLength(1);
+    expect(interrupts[0]?.payload?.interrupt?.type).toBe("abort");
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await expect(abortP).resolves.toBeTruthy();
+
+    // Same type in flight (abort_compaction): the second abortCompaction
+    // COALESCES to the same promise — exactly one abort_compaction frame.
+    const c1 = h.store.abortCompaction();
+    await flush();
+    const c2 = h.store.abortCompaction();
+    await flush();
+    const compactInterrupts = (ws.sent as { type: string; payload?: { interrupt?: { type?: string } } }[]).filter((f) => f.type === "interrupt");
+    expect(compactInterrupts).toHaveLength(2);
+    expect(compactInterrupts[1]?.payload?.interrupt?.type).toBe("abort_compaction");
+    const cIntr = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    ws.serverSend({ type: "interrupt_result", id: cIntr.id, payload: { sessionId: "s1", commandId: cIntr.payload.commandId, interruptType: "abort_compaction", result: { ok: true, type: "abort_compaction" } } });
+    await expect(c1).resolves.toEqual({ ok: true, type: "abort_compaction" });
+    await expect(c2).resolves.toEqual({ ok: true, type: "abort_compaction" });
+  });
+
+  it("wrong commandId / interruptType abort_compaction result is dropped (triple match)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact.abort"]);
+    const p = h.store.abortCompaction();
+    await flush();
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: "wrong", interruptType: "abort_compaction", result: { ok: true, type: "abort_compaction" } } });
+    await flush();
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await flush();
+    void p.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort_compaction", result: { ok: true, type: "abort_compaction" } } });
+    await expect(p).resolves.toEqual({ ok: true, type: "abort_compaction" });
+  });
+
+  it("stop / detach / dispose settle an in-flight compact command exactly once", async () => {
+    // stop
+    const h1 = createHarness();
+    const ws1 = await attachWithCaps(h1, ["runtime.compact"]);
+    const compactP1 = h1.store.compact("keep");
+    await flush();
+    const stopP = h1.store.stop();
+    await flush();
+    const stopFrame = lastFrame<{ type: string; id: string }>(ws1, "stop")!;
+    ws1.serverSend({ type: "response", id: stopFrame.id, payload: { ok: true, result: { sessionId: "s1", stopped: true } } });
+    await expect(stopP).resolves.toBeUndefined();
+    await expect(compactP1).rejects.toMatchObject({ code: "interrupted", message: "session stopped" });
+
+    // detach
+    const h2 = createHarness();
+    const ws2 = await attachWithCaps(h2, ["runtime.compact"]);
+    const compactP2 = h2.store.compact("keep");
+    await flush();
+    const detachP = h2.store.detach();
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws2, "detach")!;
+    ws2.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await expect(detachP).resolves.toBeUndefined();
+    await expect(compactP2).rejects.toMatchObject({ code: "interrupted", message: "detached" });
+
+    // dispose
+    const h3 = createHarness();
+    await attachWithCaps(h3, ["runtime.compact"]);
+    const compactP3 = h3.store.compact("keep");
+    await flush();
+    h3.store.dispose();
+    await expect(compactP3).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("session switch (detach-then-open) rejects a pending compact exactly once; a late result cannot settle the new session", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.compact"], "s1");
+    const compactP = h.store.compact("keep");
+    await flush();
+    const compactCmd = compactFrame(ws);
+    const oldEnvelope = compactCmd.id;
+    const detachP = h.store.detach();
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    ws.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await flush();
+    await expect(compactP).rejects.toMatchObject({ code: "interrupted", message: "detached" });
+    await detachP;
+    // A late response for the OLD compact envelope is dropped.
+    ws.serverSend({ type: "response", id: oldEnvelope, payload: { ok: true, result: { commandId: compactCmd.payload.command.commandId, result: { ok: true, type: "compact" } } } });
+    await flush();
+    const openP = h.store.openSession("s2");
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s2", capabilities: ["runtime.compact"] }) });
+    await flush();
+    await openP;
+    const next = h.store.compact();
+    await flush();
+    const cmd2 = compactFrame(ws);
+    respondOk(ws, cmd2.id, cmd2.payload.command.commandId, "compact");
+    await expect(next).resolves.toBeUndefined();
+  });
+
+  it("compact resolves honestly to unsupported_capability when the runtime gates it", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+    const p = h.store.compact("keep");
+    await flush();
+    const cmd = compactFrame(ws);
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "compact", error: { code: "unsupported_capability", message: "runtime.compact not available", retryable: false } } } } });
+    await expect(p).rejects.toMatchObject({ code: "unsupported_capability" });
+    expect(h.store.hasRuntimeCapability("runtime.compact")).toBe(false);
+  });
+
+  it("compact and abortCompaction reject when not attached", async () => {
+    const h = createHarness();
+    await expect(h.store.compact()).rejects.toThrow();
+    await expect(h.store.abortCompaction()).rejects.toThrow();
+  });
+
+  it("compaction events project into the snapshot (start sets isCompacting, end clears; messageCount stays authoritative)", async () => {
+    const h = createHarness();
+    await attachWithCaps(h, ["runtime.compact"]);
+    wsEvent(h, { type: "compaction_start", sessionId: "s1", eventId: 1, epoch: "e1", reason: "manual" });
+    expect(h.store.getSnapshot().snapshot!.state.isCompacting).toBe(true);
+    expect(h.store.getSnapshot().snapshot!.state.compaction?.status).toBe("running");
+    wsEvent(h, { type: "compaction_end", sessionId: "s1", eventId: 2, epoch: "e1", reason: "manual", aborted: false });
+    expect(h.store.getSnapshot().snapshot!.state.isCompacting).toBe(false);
+    expect(h.store.getSnapshot().snapshot!.state.compaction).toBeUndefined();
+    expect(h.store.getSnapshot().streaming).toBe(false);
+  });
+});
+
 function wsEvent(h: RuntimeHarness, payload: Record<string, unknown>): void {
   h.lastSocket().serverSend({ type: "event", payload });
 }

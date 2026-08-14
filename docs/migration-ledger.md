@@ -999,4 +999,116 @@ Busy 修正（isolated commit 8260b75）：
 - 无浏览器视觉验收（仅 DOM/a11y）；create 仍可能因 Git ref 深层限制在服务端失败（客户端按 parity 接受 255 边界，服务端可安全失败）。
 - Files/Git 其他 mutation 范围（Files write UI 等）仍不在本切片，不宣称 D3A 全 DONE。
 - 后续聚焦 defense-in-depth 提交：`isWorktreeDirty` 强化为要求真实 HttpError **同时** `status === 409` 且 `code === 'WORKTREE_DIRTY'`（冻结 spec 的 exact 409），而非仅 code。新增回归（it.each 400/500）：非 409 却携带 WORKTREE_DIRTY 的 HttpError 绝不出 row-local force 确认、绝不提供 force（仅 initial force:false 一次，固定错误文案）；既有 exact 409 仍揭示确认。
+
+## 43. D2-P7 — Manual Compact + Abort Compaction 生产切片记录
+
+```text
+实现：本分支（branch feat/d2p7-compact-control，base main 13859b1），backend-first，
+未合入/未部署。生产 capability 面从 14 精确扩到 16 token：精确新增
+`runtime.compact`（compact）、`runtime.compact.abort`（abort_compaction）。
+fork/navigate/extension_ui/auto_name 仍关闭。无 UI/CSS，无
+Host/Protocol/runtime-core 生产改动，无 D3A workspace 文件、package-lock、live
+服务、部署。既有 Protocol/runtime-core/worker/adapter 机制已实现；本切片开放生产
+门并加 Client API/E2E。`set_auto_compaction` 在既有语义映射下 wire-open（归
+`runtime.compact`），这是诚实的（实现存在），但本切片不新增 Client helper/UI。
+
+正确性决策（父级明确覆盖最小探索建议，必须实现）：
+1) 成功的 `compact` 必须加入 sessiond `AUTHORITY_COMMAND_TYPES`（既有 5 + compact
+   = 精确 6）。`compaction_end` 只清活动状态，不携带 post-compaction 的
+   messages/messageCount/contextUsage，所以成功 compact 必须在有界
+   worker.getSnapshot 权威刷新应用完整 post-compaction snapshot 之后才
+   return/cache。复用 set_tools/reload 的同一 singleflight/triple-match/epoch/
+   rekey/fail-closed 路径（authorityFinalizations / ensureAuthorityFinalized）。
+   断言 messages/history 数、contextUsage、isCompacting/compaction/streaming 与
+   capabilities 收敛。刷新失败 return/cache 固定 unavailable；同 commandId 重试
+   永不重执行。失败/中断的 compact 绝不触发 authority refresh 或缓存假成功。
+2) getSnapshot 等其余命令不变；AUTHORITY 精确 6。set_auto_compaction 不加入
+   authority（既有语义未要求）。
+3) Adapter compact busy guard：在状态 mutation / SDK 调用之前防御性拒绝结构化
+   `session_busy`——当前真实 driver 状态为 streaming、bash running 或 already
+   compacting（及 adapter 本地 promptRunning/bash/compaction 在途）时拒绝；绝不让
+   真实 SDK 直接 wire 覆盖 prompt 或叠 bash。拒绝不留任何部分 compaction
+   state/event。manual compact customInstructions 严格跟随 Protocol（Client
+   helper 校验非空/边界，绝不静默 trim/reinterpret——原值直传）。
+4) abort_compaction 是独立 RuntimeInterrupt，经既有 Host/sessiond 路径非 HOL；
+   同 id 同 type 合并，异 interrupt type session_busy/rejected，idle 幂等 ok。
+   真实 SDK 行为：abort ack 可为 ok:true 而 in-flight compact command 落
+   ok:false interrupted；fixture/E2E 镜像此语义，发 compaction_end{aborted:true}，
+   清 compaction 状态，无孤儿 hold。
+5) Client（无 UI）：SessionStore 加 typed `compact(customInstructions?)` 走普通单
+   pendingCommand 槽（prompt/bash/tools/reload/compact 冲突诚实 session_busy，无
+   乐观 state）；`abortCompaction()` 走 typed sendInterrupt admission。两者都暴露到
+   RuntimeProvider RuntimeApi。detach/session switch/stop/dispose/reconnect/epoch
+   清理：in-flight compact 恰好一次 reject 并释放槽（genericize Bash 的
+   settlePendingBashCommand → settlePendingControlCommand，覆盖 bash+compact，不
+   改 prompt 语义）；迟到 result/event 不能 settle 新 session。
+
+修改范围：
+- packages/pi-sdk-adapter/src/agent/index.ts（PRODUCTION_AGENT_CAPABILITIES 14→16；
+  注释注明 set_auto_compaction wire-open 但无 Client helper/UI）
+- packages/pi-sdk-adapter/src/internal/adapter.ts（compact 前置 busy guard：
+  isStreaming/isBashRunning/isCompacting/promptRunning/bash/compaction 在途 →
+  session_busy{retryable:true}，mutation/SDK 前；try/finally 清 running marker，
+  失败后快照 isCompacting:false 无 pending compaction）
+- packages/sessiond/src/service.ts（AUTHORITY_COMMAND_TYPES + compact 精确 6；
+  注释更新 authority/ensureAuthorityFinalized 语义）
+- packages/sessiond/src/testing/fake-worker.ts（compact 权威快照 mutation：确定性
+  trim messages 至后 2 条、messageCount、contextUsage percent-40/tokens-400、
+  isCompacting:false）
+- packages/client/src/runtime/session-store.ts（typed compact()/abortCompaction()；
+  settlePendingControlCommand genericize；customInstructions 严格校验非空、原值直传）
+- packages/client/src/runtime/runtime-provider.tsx（RuntimeApi 暴露 compact/abortCompaction）
+- tests/e2e/runtime.mjs（PRODUCTION_CAPS 16 token；新增 scenarioD2P7CompactControl
+  真实链路；旧 closed 数组只移除 compact，fork/navigate/auto_name 保持关闭）
+- packages/agent-worker/test/fixtures/e2e-runtime-factory.mjs（CAPABILITIES 16、
+  INTERRUPT_REQUIRED_CAP 门禁、compact/abort_compaction/set_auto_compaction 状态、
+  确定性 compact trim + __block__ hold（≤30s 硬 failsafe，非验收超时）+
+  abort_compaction 释放）
+- packages/pi-sdk-adapter/test/public-surface.test.ts + production-smoke.test.ts +
+  新增 compact-busy.test.ts（16 token、真实无网络 compact 失败/幂等 abort/
+  set_auto_compaction 离线、busy guard 定向）
+- packages/sessiond/test/sessiond.test.ts（compact authority 单测 10 个：
+  成功 refresh 全字段收敛、same-id singleflight、fail-closed 缓存、vs
+  set_tools/reload 不同 id、wrong result type、失败/中断不 refresh 不缓存假成功、
+  rekey 不跨 epoch、early crash 清 singleflight、compaction_end 先于 snapshot 仍
+  收敛、事件/能力收敛）
+- packages/client/src/runtime/session-store.test.ts + runtime-provider.test.tsx
+  （D2-P7 typed helpers + RuntimeApi 暴露 + 投影）
+- docs/refactor-execution-plan.md、docs/migration-ledger.md（本 §43）
+- 未改 Protocol/runtime-core/Host/daemon/package-lock/UI；未触碰 D3A 资源/ledger/
+  worktrees、D1 sessions store。
+
+验证（本机 Node v24.18.0）：
+- root `npm test`：scripts 44 + cli 46 + agent-worker 105 + client 525（35 files）
+  + host 372 + adapter 201 + protocol 116 + contract 75 + runtime-core 7 +
+  sessiond 178 pass/1 skip = 1669 pass/1 skip/0 fail。
+- per-workspace typecheck（含 sessiond tsconfig.test）PASS；root typecheck EXIT 0；
+  root build EXIT 0；check:architecture PASS；adapter/sessiond/agent-worker/client/
+  host boundaries PASS；`git diff --check` 通过。
+- Runtime E2E 2 轮 PASS：单连接真实 Host→sessiond→worker→fixture 贯通 D2-P7
+  切片（初始 history→成功 compact 事件序列+权威 post-snapshot
+  messageCount/contextUsage/history 收敛→detach/reattach 持久→blocking compact +
+  abort_compaction 非 HOL + interrupted result + aborted projection→idle abort→
+  第二连接 second ordinary compact session_busy→closed fork/navigate/auto_name→
+  无孤儿）。Startup E2E、Sessions E2E PASS。
+- 真实 PiSdkAgentRuntimeFactory 无网络 smoke（production-smoke）：tiny/fresh
+  session compact 结构化失败（无 raw SDK/secret），快照 isCompacting:false 无
+  pending compaction；idle abort_compaction 幂等 ok；set_auto_compaction 离线设置
+  生效；capability 精确 16。不宣称离线成功真实 compact，不联网。
+
+设计说明：
+- E2E 中 `runtime.getSnapshot` 返回 sessiond projection（无 worker fetch），所以
+  compact 前 contextUsage（无事件携带）需经 get_state 读 fixture 实时值；compact
+  后 authority refresh 已把 projection 替换为 post-compact snapshot，getSnapshot
+  直接证明投影收敛。Host gateway serial lane 保证普通命令不并发，因此「第二普通
+  命令 session_busy」在 E2E 用第二浏览器连接（独立 serial lane 立即 dispatch、
+  fixture isCompacting guard 命中）诚实验证；单连接第二命令会被 Host 串行排队。
+- fixture/E2E 镜像真实 SDK：abort ack ok:true + in-flight compact 落 interrupted +
+  compaction_end{aborted:true} + 清状态 + 无孤儿 hold（abort 后 fresh compact 立即成功）。
+
+残余/风险：
+- 未做视觉/UI 验收（本切片无 UI）；compact/extension UI/fork 后续。
+- 本分支未 merge/push/deploy；提交前工作树 clean。独立验证按 multi-layer backend
+  state change 规则另行执行（不自我宣称最终 PASS）。
+(feat(adapter,sessiond,client,e2e): D2-P7 manual compact + abort compaction slice)
 ```

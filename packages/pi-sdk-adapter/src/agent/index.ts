@@ -19,8 +19,13 @@ export {
  * `runtime.bash` (bash) and `runtime.bash.abort` (abort_bash) — the single
  * real bash runtime-control slice. D2-P6 precisely adds
  * `runtime.tools.read` (get_tools), `runtime.tools.write` (set_tools) and
- * `runtime.reload` (reload) — the single real tools+reload slice. Fork,
- * extension UI, compaction, navigation and `runtime.auto_name`
+ * `runtime.reload` (reload) — the single real tools+reload slice. D2-P7
+ * precisely adds `runtime.compact` (compact) and `runtime.compact.abort`
+ * (abort_compaction) — the single real manual-compact slice. The existing
+ * semantic mapping also makes `set_auto_compaction` wire-open under
+ * `runtime.compact` (honest, because the implementation exists), but D2-P7
+ * deliberately adds NO Client helper/UI for auto compaction. Fork,
+ * extension UI, navigation and `runtime.auto_name`
  * (generate_session_title) are all implemented by the adapter but gated out by
  * this set so composition (R1/R2) must explicitly opt into broader
  * capabilities. The constant is intentionally narrow and MUST NOT grow to
@@ -41,4 +46,6 @@ export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.tools.read",
   "runtime.tools.write",
   "runtime.reload",
+  "runtime.compact",
+  "runtime.compact.abort",
 ] as const;

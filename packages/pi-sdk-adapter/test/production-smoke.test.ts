@@ -76,6 +76,8 @@ describe("public production SDK factory smoke", () => {
           "runtime.tools.read",
           "runtime.tools.write",
           "runtime.reload",
+          "runtime.compact",
+          "runtime.compact.abort",
         ]);
 
         // Baseline query: get_state (always available, no capability gate).
@@ -222,19 +224,19 @@ describe("public production SDK factory smoke", () => {
         assert.equal(toolsRead, true, "runtime.tools.read must be open");
         assert.equal(toolsWrite, true, "runtime.tools.write must be open");
         assert.equal(reloadCap, true, "runtime.reload must be open");
-        // runtime.auto_name is explicitly NOT unlocked in D2-P1..P6.
+        // D2-P7: the manual-compact pair IS in the production surface — verify
+        // the capability gate reports them OPEN (real behavior is exercised by
+        // the dedicated D2-P7 compact smoke test).
+        const compactCap = port.getCapabilities().capabilities.includes("runtime.compact");
+        const compactAbortCap = port.getCapabilities().capabilities.includes("runtime.compact.abort");
+        assert.equal(compactCap, true, "runtime.compact must be open");
+        assert.equal(compactAbortCap, true, "runtime.compact.abort must be open");
+        // runtime.auto_name is explicitly NOT unlocked in D2-P1..P7.
         const autoName = await port.execute({ type: "generate_session_title" });
         assert.equal(autoName.ok, false);
         if (!autoName.ok) {
           assert.equal(autoName.error.code, "unsupported_capability");
           assert.match(autoName.error.message, /runtime\.auto_name/);
-        }
-        // runtime.compact is NOT in the production surface.
-        const compact = await port.execute({ type: "compact" });
-        assert.equal(compact.ok, false);
-        if (!compact.ok) {
-          assert.equal(compact.error.code, "unsupported_capability");
-          assert.match(compact.error.message, /runtime\.compact/);
         }
         // runtime.fork is NOT in the production surface.
         const fork = await port.execute({ type: "fork", entryId: "entry-1" });
@@ -243,12 +245,74 @@ describe("public production SDK factory smoke", () => {
           assert.equal(fork.error.code, "unsupported_capability");
           assert.match(fork.error.message, /runtime\.fork/);
         }
+        // runtime.navigate is NOT in the production surface.
+        const navigate = await port.execute({ type: "navigate_tree", targetId: "entry-1" });
+        assert.equal(navigate.ok, false);
+        if (!navigate.ok) {
+          assert.equal(navigate.error.code, "unsupported_capability");
+          assert.match(navigate.error.message, /runtime\.navigate/);
+        }
       } finally {
         await port.close("user");
       }
     });
   });
 
+  it("production compact: tiny/fresh session compact fails structured and leaves a clean snapshot (D2-P7)", async () => {
+    await withAgentDir(async (root) => {
+      const cwd = join(root, "workspace");
+      await mkdir(cwd, { recursive: true });
+      const port = await new PiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES }).create({
+        cwd,
+        toolNames: [],
+        thinkingLevel: "off",
+        thinkingLevelPinned: true,
+        name: "D2-P7 Compact Smoke",
+      });
+      try {
+        assert.equal(port.getCapabilities().capabilities.length, 16);
+        assert.deepEqual([...port.getCapabilities().capabilities], [...PRODUCTION_AGENT_CAPABILITIES]);
+
+        // A tiny/fresh session has nothing to compact: the real SDK compact
+        // must fail STRUCTURED (external / invalid_input / nothing-to-compact),
+        // never a raw SDK error, and must leave the snapshot isCompacting:false
+        // with no pending compaction projection.
+        const compact = await port.execute({ type: "compact" });
+        assert.equal(compact.ok, false, `fresh-session compact should not claim success: ${JSON.stringify(compact)}`);
+        if (!compact.ok) {
+          assert.equal(compact.type, "compact");
+          assert.equal(typeof compact.error.code, "string");
+          assert.equal(typeof compact.error.message, "string");
+          assert.ok(!/\n|\tat |node:internal/i.test(compact.error.message), "no raw stack text");
+          assert.ok(!compact.error.message.includes("sk-"), "no secret-shaped raw leak");
+        }
+        const afterFail = await port.execute({ type: "get_state" });
+        assert.equal(afterFail.ok, true);
+        if (afterFail.ok && afterFail.type === "get_state") {
+          assert.equal(afterFail.state.isCompacting, false, "failed compact must leave isCompacting:false");
+          assert.equal(afterFail.state.compaction, undefined, "no pending compaction projection after failed compact");
+        }
+
+        // Idle abort_compaction is an idempotent supported no-op.
+        const idleAbort = await port.interrupt({ type: "abort_compaction" });
+        assert.equal(idleAbort.ok, true, JSON.stringify(idleAbort));
+        if (idleAbort.ok) assert.equal(idleAbort.type, "abort_compaction");
+
+        // set_auto_compaction is a pure local SDK setting (wire-open under
+        // runtime.compact) and must work offline with the flag reflected.
+        const auto = await port.execute({ type: "set_auto_compaction", enabled: true });
+        assert.equal(auto.ok, true, JSON.stringify(auto));
+        if (auto.ok) assert.equal(auto.type, "set_auto_compaction");
+        const afterAuto = await port.execute({ type: "get_state" });
+        assert.equal(afterAuto.ok, true);
+        if (afterAuto.ok && afterAuto.type === "get_state") {
+          assert.equal(afterAuto.state.autoCompactionEnabled, true);
+        }
+      } finally {
+        await port.close("user");
+      }
+    });
+  });
   it("production bash control: real command projects exact output/exitCode and abort_bash preempts without blocking", async () => {
     await withAgentDir(async (root) => {
       const cwd = join(root, "workspace");

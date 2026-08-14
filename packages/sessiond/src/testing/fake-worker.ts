@@ -152,6 +152,34 @@ export class FakeWorkerConnection implements WorkerConnection {
             },
           };
         }
+        // D2-P7: a successful manual compact trims the authoritative snapshot
+        // deterministically so the post-success worker.getSnapshot refresh
+        // converges messages/messageCount/contextUsage (the wire compaction_end
+        // event only clears activity and does NOT carry these fields).
+        if (command.type === "compact") {
+          const messages = Array.isArray(this.liveSnapshot.messages) ? this.liveSnapshot.messages : [];
+          const keep = Math.max(0, messages.length - 2);
+          const trimmed = messages.slice(-keep);
+          const usage = this.liveSnapshot.state.contextUsage;
+          this.liveSnapshot = {
+            ...this.liveSnapshot,
+            state: {
+              ...this.liveSnapshot.state,
+              messageCount: keep,
+              isCompacting: false,
+              ...(usage === undefined || usage === null
+                ? {}
+                : {
+                    contextUsage: {
+                      percent: Math.max(0, (usage.percent ?? 0) - 40),
+                      ...(usage.contextWindow === undefined ? {} : { contextWindow: usage.contextWindow }),
+                      ...(usage.tokens === undefined ? {} : { tokens: Math.max(0, (usage.tokens ?? 0) - 400) }),
+                    },
+                  }),
+            },
+            messages: trimmed,
+          };
+        }
         setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, outcome(command.type)), this.options.commandDelayMs ?? 0);
         return;
       }
