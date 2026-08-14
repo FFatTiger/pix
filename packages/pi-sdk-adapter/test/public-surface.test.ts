@@ -37,7 +37,7 @@ describe("public agent factory surface", () => {
     });
   });
 
-  it("PRODUCTION_AGENT_CAPABILITIES is exactly prompt+abort+stats+rename+thinking.set+model.set+steer+follow_up+queue+bash+bash.abort and leaks no broader surface", () => {
+  it("PRODUCTION_AGENT_CAPABILITIES is exactly the D2-P6 surface and leaks no broader capability", () => {
     assert.deepEqual([...PRODUCTION_AGENT_CAPABILITIES], [
       "runtime.prompt",
       "runtime.abort",
@@ -50,15 +50,16 @@ describe("public agent factory surface", () => {
       "runtime.queue",
       "runtime.bash",
       "runtime.bash.abort",
+      "runtime.tools.read",
+      "runtime.tools.write",
+      "runtime.reload",
     ]);
-    // Still-forbidden: tools/fork/extension-UI/auto_name/reload must NOT
-    // leak through the production surface. `runtime.stats` + `runtime.session.rename`
-    // (D2-P1), `runtime.thinking.set` (D2-P2), `runtime.model.set` (D2-P3),
-    // `runtime.steer`/`runtime.follow_up`/`runtime.queue` (D2-P4) and the
-    // `runtime.bash`/`runtime.bash.abort` pair (D2-P5) ARE allowed here.
+    // Still-forbidden: fork/extension-UI/auto_name must NOT leak through the
+    // production surface. `runtime.tools.read`/`runtime.tools.write` and
+    // `runtime.reload` (D2-P6) ARE allowed here.
     const leaked = [...PRODUCTION_AGENT_CAPABILITIES].filter((capability) =>
-      /tools|fork|extension_ui|navigate|compact|reload|auto_name/.test(capability),
+      /fork|extension_ui|navigate|compact|auto_name/.test(capability),
     );
-    assert.deepEqual(leaked, [], "production surface must not leak tools/fork/extension-UI/reload/auto_name capabilities");
+    assert.deepEqual(leaked, [], "production surface must not leak fork/extension-UI/navigate/compact/auto_name capabilities");
   });
 });

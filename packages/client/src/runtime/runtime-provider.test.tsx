@@ -340,3 +340,84 @@ describe("RuntimeProvider — D2-P5 runBash/abortBash exposure", () => {
     expect(abortSettled).toBe(true);
   });
 });
+
+describe("RuntimeProvider — D2-P6 getTools/setTools/reload exposure", () => {
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("exposes getTools, setTools and reload on the RuntimeApi", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    expect(typeof exposed.getTools).toBe("function");
+    expect(typeof exposed.setTools).toBe("function");
+    expect(typeof exposed.reload).toBe("function");
+  });
+
+  it("getTools sends an exact get_tools query and resolves typed tools", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    const ws = await driveReady();
+    const store = capturedStore!;
+    await act(async () => {
+      void store.openSession("s1");
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.tools.read"] }) });
+      await flush();
+    });
+
+    let resolved: unknown = null;
+    const p = exposed.getTools().then((value) => { resolved = value; });
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.type).toBe("get_tools");
+    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "get_tools", tools: [{ name: "read", active: true }] } } } });
+    await p;
+    expect(resolved).toEqual([{ name: "read", active: true }]);
+  });
+
+  it("setTools sends an exact set_tools command and reload an exact reload command", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    const ws = await driveReady();
+    const store = capturedStore!;
+    await act(async () => {
+      void store.openSession("s1");
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.tools.write", "runtime.reload"] }) });
+      await flush();
+    });
+
+    let setSettled = false;
+    const setP = exposed.setTools(["read", "  write  "]);
+    setP.then(() => { setSettled = true; }, () => {});
+    await flush();
+    const setCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; toolNames?: string[] } } }>(ws, "command")!;
+    expect(setCmd.payload.command.type).toBe("set_tools");
+    expect(setCmd.payload.command.toolNames).toEqual(["read", "write"]);
+    await serverSend(ws, { type: "response", id: setCmd.id, payload: { ok: true, result: { commandId: setCmd.payload.command.commandId, result: { ok: true, type: "set_tools" } } } });
+    expect(setSettled).toBe(true);
+
+    let reloadSettled = false;
+    const reloadP = exposed.reload();
+    reloadP.then(() => { reloadSettled = true; }, () => {});
+    await flush();
+    const reloadCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(reloadCmd.payload.command.type).toBe("reload");
+    await serverSend(ws, { type: "response", id: reloadCmd.id, payload: { ok: true, result: { commandId: reloadCmd.payload.command.commandId, result: { ok: true, type: "reload" } } } });
+    expect(reloadSettled).toBe(true);
+  });
+});

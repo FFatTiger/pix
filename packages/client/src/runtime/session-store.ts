@@ -54,6 +54,7 @@ import {
   type SlashCommandInfo,
   type StreamingAgentMessage,
   type ThinkingLevel,
+  type ToolInfo,
   type WsClientMessage,
   type WsEventMessage,
   type WsHostMessage,
@@ -698,6 +699,72 @@ export class SessionStore implements RuntimeSocketHandler {
     }
     return this.runTypedCommand({ type: "set_model", provider, modelId }, (outcome) => {
       if (outcome.type !== "set_model") throw new Error("unexpected set_model result");
+    });
+  }
+
+  // --- D2-P6 tools + reload runtime control ------------------------------
+  //
+  // `getTools` is a QUERY: it resolves from the correlated result payload and
+  // NEVER triggers a sessiond authority snapshot refresh (same as get_state /
+  // get_commands). `setTools` and `reload` are typed helpers on the ordinary
+  // single-inflight {@link sendCommand} slot; their success is authority-
+  // finalized by sessiond (bounded worker.getSnapshot refresh converges
+  // state.tools / systemPrompt / capabilities BEFORE the terminal result is
+  // released/cached), so the helpers trust the runtime's authoritative answer
+  // and make NO optimistic state writes. Callers gate by capability
+  // (`runtime.tools.read` / `runtime.tools.write` / `runtime.reload`) via
+  // {@link hasRuntimeCapability}; the helpers stay honest and let the runtime
+  // answer `unsupported_capability` if a caller does not gate.
+
+  /**
+   * Query the runtime's current tool list with active flags. Requires
+   * `runtime.tools.read` at the runtime. Pure query — never triggers an
+   * authority refresh and never mutates projection state.
+   */
+  getTools(): Promise<readonly ToolInfo[]> {
+    return this.runTypedCommand({ type: "get_tools" }, (outcome) => {
+      if (outcome.type !== "get_tools") throw new Error("unexpected get_tools result");
+      return outcome.tools;
+    });
+  }
+
+  /**
+   * Set the runtime's active tools. Requires `runtime.tools.write` at the
+   * runtime. Names are strictly trimmed and de-duplicated (order preserved);
+   * an all-blank name is `invalid_input` before any command is sent (consistent
+   * with the Protocol `set_tools` schema which requires each name to contain a
+   * non-whitespace character). Resolves only once sessiond's authoritative
+   * snapshot refresh has converged `state.tools` and the related systemPrompt;
+   * the store makes no optimistic writes.
+   */
+  setTools(names: readonly string[]): Promise<void> {
+    const trimmed: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of names) {
+      const name = typeof raw === "string" ? raw.trim() : "";
+      if (name.length === 0) {
+        return Promise.reject({
+          code: "invalid_input",
+          message: "tool names must be non-empty",
+          retryable: false,
+        } satisfies ProtocolError);
+      }
+      if (!seen.has(name)) { seen.add(name); trimmed.push(name); }
+    }
+    return this.runTypedCommand({ type: "set_tools", toolNames: trimmed }, (outcome) => {
+      if (outcome.type !== "set_tools") throw new Error("unexpected set_tools result");
+    });
+  }
+
+  /**
+   * Reload the runtime (tools, systemPrompt, thinking pin/state and final
+   * capabilities converge). Requires `runtime.reload` at the runtime. Resolves
+   * only once sessiond's authoritative snapshot refresh has converged the
+   * snapshot — never relies on the partial capability event alone.
+   */
+  reload(): Promise<void> {
+    return this.runTypedCommand({ type: "reload" }, (outcome) => {
+      if (outcome.type !== "reload") throw new Error("unexpected reload result");
     });
   }
 

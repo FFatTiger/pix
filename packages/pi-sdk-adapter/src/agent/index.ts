@@ -17,12 +17,14 @@ export {
  * (follow_up) and `runtime.queue` (clear_queue interrupt + set_auto_retry) —
  * the single real queue-control vertical slice. D2-P5 precisely adds
  * `runtime.bash` (bash) and `runtime.bash.abort` (abort_bash) — the single
- * real bash runtime-control slice. Tool configuration, fork, extension UI,
- * compaction, navigation, reload and `runtime.auto_name`
+ * real bash runtime-control slice. D2-P6 precisely adds
+ * `runtime.tools.read` (get_tools), `runtime.tools.write` (set_tools) and
+ * `runtime.reload` (reload) — the single real tools+reload slice. Fork,
+ * extension UI, compaction, navigation and `runtime.auto_name`
  * (generate_session_title) are all implemented by the adapter but gated out by
  * this set so composition (R1/R2) must explicitly opt into broader
  * capabilities. The constant is intentionally narrow and MUST NOT grow to
- * leak tools/fork/extension-UI/reload/auto_name capabilities by default.
+ * leak fork/extension-UI/auto_name capabilities by default.
  */
 export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.prompt",
@@ -36,4 +38,7 @@ export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.queue",
   "runtime.bash",
   "runtime.bash.abort",
+  "runtime.tools.read",
+  "runtime.tools.write",
+  "runtime.reload",
 ] as const;

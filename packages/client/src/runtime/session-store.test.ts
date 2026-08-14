@@ -867,6 +867,132 @@ describe("SessionStore — D2-P3 setModel typed helper", () => {
   });
 });
 
+describe("SessionStore — D2-P6 tools + reload (getTools / setTools / reload)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function attachWithCaps(h: RuntimeHarness, capabilities: string[], sessionId = "s1"): Promise<FakeWebSocket> {
+    h.store.connect();
+    const ws = openReady(h);
+    const p = h.store.openSession(sessionId);
+    return flush().then(() => {
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, capabilities }) });
+      return flush().then(() => p.then(() => ws));
+    });
+  }
+
+  function lastCommand(ws: FakeWebSocket): { id: string; payload: { command: { commandId: string; type: string; toolNames?: string[] } } } {
+    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; toolNames?: string[] } } }>(ws, "command")!;
+    expect(frame).toBeTruthy();
+    return frame;
+  }
+
+  it("getTools sends get_tools and resolves with the typed tool list", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.tools.read"]);
+    const p = h.store.getTools();
+    await flush();
+    const cmd = lastCommand(ws);
+    expect(cmd.payload.command.type).toBe("get_tools");
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "get_tools", tools: [{ name: "read", active: true }, { name: "write", active: false }] } } } });
+    await expect(p).resolves.toEqual([{ name: "read", active: true }, { name: "write", active: false }]);
+  });
+
+  it("setTools trims and de-duplicates names and resolves on ok", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.tools.write"]);
+    const p = h.store.setTools(["  read  ", "write", "read"]);
+    await flush();
+    const cmd = lastCommand(ws);
+    expect(cmd.payload.command.type).toBe("set_tools");
+    expect(cmd.payload.command.toolNames).toEqual(["read", "write"]);
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "set_tools" } } } });
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("setTools rejects a blank name without sending (invalid_input)", async () => {
+    const h = createHarness();
+    await attachWithCaps(h, ["runtime.tools.write"]);
+    await expect(h.store.setTools(["read", "   "])).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+    await expect(h.store.setTools(["read", "\n\t"])).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+    const frames = h.lastSocket().sent.filter((f) => (f as { type: string }).type === "command");
+    expect(frames).toHaveLength(0);
+  });
+
+  it("setTools allows an empty selection (all-tools-off) and sends toolNames []", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.tools.write"]);
+    const p = h.store.setTools([]);
+    await flush();
+    const cmd = lastCommand(ws);
+    expect(cmd.payload.command.type).toBe("set_tools");
+    expect(cmd.payload.command.toolNames).toEqual([]);
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "set_tools" } } } });
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("reload sends reload and resolves on ok", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.reload"]);
+    const p = h.store.reload();
+    await flush();
+    const cmd = lastCommand(ws);
+    expect(cmd.payload.command.type).toBe("reload");
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "reload" } } } });
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("concurrent setTools/reload fail fast as session_busy (single command slot)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.tools.write", "runtime.reload"]);
+    const first = h.store.setTools(["read"]);
+    const second = h.store.reload();
+    await expect(second).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    await flush();
+    const commands = (ws.sent as { type: string; payload?: { command?: { type?: string } } }[]).filter((f) => f.type === "command");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.payload?.command?.type).toBe("set_tools");
+    const cmd = lastCommand(ws);
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "set_tools" } } } });
+    await expect(first).resolves.toBeUndefined();
+  });
+
+  it("getTools/setTools/reload reject honestly with unsupported_capability when the runtime gates them", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+
+    const toolsP = h.store.getTools();
+    await flush();
+    const toolsCmd = lastCommand(ws);
+    ws.serverSend({ type: "response", id: toolsCmd.id, payload: { ok: true, result: { commandId: toolsCmd.payload.command.commandId, result: { ok: false, type: "get_tools", error: { code: "unsupported_capability", message: "runtime.tools.read not available", retryable: false } } } } });
+    await expect(toolsP).rejects.toMatchObject({ code: "unsupported_capability", message: "runtime.tools.read not available" });
+
+    const setP = h.store.setTools(["read"]);
+    await flush();
+    const setCmd = lastCommand(ws);
+    ws.serverSend({ type: "response", id: setCmd.id, payload: { ok: true, result: { commandId: setCmd.payload.command.commandId, result: { ok: false, type: "set_tools", error: { code: "unsupported_capability", message: "runtime.tools.write not available", retryable: false } } } } });
+    await expect(setP).rejects.toMatchObject({ code: "unsupported_capability", message: "runtime.tools.write not available" });
+
+    const reloadP = h.store.reload();
+    await flush();
+    const reloadCmd = lastCommand(ws);
+    ws.serverSend({ type: "response", id: reloadCmd.id, payload: { ok: true, result: { commandId: reloadCmd.payload.command.commandId, result: { ok: false, type: "reload", error: { code: "unsupported_capability", message: "runtime.reload not available", retryable: false } } } } });
+    await expect(reloadP).rejects.toMatchObject({ code: "unsupported_capability", message: "runtime.reload not available" });
+
+    expect(h.store.hasRuntimeCapability("runtime.tools.read")).toBe(false);
+    expect(h.store.hasRuntimeCapability("runtime.tools.write")).toBe(false);
+    expect(h.store.hasRuntimeCapability("runtime.reload")).toBe(false);
+  });
+
+  it("getTools/setTools/reload reject when not attached", async () => {
+    const h = createHarness();
+    await expect(h.store.getTools()).rejects.toThrow();
+    await expect(h.store.setTools(["read"])).rejects.toThrow();
+    await expect(h.store.reload()).rejects.toThrow();
+  });
+});
+
 describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clear_queue interrupt", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });

@@ -73,6 +73,9 @@ describe("public production SDK factory smoke", () => {
           "runtime.queue",
           "runtime.bash",
           "runtime.bash.abort",
+          "runtime.tools.read",
+          "runtime.tools.write",
+          "runtime.reload",
         ]);
 
         // Baseline query: get_state (always available, no capability gate).
@@ -210,32 +213,35 @@ describe("public production SDK factory smoke", () => {
         thinkingLevelPinned: true,
       });
       try {
-        // runtime.bash IS in the production surface (D2-P5) — verify the pair is
-        // OPEN at the capability gate (a real command runs in the bash smoke test).
-        const bashCap = port.getCapabilities().capabilities.includes("runtime.bash");
-        const abortBashCap = port.getCapabilities().capabilities.includes("runtime.bash.abort");
-        assert.equal(bashCap, true, "runtime.bash must be open");
-        assert.equal(abortBashCap, true, "runtime.bash.abort must be open");
-        // runtime.auto_name is explicitly NOT unlocked in D2-P1..P5.
+        // D2-P6: the tools+reload triple IS in the production surface — verify
+        // the capability gate reports them OPEN (real behavior is exercised by
+        // the dedicated tools+reload smoke test).
+        const toolsRead = port.getCapabilities().capabilities.includes("runtime.tools.read");
+        const toolsWrite = port.getCapabilities().capabilities.includes("runtime.tools.write");
+        const reloadCap = port.getCapabilities().capabilities.includes("runtime.reload");
+        assert.equal(toolsRead, true, "runtime.tools.read must be open");
+        assert.equal(toolsWrite, true, "runtime.tools.write must be open");
+        assert.equal(reloadCap, true, "runtime.reload must be open");
+        // runtime.auto_name is explicitly NOT unlocked in D2-P1..P6.
         const autoName = await port.execute({ type: "generate_session_title" });
         assert.equal(autoName.ok, false);
         if (!autoName.ok) {
           assert.equal(autoName.error.code, "unsupported_capability");
           assert.match(autoName.error.message, /runtime\.auto_name/);
         }
-        // runtime.tools.write is NOT in the production surface.
-        const tools = await port.execute({ type: "set_tools", toolNames: [] });
-        assert.equal(tools.ok, false);
-        if (!tools.ok) {
-          assert.equal(tools.error.code, "unsupported_capability");
-          assert.match(tools.error.message, /runtime\.tools\.write/);
+        // runtime.compact is NOT in the production surface.
+        const compact = await port.execute({ type: "compact" });
+        assert.equal(compact.ok, false);
+        if (!compact.ok) {
+          assert.equal(compact.error.code, "unsupported_capability");
+          assert.match(compact.error.message, /runtime\.compact/);
         }
-        // runtime.reload is NOT in the production surface.
-        const reload = await port.execute({ type: "reload" });
-        assert.equal(reload.ok, false);
-        if (!reload.ok) {
-          assert.equal(reload.error.code, "unsupported_capability");
-          assert.match(reload.error.message, /runtime\.reload/);
+        // runtime.fork is NOT in the production surface.
+        const fork = await port.execute({ type: "fork", entryId: "entry-1" });
+        assert.equal(fork.ok, false);
+        if (!fork.ok) {
+          assert.equal(fork.error.code, "unsupported_capability");
+          assert.match(fork.error.message, /runtime\.fork/);
         }
       } finally {
         await port.close("user");
@@ -346,6 +352,82 @@ describe("public production SDK factory smoke", () => {
         assert.equal(afterRetry.ok, true);
         if (afterRetry.ok && afterRetry.type === "get_state") {
           assert.equal(afterRetry.state.autoRetryEnabled, true);
+        }
+      } finally {
+        await port.close("user");
+      }
+    });
+  });
+
+  it("production tools + reload: get_tools query, set_tools authority, reload converges tools/systemPrompt/capabilities", async () => {
+    await withAgentDir(async (root) => {
+      const cwd = join(root, "workspace");
+      await mkdir(cwd, { recursive: true });
+      const port = await new PiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES }).create({
+        cwd,
+        toolNames: ["read", "bash"],
+        thinkingLevel: "off",
+        thinkingLevelPinned: true,
+        name: "D2-P6 Tools+Reload Smoke",
+      });
+      try {
+        // get_tools — QUERY: typed result with canonical names + active flags
+        // reflecting the create-time toolNames selection (read/bash active).
+        const tools = await port.execute({ type: "get_tools" });
+        assert.equal(tools.ok, true, JSON.stringify(tools));
+        if (tools.ok && tools.type === "get_tools") {
+          const names = tools.tools.map((tool) => tool.name);
+          for (const expected of ["read", "write", "edit", "bash", "grep", "find", "ls"]) {
+            assert.ok(names.includes(expected), `tool ${expected} missing: ${JSON.stringify(names)}`);
+          }
+          const read = tools.tools.find((tool) => tool.name === "read");
+          assert.equal(read?.active, true);
+          const write = tools.tools.find((tool) => tool.name === "write");
+          assert.equal(write?.active, false);
+          assert.ok(tools.tools.every((tool) => typeof tool.active === "boolean"));
+        }
+
+        // set_tools subset with a duplicate → de-duplicated active selection and
+        // a non-empty system prompt in the authoritative state.
+        const set = await port.execute({ type: "set_tools", toolNames: ["read", "edit", "read"] });
+        assert.equal(set.ok, true, JSON.stringify(set));
+        if (set.ok) {
+          assert.equal(set.type, "set_tools");
+        }
+        const after = await port.execute({ type: "get_state" });
+        assert.equal(after.ok, true);
+        if (after.ok && after.type === "get_state") {
+          const active = (after.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
+          assert.deepEqual(active, ["edit", "read"], JSON.stringify(after.state.tools));
+          assert.ok(typeof after.state.systemPrompt === "string" && after.state.systemPrompt.length > 0, "subset selection must keep a non-empty system prompt");
+        }
+
+        // reload → converges tools (re-applies configured selection), systemPrompt
+        // and bumps the capability version (never broadens the production set).
+        const versionBefore = port.getCapabilities().version;
+        const reload = await port.execute({ type: "reload" });
+        assert.equal(reload.ok, true, JSON.stringify(reload));
+        if (reload.ok) {
+          assert.equal(reload.type, "reload");
+        }
+        const afterReload = await port.execute({ type: "get_state" });
+        assert.equal(afterReload.ok, true);
+        if (afterReload.ok && afterReload.type === "get_state") {
+          const active = (afterReload.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
+          assert.deepEqual(active, ["edit", "read"], "reload must re-apply the configured tool selection");
+        }
+        assert.ok(port.getCapabilities().version > versionBefore, `reload must bump the capability version (${port.getCapabilities().version} > ${versionBefore})`);
+        // The reloaded set must never broaden beyond the production allowed set.
+        assert.deepEqual([...port.getCapabilities().capabilities], [...PRODUCTION_AGENT_CAPABILITIES]);
+
+        // all-tools-off → systemPrompt cleared.
+        const off = await port.execute({ type: "set_tools", toolNames: [] });
+        assert.equal(off.ok, true, JSON.stringify(off));
+        const offState = await port.execute({ type: "get_state" });
+        assert.equal(offState.ok, true);
+        if (offState.ok && offState.type === "get_state") {
+          assert.equal(offState.state.systemPrompt, "");
+          assert.ok((offState.state.tools ?? []).every((tool) => !tool.active));
         }
       } finally {
         await port.close("user");

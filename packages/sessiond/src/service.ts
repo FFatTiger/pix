@@ -130,10 +130,10 @@ interface RecordState {
   pendingSnapshots: Map<string, PendingSnapshot>;
   /**
    * Per-commandId singleflight for post-success snapshot authority
-   * finalization (set_thinking_level / set_model / set_auto_retry). These commands mutate
-   * runtime state that is NOT carried on the wire `runtime_state_changed`
-   * event (signal-only), so sessiond must refresh via a bounded
-   * worker.getSnapshot and only then publish a terminal result.
+   * finalization (set_thinking_level / set_model / set_auto_retry / set_tools /
+   * reload). These commands mutate runtime state that is NOT carried on the
+   * wire `runtime_state_changed` event (signal-only), so sessiond must refresh
+   * via a bounded worker.getSnapshot and only then publish a terminal result.
    * Original callers, same-id dedup waiters, and same-id retries all await
    * the same promise before observing a terminal result. Exact-once / safe
    * join; never issues a second unbounded getSnapshot for the same commandId.
@@ -152,15 +152,20 @@ interface RecordState {
 
 /**
  * Commands whose success requires an authoritative snapshot refresh before a
- * terminal result may be published/cached (D2-P2/P3/P4). The projection is the
- * attach/resume authority; the wire `runtime_state_changed` event is
- * signal-only. Extend only for commands that mutate state absent from the
- * wire event.
+ * terminal result may be published/cached (D2-P2/P3/P4/P6). The projection is
+ * the attach/resume authority; the wire `runtime_state_changed` event is
+ * signal-only. D2-P6 adds `set_tools` (mutates `state.tools` + systemPrompt,
+ * absent from the wire event) and `reload` (the capability event alone is
+ * partial — the snapshot must converge tools, systemPrompt, thinking pin/state
+ * and the final capability set before success). Extend only for commands that
+ * mutate state absent from the wire event.
  */
 const AUTHORITY_COMMAND_TYPES = new Set<RuntimeCommand["type"]>([
   "set_thinking_level",
   "set_model",
   "set_auto_retry",
+  "set_tools",
+  "reload",
 ]);
 
 /**
@@ -481,7 +486,8 @@ export class SessiondService {
         }
         clearTimeout(pending.timer);
         record.pendingCommands.delete(message.id);
-        // set_thinking_level / set_model / set_auto_retry success must not be cached or returned
+        // set_thinking_level / set_model / set_auto_retry / set_tools / reload
+        // success must not be cached or returned
         // until the projection has converged via a bounded worker.getSnapshot
         // refresh. Defer cache + resolve through the per-commandId singleflight
         // so same-id retries cannot observe a pre-authority success.
@@ -662,7 +668,7 @@ export class SessiondService {
     if (finalization) return finalization;
     const result = await pending.promise;
     // Terminal results are cached by the worker.commandResult handler (ordinary
-    // commands) or by thinking authority finalization (set_thinking_level).
+    // commands) or by authority finalization (set_thinking_level & co).
     // Cache only when still absent and this record/epoch still owns the admission
     // so timeout paths stay at-most-once without cross-rekey writes.
     if (
@@ -676,15 +682,16 @@ export class SessiondService {
   }
 
   /**
-   * D2-P2/P3/P4 authority: `set_thinking_level` / `set_model` / `set_auto_retry` mutate runtime
-   * state that is NOT carried on the wire `runtime_state_changed` event
-   * (signal-only). Sessiond projection is the attach/resume authority, so a
-   * successful authority command must refresh via worker.getSnapshot and only
-   * then publish a terminal success. Refresh failure is fail-closed: every
-   * observer receives the same fixed `ok:false` unavailable result (type still
-   * the original command type, same commandId, no raw error text from the
-   * transport), which is cached so retries do not re-enter the worker or claim
-   * a stale-success state.
+   * D2-P2/P3/P4/P6 authority: `set_thinking_level` / `set_model` /
+   * `set_auto_retry` / `set_tools` / `reload` mutate runtime state that is NOT
+   * carried on the wire `runtime_state_changed` event (signal-only). Sessiond
+   * projection is the attach/resume authority, so a successful authority
+   * command must refresh via worker.getSnapshot and only then publish a
+   * terminal success. Refresh failure is fail-closed: every observer receives
+   * the same fixed `ok:false` unavailable result (type still the original
+   * command type, same commandId, no raw error text from the transport), which
+   * is cached so retries do not re-enter the worker or claim a stale-success
+   * state.
    */
   private ensureAuthorityFinalized(
     record: RecordState,

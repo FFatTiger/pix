@@ -812,7 +812,7 @@ Commit A（9668689）行为保持提取：
 - trusted-roots-ledger.ts 改为 lease 之上的薄 adapter：外部窄 facade/schema/error codes/语义/字节输出不变；resolvePixHostDir 仍抛 TrustedRootsLedgerError。仅 2 处静态源码守卫测试改指向共享 lease（其余 27 项 ledger 测试原样通过）。
 - lease 不导出 package index。
 
-Commit B（待记录）：托管 worktree 账本/域基础，未 mount 路由：
+Commit B（1a1ebd6，合入 main 7a890ca）：托管 worktree 账本/域基础，未 mount 路由：
 - managed-worktrees-ledger.ts：独立 sidecar managed-worktrees.json，kind pix.host.managed-worktrees version1，确定性严格 schema；缺失即空，corrupt/unknown/duplicate/sparse/unsafe fail-closed，0600 常规文件无 symlink/hardlink，有界。记录精确管理证据（非 safeToDelete）：worktreeId、path dev/ino、repoRoot repoDev/repoIno、commonDir、adminDir、base 各 dev/ino、createdAt、source=worktree.create、branchAtCreate、branchCreatedByPix。校验绝对 canonical 路径、包含关系（path 严格在 `${repoRoot}-worktrees` 内、dirname(commonDir)==repoRoot、adminDir 在 commonDir 内）、worktreeId/path 去重、safe-int 身份、有界字符串 + 全部 C0/DEL 控制字符拒绝、max records。与 trusted ledger 共用同一 lease（同一锁、同一 mutex，无第二锁），缺省不写。
 - managed-worktrees.ts 域服务：recordCreated（磁盘先于内存授权）、findLiveAuthority/classify、commitRemoved（精确 record/path，无 branch/base 删除权）、rehydrate/reconcile（身份+git 拓扑佐证；stale 才精确删；foreign 保留不授权；corrupt 证据不动）。注入窄 runner 佐证拓扑，绝不自动导入 Git worktree 或迁移 trusted-root v1 claim。
 - allowed-roots.ts 内部 seam registerManagedAuthorizedRoot（托管 record owner id 为凭据，磁盘提交后内存-only 发布，无 trusted ledger 双写）；durable root promotion 不清除托管所有权。公开 AllowedRootService 接口不变。
@@ -830,4 +830,79 @@ Commit B（待记录）：托管 worktree 账本/域基础，未 mount 路由：
 - 当前 DELETE /v1/worktrees 漏洞仍在，直到下一步路由集成 consult 托管账本；UI 必须保持禁用。
 - 生产 boot 仍会写出合法空 trusted-roots.json（§38 既有残余，行为保持）。
 - 托管 sidecar 未接线 production 组合（未来 createProductionResources 需改为 open 一个共享 lease 再建两 ledger）。
+```
+
+## 40. D2-P6 — Runtime Tools + Reload 生产切片记录
+
+```text
+实现：本分支（branch feat/d2p6-tools-reload，base main 1d3ad63），backend-first，
+未合入/未部署。生产 capability 面从 11 精确扩到 14 token：精确新增
+`runtime.tools.read`（get_tools）、`runtime.tools.write`（set_tools）、
+`runtime.reload`（reload）；compact/fork/navigate/extension_ui/auto_name 仍关闭。
+UI polish 后置（无可见 UI/CSS）。
+
+正确性决策（必须实现）：
+1) get_tools 是查询：直接以 correlated result 返回 typed tool 列表，绝不触发
+   sessiond authority snapshot refresh（与 get_state/get_commands 同级）。
+2) set_tools 加入 sessiond `AUTHORITY_COMMAND_TYPES`：成功结果在 bounded
+   worker.getSnapshot 刷新并更新 state.tools + 相关 systemPrompt 之前不得
+   release/cache；复用 set_model/set_auto_retry 的同一
+   singleflight/triple-match/epoch/rekey/fail-closed 模式（authorityFinalizations /
+   ensureAuthorityFinalized）。refresh 失败固定 unavailable（同 type+commandId，
+   无 raw transport 文本）并缓存，重试不重入 worker。
+3) reload 也必须 authority-finalized：capability 事件（runtime_capabilities_changed）
+   只是部分信号，snapshot 必须在成功前收敛 tools、systemPrompt、thinking pin/state
+   与最终 capability set（version 递增）。生产 reloadCapabilities 未设置，driver
+   reload() 返回构造时的 PRODUCTION_AGENT_CAPABILITIES，绝不拓宽 production 允许集，
+   adapter capability gate（requiredCapabilityForCommand）保持精确。
+4) `AUTHORITY_COMMAND_TYPES` 精确为既有三个 + set_tools + reload 共五个，仅此而已；
+   bash/steer/follow_up/clear_queue/rename/get_tools 均不 refresh。
+
+修改范围：
+- packages/pi-sdk-adapter/src/agent/index.ts（PRODUCTION_AGENT_CAPABILITIES 11→14）
+- packages/sessiond/src/service.ts（AUTHORITY_COMMAND_TYPES + set_tools/reload；注释）
+- packages/sessiond/src/testing/fake-worker.ts（set_tools/reload 权威快照 mutation）
+- packages/client/src/runtime/session-store.ts（typed getTools()/setTools(names)/reload()；
+  setTools 严格 trim/dedupe/nonempty，all-off 允许 []；走单 inflight sendCommand 槽，
+  诚实 session_busy/unsupported_capability，无乐观 state 写入）
+- packages/client/src/runtime/runtime-provider.tsx（RuntimeApi 暴露 getTools/setTools/reload）
+- tests/e2e/runtime.mjs（PRODUCTION_CAPS 14 token；新增 scenarioD2P6ToolsReload 真实链路：
+  initial tools + get_tools typed → set subset/all-off 权威快照 → reload 重应用
+  tools/systemPrompt/thinking pin + 最终 capabilities → detach/reattach 持久 →
+  unknown-tool invalid_input 结构化失败 → closed compact/fork/auto_name 仍关闭；
+  既有 D2-P1/P4/P5 closed-cap 断言从 tools/reload 改为 compact/fork/auto_name）
+- packages/agent-worker/test/fixtures/e2e-runtime-factory.mjs（CAPABILITIES 14 token、
+  TOOLS 目录、get_tools/set_tools/reload 状态、命令→capability 门禁镜像生产）
+- packages/pi-sdk-adapter/test/public-surface.test.ts + production-smoke.test.ts（14 token、
+  tools+reload 真实无网络 smoke）
+- packages/sessiond/test/sessiond.test.ts（set_tools/reload authority 单测：成功 refresh、
+  same-id singleflight、fail-closed 缓存、set_tools vs reload 不同 id、get_tools 无 refresh）
+- packages/client/src/runtime/session-store.test.ts + runtime-provider.test.tsx（D2-P6 typed
+  helpers + RuntimeApi 暴露）
+- docs/refactor-execution-plan.md、docs/migration-ledger.md
+- 未改 Protocol/runtime-core/worker 映射/Host/daemon/package-lock/UI；未触碰
+  D3A host 资源/ledger/files/worktrees、D1 sessions store。
+
+验证：root test（scripts 44 + cli 46 + agent-worker 105 + client 309 + adapter 190 +
+protocol 116 + contract 75 + runtime-core 7 + sessiond 169(1 skip)）全 PASS；
+per-workspace typecheck PASS；architecture + 各包 boundaries PASS；
+Runtime E2E 2 轮 PASS（单连接真实 Host→sessiond→worker→fixture 贯通 D2-P6 切片，
+无孤儿 worker）；Startup/Sessions E2E PASS。
+
+残余/风险：
+- E2E 偶发 all-off 断言失败根因已定位为既有测试助手缺陷，非生产 authority/order bug：
+  tests/e2e/runtime.mjs 的 RuntimeWsClient.getSnapshot 使用仅 `Date.now()` 的 wire id，
+  同一毫秒内连续两次 getSnapshot 会 id 碰撞，client.waitFor 命中旧的（subset）响应返回
+  陈旧投影。D2-P6 场景连续快速 getSnapshot（subset→all-off→reload）暴露了该碰撞。
+  修复：getSnapshot wire id 加单调递增 seq（根因修复，无 sleep/无 debug 日志/无超时放宽）；
+  修复后 20+12 轮 1-round Runtime E2E 全 PASS，且保留原始单次 getSnapshot 断言形态。
+  该碰撞是 pre-existing helper 弱点（未改生产代码）。sessiond 单测（FakeWorker 确定性
+  snapshot 响应）证明 set_tools/reload authority 最终化（singleflight/triple-match/
+  fail-closed/rekey/epoch）确定性正确；fixture+sessiond 双 trace 亦确认 worker.snapshot
+  按 FIFO 有序应用（subset 先、all-off 后），非新引入的 ordering 缺陷。
+- 既有 D2-P4 queue 场景在机器高负载连续多轮时仍有 pre-existing flake（clear_queue 后
+  getSnapshot 与 queue_update 事件投影传播竞态），与本分支无关，单独记录不混淆。
+- reload 通过真实 Pi SDK session.reload() 无网络执行（production smoke 已证明 headless
+  PASS）；资源/插件/技能实际重载语义由 SDK 负责，本切片只收敛 snapshot 权威。
+- UI/能力面板展示、compact/extension UI/fork 后续。
 ```

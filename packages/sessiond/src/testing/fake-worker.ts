@@ -91,9 +91,11 @@ export class FakeWorkerConnection implements WorkerConnection {
           this.runningPrompt = { id: message.id, commandId: command.commandId, sessionId: message.payload.sessionId, timer };
           return;
         }
-        // D2-P2/P3/P4: set_thinking_level / set_model / set_auto_retry mutate the authoritative
-        // snapshot so a subsequent worker.getSnapshot (sessiond post-success
-        // refresh) sees the pin / new model / auto-retry flag.
+        // D2-P2/P3/P4/P6: set_thinking_level / set_model / set_auto_retry /
+        // set_tools / reload mutate the authoritative snapshot so a subsequent
+        // worker.getSnapshot (sessiond post-success refresh) sees the pin / new
+        // model / auto-retry flag / tool selection + systemPrompt / new
+        // capability set.
         if (command.type === "set_thinking_level" && typeof command.level === "string") {
           this.liveSnapshot = {
             ...this.liveSnapshot,
@@ -123,6 +125,30 @@ export class FakeWorkerConnection implements WorkerConnection {
             state: {
               ...this.liveSnapshot.state,
               autoRetryEnabled: command.enabled,
+            },
+          };
+        }
+        if (command.type === "set_tools" && Array.isArray(command.toolNames)) {
+          const names = [...new Set(command.toolNames.filter((name): name is string => typeof name === "string" && /[^\s]/.test(name)))];
+          const all = (this.liveSnapshot.state.tools ?? []).map((tool) => ({
+            ...tool,
+            active: names.length === 0 ? false : names.includes(tool.name),
+          }));
+          this.liveSnapshot = {
+            ...this.liveSnapshot,
+            state: {
+              ...this.liveSnapshot.state,
+              tools: all,
+              ...(names.length === 0 ? { systemPrompt: "" } : {}),
+            },
+          };
+        }
+        if (command.type === "reload") {
+          this.liveSnapshot = {
+            ...this.liveSnapshot,
+            capabilities: {
+              capabilities: ["runtime.prompt", "runtime.abort", "runtime.tools.read", "runtime.tools.write", "runtime.reload"],
+              version: (this.liveSnapshot.capabilities.version ?? 0) + 1,
             },
           };
         }

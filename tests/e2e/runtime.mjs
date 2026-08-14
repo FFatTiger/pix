@@ -41,9 +41,10 @@ const HOST_START_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 8_000;
 const ROUNDS = Math.max(1, Number(process.env.PIX_E2E_ROUNDS ?? "1") || 1);
 
-// D2-P5 production capability surface (11 tokens): the exact set the attach
+// D2-P6 production capability surface (14 tokens): the exact set the attach
 // snapshot must carry. Updating this constant keeps every scenario honest about
-// what is open (bash pair) vs still closed (tools/reload/auto_name/...).
+// what is open (bash pair + tools read/write + reload) vs still closed
+// (compact/fork/auto_name/extension UI/navigate).
 const PRODUCTION_CAPS = [
   "runtime.prompt",
   "runtime.abort",
@@ -56,6 +57,9 @@ const PRODUCTION_CAPS = [
   "runtime.queue",
   "runtime.bash",
   "runtime.bash.abort",
+  "runtime.tools.read",
+  "runtime.tools.write",
+  "runtime.reload",
 ];
 
 // In-memory registry of sessions created through the E2E client, backing both
@@ -70,6 +74,8 @@ const fixtureSessions = new Map();
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+
+const activeNames = (state) => (state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
 
 function pidAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -118,6 +124,7 @@ class RuntimeWsClient {
     this.waiters = new Set();
     this.closed = null;
     this.projection = null;
+    this.msgSeq = 0;
   }
 
   async connect(timeoutMs = STEP_TIMEOUT_MS) {
@@ -225,12 +232,19 @@ class RuntimeWsClient {
     return ack;
   }
 
-  async create({ cwd, projectRoot, createRequestId = `cr-${Date.now()}` }) {
+  async create({ cwd, projectRoot, createRequestId = `cr-${Date.now()}`, toolNames, thinkingLevel, thinkingLevelPinned }) {
     const id = `create-${createRequestId}`;
     this.send({
       type: "create",
       id,
-      payload: { createRequestId, cwd, projectRoot },
+      payload: {
+        createRequestId,
+        cwd,
+        projectRoot,
+        ...(toolNames === undefined ? {} : { toolNames: [...toolNames] }),
+        ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+        ...(thinkingLevelPinned === undefined ? {} : { thinkingLevelPinned }),
+      },
     });
     const res = await this.waitFor(
       (m) => m.type === "response" && m.id === id,
@@ -321,7 +335,7 @@ class RuntimeWsClient {
   }
 
   async getSnapshot(sessionId) {
-    const id = `snap-${sessionId.slice(0, 12)}-${Date.now()}`;
+    const id = `snap-${sessionId.slice(0, 12)}-${Date.now()}-${this.msgSeq++}`;
     this.send({ type: "getSnapshot", id, payload: { sessionId } });
     const res = await this.waitFor(
       (m) => m.type === "response" && m.id === id,
@@ -1294,12 +1308,12 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
 
     // Closed capabilities must remain unsupported on the production surface.
     // Note: clear_queue is an interrupt-only wire type (cannot go via command
-    // envelope). set_model is now open (D2-P3) and queue (D2-P4) is now open
-    // (steer/follow_up commands + clear_queue interrupt + set_auto_retry);
-    // tools/reload stay closed.
+    // envelope). set_model (D2-P3), queue (D2-P4), bash pair (D2-P5) and
+    // tools/reload (D2-P6) are now open; compact/fork/auto_name stay closed.
     for (const [type, extra, token] of [
-      ["set_tools", { toolNames: [] }, "runtime.tools.write"],
-      ["reload", {}, "runtime.reload"],
+      ["compact", {}, "runtime.compact"],
+      ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, {
         commandId: `light-closed-${type}-${Date.now()}`,
@@ -1431,10 +1445,11 @@ async function scenarioD2P4QueueControl(stack, projectDir) {
       version: 1,
     });
 
-    // Closed caps still unsupported: tools/reload (queue is now open).
+    // Closed caps still unsupported: compact/fork/auto_name (queue is now open).
     for (const [type, extra, token] of [
-      ["set_tools", { toolNames: [] }, "runtime.tools.write"],
-      ["reload", {}, "runtime.reload"],
+      ["compact", {}, "runtime.compact"],
+      ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `queue-closed-${type}-${Date.now()}`, type, ...extra });
       assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
@@ -1575,10 +1590,12 @@ async function scenarioD2P5BashControl(stack, projectDir) {
       version: 1,
     });
 
-    // 4. Closed caps still unsupported: tools/reload (bash pair is now open).
+    // 4. Closed caps still unsupported: compact/fork/auto_name (tools/reload
+    //    pair is now OPEN — D2-P6).
     for (const [type, extra, token] of [
-      ["set_tools", { toolNames: [] }, "runtime.tools.write"],
-      ["reload", {}, "runtime.reload"],
+      ["compact", {}, "runtime.compact"],
+      ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `bash-closed-${type}-${Date.now()}`, type, ...extra });
       assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
@@ -1589,6 +1606,148 @@ async function scenarioD2P5BashControl(stack, projectDir) {
     }
 
     return { sessionId, bashId, longBashId, abortElapsedMs: elapsed };
+  } finally {
+    client.close();
+  }
+}
+
+async function scenarioD2P6ToolsReload(stack, projectDir) {
+  // Single browser connection (RuntimeWsClient), real chain:
+  //   Browser WS → Host gateway → sessiond → R2 child → R1 worker-main → fixture.
+  // D2-P6 tools + reload vertical slice. get_tools is a QUERY (no authority
+  // refresh); set_tools and reload are AUTHORITY commands — sessiond must
+  // refresh a bounded worker.getSnapshot after the worker success so the
+  // projection converges state.tools / systemPrompt / capabilities BEFORE the
+  // terminal result is released (singleflight, fail-closed on refresh failure).
+  const client = new RuntimeWsClient(stack.host.wsUrl);
+  await client.connect();
+  try {
+    await client.handshake();
+    const created = await client.create({
+      cwd: projectDir,
+      projectRoot: projectDir,
+      createRequestId: `cr-tools-${Date.now()}`,
+      toolNames: ["read", "write", "bash"],
+      thinkingLevel: "high",
+      thinkingLevelPinned: true,
+    });
+    const sessionId = created.sessionId;
+    const snap = await client.attach(sessionId);
+    assert.equal(snap.type, "snapshot");
+    // D2-P6 production surface = the 11 D2-P5 tokens + tools.read + tools.write + reload.
+    assert.deepEqual(snap.payload.snapshot.capabilities, {
+      capabilities: PRODUCTION_CAPS,
+      version: 1,
+    });
+
+    const bstate = (result) => result?.snapshot?.state ?? result?.state;
+
+    // 1. get_tools — QUERY, typed result with active flags reflecting the
+    //    create-time selection (read/write/bash active).
+    const getRes = await client.command(sessionId, { commandId: `get-tools-${Date.now()}`, type: "get_tools" });
+    assert.equal(getRes.payload.ok, true, JSON.stringify(getRes.payload));
+    const getOutcome = getRes.payload.result.result;
+    assert.equal(getOutcome.ok, true, JSON.stringify(getOutcome));
+    assert.equal(getOutcome.type, "get_tools");
+    const names = getOutcome.tools.map((tool) => tool.name);
+    for (const expected of ["read", "write", "edit", "bash", "grep", "find", "ls"]) {
+      assert.ok(names.includes(expected), `tool ${expected} missing: ${JSON.stringify(names)}`);
+    }
+    const activeOf = (name) => getOutcome.tools.find((tool) => tool.name === name)?.active;
+    assert.equal(activeOf("read"), true);
+    assert.equal(activeOf("write"), true);
+    assert.equal(activeOf("bash"), true);
+    assert.equal(activeOf("edit"), false, "create-time toolNames=read/write/bash must leave edit inactive");
+
+    // 2. set_tools subset → AUTHORITY: the command result must not settle until
+    //    sessiond refreshed the worker snapshot, and the projection + attach
+    //    boundary must show the new tool selection and a non-empty systemPrompt.
+    const setSubId = `set-tools-sub-${Date.now()}`;
+    const setSub = await client.command(sessionId, { commandId: setSubId, type: "set_tools", toolNames: ["read", "edit", "read"] });
+    assert.equal(setSub.payload.ok, true, JSON.stringify(setSub.payload));
+    const setSubOutcome = setSub.payload.result.result;
+    assert.equal(setSubOutcome.ok, true, JSON.stringify(setSubOutcome));
+    assert.equal(setSubOutcome.type, "set_tools");
+    // Duplicate "read" must be de-duplicated: active exactly read+edit.
+    const subSnap = await client.getSnapshot(sessionId);
+    assert.equal(subSnap.payload.ok, true, JSON.stringify(subSnap.payload));
+    const subState = bstate(subSnap.payload.result);
+    assert.deepEqual(activeNames(subState), ["edit", "read"], JSON.stringify(subState.tools));
+    assert.equal(typeof subState.systemPrompt, "string");
+    assert.ok(subState.systemPrompt.length > 0, "subset selection must keep a non-empty system prompt");
+
+    // 3. set_tools all-off → AUTHORITY: every tool inactive and systemPrompt "".
+    const setAllOff = await client.command(sessionId, { commandId: `set-tools-off-${Date.now()}`, type: "set_tools", toolNames: [] });
+    assert.equal(setAllOff.payload.ok, true, JSON.stringify(setAllOff.payload));
+    assert.equal(setAllOff.payload.result.result.ok, true, JSON.stringify(setAllOff.payload));
+    const offSnap = await client.getSnapshot(sessionId);
+    assert.equal(offSnap.payload.ok, true, JSON.stringify(offSnap.payload));
+    const offState = bstate(offSnap.payload.result);
+    assert.deepEqual(activeNames(offState), [], JSON.stringify(offState.tools));
+    assert.equal(offState.systemPrompt, "", JSON.stringify(offState.systemPrompt));
+
+    // 4. Malformed / unknown tool names → structured invalid_input, never raw.
+    const unknown = await client.command(sessionId, { commandId: `set-tools-unknown-${Date.now()}`, type: "set_tools", toolNames: ["read", "does-not-exist"] });
+    assert.equal(unknown.payload.ok, true, JSON.stringify(unknown.payload));
+    const unknownOutcome = unknown.payload.result.result;
+    assert.equal(unknownOutcome.ok, false, JSON.stringify(unknownOutcome));
+    assert.equal(unknownOutcome.error.code, "invalid_input");
+    assert.match(unknownOutcome.error.message, /unknown tool/i);
+
+    // 5. reload → AUTHORITY: re-applies the configured tool selection and
+    //    restores the system prompt; the snapshot must converge tools,
+    //    systemPrompt, thinking pin/state AND the final capability set (version
+    //    bumped) before success — the capability event alone is partial.
+    const reloadId = `reload-${Date.now()}`;
+    const reload = await client.command(sessionId, { commandId: reloadId, type: "reload" });
+    assert.equal(reload.payload.ok, true, JSON.stringify(reload.payload));
+    const reloadOutcome = reload.payload.result.result;
+    assert.equal(reloadOutcome.ok, true, JSON.stringify(reloadOutcome));
+    assert.equal(reloadOutcome.type, "reload");
+    // Last set_tools was the all-off → reload re-applies all-off (configured).
+    const reloadSnap = await client.getSnapshot(sessionId);
+    assert.equal(reloadSnap.payload.ok, true, JSON.stringify(reloadSnap.payload));
+    const reloadState = bstate(reloadSnap.payload.result);
+    assert.deepEqual(activeNames(reloadState), [], JSON.stringify(reloadState.tools));
+    assert.equal(reloadState.systemPrompt, "");
+    assert.equal(reloadState.thinkingLevel, "high");
+    assert.equal(reloadState.thinkingLevelPinned, true);
+    // Final capabilities must converge (version bumped by reload) — the
+    // authority refresh projects the reloaded capability set before the
+    // command settles.
+    assert.ok(reloadSnap.payload.result.capabilities.version >= 2, `reload must converge final capabilities with bumped version (got ${reloadSnap.payload.result.capabilities.version})`);
+    const reloadCapVersion = reloadSnap.payload.result.capabilities.version;
+
+    // 6. detach → reattach: tools/systemPrompt/thinking pin persist via the
+    //    worker snapshot; capabilities reflect the reloaded set.
+    await client.detach(sessionId);
+    const reattach = await client.attach(sessionId);
+    assert.equal(reattach.type, "snapshot");
+    const raState = reattach.payload.snapshot.state;
+    assert.ok((raState.tools ?? []).every((tool) => !tool.active), JSON.stringify(raState.tools));
+    assert.equal(raState.systemPrompt, "");
+    assert.equal(raState.thinkingLevel, "high");
+    assert.equal(raState.thinkingLevelPinned, true);
+    assert.deepEqual(reattach.payload.snapshot.capabilities, {
+      capabilities: PRODUCTION_CAPS,
+      version: reloadCapVersion,
+    });
+
+    // 7. Closed caps remain unsupported: compact/fork/auto_name.
+    for (const [type, extra, token] of [
+      ["compact", {}, "runtime.compact"],
+      ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["generate_session_title", {}, "runtime.auto_name"],
+    ]) {
+      const closed = await client.command(sessionId, { commandId: `tools-closed-${type}-${Date.now()}`, type, ...extra });
+      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
+      const outcome = closed.payload.result.result;
+      assert.equal(outcome.ok, false, `${type} must be closed`);
+      assert.equal(outcome.error.code, "unsupported_capability");
+      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
+    }
+
+    return { sessionId, getTools: getOutcome, reloadVersion: reloadCapVersion };
   } finally {
     client.close();
   }
@@ -1745,6 +1904,9 @@ async function runRound(round) {
     results.bashControl = await scenarioD2P5BashControl(stack, projectA);
     log(`round ${round}: D2-P5 bash control OK session=${results.bashControl.sessionId}`);
 
+    results.toolsReload = await scenarioD2P6ToolsReload(stack, projectA);
+    log(`round ${round}: D2-P6 tools+reload OK session=${results.toolsReload.sessionId}`);
+
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
 
@@ -1805,8 +1967,9 @@ async function main() {
           "session isolation",
           "create then host-restart cold attach",
           "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + closed caps)",
-          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed tools/reload)",
-          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed tools/reload)",
+          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed compact/fork/auto_name)",
+          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed compact/fork/auto_name)",
+          "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + closed compact/fork/auto_name)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {

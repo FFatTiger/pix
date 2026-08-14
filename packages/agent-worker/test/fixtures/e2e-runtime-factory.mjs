@@ -16,14 +16,15 @@
 
 import { randomUUID } from "node:crypto";
 
-// D2-P1/D2-P2/P3/P4/P5: production light-command + queue + bash surface. Baseline
-// queries (get_state / get_commands / get_last_assistant_text) are always
-// available; runtime.stats (get_session_stats), runtime.session.rename
+// D2-P1/D2-P2/P3/P4/P5/P6: production light-command + queue + bash + tools/reload
+// surface. Baseline queries (get_state / get_commands / get_last_assistant_text)
+// are always available; runtime.stats (get_session_stats), runtime.session.rename
 // (set_session_name), runtime.thinking.set (set_thinking_level), runtime.model.set
 // (set_model), runtime.steer (steer), runtime.follow_up (follow_up), runtime.queue
-// (clear_queue interrupt + set_auto_retry) and the D2-P5 bash pair
-// runtime.bash (bash) / runtime.bash.abort (abort_bash) are the
-// capability-gated unlocks.
+// (clear_queue interrupt + set_auto_retry), the D2-P5 bash pair
+// runtime.bash (bash) / runtime.bash.abort (abort_bash) and the D2-P6 tools+
+// reload triple runtime.tools.read (get_tools) / runtime.tools.write (set_tools)
+// / runtime.reload (reload) are the capability-gated unlocks.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
@@ -37,9 +38,56 @@ const CAPABILITIES = {
     "runtime.queue",
     "runtime.bash",
     "runtime.bash.abort",
+    "runtime.tools.read",
+    "runtime.tools.write",
+    "runtime.reload",
   ],
   version: 1,
 };
+
+// Deterministic no-network builtin tool catalog used by the fixture get_tools /
+// set_tools / reload paths. Mirrors the production SDK builtin names.
+const TOOLS = [
+  { name: "read", description: "Read a file", active: true },
+  { name: "write", description: "Write a file", active: true },
+  { name: "edit", description: "Edit a file", active: true },
+  { name: "bash", description: "Run a shell command", active: true },
+  { name: "grep", description: "Search file contents", active: true },
+  { name: "find", description: "Find files", active: true },
+  { name: "ls", description: "List a directory", active: true },
+];
+const TOOL_NAMES = new Set(TOOLS.map((tool) => tool.name));
+
+// Fixture command → required capability gate (mirrors the production adapter's
+// RUNTIME_COMMAND_CAPABILITIES). Commands whose required token is absent from
+// the fixture CAPABILITIES are answered `unsupported_capability` (never a fake
+// success), keeping closed surfaces honest.
+const REQUIRED_CAP = {
+  prompt: "runtime.prompt",
+  abort: "runtime.abort",
+  set_model: "runtime.model.set",
+  fork: "runtime.fork",
+  navigate_tree: "runtime.navigate",
+  set_thinking_level: "runtime.thinking.set",
+  compact: "runtime.compact",
+  set_session_name: "runtime.session.rename",
+  get_session_stats: "runtime.stats",
+  set_auto_compaction: "runtime.compact",
+  clear_queue: "runtime.queue",
+  steer: "runtime.steer",
+  follow_up: "runtime.follow_up",
+  get_tools: "runtime.tools.read",
+  set_tools: "runtime.tools.write",
+  reload: "runtime.reload",
+  abort_compaction: "runtime.compact.abort",
+  extension_ui_response: "runtime.extension_ui",
+  extension_ui_input: "runtime.extension_ui",
+  set_auto_retry: "runtime.queue",
+  bash: "runtime.bash",
+  abort_bash: "runtime.bash.abort",
+  generate_session_title: "runtime.auto_name",
+};
+const OPEN_CAPS = new Set(CAPABILITIES.capabilities);
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -58,6 +106,9 @@ export default {
       cwd: input.cwd,
       sessionId,
       mode: "create",
+      toolNames: input.toolNames,
+      thinkingLevel: input.thinkingLevel,
+      thinkingLevelPinned: input.thinkingLevelPinned,
     });
   },
   async open(input) {
@@ -69,7 +120,7 @@ export default {
   },
 };
 
-function makePort({ cwd, sessionId, mode }) {
+function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingLevel: initialThinkingLevel, thinkingLevelPinned: initialThinkingLevelPinned }) {
   const listeners = new Set();
   let closed = false;
   let executeCount = 0;
@@ -89,6 +140,25 @@ function makePort({ cwd, sessionId, mode }) {
   let model = { provider: "anthropic", id: "claude-sonnet-4" };
   let autoRetryEnabled = false;
   let queued = { steering: [], followUp: [] };
+  // D2-P6 tools state: active tool names (mirrors the SDK getActiveToolNames).
+  let activeToolNames = TOOLS.map((tool) => tool.name);
+  /** Last configured tool selection (reload re-applies it). */
+  let configuredToolNames = null;
+  let systemPrompt = "fixture system prompt";
+  // Apply create-time inputs (toolNames / thinkingLevel / thinkingLevelPinned).
+  if (Array.isArray(initialToolNames)) {
+    const trimmed = [];
+    const seen = new Set();
+    for (const value of initialToolNames) {
+      const name = typeof value === "string" ? value.trim() : "";
+      if (name !== "" && !seen.has(name)) { seen.add(name); trimmed.push(name); }
+    }
+    activeToolNames = [...trimmed];
+    configuredToolNames = [...trimmed];
+    if (trimmed.length === 0) systemPrompt = "";
+  }
+  if (typeof initialThinkingLevel === "string" && THINKING_LEVELS.has(initialThinkingLevel)) thinkingLevel = initialThinkingLevel;
+  if (initialThinkingLevelPinned === true) thinkingLevelPinned = true;
 
   const commands = [
     { name: "/compact", description: "Compact the session", source: "prompt" },
@@ -126,6 +196,8 @@ function makePort({ cwd, sessionId, mode }) {
       autoRetryEnabled,
       queuedMessages: queued,
       pendingMessageCount: queued.steering.length + queued.followUp.length,
+      systemPrompt,
+      tools: TOOLS.map((tool) => ({ ...tool, active: activeToolNames.includes(tool.name) })),
       ...(bashProjection === null ? {} : { bash: { ...bashProjection } }),
       ...(sessionName === "" ? {} : { sessionName }),
     };
@@ -149,6 +221,12 @@ function makePort({ cwd, sessionId, mode }) {
     },
     async execute(command) {
       executeCount += 1;
+      // Capability gate: a closed command answers unsupported_capability exactly
+      // like the production adapter gate (never a fake success).
+      const required = REQUIRED_CAP[command.type];
+      if (required !== undefined && !OPEN_CAPS.has(required)) {
+        return { ok: false, type: command.type, error: { code: "unsupported_capability", message: `${required} not available`, retryable: false } };
+      }
       switch (command.type) {
         case "get_state":
           return { ok: true, type: "get_state", state: baseState() };
@@ -217,12 +295,47 @@ function makePort({ cwd, sessionId, mode }) {
           }
           return { ok: true, type: "set_model" };
         }
-        // Closed production surface: tools/reload must stay unsupported.
-        case "set_tools":
-          return { ok: false, type: "set_tools", error: { code: "unsupported_capability", message: "runtime.tools.write not available", retryable: false } };
-        // keep toolNames accepted by protocol shape but still closed by capability
-        case "reload":
-          return { ok: false, type: "reload", error: { code: "unsupported_capability", message: "runtime.reload not available", retryable: false } };
+        // D2-P6 tools + reload: capability-gated unlocks with strict
+        // trim/dedupe/nonempty and unknown-tool structured failure.
+        case "get_tools":
+          return {
+            ok: true,
+            type: "get_tools",
+            tools: TOOLS.map((tool) => ({ ...tool, active: activeToolNames.includes(tool.name) })),
+          };
+        case "set_tools": {
+          const raw = Array.isArray(command.toolNames) ? command.toolNames : [];
+          const trimmed = [];
+          const seen = new Set();
+          for (const value of raw) {
+            const name = typeof value === "string" ? value.trim() : "";
+            if (name === "") {
+              return { ok: false, type: "set_tools", error: { code: "invalid_input", message: "tool names must be non-empty", retryable: false } };
+            }
+            if (!seen.has(name)) { seen.add(name); trimmed.push(name); }
+          }
+          const unknown = trimmed.find((name) => !TOOL_NAMES.has(name));
+          if (unknown !== undefined) {
+            return { ok: false, type: "set_tools", error: { code: "invalid_input", message: `unknown tool: ${unknown}`, retryable: false } };
+          }
+          activeToolNames = [...trimmed];
+          configuredToolNames = [...trimmed];
+          // All-tools-off clears the system prompt (mirrors production).
+          if (trimmed.length === 0) systemPrompt = "";
+          return { ok: true, type: "set_tools" };
+        }
+        case "reload": {
+          // Reload re-applies the configured tools (or all-off), restores the
+          // non-empty system prompt unless all tools are off, and bumps the
+          // capability version. Never broadens beyond the fixed production set.
+          if (configuredToolNames !== null) {
+            activeToolNames = [...configuredToolNames];
+            if (configuredToolNames.length === 0) systemPrompt = "";
+            else if (systemPrompt === "") systemPrompt = "fixture system prompt";
+          }
+          CAPABILITIES.version += 1;
+          return { ok: true, type: "reload" };
+        }
         case "steer": {
           const steerText = typeof command.message === "string" ? command.message.trim() : "";
           if (steerText === "") {

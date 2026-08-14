@@ -824,6 +824,250 @@ test("set_auto_retry wrong result type does not finalize; legitimate frame compl
   await service.shutdown();
 });
 
+/** D2-P6 fixture snapshot with a deterministic tool catalog + systemPrompt. */
+const toolsSnapshot = (sessionId: string, cwd = "/workspace", projectRoot = cwd): RuntimeSnapshot => ({
+  ...snapshot(sessionId, cwd, projectRoot),
+  state: {
+    ...snapshot(sessionId, cwd, projectRoot).state,
+    systemPrompt: "fixture system prompt",
+    tools: [
+      { name: "read", description: "Read a file", active: true },
+      { name: "write", description: "Write a file", active: true },
+      { name: "edit", description: "Edit a file", active: true },
+      { name: "bash", description: "Run a shell command", active: true },
+      { name: "grep", description: "Search file contents", active: true },
+      { name: "find", description: "Find files", active: true },
+      { name: "ls", description: "List a directory", active: true },
+    ],
+  },
+});
+
+const activeToolNames = (state: RuntimeSnapshot["state"]): string[] =>
+  (state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
+
+test("set_tools success refreshes authoritative snapshot before command returns (D2-P6)", async () => {
+  const { service, workers } = harness({ worker: { snapshot: toolsSnapshot("s") } });
+  await service.activate("s");
+  const before = service.getSnapshot("s");
+  assert.deepEqual(activeToolNames(before.state), ["bash", "edit", "find", "grep", "ls", "read", "write"]);
+  const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const result = await service.command("s", { type: "set_tools", commandId: "tools-1", toolNames: ["read", "edit", "read"] });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "set_tools");
+
+  // sessiond must issue a post-success worker.getSnapshot refresh so the
+  // projection converges on the de-duplicated tool selection BEFORE the command
+  // returns.
+  const snapshotsAfter = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.ok(snapshotsAfter > snapshotsBefore, "expected post-success worker.getSnapshot refresh");
+
+  const snap = service.getSnapshot("s");
+  assert.deepEqual(activeToolNames(snap.state), ["edit", "read"], JSON.stringify(snap.state.tools));
+  assert.ok(typeof snap.state.systemPrompt === "string" && snap.state.systemPrompt.length > 0, "subset selection keeps a non-empty system prompt");
+
+  // Attach boundary also carries the new tool selection (sessiond projection authority).
+  const attach = service.attach({ sessionId: "s" });
+  assert.deepEqual(activeToolNames(attach.result.snapshot!.state), ["edit", "read"]);
+  await service.shutdown();
+});
+
+test("set_tools all-off clears tools and system prompt in the authoritative snapshot", async () => {
+  const { service } = harness({ worker: { snapshot: toolsSnapshot("s") } });
+  await service.activate("s");
+  const result = await service.command("s", { type: "set_tools", commandId: "tools-off", toolNames: [] });
+  assert.equal(result.result.ok, true);
+  const snap = service.getSnapshot("s");
+  assert.deepEqual(activeToolNames(snap.state), [], JSON.stringify(snap.state.tools));
+  assert.equal(snap.state.systemPrompt, "");
+  await service.shutdown();
+});
+
+test("set_tools same-id second caller waits for deferred authority refresh with one worker.command", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: toolsSnapshot("s"), postCommandSnapshotDelayMs: 80 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "set_tools" as const, commandId: "tools-same", toolNames: ["read"] };
+
+  const first = service.command("s", command);
+  await wait(30);
+  let firstSettled = false;
+  void first.then(() => { firstSettled = true; });
+  await wait(0);
+  assert.equal(firstSettled, false, "original caller must not settle while refresh is deferred");
+
+  const second = service.command("s", command);
+  let secondSettled = false;
+  void second.then(() => { secondSettled = true; });
+  await wait(20);
+  assert.equal(firstSettled, false);
+  assert.equal(secondSettled, false, "same-id caller must join finalization, not settle early");
+
+  const workerCommands = worker.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 1, "exactly one worker.command for same commandId");
+
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.deepEqual(a, b);
+  assert.deepEqual(activeToolNames(service.getSnapshot("s").state), ["read"]);
+  await service.shutdown();
+});
+
+test("set_tools refresh failure fail-closes all observers and cached retry", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: toolsSnapshot("s"), dropPostCommandSnapshots: true },
+    service: { commandTimeoutMs: 80 },
+  });
+  await service.activate("s");
+  const command = { type: "set_tools" as const, commandId: "tools-fail", toolNames: ["read"] };
+
+  const first = service.command("s", command);
+  await wait(10);
+  const second = service.command("s", command);
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, false);
+  assert.equal(b.result.ok, false);
+  assert.equal(a.result.type, "set_tools");
+  assert.equal(b.result.type, "set_tools");
+  assert.equal(a.commandId, "tools-fail");
+  assert.deepEqual(a, b);
+  if (!a.result.ok) {
+    assert.equal(a.result.error.code, "unavailable");
+    assert.match(a.result.error.message, /snapshot|authority|timed out/i);
+  }
+
+  // Projection must not claim the new selection after fail-closed authority refresh.
+  const state = service.getSnapshot("s").state;
+  assert.ok(!activeToolNames(state).includes("read") || activeToolNames(state).length !== 1, "projection must not claim the failed selection");
+
+  const commandsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length;
+  const snapshotsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, a);
+  assert.equal(retry.result.ok, false);
+  assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length, commandsBeforeRetry, "cached failure must not re-send worker.command");
+  assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsBeforeRetry, "cached failure must not re-refresh snapshot");
+  await service.shutdown();
+});
+
+test("set_tools vs reload different ids remain independent", async () => {
+  const { service, workers } = harness({ worker: { snapshot: toolsSnapshot("s") } });
+  await service.activate("s");
+  const [a, b] = await Promise.all([
+    service.command("s", { type: "set_tools", commandId: "tools-a", toolNames: ["read"] }),
+    service.command("s", { type: "reload", commandId: "reload-b" }),
+  ]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.equal(a.commandId, "tools-a");
+  assert.equal(b.commandId, "reload-b");
+  const workerCommands = workers.workers[0]!.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 2);
+  await service.shutdown();
+});
+
+test("reload success refreshes authoritative snapshot with tools/systemPrompt/thinking and final capabilities", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: { ...toolsSnapshot("s"), state: { ...toolsSnapshot("s").state, thinkingLevel: "high" as const, thinkingLevelPinned: true } } },
+  });
+  await service.activate("s");
+  const before = service.getSnapshot("s");
+  const versionBefore = before.capabilities.version;
+  const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const result = await service.command("s", { type: "reload", commandId: "reload-1" });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "reload");
+
+  const snapshotsAfter = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.ok(snapshotsAfter > snapshotsBefore, "expected post-success worker.getSnapshot refresh after reload");
+
+  const snap = service.getSnapshot("s");
+  // Reload converges tools + systemPrompt + thinking pin/state AND the final
+  // capability set (version bumped by the fake worker reload).
+  assert.deepEqual(activeToolNames(snap.state), ["bash", "edit", "find", "grep", "ls", "read", "write"]);
+  assert.ok(snap.state.systemPrompt && snap.state.systemPrompt.length > 0, "reload keeps a non-empty system prompt");
+  assert.equal(snap.state.thinkingLevel, "high");
+  assert.equal(snap.state.thinkingLevelPinned, true);
+  assert.ok(snap.capabilities.version > versionBefore, `reload must bump the capability version (${snap.capabilities.version} > ${versionBefore})`);
+
+  // Attach boundary carries the reloaded set.
+  const attach = service.attach({ sessionId: "s" });
+  assert.ok(attach.result.snapshot!.capabilities.version > versionBefore);
+  await service.shutdown();
+});
+
+test("reload same-id second caller joins finalization with one worker.command", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: toolsSnapshot("s"), postCommandSnapshotDelayMs: 80 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "reload" as const, commandId: "reload-same" };
+
+  const first = service.command("s", command);
+  await wait(30);
+  const second = service.command("s", command);
+  let firstSettled = false;
+  let secondSettled = false;
+  void first.then(() => { firstSettled = true; });
+  void second.then(() => { secondSettled = true; });
+  await wait(20);
+  assert.equal(firstSettled, false);
+  assert.equal(secondSettled, false, "same-id reload caller must join finalization, not settle early");
+
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, 1, "exactly one worker.command for same reload commandId");
+
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.deepEqual(a, b);
+  await service.shutdown();
+});
+
+test("reload refresh failure fail-closes all observers and cached retry", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: toolsSnapshot("s"), dropPostCommandSnapshots: true },
+    service: { commandTimeoutMs: 80 },
+  });
+  await service.activate("s");
+  const command = { type: "reload" as const, commandId: "reload-fail" };
+
+  const first = service.command("s", command);
+  await wait(10);
+  const second = service.command("s", command);
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, false);
+  assert.equal(b.result.ok, false);
+  assert.equal(a.result.type, "reload");
+  assert.equal(b.result.type, "reload");
+  assert.equal(a.commandId, "reload-fail");
+  assert.deepEqual(a, b);
+  if (!a.result.ok) {
+    assert.equal(a.result.error.code, "unavailable");
+    assert.match(a.result.error.message, /snapshot|authority|timed out/i);
+  }
+  await service.shutdown();
+});
+
+test("get_tools is a query and never triggers an authority snapshot refresh", async () => {
+  const { service, workers } = harness({ worker: { snapshot: toolsSnapshot("s") } });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const snapshotsBefore = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const result = await service.command("s", { type: "get_tools", commandId: "get-tools-1" });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "get_tools");
+  assert.equal(worker.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsBefore, "get_tools must NOT trigger an authority refresh");
+  await service.shutdown();
+});
+
 test("steer/follow_up/clear_queue never trigger an authority snapshot refresh (D2-P4)", async () => {
   const { service, workers } = harness();
   await service.activate("s");
