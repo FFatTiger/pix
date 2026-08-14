@@ -2036,11 +2036,7 @@ seam 与否都排除；自定义 readonly 列表含 mutation token 也在 down �
 ## 54. PR#3 — sessiond 进程内 Worker 诊断手动 port 切片（DONE）
 
 ```text
-实现：branch feat/sessiond-worker-diagnostics（本提交，base main ef564b7，未 push/
-deploy/live service）。编号：Host rename §52、Client rename §53 为并行保留号，
-本切片占用 §54（execution-plan D4 行未改，避免并行冲突）。backend 仅 sessiond + docs +
-E2E 断言；无 Host /health、无 Protocol DTO、无 RPC method、无 CLI JSON、无 capability、
-无 package-lock。
+实现：source `db74383`（branch feat/sessiond-worker-diagnostics，base main `ef564b7`），current-main 集成 `49e6918`；Fresh verifier 独立 PASS，已准备合入 main，未 push/deploy/live service。编号：Host rename §52、Client rename §53 为并行保留号，本切片占用 §54。backend 仅 sessiond + docs + E2E 断言；无 Host /health、无 Protocol DTO、无 RPC method、无 CLI JSON、无 capability、无 package-lock。
 
 目标：为测试/operator 内部提供权威的进程内 Worker 生命周期诊断，替代 E2E 中基于 pgrep
 的进程扫描，同时绝不在任何公开面暴露标识符（session id/name/path/PID）。
@@ -2101,9 +2097,6 @@ E2E 断言；无 Host /health、无 Protocol DTO、无 RPC method、无 CLI JSON
 验证：sessiond typecheck/build/boundary PASS；sessiond 全量多轮 246-247 pass/0 fail/1 skip
 （唯一偶发失败为既存 `RPC authenticates locally` 的 socket-close 时序 flake，与本切片无关，
 单测隔离 3/3 PASS，baseline 229/229 PASS）；Runtime/Sessions E2E 各 2 轮 PASS；Startup
-E2E 回归 PASS；root typecheck/build/test PASS；check:architecture PASS；git diff-check 与
-工作树 clean。独立 verifier：请重放 workerPids/workersByStatus/daemon.diagnostics 测试与
-Runtime/Sessions E2E，确认 pgrep 移除与 no-false-green。
+E2E 回归 PASS；root typecheck/build/test PASS；check:architecture PASS；git diff-check 与工作树 clean。Fresh verifier 重放 workerPids/workersByStatus/daemon.diagnostics、RPC wire、Runtime 两轮、Sessions 两轮、Startup 与 current-main merge-tree，确认 no-false-green、无 orphan、无公开面增益并给出 PASS。current-main 仅 ledger 追加冲突，Sessions E2E 自动合并同时保留 Host PATCH rename 与 handle diagnostics。
 
-残余/后续：诊断面仅进程内句柄，未接任何 CLI/Host/Protocol 公开输出；Windows 支持不宣称；
-Host rename §52、Client rename §53 待并行切片。
+残余/后续：诊断面仅进程内句柄，未接任何 CLI/Host/Protocol 公开输出；Windows 支持不宣称；Host rename §52 已完成，Client rename §53 仍为并行切片。
