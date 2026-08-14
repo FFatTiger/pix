@@ -16,12 +16,15 @@
  * - The FIFO tail never rejects (a rejected/failed task can never poison later
  *   tasks) and one callback holds exactly one lane — it never re-admits
  *   recursively.
- * - Pending operation kinds are visible synchronously so a delete can fail
- *   closed against an "earlier activation reservation" without waiting for the
- *   worker.
- * - Exact-owner cleanup: a lane (and every alias/generation) is removed the
- *   moment its last pending operation settles, so success/failure leaves no
- *   coordinator/alias/generation leak.
+ * - Pending operation reservations are tracked as PER-KIND POSITIVE REFERENCE
+ *   COUNTS (`Map<IdentityOperationKind, number>`), visible synchronously, so a
+ *   delete can fail closed against an "earlier activation reservation" without
+ *   waiting for the worker, and a lane is NEVER removed while a same-kind
+ *   sibling is still queued/running — one settled task of a kind can never
+ *   release a lane owned by another task of that same kind.
+ * - Exact-owner cleanup: a lane (and every alias/generation) is removed only
+ *   when the LAST pending reservation of EVERY kind settles, so success/failure
+ *   leaves no coordinator/alias/generation leak.
  *
  * The coordinator is intentionally free of service internals (records, worker
  * connections, catalog, adapter): it only serializes identity operations and
@@ -43,8 +46,12 @@ interface Lane {
   generation: number;
   /** FIFO tail. NEVER rejects — failed tasks cannot poison later tasks. */
   tail: Promise<void>;
-  /** Operation kinds currently admitted (running OR queued ahead). */
-  pending: Set<IdentityOperationKind>;
+  /**
+   * Per-kind positive reference counts of operations currently admitted
+   * (running OR queued ahead). A lane drains only when the ENTIRE map is empty;
+   * one same-kind sibling settling can never release the lane for another.
+   */
+  pending: Map<IdentityOperationKind, number>;
 }
 
 /** Identity-run context handed to each admitted operation. */
@@ -175,7 +182,7 @@ export class SessionOperationCoordinator {
       aliases: new Set([id]),
       generation: 0,
       tail: Promise.resolve(),
-      pending: new Set(),
+      pending: new Map(),
     };
     this.lanes.set(id, lane);
     this.aliasIndex.set(id, lane);
@@ -185,17 +192,20 @@ export class SessionOperationCoordinator {
   /**
    * Admit an identity operation into the per-session FIFO lane.
    *
-   * The pending kind is registered synchronously (before the operation can be
-   * observed running), the operation waits for every previously admitted
-   * operation of the same identity, and the lane tail is made rejection-proof
-   * so a failed task never blocks the next one. The returned promise settles
-   * with the operation result (rejection propagates to this caller only) and
-   * performs exact-owner cleanup when the lane drains.
+   * The per-kind reservation is incremented SYNCHRONOUSLY (before the operation
+   * can be observed running and before any tail chaining), the operation waits
+   * for every previously admitted operation of the same identity, and the lane
+   * tail is made rejection-proof so a failed task never blocks the next one.
+   * The returned promise settles with the operation result (rejection
+   * propagates to this caller only); its `finally` decrements exactly one
+   * reservation of this kind, removes the kind only at zero, and only then
+   * performs exact-owner lane cleanup — so a settled same-kind sibling can
+   * never release the lane while another same-kind operation is still pending.
    */
   admit<T>(id: string, kind: IdentityOperationKind, operation: (ctx: IdentityOperationContext) => Promise<T>): Promise<T> {
     const lane = this.laneFor(id);
     const generation = lane.generation;
-    lane.pending.add(kind);
+    lane.pending.set(kind, (lane.pending.get(kind) ?? 0) + 1);
     const run = lane.tail.then(() =>
       operation({
         get canonicalId() {
@@ -207,9 +217,31 @@ export class SessionOperationCoordinator {
     // Poisoning-immune tail: the next task never inherits this task's rejection.
     lane.tail = run.then(() => undefined, () => undefined);
     return run.finally(() => {
-      lane.pending.delete(kind);
-      this.maybeRemoveLane(lane);
+      this.releasePending(lane, kind);
     });
+  }
+
+  /**
+   * Decrement exactly one per-kind reservation (Promise.finally semantics: a
+   * rejected task still decrements exactly once). The kind is removed only at
+   * zero; the lane is removed only when the whole map is empty. An underflow is
+   * impossible by construction (each admit is paired with exactly one release
+   * on the same lane/kind) — guard it fail-closed without leaking the lane.
+   */
+  private releasePending(lane: Lane, kind: IdentityOperationKind): void {
+    const count = lane.pending.get(kind);
+    if (count === undefined || count <= 0) {
+      // Unreachable unless a bookkeeping bug introduced a mismatch. Fail closed:
+      // never let a guard failure remove the lane mid-flight and orphan its
+      // still-pending siblings (that is the exact same-kind race this counter
+      // exists to prevent). A stray zero entry is tolerated; correct admit/
+      // finally pairing never reaches this branch.
+      lane.pending.set(kind, 0);
+      return;
+    }
+    if (count === 1) lane.pending.delete(kind);
+    else lane.pending.set(kind, count - 1);
+    this.maybeRemoveLane(lane);
   }
 
   /**
@@ -247,10 +279,10 @@ export class SessionOperationCoordinator {
 
   /** Whether an operation of `kind` is currently admitted for `id` (running or queued). */
   hasPendingKind(id: string, kind: IdentityOperationKind): boolean {
-    return this.aliasIndex.get(id)?.pending.has(kind) ?? false;
+    return (this.aliasIndex.get(id)?.pending.get(kind) ?? 0) > 0;
   }
 
-  /** Exact-owner cleanup: remove the lane + every alias the moment it drains. */
+  /** Exact-owner cleanup: remove the lane + every alias only when NO reservation of ANY kind remains. */
   private maybeRemoveLane(lane: Lane): void {
     if (lane.pending.size > 0) return;
     for (const alias of lane.aliases) this.aliasIndex.delete(alias);

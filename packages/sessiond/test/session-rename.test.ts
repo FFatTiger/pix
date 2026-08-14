@@ -293,6 +293,111 @@ test("delete while an activation reservation exists fails closed promptly with s
 });
 
 // ---------------------------------------------------------------------------
+// Same-kind reservation proof at the service level (verifier kind-race2/3):
+// one settled same-kind rename sibling must NOT release the lane while another
+// is still pending, so a delete or third rename admitted in that window queues
+// FIFO behind it instead of bypassing to a fresh lane. These fail the old
+// Set<IdentityOperationKind> implementation deterministically.
+// ---------------------------------------------------------------------------
+
+const microtaskFlush = async (): Promise<void> => {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+};
+
+test("delete admitted while a same-kind rename sibling is pending queues FIFO (never bypasses to a fresh lane)", async () => {
+  // A and B are admitted CONCURRENTLY (sharing one lane); only B is gated, so
+  // A settles while B is still pending. A delete admitted in that window must
+  // queue behind B — the old Set implementation dropped the shared rename entry
+  // on A's settle, removed the lane, and let the delete bypass B.
+  const mutationCalls: string[] = [];
+  const mutationTitles = new Map<string, string>();
+  let blockForB = false;
+  let bGatedResolve!: () => void;
+  const bGatedPromise = new Promise<void>((resolve) => { bGatedResolve = resolve; });
+  let releaseB!: () => void;
+  const bGate = new Promise<void>((resolve) => { releaseB = resolve; });
+  const h = renameHarness({
+    mutation: {
+      async renameSession(sessionId, name) {
+        mutationCalls.push(`${sessionId}:${name}`);
+        if (blockForB && name === "B") { bGatedResolve(); await bGate; }
+        mutationTitles.set(sessionId, name);
+      },
+    },
+  });
+  h.seed("s1");
+  const a = h.service.renameSession("s1", "A");
+  blockForB = true;
+  const b = h.service.renameSession("s1", "B"); // same lane as A (both pending)
+  await a;
+  await bGatedPromise; // deterministic: B is now gated after A settled
+
+  // A delete admitted now must queue behind B, never bypass to a fresh lane.
+  let deleteSettled = false;
+  const del = h.service.deleteSession("s1").then(() => { deleteSettled = true; });
+  await microtaskFlush();
+  assert.equal(deleteSettled, false, "delete must remain unresolved while the same-kind rename B is pending");
+  assert.deepEqual(h.deleted, [], "catalog delete must not run while B is pending");
+  assert.equal(h.service.diagnostics().lanes, 1, "the lane must be retained while the same-kind sibling B is pending");
+
+  // Release B → B settles, then the delete runs and succeeds in FIFO.
+  releaseB();
+  await b;
+  await del;
+  assert.equal(deleteSettled, true, "delete must run after B settles");
+  assert.deepEqual(h.deleted, ["s1"], "the catalog delete commits after the rename sibling");
+  const d = h.service.diagnostics();
+  assert.equal(d.lanes, 0);
+  assert.equal(d.aliases, 0);
+  assert.equal(d.activations, 0);
+  await h.service.shutdown();
+});
+
+test("a third same-kind rename C admitted while B is gated cannot run before B; final title is C", async () => {
+  // A + B admitted concurrently (one lane), B gated; C admitted after A settles
+  // must queue behind B (old Set implementation gave C a fresh lane and ran it
+  // before B).
+  const mutationCalls: string[] = [];
+  const mutationTitles = new Map<string, string>();
+  let blockForB = false;
+  let bGatedResolve!: () => void;
+  const bGatedPromise = new Promise<void>((resolve) => { bGatedResolve = resolve; });
+  let releaseB!: () => void;
+  const bGate = new Promise<void>((resolve) => { releaseB = resolve; });
+  const h = renameHarness({
+    mutation: {
+      async renameSession(sessionId, name) {
+        mutationCalls.push(`${sessionId}:${name}`);
+        if (blockForB && name === "B") { bGatedResolve(); await bGate; }
+        mutationTitles.set(sessionId, name);
+      },
+    },
+  });
+  h.seed("s1");
+  const a = h.service.renameSession("s1", "A");
+  blockForB = true;
+  const b = h.service.renameSession("s1", "B");
+  await a;
+  await bGatedPromise; // B is gated; A settled
+
+  const c = h.service.renameSession("s1", "C");
+  await microtaskFlush();
+  assert.deepEqual(mutationCalls, ["s1:A", "s1:B"], "C must not enter the mutation while B is gated");
+  assert.equal(h.service.diagnostics().lanes, 1, "the lane must be retained with C queued behind B");
+
+  releaseB();
+  await Promise.all([b, c]);
+  assert.deepEqual(mutationCalls, ["s1:A", "s1:B", "s1:C"], "same-kind renames must run in exact FIFO order");
+  const list = await h.service.listSessions();
+  assert.equal(list.find((s) => s.sessionId === "s1")?.title, "C", "the final title must be C");
+  assert.equal(h.service.diagnostics().overlay, 1);
+  const d = h.service.diagnostics();
+  assert.equal(d.lanes, 0);
+  assert.equal(d.aliases, 0);
+  await h.service.shutdown();
+});
+
+// ---------------------------------------------------------------------------
 // Explicit stop shares the lane (requirement 6).
 // ---------------------------------------------------------------------------
 

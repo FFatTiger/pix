@@ -1886,7 +1886,7 @@ per-session FIFO identity lane 协调器，并接通生产默认 adapter mutatio
 - 旧 record/epoch 的晚到结果（stop/reactivate/crash）不能 publish 标题或影响新 Worker。
 - 无 coordinator/lane/alias/generation/activation/overlay 泄漏；失败任务不毒化 lane tail。
 
-测试：新增 packages/sessiond/test/session-rename.test.ts（25 用例，确定性 deferred gate/
+测试：新增 packages/sessiond/test/session-rename.test.ts（28 用例，确定性 deferred gate/
 有限 watchdog，无 timing 断言）：offline-first 阻塞 activation 至 append；activation-first
 → live path 且零 mutation 调用；同 id rename FIFO（sessions.rename × runtime.command）；
 异 id 并发；delete→rename/activate not_found 且零 worker；rename→delete 成功；activation
@@ -1896,17 +1896,30 @@ live {ok:false} / thrown failure / timeout 传播 sanitized 非 false success；
 alias/promise 精确清理；失败无泄漏且失败 tail 不毒化后续；list/read 即时 overlay、旧 catalog
 响应不清新 revision、delete 移除 overlay、stop 保留；shutdown 在 lane op 在飞时 lane-free
 排空不死锁；boundary RPC（missing not_found、invalid name invalid_input、null mutation
-unavailable，无 raw 泄漏）。daemon.test.ts 新增 2 用例：真实默认 adapter JSONL offline
-rename（零 worker、同 path/id/history/context、即时 read/list、文件含 session_info 标题）与
-sessionMutation:null 固定 unavailable。既有 D4 delete/fence 回归全部保留（sessiond 195→220
-用例）。E2E sessions-history.mjs 把过时的 "non-live rename unavailable" 断言改为真实离线
-rename 成功（canonical 名、零 worker、同 path、即时 read/list）。
+unavailable，无 raw 泄漏）。新增 packages/sessiond/test/session-operation-coordinator.test.ts
+（4 用例，coordinator 直测：same-kind A+B+C FIFO 带 gated sibling、拒绝路径不毒化/不减
+兄弟 reservation、四种 kind 表驱动、异 id 独立 lane）。daemon.test.ts 新增 2 用例：真实默认
+adapter JSONL offline rename（零 worker、同 path/id/history/context、即时 read/list、文件
+含 session_info 标题）与 sessionMutation:null 固定 unavailable。既有 D4 delete/fence 回归
+全部保留。E2E sessions-history.mjs 把过时的 "non-live rename unavailable" 断言改为真实
+离线 rename 成功（canonical 名、零 worker、同 path、即时 read/list）。
 
-验证：sessiond typecheck/build/boundary PASS、sessiond 全量 221 pass/0 fail/1 skip 多轮
+独立验证首轮 FAIL 修复（sessiond 身份 lane 同 kind 去重缺陷，verifier poison-kind/
+kind-race2/kind-race3）：`Lane.pending` 原为 `Set<IdentityOperationKind>`，同 id 同 kind
+的 A+B 共享一个 set 条目——A 先 settle 时 `delete(kind)` 把 set 清空并移除 lane，而 B 仍在
+排队/运行；随后准入的 C/delete 拿到全新 lane，绕过 B，产生 FIFO/顺序反转。修复：pending
+改为 `Map<IdentityOperationKind, number>` per-kind 正引用计数——admit 在 tail 链前同步自增；
+finally 精确减一、归零才删 kind、整个 map 为空才 maybeRemoveLane（不可能下溢，防御性
+fail-closed 不提前移除 lane）；`hasPendingKind` 判 count>0。bindRekey/generation/aliases
+不变。新增 coordinator 直测（4）+ service 级 verifier race 复现（2：B gated 时 delete 不
+可 bypass、第三个 rename C 不可先于 B 进入 mutation）全部对旧 Set 实现确定性 FAIL、对修复
+实现 PASS（旧实现 5/6 同 kind 测试失败）。
+
+验证：sessiond typecheck/build/boundary PASS、sessiond 全量 229 pass/0 fail/1 skip 多轮
 （含两轮并发 stress）；runtime-core 12/12、adapter 236/236、root typecheck/build PASS、
 check:architecture PASS、root tests 全 workspace 绿；Sessions/Runtime/Startup 三条 E2E
 PASS；git diff --check 与工作树 clean（提交后）。独立 verifier 将裁定 PASS/FAIL。
 
 残余/后续：Host PATCH rename route、Client rename UI、live set_session_name 的 catalog
-持久化收敛（worker 侧）、auto-name/trash/undo、side chat 仍后置。§48 为 provisional
-编号已在 current-main 集成时顺延为 §51（Local Authority 占 §48/§49，Extension UI Client 占 §50）。
+持久化收敛（worker 侧）、auto-name/trash/undo、side chat 仍后置。编号已在 current-main
+集成时顺延为 §51（Local Authority 占 §48/§49，Extension UI Client 占 §50）。
