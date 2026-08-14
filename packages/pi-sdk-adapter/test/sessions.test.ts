@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -144,6 +144,16 @@ function fakeManager(id: string): PiSdkSessionManager {
     getSessionId: () => id,
     getHeader: () => undefined,
   };
+}
+
+/** Derive a fake session id from a path like "/repo/sessions/s2.jsonl". */
+function idFromPath(path: string): string {
+  return (path.split("/").pop() ?? "").replace(/\.jsonl$/, "");
+}
+
+/** Yield to the macrotask queue so all pending microtasks flush. */
+function tick(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +493,303 @@ describe("pi-sdk sessions list performance (injected SDK)", () => {
     await assert.rejects(() => store.readSessionContext("requested"), isNotFound);
     const located = await store.locate("requested");
     assert.equal(located.exists, false);
+    // deleteSession of a wrong-id-resolved session fails closed and never
+    // reaches rm (no file is removed).
+    await assert.rejects(() => store.deleteSession("requested"), isNotFound);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Injected-SDK cache hardening: coalesced warm-miss rebuilds, per-generation
+// negatives, generation-safe invalidation, ENOENT idempotent delete
+// ---------------------------------------------------------------------------
+
+describe("pi-sdk sessions cache hardening (injected SDK)", () => {
+  it("coalesces concurrent warm-index misses onto one fresh scan", async () => {
+    let scans = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        if (scans === 1) return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+        return [
+          mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+          mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" }),
+          mkInfo({ path: "/repo/sessions/s3.jsonl", id: "s3" }),
+          mkInfo({ path: "/repo/sessions/s4.jsonl", id: "s4" }),
+        ];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // cold snapshot: scans = 1, cache = [s1]
+    assert.equal(scans, 1);
+    // Three concurrent warm misses for sessions absent from the snapshot must
+    // share ONE coalesced fresh scan (not three separate listAll calls).
+    const details = await Promise.all(["s2", "s3", "s4"].map((id) => store.readSession(id)));
+    assert.deepEqual(details.map((d) => d.sessionId).sort(), ["s2", "s3", "s4"]);
+    assert.equal(scans, 2);
+    // Now warm index hits: no further scans.
+    await store.readSession("s3");
+    assert.equal(scans, 2);
+  });
+
+  it("retries after a failed warm-index-miss scan without caching the failure", async () => {
+    let scans = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        if (scans === 1) return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+        if (scans === 2) throw new Error("scan failed");
+        return [
+          mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+          mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" }),
+        ];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // scans = 1
+    await assert.rejects(() => store.readSession("s2"), /scan failed/); // warm-miss scan fails
+    assert.equal(scans, 2);
+    // The failure is neither cached nor recorded as a negative: a retry uses a
+    // fresh scan and finds the session.
+    const detail = await store.readSession("s2");
+    assert.equal(detail.sessionId, "s2");
+    assert.equal(scans, 3);
+  });
+
+  it("bounds repeated reads of a missing session to one fresh scan per generation", async () => {
+    let scans = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // scans = 1
+    await assert.rejects(() => store.readSession("missing"), isNotFound); // warm miss → one fresh scan, negative recorded
+    assert.equal(scans, 2);
+    // Repeated reads (read + locate + context) in the same generation never rescan.
+    await assert.rejects(() => store.readSession("missing"), isNotFound);
+    const located = await store.locate("missing");
+    assert.equal(located.exists, false);
+    await assert.rejects(() => store.readSessionContext("missing"), isNotFound);
+    assert.equal(scans, 2);
+  });
+
+  it("permits a retry after TTL expiry resets the negative result", async () => {
+    let now = 1_000;
+    let scans = 0;
+    let appeared = false;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [
+          mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+          ...(appeared ? [mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" })] : []),
+        ];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk, now: () => now, listTtlMs: 30_000 });
+    await store.listSessions(); // scans = 1
+    await assert.rejects(() => store.readSession("s2"), isNotFound); // scans = 2, negative recorded
+    assert.equal(scans, 2);
+    await assert.rejects(() => store.readSession("s2"), isNotFound); // negative hit, no scan
+    assert.equal(scans, 2);
+    // The session appears; after TTL expiry a cold rescan resets the negative
+    // and permits a retry.
+    appeared = true;
+    now += 30_001;
+    const detail = await store.readSession("s2"); // cold rescan → found
+    assert.equal(detail.sessionId, "s2");
+    assert.equal(scans, 3);
+  });
+
+  it("permits a retry after invalidation resets the negative result", async () => {
+    let scans = 0;
+    let s2exists = false;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [
+          mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+          ...(s2exists ? [mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" })] : []),
+        ];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // scans = 1
+    await assert.rejects(() => store.readSession("s2"), isNotFound); // scans = 2, negative recorded
+    assert.equal(scans, 2);
+    // The session appears; deleting another session invalidates the list and
+    // resets the negative set, so the next read retries with a fresh scan.
+    s2exists = true;
+    await store.deleteSession("s1"); // id-validated open + ENOENT rm → idempotent, invalidates
+    const detail = await store.readSession("s2");
+    assert.equal(detail.sessionId, "s2");
+    assert.equal(scans, 3);
+  });
+
+  it("recovers a session created after the cached snapshot with exactly one fresh scan", async () => {
+    let scans = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        if (scans === 1) return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+        return [
+          mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+          mkInfo({ path: "/repo/sessions/new.jsonl", id: "new" }),
+        ];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // scans = 1, snapshot lacks "new"
+    const detail = await store.readSession("new"); // warm miss → exactly one fresh scan
+    assert.equal(detail.sessionId, "new");
+    assert.equal(scans, 2);
+    await store.readSession("new"); // now a warm index hit
+    assert.equal(scans, 2);
+  });
+
+  it("coalesces concurrent warm misses for missing ids into one scan and returns not_found", async () => {
+    let scans = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // scans = 1
+    await Promise.all([
+      assert.rejects(() => store.readSession("m1"), isNotFound),
+      assert.rejects(() => store.readSession("m2"), isNotFound),
+      assert.rejects(() => store.readSession("m3"), isNotFound),
+    ]);
+    // One coalesced fresh scan served all three misses.
+    assert.equal(scans, 2);
+    // Each id is now a per-generation negative: no further scans.
+    await Promise.all([
+      assert.rejects(() => store.readSession("m1"), isNotFound),
+      assert.rejects(() => store.readSession("m2"), isNotFound),
+      assert.rejects(() => store.readSession("m3"), isNotFound),
+    ]);
+    assert.equal(scans, 2);
+  });
+
+  it("an invalidated warm-miss scan never repopulates the cache or clears a newer in-flight scan", async () => {
+    let scans = 0;
+    let releaseGen0: ((infos: FakeSessionInfo[]) => void) | undefined;
+    let releaseGen1: ((infos: FakeSessionInfo[]) => void) | undefined;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        if (scans === 1) return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+        if (scans === 2) return new Promise<FakeSessionInfo[]>((resolve) => { releaseGen0 = resolve; });
+        if (scans === 3) return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+        if (scans === 4) return new Promise<FakeSessionInfo[]>((resolve) => { releaseGen1 = resolve; });
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+
+    await store.listSessions(); // scans = 1, warm cache [s1] (gen 0)
+    const p1 = store.readSession("s2"); // gen-0 warm miss → scanOnce (scan 2) held open
+    await tick();
+    assert.ok(releaseGen0);
+
+    // Invalidate: delete of the warm s1 (file absent → ENOENT idempotent) bumps
+    // the generation and clears the cache.
+    await store.deleteSession("s1");
+    await store.listSessions(); // cold rescan (scan 3) → cache [s1] (gen 1)
+
+    const p2 = store.readSession("s3"); // gen-1 warm miss → scanOnce (scan 4) held open
+    await tick();
+    assert.ok(releaseGen1);
+
+    // Release the STALE gen-0 scan: it must not repopulate the cache, and its
+    // finally must not clear the gen-1 in-flight slot.
+    releaseGen0!([
+      mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+      mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" }),
+    ]);
+    await assert.rejects(() => p1, isNotFound); // stale result is not trusted → fail closed
+
+    // The gen-1 in-flight slot survived: a new caller joins it instead of scanning.
+    const p4 = store.readSession("s5");
+    await tick();
+
+    // Release the current gen-1 scan; every pending gen-1 reader settles against it.
+    releaseGen1!([mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })]);
+    await assert.rejects(() => p2, isNotFound);
+    await assert.rejects(() => p4, isNotFound);
+    // Exactly four listAll calls total: no extra scan was spawned by the stale
+    // gen-0 completion or by the joining callers.
+    assert.equal(scans, 4);
+  });
+
+  it("deleteSession treats ENOENT between open and rm as idempotent success and invalidates the list", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-sessions-adapter-"));
+    const sessionDir = join(root, "sessions");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionFile = join(sessionDir, "s1.jsonl");
+    await writeFile(sessionFile, "{}\n"); // a real file so rm can observe its disappearance
+    let scans = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [mkInfo({ path: sessionFile, id: "s1" })];
+      },
+      open() { return fakeManager("s1"); }, // id-validated open succeeds
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions(); // warm cache with s1
+    assert.equal(scans, 1);
+    await rm(sessionFile); // the file vanishes after the store's snapshot
+    // The id-validated open succeeds (injected), then rm hits ENOENT → idempotent.
+    await store.deleteSession("s1");
+    await store.deleteSession("s1"); // idempotent across the invalidation too
+    // Every delete invalidated the warm list: the next list re-scans.
+    const headers = await store.listSessions();
+    assert.equal(headers.length, 1);
+    assert.equal(scans, 3);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("deleteSession maps non-ENOENT filesystem failures to a sanitized error without leaking the path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-sessions-adapter-"));
+    const blocker = join(root, "blocker");
+    await writeFile(blocker, "x"); // a regular file where a directory is needed
+    const sessionFile = join(blocker, "sub", "s1.jsonl"); // rm → ENOTDIR (not ENOENT)
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        return [mkInfo({ path: sessionFile, id: "s1" })];
+      },
+      open() { return fakeManager("s1"); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await assert.rejects(
+      () => store.deleteSession("s1"),
+      (error: unknown) => {
+        assert.ok(isRuntimeError(error));
+        if (!isRuntimeError(error)) return false;
+        assert.equal(error.code, "external");
+        assert.equal(error.retryable, true);
+        assert.equal(error.cause?.kind, "file");
+        // The raw path must never leak through the sanitized error.
+        assert.ok(!JSON.stringify(error).includes(sessionFile));
+        assert.ok(!JSON.stringify(error).includes(root));
+        return true;
+      },
+    );
+    await rm(root, { recursive: true, force: true });
   });
 });
 

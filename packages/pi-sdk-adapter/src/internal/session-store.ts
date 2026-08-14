@@ -28,6 +28,18 @@
 //   resolve the sessionId → path/info index from the list result instead of
 //   re-running a global listAll. Stale/deleted paths are validated, rebuilt
 //   at most once, then reported not_found; a wrong session is never returned.
+// - A warm index miss forces at most ONE fresh scan per cache generation,
+//   coalesced across concurrent misses onto a single `listAll` (a session
+//   created after the cached snapshot is recovered on that scan). Absence
+//   confirmed by a fresh scan is remembered per generation, so repeated reads
+//   of a persistently missing session id never rescan; TTL expiry or
+//   invalidation resets the negatives and permits a retry. A scan invalidated
+//   mid-flight can never repopulate the cache, clear a newer in-flight scan,
+//   or poison the negative set (fail closed).
+// - deleteSession treats a file that vanishes between the id-validated open
+//   and the rm as already-deleted idempotent success and invalidates the list;
+//   other filesystem failures are mapped to a sanitized RuntimeError that
+//   never leaks the raw path.
 import { rm } from "node:fs/promises";
 import { join, posix, win32 } from "node:path";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -181,6 +193,16 @@ function notFound(sessionId: string) {
   return makeRuntimeError("not_found", `session not found: ${sessionId}`);
 }
 
+/** True when `error` is a Node errno error carrying the given `code` (e.g. ENOENT). */
+function isErrno(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === code
+  );
+}
+
 /**
  * Read-only JSONL session store with a per-instance list cache + in-flight
  * coalescing (see the module docstring for the performance contract).
@@ -199,6 +221,19 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
   private generation = 0;
   private cache: { ts: number; infos: readonly SdkSessionInfo[] } | undefined;
   private inFlight: { promise: Promise<readonly SdkSessionInfo[]>; generation: number } | undefined;
+  /**
+   * Coalesced in-flight slot for forced fresh scans (warm-index-miss rebuilds).
+   * Mirrors `inFlight`'s identity-guarded finally so an old generation's scan
+   * completion can never clear a newer in-flight scan.
+   */
+  private scanOnceInflight: { promise: Promise<readonly SdkSessionInfo[]>; generation: number } | undefined;
+  /**
+   * Per-generation negative results: session ids confirmed absent by a fresh
+   * scan. Bounded within one cache generation; cleared on invalidation and on
+   * a TTL-expiry cold scan (each permits a retry). Never populated by failed
+   * scans or by scans invalidated mid-flight.
+   */
+  private negativeIds = new Set<string>();
 
   constructor(options: PiSdkSessionStoreOptions = {}) {
     this.sessionDir = options.sessionDir;
@@ -216,6 +251,9 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
   private invalidateList(): void {
     this.generation += 1;
     this.cache = undefined;
+    // A new generation starts fresh: the previous generation's negative
+    // results must not block a retry.
+    this.negativeIds.clear();
   }
 
   /** One cold scan. Never caches malformed/failed results. */
@@ -240,7 +278,12 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     if (inflight && inflight.generation === generation) return inflight.promise;
     const loadPromise = this.scan().then((infos) => {
       // Only repopulate the cache when no invalidation happened during the scan.
-      if (this.generation === generation) this.cache = { ts: this.now(), infos };
+      if (this.generation === generation) {
+        this.cache = { ts: this.now(), infos };
+        // A fresh cold snapshot (TTL expiry) starts a new cache generation:
+        // reset negatives so the expired snapshot's misses are retryable.
+        this.negativeIds.clear();
+      }
       return infos;
     });
     const trackedPromise = loadPromise.finally(() => {
@@ -251,14 +294,25 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
   }
 
   /**
-   * Force a fresh scan, bypassing the warm cache and in-flight coalescing.
-   * Used as the single "rebuild" step for stale/missing warm-index lookups.
+   * Force a fresh scan, bypassing the warm cache. Concurrent warm-index misses
+   * coalesce onto ONE `listAll` per cache generation. A failed scan clears the
+   * slot and is retryable (failures are never cached); a scan invalidated
+   * mid-flight can neither repopulate the cache nor clear a newer in-flight
+   * scan (identity-guarded finally).
    */
   private async scanOnce(): Promise<readonly SdkSessionInfo[]> {
     const generation = this.generation;
-    const infos = await this.scan();
-    if (this.generation === generation) this.cache = { ts: this.now(), infos };
-    return infos;
+    const inflight = this.scanOnceInflight;
+    if (inflight && inflight.generation === generation) return inflight.promise;
+    const loadPromise = this.scan().then((infos) => {
+      if (this.generation === generation) this.cache = { ts: this.now(), infos };
+      return infos;
+    });
+    const trackedPromise = loadPromise.finally(() => {
+      if (this.scanOnceInflight?.promise === trackedPromise) this.scanOnceInflight = undefined;
+    });
+    this.scanOnceInflight = { promise: trackedPromise, generation };
+    return trackedPromise;
   }
 
   /** sessionId → info index built from the current (warm or freshly scanned) cache. */
@@ -278,20 +332,47 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
   /**
    * Resolve a session's info from the list index without re-running a global
    * scan after a warm list. Mirrors the legacy web frontend's
-   * `resolveSessionPath`:
+   * `resolveSessionPath`, bounded by a per-generation negative cache:
+   * - negative hit (snapshot still warm) → not_found immediately, no scan;
    * - warm list → index hit → return (no scan);
-   * - warm list → index miss → exactly one fresh scan (session may have been
-   *   created after the snapshot), then index again;
-   * - cold list → the `listInfos` scan just ran is fresh, so a miss is final.
+   * - warm list → index miss → exactly one fresh, coalesced scan (a session
+   *   created after the snapshot is recovered here), then index again; if still
+   *   absent, record a negative so repeated reads in this generation never scan;
+   * - cold list → the `listInfos` scan just ran is fresh, so a miss is final
+   *   and is recorded as a negative.
+   * TTL expiry (cold rescan) and invalidation each reset the negatives, so a
+   * retry is permitted. A scan invalidated mid-flight is never trusted: it can
+   * not record a negative (fail closed against the newer generation).
    */
   private async resolveInfo(sessionId: string): Promise<SdkSessionInfo | undefined> {
+    // A negative applies only while the snapshot it was recorded against is
+    // still warm; once the cache expires the cold rescan resets the negatives.
+    if (this.isWarm() && this.negativeIds.has(sessionId)) return undefined;
     const listWasWarm = this.isWarm();
+    const generation = this.generation;
     await this.listInfos();
+    // Only a snapshot that is still current is trustworthy for a negative.
+    const snapshotCurrent = this.generation === generation;
     const fromIndex = this.indexById().get(sessionId);
     if (fromIndex) return fromIndex;
-    if (!listWasWarm) return undefined;
+    if (!snapshotCurrent || !listWasWarm) {
+      // Final miss: either the cold scan that just ran is the freshest snapshot
+      // (record a negative), or the snapshot was invalidated while we waited
+      // (fail closed WITHOUT recording — the newer generation may contain it).
+      if (snapshotCurrent) this.negativeIds.add(sessionId);
+      return undefined;
+    }
+    // Warm miss: one fresh (coalesced) scan may recover a session created after
+    // the cached snapshot.
     await this.scanOnce();
-    return this.indexById().get(sessionId);
+    if (this.generation !== generation) {
+      // The fresh scan was invalidated mid-flight: never record a negative from
+      // an untrusted scan; fall back to the current (newer) snapshot.
+      return this.indexById().get(sessionId);
+    }
+    const rebuilt = this.indexById().get(sessionId);
+    if (!rebuilt) this.negativeIds.add(sessionId);
+    return rebuilt;
   }
 
   /**
@@ -394,7 +475,22 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
   async deleteSession(sessionId: string): Promise<void> {
     const opened = await this.openSession(sessionId);
     if (!opened) throw notFound(sessionId);
-    await rm(opened.info.path);
+    try {
+      await rm(opened.info.path);
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) {
+        // The file vanished between the id-validated open and the rm: the
+        // session is already gone, so the delete is idempotent success. Drop
+        // the stale warm index so it can never serve the deleted session.
+        this.invalidateList();
+        return;
+      }
+      // Map/sanitize any other filesystem failure; never leak the raw path.
+      throw makeRuntimeError("external", `failed to delete session: ${sessionId}`, {
+        retryable: true,
+        cause: { kind: "file", detail: "session file removal failed" },
+      });
+    }
     // Invalidate immediately so a warm list can never serve a deleted session.
     this.invalidateList();
   }
