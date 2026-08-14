@@ -2100,3 +2100,141 @@ seam 与否都排除；自定义 readonly 列表含 mutation token 也在 down �
 E2E 回归 PASS；root typecheck/build/test PASS；check:architecture PASS；git diff-check 与工作树 clean。Fresh verifier 重放 workerPids/workersByStatus/daemon.diagnostics、RPC wire、Runtime 两轮、Sessions 两轮、Startup 与 current-main merge-tree，确认 no-false-green、无 orphan、无公开面增益并给出 PASS。current-main 仅 ledger 追加冲突，Sessions E2E 自动合并同时保留 Host PATCH rename 与 handle diagnostics。
 
 残余/后续：诊断面仅进程内句柄，未接任何 CLI/Host/Protocol 公开输出；Windows 支持不宣称；Host rename §52 已完成，Client rename §53 仍为并行切片。
+
+## 55. Local Authority — `ensurePrivateDirectory` EEXIST/created 分类安全缺陷修复（二轮 Fresh verifier PASS）
+
+```text
+状态：修复已实现并提交（branch fix/local-authority-eexist-race，base main ef564b7）；本地全量验证绿；
+待独立 verifier 判定（parallel reservations：Host52、Client53、Diagnostics54）。
+范围：仅 packages/local-authority（src/state/posix.ts、src/state/index.ts、新增
+test/secure-directory-race.test.mjs）+ docs；不碰 Host 策略/API、sessiond 私有目录、
+package-lock/deps、merge/push/deploy/live service。不编辑 refactor-execution-plan。
+
+确认缺陷（base ef564b7 src/state/posix.ts）：
+首次 ENOENT 后置 creating=true；每个组件 mkdir 捕获并吞掉 EEXIST；随后
+`if (current === normalized) leafCreated = true` 只按路径名相等判定，与本次 mkdir 是否成功无关。
+因此一个被竞态/预植的既有 leaf（先观察到 ENOENT，再被他人 planted）会进入"新建"分支并被
+fd-fchmod(0700)——破坏"既有 leaf 只读校验（validate-only）绝不 chmod"冻结契约，并可能跳过
+validateExistingLeaf（Host 条目 allowlist）。
+
+修复语义：
+1) 逐组件按 mkdir 精确结果追踪创建：`mkdir(recursive:false, 0700)` 成功 fulfilled 才算
+   createdByThisCall；EEXIST = 预植/竞态，绝不视为 created、绝不 fchmod。
+2) ENOENT 之后出现 EEXIST：先做 lstat 类型检查（symlink/non-dir 仍 SYMLINK/NOT_DIRECTORY）；
+   最终 leaf 走既有-leaf 路径（requireOwnedByCurrentUser、精确 requireMode、validateExistingLeaf
+   钩子）并返回 created:false；竞态缺失尾 INTERMEDIATE 不强建后代——最强兼容策略：仅当真实非
+   symlink 目录 + 当前用户拥有（按需）+ 精确私有 mode 才继续，并把其 dev/ino 记为 racedParent，
+   在每次创建后代前重新校验（任何 swap fail-closed），否则 NOT_OWNED/NOT_PRIVATE 拒绝、零后代、
+   零 chmod（保留同 UID 并发建目录的合法场景）。
+3) 本次实际创建的组件照旧：leaf 仍走 fd fchmod + 身份校验，全缺失嵌套路径可用；leaf mkdir 成功
+   返回 created:true。
+4) mkdir EEXIST leaf symlink/non-dir → 固定 SYMLINK/NOT_DIRECTORY；lax 0755 → NOT_PRIVATE 且
+   mode 保持 0755；validateExistingLeaf 钩子拒绝原样保留；外部/内部零突变；EACCES/raw 全部消毒为
+   固定 LocalAuthorityError。
+5) EEXIST lstat 与校验/open 之间的路径交换按当前 API 能力处理（Node 无 openat）：保留最终
+   realpath/identity fail-closed；不夸大同 UID TOCTOU 的消除。
+
+可测性（确定性，无概率循环）：
+- 把 ensurePrivateDirectory 重构为内部 `ensurePrivateDirectoryWithFs(path, options, fs)`（注入窄
+   fs ops：lstat/mkdir/realpath/open/isOwnedByCurrentUser），生产入口用真实 fs 委托同一实现。
+- `ensurePrivateDirectoryWithFs` 是 TEST-ONLY 导出：只从直接模块路径 `dist/state/posix.js` 可达；
+  `state/index.ts` 改为显式具名重导出（不再 `export *`），公共导出集保持精确（package-surface 测试
+  仍 exact：dist/state/index.js 19 项，不含该 seam）。
+- 新增 test/secure-directory-race.test.mjs（8 用例）：注入 lstat 首查 ENOENT、mkdir 强制 EEXIST、
+  后续 lstat 用真实 fs，确定性复现竞态序列。
+
+测试（旧实现必失败——已用 base 旧算法 + 相同注入逐条复现）：
+- EEXIST raced final leaf 0755 → NOT_PRIVATE、mode 保持 0755、created 永不为 true（旧实现返回
+  created:true 并 fchmod 0700）。
+- EEXIST raced final 0700 + marker → validateExistingLeaf 运行且可拒绝、marker/文件不变、created:false
+  （旧实现 created:true 且钩子 0 次调用）。
+- EEXIST raced symlink → 外部 0755 目录 → SYMLINK、外部 mode/content 不变（回归守卫）。
+- EEXIST raced intermediate 0755 → NOT_PRIVATE、零后代；非当前用户（注入 ownerCheck=false）→
+  NOT_OWNED、零后代；0700 当前用户 → 强策略放行、后代 0700、created:true、raced 中间目录不被 chmod。
+- 成功 mkdir leaf 经内部走查 → created:true + fd fchmod 0700；既有普通行为测试全过。
+- 静态源码审计：leafCreated=true 只能出现在 mkdirFulfilled 成功分支，禁止
+  `if (current === normalized) leafCreated = true`（旧缺陷模式）——对旧实现确定性 FAIL。
+
+验证（本地实测）：
+- local-authority：build/typecheck/boundary PASS；全量 51/51（原 43 + 新增 8）。
+- Host：全量 394/394；安全子集（host-state-directory/production-resources/trusted-roots/
+  managed-worktrees/security）113/113；typecheck/build/boundary PASS。
+- root：build/typecheck PASS；check:architecture PASS（含 local-authority boundary）；
+  check-architecture 自测 31/31；root test 全 workspace 绿（CLI 46/46、sessiond 228/1skip）；
+  Startup E2E PASS。
+- 旧实现失败证明：一次性脚本按 base 旧算法 + 同一注入 fs 复现——raced 0755 leaf 被报 created:true
+  且 fchmod 0700；raced 0700 leaf 报 created:true 且钩子 0 次调用（确认缺陷）。
+- 公共导出集精确（dist/state/index.js 19 项，不含 ensurePrivateDirectoryWithFs）；git diff --check 与
+  提交后工作树 clean。
+
+残余/不越界：
+- 同 UID TOCTOU（Node 无 openat）按既有文档化方式保留；最终 realpath/identity fail-closed；不宣称
+  消除同 UID 交换。
+- sessiond 私有目录（agent 工作区等）属独立策略/加固，本切片不动，需另行独立评审/hardening。
+- Host 策略/API、sessiond 私有目录、package-lock/deps、merge/push/deploy/live service 全部未动。
+
+独立 verifier 必验：8 个 race 用例对旧实现确定性 FAIL、对修复 PASS；public 导出集精确；Host 状态
+lease/open、trusted roots、managed worktrees、production resources 安全子集回归；既有目录绝不
+chmod、macOS 别名、raw leak 测试；root/架构 + Startup E2E。
+```
+
+## 55.1 Local Authority — 独立 verifier CRITICAL 复现修复（14e7ca2 → follow-up；fd identity 校验）
+
+```text
+独立 verifier 对 14e7ca2 确定性 CRITICAL 复现并判 FAIL，本小节记录修复。范围不变（仅
+packages/local-authority + docs；不动 Host 策略/API、sessiond 私有目录、package-lock/deps、
+merge/push/deploy/live service；不编辑 refactor-execution-plan）。
+
+verifier 发现（复现要点）：成功 mkdir 后、初始 lstat 已捕获本次创建的 inode，但随后注入的 fs.open
+把路径名换成另一个真实 0755 目录再 open；14e7ca2 只靠 O_NOFOLLOW——它只能拒绝符号链接，拦不住真实
+目录替换——于是对替换目录执行 fd fchmod(0700)，篡改攻击者目录，并返回 created:true/陈旧 identity、
+跳过 Host validateExistingLeaf（posix.ts fchmod 分支无 fd 身份比对）。
+
+修复（具体）：
+1) 窄 opened-handle 接口扩为 OpenedDirectoryHandle{stat,chmod,close}（真实 FileHandle 结构兼容）；
+   `mkdir(recursive:false,0700)` fulfilled 后立即从紧随的 lstat 捕获 createdIdentity{dev,ino}
+   （本次调用创建的 inode）。
+2) open 之后、fchmod 之前：fstat（dirHandle.stat()）必须为真实目录且 dev/ino 与 createdIdentity
+   完全一致，否则固定 LocalAuthorityError UNSAFE_COMPONENT、零 fchmod；O_NOFOLLOW 单独不够。
+   另在 open 前校验 createdIdentity 仍等于最后一次 open 前 lstat（finalInfo），open 前被替换也 fail-closed。
+3) 身份校验通过才 chmod(requireMode)；随后再次 fstat：同 identity/类型且 (mode&0777)===requireMode，
+   否则 NOT_PRIVATE。
+4) 成功返回前：re-lstat 路径名，要求仍为同一已校验 inode（created 路径=创建句柄身份；existing 路径=
+   已校验身份），替换在返回前发生即 fail-closed；保留 final realpath/canonical 检查。最终检查之后
+   （句柄已关闭、无 openat 可重新钉住）的替换属文档化残余竞态，诚实声明，不宣称 fail-closed。
+5) 所有 mismatch/error 路径 finally 关闭句柄（close 失败吞掉以免遮蔽主错误/raw 泄漏）；raw 错误
+   全部消毒为固定 LocalAuthorityError。
+6) 修正 posix.ts 模块头与本节措辞：准确表述为「fchmod 前 fd identity 校验 + fchmod 后复验 + 返回前
+   pathname re-lstat」，残余为「最终检查之后的竞态」，不再用 blanket 同 UID fail-closed 表述。
+
+新增确定性测试（test/secure-directory-race.test.mjs，10 用例；全部注入真实 fs、非概率）：
+- created leaf 在 open 时被替换为真实 0755 标记目录并返回替换句柄 → UNSAFE_COMPONENT；替换目录
+  mode/content 不变（绝不被 chmod）；本次创建的原始 inode 不变（0700、空）；created 永不为 true；
+  validateExistingLeaf 不绕过。
+- created leaf 在 open 时被替换为普通文件 → UNSAFE_COMPONENT；文件不变；原始 inode 不变。
+两测试对 14e7ca2 确定性 FAIL（14e7ca2 直接成功返回、chmod 替换目录/文件并报 created:true，报
+"Missing expected rejection: expected reject with UNSAFE_COMPONENT"），对修复 PASS；原 8 个 race
+用例在 14e7ca2 与修复上均 PASS。
+
+验证（本地实测，follow-up）：
+- local-authority：build/typecheck/boundary PASS；全量 53/53（14e7ca2 的 51 + 新增 2）。
+- Host：全量 394/394；安全子集 113/113；typecheck/build/boundary PASS。
+- root：build/typecheck PASS；check:architecture PASS + 自测 31/31；root test 全 workspace 绿；
+  Startup E2E PASS。
+- 14e7ca2 编译实现 + 新测试实测：2 个 swap 测试 FAIL（直接成功返回并 chmod 替换对象）→ 证明缺陷；
+  修复实现 10/10 PASS。
+- public 导出集精确（dist/state/index.js 19 项，不含 ensurePrivateDirectoryWithFs）；
+  git diff --check 与提交后工作树 clean。
+
+残余（诚实声明，两个窗口）：Node 无 openat，同 UID 替换存在两个无法钉住的窗口，均不宣称
+fail-closed：(1) fulfilled mkdir 与紧随的 identity 捕获 lstat 之间的替换——createdIdentity 会
+捕获到替换对象身份，后续 walk 会 chmod 替换目录并返回 created:true（Node 无法原子 fd-pin
+新建 inode；亚微秒窗口；14e7ca2 严格更弱，非 follow-up 引入）；(2) 最终 pathname re-lstat/
+realpath 检查之后的替换（句柄已关闭、无 openat 可重新钉住）。跨用户边界不变弱。sessiond
+私有目录仍需独立策略/加固。
+二轮 Fresh verifier（772269d）独立重放原 CRITICAL 注入（替换目录/替换文件均 UNSAFE_COMPONENT、
+零 chmod、替换对象 mode/content/inode 不变、句柄恰关闭一次）、原 8 race 用例、public 精确 19
+导出、Host 394/394 + 安全子集 119/119、typecheck/boundary/architecture、current-main
+merge-tree（仅 ledger 追加冲突），对 772269d 给出 PASS，并要求本节与 posix.ts 模块头枚举窗口
+(1)——本修订即该要求。
+```
