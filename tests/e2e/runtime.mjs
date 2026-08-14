@@ -41,6 +41,23 @@ const HOST_START_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 8_000;
 const ROUNDS = Math.max(1, Number(process.env.PIX_E2E_ROUNDS ?? "1") || 1);
 
+// D2-P5 production capability surface (11 tokens): the exact set the attach
+// snapshot must carry. Updating this constant keeps every scenario honest about
+// what is open (bash pair) vs still closed (tools/reload/auto_name/...).
+const PRODUCTION_CAPS = [
+  "runtime.prompt",
+  "runtime.abort",
+  "runtime.stats",
+  "runtime.session.rename",
+  "runtime.thinking.set",
+  "runtime.model.set",
+  "runtime.steer",
+  "runtime.follow_up",
+  "runtime.queue",
+  "runtime.bash",
+  "runtime.bash.abort",
+];
+
 // In-memory registry of sessions created through the E2E client, backing both
 // the fixture locator and the fixture catalog overrides passed to startDaemon.
 // Populated by RuntimeWsClient.create(); cleared per stack/round.
@@ -590,23 +607,14 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
     assert.equal(snap.payload.epoch, created.epoch);
     assert.ok(typeof snap.payload.lastEventId === "number");
     // Authoritative runtime capability set is primed from the worker snapshot
-    // (NOT the Host `agent` capability): D2-P1/P2/P3 production surface =
+    // (NOT the Host `agent` capability): D2-P1/P2/P3/P4/P5 production surface =
     // runtime.prompt + runtime.abort + runtime.stats + runtime.session.rename +
-    // runtime.thinking.set + runtime.model.set.
+    // runtime.thinking.set + runtime.model.set + runtime.steer +
+    // runtime.follow_up + runtime.queue + runtime.bash + runtime.bash.abort.
     assert.deepEqual(
       snap.payload.snapshot.capabilities,
       {
-        capabilities: [
-          "runtime.prompt",
-          "runtime.abort",
-          "runtime.stats",
-          "runtime.session.rename",
-          "runtime.thinking.set",
-          "runtime.model.set",
-          "runtime.steer",
-          "runtime.follow_up",
-          "runtime.queue",
-        ],
+        capabilities: PRODUCTION_CAPS,
         version: 1,
       },
       `attach capabilities=${JSON.stringify(snap.payload.snapshot.capabilities)}`,
@@ -737,7 +745,7 @@ async function scenarioHostRestartResume(stack, projectDir) {
     lastEventId = snap.payload.lastEventId;
     // Resume attach still carries the authoritative runtime capability set.
     assert.deepEqual(snap.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
+      capabilities: PRODUCTION_CAPS,
       version: 1,
     });
 
@@ -888,7 +896,7 @@ async function scenarioEpochChangeNoAutoResend(stack, projectDir) {
     // After an epoch change (stop+reactivate), the freshly primed attach snapshot
     // still carries the authoritative runtime capability set.
     assert.deepEqual(snap2.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
+      capabilities: PRODUCTION_CAPS,
       version: 1,
     });
     // epoch may equal if makeEpoch collides (UUID); force assert via status if needed.
@@ -1131,7 +1139,7 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     assert.equal(snap.type, "snapshot");
     // Attach snapshot carries the D2-P1/D2-P2 production capability surface.
     assert.deepEqual(snap.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
+      capabilities: PRODUCTION_CAPS,
       version: 1,
     });
 
@@ -1219,7 +1227,7 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     assert.equal(reattach.payload.snapshot.state.thinkingLevel, "high", JSON.stringify(reattach.payload.snapshot.state));
     assert.equal(reattach.payload.snapshot.state.thinkingLevelPinned, true, JSON.stringify(reattach.payload.snapshot.state));
     assert.deepEqual(reattach.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
+      capabilities: PRODUCTION_CAPS,
       version: 1,
     });
 
@@ -1280,7 +1288,7 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     assert.equal(reattachModel.payload.snapshot.state.thinkingLevel, "high");
     assert.equal(reattachModel.payload.snapshot.state.thinkingLevelPinned, true);
     assert.deepEqual(reattachModel.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
+      capabilities: PRODUCTION_CAPS,
       version: 1,
     });
 
@@ -1341,7 +1349,7 @@ async function scenarioD2P4QueueControl(stack, projectDir) {
     assert.equal(snap.type, "snapshot");
     // D2-P4 production surface = prompt/abort/stats/rename/thinking/model + steer/follow_up/queue.
     assert.deepEqual(snap.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
+      capabilities: PRODUCTION_CAPS,
       version: 1,
     });
     // Base state: empty queue + pendingMessageCount 0.
@@ -1419,7 +1427,7 @@ async function scenarioD2P4QueueControl(stack, projectDir) {
     assert.equal(reattach.payload.snapshot.state.autoRetryEnabled, true, JSON.stringify(reattach.payload.snapshot.state));
     assert.deepEqual(reattach.payload.snapshot.state.queuedMessages, { steering: [], followUp: [] });
     assert.deepEqual(reattach.payload.snapshot.capabilities, {
-      capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.session.rename", "runtime.thinking.set", "runtime.model.set", "runtime.steer", "runtime.follow_up", "runtime.queue"],
+      capabilities: PRODUCTION_CAPS,
       version: 1,
     });
 
@@ -1437,6 +1445,150 @@ async function scenarioD2P4QueueControl(stack, projectDir) {
     }
 
     return { sessionId, promptId };
+  } finally {
+    client.close();
+  }
+}
+
+async function scenarioD2P5BashControl(stack, projectDir) {
+  // Single browser connection (RuntimeWsClient), real chain:
+  //   Browser WS → Host gateway → sessiond → R2 child → R1 worker-main → fixture.
+  // The bash command runs on the gateway's serial lane (ordinary command);
+  // abort_bash is an INTERRUPT that bypasses both lanes, so it never
+  // HOL-blocks behind a long bash command. bash_update.output deltas flow
+  // through the SHARED Protocol projection (the single accumulator) — no
+  // sessiond authority snapshot-finalization is involved.
+  const client = new RuntimeWsClient(stack.host.wsUrl);
+  await client.connect();
+  try {
+    await client.handshake();
+    const created = await client.create({
+      cwd: projectDir,
+      projectRoot: projectDir,
+      createRequestId: `cr-bash-${Date.now()}`,
+    });
+    const sessionId = created.sessionId;
+    const snap = await client.attach(sessionId);
+    assert.equal(snap.type, "snapshot");
+    // D2-P5 production surface = the 9 D2-P4 tokens + runtime.bash + runtime.bash.abort.
+    assert.deepEqual(snap.payload.snapshot.capabilities, {
+      capabilities: PRODUCTION_CAPS,
+      version: 1,
+    });
+    const bstate = (result) => result?.snapshot?.state ?? result?.state;
+
+    // 1. Normal bash: deterministic delta stream, exact projection output.
+    const bashId = `bash-${Date.now()}`;
+    const bashRes = await client.command(sessionId, {
+      commandId: bashId,
+      type: "bash",
+      command: "echo e2e-bash",
+    });
+    assert.equal(bashRes.payload.ok, true, JSON.stringify(bashRes.payload));
+    const bashOutcome = bashRes.payload.result.result;
+    assert.equal(bashOutcome.ok, true, JSON.stringify(bashOutcome));
+    assert.equal(bashOutcome.type, "bash");
+    // Concatenating every bash_update.output delta reconstructs the exact
+    // accumulated output (empty start delta + "line 1\n" + "line 2\n").
+    const deltas = client.messages
+      .filter(
+        (m) =>
+          m.type === "event" &&
+          m.payload?.sessionId === sessionId &&
+          m.payload?.type === "bash_update" &&
+          m.payload?.command === "echo e2e-bash",
+      )
+      .map((m) => m.payload.output ?? "");
+    assert.equal(deltas.join(""), "line 1\nline 2\n", JSON.stringify(deltas));
+    const bsnap = await client.getSnapshot(sessionId);
+    assert.equal(bsnap.payload.ok, true, JSON.stringify(bsnap.payload));
+    const bstate1 = bstate(bsnap.payload.result);
+    assert.equal(bstate1.bash?.output, "line 1\nline 2\n", JSON.stringify(bstate1.bash));
+    assert.equal(bstate1.bash?.exitCode, 0);
+    assert.equal(bstate1.bash?.completed, true);
+    assert.equal(bstate1.bash?.cancelled, false);
+    assert.equal(bstate1.isBashRunning, false);
+
+    // 2. Blocking bash + abort_bash via the independent interrupt path.
+    const longBashId = `bash-long-${Date.now()}`;
+    const longBashP = client.command(sessionId, {
+      commandId: longBashId,
+      type: "bash",
+      command: "__block__ long bash",
+    });
+    // The start bash_update (empty delta) proves the bash is running; events are
+    // NOT blocked by the serial lane that holds the pending bash command.
+    await client.waitFor(
+      (m) =>
+        m.type === "event" &&
+        m.payload?.sessionId === sessionId &&
+        m.payload?.type === "bash_update" &&
+        m.payload?.command === "__block__ long bash",
+      { label: "blocking bash started" },
+    );
+
+    const t0 = Date.now();
+    const ir = await client.interrupt(sessionId, `abort-bash-${Date.now()}`, {
+      type: "abort_bash",
+    });
+    const elapsed = Date.now() - t0;
+    assert.equal(ir.type, "interrupt_result");
+    assert.equal(ir.payload.interruptType, "abort_bash");
+    assert.equal(ir.payload.result.ok, true, JSON.stringify(ir.payload));
+    assert.ok(
+      elapsed < 5_000,
+      `abort_bash HOL-blocked behind the bash command? elapsed=${elapsed}ms`,
+    );
+
+    const longOutcome = (await longBashP).payload.result.result;
+    assert.equal(longOutcome.ok, false, JSON.stringify(longOutcome));
+    assert.equal(longOutcome.type, "bash");
+    assert.equal(longOutcome.error.code, "interrupted");
+
+    // A bash_update with cancelled:true must have been received, and the
+    // snapshot must carry the cancelled/completed projection.
+    const cancelledEvent = client.messages.find(
+      (m) =>
+        m.type === "event" &&
+        m.payload?.sessionId === sessionId &&
+        m.payload?.type === "bash_update" &&
+        m.payload?.command === "__block__ long bash" &&
+        m.payload?.cancelled === true,
+    );
+    assert.ok(cancelledEvent, "bash_update must report cancelled");
+    const absnap = await client.getSnapshot(sessionId);
+    const abstate = bstate(absnap.payload.result);
+    assert.equal(abstate.bash?.cancelled, true, JSON.stringify(abstate.bash));
+    assert.equal(abstate.bash?.completed, true, JSON.stringify(abstate.bash));
+    assert.equal(abstate.isBashRunning, false);
+
+    // 3. detach → reattach: the bash projection persists via the worker snapshot.
+    await client.detach(sessionId);
+    const reattach = await client.attach(sessionId);
+    assert.equal(reattach.type, "snapshot");
+    assert.equal(reattach.payload.snapshot.state.bash?.cancelled, true, JSON.stringify(reattach.payload.snapshot.state.bash));
+    assert.equal(reattach.payload.snapshot.state.bash?.completed, true);
+    assert.equal(reattach.payload.snapshot.state.bash?.command, "__block__ long bash");
+    assert.equal(reattach.payload.snapshot.state.isBashRunning, false);
+    assert.deepEqual(reattach.payload.snapshot.capabilities, {
+      capabilities: PRODUCTION_CAPS,
+      version: 1,
+    });
+
+    // 4. Closed caps still unsupported: tools/reload (bash pair is now open).
+    for (const [type, extra, token] of [
+      ["set_tools", { toolNames: [] }, "runtime.tools.write"],
+      ["reload", {}, "runtime.reload"],
+    ]) {
+      const closed = await client.command(sessionId, { commandId: `bash-closed-${type}-${Date.now()}`, type, ...extra });
+      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
+      const outcome = closed.payload.result.result;
+      assert.equal(outcome.ok, false, `${type} must be closed`);
+      assert.equal(outcome.error.code, "unsupported_capability");
+      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
+    }
+
+    return { sessionId, bashId, longBashId, abortElapsedMs: elapsed };
   } finally {
     client.close();
   }
@@ -1590,6 +1742,9 @@ async function runRound(round) {
     results.queueControl = await scenarioD2P4QueueControl(stack, projectA);
     log(`round ${round}: D2-P4 queue control OK session=${results.queueControl.sessionId}`);
 
+    results.bashControl = await scenarioD2P5BashControl(stack, projectA);
+    log(`round ${round}: D2-P5 bash control OK session=${results.bashControl.sessionId}`);
+
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
 
@@ -1651,6 +1806,7 @@ async function main() {
           "create then host-restart cold attach",
           "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + closed caps)",
           "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed tools/reload)",
+          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed tools/reload)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {

@@ -71,6 +71,8 @@ describe("public production SDK factory smoke", () => {
           "runtime.steer",
           "runtime.follow_up",
           "runtime.queue",
+          "runtime.bash",
+          "runtime.bash.abort",
         ]);
 
         // Baseline query: get_state (always available, no capability gate).
@@ -208,14 +210,13 @@ describe("public production SDK factory smoke", () => {
         thinkingLevelPinned: true,
       });
       try {
-        // runtime.bash is NOT in the production surface.
-        const bash = await port.execute({ type: "bash", command: "ls" });
-        assert.equal(bash.ok, false);
-        if (!bash.ok) {
-          assert.equal(bash.error.code, "unsupported_capability");
-          assert.match(bash.error.message, /runtime\.bash/);
-        }
-        // runtime.auto_name is explicitly NOT unlocked in D2-P1/D2-P2.
+        // runtime.bash IS in the production surface (D2-P5) — verify the pair is
+        // OPEN at the capability gate (a real command runs in the bash smoke test).
+        const bashCap = port.getCapabilities().capabilities.includes("runtime.bash");
+        const abortBashCap = port.getCapabilities().capabilities.includes("runtime.bash.abort");
+        assert.equal(bashCap, true, "runtime.bash must be open");
+        assert.equal(abortBashCap, true, "runtime.bash.abort must be open");
+        // runtime.auto_name is explicitly NOT unlocked in D2-P1..P5.
         const autoName = await port.execute({ type: "generate_session_title" });
         assert.equal(autoName.ok, false);
         if (!autoName.ok) {
@@ -236,6 +237,62 @@ describe("public production SDK factory smoke", () => {
           assert.equal(reload.error.code, "unsupported_capability");
           assert.match(reload.error.message, /runtime\.reload/);
         }
+      } finally {
+        await port.close("user");
+      }
+    });
+  });
+
+  it("production bash control: real command projects exact output/exitCode and abort_bash preempts without blocking", async () => {
+    await withAgentDir(async (root) => {
+      const cwd = join(root, "workspace");
+      await mkdir(cwd, { recursive: true });
+      const port = await new PiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES }).create({
+        cwd,
+        toolNames: [],
+        thinkingLevel: "off",
+        thinkingLevelPinned: true,
+        name: "D2-P5 Bash Smoke",
+      });
+      try {
+        // Normal bash: deterministic real command, exact accumulated projection.
+        const result = await port.execute({ type: "bash", command: "echo pix-bash-smoke-output" });
+        assert.equal(result.ok, true, JSON.stringify(result));
+        if (result.ok) {
+          assert.equal(result.type, "bash");
+        }
+        const after = await port.execute({ type: "get_state" });
+        assert.equal(after.ok, true);
+        if (after.ok && after.type === "get_state") {
+          assert.equal(after.state.isBashRunning, false);
+          assert.equal(after.state.bash?.completed, true);
+          assert.equal(after.state.bash?.exitCode, 0);
+          assert.ok(
+            after.state.bash?.output.includes("pix-bash-smoke-output"),
+            `projected output=${JSON.stringify(after.state.bash?.output)}`,
+          );
+        }
+
+        // abort_bash interrupt while idle is a supported no-op.
+        const idleAbort = await port.interrupt({ type: "abort_bash" });
+        assert.equal(idleAbort.ok, true, JSON.stringify(idleAbort));
+        if (idleAbort.ok) {
+          assert.equal(idleAbort.type, "abort_bash");
+        }
+
+        // Long bash + immediate abort_bash: the interrupt must not be blocked
+        // behind the command, and the command settles (ok or interrupted).
+        const pending = port.execute({ type: "bash", command: "sleep 1" });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const started = Date.now();
+        const abortResult = await port.interrupt({ type: "abort_bash" });
+        assert.equal(abortResult.ok, true, JSON.stringify(abortResult));
+        assert.ok(Date.now() - started < 500, "abort_bash must not block behind the long bash");
+        const bashOutcome = await pending;
+        assert.ok(
+          bashOutcome.ok === true || (bashOutcome.ok === false && bashOutcome.error.code === "interrupted"),
+          JSON.stringify(bashOutcome),
+        );
       } finally {
         await port.close("user");
       }

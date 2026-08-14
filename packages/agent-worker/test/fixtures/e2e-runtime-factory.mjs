@@ -16,12 +16,14 @@
 
 import { randomUUID } from "node:crypto";
 
-// D2-P1/D2-P2/P3/P4: production light-command surface. Baseline queries
-// (get_state / get_commands / get_last_assistant_text) are always available;
-// runtime.stats (get_session_stats), runtime.session.rename (set_session_name),
-// runtime.thinking.set (set_thinking_level), runtime.model.set (set_model),
-// runtime.steer (steer), runtime.follow_up (follow_up) and runtime.queue
-// (clear_queue interrupt + set_auto_retry) are the capability-gated unlocks.
+// D2-P1/D2-P2/P3/P4/P5: production light-command + queue + bash surface. Baseline
+// queries (get_state / get_commands / get_last_assistant_text) are always
+// available; runtime.stats (get_session_stats), runtime.session.rename
+// (set_session_name), runtime.thinking.set (set_thinking_level), runtime.model.set
+// (set_model), runtime.steer (steer), runtime.follow_up (follow_up), runtime.queue
+// (clear_queue interrupt + set_auto_retry) and the D2-P5 bash pair
+// runtime.bash (bash) / runtime.bash.abort (abort_bash) are the
+// capability-gated unlocks.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
@@ -33,6 +35,8 @@ const CAPABILITIES = {
     "runtime.steer",
     "runtime.follow_up",
     "runtime.queue",
+    "runtime.bash",
+    "runtime.bash.abort",
   ],
   version: 1,
 };
@@ -73,6 +77,10 @@ function makePort({ cwd, sessionId, mode }) {
   /** @type {{ resolve: (v: unknown) => void, reject: (e: unknown) => void, timer?: ReturnType<typeof setTimeout> } | null} */
   let blocked = null;
   let isPromptRunning = false;
+  let isBashRunning = false;
+  /** @type {{ resolve: (v: unknown) => void, reject: (e: unknown) => void, timer?: ReturnType<typeof setTimeout> } | null} */
+  let blockedBash = null;
+  let bashProjection = null;
   let sessionName = "";
   let messageCount = 0;
   let lastAssistantText = "";
@@ -109,7 +117,7 @@ function makePort({ cwd, sessionId, mode }) {
       sessionId,
       isStreaming: false,
       isPromptRunning,
-      isBashRunning: false,
+      isBashRunning,
       isCompacting: false,
       model,
       messageCount,
@@ -118,6 +126,7 @@ function makePort({ cwd, sessionId, mode }) {
       autoRetryEnabled,
       queuedMessages: queued,
       pendingMessageCount: queued.steering.length + queued.followUp.length,
+      ...(bashProjection === null ? {} : { bash: { ...bashProjection } }),
       ...(sessionName === "" ? {} : { sessionName }),
     };
   }
@@ -239,6 +248,86 @@ function makePort({ cwd, sessionId, mode }) {
           autoRetryEnabled = command.enabled;
           return { ok: true, type: "set_auto_retry" };
         }
+        case "bash": {
+          const bashText = typeof command.command === "string" ? command.command : "";
+          if (bashText.trim() === "") {
+            return { ok: false, type: "bash", error: { code: "invalid_input", message: "command cannot be empty", retryable: false } };
+          }
+          if (isBashRunning) {
+            return { ok: false, type: "bash", error: { code: "session_busy", message: "a bash command is already running", retryable: true } };
+          }
+          isBashRunning = true;
+          const excludeFromContext = command.excludeFromContext === true;
+          bashProjection = {
+            command: bashText,
+            output: "",
+            excludeFromContext,
+            truncated: false,
+            cancelled: false,
+            completed: false,
+            updateCount: 1,
+          };
+          // Emit a start delta (empty output) so a consumer can observe the bash
+          // has begun without polling (the long-running bash command sits on the
+          // Host serial lane, so getSnapshot would HOL behind it — events do not).
+          emit({ type: "bash_update", sessionId, command: bashText, output: "", ...(excludeFromContext ? { excludeFromContext } : {}) });
+          // Deterministic delta stream (bash_update.output is a per-event DELTA,
+          // the shared projection concatenates to the exact accumulated output).
+          const pushChunk = (chunk) => {
+            bashProjection = { ...bashProjection, output: `${bashProjection.output}${chunk}`, updateCount: bashProjection.updateCount + 1 };
+            emit({ type: "bash_update", sessionId, command: bashText, output: chunk, ...(excludeFromContext ? { excludeFromContext } : {}) });
+          };
+          if (bashText.startsWith("__block__")) {
+            // Controllable long bash: hold until abort_bash (or hard timeout).
+            const holdMs = 30_000;
+            const result = await new Promise((resolve, reject) => {
+              const timer = setTimeout(() => {
+                blockedBash = null;
+                resolve({ kind: "timeout" });
+              }, holdMs);
+              blockedBash = {
+                resolve: (value) => {
+                  clearTimeout(timer);
+                  blockedBash = null;
+                  resolve(value);
+                },
+                reject: (error) => {
+                  clearTimeout(timer);
+                  blockedBash = null;
+                  reject(error);
+                },
+                timer,
+              };
+            });
+            if (result?.kind === "aborted") {
+              bashProjection = { ...bashProjection, cancelled: true, completed: true, updateCount: bashProjection.updateCount + 1 };
+              emit({ type: "bash_update", sessionId, command: bashText, cancelled: true, truncated: false });
+              isBashRunning = false;
+              return { ok: false, type: "bash", error: { code: "interrupted", message: "bash aborted", retryable: true } };
+            }
+            // Timeout fallback: still settle so the E2E never hangs.
+            bashProjection = { ...bashProjection, exitCode: 0, completed: true, updateCount: bashProjection.updateCount + 1 };
+            emit({ type: "bash_update", sessionId, command: bashText, exitCode: 0, truncated: false });
+            isBashRunning = false;
+            return { ok: true, type: "bash" };
+          }
+          pushChunk("line 1\n");
+          await delay(10);
+          pushChunk("line 2\n");
+          await delay(10);
+          bashProjection = { ...bashProjection, exitCode: 0, completed: true, updateCount: bashProjection.updateCount + 1 };
+          emit({ type: "bash_update", sessionId, command: bashText, exitCode: 0, truncated: false });
+          isBashRunning = false;
+          return { ok: true, type: "bash" };
+        }
+        case "abort_bash":
+          // Ordinary-command form of the abort_bash control (the Client sends it
+          // over the independent interrupt path, but the Core command must also
+          // preempt a running bash).
+          if (blockedBash) {
+            blockedBash.resolve({ kind: "aborted" });
+          }
+          return { ok: true, type: "abort_bash" };
         default:
           break;
       }
@@ -337,6 +426,9 @@ function makePort({ cwd, sessionId, mode }) {
       if (interrupt.type === "abort" && blocked) {
         blocked.resolve({ kind: "aborted" });
       }
+      if (interrupt.type === "abort_bash" && blockedBash) {
+        blockedBash.resolve({ kind: "aborted" });
+      }
       if (interrupt.type === "clear_queue") {
         queued = { steering: [], followUp: [] };
         emit({ type: "queue_update", sessionId, steering: [], followUp: [] });
@@ -347,6 +439,9 @@ function makePort({ cwd, sessionId, mode }) {
       closed = true;
       if (blocked) {
         blocked.resolve({ kind: "closed" });
+      }
+      if (blockedBash) {
+        blockedBash.resolve({ kind: "closed" });
       }
       listeners.clear();
     },

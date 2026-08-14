@@ -286,3 +286,57 @@ describe("TranscriptList — runtime messages", () => {
     expect(screen.getByText("part")).toBeTruthy();
   });
 });
+
+describe("RuntimeProvider — D2-P5 runBash/abortBash exposure", () => {
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("exposes runBash and abortBash on the RuntimeApi", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    expect(typeof exposed.runBash).toBe("function");
+    expect(typeof exposed.abortBash).toBe("function");
+  });
+
+  it("runBash sends an exact bash command and abortBash an exact abort_bash interrupt", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    const ws = await driveReady();
+    const store = capturedStore!;
+    await act(async () => {
+      void store.openSession("s1");
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.bash", "runtime.bash.abort"] }) });
+      await flush();
+    });
+
+    let bashSettled = false;
+    const bashP = exposed.runBash("echo hello", { excludeFromContext: true });
+    bashP.then(() => { bashSettled = true; }, () => {});
+    await flush();
+    const bashCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; command: string; excludeFromContext?: boolean } } }>(ws, "command")!;
+    expect(bashCmd.payload.command.type).toBe("bash");
+    expect(bashCmd.payload.command.command).toBe("echo hello");
+    expect(bashCmd.payload.command.excludeFromContext).toBe(true);
+    await serverSend(ws, { type: "response", id: bashCmd.id, payload: { ok: true, result: { commandId: bashCmd.payload.command.commandId, result: { ok: true, type: "bash" } } } });
+    expect(bashSettled).toBe(true);
+
+    let abortSettled = false;
+    const abortP = exposed.abortBash();
+    abortP.then(() => { abortSettled = true; }, () => {});
+    await flush();
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
+    expect(intr.payload.interrupt.type).toBe("abort_bash");
+    await serverSend(ws, { type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort_bash", result: { ok: true, type: "abort_bash" } } });
+    expect(abortSettled).toBe(true);
+  });
+});

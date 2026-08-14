@@ -1201,3 +1201,274 @@ describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clea
     await expect(p).resolves.toEqual({ ok: true, type: "clear_queue" });
   });
 });
+
+describe("SessionStore — D2-P5 bash runtime control (runBash / abortBash)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function attachWithCaps(h: RuntimeHarness, capabilities: string[], sessionId = "s1"): Promise<FakeWebSocket> {
+    h.store.connect();
+    const ws = openReady(h);
+    const p = h.store.openSession(sessionId);
+    return flush().then(() => {
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, capabilities }) });
+      return flush().then(() => p.then(() => ws));
+    });
+  }
+
+  function bashFrame(ws: FakeWebSocket): { id: string; payload: { command: { commandId: string; type: string; command: string; excludeFromContext?: boolean } } } {
+    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; command: string; excludeFromContext?: boolean } } }>(ws, "command")!;
+    expect(frame).toBeTruthy();
+    expect(frame.payload.command.type).toBe("bash");
+    return frame;
+  }
+
+  function respondOk(ws: FakeWebSocket, id: string, commandId: string, type: string): void {
+    ws.serverSend({ type: "response", id, payload: { ok: true, result: { commandId, result: { ok: true, type } } } });
+  }
+
+  it("runBash sends an exact bash command on the ordinary command slot and resolves on ok", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash", "runtime.bash.abort"]);
+    const p = h.store.runBash("  echo hello  ", { excludeFromContext: true });
+    await flush();
+    const cmd = bashFrame(ws);
+    expect(cmd.payload.command.command).toBe("echo hello");
+    expect(cmd.payload.command.excludeFromContext).toBe(true);
+    expect(cmd.payload.command.commandId).toBeTruthy();
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "bash");
+    await expect(p).resolves.toBeUndefined();
+    // Slot freed: a follow-up bash can go out.
+    const next = h.store.runBash("echo again");
+    await flush();
+    const cmd2 = bashFrame(ws);
+    expect(cmd2.payload.command.excludeFromContext).toBeUndefined();
+    respondOk(ws, cmd2.id, cmd2.payload.command.commandId, "bash");
+    await expect(next).resolves.toBeUndefined();
+  });
+
+  it("runBash rejects blank commands without sending (invalid_input)", async () => {
+    const h = createHarness();
+    await attachWithCaps(h, ["runtime.bash"]);
+    await expect(h.store.runBash("   ")).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+    await expect(h.store.runBash("\n\t")).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+    const frames = h.lastSocket().sent.filter((f) => (f as { type: string }).type === "command");
+    expect(frames).toHaveLength(0);
+  });
+
+  it("second ordinary command while a bash is pending is session_busy and never overwrites the bash waiter", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash"]);
+    const bashP = h.store.runBash("sleep 5");
+    await flush();
+    // A second bash is session_busy; a prompt is ALSO an ordinary command → session_busy.
+    const secondBash = h.store.runBash("second");
+    await expect(secondBash).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const promptDuringBash = h.store.sendPrompt("hello");
+    await expect(promptDuringBash).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    await flush();
+    const frames = (ws.sent as { type: string; payload?: { command?: { type?: string; command?: string } } }[]).filter((f) => f.type === "command");
+    // Only ONE ordinary command frame was sent (the first bash) — no overwrite.
+    expect(frames).toHaveLength(1);
+    const cmd = bashFrame(ws);
+    expect(cmd.payload.command.command).toBe("sleep 5");
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "bash");
+    await expect(bashP).resolves.toBeUndefined();
+  });
+
+  it("runBash while a prompt is pending is session_busy (bash never overwrites prompt state)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.bash"]);
+    const promptP = h.store.sendPrompt("long running prompt");
+    await flush();
+    const bashP = h.store.runBash("echo x");
+    await expect(bashP).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(promptCmd.payload.command.type).toBe("prompt");
+    respondOk(ws, promptCmd.id, promptCmd.payload.command.commandId, "prompt");
+    await expect(promptP).resolves.toBeTruthy();
+    // Prompt slot freed: a bash can now go out and must not be a hung promise.
+    const nextBash = h.store.runBash("echo after prompt");
+    await flush();
+    const bashCmd = bashFrame(ws);
+    respondOk(ws, bashCmd.id, bashCmd.payload.command.commandId, "bash");
+    await expect(nextBash).resolves.toBeUndefined();
+  });
+
+  it("abortBash sends the abort_bash interrupt and resolves on ok (independent of the bash command)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash", "runtime.bash.abort"]);
+    // Start a bash command on the ordinary slot; abortBash must still dispatch.
+    const bashP = h.store.runBash("sleep 5");
+    await flush();
+    const abortP = h.store.abortBash();
+    await flush();
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
+    expect(intr).toBeTruthy();
+    expect(intr.payload.interrupt.type).toBe("abort_bash");
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort_bash", result: { ok: true, type: "abort_bash" } } });
+    await expect(abortP).resolves.toEqual({ ok: true, type: "abort_bash" });
+    // The bash command promise stays pending until its own correlated result.
+    let settled = false;
+    void bashP.then(() => { settled = true; }, () => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    const cmd = bashFrame(ws);
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "bash", error: { code: "interrupted", message: "bash aborted", retryable: true } } } } });
+    await expect(bashP).rejects.toMatchObject({ code: "interrupted" });
+  });
+
+  it("abortBash while another interrupt type is in flight is session_busy (typed admission)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash.abort"]);
+    const abortP = h.store.abort();
+    await flush();
+    const bashAbortP = h.store.abortBash();
+    await expect(bashAbortP).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string; interrupt: { type: string } } }>(ws, "interrupt")!;
+    expect(intr.payload.interrupt.type).toBe("abort");
+    const interrupts = (ws.sent as { type: string; payload?: { interrupt?: { type?: string } } }[]).filter((f) => f.type === "interrupt");
+    expect(interrupts).toHaveLength(1);
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await expect(abortP).resolves.toBeTruthy();
+  });
+
+  it("abort while abort_bash is in flight is session_busy; concurrent abort_bash coalesces", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash.abort"]);
+    const a1 = h.store.abortBash();
+    await flush();
+    const abortP = h.store.abort();
+    await expect(abortP).rejects.toMatchObject({ code: "session_busy", retryable: false });
+    const a2 = h.store.abortBash();
+    await flush();
+    const interrupts = (ws.sent as { type: string; payload?: { interrupt?: { type?: string } } }[]).filter((f) => f.type === "interrupt");
+    expect(interrupts).toHaveLength(1);
+    expect(interrupts[0]?.payload?.interrupt?.type).toBe("abort_bash");
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort_bash", result: { ok: true, type: "abort_bash" } } });
+    await expect(a1).resolves.toBeTruthy();
+    await expect(a2).resolves.toBeTruthy();
+  });
+
+  it("wrong commandId / interruptType abort_bash result is dropped (triple match)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash.abort"]);
+    const p = h.store.abortBash();
+    await flush();
+    const intr = lastFrame<{ type: string; id: string; payload: { commandId: string } }>(ws, "interrupt")!;
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: "wrong", interruptType: "abort_bash", result: { ok: true, type: "abort_bash" } } });
+    await flush();
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await flush();
+    void p.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    ws.serverSend({ type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "abort_bash", result: { ok: true, type: "abort_bash" } } });
+    await expect(p).resolves.toEqual({ ok: true, type: "abort_bash" });
+  });
+
+  it("stop / detach / dispose settle an in-flight bash command exactly once", async () => {
+    // stop
+    const h1 = createHarness();
+    const ws1 = await attachWithCaps(h1, ["runtime.prompt", "runtime.abort", "runtime.bash"]);
+    const bashP1 = h1.store.runBash("sleep 5");
+    await flush();
+    const stopP = h1.store.stop();
+    await flush();
+    const stopFrame = lastFrame<{ type: string; id: string }>(ws1, "stop")!;
+    ws1.serverSend({ type: "response", id: stopFrame.id, payload: { ok: true, result: { sessionId: "s1", stopped: true } } });
+    await expect(stopP).resolves.toBeUndefined();
+    await expect(bashP1).rejects.toMatchObject({ code: "interrupted", message: "session stopped" });
+
+    // detach
+    const h2 = createHarness();
+    const ws2 = await attachWithCaps(h2, ["runtime.bash"]);
+    const bashP2 = h2.store.runBash("sleep 5");
+    await flush();
+    const detachP = h2.store.detach();
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws2, "detach")!;
+    ws2.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await expect(detachP).resolves.toBeUndefined();
+    await expect(bashP2).rejects.toMatchObject({ code: "interrupted", message: "detached" });
+
+    // dispose
+    const h3 = createHarness();
+    await attachWithCaps(h3, ["runtime.bash"]);
+    const bashP3 = h3.store.runBash("sleep 5");
+    await flush();
+    h3.store.dispose();
+    await expect(bashP3).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("session switch (detach-then-open) rejects a pending bash exactly once; a late result cannot settle the new session", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.bash"], "s1");
+    const bashP = h.store.runBash("sleep 5");
+    await flush();
+    const bashCmd = bashFrame(ws);
+    const oldEnvelope = bashCmd.id;
+    // AppShell switch path: detach the live session (Worker preserved) — the
+    // pending bash bound to s1 is rejected exactly once.
+    const detachP = h.store.detach();
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    ws.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await flush();
+    await expect(bashP).rejects.toMatchObject({ code: "interrupted", message: "detached" });
+    await detachP;
+    // A late response for the OLD bash envelope is dropped — it must not settle
+    // anything (the pendingCommand slot is already cleared).
+    ws.serverSend({ type: "response", id: oldEnvelope, payload: { ok: true, result: { commandId: bashCmd.payload.command.commandId, result: { ok: true, type: "bash" } } } });
+    await flush();
+    // Open the new session; the ordinary slot is free → a fresh bash goes out.
+    const openP = h.store.openSession("s2");
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s2", capabilities: ["runtime.bash"] }) });
+    await flush();
+    await openP;
+    const next = h.store.runBash("echo new session");
+    await flush();
+    const cmd2 = bashFrame(ws);
+    expect(cmd2.payload.command.command).toBe("echo new session");
+    respondOk(ws, cmd2.id, cmd2.payload.command.commandId, "bash");
+    await expect(next).resolves.toBeUndefined();
+  });
+
+  it("runBash resolves honestly to unsupported_capability when the runtime gates it", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"]);
+    const p = h.store.runBash("echo x");
+    await flush();
+    const cmd = bashFrame(ws);
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "bash", error: { code: "unsupported_capability", message: "runtime.bash not available", retryable: false } } } } });
+    await expect(p).rejects.toMatchObject({ code: "unsupported_capability" });
+    expect(h.store.hasRuntimeCapability("runtime.bash")).toBe(false);
+  });
+
+  it("bash_update events project exact accumulated output into snapshot.state.bash", async () => {
+    const h = createHarness();
+    await attachWithCaps(h, ["runtime.bash"]);
+    wsEvent(h, { type: "bash_update", sessionId: "s1", eventId: 1, epoch: "e1", command: "echo hi", output: "line 1\n" });
+    wsEvent(h, { type: "bash_update", sessionId: "s1", eventId: 2, epoch: "e1", command: "echo hi", output: "line 2\n" });
+    wsEvent(h, { type: "bash_update", sessionId: "s1", eventId: 3, epoch: "e1", command: "echo hi", exitCode: 0, truncated: false });
+    const state = h.store.getSnapshot().snapshot!.state;
+    expect(state.bash?.output).toBe("line 1\nline 2\n");
+    expect(state.bash?.exitCode).toBe(0);
+    expect(state.bash?.completed).toBe(true);
+    expect(state.bash?.command).toBe("echo hi");
+    expect(state.isBashRunning).toBe(false);
+    expect(h.store.getSnapshot().streaming).toBe(false);
+  });
+});
+
+function wsEvent(h: RuntimeHarness, payload: Record<string, unknown>): void {
+  h.lastSocket().serverSend({ type: "event", payload });
+}

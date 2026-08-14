@@ -116,6 +116,8 @@ export interface RuntimeApi extends RuntimeView {
   readonly steer: SessionStore["steer"];
   readonly followUp: SessionStore["followUp"];
   readonly clearQueue: SessionStore["clearQueue"];
+  readonly runBash: SessionStore["runBash"];
+  readonly abortBash: SessionStore["abortBash"];
   readonly abort: SessionStore["abort"];
   readonly getState: SessionStore["getState"];
   readonly getCommands: SessionStore["getCommands"];
@@ -144,6 +146,8 @@ export function useRuntime(): RuntimeApi {
         steer: (message, images) => store.steer(message, images),
         followUp: (message, images) => store.followUp(message, images),
         clearQueue: () => store.clearQueue(),
+        runBash: (command, options) => store.runBash(command, options),
+        abortBash: () => store.abortBash(),
         abort: () => store.abort(),
         getState: () => store.getState(),
         getCommands: () => store.getCommands(),

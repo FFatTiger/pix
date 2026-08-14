@@ -15,12 +15,14 @@ export {
  * `runtime.model.set` (set_model) — the single real `set_model` vertical slice.
  * D2-P4 precisely adds `runtime.steer` (steer), `runtime.follow_up`
  * (follow_up) and `runtime.queue` (clear_queue interrupt + set_auto_retry) —
- * the single real queue-control vertical slice. Tool configuration, bash,
- * fork, extension UI, compaction, navigation, reload and `runtime.auto_name`
+ * the single real queue-control vertical slice. D2-P5 precisely adds
+ * `runtime.bash` (bash) and `runtime.bash.abort` (abort_bash) — the single
+ * real bash runtime-control slice. Tool configuration, fork, extension UI,
+ * compaction, navigation, reload and `runtime.auto_name`
  * (generate_session_title) are all implemented by the adapter but gated out by
  * this set so composition (R1/R2) must explicitly opt into broader
  * capabilities. The constant is intentionally narrow and MUST NOT grow to
- * leak tools/bash/fork/extension-UI/reload/auto_name capabilities by default.
+ * leak tools/fork/extension-UI/reload/auto_name capabilities by default.
  */
 export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.prompt",
@@ -32,4 +34,6 @@ export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.steer",
   "runtime.follow_up",
   "runtime.queue",
+  "runtime.bash",
+  "runtime.bash.abort",
 ] as const;

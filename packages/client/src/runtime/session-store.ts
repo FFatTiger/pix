@@ -374,6 +374,12 @@ export class SessionStore implements RuntimeSocketHandler {
       // D2-P4: a queued turn is bound to the live streaming session; detaching
       // invalidates it (fixed error, never overwrites a prompt promise).
       this.settlePendingQueuedTurn({ code: "interrupted", message: "detached", retryable: false });
+      // D2-P5: a pending bash command is bound to the detached session — reject
+      // it exactly once so the single ordinary-command slot frees and a late
+      // bash result/event can never settle a newly attached session. Ordinary
+      // prompt semantics are preserved (the prompt promise is never overwritten
+      // here; it settles on its own correlated response or transport loss).
+      this.settlePendingBashCommand({ code: "interrupted", message: "detached", retryable: false });
       this.rejectAttach({ code: "interrupted", message: "detached", retryable: false });
       this.setConnection(this.socket.connectionState === "stopped" ? "stopped" : "ready");
       this.notify();
@@ -695,6 +701,55 @@ export class SessionStore implements RuntimeSocketHandler {
     });
   }
 
+  // --- D2-P5 bash runtime control ------------------------------------------
+  //
+  // `runBash` is an ORDINARY command (single-inflight {@link pendingCommand}
+  // slot): while a prompt (or any other ordinary command) is pending, a second
+  // ordinary command — including a second bash — is honestly `session_busy` and
+  // NEVER overwrites the first waiter. The accumulated output/cancelled/
+  // exitCode/truncated/fullOutputPath arrive via `bash_update` deltas through
+  // the SHARED Protocol projection into {@link RuntimeView.snapshot.state.bash}
+  // (no sessiond authority snapshot-finalization is involved), so `runBash`
+  // resolves as a bare ack once the runtime settles and callers read the
+  // snapshot for output. `abortBash` is an INTERRUPT (independent non-queued
+  // control path) with typed admission: it never waits behind the running bash
+  // command and never串线 into another interrupt type's promise.
+
+  /**
+   * Run a bash command. Requires `runtime.bash` at the runtime. The command is
+   * strictly trimmed and must be non-empty (`invalid_input` otherwise); output
+   * streams through the shared projection into `snapshot.state.bash` while the
+   * command is in flight and stays accumulated after completion. Resolves as a
+   * bare ack; on an aborted run the runtime answers `interrupted` (rejected
+   * here) and the snapshot still carries the cancelled projection.
+   */
+  runBash(command: string, options?: { excludeFromContext?: boolean }): Promise<void> {
+    const trimmed = command.trim();
+    if (trimmed.length === 0) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "command cannot be empty",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    return this.runTypedCommand(
+      { type: "bash", command: trimmed, ...(options?.excludeFromContext === undefined ? {} : { excludeFromContext: options.excludeFromContext }) },
+      (outcome) => {
+        if (outcome.type !== "bash") throw new Error("unexpected bash result");
+      },
+    );
+  }
+
+  /**
+   * Abort the running bash command via the INDEPENDENT interrupt path (never
+   * HOL-blocked behind the long bash command). Requires `runtime.bash.abort` at
+   * the runtime. Typed interrupt admission: same-type aborts coalesce, a
+   * different in-flight interrupt type returns `session_busy`.
+   */
+  abortBash(): Promise<unknown> {
+    return this.sendInterrupt({ type: "abort_bash" });
+  }
+
   /**
    * Send a typed command through the single-inflight {@link sendCommand} path
    * with an internally-minted commandId, then unwrap the correlated result.
@@ -976,6 +1031,11 @@ export class SessionStore implements RuntimeSocketHandler {
     if (this.pendingQueuedTurn && this.sessionId !== null && this.sessionId !== sessionId) {
       this.settlePendingQueuedTurn({ code: "interrupted", message: "session switched", retryable: false });
     }
+    // D2-P5: a pending bash command bound to the OLD session is rejected exactly
+    // once on a switch so its late result/events cannot settle the new session.
+    if (this.pendingCommand && this.sessionId !== null && this.sessionId !== sessionId) {
+      this.settlePendingBashCommand({ code: "interrupted", message: "session switched", retryable: false });
+    }
     this.attached = false;
     this.awaitingSnapshot = true;
     if (this.attach && this.attach.sessionId === sessionId) {
@@ -1199,6 +1259,23 @@ export class SessionStore implements RuntimeSocketHandler {
       this.pendingQueuedTurn.reject(error);
       this.pendingQueuedTurn = null;
       this.notify();
+    }
+  }
+
+  /**
+   * Reject an in-flight BASH command exactly once (D2-P5 detach/session-switch).
+   * Bash commands occupy the single ordinary-command slot ({@link pendingCommand})
+   * like prompts, but are long-running control resources with their own abort
+   * path: on detach/switch they must be settled so the slot frees and a late
+   * bash result/event can never settle a newly attached session. A pending
+   * PROMPT is deliberately left untouched here (prompt promise semantics are
+   * preserved — it settles on its own correlated response or transport loss).
+   */
+  private settlePendingBashCommand(error: ProtocolError): void {
+    const pending = this.pendingCommand;
+    if (pending && pending.command.type === "command" && pending.command.payload.command.type === "bash") {
+      this.pendingCommand = null;
+      pending.reject(error);
     }
   }
 

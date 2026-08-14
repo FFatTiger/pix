@@ -706,3 +706,28 @@ commit 边界重验（Existing AllowedRoot 语义）：
 - overwrite 的 `link(target,backup)` 与 `rename` 之间 target 缺位窗口极小（硬链接方案下 target 从不缺位；rename backup 还原为原子单步）。
 - 并发锁仅串行化 Host 上传请求；外部进程（shell/git）对同目录的并发修改仍依赖 commit 边界重验兜底（TOCTOU 不可完全消除）。外部重命名整个目标目录时 final 写入会拒绝，但移动后的目录中可能遗留0600 temp；大型上传时 temp 也可能短暂出现在 GET 文件列表。
 ```
+
+## 36. D2-P5 — Bash Runtime Control 记录（DONE）
+
+```text
+实现：本任务执行体（Fresh session）；独立 worktree d2p5-bash-control，branch feat/d2p5-bash-control，base main 811c94e，implementation `3ce5d2d`，docs follow-up `ea95102`。目标：真实贯通 bash 命令 + abort_bash 控制（独立 interrupt 路径，长 bash 不 HOL 阻塞 abort）；production capability 精确加 runtime.bash / runtime.bash.abort（9→11 token）；Client SessionStore 暴露 typed runBash / abortBash helper。与 D3A host 并行 slice 并行进行，未触碰 host 文件/资源、D1 会话、trusted-roots ledger、upload transaction、package-lock、无关 UI。状态 DONE（Fresh GPT 独立验证 PASS）。
+
+范围（生产文件）：adapter `agent/index.ts`（11-token capability surface）、client `session-store.ts`（runBash / abortBash + bash 生命周期清理）、client `runtime-provider.tsx`（暴露 API）。未改 Protocol/runtime-core/sessiond/Host/daemon/package-lock；未新增 wire 类型；Bash 未进入 AUTHORITY_COMMAND_TYPES（bash_update delta 投影即权威，无 sessiond 快照终态化）。
+
+关键架构冻结与实现：
+- Adapter：PRODUCTION_AGENT_CAPABILITIES 在 9 token 后稳定追加 runtime.bash / runtime.bash.abort（共 11 token）；internal adapter 的 bash / abort_bash 原已实现，仅 capability 门打开。production-smoke 无网络实测：真实 `echo` 命令 → snapshot.state.bash.output 精确投影 + exitCode 0；idle abort_bash no-op ok；`sleep` + 立即 abort_bash 不阻塞（<500ms）且命令 settle（ok 或 interrupted）。
+- Client SessionStore `runBash(command, options?)`：ORDINARY 命令，走既有单 inflight pendingCommand 槽 —— prompt/bash 任一在飞时第二条普通命令诚实 session_busy（绝不覆盖第一条 waiter）；严格 trim/nonempty invalid_input；bash_update.output delta 经共享 Protocol projection 累积到 snapshot.state.bash（无需客户端额外权威刷新），helper 仅解包相关 ack。`abortBash()`：独立 interrupt 信封 + typed admission（同 type coalesce、different type session_busy、三重匹配），绝不在长 bash 后排队。
+- Client bash 生命周期清理：stop/dispose 沿用通用 settlePendingCommand（bash 与 prompt 一样恰一次 settle）；detach 与 session-switch（startAttach 到不同 session）新增类型感知 `settlePendingBashCommand`——bash 是长跑控制资源，detach/switch 必须恰一次 reject（slot 释放、晚到 result/event 不能 settle 新 session），而 prompt promise 语义保持不变（detach 不 overwrite prompt）。
+- E2E fixture：CAPABILITIES 加 bash 对；execute bash 确定性 start(空 delta)/delta 流/end，`__block__` 长 bash 持锁直到 abort_bash（或超时兜底），中断后 cancelled projection；interrupt abort_bash 解析持锁；baseState 暴露 isBashRunning + bash projection；close 也释放 bash 持锁。closed caps 仍为 set_tools/reload。
+- E2E runtime.mjs：单一 RuntimeWsClient（同一 WS 连接）真实贯通 Host→sessiond→R2→R1→fixture：PRODUCTION_CAPS 常量统一 11 token 断言；新 scenarioD2P5BashControl——普通 bash 的 delta 拼接精确输出 + getSnapshot state.bash 精确/exitCode0/completed、`__block__` 长 bash + abort_bash interrupt 非阻塞（<5s 断言）+ interrupted + cancelled bash_update + snapshot cancelled/completed + detach/reattach 后 bash 投影持久（worker snapshot）+ closed tools/reload。注：普通命令 getSnapshot/set_tools 走 serial lane，长 bash 运行中会 HOL（设计如此，文档化 LOW）；abort_bash 走 interrupt 旁路不 HOL；bash 运行中事件（bash_update）不阻塞。
+
+验证（本机 Node v24.18.0，PIX_AUTH_DISABLED=true 跑 E2E）：
+- 定向/分包：adapter 172/172（基线 171 + 1 bash smoke）、client 496/496（基线 482 + 14：session-store +12、provider +2）、sessiond 158 pass/1 skip、protocol 116、runtime-core 7、runtime-contract-tests 75、agent-worker 105、host 269、cli 46。
+- typecheck：adapter/client/sessiond 官方 tsconfig 全 PASS；root build EXIT 0。
+- check:architecture PASS；client boundaries 83 files OK；host boundaries 38 files OK；`git diff --check` OK。
+- test:e2e:runtime（真实进程链，单连接）：2/2 轮 PASS——既有 10 场景 + 新 D2-P5 bash control（普通 bash 精确投影 + block 长 bash + abort_bash 非阻塞 interrupt + cancelled + detach/reattach 持久 + closed tools/reload）全 PASS，shutdown 无孤儿。test:e2e:startup / test:e2e:sessions 未受本 slice 影响。
+- candidate-local module resolution：import.meta.resolve 证明 sessiond/daemon、adapter/agent、protocol、runtime-core、agent-worker、host 全部指向本 worktree packages/dist。
+
+独立验证：Fresh GPT 复验 root build/typecheck、Client 496/496、Adapter 172/172、其余 workspace 全绿、Runtime E2E 1轮+2轮、Startup/Sessions E2E、architecture/boundaries 全 PASS；另检查 capability 精确门控、bash/prompt pending 互斥、detach/switch/stop/dispose/epoch/reconnect、abort typed admission与竞态、delta不重复累积、same-WS真实链与无孤儿，verdict PASS。
+
+残余风险：① Host 单连接 serial lane 仍 HOL 普通命令（getSnapshot 等）于长 bash 之后（文档化 LOW，本 slice 不重设计 Host lane，abort_bash 走既有独立 interrupt 旁路已验证非阻塞）；② Bash 命令/abort 仅 capability 门控，UI（Composer 等）未在本 slice 暴露 bash 控件（显式排除，minimal API only）；③ Bash command text 沿用既有 Protocol 合约，无额外长度上限且允许 shell 控制字符；④ `fullOutputPath` 沿用既有 bash projection，可能包含服务端本地路径；⑤ interrupt ack 沿用既有 abort/clearQueue 设计，无独立客户端超时，依靠重连同步收敛。
