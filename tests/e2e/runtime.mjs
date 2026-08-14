@@ -705,6 +705,22 @@ async function scenarioAbort(stack, projectDir) {
       { label: "agent_start before abort" },
     );
 
+    // D3A worktree safety query (runtime.hasBusyCwd descendant containment):
+    // while the prompt is running the exact busy cwd AND any ancestor report
+    // busy; a sibling prefix and an unrelated cwd do not. stopByCwd stays exact.
+    {
+      const { SessiondRpcClient } = await import("@fffattiger/pix-sessiond/client");
+      const rpc = new SessiondRpcClient({ endpoint: stack.daemon.endpoint, secret: stack.daemon.secret, timeoutMs: 2_000 });
+      const exact = await rpc.call("runtime.hasBusyCwd", { cwd: projectDir });
+      assert.equal(exact.busy, true, "exact busy cwd must report busy");
+      const ancestor = await rpc.call("runtime.hasBusyCwd", { cwd: dirname(projectDir) });
+      assert.equal(ancestor.busy, true, "ancestor of a busy cwd must report busy (descendant containment)");
+      const sibling = await rpc.call("runtime.hasBusyCwd", { cwd: `${projectDir}x` });
+      assert.equal(sibling.busy, false, "sibling prefix is NOT a descendant");
+      const unrelated = await rpc.call("runtime.hasBusyCwd", { cwd: "/nonexistent-unrelated-dir-xyz" });
+      assert.equal(unrelated.busy, false, "unrelated cwd must not be busy");
+    }
+
     // Independent interrupt path — must not HOL-block behind the long command.
     const t0 = Date.now();
     const ir = await client.interrupt(sessionId, `abort-${Date.now()}`, {

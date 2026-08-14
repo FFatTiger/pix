@@ -921,3 +921,40 @@ architecture/boundaries、Runtime E2E 2 轮、Startup/Sessions E2E 全 PASS。
   PASS）；资源/插件/技能实际重载语义由 SDK 负责，本切片只收敛 snapshot 权威。
 - UI/能力面板展示、compact/extension UI/fork 后续。
 ```
+
+## 41. D3A Managed-Worktree Routes — 路由/组合接线（安全修复，UI 保持只读）
+
+```text
+实现：branch feat/d3a-managed-worktree-routes，base main 7a890ca（rebase 到 main dfbd8ee，未动 D2-P6 内容）。在 §39 托管账本/域基础上接线生产组合与 /v1/worktrees 路由，关闭「DELETE 按 Git 拓扑成员身份授权」漏洞。UI 保持只读（无 create/remove/force 控件）；未触碰 package-lock、D2 tools/reload、adapter/client 运行时、live 服务。
+
+安全目标：托管所有权（managed-worktrees ledger）是唯一删除授权；trusted-root/authorized 仅授权、绝不授予删除权。外部/planted/manual/legacy-claim-only 一律 403 WORKTREE_NOT_MANAGED。
+
+生产组合（createProductionResources 重写）：
+- PIX_HOST_DIR 只开 ONE HostStateDirectoryLease；用 createTrustedRootsLedgerFromLease + createManagedWorktreesLedgerFromLease 从同一共享 lease 建两 ledger（同 hostDir、同 lockPath、同一进程内 mutation 互斥，无第二锁/无双重打开）。
+- validateBeforeLock 同时校验 trusted + managed 两侧车；corrupt/unsafe managed sidecar 启动前 MANAGED_CORRUPT fail closed 且字节/inode 不变（不建锁文件）。缺失 managed sidecar 保持缺失直到首个托管 record（rehydrate 对缺失 sidecar 不再写空文件）。
+- 独立 rehydrate：trusted 授权与 managed 所有权各自恢复；legacy trusted v1 claim 只授权、永不迁移/收养为托管。live managed record 才发布内存授权。
+- 优雅关闭只 close 一次共享 lease（trustedRootsLedger.close 释放；managed close 为 no-op）；第二 Host 同目录仍 LEDGER_LOCK_BUSY、SIGKILL stale 锁仍 LEDGER_LOCK_STALE fail closed。
+
+路由契约（worktrees.ts 重写）：
+- WorktreeDeps 新增 managedWorktrees。POST/DELETE 缺 managed 服务时 503 WORKTREE_MANAGED_UNAVAILABLE（在 Git/fs 前）；GET 只读照常（managedByPix:false）。
+- GET 每项加 managedByPix（live record 佐证才 true）并保留 authorized；无缓存 safeToDelete。
+- POST：mutation guard → 校验 → safeBranch（含内部空白）→ repo mutex → 现有事务性 git add + post 验证 → recordCreated（capture→disk→memory，无 trusted claim）→ 终局拓扑/授权检查 → 201 {path,branch,managedByPix:true}。持久化失败只回滚事务自有 worktree/新 branch/新建空 base；record 已持久但后续失败先 commitRemoved 精确 record 再 git 回滚；绝不假 201。
+- DELETE：mutation guard → 绝对路径校验 → 授权 cwd/repo → repo mutex → 非 main Git 成员 AND findLiveAuthority live:true 且 repo/path/common/admin/base 身份匹配 → busy 预检（exact+descendant）→ 非 force 需干净 → git remove 前立即重验 → git worktree remove（传请求 AbortSignal）→ 验证 path/topology 消失 → commitRemoved 精确 record + 按路径清除 stale legacy trusted claim → 200 {success:true,fallbackCwd:<canonical main>,branchRetained:true}。Git 成功但持久清理失败 → 固定 500 WORKTREE_DELETE_COMMIT_INCOMPLETE（重启 reconcile 丢 stale 行）。
+- force 只跳过 dirty/untracked 并恰传一个 --force；不绕过 authority/identity/main/sessiond-down/busy/auth/topology。
+- 全部 Git/process 错误 sanitize：固定 code，不泄 raw stderr/path/branch/JSON（含既有 WORKTREE_CREATE_FAILED 泄漏收口）。ManagedWorktreesLedgerError 映射为固定 500 code。
+
+能力/客户端 HTTP 契约（无 UI）：
+- 新增能力 token worktree.write（full/sessiond-up only；degraded/down 不含；worktree 仍是只读 list token）。同步 Host types、protocol HostCapabilitySchema、production caps、host-runner、Startup E2E caps。token 仅 discovery 非授权。
+- Client：WorktreeInfoSchema 严格加 managedByPix；create 响应解析 managedByPix(literal true)；delete 响应解析 fallbackCwd/branchRetained（新 WorktreeDeleteResponseSchema）。resources.ts 保留 dormant mutation helpers，无 WorktreePanel 控件/import/CSS。
+
+Busy 修正（isolated commit ac83f39）：
+- 仅强化 safety 查询 hasBusyCwd：normalized absolute runtime cwd 等于 target 或是 descendant 才 busy（path.relative 包含；/a/bc 对 /a/b 非 descendant）；stopByCwd 保持 exact 语义不变。非绝对 cwd 回退 exact 字符串相等（symlink-text caveat 文档化）。与 D2 tools 对 service.ts 的并行修改隔离。
+
+验证（本机 Node v24.18.0，worktree 通过 symlink 覆盖复用 main 第三方依赖）：
+- host 372/372（新 worktrees.test.mjs 20 + resources 43 + trusted-ledger 28 + production-resources 27 + managed-worktrees 16 + managed-ledger 11 + lease 13 等）；client 499/499（新增 worktrees.test.ts 3）；sessiond 160 pass/1 Windows skip；protocol 构建通过。
+- root build/typecheck EXIT 0；check:architecture PASS；host check:boundaries 42 files PASS；client boundaries PASS；git diff --check 通过。
+- test:e2e:startup PASS（重写）：create→managed sidecar→restart rehydrate（managedByPix+authorized）、external/planted DELETE 403 保留标记、dirty 无 force 409→force 200 且 branch 保留、record 移除→restart 不复活、第二 Host LEDGER_LOCK_BUSY、corrupt managed sidecar MANAGED_CORRUPT 启动前失败且不可变、SIGKILL stale LEDGER_LOCK_STALE、显式删锁恢复、degraded 不含 worktree.write 且 POST/DELETE 503 在 Git/fs 前。
+- Sessions E2E 通过；Runtime E2E 通过（scenarioAbort 忙窗口内新增 runtime.hasBusyCwd exact/ancestor/sibling/unrelated 探针）。
+
+残余风险（跨进程 TOCTOU）：busy 预检与 git remove 之间会话可能新起；重新验证在 git remove 前瞬间完成，非原子（无 OS 级跨进程锁）。ledger 生命周期锁是单 Host 证据机制而非 OS 强排它（同用户可删/换锁文件则需目录权限纪律）。本分支未 merge/push/deploy；UI 保持禁用；DELETE 现由托管记录 + 双重活体佐证门控，提交给独立 GPT review 复核。
+```

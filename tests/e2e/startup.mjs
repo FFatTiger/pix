@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, rmSync, realpathSync, readFileSync, lstatSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync, realpathSync, readFileSync, lstatSync, mkdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -20,7 +20,7 @@ const PROD_MAX_UPLOAD = 25 * 1024 * 1024;
 // tokens are mounted on the Host and stay advertised in BOTH states; `agent`
 // (the runtime) and `sessions` (read-only session history) are added only
 // while sessiond is up. `worktree` is the read-only list token (no write token).
-const FULL_CAPS = ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"];
+const FULL_CAPS = ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "auth.providers", "skills", "plugins"];
 const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"];
 
 function delay(ms) {
@@ -411,29 +411,33 @@ async function main() {
     assert.equal(upload.status, 201, `upload should succeed while up (got ${upload.status})`);
     assert.deepEqual((await upload.json()).uploaded, ["e2e-upload.txt"]);
 
-    // ---- phase 3b: D3A-P0 create linked worktree → durable ledger → 201 ----
+    // ---- phase 3b: managed create → managed sidecar → restart rehydrate ----
+    const managedLedgerPath = join(hostDir, "managed-worktrees.json");
     const createWt = await fetch(`${origin}/v1/worktrees`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cwd: project, branch: "e2e-trusted" }),
+      body: JSON.stringify({ cwd: project, branch: "e2e-managed-a" }),
     });
     assert.equal(createWt.status, 201, `worktree create should succeed while sessiond is up (got ${createWt.status})`);
-    const trustedPath = (await createWt.json()).path;
-    // Authorize before restart (in-memory + ledger).
+    const createBody = await createWt.json();
+    assert.equal(createBody.managedByPix, true, "create response reports managedByPix:true");
+    const managedPath = createBody.path;
+    assert.equal(createBody.branch, "e2e-managed-a");
     const beforeRestart = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
-    assert.ok(
-      beforeRestart.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
-      "created linked worktree must be authorized before Host restart",
-    );
-    assert.equal(existsSync(ledgerPath), true, "create must persist trusted-roots.json under PIX_HOST_DIR");
+    const managedEntry = beforeRestart.worktrees.find((entry) => entry.path === managedPath);
+    assert.equal(managedEntry?.authorized, true, "created managed worktree must be authorized before Host restart");
+    assert.equal(managedEntry?.managedByPix, true, "created managed worktree reports managedByPix:true");
+    assert.equal(existsSync(managedLedgerPath), true, "create must persist the managed-worktrees sidecar");
+    assert.equal(existsSync(ledgerPath), true, "trusted-roots.json exists (empty claims)");
     assert.equal(lstatSync(hostDir).mode & 0o777, 0o700, "PIX_HOST_DIR must be mode 0700");
-    assert.equal(lstatSync(ledgerPath).mode & 0o777, 0o600, "trusted-roots.json must be mode 0600");
-    assert.equal(lstatSync(ledgerPath).isSymbolicLink(), false);
-    assert.equal(lstatSync(ledgerPath).isFile(), true);
-    const ledgerAfterCreate = JSON.parse(readFileSync(ledgerPath, "utf8"));
-    assert.equal(ledgerAfterCreate.claims.length, 1, "ledger holds the created claim");
+    assert.equal(lstatSync(managedLedgerPath).mode & 0o777, 0o600, "managed-worktrees.json must be mode 0600");
+    assert.equal(lstatSync(managedLedgerPath).isSymbolicLink(), false);
+    assert.equal(lstatSync(managedLedgerPath).isFile(), true);
+    const managedAfterCreate = JSON.parse(readFileSync(managedLedgerPath, "utf8"));
+    assert.equal(managedAfterCreate.records.length, 1, "managed sidecar holds the created record");
+    assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 0, "NO trusted-root claim for a managed worktree");
 
-    // Graceful Host-only restart rehydrates the trusted claim.
+    // Graceful Host-only restart rehydrates the managed record + authorization.
     await stopHost(currentHost);
     currentHost = undefined;
     assert.equal(pidAlive(sessiondPid), true, "sessiond must survive Host exit before rehydrate restart");
@@ -451,24 +455,41 @@ async function main() {
     assert.equal((await readLock(lockFile)).pid, sessiondPid, "rehydrate Host restart must reuse sessiond PID");
     currentHost = thirdHost;
     const afterRestart = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
-    assert.ok(
-      afterRestart.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
-      "trusted claim must rehydrate after Host restart",
-    );
-    const trustedFile = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(join(trustedPath, "README.md"))}&op=read`);
-    assert.match(trustedFile.content, /pix e2e project/);
+    const afterRestartEntry = afterRestart.worktrees.find((entry) => entry.path === managedPath);
+    assert.equal(afterRestartEntry?.authorized, true, "managed record must rehydrate + authorize after Host restart");
+    assert.equal(afterRestartEntry?.managedByPix, true, "managedByPix survives Host restart");
+    const managedFile = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(join(managedPath, "README.md"))}&op=read`);
+    assert.match(managedFile.content, /pix e2e project/);
 
     // ---- phase 3c: strict single Host — a second Host on the SAME PIX_HOST_DIR
     // fails before listen (LEDGER_LOCK_BUSY), with a fixed sanitized error and
-    // no ledger/claim mutation ---------------------------------------------
+    // no ledger/record mutation ---------------------------------------------
     const intruder = await runHostToCompletion(env);
     assert.equal(intruder.code, 1, `second Host must exit 1 before listen (got ${intruder.code})`);
     assert.match(intruder.stderr + intruder.stdout, /PIX_HOST_DIR rejected \(LEDGER_LOCK_BUSY\)/, "fixed sanitized lock-busy error");
     assert.ok(!(intruder.stdout + intruder.stderr).includes("host listening"), "second Host must never reach listen");
     assert.equal(existsSync(hostLockPath), true, "first Host still holds the lifetime lock");
-    assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 1, "intruder must not touch the ledger");
+    assert.equal(JSON.parse(readFileSync(managedLedgerPath, "utf8")).records.length, 1, "intruder must not touch the managed sidecar");
 
-    // ---- phase 3d: delete → durable claim removal → restart no resurrection --
+    // ---- phase 3d: external (outside base) + planted (inside base) DELETE denied --
+    const externalBase = join(project, "..", `pix-e2e-external-${process.pid}`);
+    mkdirSync(externalBase, { recursive: true });
+    const externalPath = join(externalBase, "external-b");
+    git(project, ["worktree", "add", "-b", "e2e-external", "--", externalPath]);
+    const plantedPath = join(`${realpathSync(project)}-worktrees`, "planted-b");
+    git(project, ["worktree", "add", "-b", "e2e-planted", "--", plantedPath]);
+    for (const target of [externalPath, plantedPath]) {
+      const denied = await fetch(`${origin}/v1/worktrees`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cwd: project, path: target }),
+      });
+      assert.equal(denied.status, 403, `external/planted delete must be denied (${target})`);
+      assert.equal((await denied.json()).code, "WORKTREE_NOT_MANAGED");
+      assert.equal(existsSync(target), true, `external/planted marker retained (${target})`);
+    }
+
+    // ---- phase 3e: dirty no-force denied → forced managed delete succeeds ----
     const delWtCreate = await fetch(`${origin}/v1/worktrees`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -476,17 +497,34 @@ async function main() {
     });
     assert.equal(delWtCreate.status, 201, `delete-phase worktree create should succeed (got ${delWtCreate.status})`);
     const delWtPath = (await delWtCreate.json()).path;
-    assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 2, "ledger holds both claims");
+    assert.equal(JSON.parse(readFileSync(managedLedgerPath, "utf8")).records.length, 2, "managed sidecar holds both records");
+    writeFileSync(join(delWtPath, "dirty.txt"), "x");
 
-    const delWt = await fetch(`${origin}/v1/worktrees`, {
+    // No-force dirty delete → 409 WORKTREE_DIRTY, marker retained.
+    const dirtyDelete = await fetch(`${origin}/v1/worktrees`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ cwd: project, path: delWtPath }),
     });
-    assert.equal(delWt.status, 200, `worktree delete should succeed while sessiond is up (got ${delWt.status})`);
-    const ledgerAfterDelete = JSON.parse(readFileSync(ledgerPath, "utf8"));
-    assert.equal(ledgerAfterDelete.claims.length, 1, "unregister must remove only the deleted claim from the ledger");
+    assert.equal(dirtyDelete.status, 409, "dirty delete without force must be denied");
+    assert.equal((await dirtyDelete.json()).code, "WORKTREE_DIRTY");
+    assert.equal(existsSync(delWtPath), true, "dirty worktree retained after denied delete");
 
+    const delWt = await fetch(`${origin}/v1/worktrees`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: project, path: delWtPath, force: true }),
+    });
+    assert.equal(delWt.status, 200, `forced managed delete should succeed while sessiond is up (got ${delWt.status})`);
+    const delBody = await delWt.json();
+    assert.equal(delBody.success, true);
+    assert.equal(delBody.fallbackCwd, realpathSync(project), "fallbackCwd is the canonical main worktree");
+    assert.equal(delBody.branchRetained, true, "branch is retained after forced managed delete");
+    assert.equal(existsSync(delWtPath), false, "worktree path removed after forced delete");
+    assert.doesNotThrow(() => git(project, ["show-ref", "--verify", "refs/heads/e2e-delete-me"]), "branch retained");
+    assert.equal(JSON.parse(readFileSync(managedLedgerPath, "utf8")).records.length, 1, "delete removes only the deleted record");
+
+    // Restart → no resurrection of the deleted managed worktree.
     await stopHost(currentHost);
     currentHost = undefined;
     assert.equal(pidAlive(sessiondPid), true, "sessiond must survive delete-phase Host exit");
@@ -503,17 +541,17 @@ async function main() {
     const afterDeleteRestart = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
     assert.ok(
       !afterDeleteRestart.worktrees.some((entry) => entry.path === delWtPath),
-      "deleted trusted claim must NOT be resurrected after Host restart",
+      "deleted managed worktree must NOT be resurrected after Host restart",
     );
     assert.ok(
-      afterDeleteRestart.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
-      "the surviving trusted claim must still rehydrate after the delete-phase restart",
+      afterDeleteRestart.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === true),
+      "the surviving managed record must still rehydrate after the delete-phase restart",
     );
-    assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 1, "ledger stays at one claim after restart");
+    assert.equal(JSON.parse(readFileSync(managedLedgerPath, "utf8")).records.length, 1, "managed sidecar stays at one record after restart");
 
-    // ---- phase 3e: SIGKILL leaves a stale lock → restart fails closed ----
-    const ledgerBytesBeforeSigkill = readFileSync(ledgerPath);
-    const ledgerInoBeforeSigkill = lstatSync(ledgerPath).ino;
+    // ---- phase 3f: SIGKILL leaves a stale lock → restart fails closed ----
+    const managedBytesBeforeSigkill = readFileSync(managedLedgerPath);
+    const managedInoBeforeSigkill = lstatSync(managedLedgerPath).ino;
     await sigkillHost(currentHost);
     currentHost = undefined;
     // The stale lifetime lock must remain on disk (no auto-reclaim).
@@ -522,8 +560,8 @@ async function main() {
     assert.equal(staleRestart.code, 1, `restart after SIGKILL must fail closed (got ${staleRestart.code})`);
     assert.match(staleRestart.stderr + staleRestart.stdout, /PIX_HOST_DIR rejected \(LEDGER_LOCK_STALE\)/, "fixed sanitized stale-lock error");
     assert.ok(!(staleRestart.stdout + staleRestart.stderr).includes("host listening"), "stale-lock restart must never listen");
-    assert.deepEqual(readFileSync(ledgerPath), ledgerBytesBeforeSigkill, "SIGKILL/stale restart must leave the ledger byte-identical");
-    assert.equal(lstatSync(ledgerPath).ino, ledgerInoBeforeSigkill, "SIGKILL/stale restart must leave the ledger inode unchanged");
+    assert.deepEqual(readFileSync(managedLedgerPath), managedBytesBeforeSigkill, "SIGKILL/stale restart must leave the managed sidecar byte-identical");
+    assert.equal(lstatSync(managedLedgerPath).ino, managedInoBeforeSigkill, "SIGKILL/stale restart must leave the managed sidecar inode unchanged");
 
     // Operator explicitly removes the fixture stale lock after proving the old
     // pid is dead (no automatic crash recovery is claimed), then restart works.
@@ -540,19 +578,45 @@ async function main() {
     await waitForCaps(origin, currentHost, { sessiond: "up", caps: FULL_CAPS });
     const afterRecovery = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
     assert.ok(
-      afterRecovery.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
-      "after explicit stale-lock removal, restart restores authorization",
+      afterRecovery.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === true),
+      "after explicit stale-lock removal, restart restores managed authorization",
     );
 
+    // ---- phase 3g: a corrupt managed sidecar fails the Host BEFORE listen ----
+    await stopHost(currentHost);
+    currentHost = undefined;
+    const corruptHostDir = join(realpathSync(temp), "host-corrupt");
+    mkdirSync(corruptHostDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(corruptHostDir, "managed-worktrees.json"), "{not-json", { mode: 0o600 });
+    const corruptEnv = { ...env, PIX_HOST_DIR: corruptHostDir };
+    const corruptBoot = await runHostToCompletion(corruptEnv);
+    assert.equal(corruptBoot.code, 1, "corrupt managed sidecar must fail the Host before listen");
+    assert.match(corruptBoot.stderr + corruptBoot.stdout, /PIX_HOST_DIR rejected \(MANAGED_CORRUPT\)/, "fixed sanitized corrupt-managed error");
+    assert.ok(!(corruptBoot.stdout + corruptBoot.stderr).includes("host listening"), "corrupt-managed Host must never listen");
+    assert.equal(readFileSync(join(corruptHostDir, "managed-worktrees.json"), "utf8"), "{not-json", "corrupt sidecar stays immutable");
+    assert.equal(existsSync(join(corruptHostDir, "trusted-roots.lock")), false, "no lock created for a corrupt managed sidecar");
+
     // ---- phase 4: sessiond down while Host runs --------------------------
+    currentHost = startProcess([
+      "packages/cli/bin/pix-host.mjs",
+      "--hostname",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--no-open",
+    ], env);
+    await waitForHealthy(origin, currentHost);
+    await waitForCaps(origin, currentHost, { sessiond: "up", caps: FULL_CAPS });
     const down = await runProcess(["scripts/product-entry.mjs", "cli", "down", "--all"], env);
     assert.equal(down.code, 0, `${down.stdout}\n${down.stderr}`);
     assert.match(down.stdout, new RegExp(`terminated \\(pid ${sessiondPid}\\)`));
 
-    // Four surfaces degrade to the resource-only surface (no agent/sessions;
-    // worktree read-only list stays advertised).
+    // Four surfaces degrade to the resource-only surface: no agent/sessions and
+    // NO worktree.write (sessiond-guarded write capability); the read-only
+    // worktree list stays advertised.
     const downAck = await waitForCaps(origin, currentHost, { sessiond: "down", caps: DEGRADED_CAPS });
     assert.equal(downAck.limits.maxUpload, PROD_MAX_UPLOAD, "degraded WS still advertises the 25 MiB upload ceiling");
+    assert.ok(!DEGRADED_CAPS.includes("worktree.write"), "degraded must exclude worktree.write");
 
     // Resources stay usable while the authority is down: file read + upload
     // are pure Host-mounted filesystem ops and are NOT runtime-guarded.
@@ -560,15 +624,19 @@ async function main() {
     assert.match(downRead.content, /pix e2e project/);
 
     // `worktree` is a read-only list token: the real GET remains available
-    // while sessiond is down and returns the main + rehydrated trusted topology.
+    // while sessiond is down and returns the main + rehydrated managed topology.
     const downWorktrees = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
     assert.equal(downWorktrees.isGit, true, "worktree GET must remain available while sessiond is down");
     assert.ok(
-      downWorktrees.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
-      "rehydrated linked worktree must stay authorized while sessiond is down",
+      downWorktrees.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === true),
+      "rehydrated managed worktree must stay authorized + managedByPix while sessiond is down",
     );
-    const downTrustedFile = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(join(trustedPath, "README.md"))}&op=read`);
-    assert.match(downTrustedFile.content, /pix e2e project/);
+    assert.ok(
+      downWorktrees.worktrees.some((entry) => entry.path === externalPath && entry.managedByPix === false),
+      "external worktree reports managedByPix:false",
+    );
+    const downManagedFile = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(join(managedPath, "README.md"))}&op=read`);
+    assert.match(downManagedFile.content, /pix e2e project/);
 
     // A sessiond-dependent worktree write must 503 BEFORE touching the repo,
     // regardless of `force`. This is the mutation guard.
@@ -580,7 +648,16 @@ async function main() {
     assert.equal(worktreeCreate.status, 503, "worktree create must 503 while sessiond is down");
     assert.equal((await worktreeCreate.json()).code, "MUTATION_UNAVAILABLE");
     assert.throws(() => git(project, ["show-ref", "--verify", "refs/heads/should-not-create"]), "guard must run before any git side effect");
-    assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 1, "blocked POST must not touch the ledger");
+    const worktreeDelete = await fetch(`${origin}/v1/worktrees`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: project, path: managedPath, force: true }),
+    });
+    assert.equal(worktreeDelete.status, 503, "worktree delete must 503 while sessiond is down");
+    assert.equal((await worktreeDelete.json()).code, "MUTATION_UNAVAILABLE");
+    assert.equal(existsSync(managedPath), true, "guard must run before any git side effect");
+    assert.equal(JSON.parse(readFileSync(managedLedgerPath, "utf8")).records.length, 1, "blocked POST/DELETE must not touch the managed sidecar");
+
 
     // Now stop the Host (graceful — releases its lifetime lock); sessiond is down.
     await stopHost(currentHost);
@@ -606,12 +683,16 @@ async function main() {
       port,
       sessiondPid,
       hostRestartReusedSessiond: true,
-      trustedRootsLedger: true,
+      managedWorktreesLedger: true,
       hostDirIsolated: true,
       secondHostFailsBeforeListen: true,
+      externalAndPlantedDeleteDenied: true,
       deleteNoResurrection: true,
+      dirtyRequiresForceAndBranchRetained: true,
+      corruptManagedSidecarFailsBeforeListen: true,
       sigkillStaleLockFailsClosed: true,
       explicitStaleLockRemovalRestores: true,
+      degradedExcludesWorktreeWrite: true,
       upCaps: FULL_CAPS,
       degradedCaps: DEGRADED_CAPS,
       wsMaxUpload: PROD_MAX_UPLOAD,
@@ -631,6 +712,10 @@ async function main() {
       while (Date.now() < deadline && pidAlive(sessiondPid)) await delay(50);
       if (pidAlive(sessiondPid)) process.kill(sessiondPid, "SIGKILL");
     }
+    const worktreesBase = `${realpathSync(project)}-worktrees`;
+    const externalDir = join(project, "..", `pix-e2e-external-${process.pid}`);
+    rmSync(worktreesBase, { recursive: true, force: true });
+    rmSync(externalDir, { recursive: true, force: true });
     rmSync(project, { recursive: true, force: true });
     await rm(temp, { recursive: true, force: true });
   }
