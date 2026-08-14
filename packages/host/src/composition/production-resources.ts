@@ -34,11 +34,33 @@ import {
 import { createProcessRunner, runChecked } from "../resources/process-runner.js";
 import type { MutationGuard, ResourceDeps, ResourceLimits, WorktreeBusyPreflight } from "../resources/types.js";
 import {
-  openTrustedRootsLedger,
+  createTrustedRootsLedgerFromLease,
+  mapLeaseCode as mapTrustedLeaseCode,
+  parseTrustedRootsDocument,
   resolvePixHostDir,
   TrustedRootsLedgerError,
   type TrustedRootsLedger,
 } from "../resources/trusted-roots-ledger.js";
+import {
+  createManagedWorktreesLedgerFromLease,
+  mapLeaseCode as mapManagedLeaseCode,
+  parseManagedWorktreesDocument,
+  ManagedWorktreesLedgerError,
+  type ManagedWorktreesLedger,
+} from "../resources/managed-worktrees-ledger.js";
+import {
+  createManagedWorktreesService,
+  rehydrateManagedWorktrees,
+  type ManagedWorktreesDeps,
+  type ManagedWorktreesService,
+} from "../resources/managed-worktrees.js";
+import {
+  openHostStateDirectoryLease,
+  TRUSTED_ROOTS_STATE_DOCUMENT,
+  MANAGED_WORKTREES_STATE_DOCUMENT,
+  HostStateDirectoryError,
+  type HostStateDirectoryLease,
+} from "../resources/host-state-directory.js";
 import type { HostCapability, HostLogger } from "../types.js";
 
 /** Fixed ping / RPC timeout for the resolver and the worktree safety adapter. */
@@ -65,6 +87,12 @@ export const PRODUCTION_RESOURCE_LIMITS: Readonly<ResourceLimits> = Object.freez
 });
 
 /**
+ * Production bound for each Host state sidecar (claims / managed records).
+ * Both ledger adapters share this ceiling over the one lease.
+ */
+export const PRODUCTION_LEDGER_MAX = 128;
+
+/**
  * Resource + catalog capabilities offered while sessiond is unavailable
  * (degraded). Resource services (files/git/worktree list) remain structurally
  * wired; individual writes are still runtime-guarded (503) — these tokens
@@ -72,9 +100,13 @@ export const PRODUCTION_RESOURCE_LIMITS: Readonly<ResourceLimits> = Object.freez
  * Catalog tokens (D3B-R1B) are independent of sessiond and stay advertised.
  *
  * `worktree` is the read-only list capability (GET /v1/worktrees). It does not
- * depend on sessiond, so it stays advertised in degraded. POST/DELETE remain
- * guarded by the mutation/busy adapter and are NOT a separate write token
- * (no `worktree.write`).
+ * depend on sessiond, so it stays advertised in degraded. `worktree.write` is
+ * the honest product capability for worktree create/remove (POST/DELETE
+ * /v1/worktrees): those mutations are sessiond-guarded (mutation guard + busy
+ * preflight) and require the managed-worktrees ledger, so the write token is
+ * advertised ONLY while sessiond is up and excluded from degraded. The token is
+ * discovery, never authorization — the route still fail-closes on every
+ * authority/ownership check.
  */
 export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
   "files",
@@ -97,9 +129,10 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
  * `sessions` (read-only history) requires the sessiond-backed catalog and is
  * advertised ONLY while the authority is up — D1A-2 phase 2.
  * `worktree` is the read-only list token (D3A Worktrees UI); GET does not
- * depend on sessiond so the token is also present in degraded. No
- * `worktree.write` token exists — create/remove stay sessiond-guarded writes
- * without a negotiated write capability.
+ * depend on sessiond so the token is also present in degraded. `worktree.write`
+ * is the honest product write capability for create/remove: full/sessiond-up
+ * only (the mutations are sessiond-guarded and managed-ledger-backed), excluded
+ * from degraded. The token is discovery, never authorization.
  */
 export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "agent",
@@ -110,6 +143,7 @@ export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "files.upload",
   "git",
   "worktree",
+  "worktree.write",
   "models",
   "auth.providers",
   "skills",
@@ -174,8 +208,14 @@ export class InvalidHostDirError extends Error {
 }
 
 function sanitizeHostDirError(error: unknown): string {
-  if (error instanceof TrustedRootsLedgerError) {
+  // Ledger-specific failures (both sidecars) keep their own fixed code.
+  if (error instanceof TrustedRootsLedgerError || error instanceof ManagedWorktreesLedgerError) {
     return `PIX_HOST_DIR rejected (${error.code})`;
+  }
+  // Shared lease lock/host-dir failures map to the trusted facade codes (the
+  // E2E single-Host contract uses LEDGER_LOCK_BUSY / LEDGER_LOCK_STALE).
+  if (error instanceof HostStateDirectoryError) {
+    return `PIX_HOST_DIR rejected (${mapTrustedLeaseCode(error.code)})`;
   }
   // Unknown errors must never echo raw message/path (permission, ENOENT, etc.).
   return "PIX_HOST_DIR rejected (HOST_DIR_UNSAFE)";
@@ -370,12 +410,22 @@ export interface ProductionResources {
   resolver: ProductionCapabilityResolver;
   adapter: SessiondWorktreeSafetyAdapter;
   /**
-   * Host-owned durable trusted-roots ledger (holds the exclusive lifetime
-   * Host-dir lock). Consumed by the Host runner to release the lock on graceful
-   * shutdown / startup failure. Narrow facade; raw ledger internals are not
-   * part of the public package surface.
+   * Host-owned durable trusted-roots ledger over the SHARED host-state lease.
+   * `close()` releases the exclusive lifetime Host-dir lock exactly once (the
+   * lease owner). Consumed by the Host runner on graceful shutdown / startup
+   * failure. Narrow facade; raw ledger internals are not part of the public
+   * package surface.
    */
   trustedRootsLedger: TrustedRootsLedger;
+  /**
+   * Host-owned durable managed-worktrees ledger over the SAME shared lease as
+   * the trusted ledger (one lock, one mutation mutex — never a second lock).
+   * `close()` is a no-op: the lease owner (trustedRootsLedger) releases it.
+   * Missing sidecar stays absent until the first managed record is written.
+   */
+  managedWorktreesLedger: ManagedWorktreesLedger;
+  /** Managed-worktree domain service (ownership evidence + memory authorization). */
+  managedWorktrees: ManagedWorktreesService;
 }
 
 /**
@@ -420,28 +470,85 @@ export async function createProductionResources(
       `PIX_ALLOWED_ROOTS first segment cannot be canonicalized: ${JSON.stringify(firstSegment)}`,
     );
   }
-  // Host data dir + durable trusted-roots ledger (D3A-P0). Bad PIX_HOST_DIR,
-  // a held/stale Host-dir lock, or a corrupt/unsafe ledger fails BEFORE listen
-  // with a single sanitized reason (never rewriting/truncating evidence). The
-  // lifetime lock is held until the returned ledger is closed on graceful
-  // shutdown / startup failure. Rehydrate corroborates survivors via git list.
+  // Host data dir + BOTH durable sidecars over ONE shared lease (D3A-P0 + D3A
+  // managed-worktrees). Bad PIX_HOST_DIR, a held/stale Host-dir lock, or a
+  // corrupt/unsafe trusted OR managed ledger fails BEFORE listen with a single
+  // sanitized reason (never rewriting/truncating evidence; corrupt managed
+  // sidecar stays immutable). The shared exclusive lifetime lock is held until
+  // the returned trustedRootsLedger is closed on graceful shutdown / startup
+  // failure. Both ledger adapters share that one lease, one in-process mutation
+  // mutex, and one installation context — there is NO second lock.
   let trustedRootsLedger: TrustedRootsLedger;
+  let managedWorktreesLedger: ManagedWorktreesLedger;
+  let lease: HostStateDirectoryLease;
   try {
     const hostDir = resolvePixHostDir(options.hostDirEnv);
-    trustedRootsLedger = await openTrustedRootsLedger({ hostDir });
+    lease = await openHostStateDirectoryLease({
+      hostDir,
+      validateBeforeLock: async ({ readDocument }) => {
+        // Validate BOTH sidecars before the lifetime lock is created, so a
+        // corrupt/unsafe document fails startup with no lock file and immutable
+        // evidence. Missing sidecars stay absent (empty) until first write.
+        try {
+          const trustedResult = await readDocument(TRUSTED_ROOTS_STATE_DOCUMENT);
+          if (!("missing" in trustedResult)) {
+            const parsed = parseTrustedRootsDocument(trustedResult.content, PRODUCTION_LEDGER_MAX);
+            if (parsed.warning) {
+              throw new TrustedRootsLedgerError(parsed.warning, "Trusted-roots ledger failed validation");
+            }
+          }
+        } catch (error) {
+          if (error instanceof TrustedRootsLedgerError) throw error;
+          if (error instanceof HostStateDirectoryError) {
+            throw new TrustedRootsLedgerError(mapTrustedLeaseCode(error.code), "Trusted-roots ledger failed validation");
+          }
+          throw new TrustedRootsLedgerError("LEDGER_CORRUPT", "Trusted-roots ledger failed validation");
+        }
+        try {
+          const managedResult = await readDocument(MANAGED_WORKTREES_STATE_DOCUMENT);
+          if (!("missing" in managedResult)) {
+            const parsed = parseManagedWorktreesDocument(managedResult.content, PRODUCTION_LEDGER_MAX);
+            if (parsed.warning) {
+              throw new ManagedWorktreesLedgerError(parsed.warning, "Managed-worktrees ledger failed validation");
+            }
+          }
+        } catch (error) {
+          if (error instanceof ManagedWorktreesLedgerError) throw error;
+          if (error instanceof HostStateDirectoryError) {
+            throw new ManagedWorktreesLedgerError(mapManagedLeaseCode(error.code), "Managed-worktrees ledger failed validation");
+          }
+          throw new ManagedWorktreesLedgerError("MANAGED_CORRUPT", "Managed-worktrees ledger failed validation");
+        }
+      },
+    });
+    trustedRootsLedger = createTrustedRootsLedgerFromLease(lease, { maxClaims: PRODUCTION_LEDGER_MAX });
+    managedWorktreesLedger = createManagedWorktreesLedgerFromLease(lease, { maxRecords: PRODUCTION_LEDGER_MAX });
   } catch (error) {
     throw new InvalidHostDirError(sanitizeHostDirError(error));
   }
   attachTrustedRootsLedger(allowedRoots, trustedRootsLedger, options.logger);
   const processRunner = createProcessRunner();
+  const managedDeps: ManagedWorktreesDeps = {
+    ledger: managedWorktreesLedger,
+    allowedRoots,
+    runner: processRunner,
+    maxOutputBytes: PRODUCTION_RESOURCE_LIMITS.processOutputBytes ?? 8 * 1024 * 1024,
+  };
+  const managedWorktrees = createManagedWorktreesService(managedDeps);
   try {
     const maxOutput = PRODUCTION_RESOURCE_LIMITS.processOutputBytes ?? 8 * 1024 * 1024;
     const ledgerSnapshot = await trustedRootsLedger.read();
     await rehydrateTrustedCreatedRoots(allowedRoots, ledgerSnapshot.claims, {
       listWorktrees: (repoRoot) => listWorktreesForRehydrate(processRunner, repoRoot, maxOutput),
     });
+    // Rehydrate managed ownership INDEPENDENTLY: live managed records publish
+    // memory authorization; legacy trusted v1 claims stay authorization-only and
+    // are never migrated/adopted into managed ownership.
+    await rehydrateManagedWorktrees(managedDeps, {
+      isRepoManaged: (repoRoot) => allowedRoots.isAuthorized(repoRoot, "directory"),
+    });
   } catch (error) {
-    // Release the lifetime lock so a failed startup does not leave a stale lock.
+    // Release the shared lifetime lock so a failed startup does not leave a stale lock.
     await trustedRootsLedger.close().catch(() => {});
     throw new InvalidHostDirError(sanitizeHostDirError(error));
   }
@@ -457,8 +564,9 @@ export async function createProductionResources(
     processRunner,
     busyPreflight: adapter,
     mutationGuard: adapter,
+    managedWorktrees,
     limits: { ...PRODUCTION_RESOURCE_LIMITS },
     defaultCwd,
   };
-  return { deps, resolver, adapter, trustedRootsLedger };
+  return { deps, resolver, adapter, trustedRootsLedger, managedWorktreesLedger, managedWorktrees };
 }

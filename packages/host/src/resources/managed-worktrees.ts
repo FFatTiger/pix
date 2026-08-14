@@ -403,6 +403,7 @@ export async function rehydrateManagedWorktrees(
   options: RehydrateManagedWorktreesOptions,
 ): Promise<RehydrateManagedWorktreesResult> {
   const snapshot = await deps.ledger.read();
+  const snapshotMissing = snapshot.warning === "MANAGED_MISSING";
   const survivors: ManagedWorktreeRecord[] = [];
   let restored = 0;
   let dropped = 0;
@@ -435,11 +436,17 @@ export async function rehydrateManagedWorktrees(
     }
   }
   let rewritten = false;
-  await deps.ledger.update((records) => {
-    const survivorKeys = new Set(survivors.map((item) => `${item.worktreeId}\0${item.path}`));
-    const next = records.filter((item) => survivorKeys.has(`${item.worktreeId}\0${item.path}`));
-    rewritten = next.length !== records.length;
-    return next;
-  });
+  // A missing sidecar stays ABSENT until the first managed record is written:
+  // with no on-disk records there is nothing to reconcile, so skip the rewrite
+  // entirely (writing an empty document here would violate the invariant that
+  // the managed sidecar only appears with real ownership evidence).
+  if (!snapshotMissing) {
+    await deps.ledger.update((records) => {
+      const survivorKeys = new Set(survivors.map((item) => `${item.worktreeId}\0${item.path}`));
+      const next = records.filter((item) => survivorKeys.has(`${item.worktreeId}\0${item.path}`));
+      rewritten = next.length !== records.length;
+      return next;
+    });
+  }
   return { restored, dropped, preservedForeign, rewritten };
 }

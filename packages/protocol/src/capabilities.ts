@@ -21,6 +21,7 @@ export const HostCapabilitySchema = z.enum([
   "files.upload",
   "git",
   "worktree",
+  "worktree.write",
   "session.write",
   "session.delete",
   "models",

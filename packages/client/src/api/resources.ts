@@ -11,9 +11,9 @@ import {
   FileTextResponseSchema,
   GitDiffResponseSchema,
   GitStatusResponseSchema,
-  SuccessSchema,
   UploadResponseSchema,
   WorktreeCreateResponseSchema,
+  WorktreeDeleteResponseSchema,
   WorktreeListResponseSchema,
 } from "./schemas";
 
@@ -51,7 +51,9 @@ export function createResourcesApi(http: HttpClient) {
     worktrees: {
       list: (cwd: string, signal?: AbortSignal) => http.get(urls.worktrees.list(cwd), { schema: WorktreeListResponseSchema, ...(signal === undefined ? {} : { signal }) }),
       create: (input: { cwd: string; branch: string }, signal?: AbortSignal) => http.post(urls.worktrees.mutate(), input, { schema: WorktreeCreateResponseSchema, ...(signal === undefined ? {} : { signal }) }),
-      remove: (input: { cwd: string; path: string; force?: boolean }, signal?: AbortSignal) => http.delete(urls.worktrees.mutate(), input, { schema: SuccessSchema, ...(signal === undefined ? {} : { signal }) }),
+      // Dormant mutation helper (no WorktreePanel controls import it): parses
+      // the managed delete contract (fallbackCwd + branchRetained).
+      remove: (input: { cwd: string; path: string; force?: boolean }, signal?: AbortSignal) => http.delete(urls.worktrees.mutate(), input, { schema: WorktreeDeleteResponseSchema, ...(signal === undefined ? {} : { signal }) }),
     },
   };
 }

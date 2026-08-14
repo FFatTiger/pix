@@ -155,7 +155,8 @@ export const CwdRootsResponseSchema = z.strictObject({ roots: z.array(z.string()
 export const CwdDefaultResponseSchema = z.strictObject({ cwd: z.string(), projectRoot: z.string() });
 
 export const WorktreeInfoSchema = z.strictObject({
-  path: z.string(), branch: z.string().nullable(), isMain: z.boolean(), authorized: z.boolean(),
+  path: z.string(), branch: z.string().nullable(), isMain: z.boolean(), authorized: z.boolean(), managedByPix: z.boolean(),
 });
 export const WorktreeListResponseSchema = z.strictObject({ projectRoot: z.string(), isGit: z.boolean(), isTopLevel: z.boolean(), worktrees: z.array(WorktreeInfoSchema) });
-export const WorktreeCreateResponseSchema = z.strictObject({ path: z.string(), branch: z.string() });
+export const WorktreeCreateResponseSchema = z.strictObject({ path: z.string(), branch: z.string(), managedByPix: z.literal(true) });
+export const WorktreeDeleteResponseSchema = z.strictObject({ success: z.literal(true), fallbackCwd: z.string(), branchRetained: z.literal(true) });

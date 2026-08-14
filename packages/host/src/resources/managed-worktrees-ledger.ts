@@ -188,7 +188,7 @@ function isWithin(root: string, target: string): boolean {
 }
 
 /** Map a shared-lease error code to the managed-worktrees ledger error code. */
-function mapLeaseCode(code: HostStateDirectoryCode): ManagedWorktreesLedgerCode {
+export function mapLeaseCode(code: HostStateDirectoryCode): ManagedWorktreesLedgerCode {
   switch (code) {
     case "HOST_DIR_INVALID": return "HOST_DIR_INVALID";
     case "HOST_DIR_UNSAFE": return "HOST_DIR_UNSAFE";

@@ -29,6 +29,7 @@ export type HostCapability =
   | "files.upload"
   | "git"
   | "worktree"
+  | "worktree.write"
   | "models"
   | "auth.providers"
   | "skills"
@@ -43,6 +44,7 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "files.upload",
   "git",
   "worktree",
+  "worktree.write",
   "models",
   "auth.providers",
   "skills",

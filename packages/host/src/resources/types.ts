@@ -1,5 +1,6 @@
 import type { AllowedRootService } from "./allowed-roots.js";
 import type { ProcessRunner } from "./process-runner.js";
+import type { ManagedWorktreesService } from "./managed-worktrees.js";
 
 export interface ResourceLimits {
   maxUploadFileBytes?: number;
@@ -52,6 +53,15 @@ export interface ResourceDeps {
    * serves as {@link WorktreeBusyPreflight}).
    */
   mutationGuard?: MutationGuard;
+  /**
+   * Managed-worktree ownership service (D3A managed-worktree ledger/domain).
+   * When wired, worktree POST/DELETE require it and the managed ledger becomes
+   * the ONLY delete authority (Git topology membership alone never suffices).
+   * When absent, POST/DELETE fail closed BEFORE any Git/filesystem effect (GET
+   * stays read-only with `managedByPix: false`). Production composition always
+   * wires it over the shared host-state lease.
+   */
+  managedWorktrees?: ManagedWorktreesService;
   defaultCwdFactory?: DefaultCwdFactory;
   limits?: ResourceLimits;
   /** Optional operator-selected default cwd; must still be in allowed roots. */

@@ -199,7 +199,7 @@ const MAX_LEDGER_BYTES = 1_048_576;
 const MAX_CLAIMS_HARD = 1_024;
 
 /** Map a shared-lease error code to the trusted-roots ledger error code. */
-function mapLeaseCode(code: HostStateDirectoryCode): TrustedRootsLedgerCode {
+export function mapLeaseCode(code: HostStateDirectoryCode): TrustedRootsLedgerCode {
   switch (code) {
     case "HOST_DIR_INVALID": return "HOST_DIR_INVALID";
     case "HOST_DIR_UNSAFE": return "HOST_DIR_UNSAFE";
