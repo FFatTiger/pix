@@ -30,12 +30,17 @@
 //   at most once, then reported not_found; a wrong session is never returned.
 // - A warm index miss forces at most ONE fresh scan per cache generation,
 //   coalesced across concurrent misses onto a single `listAll` (a session
-//   created after the cached snapshot is recovered on that scan). Absence
-//   confirmed by a fresh scan is remembered per generation, so repeated reads
-//   of a persistently missing session id never rescan; TTL expiry or
-//   invalidation resets the negatives and permits a retry. A scan invalidated
-//   mid-flight can never repopulate the cache, clear a newer in-flight scan,
-//   or poison the negative set (fail closed).
+//   created after the cached snapshot is recovered on that scan). All physical
+//   scans (cold `listInfos` and `scanOnce`) share a monotonic refresh revision:
+//   a scan replaces the cache only when its generation is current AND its
+//   revision is newer than the last applied one, so a late-finishing older scan
+//   can never overwrite a newer snapshot. Absence confirmed by a fresh scan is
+//   remembered per generation with a fixed deadline measured from when it was
+//   recorded and a bounded LRU capacity, so repeated reads of a persistently
+//   missing session id never rescan, unrelated refreshes cannot extend a
+//   negative, and TTL expiry or invalidation permits a retry. A scan
+//   invalidated or superseded mid-flight can never repopulate the cache, clear
+//   a newer in-flight scan, or record a negative (fail closed).
 // - deleteSession treats a file that vanishes between the id-validated open
 //   and the rm as already-deleted idempotent success and invalidates the list;
 //   other filesystem failures are mapped to a sanitized RuntimeError that
@@ -73,6 +78,12 @@ export interface PiSdkSessionStoreOptions {
    * `Date.now`.
    */
   now?: () => number;
+  /**
+   * @internal Test-only: max entries in the per-generation negative cache
+   * (default 1024). Bounds memory for long generations with many distinct
+   * missing session ids; oldest entries are evicted (LRU by recording time).
+   */
+  maxNegatives?: number;
   /**
    * @internal Test-only: injectable SDK surface for deterministic tests.
    * Defaults to the real `SessionManager`.
@@ -219,7 +230,18 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
    * obsolete in-flight promise.
    */
   private generation = 0;
-  private cache: { ts: number; infos: readonly SdkSessionInfo[] } | undefined;
+  /**
+   * Shared monotonic refresh revision. Every newly launched physical scan
+   * (a `listInfos` cold scan OR a `scanOnce`) takes the next revision, and a
+   * scan may only replace the cache when its generation is still current AND
+   * its revision is newer than the last applied one. This fences both scan
+   * paths together, so an earlier-launched scan that finishes late can never
+   * overwrite a newer snapshot regardless of which slot launched it.
+   */
+  private revision = 0;
+  /** Revision of the newest scan whose result is currently applied to `cache`. */
+  private lastAppliedRevision = 0;
+  private cache: { ts: number; infos: readonly SdkSessionInfo[]; revision: number } | undefined;
   private inFlight: { promise: Promise<readonly SdkSessionInfo[]>; generation: number } | undefined;
   /**
    * Coalesced in-flight slot for forced fresh scans (warm-index-miss rebuilds).
@@ -228,17 +250,22 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
    */
   private scanOnceInflight: { promise: Promise<readonly SdkSessionInfo[]>; generation: number } | undefined;
   /**
-   * Per-generation negative results: session ids confirmed absent by a fresh
-   * scan. Bounded within one cache generation; cleared on invalidation and on
-   * a TTL-expiry cold scan (each permits a retry). Never populated by failed
-   * scans or by scans invalidated mid-flight.
+   * Per-generation negative results keyed by session id with a fixed expiry
+   * measured from when the negative was RECORDED (not the moving cache
+   * timestamp), so unrelated warm-miss refreshes can never extend a negative's
+   * deadline. Expired entries are pruned lazily and capacity is bounded (LRU
+   * eviction by recording time). Cleared on invalidation and on a TTL-expiry
+   * cold full snapshot. Never populated by failed scans or by scans
+   * invalidated/superseded mid-flight.
    */
-  private negativeIds = new Set<string>();
+  private negatives = new Map<string, number>();
+  private readonly maxNegatives: number;
 
   constructor(options: PiSdkSessionStoreOptions = {}) {
     this.sessionDir = options.sessionDir;
     this.ttlMs = options.listTtlMs ?? 30_000;
     this.now = options.now ?? Date.now;
+    this.maxNegatives = options.maxNegatives ?? 1024;
     this.sdk = options.sdk ?? realSdkSurface;
   }
 
@@ -253,7 +280,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     this.cache = undefined;
     // A new generation starts fresh: the previous generation's negative
     // results must not block a retry.
-    this.negativeIds.clear();
+    this.negatives.clear();
   }
 
   /** One cold scan. Never caches malformed/failed results. */
@@ -263,6 +290,57 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       throw new Error("session list scan returned a malformed result");
     }
     return infos;
+  }
+
+  /**
+   * Apply a completed scan under the shared revision fence: only when its
+   * generation is still current AND its revision is newer than the last applied
+   * one. A late-finished older scan is discarded so it can never overwrite a
+   * newer snapshot. A full cold snapshot (listInfos) resets the negatives; any
+   * id present in an applied scan has its negative dropped (it is no longer
+   * missing).
+   */
+  private applyCache(
+    infos: readonly SdkSessionInfo[],
+    generation: number,
+    revision: number,
+    coldSnapshot: boolean,
+  ): void {
+    if (this.generation !== generation || revision <= this.lastAppliedRevision) return;
+    this.cache = { ts: this.now(), infos, revision };
+    this.lastAppliedRevision = revision;
+    if (coldSnapshot) this.negatives.clear();
+    for (const info of infos) this.negatives.delete(info.id);
+  }
+
+  /** Prune negatives whose recording-time deadline has passed. */
+  private pruneNegatives(now = this.now()): void {
+    for (const [id, at] of this.negatives) {
+      if (now - at >= this.ttlMs) this.negatives.delete(id);
+    }
+  }
+
+  /** True while a negative for `sessionId` is still within its fixed deadline. */
+  private isNegative(sessionId: string): boolean {
+    const at = this.negatives.get(sessionId);
+    if (at === undefined) return false;
+    if (this.now() - at >= this.ttlMs) {
+      this.negatives.delete(sessionId);
+      return false;
+    }
+    return true;
+  }
+
+  /** Record a negative with a fresh recording-time deadline; capacity bounded. */
+  private recordNegative(sessionId: string): void {
+    this.pruneNegatives();
+    this.negatives.set(sessionId, this.now());
+    if (this.negatives.size > this.maxNegatives) {
+      // LRU by recording time: evict the oldest entries down to capacity.
+      const ordered = [...this.negatives.entries()].sort((a, b) => a[1] - b[1]);
+      const excess = this.negatives.size - this.maxNegatives;
+      for (let index = 0; index < excess; index++) this.negatives.delete(ordered[index]![0]);
+    }
   }
 
   /**
@@ -276,14 +354,11 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     if (this.isWarm()) return this.cache!.infos;
     const inflight = this.inFlight;
     if (inflight && inflight.generation === generation) return inflight.promise;
+    const revision = ++this.revision;
     const loadPromise = this.scan().then((infos) => {
-      // Only repopulate the cache when no invalidation happened during the scan.
-      if (this.generation === generation) {
-        this.cache = { ts: this.now(), infos };
-        // A fresh cold snapshot (TTL expiry) starts a new cache generation:
-        // reset negatives so the expired snapshot's misses are retryable.
-        this.negativeIds.clear();
-      }
+      // A full cold snapshot (TTL expiry / first fill) resets the negatives so
+      // the expired snapshot's misses are retryable.
+      this.applyCache(infos, generation, revision, true);
       return infos;
     });
     const trackedPromise = loadPromise.finally(() => {
@@ -296,16 +371,17 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
   /**
    * Force a fresh scan, bypassing the warm cache. Concurrent warm-index misses
    * coalesce onto ONE `listAll` per cache generation. A failed scan clears the
-   * slot and is retryable (failures are never cached); a scan invalidated
-   * mid-flight can neither repopulate the cache nor clear a newer in-flight
-   * scan (identity-guarded finally).
+   * slot and is retryable (failures are never cached); a scan invalidated or
+   * superseded mid-flight can neither repopulate the cache nor clear a newer
+   * in-flight scan (identity-guarded finally + shared revision fence).
    */
   private async scanOnce(): Promise<readonly SdkSessionInfo[]> {
     const generation = this.generation;
     const inflight = this.scanOnceInflight;
     if (inflight && inflight.generation === generation) return inflight.promise;
+    const revision = ++this.revision;
     const loadPromise = this.scan().then((infos) => {
-      if (this.generation === generation) this.cache = { ts: this.now(), infos };
+      this.applyCache(infos, generation, revision, false);
       return infos;
     });
     const trackedPromise = loadPromise.finally(() => {
@@ -333,46 +409,56 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
    * Resolve a session's info from the list index without re-running a global
    * scan after a warm list. Mirrors the legacy web frontend's
    * `resolveSessionPath`, bounded by a per-generation negative cache:
-   * - negative hit (snapshot still warm) → not_found immediately, no scan;
+   * - negative hit (within its fixed recording-time deadline) → not_found, no
+   *   scan; unrelated refreshes can never extend the deadline;
    * - warm list → index hit → return (no scan);
    * - warm list → index miss → exactly one fresh, coalesced scan (a session
-   *   created after the snapshot is recovered here), then index again; if still
-   *   absent, record a negative so repeated reads in this generation never scan;
+   *   created after the snapshot is recovered here), then re-check the CURRENT
+   *   cache; if still absent and the scan is still the newest trusted snapshot,
+   *   record a negative so repeated reads in this generation never scan;
    * - cold list → the `listInfos` scan just ran is fresh, so a miss is final
    *   and is recorded as a negative.
-   * TTL expiry (cold rescan) and invalidation each reset the negatives, so a
-   * retry is permitted. A scan invalidated mid-flight is never trusted: it can
-   * not record a negative (fail closed against the newer generation).
+   * TTL expiry (cold full snapshot) and invalidation each clear the negatives,
+   * so a retry is permitted. A scan invalidated or superseded mid-flight is
+   * never trusted: it can not record a negative (fail closed against the newer
+   * snapshot) and the caller re-reads the CURRENT cache before deciding.
    */
   private async resolveInfo(sessionId: string): Promise<SdkSessionInfo | undefined> {
-    // A negative applies only while the snapshot it was recorded against is
-    // still warm; once the cache expires the cold rescan resets the negatives.
-    if (this.isWarm() && this.negativeIds.has(sessionId)) return undefined;
+    // A negative has its own fixed recording-time deadline, independent of cache
+    // freshness, so unrelated warm-miss refreshes never extend it.
+    if (this.isNegative(sessionId)) return undefined;
     const listWasWarm = this.isWarm();
     const generation = this.generation;
     await this.listInfos();
-    // Only a snapshot that is still current is trustworthy for a negative.
-    const snapshotCurrent = this.generation === generation;
+    // Re-read the CURRENT cache: the snapshot may have been superseded or
+    // invalidated while we waited.
     const fromIndex = this.indexById().get(sessionId);
     if (fromIndex) return fromIndex;
-    if (!snapshotCurrent || !listWasWarm) {
-      // Final miss: either the cold scan that just ran is the freshest snapshot
-      // (record a negative), or the snapshot was invalidated while we waited
-      // (fail closed WITHOUT recording — the newer generation may contain it).
-      if (snapshotCurrent) this.negativeIds.add(sessionId);
+    if (!listWasWarm) {
+      // The cold `listInfos` scan that just ran is the freshest full snapshot.
+      // A miss is final ONLY while it is still the newest applied snapshot (no
+      // newer scan in flight); otherwise fail closed without recording.
+      if (this.generation === generation && this.revision === this.cache?.revision) {
+        this.recordNegative(sessionId);
+      }
       return undefined;
     }
     // Warm miss: one fresh (coalesced) scan may recover a session created after
     // the cached snapshot.
     await this.scanOnce();
-    if (this.generation !== generation) {
-      // The fresh scan was invalidated mid-flight: never record a negative from
-      // an untrusted scan; fall back to the current (newer) snapshot.
-      return this.indexById().get(sessionId);
+    // Re-check the CURRENT cache: this scan may have been discarded by a newer
+    // refresh, or a newer scan may still be in flight. Only record a negative
+    // against the current trusted snapshot (warm, current generation, newest).
+    const current = this.indexById().get(sessionId);
+    if (current) return current;
+    if (
+      this.generation === generation &&
+      this.isWarm() &&
+      this.revision === this.cache?.revision
+    ) {
+      this.recordNegative(sessionId);
     }
-    const rebuilt = this.indexById().get(sessionId);
-    if (!rebuilt) this.negativeIds.add(sessionId);
-    return rebuilt;
+    return undefined;
   }
 
   /**

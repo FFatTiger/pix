@@ -791,6 +791,109 @@ describe("pi-sdk sessions cache hardening (injected SDK)", () => {
     );
     await rm(root, { recursive: true, force: true });
   });
+
+  it("F1: an older scanOnce finishing after a newer TTL list refresh cannot overwrite the cache or poison the session", async () => {
+    let now = 1_000;
+    let scans = 0;
+    let releaseOld: ((infos: FakeSessionInfo[]) => void) | undefined;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        if (scans === 1) return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+        if (scans === 2) return new Promise<FakeSessionInfo[]>((resolve) => { releaseOld = resolve; });
+        return [
+          mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+          mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" }),
+        ];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk, now: () => now, listTtlMs: 30_000 });
+    await store.listSessions(); // scan1 → [s1]
+    const p1 = store.readSession("s2"); // warm miss → scanOnce (scan2, OLD) held open
+    await tick();
+    assert.ok(releaseOld);
+
+    // TTL expiry triggers a NEWER listInfos cold refresh that returns s2 first.
+    now += 30_001;
+    await store.listSessions(); // scan3 → [s1, s2] applied (newer revision)
+    assert.equal(scans, 3);
+
+    // The OLD scanOnce completes late with stale [s1]: the shared revision fence
+    // must discard it (never overwrite the newer cache).
+    releaseOld!([mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })]);
+    // The reader that waited on the discarded scan re-checks the CURRENT cache
+    // and finds s2 there — no not_found, no negative poisoning.
+    const detail = await p1;
+    assert.equal(detail.sessionId, "s2");
+    // The current cache still holds [s1, s2] (stale scan was discarded).
+    const headers = await store.listSessions();
+    assert.deepEqual(headers.map((h) => h.sessionId).sort(), ["s1", "s2"]);
+    // A fresh read succeeds too (no negative was recorded for s2).
+    const again = await store.readSession("s2");
+    assert.equal(again.sessionId, "s2");
+    assert.equal(scans, 3);
+  });
+
+  it("F2: unrelated warm-miss scans cannot extend a negative past its recording-time deadline", async () => {
+    let now = 1_000;
+    let scans = 0;
+    let s2exists = false;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        const infos = [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+        if (s2exists) infos.push(mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" }));
+        return infos;
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk, now: () => now, listTtlMs: 30_000 });
+    await store.listSessions(); // scan1 → [s1]
+    await assert.rejects(() => store.readSession("s2"), isNotFound); // scan2 → negative s2 @ t=1000
+    assert.equal(scans, 2);
+
+    // For >100s, unrelated warm-miss scans for OTHER missing ids keep the cache
+    // timestamp fresh, while s2 stays absent from every scan (its negative is
+    // never re-armed by a scan that contains it).
+    let id = 100;
+    for (let i = 0; i < 40; i++) {
+      now += 3_000;
+      await assert.rejects(() => store.readSession(`other-${id++}`), isNotFound); // warm miss → one fresh scan
+    }
+    assert.ok(now - 1_000 > 30_000, ">100s elapsed since s2's negative was recorded");
+
+    // s2 appears. Its negative expired by recording-time, so a retry works even
+    // though unrelated scans refreshed the cache timestamp the whole time.
+    s2exists = true;
+    const detail = await store.readSession("s2"); // warm miss → fresh scan → found
+    assert.equal(detail.sessionId, "s2");
+  });
+
+  it("F3: the negative cache is bounded (LRU eviction at max capacity)", async () => {
+    let scans = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+      },
+      open(path) { return fakeManager(idFromPath(path)); },
+    };
+    const store = createPiSdkSessionStore({ sdk, maxNegatives: 8 });
+    await store.listSessions(); // scan1 (cold)
+    const ids = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+    for (const id of ids) {
+      await assert.rejects(() => store.readSession(id), isNotFound);
+    }
+    // 9 distinct negatives recorded against a capacity of 8 → "a" (oldest) evicted.
+    assert.equal(scans, 10); // 1 cold + 9 warm-miss scans
+    // The evicted oldest id must be re-scanned (its negative is gone)…
+    await assert.rejects(() => store.readSession("a"), isNotFound);
+    assert.equal(scans, 11);
+    // …while a recent id is still a negative hit (no scan).
+    await assert.rejects(() => store.readSession("i"), isNotFound);
+    assert.equal(scans, 11);
+  });
 });
 
 // ---------------------------------------------------------------------------
