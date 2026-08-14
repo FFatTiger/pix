@@ -27,18 +27,21 @@ const MAIN = {
   branch: "main",
   isMain: true,
   authorized: true,
+  managedByPix: true,
 };
 const LINKED = {
   path: "/proj-worktrees/feature",
   branch: "feature/long-branch-name-that-should-not-break-layout",
   isMain: false,
   authorized: true,
+  managedByPix: true,
 };
 const EXTERNAL = {
   path: "/tmp/external-wt",
   branch: null,
   isMain: false,
   authorized: false,
+  managedByPix: false,
 };
 
 describe("WorktreePanel", () => {
@@ -152,7 +155,7 @@ describe("WorktreePanel", () => {
           projectRoot: "/repo-b-root",
           isGit: true,
           isTopLevel: true,
-          worktrees: [{ path: "/repo-b-root", branch: "branch-b", isMain: true, authorized: true }],
+          worktrees: [{ path: "/repo-b-root", branch: "branch-b", isMain: true, authorized: true, managedByPix: true }],
         });
       }
       return json({});
@@ -184,7 +187,7 @@ describe("WorktreePanel", () => {
           projectRoot: "/repo-a-root",
           isGit: true,
           isTopLevel: true,
-          worktrees: [{ path: "/repo-a-root", branch: "branch-a", isMain: true, authorized: true }],
+          worktrees: [{ path: "/repo-a-root", branch: "branch-a", isMain: true, authorized: true, managedByPix: true }],
         }),
       );
       await aPromise;

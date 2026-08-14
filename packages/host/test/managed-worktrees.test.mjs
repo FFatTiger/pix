@@ -397,6 +397,19 @@ test("foreign installation/repository records are preserved on disk but never au
 // concurrency / failure ordering
 // ---------------------------------------------------------------------------
 
+test("rehydrate on a MISSING sidecar keeps it absent (no empty sidecar write)", async () => {
+  const root = temp("mwt-missing-repo-");
+  initRepo(root);
+  const hostDir = temp("mwt-missing-host-");
+  const ledger = await openManagedWorktreesLedger({ hostDir });
+  assert.equal(existsSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME)), false, "sidecar absent before rehydrate");
+  const result = await rehydrateManagedWorktrees({ ledger }, { isRepoManaged: () => true });
+  assert.equal(result.restored, 0);
+  assert.equal(result.dropped, 0);
+  assert.equal(existsSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME)), false, "missing sidecar stays absent after rehydrate (no empty write)");
+  await ledger.close();
+});
+
 test("concurrent recordCreated for distinct paths both commit durably (shared lease serializes)", async () => {
   const root = temp("mwt-conc-repo-");
   initRepo(root);

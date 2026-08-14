@@ -89,6 +89,7 @@ describe("capabilities", () => {
       "files.upload",
       "git",
       "worktree",
+      "worktree.write",
       "session.write",
       "session.delete",
       "models",

@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readdirSync, renameSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, renameSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AsyncMutex, KeyedMutex } from "../dist/resources/mutex.js";
-import { registerTrustedCreatedRoot } from "../dist/resources/allowed-roots.js";
+import { registerTrustedCreatedRoot, attachTrustedRootsLedger } from "../dist/resources/allowed-roots.js";
+import { openHostStateDirectoryLease } from "../dist/resources/host-state-directory.js";
+import { createTrustedRootsLedgerFromLease } from "../dist/resources/trusted-roots-ledger.js";
+import { createManagedWorktreesLedgerFromLease } from "../dist/resources/managed-worktrees-ledger.js";
+import { createManagedWorktreesService } from "../dist/resources/managed-worktrees.js";
 import {
   createAllowedRootService,
   createFileWatchManager,
@@ -17,8 +21,35 @@ import {
 
 const temporary = [];
 const gate = { config: { read: () => ({ status: "disabled", source: "test" }) } };
+const managedLeases = [];
+const CANON_TMP = realpathSync(tmpdir());
 function temp(prefix) { const value = mkdtempSync(join(tmpdir(), prefix)); temporary.push(value); return value; }
-afterEach(() => { while (temporary.length) rmSync(temporary.pop(), { recursive: true, force: true }); });
+afterEach(() => {
+  while (managedLeases.length) void managedLeases.pop().close().catch(() => {});
+  while (temporary.length) rmSync(temporary.pop(), { recursive: true, force: true });
+});
+
+/**
+ * Wire a REAL managed-worktrees service (shared host-state lease) into a
+ * resources object so the worktree POST/DELETE routes operate under the D3A
+ * managed ownership contract instead of failing closed. Returns the service.
+ * The host dir is canonicalized (ensurePixHostDir refuses `/var` symlinks).
+ */
+async function withManagedWorktrees(resources = {}) {
+  const hostDir = mkdtempSync(join(CANON_TMP, "pi-mwt-host-"));
+  temporary.push(hostDir);
+  const lease = await openHostStateDirectoryLease({ hostDir, instanceId: `mwt-${process.pid}-${Math.random().toString(36).slice(2, 10)}` });
+  managedLeases.push(lease);
+  const trusted = createTrustedRootsLedgerFromLease(lease, { maxClaims: 32 });
+  const managedLedger = createManagedWorktreesLedgerFromLease(lease, { maxRecords: 32 });
+  if (resources.allowedRoots) attachTrustedRootsLedger(resources.allowedRoots, trusted);
+  const service = createManagedWorktreesService({
+    ledger: managedLedger,
+    ...(resources.allowedRoots ? { allowedRoots: resources.allowedRoots } : {}),
+    ...(resources.processRunner ? { runner: resources.processRunner } : {}),
+  });
+  return service;
+}
 
 async function fixture(options = {}) {
   const root = temp("pi-host-resources-");
@@ -314,7 +345,8 @@ test("route-level repo locks serialize same repo and permit different repos conc
     }
     return realRunner.run(request);
   } };
-  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, processRunner: runner } }).app;
+  const managedWorktrees = await withManagedWorktrees({ allowedRoots: roots, processRunner: runner });
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, processRunner: runner, managedWorktrees } }).app;
   const create = (cwd, branch) => app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd, branch }) });
   const first = create(rootA, "lock-a1"); await firstEntered.promise;
   const sameRepo = create(rootA, "lock-a2"); const otherRepo = create(rootB, "lock-b1"); await secondRepoEntered.promise;
@@ -323,7 +355,7 @@ test("route-level repo locks serialize same repo and permit different repos conc
 });
 
 test("real Promise.all worktree create concurrency preserves ownership and no stale roots", async () => {
-  const root = temp("pi-worktree-real-concurrent-"); initRepo(root); const roots = await createAllowedRootService({ roots: [root] }); const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, busyPreflight: { check: async () => ({ busy: false }) } } }).app;
+  const root = temp("pi-worktree-real-concurrent-"); initRepo(root); const roots = await createAllowedRootService({ roots: [root] }); const managedWorktrees = await withManagedWorktrees({ allowedRoots: roots }); const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, busyPreflight: { check: async () => ({ busy: false }) }, managedWorktrees } }).app;
   const create = (branch) => app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch }) });
   const same = await Promise.all([create("same-branch"), create("same-branch")]); assert.equal(same.filter((response) => response.status === 201).length, 1); const samePath = (await same.find((response) => response.status === 201).json()).path; assert.equal(statSync(samePath).isDirectory(), true); assert.equal(await roots.isAuthorized(samePath, "directory"), true); assert.equal(roots.roots().filter((entry) => entry.includes("same-branch")).length, 1);
   const different = await Promise.all([create("parallel-a"), create("parallel-b")]); assert.deepEqual(different.map((response) => response.status).sort(), [201, 201]);
@@ -331,7 +363,7 @@ test("real Promise.all worktree create concurrency preserves ownership and no st
 });
 
 test("create/delete race is serialized and failed create cannot undo successful create", async () => {
-  const root = temp("pi-worktree-create-delete-"); initRepo(root); const roots = await createAllowedRootService({ roots: [root] }); const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, busyPreflight: { check: async () => ({ busy: false }) } } }).app;
+  const root = temp("pi-worktree-create-delete-"); initRepo(root); const roots = await createAllowedRootService({ roots: [root] }); const managedWorktrees = await withManagedWorktrees({ allowedRoots: roots }); const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, busyPreflight: { check: async () => ({ busy: false }) }, managedWorktrees } }).app;
   const create = async (branch) => app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch }) });
   const created = await create("race-delete"); const target = (await created.json()).path;
   const [duplicate, deletion] = await Promise.all([
@@ -345,10 +377,11 @@ test("create/delete race is serialized and failed create cannot undo successful 
 
 test("worktree deletion fails closed without preflight and force never overrides busy", async () => {
   const root = temp("pi-worktree-repo-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] });
-  const noPreflight = createHostApp({ logger: {}, gate, resources: { allowedRoots } }).app;
+  const managedWorktrees = await withManagedWorktrees({ allowedRoots });
+  const noPreflight = createHostApp({ logger: {}, gate, resources: { allowedRoots, managedWorktrees } }).app;
   const create = await noPreflight.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "feature-safe" }) }); assert.equal(create.status, 201); const target = (await create.json()).path;
   let removed = await noPreflight.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: target, force: true }) }); assert.equal(removed.status, 503);
-  const busy = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => ({ busy: true, reason: "active" }) } } }).app;
+  const busy = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => ({ busy: true, reason: "active" }) }, managedWorktrees } }).app;
   removed = await busy.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: target, force: true }) }); assert.equal(removed.status, 409); assert.equal((await removed.json()).code, "WORKTREE_BUSY");
 });
 
@@ -371,23 +404,25 @@ test("mutation guard 503s worktree POST/DELETE before any write while the author
 
 test("mutation guard runs before the busy preflight; force cannot bypass either", async () => {
   const root = temp("pi-worktree-order-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] });
-  // First create a worktree with NO guard so we have something to delete.
-  const seed = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => ({ busy: false }) } } }).app;
+  // ONE shared managed service (one lease/ledger) so the seeded managed record
+  // is visible to the guarded app.
+  const managedWorktrees = await withManagedWorktrees({ allowedRoots });
+  const seed = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => ({ busy: false }) }, managedWorktrees } }).app;
   const created = await seed.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "to-remove" }) });
   assert.equal(created.status, 201); const target = (await created.json()).path;
   // Now wire a guard that is UP, plus a busy preflight that reports busy.
   // busyPreflight.check must still be reached (guard passes) and force still cannot bypass busy.
   const calls = { guard: 0, busy: 0 };
-  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => { calls.busy += 1; return { busy: true, reason: "active" }; } }, mutationGuard: { assertAvailable: async () => { calls.guard += 1; } } } }).app;
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => { calls.busy += 1; return { busy: true, reason: "active" }; } }, mutationGuard: { assertAvailable: async () => { calls.guard += 1; } }, managedWorktrees } }).app;
   const removed = await app.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: target, force: true }) });
   assert.equal(removed.status, 409); assert.equal((await removed.json()).code, "WORKTREE_BUSY");
   assert.equal(calls.guard, 1, "guard runs first");
   assert.equal(calls.busy, 1, "busy preflight still runs after the guard passes");
 });
 
-test("mutation guard is optional: omitting it keeps worktree create/delete working", async () => {
-  const root = temp("pi-worktree-noguard-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] });
-  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => ({ busy: false }) } } }).app;
+test("managed service is required; mutation guard stays optional", async () => {
+  const root = temp("pi-worktree-noguard-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] }); const managedWorktrees = await withManagedWorktrees({ allowedRoots });
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: { check: async () => ({ busy: false }) }, managedWorktrees } }).app;
   const create = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "no-guard" }) });
   assert.equal(create.status, 201); const target = (await create.json()).path;
   const remove = await app.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: target }) });
@@ -395,8 +430,8 @@ test("mutation guard is optional: omitting it keeps worktree create/delete worki
 });
 
 test("worktree dirty check requires force but clean/forced deletion succeeds", async () => {
-  const root = temp("pi-worktree-dirty-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] }); const preflight = { check: async () => ({ busy: false }) };
-  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: preflight } }).app;
+  const root = temp("pi-worktree-dirty-"); initRepo(root); const allowedRoots = await createAllowedRootService({ roots: [root] }); const preflight = { check: async () => ({ busy: false }) }; const managedWorktrees = await withManagedWorktrees({ allowedRoots });
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, busyPreflight: preflight, managedWorktrees } }).app;
   let create = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "dirty-branch" }) }); const dirtyPath = (await create.json()).path; writeFileSync(join(dirtyPath, "dirty.txt"), "x");
   let remove = await app.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: dirtyPath }) }); assert.equal(remove.status, 409); assert.equal((await remove.json()).code, "WORKTREE_DIRTY");
   remove = await app.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: dirtyPath, force: true }) }); assert.equal(remove.status, 200);
@@ -404,19 +439,18 @@ test("worktree dirty check requires force but clean/forced deletion succeeds", a
   remove = await app.request("http://localhost/v1/worktrees", { method: "DELETE", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, path: cleanPath }) }); assert.equal(remove.status, 200);
 });
 
-test("worktree creation rejects symlink base and rolls back when root registration fails", async () => {
+test("worktree creation rejects a symlink base before any mutation", async () => {
   const root = temp("pi-worktree-rollback-"); initRepo(root); const outside = temp("pi-worktree-outside-"); const base = `${resolve(root)}-worktrees`; symlinkSync(outside, base, "dir");
-  let allowedRoots = await createAllowedRootService({ roots: [root] }); let app = createHostApp({ logger: {}, gate, resources: { allowedRoots } }).app;
-  let response = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "unsafe-base" }) }); assert.equal(response.status, 409); assert.deepEqual(allowedRoots.roots(), [await import("node:fs/promises").then(({ realpath }) => realpath(root))]);
-  rmSync(base); allowedRoots = await createAllowedRootService({ roots: [root], maxRoots: 1 }); app = createHostApp({ logger: {}, gate, resources: { allowedRoots } }).app;
-  response = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "registration-fails" }) }); assert.equal(response.status, 429);
-  assert.ok(!git(root, ["worktree", "list", "--porcelain"]).includes("registration-fails")); assert.throws(() => git(root, ["show-ref", "--verify", "refs/heads/registration-fails"])); assert.ok(!allowedRoots.roots().some((entry) => entry.includes("registration-fails")));
+  const allowedRoots = await createAllowedRootService({ roots: [root] }); const managedWorktrees = await withManagedWorktrees({ allowedRoots }); const app = createHostApp({ logger: {}, gate, resources: { allowedRoots, managedWorktrees } }).app;
+  const response = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "unsafe-base" }) }); assert.equal(response.status, 409); assert.deepEqual(allowedRoots.roots(), [await import("node:fs/promises").then(({ realpath }) => realpath(root))]);
+  assert.throws(() => git(root, ["show-ref", "--verify", "refs/heads/unsafe-base"]), "no branch created behind a symlink base");
 });
 
 test("ambiguous nonzero add failure does not claim or delete observed resources", async () => {
   const root = temp("pi-worktree-process-fail-"); initRepo(root); const roots = await createAllowedRootService({ roots: [root] }); const realRunner = createProcessRunner();
   const runner = { async run(request) { if (request.args.includes("add")) { const actual = await realRunner.run(request); assert.equal(actual.exitCode, 0); return { stdout: actual.stdout, stderr: "simulated ambiguous failure", exitCode: 7, truncated: false }; } return realRunner.run(request); } };
-  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, processRunner: runner } }).app;
+  const managedWorktrees = await withManagedWorktrees({ allowedRoots: roots, processRunner: runner });
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, processRunner: runner, managedWorktrees } }).app;
   const response = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "partial-failure" }) }); assert.equal(response.status, 400);
   assert.doesNotThrow(() => git(root, ["show-ref", "--verify", "refs/heads/partial-failure"])); assert.match(git(root, ["worktree", "list", "--porcelain"]), /partial-failure/); assert.equal(roots.roots().length, 1, "ambiguous resource is not authorized or transaction-owned");
 });
@@ -425,21 +459,28 @@ test("worktree create transaction rolls back timeout/output failures and concurr
   for (const failure of ["PROCESS_TIMEOUT", "PROCESS_OUTPUT_LIMIT"]) {
     const root = temp(`pi-worktree-${failure}-`); initRepo(root); const roots = await createAllowedRootService({ roots: [root] }); const realRunner = createProcessRunner();
     const runner = { async run(request) { if (request.args.includes("add")) throw new HttpError(failure === "PROCESS_TIMEOUT" ? 504 : 413, failure, failure); return realRunner.run(request); } };
-    const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, processRunner: runner } }).app;
+    const managedWorktrees = await withManagedWorktrees({ allowedRoots: roots, processRunner: runner });
+    const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, processRunner: runner, managedWorktrees } }).app;
     const response = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: failure.toLowerCase() }) }); assert.equal(response.status, failure === "PROCESS_TIMEOUT" ? 504 : 413);
     assert.throws(() => git(root, ["show-ref", "--verify", `refs/heads/${failure.toLowerCase()}`])); assert.equal(statSync(`${resolve(root)}-worktrees`, { throwIfNoEntry: false }), undefined);
   }
   const root = temp("pi-worktree-conflict-"); initRepo(root); const base = `${resolve(root)}-worktrees`; const target = join(base, "race-branch"); const roots = await createAllowedRootService({ roots: [root] }); const realRunner = createProcessRunner();
   const runner = { async run(request) { if (request.args.includes("worktree") && request.args.includes("add")) { mkdirSync(target, { recursive: true }); writeFileSync(join(target, "concurrent-owner.txt"), "keep"); } return realRunner.run(request); } };
-  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, processRunner: runner } }).app;
+  const managedWorktrees = await withManagedWorktrees({ allowedRoots: roots, processRunner: runner });
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, processRunner: runner, managedWorktrees } }).app;
   const response = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "race-branch" }) }); assert.equal(response.status, 400); assert.equal(readFileSync(join(target, "concurrent-owner.txt"), "utf8"), "keep"); assert.doesNotThrow(() => git(root, ["show-ref", "--verify", "refs/heads/race-branch"])); assert.equal(await roots.isAuthorized(target, "directory"), false);
 });
 
 test("worktree rollback preserves pre-existing branch and base", async () => {
   const root = temp("pi-worktree-preserve-"); initRepo(root); git(root, ["branch", "existing-branch"]); const base = `${resolve(root)}-worktrees`; mkdirSync(base); writeFileSync(join(base, "keep.txt"), "keep");
-  const roots = await createAllowedRootService({ roots: [root], maxRoots: 1 }); const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots } }).app;
-  const response = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "existing-branch" }) }); assert.equal(response.status, 429);
-  assert.doesNotThrow(() => git(root, ["show-ref", "--verify", "refs/heads/existing-branch"])); assert.equal(readFileSync(join(base, "keep.txt"), "utf8"), "keep"); assert.ok(!git(root, ["worktree", "list", "--porcelain"]).includes(join(base, "existing-branch")));
+  // A pre-existing target directory makes the create fail at the target check,
+  // preserving the pre-existing branch and base contents (never a rollback of
+  // foreign/pre-existing state).
+  mkdirSync(join(base, "existing-branch")); writeFileSync(join(base, "existing-branch", "owned.txt"), "keep");
+  const roots = await createAllowedRootService({ roots: [root] }); const managedWorktrees = await withManagedWorktrees({ allowedRoots: roots });
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, managedWorktrees } }).app;
+  const response = await app.request("http://localhost/v1/worktrees", { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify({ cwd: root, branch: "existing-branch" }) }); assert.equal(response.status, 409);
+  assert.doesNotThrow(() => git(root, ["show-ref", "--verify", "refs/heads/existing-branch"])); assert.equal(readFileSync(join(base, "keep.txt"), "utf8"), "keep"); assert.equal(readFileSync(join(base, "existing-branch", "owned.txt"), "utf8"), "keep"); assert.ok(!git(root, ["worktree", "list", "--porcelain"]).includes(join(base, "existing-branch")));
 });
 
 test("malicious worktree branches are rejected before git argv execution", async () => {

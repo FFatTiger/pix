@@ -43,6 +43,10 @@ import {
   rehydrateTrustedCreatedRoots,
   listTrustedCreatedRoots,
 } from "../dist/resources/allowed-roots.js";
+import { openHostStateDirectoryLease } from "../dist/resources/host-state-directory.js";
+import { createTrustedRootsLedgerFromLease } from "../dist/resources/trusted-roots-ledger.js";
+import { createManagedWorktreesLedgerFromLease } from "../dist/resources/managed-worktrees-ledger.js";
+import { createManagedWorktreesService } from "../dist/resources/managed-worktrees.js";
 
 const temporary = [];
 // Canonicalize temp roots so hostDir never walks macOS `/var` → `/private/var`.
@@ -760,30 +764,33 @@ test("collision and identity replacement fail closed; loser never authorizes", a
 // Production composition / worktree route
 // ---------------------------------------------------------------------------
 
-test("worktree create persistence failure rolls back worktree/branch and never 201", async () => {
+test("worktree create managed persistence failure rolls back worktree/branch and never 201", async () => {
   const root = temp("pi-persist-fail-");
   initRepo(root);
   const hostDir = temp("pi-persist-fail-host-");
-  const ledger = await openTrustedRootsLedger({ hostDir, failTempFsync: () => { throw new Error("injected"); } });
+  const lease = await openHostStateDirectoryLease({ hostDir, instanceId: "pi-persist-fail-0001", failTempFsync: () => { throw new Error("injected"); } });
+  const trusted = createTrustedRootsLedgerFromLease(lease, { maxClaims: 16 });
+  const managedLedger = createManagedWorktreesLedgerFromLease(lease, { maxRecords: 16 });
   const roots = await createAllowedRootService({ roots: [root], maxRoots: 16 });
-  attachTrustedRootsLedger(roots, ledger);
+  attachTrustedRootsLedger(roots, trusted);
+  const managedWorktrees = createManagedWorktreesService({ ledger: managedLedger, allowedRoots: roots });
   const gate = { config: { read: () => ({ status: "disabled", source: "test" }) } };
-  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots } }).app;
+  const app = createHostApp({ logger: {}, gate, resources: { allowedRoots: roots, managedWorktrees } }).app;
   const response = await app.request("http://localhost/v1/worktrees", {
     method: "POST",
     headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cwd: root, branch: "persist-fail" }),
   });
   assert.equal(response.status, 500);
-  assert.equal((await response.json()).code, "TRUSTED_ROOT_PERSIST_FAILED");
+  assert.equal((await response.json()).code, "MANAGED_WRITE_FAILED");
   assert.throws(() => git(root, ["show-ref", "--verify", "refs/heads/persist-fail"]), "persist failure must roll back the branch");
   const linked = join(`${realpathSync(root)}-worktrees`, "persist-fail");
   const porcelain = git(root, ["worktree", "list", "--porcelain"]);
   assert.ok(!porcelain.includes(linked), `stale worktree remained: ${porcelain}`);
-  assert.equal(listTrustedCreatedRoots(roots).length, 0);
-  assert.equal((await ledger.read()).claims.length, 0);
+  assert.equal((await managedLedger.read()).records.length, 0, "no managed record after persist failure");
+  assert.equal((await trusted.read()).claims.length, 0, "no trusted claim written for a managed create");
   assert.equal(await roots.isAuthorized(linked, "directory"), false);
-  await ledger.close();
+  await lease.close();
 });
 
 test("create→production resources restart→authorized; sessiond down GET still works; POST 503 before git", async () => {
@@ -805,7 +812,7 @@ test("create→production resources restart→authorized; sessiond down GET stil
   const app1 = createHostApp({
     logger: {},
     gate,
-    resources: { allowedRoots: first.deps.allowedRoots, processRunner: first.deps.processRunner, busyPreflight: { check: async () => ({ busy: false }) } },
+    resources: { allowedRoots: first.deps.allowedRoots, processRunner: first.deps.processRunner, busyPreflight: { check: async () => ({ busy: false }) }, managedWorktrees: first.managedWorktrees },
   }).app;
   const created = await app1.request("http://localhost/v1/worktrees", {
     method: "POST",
@@ -815,7 +822,8 @@ test("create→production resources restart→authorized; sessiond down GET stil
   assert.equal(created.status, 201);
   const { path } = await created.json();
   assert.equal(await first.deps.allowedRoots.isAuthorized(path, "directory"), true);
-  assert.equal((await first.trustedRootsLedger.read()).claims.length, 1);
+  assert.equal((await first.managedWorktreesLedger.read()).records.length, 1, "one durable managed record");
+  assert.equal((await first.trustedRootsLedger.read()).claims.length, 0, "no trusted claim for a managed create");
   // Graceful close releases the lifetime lock before the simulated restart.
   await first.trustedRootsLedger.close();
 
@@ -826,7 +834,7 @@ test("create→production resources restart→authorized; sessiond down GET stil
     secret: fakeSecret,
     hostDirEnv: hostDir,
   });
-  assert.equal(await second.deps.allowedRoots.isAuthorized(path, "directory"), true);
+  assert.equal(await second.deps.allowedRoots.isAuthorized(path, "directory"), true, "managed record rehydrates + authorizes after restart");
 
   // sessiond-down style: no mutationGuard; GET list still authorizes; files authorize.
   const app2 = createHostApp({
@@ -837,12 +845,14 @@ test("create→production resources restart→authorized; sessiond down GET stil
       processRunner: second.deps.processRunner,
       mutationGuard: { assertAvailable: async () => { const { HttpError } = await import("../dist/index.js"); throw new HttpError(503, "MUTATION_UNAVAILABLE", "Runtime authority unavailable"); } },
       busyPreflight: { check: async () => ({ busy: false }) },
+      managedWorktrees: second.managedWorktrees,
     },
   }).app;
   const listed = await app2.request(`http://localhost/v1/worktrees?cwd=${encodeURIComponent(root)}`, { headers: { host: "localhost" } });
   assert.equal(listed.status, 200);
   const item = (await listed.json()).worktrees.find((w) => w.path === path);
   assert.equal(item?.authorized, true);
+  assert.equal(item?.managedByPix, true, "rehydrated managed worktree reports managedByPix");
   const file = join(path, "tracked.txt");
   const fileRes = await app2.request(`http://localhost/v1/files?op=read&path=${encodeURIComponent(file)}`, { headers: { host: "localhost" } });
   assert.equal(fileRes.status, 200);
@@ -856,7 +866,7 @@ test("create→production resources restart→authorized; sessiond down GET stil
   assert.equal(blocked.status, 503);
   assert.equal((await blocked.json()).code, "MUTATION_UNAVAILABLE");
   assert.throws(() => git(root, ["show-ref", "--verify", "refs/heads/should-not"]), "guard must run before any git side effect");
-  assert.equal((await second.trustedRootsLedger.read()).claims.length, 1, "blocked POST must not touch the ledger");
+  assert.equal((await second.managedWorktreesLedger.read()).records.length, 1, "blocked POST must not touch the managed ledger");
   assert.equal(await second.deps.allowedRoots.isAuthorized(path, "directory"), true, "rehydrated authorization survives the blocked POST");
   await second.trustedRootsLedger.close();
 });
@@ -865,15 +875,18 @@ test("authenticated LAN worktree create/delete persists durably; unauth LAN bloc
   const root = temp("pi-lan-repo-");
   initRepo(root);
   const hostDir = temp("pi-lan-host-");
-  const ledger = await openTrustedRootsLedger({ hostDir });
+  const lease = await openHostStateDirectoryLease({ hostDir, instanceId: "pi-lan-00000001" });
+  const trusted = createTrustedRootsLedgerFromLease(lease, { maxClaims: 16 });
+  const managedLedger = createManagedWorktreesLedgerFromLease(lease, { maxRecords: 16 });
   const roots = await createAllowedRootService({ roots: [root], maxRoots: 16 });
-  attachTrustedRootsLedger(roots, ledger);
+  attachTrustedRootsLedger(roots, trusted);
+  const managedWorktrees = createManagedWorktreesService({ ledger: managedLedger, allowedRoots: roots });
   const gate = { config: { read: () => ({ status: "enabled", password: "secret", source: "test" }) } };
   const app = createHostApp({
     logger: {},
     gate,
     exposureMode: "lan",
-    resources: { allowedRoots: roots, busyPreflight: { check: async () => ({ busy: false }) } },
+    resources: { allowedRoots: roots, busyPreflight: { check: async () => ({ busy: false }) }, managedWorktrees },
   }).app;
   const headers = { host: "127.0.0.1" };
 
@@ -886,10 +899,11 @@ test("authenticated LAN worktree create/delete persists durably; unauth LAN bloc
   assert.equal(denied.status, 401, "enabled LAN gate blocks unauthenticated API with 401");
   assert.equal((await denied.json()).code, "UNAUTHORIZED");
   assert.throws(() => git(root, ["show-ref", "--verify", "refs/heads/lan-blocked"]), "gate must block before any git side effect");
-  assert.equal((await ledger.read()).claims.length, 0, "gate must block before any ledger side effect");
+  assert.equal((await managedLedger.read()).records.length, 0, "gate must block before any managed ledger side effect");
+  assert.equal((await trusted.read()).claims.length, 0, "gate must block before any trusted ledger side effect");
   assert.equal(existsSync(join(`${realpathSync(root)}-worktrees`, "lan-blocked")), false, "gate must block before any filesystem side effect");
 
-  // Authenticated LAN create → 201 + durable claim.
+  // Authenticated LAN create → 201 + durable managed record.
   const login = await app.request("http://127.0.0.1/v1/gate/login", {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
@@ -902,18 +916,18 @@ test("authenticated LAN worktree create/delete persists durably; unauth LAN bloc
     body: JSON.stringify({ cwd: root, branch: "lan-persist" }),
   });
   assert.equal(created.status, 201);
-  assert.equal((await ledger.read()).claims.length, 1, "authenticated LAN create persists durably");
+  assert.equal((await managedLedger.read()).records.length, 1, "authenticated LAN create persists a managed record durably");
   const delPath = (await created.json()).path;
 
-  // Authenticated LAN delete → claim removed durably.
+  // Authenticated LAN delete → managed record removed durably.
   const del = await app.request("http://127.0.0.1/v1/worktrees", {
     method: "DELETE",
     headers: { ...headers, cookie, "content-type": "application/json" },
     body: JSON.stringify({ cwd: root, path: delPath }),
   });
   assert.equal(del.status, 200);
-  assert.equal((await ledger.read()).claims.length, 0, "authenticated LAN delete removes the claim durably");
-  await ledger.close();
+  assert.equal((await managedLedger.read()).records.length, 0, "authenticated LAN delete removes the managed record durably");
+  await lease.close();
 });
 
 // ---------------------------------------------------------------------------

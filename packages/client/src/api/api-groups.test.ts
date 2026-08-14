@@ -43,7 +43,7 @@ describe("API domain response parsing", () => {
   it("parses cwd/git/worktree domains and rejects malformed values", async () => {
     await expect(createResourcesApi(client({ roots: ["/repo"], defaultCwd: "/repo" })).cwd.roots()).resolves.toEqual({ roots: ["/repo"], defaultCwd: "/repo" });
     await expect(createResourcesApi(client({ isGitRepository: false, repositoryRoot: null, files: [], additions: 0, deletions: 0 })).git.status("/repo")).resolves.toMatchObject({ isGitRepository: false });
-    await expect(createResourcesApi(client({ projectRoot: "/repo", isGit: true, isTopLevel: true, worktrees: [{ path: "/x", branch: null, isMain: false, authorized: false }] })).worktrees.list("/repo")).resolves.toMatchObject({ isGit: true });
+    await expect(createResourcesApi(client({ projectRoot: "/repo", isGit: true, isTopLevel: true, worktrees: [{ path: "/x", branch: null, isMain: false, authorized: false, managedByPix: false }] })).worktrees.list("/repo")).resolves.toMatchObject({ isGit: true });
     await expect(createResourcesApi(client({ roots: [1], defaultCwd: null })).cwd.roots()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 

@@ -158,7 +158,7 @@ describe("table-driven mutation invalidation", () => {
   });
 
   it("invalidates the affected worktree list and cwd roots", async () => {
-    const { options, invalidate } = invalidationHarness({ path: "/wt", branch: "b" });
+    const { options, invalidate } = invalidationHarness({ path: "/wt", branch: "b", managedByPix: true });
     const input = { cwd: "/repo", branch: "b" };
     const mutation = options.worktrees.create();
     await mutation.mutationFn(input); await mutation.onSuccess(undefined, input);

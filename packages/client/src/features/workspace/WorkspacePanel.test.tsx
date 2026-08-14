@@ -73,7 +73,7 @@ function makeRouter() {
         isGit: true,
         isTopLevel: true,
         worktrees: [
-          { path: params.cwd, branch: "workspace-main", isMain: true, authorized: true },
+          { path: params.cwd, branch: "workspace-main", isMain: true, authorized: true, managedByPix: true },
         ],
       });
     }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { delimiter } from "node:path";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import {
   createProductionCapabilityResolver,
   SessiondWorktreeSafetyAdapter,
   InvalidAllowedRootsError,
+  InvalidHostDirError,
   HttpError,
   PRODUCTION_MAX_UPLOAD_BYTES,
   PRODUCTION_PING_TIMEOUT_MS,
@@ -214,15 +215,15 @@ test("resolver: up ⇒ PRODUCTION_FULL_CAPABILITIES, down ⇒ RESOURCE_DEGRADED_
     });
     assert.equal(await resolver.isAvailable(), true);
     assert.deepEqual(await resolver.resolve(), [...PRODUCTION_FULL_CAPABILITIES]);
-    assert.deepEqual([...PRODUCTION_FULL_CAPABILITIES], ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"]);
+    assert.deepEqual([...PRODUCTION_FULL_CAPABILITIES], ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "auth.providers", "skills", "plugins"]);
     // sessions history requires the up authority; degraded never advertises it.
     assert.ok([...RESOURCE_DEGRADED_CAPABILITIES].includes("files"));
     assert.ok(![...RESOURCE_DEGRADED_CAPABILITIES].includes("sessions"));
     // worktree is the read-only list token — present in both up and degraded.
     assert.ok((await resolver.resolve()).includes("worktree"));
     assert.ok([...RESOURCE_DEGRADED_CAPABILITIES].includes("worktree"));
-    // No write token is negotiated; POST/DELETE stay sessiond-guarded.
-    assert.ok(!(await resolver.resolve()).includes("worktree.write"));
+    // worktree.write is the honest write capability: full/sessiond-up only.
+    assert.ok((await resolver.resolve()).includes("worktree.write"));
     assert.ok(![...RESOURCE_DEGRADED_CAPABILITIES].includes("worktree.write"));
   });
 });
@@ -331,4 +332,69 @@ test("adapter: busy preflight throws sanitized 503 when the authority is down", 
       (e) => e instanceof HttpError && e.status === 503 && /Cannot determine worktree busy state/i.test(e.message),
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// D3A managed-worktree production composition (shared lease)
+// ---------------------------------------------------------------------------
+
+const MANAGED_DOC = "managed-worktrees.json";
+const HOST_LOCK = "trusted-roots.lock";
+
+test("production composition: ONE shared lease backs both sidecars; managed close is a no-op; trusted close releases once", async () => {
+  const root = temp("pix-prod-shared-");
+  const hostDir = temp("pix-prod-shared-host-");
+  const base = { allowedRootsEnv: root, cwd: root, endpoint: "unix:/nonexistent-prod-shared", secret: "s".repeat(48), hostDirEnv: hostDir };
+  const first = await createProductionResources(base);
+  assert.equal(first.trustedRootsLedger.hostDir, first.managedWorktreesLedger.hostDir, "both ledgers share ONE host dir");
+  assert.equal(first.trustedRootsLedger.lockPath, first.managedWorktreesLedger.lockPath, "both ledgers share ONE lifetime lock");
+  assert.ok(first.managedWorktrees, "managed service wired");
+  assert.equal(first.deps.managedWorktrees, first.managedWorktrees, "ResourceDeps carries the managed service");
+
+  // Second Host on the same host dir fails before listen (ONE lock held).
+  await assert.rejects(
+    () => createProductionResources(base),
+    (e) => e instanceof InvalidHostDirError && e.message === "PIX_HOST_DIR rejected (LEDGER_LOCK_BUSY)",
+  );
+  // Managed-ledger close is a no-op (lease owner is the trusted ledger).
+  await first.managedWorktreesLedger.close();
+  await assert.rejects(
+    () => createProductionResources(base),
+    (e) => e instanceof InvalidHostDirError && e.message === "PIX_HOST_DIR rejected (LEDGER_LOCK_BUSY)",
+    "managed close must NOT release the shared lease",
+  );
+  // Trusted-ledger close releases the shared lease exactly once.
+  await first.trustedRootsLedger.close();
+  const second = await createProductionResources(base);
+  assert.ok(second.managedWorktrees, "restart wires the managed service again");
+  await second.trustedRootsLedger.close();
+});
+
+test("production composition: corrupt managed sidecar fails before listen and stays immutable", async () => {
+  const root = temp("pix-prod-corrupt-");
+  const hostDir = temp("pix-prod-corrupt-host-");
+  const managedPath = join(hostDir, MANAGED_DOC);
+  writeFileSync(managedPath, "{not-json", { mode: 0o600 });
+  const before = readFileSync(managedPath);
+  const base = { allowedRootsEnv: root, cwd: root, endpoint: "unix:/nonexistent-prod-corrupt", secret: "s".repeat(48), hostDirEnv: hostDir };
+  await assert.rejects(
+    () => createProductionResources(base),
+    (e) => e instanceof InvalidHostDirError && e.message === "PIX_HOST_DIR rejected (MANAGED_CORRUPT)",
+  );
+  assert.deepEqual(readFileSync(managedPath), before, "corrupt managed sidecar must stay byte-identical (immutable)");
+  assert.equal(existsSync(join(hostDir, HOST_LOCK)), false, "no lifetime lock created for a corrupt managed sidecar (validateBeforeLock)");
+});
+
+test("production composition: missing managed sidecar stays ABSENT after boot + rehydrate", async () => {
+  const root = temp("pix-prod-absent-");
+  const hostDir = temp("pix-prod-absent-host-");
+  const production = await createProductionResources({
+    allowedRootsEnv: root, cwd: root, endpoint: "unix:/nonexistent-prod-absent", secret: "s".repeat(48), hostDirEnv: hostDir,
+  });
+  assert.equal(existsSync(join(hostDir, MANAGED_DOC)), false, "managed sidecar stays absent until the first managed create");
+  const read = await production.managedWorktreesLedger.read();
+  assert.equal(read.records.length, 0, "missing sidecar reads as empty");
+  assert.equal(read.warning, "MANAGED_MISSING", "read reports the missing warning");
+  assert.equal(production.managedWorktreesLedger.hostDir, hostDir, "managed ledger attached to the shared lease");
+  await production.trustedRootsLedger.close();
 });
