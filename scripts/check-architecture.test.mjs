@@ -10,11 +10,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   checkBinTargets,
+  checkDependencyBuildersSafe,
   checkNoAgentSession,
   checkNoNextDependency,
   checkNoNextImport,
   checkNoNextProductPath,
   checkNoLegacyProductName,
+  checkNoRawNodeTestGlob,
+  checkNoRmRfInScripts,
   checkPiSdkBoundary,
   checkProtocolBoundary,
   checkRuntimeCoreBoundary,
@@ -284,6 +287,102 @@ test("checkBinTargets verifies declared production bins exist", (t) => {
   assert.equal(result.ok, false);
   assert.match(result.details, /missing/);
   assert.equal(checkBinTargets(manifests.slice(0, 2).concat(manifests[3])).ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// cross-platform tooling
+// ---------------------------------------------------------------------------
+
+test("checkNoRmRfInScripts flags rm -rf in any manifest script", () => {
+  const manifests = [
+    { path: "a/package.json", manifest: { scripts: { clean: "rm -rf dist dist-test" } } },
+    { path: "b/package.json", manifest: { scripts: { build: "rm -r out && tsc" } } },
+    { path: "c/package.json", manifest: { scripts: { clean: "node ../../scripts/remove-paths.mjs dist" } } },
+    { path: "d/package.json", manifest: { scripts: { test: "echo ok" } } },
+  ];
+  const result = checkNoRmRfInScripts(manifests);
+  assert.equal(result.ok, false);
+  assert.match(result.details, /a\/package\.json/);
+  assert.match(result.details, /b\/package\.json/);
+  assert.doesNotMatch(result.details, /c\/package\.json/);
+  assert.doesNotMatch(result.details, /d\/package\.json/);
+  assert.equal(checkNoRmRfInScripts(manifests.slice(2)).ok, true);
+});
+
+test("checkNoRawNodeTestGlob flags shell-dependent node --test globs", () => {
+  const manifests = [
+    { path: "a/package.json", manifest: { scripts: { test: `node --test 'scripts/**/*.test.mjs'` } } },
+    { path: "b/package.json", manifest: { scripts: { test: `node --test "dist-test/**/*.test.js"` } } },
+    { path: "c/package.json", manifest: { scripts: { test: `node --test test/*.test.mjs` } } },
+    { path: "d/package.json", manifest: { scripts: { test: `node scripts/run-node-test.mjs "scripts/**/*.test.mjs"` } } },
+    { path: "e/package.json", manifest: { scripts: { test: `node --test a.test.mjs b.test.mjs` } } },
+    { path: "f/package.json", manifest: { scripts: { test: `node --test` } } },
+  ];
+  const result = checkNoRawNodeTestGlob(manifests);
+  assert.equal(result.ok, false);
+  assert.match(result.details, /a\/package\.json/);
+  assert.match(result.details, /b\/package\.json/);
+  assert.match(result.details, /c\/package\.json/);
+  assert.doesNotMatch(result.details, /d\/package\.json/);
+  assert.doesNotMatch(result.details, /e\/package\.json/);
+  assert.doesNotMatch(result.details, /f\/package\.json/);
+  assert.equal(checkNoRawNodeTestGlob(manifests.slice(3)).ok, true);
+});
+
+test("checkDependencyBuildersSafe flags npm.cmd / .bin/tsc / shell:true in builder code", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  // Violations live in executable code, not comments.
+  const badNpm = write(dir, "packages/cli/scripts/prebuild-deps.mjs", `spawnSync("npm.cmd", ["run", "build"]);\n`);
+  const badTsc = write(dir, "packages/host/scripts/prebuild-deps.mjs", `spawnSync(join(root, "node_modules/.bin/tsc"), [...]);\n`);
+  const badShell = write(dir, "packages/sessiond/scripts/build-deps.mjs", `spawnSync(cmd, args, { shell: true });\n`);
+  const good = write(dir, "packages/agent-worker/scripts/build-deps.mjs", `spawnSync(tsc.command, tsc.args);\n`);
+  const unrelated = write(dir, "packages/host/scripts/check-boundaries.mjs", `spawnSync("npm.cmd", [], { shell: true });\n`);
+  const result = checkDependencyBuildersSafe([badNpm, badTsc, badShell, good, unrelated]);
+  assert.equal(result.ok, false);
+  assert.match(result.details, /npm\.cmd/);
+  assert.match(result.details, /\.bin\/tsc/);
+  assert.match(result.details, /shell:true/);
+  assert.doesNotMatch(result.details, /agent-worker\/scripts\/build-deps\.mjs/);
+  assert.doesNotMatch(result.details, /check-boundaries\.mjs/);
+  assert.equal(checkDependencyBuildersSafe([good, unrelated]).ok, true);
+});
+
+test("checkDependencyBuildersSafe ignores forbidden tokens inside comments", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  const body = [
+    `// never use npm.cmd, the .bin/tsc shim, or shell: true here`,
+    `/* multi-line: spawnSync("npm.cmd") is forbidden */`,
+    `const result = spawnSync(tsc.command, tsc.args, { cwd, stdio: "inherit" });`,
+  ].join("\n");
+  const file = write(dir, "packages/protocol/scripts/build-deps.mjs", body);
+  assert.equal(checkDependencyBuildersSafe([file]).ok, true);
+});
+
+test("runChecks includes the cross-platform tooling gates", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  write(dir, "scripts/placeholder.mjs", `console.log("x");\n`);
+  const result = runChecks(dir);
+  const names = result.checks.map((c) => c.name);
+  assert.ok(names.includes("no rm -rf in production/test scripts"), JSON.stringify(names));
+  assert.ok(names.includes("no shell-dependent node --test glob"), JSON.stringify(names));
+  assert.ok(names.includes("dependency builders use safe tool invocation"), JSON.stringify(names));
+});
+
+test("runChecks fails on a fixture that shells out to rm -rf", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  write(
+    dir,
+    "packages/protocol/package.json",
+    JSON.stringify({ name: "@fffattiger/pix-protocol", private: true, scripts: { clean: "rm -rf dist" } }),
+  );
+  const result = runChecks(dir);
+  assert.equal(result.ok, false);
+  const names = result.failed.map((c) => c.name);
+  assert.ok(names.includes("no rm -rf in production/test scripts"), JSON.stringify(names));
 });
 
 // ---------------------------------------------------------------------------

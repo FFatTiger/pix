@@ -16,6 +16,10 @@
 //   8. host / sessiond / agent-worker have no AgentSession / SessionManager usage
 //   9. production bin targets exist for every manifest that declares a bin
 //  10. no legacy product name in production source, manifests, README or docs
+//  11. no production/test script uses `rm -rf` (use scripts/remove-paths.mjs)
+//  12. no shell-dependent `node --test` glob in scripts (use scripts/run-node-test.mjs)
+//  13. dependency builders launch tsc/npm as JS CLIs through the current Node
+//      (no npm.cmd / .bin/tsc / shell:true)
 //
 // Only Node builtins; runs with zero installed dependencies.
 
@@ -379,6 +383,101 @@ export function checkBinTargets(manifests) {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-platform tooling
+// ---------------------------------------------------------------------------
+
+// `rm -rf` / `rm -r` in a package.json script value. The lookbehind keeps
+// `remove-paths.mjs` (which contains “rm” inside “remove”) from matching.
+const RM_RF_IN_SCRIPT = /(?:^|[^A-Za-z0-9_.-])rm\s+-(?:r|R)(?:f|F)?\b/;
+const RAW_NODE_TEST = /\bnode\s+--test\b/;
+const GLOB_CHARS = /[*?{}[\]]/;
+const DEP_BUILDER_NAMES = new Set(["build-deps.mjs", "prebuild-deps.mjs"]);
+
+/** True when `script` runs `node --test` with a glob argument. */
+function isShellDependentNodeTestGlob(script) {
+  const match = RAW_NODE_TEST.exec(script);
+  if (!match) return false;
+  // Examine only the segment after `node --test` up to the next `&&` / `||`
+  // / `;` so unrelated later shell commands are not blamed.
+  const segment = script.slice(match.index + match[0].length).split(/\s*(?:&&|\|\||;)\s*/)[0];
+  return GLOB_CHARS.test(segment);
+}
+
+/** No production/test script may shell out to `rm -rf`. */
+export function checkNoRmRfInScripts(manifests) {
+  const offenders = [];
+  for (const { path, manifest } of manifests) {
+    const scripts = manifest.scripts;
+    if (!scripts) continue;
+    for (const [name, script] of Object.entries(scripts)) {
+      if (typeof script === "string" && RM_RF_IN_SCRIPT.test(script)) {
+        offenders.push(`${path}: script "${name}" calls rm -rf (use scripts/remove-paths.mjs)`);
+      }
+    }
+  }
+  return offenders.length === 0
+    ? { ok: true, details: "no production/test script uses rm -rf" }
+    : { ok: false, details: offenders.join("; ") };
+}
+
+/**
+ * No script may pass a glob to raw `node --test`: Node 24 exits 0 when the
+ * glob matches nothing, and the quoting is fragile under Windows cmd. Use
+ * scripts/run-node-test.mjs so the file list is explicit and fail-closed.
+ */
+export function checkNoRawNodeTestGlob(manifests) {
+  const offenders = [];
+  for (const { path, manifest } of manifests) {
+    const scripts = manifest.scripts;
+    if (!scripts) continue;
+    for (const [name, script] of Object.entries(scripts)) {
+      if (typeof script === "string" && isShellDependentNodeTestGlob(script)) {
+        offenders.push(
+          `${path}: script "${name}" runs node --test with a shell-dependent glob (use scripts/run-node-test.mjs)`,
+        );
+      }
+    }
+  }
+  return offenders.length === 0
+    ? { ok: true, details: "no shell-dependent node --test glob in scripts" }
+    : { ok: false, details: offenders.join("; ") };
+}
+
+// Tokens inspected in the executable code of dependency builders (after
+// comments are stripped), so explanatory comment text can never trip the
+// gate. `node_modules/.bin/tsc` may be written as one string or as the
+// joined `.bin`, "tsc" array args, so both forms are matched.
+const NPM_CMD_TOKEN = /npm\.cmd\b/;
+const BIN_TSC_TOKEN = /\.bin[\\/]tsc\b|["'`]\.bin["'`]\s*,\s*["'`]tsc["'`]/;
+const SHELL_TRUE_TOKEN = /shell\s*:\s*true\b/;
+
+/**
+ * Dependency builders (build-deps.mjs / prebuild-deps.mjs) must launch tsc
+ * and npm as JS CLIs through the current Node. This is a precise guard on
+ * the executable code of those files only (comments are ignored); other
+ * scripts that legitimately need a shell are not touched.
+ */
+export function checkDependencyBuildersSafe(sourceFiles) {
+  const offenders = [];
+  for (const file of sourceFiles) {
+    if (!DEP_BUILDER_NAMES.has(basename(file))) continue;
+    const body = stripComments(readFileSync(file, "utf8"));
+    if (NPM_CMD_TOKEN.test(body)) {
+      offenders.push(`${file}: spawns npm.cmd (use scripts/tool-invocation.mjs)`);
+    }
+    if (BIN_TSC_TOKEN.test(body)) {
+      offenders.push(`${file}: spawns the .bin/tsc shim (use scripts/tool-invocation.mjs)`);
+    }
+    if (SHELL_TRUE_TOKEN.test(body)) {
+      offenders.push(`${file}: spawns with shell:true (use scripts/tool-invocation.mjs)`);
+    }
+  }
+  return offenders.length === 0
+    ? { ok: true, details: "dependency builders invoke tsc/npm through the current Node" }
+    : { ok: false, details: offenders.join("; ") };
+}
+
+// ---------------------------------------------------------------------------
 // No legacy product name
 // ---------------------------------------------------------------------------
 
@@ -458,6 +557,15 @@ export function runChecks(rootDir = ROOT_DIR) {
       result: checkNoAgentSession(sourceFiles),
     },
     { name: "production bin targets exist", result: checkBinTargets(manifests) },
+    { name: "no rm -rf in production/test scripts", result: checkNoRmRfInScripts(manifests) },
+    {
+      name: "no shell-dependent node --test glob",
+      result: checkNoRawNodeTestGlob(manifests),
+    },
+    {
+      name: "dependency builders use safe tool invocation",
+      result: checkDependencyBuildersSafe(sourceFiles),
+    },
     { name: "no legacy product name", result: checkNoLegacyProductName({ files, rootDir }) },
   ];
   const failed = checks.filter((c) => !c.result.ok);

@@ -13,7 +13,7 @@
   "scripts": {
     "build": "node scripts/run-workspaces.mjs build",
     "typecheck": "node scripts/run-workspaces.mjs typecheck",
-    "test": "node --test 'scripts/**/*.test.mjs' && node scripts/run-workspaces.mjs test",
+    "test": "node scripts/run-node-test.mjs \"scripts/**/*.test.mjs\" && node scripts/run-workspaces.mjs test",
     "check:architecture": "node scripts/check-architecture.mjs",
     "start": "node scripts/product-entry.mjs start",
     "cli": "node scripts/product-entry.mjs cli",

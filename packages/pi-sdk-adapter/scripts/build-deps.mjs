@@ -15,6 +15,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveTscInvocation } from "../../../scripts/tool-invocation.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(here, "..");
@@ -25,23 +26,18 @@ const deps = [
   { name: "@fffattiger/pix-runtime-contract-tests", dir: join(workspaceRoot, "packages/runtime-contract-tests") },
 ];
 
-/** Resolve the tsc executable: prefer the workspace-local .bin, then PATH. */
-function resolveTsc() {
-  const localBin = join(workspaceRoot, "node_modules", ".bin", "tsc");
-  if (existsSync(localBin)) return { command: localBin, shell: false };
-  return { command: "tsc", shell: true };
-}
+// Launch tsc as a JS CLI through the current Node — never the `.bin/tsc`
+// shim and never `shell: true`.
+const tsc = resolveTscInvocation(workspaceRoot);
 
 for (const dep of deps) {
   const tsconfig = join(dep.dir, "tsconfig.json");
   if (!existsSync(tsconfig)) {
     throw new Error(`[pi-sdk-adapter] dependency tsconfig not found: ${tsconfig}`);
   }
-  const { command, shell } = resolveTsc();
-  const result = spawnSync(command, ["-p", tsconfig], {
+  const result = spawnSync(tsc.command, [...tsc.args, "-p", tsconfig], {
     cwd: workspaceRoot,
     stdio: "inherit",
-    shell,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {

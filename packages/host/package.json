@@ -24,7 +24,7 @@
     "pretypecheck": "node scripts/prebuild-deps.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "pretest": "node scripts/prebuild-deps.mjs",
-    "test": "npm run build && node --test 'test/*.test.mjs'",
+    "test": "npm run build && node ../../scripts/run-node-test.mjs \"test/*.test.mjs\"",
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },
   "dependencies": {

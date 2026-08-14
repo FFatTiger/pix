@@ -17,14 +17,14 @@
   },
   "files": ["dist", "bin"],
   "scripts": {
-    "clean": "rm -rf dist dist-test",
+    "clean": "node ../../scripts/remove-paths.mjs dist dist-test",
     "prebuild": "node scripts/prebuild-deps.mjs",
     "build": "npm run clean && tsc -p tsconfig.json",
     "pretypecheck": "node scripts/prebuild-deps.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "pretest": "node scripts/prebuild-deps.mjs",
-    "test": "npm run build:test && node --test \"dist-test/**/*.test.js\"",
-    "build:test": "rm -rf dist-test && tsc -p tsconfig.test.json"
+    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\" --test-concurrency=1",
+    "build:test": "node ../../scripts/remove-paths.mjs dist-test && tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@fffattiger/pix-host": "0.0.0",

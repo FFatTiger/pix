@@ -9,6 +9,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveNpmInvocation } from "../../../scripts/tool-invocation.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..", "..", "..");
@@ -20,12 +21,19 @@ const targets = [
   "packages/sessiond",
 ];
 
+// Launch the invoking npm as a JS CLI through the current Node — never
+// `npm`/`npm.cmd` from PATH and never `shell: true`.
+const npm = resolveNpmInvocation();
+
 for (const target of targets) {
-  const result = spawnSync(
-    process.platform === "win32" ? "npm.cmd" : "npm",
-    ["run", "build", "--workspace", target],
-    { cwd: root, stdio: "inherit" },
-  );
+  const result = spawnSync(npm.command, [...npm.args, "run", "build", "--workspace", target], {
+    cwd: root,
+    stdio: "inherit",
+  });
+  if (result.error) {
+    console.error(`[pix] failed to start npm for ${target}: ${result.error.message}`);
+    process.exit(1);
+  }
   if (result.status !== 0) {
     console.error(`[pix] prebuild failed for ${target}`);
     process.exit(result.status ?? 1);

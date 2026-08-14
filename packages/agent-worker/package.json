@@ -13,15 +13,15 @@
   },
   "files": ["dist"],
   "scripts": {
-    "clean": "rm -rf dist dist-test",
+    "clean": "node ../../scripts/remove-paths.mjs dist dist-test",
     "build:deps": "node ./scripts/build-deps.mjs",
     "prebuild": "npm run build:deps",
     "build": "npm run clean && tsc -p tsconfig.json",
     "pretypecheck": "npm run build:deps",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "prebuild:test": "npm run build:deps && npm run build",
-    "build:test": "rm -rf dist-test && tsc -p tsconfig.test.json",
-    "test": "npm run build:test && node --test 'dist-test/**/*.test.js'",
+    "build:test": "node ../../scripts/remove-paths.mjs dist-test && tsc -p tsconfig.test.json",
+    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\"",
     "precheck:boundaries": "npm run build",
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },

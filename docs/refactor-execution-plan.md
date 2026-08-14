@@ -358,6 +358,20 @@ stop
 
 `PiRpcAdapter` 保持 `BACKLOG`，不进入当前关键路径。
 
+### Wave 4 工具化前置（跨平台安全工具子集，feat/cross-platform-tooling）
+
+Wave 4 的 REL1 发布/安装/卸载需要跨平台脚本，因此先落地三个 Node 内置工具
+（scripts/run-node-test.mjs、scripts/remove-paths.mjs、scripts/tool-invocation.mjs）
+把 test-glob 展开、clean/remove、npm/tsc 调用从 POSIX shell/`.cmd`/PATH shim 迁移到
+确定性 Node 路径（shell:false、无 command injection）。所有 workspace 的
+package.json 已改用这些 wrapper，root 编排继续经 run-workspaces.mjs；browser/client
+Vitest 不走 node --test。check:architecture 增加三门禁（script 值不得含 rm -rf、
+raw `node --test` 不得传 shell 依赖 glob、build-deps/prebuild-deps 可执行代码不得用
+npm.cmd/.bin/tsc/shell:true，注释不误报）。
+
+注意：本工具化**不建立原生 Windows 产品支持**。Host state directory / Named Pipe /
+DACL / process-tree 生命周期仍是独立工作包（另见 migration-ledger §46），不在本子集宣称。
+
 ---
 
 ## 6. 新仓库目标结构
@@ -472,6 +486,10 @@ git diff --check
 - Protocol 无 Runtime Core/Pi SDK/Hono/React import。
 - 所有生产 bin target 存在。
 - Client dist 进入 production build/package 布局。
+- 跨平台工具门禁：任何 package.json script 值不得 `rm -rf`/`rm -r`（用
+  `scripts/remove-paths.mjs`）；raw `node --test` 不得传 shell 依赖 glob（用
+  `scripts/run-node-test.mjs`）；build-deps/prebuild-deps 可执行代码不得出现
+  `npm.cmd` / `.bin/tsc` / `shell:true`（用 `scripts/tool-invocation.mjs`，注释忽略）。
 
 ### 9.3 独立验证
 

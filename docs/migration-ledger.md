@@ -1382,4 +1382,95 @@ detach/reattach/replay 会复活幽灵弹窗）。本切片安全打开并做投
 - source 分支提交前工作树 clean；Fresh GPT 已完成 Protocol/Reducer/Mapper/Adapter settle/
   Host lane/epoch-replay 与 97+ 对抗探针审查并判定 PASS；已集成 main，未 push/deploy。
 (feat(protocol,runtime-core,worker,adapter,host,sessiond,e2e): D2-P8 extension UI backend slice)
+
+## 46. 跨平台安全工具子集 — run-node-test / remove-paths / tool-invocation 记录
+
+```text
+实现：本分支（branch feat/cross-platform-tooling，base main 125d0a6），安全子集
+reimplementation，灵感来自 closed PR #3 但按最终评审决定适配当前 main，未整体
+merge/cherry-pick PR commit。未合入/未部署。保留 main 的 scripts/run-workspaces.mjs
+及其测试（不替换为 raw npm workspaces）；只移植 test-glob、clean/remove、JS CLI
+invocation 三个跨平台概念；未复制 PR 的 E2E 改动（原 PR E2E 非 hermetic，401 泄漏
+daemon）。无 daemon/Named Pipe/PowerShell/lifecycle/Host ledger/git route 改动，无
+live 服务，无 package-lock 依赖变化。
+
+新增三个 Node 内置脚本（全部 shell:false、无 .cmd、无 PATH shim 依赖）：
+
+1) scripts/run-node-test.mjs + run-node-test.test.mjs —— 确定性跨平台测试运行器。
+   接受一个或多个 glob/path pattern + node --test flags 透传（`--` 分隔符可转义以
+   `-` 开头的 pattern；以 `-` 开头者为 flag）。用 Node 内置 globSync 在 Node 内展开
+   （无 shell/cmd glob），归一 `/` 与 `\`，排序去重（按 realpath），仅 regular file，
+   排除 realpath 逃逸 cwd 的 symlink。任一 pattern 匹配零个 → exit 1 + 固定消息
+   （Node24 裸 `node --test 'glob'` 匹配零可 exit 0，故 fail-closed）；字面量缺失
+   路径用不同固定消息（test path not found）。spawn `process.execPath --test
+   <flags> <files>`，shell:false，继承 stdio，转发子进程 exit code 与 termination
+   signal（re-raise）。Windows 安全的 argv（空格/Unicode/CRLF/反斜杠 glob/盘符路径）
+   以 macOS 上的字符串级单元探测覆盖。CLI 包测试保留 `--test-concurrency=1`
+   （CLI 测试变更 process-global env / machine endpoint 状态）。
+
+2) scripts/remove-paths.mjs + remove-paths.test.mjs —— 安全跨平台 `rm -rf` 替代。
+   只删除显式给定的相对 cwd 路径；拒绝空串/NUL/根/盘符根/UNC 根/cwd 本身/父级
+   逃逸/经逃逸 symlink 组件到达的路径（按 realpath 比较，macOS /var→/private/var
+   不误报）；顶层 symlink 作为链接删除、绝不跟随其 target（fs.rm 语义 + 前置
+   realpath 祖先守卫，防止 link/sub 型穿透删除）。fs.rmSync recursive force +
+   有界 Windows 瞬态 EPERM/EBUSY/ENOTEMPTY 重试（maxRetries:5/retryDelay:100）；
+   持久失败诚实 nonzero（exit 1）+ sanitized 消息（无堆栈）。空格/Unicode/只读文件/
+   symlink fixture 在当前 OS（macOS）可移植范围内覆盖。无 `rm -rf` shell。
+
+3) scripts/tool-invocation.mjs + tool-invocation.test.mjs —— tsc 与 npm 的 JS CLI
+   安全解析。resolveTscInvocation(workspaceRoot)：createRequire 锚定 workspaceRoot，
+   require.resolve("typescript/package.json") 取包元数据 bin.tsc 得到 JS CLI 路径
+   （不依赖 node_modules/.bin 布局），返回 {command:process.execPath,args:[cli],
+   shell:false}；缺 typescript/无 tsc bin/CLI 文件缺失 → 固定错误。resolveNpmInvocation：
+   只用 npm 生命周期契约的 npm_execpath（须为存在的 npm-cli.js），返回
+   {command:process.execPath,args:[cli],shell:false}；无 PATH npm/npm.cmd 回退、
+   无用户可控包任意执行。失败固定消息（run this script through npm / npm ci）。
+
+集成：
+- 五个依赖构建脚本改用上述 helper：agent-worker/pi-sdk-adapter/sessiond 的
+  build-deps.mjs 用 resolveTscInvocation，cli/host 的 prebuild-deps.mjs 用
+  resolveNpmInvocation；删除各自 `.bin/tsc`/`npm.cmd`/`shell:true` 的本地回退逻辑，
+  保留 workspace cwd/env/stdio/错误语义（prebuild-deps 增加 result.error 诚实处理）。
+- 全部 workspace package.json（agent-worker/cli/host/pi-sdk-adapter/protocol/
+  runtime-contract-tests/runtime-core/sessiond）把 POSIX `rm -rf` 替换为
+  remove-paths.mjs，把 quoted raw `node --test 'glob'` 替换为 run-node-test.mjs。
+  root build/typecheck/test 继续经 run-workspaces.mjs 编排；root test 的 scripts glob
+  走 run-node-test.mjs。browser/client Vitest 脚本保持不变（不强制 node --test）。
+- check-architecture.mjs 新增三把精确门禁（+ 测试）：(a) 任何 package.json script
+  值不得含 `rm -rf`/`rm -r`（建议 remove-paths.mjs）；(b) 任何 script 值不得对
+  raw `node --test` 传 shell 依赖 glob（建议 run-node-test.mjs；显式文件列表不拦）；
+  (c) 仅对 build-deps.mjs/prebuild-deps.mjs 的可执行代码（先 strip 注释，注释提及
+  不误报）检查 `npm.cmd`/`.bin/tsc`/`shell:true`（建议 tool-invocation.mjs）。
+  不禁止与构建无关的合法 shell 使用。
+- 动态 ESM import 加载文件系统路径一律 pathToFileURL（本切片新增代码无此类裸动态
+  import；既有 worker-main.ts 已合规）。
+
+验证（本机 Node v24.18.0 / npm 11.16.0）：
+- scripts 全量 91 pass/0 fail（run-node-test 18 + remove-paths 16 + tool-invocation 7 +
+  check-architecture 25 + run-workspaces 25）；run-node-test 对
+  `scripts/**/*.test.mjs` 发现 5 个文件正常展开，零匹配 exit 1。
+- 新增脚本单元探针含注入 fs/spawn 故障（remove-paths rmImpl 抛 EPERM → exit 1；
+  run-node-test spawnSync 抛 error/signal → exit 1）与 Windows 路径字符串
+  （盘符根 C:\、盘符路径 C:\foo、UNC 根 \\server\share、反斜杠 glob）在 macOS 上
+  的确定性结果。
+- root check:architecture PASS（含新增三门禁）；root typecheck/build/test PASS；
+  各 workspace 每包 test script 实际发现 ≥1 文件（agent-worker 105 / cli 46 /
+  host 372 / adapter 206 / protocol 116 / contract 75 / runtime-core 7 /
+  sessiond 178 / client 566 基线，见下）。
+- Startup/Sessions/Runtime E2E 从隔离临时配置回归 PASS（随机端口 + 临时
+  PI_CODING_AGENT_DIR，不触碰 30144/真实 Agent 配置；有限 watchdog，无 grep/head；
+  无孤儿进程残留）。
+
+边界与残余风险：
+- 本切片只做“跨平台安全工具子集”，不建立原生 Windows 产品支持。Host state
+  directory / Named Pipe / DACL / process-tree 生命周期仍属独立工作包（未触碰）。
+- 未在 Windows 实机运行；Node24/npm11 已验证，Node22.19/npm10 按 API 兼容性
+  （fs.globSync、fs.rmSync maxRetries/retryDelay、createRequire、spawnSync）推理
+  兼容，未在 Node25 或 Windows native CI 宣称支持。
+- npm_execpath 契约依赖“经 npm 运行”的前置；直接 node 运行 prebuild-deps.mjs 会
+  固定失败（诚实消息），这是有意 fail-closed。
+- run-workspaces.mjs 内部自带的 resolveNpmInvocation（含 npm 兄弟/PATH 回退）未改，
+  与 tool-invocation.mjs 的 fail-closed 版并存；两者职责不同（root 编排 vs 包内依赖
+  构建），后续可统一，非本切片范围。
+- 本分支未 merge/push/deploy；工作树 clean。
 ```
