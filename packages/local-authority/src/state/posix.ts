@@ -26,13 +26,16 @@
  *     atomic publish (lock lost ⇒ fail closed).
  *
  * Residual (Node has no openat): a same-UID concurrent actor on a shared parent
- * can race lstat/mkdir/open. The newly-created leaf is pinned by fd identity:
- * the opened handle is fstat-verified (real directory, exact dev/ino) to equal
- * the inode THIS call created BEFORE any fchmod and again AFTER it, and the
- * pathname is re-lstat-verified to that same inode before return. A swap after
- * that final pathname check (post-close — no openat to re-pin) is a documented
- * residual race, NOT claimed fail-closed. Cross-user boundaries are never
- * weakened.
+ * can race lstat/mkdir/open. The created leaf is pinned by fd identity from the
+ * first post-mkdir lstat onward: the opened handle is fstat-verified (real
+ * directory, exact dev/ino) to equal the inode THIS call created BEFORE any
+ * fchmod and again AFTER it, and the pathname is re-lstat-verified to that same
+ * inode before return. TWO windows remain and are documented residuals, NOT
+ * claimed fail-closed: (1) a swap between the fulfilled leaf mkdir and the
+ * immediate identity-capture lstat can capture the replacement's identity
+ * (Node cannot atomically fd-pin a freshly created inode); (2) a swap after
+ * the final pathname check (post-close — no openat to re-pin). Cross-user
+ * boundaries are never weakened.
  */
 import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";

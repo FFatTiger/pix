@@ -1922,7 +1922,7 @@ PASS；git diff --check 与工作树 clean。独立 verifier 首轮复现 same-k
 持久化收敛（worker 侧）、auto-name/trash/undo、side chat 仍后置。编号已在 current-main
 集成时顺延为 §51（Local Authority 占 §48/§49，Extension UI Client 占 §50）。
 
-## 55. Local Authority — `ensurePrivateDirectory` EEXIST/created 分类安全缺陷修复（独立 verifier 待验）
+## 55. Local Authority — `ensurePrivateDirectory` EEXIST/created 分类安全缺陷修复（二轮 Fresh verifier PASS）
 
 ```text
 状态：修复已实现并提交（branch fix/local-authority-eexist-race，base main ef564b7）；本地全量验证绿；
@@ -2047,9 +2047,15 @@ verifier 发现（复现要点）：成功 mkdir 后、初始 lstat 已捕获本
 - public 导出集精确（dist/state/index.js 19 项，不含 ensurePrivateDirectoryWithFs）；
   git diff --check 与提交后工作树 clean。
 
-残余（诚实声明）：Node 无 openat，最终 pathname re-lstat/realpath 检查之后的同 UID 替换无法被钉住，
-属文档化残余竞态，不宣称 fail-closed；跨用户边界不变弱。sessiond 私有目录仍需独立策略/加固。
-独立 verifier 必验：2 个 swap 测试对 14e7ca2 确定性 FAIL、对 follow-up PASS；原 8 个 race 用例；
-public 导出集精确；Host 状态 lease/open、trusted roots、managed worktrees、production resources
-安全子集；root/架构 + Startup E2E。
+残余（诚实声明，两个窗口）：Node 无 openat，同 UID 替换存在两个无法钉住的窗口，均不宣称
+fail-closed：(1) fulfilled mkdir 与紧随的 identity 捕获 lstat 之间的替换——createdIdentity 会
+捕获到替换对象身份，后续 walk 会 chmod 替换目录并返回 created:true（Node 无法原子 fd-pin
+新建 inode；亚微秒窗口；14e7ca2 严格更弱，非 follow-up 引入）；(2) 最终 pathname re-lstat/
+realpath 检查之后的替换（句柄已关闭、无 openat 可重新钉住）。跨用户边界不变弱。sessiond
+私有目录仍需独立策略/加固。
+二轮 Fresh verifier（772269d）独立重放原 CRITICAL 注入（替换目录/替换文件均 UNSAFE_COMPONENT、
+零 chmod、替换对象 mode/content/inode 不变、句柄恰关闭一次）、原 8 race 用例、public 精确 19
+导出、Host 394/394 + 安全子集 119/119、typecheck/boundary/architecture、current-main
+merge-tree（仅 ledger 追加冲突），对 772269d 给出 PASS，并要求本节与 posix.ts 模块头枚举窗口
+(1)——本修订即该要求。
 ```
