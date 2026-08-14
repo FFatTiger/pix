@@ -998,4 +998,5 @@ Busy 修正（isolated commit 8260b75）：
 - 焦点恢复经 post-commit effect（确认打开时 Delete 按钮卸载，无法同步 focus），jsdom 已验证。
 - 无浏览器视觉验收（仅 DOM/a11y）；create 仍可能因 Git ref 深层限制在服务端失败（客户端按 parity 接受 255 边界，服务端可安全失败）。
 - Files/Git 其他 mutation 范围（Files write UI 等）仍不在本切片，不宣称 D3A 全 DONE。
+- 后续聚焦 defense-in-depth 提交：`isWorktreeDirty` 强化为要求真实 HttpError **同时** `status === 409` 且 `code === 'WORKTREE_DIRTY'`（冻结 spec 的 exact 409），而非仅 code。新增回归（it.each 400/500）：非 409 却携带 WORKTREE_DIRTY 的 HttpError 绝不出 row-local force 确认、绝不提供 force（仅 initial force:false 一次，固定错误文案）；既有 exact 409 仍揭示确认。
 ```

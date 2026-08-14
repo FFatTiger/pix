@@ -507,6 +507,34 @@ describe("WorktreePanel managed workflow (worktree.write)", () => {
     expect(screen.queryByText(/only pix-managed/i)).toBeNull();
   });
 
+  it.each([400, 500])(
+    "non-409 HttpError carrying WORKTREE_DIRTY never reveals force confirmation (status %s)",
+    async (status) => {
+      // Defense-in-depth: the force confirmation requires an EXACT 409 + code
+      // WORKTREE_DIRTY. A real HttpError with the dirty code but a different
+      // status must fail closed — no row-local confirmation, no force path.
+      const { impl, calls } = makeRouter({
+        list: () => standardList(),
+        remove: () => json({ code: "WORKTREE_DIRTY", message: "leak" }, status),
+      });
+      globalThis.fetch = impl;
+      renderPanel({ cwd: "/proj", canWorktreeWrite: true });
+      await waitFor(() => expect(screen.getByRole("list", { name: /git worktrees/i })).toBeTruthy());
+
+      fireEvent.click(screen.getByRole("button", { name: "Delete worktree feature/x" }));
+      // A row-local error surfaces, but it is never the confirmation and never
+      // offers force for a non-409 status.
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+      expect(screen.queryByRole("alert", { name: /confirm deleting feature\/x/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /delete worktree feature\/x anyway/i })).toBeNull();
+      expect(screen.queryByText(/permanent and cannot be undone/i)).toBeNull();
+      expect(screen.getByRole("alert").textContent).not.toMatch(/permanent and cannot be undone/i);
+      // Initial force:false request only — force is never offered or sent.
+      expect(calls.remove).toHaveLength(1);
+      expect(calls.remove[0]?.force).toBe(false);
+    },
+  );
+
   it("Cancel closes the confirmation, sends no force, and returns focus to Delete", async () => {
     const { impl, calls } = makeRouter({
       list: () => standardList(),

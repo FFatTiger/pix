@@ -122,9 +122,15 @@ export function describeWorktreeMutationError(
   return op === "create" ? "Unable to create the worktree." : "Unable to remove the worktree.";
 }
 
-/** Exact 409 dirty marker — the ONLY condition that offers force delete. */
+/** Exact 409 dirty marker — the ONLY condition that offers force delete.
+ * Requires a real HttpError carrying BOTH status 409 and code WORKTREE_DIRTY
+ * (frozen spec: only an exact 409 reveals the force confirmation). */
 function isWorktreeDirty(error: unknown): boolean {
-  return error instanceof HttpError && error.code === "WORKTREE_DIRTY";
+  return (
+    error instanceof HttpError &&
+    error.status === 409 &&
+    error.code === "WORKTREE_DIRTY"
+  );
 }
 
 /** Fixed warning shown in the row-local irreversible confirmation. */
