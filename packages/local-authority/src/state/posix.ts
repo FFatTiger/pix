@@ -30,8 +30,8 @@
  * closed on any swap. Cross-user boundaries are never weakened.
  */
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { lstat, mkdir, open, readFile, realpath, rename, rm, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   hasControlChar,
@@ -253,27 +253,60 @@ export function isOwnedByCurrentUser(identity: PosixFileIdentity): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * Narrow fs dependency set injected into the secure-directory walk so tests can
+ * deterministically force the exact ENOENT → mkdir EEXIST race sequence (a
+ * raced/preplanted component). Production always injects the real fs via
+ * {@link ensurePrivateDirectory}. This is a private/internal seam: it is
+ * exported from the compiled `dist/state/posix.js` module for tests but NEVER
+ * re-exported from the public `state/index` or package surfaces.
+ */
+interface EnsurePrivateDirectoryFs {
+  lstat: (path: string) => Promise<Stats>;
+  mkdir: (path: string, options: { recursive: false; mode: number }) => Promise<string | undefined>;
+  realpath: (path: string) => Promise<string>;
+  open: (path: string, flags: number) => Promise<FileHandle>;
+  isOwnedByCurrentUser: (identity: PosixFileIdentity) => boolean;
+}
+
+/**
  * Ensure a dedicated private directory exists as a real non-symlink directory.
  *
  * Walks every textual component of the (already canonical) absolute path from
  * the root:
  * 1. Existing components must be non-symlink directories (a symlink at any
  *    depth is fail-closed).
- * 2. On first ENOENT, create each remaining segment with mkdir(recursive:false);
- *    a newly created leaf is set to 0700 via fd-based fchmod (open the dir with
- *    O_RDONLY|O_NOFOLLOW, fchmod the opened handle — never path-chmod after a
- *    handle close, so a swapped-in symlink cannot be followed).
+ * 2. On first ENOENT, attempt mkdir(recursive:false, 0700) per remaining
+ *    segment; creation is tracked from the EXACT mkdir result. A newly created
+ *    leaf is set to 0700 via fd-based fchmod (open the dir with O_RDONLY|
+ *    O_NOFOLLOW, fchmod the opened handle — never path-chmod after a handle
+ *    close, so a swapped-in symlink cannot be followed).
  * 3. An EXISTING final directory is NEVER chmod'd. It must be current-user
  *    owned (where supported), exact 0700, real non-symlink, and pass the Host
  *    `validateExistingLeaf` policy hook (entries allowlist).
  *
+ * A component that returns EEXIST after an earlier ENOENT observation was
+ * raced/preplanted — never created by this call, never chmod'd. A raced final
+ * leaf takes the existing-leaf validate-only path (owner / exact mode / Host
+ * hook). A raced missing-tail INTERMEDIATE never gets descendants created
+ * blindly: it may be descended into only when it is a real non-symlink
+ * directory owned by the current user (where required) with the exact private
+ * mode, and its stable dev/ino is re-verified before each child is created;
+ * anything else fails closed with no mutation.
+ *
  * Reserved-destination / repository-tree rejection is Host policy and is
  * applied by the caller BEFORE this walk (so nothing is mutated for a rejected
  * dir).
+ *
+ * @param fs Narrow fs injection (real fs in production; test seam in tests).
+ *
+ * TEST-ONLY EXPORT: reachable only via the direct module path
+ * `dist/state/posix.js` (NOT re-exported from `state/index` or the package
+ * surface), so the public export set stays exact.
  */
-export async function ensurePrivateDirectory(
+export async function ensurePrivateDirectoryWithFs(
   path: string,
-  options: EnsurePrivateDirectoryOptions = {},
+  options: EnsurePrivateDirectoryOptions,
+  fs: EnsurePrivateDirectoryFs,
 ): Promise<EnsurePrivateDirectoryResult> {
   const requireOwnedByCurrentUser = options.requireOwnedByCurrentUser ?? true;
   const requireMode = options.requireMode ?? DEFAULT_PRIVATE_DIR_MODE;
@@ -307,14 +340,42 @@ export async function ensurePrivateDirectory(
 
   let current = "/";
   let creating = false;
+  // True ONLY when THIS call's mkdir(recursive:false, 0700) fulfilled the final
+  // leaf component. Never derived from pathname equality alone — a raced EEXIST
+  // leaf must not be treated as created.
   let leafCreated = false;
+  // dev/ino identity of an accepted raced intermediate, re-verified before each
+  // descendant is created (fail closed on any swap).
+  let racedParent: { path: string; dev: number; ino: number } | null = null;
+
   for (const segment of segments) {
     current = current === "/" ? `/${segment}` : `${current}/${segment}`;
+    const isLeaf = current === normalized;
+
+    if (racedParent !== null) {
+      // Re-verify a previously accepted raced intermediate is STILL the same
+      // real non-symlink directory before creating a descendant inside it.
+      let parentInfo;
+      try {
+        parentInfo = await fs.lstat(racedParent.path);
+      } catch {
+        throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
+      }
+      if (
+        parentInfo.isSymbolicLink()
+        || !parentInfo.isDirectory()
+        || parentInfo.dev !== racedParent.dev
+        || parentInfo.ino !== racedParent.ino
+      ) {
+        throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
+      }
+      racedParent = null;
+    }
 
     if (!creating) {
       let info;
       try {
-        info = await lstat(current);
+        info = await fs.lstat(current);
       } catch (error) {
         if (errnoCode(error) !== "ENOENT") {
           throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
@@ -333,31 +394,68 @@ export async function ensurePrivateDirectory(
       }
     }
 
+    // "creating" mode: this component was ENOENT at its initial observation (or
+    // an ancestor was). Try a non-recursive mkdir and classify the component
+    // from the EXACT result: only a fulfilled mkdir is "created by this call";
+    // a swallowed EEXIST is a raced/preplanted component, never created by us.
+    let mkdirFulfilled = false;
     try {
-      await mkdir(current, { recursive: false, mode: 0o700 });
+      await fs.mkdir(current, { recursive: false, mode: 0o700 });
+      mkdirFulfilled = true;
     } catch (mkdirError) {
       if (errnoCode(mkdirError) !== "EEXIST") {
         throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
       }
     }
-    let createdInfo;
+
+    let info;
     try {
-      createdInfo = await lstat(current);
+      info = await fs.lstat(current);
     } catch {
       throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
     }
-    if (createdInfo.isSymbolicLink() || !createdInfo.isDirectory()) {
+    if (info.isSymbolicLink() || !info.isDirectory()) {
       throw new LocalAuthorityError(
-        createdInfo.isSymbolicLink() ? "SYMLINK" : "NOT_DIRECTORY",
+        info.isSymbolicLink() ? "SYMLINK" : "NOT_DIRECTORY",
         "Directory path is unsafe",
       );
     }
-    if (current === normalized) leafCreated = true;
+
+    if (mkdirFulfilled) {
+      // Created by THIS call: keep creating descendants. The final leaf gets its
+      // fd-based fchmod below.
+      if (isLeaf) {
+        leafCreated = true;
+      }
+      continue;
+    }
+
+    // EEXIST after an earlier ENOENT observation: raced/preplanted. NEVER
+    // chmod'd; NEVER silently treated as created.
+    if (!isLeaf) {
+      // Raced missing-tail INTERMEDIATE: never blindly create descendants in an
+      // untrusted newly-planted directory. Strongest compatible policy —
+      // continue only when it is a real non-symlink directory, owned by the
+      // current user (where required), and exactly private; this keeps
+      // legitimate same-user concurrent creation working while failing closed
+      // on any foreign or lax planted component. Its stable dev/ino is
+      // re-verified before the next descendant is created.
+      if (requireOwnedByCurrentUser && !fs.isOwnedByCurrentUser(toIdentity(info))) {
+        throw new LocalAuthorityError("NOT_OWNED", "Directory path is unsafe");
+      }
+      if ((info.mode & 0o777) !== requireMode) {
+        throw new LocalAuthorityError("NOT_PRIVATE", "Directory path is unsafe");
+      }
+      racedParent = { path: current, dev: info.dev, ino: info.ino };
+      continue;
+    }
+    // Raced final leaf: leafCreated stays false, so the existing-leaf
+    // validate-only branch below handles it (owner / exact mode / Host hook).
   }
 
   let finalInfo;
   try {
-    finalInfo = await lstat(current);
+    finalInfo = await fs.lstat(current);
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
@@ -369,12 +467,13 @@ export async function ensurePrivateDirectory(
   }
 
   if (leafCreated) {
-    // Newly created dedicated leaf: enforce 0700 via fd-based fchmod. O_NOFOLLOW
-    // refuses a swapped-in symlink at open time (ELOOP → fail closed); fchmod
-    // applies to the opened inode regardless of path swaps. No path chmod.
+    // Newly created dedicated leaf: enforce requireMode via fd-based fchmod.
+    // O_NOFOLLOW refuses a swapped-in symlink at open time (ELOOP → fail
+    // closed); fchmod applies to the opened inode regardless of path swaps. No
+    // path chmod.
     let dirHandle;
     try {
-      dirHandle = await open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      dirHandle = await fs.open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       try {
         await dirHandle.chmod(requireMode);
       } finally {
@@ -384,9 +483,10 @@ export async function ensurePrivateDirectory(
       throw new LocalAuthorityError("NOT_PRIVATE", "Directory private mode could not be enforced");
     }
   } else {
-    // Existing directory: NEVER chmod. Require current-user ownership where
-    // supported and exact private mode; Host policy validates the contents.
-    if (requireOwnedByCurrentUser && !isOwnedByCurrentUser(toIdentity(finalInfo))) {
+    // Existing directory (pre-existing, or raced EEXIST leaf): NEVER chmod.
+    // Require current-user ownership where supported and exact private mode;
+    // Host policy validates the contents.
+    if (requireOwnedByCurrentUser && !fs.isOwnedByCurrentUser(toIdentity(finalInfo))) {
       throw new LocalAuthorityError("NOT_OWNED", "Directory is owned by another user");
     }
     if ((finalInfo.mode & 0o777) !== requireMode) {
@@ -400,7 +500,7 @@ export async function ensurePrivateDirectory(
   // Final re-verify the leaf is still a real canonical non-symlink directory.
   let finalReal: string;
   try {
-    finalReal = await realpath(current);
+    finalReal = await fs.realpath(current);
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
@@ -408,6 +508,24 @@ export async function ensurePrivateDirectory(
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
   return { path: current, created: leafCreated, identity: toIdentity(finalInfo) };
+}
+
+/**
+ * Public entry: ensure a dedicated private directory exists, delegating to
+ * {@link ensurePrivateDirectoryWithFs} with the real fs. The internal walk is
+ * the same for production and tests.
+ */
+export async function ensurePrivateDirectory(
+  path: string,
+  options: EnsurePrivateDirectoryOptions = {},
+): Promise<EnsurePrivateDirectoryResult> {
+  return ensurePrivateDirectoryWithFs(path, options, {
+    lstat,
+    mkdir,
+    realpath,
+    open,
+    isOwnedByCurrentUser,
+  });
 }
 
 // ---------------------------------------------------------------------------
