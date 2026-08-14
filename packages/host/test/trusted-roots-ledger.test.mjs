@@ -321,8 +321,8 @@ test("PIX_HOST_DIR: intermediate symlink rejected; outside tree never mutated", 
 
 test("PIX_HOST_DIR: wrong owner / wrong-permission ledger / hard-linked ledger / symlink ledger rejected", async () => {
   // wrong owner (where supported): only runnable as root; static guard otherwise.
-  const src = readFileSync(new URL("../src/resources/trusted-roots-ledger.ts", import.meta.url), "utf8");
-  assert.match(src, /Host directory is owned by another user/, "ownership check must exist");
+  const src = readFileSync(new URL("../src/resources/host-state-directory.ts", import.meta.url), "utf8");
+  assert.match(src, /Host directory is owned by another user/, "ownership check must exist in the shared lease");
 
   // wrong-permission ledger (0644) → open rejects LEDGER_PERMISSIONS, unchanged.
   const hostDir = temp("pi-wrongperm-");
@@ -975,18 +975,26 @@ test("string-only registerTrustedCreatedRoot remains memory-only (no ledger with
 // Static source guards
 // ---------------------------------------------------------------------------
 
-test("ledger source: fd-based fchmod only; ownership re-verified before publish; lifetime lock no stale reclaim", async () => {
-  const src = readFileSync(new URL("../src/resources/trusted-roots-ledger.ts", import.meta.url), "utf8");
+test("lease source: fd-based fchmod only; ownership re-verified before publish; lifetime lock no stale reclaim", async () => {
+  // D3A extraction moved the low-level primitives (host-dir fchmod, temp/lock
+  // fchmod, atomic rename, lifetime lock) into the shared host-state-directory
+  // lease; the trusted-roots ledger is now a thin adapter over it.
+  const leaseSrc = readFileSync(new URL("../src/resources/host-state-directory.ts", import.meta.url), "utf8");
+  const ledgerSrc = readFileSync(new URL("../src/resources/trusted-roots-ledger.ts", import.meta.url), "utf8");
   // No path-based chmod anywhere (dir/temp/lock/ledger); only fd-based `.chmod`.
-  assert.equal(/await chmod\(/.test(src), false, "must never path-chmod");
-  assert.equal((src.match(/\.chmod\(/g) ?? []).length, 3, "exactly three fd-based chmod call sites (dir, temp, lock)");
-  assert.match(src, /dirHandle\.chmod\(0o700\)/);
-  assert.match(src, /handle\.chmod\(0o600\)/);
+  assert.equal(/await chmod\(/.test(leaseSrc), false, "must never path-chmod");
+  assert.equal((leaseSrc.match(/\.chmod\(/g) ?? []).length, 3, "exactly three fd-based chmod call sites (dir, temp, lock)");
+  assert.match(leaseSrc, /dirHandle\.chmod\(0o700\)/);
+  assert.match(leaseSrc, /handle\.chmod\(0o600\)/);
   // Ownership re-verification runs before the atomic publish (rename).
-  const renameIdx = src.indexOf("await rename(temp, ledgerPath)");
-  const verifyIdx = src.indexOf("Ledger lock ownership lost before publish");
+  const renameIdx = leaseSrc.indexOf("await rename(temp, targetPath)");
+  const verifyIdx = leaseSrc.indexOf("ownership lost before publish");
   assert.ok(verifyIdx !== -1 && renameIdx !== -1 && verifyIdx < renameIdx, "ownership check must precede rename");
-  // Lifetime lock: stale lock fails closed (LEDGER_LOCK_STALE), never auto-reclaimed.
-  assert.match(src, /LEDGER_LOCK_STALE/);
-  assert.match(src, /LEDGER_LOCK_BUSY/);
+  // Lifetime lock: stale lock fails closed (LOCK_STALE), never auto-reclaimed.
+  assert.match(leaseSrc, /LOCK_STALE/);
+  assert.match(leaseSrc, /LOCK_BUSY/);
+  // The trusted-roots adapter delegates to the shared lease (no raw primitives).
+  assert.match(ledgerSrc, /openHostStateDirectoryLease/);
+  assert.equal(/await chmod\(/.test(ledgerSrc), false, "adapter must never path-chmod");
+  assert.equal(ledgerSrc.includes("await rename(temp,"), false, "atomic rename lives in the lease");
 });

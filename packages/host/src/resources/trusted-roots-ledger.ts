@@ -4,63 +4,75 @@
  * Authority remains AllowedRootService; this module only persists and reloads
  * Host-created trusted claims. Never scans Git to invent authorization.
  *
+ * This module is now a thin ADAPTER over the shared
+ * {@link HostStateDirectoryLease} (`host-state-directory.ts`): host-dir
+ * safety, the exclusive lifetime lock, bounded document read and the atomic
+ * durability contract all live in the lease. The external narrow facade,
+ * schema, error codes, semantics and byte output are unchanged.
+ *
  * Layout (default `~/.pi/pix/host`, override via absolute `PIX_HOST_DIR`):
  *   trusted-roots.json   — schema v1 claims (0600, regular file, no symlink)
- *   trusted-roots.lock   — EXCLUSIVE LIFETIME Host-dir lock (0600, pid+instanceId)
+ *   trusted-roots.lock   — EXCLUSIVE LIFETIME host-dir lock (0600, pid+instanceId)
+ *
+ * The lease recognizes the future `managed-worktrees.json` sidecar as part of
+ * the host-dir layout policy, so this ledger can open a host dir that already
+ * carries that sidecar (rollback compatibility); unknown entries still fail
+ * closed. The trusted ledger never writes the managed sidecar.
  *
  * Frozen architecture decisions (parent D3A-P0 mandate):
- *   1. STRICT single Host per PIX_HOST_DIR. `openTrustedRootsLedger` acquires an
- *      exclusive lifetime lock from pre-listen until graceful `close()`. Any
- *      existing lock (live OR stale) fails startup with a fixed sanitized error.
- *      There is NO automatic stale-lock reclaim: SIGKILL leaves a stale lock and
- *      the next startup must fail closed without touching the ledger. An operator
- *      may explicitly remove the fixture lock after proving the old pid is dead.
- *      `close()` removes only its exact lock identity (dev/ino + instanceId); a
- *      wrong instance id can never unlock another Host's dir.
- *   2. Safe dedicated PIX_HOST_DIR only. Newly created dedicated leaf is created
- *      safely and set 0700 via fd. An existing directory is never chmod'd: it
- *      must be current-user owned (where supported), mode 0700, real non-symlink,
- *      and contain only the recognized Pix ledger/lock/temp layout. Filesystem
- *      root, home itself, shared tmp itself, repository/source trees and
- *      populated unrelated dirs are rejected BEFORE any mutation.
- *   3. A corrupt ledger is immutable evidence. Missing ledger ⇒ empty. Any
+ *   1. STRICT single Host per PIX_HOST_DIR (see lease).
+ *   2. Safe dedicated PIX_HOST_DIR only (see lease).
+ *   3. A corrupt ledger is immutable evidence. Missing ⇒ empty. Any
  *      corrupt / unknown-version / wrong-kind / duplicate / sparse /
  *      wrong-permission / hard-linked / unsafe ledger fails startup and every
  *      mutation with a fixed sanitized error; it is never rewritten, truncated,
  *      renamed or deleted. Tests assert bytes and inode are unchanged.
  *   4. Durability contract: temp same-dir O_EXCL|O_NOFOLLOW 0600 → write+fsync →
- *      identity verification → atomic rename → directory fsync. Directory fsync
- *      errors are FATAL except a narrowly enumerated truly-unsupported platform
- *      error set (EINVAL / ENOTSUP / EISDIR — see DIR_FSYNC_UNSUPPORTED_CODES);
- *      arbitrary errors are never swallowed. A returned success/201 means the
- *      publish completed per this contract.
+ *      identity verification → atomic rename → directory fsync (see lease).
  *
  * Logs never include raw JSON, stacks, claim paths, host paths or branch names —
  * fixed codes/counts only.
  */
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { join } from "node:path";
 import {
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  rm,
-} from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { AsyncMutex } from "./mutex.js";
+  isAbsoluteCanonicalShape,
+  isIsoTimestamp,
+  isRecord,
+  isSafeInteger,
+  isValidInstanceId,
+  openHostStateDirectoryLease,
+  resolvePixHostDir as resolvePixHostDirInLease,
+  type HostStateDirectoryCode,
+  type HostStateDirectoryIo,
+  type HostStateDirectoryLease,
+  type LeaseDocumentReadResult,
+} from "./host-state-directory.js";
+import { HostStateDirectoryError } from "./host-state-directory.js";
 
 export const TRUSTED_ROOTS_KIND = "pix.host.trusted-roots" as const;
 export const TRUSTED_ROOTS_VERSION = 1 as const;
 export const TRUSTED_ROOTS_SOURCE = "worktree.create" as const;
-export const DEFAULT_PIX_HOST_DIR_SEGMENTS = [".pi", "pix", "host"] as const;
 
 export const LEDGER_FILE_NAME = "trusted-roots.json";
 export const LEDGER_LOCK_NAME = "trusted-roots.lock";
+
+export type { HostStateDirectoryLease, LeaseDocumentReadResult } from "./host-state-directory.js";
+
+// Re-exported for the narrow facade with the ledger's fixed error class: the
+// shared lease throws HostStateDirectoryError, but this facade promises a
+// TrustedRootsLedgerError (HOST_DIR_INVALID) so callers and the package index
+// surface are unchanged.
+export function resolvePixHostDir(raw: string | undefined, home?: string): string {
+  try {
+    return resolvePixHostDirInLease(raw, home);
+  } catch (error) {
+    if (error instanceof HostStateDirectoryError && error.code === "HOST_DIR_INVALID") {
+      throw new TrustedRootsLedgerError("HOST_DIR_INVALID", error.message);
+    }
+    throw error;
+  }
+}
 
 /** Fixed warning / error codes — never embed paths or raw payloads. */
 export type TrustedRootsLedgerCode =
@@ -176,296 +188,64 @@ export interface OpenTrustedRootsLedgerOptions {
   failDirFsync?: () => void;
 }
 
+export interface TrustedRootsLedgerFromLeaseOptions {
+  /** Upper bound on claim count accepted from disk (defaults to 128). */
+  maxClaims?: number;
+  /** Lock ownership instance id used by the shared lease. */
+  instanceId?: string;
+}
+
 const MAX_LEDGER_BYTES = 1_048_576;
 const MAX_CLAIMS_HARD = 1_024;
 
-/**
- * Narrowly enumerated truly-unsupported directory-fsync error codes. These mean
- * "this OS/filesystem does not support fsync on a directory handle", never
- * "the durable write is lost" — so they are tolerated. Any other error (EIO,
- * EACCES, EROFS, ENOSPC, EMFILE, ENOMEM, ...) is FATAL and fails the publish.
- */
-const DIR_FSYNC_UNSUPPORTED_CODES = new Set(["EINVAL", "ENOTSUP", "EISDIR"]);
-
-/** Recognized entries allowed inside an existing PIX_HOST_DIR (ledger/lock/temp). */
-const RECOGNIZED_HOST_ENTRIES = new Set([LEDGER_FILE_NAME, LEDGER_LOCK_NAME]);
-const HOST_TEMP_ENTRY = /^trusted-roots\.json\.\d+\.[0-9a-f-]{8,128}\.tmp$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isSafeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isValidInstanceId(value: unknown): value is string {
-  return typeof value === "string"
-    && value.length >= 8
-    && value.length <= 128
-    && !/[\u0000-\u001f\u007f]/u.test(value);
-}
-
-function isAbsoluteCanonicalShape(value: unknown): value is string {
-  return typeof value === "string"
-    && value.length > 0
-    && value.length <= 4096
-    && !value.includes("\0")
-    && isAbsolute(value)
-    && resolve(value) === value;
-}
-
-function isIsoTimestamp(value: unknown): value is string {
-  if (typeof value !== "string" || value.length < 10 || value.length > 64) return false;
-  return Number.isFinite(Date.parse(value));
-}
-
-function pidAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+/** Map a shared-lease error code to the trusted-roots ledger error code. */
+function mapLeaseCode(code: HostStateDirectoryCode): TrustedRootsLedgerCode {
+  switch (code) {
+    case "HOST_DIR_INVALID": return "HOST_DIR_INVALID";
+    case "HOST_DIR_UNSAFE": return "HOST_DIR_UNSAFE";
+    case "LOCK_BUSY": return "LEDGER_LOCK_BUSY";
+    case "LOCK_STALE": return "LEDGER_LOCK_STALE";
+    case "LOCK_UNSAFE": return "LEDGER_LOCK_UNSAFE";
+    case "DOC_SYMLINK": return "LEDGER_SYMLINK";
+    case "DOC_NOT_REGULAR": return "LEDGER_NOT_REGULAR";
+    case "DOC_UNREADABLE": return "LEDGER_UNREADABLE";
+    case "DOC_OVERSIZE": return "LEDGER_OVERSIZE";
+    case "DOC_PERMISSIONS": return "LEDGER_PERMISSIONS";
+    case "DOC_HARD_LINK": return "LEDGER_HARD_LINK";
+    case "DOC_WRITE_FAILED": return "LEDGER_WRITE_FAILED";
+    case "DOC_LOCK_LOST": return "LEDGER_LOCK_UNSAFE";
+    case "DOC_UNKNOWN": return "LEDGER_CORRUPT";
   }
 }
 
-/**
- * Resolve Host data directory.
- * - unset ⇒ `~/.pi/pix/host`
- * - set ⇒ must be non-empty absolute path with no NUL (no ~ / relative resolve)
- */
-export function resolvePixHostDir(
-  raw: string | undefined,
-  home: string = homedir(),
-): string {
-  if (raw === undefined) {
-    if (!home || !isAbsolute(home) || home.includes("\0")) {
-      throw new TrustedRootsLedgerError("HOST_DIR_INVALID", "Home directory is not absolute");
-    }
-    return resolve(join(home, ...DEFAULT_PIX_HOST_DIR_SEGMENTS));
-  }
-  if (raw === "" || raw.includes("\0") || !isAbsolute(raw)) {
+/** Ledger-specific messages for lease document codes (never leak paths/payloads). */
+const LEDGER_DOC_MESSAGES: Partial<Record<HostStateDirectoryCode, string>> = {
+  DOC_SYMLINK: "Trusted-roots ledger must not be a symbolic link",
+  DOC_NOT_REGULAR: "Trusted-roots ledger must be a regular file",
+  DOC_UNREADABLE: "Trusted-roots ledger is unreadable",
+  DOC_OVERSIZE: "Trusted-roots ledger exceeds the size bound",
+  DOC_PERMISSIONS: "Trusted-roots ledger permissions are unsafe",
+  DOC_HARD_LINK: "Trusted-roots ledger must not be hard-linked",
+  DOC_WRITE_FAILED: "Atomic ledger write failed",
+  DOC_LOCK_LOST: "Ledger lock ownership lost before publish",
+  DOC_UNKNOWN: "Trusted-roots ledger failed validation",
+};
+
+/** Convert a shared-lease error into the trusted-roots ledger error; rethrow others. */
+function toLedgerError(error: unknown): never {
+  if (error instanceof TrustedRootsLedgerError) throw error;
+  if (error instanceof HostStateDirectoryError) {
     throw new TrustedRootsLedgerError(
-      "HOST_DIR_INVALID",
-      "PIX_HOST_DIR must be a non-empty absolute path",
+      mapLeaseCode(error.code),
+      LEDGER_DOC_MESSAGES[error.code] ?? error.message,
     );
   }
-  return resolve(raw);
-}
-
-/** True when `path` is a real existing directory (non-symlink). */
-/** Reject repository/source trees: any ancestor (incl. hostDir) with a `.git` entry. */
-async function isInsideRepository(path: string): Promise<boolean> {
-  let current = resolve(path);
-  for (;;) {
-    try {
-      await lstat(join(current, ".git"));
-      return true;
-    } catch {
-      /* no .git at this level (or not a directory) */
-    }
-    const parent = dirname(current);
-    if (parent === current) return false;
-    current = parent;
-  }
+  throw error;
 }
 
 /**
- * Ensure Host dir exists as a real non-symlink directory with mode 0700.
- *
- * Does not use mkdir({ recursive: true }) (which follows intermediate symlinks).
- * Walks every textual component of the absolute path from the root:
- * 1. Reserved destinations are rejected BEFORE any mutation: filesystem root,
- *    the user's home itself, shared tmp itself, and any repository/source tree.
- * 2. Build prefix segment-by-segment; lstat each existing prefix. Existing
- *    components must be non-symlink directories (a symlink at any depth is
- *    HOST_DIR_UNSAFE).
- * 3. On first ENOENT, create each remaining segment with mkdir(recursive:false);
- *    a newly created dedicated leaf is set to 0700 via fd-based fchmod (open the
- *    dir with O_RDONLY|O_NOFOLLOW, fchmod the opened handle — never path-chmod
- *    after a handle close, so a swapped-in symlink cannot be followed).
- * 4. An EXISTING final directory is NEVER chmod'd. It must be current-user owned
- *    (where supported), mode 0700, real non-symlink, and empty or contain only
- *    the recognized Pix ledger/lock/temp layout. A populated unrelated dir is
- *    rejected with no mode/content mutation.
- *
- * Residual (Node has no openat): TOCTOU between lstat and mkdir remains under a
- * hostile concurrent actor on a shared parent; the final fchmod acts on the
- * opened inode and the re-lstat/realpath after it fail closed on any swap.
+ * Deterministic, bounded JSON serialization (sorted claimIds, stable key order).
  */
-export async function ensurePixHostDir(hostDir: string): Promise<string> {
-  const normalized = resolve(hostDir);
-  if (!isAbsolute(normalized) || normalized.includes("\0")) {
-    throw new TrustedRootsLedgerError("HOST_DIR_INVALID", "Host directory path is invalid");
-  }
-  if (normalized === "/") {
-    throw new TrustedRootsLedgerError("HOST_DIR_INVALID", "Host directory must not be the filesystem root");
-  }
-
-  // Reserved destinations: home itself and shared tmp itself (never the leaf).
-  const home = homedir();
-  const tmp = tmpdir();
-  for (const candidate of [home, tmp]) {
-    if (!candidate || !isAbsolute(candidate) || candidate.includes("\0")) continue;
-    let canonical: string;
-    try {
-      canonical = await realpath(candidate);
-    } catch {
-      canonical = resolve(candidate);
-    }
-    if (normalized === resolve(candidate) || normalized === canonical) {
-      throw new TrustedRootsLedgerError("HOST_DIR_INVALID", "Host directory must not be a reserved shared directory");
-    }
-  }
-
-  // Repository/source trees are not dedicated host dirs.
-  if (await isInsideRepository(normalized)) {
-    throw new TrustedRootsLedgerError("HOST_DIR_INVALID", "Host directory must not be inside a repository");
-  }
-
-  const segments = normalized === "/"
-    ? []
-    : normalized.slice(1).split("/").filter((segment) => segment.length > 0);
-  for (const segment of segments) {
-    if (
-      segment === "."
-      || segment === ".."
-      || segment.includes("\0")
-      || segment.includes("/")
-    ) {
-      throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-    }
-  }
-
-  let current = "/";
-  let creating = false;
-  let leafCreated = false;
-  for (const segment of segments) {
-    current = current === "/" ? `/${segment}` : `${current}/${segment}`;
-
-    if (!creating) {
-      let info;
-      try {
-        info = await lstat(current);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-        }
-        creating = true;
-      }
-      if (!creating) {
-        // Existing component of the *original* absolute path: never a symlink.
-        // Covers `parent/link/child` even when outside/child already exists
-        // (lstat(hostDir) would see a directory via the link — we still reject).
-        if (info!.isSymbolicLink() || !info!.isDirectory()) {
-          throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-        }
-        continue;
-      }
-    }
-
-    try {
-      await mkdir(current, { recursive: false, mode: 0o700 });
-    } catch (mkdirError) {
-      if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-      }
-    }
-    let createdInfo;
-    try {
-      createdInfo = await lstat(current);
-    } catch {
-      throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-    }
-    if (createdInfo.isSymbolicLink() || !createdInfo.isDirectory()) {
-      throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-    }
-    if (current === normalized) leafCreated = true;
-  }
-
-  let finalInfo;
-  try {
-    finalInfo = await lstat(current);
-  } catch {
-    throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-  }
-  if (finalInfo.isSymbolicLink() || !finalInfo.isDirectory()) {
-    throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-  }
-
-  if (leafCreated) {
-    // Newly created dedicated leaf: enforce 0700 via fd-based fchmod. O_NOFOLLOW
-    // refuses a swapped-in symlink at open time (ELOOP → fail closed); fchmod
-    // applies to the opened inode regardless of path swaps. No path chmod.
-    let dirHandle;
-    try {
-      dirHandle = await open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      try {
-        await dirHandle.chmod(0o700);
-      } finally {
-        await dirHandle.close();
-      }
-    } catch {
-      throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-    }
-  } else {
-    // Existing directory: NEVER chmod. Require current-user ownership where
-    // supported, exact mode 0700, and only recognized Pix ledger/lock/temp
-    // layout — a populated unrelated dir is rejected without mutation.
-    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-    if (typeof finalInfo.uid === "number" && typeof uid === "number" && finalInfo.uid !== uid) {
-      throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory is owned by another user");
-    }
-    if ((finalInfo.mode & 0o777) !== 0o700) {
-      throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory mode must be 0700");
-    }
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory is not readable");
-    }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) {
-        throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory contains a symbolic link");
-      }
-      if (!RECOGNIZED_HOST_ENTRIES.has(entry.name) && !HOST_TEMP_ENTRY.test(entry.name)) {
-        throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory is not a dedicated empty Pix directory");
-      }
-    }
-  }
-
-  // Final re-verify the leaf is still a real canonical non-symlink directory.
-  let finalReal: string;
-  try {
-    finalReal = await realpath(current);
-  } catch (error) {
-    if (error instanceof TrustedRootsLedgerError) throw error;
-    throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-  }
-  if (finalReal !== current) {
-    throw new TrustedRootsLedgerError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-  }
-  return current;
-}
-
-function openFlags(): number {
-  return constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0);
-}
-
-async function lstatRegularFile(path: string): Promise<{ dev: number; ino: number; size: number } | null> {
-  try {
-    const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isFile()) return null;
-    return { dev: info.dev, ino: info.ino, size: info.size };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-/** Deterministic, bounded JSON serialization (sorted claimIds, stable key order). */
 export function serializeTrustedRootsDocument(claims: readonly TrustedRootClaimRecord[]): string {
   const sorted = [...claims].sort((a, b) => a.claimId.localeCompare(b.claimId) || a.path.localeCompare(b.path));
   const body: TrustedRootsLedgerDocument = {
@@ -604,314 +384,126 @@ export function parseTrustedRootsDocument(
   return { claims };
 }
 
-export async function openTrustedRootsLedger(
-  options: OpenTrustedRootsLedgerOptions,
-): Promise<TrustedRootsLedger> {
-  // Validate lock ownership metadata before creating or changing any filesystem
-  // path. The same predicate is used when reading locks so an owner can never
-  // create a lock that it subsequently considers malformed and cannot release.
-  const instanceId = options.instanceId ?? randomUUID();
-  if (!isValidInstanceId(instanceId)) {
-    throw new TrustedRootsLedgerError("LEDGER_LOCK_UNSAFE", "Ledger instance id is invalid");
-  }
-  const hostDir = await ensurePixHostDir(options.hostDir);
-  const ledgerPath = join(hostDir, LEDGER_FILE_NAME);
-  const lockPath = join(hostDir, LEDGER_LOCK_NAME);
+/**
+ * Wrap an already-open shared lease as a trusted-roots ledger. Internal
+ * composition seam for the future shared-lease wiring (trusted + managed
+ * ledgers over ONE lease, so a single mutex serializes both documents).
+ * The lease must already be open (host dir validated, lifetime lock held).
+ */
+export function createTrustedRootsLedgerFromLease(
+  lease: HostStateDirectoryLease,
+  options: TrustedRootsLedgerFromLeaseOptions = {},
+): TrustedRootsLedger {
   const maxClaims = options.maxClaims ?? 128;
-  if (!Number.isInteger(maxClaims) || maxClaims < 1 || maxClaims > MAX_CLAIMS_HARD) {
-    throw new TrustedRootsLedgerError("LEDGER_OVERSIZE", "maxClaims out of bounds");
-  }
-  const isAlive = options.isPidAlive ?? pidAlive;
-  const mutex = new AsyncMutex();
+  const ledgerPath = join(lease.hostDir, LEDGER_FILE_NAME);
 
   /**
-   * Read + validate the on-disk ledger. Missing ⇒ empty. Every other invalid
-   * condition (corrupt/unknown-version/wrong-kind/duplicate/sparse/oversize/
-   * wrong-permission/hard-link/symlink/non-regular/unreadable) THROWS a fixed
-   * sanitized error and never rewrites/truncates/renames/deletes the file.
+   * Classify a bounded document read into ledger semantics. Missing ⇒ empty.
+   * Every other invalid condition (corrupt/unknown-version/wrong-kind/
+   * duplicate/sparse/oversize) THROWS a fixed sanitized error and never
+   * rewrites/truncates/renames/deletes the file.
    */
-  async function readUnlocked(): Promise<TrustedRootsReadResult> {
-    let info;
-    try {
-      info = await lstat(ledgerPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return { claims: [], warning: "LEDGER_MISSING" };
-      }
-      throw new TrustedRootsLedgerError("LEDGER_UNREADABLE", "Trusted-roots ledger is unreadable");
+  function classify(result: LeaseDocumentReadResult): TrustedRootsReadResult {
+    if ("missing" in result) {
+      return { claims: [], warning: "LEDGER_MISSING" };
     }
-    if (info.isSymbolicLink()) {
-      throw new TrustedRootsLedgerError("LEDGER_SYMLINK", "Trusted-roots ledger must not be a symbolic link");
-    }
-    if (!info.isFile()) {
-      throw new TrustedRootsLedgerError("LEDGER_NOT_REGULAR", "Trusted-roots ledger must be a regular file");
-    }
-    if (info.size > MAX_LEDGER_BYTES) {
-      throw new TrustedRootsLedgerError("LEDGER_OVERSIZE", "Trusted-roots ledger exceeds the size bound");
-    }
-    // Wrong permission: no group/other read/write access on the ledger.
-    if ((info.mode & 0o077) !== 0) {
-      throw new TrustedRootsLedgerError("LEDGER_PERMISSIONS", "Trusted-roots ledger permissions are unsafe");
-    }
-    // Hard-linked ledger: extra names could alias a file we must not rewrite.
-    if (info.nlink > 1) {
-      throw new TrustedRootsLedgerError("LEDGER_HARD_LINK", "Trusted-roots ledger must not be hard-linked");
-    }
-    let text: string;
-    try {
-      text = await readFile(ledgerPath, "utf8");
-    } catch {
-      throw new TrustedRootsLedgerError("LEDGER_UNREADABLE", "Trusted-roots ledger is unreadable");
-    }
-    const parsed = parseTrustedRootsDocument(text, maxClaims);
+    const parsed = parseTrustedRootsDocument(result.content, maxClaims);
     if (parsed.warning) {
       throw new TrustedRootsLedgerError(parsed.warning, "Trusted-roots ledger failed validation");
     }
     return { claims: parsed.claims };
   }
 
-  async function writeAllUnlocked(
-    claims: readonly TrustedRootClaimRecord[],
-  ): Promise<void> {
+  async function writeSerialized(io: HostStateDirectoryIo, claims: readonly TrustedRootClaimRecord[]): Promise<void> {
     if (claims.length > maxClaims) {
       throw new TrustedRootsLedgerError("LEDGER_OVERSIZE", "Claim set exceeds maxClaims");
     }
     try {
-      const existing = await lstat(ledgerPath);
-      if (existing.isSymbolicLink() || !existing.isFile()) {
-        throw new TrustedRootsLedgerError("LEDGER_NOT_REGULAR", "Ledger path is not a regular file");
-      }
+      await io.writeDocument(LEDGER_FILE_NAME, serializeTrustedRootsDocument(claims));
     } catch (error) {
-      if (error instanceof TrustedRootsLedgerError) throw error;
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw new TrustedRootsLedgerError("LEDGER_WRITE_FAILED", "Ledger path unsafe");
-      }
-    }
-    const payload = serializeTrustedRootsDocument(claims);
-    if (Buffer.byteLength(payload, "utf8") > MAX_LEDGER_BYTES) {
-      throw new TrustedRootsLedgerError("LEDGER_OVERSIZE", "Serialized ledger exceeds size bound");
-    }
-    const temp = join(hostDir, `${LEDGER_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`);
-    try {
-      // Mode is set on the O_EXCL open handle (and reinforced via handle.chmod)
-      // before close. Never path-chmod temp/ledger after close — a same-user
-      // swap to a symlink would be followed by chmod(path).
-      const handle = await open(temp, openFlags(), 0o600);
-      let tempIdentity: { dev: number; ino: number };
-      try {
-        await handle.chmod(0o600);
-        await handle.writeFile(payload, "utf8");
-        options.failTempFsync?.();
-        await handle.sync();
-        const st = await handle.stat();
-        tempIdentity = { dev: st.dev, ino: st.ino };
-      } finally {
-        await handle.close();
-      }
-      // Cross-process ownership re-verification immediately before publish: if
-      // the lifetime lock was lost (external removal/replacement), abort
-      // fail-closed instead of publishing under an unlocked dir.
-      const currentLock = await lstatRegularFile(lockPath);
-      if (!currentLock || currentLock.dev !== owned.dev || currentLock.ino !== owned.ino) {
-        throw new TrustedRootsLedgerError("LEDGER_LOCK_UNSAFE", "Ledger lock ownership lost before publish");
-      }
-      options.failRename?.();
-      await rename(temp, ledgerPath);
-      // rename preserves mode/identity; verify final is the same regular file.
-      let published;
-      try {
-        published = await lstat(ledgerPath);
-      } catch {
-        throw new TrustedRootsLedgerError("LEDGER_WRITE_FAILED", "Atomic ledger write failed");
-      }
-      if (
-        published.isSymbolicLink()
-        || !published.isFile()
-        || published.dev !== tempIdentity.dev
-        || published.ino !== tempIdentity.ino
-      ) {
-        throw new TrustedRootsLedgerError("LEDGER_WRITE_FAILED", "Published ledger identity mismatch");
-      }
-      await fsyncDir();
-    } catch (error) {
-      await rm(temp, { force: true }).catch(() => {});
-      if (error instanceof TrustedRootsLedgerError) throw error;
-      throw new TrustedRootsLedgerError("LEDGER_WRITE_FAILED", "Atomic ledger write failed");
+      toLedgerError(error);
     }
   }
-
-  /**
-   * Directory fsync after the atomic rename. FATAL on any error EXCEPT the
-   * narrowly enumerated truly-unsupported platform set (EINVAL / ENOTSUP /
-   * EISDIR) — those mean the OS/filesystem cannot fsync a directory handle, not
-   * that the publish is lost. Arbitrary errors are never swallowed: a returned
-   * success must mean the rename is durably on disk.
-   */
-  async function fsyncDir(): Promise<void> {
-    try {
-      options.failDirFsync?.();
-      const handle = await open(hostDir, constants.O_RDONLY);
-      try {
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (typeof code === "string" && DIR_FSYNC_UNSUPPORTED_CODES.has(code)) {
-        // Truly-unsupported platform/filesystem: tolerate (documented above).
-        return;
-      }
-      throw new TrustedRootsLedgerError("LEDGER_WRITE_FAILED", "Directory fsync failed");
-    }
-  }
-
-  interface LockRecord {
-    pid: number;
-    instanceId: string;
-    createdAt: number;
-  }
-
-  async function readLock(): Promise<
-    | { kind: "missing" }
-    | { kind: "unsafe"; reason: TrustedRootsLedgerCode }
-    | { kind: "valid"; record: LockRecord; identity: { dev: number; ino: number } }
-  > {
-    const identity = await lstatRegularFile(lockPath);
-    if (identity === null) {
-      try {
-        const info = await lstat(lockPath);
-        if (info.isSymbolicLink() || !info.isFile()) return { kind: "unsafe", reason: "LEDGER_LOCK_UNSAFE" };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
-        return { kind: "unsafe", reason: "LEDGER_LOCK_UNSAFE" };
-      }
-      return { kind: "missing" };
-    }
-    let text: string;
-    try {
-      text = await readFile(lockPath, "utf8");
-    } catch {
-      return { kind: "unsafe", reason: "LEDGER_LOCK_UNSAFE" };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return { kind: "unsafe", reason: "LEDGER_LOCK_UNSAFE" };
-    }
-    if (!isRecord(parsed)) return { kind: "unsafe", reason: "LEDGER_LOCK_UNSAFE" };
-    if (!isSafeInteger(parsed.pid) || parsed.pid <= 0) return { kind: "unsafe", reason: "LEDGER_LOCK_UNSAFE" };
-    if (!isValidInstanceId(parsed.instanceId)) {
-      return { kind: "unsafe", reason: "LEDGER_LOCK_UNSAFE" };
-    }
-    if (!isSafeInteger(parsed.createdAt)) return { kind: "unsafe", reason: "LEDGER_LOCK_UNSAFE" };
-    return {
-      kind: "valid",
-      record: { pid: parsed.pid, instanceId: parsed.instanceId, createdAt: parsed.createdAt },
-      identity: { dev: identity.dev, ino: identity.ino },
-    };
-  }
-
-  interface LockOwnership { dev: number; ino: number }
-
-  /**
-   * Acquire the exclusive LIFETIME Host-dir lock (O_EXCL). If any lock exists
-   * — live (LEDGER_LOCK_BUSY) or stale/ambiguous (LEDGER_LOCK_STALE / UNSAFE) —
-   * fail closed with a fixed sanitized error. NEVER auto-reclaims a stale lock:
-   * after SIGKILL the next startup fails closed and the operator must explicitly
-   * remove the fixture lock after proving the old pid is dead.
-   */
-  async function acquireLifetimeLock(): Promise<LockOwnership> {
-    const payload = `${JSON.stringify({ pid: process.pid, instanceId, createdAt: Date.now() })}\n`;
-    try {
-      // Mode via O_EXCL open + handle.chmod only; never path-chmod after close.
-      const handle = await open(lockPath, openFlags(), 0o600);
-      try {
-        await handle.chmod(0o600);
-        await handle.writeFile(payload, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      const owned = await lstatRegularFile(lockPath);
-      if (!owned) {
-        // Lock vanished immediately after O_EXCL create: cannot pin identity →
-        // ambiguous → fail closed.
-        throw new TrustedRootsLedgerError("LEDGER_LOCK_UNSAFE", "Ledger lock ownership could not be pinned");
-      }
-      return { dev: owned.dev, ino: owned.ino };
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") {
-        if (error instanceof TrustedRootsLedgerError) throw error;
-        throw new TrustedRootsLedgerError("LEDGER_LOCK_UNSAFE", "Could not create Host directory lock");
-      }
-      const existing = await readLock();
-      if (existing.kind === "unsafe") {
-        throw new TrustedRootsLedgerError("LEDGER_LOCK_UNSAFE", "Existing Host directory lock is unsafe");
-      }
-      if (existing.kind === "missing") {
-        // Lock existed at O_EXCL but vanished before the read — ambiguous.
-        throw new TrustedRootsLedgerError("LEDGER_LOCK_UNSAFE", "Host directory lock identity is ambiguous");
-      }
-      if (isAlive(existing.record.pid)) {
-        throw new TrustedRootsLedgerError("LEDGER_LOCK_BUSY", "Another Host holds the Host directory lock");
-      }
-      throw new TrustedRootsLedgerError(
-        "LEDGER_LOCK_STALE",
-        "Host directory lock is stale; verify the old process is dead and remove the lock explicitly",
-      );
-    }
-  }
-
-  // Validate the ledger BEFORE acquiring the lifetime lock: a corrupt ledger
-  // must fail startup without creating any new file (immutable evidence).
-  await readUnlocked();
-
-  const owned = await acquireLifetimeLock();
-  let closed = false;
 
   return {
-    hostDir,
+    hostDir: lease.hostDir,
     ledgerPath,
-    lockPath,
+    lockPath: lease.lockPath,
     async read() {
-      return mutex.runExclusive(() => readUnlocked());
+      let result: LeaseDocumentReadResult;
+      try {
+        result = await lease.readDocument(LEDGER_FILE_NAME);
+      } catch (error) {
+        toLedgerError(error);
+      }
+      return classify(result);
     },
     async writeAll(claims) {
-      return mutex.runExclusive(() => writeAllUnlocked(claims));
+      return lease.withLock((io) => writeSerialized(io, claims));
     },
     async update(mutator) {
-      return mutex.runExclusive(async () => {
-        const current = await readUnlocked();
-        const next = await mutator([...current.claims]);
-        if (next.length > maxClaims) {
-          throw new TrustedRootsLedgerError("LEDGER_OVERSIZE", "Claim set exceeds maxClaims");
+      return lease.withLock(async (io) => {
+        let current: TrustedRootsReadResult;
+        try {
+          const result = await io.readDocument(LEDGER_FILE_NAME);
+          current = classify(result);
+        } catch (error) {
+          toLedgerError(error);
         }
-        await writeAllUnlocked(next);
+        const next = await mutator([...current.claims]);
+        await writeSerialized(io, next);
         return next;
       });
     },
     async withLock(operation) {
-      return mutex.runExclusive(() => operation());
+      return lease.withLock(() => operation());
     },
     async close() {
-      return mutex.runExclusive(async () => {
-        if (closed) return;
-        closed = true;
-        try {
-          const current = await readLock();
-          if (current.kind !== "valid") return;
-          // Graceful shutdown removes only its exact lock identity: same
-          // instanceId AND same dev/ino. A wrong instance cannot unlock.
-          if (current.record.instanceId !== instanceId) return;
-          if (current.identity.dev !== owned.dev || current.identity.ino !== owned.ino) return;
-          await rm(lockPath, { force: true });
-        } catch {
-          /* lock already gone or replaced */
-        }
-      });
+      return lease.close();
     },
   };
+}
+
+/**
+ * Open the trusted-roots ledger over a fresh shared lease: validate the host
+ * dir, validate the ledger document (fail-closed, no lock created for a
+ * corrupt/unsafe ledger), then acquire the exclusive lifetime Host-dir lock
+ * held until graceful {@link TrustedRootsLedger.close}.
+ */
+export async function openTrustedRootsLedger(
+  options: OpenTrustedRootsLedgerOptions,
+): Promise<TrustedRootsLedger> {
+  // Validate lock ownership metadata before creating or changing any filesystem
+  // path (exact facade message preserved).
+  const instanceId = options.instanceId ?? randomUUID();
+  if (!isValidInstanceId(instanceId)) {
+    throw new TrustedRootsLedgerError("LEDGER_LOCK_UNSAFE", "Ledger instance id is invalid");
+  }
+  const maxClaims = options.maxClaims ?? 128;
+  if (!Number.isInteger(maxClaims) || maxClaims < 1 || maxClaims > MAX_CLAIMS_HARD) {
+    throw new TrustedRootsLedgerError("LEDGER_OVERSIZE", "maxClaims out of bounds");
+  }
+
+  let lease: HostStateDirectoryLease;
+  try {
+    lease = await openHostStateDirectoryLease({
+      hostDir: options.hostDir,
+      instanceId,
+      ...(options.isPidAlive ? { isPidAlive: options.isPidAlive } : {}),
+      ...(options.failTempFsync ? { failTempFsync: options.failTempFsync } : {}),
+      ...(options.failRename ? { failRename: options.failRename } : {}),
+      ...(options.failDirFsync ? { failDirFsync: options.failDirFsync } : {}),
+      validateBeforeLock: async ({ readDocument }) => {
+        const result = await readDocument(LEDGER_FILE_NAME);
+        if ("missing" in result) return;
+        const parsed = parseTrustedRootsDocument(result.content, maxClaims);
+        if (parsed.warning) {
+          throw new TrustedRootsLedgerError(parsed.warning, "Trusted-roots ledger failed validation");
+        }
+      },
+    });
+  } catch (error) {
+    toLedgerError(error);
+  }
+  return createTrustedRootsLedgerFromLease(lease, { maxClaims, instanceId });
 }
