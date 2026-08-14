@@ -18,14 +18,14 @@ class FakeSocket extends EventEmitter {
   destroyed = false;
   /** When true, write() returns false (backpressure) and drain is required. */
   block = false;
-  readonly writes: Array<{ data: string; callback: (() => void) | undefined }> = [];
-  write(data: string, callback?: () => void): boolean {
+  readonly writes: Array<{ data: string; callback: ((error?: Error | null) => void) | undefined }> = [];
+  write(data: string, callback?: (error?: Error | null) => void): boolean {
     if (this.destroyed) throw new Error("closed");
     this.writes.push({ data, callback });
     return !this.block;
   }
-  fireWriteCallback(index = this.writes.length - 1): void {
-    this.writes[index]?.callback?.();
+  fireWriteCallback(index = this.writes.length - 1, error?: Error | null): void {
+    this.writes[index]?.callback?.(error);
   }
   fireDrain(): void {
     this.emit("drain");
@@ -211,4 +211,28 @@ test("acked flush enqueue after close rejects with a catchable error", async () 
     writer.enqueueFlushed("b\n", 500),
     (error: unknown) => error instanceof SessiondError && error.retryable === true,
   );
+});
+
+test("acked flush write callback with an error fails closed (rejects, never settles success, late events no-op)", async () => {
+  const socket = new FakeSocket();
+  socket.block = false; // write() returns true; delivery hangs on the write callback
+  const writer = new SerialSocketWriter(socket as never);
+  const p = writer.enqueueFlushed("response\n", 500);
+  await Promise.resolve();
+  const counts = settleCounts(p);
+  const boom = new Error("EPIPE delivered via write callback");
+  socket.fireWriteCallback(0, boom);
+  // The barrier must reject with exactly the callback error — never success.
+  await assert.rejects(p, (error: unknown) => error === boom);
+  assert.equal(counts.rejected(), 1, "rejects exactly once");
+  assert.equal(counts.resolved(), 0, "a failed write must never settle as success");
+  assert.equal(writer.isClosed, true, "writer fails closed");
+  // Late events (a subsequent success callback, drain) are no-ops and must not
+  // resurrect the frame or produce an unhandled rejection.
+  socket.fireWriteCallback(0);
+  socket.fireDrain();
+  await sleep(10);
+  assert.equal(counts.rejected(), 1);
+  assert.equal(counts.resolved(), 0);
+  await assert.rejects(writer.enqueueFlushed("x\n", 500));
 });

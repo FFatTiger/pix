@@ -2174,16 +2174,17 @@ lifecycle 语义（认证 instance-fenced 关闭 + 交付屏障），不复制 P
 - packages/cli/src/commands/down.ts：失败分支 sanitized reason。
 
 测试（新增）：
-- packages/sessiond/test/serial-writer-ack.test.ts（9 用例）：write-callback 恰一次 settle、
+- packages/sessiond/test/serial-writer-ack.test.ts（11 用例：10 基线 + 1 follow-up 写回调报错 fail-closed）：write-callback 恰一次 settle、
   write=false 下 callback-before-drain / drain-before-callback、callback-without-drain 悬置、
   drain-before-callback + close reject、bounded timeout fail closed、error→close→late 全 no-op、
-  close→error 幂等、ordering 保持、close 后 enqueue reject。
+  close→error 幂等、ordering 保持、close 后 enqueue reject；follow-up：socket write callback 携
+  error 时经既有 fail 路径 reject（绝不定成 success、late 事件 no-op、无 unhandled rejection）。
 - packages/sessiond/test/shutdown-rpc.test.ts（12 用例）：错/missing AUTH 连接销毁无关闭；
   错 instanceId forbidden 无关闭；blank/malformed/unknown method invalid_request 无关闭；无
   authority unsupported 无关闭；合法请求 {accepted:true} 恰一次 initiate；backpressure 永不
   drain + 短 ack timeout → initiate 0；daemon 端合法 ACK 字节先于 close 再关闭、两并发至多一次
   转换、retry/进行中不双触发、错 instanceId daemon 保持 pingable。
-- packages/cli/test/down-rpc.test.ts（7 用例）：错 secret 拒绝(obstructed) 非零目标存活；instance
+- packages/cli/test/down-rpc.test.ts（6 用例）：错 secret 拒绝(obstructed) 非零目标存活；instance
   错配 forbidden 非零目标存活；hung response 超时非零目标存活；unsupported 非零目标存活；happy
   path 外部队列 daemon 退出并清锁/socket；static 源检查禁止 process.kill(SIGTERM/SIGKILL)/
   taskkill/powershell/unix kill fallback。
@@ -2191,7 +2192,7 @@ lifecycle 语义（认证 instance-fenced 关闭 + 交付屏障），不复制 P
   running daemon" 改 RPC happy-path 命名与断言。
 
 验证（实现者已执行，PENDING 独立 PASS）：
-- protocol 132/132、cli 52/52、sessiond 268/1 skip（多轮稳定）；root build/typecheck/test 全绿；
+- protocol 132/132、cli 52/52、sessiond 269/1 skip（多轮稳定）；root build/typecheck/test 全绿；
   check:architecture PASS；sessiond/host boundary PASS；Startup（含 CLI `down --all` 经 RPC 退出
   daemon 并清 lock/socket）+ Runtime + Sessions E2E 全 PASS；git diff --check 干净；worktree 未
   push/deploy，未触碰 live service。

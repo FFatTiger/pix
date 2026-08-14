@@ -199,7 +199,16 @@ export class SerialSocketWriter {
       barrier.rejectFlush = rejectFlush;
       let wrote = false;
       try {
-        wrote = this.socket.write(frame.data, () => {
+        wrote = this.socket.write(frame.data, (error?: Error | null) => {
+          if (error) {
+            // The write callback reported a failure (e.g. EPIPE delivered via
+            // the callback rather than the socket 'error' event). Fail closed
+            // through the existing path: rejects this barrier + any queued
+            // frames exactly once (clearing timers) and marks the writer
+            // closed. Never settle a genuinely-failed write as success.
+            this.fail(error);
+            return;
+          }
           barrier.writeCallbackFired = true;
           this.trySettleBarrier(frame);
         });
