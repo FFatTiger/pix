@@ -1817,6 +1817,16 @@ async function scenarioD2P7CompactControl(stack, projectDir) {
       assert.equal(p.payload.result.result.ok, true, JSON.stringify(p.payload));
       assert.equal(p.payload.result.result.type, "prompt");
     }
+    // Product-sequence pin (F1 fix): complete a bash command BEFORE the
+    // successful compact — the retained terminal bash projection must NOT make
+    // the compact session_busy (the D2-P7 adapter fix). This pins the exact
+    // product flow without weakening the D2-P5 bash scenario.
+    const bashDone = await client.command(sessionId, { commandId: `d2p7-bash-${Date.now()}`, type: "bash", command: "echo d2p7-bash" });
+    assert.equal(bashDone.payload.ok, true, JSON.stringify(bashDone.payload));
+    assert.equal(bashDone.payload.result.result.ok, true, JSON.stringify(bashDone.payload));
+    const bashSnap = await client.getSnapshot(sessionId);
+    assert.equal(bstate(bashSnap.payload.result).isBashRunning, false, "bash must be complete before compact");
+    assert.equal(bstate(bashSnap.payload.result).bash?.completed, true, "terminal bash projection retained before compact");
     // Build a deterministic history: 4 normal prompts → the fixture's live state
     // has messageCount 4 and contextUsage > 0. The sessiond projection also
     // accumulates messageCount/history from the message_end events, but

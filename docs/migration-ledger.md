@@ -1084,8 +1084,8 @@ Host/Protocol/runtime-core 生产改动，无 D3A workspace 文件、package-loc
 验证（本机 Node v24.18.0）：
 - root `npm test`：scripts 44 + cli 46 + agent-worker 105 + client 566（36 files，含
   D3A Worktree UI 与 compact 测试）
-  + host 372 + adapter 201 + protocol 116 + contract 75 + runtime-core 7 +
-  sessiond 178 pass/1 skip = 1710 pass/1 skip/0 fail。
+  + host 372 + adapter 206 + protocol 116 + contract 75 + runtime-core 7 +
+  sessiond 178 pass/1 skip = 1715 pass/1 skip/0 fail。
 - per-workspace typecheck（含 sessiond tsconfig.test）PASS；root typecheck EXIT 0；
   root build EXIT 0；check:architecture PASS；adapter/sessiond/agent-worker/client/
   host boundaries PASS；`git diff --check` 通过。
@@ -1109,6 +1109,38 @@ Host/Protocol/runtime-core 生产改动，无 D3A workspace 文件、package-loc
   fixture isCompacting guard 命中）诚实验证；单连接第二命令会被 Host 串行排队。
 - fixture/E2E 镜像真实 SDK：abort ack ok:true + in-flight compact 落 interrupted +
   compaction_end{aborted:true} + 清状态 + 无孤儿 hold（abort 后 fresh compact 立即成功）。
+
+GPT 独立验证 FAIL → 修复（follow-up 提交，同 worktree，未 merge/push/deploy）：
+
+F1 HIGH（真实生产复现）：任意已完成 bash 之后 compact 永久 session_busy —— adapter compact
+busy guard 曾用 `this.bash !== null` 判 busy，但终态 bash projection（completed:true）永久
+保留。修复：guard 只在 ACTIVE bash 时拒绝——真实 driver `isBashRunning` 或 adapter 本地
+非终态 projection（`this.bash.completed === false`，覆盖 SDK state 尚未翻转的并发窗口）；
+终态 completed:true 不再阻塞。保留直接并发 bash-vs-compact 保护。
+- 真实 PiSdkAgentRuntimeFactory smoke：完整 `bash echo`（isBashRunning:false,
+  bash.completed:true 保留）后 compact 必须到达 SDK，tiny-session 返回结构化非 busy 失败
+  （实测 code=external "Nothing to compact (session too small)"，绝无 session_busy）；状态
+  干净（isCompacting:false、无 compaction）。
+- 确定性 adapter 并发测试：active（非终态）bash 仍 session_busy/零 compact SDK 调用；终态
+  bash 不再阻塞（compact 到达 SDK 恰一次）。
+- Runtime E2E D2-P7 会话在成功 fixture compact 前先完成一个 bash，钉住该产品序列（未削弱
+  既有 D2-P5）。
+
+F2 MEDIUM：start compact → abort_compaction 把 projection 翻为 `aborting` → driver.compact
+throw 且无 SDK compaction_end → 原 finally 只清 `running`，遗留 adapter 快照
+isCompacting:true/status aborting。修复：exact-owner 清理（startedAt 为所有权键，abort
+flip 保留、canonical end 置空、不可能的新 compaction 不同 startedAt 绝不清掉）对 running 与
+aborting 一并清理；若该 lineage 的 manual compaction_start 已转发（sessiond 见过 start）而
+无 end，则补发一条合成 compaction_end（aborted 依状态），sessiond/client projection 清除；
+SDK 已发 end 时 this.compaction 已 null，绝不重复发。compact 结果保留 interrupted、abort
+ack 保留 ok:true。
+- 回归（mock driver 发 start → abort → throw 无 end）：adapter 快照干净、恰一次合成 end
+  清投影；SDK 正常 start+end 不 double-emit。
+
+复验：adapter 206/206（compact 定向 32）、sessiond 178/1skip（compact authority 18，
+失败仍无 authority refresh/假成功）、client 566/566 不受影响、Runtime E2E 2 轮（含 D2-P7
+bash→compact pin 与 D3A busy probes）、root test 1715/1skip、typecheck/build/architecture/
+boundaries、Startup/Sessions E2E、diff-check 全 PASS。不自行判定 PASS，交同一 verifier 复检。
 
 残余/风险：
 - 未做视觉/UI 验收（本切片无 UI）；compact/extension UI/fork 后续。

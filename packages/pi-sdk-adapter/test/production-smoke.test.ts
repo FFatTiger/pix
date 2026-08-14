@@ -313,6 +313,53 @@ describe("public production SDK factory smoke", () => {
       }
     });
   });
+  it("production compact after a COMPLETED bash reaches the SDK and is never session_busy (D2-P7 F1 fix)", async () => {
+    await withAgentDir(async (root) => {
+      const cwd = join(root, "workspace");
+      await mkdir(cwd, { recursive: true });
+      const port = await new PiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES }).create({
+        cwd,
+        toolNames: [],
+        thinkingLevel: "off",
+        thinkingLevelPinned: true,
+        name: "D2-P7 BashThenCompact Smoke",
+      });
+      try {
+        // Complete a real bash command; the terminal bash projection is retained
+        // forever (this.bash.completed === true).
+        const bash = await port.execute({ type: "bash", command: "echo pix-bash-then-compact" });
+        assert.equal(bash.ok, true, JSON.stringify(bash));
+        const afterBash = await port.execute({ type: "get_state" });
+        assert.equal(afterBash.ok, true);
+        if (afterBash.ok && afterBash.type === "get_state") {
+          assert.equal(afterBash.state.isBashRunning, false);
+          assert.equal(afterBash.state.bash?.completed, true, "terminal bash projection retained");
+        }
+
+        // Compact MUST reach the SDK: the tiny session has nothing to compact, so
+        // the real SDK answers a structured non-busy failure — NEVER session_busy
+        // (a completed bash must not block compact forever).
+        const compact = await port.execute({ type: "compact" });
+        assert.equal(compact.ok, false, `compact should not claim success: ${JSON.stringify(compact)}`);
+        if (!compact.ok) {
+          assert.equal(compact.type, "compact");
+          assert.notEqual(compact.error.code, "session_busy", "completed bash must not make compact session_busy (F1 fix)");
+          assert.equal(typeof compact.error.message, "string");
+          assert.ok(!/\n|\tat |node:internal/i.test(compact.error.message), "no raw stack text");
+          assert.ok(!compact.error.message.includes("sk-"), "no secret-shaped raw leak");
+        }
+        // State clean after the failed compact (no pending compaction).
+        const afterCompact = await port.execute({ type: "get_state" });
+        assert.equal(afterCompact.ok, true);
+        if (afterCompact.ok && afterCompact.type === "get_state") {
+          assert.equal(afterCompact.state.isCompacting, false, "failed compact must leave isCompacting:false");
+          assert.equal(afterCompact.state.compaction, undefined, "no pending compaction after failed compact");
+        }
+      } finally {
+        await port.close("user");
+      }
+    });
+  });
   it("production bash control: real command projects exact output/exitCode and abort_bash preempts without blocking", async () => {
     await withAgentDir(async (root) => {
       const cwd = join(root, "workspace");

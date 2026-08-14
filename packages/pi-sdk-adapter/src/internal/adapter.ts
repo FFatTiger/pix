@@ -49,6 +49,13 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private partialMessage: StreamingAgentMessage | null = null;
   private bash: BashProjection | null = null;
   private compaction: CompactionProjection | null = null;
+  /**
+   * startedAt of the manual compaction whose `compaction_start` was forwarded to
+   * consumers (so a synthetic `compaction_end` on interrupted cleanup clears the
+   * sessiond/client projection only when it previously saw a start). null when no
+   * manual start was forwarded for the current lineage.
+   */
+  private forwardedCompactionStartAt: number | null = null;
   private pendingUi = new Map<string, PendingUi>();
   private extensionStatuses = new Map<string, string>();
   private extensionWidgets = new Map<string, { key: string; lines: readonly string[]; placement: "aboveEditor" | "belowEditor" }>();
@@ -187,18 +194,24 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         case "compact": {
           // Defensive compact busy guard (D2-P7) BEFORE any state mutation or
           // SDK call: a manual compact must never overlap a live prompt stream,
-          // a running bash command, or an already-running compaction (real or
+          // an ACTIVE bash command, or an already-running compaction (real or
           // adapter-local). The real SDK auto-aborts a prompt / overlaps bash on
           // a direct wire compact, so the canonical boundary rejects first with
           // a structured session_busy and leaves NO partial compaction state or
-          // event behind.
+          // event behind. A bash is busy only while NONTERMINAL: the adapter
+          // retains the terminal bash projection (`bash.completed === true`)
+          // forever after a finished/cancelled command, so a mere non-null
+          // projection must NOT block compact — only the real driver
+          // isBashRunning OR a nonterminal in-flight projection (the window
+          // where the adapter has admitted the bash but the SDK state has not
+          // yet flipped) is busy.
           const driverState = this.driver.getState();
           if (
             driverState.isStreaming ||
             driverState.isBashRunning ||
             driverState.isCompacting ||
             this.promptRunning ||
-            this.bash !== null ||
+            (this.bash !== null && this.bash.completed === false) ||
             this.compaction !== null
           ) {
             return this.failure("compact", makeRuntimeError("session_busy", "a prompt, bash command, or compaction is already in progress", { retryable: true }));
@@ -211,16 +224,40 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
               : { customInstructions: command.customInstructions }),
             startedAt: Date.now(),
           };
+          const owned = this.compaction;
+          this.forwardedCompactionStartAt = null;
           try {
             await this.driver.compact(command.customInstructions);
             return { ok: true, type: "compact" };
           } finally {
-            // The real SDK emits compaction_end on success/abort (clearing
-            // this.compaction via handleDriverEvent). When it does not (a
-            // thrown failure before any event, or a no-event settle), clear the
-            // local running marker so the snapshot never claims a pending
-            // compaction. isCompacting stays governed by the real driver state.
-            if (this.compaction?.status === "running") this.compaction = null;
+            // Exact-owner cleanup (D2-P7 fix): the real SDK emits compaction_end
+            // on success/abort (clearing this.compaction via handleDriverEvent).
+            // When it does NOT (a thrown failure before any event, or a
+            // no-event settle), clear the local marker for the OWNED compaction
+            // — running OR aborting — so the snapshot never claims a pending
+            // compaction. `startedAt` is the ownership key: the abort_compaction
+            // flip preserves it, a canonical end nulls this.compaction, and a
+            // newer compaction (which the busy guard keeps impossible while this
+            // is pending) would carry a different startedAt — so we never clear
+            // a newer compaction. If a manual compaction_start was forwarded
+            // (sessiond saw start) but no end arrived, emit a synthetic
+            // compaction_end so the sessiond/client projection clears; no
+            // duplicate end when the SDK already emitted one (this.compaction is
+            // null then).
+            if (this.compaction !== null && this.compaction.startedAt === owned.startedAt) {
+              const wasAborting = this.compaction.status === "aborting";
+              this.compaction = null;
+              if (this.forwardedCompactionStartAt === owned.startedAt) {
+                this.forwardedCompactionStartAt = null;
+                this.emit({
+                  type: "compaction_end",
+                  sessionId: this.identity.sessionId,
+                  reason: "manual",
+                  ...(wasAborting ? { aborted: true } : {}),
+                  errorMessage: "compaction interrupted",
+                });
+              }
+            }
           }
         }
         case "set_session_name": {
@@ -509,6 +546,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           startedAt: this.compaction?.startedAt ?? Date.now(),
         };
         if (isManual) {
+          this.forwardedCompactionStartAt = this.compaction?.startedAt ?? null;
           this.emit({ type, sessionId, reason: "manual" });
         } else {
           this.emit({ type: "auto_compaction_start", sessionId });
@@ -517,6 +555,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       }
       case "compaction_end": {
         const isManual = raw.reason === "manual";
+        this.forwardedCompactionStartAt = null;
         this.compaction = null;
         if (isManual) {
           this.emit({ type, sessionId, reason: "manual", ...(typeof raw.aborted === "boolean" ? { aborted: raw.aborted } : {}), ...(raw.result === undefined ? {} : { result: raw.result }), ...(typeof raw.errorMessage === "string" ? { errorMessage: raw.errorMessage } : {}) });
@@ -526,7 +565,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         return;
       }
       case "auto_compaction_start": this.compaction = { reason: "auto", status: "running", startedAt: Date.now() }; this.emit({ type, sessionId }); return;
-      case "auto_compaction_end": this.compaction = null; this.emit({ type, sessionId, ...(typeof raw.aborted === "boolean" ? { aborted: raw.aborted } : {}), ...(raw.result === undefined ? {} : { result: raw.result }) }); return;
+      case "auto_compaction_end": this.forwardedCompactionStartAt = null; this.compaction = null; this.emit({ type, sessionId, ...(typeof raw.aborted === "boolean" ? { aborted: raw.aborted } : {}), ...(raw.result === undefined ? {} : { result: raw.result }) }); return;
       case "auto_retry_start": this.emit({ type, sessionId, attempt: Number(raw.attempt ?? 0), maxAttempts: Number(raw.maxAttempts ?? 0), ...(typeof raw.errorMessage === "string" ? { errorMessage: raw.errorMessage } : {}) }); return;
       case "auto_retry_end": this.emit({ type, sessionId, ...(typeof raw.success === "boolean" ? { success: raw.success } : {}) }); return;
       case "extension_error": this.emit({ type, sessionId, error: String(raw.error ?? raw.message ?? "extension error"), ...(raw.details === undefined ? {} : { details: raw.details }) }); return;

@@ -15,8 +15,14 @@ import type { DriverEventListener, DriverState, DriverUiRequest, PiRuntimeDriver
 interface DriverControls {
   readonly state: DriverState;
   readonly compactCalls: (string | undefined)[];
+  readonly context: {
+    abortCompactionCalled: boolean;
+    emit(event: unknown): void;
+  };
   setCompactImpl(impl: (customInstructions?: string) => Promise<unknown>): void;
+  setBashImpl(impl: (command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void) => Promise<{ output: string; exitCode?: number; cancelled?: boolean; truncated?: boolean }>): void;
   setState(patch: Partial<DriverState>): void;
+  emitDriver(event: unknown): void;
 }
 
 function makeDriver(overrides: Partial<DriverState> = {}): { driver: PiRuntimeDriver; controls: DriverControls } {
@@ -40,6 +46,11 @@ function makeDriver(overrides: Partial<DriverState> = {}): { driver: PiRuntimeDr
   const listeners = new Set<DriverEventListener>();
   const compactCalls: (string | undefined)[] = [];
   let compactImpl: (customInstructions?: string) => Promise<unknown> = async () => {};
+  let bashImpl: (command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void) => Promise<{ output: string; exitCode?: number; cancelled?: boolean; truncated?: boolean }> = async () => ({ output: "", exitCode: 0 });
+  const context = {
+    abortCompactionCalled: false,
+    emit: (event: unknown) => { for (const listener of [...listeners]) listener(structuredClone(event)); },
+  };
   const unused = async () => { throw new Error("not used by the compact-busy scenario"); };
   const driver: PiRuntimeDriver = {
     identity,
@@ -53,14 +64,14 @@ function makeDriver(overrides: Partial<DriverState> = {}): { driver: PiRuntimeDr
     setModel: unused,
     setThinkingLevel: () => {},
     compact: (customInstructions) => { compactCalls.push(customInstructions); return compactImpl(customInstructions); },
-    abortCompaction: () => {},
+    abortCompaction: () => { context.abortCompactionCalled = true; },
     setSessionName: () => {},
     setAutoCompaction: () => {},
     setAutoRetry: () => {},
     clearQueue: () => {},
     setTools: () => {},
     reload: async () => RUNTIME_CAPABILITIES,
-    bash: unused,
+    bash: (command, excludeFromContext, onChunk) => bashImpl(command, excludeFromContext, onChunk),
     abortBash: () => {},
     navigate: unused,
     fork: unused,
@@ -73,8 +84,11 @@ function makeDriver(overrides: Partial<DriverState> = {}): { driver: PiRuntimeDr
     controls: {
       state,
       compactCalls,
+      context,
       setCompactImpl(impl) { compactImpl = impl; },
+      setBashImpl(impl) { bashImpl = impl; },
       setState(patch) { Object.assign(state, patch); },
+      emitDriver(event) { context.emit(event); },
     },
   };
 }
@@ -226,5 +240,112 @@ describe("adapter manual compact busy guard (D2-P7)", () => {
     assert.equal(snap.state.isCompacting, false);
     assert.equal(snap.state.compaction, undefined);
     assert.ok(events.every((event) => event.type !== "compaction_start"), "no spurious compaction events");
+  });
+
+  it("a COMPLETED terminal bash does NOT block compact — the compact reaches the SDK (F1 fix)", async () => {
+    const { driver, controls } = makeDriver();
+    const adapter = new CanonicalAgentRuntimeAdapter(driver);
+    await adapter.ready();
+    controls.setBashImpl(async () => ({ output: "done\n", exitCode: 0 }));
+    const bashResult = await adapter.execute({ type: "bash", command: "echo hi" });
+    assert.equal(bashResult.ok, true);
+    // The terminal bash projection is retained forever (completed:true).
+    const afterBash = await adapter.getSnapshot();
+    assert.equal(afterBash.state.bash?.completed, true, "terminal bash projection retained");
+    assert.equal(afterBash.state.isBashRunning, false);
+
+    // compact must NOT be session_busy — it must reach the SDK exactly once.
+    const compactResult = await adapter.execute({ type: "compact" });
+    assert.equal(controls.compactCalls.length, 1, "compact must reach the SDK after a completed bash (F1 fix)");
+    assert.equal(compactResult.ok, true, JSON.stringify(compactResult));
+    const snap = await adapter.getSnapshot();
+    assert.equal(snap.state.isCompacting, false);
+    assert.equal(snap.state.compaction, undefined);
+  });
+
+  it("an in-flight NONTERMINAL bash projection blocks compact even before the driver state flips (F1 fix)", async () => {
+    const { driver, controls } = makeDriver();
+    const adapter = new CanonicalAgentRuntimeAdapter(driver);
+    await adapter.ready();
+    let releaseBash: (() => void) | undefined;
+    controls.setBashImpl(() => new Promise<{ output: string; exitCode: number }>((resolve) => { releaseBash = () => resolve({ output: "", exitCode: 0 }); }));
+    const bashP = adapter.execute({ type: "bash", command: "sleep 1" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // Driver state still idle (real SDK not yet flipped) but the adapter holds a
+    // nonterminal bash projection — direct concurrent bash-vs-compact must be
+    // rejected with zero SDK compact calls.
+    const result = await adapter.execute({ type: "compact" });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, "session_busy");
+      assert.equal(result.error.retryable, true);
+    }
+    assert.equal(controls.compactCalls.length, 0, "the SDK compact must never overlap an in-flight bash");
+    const snap = await adapter.getSnapshot();
+    assert.equal(snap.state.isCompacting, false);
+    assert.equal(snap.state.compaction, undefined);
+    releaseBash!();
+    await bashP;
+  });
+
+  it("abort_compaction + thrown compact without an SDK end clears BOTH running/aborting and emits one synthetic end (F2 fix)", async () => {
+    const { driver, controls } = makeDriver();
+    const adapter = new CanonicalAgentRuntimeAdapter(driver);
+    await adapter.ready();
+    const events = await collectEvents(adapter);
+    let releaseCompact: ((value: unknown) => void) | undefined;
+    controls.setCompactImpl(() => new Promise<unknown>((resolve, reject) => {
+      // Realistic SDK: emit compaction_start, then hold until abort.
+      controls.emitDriver({ type: "compaction_start", reason: "manual" });
+      releaseCompact = (value) => {
+        if (controls.context.abortCompactionCalled) reject(new Error("compaction aborted"));
+        else resolve(value);
+      };
+    }));
+
+    const compactP = adapter.execute({ type: "compact" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const abort = await adapter.interrupt({ type: "abort_compaction" });
+    assert.equal(abort.ok, true, JSON.stringify(abort));
+    if (abort.ok) assert.equal(abort.type, "abort_compaction");
+    releaseCompact!(undefined);
+    const result = await compactP;
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.type, "compact");
+      assert.equal(result.error.code, "interrupted", "compact result preserved as interrupted");
+    }
+    // Adapter snapshot MUST NOT remain compacting (status aborting cleared).
+    const snap = await adapter.getSnapshot();
+    assert.equal(snap.state.isCompacting, false, "snapshot must not remain compacting after aborted compact without an SDK end");
+    assert.equal(snap.state.compaction, undefined, "no pending compaction projection");
+    // One start forwarded + exactly one synthetic end (clears the sessiond/
+    // client-facing projection), aborted:true, no duplicate end.
+    const starts = events.filter((event) => event.type === "compaction_start");
+    const ends = events.filter((event) => event.type === "compaction_end");
+    assert.equal(starts.length, 1, "compaction_start forwarded once");
+    assert.equal(ends.length, 1, "exactly one compaction_end emitted (synthetic, no duplicate)");
+    assert.equal((ends[0] as { aborted?: boolean }).aborted, true);
+  });
+
+  it("an SDK compaction_start+end sequence does NOT double-emit a synthetic end (F2 fix)", async () => {
+    const { driver, controls } = makeDriver();
+    const adapter = new CanonicalAgentRuntimeAdapter(driver);
+    await adapter.ready();
+    const events = await collectEvents(adapter);
+    controls.setCompactImpl(async () => {
+      controls.emitDriver({ type: "compaction_start", reason: "manual" });
+      controls.emitDriver({ type: "compaction_end", reason: "manual", aborted: false });
+    });
+
+    const result = await adapter.execute({ type: "compact" });
+    assert.equal(result.ok, true);
+    const starts = events.filter((event) => event.type === "compaction_start");
+    const ends = events.filter((event) => event.type === "compaction_end");
+    assert.equal(starts.length, 1, "compaction_start forwarded once");
+    assert.equal(ends.length, 1, "SDK compaction_end must not be doubled by the finally cleanup");
+    const snap = await adapter.getSnapshot();
+    assert.equal(snap.state.isCompacting, false);
+    assert.equal(snap.state.compaction, undefined);
   });
 });
