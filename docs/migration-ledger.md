@@ -1804,9 +1804,7 @@ token/radius/type），无渐变/玻璃/弹跳。
 ## 51. D4 — Session-Rename Upper-Layer（sessiond 身份 lane 切片）记录
 
 ```text
-实现：source branch feat/d4-session-rename-service（base main e1249f4），backend-first，
-仅 sessiond 上层 + docs + E2E 断言更新；无 Host route/Client UI/package-lock/live
-service/merge/push/deploy。依赖地基 §44（adapter `SessionMutationPort.renameSession` +
+实现：source `f575b82` + same-kind fix `a6cdedd`（branch feat/d4-session-rename-service，base main e1249f4）；current-main 集成 `1cb32e3` + `66e7e4c`。backend-first，仅 sessiond 上层 + docs + E2E 断言更新；无 Host route/Client UI/package-lock/live service；已合入 main，未 push/deploy。依赖地基 §44（adapter `SessionMutationPort.renameSession` +
 共享 store 即时失效，main 953640b）与 §47（stopped-only delete + activate 同步 admission
 fence，main e1249f4）。本切片把 sessiond 的身份变更（activate / sessions.rename /
 public runtime.command(set_session_name) / 显式 stop / delete）收敛到服务持有的
@@ -1918,7 +1916,7 @@ fail-closed 不提前移除 lane）；`hasPendingKind` 判 count>0。bindRekey/g
 验证：sessiond typecheck/build/boundary PASS、sessiond 全量 229 pass/0 fail/1 skip 多轮
 （含两轮并发 stress）；runtime-core 12/12、adapter 236/236、root typecheck/build PASS、
 check:architecture PASS、root tests 全 workspace 绿；Sessions/Runtime/Startup 三条 E2E
-PASS；git diff --check 与工作树 clean（提交后）。独立 verifier 将裁定 PASS/FAIL。
+PASS；git diff --check 与工作树 clean。独立 verifier 首轮复现 same-kind 缺陷并判 FAIL，修复后重放 poison-kind/kind-race2/kind-race3、release/rekey/overlay/delete 与多轮 Sessiond/E2E，最终对 `a6cdedd` 给出 PASS；current-main 正确 workspace 解析下 root build/typecheck/test 与三条 E2E 再次全绿。
 
 残余/后续：Host PATCH rename route、Client rename UI、live set_session_name 的 catalog
 持久化收敛（worker 侧）、auto-name/trash/undo、side chat 仍后置。编号已在 current-main
