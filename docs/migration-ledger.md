@@ -947,7 +947,7 @@ architecture/boundaries、Runtime E2E 2 轮、Startup/Sessions E2E 全 PASS。
 - 新增能力 token worktree.write（full/sessiond-up only；degraded/down 不含；worktree 仍是只读 list token）。同步 Host types、protocol HostCapabilitySchema、production caps、host-runner、Startup E2E caps。token 仅 discovery 非授权。
 - Client：WorktreeInfoSchema 严格加 managedByPix；create 响应解析 managedByPix(literal true)；delete 响应解析 fallbackCwd/branchRetained（新 WorktreeDeleteResponseSchema）。resources.ts 保留 dormant mutation helpers，无 WorktreePanel 控件/import/CSS。
 
-Busy 修正（isolated commit ac83f39）：
+Busy 修正（isolated commit 8260b75）：
 - 仅强化 safety 查询 hasBusyCwd：normalized absolute runtime cwd 等于 target 或是 descendant 才 busy（path.relative 包含；/a/bc 对 /a/b 非 descendant）；stopByCwd 保持 exact 语义不变。非绝对 cwd 回退 exact 字符串相等（symlink-text caveat 文档化）。与 D2 tools 对 service.ts 的并行修改隔离。
 
 验证（本机 Node v24.18.0，worktree 通过 symlink 覆盖复用 main 第三方依赖）：
