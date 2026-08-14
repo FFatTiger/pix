@@ -1645,10 +1645,10 @@ E2E + docs：
 ## 48. (provisional) secure-Windows-state Slice 1 — `@fffattiger/pix-local-authority` POSIX 基础（平台中立 contracts + POSIX backend + Host 委托 + macOS `/var` 别名规范化）
 
 ```text
-状态：INTEGRATION_REVIEW（source hardening 已独立 persistence/security PASS；current-main 集成候选尚未合入/push/deploy，无 live service）
+状态：DONE（source hardening 与 current-main 集成均已独立 persistence/security 验证 PASS；已合入 main，未 push/deploy，无 live service）
 来源分支：feat/local-authority-posix-host（`1dd6e7d` + hardening `1d2caf2`）
 集成分支：integrate/local-authority-posix（base main `e1249f4`；`c2af2b9` + `6b3047d` + tooling adaptation `4951ac3`）
-验证者：原 persistence/security verifier 已确认 `1d2caf2` PASS；集成候选仍需最终 current-main 复核
+验证者：原 persistence/security verifier 确认 `1d2caf2` security PASS，并确认 current-main 集成 HEAD `5f96df8` integration-ready PASS
 ```
 
 目标：为 secure-Windows-state 计划铺设「平台中立 secure-state contracts + 当前高保真 POSIX 实现」的依赖无关基础设施工作区，并让 Host 内部 `HostStateDirectoryLease` 委托底层操作——不改 Host 公共/API/错误/布局/字节语义；同时修复 canonical alias 处理，使 macOS `/var/...` 可经「最近已存在祖先 realpath」安全规范化到 `/private/var/...` 而非误拒。
@@ -1673,7 +1673,7 @@ E2E + docs：
 - 未做原生 Windows backend（contracts 是平台中立接口；POSIX 为当前唯一实现）；原生 Windows 仍需：native backend + secure named pipe + CI 门禁（含 Windows 专用测试矩阵）后才可声明支持，本切片不宣称。
 - 同 UID 残余 TOCTOU（Node 无 openat）保持既有文档化处理；不削弱跨用户边界。
 - 本切片为 source-only 抽取/委托，无任何 persisted schema 迁移（lock/ledger 文件格式不变），无数据迁移脚本。
-- source hardening `1d2caf2` 已独立 persistence/security PASS；current-main 集成候选须再确认 tooling/docs/package-lock 冲突处理与全部新旧门禁后方可合入。
+- source hardening `1d2caf2` 与 current-main 集成 HEAD `5f96df8` 均已独立验证 PASS；当前已合入 main，未 push/deploy。
 ```
 
 ## 49. (provisional) secure-Windows-state Slice 1 — 验证证据
