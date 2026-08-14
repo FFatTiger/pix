@@ -1798,6 +1798,5 @@ token/radius/type），无渐变/玻璃/弹跳。
   通过。
 - 根 test（scripts 44 + 9 workspace 分包）全绿；Runtime E2E + Startup E2E + Sessions
   E2E（backend 回归）PASS；shutdown 无孤儿；watchdog/temp config 有限。
-- 无 Playwright 依赖；无浏览器视觉 PASS 声明（仅 DOM/a11y 测试覆盖）；无 manual visual
-  gate。Client 并发/无障碍实现需独立 review（本记录不替代）。
+- 无 Playwright 依赖，不声明浏览器视觉 PASS；真实 Store/DOM 并发、IME、request-id 复用、不同/相同 id 的 in-flight reply 焦点恢复与 no-steal 已由独立 verifier 对 integration `4e09278` + focus fix `46db2b4` 复验 PASS。浏览器视觉观感仍是非阻塞 manual gap。
 ```
