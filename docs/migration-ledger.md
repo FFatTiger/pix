@@ -1645,11 +1645,10 @@ E2E + docs：
 ## 48. (provisional) secure-Windows-state Slice 1 — `@fffattiger/pix-local-authority` POSIX 基础（平台中立 contracts + POSIX backend + Host 委托 + macOS `/var` 别名规范化）
 
 ```text
-状态：IN_REVIEW（独立持久性/安全验证前不合入 main；未 merge/push/deploy，无 live service）
-分支：feat/local-authority-posix-host（isolated worktree `/Users/proxy/Documents/program/pix-worktrees/local-authority-posix-host`）
-Base：main 125d0a6
-实现：本次提交（见下）
-验证者：需独立 persistence/security verifier 复核（不自行判定最终 PASS）
+状态：INTEGRATION_REVIEW（source hardening 已独立 persistence/security PASS；current-main 集成候选尚未合入/push/deploy，无 live service）
+来源分支：feat/local-authority-posix-host（`1dd6e7d` + hardening `1d2caf2`）
+集成分支：integrate/local-authority-posix（base main `e1249f4`；`c2af2b9` + `6b3047d` + tooling adaptation `4951ac3`）
+验证者：原 persistence/security verifier 已确认 `1d2caf2` PASS；集成候选仍需最终 current-main 复核
 ```
 
 目标：为 secure-Windows-state 计划铺设「平台中立 secure-state contracts + 当前高保真 POSIX 实现」的依赖无关基础设施工作区，并让 Host 内部 `HostStateDirectoryLease` 委托底层操作——不改 Host 公共/API/错误/布局/字节语义；同时修复 canonical alias 处理，使 macOS `/var/...` 可经「最近已存在祖先 realpath」安全规范化到 `/private/var/...` 而非误拒。
@@ -1664,7 +1663,7 @@ Base：main 125d0a6
 - canonical alias 修复：`ensurePixHostDir` 先 canonicalize（`/var/foo`→`/private/var/foo` 不再误拒），再按原始路径回走拒绝「除 canonical root alias（macOS /var→/private/var、/tmp、/etc）之外的符号链接中间组件」（既有「中间符号链接拒绝、外部树绝不突变」测试保持通过）；拒绝 lexical 父级逃逸、根、网络/Windows 声明。
 - Host dependency：`@fffattiger/pix-local-authority@0.1.0`；prebuild-deps 增 `packages/local-authority`；Host check-boundaries 只放行 `@fffattiger/pix-local-authority/state`（非 root/非其他 subpath）；check:architecture 新增 `local-authority boundary` 检查（禁 Protocol/Runtime Core/Pi SDK/Hono/React import 或依赖）+ 自测；package-lock 仅新增本新 workspace（未改其他依赖版本）。
 
-不变式验证（Host 既有测试未改即过 + 新增）：Host 373/373（基线 372 + 新增 macOS `/var` alias lease 测试；trusted-roots/managed-worktrees/production-resources 既有 79 用例字节与 lock 名语义不变）；local-authority 33/33；check:architecture PASS（含新增 local-authority boundary）；scripts 自测 20/20；Host boundary 42 files PASS；local-authority boundary 4 files PASS；逐包 typecheck/build PASS；root test 见下；Startup/Sessions/Runtime E2E 有限 watchdog 全 PASS；`git diff --check` 通过；npm pack --dry-run 检查两包内容。
+当前 main 集成候选不变式验证（Host 既有测试未改即过 + 新增）：Host 394/394；安全重点子集 84/84；local-authority 43/43（含 raw EACCES/path 脱敏、broken-symlink/parent-is-file 分类兼容）；check:architecture PASS（全部 14 gates，含 local-authority boundary 与跨平台 tooling gates）；scripts 自测 31/31；Host boundary 42 files PASS；local-authority boundary 4 files PASS；root 1345 pass + 1 skip；Startup/Sessions/Runtime E2E 有限 watchdog 全 PASS；Node 22.19、24.12、24.18 均有 focused 证据；`git diff --check` 与两包 npm pack dry-run 通过。
 
 语义增量（相对旧 lease 行为）：
 - `PIX_HOST_DIR`（或 resolve 后）含 macOS 根级 canonical alias（/var、/tmp、/etc）时，hostDir 返回 canonical（/private/var/...）且不再误拒——这正是本切片目标；非根级用户符号链接中间组件仍 fail-closed（HOST_DIR_UNSAFE），外部树绝不突变。
@@ -1674,19 +1673,21 @@ Base：main 125d0a6
 - 未做原生 Windows backend（contracts 是平台中立接口；POSIX 为当前唯一实现）；原生 Windows 仍需：native backend + secure named pipe + CI 门禁（含 Windows 专用测试矩阵）后才可声明支持，本切片不宣称。
 - 同 UID 残余 TOCTOU（Node 无 openat）保持既有文档化处理；不削弱跨用户边界。
 - 本切片为 source-only 抽取/委托，无任何 persisted schema 迁移（lock/ledger 文件格式不变），无数据迁移脚本。
-- 独立 persistence/security 复核后再合入 main；本切片的 migration-ledger 序号在集成到 current main 时由父级统一为 §48（验证证据 §49）。
+- source hardening `1d2caf2` 已独立 persistence/security PASS；current-main 集成候选须再确认 tooling/docs/package-lock 冲突处理与全部新旧门禁后方可合入。
 ```
 
 ## 49. (provisional) secure-Windows-state Slice 1 — 验证证据
 
 ```text
-- Host 全量 test：`node --test packages/host/test/*.test.mjs` → 373 pass / 0 fail（基线 372 + 1）
-- local-authority：`node --test 'packages/local-authority/test/*.test.mjs'` → 33 pass / 0 fail
-- `node scripts/check-architecture.mjs` → PASS（含 local-authority boundary）
-- `node --test scripts/check-architecture.test.mjs` → 20 pass / 0 fail
+- Host 全量 test：当前 main 集成候选 → 394 pass / 0 fail；安全重点子集 → 84/84
+- local-authority：当前跨平台 wrapper → 43 pass / 0 fail
+- `node scripts/check-architecture.mjs` → PASS（14 gates，含 local-authority boundary 与 tooling gates 11–13）
+- `node --test scripts/check-architecture.test.mjs` → 31 pass / 0 fail
 - `node packages/host/scripts/check-boundaries.mjs` → PASS（42 files）
 - `node packages/local-authority/scripts/check-boundaries.mjs` → PASS（4 files）
-- 逐包 typecheck / build → PASS；root build / typecheck / test → 见下
-- Startup / Sessions / Runtime E2E（有限 watchdog、temp dirs）→ PASS
+- 逐包 typecheck / build → PASS；root build / typecheck / test → 1345 pass + 1 skip / 0 fail
+- Startup / Sessions / Runtime E2E（有限 watchdog、temp dirs）→ PASS；无本 worktree 孤儿进程
+- Node 22.19：local-authority 43/43、Host security 84/84、architecture PASS；Node 24.12：local-authority 43/43；Node 24.18 为全量主验证环境
+- package-lock 仅新增 workspace/link/Host dependency（无依赖版本漂移）；跨平台 clean/test wrapper 与 Host prebuild npm resolver 均保留
 - `git diff --check` → PASS；`npm pack --dry-run`（local-authority + host）→ 内容核对通过
 ```
