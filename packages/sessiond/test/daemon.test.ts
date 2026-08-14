@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { seedSessionForTests } from "@fffattiger/pix-pi-sdk-adapter/testing";
 import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import { makeRuntimeError, type SessionCatalogPort, type SessionDetail, type SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondError } from "../src/errors.js";
@@ -410,5 +411,54 @@ test("sessions.resolve and runtime.activate share the catalog-derived resolver (
   } finally {
     await h.handle.shutdown();
     await cleanup(h.dir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Production default wiring (WP-2): catalog + locator + catalog-derived
+// activation context share ONE Pi SDK session store.
+//
+// With NO sessionCatalog/sessionLocator overrides, buildDependencies wires the
+// shared adapter pair (`createPiSdkSessionPorts`). This test drives that real
+// production path end-to-end against a real Pi SDK session seeded into a temp
+// PI_CODING_AGENT_DIR: sessions.resolve (locate) then runtime.activate
+// (catalog-derived context) both resolve from the shared store, and the worker
+// opens with the cwd recorded in the session catalog.
+// ---------------------------------------------------------------------------
+
+test("default wiring uses the shared Pi SDK session pair end-to-end (real SDK)", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "sessiond-agent-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const dir = await tempDir();
+  try {
+    const cwd = join(agentDir, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const { sessionId } = seedSessionForTests({ cwd });
+    const workers = new FakeWorkerFactory({ readyDelayMs: 0 });
+    // No sessionCatalog/sessionLocator overrides → the production default pair.
+    const handle = await startDaemon({ directory: dir, workerFactory: workers, serviceOptions: { idleTimeoutMs: 0 } });
+    const rpc = client(handle);
+    try {
+      const resolved = await rpc.call("sessions.resolve", { sessionId });
+      assert.equal(resolved.sessionId, sessionId);
+      assert.equal(resolved.cwd, cwd);
+      assert.equal(resolved.projectRoot, cwd);
+      assert.ok(typeof resolved.sessionFile === "string" && resolved.sessionFile.endsWith(".jsonl"));
+      assert.equal(workers.starts, 0, "sessions.resolve is zero-worker");
+
+      const activated = await rpc.call("runtime.activate", { sessionId });
+      assert.equal(activated.cwd, cwd);
+      assert.equal(activated.projectRoot, cwd);
+      assert.equal(workers.workers[0]?.input.cwd, cwd);
+      assert.equal(workers.workers[0]?.input.projectRoot, cwd);
+    } finally {
+      await handle.shutdown();
+    }
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await cleanup(dir);
+    await rm(agentDir, { recursive: true, force: true });
   }
 });

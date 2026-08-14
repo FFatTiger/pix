@@ -30,8 +30,7 @@ import {
 } from "./worker-process.js";
 import { resolveRuntimeDir } from "./locator.js";
 import {
-  createPiSdkSessionCatalog,
-  createPiSdkSessionLocator,
+  createPiSdkSessionPorts,
 } from "@fffattiger/pix-pi-sdk-adapter/sessions";
 
 /** Optional overrides for the daemon bootstrap. */
@@ -144,26 +143,32 @@ function createCatalogActivationContext(catalog: SessionCatalogPort | null | und
  * Build service dependencies, applying any caller overrides.
  *
  * Production default: the catalog and locator are backed by the Pi SDK
- * adapter's read-only JSONL surface (`createPiSdkSessionCatalog` /
- * `createPiSdkSessionLocator`). Constructing them does NOT spawn a worker or
- * open the network — they are lazy stores that only touch the SDK read-only
- * JSONL API when a method is called, and list/read/context/locate run
- * with zero workers. The production activation context (see
- * {@link createCatalogActivationContext}) derives an opened session's
- * cwd/projectRoot from the SAME catalog instance: an explicit requested cwd
- * keeps its override, otherwise the recorded session cwd/projectRoot are used,
- * and a missing catalog fails activation closed instead of falling back to
- * `/workspace`. Test overrides (`sessionCatalog`, including `null` to run with
- * no catalog, and `sessionLocator`) always take priority so unit tests stay
- * deterministic; an explicit `activationContext` override keeps priority and
- * decouples activation resolution from the catalog.
+ * adapter's read-only JSONL surface, and they SHARE ONE session store
+ * (`createPiSdkSessionPorts`), so a cold locate followed by a catalog read
+ * (sessions.resolve → catalog-derived activation context) runs a single
+ * session-list scan against one shared cache instead of two independent
+ * stores. Constructing the pair does NOT spawn a worker or open the network —
+ * it is a lazy store that only touches the SDK read-only JSONL API when a
+ * method is called, and list/read/context/locate run with zero workers. The
+ * production activation context (see {@link createCatalogActivationContext})
+ * derives an opened session's cwd/projectRoot from the SAME catalog instance:
+ * an explicit requested cwd keeps its override, otherwise the recorded session
+ * cwd/projectRoot are used, and a missing catalog fails activation closed
+ * instead of falling back to `/workspace`. Test overrides (`sessionCatalog`,
+ * including `null` to run with no catalog, and `sessionLocator`) always take
+ * priority so unit tests stay deterministic; an explicit `activationContext`
+ * override keeps priority and decouples activation resolution from the catalog.
  */
 function buildDependencies(directory: string, options: DaemonOptions): SessiondDependencies {
   const workerFactory: WorkerProcessFactory =
     options.workerFactory ?? createProductionWorkerProcessFactory(options.workerOptions ?? {});
-  const catalog = options.sessionCatalog === undefined ? createPiSdkSessionCatalog() : options.sessionCatalog;
+  // One shared default pair: catalog + locator over a single private Pi SDK
+  // session store. Constructing it is lazy and side-effect-free (no worker, no
+  // network, no SDK call) even when both defaults are overridden.
+  const defaultPorts = createPiSdkSessionPorts();
+  const catalog = options.sessionCatalog === undefined ? defaultPorts.catalog : options.sessionCatalog;
   const deps: SessiondDependencies = {
-    sessionLocator: options.sessionLocator ?? createPiSdkSessionLocator(),
+    sessionLocator: options.sessionLocator ?? defaultPorts.locator,
     activationContext: options.activationContext ?? createCatalogActivationContext(catalog),
     workerFactory,
   };

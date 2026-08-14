@@ -88,3 +88,28 @@ export function createPiSdkSessionCatalog(store: PiSdkSessionStore = createPiSdk
 export function createPiSdkSessionLocator(store: PiSdkSessionStore = createPiSdkSessionStore()): SessionLocatorPort {
   return new PiSdkSessionLocator(store);
 }
+
+/** Production session pair: catalog + locator sharing ONE Pi SDK session store. */
+export interface PiSdkSessionPorts {
+  /** Read-side session catalog (list / read / context / delete). */
+  readonly catalog: SessionCatalogPort;
+  /** Activation-side session locator (locate / resolveLeafId). */
+  readonly locator: SessionLocatorPort;
+}
+
+/**
+ * Create the production session pair: a catalog and locator backed by ONE
+ * shared Pi SDK session store, so a cold locate followed by a catalog read (the
+ * sessiond `sessions.resolve` → catalog-derived activation-context path) runs a
+ * single session-list scan against one shared cache instead of two independent
+ * stores. The default store is private (created by the internal store factory);
+ * an optional store may be injected for tests/composition, exactly like the
+ * injectable catalog/locator factories above. All methods run with zero
+ * Workers.
+ */
+export function createPiSdkSessionPorts(store: PiSdkSessionStore = createPiSdkSessionStore()): PiSdkSessionPorts {
+  return {
+    catalog: createPiSdkSessionCatalog(store),
+    locator: createPiSdkSessionLocator(store),
+  };
+}
