@@ -2245,10 +2245,13 @@ merge-tree（仅 ledger 追加冲突），对 772269d 给出 PASS，并要求本
 ## 56. authenticated-shutdown — sessiond 认证控制平面关闭 + ACK-before-close + CLI RPC-only down（PENDING 独立验证）
 
 ```text
-实现：本 worktree（branch feat/authenticated-shutdown，base main `5b8a7c9`），未 push/deploy/live
-service；仅 sessiond + protocol + cli + docs + 测试 + E2E 断言，无 Host HTTP/capability/health/WS
-变更、无 Client source、无 package-lock。编号：§52 Host rename、§53 Client rename、§54 diagnostics
-已占用；Local Authority race 规划 §55 仍在飞，本切片保留 §56 避免冲突。手动 port 仅取 PR#3 有价值的
+实现：source `dfabec2` + follow-up `bad2e0c`（branch feat/authenticated-shutdown，base main `5b8a7c9`），
+合并 main merge commit `5c29085`；未 push/deploy/live service。Fresh verifier 对 dfabec2 七门全 PASS（含
+120+ 真实 socket 探针、外部 daemon exit 0、CLI 静态无杀回退扫描、三条 E2E 重放），非阻塞 robustness
+建议（write callback 忽略 error 参数）由 bad2e0c 防御性修复，同 verifier 聚焦复验 PASS（聚焦套件
+11/12/6、sessiond 269/1skip、真实 socket fail-closed 探针 30/30 行为不变）。仅 sessiond + protocol +
+cli + docs + 测试 + E2E 断言，无 Host HTTP/capability/health/WS 变更、无 Client source、无 package-lock。
+编号：§52/§53/§54/§55 已占用，本切片占 §56。手动 port 仅取 PR#3 有价值的
 lifecycle 语义（认证 instance-fenced 关闭 + 交付屏障），不复制 PID/SIGTERM/PowerShell kill fallback。
 
 目标/不变量：
