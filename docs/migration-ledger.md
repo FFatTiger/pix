@@ -710,7 +710,7 @@ commit 边界重验（Existing AllowedRoot 语义）：
 ## 36. D2-P5 — Bash Runtime Control 记录（DONE）
 
 ```text
-实现：本任务执行体（Fresh session）；独立 worktree d2p5-bash-control，branch feat/d2p5-bash-control，base main 811c94e，implementation `3ce5d2d`，docs follow-up `ea95102`。目标：真实贯通 bash 命令 + abort_bash 控制（独立 interrupt 路径，长 bash 不 HOL 阻塞 abort）；production capability 精确加 runtime.bash / runtime.bash.abort（9→11 token）；Client SessionStore 暴露 typed runBash / abortBash helper。与 D3A host 并行 slice 并行进行，未触碰 host 文件/资源、D1 会话、trusted-roots ledger、upload transaction、package-lock、无关 UI。状态 DONE（Fresh GPT 独立验证 PASS）。
+实现：本任务执行体（Fresh session）；独立 worktree d2p5-bash-control，branch feat/d2p5-bash-control，base main 811c94e，implementation `3ce5d2d`，已 cherry-pick 至 main `28f6b8e`。目标：真实贯通 bash 命令 + abort_bash 控制（独立 interrupt 路径，长 bash 不 HOL 阻塞 abort）；production capability 精确加 runtime.bash / runtime.bash.abort（9→11 token）；Client SessionStore 暴露 typed runBash / abortBash helper。与 D3A host 并行 slice 并行进行，未触碰 host 文件/资源、D1 会话、trusted-roots ledger、upload transaction、package-lock、无关 UI。状态 DONE（Fresh GPT 独立验证 PASS）。
 
 范围（生产文件）：adapter `agent/index.ts`（11-token capability surface）、client `session-store.ts`（runBash / abortBash + bash 生命周期清理）、client `runtime-provider.tsx`（暴露 API）。未改 Protocol/runtime-core/sessiond/Host/daemon/package-lock；未新增 wire 类型；Bash 未进入 AUTHORITY_COMMAND_TYPES（bash_update delta 投影即权威，无 sessiond 快照终态化）。
 
