@@ -633,7 +633,7 @@ FilesPanel 搜索集成（冻结交互）：
 ## 33. session-list-piweb-parity — 全量会话列表性能 hotfix 记录
 
 ```text
-实现：95f72a3（branch fix/session-list-piweb-parity，base 57ec4619becb1647ba672e51b46d1fcd7152c09c）
+实现：95f72a3（branch fix/session-list-piweb-parity，base 57ec4619becb1647ba672e51b46d1fcd7152c09c），已 cherry-pick 至 main `b5d6a4c`，文档跟进 `5f10352`。
 实现模型：本任务执行体（Fresh session）
 范围：packages/pi-sdk-adapter/src/internal/session-store.ts、packages/pi-sdk-adapter/test/sessions.test.ts、packages/client/src/api/query-keys.ts、packages/client/src/api/query-options.test.ts、docs/refactor-execution-plan.md、docs/migration-ledger.md。未改 Protocol/runtime-core/sessiond service/daemon/Host/package-lock，未加 Host RPC 超时，未引入 SQLite/Next，未改 allowed-root/项目总览/无关 UI。
 
@@ -664,10 +664,11 @@ FilesPanel 搜索集成（冻结交互）：
 残余风险：
 - create/discovery/rename 后 store 缓存最长 30s 陈旧（已文档化；单会话读取自愈；Client rename/delete mutation 已 invalidate client query）。
 - `locate` 现在经 openSession 校验 id（activate 属冷启动低频路径，一次全读可接受）；`readSession`/`deleteSession` 同样校验 id 以绝不错会话。
-- root npm run build/typecheck 本机可跑（本次 EXIT 0），未复现 §29 stall；未 merge/push/重启部署。
-独立验证 verdict：待父会话按协作规则复验。
+- root npm run build/typecheck 本机可跑（本次 EXIT 0），未复现 §29 stall；已合入 main 并部署至 `test-pi.huu.im`。公网实测 616 条会话冷请求 3.63s、热请求 0.58s（含公网转发），sessiond 健康且空闲 CPU 约 0.1%。
+
+独立验证 verdict：PASS（Fresh GPT，review main `b5d6a4c` + `5f10352`）。复验 adapter 171/171、Client 482/482、双方 typecheck/boundary、diff-check 全 PASS；另以临时真实 SDK 语料和对抗探针覆盖缓存失效期间并发、旧请求不得覆盖新 generation、失败重试、TTL 边界、畸形结果不缓存、并发冷请求合并、调用方修改返回数组不污染缓存、每 store 独立缓存、列表零 `SessionManager.open`、parentSessionId 路径映射、detail provenance、已删/复用路径绝不返回错误会话、stale rebuild 恰一次等，全部 PASS。无 blocker。非阻塞风险：① warm index miss 的 `scanOnce` 未合并，多个并发 miss 可各跑一次全量扫描；② production catalog 与 locator 使用两个 store，冷 activation 不复用已热 catalog cache；③ 外部已删文件导致 delete 的 rm 返回 ENOENT 时，list 最长保留 30s；④ 连续查询不存在 session 会每次 fresh scan。以上不影响主列表热路径与正确性，后续索引阶段处理。
 ```
 
 ## 34. session-list-piweb-parity 实现模型说明
 
-本 hotfix 在独立 worktree `fix-session-list-piweb-parity` 完成（base 57ec461），未改 main、未新建其他 worktree、未 merge/push。实现、测试、文档更新与真实语料探针均在本 worktree 完成；机器相关探针脚本 `.perf-probe.mjs` 未提交（提交前已删除）。
+本 hotfix 在独立 worktree `fix-session-list-piweb-parity` 完成（base 57ec461），随后以 `b5d6a4c` + `5f10352` 合入 main，并部署至当前测试服务。实现、测试、文档更新与真实语料探针均先在独立 worktree 完成；机器相关探针脚本 `.perf-probe.mjs` 未提交（提交前已删除）。
