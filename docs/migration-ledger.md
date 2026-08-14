@@ -799,3 +799,35 @@ WP3：仅扩 `tests/e2e/sessions-history.mjs`，覆盖limit/offset严格十进�
 - 既有 `WORKTREE_CREATE_FAILED` 仍可能携带raw git stderr，这是base既有问题，本分支只收紧rollback日志，后续单独sanitize。
 - 已合入 main `f7c9a80`；未部署，当前 `test-pi.huu.im` 与 live host/sessiond 状态未触碰。
 ```
+
+## 39. D3A Managed-Worktree Foundation — 后端所有权基础（安全发现，UI/路由未接线）
+
+```text
+实现：branch feat/d3a-managed-worktree-foundation，base main 1d3ad63。两个聚焦 commit（A 提取共享租约，B 托管账本/域基础）。纯后端 Host 基础，未接线路由、未改 UI/能力/会话/sessiond/Protocol/package-lock；并行 D2 tools/reload 工作树与 live 服务未触碰。UI 必须保持禁用。
+
+安全发现：当前 DELETE /v1/worktrees 把 Git 拓扑成员身份当作删除授权，可删除外部/未授权 worktree。TrustedRootClaimRecord 仅为授权凭据，不能被改作所有权（claim 在 durable root 下可能永不存在或在 promotion 时被吸收；v1 契约明确）。需要一个独立的持久化托管所有权基础，本项只做基础，路由接线留待下一步。
+
+Commit A（9668689）行为保持提取：
+- 新内部 packages/host/src/resources/host-state-directory.ts：HostStateDirectoryLease 提取 PIX_HOST_DIR 安全校验/创建、生命周期锁（精确 owner 释放、无 stale 回收）、锁身份校验、有界文档读、原子替换（temp+fsync+rename+dir-fsync）、单进程 mutation 互斥、recognized-entry 布局策略。布局已认可未来 managed-worktrees.json 及 temp pattern，当前 trusted ledger 打开含该 sidecar 的目录不会判 unsafe（回滚兼容）；未知条目仍 fail closed。
+- trusted-roots-ledger.ts 改为 lease 之上的薄 adapter：外部窄 facade/schema/error codes/语义/字节输出不变；resolvePixHostDir 仍抛 TrustedRootsLedgerError。仅 2 处静态源码守卫测试改指向共享 lease（其余 27 项 ledger 测试原样通过）。
+- lease 不导出 package index。
+
+Commit B（待记录）：托管 worktree 账本/域基础，未 mount 路由：
+- managed-worktrees-ledger.ts：独立 sidecar managed-worktrees.json，kind pix.host.managed-worktrees version1，确定性严格 schema；缺失即空，corrupt/unknown/duplicate/sparse/unsafe fail-closed，0600 常规文件无 symlink/hardlink，有界。记录精确管理证据（非 safeToDelete）：worktreeId、path dev/ino、repoRoot repoDev/repoIno、commonDir、adminDir、base 各 dev/ino、createdAt、source=worktree.create、branchAtCreate、branchCreatedByPix。校验绝对 canonical 路径、包含关系（path 严格在 `${repoRoot}-worktrees` 内、dirname(commonDir)==repoRoot、adminDir 在 commonDir 内）、worktreeId/path 去重、safe-int 身份、有界字符串 + 全部 C0/DEL 控制字符拒绝、max records。与 trusted ledger 共用同一 lease（同一锁、同一 mutex，无第二锁），缺省不写。
+- managed-worktrees.ts 域服务：recordCreated（磁盘先于内存授权）、findLiveAuthority/classify、commitRemoved（精确 record/path，无 branch/base 删除权）、rehydrate/reconcile（身份+git 拓扑佐证；stale 才精确删；foreign 保留不授权；corrupt 证据不动）。注入窄 runner 佐证拓扑，绝不自动导入 Git worktree 或迁移 trusted-root v1 claim。
+- allowed-roots.ts 内部 seam registerManagedAuthorizedRoot（托管 record owner id 为凭据，磁盘提交后内存-only 发布，无 trusted ledger 双写）；durable root promotion 不清除托管所有权。公开 AllowedRootService 接口不变。
+- 提供窄内部 factory/types 供未来 production 组合；生产 boot 不实例化/不写 managed sidecar（缺失保持缺失直到首个托管 record）。当前路由/能力不变。
+
+冻结语义（测试覆盖）：legacy trusted claim 永不授予托管/删除权；已 durable AllowedRoot 下创建仍写托管 record + 内存授权、无 trusted claim；外部/planted worktree 判 unmanaged；同一路径 remove/readd 经 inode/admin 身份失效；repo/common/base 替换失败；branch switch/detach 仍 managed；外部删除得 stale record，reconcile 仅按证据安全精确删除；corrupt 证据不动；foreign 保留不授权；无 branch/base 自动删除权；不同 lease/host dir 独立；同一 lease 串行化两文档防 lost update。
+
+验证（本机 Node v24.18.0，worktree 通过 node_modules 符号链接复用 main 依赖）：
+- host 348/348（main 基线 309 + 新 13 lease + 11 managed ledger + 15 managed 域）；typecheck/build EXIT 0；check:architecture PASS；host check:boundaries PASS（42 files）；git diff --check PASS。
+- Startup E2E PASS（cli 以 worktree host 覆写运行）：trustedRootsLedger/hostDirIsolated/secondHostFailsBeforeListen/deleteNoResurrection/sigkillStaleLockFailsClosed/explicitStaleLockRemovalRestores 全绿；能力面不变。
+- Sessions E2E PASS。生产 boot 探针：managed sidecar 缺失保持缺失。
+- 未改 main；未 merge/push/deploy；live 未触碰。
+
+残余：
+- 当前 DELETE /v1/worktrees 漏洞仍在，直到下一步路由集成 consult 托管账本；UI 必须保持禁用。
+- 生产 boot 仍会写出合法空 trusted-roots.json（§38 既有残余，行为保持）。
+- 托管 sidecar 未接线 production 组合（未来 createProductionResources 需改为 open 一个共享 lease 再建两 ledger）。
+```

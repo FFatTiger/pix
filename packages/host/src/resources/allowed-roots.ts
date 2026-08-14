@@ -42,11 +42,25 @@ interface TrustedClaim {
   branch?: string;
 }
 interface RootRecord { identity: RootIdentity }
+
+/** Managed-worktree ownership claim (memory-only, published after disk commit). */
+interface ManagedClaim {
+  worktreeId: string;
+  path: string;
+  identity: RootIdentity;
+}
+
 interface RootState {
   /** Durable policy ownership, normalized so no path has a durable ancestor. */
   durableClaims: Map<string, RootIdentity>;
   /** Stable owner token → requested trusted-created root. Hidden claims are retained. */
   trustedClaims: Map<string, TrustedClaim>;
+  /**
+   * Managed-worktree ownership (worktreeId → claim). Memory-only publication
+   * after the managed-worktrees ledger committed the record to disk; durable
+   * root promotion must NOT erase managed ownership.
+   */
+  managedClaims: Map<string, ManagedClaim>;
   /** Minimal effective authorization projection derived from all claims. */
   records: Map<string, RootRecord>;
   maxRoots: number;
@@ -56,6 +70,19 @@ interface RootState {
   ledger?: TrustedRootsLedger;
   logger?: HostLogger;
 }
+/**
+ * Memory-only managed-worktree authorization input (already committed to the
+ * managed-worktrees ledger on disk by the caller). `registerManagedAuthorizedRoot`
+ * publishes it into the effective authorization projection without writing any
+ * trusted-root ledger claim.
+ */
+export interface ManagedAuthorizedRootInput {
+  worktreeId: string;
+  path: string;
+  dev: number;
+  ino: number;
+}
+
 export interface TrustedCreatedRootReceipt {
   canonicalPath: string;
   added: boolean;
@@ -138,15 +165,29 @@ function stateFor(service: AllowedRootService): RootState {
   if (!state) throw new Error("Unknown AllowedRootService instance");
   return state;
 }
-function sortedClaimPaths(durable: Map<string, RootIdentity>, trusted: Map<string, TrustedClaim>): string[] {
-  return [...new Set([...durable.keys(), ...[...trusted.values()].map((claim) => claim.path)])]
+function sortedClaimPaths(
+  durable: Map<string, RootIdentity>,
+  trusted: Map<string, TrustedClaim>,
+  managed: Map<string, ManagedClaim> = new Map(),
+): string[] {
+  return [...new Set([
+    ...durable.keys(),
+    ...[...trusted.values()].map((claim) => claim.path),
+    ...[...managed.values()].map((claim) => claim.path),
+  ])]
     .sort((a, b) => a.length - b.length || a.localeCompare(b));
 }
-function deriveRecords(durable: Map<string, RootIdentity>, trusted: Map<string, TrustedClaim>): Map<string, RootRecord> {
+function deriveRecords(
+  durable: Map<string, RootIdentity>,
+  trusted: Map<string, TrustedClaim>,
+  managed: Map<string, ManagedClaim> = new Map(),
+): Map<string, RootRecord> {
   const records = new Map<string, RootRecord>();
-  for (const path of sortedClaimPaths(durable, trusted)) {
+  for (const path of sortedClaimPaths(durable, trusted, managed)) {
     if ([...records.keys()].some((ancestor) => isWithin(ancestor, path))) continue;
-    const identity = durable.get(path) ?? [...trusted.values()].find((claim) => claim.path === path)?.identity;
+    const identity = durable.get(path)
+      ?? [...trusted.values()].find((claim) => claim.path === path)?.identity
+      ?? [...managed.values()].find((claim) => claim.path === path)?.identity;
     if (identity) records.set(path, { identity });
   }
   return records;
@@ -340,6 +381,49 @@ function normalizeRegisterInput(target: string | TrustedCreatedRootInput): Trust
   return target;
 }
 
+/**
+ * Internal managed-worktree seam. Publishes managed-worktree ownership into
+ * memory ONLY (never writes a trusted-root ledger claim — no double-write).
+ * The managed-worktrees ledger MUST have already committed the ownership
+ * record to disk before this is called (disk before memory). Durable root
+ * promotion never erases managed claims.
+ */
+export async function registerManagedAuthorizedRoot(
+  service: AllowedRootService,
+  input: ManagedAuthorizedRootInput,
+): Promise<void> {
+  const state = stateFor(service);
+  await state.mutation.runExclusive(() => {
+    state.managedClaims.set(input.worktreeId, {
+      worktreeId: input.worktreeId,
+      path: input.path,
+      identity: { dev: input.dev, ino: input.ino },
+    });
+    state.records = deriveRecords(state.durableClaims, state.trustedClaims, state.managedClaims);
+  });
+}
+
+/**
+ * Internal managed-worktree seam. Removes only the exact managed claim
+ * (worktreeId + path); a mismatched path is never removed. Memory-only — the
+ * managed-worktrees ledger removal is the caller's disk step.
+ */
+export async function unregisterManagedAuthorizedRoot(
+  service: AllowedRootService,
+  worktreeId: string,
+  path: string,
+): Promise<void> {
+  const state = stateFor(service);
+  await state.mutation.runExclusive(() => {
+    const existing = state.managedClaims.get(worktreeId);
+    if (!existing || existing.path !== path) return;
+    const proposed = new Map(state.managedClaims);
+    proposed.delete(worktreeId);
+    state.managedClaims = proposed;
+    state.records = deriveRecords(state.durableClaims, state.trustedClaims, proposed);
+  });
+}
+
 /** Internal-only. Worktree routes call this while holding repo lock (repo→roots). */
 export async function registerTrustedCreatedRoot(
   service: AllowedRootService,
@@ -394,7 +478,7 @@ export async function registerTrustedCreatedRoot(
         if (input.branch !== undefined) claim.branch = input.branch;
       }
       proposedTrusted.set(owner, claim);
-      const proposedRecords = deriveRecords(state.durableClaims, proposedTrusted);
+      const proposedRecords = deriveRecords(state.durableClaims, proposedTrusted, state.managedClaims);
       if (proposedRecords.size > state.maxRoots) throw new HttpError(429, "ROOT_LIMIT", "Allowed-root limit reached");
       // Persist before publishing memory when a ledger is attached and the claim is ledger-eligible.
       // RMW under ledger lock: upsert only this claim; preserve other Hosts' disk claims.
@@ -436,7 +520,7 @@ export async function registerTrustedCreatedRoot(
             }
           }
           state.trustedClaims = proposedTrusted;
-          state.records = deriveRecords(state.durableClaims, proposedTrusted);
+          state.records = deriveRecords(state.durableClaims, proposedTrusted, state.managedClaims);
         });
       },
     };
@@ -474,7 +558,7 @@ export async function unregisterTrustedCreatedRoot(service: AllowedRootService, 
       }
     }
     state.trustedClaims = proposedTrusted;
-    state.records = deriveRecords(state.durableClaims, proposedTrusted);
+    state.records = deriveRecords(state.durableClaims, proposedTrusted, state.managedClaims);
   });
 }
 
@@ -599,7 +683,7 @@ export async function rehydrateTrustedCreatedRoots(
     // A lowered maxRoots must FAIL, never destructively empty the on-disk evidence.
     const capacityProbe = cloneTrusted(state.trustedClaims);
     for (const claim of acceptedById.values()) capacityProbe.set(claim.claimId, claim);
-    const capacityRecords = deriveRecords(state.durableClaims, capacityProbe);
+    const capacityRecords = deriveRecords(state.durableClaims, capacityProbe, state.managedClaims);
     if (capacityRecords.size > state.maxRoots) {
       throw new TrustedRootsLedgerError("LEDGER_OVERSIZE", "Trusted-roots claim capacity exceeded");
     }
@@ -639,7 +723,7 @@ export async function rehydrateTrustedCreatedRoots(
       if (claim) proposedTrusted.set(claim.claimId, claim);
     }
     state.trustedClaims = proposedTrusted;
-    state.records = deriveRecords(state.durableClaims, proposedTrusted);
+    state.records = deriveRecords(state.durableClaims, proposedTrusted, state.managedClaims);
     survivors.length = 0;
     survivors.push(...committedSurvivors);
     restored = committedSurvivors.length;
@@ -659,9 +743,9 @@ export async function createAllowedRootService(policy: AllowedRootPolicy): Promi
     for (const path of [...durableClaims.keys()]) if (isWithin(candidate.canonical, path)) durableClaims.delete(path);
     durableClaims.set(candidate.canonical, candidate.identity);
   }
-  const initialRecords = deriveRecords(durableClaims, new Map());
+  const initialRecords = deriveRecords(durableClaims, new Map(), new Map());
   if (initialRecords.size > maxRoots) throw new Error("Too many configured allowed roots");
-  const state: RootState = { durableClaims, trustedClaims: new Map(), records: initialRecords, maxRoots, policy, mutation: new AsyncMutex() };
+  const state: RootState = { durableClaims, trustedClaims: new Map(), managedClaims: new Map(), records: initialRecords, maxRoots, policy, mutation: new AsyncMutex() };
 
   async function authorizeExisting(target: string, kind: "any" | "file" | "directory" = "any"): Promise<AuthorizedPath> {
     const requestedPath = validateAbsolutePath(target);
@@ -725,7 +809,7 @@ export async function createAllowedRootService(policy: AllowedRootPolicy): Promi
             const permitted = mode === "local" ? policy.allowLocalExpansion === true : policy.allowLanExpansion === true;
             if (!permitted) throw new HttpError(403, "ROOT_EXPANSION_DISABLED", "Directory expansion is disabled by host policy");
           }
-          const proposedRecords = deriveRecords(proposedDurable, proposedTrusted);
+          const proposedRecords = deriveRecords(proposedDurable, proposedTrusted, state.managedClaims);
           if (proposedRecords.size > maxRoots) throw new HttpError(429, "ROOT_LIMIT", "Allowed-root limit reached");
           // Persist trusted-claim absorption when a ledger is attached.
           // RMW: remove only claims under newly durable roots; preserve other Hosts' claims.
