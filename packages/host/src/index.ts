@@ -47,6 +47,7 @@ export {
   defaultMountedCapabilities,
   catalogCapabilitiesFromDeps,
   normalizeCatalogCapabilities,
+  normalizeSessionMutationCapabilities,
   registerHealthRoutes,
   registerBootstrapRoutes,
   resolveBootstrapGateStatus,

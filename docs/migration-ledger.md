@@ -2020,4 +2020,19 @@ skip）、check:architecture PASS；Sessions/Runtime/Startup 三条 E2E PASS（S
 upCaps 含 session.write、degraded 不含；Sessions 验证 live+offline HTTP PATCH、down
 收回+503、LAN auth、fail-closed 面）；git diff --check 干净。残余/后续：Client Sidebar
 rename UI 为独立切片（见 §53，本记录不含 Windows claim；未触碰 Client source）。
+
+独立验证 F1 修复（本分支 follow-up，verifier 复播后判）：verifier 发现 createHostApp 在
+sessiond up + capabilities.full 含 session.write + sessions.rename 缺失时 /v1/capabilities
+仍返回 session.write 而 PATCH 路由 404 —— 能力 token 与路由挂载不同源。修复：health.ts 新增
+`normalizeSessionMutationCapabilities`（能力过滤与路由挂载同一 source of truth：仅当
+sessions.rename 存在才保留 session.write、仅当 sessions.delete 存在才保留 session.delete；
+只移除不可能 token、绝不添加；read sessions 与其余 token 不变），resolveCapabilities 对
+full 投影应用该 seam 过滤，对 readonly/down 投影无条件剥离两个 mutation token（down 无论
+seam 与否都排除；自定义 readonly 列表含 mutation token 也在 down 时剥离）。custom 列表满足
+“只删不增”：token 不在输入则绝不发明。生产默认（CLI host-runner / E2E bootStack 双 seam 常挂）
+行为不变，Startup/Sessions/Runtime E2E 与 delete 语义不受影响。Host 新增 8 用例（health.test.mjs
+真实 createHostApp /v1/capabilities 矩阵：up+无 seam/仅 rename/仅 delete/双 seam、down+双 seam
+（含自定义 readonly 剥离）、production FULL 默认仍双、normalizeSessionMutationCapabilities
+单元“只删不增”），Host 全量 412→420/420；CLI 46、root typecheck/build/test/architecture、
+三条 E2E 全 PASS。
 ```

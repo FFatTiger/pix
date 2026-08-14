@@ -97,18 +97,66 @@ export function normalizeCatalogCapabilities(
   return [...nonCatalog, ...catalogCapabilitiesFromDeps(catalogs)];
 }
 
+/**
+ * Honest session-mutation token filter (D4 rename + delete). A `session.write`
+ * token is only advertisable when the `sessions.rename` seam is actually
+ * mounted, and a `session.delete` token only when the `sessions.delete` seam is
+ * mounted — the SAME source of truth as the PATCH/DELETE route mounts in
+ * {@link registerSessionRoutes}. Tokens are only ever removed (never added): a
+ * token absent from the input list is never invented, and impossible tokens
+ * (seam not mounted ⇒ route not mounted) are dropped. The read-only `sessions`
+ * token and every other capability are untouched. The seam object is typed to
+ * require both `client` and `mutationGuard`, so a truthy seam means the route
+ * is actually mountable.
+ */
+export function normalizeSessionMutationCapabilities(
+  listed: readonly HostCapability[],
+  deps: HostDeps,
+): readonly HostCapability[] {
+  const hasRename = deps.sessions?.rename !== undefined;
+  const hasDelete = deps.sessions?.delete !== undefined;
+  return listed.filter((token) => {
+    if (token === "session.write") return hasRename;
+    if (token === "session.delete") return hasDelete;
+    return true;
+  });
+}
+
+/**
+ * Strip both session-mutation tokens from a list. Applied to the readonly/
+ * degraded projection: `session.write` / `session.delete` are only advertisable
+ * while sessiond is up, so the down/unknown projection never includes them
+ * regardless of mounted seams.
+ */
+function withoutSessionMutationTokens(
+  listed: readonly HostCapability[],
+): readonly HostCapability[] {
+  return listed.filter(
+    (token) => token !== "session.write" && token !== "session.delete",
+  );
+}
+
 export async function resolveCapabilities(
   deps: HostDeps,
 ): Promise<ResolvedCapabilities> {
   const mounted = defaultMountedCapabilities(deps);
   // Explicit overrides still have catalog tokens rewritten from mounted seams.
-  const full = normalizeCatalogCapabilities(
-    deps.capabilities?.full ?? mounted,
-    deps.catalogs,
+  // Session mutation tokens are seam-honest: only the mutation tokens whose
+  // seams are actually mounted survive in the full projection.
+  const full = normalizeSessionMutationCapabilities(
+    normalizeCatalogCapabilities(
+      deps.capabilities?.full ?? mounted,
+      deps.catalogs,
+    ),
+    deps,
   );
-  const readonly = normalizeCatalogCapabilities(
-    deps.capabilities?.readonly ?? mounted,
-    deps.catalogs,
+  // The readonly projection is only ever returned while sessiond is down (or
+  // unknown), so both session-mutation tokens are always stripped there.
+  const readonly = withoutSessionMutationTokens(
+    normalizeCatalogCapabilities(
+      deps.capabilities?.readonly ?? mounted,
+      deps.catalogs,
+    ),
   );
   if (!deps.sessiond) return { sessiond: "unknown", capabilities: readonly };
   const timeoutMs = deps.sessiondProbeTimeoutMs ?? 2_000;
