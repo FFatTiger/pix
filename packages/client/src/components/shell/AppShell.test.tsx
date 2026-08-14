@@ -23,11 +23,17 @@ vi.mock("@tanstack/react-virtual", () => ({
 }));
 
 // AppShell uses TanStack Router navigation; stub it so the component renders in
-// isolation without a router context.
+// isolation without a router context, and capture navigation calls for the D3A
+// worktree Open/switch assertions.
+const { navigateCalls } = vi.hoisted(() => ({
+  navigateCalls: [] as { to: string; search: Record<string, unknown> | undefined }[],
+}));
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, to, search }: { children: ReactNode; to: string; search?: unknown }) =>
     <a href={to} data-search={JSON.stringify(search ?? {})}>{children}</a>,
-  useNavigate: () => () => undefined,
+  useNavigate: () => (opts: { to: string; search?: Record<string, unknown> }) => {
+    navigateCalls.push({ to: opts.to, search: opts.search });
+  },
 }));
 
 const SOCKETS: FakeWebSocket[] = [];
@@ -505,5 +511,73 @@ describe("AppShell visible-branch export gate (D1B-3)", () => {
     mount({ session: "s-abc", cwd: "/proj" }, { mode: "local", capabilities: ["agent"] });
     await flush();
     expect(screen.queryByRole("button", { name: "Export visible branch" })).toBeNull();
+  });
+});
+
+describe("AppShell worktree Open/switch navigation (D3A)", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+    navigateCalls.length = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://pix.local");
+      if (url.pathname === "/v1/worktrees") {
+        return new Response(
+          JSON.stringify({
+            projectRoot: "/proj",
+            isGit: true,
+            isTopLevel: true,
+            worktrees: [
+              { path: "/proj", branch: "main", isMain: true, authorized: true, managedByPix: true },
+              { path: "/proj-worktrees/feature", branch: "feature/x", isMain: false, authorized: true, managedByPix: true },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return contextResponse("s-stale");
+    }) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    cleanup();
+  });
+
+  it("Open worktree navigates to the row path, clears old session, and issues no mutation", async () => {
+    mount(
+      { cwd: "/proj", session: "s-stale" },
+      { mode: "local", capabilities: ["agent", "worktree", "worktree.write"] },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show workspace panel" }));
+    await screen.findByRole("tab", { name: "Worktrees" });
+    await screen.findByText("feature/x");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open worktree feature/x" }));
+
+    // Client URL cwd navigation ONLY — AppShell owns it via navigate.
+    await waitFor(() =>
+      expect(navigateCalls).toContainEqual({ to: "/", search: { cwd: "/proj-worktrees/feature" } }),
+    );
+    // The fresh search intentionally clears the old session selection.
+    const nav = navigateCalls.find((n) => n.to === "/");
+    expect(nav?.search).toEqual({ cwd: "/proj-worktrees/feature" });
+    expect(nav?.search).not.toHaveProperty("session");
+    // No runtime socket (no session attach), no worktree mutation.
+    expect(SOCKETS.length).toBe(0);
+  });
+
+  it("Open is not offered for the current worktree row", async () => {
+    mount(
+      { cwd: "/proj", session: "s-stale" },
+      { mode: "local", capabilities: ["agent", "worktree", "worktree.write"] },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show workspace panel" }));
+    await screen.findByRole("tab", { name: "Worktrees" });
+    await screen.findByText("feature/x");
+    // The current cwd (/proj = main) row is never offered an Open control.
+    expect(screen.queryByRole("button", { name: /open worktree main/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open worktree feature/x" })).toBeTruthy();
   });
 });

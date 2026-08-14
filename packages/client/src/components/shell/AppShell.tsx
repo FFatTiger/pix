@@ -171,6 +171,15 @@ export function AppShell({ search }: AppShellProps) {
     void navigate({ to: "/", search: { cwd } });
   };
 
+  // D3A managed-worktree switch/Open: Client URL cwd navigation ONLY. Never Git
+  // checkout, never create/attach/stop/move a Session, never a server endpoint.
+  // Navigating with a fresh `{ cwd: path }` search intentionally clears any old
+  // `session` selection so a stale session is never displayed under the new
+  // workspace; existing runtime sessions stay alive untouched.
+  const handleOpenWorktree = (path: string): void => {
+    void navigate({ to: "/", search: { cwd: path } });
+  };
+
   const subtitle = !canAgent
     ? unavailable
       ? "Host runtime unavailable — no capability has been negotiated."
@@ -338,7 +347,12 @@ export function AppShell({ search }: AppShellProps) {
           <Composer live={selectionMatchesLive} />
         </main>
 
-        <WorkspacePanel cwd={search.cwd} open={workspaceOpen} onClose={() => setWorkspaceOpen(false)} />
+        <WorkspacePanel
+          cwd={search.cwd}
+          open={workspaceOpen}
+          onClose={() => setWorkspaceOpen(false)}
+          onOpenWorktree={handleOpenWorktree}
+        />
         <CatalogPanel cwd={search.cwd} open={catalogOpen} onClose={() => setCatalogOpen(false)} />
       </div>
     </div>

@@ -13,6 +13,11 @@ export interface WorkspacePanelProps {
   open: boolean;
   /** Close the docked panel (chat reclaims the full width). */
   onClose: () => void;
+  /**
+   * Client URL cwd navigation to a worktree (AppShell-owned). Passed down to
+   * the Worktrees tab; only used when `worktree.write` is negotiated.
+   */
+  onOpenWorktree?: ((path: string) => void) | undefined;
 }
 
 const TAB_ORDER: readonly WorkspaceTab[] = ["files", "git", "worktrees"];
@@ -32,11 +37,12 @@ const TAB_LABEL: Record<WorkspaceTab, string> = {
  * main chat session remains fully usable underneath. Inactive tabs are not
  * mounted and therefore never fetch.
  */
-export function WorkspacePanel({ cwd, open, onClose }: WorkspacePanelProps) {
+export function WorkspacePanel({ cwd, open, onClose, onOpenWorktree }: WorkspacePanelProps) {
   const { can } = useCapabilities();
   const canFiles = can("files");
   const canGit = can("git");
   const canWorktree = can("worktree");
+  const canWorktreeWrite = can("worktree.write");
 
   const availableTabs = useMemo(() => {
     const tabs: WorkspaceTab[] = [];
@@ -90,7 +96,12 @@ export function WorkspacePanel({ cwd, open, onClose }: WorkspacePanelProps) {
         {activeTab === "files" && canFiles ? <FilesPanel cwd={cwd} canFiles={canFiles} /> : null}
         {activeTab === "git" && canGit ? <GitPanel cwd={cwd} canGit={canGit} /> : null}
         {activeTab === "worktrees" && canWorktree ? (
-          <WorktreePanel cwd={cwd} canWorktree={canWorktree} />
+          <WorktreePanel
+            cwd={cwd}
+            canWorktree={canWorktree}
+            canWorktreeWrite={canWorktreeWrite}
+            onOpenWorktree={onOpenWorktree}
+          />
         ) : null}
       </div>
     </aside>

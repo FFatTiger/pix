@@ -958,3 +958,44 @@ Busy 修正（isolated commit 8260b75）：
 
 残余风险（跨进程 TOCTOU）：busy 预检与 git remove 之间会话可能新起；重新验证在 git remove 前瞬间完成，非原子（无 OS 级跨进程锁）。ledger 生命周期锁是单 Host 证据机制而非 OS 强排它（同用户可删/换锁文件则需目录权限纪律）。本分支未 merge/push/deploy；UI 保持禁用；DELETE 现由托管记录 + 双重活体佐证门控，提交给独立 GPT review 复核。
 ```
+
+## 42. D3A Managed-Worktree Client UI — 垂直切片记录
+
+```text
+实现：独立 worktree d3a-worktree-ui，branch feat/d3a-worktree-ui，base main 13859b1。纯 Client 产品 UI + 测试 + 文档；未改 Host/Protocol/sessiond/adapter/backend 契约、package-lock、live 服务、无关 Runtime UI。实现阶段未改 main、未 merge/push/deploy、未另建 worktree。状态：实现完成，待独立验证（不自行判定 PASS）。
+
+后端契约已在 §39/§41 冻结于 main：GET 严格 `{path,branch,isMain,authorized,managedByPix}`（managedByPix 为 live authority）；POST `{cwd,branch}`→201 `{path,branch,managedByPix:true}`；DELETE `{cwd,path,force}`→200 `{success:true,fallbackCwd,branchRetained:true}`；unmanaged/identity 403、busy/dirty 409、service down 503。Client 既有 dormant mutation helper（resources.worktrees.create/remove）+ createMutationOptions.worktrees.create/remove（onSuccess invalidate worktrees.list(cwd)+cwd.roots）+ 严格 schema 全部原样复用，无后端改动。
+
+冻结产品决策（全部实现）：
+1) Open/Switch = Client URL cwd navigation 仅；绝不 Git checkout、绝不 create/attach/stop/move Session、绝不新增 server endpoint。
+2) AppShell 保持唯一导航 owner：navigate({to:'/',search:{cwd:path}}) 并显式清掉旧 session search（新工作区不显示旧 session；既有 runtime session 保持存活不触碰）。
+3) 整个新工作流（create/open/delete）门控 `worktree.write`；仅 `worktree` 时 panel 字节/行为等价 list-only，既有 no-actions 测试语义不变；cap 撤回立即隐藏控件。
+4) create 从任意当前 authorized cwd 开始；仅 free-text branch；新增纯 client validator worktree-branch.ts 逐字节镜像 Host safeBranch（空/长>255/trim≠原值/前导- /NUL+空白+~^:?*[\ /.. /尾. /尾/ /// /@{）；不 auto-trim/reinterpret；input maxLength=255；固定 inline error；发送精确 raw 接受值。
+5) Open 仅 authorized:true 且非当前行；unmanaged-but-authorized 可 open 不可 delete；unauthorized external 永不 Open/Delete。
+6) Delete 仅 `!isMain && managedByPix`（external/manual/planted/legacy/unmanaged/main 永不渲染）；initial delete force:false；仅精确 409 WORKTREE_DIRTY 揭示 row-local 二次确认（不可逆警告 + 显式「Delete anyway」(force:true) + Cancel）；WORKTREE_BUSY 永不提供 force；无 modal/window.confirm；默认/回返焦点倾向 Cancel（safe escape），cancel 后尽力回焦点原 Delete 控件。
+7) create 成功→既有 mutation invalidation + navigate 返回 path（清 session）；delete 成功→若删除 path == 当前 cwd 则 navigate fallbackCwd（清 session），否则保持 cwd；错误/cap 撤回/cwd 变化/stale/late/cancelled 确认永不 navigate。
+8) 一次诚实操作跨 create/delete/force：busy 禁用相关控件 + aria-busy，防 double submit（busy guard + mutation.isPending 双保险）；SessionActions 风格 generation/current-capability/current-cwd refs——mid-flight cap 撤回/cwd 变化绝不 navigate 或把 late error 泄漏进新上下文；网络不可取消但 stale completion 对 UI/navigation 忽略；cwd 变化或 cap 撤回重置 confirmation/error。
+9) 错误文案 code-first + transport-kind fallback，固定且 sanitize，绝不渲染 Host raw message/path/branch/JSON；映射 INVALID_BRANCH/WORKTREE_EXISTS/WORKTREE_DIRTY/WORKTREE_BUSY/WORKTREE_NOT_MANAGED/MAIN_WORKTREE/WORKTREE_NOT_FOUND/NOT_PROJECT_WORKTREE/REPOSITORY_REPLACED/WORKTREE_CREATE_FAILED/WORKTREE_COMMIT_UNSTABLE/WORKTREE_DELETE_FAILED/WORKTREE_DELETE_COMMIT_INCOMPLETE/MUTATION_UNAVAILABLE+BUSY_PREFLIGHT_UNAVAILABLE+WORKTREE_MANAGED_UNAVAILABLE/MUTATION_ABORTED+PROCESS_ABORTED/auth/network/timeout/unknown 固定 fallback。
+10) A11y：label、role=status(polite) vs role=alert、按钮名含 branch/path basename、键盘 form submit、disabled 控件、确认非纯色（文字警告+role=alert）、mobile overlay 不溢出（action flex-wrap + min-width:0 + overflow-wrap）；无新增动画（沿用既有 button active/focus 约定）。
+
+文件：
+- 新增 packages/client/src/features/workspace/worktree-branch.ts + worktree-branch.test.ts（纯 validator，13 用例全表）
+- 重写 packages/client/src/features/workspace/WorktreePanel.tsx（create/open/delete 单飞行、identity-gated、固定错误映射；保留 describeWorktreeError 列表错误）
+- WorktreePanel.test.tsx（新增 mutation 测试，保留既有 list-only 测试；32 用例）
+- WorkspacePanel.tsx（传递 canWorktreeWrite + onOpenWorktree）+ WorkspacePanel.test.tsx（write cap 揭示 create 表单等；10 用例）
+- AppShell.tsx（handleOpenWorktree 唯一导航 owner，navigate 清 session）+ AppShell.test.tsx（Open→navigate {to:'/',search:{cwd}} 且无 session、当前行无 Open；20 用例）
+- packages/client/src/styles/app.css（create/open/delete/confirm/status/error 样式，沿用既有 token 视觉语言，无新动画）
+- docs/migration-ledger.md（本 §42）+ docs/refactor-execution-plan.md（D3A 行/当前 checkpoint 刷新）
+
+验证（本机 Node v24.18.0；worktree 经 node_modules 符号链接复用 main 第三方依赖，@fffattiger/pix-protocol 符号链接指向本 worktree packages/protocol 的 fresh dist）：
+- Client 全量 549/549（基线 510 + 新增 39：worktree-branch 13 + WorktreePanel 22 + WorkspacePanel 2 + AppShell 2）；typecheck（tsc -b --pretty false）EXIT 0。
+- 定向覆盖：no write cap→list-only/无动作 + write cap→create 表单/动作；validator 全表含 255 边界接受/无 auto-trim；create 成功→navigate 返回 path；pending/double submit 恰一次；cap 撤回/cwd 变化 stale 不 navigate 不报错；Open 仅 authorized 非当前且仅 navigation 无 mutation；Delete 仅 managed 非 main（unmanaged/unauthorized/main 无 destructive 控件）；dirty 409→inline confirm；Cancel 无 force 且焦点回 Delete；force 恰一次；busy/无 authority/service down 无 force 固定文案；selected delete→fallback navigate / 非 selected 不 navigate / late 忽略；create/delete 成功均经既有 mutation options invalidate（list refetch）；a11y 查询/焦点/mobile-safe 类结构与 raw malicious marker 不渲染；AppShell Open→navigate 清 session 且零 socket。
+- check:architecture PASS、client check:boundaries PASS、git diff --check PASS；Host/Protocol/sessiond/adapter/runtime 零 diff（纯 Client）。
+
+残余/风险：
+- 本分支未 merge/push/deploy；待独立验证后合入 main。
+- 网络不可取消：stale completion 由 generation 忽略，但网络请求本身仍会到达 Host（documented，决策 8）。
+- 焦点恢复经 post-commit effect（确认打开时 Delete 按钮卸载，无法同步 focus），jsdom 已验证。
+- 无浏览器视觉验收（仅 DOM/a11y）；create 仍可能因 Git ref 深层限制在服务端失败（客户端按 parity 接受 255 边界，服务端可安全失败）。
+- Files/Git 其他 mutation 范围（Files write UI 等）仍不在本切片，不宣称 D3A 全 DONE。
+```

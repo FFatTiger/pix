@@ -1337,6 +1337,106 @@ html.dark .git-status-badge--deleted {
   min-width: 0;
 }
 
+/* —— Worktrees (managed create/open/delete controls) —— */
+
+.worktree-create {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  min-width: 0;
+}
+.worktree-create-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.worktree-create-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.worktree-create-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.worktree-create-row input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.worktree-create-row input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.worktree-create-error {
+  margin: 0;
+  font-size: 12px;
+  color: #b91c1c;
+}
+html.dark .worktree-create-error {
+  color: #fca5a5;
+}
+.worktree-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.worktree-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.worktree-btn--danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+.worktree-delete-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg-card));
+  min-width: 0;
+}
+.worktree-delete-confirm-warning {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  overflow-wrap: break-word;
+}
+.worktree-delete-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.worktree-row-error {
+  margin: 0;
+  font-size: 12px;
+  color: #b91c1c;
+}
+html.dark .worktree-row-error {
+  color: #fca5a5;
+}
+
 /* —— Catalog dock (reuses workspace-panel shell) —— */
 
 .catalog-panel-header {
