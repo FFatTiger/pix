@@ -70,7 +70,11 @@ export function createQueryOptions(http: HttpClient) {
       bootstrap: () => queryOptions({ queryKey: queryKeys.capabilities.bootstrap(), queryFn: ({ signal }) => http.get(urls.bootstrap(), { schema: BootstrapResponseSchema, signal }), staleTime: 15_000, retry: false }),
     },
     sessions: {
-      list: (cwd?: string) => queryOptions({ queryKey: queryKeys.sessions.list(cwd), queryFn: ({ signal }) => sessions.list({ ...(cwd === undefined ? {} : { cwd }), signal }) }),
+      // 30s staleTime matches the server-side per-store list cache TTL: mount
+      // / window-focus refetches of the (heavy, all-project) session list are
+      // served from the cache instead of re-running a full SessionManager scan
+      // per request. The cold-open all-project request still fires on first mount.
+      list: (cwd?: string) => queryOptions({ queryKey: queryKeys.sessions.list(cwd), queryFn: ({ signal }) => sessions.list({ ...(cwd === undefined ? {} : { cwd }), signal }), staleTime: 30_000 }),
       detail: (id: string) => queryOptions({ queryKey: queryKeys.sessions.detail(id), queryFn: ({ signal }) => sessions.detail(id, signal), enabled: Boolean(id) }),
       context: (id: string) => queryOptions({ queryKey: queryKeys.sessions.context(id), queryFn: ({ signal }) => sessions.context(id, signal), enabled: Boolean(id) }),
       thinking: (id: string, entryId: string) => queryOptions({ queryKey: queryKeys.sessions.thinking(id, entryId), queryFn: ({ signal }) => sessions.thinking(id, entryId, signal), enabled: Boolean(id && entryId) }),

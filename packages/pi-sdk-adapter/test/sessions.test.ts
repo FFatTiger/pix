@@ -11,6 +11,7 @@ import type {
 } from "@fffattiger/pix-runtime-core";
 import { isRuntimeError } from "@fffattiger/pix-runtime-core";
 import { createPiSdkSessionStore } from "../src/internal/session-store.js";
+import type { PiSdkSessionManager, PiSdkSessionsSurface } from "../src/internal/session-store.js";
 import {
   createPiSdkSessionCatalog,
   createPiSdkSessionLocator,
@@ -101,6 +102,48 @@ async function seedRichSession(f: Fixture, cwdOverride?: string) {
 
 function isNotFound(error: unknown): error is RuntimeError {
   return isRuntimeError(error) && error.code === "not_found";
+}
+
+// ---------------------------------------------------------------------------
+// Injected-SDK fixtures: valid list info + a manager that never needs to read
+// entries, letting tests prove list-time behavior deterministically.
+// ---------------------------------------------------------------------------
+
+interface FakeSessionInfo {
+  path: string;
+  id: string;
+  cwd: string;
+  name?: string;
+  parentSessionPath?: string;
+  created: Date;
+  modified: Date;
+  messageCount: number;
+  firstMessage: string;
+  allMessagesText: string;
+}
+
+function mkInfo(overrides: { path: string; id: string } & Partial<Omit<FakeSessionInfo, "path" | "id">>): FakeSessionInfo {
+  return {
+    cwd: "/workspace",
+    created: new Date(NOW),
+    modified: new Date(NOW + 1),
+    messageCount: 1,
+    firstMessage: "hi",
+    allMessagesText: "hi",
+    ...overrides,
+  };
+}
+
+function fakeManager(id: string): PiSdkSessionManager {
+  return {
+    getEntries: () => [],
+    getBranch: () => [],
+    buildContextEntries: () => [],
+    getLeafId: () => null,
+    getEntry: () => undefined,
+    getSessionId: () => id,
+    getHeader: () => undefined,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +340,7 @@ describe("pi-sdk sessions fork provenance", () => {
     });
   }
 
-  it("recognizes the pix-fork-provenance custom entry", async () => {
+  it("keeps pix-fork-provenance in the detail path, not in the list header", async () => {
     const f = await setup();
     try {
       const manager = SessionManager.create(f.cwd, f.sessionDir);
@@ -307,10 +350,18 @@ describe("pi-sdk sessions fork provenance", () => {
         forkPointEntryId: "parent-entry",
       });
       flush(manager);
+      const sessionId = manager.getSessionId();
       const headers = await f.catalog.listSessions();
       const [header] = headers;
-      assert.equal(header?.parentSessionId, "parent-session");
-      assert.equal(header?.forkPointEntryId, "parent-entry");
+      // The list derives parentSessionId only from the SDK-native
+      // `parentSessionPath`; this session has none, and `forkPointEntryId`
+      // requires reading entries, so neither appears in list headers.
+      assert.equal(header?.parentSessionId, undefined);
+      assert.equal(header?.forkPointEntryId, undefined);
+      // The detail path retains full provenance behavior.
+      const detail = await f.catalog.readSession(sessionId);
+      assert.equal(detail.parentSessionId, "parent-session");
+      assert.equal(detail.forkPointEntryId, "parent-entry");
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }
@@ -333,6 +384,151 @@ describe("pi-sdk sessions fork provenance", () => {
       const childHeader = headers.find((h) => h.sessionId === child.getSessionId());
       assert.equal(childHeader?.parentSessionId, parent.getSessionId());
       assert.equal(childHeader?.forkPointEntryId, undefined);
+
+      // The detail path also resolves the SDK-native parent header to the
+      // parent session id (via the warm path→id index, no second open).
+      const detail = await f.catalog.readSession(child.getSessionId());
+      assert.equal(detail.parentSessionId, parent.getSessionId());
+      assert.equal(detail.forkPointEntryId, undefined);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Injected-SDK list performance + parent parity + cache semantics
+// ---------------------------------------------------------------------------
+
+describe("pi-sdk sessions list performance (injected SDK)", () => {
+  it("lists headers from a single listAll without opening any session file", async () => {
+    let openCalls = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+      },
+      open() { openCalls += 1; throw new Error("SessionManager.open must not be called during list"); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    const headers = await store.listSessions();
+    assert.equal(headers.length, 1);
+    assert.equal(headers[0]?.sessionId, "s1");
+    assert.equal(openCalls, 0);
+  });
+
+  it("derives parentSessionId from parentSessionPath via the normalized path map (legacy web parity)", async () => {
+    const infos = [
+      mkInfo({ path: "/repo/sessions/p.jsonl", id: "parent" }),
+      mkInfo({ path: "/repo/sessions/c1.jsonl", id: "c1", parentSessionPath: "/repo/sessions/p.jsonl" }),
+      mkInfo({ path: "/repo/sessions/c2.jsonl", id: "c2", parentSessionPath: "/repo/sub/../sessions/p.jsonl" }),
+      mkInfo({ path: "/repo/sessions/c3.jsonl", id: "c3", parentSessionPath: "sessions/p.jsonl" }),
+      mkInfo({ path: "/repo/sessions/c4.jsonl", id: "c4", parentSessionPath: "/repo/other/missing.jsonl" }),
+      mkInfo({ path: "/repo/sessions/c5.jsonl", id: "c5" }),
+    ];
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() { return infos; },
+      open() { throw new Error("unexpected open"); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    const headers = await store.listSessions();
+    const byId = new Map(headers.map((h) => [h.sessionId, h]));
+    assert.equal(byId.get("parent")?.parentSessionId, undefined); // no parent recorded
+    assert.equal(byId.get("c1")?.parentSessionId, "parent");     // exact absolute match
+    assert.equal(byId.get("c2")?.parentSessionId, "parent");     // dot segments normalize
+    assert.equal(byId.get("c3")?.parentSessionId, undefined);     // relative path does not resolve
+    assert.equal(byId.get("c4")?.parentSessionId, undefined);     // missing parent
+    assert.equal(byId.get("c5")?.parentSessionId, undefined);     // no parentSessionPath
+  });
+
+  it("serves a 30s TTL cache, coalesces concurrent calls to one scan, and retries after failure", async () => {
+    let now = 1_000;
+    let scans = 0;
+    let failNext = false;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        if (failNext) { failNext = false; throw new Error("scan failed"); }
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })];
+      },
+      open() { throw new Error("unexpected open"); },
+    };
+    const store = createPiSdkSessionStore({ sdk, now: () => now, listTtlMs: 30_000 });
+
+    await store.listSessions();                 // cold
+    assert.equal(scans, 1);
+    await store.listSessions();                 // warm hit
+    assert.equal(scans, 1);
+    now += 30_001; await store.listSessions();  // expiry
+    assert.equal(scans, 2);
+    now += 30_001;
+    await Promise.all([1, 2, 3, 4].map(() => store.listSessions())); // 4 concurrent → 1 scan
+    assert.equal(scans, 3);
+    now += 30_001;
+    failNext = true;
+    await assert.rejects(() => store.listSessions(), /scan failed/); // failure → no cache
+    assert.equal(scans, 4);
+    await store.listSessions();                 // retry succeeds
+    assert.equal(scans, 5);
+  });
+
+  it("never returns a wrong session when a path was reused by another session id", async () => {
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "requested" })];
+      },
+      open() { return fakeManager("different-session"); },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await assert.rejects(() => store.readSession("requested"), isNotFound);
+    await assert.rejects(() => store.readSessionContext("requested"), isNotFound);
+    const located = await store.locate("requested");
+    assert.equal(located.exists, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real-JSONL warm reads reuse the list index (scan counting via injected SDK)
+// ---------------------------------------------------------------------------
+
+describe("pi-sdk sessions warm reads reuse the list index (real JSONL)", () => {
+  it("read/context/locate/resolveLeafId do not re-scan after a warm list; stale paths rebuild once", async () => {
+    const f = await setup();
+    try {
+      const { sessionId, assistant } = await seedRichSession(f);
+      let scans = 0;
+      const sdk: PiSdkSessionsSurface = {
+        async listAll(dir?: string) {
+          scans += 1;
+          return dir === undefined ? SessionManager.listAll() : SessionManager.listAll(dir);
+        },
+        open: (path: string) => SessionManager.open(path) as unknown as PiSdkSessionManager,
+      };
+      const store = createPiSdkSessionStore({ sessionDir: f.sessionDir, sdk });
+      const catalog = createPiSdkSessionCatalog(store);
+      const locator = createPiSdkSessionLocator(store);
+
+      // cold read → exactly one scan
+      await catalog.readSession(sessionId);
+      assert.equal(scans, 1);
+
+      // warm read / context / locate / resolveLeafId → no additional scan
+      await catalog.readSession(sessionId);
+      await catalog.readSessionContext(sessionId, { leafId: assistant });
+      const located = await locator.locate(sessionId);
+      await locator.resolveLeafId(sessionId, assistant);
+      assert.equal(located.exists, true);
+      assert.equal(scans, 1);
+
+      // externally deleted file → warm read rebuilds once then not_found
+      await rm(located.sessionFile);
+      await assert.rejects(() => catalog.readSession(sessionId), isNotFound);
+      assert.equal(scans, 2);
+
+      // a newly created session recovers with a single fresh scan
+      const { sessionId: newId } = await seedRichSession(f);
+      const detail = await catalog.readSession(newId);
+      assert.equal(detail.sessionId, newId);
+      assert.equal(scans, 3);
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }

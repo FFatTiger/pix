@@ -629,3 +629,45 @@ FilesPanel 搜索集成（冻结交互）：
 
 残余风险：① Host 单连接 serial lane 仍 HOL getSnapshot/set_auto_retry 于运行中 prompt 之后（文档化 LOW，非本 slice 目标）；② Composer queue 展示仅 DOM/a11y 测试覆盖，无浏览器视觉验收；③ 双 lane 上限复用 maxSerialFrames/maxSerialBytes 未新增独立配额（按父指令不新增 API）；④ root `npm run build`/`typecheck` 并行 runner 本机 stall（同 §29）；⑤ 候选 worktree 的未重建 protocol dist `.d.ts` 陈旧，但 pipeline fresh build 会消除，Protocol 源码未由 D2-P4 修改。
 ```
+
+## 33. session-list-piweb-parity — 全量会话列表性能 hotfix 记录
+
+```text
+实现：590fa12（branch fix/session-list-piweb-parity，base 57ec4619becb1647ba672e51b46d1fcd7152c09c）
+实现模型：本任务执行体（Fresh session）
+范围：packages/pi-sdk-adapter/src/internal/session-store.ts、packages/pi-sdk-adapter/test/sessions.test.ts、packages/client/src/api/query-keys.ts、packages/client/src/api/query-options.test.ts、docs/refactor-execution-plan.md、docs/migration-ledger.md。未改 Protocol/runtime-core/sessiond service/daemon/Host/package-lock，未加 Host RPC 超时，未引入 SQLite/Next，未改 allowed-root/项目总览/无关 UI。
+
+缺陷（既有）：pix 的 Pi SDK session store `listSessions()` 对每个 list 结果调用 `toSessionHeader` → `forkProvenance(info.path)` → `SessionManager.open(path).getEntries()`，对每条会话做第二次全量同步读取，且经常再 open 父会话；单会话 read/context/locate/resolveLeafId/delete 每次都重新跑全局 `SessionManager.listAll()`。listAll 冷 ~3.25s（本机实测 616 条会话冷 2.92s），旧 list 路径每会话二次读 + 完全阻塞 event loop（本机实测隔离同步 open 阶段 2.53s 内 1ms 心跳 0 tick）。
+
+修复（对齐旧 pi-web `lib/session-reader.ts` 算法，只迁算法不迁框架）：
+- list 路径：每次冷刷新一次 `SessionManager.listAll()`；构建 normalized path→sessionId map（`sessionPathKey` 逐字节对齐旧 pi-web：posix.normalize / win32.normalize+toLowerCase）；`parentSessionId` 由每条 info 的 `parentSessionPath` 经该 map 解析（相对路径不匹配绝对路径键 → undefined，与旧产品一致）；**list 绝不调用 `SessionManager.open`/getEntries 二次读**；保留 title/messageCount/lastActivity/cwd/sessionFile 元数据；`forkPointEntryId` 不在 list 头出现（读 entries 才可得），detail/context 保留完整 provenance（pix-fork-provenance custom entry，否则 SDK-native parentSession header 经 warm path→id index 解析、兜底 open 父会话）。
+- 缓存：per-store 实例缓存（非 process-global），30s TTL（默认）+ 单一 in-flight promise 按 generation 合并并发 list；timing 可注入（`now`/`listTtlMs`）。失败时 in-flight 清除且可重试，绝不为失败/畸形结果写缓存。
+- 单会话索引：warm list 后用 sessionId→path/info index，read/context/locate/resolveLeafId/delete 不再重跑全局 listAll；对齐旧 resolveSessionPath：warm 命中→零扫描；warm 未命中→恰一次 fresh scan；cold 未命中→listInfos 那次扫描即最新。open 时校验 `manager.getSessionId()===sessionId`（SDK open 对已删文件会生成新随机 id），stale/reused 路径 invalidate + rebuild 恰一次后 not_found，绝不返回错误会话。
+- 失效：delete 立即 invalidateList。create/discovery/rename 无现成窄 seam（catalog port 无 invalidate 方法，加方法属接口/协议变更），按 hotfix 约定记录最长 30s 陈旧：单会话 read 经 rebuild-once 自愈，list 标题/成员最迟 30s 后刷新。
+- Client：sessions list query 加 `staleTime: 30_000`（对齐服务端 TTL），mount/window focus 不再重复触发重型全量 list 请求；保留无 cwd 全项目冷启动请求。
+
+验证（本机 Node v24.18.0，PIX_AUTH_DISABLED=true 跑 E2E）：
+- root npm run build EXIT 0（9 workspace 全 build）；root npm run typecheck EXIT 0；check:architecture PASS（含 no legacy product name）；adapter check:boundaries PASS（21 source/10 public declarations）；client check:boundaries PASS（83 files）。
+- adapter 171/171（基线含既有 166 + 新增 5：list 不 open、parent 归一化 parity、30s TTL/coalesce/failure-retry、path-reuse 绝不错会话、real-JSONL warm 不再扫描+stale rebuild once+恢复）；sessions.test.js 18/18。
+- client 482/482（新增 1：sessions list staleTime=30s + 无 cwd 冷请求保留）。
+- sessiond 158 pass/1 Windows skip；runtime-core 7/7；protocol 116/116；runtime-contract-tests 75/75；agent-worker 105/105；host 269/269；cli 46/46。
+- test:e2e:sessions PASS（真实 JSONL 全链路零 worker）；test:e2e:startup PASS；test:e2e:runtime PASS（round 1 全场景）。
+- git diff --check PASS（见下）。
+
+真实语料性能（本机，`~/.pi` 616 条会话，warm page cache，1ms 心跳）：
+- A. `SessionManager.listAll()` 冷：2.92s，event loop 响应（2019 ticks，maxGap 3.9ms）。
+- B. 旧 list 路径（listAll + 每会话 open().getEntries()）：~5.5s 总量；隔离同步 open 阶段 2.53s 内 1ms 心跳 0 tick（event loop 完全阻塞 ~2.5s）。
+- C. 新 store `listSessions()` 冷：2.97s ≈ listAll-only（2027 ticks，maxGap 7.5ms，无额外阻塞）。
+- D. 新 store `listSessions()` 热：1ms（30s TTL 命中）。
+- 结论：本机冷 list 从 ~5.5s 降到 ~2.97s（≈纯 listAll，无二次读），重复 list 从 ~5.5s/次降到 ~1ms/次，且不再阻塞 sessiond event loop。根因描述中的 53.7s 为更大语料/冷缓存条件下测得，相对改善与阻塞证据在本机一致。
+
+残余风险：
+- create/discovery/rename 后 store 缓存最长 30s 陈旧（已文档化；单会话读取自愈；Client rename/delete mutation 已 invalidate client query）。
+- `locate` 现在经 openSession 校验 id（activate 属冷启动低频路径，一次全读可接受）；`readSession`/`deleteSession` 同样校验 id 以绝不错会话。
+- root npm run build/typecheck 本机可跑（本次 EXIT 0），未复现 §29 stall；未 merge/push/重启部署。
+独立验证 verdict：待父会话按协作规则复验。
+```
+
+## 34. session-list-piweb-parity 实现模型说明
+
+本 hotfix 在独立 worktree `fix-session-list-piweb-parity` 完成（base 57ec461），未改 main、未新建其他 worktree、未 merge/push。实现、测试、文档更新与真实语料探针均在本 worktree 完成；机器相关探针脚本 `.perf-probe.mjs` 未提交（提交前已删除）。

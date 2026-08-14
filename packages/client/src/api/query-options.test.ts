@@ -58,6 +58,27 @@ describe("query keys and options", () => {
     await expect(option.queryFn!({ signal: new AbortController().signal } as never)).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 
+  it("sessions list option sets a 30s staleTime and preserves the cold-open all-project request", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ sessions: [session], revision: 4 }));
+    const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const options = createQueryOptions(http);
+
+    const byCwd = options.sessions.list("/repo");
+    expect(byCwd.staleTime).toBe(30_000);
+    expect(byCwd.queryKey).toEqual(["pix", "sessions", "list", "/repo"]);
+
+    // The no-cwd (all-project) cold-open request is preserved and fires on mount.
+    const all = options.sessions.list();
+    expect(all.queryKey).toEqual(["pix", "sessions", "list", null]);
+    expect(all.staleTime).toBe(30_000);
+    const signal = new AbortController().signal;
+    await all.queryFn!({ signal } as never);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/sessions",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("catalog options require cwd, pass signal, set staleTime 15s and retry false", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json({
       models: [{ id: "m", provider: "p" }],
