@@ -111,11 +111,12 @@ test("shutdownSessiond is a no-op when nothing is running", async () => {
   }
 });
 
-test("shutdownSessiond SIGTERMs a running daemon and clears lock + socket", async () => {
+test("shutdownSessiond stops a running daemon via authenticated RPC and clears lock + socket", async () => {
   const dir = await tempDir();
   try {
-    // shutdownSessiond stops a *separate* daemon process by pid, so spawn a
-    // detached one (never the in-process test daemon, whose pid is this test).
+    // shutdownSessiond stops a *separate* daemon process via its authenticated
+    // system.shutdown RPC, so spawn a detached one (never the in-process test
+    // daemon, whose pid is this test).
     const ensured = await ensureSessiond(dir);
     const pid = ensured.pid;
     const paths = sessiondPaths(dir);
@@ -172,14 +173,15 @@ test("shutdownSessiond refuses (obstructed) a live-but-unreachable pid without s
   }
 });
 
-test("shutdownSessiond returns failed (timeout) when a reachable daemon ignores SIGTERM", async (t) => {
-  if (process.platform === "win32") return t.skip("SIGTERM semantics differ on Windows");
+test("shutdownSessiond returns failed (unsupported) when a reachable daemon does not support system.shutdown", async (t) => {
+  if (process.platform === "win32") return t.skip("Unix sockets only");
   const dir = await tempDir();
   let child: ChildProcess | undefined;
   try {
     // A controlled fixture: real lock + secret + public socket served by the
-    // real SessiondRpcServer (so inspect reports healthy), but the process
-    // ignores SIGTERM — shutdown must report failed(timeout), never success.
+    // real SessiondRpcServer (so inspect reports healthy), but WITHOUT the
+    // shutdown authority — RPC-only down must refuse as unsupported and never
+    // kill the target via a PID/SIGTERM fallback.
     const script =
       `import { mkdirSync, writeFileSync } from 'node:fs';` +
       `import { join } from 'node:path';` +
@@ -187,30 +189,30 @@ test("shutdownSessiond returns failed (timeout) when a reachable daemon ignores 
       `const dir=${JSON.stringify(dir)};` +
       `mkdirSync(dir,{recursive:true});` +
       `const secret='s'.repeat(43);` +
-      `writeFileSync(join(dir,'sessiond.lock'),JSON.stringify({pid:process.pid,instanceId:'stubborn',createdAt:Date.now()}));` +
+      `writeFileSync(join(dir,'sessiond.lock'),JSON.stringify({pid:process.pid,instanceId:'legacy',createdAt:Date.now()}));` +
       `writeFileSync(join(dir,'sessiond.secret'),secret);` +
       `const server=new SessiondRpcServer({endpoint:join(dir,'sessiond.sock'),secret,handler:{handle:async(m)=>(m==='system.ping'?{pong:true,serverTime:Date.now()}:{pong:true})}});` +
       `await server.listen();` +
-      `process.on('SIGTERM',()=>{});process.stdout.write('ready');setInterval(()=>{},60000);`;
+      `process.stdout.write('ready');setInterval(()=>{},60000);`;
     child = spawn(process.execPath, ["--input-type=module", "-e", script], {
       cwd: resolveCliPackageRoot(),
       stdio: ["ignore", "pipe", "inherit"],
     });
     const proc = child;
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("stubborn child did not signal ready")), 5_000);
+      const timer = setTimeout(() => reject(new Error("legacy child did not signal ready")), 5_000);
       proc.stdout?.on("data", () => { clearTimeout(timer); resolve(); });
       proc.on("error", reject);
     });
-    // The fixture must be genuinely reachable, so the failure is a timeout on
-    // a healthy-but-stubborn daemon, not an obstructed classification.
+    // The fixture must be genuinely reachable, so the failure is a refusal on a
+    // healthy-but-legacy daemon, not an obstructed classification.
     const status = await inspectSessiond(dir);
     assert.equal(status.pingable, true);
     assert.equal(status.obstructed, false);
     const result = await shutdownSessiond(dir, { timeoutMs: 300 });
     assert.equal(result.action, "failed");
-    assert.equal(result.reason, "timeout");
-    assert.equal(proc.exitCode, null); // SIGTERM ignored; process still alive
+    assert.equal(result.reason, "sessiond does not support remote shutdown");
+    assert.equal(proc.exitCode, null); // no PID/SIGTERM fallback: process still alive
   } finally {
     if (child) {
       const proc = child;
