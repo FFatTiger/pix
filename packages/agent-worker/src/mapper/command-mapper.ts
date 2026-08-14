@@ -104,11 +104,14 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
     case "generate_session_title":
       return { type: "generate_session_title" };
     case "extension_ui_response": {
-      // Collapse method/responseKind into the Core value|confirmed|cancelled form.
+      // Collapse method/responseKind into the Core value|confirmed|cancelled
+      // form, PRESERVING the correlated method (the adapter validates the
+      // pending request's exact method against it).
       if (command.responseKind === "cancelled") {
         const core: CoreExtensionUiResponseCommand = {
           type: "extension_ui_response",
           id: command.id,
+          method: command.method,
           cancelled: true,
         };
         return core;
@@ -117,6 +120,7 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
         const core: CoreExtensionUiResponseCommand = {
           type: "extension_ui_response",
           id: command.id,
+          method: command.method,
           confirmed: command.confirmed,
         };
         return core;
@@ -127,13 +131,14 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
       const core: CoreExtensionUiResponseCommand = {
         type: "extension_ui_response",
         id: command.id,
+        method: command.method,
         value,
       };
       return core;
     }
     case "extension_ui_input":
-      // Strip commandId/method; carry the incremental data string.
-      return { type: "extension_ui_input", id: command.id, data: command.data };
+      // Strip commandId; carry the correlated method + incremental data string.
+      return { type: "extension_ui_input", id: command.id, method: command.method, data: command.data };
   }
 }
 

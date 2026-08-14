@@ -41,10 +41,10 @@ const HOST_START_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 8_000;
 const ROUNDS = Math.max(1, Number(process.env.PIX_E2E_ROUNDS ?? "1") || 1);
 
-// D2-P7 production capability surface (16 tokens): the exact set the attach
+// D2-P8 production capability surface (17 tokens): the exact set the attach
 // snapshot must carry. Updating this constant keeps every scenario honest about
-// what is open (bash pair + tools read/write + reload + manual-compact pair)
-// vs still closed (fork/auto_name/extension UI/navigate).
+// what is open (bash pair + tools read/write + reload + manual-compact pair +
+// extension UI) vs still closed (fork/navigate/auto_name).
 const PRODUCTION_CAPS = [
   "runtime.prompt",
   "runtime.abort",
@@ -62,6 +62,7 @@ const PRODUCTION_CAPS = [
   "runtime.reload",
   "runtime.compact",
   "runtime.compact.abort",
+  "runtime.extension_ui",
 ];
 
 // In-memory registry of sessions created through the E2E client, backing both
@@ -1995,6 +1996,251 @@ async function scenarioD2P7CompactControl(stack, projectDir) {
   }
 }
 
+async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
+  // Single browser connection (RuntimeWsClient), real chain:
+  //   Browser WS → Host gateway (serial + interleaving lanes) → sessiond →
+  //   R2 child → R1 worker-main → fixture.
+  // D2-P8 extension UI vertical slice. The prompt command awaits an extension
+  // request on the Host SERIAL lane; the response/input command is routed to the
+  // existing INTERLEAVING lane (D2-P4 queued-turn lane generalized) so it is
+  // NOT HOL-blocked behind the prompt on the SAME socket — the prompt resumes
+  // only after the correct response settles the request. Detach/reattach
+  // persistence is checked on a second connection (detach is an ordinary serial
+  // command, so it would HOL behind the in-flight prompt on connection 1).
+  const client = new RuntimeWsClient(stack.host.wsUrl);
+  await client.connect();
+  const pending = (result) => result?.snapshot?.state?.pendingExtensionUi ?? result?.state?.pendingExtensionUi ?? [];
+  const bstate = (result) => result?.snapshot?.state ?? result?.state;
+  try {
+    await client.handshake();
+    const created = await client.create({
+      cwd: projectDir,
+      projectRoot: projectDir,
+      createRequestId: `cr-d2p8-${Date.now()}`,
+    });
+    const sessionId = created.sessionId;
+    const snap = await client.attach(sessionId);
+    assert.equal(snap.type, "snapshot");
+    assert.deepEqual(snap.payload.snapshot.capabilities, {
+      capabilities: PRODUCTION_CAPS,
+      version: 1,
+    });
+
+    const startUiPrompt = async (token, tag) => {
+      const commandId = `d2p8-${token}-${tag}-${Date.now()}`;
+      const afterIndex = client.messages.length;
+      const promptP = client.command(sessionId, {
+        commandId,
+        type: "prompt",
+        message: `__${token}__ ${tag}`,
+      });
+      // Only match the request published AFTER this prompt (a stale request from
+      // an earlier phase must never be mistaken for this one).
+      const req = await client.waitFor(
+        (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "extension_ui_request" && !m.payload?.request?.closed,
+        { label: `extension_ui_request ${token}`, afterIndex },
+      );
+      return { promptP, request: req.payload.request, commandId };
+    };
+    const waitForClose = async (requestId, afterIndex) => {
+      const close = await client.waitFor(
+        (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "extension_ui_request" && m.payload?.request?.closed === true && m.payload?.request?.id === requestId,
+        { label: `extension_ui_request close ${requestId}`, afterIndex },
+      );
+      return close;
+    };
+    const uiCommand = (type, commandId, extra) => client.command(sessionId, { commandId, type, ...extra });
+
+    // ---- 1. confirm flow: wrong method invalid_input (stays pending), then
+    // ----    correct response resumes the prompt and emits a single close.
+    // NOTE: while a prompt awaits extension UI, the Host serial lane is
+    // HOL-blocked (getSnapshot/detach would queue behind it), so pending-state
+    // assertions use the client's event-driven projection (live + replay both
+    // reduce through the shared Protocol reducer).
+    let { promptP, request, commandId } = await startUiPrompt("confirm", "confirm-me");
+    const confirmReqId = request.id;
+    assert.equal(request.method, "confirm");
+    assert.equal(client.projection.state.pendingExtensionUi.length, 1, "live projection must show the pending request");
+    assert.equal(client.projection.state.pendingExtensionUi[0].id, confirmReqId);
+
+    // Wrong-method response: structured invalid_input, no settle, no close.
+    const wrongMethod = await uiCommand("extension_ui_response", `d2p8-wrong-method-${Date.now()}`, { id: confirmReqId, method: "input", responseKind: "value", value: "x" });
+    assert.equal(wrongMethod.payload.ok, true, JSON.stringify(wrongMethod.payload));
+    const wrongOutcome = wrongMethod.payload.result.result;
+    assert.equal(wrongOutcome.ok, false, JSON.stringify(wrongOutcome));
+    assert.equal(wrongOutcome.error.code, "invalid_input");
+    assert.equal(client.projection.state.pendingExtensionUi.length, 1, "wrong-method response must not close the request");
+
+    // Unknown id: not_found.
+    const unknown = await uiCommand("extension_ui_response", `d2p8-unknown-${Date.now()}`, { id: "no-such-request", method: "confirm", responseKind: "confirmed", confirmed: true });
+    assert.equal(unknown.payload.result.result.ok, false);
+    assert.equal(unknown.payload.result.result.error.code, "not_found");
+
+    // Correct response on the SAME socket resumes the prompt (interleaving lane).
+    const confirmIndex = client.messages.length;
+    const correct = await uiCommand("extension_ui_response", `d2p8-correct-${Date.now()}`, { id: confirmReqId, method: "confirm", responseKind: "confirmed", confirmed: true });
+    assert.equal(correct.payload.ok, true, JSON.stringify(correct.payload));
+    assert.equal(correct.payload.result.result.ok, true, JSON.stringify(correct.payload));
+    const promptRes = await promptP;
+    assert.equal(promptRes.payload.result.result.ok, true, JSON.stringify(promptRes.payload));
+    const closeEvt = await waitForClose(confirmReqId, confirmIndex);
+    assert.equal(closeEvt.payload.request.id, confirmReqId);
+    assert.equal(client.projection.state.pendingExtensionUi.length, 0, "settled request must be removed from the live projection");
+
+    // Late response after close: not_found.
+    const late = await uiCommand("extension_ui_response", `d2p8-late-${Date.now()}`, { id: confirmReqId, method: "confirm", responseKind: "confirmed", confirmed: false });
+    assert.equal(late.payload.result.result.ok, false);
+    assert.equal(late.payload.result.result.error.code, "not_found");
+
+    // Same commandId at-most-once: retrying the identical response returns the
+    // cached result and never re-settles (no second close).
+    const dedupId = `d2p8-dedup-${Date.now()}`;
+    ({ promptP, request, commandId } = await startUiPrompt("confirm", "dedup"));
+    const dedupReqId = request.id;
+    const dedupIndex = client.messages.length;
+    const first = await uiCommand("extension_ui_response", dedupId, { id: dedupReqId, method: "confirm", responseKind: "confirmed", confirmed: true });
+    assert.equal(first.payload.result.result.ok, true);
+    await promptP;
+    await waitForClose(dedupReqId, dedupIndex);
+    const retry = await uiCommand("extension_ui_response", dedupId, { id: dedupReqId, method: "confirm", responseKind: "confirmed", confirmed: true });
+    assert.equal(retry.payload.result.result.ok, true, "same commandId retry returns the cached at-most-once result");
+    const dedupCloses = client.eventsFor(sessionId).filter((e) => e.type === "extension_ui_request" && e.request?.id === dedupReqId && e.request?.closed === true);
+    assert.equal(dedupCloses.length, 1, "duplicate commandId must never emit a second close");
+
+    // ---- 2. detach before response → reattach sees pending; response then
+    // ----    detach/reattach sees none (journal replay cannot resurrect).
+    ({ promptP, request, commandId } = await startUiPrompt("confirm", "detach-me"));
+    const detachReqId = request.id;
+    const client2 = new RuntimeWsClient(stack.host.wsUrl);
+    await client2.connect();
+    try {
+      await client2.handshake();
+      const attached = await client2.attach(sessionId);
+      assert.equal(attached.type, "snapshot");
+      assert.equal(pending(attached.payload.snapshot).length, 1, "detach/reattach must see the pending request");
+      assert.equal(pending(attached.payload.snapshot)[0].id, detachReqId);
+      await client2.detach(sessionId);
+      const reattached = await client2.attach(sessionId);
+      assert.equal(pending(reattached.payload.snapshot).length, 1, "detach before response then reattach still shows pending");
+      // Now respond on connection 1 and confirm reattach shows none.
+      const respIndex = client.messages.length;
+      const resp = await uiCommand("extension_ui_response", `d2p8-detach-resp-${Date.now()}`, { id: detachReqId, method: "confirm", responseKind: "confirmed", confirmed: true });
+      assert.equal(resp.payload.result.result.ok, true);
+      await promptP;
+      await waitForClose(detachReqId, respIndex);
+      const reattached2 = await client2.attach(sessionId);
+      assert.equal(pending(reattached2.payload.snapshot).length, 0, "response then detach/reattach sees none (replay cannot resurrect)");
+    } finally {
+      client2.close();
+    }
+
+    // ---- 3. input incremental: exact-method input accumulates, wrong-method
+    // ----    input is invalid_input, only the final response closes.
+    ({ promptP, request, commandId } = await startUiPrompt("input", "enter"));
+    const inputReqId = request.id;
+    assert.equal(request.method, "input");
+    const inputIndex = client.messages.length;
+    const in1 = await uiCommand("extension_ui_input", `d2p8-input-1-${Date.now()}`, { id: inputReqId, method: "input", data: "hello" });
+    assert.equal(in1.payload.result.result.ok, true, JSON.stringify(in1.payload));
+    const inWrong = await uiCommand("extension_ui_input", `d2p8-input-wrong-${Date.now()}`, { id: inputReqId, method: "editor", data: "wrong" });
+    assert.equal(inWrong.payload.result.result.ok, false);
+    assert.equal(inWrong.payload.result.result.error.code, "invalid_input");
+    const in2 = await uiCommand("extension_ui_input", `d2p8-input-2-${Date.now()}`, { id: inputReqId, method: "input", data: " world" });
+    assert.equal(in2.payload.result.result.ok, true);
+    assert.equal(client.projection.state.pendingExtensionUi.length, 1, "incremental input must NOT close the request");
+    const inputResp = await uiCommand("extension_ui_response", `d2p8-input-resp-${Date.now()}`, { id: inputReqId, method: "input", responseKind: "value", value: "hello world" });
+    assert.equal(inputResp.payload.result.result.ok, true);
+    await promptP;
+    await waitForClose(inputReqId, inputIndex);
+    assert.equal(client.projection.state.pendingExtensionUi.length, 0);
+
+    // ---- 4. select cancel: cancelled is allowed for interactive methods.
+    ({ promptP, request, commandId } = await startUiPrompt("select", "pick"));
+    const selectReqId = request.id;
+    assert.deepEqual([...request.options], ["opt-a", "opt-b"]);
+    const selectIndex = client.messages.length;
+    const cancelResp = await uiCommand("extension_ui_response", `d2p8-select-cancel-${Date.now()}`, { id: selectReqId, method: "select", responseKind: "cancelled", cancelled: true });
+    assert.equal(cancelResp.payload.result.result.ok, true);
+    await promptP;
+    await waitForClose(selectReqId, selectIndex);
+
+    // ---- 5. editor: incremental reaches the driver; final value closes.
+    ({ promptP, request, commandId } = await startUiPrompt("editor", "edit"));
+    const editorReqId = request.id;
+    assert.equal(request.prefill, "prefill");
+    const editorIndex = client.messages.length;
+    const ed1 = await uiCommand("extension_ui_input", `d2p8-editor-1-${Date.now()}`, { id: editorReqId, method: "editor", data: "draft" });
+    assert.equal(ed1.payload.result.result.ok, true);
+    const editorResp = await uiCommand("extension_ui_response", `d2p8-editor-resp-${Date.now()}`, { id: editorReqId, method: "editor", responseKind: "value", value: "draft" });
+    assert.equal(editorResp.payload.result.result.ok, true);
+    await promptP;
+    await waitForClose(editorReqId, editorIndex);
+
+    // ---- 6. custom: lines shape exact; value response closes.
+    ({ promptP, request, commandId } = await startUiPrompt("custom", "custom"));
+    const customReqId = request.id;
+    assert.deepEqual([...request.lines], ["Custom UI lines"]);
+    const customIndex = client.messages.length;
+    const customResp = await uiCommand("extension_ui_response", `d2p8-custom-${Date.now()}`, { id: customReqId, method: "custom", responseKind: "value", value: "custom-out" });
+    assert.equal(customResp.payload.result.result.ok, true);
+    await promptP;
+    await waitForClose(customReqId, customIndex);
+
+    // ---- 7. abort clears a pending request: one close + interrupted prompt.
+    ({ promptP, request, commandId } = await startUiPrompt("editor", "abort-me"));
+    const abortReqId = request.id;
+    const abortIndex = client.messages.length;
+    const ir = await client.interrupt(sessionId, `d2p8-abort-${Date.now()}`, { type: "abort" });
+    assert.equal(ir.payload.result.ok, true, JSON.stringify(ir.payload));
+    const aborted = await promptP;
+    assert.equal(aborted.payload.result.result.ok, false);
+    assert.equal(aborted.payload.result.result.error.code, "interrupted");
+    await waitForClose(abortReqId, abortIndex);
+    assert.equal(client.projection.state.pendingExtensionUi.length, 0, "abort must clear the pending request");
+
+    // ---- 8. status/widget/title/notify are events/state, not responses.
+    await client.command(sessionId, { commandId: `d2p8-status-${Date.now()}`, type: "prompt", message: "__status__" });
+    await client.waitFor((m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "extension_statuses", { label: "extension_statuses" });
+    const gsStatus = await client.getSnapshot(sessionId);
+    assert.equal(bstate(gsStatus.payload.result).extensionStatuses.length, 2);
+    await client.command(sessionId, { commandId: `d2p8-widget-${Date.now()}`, type: "prompt", message: "__widget__" });
+    await client.waitFor((m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "extension_widgets", { label: "extension_widgets" });
+    const gsWidget = await client.getSnapshot(sessionId);
+    assert.equal(bstate(gsWidget.payload.result).extensionWidgets.length, 1);
+    assert.equal(bstate(gsWidget.payload.result).extensionWidgets[0].placement, "belowEditor");
+    const titleRes = await client.command(sessionId, { commandId: `d2p8-title-${Date.now()}`, type: "prompt", message: "__title__" });
+    assert.equal(titleRes.payload.result.result.ok, true);
+    await client.waitFor((m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "session_title", { label: "session_title" });
+    const gsTitle = await client.getSnapshot(sessionId);
+    assert.equal(bstate(gsTitle.payload.result).sessionName, "Extension Title");
+    const notifyRes = await client.command(sessionId, { commandId: `d2p8-notify-${Date.now()}`, type: "prompt", message: "__notify__" });
+    assert.equal(notifyRes.payload.result.result.ok, true);
+    await client.waitFor((m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "extension_error", { label: "extension_error" });
+
+    // ---- 9. closed caps remain unsupported; reload cannot broaden.
+    for (const [type, extra, token] of [
+      ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
+      ["generate_session_title", {}, "runtime.auto_name"],
+    ]) {
+      const closed = await client.command(sessionId, { commandId: `d2p8-closed-${type}-${Date.now()}`, type, ...extra });
+      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
+      const outcome = closed.payload.result.result;
+      assert.equal(outcome.ok, false, `${type} must be closed`);
+      assert.equal(outcome.error.code, "unsupported_capability");
+      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
+    }
+    const reload = await client.command(sessionId, { commandId: `d2p8-reload-${Date.now()}`, type: "reload" });
+    assert.equal(reload.payload.result.result.ok, true, JSON.stringify(reload.payload));
+    const afterReload = await client.getSnapshot(sessionId);
+    assert.deepEqual(afterReload.payload.result.capabilities, { capabilities: PRODUCTION_CAPS, version: 2 }, "reload must not broaden the capability set");
+
+    return { sessionId, confirmReqId };
+  } finally {
+    client.close();
+  }
+}
+
 async function scenarioShutdownCleanup(stack, projectDir) {
   const { readFile } = await import("node:fs/promises");
   const lock = JSON.parse(
@@ -2152,6 +2398,9 @@ async function runRound(round) {
     results.compactControl = await scenarioD2P7CompactControl(stack, projectA);
     log(`round ${round}: D2-P7 compact control OK session=${results.compactControl.sessionId} before=${results.compactControl.beforeCount} after=${results.compactControl.afterCount}`);
 
+    results.extensionUi = await scenarioD2P8ExtensionUiControl(stack, projectA);
+    log(`round ${round}: D2-P8 extension UI control OK session=${results.extensionUi.sessionId}`);
+
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
 
@@ -2216,6 +2465,7 @@ async function main() {
           "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed fork/navigate/auto_name)",
           "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + closed fork/navigate/auto_name)",
           "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + closed fork/navigate/auto_name + no orphan)",
+          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + custom lines + abort clears + status/widget/title/notify events + closed fork/navigate/auto_name + reload cannot broaden)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {

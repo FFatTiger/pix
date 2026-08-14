@@ -99,9 +99,19 @@ function applyEventToSnapshot(snapshot: RuntimeSnapshot, event: RuntimeEventData
       state.queuedMessages = { steering: clone(event.steering ?? []), followUp: clone(event.followUp ?? []) };
       state.pendingMessageCount = state.queuedMessages.steering.length + state.queuedMessages.followUp.length;
       break;
-    case "extension_ui_request":
+    case "extension_ui_request": {
+      // Canonical close tombstone: `closed: true` REMOVES the requestId and is
+      // never stored. An unknown close is an idempotent no-op. A normal request
+      // upserts by requestId (same id replaced, others/order preserved). Both
+      // sessiond and the browser reduce through this exact function, so
+      // detach/reattach/replay can never resurrect a settled request.
+      if (event.request.closed === true) {
+        state.pendingExtensionUi = [...(state.pendingExtensionUi ?? []).filter((item) => item.id !== event.request.id)];
+        break;
+      }
       state.pendingExtensionUi = [...(state.pendingExtensionUi ?? []).filter((item) => item.id !== event.request.id), clone(event.request)];
       break;
+    }
     case "extension_statuses": state.extensionStatuses = clone(event.statuses); break;
     case "extension_widgets": state.extensionWidgets = clone(event.widgets); break;
     case "runtime_capabilities_changed": snapshot.capabilities = clone(event.capabilities); break;

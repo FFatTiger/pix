@@ -9,24 +9,44 @@ const requestTiming = {
   expiresAt: z.number().optional(),
 };
 
+/**
+ * Strict optional canonical close marker. A close tombstone is a normal
+ * `extension_ui_request` event whose `request` carries `closed: true` (never
+ * `false`); the pure projection removes that requestId and never stores the
+ * tombstone. Only `true` is a valid value — fail-closed against `false` being
+ * misread as a normal upsert.
+ */
+const closedMarker = { closed: z.literal(true).optional() };
+
 /** Strict method-discriminated extension request; cross-method fields reject. */
 export const ExtensionUiRequestSchema = z.discriminatedUnion("method", [
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("select"), title: z.string(), options: z.array(z.string()).min(1), ...requestTiming }),
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("confirm"), title: z.string(), message: z.string(), ...requestTiming }),
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("input"), title: z.string(), placeholder: z.string().optional(), ...requestTiming }),
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("editor"), title: z.string(), prefill: z.string().optional(), ...requestTiming }),
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("notify"), message: z.string(), notifyType: z.enum(["info", "warning", "error"]), ...requestTiming }),
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("setStatus"), statusKey: NonEmptyStringSchema, statusText: z.string().optional(), ...requestTiming }),
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("setWidget"), widgetKey: NonEmptyStringSchema, widgetLines: z.array(z.string()).optional(), widgetPlacement: ExtensionWidgetPlacementSchema.optional(), ...requestTiming }),
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("setTitle"), title: z.string(), ...requestTiming }),
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("set_editor_text"), text: z.string(), ...requestTiming }),
-  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("custom"), lines: z.array(z.string()), ...requestTiming }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("select"), title: z.string(), options: z.array(z.string()).min(1), ...requestTiming, ...closedMarker }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("confirm"), title: z.string(), message: z.string(), ...requestTiming, ...closedMarker }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("input"), title: z.string(), placeholder: z.string().optional(), ...requestTiming, ...closedMarker }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("editor"), title: z.string(), prefill: z.string().optional(), ...requestTiming, ...closedMarker }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("notify"), message: z.string(), notifyType: z.enum(["info", "warning", "error"]), ...requestTiming, ...closedMarker }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("setStatus"), statusKey: NonEmptyStringSchema, statusText: z.string().optional(), ...requestTiming, ...closedMarker }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("setWidget"), widgetKey: NonEmptyStringSchema, widgetLines: z.array(z.string()).optional(), widgetPlacement: ExtensionWidgetPlacementSchema.optional(), ...requestTiming, ...closedMarker }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("setTitle"), title: z.string(), ...requestTiming, ...closedMarker }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("set_editor_text"), text: z.string(), ...requestTiming, ...closedMarker }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("custom"), lines: z.array(z.string()), ...requestTiming, ...closedMarker }),
 ]);
 export type ExtensionUiRequest = z.infer<typeof ExtensionUiRequestSchema>;
 export const ExtensionUiRequestMethodSchema = z.enum([
   "select", "confirm", "input", "editor", "notify", "setStatus",
   "setWidget", "setTitle", "set_editor_text", "custom",
 ]);
+
+/**
+ * Interactive methods (the only ones that produce a client response or
+ * incremental input). notify/setStatus/setWidget/setTitle/set_editor_text are
+ * events/state, not user-response requests.
+ */
+export const ExtensionUiInteractiveMethodSchema = z.enum([
+  "select", "confirm", "input", "editor", "custom",
+]);
+
+export type ExtensionUiInteractiveMethod = z.infer<typeof ExtensionUiInteractiveMethodSchema>;
 export type ExtensionUiRequestMethod = z.infer<typeof ExtensionUiRequestMethodSchema>;
 
 const extensionCommandBase = {

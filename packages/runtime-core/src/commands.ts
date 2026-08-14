@@ -109,15 +109,20 @@ export interface AbortCompactionCommand {
 
 /**
  * Extension UI responses — exactly one of `value` / `confirmed` / `cancelled`.
+ * `method` is the request method the response correlates to (preserved through
+ * the worker mapper from the wire command) so the adapter can reject a response
+ * whose method does not match the pending request.
  */
 export type ExtensionUiResponseCommand =
-  | { type: "extension_ui_response"; id: string; value: string }
-  | { type: "extension_ui_response"; id: string; confirmed: boolean }
-  | { type: "extension_ui_response"; id: string; cancelled: true };
+  | { type: "extension_ui_response"; id: string; method: "select" | "input" | "editor" | "custom"; value: string }
+  | { type: "extension_ui_response"; id: string; method: "confirm"; confirmed: boolean }
+  | { type: "extension_ui_response"; id: string; method: "select" | "confirm" | "input" | "editor" | "custom"; cancelled: true };
 
 export interface ExtensionUiInputCommand {
   type: "extension_ui_input";
   id: string;
+  /** Only input/editor accept incremental input. */
+  method: "input" | "editor";
   data: string;
 }
 

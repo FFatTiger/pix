@@ -78,6 +78,7 @@ describe("public production SDK factory smoke", () => {
           "runtime.reload",
           "runtime.compact",
           "runtime.compact.abort",
+          "runtime.extension_ui",
         ]);
 
         // Baseline query: get_state (always available, no capability gate).
@@ -231,7 +232,18 @@ describe("public production SDK factory smoke", () => {
         const compactAbortCap = port.getCapabilities().capabilities.includes("runtime.compact.abort");
         assert.equal(compactCap, true, "runtime.compact must be open");
         assert.equal(compactAbortCap, true, "runtime.compact.abort must be open");
-        // runtime.auto_name is explicitly NOT unlocked in D2-P1..P7.
+        // D2-P8: runtime.extension_ui IS in the production surface — the
+        // capability gate must report it OPEN. A response for an unknown id
+        // must therefore reach the adapter and fail as not_found (never
+        // unsupported_capability, which would prove the gate is still closed).
+        const extUiCap = port.getCapabilities().capabilities.includes("runtime.extension_ui");
+        assert.equal(extUiCap, true, "runtime.extension_ui must be open");
+        const extUi = await port.execute({ type: "extension_ui_response", id: "missing", method: "confirm", confirmed: true });
+        assert.equal(extUi.ok, false);
+        if (!extUi.ok) {
+          assert.equal(extUi.error.code, "not_found", "open gate must reach the adapter (not unsupported_capability)");
+        }
+        // runtime.auto_name is explicitly NOT unlocked in D2-P1..P8.
         const autoName = await port.execute({ type: "generate_session_title" });
         assert.equal(autoName.ok, false);
         if (!autoName.ok) {
@@ -270,7 +282,7 @@ describe("public production SDK factory smoke", () => {
         name: "D2-P7 Compact Smoke",
       });
       try {
-        assert.equal(port.getCapabilities().capabilities.length, 16);
+        assert.equal(port.getCapabilities().capabilities.length, 17);
         assert.deepEqual([...port.getCapabilities().capabilities], [...PRODUCTION_AGENT_CAPABILITIES]);
 
         // A tiny/fresh session has nothing to compact: the real SDK compact

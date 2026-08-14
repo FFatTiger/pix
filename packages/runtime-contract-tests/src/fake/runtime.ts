@@ -694,6 +694,15 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         error: makeRuntimeError("not_found", `no pending extension UI request: ${command.id}`),
       };
     }
+    // Exact method correlation: a wrong-method response/input is structured
+    // invalid_input and the request stays pending/usable (no settle).
+    if (pending.request.method !== command.method) {
+      return {
+        ok: false,
+        type: command.type,
+        error: makeRuntimeError("invalid_input", `extension response method mismatch for request ${command.id}`),
+      };
+    }
     this.pendingExtension = null;
     pending.settle({ kind: "response", command });
     this.emitStateChanged();

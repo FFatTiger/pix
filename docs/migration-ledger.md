@@ -1152,8 +1152,9 @@ boundaries、Startup/Sessions E2E、diff-check 全 PASS。不自行判定 PASS�
 ## 44. D4 Session-Rename Adapter Foundation — 离线重命名 adapter/runtime-core 地基记录
 
 ```text
-实现：本分支（branch feat/d4-session-rename-adapter，base main 125d0a6），backend-first，
-FOUNDATION ONLY，未合入/未部署。后续 sessiond 切片负责选择 live vs offline 并加
+实现：source branch feat/d4-session-rename-adapter（base main 125d0a6，source a266b01），
+backend-first FOUNDATION ONLY；Fresh GPT 独立持久化/并发审查 PASS，已合入 main
+`953640b`，未部署。后续 sessiond 切片负责选择 live vs offline 并加
 activation fence；本切片不开放任何 Host 路由/capability，不接 sessiond production
 （其 SessionMutationPort stub 未动），不改 live `set_session_name`，无 Client API/UI。
 
@@ -1231,5 +1232,154 @@ adapter.ts/index 分支）：
 残余/风险：
 - 未做 Host/sessiond/Client 接线与 UI 验收（本切片无 UI/无路由）；sessiond 后续选择
   live vs offline + activation fence。
-- 本分支未 merge/push/deploy；提交前工作树 clean。持久化与并发地基需独立 review 后合入。
+- source 分支提交前工作树 clean；Fresh GPT 已完成持久化、身份、缓存与并发对抗审查并判定
+  PASS；main 集成后 runtime-core 9/9、adapter 223/223、两包 typecheck、architecture 与
+  diff-check 再次 PASS。未 push/deploy。
+
+## 45. D2-P8 — Extension UI Backend 生产切片记录
+
+```text
+实现：source branch feat/d2p8-extension-ui-backend（base main 125d0a6，source
+`f568eeb`），backend-first；Fresh GPT 独立 multi-layer 审查 PASS，已集成 main，未部署。
+生产 capability 面从 16 精确扩到 17 token：精确新增
+`runtime.extension_ui`（extension_ui_response / extension_ui_input）。fork/navigate/
+auto_name 仍关闭。无 Client UI/CSS，无 Client SessionStore helper；E2E 浏览器 helper 直接
+发原始 extension 命令。sessiond `AUTHORITY_COMMAND_TYPES` 未改（extension 命令不进
+authority——不携带需权威快照收敛的 state，close 事件本身收敛投影）。未触碰 D4 session
+delete 文件、side chat、fork/navigate、package-lock、live 服务、部署。
+
+根因：既有多层机制已实现 extension_ui_response/input（Protocol schema、runtime-core 模型、
+worker mapper、adapter settle、sessiond/client 共享 projection），但生产 capability 关闭且
+projection 从不删除已 settle 的 pending UI 请求（settle 后 pendingExtensionUi 永久残留，
+detach/reattach/replay 会复活幽灵弹窗）。本切片安全打开并做投影收敛硬化。
+
+冻结设计（父级明确覆盖，必须实现）：
+1) capability 精确 16→17，单 token 诚实覆盖 extension_ui_response 与 extension_ui_input。
+2) 投影收敛使用既有 canonical `ExtensionUiRequest.closed?: boolean` 概念（非 sessiond
+   authority snapshot）：
+   - Protocol ExtensionUiRequest schema/event shape 加 strict optional `closed`
+     （z.literal(true).optional()，仅 true 合法；runtime-core 已建模，align 所有 DTO）。
+   - Adapter `finishUiRequest` 是唯一 settle 漏斗：任何原因 settle（成功响应、cancelled、
+     abort/prompt interruption、SDK timeout/signal/onSettled）都对该请求发出恰一次
+     canonical `extension_ui_request` close tombstone（closed:true），然后 race-safe
+     顺序删除 pending map / emit state。registerUiRequest 先 publish 再注册 onSettled
+     （同步 settle 不会在发布前发 close；close 顺序确定 request→close）。
+   - Protocol 纯 reducer：普通请求按 requestId upsert；closed:true 删除该 requestId 且
+     永存 tombstone；未知 close 幂等 no-op；保留无关请求/顺序。sessiond/client 都委托
+     此 reducer，detach/reattach/replay 不能复活。
+   - subscribe/replay 只回放 active pending（closed 已从 map 删除）。
+3) 方法相关性硬化：
+   - Protocol wire 命令已带 requestId+method；runtime-core response/input 命令必须保留
+     `method`（worker mapper 不再丢弃）；adapter 对 response 与 input 都校验 pending
+     请求精确 method，错 method ⇒ 结构化 invalid_input、请求保持 pending/usable、不
+     settle/不 input/不 close；unknown id ⇒ not_found；cancelled 按 schema 对交互方法允许。
+   - 保持既有 result-method shape 校验，无 value coercion/trim/logging；用户文本永不
+     入日志、错误只含 request id 已 sanitize。
+4) 无 sessiond AUTHORITY_COMMAND_TYPES 变更。response/input 必须与占用普通 client 命令槽的
+   prompt 交错。探索假设被父级纠正：`runtime.command(prompt)` 经 sessiond 一直 await 到
+   turn 恢复，所以单连接 Host serial lane 被 prompt HOL 阻塞——extension_ui_response/input
+   走普通 serial 会死锁。最小修复在 `packages/host/src/composition/runtime-gateway.ts`：
+   把既有 queuedTurnSerial 泛化为 interleaving lane（isQueuedTurnCommand →
+   isInterleavingCommand），容纳 steer/follow_up + extension_ui_response/input 四类；
+   复用同 count/byte limits、overflow close1009、lane-safe 记数/raw-frame redaction、
+   browser-close 双 lane short-circuit、FIFO 确定序、close 后无额外 RPC；create/getSnapshot/
+   普通命令仍留 serial lane；不新增 Host lane。真实链 E2E 钉住单连接 prompt→request→response
+   交错。
+5) 本 backend 切片无 Client SessionStore helper/UI；UI 是下一依赖切片。
+6) 交互方法覆盖 select/confirm/input/editor/custom（按既有 schema/driver 行为）；notify/
+   status/widget/title 是事件/state 非用户响应请求；SDK unsupported stub 仍 unsupported，
+   不发明行为。
+
+修改范围：
+- packages/protocol/src/extension.ts（ExtensionUiRequestSchema 全 10 variant 加 strict
+  closed marker；新增 ExtensionUiInteractiveMethodSchema/type）
+- packages/protocol/src/projection.ts（reducer：closed:true 删除且永存 tombstone；未知
+  close 幂等；保序）
+- packages/protocol/src/type-contract.test.ts + 新增 test/extension.test.mjs（16 用例：
+  closed schema、reducer add/close/unknown-close/replay/multi-id、交互方法精确、response/
+  input method correlation、wrong result variant schema 拒绝）
+- packages/runtime-core/src/commands.ts（response/input 命令加 method 字段；
+  ExtensionUiRequest.closed 已建模）+ 新增 src/extension-commands.test.ts（3 用例：
+  method 精确 type、closed marker、JSON 序列化）
+- packages/agent-worker/src/mapper/command-mapper.ts（response/input 保留 method）
+- packages/agent-worker/src/mapper/core-to-protocol.ts（mapExtensionUiRequest 保留 closed
+  marker——否则 close tombstone 经 worker 被丢弃、投影永不删除；关键修复）
+- packages/agent-worker/test/mapper/command-mapper.test.ts（method 保留断言）
+- packages/agent-worker/test/fixtures/e2e-runtime-factory.mjs（CAPABILITIES 17；
+  __confirm__/__input__/__select__/__editor__/__custom__ emit pending request 并 block
+  至正确 response；__status__/__widget__/__title__/__notify__ 事件；恰一次 close
+  tombstone；exact-method 校验；≤30s 硬 failsafe 仅防挂死、不把失败转 pass；abort/close
+  cancel 全部 pending 并发 close）
+- packages/pi-sdk-adapter/src/agent/index.ts（PRODUCTION_AGENT_CAPABILITIES 16→17 +
+  runtime.extension_ui）
+- packages/pi-sdk-adapter/src/internal/adapter.ts（resolveUi/inputUi exact-method 校验
+  invalid_input；finishUiRequest 恰一次 close tombstone + race-safe delete/emitState；
+  registerUiRequest 先 publish 后 onSettled；cancelPendingUi/close 经 finishUiRequest
+  兜底清理；inputUi 签名改收 command）
+- packages/pi-sdk-adapter/test/extension-ui.test.ts（新增 12 用例：capability 17、
+  add→response→close、wrong-method invalid_input 保持 pending 后正确 method 可用、
+  unknown not_found、cancelled 恰一次、input exact-method/不 close、settle+cancel race
+  恰一次、late response not_found、abort 每请求一 close、subscribe replay 只 active、
+  错误只含 id 不泄用户文本）+ public-surface.test.ts/production-smoke.test.ts（17 token、
+  extension_ui open 真实到达 adapter 非 unsupported）
+- packages/host/src/composition/runtime-gateway.ts（isInterleavingCommand 泛化 queued-turn
+  lane 容纳 extension_ui_response/input；interleavingSerial 重命名；注释/日志 lane 名更新）
+- packages/host/test/runtime-gateway.test.mjs（D2-P8 定向 5 用例：prompt HOL 时
+  response/input 在 interleaving lane 立即 dispatch FIFO；getSnapshot 仍 HOL；lane
+  overflow close1009 无额外 RPC；extension flood 不能绕过 limits 且不泄 raw；browser
+  close short-circuit）
+- packages/sessiond/test/sessiond.test.ts（+2：close tombstone 删除 + unknown close
+  no-op；attach convergence add→detach→reattach 见 pending、close 后 replay 不复活、
+  多 pending 只删精确 id）；service.ts 未改
+- packages/client/src/runtime/projection.test.ts（+1 close tombstone 删除/不复活）
+- packages/runtime-contract-tests/src/suite.ts + fake/runtime.ts（response/input 调用加
+  method；reference runtime exact-method 校验；+1 wrong-method 用例）
+- tests/e2e/runtime.mjs（PRODUCTION_CAPS 17；新增 scenarioD2P8ExtensionUiControl 单连接
+  真实链：confirm wrong-method invalid_input 保持 pending + 正确 response 经 interleaving
+  lane 恢复 prompt + unknown/late not_found + same-commandId at-most-once 无重复 close +
+  detach 前 response→reattach 见 pending（第二连接 detach 因 serial HOL）+ response 后
+  detach/reattach 见 none（replay 不复活）+ input/editor incremental exact-method + select
+  cancel + custom lines + abort 清 pending + status/widget/title/notify 事件 + closed
+  fork/navigate/auto_name + reload 不能 broaden）
+- docs/refactor-execution-plan.md、docs/migration-ledger.md（本 §45）
+
+验证（本机 Node v24.18.0）：
+- 独立复验 root `npm test`：scripts 44 + cli 46 + agent-worker 105 + client 567 + host
+  377 + adapter 219 + protocol 132 + contract 76 + runtime-core 10 + sessiond 180 =
+  1756 pass/1 skip/0 fail；source 记录的 1755/adapter 218 为提交前计数漂移，已以 verifier
+  实测修正。
+- per-workspace typecheck PASS；root typecheck EXIT 0；root build EXIT 0；
+  check:architecture PASS；boundaries（runtime-core/client/sessiond boundary tests）PASS；
+  `git diff --check` 通过。
+- Runtime E2E 2 轮 PASS：单连接真实 Host→sessiond→worker→fixture 贯通 D2-P8 切片
+  （confirm wrong-method→correct resume 同 socket；detach/reattach 持久与 close 后不复活；
+  input/editor incremental；select cancel；custom；abort 清 pending；status/widget/title/
+  notify 事件；closed fork/navigate/auto_name；reload 不 broaden；shutdown 无孤儿）。
+  Startup E2E、Sessions E2E PASS。
+- 关键路径：`runtime.command(prompt)` 一直 await 到 turn 恢复 ⇒ 单连接 serial lane 被
+  prompt HOL；extension response/input 走泛化 interleaving lane 立即 dispatch，同 socket
+  不 session_busy、prompt 恢复。E2E 用同一 RuntimeWsClient（同一 WS）验证 prompt→request→
+  response/input；detach/reattach 持久性检查用第二连接（detach 是普通 serial 命令，单连接
+  会被 prompt HOL——文档化设计）。
+
+设计说明：
+- close tombstone 走 adapter `finishUiRequest`（Core event）→ worker mapper
+  `mapExtensionUiRequest`（必须保留 closed）→ Protocol `extension_ui_request` 事件 →
+  sessiond/browser 共享 reducer 删除。replay/attach 都以 reducer 收敛，无法复活。
+- `mapExtensionUiRequest` 保留 closed 是 E2E 能通过的关键（否则 tombstone 被 mapper 丢弃，
+  投影把请求当 upsert 重新加入）。
+- Adapter/参考 runtime/fixture 三层都镜像 exact-method 校验；Protocol schema 拒绝 wrong
+  result variant（select+value、input+confirmed、confirm+selected 等）fail-closed。
+
+残余/风险：
+- 未做视觉/UI 验收（本切片无 UI）；Client SessionStore helper/UI 是下一依赖切片。
+- Host interleaving lane 现在容纳 steer/follow_up + extension_ui_response/input 四类
+  （D2-P4 语义未变，仅 lane 名/log 从 queued-turn 改 interleaving；既有 D2-P4 Host 测试
+  相应更新 lane 名断言）。单连接 serial lane 仍 HOL getSnapshot 等普通命令于运行中 prompt
+  之后（文档化 LOW，非本 slice 目标）。
+- 真实 SDK 的 input/editor 增量行为以 fixture 建模（input 收集增量、final response settle）；
+  未对真实 SDK 发起无网络 UI 交互 smoke（无 extension 可在无网络环境触发 select/input）。
+- source 分支提交前工作树 clean；Fresh GPT 已完成 Protocol/Reducer/Mapper/Adapter settle/
+  Host lane/epoch-replay 与 97+ 对抗探针审查并判定 PASS；已集成 main，未 push/deploy。
+(feat(protocol,runtime-core,worker,adapter,host,sessiond,e2e): D2-P8 extension UI backend slice)
 ```

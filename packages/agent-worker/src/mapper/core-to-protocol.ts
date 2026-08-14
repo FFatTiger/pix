@@ -250,11 +250,15 @@ export function mapExtensionUiRequest(request: ExtensionUiRequest): ProtocolExte
     ...(request.timeout === undefined ? {} : { timeout: request.timeout }),
     ...(request.expiresAt === undefined ? {} : { expiresAt: request.expiresAt }),
   };
+  // Canonical close marker: a close tombstone must survive the worker mapper
+  // so the sessiond/browser projection REMOVES the request. Active pending
+  // requests never carry it.
+  const closed = request.closed === true ? { closed: true as const } : {};
   switch (method) {
     case "select":
-      return { id, method: "select", title: request.title ?? "", options: [...(request.options ?? [])], ...timing };
+      return { id, method: "select", title: request.title ?? "", options: [...(request.options ?? [])], ...timing, ...closed };
     case "confirm":
-      return { id, method: "confirm", title: request.title ?? "", message: request.message ?? "", ...timing };
+      return { id, method: "confirm", title: request.title ?? "", message: request.message ?? "", ...timing, ...closed };
     case "input":
       return {
         id,
@@ -262,6 +266,7 @@ export function mapExtensionUiRequest(request: ExtensionUiRequest): ProtocolExte
         title: request.title ?? "",
         ...(request.placeholder === undefined ? {} : { placeholder: request.placeholder }),
         ...timing,
+        ...closed,
       };
     case "editor":
       return {
@@ -270,6 +275,7 @@ export function mapExtensionUiRequest(request: ExtensionUiRequest): ProtocolExte
         title: request.title ?? "",
         ...(request.prefill === undefined ? {} : { prefill: request.prefill }),
         ...timing,
+        ...closed,
       };
     case "notify":
       return {
@@ -278,6 +284,7 @@ export function mapExtensionUiRequest(request: ExtensionUiRequest): ProtocolExte
         message: request.message ?? "",
         notifyType: request.notifyType ?? "info",
         ...timing,
+        ...closed,
       };
     case "setStatus":
       return {
@@ -286,6 +293,7 @@ export function mapExtensionUiRequest(request: ExtensionUiRequest): ProtocolExte
         statusKey: request.statusKey ?? "",
         ...(request.statusText === undefined ? {} : { statusText: request.statusText }),
         ...timing,
+        ...closed,
       };
     case "setWidget":
       return {
@@ -295,13 +303,14 @@ export function mapExtensionUiRequest(request: ExtensionUiRequest): ProtocolExte
         ...(request.widgetLines === undefined ? {} : { widgetLines: [...request.widgetLines] }),
         ...(request.widgetPlacement === undefined ? {} : { widgetPlacement: request.widgetPlacement }),
         ...timing,
+        ...closed,
       };
     case "setTitle":
-      return { id, method: "setTitle", title: request.title ?? "", ...timing };
+      return { id, method: "setTitle", title: request.title ?? "", ...timing, ...closed };
     case "set_editor_text":
-      return { id, method: "set_editor_text", text: request.text ?? "", ...timing };
+      return { id, method: "set_editor_text", text: request.text ?? "", ...timing, ...closed };
     case "custom":
-      return { id, method: "custom", lines: [...(request.lines ?? [])], ...timing };
+      return { id, method: "custom", lines: [...(request.lines ?? [])], ...timing, ...closed };
   }
 }
 

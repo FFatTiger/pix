@@ -786,10 +786,12 @@ test("non-finite byte and bufferedAmount limits cannot disable fail-closed bound
   assert.equal(outboundSession.closed.code, 1009);
 });
 
-// --- D2-P4: independent queued-turn lane (steer/follow_up) --------------------
+// --- D2-P4/P2-P8: independent interleaving lane (steer/follow_up + extension UI) ---
 
 const steerFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "steer", message: "steer" } } });
 const followFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "follow_up", message: "follow" } } });
+const extensionResponseFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "extension_ui_response", id: "ui-1", method: "confirm", responseKind: "confirmed", confirmed: true } } });
+const extensionInputFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "extension_ui_input", id: "ui-1", method: "input", data: "typed" } } });
 const promptFrame = (id) => cmdFrame(id);
 const getSnapshotFrame = (id) => JSON.stringify({ type: "getSnapshot", id, payload: { sessionId: "s1" } });
 const createFrame = (id) => JSON.stringify({ type: "create", id, payload: { createRequestId: id, cwd: "/p", projectRoot: "/p" } });
@@ -885,7 +887,7 @@ test("D2-P4: lane overflow logs lane + count + bytes, never the raw frame", asyn
   assert.equal(session.closed.code, 1009);
   assert.equal(warned.length, 1);
   assert.match(warned[0].msg, /inbound overflow/);
-  assert.equal(warned[0].fields.lane, "queued-turn");
+  assert.equal(warned[0].fields.lane, "interleaving");
   assert.ok(Number.isInteger(warned[0].fields.pending));
   assert.ok(Number.isInteger(warned[0].fields.bytes));
   // no raw frame body (the steer message text / frame id) leaks into the log.
@@ -922,4 +924,115 @@ test("D2-P4: create stays on the serial lane and never runs concurrently with a 
   // create must NOT dispatch concurrently with the hanging prompt.
   assert.equal(client.calls.filter((c) => c.method === "runtime.create").length, 0);
   assert.ok(!session.closed, "socket stays open (create is queued, not rejected)");
+});
+
+// --- D2-P8: extension UI response/input interleave on the interleaving lane ---
+
+test("D2-P8: extension_ui_response/input dispatch on the interleaving lane while a prompt HOLs the serial lane", async () => {
+  const client = new FakeClient();
+  // The prompt (awaiting an extension request) hangs on the serial lane;
+  // response/input resolve immediately on the interleaving lane.
+  client.handlers["runtime.command"] = (p) => (p.command.type === "prompt" ? hang() : okByType(p));
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+
+  session.receive(promptFrame("p1")); // serial lane dispatches + RPC hangs
+  await wait();
+  session.receive(extensionResponseFrame("r1")); // interleaving lane → NOT HOL-blocked
+  await wait();
+  session.receive(extensionInputFrame("i1")); // interleaving lane FIFO after r1
+  await wait();
+
+  // response + input both opened an RPC while the prompt is still hanging.
+  const cmds = commandCalls(client);
+  assert.equal(cmds.length, 3, "prompt + response + input must each open an RPC");
+  assert.deepEqual(
+    cmds.map((c) => c.params.command.type).sort(),
+    ["extension_ui_input", "extension_ui_response", "prompt"],
+  );
+  // Both extension responses arrived (the prompt's response is still pending).
+  const ids = responseIds(session);
+  assert.ok(ids.includes("r1"), `responses=${ids.join(",")}`);
+  assert.ok(ids.includes("i1"), `responses=${ids.join(",")}`);
+  assert.ok(!ids.includes("p1"), "hung prompt must not have a response");
+  // Interleaving lane is FIFO: r1 response before i1 response.
+  assert.ok(ids.indexOf("r1") < ids.indexOf("i1"), `order=${ids.join(",")}`);
+  assert.ok(!session.closed, "socket must stay open");
+});
+
+test("D2-P8: ordinary getSnapshot still HOLs behind a long prompt awaiting extension UI", async () => {
+  const client = new FakeClient();
+  let resolvePrompt;
+  client.handlers["runtime.command"] = (p) => {
+    if (p.command.type === "prompt") return new Promise((res) => { resolvePrompt = res; });
+    return okByType(p);
+  };
+  client.handlers["runtime.getSnapshot"] = { snapshot: snapshot("s1") };
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+
+  session.receive(promptFrame("p1")); // serial lane dispatches + RPC pending
+  await wait();
+  session.receive(getSnapshotFrame("g1")); // serial lane → queued behind p1
+  await wait();
+  assert.equal(client.calls.filter((c) => c.method === "runtime.getSnapshot").length, 0);
+  resolvePrompt({ commandId: "p1", result: { ok: true, type: "prompt" } });
+  await wait();
+  assert.equal(client.calls.filter((c) => c.method === "runtime.getSnapshot").length, 1);
+  assert.ok(responseIds(session).includes("g1"));
+  assert.ok(!session.closed);
+});
+
+test("D2-P8: interleaving lane overflow fails closed 1009 and opens no extra RPC", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 2, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+  session.receive(extensionResponseFrame("r1")); // interleaving lane dispatches + RPC hangs
+  await wait();
+  session.receive(extensionInputFrame("r2")); // queued behind r1 (pending = 2)
+  await wait();
+  session.receive(extensionResponseFrame("r3")); // 3rd pending interleaving frame → overflow
+  await wait();
+  assert.equal(session.closed.code, 1009);
+  // only r1 dispatched (its RPC hung); r2 short-circuited, r3 rejected — no extra RPC.
+  assert.equal(commandCalls(client).length, 1);
+});
+
+test("D2-P8: extension UI flood cannot bypass the interleaving lane limits", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  const warned = [];
+  const gw = makeGateway(client, {
+    inbound: { maxSerialFrames: 2, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 },
+    logger: { warn: (msg, fields) => warned.push({ msg, fields }) },
+  });
+  const session = await connect(gw);
+  session.receive(extensionInputFrame("f1"));
+  await wait();
+  session.receive(extensionInputFrame("f2"));
+  await wait();
+  session.receive(extensionInputFrame("f3")); // overflow
+  await wait();
+  assert.equal(session.closed.code, 1009);
+  assert.equal(warned.length, 1);
+  assert.equal(warned[0].fields.lane, "interleaving");
+  // No raw UI text leaks into the overflow log.
+  assert.equal(JSON.stringify(warned).includes("typed"), false);
+  assert.equal(commandCalls(client).length, 1);
+});
+
+test("D2-P8: browser close short-circuits queued extension commands (no extra RPC)", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  const gw = makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } });
+  const session = await connect(gw);
+  session.receive(promptFrame("p1")); // serial: dispatched + RPC hangs
+  session.receive(extensionResponseFrame("r1")); // interleaving: dispatched + RPC hangs
+  session.receive(extensionInputFrame("r2")); // interleaving: queued behind r1
+  await wait();
+  session.close();
+  await wait();
+  // Only the two dispatched commands opened RPCs; queued r2 short-circuits.
+  assert.equal(commandCalls(client).length, 2);
 });

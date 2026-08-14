@@ -25,9 +25,10 @@ import { randomUUID } from "node:crypto";
 // (clear_queue interrupt + set_auto_retry), the D2-P5 bash pair
 // runtime.bash (bash) / runtime.bash.abort (abort_bash), the D2-P6 tools+
 // reload triple runtime.tools.read (get_tools) / runtime.tools.write (set_tools)
-// / runtime.reload (reload) and the D2-P7 manual-compact pair
-// runtime.compact (compact) / runtime.compact.abort (abort_compaction) are the
-// capability-gated unlocks.
+// / runtime.reload (reload), the D2-P7 manual-compact pair
+// runtime.compact (compact) / runtime.compact.abort (abort_compaction) and the
+// D2-P8 extension-UI token runtime.extension_ui (extension_ui_response /
+// extension_ui_input) are the capability-gated unlocks.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
@@ -46,6 +47,7 @@ const CAPABILITIES = {
     "runtime.reload",
     "runtime.compact",
     "runtime.compact.abort",
+    "runtime.extension_ui",
   ],
   version: 1,
 };
@@ -164,6 +166,12 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
   let autoCompactionEnabled = false;
   let autoRetryEnabled = false;
   let queued = { steering: [], followUp: [] };
+  // D2-P8 extension UI state. Each pending request carries the published
+  // request, its settle promise, and the accumulated incremental input.
+  /** @type {{ request: object, resolve: (v: { cancelled: boolean, abort: boolean, data: string }) => void, timer?: ReturnType<typeof setTimeout>, data: string, settled: boolean }[]} */
+  let pendingUi = [];
+  let extensionStatuses = [{ key: "model", text: "e2e-fixture" }];
+  let extensionWidgets = [{ key: "summary", lines: ["line1", "line2"], placement: "belowEditor" }];
   // D2-P6 tools state: active tool names (mirrors the SDK getActiveToolNames).
   let activeToolNames = TOOLS.map((tool) => tool.name);
   /** Last configured tool selection (reload re-applies it). */
@@ -227,7 +235,58 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
       tools: TOOLS.map((tool) => ({ ...tool, active: activeToolNames.includes(tool.name) })),
       ...(bashProjection === null ? {} : { bash: { ...bashProjection } }),
       ...(sessionName === "" ? {} : { sessionName }),
+      extensionStatuses: structuredClone(extensionStatuses),
+      extensionWidgets: structuredClone(extensionWidgets),
+      pendingExtensionUi: pendingUi.map((entry) => ({ ...entry.request })),
     };
+  }
+
+  // D2-P8 extension UI machinery (mirrors the real adapter's canonical close
+  // semantics + exact-method correlation):
+  //  - publish emits extension_ui_request; settle emits EXACTLY ONE close
+  //    tombstone (closed:true) and removes the request;
+  //  - wrong-method response/input is structured invalid_input and the request
+  //    stays pending/usable (never settled); unknown id is not_found;
+  //  - a hard ≤30s failsafe settles a stuck request so the E2E can never hang
+  //    (it never converts a real failure into a pass — the E2E always settles
+  //    correctly first).
+  function settleUi(entry, { cancelled, abort }, data = "") {
+    if (entry.settled) return;
+    entry.settled = true;
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    pendingUi = pendingUi.filter((item) => item !== entry);
+    // Canonical close tombstone for the SAME request — the projection removes
+    // it and never stores the tombstone (replay cannot resurrect).
+    emit({ type: "extension_ui_request", sessionId, request: { ...entry.request, closed: true } });
+    emit({ type: "runtime_state_changed", sessionId });
+    entry.resolve({ cancelled, abort, data });
+  }
+
+  function waitForUi(request) {
+    return new Promise((resolve) => {
+      const entry = { request, resolve, data: "", settled: false };
+      pendingUi = [...pendingUi, entry];
+      emit({ type: "extension_ui_request", sessionId, request });
+      emit({ type: "runtime_state_changed", sessionId });
+      // Hard failsafe (≤30s) purely to prevent hangs; never converts failure to pass.
+      entry.timer = setTimeout(() => settleUi(entry, { cancelled: true, abort: false }), 30_000);
+    });
+  }
+
+  function cancelAllUi(abort) {
+    for (const entry of [...pendingUi]) settleUi(entry, { cancelled: true, abort });
+  }
+
+  function buildUiRequest(method, message) {
+    const base = { id: `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${method}` };
+    switch (method) {
+      case "select": return { ...base, method, title: "Choose", options: ["opt-a", "opt-b"] };
+      case "confirm": return { ...base, method, title: "Confirm", message: "Continue?" };
+      case "input": return { ...base, method, title: "Enter", placeholder: "value" };
+      case "editor": return { ...base, method, title: "Edit", prefill: "prefill" };
+      case "custom": return { ...base, method, lines: ["Custom UI lines"] };
+      default: throw new Error(`unknown ui method: ${method}`);
+    }
   }
 
   return {
@@ -545,6 +604,32 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
             blockedBash.resolve({ kind: "aborted" });
           }
           return { ok: true, type: "abort_bash" };
+        case "extension_ui_response": {
+          const entry = pendingUi.find((item) => item.request.id === command.id);
+          if (!entry) {
+            return { ok: false, type: "extension_ui_response", error: { code: "not_found", message: `no pending extension UI request: ${command.id}`, retryable: false } };
+          }
+          // Exact method correlation: wrong method is invalid_input and the
+          // request stays pending/usable (no settle, no close).
+          if (entry.request.method !== command.method) {
+            return { ok: false, type: "extension_ui_response", error: { code: "invalid_input", message: `extension response method mismatch for request ${command.id}`, retryable: false } };
+          }
+          const cancelled = command.responseKind === "cancelled";
+          settleUi(entry, { cancelled, abort: false }, entry.data);
+          return { ok: true, type: "extension_ui_response" };
+        }
+        case "extension_ui_input": {
+          const entry = pendingUi.find((item) => item.request.id === command.id);
+          if (!entry) {
+            return { ok: false, type: "extension_ui_input", error: { code: "not_found", message: `no pending extension UI input: ${command.id}`, retryable: false } };
+          }
+          // Exact method correlation: only input/editor carry incremental input.
+          if (entry.request.method !== command.method) {
+            return { ok: false, type: "extension_ui_input", error: { code: "invalid_input", message: `extension input method mismatch for request ${command.id}`, retryable: false } };
+          }
+          entry.data = `${entry.data}${command.data}`;
+          return { ok: true, type: "extension_ui_input" };
+        }
         default:
           break;
       }
@@ -565,6 +650,66 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
 
       isPromptRunning = true;
       emit({ type: "agent_start", sessionId });
+
+      // D2-P8 extension UI control surface. Deterministic prompt tokens emit a
+      // pending request and BLOCK until the correct response settles it (or the
+      // hard ≤30s failsafe fires purely to prevent hangs). The prompt command
+      // stays in-flight on the worker while the request is pending — the Host
+      // interleaving lane delivers the response/input on the SAME socket while
+      // the serial lane is HOL-blocked by this prompt.
+      const uiToken = message.startsWith("__confirm__") ? "confirm"
+        : message.startsWith("__input__") ? "input"
+          : message.startsWith("__select__") ? "select"
+            : message.startsWith("__editor__") ? "editor"
+              : message.startsWith("__custom__") ? "custom"
+                : message.startsWith("__status__") ? "status"
+                  : message.startsWith("__widget__") ? "widget"
+                    : message.startsWith("__title__") ? "title"
+                      : message.startsWith("__notify__") ? "notify"
+                        : null;
+      if (uiToken !== null) {
+        if (uiToken === "status") {
+          extensionStatuses = [{ key: "model", text: "e2e-fixture" }, { key: "branch", text: "main" }];
+          emit({ type: "extension_statuses", sessionId, statuses: structuredClone(extensionStatuses) });
+          emit({ type: "runtime_state_changed", sessionId });
+          isPromptRunning = false;
+          return { ok: true, type: "prompt" };
+        }
+        if (uiToken === "widget") {
+          extensionWidgets = [{ key: "summary", lines: ["line1", "line2"], placement: "belowEditor" }];
+          emit({ type: "extension_widgets", sessionId, widgets: structuredClone(extensionWidgets) });
+          emit({ type: "runtime_state_changed", sessionId });
+          isPromptRunning = false;
+          return { ok: true, type: "prompt" };
+        }
+        if (uiToken === "title") {
+          sessionName = "Extension Title";
+          emit({ type: "session_title", sessionId, name: "Extension Title" });
+          emit({ type: "runtime_state_changed", sessionId });
+          isPromptRunning = false;
+          return { ok: true, type: "prompt" };
+        }
+        if (uiToken === "notify") {
+          // Mirrors the real SDK notify → extension_error event.
+          emit({ type: "extension_error", sessionId, error: "[info] notification", details: { sanitized: true } });
+          isPromptRunning = false;
+          return { ok: true, type: "prompt" };
+        }
+        const request = buildUiRequest(uiToken, message);
+        const outcome = await waitForUi(request);
+        // isPromptRunning is cleared in settleUi paths only on abort; a normal
+        // (response/cancel/failsafe) settle ends the turn normally.
+        if (outcome.abort) {
+          isPromptRunning = false;
+          emit({ type: "prompt_error", sessionId, errorMessage: "interrupted", error: { code: "interrupted", message: "interrupted", retryable: false } });
+          return { ok: false, type: "prompt", error: { code: "interrupted", message: "interrupted", retryable: false } };
+        }
+        isPromptRunning = false;
+        emit({ type: "agent_end", sessionId });
+        emit({ type: "agent_settled", sessionId });
+        emit({ type: "prompt_done", sessionId });
+        return { ok: true, type: "prompt" };
+      }
 
       if (message.startsWith("__block__")) {
         // Controllable long prompt: wait for interrupt (or hard timeout).
@@ -665,6 +810,12 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
       if (interrupt.type === "abort_compaction" && blockedCompact) {
         blockedCompact.resolve({ kind: "aborted" });
       }
+      if (interrupt.type === "abort") {
+        // D2-P8: abort cancels every pending extension request, emitting one
+        // canonical close tombstone per request (the blocked prompt resumes as
+        // interrupted, mirroring the real adapter's prompt-interruption path).
+        cancelAllUi(true);
+      }
       if (interrupt.type === "clear_queue") {
         queued = { steering: [], followUp: [] };
         emit({ type: "queue_update", sessionId, steering: [], followUp: [] });
@@ -682,6 +833,9 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
       if (blockedCompact) {
         blockedCompact.resolve({ kind: "closed" });
       }
+      // D2-P8: settle every still-pending request as aborted (the prompt
+      // resumes interrupted rather than reporting a false success on shutdown).
+      cancelAllUi(true);
       listeners.clear();
     },
     // Diagnostics for tests that inspect the port (not used over the wire).

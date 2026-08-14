@@ -167,9 +167,9 @@ function fixtureFor(type: RuntimeCommandType): RuntimeCommand {
     case "abort_compaction":
       return { type };
     case "extension_ui_response":
-      return { type, id: "nope", cancelled: true };
+      return { type, id: "nope", method: "confirm", cancelled: true };
     case "extension_ui_input":
-      return { type, id: "nope", data: "x" };
+      return { type, id: "nope", method: "input", data: "x" };
     case "set_auto_retry":
       return { type, enabled: true };
     case "bash":
@@ -1130,6 +1130,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const response = await port.execute({
           type: "extension_ui_response",
           id: requestEvent.request.id,
+          method: "confirm",
           confirmed: true,
         });
         assert.equal(response.ok, true);
@@ -1149,6 +1150,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const response = await port.execute({
           type: "extension_ui_response",
           id: requestEvent.request.id,
+          method: "confirm",
           cancelled: true,
         });
         assert.equal(response.ok, true);
@@ -1168,6 +1170,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const response = await port.execute({
           type: "extension_ui_input",
           id: requestEvent.request.id,
+          method: "input",
           data: "hello-data",
         });
         assert.equal(response.ok, true);
@@ -1199,9 +1202,38 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const result = await port.execute({
           type: "extension_ui_response",
           id: "missing",
+          method: "confirm",
           confirmed: true,
         });
         assertErrorCode(result, "not_found");
+        await port.close("user");
+      });
+
+      it("wrong-method response is invalid_input and the request stays usable", async () => {
+        const { port } = await newRuntime(harness);
+        const collector = new EventCollector(port);
+        const pending = port.execute({ type: "prompt", message: "confirm please" });
+        const requestEvent = await collector.waitFor((event) => event.type === "extension_ui_request");
+        assert.equal(requestEvent.type, "extension_ui_request");
+        const wrong = await port.execute({
+          type: "extension_ui_response",
+          id: requestEvent.request.id,
+          method: "input",
+          value: "x",
+        });
+        assertErrorCode(wrong, "invalid_input");
+        // Request remains pending and a later correct response works.
+        assert.equal((await port.getSnapshot()).state.pendingExtensionUi?.length, 1);
+        const correct = await port.execute({
+          type: "extension_ui_response",
+          id: requestEvent.request.id,
+          method: "confirm",
+          confirmed: true,
+        });
+        assert.equal(correct.ok, true);
+        const result = await pending;
+        assert.equal(result.ok, true, "correct response must resume the turn");
+        assert.equal((await port.getSnapshot()).state.pendingExtensionUi?.length, 0);
         await port.close("user");
       });
     });

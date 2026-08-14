@@ -83,6 +83,17 @@ describe("reduceRuntimeEventData — queue / UI / tools / capabilities / title /
     const snap = reduceRuntimeEventData(base(), { type: "extension_ui_request", sessionId: "s", request: { id: "ui", method: "confirm", title: "t", message: "m" } });
     expect(snap.state.pendingExtensionUi?.length).toBe(1);
   });
+  it("close tombstone removes a settled extension UI request (never resurrected by replay)", () => {
+    let snap = reduceRuntimeEventData(base(), { type: "extension_ui_request", sessionId: "s", request: { id: "ui", method: "confirm", title: "t", message: "m" } });
+    expect(snap.state.pendingExtensionUi?.length).toBe(1);
+    // Canonical close tombstone: removed, never stored.
+    snap = reduceRuntimeEventData(snap, { type: "extension_ui_request", sessionId: "s", request: { id: "ui", method: "confirm", title: "t", message: "m", closed: true } });
+    expect(snap.state.pendingExtensionUi?.length ?? 0).toBe(0);
+    // Unknown close is an idempotent no-op; unrelated requests survive.
+    snap = reduceRuntimeEventData(snap, { type: "extension_ui_request", sessionId: "s", request: { id: "ui2", method: "input", title: "t" } });
+    snap = reduceRuntimeEventData(snap, { type: "extension_ui_request", sessionId: "s", request: { id: "ghost", method: "confirm", title: "t", message: "m", closed: true } });
+    expect(snap.state.pendingExtensionUi?.map((request) => request.id)).toEqual(["ui2"]);
+  });
   it("applies capabilities / statuses / widgets / title", () => {
     let snap = reduceRuntimeEventData(base(), { type: "runtime_capabilities_changed", sessionId: "s", capabilities: { capabilities: ["runtime.bash"], version: 2 } });
     expect(snap.capabilities.version).toBe(2);

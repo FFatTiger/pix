@@ -186,6 +186,39 @@ test("snapshot projection recovers streaming queue extension bash compaction and
   assert.deepEqual(projection.snapshot().state.writtenFiles, ["/a"]);
 });
 
+test("extension UI close tombstone removes a pending request and unknown close is a no-op", () => {
+  const projection = new SnapshotProjection(snapshot("s"));
+  projection.apply({ type: "extension_ui_request", sessionId: "s", request: { id: "ui", method: "confirm", title: "t", message: "m" } });
+  assert.equal(projection.snapshot().state.pendingExtensionUi?.length, 1);
+  assert.equal(projection.snapshot().state.pendingExtensionUi?.[0]?.id, "ui");
+  // canonical close tombstone: removed, never stored.
+  projection.apply({ type: "extension_ui_request", sessionId: "s", request: { id: "ui", method: "confirm", title: "t", message: "m", closed: true } });
+  assert.equal(projection.snapshot().state.pendingExtensionUi?.length ?? 0, 0);
+  // unknown close is an idempotent no-op.
+  projection.apply({ type: "extension_ui_request", sessionId: "s", request: { id: "ghost", method: "confirm", title: "t", message: "m", closed: true } });
+  assert.equal(projection.snapshot().state.pendingExtensionUi?.length ?? 0, 0);
+});
+
+test("extension UI pending request survives detach/reattach; close removes it and cannot resurrect", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  workers.workers[0]!.emitEvent({ type: "extension_ui_request", sessionId: "s", request: { id: "ui-1", method: "confirm", title: "t", message: "m" } });
+  await wait();
+  let attached = service.attach({ sessionId: "s" });
+  assert.equal(attached.result.snapshot.state.pendingExtensionUi?.length, 1);
+  assert.equal(attached.result.snapshot.state.pendingExtensionUi?.[0]?.id, "ui-1");
+  attached.unsubscribe?.();
+  // A second pending request stays while the first closes — only the exact id is removed.
+  workers.workers[0]!.emitEvent({ type: "extension_ui_request", sessionId: "s", request: { id: "ui-2", method: "input", title: "t" } });
+  workers.workers[0]!.emitEvent({ type: "extension_ui_request", sessionId: "s", request: { id: "ui-1", method: "confirm", title: "t", message: "m", closed: true } });
+  await wait();
+  attached = service.attach({ sessionId: "s" });
+  const pending = attached.result.snapshot.state.pendingExtensionUi ?? [];
+  assert.deepEqual(pending.map((request) => request.id), ["ui-2"], "replay of add+close must never resurrect ui-1");
+  attached.unsubscribe?.();
+  await service.shutdown();
+});
+
 test("bash_update output deltas accumulate once without double-joining", () => {
   // bash_update.output is a per-event DELTA (frozen semantic on both Runtime
   // Core and Protocol sides). The projection is the single accumulator: two

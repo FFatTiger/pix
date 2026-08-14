@@ -302,7 +302,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           return { ok: true, type: "reload" };
         }
         case "extension_ui_response": return this.resolveUi(command);
-        case "extension_ui_input": return this.inputUi(command.id, command.data);
+        case "extension_ui_input": return this.inputUi(command);
         case "bash": {
           // R0 frozen bash semantics:
           //  - `bash_update.output` events carry a DELTA chunk (the original
@@ -426,8 +426,13 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     this.closeReason = reason;
     this.unsubscribeDriver();
     this.clearToolCorrelations();
-    for (const pending of this.pendingUi.values()) pending.driver.cancel();
-    this.pendingUi.clear();
+    // Cancel every pending request and emit its canonical close tombstone via
+    // finishUiRequest (idempotent per id, so a synchronous onSettled and this
+    // explicit call never double-emit).
+    for (const pending of [...this.pendingUi.values()]) {
+      try { pending.driver.cancel(); } catch { /* best-effort: settle may have raced */ }
+      this.finishUiRequest(pending.request.id);
+    }
     await this.driver.close(reason);
     this.emit({ type: "runtime_closed", sessionId: this.identity.sessionId, reason });
     this.listeners.clear();
@@ -617,27 +622,40 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       ...(driver.timeout === undefined ? {} : { timeout: driver.timeout, expiresAt: Date.now() + driver.timeout }),
     };
     this.pendingUi.set(driver.id, { request, driver });
-    driver.onSettled(() => this.finishUiRequest(driver.id));
+    // Publish the request BEFORE registering onSettled: a synchronous settle
+    // (already-settled / immediate cancel / timeout) must never emit a close
+    // for a request that was never published, and close ordering is
+    // deterministic (request → close). finishUiRequest is the single funnel.
     this.emit({ type: "extension_ui_request", sessionId: this.identity.sessionId, request });
     this.emitState();
+    driver.onSettled(() => this.finishUiRequest(driver.id));
   }
 
   private resolveUi(command: Extract<RuntimeCommand, { type: "extension_ui_response" }>): RuntimeCommandResult {
     const pending = this.pendingUi.get(command.id);
     if (!pending) return this.failure(command.type, makeRuntimeError("not_found", `no pending extension UI request: ${command.id}`));
+    // Exact method correlation: a response whose method does not match the
+    // pending request is structured invalid_input; the request stays pending
+    // and usable (no SDK settle, no close). Only the exact method may settle.
+    if (pending.request.method !== command.method) {
+      return this.failure(command.type, makeRuntimeError("invalid_input", `extension response method mismatch for request ${command.id}`));
+    }
     if ("value" in command) pending.driver.settle({ value: command.value });
     else if ("confirmed" in command) pending.driver.settle({ confirmed: command.confirmed });
     else pending.driver.settle({ cancelled: true });
     return { ok: true, type: command.type };
   }
 
-  private inputUi(id: string, data: string): RuntimeCommandResult {
-    const pending = this.pendingUi.get(id);
-    if (!pending || !pending.driver.input) return this.failure("extension_ui_input", makeRuntimeError("not_found", `no pending extension UI input: ${id}`));
-    if (pending.request.method === "select" || pending.request.method === "confirm") {
-      return this.failure("extension_ui_input", makeRuntimeError("invalid_input", `${pending.request.method} does not accept extension input`));
+  private inputUi(command: Extract<RuntimeCommand, { type: "extension_ui_input" }>): RuntimeCommandResult {
+    const pending = this.pendingUi.get(command.id);
+    if (!pending || !pending.driver.input) return this.failure("extension_ui_input", makeRuntimeError("not_found", `no pending extension UI input: ${command.id}`));
+    // Exact method correlation. The input command only carries input/editor, so
+    // a mismatch rejects select/confirm/custom with structured invalid_input;
+    // the request stays pending and usable (no SDK input call, no close).
+    if (pending.request.method !== command.method) {
+      return this.failure("extension_ui_input", makeRuntimeError("invalid_input", `extension input method mismatch for request ${command.id}`));
     }
-    pending.driver.input(data);
+    pending.driver.input(command.data);
     return { ok: true, type: "extension_ui_input" };
   }
 
@@ -694,16 +712,34 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     });
   }
 
+  /**
+   * Single funnel for request settlement (response, cancel, abort/prompt
+   * interruption, SDK timeout/signal/onSettled). Emits EXACTLY ONE canonical
+   * `extension_ui_request` close tombstone (`closed: true`) for a request that
+   * was published, then removes the pending entry and notifies state consumers
+   * — in race-safe order (close event before map delete). A second call (or a
+   * settle/cancel/onSettled race) sees no entry and emits nothing, so there is
+   * never a duplicate close and never a close before a request was published.
+   */
   private finishUiRequest(id: string): void {
-    if (!this.pendingUi.delete(id)) return;
+    const pending = this.pendingUi.get(id);
+    if (!pending) return;
+    this.emit({
+      type: "extension_ui_request",
+      sessionId: this.identity.sessionId,
+      request: { ...pending.request, closed: true },
+    });
+    this.pendingUi.delete(id);
     this.emitState();
   }
 
   private cancelPendingUi(): void {
-    for (const pending of this.pendingUi.values()) pending.driver.cancel();
-    if (this.pendingUi.size > 0) {
-      this.pendingUi.clear();
-      this.emitState();
+    for (const pending of [...this.pendingUi.values()]) {
+      try { pending.driver.cancel(); } catch { /* best-effort: settle may have raced */ }
+      // Cancel may defer onSettled; emit close + remove now for any request the
+      // driver did not synchronously settle so the projection converges exactly
+      // once (finishUiRequest is idempotent per id).
+      this.finishUiRequest(pending.request.id);
     }
   }
 

@@ -21,15 +21,17 @@ export {
  * `runtime.tools.read` (get_tools), `runtime.tools.write` (set_tools) and
  * `runtime.reload` (reload) — the single real tools+reload slice. D2-P7
  * precisely adds `runtime.compact` (compact) and `runtime.compact.abort`
- * (abort_compaction) — the single real manual-compact slice. The existing
+ * (abort_compaction) — the single real manual-compact slice. D2-P8 precisely
+ * adds `runtime.extension_ui` (extension_ui_response / extension_ui_input) —
+ * the single real extension-UI slice. The existing
  * semantic mapping also makes `set_auto_compaction` wire-open under
  * `runtime.compact` (honest, because the implementation exists), but D2-P7
  * deliberately adds NO Client helper/UI for auto compaction. Fork,
- * extension UI, navigation and `runtime.auto_name`
+ * navigation and `runtime.auto_name`
  * (generate_session_title) are all implemented by the adapter but gated out by
  * this set so composition (R1/R2) must explicitly opt into broader
  * capabilities. The constant is intentionally narrow and MUST NOT grow to
- * leak fork/extension-UI/auto_name capabilities by default.
+ * leak fork/navigate/auto_name capabilities by default.
  */
 export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.prompt",
@@ -48,4 +50,5 @@ export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.reload",
   "runtime.compact",
   "runtime.compact.abort",
+  "runtime.extension_ui",
 ] as const;

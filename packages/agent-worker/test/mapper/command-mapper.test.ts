@@ -62,29 +62,33 @@ describe("command-mapper (protocol → core, commandId stripped)", () => {
     }
   });
 
-  it("extension_ui_response collapses method/responseKind into value|confirmed|cancelled", () => {
+  it("extension_ui_response collapses responseKind into value|confirmed|cancelled and preserves method", () => {
     assert.deepEqual(
       coreFor({ type: "extension_ui_response", id: "r1", method: "select", responseKind: "selected", selected: "optA" }),
-      { type: "extension_ui_response", id: "r1", value: "optA" },
+      { type: "extension_ui_response", id: "r1", method: "select", value: "optA" },
     );
     assert.deepEqual(
       coreFor({ type: "extension_ui_response", id: "r1", method: "confirm", responseKind: "confirmed", confirmed: true }),
-      { type: "extension_ui_response", id: "r1", confirmed: true },
+      { type: "extension_ui_response", id: "r1", method: "confirm", confirmed: true },
     );
     assert.deepEqual(
-      coreFor({ type: "extension_ui_response", id: "r1", method: "input", responseKind: "value", value: "typed" }),
-      { type: "extension_ui_response", id: "r1", value: "typed" },
+      coreFor({ type: "extension_ui_response", id: "r1", method: "editor", responseKind: "value", value: "typed" }),
+      { type: "extension_ui_response", id: "r1", method: "editor", value: "typed" },
     );
     assert.deepEqual(
       coreFor({ type: "extension_ui_response", id: "r1", method: "select", responseKind: "cancelled", cancelled: true }),
-      { type: "extension_ui_response", id: "r1", cancelled: true },
+      { type: "extension_ui_response", id: "r1", method: "select", cancelled: true },
     );
   });
 
-  it("extension_ui_input strips method/commandId and carries data", () => {
+  it("extension_ui_input preserves method/commandId-strip and carries data", () => {
     assert.deepEqual(
       coreFor({ type: "extension_ui_input", id: "r1", method: "input", data: "incremental" }),
-      { type: "extension_ui_input", id: "r1", data: "incremental" },
+      { type: "extension_ui_input", id: "r1", method: "input", data: "incremental" },
+    );
+    assert.deepEqual(
+      coreFor({ type: "extension_ui_input", id: "r1", method: "editor", data: "edit" }),
+      { type: "extension_ui_input", id: "r1", method: "editor", data: "edit" },
     );
   });
 });

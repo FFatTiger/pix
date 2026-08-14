@@ -424,12 +424,17 @@ function safeJson(text: string): unknown {
 }
 
 /**
- * True when a command is a D2-P4 queued turn (steer / follow_up). These run on
- * the INDEPENDENT queued-turn lane so they are never HOL-blocked behind a
- * long-running prompt command on the serial lane.
+ * True when a command must interleave with a long-running prompt on the
+ * serial lane. D2-P4 queued turns (steer / follow_up) and D2-P8 extension UI
+ * response/input run on the INDEPENDENT interleaving lane so they are never
+ * HOL-blocked behind a prompt command that awaits an extension request (or
+ * streams/queues). All other commands (create/getSnapshot/stop/… and the
+ * ordinary prompt itself) stay on the serial lane.
  */
-function isQueuedTurnCommand(message: WsClientMessage): boolean {
-  return message.type === "command" && (message.payload.command.type === "steer" || message.payload.command.type === "follow_up");
+function isInterleavingCommand(message: WsClientMessage): boolean {
+  if (message.type !== "command") return false;
+  const type = message.payload.command.type;
+  return type === "steer" || type === "follow_up" || type === "extension_ui_response" || type === "extension_ui_input";
 }
 
 /**
@@ -440,8 +445,13 @@ function isQueuedTurnCommand(message: WsClientMessage): boolean {
 class GatewayConnection {
   private readonly outbound: BoundedOutbound;
   private readonly serial: BoundedSerialQueue;
-  /** D2-P4 independent bounded FIFO lane for steer / follow_up queued turns. */
-  private readonly queuedTurnSerial: BoundedSerialQueue;
+  /**
+   * D2-P4/P2-P8 independent bounded FIFO interleaving lane. Carries queued
+   * turns (steer / follow_up) and extension UI response/input so a long-running
+   * prompt on the serial lane never HOL-blocks them (a prompt awaiting an
+   * extension request would otherwise deadlock the same-socket response).
+   */
+  private readonly interleavingSerial: BoundedSerialQueue;
   private readonly maxInflightInterrupts: number;
   private inflightInterrupts = 0;
   private generation = 0;
@@ -451,11 +461,12 @@ class GatewayConnection {
   constructor(private readonly config: GatewayConfig, private readonly session: WsSession) {
     this.outbound = new BoundedOutbound(session, config.outboundLimits, () => this.onOutboundOverflow());
     this.serial = new BoundedSerialQueue(config.inboundLimits.maxSerialFrames, config.inboundLimits.maxSerialBytes);
-    // D2-P4: steer/follow_up share the same bounded inbound limits but run on
-    // an INDEPENDENT FIFO, so a long-running prompt (serial lane) never
-    // HOL-blocks a queued turn. Both lanes may run concurrently; interrupts
-    // remain on the fire-and-forget bypass path.
-    this.queuedTurnSerial = new BoundedSerialQueue(config.inboundLimits.maxSerialFrames, config.inboundLimits.maxSerialBytes);
+    // D2-P4 (steer/follow_up) + D2-P8 (extension UI response/input) share the
+    // same bounded inbound limits but run on an INDEPENDENT FIFO, so a
+    // long-running prompt (serial lane) never HOL-blocks an interleaving
+    // command. Both lanes may run concurrently; interrupts remain on the
+    // fire-and-forget bypass path.
+    this.interleavingSerial = new BoundedSerialQueue(config.inboundLimits.maxSerialFrames, config.inboundLimits.maxSerialBytes);
     this.maxInflightInterrupts = config.inboundLimits.maxInflightInterrupts;
   }
 
@@ -487,16 +498,17 @@ class GatewayConnection {
     // Bounded inbound serial queue(s): reserve raw UTF-8 bytes before enqueuing
     // so a flood of frames (e.g. commands whose RPC never settles) cannot grow
     // memory unbounded. Overflow fails closed without dispatching. D2-P4 routes
-    // steer/follow_up to the independent queued-turn lane so they are never
-    // HOL-blocked behind a long-running prompt; all other frames stay on the
-    // ordinary serial lane (create/attach/detach/getSnapshot/stop never run
-    // concurrently). Both lanes are bounded by the same inbound limits.
+    // steer/follow_up and D2-P8 routes extension UI response/input to the
+    // independent interleaving lane so they are never HOL-blocked behind a
+    // long-running prompt; all other frames stay on the ordinary serial lane
+    // (create/attach/detach/getSnapshot/stop never run concurrently). Both
+    // lanes are bounded by the same inbound limits.
     const bytes = Buffer.byteLength(raw, "utf8");
-    const queuedTurn = isQueuedTurnCommand(message);
-    const lane = queuedTurn ? this.queuedTurnSerial : this.serial;
+    const interleaving = isInterleavingCommand(message);
+    const lane = interleaving ? this.interleavingSerial : this.serial;
     if (!lane.enqueue(() => this.handleParsed(message), bytes)) {
       this.config.logger.warn?.("runtime gateway inbound overflow; closing", {
-        lane: queuedTurn ? "queued-turn" : "serial",
+        lane: interleaving ? "interleaving" : "serial",
         bytes,
         pending: lane.depth,
       });
@@ -693,7 +705,7 @@ class GatewayConnection {
     this.browserClosed = true;
     this.outbound.close();
     this.serial.close(); // queued inbound tasks short-circuit without dispatching
-    this.queuedTurnSerial.close(); // D2-P4 queued-turn lane short-circuits too
+    this.interleavingSerial.close(); // interleaving lane short-circuits too
     // Best-effort detach only; NEVER runtime.stop on a browser disconnect.
     this.closeActive(true, true);
   }
@@ -741,7 +753,7 @@ class GatewayConnection {
   private closeBrowser(code: number, reason: string): void {
     this.outbound.close();
     this.serial.close(); // stop dispatching any queued inbound frames
-    this.queuedTurnSerial.close(); // D2-P4 queued-turn lane stops dispatching too
+    this.interleavingSerial.close(); // interleaving lane stops dispatching too
     try {
       this.session.close(code, reason);
     } catch {
