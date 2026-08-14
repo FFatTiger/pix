@@ -18,6 +18,8 @@ import { SerialSocketWriter, type SerialSocketWriterOptions } from "./internal/s
 import type { PreparedAttachment } from "./service.js";
 
 const MAX_FRAME_BYTES = 2 * 1024 * 1024;
+/** Bounded ACK barrier for the `system.shutdown` response delivery (see {@link SessiondRpcServerOptions.shutdownAckTimeoutMs}). */
+const SHUTDOWN_ACK_TIMEOUT_MS = 2_000;
 
 const equalSecret = (actual: string, expected: string): boolean => {
   const left = Buffer.from(actual);
@@ -39,11 +41,35 @@ export interface SessiondRpcServerOptions {
   maxFrameBytes?: number;
   writer?: SerialSocketWriterOptions;
   /**
+   * Optional daemon-owned shutdown authority. When present, the server accepts
+   * `system.shutdown` requests (after the AUTH secret AND the exact instance-id
+   * fence) and delivers a bounded ACK-before-close response; only after that
+   * response is actually flushed to the client is {@link SessiondShutdownAuthority.initiate}
+   * invoked (at most once per server). When absent, `system.shutdown` is
+   * refused fail-closed as unsupported and can never trigger anything.
+   */
+  shutdownAuthority?: SessiondShutdownAuthority;
+  /** Bounded ACK barrier for the `system.shutdown` response (default 2s). */
+  shutdownAckTimeoutMs?: number;
+  /**
    * Diagnostic line logger (defaults to a never-throwing stderr line writer).
    * Receives pre-formatted `[sessiond] ...` lines that never contain request
    * bodies or secrets.
    */
   logger?: (line: string) => void;
+}
+
+/**
+ * Daemon-owned shutdown authority wired into the RPC server. `initiate` is
+ * invoked exactly once, only after an authenticated + instance-fenced
+ * `system.shutdown` response has been ACKed (flushed) to the client. It must
+ * never throw. The daemon maps it onto its idempotent shutdown transition.
+ */
+export interface SessiondShutdownAuthority {
+  /** Exact current daemon instance-id; the RPC fence compares strictly against this. */
+  readonly instanceId: string;
+  /** Begin the (idempotent) daemon shutdown transition. Call-safe multiple times. */
+  initiate: () => void;
 }
 
 /** Never-throwing default logger: one line to stderr, matching daemon diagnostics. */
@@ -121,6 +147,10 @@ export class SessiondRpcServer {
       return;
     }
     const request = parsed.data;
+    if (request.method === "system.shutdown") {
+      await this.handleShutdown(writer, request);
+      return;
+    }
     if (request.method === "runtime.attach" && this.options.handler.attach) {
       let attached: PreparedAttachment;
       try {
@@ -218,6 +248,49 @@ export class SessiondRpcServer {
   private write(writer: SerialSocketWriter, response: SessiondRpcResponse): Promise<void> {
     const parsed = SessiondRpcResponseSchema.parse(response);
     return writer.enqueue(`${JSON.stringify(parsed)}\n`);
+  }
+
+  /**
+   * Write a response with the bounded ACK barrier (real write callback + drain,
+   * exactly-once). Only when this resolves has the client actually received the
+   * bytes, so it is the safe point to begin a daemon shutdown transition.
+   */
+  private writeAcked(writer: SerialSocketWriter, response: SessiondRpcResponse): Promise<void> {
+    const parsed = SessiondRpcResponseSchema.parse(response);
+    return writer.enqueueFlushed(`${JSON.stringify(parsed)}\n`, this.options.shutdownAckTimeoutMs ?? SHUTDOWN_ACK_TIMEOUT_MS);
+  }
+
+  /**
+   * Authenticated, instance-fenced `system.shutdown` (AUTH secret was already
+   * required by the transport). Strictly fail-closed:
+   *  - no authority → unsupported, no shutdown;
+   *  - instance-id mismatch → forbidden, no shutdown (never echoes either id);
+   *  - malformed params never reach here (schema rejected them earlier);
+   *  - response delivery is ACKed (flushed) BEFORE `authority.initiate()` runs;
+   *  - if the ACK barrier fails/times out the authority is never invoked — the
+   *    daemon is never shut down merely because a request arrived.
+   */
+  private async handleShutdown(writer: SerialSocketWriter, request: SessiondRpcRequest & { method: "system.shutdown" }): Promise<void> {
+    const authority = this.options.shutdownAuthority;
+    if (!authority) {
+      await this.writeFailureSafely(writer, request.id, "system.shutdown", { code: "unsupported_capability", message: "sessiond shutdown is unsupported", retryable: false });
+      return;
+    }
+    if (request.params.instanceId !== authority.instanceId) {
+      // Fail closed on any instance mismatch. The response is a fixed sanitized
+      // error that never echoes the received or expected instance id.
+      await this.writeFailureSafely(writer, request.id, "system.shutdown", { code: "forbidden", message: "sessiond shutdown refused", retryable: false });
+      return;
+    }
+    let delivered = false;
+    try {
+      await this.writeAcked(writer, { id: request.id, ok: true, method: "system.shutdown", result: { accepted: true } } as SessiondRpcResponse);
+      delivered = true;
+    } catch (error) {
+      // Delivery failed or timed out: fail closed — never initiate shutdown.
+      this.logDrop("shutdown response", error);
+    }
+    if (delivered) authority.initiate();
   }
 
   async close(): Promise<void> {

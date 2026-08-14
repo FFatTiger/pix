@@ -2241,4 +2241,104 @@ realpath 检查之后的替换（句柄已关闭、无 openat 可重新钉住）
 导出、Host 394/394 + 安全子集 119/119、typecheck/boundary/architecture、current-main
 merge-tree（仅 ledger 追加冲突），对 772269d 给出 PASS，并要求本节与 posix.ts 模块头枚举窗口
 (1)——本修订即该要求。
+
+## 56. authenticated-shutdown — sessiond 认证控制平面关闭 + ACK-before-close + CLI RPC-only down（PENDING 独立验证）
+
+```text
+实现：本 worktree（branch feat/authenticated-shutdown，base main `5b8a7c9`），未 push/deploy/live
+service；仅 sessiond + protocol + cli + docs + 测试 + E2E 断言，无 Host HTTP/capability/health/WS
+变更、无 Client source、无 package-lock。编号：§52 Host rename、§53 Client rename、§54 diagnostics
+已占用；Local Authority race 规划 §55 仍在飞，本切片保留 §56 避免冲突。手动 port 仅取 PR#3 有价值的
+lifecycle 语义（认证 instance-fenced 关闭 + 交付屏障），不复制 PID/SIGTERM/PowerShell kill fallback。
+
+目标/不变量：
+1) 内部认证 sessiond RPC 方法 `system.shutdown`：strict params 携带 expected `instanceId`
+   （NonEmptyStringSchema），strict result 冻结为 `{ accepted: true }`（`SystemShutdownResultSchema`）。
+   AUTH secret 先于一切强制；与当前 daemon instance-lock identity 精确 fence。错 secret/instance、
+   malformed、unsupported、timeout 全部 fail closed 且绝不能触发关闭；响应/日志不含 secret/
+   endpoint/path/raw OS error。
+2) ACK-before-close 为硬契约，无 sleep/delay hack：serial-writer 新增 `enqueueFlushed(data, timeoutMs)`
+   有界交付屏障——真实 socket write callback +（write() 返回 false 时）drain，跨
+   callback/drain/error/close/timeout 恰一次 settle；既有 ordering/backpressure/overflow 语义
+   与无未处理 promise/无 listener 泄漏全部保留；daemon 关闭只在屏障成功后才发起。
+3) RPC/application/daemon 组合：daemon-owned shutdown transition（shutdownPromise/closed lifecycle
+   notification）仅由认证 + instance-fenced 响应交付后触发；并发合法请求至多一次 accepted 转换，
+   全部确定性。RPC 连接 ACK 先 flush 再 server/socket close，无自死锁。普通 RPC 行为不变。
+4) CLI `down` 变 RPC-only 生产 authority：经既有 secure local state/probe 路径读 endpoint+secret+
+   instance identity，authenticate，ping 已由 inspectSessiond 完成，调 `system.shutdown`（exact
+   instanceId）并有限等待 daemon lifecycle exit/state 消失。移除生产 SIGTERM/PID authority fallback
+   全部；PID 仅作最后观察（实例确已退出），绝不 signal/kill。错 secret/instance/unsupported/
+   timeout/connection failure 返回 sanitized 非零且进程不被触碰；旧 daemon 不被 fallback 杀掉。
+5) 诊断保持内部：无 Host HTTP/capability/health/WS 变化；`system.shutdown` 仅 sessiond 控制 RPC，
+   非产品 capability；CLI JSON/text 无 secret/instance 泄漏。
+
+冻结架构决策（父级明确，必须实现）：
+1) Protocol：`SystemShutdownParamsSchema`（strict {instanceId: NonEmptyStringSchema}）、
+   `SystemShutdownResultSchema`（strict {accepted: literal(true)}）、request/success/failure union、
+   `SESSIOND_RPC_METHODS`（含 "system.shutdown"）、SessiondMethodParams/Result/ResultSchemas 1:1。
+2) SerialSocketWriter（packages/sessiond/src/internal/serial-writer.ts）：`enqueueFlushed(data,
+   timeoutMs)` 复用同一有界队列（ordering/overflow/backpressure 不变）；屏障 settle 条件 =
+   write callback fired AND（write()=false 时 drain fired）；超时从 enqueue 起算，超时/close/error
+   走 `fail` 恰一次 reject；late callback/drain/error/close 全 no-op；timer 无泄漏（settle 或
+   reject 时 clearTimeout）。
+3) SessiondRpcServer（rpc.ts）：可选 `shutdownAuthority: { instanceId, initiate }`（无 authority 时
+   `system.shutdown` → unsupported_capability，fail closed）；`handleShutdown` 先 fence instanceId
+   （错配 → forbidden 固定文案，不 echo 任一侧 id），再 `writeAcked`（enqueueFlushed 屏障），屏障
+   成功才调 `authority.initiate()`（至多一次/请求）；屏障失败/超时绝不 initiate。application 对
+   `system.shutdown` 仅编译期穷尽性兜底（内嵌 throw，RPC server 拦截后永不达）。
+4) Daemon（composition/daemon.ts）：shutdown/closed/shutdownPromise 定义提前到 server 构造前；
+   `initiateShutdown` 一次性 guard 转 `shutdown()`（idempotent）；server options 注入
+   shutdownAuthority{instanceId: lock.instanceId, initiate}；`runDaemon`/`main`（bin）已 await
+   handle.closed，RPC 关闭后外部进程以 exitCode 0 退出，无孤儿。
+5) CLI（supervise.ts）：`shutdownSessiond` 移除 process.kill(SIGTERM)；inspectSessiond 读锁 +
+   secret + ping 确认可达 → RPC `system.shutdown`（client timeoutMs 有界）→ 轮询 lock+socket 消失
+   （pid 仅观察）；失败原因固定 sanitized（unauthorized/forbidden/unsupported/timeout/…），绝不含
+   secret/endpoint/instance/stack。down.ts 失败分支改 `sessiond: failed to stop (pid X): reason`。
+
+安全/边界：
+- 无 secret/endpoint/path/instanceId/raw error/stack 进入 RPC 响应、CLI 输出或日志；instanceId
+  错配响应为固定 "sessiond shutdown refused"。
+- 交付失败（write=false 无 drain / timeout / close / error）绝不触发 daemon 关闭——不因请求到达
+  而关闭 authority。
+- 不宣称 Windows 支持；进程 kill 仅保留 liveness probe（process.kill(pid,0)），无信号名 kill。
+- 无 Host/capability/health/WS 公开面增益；`system.shutdown` 为 sessiond 控制 RPC 而非产品能力。
+
+实现（文件）：
+- packages/protocol/src/sessiond.ts：system.shutdown params/result/method-constant/schema 1:1。
+- packages/protocol/test/contract.test.mjs：结果 fixture 增 {system.shutdown:{accepted:true}}。
+- packages/sessiond/src/internal/serial-writer.ts：enqueueFlushed + FrameBarrier 屏障。
+- packages/sessiond/src/rpc.ts：SessiondShutdownAuthority、handleShutdown、writeAcked、
+  shutdownAckTimeoutMs（默认 2s）。
+- packages/sessiond/src/application.ts：system.shutdown 穷尽性兜底 throw。
+- packages/sessiond/src/composition/daemon.ts：initiateShutdown + shutdownAuthority 注入。
+- packages/cli/src/supervise.ts：RPC-only shutdownSessiond + sanitizeShutdownFailure。
+- packages/cli/src/commands/down.ts：失败分支 sanitized reason。
+
+测试（新增）：
+- packages/sessiond/test/serial-writer-ack.test.ts（11 用例：10 基线 + 1 follow-up 写回调报错 fail-closed）：write-callback 恰一次 settle、
+  write=false 下 callback-before-drain / drain-before-callback、callback-without-drain 悬置、
+  drain-before-callback + close reject、bounded timeout fail closed、error→close→late 全 no-op、
+  close→error 幂等、ordering 保持、close 后 enqueue reject；follow-up：socket write callback 携
+  error 时经既有 fail 路径 reject（绝不定成 success、late 事件 no-op、无 unhandled rejection）。
+- packages/sessiond/test/shutdown-rpc.test.ts（12 用例）：错/missing AUTH 连接销毁无关闭；
+  错 instanceId forbidden 无关闭；blank/malformed/unknown method invalid_request 无关闭；无
+  authority unsupported 无关闭；合法请求 {accepted:true} 恰一次 initiate；backpressure 永不
+  drain + 短 ack timeout → initiate 0；daemon 端合法 ACK 字节先于 close 再关闭、两并发至多一次
+  转换、retry/进行中不双触发、错 instanceId daemon 保持 pingable。
+- packages/cli/test/down-rpc.test.ts（6 用例）：错 secret 拒绝(obstructed) 非零目标存活；instance
+  错配 forbidden 非零目标存活；hung response 超时非零目标存活；unsupported 非零目标存活；happy
+  path 外部队列 daemon 退出并清锁/socket；static 源检查禁止 process.kill(SIGTERM/SIGKILL)/
+  taskkill/powershell/unix kill fallback。
+- 既有 supervise.test.ts 改造：SIGTERM stubborn 用例改为 legacy/unsupported 拒绝语义；"SIGTERM a
+  running daemon" 改 RPC happy-path 命名与断言。
+
+验证（实现者已执行，PENDING 独立 PASS）：
+- protocol 132/132、cli 52/52、sessiond 269/1 skip（多轮稳定）；root build/typecheck/test 全绿；
+  check:architecture PASS；sessiond/host boundary PASS；Startup（含 CLI `down --all` 经 RPC 退出
+  daemon 并清 lock/socket）+ Runtime + Sessions E2E 全 PASS；git diff --check 干净；worktree 未
+  push/deploy，未触碰 live service。
+
+残余/后续：本切片为 RPC-only 关闭，不宣称 Windows；旧 daemon（无 shutdownAuthority）只能被
+unsupported 拒绝，绝不 fallback kill；Local Authority race 仍在 §55 在飞；Fresh verifier 独立 PASS
+待补。
 ```

@@ -27,6 +27,10 @@ export class SessiondApplication implements SessiondRpcHandler {
     switch (method) {
       case "system.ping": return { pong: true, serverTime: Date.now() };
       case "system.hello": return { protocolVersion: PROTOCOL_VERSION, capabilities: ["runtime.authority", "runtime.resume"] };
+      case "system.shutdown":
+        // Intercepted by the RPC server (daemon-owned shutdown authority) and
+        // never dispatched here. Fail closed if it somehow reaches the app.
+        throw new SessiondError("internal", "system.shutdown must be handled by the daemon authority");
       case "runtime.create": return this.service.create(params as SessiondMethodParams["runtime.create"]);
       case "runtime.activate": {
         const input = params as SessiondMethodParams["runtime.activate"];

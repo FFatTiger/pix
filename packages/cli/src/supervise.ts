@@ -10,16 +10,19 @@ import {
   type InstanceLockRead,
   type SessiondPaths,
 } from "@fffattiger/pix-sessiond/control";
+import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
+import { SessiondError } from "@fffattiger/pix-sessiond";
 import { readLocalSecret, UnsafeSecretError } from "./secret.js";
 import { pingSessiond } from "./probe.js";
 import { resolveSessiondBin } from "./paths.js";
 
 const READINESS_TIMEOUT_MS = 10_000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+const SHUTDOWN_RPC_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 100;
 
 export interface ShutdownOptions {
-  /** Override the SIGTERM cleanup wait (default 10s). Useful for tests. */
+  /** Override the bounded shutdown wait (default 10s). Useful for tests. */
   timeoutMs?: number;
 }
 
@@ -27,7 +30,7 @@ export type ShutdownResult =
   | { action: "already-down"; pid: number | undefined }
   | { action: "obstructed"; pid: number | undefined; reason: string }
   | { action: "terminated"; pid: number }
-  | { action: "failed"; pid: number; reason: "timeout" };
+  | { action: "failed"; pid: number; reason: string };
 
 export interface SessiondLocation {
   directory: string;
@@ -272,14 +275,23 @@ export async function ensureSessiond(
 }
 
 /**
- * Stop the sessiond named by `directory`'s lock via SIGTERM, then wait until the
- * pid, lock file and socket are all cleared. Idempotent: a missing/stale lock is
- * a no-op returning "already-down". If the process does not clean up within the
- * timeout it returns `{ action: "failed", reason: "timeout" }` rather than
- * pretending success — a stuck authority must be visible to the operator.
+ * Stop the sessiond named by `directory`'s lock via its authenticated RPC
+ * control method (`system.shutdown`), then wait boundedly until the pid, lock
+ * file and socket are all cleared. Idempotent: a missing/stale lock is a no-op
+ * returning "already-down".
+ *
+ * RPC-only production authority (no SIGTERM/PID fallback): the AUTH secret and
+ * the exact lock instance identity are read from the local secure state, the
+ * request is authenticated and instance-fenced by the daemon, and the daemon
+ * ACKs the response to the client BEFORE beginning its shutdown transition. The
+ * pid is used only as a final observation that the authenticated instance
+ * exited — never to signal/kill. Any wrong secret / wrong instance / unsupported
+ * / timeout / connection failure returns a sanitized failure and leaves the
+ * target process untouched (old daemons without the control method are not
+ * killable via a fallback).
  *
  * Fail-closed: an unsafe lock, a live listener without a lock, or a
- * live-but-unreachable pid is never SIGTERM'd — the daemon state is not safely
+ * live-but-unreachable pid is never touched — the daemon state is not safely
  * owned, so the caller is told it is obstructed instead of being reported as
  * already-down (which would hide a live authority from the operator).
  */
@@ -299,11 +311,41 @@ export async function shutdownSessiond(
   if (status.pid === undefined || !status.alive) {
     return { action: "already-down", pid: status.pid };
   }
-  try {
-    process.kill(status.pid, "SIGTERM");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  // The exact authenticated instance identity comes from the strict lock read;
+  // without it we can never authorize a shutdown of this instance.
+  if (status.instanceId === undefined) {
+    return { action: "failed", pid: status.pid, reason: "sessiond instance identity is unknown" };
   }
+  // The AUTH secret is mandatory and read strictly (never created). A missing
+  // or unsafe secret means we cannot authenticate and must fail closed.
+  let secret: string | undefined;
+  try {
+    secret = await readLocalSecret(paths.secretFile);
+  } catch (error) {
+    if (error instanceof UnsafeSecretError) {
+      return { action: "failed", pid: status.pid, reason: "sessiond secret is unsafe" };
+    }
+    throw error;
+  }
+  if (secret === undefined) {
+    return { action: "failed", pid: status.pid, reason: "sessiond secret is unavailable" };
+  }
+  // Authenticate + instance-fence, then call system.shutdown with the exact
+  // instance id. The daemon ACKs the response before it begins to shut down, so
+  // a successful call means the transition was authorized and accepted.
+  const rpcTimeoutMs = options.timeoutMs ?? SHUTDOWN_RPC_TIMEOUT_MS;
+  const client = new SessiondRpcClient({ endpoint: paths.endpoint, secret, timeoutMs: rpcTimeoutMs });
+  try {
+    const result = await client.call("system.shutdown", { instanceId: status.instanceId });
+    if (result.accepted !== true) {
+      return { action: "failed", pid: status.pid, reason: "sessiond did not accept shutdown" };
+    }
+  } catch (error) {
+    // Never echo the secret, endpoint, instance id, or a raw error/stack.
+    return { action: "failed", pid: status.pid, reason: sanitizeShutdownFailure(error) };
+  }
+  // Wait boundedly for the authenticated instance to exit: the owned socket and
+  // lock disappear and the pid (final observation only) dies.
   const deadline = Date.now() + (options.timeoutMs ?? SHUTDOWN_TIMEOUT_MS);
   while (Date.now() < deadline) {
     // instanceAlive reads the lock each poll; once the daemon releases it the
@@ -314,4 +356,19 @@ export async function shutdownSessiond(
     await sleep(50);
   }
   return { action: "failed", pid: status.pid, reason: "timeout" };
+}
+
+/** Map an RPC shutdown failure onto a fixed sanitized reason (never secret/endpoint/instance/stack). */
+function sanitizeShutdownFailure(error: unknown): string {
+  if (error instanceof SessiondError) {
+    switch (error.code) {
+      case "unauthorized": return "sessiond refused shutdown (unauthorized)";
+      case "forbidden": return "sessiond refused shutdown (instance mismatch)";
+      case "unsupported_capability": return "sessiond does not support remote shutdown";
+      case "timeout": return "timeout waiting for sessiond shutdown response";
+      case "invalid_request": return "sessiond rejected the shutdown request";
+      default: return "sessiond refused shutdown";
+    }
+  }
+  return "sessiond refused shutdown";
 }

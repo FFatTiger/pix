@@ -1003,6 +1003,7 @@ describe("sessiond RPC", () => {
       "sessions.context": { sessionId: "s-1", entries: [] },
       "sessions.rename": { sessionId: "s-1", name: "New" },
       "sessions.delete": { sessionId: "s-1", deleted: true },
+      "system.shutdown": { accepted: true },
     };
 
     for (const method of Object.keys(SessiondMethodResultSchemas)) {

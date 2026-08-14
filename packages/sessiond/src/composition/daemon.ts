@@ -229,6 +229,46 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   let server: SessiondRpcServer | undefined;
   let publication: OwnedSocketPublication | undefined;
   let privatePath: string | undefined;
+  // Daemon-owned shutdown transition. Defined before the RPC server so the
+  // shutdown authority can be wired in: `system.shutdown` ACKs its response to
+  // the client FIRST, then calls `initiateShutdown`, which begins this
+  // idempotent transition exactly once. `closed` is the lifecycle notification
+  // that resolves when the transition completes.
+  let shutdownInitiated = false;
+  let shutdownPromise: Promise<void> | undefined;
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const shutdown = async (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      // 1) Owned public unlink while the server is still alive. Only removes
+      //    the public when the lock still names this instance AND the public
+      //    is still our socket inode; a replaced public/lock is left alone
+      //    (the incident fix).
+      if (publication) await releaseOwnedPublicEndpoint(paths, publication).catch(() => {});
+      // 2) server → service teardown (libuv unlinks the private path).
+      for (const step of teardown.splice(0).reverse()) await step().catch(() => {});
+      // 3) Defensive residue removal of our own private path.
+      if (privatePath) await removeOwnedPrivateSocket(privatePath).catch(() => {});
+      // 4) Lock release.
+      await lock.release().catch(() => {});
+      resolveClosed();
+    })();
+    return shutdownPromise;
+  };
+  /**
+   * RPC shutdown authority (delivery-gated): the RPC server invokes this only
+   * after an authenticated, instance-fenced `system.shutdown` response was
+   * flushed to the client. Call-safe; the idempotent transition runs at most
+   * once. Never throws.
+   */
+  const initiateShutdown = (): void => {
+    if (shutdownInitiated) return;
+    shutdownInitiated = true;
+    void shutdown();
+  };
   try {
     // Fail-closed stale recovery BEFORE publishing anything new: an old orphan
     // daemon's debris must never be removed unconditionally, and a live orphan
@@ -252,36 +292,20 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     // Unix: libuv binds the private per-instance path (never the stable public
     // one), so a close can never unlink another daemon's public endpoint.
     // Windows: named pipes leave no files; bind the public pipe directly.
-    server = new SessiondRpcServer({ endpoint: privatePath ?? paths.endpoint, secret, handler: application });
+    server = new SessiondRpcServer({
+      endpoint: privatePath ?? paths.endpoint,
+      secret,
+      handler: application,
+      // Internal, authenticated control-plane shutdown: ACK-before-close via
+      // the RPC server, fenced on the exact lock instance id, and gated so the
+      // daemon transition starts only after the response was flushed.
+      shutdownAuthority: { instanceId: lock.instanceId, initiate: initiateShutdown },
+    });
     await server.listen();
     teardown.push(() => server!.close());
     if (needsUnixSocketPublication()) {
       publication = await publishPublicEndpoint(paths, privatePath!, lock.instanceId);
     }
-
-    let shutdownPromise: Promise<void> | undefined;
-    let resolveClosed!: () => void;
-    const closed = new Promise<void>((resolve) => {
-      resolveClosed = resolve;
-    });
-    const shutdown = async (): Promise<void> => {
-      if (shutdownPromise) return shutdownPromise;
-      shutdownPromise = (async () => {
-        // 1) Owned public unlink while the server is still alive. Only removes
-        //    the public when the lock still names this instance AND the public
-        //    is still our socket inode; a replaced public/lock is left alone
-        //    (the incident fix).
-        if (publication) await releaseOwnedPublicEndpoint(paths, publication).catch(() => {});
-        // 2) server → service teardown (libuv unlinks the private path).
-        for (const step of teardown.splice(0).reverse()) await step().catch(() => {});
-        // 3) Defensive residue removal of our own private path.
-        if (privatePath) await removeOwnedPrivateSocket(privatePath).catch(() => {});
-        // 4) Lock release.
-        await lock.release().catch(() => {});
-        resolveClosed();
-      })();
-      return shutdownPromise;
-    };
 
     return {
       directory,

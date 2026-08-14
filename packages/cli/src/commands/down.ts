@@ -31,7 +31,9 @@ export async function downCommand(argv: string[]): Promise<number> {
   } else if (result.action === "terminated") {
     pixLog(`sessiond: terminated (pid ${result.pid})`);
   } else {
-    pixErr(`sessiond: failed to stop (pid ${result.pid}, ${result.reason}); process may be stuck`);
+    // Sanitized reason only (never the secret/endpoint/instance id/stack); the
+    // target process is left untouched.
+    pixErr(`sessiond: failed to stop (pid ${result.pid}): ${result.reason}`);
     return 1;
   }
   return 0;
