@@ -1800,3 +1800,113 @@ token/radius/type），无渐变/玻璃/弹跳。
   E2E（backend 回归）PASS；shutdown 无孤儿；watchdog/temp config 有限。
 - 无 Playwright 依赖，不声明浏览器视觉 PASS；真实 Store/DOM 并发、IME、request-id 复用、不同/相同 id 的 in-flight reply 焦点恢复与 no-steal 已由独立 verifier 对 integration `4e09278` + focus fix `46db2b4` 复验 PASS。浏览器视觉观感仍是非阻塞 manual gap。
 ```
+
+## 51. D4 — Session-Rename Upper-Layer（sessiond 身份 lane 切片）记录
+
+```text
+实现：source branch feat/d4-session-rename-service（base main e1249f4），backend-first，
+仅 sessiond 上层 + docs + E2E 断言更新；无 Host route/Client UI/package-lock/live
+service/merge/push/deploy。依赖地基 §44（adapter `SessionMutationPort.renameSession` +
+共享 store 即时失效，main 953640b）与 §47（stopped-only delete + activate 同步 admission
+fence，main e1249f4）。本切片把 sessiond 的身份变更（activate / sessions.rename /
+public runtime.command(set_session_name) / 显式 stop / delete）收敛到服务持有的
+per-session FIFO identity lane 协调器，并接通生产默认 adapter mutation、标题 overlay。
+
+冻结架构决策（父级明确，必须实现）：
+1) 全局 `SessiondService.mutex` 只用于短同步 records/activations/rekey/alias 迁移；
+   绝不在全局锁下 await adapter/catalog/locator/Worker command/start/close/另一 lane。
+   长身份工作全部在 per-session FIFO lane 内进行；同 id 串行、不同 id 独立并行。
+2) lane 覆盖 activate、sessions.rename、runtime.command(set_session_name)（命令类型
+   set_session_name 时）、显式 stop、delete。runtime.command(set_session_name) 与
+   sessions.rename 共享同一 lane（Client SessionActions 不能绕过 Host/API rename
+   顺序）；抽取私有非重入 commandOnRecord，绝不在 lane 内递归 admit。
+3) activate 先同步注册 reservation（lane pending kind + activations map）再做长工作；
+   exact-promise singleflight 保留；两个不同 id 的 activation 并发不串行。
+4) delete 的 catalog I/O 移入 lane；保留 stopped-only、prompt session_busy、no-stop/
+   no-force 与全部固定错误。delete 准入（enqueue 前）即时检查 records/activations/
+   lane activate reservation → 固定 session_busy，绝不等待 worker。
+5) 显式 stop 走 lane（内部非重入 stopRecord）；全局 shutdown 用 lane-free 内部 bypass
+   （调用者已拥有/排空整服务，绝不递归取 lane）。
+6) rekey 在短全局锁下把 authoritative id 原子绑定到同一 startup reservation lane；
+   目标已被独立 lane/reservation/record 占用 → 固定 conflict fail-closed（不等待/
+   合并/抢占）；rekey 前对旧 id 排队的请求变 stale（generation 失配）固定
+   conflict/unavailable，绝不对被复用的旧 id 做 offline mutation；rekey 后对
+   authoritative id 的请求排到 startup 之后并在 ready 记录上运行。
+7) 标题收敛用服务持有的 revisioned overlay（sessionId -> {canonicalName,revision}）：
+   仅在确认 live/offline rename 成功后才 publish；sessions.list/read 经服务 wrapper
+   应用；stop 保留；delete 成功移除；rekey 安全移动；与 rename 重叠的旧读不得清除
+   新 revision；成功返回之后开始的读必须看到新标题；绝不改 id/path/timestamps/context。
+8) 名字只 canonicalize 一次（trim、非空、≤200 Unicode JS code units、拒 NUL/C0/DEL），
+   RPC 返回 canonical 名；live 命令结果必须匹配 wire id/commandId/type/捕获 ownership，
+   `{ok:false}` 一律视为失败，绝不报成功；任何 raw name/session/path/worker/adapter
+   error 不得跨 boundary。
+
+实现（packages/sessiond）：
+- 新增 internal/session-operation-coordinator.ts：`SessionOperationCoordinator`（per-session
+  FIFO lane：唯一 owner token、canonical id、绑定 aliases、单调 identity generation、
+  拒毒 tail、pending kinds 同步可见、exact-owner 清理；admit/bindRekey/hasPendingKind/
+  hasLane/resolveCanonical/diagnostics）与 `SessionTitleOverlay`（revisioned 标题 overlay，
+  publish/remove/move/capture/apply）。
+- service.ts：
+  * `SessiondDependencies.sessionMutation?: SessionMutationPort | null` 改用 runtime-core
+    `SessionMutationPort`（renameSession）；undefined=生产默认、null=显式禁用。
+  * activate：records 快路径 → lane admit（pending activate）→ op 内复检 records/
+    activations（join）→ stale 检查 → 同步注册 reservation → locate/context/start 在
+    lane 内但全局锁外；exact-owner 清理用当前 canonical（rekey 会搬 reservation）。
+  * rekey：短全局锁内做 records 迁移 + coordinator.bindRekey（含目标占用检测）+ activations
+    reservation 迁移 + overlay.move；conflict 时 Worker close 在锁外。
+  * command 拆出私有 `commandOnRecord`；set_session_name 走 lane（commandRename），
+    offline/无 record 返回固定 unavailableCommand（不做 offline mutation）；其余命令原路径。
+  * executeLiveRename：命令准入前与成功发布前双重捕获 record+epoch ownership 检查；
+    ok:false 或 ownership 丢失绝不 publish/绝不 false success。
+  * renameSession：canonicalize → lane admit → live（crashed/stopping 固定 unavailable，
+    绝不 offline 回退）或 offline mutation；失败映射为固定 sanitized SessiondError。
+  * deleteSession：enqueue 前 prompt busy（records/activations/lane activate）→ lane 内
+    catalog.deleteSession（防御性 records 复检）→ overlay.remove。
+  * stop 走 lane（内部 stopRecord 非重入）；shutdown 用 lane-free stopInternalBypass；
+    touch 的 idle 路径仍直接 stopRecord。
+  * listSessions/readSession 服务 wrapper 应用 overlay；diagnostics 增 lanes/aliases/
+    overlay。
+- application.ts：sessions.list/read 走服务 wrapper；sessions.rename 返回 canonical 名。
+- composition/daemon.ts：生产默认 catalog/locator/mutation 同来自一个
+  `createPiSdkSessionPorts()` 结果；sessionMutation override 语义 undefined/null。
+- testing/fake-worker.ts：新增 primeSnapshotDelayMs（rekey 绑定后可确定性地把请求排在
+  startup 之后）。
+
+语义（竞态/product，父级冻结）：
+- offline rename 先准入 → activation 排队等待、append 提交后才 locate/open 改名 JSONL
+  （零 worker 先于 append）；activation 先准入 → rename 等待，startup 成功后成为 live
+  set_session_name（绝不因 startup 返回 busy）。
+- delete 在 live/crashed record 或更早 activation reservation 存在时 prompt 固定
+  session_busy；delete 先准入 → activation 排队、删除后 not_found 且零 worker；rename 在
+  delete 之后 not_found 且绝不重建文件；rename→delete 双成功；同 id rename FIFO、异 id 并发。
+- 显式 stop 共享 lane：rename-first 先 settle live 命令再 stop；stop-first 先移除 record
+  再 offline rename；crashed record 仍是 reservation：rename 固定 unavailable，绝不 offline
+  回退，直到显式 stop/移除。
+- 旧 record/epoch 的晚到结果（stop/reactivate/crash）不能 publish 标题或影响新 Worker。
+- 无 coordinator/lane/alias/generation/activation/overlay 泄漏；失败任务不毒化 lane tail。
+
+测试：新增 packages/sessiond/test/session-rename.test.ts（25 用例，确定性 deferred gate/
+有限 watchdog，无 timing 断言）：offline-first 阻塞 activation 至 append；activation-first
+→ live path 且零 mutation 调用；同 id rename FIFO（sessions.rename × runtime.command）；
+异 id 并发；delete→rename/activate not_found 且零 worker；rename→delete 成功；activation
+→delete prompt busy；stop→rename offline；rename→stop live；crash 防 offline 回退；
+live {ok:false} / thrown failure / timeout 传播 sanitized 非 false success；crash+reactivate
+旧结果 inert；rekey 旧 id stale conflict、authoritative id 排队 live、目标占用 fail-closed、
+alias/promise 精确清理；失败无泄漏且失败 tail 不毒化后续；list/read 即时 overlay、旧 catalog
+响应不清新 revision、delete 移除 overlay、stop 保留；shutdown 在 lane op 在飞时 lane-free
+排空不死锁；boundary RPC（missing not_found、invalid name invalid_input、null mutation
+unavailable，无 raw 泄漏）。daemon.test.ts 新增 2 用例：真实默认 adapter JSONL offline
+rename（零 worker、同 path/id/history/context、即时 read/list、文件含 session_info 标题）与
+sessionMutation:null 固定 unavailable。既有 D4 delete/fence 回归全部保留（sessiond 195→220
+用例）。E2E sessions-history.mjs 把过时的 "non-live rename unavailable" 断言改为真实离线
+rename 成功（canonical 名、零 worker、同 path、即时 read/list）。
+
+验证：sessiond typecheck/build/boundary PASS、sessiond 全量 221 pass/0 fail/1 skip 多轮
+（含两轮并发 stress）；runtime-core 12/12、adapter 236/236、root typecheck/build PASS、
+check:architecture PASS、root tests 全 workspace 绿；Sessions/Runtime/Startup 三条 E2E
+PASS；git diff --check 与工作树 clean（提交后）。独立 verifier 将裁定 PASS/FAIL。
+
+残余/后续：Host PATCH rename route、Client rename UI、live set_session_name 的 catalog
+持久化收敛（worker 侧）、auto-name/trash/undo、side chat 仍后置。§48 为 provisional
+编号已在 current-main 集成时顺延为 §51（Local Authority 占 §48/§49，Extension UI Client 占 §50）。

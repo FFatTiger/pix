@@ -64,10 +64,10 @@ export class SessiondApplication implements SessiondRpcHandler {
         return { cwd: input.cwd, stoppedSessionIds: await this.service.stopByCwd(input.cwd, input.reason) };
       }
       case "sessions.list": {
-        const catalog = this.service.sessionCatalog();
-        if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable");
         const input = params as SessiondMethodParams["sessions.list"];
-        const sessions = await catalog.listSessions({ ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.limit === undefined ? {} : { limit: input.limit }), ...(input.offset === undefined ? {} : { offset: input.offset }) });
+        // Service wrapper applies the service-owned revisioned title overlay so
+        // reads beginning after a confirmed rename observe the new title.
+        const sessions = await this.service.listSessions({ ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.limit === undefined ? {} : { limit: input.limit }), ...(input.offset === undefined ? {} : { offset: input.offset }) });
         return { sessions: sessions.map((item) => ({ ...item })) };
       }
       case "sessions.resolve": {
@@ -78,9 +78,9 @@ export class SessiondApplication implements SessiondRpcHandler {
         return { sessionId: input.sessionId, sessionFile: location.sessionFile, cwd: context.cwd, projectRoot: context.projectRoot };
       }
       case "sessions.read": {
-        const catalog = this.service.sessionCatalog();
-        if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable");
-        return { ...await catalog.readSession((params as SessiondMethodParams["sessions.read"]).sessionId) };
+        const input = params as SessiondMethodParams["sessions.read"];
+        // Service wrapper applies the service-owned revisioned title overlay.
+        return { ...await this.service.readSession(input.sessionId) };
       }
       case "sessions.context": {
         const catalog = this.service.sessionCatalog();
@@ -91,8 +91,9 @@ export class SessiondApplication implements SessiondRpcHandler {
       }
       case "sessions.rename": {
         const input = params as SessiondMethodParams["sessions.rename"];
-        await this.service.renameSession(input.sessionId, input.name);
-        return { sessionId: input.sessionId, name: input.name };
+        // The service canonicalizes the name once (trim / length / controls) and
+        // the RPC returns the canonical name, never the raw user string.
+        return this.service.renameSession(input.sessionId, input.name);
       }
       case "sessions.delete": {
         const input = params as SessiondMethodParams["sessions.delete"];

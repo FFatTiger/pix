@@ -470,16 +470,23 @@ async function main() {
     // 2d. D1 WP-3 session mutation contracts at the correct layer. The Host
     //     exposes no mutation routes (read-only by design, D4) — do not invent
     //     any. These are exercised against the sessiond RPC seam this E2E
-    //     already owns. Non-live rename is fixed-unavailable (M1 ships no
-    //     mutation backend); live rename requires a Worker (set_session_name
-    //     command) and is deliberately NOT exercised here — this slice stays
-    //     zero-worker, so only the non-live contract is covered.
-    try {
-      await rpc.call("sessions.rename", { sessionId, name: "renamed" });
-      assert.fail("non-live rename must be unavailable");
-    } catch (error) {
-      assert.equal(error.code, "unavailable", "non-live rename must surface code unavailable");
-    }
+    //     already owns. D4 wires the production daemon's default adapter
+    //     mutation, so a NON-LIVE rename now succeeds as a real JSONL offline
+    //     append: canonical name returned, zero Workers, same id/path/history,
+    //     and the title is immediately visible to read/list. LIVE rename
+    //     (set_session_name) is deliberately NOT exercised here — this slice
+    //     stays zero-worker until the attach step.
+    const sessionFileBefore = detail.body.session.sessionFile;
+    const renamed = await rpc.call("sessions.rename", { sessionId, name: "  e2e renamed  " });
+    assert.deepEqual(renamed, { sessionId, name: "e2e renamed" }, "offline rename returns the canonical trimmed name");
+    const readAfterRename = await get(`/v1/sessions/${sessionId}`);
+    assert.equal(readAfterRename.status, 200);
+    assert.equal(readAfterRename.body.session.title, "e2e renamed", "read observes the new title immediately");
+    assert.equal(readAfterRename.body.session.sessionFile, sessionFileBefore, "the rename never rewrites the file path");
+    const listAfterRename = await get("/v1/sessions");
+    assert.equal(listAfterRename.body.sessions.find((s) => s.sessionId === sessionId)?.title, "e2e renamed", "list observes the new title immediately");
+    const runningAfterRename = await rpc.call("runtime.listRunning", {});
+    assert.deepEqual(runningAfterRename.sessions, [], "offline rename must not start a Worker");
     const deleteGhost = "nonexistent-delete-00000000-deadbeef";
     try {
       await rpc.call("sessions.delete", { sessionId: deleteGhost });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -452,6 +452,103 @@ test("default wiring uses the shared Pi SDK session pair end-to-end (real SDK)",
       assert.equal(activated.projectRoot, cwd);
       assert.equal(workers.workers[0]?.input.cwd, cwd);
       assert.equal(workers.workers[0]?.input.projectRoot, cwd);
+    } finally {
+      await handle.shutdown();
+    }
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await cleanup(dir);
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// D4 session-rename production wiring: the daemon's default catalog + locator +
+// mutation come from ONE createPiSdkSessionPorts() result, so a real JSONL
+// offline rename is immediately visible to list/read with zero Workers and
+// unchanged identity/history/context; sessionMutation:null fails closed.
+// ---------------------------------------------------------------------------
+
+test("daemon real default adapter: JSONL offline rename, zero workers, same path/id/history/context, immediate read/list", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "sessiond-rename-agent-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const dir = await tempDir();
+  try {
+    const cwd = join(agentDir, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const { sessionId } = seedSessionForTests({ cwd });
+    const workers = new FakeWorkerFactory({ readyDelayMs: 0 });
+    const handle = await startDaemon({ directory: dir, workerFactory: workers, serviceOptions: { idleTimeoutMs: 0 } });
+    const rpc = client(handle);
+    try {
+      const before = await rpc.call("sessions.read", { sessionId });
+      assert.equal(before.sessionId, sessionId);
+      const sessionFile = before.sessionFile;
+      assert.ok(typeof sessionFile === "string" && sessionFile.endsWith(".jsonl"));
+
+      const renamed = await rpc.call("sessions.rename", { sessionId, name: "  Canonical Renamed  " });
+      assert.deepEqual(renamed, { sessionId, name: "Canonical Renamed" }, "the RPC returns the canonical trimmed name");
+
+      // Zero Workers: offline rename is a pure JSONL append.
+      assert.deepEqual((await rpc.call("runtime.listRunning", {})).sessions, []);
+      assert.equal(workers.starts, 0);
+
+      // Same path / id / history / context; title reflects the rename immediately.
+      const after = await rpc.call("sessions.read", { sessionId });
+      assert.equal(after.sessionId, sessionId, "session id is unchanged");
+      assert.equal(after.sessionFile, sessionFile, "the session file path is unchanged");
+      assert.equal(after.title, "Canonical Renamed", "read observes the new title immediately");
+      const context = await rpc.call("sessions.context", { sessionId });
+      assert.equal(context.sessionId, sessionId);
+      assert.ok(context.entries.length >= 2, "history is preserved");
+      const list = await rpc.call("sessions.list", {});
+      const item = list.sessions.find((s: { sessionId: string }) => s.sessionId === sessionId);
+      assert.equal(item?.title, "Canonical Renamed", "list observes the new title immediately");
+
+      // The JSONL file really carries the appended session_info (title source of truth).
+      const raw = await readFile(sessionFile, "utf8");
+      assert.ok(raw.includes("Canonical Renamed"), "the JSONL must contain the appended session_info title");
+    } finally {
+      await handle.shutdown();
+    }
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await cleanup(dir);
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("daemon sessionMutation:null disables offline rename fail-closed with fixed unavailable", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "sessiond-nullmut-agent-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const dir = await tempDir();
+  try {
+    const cwd = join(agentDir, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const { sessionId } = seedSessionForTests({ cwd });
+    const workers = new FakeWorkerFactory({ readyDelayMs: 0 });
+    const handle = await startDaemon({ directory: dir, workerFactory: workers, sessionMutation: null, serviceOptions: { idleTimeoutMs: 0 } });
+    const rpc = client(handle);
+    try {
+      await assert.rejects(
+        rpc.call("sessions.rename", { sessionId, name: "Nope" }),
+        (error: unknown) => {
+          assert.ok(error instanceof SessiondError);
+          assert.equal(error.code, "unavailable");
+          assert.equal(error.message, "session mutation is unavailable");
+          assert.ok(!String(error.message).includes(sessionId), "no raw id may echo");
+          return true;
+        },
+      );
+      // Nothing changed: the title stays undefined and zero workers ran.
+      const after = await rpc.call("sessions.read", { sessionId });
+      assert.equal(after.title, undefined);
+      assert.equal(workers.starts, 0);
+      assert.deepEqual((await rpc.call("runtime.listRunning", {})).sessions, []);
     } finally {
       await handle.shutdown();
     }

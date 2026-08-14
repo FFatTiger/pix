@@ -19,6 +19,13 @@ export interface FakeWorkerOptions {
   /** Drop worker.getSnapshot requests during startup so sessiond fails closed. */
   ignoreSnapshot?: boolean;
   /**
+   * Delay answering the FIRST worker.getSnapshot (the startup/prime response)
+   * so the rekey binding (sessionDiscovered/ready) can be observed while the
+   * activation is still in flight. Used to queue authoritative-id requests
+   * behind a startup deterministically.
+   */
+  primeSnapshotDelayMs?: number;
+  /**
    * Delay answering worker.getSnapshot after the first (startup/prime) response
    * has been delivered. Used to hold set_thinking_level authority finalization
    * open so concurrent same-id callers can join the singleflight.
@@ -226,7 +233,7 @@ export class FakeWorkerConnection implements WorkerConnection {
       this.emit({ type: "worker.snapshot", id, payload: { sessionId, snapshot: snap } });
     };
 
-    const delayMs = isPostCommand ? (this.options.postCommandSnapshotDelayMs ?? 0) : 0;
+    const delayMs = isPostCommand ? (this.options.postCommandSnapshotDelayMs ?? 0) : (this.options.primeSnapshotDelayMs ?? 0);
     if (delayMs > 0) {
       const timer = setTimeout(() => {
         this.pendingSnapshotTimers.delete(timer);

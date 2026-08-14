@@ -20,12 +20,13 @@ import type {
   WorkerStatus,
   WorkerToSessiondMessage,
 } from "@fffattiger/pix-protocol";
-import { PROTOCOL_VERSION, RuntimeCloseReasonSchema } from "@fffattiger/pix-protocol";
+import { PROTOCOL_VERSION, RuntimeCloseReasonSchema, type ProtocolErrorCode } from "@fffattiger/pix-protocol";
 import type { RuntimeCloseReason } from "@fffattiger/pix-protocol";
-import type { SessionCatalogPort, SessionLocation, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
+import { isRuntimeError, type SessionCatalogPort, type SessionDetail, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMutationPort } from "@fffattiger/pix-runtime-core";
 import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailable, rejectedCommand, rejectedInterrupt, unavailableCommand, unavailableInterrupt } from "./errors.js";
 import { EventJournal, type EventJournalOptions } from "./journal.js";
 import { AsyncMutex } from "./internal/mutex.js";
+import { SessionOperationCoordinator, SessionTitleOverlay } from "./internal/session-operation-coordinator.js";
 import { SnapshotProjection } from "./projection.js";
 import type { WorkerConnection, WorkerProcessFactory, WorkerStartInput } from "./worker.js";
 
@@ -36,10 +37,6 @@ export interface ActivationContext {
 
 export interface ActivationContextProvider {
   resolve(sessionId: string, location: SessionLocation, requestedCwd?: string): Promise<ActivationContext>;
-}
-
-export interface SessionMutationPort {
-  rename(sessionId: string, name: string): Promise<void>;
 }
 
 export interface SessiondOptions {
@@ -61,7 +58,13 @@ export interface SessiondDependencies {
   activationContext: ActivationContextProvider;
   workerFactory: WorkerProcessFactory;
   sessionCatalog?: SessionCatalogPort;
-  sessionMutation?: SessionMutationPort;
+  /**
+   * Offline session mutation (rename) from runtime-core. `undefined` lets the
+   * production composition wire the shared {@link createPiSdkSessionPorts}
+   * mutation; `null` explicitly disables it for fail-closed tests. The service
+   * treats a missing/`null` mutation as fixed `unavailable` for offline rename.
+   */
+  sessionMutation?: SessionMutationPort | null;
 }
 
 export interface PreparedAttachment {
@@ -211,6 +214,64 @@ const stripCursor = (event: RuntimeEvent): RuntimeEventData => {
   return data as RuntimeEventData;
 };
 
+/** Max session-name length in Unicode JS code units (mirrors the adapter/UX cap). */
+const MAX_SESSION_NAME_LENGTH = 200;
+
+/**
+ * Canonicalize a session display name with the current protocol/domain rule:
+ * outer whitespace trimmed, blank rejected, capped at 200 Unicode JS code
+ * units, and NUL/C0/DEL control characters rejected. The canonical trimmed
+ * name is what the worker/adapter receive and what the RPC returns — a raw
+ * user name never crosses the boundary untrimmed. Throws a fixed canonical
+ * `invalid_input` SessiondError that never echoes the raw name.
+ */
+function canonicalizeSessionName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) throw new SessiondError("invalid_input", "session name must be a non-empty string", false);
+  if (trimmed.length > MAX_SESSION_NAME_LENGTH) throw new SessiondError("invalid_input", "session name exceeds 200 characters", false);
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) throw new SessiondError("invalid_input", "session name contains control characters", false);
+  return trimmed;
+}
+
+/**
+ * Fixed sanitized protocol message for each live-rename command failure code.
+ * The worker's raw error message (which may reflect transport/worker internals)
+ * never crosses the boundary — every code is re-projected onto a fixed message.
+ */
+const RENAME_FAILURE_MESSAGES: Readonly<Record<ProtocolErrorCode, string>> = {
+  protocol_mismatch: "session rename failed",
+  invalid_request: "session rename failed",
+  invalid_command: "session rename failed",
+  invalid_input: "session name is invalid",
+  unauthorized: "session rename failed",
+  forbidden: "session rename failed",
+  not_found: "session not found",
+  conflict: "session state conflict during rename",
+  epoch_changed: "session state changed during rename",
+  gap: "session state changed during rename",
+  runtime_unavailable: "runtime unavailable during rename",
+  worker_unavailable: "worker unavailable during rename",
+  session_busy: "session is busy",
+  command_rejected: "session rename was rejected",
+  command_duplicate: "session rename was already accepted",
+  interrupted: "session rename interrupted",
+  unsupported_capability: "session rename is not supported",
+  timeout: "session rename timed out",
+  external: "session rename failed",
+  unavailable: "session rename unavailable",
+  internal: "session rename failed",
+};
+
+/** Fixed canonical protocol message for offline-mutation failures. */
+const OFFLINE_RENAME_FAILURE_MESSAGES: Readonly<Record<ProtocolErrorCode, string>> = {
+  ...RENAME_FAILURE_MESSAGES,
+  not_found: "session not found",
+  invalid_input: "session name is invalid",
+  unavailable: "session mutation is unavailable",
+};
+
+
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -222,7 +283,18 @@ export class SessiondService {
   private readonly records = new Map<string, RecordState>();
   private readonly activations = new Map<string, Promise<RecordState>>();
   private readonly creates = new Map<string, Promise<RuntimeCreateResult>>();
+  /**
+   * D4 identity fence: the global mutex is held ONLY for short synchronous
+   * records/activations transitions, rekey and alias binding. It is NEVER held
+   * across adapter/catalog/locator calls, Worker command/start/close, or any
+   * other lane — the per-session FIFO identity lanes (see
+   * {@link SessionOperationCoordinator}) own all long-running identity work.
+   */
   private readonly mutex = new AsyncMutex();
+  /** Per-session FIFO identity coordinator (activate / rename / stop / delete). */
+  private readonly coordinator = new SessionOperationCoordinator();
+  /** Service-owned revisioned rename-title overlay for sessions.list/read. */
+  private readonly titleOverlay = new SessionTitleOverlay();
   private readonly now: () => number;
   private readonly makeEpoch: () => string;
   private readonly journalOptions: EventJournalOptions;
@@ -300,64 +372,58 @@ export class SessiondService {
 
   async activate(sessionId: string, requestedCwd?: string): Promise<RuntimeActivateResult> {
     if (this.shuttingDown) throw new SessiondError("unavailable", "sessiond is shutting down", true);
+    // Fast path: an already-live record needs no lane and no reservation.
     const active = this.records.get(sessionId);
     if (active && active.status !== "crashed" && active.status !== "stopped") return this.activateResult(active);
-    const inFlight = this.activations.get(sessionId);
-    if (inFlight) return this.activateResult(await inFlight);
-    // D4 session-delete fence: the mutex is held ONLY for the synchronous
-    // admission (recheck + registration into `this.activations`) and is NEVER
-    // held across locate/context/worker start. The mutex callback must therefore
-    // return void — AsyncMutex.runExclusive awaits the callback result, so
-    // returning the async operation here would hold the global mutex for the
-    // whole worker start. That would self-block a worker ready/sessionDiscovered
-    // rekey (which itself acquires the mutex) until the startup timeout, and
-    // serialize different-id starts behind a slow start. Instead the operation is
-    // created inside the section but awaited OUTSIDE the lock, so a delete
-    // observing this registered activation fails closed promptly with
-    // session_busy (never waiting for the worker), and a delete that wins the
-    // fence first removes the catalog entry so this admission locates not_found
-    // and never starts a worker for a deleted session.
-    let operation!: Promise<RecordState>;
-    let admitted = false;
-    await this.mutex.runExclusive(() => {
-      const activeNow = this.records.get(sessionId);
-      if (activeNow && activeNow.status !== "crashed" && activeNow.status !== "stopped") {
-        operation = Promise.resolve(activeNow);
-        return;
-      }
-      const inflightNow = this.activations.get(sessionId);
-      if (inflightNow) {
-        operation = inflightNow;
-        return;
-      }
-      admitted = true;
-      operation = (async () => {
-        const location = await this.deps.sessionLocator.locate(sessionId);
-        if (!location.exists) throw new SessiondError("not_found", `session not found: ${sessionId}`);
-        const context = await this.deps.activationContext.resolve(sessionId, location, requestedCwd);
+    // D4 identity lane: the activation is admitted into the per-session FIFO
+    // lane (registering an "activate" reservation SYNCHRONOUSLY so a delete
+    // observing it fails closed promptly with session_busy and never waits for
+    // the worker). The operation itself — locate / activation-context / worker
+    // start — runs INSIDE the lane but OUTSIDE the global mutex, so a worker
+    // ready/sessionDiscovered rekey (which itself acquires the mutex) never
+    // self-blocks, different-id activations progress independently, and a
+    // delete that wins the lane first removes the catalog entry so this
+    // admission locates not_found and never starts a worker.
+    return this.coordinator.admit(sessionId, "activate", async (ctx) => {
+      if (this.shuttingDown) throw new SessiondError("unavailable", "sessiond is shutting down", true);
+      const canonicalId = ctx.canonicalId;
+      // Re-check inside the lane (FIFO means no same-id race, but a record may
+      // already exist from a prior activation or a joined caller).
+      const activeNow = this.records.get(canonicalId);
+      if (activeNow && activeNow.status !== "crashed" && activeNow.status !== "stopped") return this.activateResult(activeNow);
+      const inflightNow = this.activations.get(canonicalId);
+      if (inflightNow) return this.activateResult(await inflightNow);
+      // A queued request against an id that rekeyed away before it ran is stale.
+      if (ctx.isStale()) throw new SessiondError("conflict", "session identity changed during activation", false);
+      // Reservation is registered synchronously BEFORE long work (locate /
+      // context / worker start).
+      const operation = (async () => {
+        const location = await this.deps.sessionLocator.locate(canonicalId);
+        if (!location.exists) throw new SessiondError("not_found", `session not found: ${canonicalId}`);
+        const context = await this.deps.activationContext.resolve(canonicalId, location, requestedCwd);
         return this.start({
           mode: "open",
           activationId: randomUUID(),
-          sessionId,
+          sessionId: canonicalId,
           cwd: context.cwd,
           projectRoot: context.projectRoot,
           sessionFile: location.sessionFile,
         });
       })();
-      this.activations.set(sessionId, operation);
-    });
-    try { return this.activateResult(await operation); }
-    finally {
-      // Identity-safe cleanup: only the exact admitted owner deletes its own
-      // entry, and only while it still owns it (a newer activation may have
-      // taken over the slot after this one settled). Joiners never delete
-      // another caller's entry. The cleanup section is a short mutex hold.
-      if (admitted) {
-        await this.mutex.runExclusive(() => {
-          if (this.activations.get(sessionId) === operation) this.activations.delete(sessionId);
-        });
+      this.activations.set(canonicalId, operation);
+      try {
+        return this.activateResult(await operation);
+      } finally {
+        // Exact-owner cleanup: only the admitted owner deletes its own entry,
+        // and only while it still owns it. Joiners never delete another
+        // caller's entry. Same-id admissions are lane-serialized, so no other
+        // operation can take over the slot while this one is running. The
+        // CURRENT canonical id is used (rekey moves the reservation, so a
+        // captured pre-rekey id would leak the moved entry).
+        const currentCanonical = ctx.canonicalId;
+        if (this.activations.get(currentCanonical) === operation) this.activations.delete(currentCanonical);
       }
-    }
+    });
   }
 
   private activateResult(record: RecordState): RuntimeActivateResult {
@@ -568,21 +634,42 @@ export class SessiondService {
     }
   }
 
+  /**
+   * D4 rekey: requestedId → authoritativeId. The alias is atomically bound to
+   * the SAME startup reservation under the short global mutex (synchronous
+   * records/alias transition only — the Worker close on the conflict path runs
+   * OUTSIDE the mutex). If the target already has an independent lane,
+   * reservation or live record, the rekey fails closed with a fixed conflict
+   * (never waits/merges/steals). Requests queued against the old id before the
+   * rekey observe a bumped lane generation and fail closed stale; requests
+   * admitted under the authoritative id after binding queue behind the startup
+   * and operate on the ready authoritative record.
+   */
   private async rekey(record: RecordState, realId: string, sessionFile?: string, cwd?: string): Promise<void> {
-    await this.mutex.runExclusive(async () => {
-      if (!this.records.has(record.sessionId) || realId === record.sessionId) return;
+    const oldId = record.sessionId;
+    let conflicted = false;
+    await this.mutex.runExclusive(() => {
+      if (!this.records.has(oldId) || realId === oldId) return;
       const collision = this.records.get(realId);
       if (collision && collision !== record) {
-        record.expectedExitReason = "rekey_conflict";
-        this.records.delete(record.sessionId);
-        record.unsubscribeWorker();
-        record.unsubscribeExit();
-        record.startupReject?.(new SessiondError("conflict", `session already active: ${realId}`));
-        delete record.startupReject;
-        await record.worker.close().catch(() => {});
+        conflicted = true;
         return;
       }
-      const oldId = record.sessionId;
+      if (this.activations.has(realId)) {
+        conflicted = true;
+        return;
+      }
+      // An occupied target lane (or a target lane when we have none) is an
+      // independent reservation — fail closed rather than wait/merge/steal.
+      if (this.coordinator.hasLane(oldId)) {
+        if (!this.coordinator.bindRekey(oldId, realId)) {
+          conflicted = true;
+          return;
+        }
+      } else if (this.coordinator.hasLane(realId)) {
+        conflicted = true;
+        return;
+      }
       this.records.delete(oldId);
       record.sessionId = realId;
       if (sessionFile !== undefined) record.sessionFile = sessionFile;
@@ -602,7 +689,26 @@ export class SessiondService {
       record.projection.replace(snapshot);
       record.journalBaseSnapshot = record.projection.snapshot();
       this.records.set(realId, record);
+      // Move the activation reservation + any rename-title overlay so joiners
+      // and reads under the authoritative id see the same identity.
+      const reservation = this.activations.get(oldId);
+      if (reservation) {
+        this.activations.delete(oldId);
+        this.activations.set(realId, reservation);
+      }
+      this.titleOverlay.move(oldId, realId);
     });
+    if (conflicted) {
+      // Fail closed OUTSIDE the mutex: identity transition is already done, and
+      // the Worker close is never awaited under the global lock.
+      record.expectedExitReason = "rekey_conflict";
+      this.records.delete(record.sessionId);
+      record.unsubscribeWorker();
+      record.unsubscribeExit();
+      record.startupReject?.(new SessiondError("conflict", `session already active: ${realId}`));
+      delete record.startupReject;
+      await record.worker.close().catch(() => {});
+    }
   }
 
   private acceptEvent(record: RecordState, data: RuntimeEventData): void {
@@ -662,7 +768,23 @@ export class SessiondService {
   }
 
   async command(sessionId: string, command: RuntimeCommand): Promise<CorrelatedRuntimeCommandResult> {
+    // D4 identity lane: public `runtime.command(set_session_name)` shares the
+    // EXACT same per-session FIFO lane as `sessions.rename`, so the Client
+    // SessionActions path can never bypass Host/API rename ordering. The private
+    // non-reentrant command operation is never re-admitted into the lane.
+    if (command.type === "set_session_name") return this.commandRename(sessionId, command);
     const record = this.requireActive(sessionId);
+    return this.commandOnRecord(record, command);
+  }
+
+  /**
+   * Private non-reentrant command operation (the former `command` body). One
+   * caller holds exactly one lane and never enqueues recursively; this method
+   * is invoked by the rename lane operation for live `set_session_name` and by
+   * the public `command` for every other command type.
+   */
+  private async commandOnRecord(record: RecordState, command: RuntimeCommand): Promise<CorrelatedRuntimeCommandResult> {
+    const sessionId = record.sessionId;
     let immediate: CorrelatedRuntimeCommandResult | undefined;
     let pending!: PendingCommand;
     let finalization: Promise<CorrelatedRuntimeCommandResult> | undefined;
@@ -725,6 +847,74 @@ export class SessiondService {
       this.cacheCommandResult(record, result);
     }
     return result;
+  }
+
+  /**
+   * D4 identity lane for public `runtime.command(set_session_name)`. Shares the
+   * exact same per-session FIFO lane as `sessions.rename` (never bypasses rename
+   * ordering) and always returns a structured correlated result. An offline
+   * session (no live record) fails with a fixed unavailable result — the Client
+   * SessionActions path never silently performs an offline mutation.
+   */
+  private commandRename(sessionId: string, command: RuntimeCommand & { type: "set_session_name" }): Promise<CorrelatedRuntimeCommandResult> {
+    let canonicalName: string;
+    try {
+      canonicalName = canonicalizeSessionName(command.name);
+    } catch {
+      return Promise.resolve({
+        commandId: command.commandId,
+        result: { ok: false, type: "set_session_name", error: { code: "invalid_input", message: "session name is invalid", retryable: false } },
+      });
+    }
+    return this.coordinator.admit(sessionId, "rename", async (ctx) => {
+      if (this.shuttingDown) return unavailableCommand(command.commandId, "set_session_name", "sessiond is shutting down");
+      if (ctx.isStale()) return unavailableCommand(command.commandId, "set_session_name", "session identity changed during rename");
+      const record = this.records.get(ctx.canonicalId);
+      if (!record || record.status === "stopped") {
+        return unavailableCommand(command.commandId, "set_session_name", "runtime is not active");
+      }
+      if (record.status === "crashed" || record.status === "stopping") {
+        // A crashed/stopping record remains a reservation: never fall back offline.
+        return unavailableCommand(command.commandId, "set_session_name", "runtime is not active");
+      }
+      return this.executeLiveRename(record, command.commandId, canonicalName);
+    });
+  }
+
+  /**
+   * Live `set_session_name` with D4 ownership guards. The captured record
+   * object + epoch are checked immediately before command admission and again
+   * before success publication, so an old record/epoch result after
+   * stop/reactivate can never publish a title or affect a new Worker. The
+   * command result must match the captured ownership; `{ok:false}` is a
+   * failure and is never reported as success.
+   */
+  private async executeLiveRename(record: RecordState, commandId: string, name: string): Promise<CorrelatedRuntimeCommandResult> {
+    const epochAtCapture = record.epoch;
+    if (!this.ownsLiveRecord(record, epochAtCapture)) {
+      return unavailableCommand(commandId, "set_session_name", "runtime stopped before rename command");
+    }
+    const result = await this.commandOnRecord(record, { type: "set_session_name", commandId, name });
+    const stillOwned = this.ownsLiveRecord(record, epochAtCapture);
+    const matchesCapture = result.commandId === commandId && result.result.type === "set_session_name";
+    if (result.result.ok && stillOwned && matchesCapture) {
+      this.titleOverlay.publish(record.sessionId, name);
+      return result;
+    }
+    if (result.result.ok) {
+      // The command settled but we no longer own the record/epoch (stop /
+      // reactivate / crash during the flight): never publish, never false success.
+      return unavailableCommand(commandId, "set_session_name", "runtime changed during rename");
+    }
+    return result;
+  }
+
+  private ownsLiveRecord(record: RecordState, epoch: string): boolean {
+    return (
+      this.records.get(record.sessionId) === record &&
+      record.epoch === epoch &&
+      !["crashed", "stopped", "stopping"].includes(record.status)
+    );
   }
 
   /**
@@ -1047,7 +1237,32 @@ export class SessiondService {
     return ids;
   }
 
+  /**
+   * D4 identity lane: an explicit stop shares the session lane with rename /
+   * activate / delete, so a rename-first live command settles before the stop
+   * and a stop-first removes the record before a later rename uses the offline
+   * mutation. The internal {@link stopRecord} is non-reentrant (never acquires
+   * the lane); callers that already own/drain (idle timeout, bulk shutdown)
+   * must use {@link stopRecord} / {@link stopInternalBypass} directly.
+   */
   async stop(sessionId: string, reason = "user"): Promise<boolean> {
+    return this.coordinator.admit(sessionId, "stop", async (ctx) => {
+      // Stop is an unconditional close intent: even when a rekey moved the lane
+      // identity while this stop was queued, it stops the CURRENT canonical
+      // record (never leaves a session running because the requested id rekeyed).
+      const record = this.records.get(ctx.canonicalId);
+      if (!record) return false;
+      return record.lifecycle.runExclusive(() => this.stopRecord(record, reason));
+    });
+  }
+
+  /**
+   * Lane-free internal stop bypass for bulk drain (global shutdown). The caller
+   * already owns the whole service and must never deadlock by recursively
+   * acquiring the per-session lane (a queued lane operation may be blocked on a
+   * Worker command this stop would otherwise wait behind).
+   */
+  private async stopInternalBypass(sessionId: string, reason = "user"): Promise<boolean> {
     const record = this.records.get(sessionId);
     if (!record) return false;
     return record.lifecycle.runExclusive(() => this.stopRecord(record, reason));
@@ -1077,7 +1292,11 @@ export class SessiondService {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     const ids = [...this.records.keys()];
-    await Promise.allSettled(ids.map((id) => this.stop(id, "shutdown")));
+    // Bulk drain uses the lane-free internal bypass: it never recursively
+    // acquires a per-session lane (a queued lane operation may be blocked on a
+    // Worker command), and every still-queued lane operation fails fast on the
+    // `shuttingDown` guard when its turn arrives.
+    await Promise.allSettled(ids.map((id) => this.stopInternalBypass(id, "shutdown")));
   }
 
   subscribe(sessionId: string, listener: PushListener): () => void {
@@ -1197,44 +1416,128 @@ export class SessiondService {
     return this.deps.activationContext.resolve(sessionId, location, requestedCwd);
   }
 
-  async renameSession(sessionId: string, name: string): Promise<void> {
-    const record = this.records.get(sessionId);
-    if (record) {
-      await this.command(sessionId, { type: "set_session_name", commandId: `rename:${randomUUID()}`, name });
-      return;
+  /**
+   * D4 identity lane for `sessions.rename`. The name is canonicalized exactly
+   * once with the current protocol/domain rule and the canonical name is
+   * returned from the RPC. The operation resolves the live/offline choice at
+   * lane-run time: a live record gets a live `set_session_name` (never a
+   * fallback to offline), a crashed/stopping record remains a reservation with
+   * a fixed unavailable, and only an explicitly stopped/absent session uses the
+   * offline mutation. No raw name/session/path/worker/adapter error crosses the
+   * boundary.
+   */
+  async renameSession(sessionId: string, name: string): Promise<{ sessionId: string; name: string }> {
+    const canonicalName = canonicalizeSessionName(name);
+    await this.coordinator.admit(sessionId, "rename", async (ctx) => {
+      if (this.shuttingDown) throw new SessiondError("unavailable", "sessiond is shutting down", true);
+      if (ctx.isStale()) throw new SessiondError("conflict", "session identity changed during rename", false);
+      const record = this.records.get(ctx.canonicalId);
+      if (record && record.status !== "stopped") {
+        if (record.status === "crashed" || record.status === "stopping") {
+          // A crashed/stopping record remains a reservation: rename is fixed
+          // unavailable and NEVER falls back to offline until explicitly
+          // stopped/removed.
+          throw new SessiondError("unavailable", "session rename unavailable while the runtime is stopped or crashed", true);
+        }
+        const result = await this.executeLiveRename(record, `rename:${randomUUID()}`, canonicalName);
+        if (!result.result.ok) throw this.mapRenameCommandFailure(result);
+        return;
+      }
+      if (!this.deps.sessionMutation) throw new SessiondError("unavailable", "session mutation is unavailable", false);
+      try {
+        await this.deps.sessionMutation.renameSession(ctx.canonicalId, canonicalName);
+      } catch (error) {
+        throw this.mapOfflineRenameFailure(error);
+      }
+      this.titleOverlay.publish(ctx.canonicalId, canonicalName);
+    });
+    return { sessionId, name: canonicalName };
+  }
+
+  /** Map a live-command `{ok:false}` result onto a fixed sanitized SessiondError. */
+  private mapRenameCommandFailure(result: CorrelatedRuntimeCommandResult): SessiondError {
+    const error = result.result.ok ? undefined : result.result.error;
+    const code = error?.code ?? "unavailable";
+    return new SessiondError(code, RENAME_FAILURE_MESSAGES[code] ?? "session rename failed", error?.retryable ?? false);
+  }
+
+  /** Map an offline-mutation failure onto a fixed sanitized SessiondError. */
+  private mapOfflineRenameFailure(error: unknown): SessiondError {
+    if (error instanceof SessiondError) return error;
+    if (isRuntimeError(error)) {
+      const code = error.code as ProtocolErrorCode;
+      return new SessiondError(code, OFFLINE_RENAME_FAILURE_MESSAGES[code] ?? "session rename failed", error.retryable);
     }
-    if (!this.deps.sessionMutation) throw new SessiondError("unavailable", "session mutation is unavailable");
-    await this.deps.sessionMutation.rename(sessionId, name);
+    return new SessiondError("unavailable", "session rename failed", true);
   }
 
   /**
-   * D4 session-history delete: DELETE is for stopped/history sessions ONLY.
-   *
-   * A live session (any `records` entry — idle, prompt, bash, compact, crashed
-   * or stopping) fails closed with the canonical `session_busy` code and is
-   * NEVER stopped, interrupted, closed, or deleted. There is no `force` and no
-   * "stop then delete" path. The whole admission + catalog deletion runs under
-   * the same session-scoped fence as activate admission, so a session cannot
-   * become live between the busy check and the catalog deletion. Concurrent
-   * delete/delete serialize on the fence; the adapter is ENOENT-idempotent, so
-   * the second delete surfaces a fixed `not_found` (or an idempotent success)
-   * with no wrong-file risk.
+   * D4 session-history delete (stopped/history only). A live/crashed record (any
+   * `records` entry — idle, prompt, bash, compact, crashed or stopping) or an
+   * earlier activation reservation (in-flight or queued ahead in the identity
+   * lane) fails closed PROMPTLY with a fixed `session_busy` — no wait/stop/
+   * delete, no `force`. The catalog I/O runs INSIDE the per-session lane (never
+   * under the global mutex), so a delete admitted first lets a later activation
+   * queue behind it and fail not_found with zero Workers, and a rename admitted
+   * first commits before the delete removes the file. Concurrent delete/delete
+   * serialize on the lane; the adapter is ENOENT-idempotent, so the second
+   * delete surfaces a fixed `not_found` (or an idempotent success) with no
+   * wrong-file risk.
    */
   async deleteSession(sessionId: string): Promise<void> {
-    if (!this.deps.sessionCatalog) throw new SessiondError("unavailable", "session catalog is unavailable");
-    await this.mutex.runExclusive(async () => {
-      if (this.records.has(sessionId)) {
-        throw new SessiondError("session_busy", "session is running", false);
-      }
-      if (this.activations.has(sessionId)) {
-        throw new SessiondError("session_busy", "session is starting", false);
-      }
-      await this.deps.sessionCatalog!.deleteSession(sessionId);
+    if (!this.deps.sessionCatalog) throw new SessiondError("unavailable", "session catalog is unavailable", false);
+    const failClosedBusy = (): never => { throw new SessiondError("session_busy", "session is running", false); };
+    // Prompt checks BEFORE enqueue (never wait for a worker).
+    if (this.records.has(sessionId)) failClosedBusy();
+    if (this.activations.has(sessionId)) failClosedBusy();
+    if (this.coordinator.hasPendingKind(sessionId, "activate")) failClosedBusy();
+    await this.coordinator.admit(sessionId, "delete", async (ctx) => {
+      if (this.shuttingDown) throw new SessiondError("unavailable", "sessiond is shutting down", true);
+      if (ctx.isStale()) throw new SessiondError("conflict", "session identity changed during delete", false);
+      // Defensive record check inside the lane: an activation ahead of a delete
+      // would already have made the prompt admission fail closed, and any
+      // activation admitted after this delete queues BEHIND it (never runs
+      // ahead) — so no live record can exist here; stay fail-closed anyway.
+      const canonical = ctx.canonicalId;
+      if (this.records.has(canonical)) failClosedBusy();
+      await this.deps.sessionCatalog!.deleteSession(canonical);
+      this.titleOverlay.remove(canonical);
     });
   }
 
+  /**
+   * D4 service wrappers for the read-side catalog that apply the service-owned
+   * revisioned title overlay to `sessions.list` / `sessions.read`. A read that
+   * begins after a confirmed rename MUST observe the new title; an older
+   * catalog response can never clear a newer overlay revision.
+   */
+  async listSessions(filter?: SessionListFilter): Promise<SessionHeader[]> {
+    const catalog = this.sessionCatalog();
+    if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable", false);
+    const captured = this.titleOverlay.captureAll();
+    const sessions = await catalog.listSessions(filter);
+    return sessions.map((item) => this.titleOverlay.apply(item, captured.get(item.sessionId)));
+  }
+
+  async readSession(sessionId: string): Promise<SessionDetail> {
+    const catalog = this.sessionCatalog();
+    if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable", false);
+    const captured = this.titleOverlay.captureFor(sessionId);
+    const detail = await catalog.readSession(sessionId);
+    return this.titleOverlay.apply(detail, captured);
+  }
+
   /** Test/diagnostic view with no process internals. */
-  diagnostics(): { sessions: number; creates: number; activations: number; subscribers: number } {
-    return { sessions: this.records.size, creates: this.creates.size, activations: this.activations.size, subscribers: [...this.records.values()].reduce((sum, record) => sum + record.subscribers.size, 0) };
+  diagnostics(): { sessions: number; creates: number; activations: number; subscribers: number; lanes: number; aliases: number; overlay: number } {
+    const lanes = this.coordinator.diagnostics();
+    return {
+      sessions: this.records.size,
+      creates: this.creates.size,
+      activations: this.activations.size,
+      subscribers: [...this.records.values()].reduce((sum, record) => sum + record.subscribers.size, 0),
+      lanes: lanes.lanes,
+      aliases: lanes.aliases,
+      overlay: this.titleOverlay.size(),
+    };
   }
 }

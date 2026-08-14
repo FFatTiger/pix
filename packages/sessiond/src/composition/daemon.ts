@@ -2,9 +2,9 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessiondApplication } from "../application.js";
-import type { ActivationContextProvider, SessiondDependencies, SessiondOptions, SessionMutationPort } from "../service.js";
+import type { ActivationContextProvider, SessiondDependencies, SessiondOptions } from "../service.js";
 import { SessiondService } from "../service.js";
-import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
+import type { SessionCatalogPort, SessionLocatorPort, SessionMutationPort } from "@fffattiger/pix-runtime-core";
 import { SessiondRpcServer } from "../rpc.js";
 import { SessiondError } from "../errors.js";
 import {
@@ -61,8 +61,12 @@ export interface DaemonOptions {
    * no requested cwd, a `null` catalog makes activation fail closed.
    */
   sessionCatalog?: SessionCatalogPort | null;
-  /** Override the session mutation stub. */
-  sessionMutation?: SessionMutationPort;
+  /**
+   * Override the session mutation port (offline rename). `undefined` uses the
+   * SAME `createPiSdkSessionPorts()` result as the default catalog/locator;
+   * `null` explicitly disables it for fail-closed tests.
+   */
+  sessionMutation?: SessionMutationPort | null;
   /** Forwarded to {@link SessiondService}. */
   serviceOptions?: SessiondOptions;
   /**
@@ -162,9 +166,12 @@ function createCatalogActivationContext(catalog: SessionCatalogPort | null | und
 function buildDependencies(directory: string, options: DaemonOptions): SessiondDependencies {
   const workerFactory: WorkerProcessFactory =
     options.workerFactory ?? createProductionWorkerProcessFactory(options.workerOptions ?? {});
-  // One shared default pair: catalog + locator over a single private Pi SDK
-  // session store. Constructing it is lazy and side-effect-free (no worker, no
-  // network, no SDK call) even when both defaults are overridden.
+  // One shared default triple: catalog + locator + mutation over a single
+  // private Pi SDK session store. Constructing it is lazy and side-effect-free
+  // (no worker, no network, no SDK call) even when all defaults are overridden.
+  // The production daemon's catalog, locator AND mutation MUST come from the
+  // same createPiSdkSessionPorts() result so an offline rename invalidates the
+  // same shared store the catalog reads from (immediate title convergence).
   const defaultPorts = createPiSdkSessionPorts();
   const catalog = options.sessionCatalog === undefined ? defaultPorts.catalog : options.sessionCatalog;
   const deps: SessiondDependencies = {
@@ -173,9 +180,10 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
     workerFactory,
   };
   if (catalog) deps.sessionCatalog = catalog;
-  // M1 ships no real mutation backend: rename of a non-active session reports
-  // "session mutation is unavailable" rather than silently succeeding.
-  if (options.sessionMutation) deps.sessionMutation = options.sessionMutation;
+  // undefined → the production shared adapter mutation; null → explicitly
+  // disabled (fail-closed tests observe a fixed unavailable for offline rename).
+  const mutation = options.sessionMutation === undefined ? defaultPorts.mutation : options.sessionMutation;
+  if (mutation) deps.sessionMutation = mutation;
   return deps;
 }
 
