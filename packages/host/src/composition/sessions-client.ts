@@ -1,5 +1,5 @@
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
-import type { SessionDeleteClient, SessionHistoryReadClient } from "../types.js";
+import type { SessionDeleteClient, SessionHistoryReadClient, SessionRenameClient } from "../types.js";
 
 /**
  * Narrow read-only session history client backed by the fixed sessiond RPC
@@ -68,6 +68,33 @@ export function createSessiondSessionDeleteClient(
   return {
     async delete(sessionId) {
       return client.call("sessions.delete", { sessionId });
+    },
+  };
+}
+
+/**
+ * D4 narrow session rename client backed by the fixed sessiond RPC
+ * endpoint+secret. It wraps exactly the `sessions.rename` RPC and never the
+ * runtime lifecycle (no activate/command/stop). The sessiond service is the
+ * authority and decides live vs offline rename itself (live rename is
+ * supported via set_session_name — never a busy failure). The sessiond secret
+ * is captured once at Host startup and bound here; a rotation while the Host
+ * keeps running surfaces as an authentication failure ⇒ 503 on the rename
+ * route. The result is already schema-validated by the real RPC client; the
+ * Host only ever calls it once per request and returns `{success:true}` after
+ * sessiond confirmed the rename.
+ */
+export function createSessiondSessionRenameClient(
+  options: SessiondSessionsClientOptions,
+): SessionRenameClient {
+  const client = new SessiondRpcClient({
+    endpoint: options.endpoint,
+    secret: options.secret,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  });
+  return {
+    async rename(sessionId, name) {
+      return client.call("sessions.rename", { sessionId, name });
     },
   };
 }

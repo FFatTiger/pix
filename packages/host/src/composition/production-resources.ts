@@ -133,6 +133,11 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
  * guard + the sessiond `sessions.delete` authority rejects live sessions) and
  * is mounted only with the mutation seam. The token is discovery, never
  * authorization: the route still fail-closes on every guard/authority check.
+ * `session.write` is the D4 session-rename capability: full/sessiond-up only,
+ * excluded from degraded — the PATCH route is sessiond-guarded (mutation guard
+ * + the sessiond `sessions.rename` authority) and is mounted only with the
+ * rename seam. Live rename is supported by sessiond (never a busy failure). The
+ * token is discovery, never authorization.
  * `worktree` is the read-only list token (D3A Worktrees UI); GET does not
  * depend on sessiond so the token is also present in degraded. `worktree.write`
  * is the honest product write capability for create/remove: full/sessiond-up
@@ -143,6 +148,7 @@ export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "agent",
   "sessions",
   "session.delete",
+  "session.write",
   "files",
   "files.write",
   "files.watch",

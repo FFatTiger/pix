@@ -64,6 +64,7 @@ export {
   registerSessionRoutes,
   mapSessionCatalogError,
   mapSessionDeleteError,
+  mapSessionRenameError,
   SESSIONS_MAX_LIMIT,
   SESSIONS_MAX_OFFSET,
 } from "./routes/sessions.js";
@@ -138,6 +139,7 @@ export type { ProductionCatalogsOptions } from "./composition/production-catalog
 export {
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
+  createSessiondSessionRenameClient,
 } from "./composition/sessions-client.js";
 export type { SessiondSessionsClientOptions } from "./composition/sessions-client.js";
 export type {
@@ -171,6 +173,8 @@ export type {
   SessionHistoryReadClient,
   SessionDeleteClient,
   SessionDeleteSeam,
+  SessionRenameClient,
+  SessionRenameSeam,
   CatalogDeps,
   CatalogModelsSeam,
   CatalogCredentialsSeam,

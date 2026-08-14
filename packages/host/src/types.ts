@@ -24,6 +24,7 @@ export type HostCapability =
   | "agent"
   | "sessions"
   | "session.delete"
+  | "session.write"
   | "files"
   | "files.write"
   | "files.watch"
@@ -40,6 +41,7 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "agent",
   "sessions",
   "session.delete",
+  "session.write",
   "files",
   "files.write",
   "files.watch",
@@ -207,6 +209,31 @@ export interface SessionDeleteSeam {
   mutationGuard: MutationGuard;
 }
 
+/**
+ * D4 session-rename port. A narrow, protocol-independent mutation seam:
+ * composition wires the real sessiond `sessions.rename` RPC and tests inject a
+ * fake. Returns `unknown` so this foundation module stays free of protocol DTO
+ * imports. Like the read client, this is deliberately NOT the runtime lifecycle
+ * (no activate/command/stop) — rename is sessiond-guarded and sessiond decides
+ * live vs offline itself; live rename is supported (never mapped to busy).
+ */
+export interface SessionRenameClient {
+  rename(sessionId: string, name: string): Promise<unknown>;
+}
+
+/**
+ * D4 session-rename mutation seam. The production route is mounted ONLY when
+ * both the rename client AND a mutation guard (sessiond `system.ping`) are
+ * present; the `session.write` capability is advertised only then (and only
+ * while sessiond is up). A generic composition that wires no rename seam gets
+ * no PATCH route and no capability token — no unsafe write is ever mounted.
+ */
+export interface SessionRenameSeam {
+  client: SessionRenameClient;
+  /** sessiond availability guard (production: `system.ping`). Fails closed 503. */
+  mutationGuard: MutationGuard;
+}
+
 // ---------------------------------------------------------------------------
 // Catalog seams (D3B-R1B) — protocol-independent, return unknown
 // ---------------------------------------------------------------------------
@@ -320,8 +347,15 @@ export interface HostDeps {
    * D4: when `sessions.delete` is present, DELETE /v1/sessions/:id is mounted
    * (production mutation guard first) and the `session.delete` capability is
    * advertised only while sessiond is up. Omitted ⇒ no DELETE route, no token.
+   * When `sessions.rename` is present, PATCH /v1/sessions/:id is mounted
+   * (production mutation guard first) and the `session.write` capability is
+   * advertised only while sessiond is up. Omitted ⇒ no PATCH route, no token.
    */
-  sessions?: { client: SessionHistoryReadClient; delete?: SessionDeleteSeam };
+  sessions?: {
+    client: SessionHistoryReadClient;
+    delete?: SessionDeleteSeam;
+    rename?: SessionRenameSeam;
+  };
   /**
    * D3B-R1B: read-only catalog routes (models/auth/skills/plugins/commands/trust).
    * Omitted means the catalog routes are unavailable. Each sub-seam is optional;

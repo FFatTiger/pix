@@ -22,17 +22,20 @@
  *   8. GET context?leafId= — the Host forwards the leaf and the real stack
  *      returns the selected visible branch (trunk vs side) with no leakage;
  *      no Worker is spawned.
- *   9. Session mutation contracts at the correct layer. Rename is exercised
- *      directly against the sessiond RPC seam this E2E already owns (non-live
- *      rename is fixed-unavailable; LIVE rename is deliberately NOT covered: it
- *      requires a Worker and would broaden this slice past zero-worker). D4
- *      delete is exercised through the REAL HTTP route (DELETE /v1/sessions/:id)
- *      with the production mutation seam: stopped/history delete succeeds and
- *      removes the file; a live delete is 409 SESSION_IN_USE with the worker and
- *      file retained; after an explicit runtime.stop the delete succeeds; a
- *      request body is rejected 400; an unauthenticated LAN delete is gated 401
- *      before the guard/RPC; and while sessiond is down the capability is
- *      retracted and the delete 503s before touching the file.
+ *   9. Session mutation contracts at the correct layer. D4 delete is exercised
+ *      through the REAL HTTP route (DELETE /v1/sessions/:id) with the production
+ *      mutation seam: stopped/history delete succeeds and removes the file; a
+ *      live delete is 409 SESSION_IN_USE with the worker and file retained;
+ *      after an explicit runtime.stop the delete succeeds; a request body is
+ *      rejected 400; an unauthenticated LAN delete is gated 401 before the
+ *      guard/RPC; and while sessiond is down the capability is retracted and
+ *      the delete 503s before touching the file. D4 rename is exercised through
+ *      the REAL HTTP route (PATCH /v1/sessions/:id) with the production rename
+ *      seam: a live attached rename succeeds (sessiond supports live
+ *      set_session_name — never busy) and an offline JSONL rename succeeds,
+ *      both returning {success:true} with immediate GET/list title, same
+ *      id/path/history, honest running-worker state, and fixed fail-closed
+ *      invalid-name / query / wrong-method / LAN-auth / down-503 surfaces.
  *  10. A repeated list stays correct and spawns no Worker (no timing asserts).
  *
  * The branched/pagination fixtures are written as raw JSONL in exactly the
@@ -61,6 +64,7 @@ import {
   createProductionCapabilityResolver,
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
+  createSessiondSessionRenameClient,
   PRODUCTION_FULL_CAPABILITIES,
   RESOURCE_DEGRADED_CAPABILITIES,
   PRODUCTION_MAX_UPLOAD_BYTES,
@@ -288,10 +292,17 @@ async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir, exposureM
     // D4: production delete seam — narrow `sessions.delete` RPC client + the
     // shared sessiond `system.ping` mutation guard. Mounted only here (the
     // read-only M1 boot composition still wires no delete route).
+    // D4: production rename seam — narrow `sessions.rename` RPC client + the
+    // shared sessiond `system.ping` mutation guard; PATCH /v1/sessions/:id is
+    // mounted only when this seam is present.
     sessions: {
       client: createSessiondSessionsClient({ endpoint: daemon.endpoint, secret: daemon.secret, timeoutMs: 5_000 }),
       delete: {
         client: createSessiondSessionDeleteClient({ endpoint: daemon.endpoint, secret: daemon.secret, timeoutMs: 5_000 }),
+        mutationGuard: production.adapter,
+      },
+      rename: {
+        client: createSessiondSessionRenameClient({ endpoint: daemon.endpoint, secret: daemon.secret, timeoutMs: 5_000 }),
         mutationGuard: production.adapter,
       },
     },
@@ -467,15 +478,16 @@ async function main() {
     const runningAfterLeaf = await rpc.call("runtime.listRunning", {});
     assert.deepEqual(runningAfterLeaf.sessions, [], "leafId context reads must not start a worker");
 
-    // 2d. D1 WP-3 session mutation contracts at the correct layer. The Host
-    //     exposes no mutation routes (read-only by design, D4) — do not invent
-    //     any. These are exercised against the sessiond RPC seam this E2E
-    //     already owns. D4 wires the production daemon's default adapter
-    //     mutation, so a NON-LIVE rename now succeeds as a real JSONL offline
-    //     append: canonical name returned, zero Workers, same id/path/history,
-    //     and the title is immediately visible to read/list. LIVE rename
-    //     (set_session_name) is deliberately NOT exercised here — this slice
-    //     stays zero-worker until the attach step.
+    // 2d. D1 WP-3 session mutation contracts at the correct layer. This section
+    //     is pre-attach (zero-worker), so rename is exercised against the
+    //     sessiond RPC seam this E2E already owns: a NON-LIVE rename succeeds as
+    //     a real JSONL offline append with canonical name, zero Workers, same
+    //     id/path/history, and immediate read/list title. LIVE rename
+    //     (set_session_name) is deliberately NOT exercised HERE — this section
+    //     stays zero-worker until the attach step (the Host HTTP PATCH route
+    //     covers live + offline rename in 5c-1 / 5c-2 after the attach). D4
+    //     wires the production daemon's default adapter mutation, so this
+    //     RPC-level rename now succeeds as a real JSONL offline append:
     const sessionFileBefore = detail.body.session.sessionFile;
     const renamed = await rpc.call("sessions.rename", { sessionId, name: "  e2e renamed  " });
     assert.deepEqual(renamed, { sessionId, name: "e2e renamed" }, "offline rename returns the canonical trimmed name");
@@ -579,8 +591,16 @@ async function main() {
     //     sessiond `system.ping` mutation guard runs before any RPC.
     const del = (path, init = {}) =>
       fetch(`${stack.origin}${path}`, { method: "DELETE", ...init }).then(async (r) => ({ status: r.status, body: r.status === 204 ? null : await r.json().catch(() => null) }));
-    // `session.delete` is advertised while sessiond is up (full caps).
+    const patch = (path, init = {}) =>
+      fetch(`${stack.origin}${path}`, { method: "PATCH", ...init }).then(async (r) => ({ status: r.status, body: r.status === 204 ? null : await r.json().catch(() => null) }));
+    const jsonPatch = (path, body) =>
+      patch(path, {
+        body: typeof body === "string" ? body : JSON.stringify(body),
+        headers: { "content-type": "application/json" },
+      });
+    // `session.delete` / `session.write` are advertised while sessiond is up (full caps).
     assert.ok(boot.body.capabilities.includes("session.delete"), `full caps must include session.delete: ${JSON.stringify(boot.body.capabilities)}`);
+    assert.ok(boot.body.capabilities.includes("session.write"), `full caps must include session.write: ${JSON.stringify(boot.body.capabilities)}`);
 
     // 5b-1. Live session delete ⇒ 409 SESSION_IN_USE; worker + file retained.
     const liveDetail = await get(`/v1/sessions/${sessionId}`);
@@ -593,6 +613,23 @@ async function main() {
     const runningAfterLiveDelete = await rpc.call("runtime.listRunning", {});
     assert.ok(runningAfterLiveDelete.sessions.some((s) => s.sessionId === sessionId), "live delete must not stop the worker");
     assert.equal(existsSync(liveFile), true, "live delete must retain the file");
+
+    // 5c-1. LIVE attached HTTP PATCH rename succeeds (sessiond supports live
+    //         rename via set_session_name — never a busy/409), returns strict
+    //         {success:true}, and the title overlay is immediately visible to
+    //         read/list with the same id/path while the worker stays honest.
+    const livePatch = await jsonPatch(`/v1/sessions/${sessionId}`, { name: "  live renamed 😀  " });
+    assert.equal(livePatch.status, 200, "live attached rename must succeed");
+    assert.deepEqual(livePatch.body, { success: true });
+    const liveReadAfter = await get(`/v1/sessions/${sessionId}`);
+    assert.equal(liveReadAfter.status, 200);
+    assert.equal(liveReadAfter.body.session.title, "live renamed 😀", "read must observe the live rename title immediately");
+    assert.equal(liveReadAfter.body.session.sessionFile, liveFile, "live rename never rewrites the file path");
+    const liveListAfter = await get("/v1/sessions");
+    assert.equal(liveListAfter.body.sessions.find((s) => s.sessionId === sessionId)?.title, "live renamed 😀", "list must observe the live rename title immediately");
+    const runningAfterLiveRename = await rpc.call("runtime.listRunning", {});
+    assert.ok(runningAfterLiveRename.sessions.some((s) => s.sessionId === sessionId), "live rename must not stop the worker");
+    assert.equal(runningAfterLiveRename.sessions.find((s) => s.sessionId === sessionId)?.sessionId, sessionId, "running worker identity stays honest after live rename");
 
     // 5b-2. After an explicit runtime.stop, delete succeeds and removes the file.
     const stopped = await rpc.call("runtime.stop", { sessionId, reason: "user" });
@@ -634,6 +671,55 @@ async function main() {
     assert.equal(bodyDelete.body.code, "REQUEST_BODY_NOT_ALLOWED");
     assert.equal(existsSync(p2File), true, "a body-rejected delete must not touch the file");
 
+    // 5c-2. HTTP PATCH offline rename of a stopped JSONL session (never
+    //        activated): real JSONL append, canonical trimmed name, same
+    //        id/path/history, zero Worker, immediate GET/list title, and the
+    //        invalid/query/method surfaces all fail closed with zero RPC effect.
+    const p4Detail = await get(`/v1/sessions/${FIXTURE_P4}`);
+    const p4File = p4Detail.body.session.sessionFile;
+    assert.equal(existsSync(p4File), true, "stopped P4 file must exist before rename");
+    const p4Rename = await jsonPatch(`/v1/sessions/${FIXTURE_P4}`, { name: "  offline renamed 🚀  " });
+    assert.equal(p4Rename.status, 200, "offline rename must succeed");
+    assert.deepEqual(p4Rename.body, { success: true });
+    const p4ReadAfter = await get(`/v1/sessions/${FIXTURE_P4}`);
+    assert.equal(p4ReadAfter.status, 200);
+    assert.equal(p4ReadAfter.body.session.title, "offline renamed 🚀", "read observes the offline rename title immediately");
+    assert.equal(p4ReadAfter.body.session.sessionFile, p4File, "offline rename never rewrites the file path");
+    assert.deepEqual(p4ReadAfter.body.session.entries.map((e) => e.entryId), [`${FIXTURE_P4}-m1`, `${FIXTURE_P4}-m2`], "rename must preserve the session history");
+    const p4ListAfter = await get("/v1/sessions");
+    assert.equal(p4ListAfter.body.sessions.find((s) => s.sessionId === FIXTURE_P4)?.title, "offline renamed 🚀", "list observes the offline rename title immediately");
+    const runningAfterOfflineRename = await rpc.call("runtime.listRunning", {});
+    assert.ok(!runningAfterOfflineRename.sessions.some((s) => s.sessionId === FIXTURE_P4), "offline rename must not start a worker");
+    // 5c-3. invalid name / blank / control / query / wrong method / extra field
+    //        all fail closed with fixed errors and the file is retained.
+    const invalidCases = [
+      { body: { name: "   " }, status: 400, code: "INVALID_SESSION_NAME" },
+      { body: { name: "a\u0000b" }, status: 400, code: "INVALID_SESSION_NAME" },
+      { body: { name: "a".repeat(201) }, status: 400, code: "INVALID_SESSION_NAME" },
+      { body: { name: "x", extra: 1 }, status: 400, code: "INVALID_SESSION_NAME" },
+      { body: { name: 5 }, status: 400, code: "INVALID_SESSION_NAME" },
+      { body: "{not-json", status: 400, code: "INVALID_JSON" },
+    ];
+    for (const c of invalidCases) {
+      const res = await jsonPatch(`/v1/sessions/${FIXTURE_P4}`, c.body);
+      assert.equal(res.status, c.status, `rename body ${JSON.stringify(c.body)} must be ${c.status}`);
+      assert.equal(res.body.code, c.code);
+      assert.equal(existsSync(p4File), true, "an invalid rename must never touch the file");
+    }
+    for (const q of ["?", "?x", "?force=false"]) {
+      const res = await jsonPatch(`/v1/sessions/${FIXTURE_P4}${q}`, { name: "x" });
+      assert.equal(res.status, 400, `rename query ${q} must be 400`);
+      assert.equal(res.body.code, "INVALID_QUERY");
+      assert.equal(existsSync(p4File), true, "a query-rejected rename must never touch the file");
+    }
+    const postRename = await fetch(`${stack.origin}/v1/sessions/${FIXTURE_P4}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "x" }),
+    });
+    assert.equal(postRename.status, 404, "POST is not a rename surface");
+    assert.equal(existsSync(p4File), true, "a wrong-method rename must never touch the file");
+
     // 5b-5. Auth LAN gate FIRST: an unauthenticated DELETE against a LAN-bound
     //       Host with an enabled gate is rejected before the mutation guard /
     //       RPC, and the session file is retained. (Separate Host-state dir:
@@ -650,8 +736,14 @@ async function main() {
       });
       const lanDel = await fetch(`${lanStack.origin}/v1/sessions/${FIXTURE_P3}`, { method: "DELETE" });
       assert.ok(lanDel.status === 401 || lanDel.status === 403, `LAN unauth delete must be rejected, got ${lanDel.status}`);
+      const lanPatch = await fetch(`${lanStack.origin}/v1/sessions/${FIXTURE_P3}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "x" }),
+      });
+      assert.ok(lanPatch.status === 401 || lanPatch.status === 403, `LAN unauth rename must be rejected, got ${lanPatch.status}`);
       // The LAN gate also blocks reads, so verify the file retention on disk
-      // directly (the LAN-blocked delete must never touch the JSONL).
+      // directly (the LAN-blocked delete/rename must never touch the JSONL).
       const p3File = join(encodedSessionDir(agentDir, projectCwd), `${FIXTURE_ENTRY_TS}_${FIXTURE_P3}.jsonl`);
       assert.equal(existsSync(p3File), true, "LAN-blocked delete must retain the file");
     } finally {
@@ -661,7 +753,8 @@ async function main() {
       await rm(lanHostDir, { recursive: true, force: true });
     }
 
-    // 6. sessiond down → `sessions` + `session.delete` retracted AND routes 503.
+    // 6. sessiond down → `sessions` + `session.delete` + `session.write` retracted
+    //    AND routes 503.
     const p3FileBeforeDown = (await get(`/v1/sessions/${FIXTURE_P3}`)).body.session.sessionFile;
     assert.equal(existsSync(p3FileBeforeDown), true, "P3 file must exist before the down-delete probe");
     await stack.daemon.shutdown();
@@ -673,6 +766,7 @@ async function main() {
     }
     assert.ok(!downBoot.body.capabilities.includes("sessions"), "sessions token must be retracted when sessiond is down");
     assert.ok(!downBoot.body.capabilities.includes("session.delete"), "session.delete must be retracted when sessiond is down");
+    assert.ok(!downBoot.body.capabilities.includes("session.write"), "session.write must be retracted when sessiond is down");
     assert.deepEqual(downBoot.body.capabilities, [...RESOURCE_DEGRADED_CAPABILITIES]);
     const downList = await get("/v1/sessions");
     assert.equal(downList.status, 503, "read route must answer 503 when sessiond is down");
@@ -682,8 +776,14 @@ async function main() {
     const downDelete = await del(`/v1/sessions/${FIXTURE_P3}`);
     assert.equal(downDelete.status, 503, "delete must 503 when sessiond is down");
     assert.equal(existsSync(p3FileBeforeDown), true, "a down 503 delete must never touch the file");
+    // D4: a rename while sessiond is down 503s from the mutation guard BEFORE
+    // any query/body parsing or RPC/effect — the file is never touched.
+    const downRename = await jsonPatch(`/v1/sessions/${FIXTURE_P3}`, { name: "x" });
+    assert.equal(downRename.status, 503, "rename must 503 when sessiond is down");
+    assert.equal(downRename.body.code, "MUTATION_UNAVAILABLE");
+    assert.equal(existsSync(p3FileBeforeDown), true, "a down 503 rename must never touch the file");
 
-    log(`PASS — session ${sessionId.slice(0, 8)} read-only with zero workers; continue live started a worker; D4 delete (live 409 / stop-then-delete / stopped HTTP / body 400 / LAN auth / down 503) verified; down retraction + 503 verified`);
+    log(`PASS — session ${sessionId.slice(0, 8)} read-only with zero workers; continue live started a worker; D4 delete (live 409 / stop-then-delete / stopped HTTP / body 400 / LAN auth / down 503) verified; D4 rename (live + offline HTTP PATCH / invalid + query + method fail-closed / LAN auth / down retraction + 503) verified; down retraction + 503 verified`);
   } catch (error) {
     exitCode = 1;
     log("FAIL", error?.stack ?? error);

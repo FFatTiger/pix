@@ -102,6 +102,7 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
     registerSessionRoutes(app, {
       client: deps.sessions.client,
       ...(deps.sessions.delete ? { delete: deps.sessions.delete } : {}),
+      ...(deps.sessions.rename ? { rename: deps.sessions.rename } : {}),
     });
   }
   if (deps.catalogs) {

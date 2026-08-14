@@ -9,6 +9,7 @@ import {
   createProductionCatalogs,
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
+  createSessiondSessionRenameClient,
   InvalidAllowedRootsError,
   InvalidHostDirError,
   InvalidCatalogAgentDirError,
@@ -241,10 +242,19 @@ export async function runHost(
     // D4: DELETE /v1/sessions/:id is mounted ONLY alongside the production
     // mutation guard (sessiond system.ping) and the narrow delete RPC client;
     // `session.delete` is advertised only while sessiond is up (full caps).
+    // D4: PATCH /v1/sessions/:id (rename) is mounted the same way with the
+    // narrow rename RPC client + the shared mutation guard; `session.write` is
+    // advertised only while sessiond is up (full caps). The default full
+    // resource composition exposes the rename seam; null/unavailable seams fail
+    // closed (route not mounted / 503).
     sessions: {
       client: createSessiondSessionsClient({ endpoint: location.paths.endpoint, secret }),
       delete: {
         client: createSessiondSessionDeleteClient({ endpoint: location.paths.endpoint, secret }),
+        mutationGuard: production.adapter,
+      },
+      rename: {
+        client: createSessiondSessionRenameClient({ endpoint: location.paths.endpoint, secret }),
         mutationGuard: production.adapter,
       },
     },
@@ -267,7 +277,7 @@ export async function runHost(
   const url = `http://${options.hostname}:${handle.port}`;
   pixLog(`host listening on ${url}`);
   pixLog(`sessiond at ${location.directory} (endpoint ${location.endpoint})`);
-  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); sessions history routes mounted (read-only + delete); catalog surface mounted; press Ctrl+C to stop the host`);
+  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); sessions history routes mounted (read-only + delete + rename); catalog surface mounted; press Ctrl+C to stop the host`);
 
   if (options.open) openBrowser(url);
 

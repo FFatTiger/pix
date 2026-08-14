@@ -1921,3 +1921,103 @@ PASS；git diff --check 与工作树 clean。独立 verifier 首轮复现 same-k
 残余/后续：Host PATCH rename route、Client rename UI、live set_session_name 的 catalog
 持久化收敛（worker 侧）、auto-name/trash/undo、side chat 仍后置。编号已在 current-main
 集成时顺延为 §51（Local Authority 占 §48/§49，Extension UI Client 占 §50）。
+
+## 52. D4 — Host Session Rename API（PATCH /v1/sessions/:id）记录
+
+```text
+实现：branch `feat/d4-host-session-rename-api`，base current main `ef564b7`
+（D4 session-rename upper-layer 身份 lane 已集成/验证，见 §51）。Host-only：只改
+packages/host、packages/cli、tests/e2e、docs；无 Client source、无 package-lock、
+无 sessiond 改动、无 merge/push/deploy/live service。独立 verifier 未自判 PASS；
+下划线：本记录为可复验证据，独立结果以 verifier 结论为准。依赖 §51（sessiond 已支持
+live/offline `sessions.rename` 身份 lane）与 §47（Host DELETE 删除 seam 先例）。
+
+冻结契约（父级明确，必须实现）：
+1) 能力：Host 新增 `session.write`（Protocol token 早已存在）到 HostCapability/
+   ALL_HOST_CAPABILITIES 与 production `PRODUCTION_FULL_CAPABILITIES`（session.delete
+   之后、files 之前，顺序冻结），仅 sessiond-up + rename seam 挂载时广告；degraded/down
+   排除（RESOURCE_DEGRADED_CAPABILITIES 不含）。能力只是 discovery，既有 auth/gate 仍是
+   授权权威。默认 full 资源组合（CLI host-runner / E2E bootStack）暴露 rename seam；
+   null（seam 缺失→路由不挂载 404）与 unavailable（guard/RPC 失败→503）测试 fail closed。
+   `session.delete` 现有一切行为不受影响（类型/ALL/FULL/路由/测试同存）。
+2) 窄 seam：新增 `SessionRenameClient`（`rename(sessionId,name):Promise<unknown>`）与
+   `SessionRenameSeam`（client + mutationGuard），与 D4 delete 平行；production sessiond
+   窄 client `createSessiondSessionRenameClient` 只包 `sessions.rename` RPC 恰一次（无
+   runtime lifecycle）。read/delete seam 全部保持兼容（HostDeps.sessions 扩为
+   {client, delete?, rename?}）。
+3) 路由 `PATCH /v1/sessions/:id` 仅当 rename seam 存在才挂载；成功固定严格
+   `{success:true}`，仅在 sessiond 确认 live/offline rename 后返回。冻结顺序：
+   a) 既有全局 Host auth/LAN gate（最前）；
+   b) production mutation guard `system.ping` 先于解析任何 attacker 控制的 query/body
+      （同 delete authority-first 先例；down→固定 503 且零 RPC/零 body 读）；
+   c) 任何 query 字符串（含裸 `?`）→ 固定 400 INVALID_QUERY（同 delete 文案）；
+   d) session id 用既有 canonical rule（requireSessionId，空段不匹配 404）；
+   e) 要求 application/json（既有 415 UNSUPPORTED_MEDIA_TYPE）；
+   f) bounded body max 4 KiB（既有 readBoundedBody 语义，overlimit 413 BODY_TOO_LARGE）；
+   g) 严格对象恰一个 own 字段 `name`：无数组/prototype/未知字段（malformed JSON 走既有
+      400 INVALID_JSON）；`__proto__`/constructor/toString 等多余或非 name 键→400；
+   h) 名字 canonicalize 恰一次：string（无 coercion）、trim 外层空白、非空、≤200 JS
+      UTF-16 code units、拒 NUL/全部 C0/DEL；允许 Unicode/emoji/内部普通空格；
+      canonical 名传给 RPC（sessiond 返回同名）；任何违规固定 400 INVALID_SESSION_NAME
+      `Session name is invalid`（repo 一致固定文案，不 echo 原始名）；
+   i) 调 seam 恰一次，返回 success 前 sessiond 已确认 rename。
+4) 固定错误映射：bad query 400 INVALID_QUERY；invalid body/name 400 INVALID_SESSION_NAME；
+   not_found 404 SESSION_NOT_FOUND `Session not found`；conflict/epoch_changed（身份已变）
+   409 SESSION_CHANGED `Session changed during rename`；unavailable/timeout/unsupported/
+   internal/session_busy/worker_unavailable/未知/raw socket error 一律 503
+   SESSION_RENAME_UNAVAILABLE `Session rename is unavailable`；auth 既有 401/403 不变。
+   live rename 绝不映射到 busy（sessiond 支持 live set_session_name，session_busy 也落到
+   固定 503）。Wrong media/invalid JSON/too large 沿用既有共享固定错误
+   （415/400 INVALID_JSON/413）。Body/name/session/raw adapter/worker 错误永不 log/返回
+   （无 raw id/name/path/secret/endpoint/stack 泄漏）。
+5) 无 stop/force 行为：PATCH 只做 rename，无 force 面（任何 force/override query 是
+   400），绝不 stop-then-rename。
+
+实现（packages/host + packages/cli + tests）：
+- types.ts：HostCapability/ALL 加 `session.write`；新增 SessionRenameClient/SessionRenameSeam；
+  HostDeps.sessions 扩 rename?。doc 注释同步。
+- routes/sessions.ts：`mapSessionRenameError`（固定 404/409/503）、`parseRenameBody`
+  （严格单 own 字段 name）、`canonicalizeSessionName`（trim/非空/≤200/拒 C0/DEL）；
+  PATCH 路由仅在 deps.rename 时挂载，按冻结顺序实现（guard→query→id→415→4KiB→
+  严格对象→canonical→rename 恰一次→{success:true}）。
+- app.ts：registerSessionRoutes 透传 rename seam。
+- composition/sessions-client.ts：新增 `createSessiondSessionRenameClient`（只包
+  sessions.rename）。
+- composition/production-resources.ts：PRODUCTION_FULL_CAPABILITIES 加 `session.write`
+  （session.delete 后）；degraded 不变；doc 注释同步。
+- index.ts：导出 mapSessionRenameError、createSessiondSessionRenameClient、
+  SessionRenameClient/SessionRenameSeam 类型。
+- cli/commands/host-runner.ts：production boot 接线 rename seam（client +
+  production.adapter 共享 mutation guard）；log 文案更新（read-only + delete + rename）。
+- tests/e2e/startup.mjs：FULL_CAPS 加 `session.write`；full 含/degraded 不含断言。
+- tests/e2e/sessions-history.mjs：bootStack 接 rename seam；新增 live attached HTTP PATCH
+  rename（200 {success:true}、canonical trim、即时 GET/list 标题、同 sessionFile、worker
+  保持运行/身份诚实）、offline P4 HTTP PATCH rename（同 id/path/history、零 worker、即时
+  标题）、invalid name/blank/control/201/extra/nonstring/malformed 400、query（?/?x/
+  ?force=false）400、POST 404、LAN auth gate 先于 guard（rename 401/403）、down 时
+  `session.write` 收回 + rename 从 guard 503（零 body/RPC/文件不变）。
+- tests/e2e/startup.mjs 已在上文。Host test 新增 18 个 rename 用例（见下）。
+
+Host 单元测试（packages/host/test/sessions.test.mjs，新增 17）：
+route 缺失（无 seam→404）与存在；guard 先于 query/body 且 down→503（带非法 query+超大
+body 也先 503、零 rename RPC、零 body 读）；LAN auth gate 先于 guard/RPC；query 全系列
+（?、?x、?force=false、?name=、encoded）→400 INVALID_QUERY 且零 RPC；仅 PATCH 挂载
+（POST/PUT 404）；content-type 415（含 charset 接受）；body 4KiB 413（declared+streamed）；
+malformed/array/null→400 INVALID_JSON；strict 单字段（missing/extra/unknown/__proto__/
+constructor/toString）→400；非 string/blank/201/control（NUL/C0/DEL）→400 INVALID_SESSION_
+NAME 固定文案；Unicode/emoji/200 边界成功（100 emoji=200 code units、中文+emoji、200 ASCII）
+canonical trim 且 seam 恰一次、内部空格保留；空 id 404 零 RPC；not_found 404 SESSION_NOT_
+FOUND 固定文案无 id/name 泄漏；conflict/epoch_changed 409 SESSION_CHANGED 固定文案；
+unavailable/timeout/unsupported/internal/worker_unavailable/session_busy/invalid_input/
+unknown→503 SESSION_RENAME_UNAVAILABLE 固定文案无泄漏；raw socket/unknown error→503
+sanitized。production-resources.test.mjs 更新：FULL 精确含 `session.write`（列表断言）+
+full 含/degraded 不含断言。既有 `session.delete` 全部断言/行为不变（同文件同存）。
+
+验证（全部实际执行）：host typecheck/build/check:boundaries（42 files）PASS；
+host 全量 412/412（新增 18 rename，sessions.test.mjs 44/44）；CLI typecheck/test
+46/46（客户端 dist 需先 build）；root typecheck/build/test 全绿（sessiond 229 含 1 既有
+skip）、check:architecture PASS；Sessions/Runtime/Startup 三条 E2E PASS（Startup 验证
+upCaps 含 session.write、degraded 不含；Sessions 验证 live+offline HTTP PATCH、down
+收回+503、LAN auth、fail-closed 面）；git diff --check 干净。残余/后续：Client Sidebar
+rename UI 为独立切片（见 §53，本记录不含 Windows claim；未触碰 Client source）。
+```

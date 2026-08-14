@@ -20,7 +20,7 @@ const PROD_MAX_UPLOAD = 25 * 1024 * 1024;
 // tokens are mounted on the Host and stay advertised in BOTH states; `agent`
 // (the runtime) and `sessions` (read-only session history) are added only
 // while sessiond is up. `worktree` is the read-only list token (no write token).
-const FULL_CAPS = ["agent", "sessions", "session.delete", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "auth.providers", "skills", "plugins"];
+const FULL_CAPS = ["agent", "sessions", "session.delete", "session.write", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "auth.providers", "skills", "plugins"];
 const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"];
 
 function delay(ms) {
@@ -620,6 +620,9 @@ async function main() {
     // D4: session.delete is the sessiond-guarded delete capability — full only.
     assert.ok(FULL_CAPS.includes("session.delete"), "full must include session.delete");
     assert.ok(!DEGRADED_CAPS.includes("session.delete"), "degraded must exclude session.delete");
+    // D4: session.write is the sessiond-guarded rename capability — full only.
+    assert.ok(FULL_CAPS.includes("session.write"), "full must include session.write");
+    assert.ok(!DEGRADED_CAPS.includes("session.write"), "degraded must exclude session.write");
 
     // Resources stay usable while the authority is down: file read + upload
     // are pure Host-mounted filesystem ops and are NOT runtime-guarded.
