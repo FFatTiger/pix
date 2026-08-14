@@ -358,7 +358,7 @@ stop
 
 `PiRpcAdapter` 保持 `BACKLOG`，不进入当前关键路径。
 
-### Wave 4 工具化前置（跨平台安全工具子集，feat/cross-platform-tooling）
+### Wave 4 工具化前置（跨平台安全工具子集，main `417f1c9` + hardening `776fbe5`，Fresh GPT PASS）
 
 Wave 4 的 REL1 发布/安装/卸载需要跨平台脚本，因此先落地三个 Node 内置工具
 （scripts/run-node-test.mjs、scripts/remove-paths.mjs、scripts/tool-invocation.mjs）
@@ -372,7 +372,7 @@ npm.cmd/.bin/tsc/shell:true，注释不误报）。
 注意：本工具化**不建立原生 Windows 产品支持**。Host state directory / Named Pipe /
 DACL / process-tree 生命周期仍是独立工作包（另见 migration-ledger §46），不在本子集宣称。
 
-硬化（§44.1，独立验证 FAIL 后修复）：run-node-test 解析器 fail-closed —— 取值型
+硬化（migration-ledger §46.1，独立验证 FAIL 后修复）：run-node-test 解析器 fail-closed —— 取值型
 node test flag 必须 `--flag=value`，分离形式在 discovery/spawn 前以固定消息拒绝，
 布尔 flag 可与 pattern 共存，`--watch*` 与未知 flag 拒绝；嵌套调用剥离 `NODE_TEST_CONTEXT`
 防静默跳过。architecture 三把门禁按精确 normal-form 回归实现（命令位置 + 注释/echo

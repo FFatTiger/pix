@@ -1386,9 +1386,10 @@ detach/reattach/replay 会复活幽灵弹窗）。本切片安全打开并做投
 ## 46. 跨平台安全工具子集 — run-node-test / remove-paths / tool-invocation 记录
 
 ```text
-实现：本分支（branch feat/cross-platform-tooling，base main 125d0a6），安全子集
-reimplementation，灵感来自 closed PR #3 但按最终评审决定适配当前 main，未整体
-merge/cherry-pick PR commit。未合入/未部署。保留 main 的 scripts/run-workspaces.mjs
+实现：source branch feat/cross-platform-tooling（base main 125d0a6，source `ac16a44` +
+hardening `e06a052`），安全子集 reimplementation，灵感来自 closed PR #3 但按最终
+评审决定适配当前 main，未整体 merge/cherry-pick PR commit。Fresh GPT 第二轮独立验证
+PASS；已合入 main `417f1c9` + `776fbe5`，未部署。保留 main 的 scripts/run-workspaces.mjs
 及其测试（不替换为 raw npm workspaces）；只移植 test-glob、clean/remove、JS CLI
 invocation 三个跨平台概念；未复制 PR 的 E2E 改动（原 PR E2E 非 hermetic，401 泄漏
 daemon）。无 daemon/Named Pipe/PowerShell/lifecycle/Host ledger/git route 改动，无
@@ -1472,10 +1473,12 @@ live 服务，无 package-lock 依赖变化。
 - run-workspaces.mjs 内部自带的 resolveNpmInvocation（含 npm 兄弟/PATH 回退）未改，
   与 tool-invocation.mjs 的 fail-closed 版并存；两者职责不同（root 编排 vs 包内依赖
   构建），后续可统一，非本切片范围。
-- 本分支未 merge/push/deploy；工作树 clean。
+- source 分支提交前工作树 clean；独立验证首轮 FAIL 后由 `e06a052` 修复，第二轮已对
+  F1–F4 原复现、Node22.19/24、npm10/11、root tests 与三条 E2E 判定 PASS；main 已合入，
+  未 push/deploy。
 ```
 
-### 44.1 独立验证 FAIL → 硬化修复（follow-up 提交，同 worktree，未 merge/push/deploy）
+### 46.1 独立验证 FAIL → 硬化修复（follow-up `e06a052`，已合入 main，未部署）
 
 独立 verifier 复现失败并给出精确复现清单；以下为针对逐项的硬化修复（提交 atop
 §44，见 commit message）：
