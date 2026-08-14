@@ -1998,3 +1998,58 @@ validateExistingLeaf（Host 条目 allowlist）。
 lease/open、trusted roots、managed worktrees、production resources 安全子集回归；既有目录绝不
 chmod、macOS 别名、raw leak 测试；root/架构 + Startup E2E。
 ```
+
+## 55.1 Local Authority — 独立 verifier CRITICAL 复现修复（14e7ca2 → follow-up；fd identity 校验）
+
+```text
+独立 verifier 对 14e7ca2 确定性 CRITICAL 复现并判 FAIL，本小节记录修复。范围不变（仅
+packages/local-authority + docs；不动 Host 策略/API、sessiond 私有目录、package-lock/deps、
+merge/push/deploy/live service；不编辑 refactor-execution-plan）。
+
+verifier 发现（复现要点）：成功 mkdir 后、初始 lstat 已捕获本次创建的 inode，但随后注入的 fs.open
+把路径名换成另一个真实 0755 目录再 open；14e7ca2 只靠 O_NOFOLLOW——它只能拒绝符号链接，拦不住真实
+目录替换——于是对替换目录执行 fd fchmod(0700)，篡改攻击者目录，并返回 created:true/陈旧 identity、
+跳过 Host validateExistingLeaf（posix.ts fchmod 分支无 fd 身份比对）。
+
+修复（具体）：
+1) 窄 opened-handle 接口扩为 OpenedDirectoryHandle{stat,chmod,close}（真实 FileHandle 结构兼容）；
+   `mkdir(recursive:false,0700)` fulfilled 后立即从紧随的 lstat 捕获 createdIdentity{dev,ino}
+   （本次调用创建的 inode）。
+2) open 之后、fchmod 之前：fstat（dirHandle.stat()）必须为真实目录且 dev/ino 与 createdIdentity
+   完全一致，否则固定 LocalAuthorityError UNSAFE_COMPONENT、零 fchmod；O_NOFOLLOW 单独不够。
+   另在 open 前校验 createdIdentity 仍等于最后一次 open 前 lstat（finalInfo），open 前被替换也 fail-closed。
+3) 身份校验通过才 chmod(requireMode)；随后再次 fstat：同 identity/类型且 (mode&0777)===requireMode，
+   否则 NOT_PRIVATE。
+4) 成功返回前：re-lstat 路径名，要求仍为同一已校验 inode（created 路径=创建句柄身份；existing 路径=
+   已校验身份），替换在返回前发生即 fail-closed；保留 final realpath/canonical 检查。最终检查之后
+   （句柄已关闭、无 openat 可重新钉住）的替换属文档化残余竞态，诚实声明，不宣称 fail-closed。
+5) 所有 mismatch/error 路径 finally 关闭句柄（close 失败吞掉以免遮蔽主错误/raw 泄漏）；raw 错误
+   全部消毒为固定 LocalAuthorityError。
+6) 修正 posix.ts 模块头与本节措辞：准确表述为「fchmod 前 fd identity 校验 + fchmod 后复验 + 返回前
+   pathname re-lstat」，残余为「最终检查之后的竞态」，不再用 blanket 同 UID fail-closed 表述。
+
+新增确定性测试（test/secure-directory-race.test.mjs，10 用例；全部注入真实 fs、非概率）：
+- created leaf 在 open 时被替换为真实 0755 标记目录并返回替换句柄 → UNSAFE_COMPONENT；替换目录
+  mode/content 不变（绝不被 chmod）；本次创建的原始 inode 不变（0700、空）；created 永不为 true；
+  validateExistingLeaf 不绕过。
+- created leaf 在 open 时被替换为普通文件 → UNSAFE_COMPONENT；文件不变；原始 inode 不变。
+两测试对 14e7ca2 确定性 FAIL（14e7ca2 直接成功返回、chmod 替换目录/文件并报 created:true，报
+"Missing expected rejection: expected reject with UNSAFE_COMPONENT"），对修复 PASS；原 8 个 race
+用例在 14e7ca2 与修复上均 PASS。
+
+验证（本地实测，follow-up）：
+- local-authority：build/typecheck/boundary PASS；全量 53/53（14e7ca2 的 51 + 新增 2）。
+- Host：全量 394/394；安全子集 113/113；typecheck/build/boundary PASS。
+- root：build/typecheck PASS；check:architecture PASS + 自测 31/31；root test 全 workspace 绿；
+  Startup E2E PASS。
+- 14e7ca2 编译实现 + 新测试实测：2 个 swap 测试 FAIL（直接成功返回并 chmod 替换对象）→ 证明缺陷；
+  修复实现 10/10 PASS。
+- public 导出集精确（dist/state/index.js 19 项，不含 ensurePrivateDirectoryWithFs）；
+  git diff --check 与提交后工作树 clean。
+
+残余（诚实声明）：Node 无 openat，最终 pathname re-lstat/realpath 检查之后的同 UID 替换无法被钉住，
+属文档化残余竞态，不宣称 fail-closed；跨用户边界不变弱。sessiond 私有目录仍需独立策略/加固。
+独立 verifier 必验：2 个 swap 测试对 14e7ca2 确定性 FAIL、对 follow-up PASS；原 8 个 race 用例；
+public 导出集精确；Host 状态 lease/open、trusted roots、managed worktrees、production resources
+安全子集；root/架构 + Startup E2E。
+```

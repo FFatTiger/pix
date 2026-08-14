@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -232,6 +233,90 @@ test("internal walk with real fs: all-missing nested path created 0700, created:
   assert.equal(result.path, leaf);
   assert.equal(lstatSync(leaf).mode & 0o777, 0o700);
   assert.equal(lstatSync(join(dir, "a", "b")).mode & 0o777, 0o700);
+});
+
+// ---------------------------------------------------------------------------
+// fd-identity hardening: after THIS call's mkdir succeeds, the created inode is
+// pinned. If open is raced so the pathname now names a DIFFERENT real directory
+// (or a non-directory), the fd fstat identity check must fail closed with zero
+// chmod — O_NOFOLLOW alone cannot stop a real-directory swap.
+// ---------------------------------------------------------------------------
+
+test("created leaf pathname swapped at open to a real 0755 replacement dir: UNSAFE_COMPONENT, zero chmod, no created/hook bypass", async () => {
+  const dir = temp("race-open-swap-dir-");
+  const leaf = join(dir, "leaf");
+  const backup = join(dir, "leaf.original");
+  let opened = 0;
+
+  const fs = {
+    lstat: (p) => lstat(p),
+    mkdir: (p, o) => mkdir(p, o),
+    realpath: (p) => realpath(p),
+    open: async (p, flags) => {
+      if (p === leaf) {
+        opened += 1;
+        // Swap between the post-mkdir lstat and open: move the inode THIS call
+        // created aside, plant a real 0755 replacement dir at the pathname, and
+        // hand back the handle to the REPLACEMENT (a real dir — O_NOFOLLOW
+        // cannot stop this).
+        renameSync(leaf, backup);
+        mkdirSync(leaf, { mode: 0o755 });
+        chmodSync(leaf, 0o755);
+        writeFileSync(join(leaf, "marker.txt"), "payload", { mode: 0o600 });
+        return open(leaf, flags);
+      }
+      return open(p, flags);
+    },
+    isOwnedByCurrentUser,
+  };
+
+  let hookCalls = 0;
+  await expectReject(
+    () => ensurePrivateDirectoryWithFs(leaf, {
+      requireMode: 0o700,
+      validateExistingLeaf: async () => { hookCalls += 1; },
+    }, fs),
+    "UNSAFE_COMPONENT",
+  );
+
+  // The replacement dir at the pathname was NEVER chmod'd (still 0755) and its
+  // content is untouched.
+  assert.equal(lstatSync(leaf).mode & 0o777, 0o755, "replacement dir must never be chmod'd");
+  assert.equal(readFileSync(join(leaf, "marker.txt"), "utf8"), "payload", "replacement content unchanged");
+  // The inode THIS call created (moved aside) is unchanged: still 0700 and empty.
+  assert.equal(lstatSync(backup).mode & 0o777, 0o700, "original created inode unchanged");
+  assert.equal(await exists(join(backup, "marker.txt")), false, "original created inode empty");
+  // created:true must never be returned and the existing-leaf hook never runs.
+  assert.equal(hookCalls, 0, "validateExistingLeaf not bypassed");
+  assert.equal(opened, 1, "leaf opened exactly once");
+});
+
+test("created leaf pathname swapped at open to a regular file: UNSAFE_COMPONENT, file unchanged", async () => {
+  const dir = temp("race-open-swap-file-");
+  const leaf = join(dir, "leaf");
+  const backup = join(dir, "leaf.original");
+
+  const fs = {
+    lstat: (p) => lstat(p),
+    mkdir: (p, o) => mkdir(p, o),
+    realpath: (p) => realpath(p),
+    open: async (p, flags) => {
+      if (p === leaf) {
+        renameSync(leaf, backup);
+        writeFileSync(leaf, "not-a-dir", { mode: 0o600 });
+        return open(leaf, flags);
+      }
+      return open(p, flags);
+    },
+    isOwnedByCurrentUser,
+  };
+
+  await expectReject(
+    () => ensurePrivateDirectoryWithFs(leaf, { requireMode: 0o700 }, fs),
+    "UNSAFE_COMPONENT",
+  );
+  assert.equal(readFileSync(leaf, "utf8"), "not-a-dir", "replacement file unchanged");
+  assert.equal(lstatSync(backup).mode & 0o777, 0o700, "original created inode unchanged");
 });
 
 // ---------------------------------------------------------------------------

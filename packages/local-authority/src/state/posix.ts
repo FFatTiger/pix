@@ -26,12 +26,17 @@
  *     atomic publish (lock lost ⇒ fail closed).
  *
  * Residual (Node has no openat): a same-UID concurrent actor on a shared parent
- * can race lstat/mkdir/open — the final fd-based fchmod/identity re-checks fail
- * closed on any swap. Cross-user boundaries are never weakened.
+ * can race lstat/mkdir/open. The newly-created leaf is pinned by fd identity:
+ * the opened handle is fstat-verified (real directory, exact dev/ino) to equal
+ * the inode THIS call created BEFORE any fchmod and again AFTER it, and the
+ * pathname is re-lstat-verified to that same inode before return. A swap after
+ * that final pathname check (post-close — no openat to re-pin) is a documented
+ * residual race, NOT claimed fail-closed. Cross-user boundaries are never
+ * weakened.
  */
 import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { lstat, mkdir, open, readFile, realpath, rename, rm, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   hasControlChar,
@@ -264,8 +269,21 @@ interface EnsurePrivateDirectoryFs {
   lstat: (path: string) => Promise<Stats>;
   mkdir: (path: string, options: { recursive: false; mode: number }) => Promise<string | undefined>;
   realpath: (path: string) => Promise<string>;
-  open: (path: string, flags: number) => Promise<FileHandle>;
+  open: (path: string, flags: number) => Promise<OpenedDirectoryHandle>;
   isOwnedByCurrentUser: (identity: PosixFileIdentity) => boolean;
+}
+
+/**
+ * Minimal handle surface the secure-directory walk requires from an opened
+ * directory handle. The real `FileHandle` satisfies this structurally; tests can
+ * inject a controlled handle. `stat` (fstat on the fd) is REQUIRED — it is how
+ * the walk pins the inode it created BEFORE chmod: O_NOFOLLOW alone cannot stop
+ * a real directory swapped in for the pathname, only the fd identity can.
+ */
+interface OpenedDirectoryHandle {
+  stat: () => Promise<Stats>;
+  chmod: (mode: number) => Promise<void>;
+  close: () => Promise<void>;
 }
 
 /**
@@ -344,6 +362,11 @@ export async function ensurePrivateDirectoryWithFs(
   // leaf component. Never derived from pathname equality alone — a raced EEXIST
   // leaf must not be treated as created.
   let leafCreated = false;
+  // dev/ino identity of the inode THIS call created for the final leaf,
+  // captured immediately after the successful leaf mkdir. It is the pinned
+  // reference for the fd-based identity verification before/after chmod and for
+  // the final pathname re-lstat.
+  let createdIdentity: { dev: number; ino: number } | null = null;
   // dev/ino identity of an accepted raced intermediate, re-verified before each
   // descendant is created (fail closed on any swap).
   let racedParent: { path: string; dev: number; ino: number } | null = null;
@@ -426,6 +449,7 @@ export async function ensurePrivateDirectoryWithFs(
       // fd-based fchmod below.
       if (isLeaf) {
         leafCreated = true;
+        createdIdentity = { dev: info.dev, ino: info.ino };
       }
       continue;
     }
@@ -467,19 +491,52 @@ export async function ensurePrivateDirectoryWithFs(
   }
 
   if (leafCreated) {
-    // Newly created dedicated leaf: enforce requireMode via fd-based fchmod.
-    // O_NOFOLLOW refuses a swapped-in symlink at open time (ELOOP → fail
-    // closed); fchmod applies to the opened inode regardless of path swaps. No
-    // path chmod.
+    // Newly created dedicated leaf: enforce requireMode via fd-based fchmod, but
+    // ONLY after the opened handle is fstat-verified to be the exact inode THIS
+    // call created. O_NOFOLLOW alone is not sufficient — it only refuses a
+    // SYMLINK at open time; a real directory swapped in for the pathname would
+    // otherwise be opened and silently chmod'd. The created identity must also
+    // match the last pre-open lstat (a swap before open fails closed). Never
+    // path-chmod after a handle close.
+    if (
+      createdIdentity === null
+      || createdIdentity.dev !== finalInfo.dev
+      || createdIdentity.ino !== finalInfo.ino
+    ) {
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
+    }
     let dirHandle;
     try {
       dirHandle = await fs.open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       try {
+        // fstat the OPENED handle BEFORE any chmod: must be a real directory
+        // with the exact dev/ino of the inode this call created.
+        const opened = await dirHandle.stat();
+        if (
+          !opened.isDirectory()
+          || opened.dev !== createdIdentity.dev
+          || opened.ino !== createdIdentity.ino
+        ) {
+          throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
+        }
         await dirHandle.chmod(requireMode);
+        // fstat again AFTER chmod: same identity/type and the exact required
+        // mode (fd identity + mode re-verified before the handle is closed).
+        const after = await dirHandle.stat();
+        if (
+          !after.isDirectory()
+          || after.dev !== createdIdentity.dev
+          || after.ino !== createdIdentity.ino
+          || (after.mode & 0o777) !== requireMode
+        ) {
+          throw new LocalAuthorityError("NOT_PRIVATE", "Directory private mode could not be enforced");
+        }
       } finally {
-        await dirHandle.close();
+        // Always close the opened handle on every path (mismatch/error included).
+        await dirHandle.close().catch(() => {});
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof LocalAuthorityError) throw error;
       throw new LocalAuthorityError("NOT_PRIVATE", "Directory private mode could not be enforced");
     }
   } else {
@@ -497,6 +554,28 @@ export async function ensurePrivateDirectoryWithFs(
     }
   }
 
+  // Final re-lstat of the pathname: it must STILL be the same verified inode
+  // (the created-handle identity for a created leaf; the validated identity for
+  // an existing leaf), so a replacement before return fails closed. Keep the
+  // canonical realpath check below. A swap after this check (post-close, no
+  // openat to re-pin) is the documented residual race.
+  const verifiedDev = createdIdentity !== null ? createdIdentity.dev : finalInfo.dev;
+  const verifiedIno = createdIdentity !== null ? createdIdentity.ino : finalInfo.ino;
+  let finalRecheck;
+  try {
+    finalRecheck = await fs.lstat(current);
+  } catch {
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
+  }
+  if (
+    finalRecheck.isSymbolicLink()
+    || !finalRecheck.isDirectory()
+    || finalRecheck.dev !== verifiedDev
+    || finalRecheck.ino !== verifiedIno
+  ) {
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
+  }
+
   // Final re-verify the leaf is still a real canonical non-symlink directory.
   let finalReal: string;
   try {
@@ -507,7 +586,7 @@ export async function ensurePrivateDirectoryWithFs(
   if (finalReal !== current) {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
-  return { path: current, created: leafCreated, identity: toIdentity(finalInfo) };
+  return { path: current, created: leafCreated, identity: toIdentity(finalRecheck) };
 }
 
 /**
