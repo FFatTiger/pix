@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessiondApplication } from "../application.js";
-import type { ActivationContextProvider, SessiondDependencies, SessiondOptions } from "../service.js";
+import type { ActivationContextProvider, SessiondDiagnostics, SessiondDependencies, SessiondOptions } from "../service.js";
 import { SessiondService } from "../service.js";
 import type { SessionCatalogPort, SessionLocatorPort, SessionMutationPort } from "@fffattiger/pix-runtime-core";
 import { SessiondRpcServer } from "../rpc.js";
@@ -77,6 +77,21 @@ export interface DaemonOptions {
   __testStartupDelayMs?: number;
 }
 
+/**
+ * @internal In-process Worker lifecycle diagnostics surface on the daemon
+ * handle (PR#3). Handle-only: this is deliberately NOT exported as a Protocol
+ * DTO, RPC method, Host `/health` field, CLI JSON, or capability. It exposes
+ * only bounded counts and current PIDs derived from authoritative service
+ * records — never session ids, names, paths, stderr, or raw errors. No new
+ * timers/handles/retention: every call is O(records) over the live service.
+ */
+export interface DaemonDiagnostics {
+  /** Unique safe positive PIDs of live Worker records, ascending. */
+  workerPids(): readonly number[];
+  /** Bounded per-status worker counts plus the existing service counts. */
+  snapshot(): SessiondDiagnostics;
+}
+
 /** A running daemon handle. {@link shutdown} is idempotent and tear-down ordered. */
 export interface DaemonHandle {
   readonly directory: string;
@@ -93,6 +108,11 @@ export interface DaemonHandle {
   readonly secret: string;
   /** Resolves once shutdown has fully completed (signal or explicit). */
   readonly closed: Promise<void>;
+  /**
+   * @internal In-process authoritative Worker lifecycle diagnostics (PIDs +
+   * bounded counts). Handle-only, never exposed over any public surface.
+   */
+  readonly diagnostics: DaemonDiagnostics;
   /** Idempotent tear-down: owned-public → server → service → private → lock. */
   shutdown(): Promise<void>;
 }
@@ -221,6 +241,12 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     }
     const secret = await loadOrCreateLocalSecret(paths);
     const service = new SessiondService(buildDependencies(directory, options), options.serviceOptions);
+    // @internal handle-only diagnostics: delegates the LIVE service, so a
+    // closed/shutdown daemon reports no workers and no leaked records.
+    const diagnostics: DaemonDiagnostics = {
+      workerPids: () => service.workerPids(),
+      snapshot: () => service.diagnostics(),
+    };
     teardown.push(() => service.shutdown());
     const application = new SessiondApplication(service);
     // Unix: libuv binds the private per-instance path (never the stable public
@@ -266,6 +292,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       secret,
       closed,
       shutdown,
+      diagnostics,
     };
   } catch (error) {
     // Startup rollback must never leave our own published paths behind.

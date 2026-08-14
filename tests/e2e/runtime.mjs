@@ -487,7 +487,7 @@ async function startRuntimeStack(tempDir) {
     clientDist,
   });
 
-  return { daemon, host, clientDist, workerPids: () => collectWorkerPids(daemon) };
+  return { daemon, host, clientDist, workerPids: () => daemon.diagnostics.workerPids() };
 }
 
 async function bootHost({ endpoint, secret, clientDist, capabilities = ["agent"] }) {
@@ -559,32 +559,10 @@ async function makeMinimalClientDist(tempDir) {
   return dist;
 }
 
-function collectWorkerPids(daemon) {
-  // sessiond service is private; inspect via /proc-less approach is hard.
-  // We track PIDs observed through listRunning is not available over public API
-  // without RPC. Instead the scenarios that spawn workers record PIDs from
-  // OS-level children of the daemon process when needed.
-  void daemon;
-  return [];
-}
-
-async function listChildPids(parentPid) {
-  if (process.platform === "win32") return [];
-  try {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execFileAsync = promisify(execFile);
-    const { stdout } = await execFileAsync("pgrep", ["-P", String(parentPid)], {
-      timeout: 2_000,
-    }).catch(() => ({ stdout: "" }));
-    return stdout
-      .split("\n")
-      .map((s) => Number(s.trim()))
-      .filter((n) => Number.isSafeInteger(n) && n > 0);
-  } catch {
-    return [];
-  }
-}
+// Authoritative in-process worker discovery: the daemon handle exposes only
+// current Worker PIDs derived from service records (no pgrep / ps / PID files /
+// process scans, and no fail-open `[]` when pgrep is unavailable). The daemon
+// runs in-process in this harness, so the handle is always reachable.
 
 async function waitForPidDead(pid, timeoutMs = CLEANUP_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
@@ -803,33 +781,27 @@ async function scenarioHostRestartResume(stack, projectDir) {
     client1.close();
   }
 
-  // Host exit must NOT stop sessiond / Worker.
-  const sessiondPid = stack.daemon.paths
-    ? undefined
-    : undefined;
-  void sessiondPid;
-  // Read lock for sessiond pid.
-  const { readFile } = await import("node:fs/promises");
-  const lock = JSON.parse(
-    await readFile(stack.daemon.paths.lockFile, "utf8"),
-  );
-  const daemonPid = lock.pid;
-  assert.equal(pidAlive(daemonPid), true);
-
-  const childrenBefore = await listChildPids(daemonPid);
+  // Host exit must NOT stop sessiond / Worker. The daemon runs in-process in
+  // this harness, so worker discovery is authoritative via the daemon handle
+  // diagnostics (no pgrep, no PID file, no process scan).
+  const workersBefore = stack.daemon.diagnostics.workerPids();
   assert.ok(
-    childrenBefore.length >= 1,
-    `expected at least one worker child of sessiond; got ${childrenBefore.join(",")}`,
+    workersBefore.length >= 1,
+    `expected at least one live worker; got ${workersBefore.join(",")}`,
   );
 
   await stack.host.handle.close();
-  // sessiond still alive, workers still alive.
-  assert.equal(pidAlive(daemonPid), true, "sessiond must survive Host exit");
-  for (const child of childrenBefore) {
+  // sessiond still alive (in-process handle), workers still alive.
+  assert.deepEqual(
+    stack.daemon.diagnostics.workerPids(),
+    workersBefore,
+    "worker set must be unchanged after Host exit",
+  );
+  for (const workerPid of workersBefore) {
     assert.equal(
-      pidAlive(child),
+      pidAlive(workerPid),
       true,
-      `worker pid ${child} must survive Host exit`,
+      `worker pid ${workerPid} must survive Host exit`,
     );
   }
 
@@ -889,7 +861,7 @@ async function scenarioHostRestartResume(stack, projectDir) {
       "cached retry must not re-stream prompt_done",
     );
 
-    return { sessionId, epoch, daemonPid, workerPids: childrenBefore };
+    return { sessionId, epoch, workerPids: workersBefore };
   } finally {
     client2.close();
   }
@@ -1123,14 +1095,9 @@ async function scenarioCreateThenColdAttach(stack, projectDir) {
     client.close();
   }
 
-  // Host restart (sessiond + worker stay).
-  const { readFile } = await import("node:fs/promises");
-  const lock = JSON.parse(
-    await readFile(stack.daemon.paths.lockFile, "utf8"),
-  );
-  const daemonPid = lock.pid;
+  // Host restart (sessiond + worker stay). The daemon runs in-process; the
+  // subsequent re-attach through the restarted Host proves sessiond survived.
   await stack.host.handle.close();
-  assert.equal(pidAlive(daemonPid), true);
 
   const newHost = await bootHost({
     endpoint: stack.daemon.endpoint,
@@ -2242,15 +2209,11 @@ async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
 }
 
 async function scenarioShutdownCleanup(stack, projectDir) {
-  const { readFile } = await import("node:fs/promises");
-  const lock = JSON.parse(
-    await readFile(stack.daemon.paths.lockFile, "utf8"),
-  );
-  const daemonPid = lock.pid;
-
-  // Snapshot children before this scenario's create so we only assert on the
-  // newly spawned worker (earlier scenarios may still hold live workers).
-  const before = new Set(await listChildPids(daemonPid));
+  // Authoritative worker discovery via the in-process daemon handle (no pgrep,
+  // no PID file, no process scan). Snapshot the live worker set before this
+  // scenario's create so we only assert on the newly spawned worker (earlier
+  // scenarios may still hold live workers).
+  const before = new Set(stack.daemon.diagnostics.workerPids());
 
   const client = new RuntimeWsClient(stack.host.wsUrl);
   await client.connect();
@@ -2266,7 +2229,7 @@ async function scenarioShutdownCleanup(stack, projectDir) {
     sessionId = created.sessionId;
     await client.attach(sessionId);
 
-    const after = await listChildPids(daemonPid);
+    const after = stack.daemon.diagnostics.workerPids();
     workerPids = after.filter((pid) => !before.has(pid));
     assert.ok(
       workerPids.length >= 1,
@@ -2302,12 +2265,11 @@ async function scenarioShutdownCleanup(stack, projectDir) {
     assert.equal(dead, true, `worker ${pid} should die after runtime.stop`);
   }
 
-  // Host close alone must not stop sessiond (in-process daemon: lock pid is the
-  // E2E parent; we assert the RPC is still pingable and workers from earlier
-  // scenarios can still be present until explicit daemon.shutdown).
+  // Host close alone must not stop sessiond (in-process daemon: the handle is
+  // the E2E parent's; we assert the RPC is still pingable and workers from
+  // earlier scenarios can still be present until explicit daemon.shutdown).
   await stack.host.handle.close();
   stack.host.handle = null;
-  assert.equal(pidAlive(daemonPid), true, "sessiond process still alive after host close");
   {
     const { SessiondRpcClient } = await import("@fffattiger/pix-sessiond/client");
     const probe = new SessiondRpcClient({
@@ -2320,15 +2282,15 @@ async function scenarioShutdownCleanup(stack, projectDir) {
   }
 
   // Daemon shutdown (service.shutdown stops all workers) leaves no orphan children.
-  // Note: startDaemon runs in the E2E parent process, so the lock pid is our own
-  // PID and must NOT be expected to die — only worker children must exit.
-  const remaining = await listChildPids(daemonPid);
+  // The daemon runs in the E2E parent process (in-process), so the E2E parent
+  // PID is NOT expected to die — only worker children must exit.
+  const remaining = stack.daemon.diagnostics.workerPids();
   await stack.daemon.shutdown();
   for (const pid of remaining) {
     const dead = await waitForPidDead(pid, 8_000);
     assert.equal(dead, true, `orphan worker child ${pid} after daemon shutdown`);
   }
-  const leftover = await listChildPids(daemonPid);
+  const leftover = stack.daemon.diagnostics.workerPids();
   assert.deepEqual(
     leftover,
     [],
@@ -2339,8 +2301,8 @@ async function scenarioShutdownCleanup(stack, projectDir) {
   return {
     sessionId,
     workerPids,
-    daemonPid,
-    daemonInProcess: daemonPid === process.pid,
+    daemonPid: process.pid,
+    daemonInProcess: true,
   };
 }
 

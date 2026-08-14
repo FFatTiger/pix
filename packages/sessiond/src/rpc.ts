@@ -2,6 +2,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { timingSafeEqual } from "node:crypto";
 import {
   PROTOCOL_VERSION,
+  SESSIOND_RPC_METHODS,
   SessiondRpcRequestSchema,
   SessiondRpcResponseSchema,
   SessiondPushSchema,
@@ -115,7 +116,7 @@ export class SessiondRpcServer {
     const parsed = SessiondRpcRequestSchema.safeParse(input);
     if (!parsed.success) {
       const candidate = input as { id?: unknown; method?: unknown };
-      const method = typeof candidate.method === "string" && isMethod(candidate.method) ? candidate.method : "system.ping";
+      const method = typeof candidate.method === "string" && isSessiondRpcMethod(candidate.method) ? candidate.method : "system.ping";
       await this.writeFailureSafely(writer, typeof candidate.id === "string" ? candidate.id : "invalid", method, { code: "invalid_request", message: "invalid RPC request", retryable: false });
       return;
     }
@@ -236,13 +237,15 @@ const describeSafe = (error: unknown): string => {
   return typeof error;
 };
 
-const methods = new Set<SessiondRpcMethod>([
-  "system.ping", "system.hello", "runtime.create", "runtime.activate", "runtime.attach", "runtime.detach",
-  "runtime.getSnapshot", "runtime.listRunning", "runtime.command", "runtime.interrupt", "runtime.stop",
-  "runtime.hasBusyCwd", "runtime.stopByCwd", "sessions.list", "sessions.resolve", "sessions.read",
-  "sessions.context", "sessions.rename", "sessions.delete",
-]);
-const isMethod = (value: string): value is SessiondRpcMethod => methods.has(value as SessiondRpcMethod);
+/**
+ * The exact method set the RPC server accepts. Derived from the current
+ * Protocol `SESSIOND_RPC_METHODS` constant (never a hand-maintained duplicate
+ * that can drift), so it always includes the latest methods such as
+ * `sessions.rename` / `sessions.delete`. Contract tests assert this equals the
+ * constant and that the constant matches the request schema.
+ */
+export const isSessiondRpcMethod = (value: string): value is SessiondRpcMethod =>
+  (SESSIOND_RPC_METHODS as readonly string[]).includes(value);
 
 async function dispatchHandler(handler: SessiondRpcHandler, request: SessiondRpcRequest): Promise<SessiondMethodResult[SessiondRpcMethod]> {
   return handler.handle(request.method, request.params as never, { requestId: request.id }) as Promise<SessiondMethodResult[SessiondRpcMethod]>;

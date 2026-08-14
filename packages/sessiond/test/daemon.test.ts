@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { seedSessionForTests } from "@fffattiger/pix-pi-sdk-adapter/testing";
-import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
+import { PROTOCOL_VERSION, SESSIOND_RPC_METHODS } from "@fffattiger/pix-protocol";
 import { makeRuntimeError, type SessionCatalogPort, type SessionDetail, type SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondError } from "../src/errors.js";
 import { instanceAlive, readInstanceLock, sessiondPaths } from "../src/control.js";
@@ -557,5 +557,77 @@ test("daemon sessionMutation:null disables offline rename fail-closed with fixed
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     await cleanup(dir);
     await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PR#3 manual-port diagnostics: `DaemonHandle.diagnostics` is an @internal
+// in-process surface that delegates the live service. Handle-only — never a
+// Protocol DTO, RPC method, hello field, Host /health, CLI JSON, or capability.
+// ---------------------------------------------------------------------------
+
+test("daemon.diagnostics exposes authoritative worker PIDs and bounded counts (delegates live service)", async () => {
+  const dir = await tempDir();
+  try {
+    const workers = new FakeWorkerFactory({ readyDelayMs: 0 });
+    const handle = await startDaemon({ directory: dir, workerFactory: workers, serviceOptions: { idleTimeoutMs: 0 } });
+    const rpc = client(handle);
+    try {
+      // Empty before any worker.
+      assert.deepEqual(handle.diagnostics.workerPids(), []);
+      const snap0 = handle.diagnostics.snapshot();
+      assert.equal(snap0.sessions, 0);
+      assert.equal(Object.values(snap0.workersByStatus).reduce((a, b) => a + b, 0), 0);
+
+      const created = await rpc.call("runtime.create", { createRequestId: "diag-cr", cwd: "/p", projectRoot: "/p" });
+      const sessionId = created.sessionId as string;
+      // Worker spawned: authoritative child pid reported.
+      const pids = handle.diagnostics.workerPids();
+      assert.equal(pids.length, 1);
+      assert.ok(Number.isSafeInteger(pids[0]!) && pids[0]! > 0);
+      const snap1 = handle.diagnostics.snapshot();
+      assert.equal(snap1.sessions, 1);
+      assert.equal(snap1.workersByStatus.ready, 1);
+      // No identifiers or PIDs in the stringified snapshot.
+      const json = JSON.stringify(snap1);
+      assert.ok(!json.includes(sessionId), "session id must not leak into snapshot");
+      assert.ok(!json.includes("/p"), "paths must not leak into snapshot");
+      assert.ok(!/pid/i.test(json), "snapshot must not carry PIDs");
+
+      // Exact cleanup: stop removes the record and pid.
+      await rpc.call("runtime.stop", { sessionId });
+      assert.deepEqual(handle.diagnostics.workerPids(), []);
+      assert.equal(handle.diagnostics.snapshot().sessions, 0);
+    } finally {
+      await handle.shutdown();
+    }
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("daemon.diagnostics is handle-only: no RPC/hello gains, and shutdown leaves no leak", async () => {
+  const dir = await tempDir();
+  try {
+    const workers = new FakeWorkerFactory({ readyDelayMs: 0 });
+    const handle = await startDaemon({ directory: dir, workerFactory: workers, serviceOptions: { idleTimeoutMs: 0 } });
+    const rpc = client(handle);
+    try {
+      await rpc.call("runtime.create", { createRequestId: "diag-cr2", cwd: "/p", projectRoot: "/p" });
+      assert.equal(handle.diagnostics.workerPids().length, 1);
+      // No diagnostics/PID method on the public RPC surface.
+      assert.ok(!SESSIOND_RPC_METHODS.some((m) => /diagnostic|pid/i.test(m)));
+      // system.hello carries no diagnostics/pid fields.
+      const hello = await rpc.call("system.hello", {});
+      const helloJson = JSON.stringify(hello);
+      assert.ok(!/diagnostic|pid/i.test(helloJson), `hello leaked a diagnostics surface: ${helloJson}`);
+    } finally {
+      await handle.shutdown();
+    }
+    // After shutdown: no workers, no leaked records; the handle surface stays callable.
+    assert.deepEqual(handle.diagnostics.workerPids(), []);
+    assert.equal(handle.diagnostics.snapshot().sessions, 0);
+  } finally {
+    await cleanup(dir);
   }
 });

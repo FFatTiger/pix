@@ -98,28 +98,6 @@ async function freePort() {
     });
   });
 }
-function pidAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
-}
-async function listChildPids(parentPid) {
-  if (process.platform === "win32") return [];
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const execFileAsync = promisify(execFile);
-  const { stdout } = await execFileAsync("pgrep", ["-P", String(parentPid)], {
-    timeout: 2_000,
-  }).catch(() => ({ stdout: "" }));
-  return stdout
-    .split("\n")
-    .map((s) => Number(s.trim()))
-    .filter((n) => Number.isSafeInteger(n) && n > 0);
-}
 
 // ---------------------------------------------------------------------------
 // Seed real JSONL into a temp agent dir (via the adapter testing helper, so the
@@ -533,16 +511,20 @@ async function main() {
     assert.deepEqual(runningAfterRepeat.sessions, [], "a repeated list must not start a worker");
 
     // 3. No worker after reads: runtime.listRunning empty + no worker children.
+    //    PR#3: worker discovery is authoritative via the in-process daemon
+    //    handle — never pgrep/ps/PID files, so it cannot false-green to [] when
+    //    pgrep is unavailable.
     const runningAfterReads = await rpc.call("runtime.listRunning", {});
     assert.deepEqual(runningAfterReads.sessions, [], "no worker must be running after read-only requests");
-    const childrenAfterReads = await listChildPids(process.pid);
+    const workerPidsAfterReads = stack.daemon.diagnostics.workerPids();
+    assert.deepEqual(workerPidsAfterReads, [], "no worker child after read-only requests");
 
     // 4. A read-only context GET (the deep-link request) does not start a worker.
     await get(`/v1/sessions/${sessionId}/context`);
     const runningAfterDeepLink = await rpc.call("runtime.listRunning", {});
     assert.deepEqual(runningAfterDeepLink.sessions, [], "read-only deep-link GET must not start a worker");
-    const childrenAfterDeepLink = await listChildPids(process.pid);
-    assert.deepEqual(childrenAfterDeepLink, childrenAfterReads, "no new worker child after read-only deep link");
+    const workerPidsAfterDeepLink = stack.daemon.diagnostics.workerPids();
+    assert.deepEqual(workerPidsAfterDeepLink, workerPidsAfterReads, "no new worker child after read-only deep link");
 
     // 4b. A nonexistent session read AND context return a sanitized 404
     //     SESSION_NOT_FOUND through the REAL stack (catalog not_found →
@@ -570,8 +552,8 @@ async function main() {
     // A 404 read path stays read-only: still zero workers, no new worker child.
     const runningAfter404 = await rpc.call("runtime.listRunning", {});
     assert.deepEqual(runningAfter404.sessions, [], "a missing-session 404 must not start a worker");
-    const childrenAfter404 = await listChildPids(process.pid);
-    assert.deepEqual(childrenAfter404, childrenAfterDeepLink, "no new worker child after missing-session 404");
+    const workerPidsAfter404 = stack.daemon.diagnostics.workerPids();
+    assert.deepEqual(workerPidsAfter404, workerPidsAfterDeepLink, "no new worker child after missing-session 404");
 
     // 5. Continue live (WS attach) is the ONLY path that starts a worker.
     const outcome = await attachViaWs(stack.wsUrl, sessionId);
@@ -789,6 +771,12 @@ async function main() {
     log("FAIL", error?.stack ?? error);
   } finally {
     process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    // Best-effort cleanup of any worker children spawned by the fixture: the
+    // in-process daemon handle is authoritative, so capture the live worker
+    // PIDs BEFORE shutdown (after shutdown the records are gone) and SIGKILL
+    // them as a safety net.
+    const daemonForCleanup = stack?.daemon;
+    const workerPidsForCleanup = daemonForCleanup ? daemonForCleanup.diagnostics.workerPids() : [];
     if (stack?.handle) {
       try {
         await stack.handle.close();
@@ -796,16 +784,15 @@ async function main() {
         /* ignore */
       }
     }
-    if (stack?.daemon) {
+    if (daemonForCleanup) {
       try {
-        await stack.daemon.shutdown();
+        await daemonForCleanup.shutdown();
       } catch {
         /* ignore */
       }
     }
     await rm(hostDir, { recursive: true, force: true });
-    // Best-effort cleanup of any worker children spawned by the fixture.
-    for (const pid of await listChildPids(process.pid)) {
+    for (const pid of workerPidsForCleanup) {
       try {
         process.kill(pid, "SIGKILL");
       } catch {

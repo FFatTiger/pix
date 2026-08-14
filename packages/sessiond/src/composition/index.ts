@@ -8,7 +8,7 @@
  * the package `./daemon` export.
  */
 export { startDaemon, runDaemon, main } from "./daemon.js";
-export type { DaemonOptions, DaemonHandle } from "./daemon.js";
+export type { DaemonOptions, DaemonHandle, DaemonDiagnostics } from "./daemon.js";
 export { UnavailableWorkerFactory } from "./unavailable-worker.js";
 export {
   ProductionWorkerProcessFactory,

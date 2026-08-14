@@ -53,6 +53,23 @@ export interface SessiondOptions {
   makeEpoch?: () => string;
 }
 
+/**
+ * Bounded in-process diagnostics snapshot (PR#3). Counts only — never session
+ * ids, names, paths, stderr, error text, or PIDs. `workersByStatus` covers
+ * every frozen {@link WorkerStatus} enum key exactly (zero-filled), so the
+ * shape is stable even when no worker exists.
+ */
+export interface SessiondDiagnostics {
+  sessions: number;
+  creates: number;
+  activations: number;
+  subscribers: number;
+  lanes: number;
+  aliases: number;
+  overlay: number;
+  workersByStatus: Record<WorkerStatus, number>;
+}
+
 export interface SessiondDependencies {
   sessionLocator: SessionLocatorPort;
   activationContext: ActivationContextProvider;
@@ -1527,9 +1544,50 @@ export class SessiondService {
     return this.titleOverlay.apply(detail, captured);
   }
 
+  /**
+   * Authoritative in-process Worker lifecycle PIDs (PR#3). Derived ONLY from
+   * authoritative records — no process scan. Every record that carries an
+   * actual child PID is included (starting / ready / busy / stopping / crashed)
+   * until exact record cleanup: `stop` removes the record immediately; a
+   * crashed record stays visible until it is stopped or rekeyed/replaced. A
+   * record with no real child PID (undefined / non-finite / non-positive /
+   * fractional / unsafe) is excluded. Returns unique safe positive integers in
+   * ascending order. Never session ids, names, paths, or environment.
+   */
+  workerPids(): readonly number[] {
+    const seen = new Set<number>();
+    const pids: number[] = [];
+    for (const record of this.records.values()) {
+      const pid = record.worker.pid;
+      if (typeof pid !== "number") continue;
+      // finite is implied by Number.isSafeInteger; exclude NaN/Infinity/fraction/unsafe.
+      if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      pids.push(pid);
+    }
+    pids.sort((a, b) => a - b);
+    return pids;
+  }
+
   /** Test/diagnostic view with no process internals. */
-  diagnostics(): { sessions: number; creates: number; activations: number; subscribers: number; lanes: number; aliases: number; overlay: number } {
+  diagnostics(): SessiondDiagnostics {
     const lanes = this.coordinator.diagnostics();
+    // Literal object pinned to the frozen WorkerStatus enum: adding a status to
+    // the Protocol enum without adding a key here is a compile-time error.
+    const workersByStatus = {
+      idle: 0,
+      starting: 0,
+      ready: 0,
+      busy: 0,
+      stopping: 0,
+      stopped: 0,
+      crashed: 0,
+      unavailable: 0,
+    } satisfies Record<WorkerStatus, number>;
+    for (const record of this.records.values()) {
+      if (Object.prototype.hasOwnProperty.call(workersByStatus, record.status)) workersByStatus[record.status] += 1;
+    }
     return {
       sessions: this.records.size,
       creates: this.creates.size,
@@ -1538,6 +1596,7 @@ export class SessiondService {
       lanes: lanes.lanes,
       aliases: lanes.aliases,
       overlay: this.titleOverlay.size(),
+      workersByStatus,
     };
   }
 }

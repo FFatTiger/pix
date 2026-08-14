@@ -2032,3 +2032,78 @@ seam 与否都排除；自定义 readonly 列表含 mutation token 也在 down �
 单元“只删不增”），Host 全量 412→420/420；CLI 46、root typecheck/build/test/architecture、
 三条 E2E 全 PASS。
 ```
+
+## 54. PR#3 — sessiond 进程内 Worker 诊断手动 port 切片（DONE）
+
+```text
+实现：branch feat/sessiond-worker-diagnostics（本提交，base main ef564b7，未 push/
+deploy/live service）。编号：Host rename §52、Client rename §53 为并行保留号，
+本切片占用 §54（execution-plan D4 行未改，避免并行冲突）。backend 仅 sessiond + docs +
+E2E 断言；无 Host /health、无 Protocol DTO、无 RPC method、无 CLI JSON、无 capability、
+无 package-lock。
+
+目标：为测试/operator 内部提供权威的进程内 Worker 生命周期诊断，替代 E2E 中基于 pgrep
+的进程扫描，同时绝不在任何公开面暴露标识符（session id/name/path/PID）。
+
+冻结架构决策（父级明确，必须实现）：
+1) `SessiondService.workerPids(): readonly number[]`：仅由权威 records 推导，绝不扫描
+   进程；只包含 worker.pid 的有限安全正整数 PID（Number.isSafeInteger 且 >0），去重、
+   数值升序；不携带 session id/name/path。starting/live/busy/stopping/crashed 且带真实
+   子 PID 的 record 在精确 record 清理前都计入：stop 立即删 record；crashed record 保留
+   至显式 stop/rekey/替换。rekey 只搬同一 record（不复制 PID），alias 不影响计数。
+2) `diagnostics()` 扩展 `workersByStatus: Record<WorkerStatus, number>`：用
+   `satisfies Record<WorkerStatus, number>` 字面量覆盖冻结 WorkerStatus 枚举全部 key
+   精确 zero-fill（协议枚举新增 key 会编译失败）；按 records on demand 计算，sum 恒等于
+   records 数。既有 sessions/creates/activations/subscribers/lanes/aliases/overlay
+   语义不变。无持久化高基数历史、无 stderr、无 error message/path/PID 进 snapshot。
+3) `DaemonHandle.diagnostics: DaemonDiagnostics`（@internal 句柄面，仅进程内）：方法
+   `workerPids()` 与 `snapshot()`（仅有界计数 + 当前 PID），委托 live service；不做为
+   Protocol DTO/RPC method/Host /health/CLI JSON/capability 导出；类型仅从 daemon
+   composition 类型位置导出。关闭/shutdown 后返回空、无泄漏。
+4) `packages/sessiond/src/rpc.ts` 删除手写重复 method set，改用 Protocol
+   `SESSIOND_RPC_METHODS`（含 sessions.rename/delete），行为字节等价；新增 static/
+   contract 测试防 drift（constant == request schema；server predicate 恰等于 constant；
+   params/results key 1:1 与 constant 的编译期断言）。
+5) Runtime/Sessions E2E：daemon 进程内运行时用 `daemon.diagnostics.workerPids()` 替换
+   pgrep/`ps`/PID file/进程扫描与 fail-open `[]`；无进程名扫描、无 Windows 分支。Startup
+   E2E 保持进程级（无安全进程内句柄，不强制扩面）。
+
+安全/边界：
+- 新诊断不含 raw stderr（含红acted 都不进新面）；StderrRing 不变。
+- 无 secrets/env/endpoint/instanceId/session id/title/path/raw error；PID 仅经内部/
+  测试句柄。
+- 无新 timer/handle/retention；snapshot O(records)+固定枚举。
+- 不宣称 Windows 支持；observer 本身跨平台，测试只按当前证据声明。
+- 既存 child-stdio/worker-process redaction 与 session rename/delete 测试不变。
+
+实现（packages/sessiond）：
+- service.ts：新增导出 `SessiondDiagnostics` 接口；`workerPids()`；`diagnostics()` 增
+  `workersByStatus`（satisfies 字面量 zero-fill + hasOwnProperty 防御计数）。
+- composition/daemon.ts：新增 `@internal DaemonDiagnostics` 接口与 `DaemonHandle.diagnostics`
+  字段；startDaemon 内建闭包委托 live service（workerPids/snapshot）。
+- composition/index.ts：导出 `DaemonDiagnostics` 类型。
+- rpc.ts：`isSessiondRpcMethod` 直接基于 `SESSIOND_RPC_METHODS`（删除 19 项硬编码 set）。
+
+测试：
+- 新增 packages/sessiond/test/worker-diagnostics.test.ts（13 用例，确定性 gated fake/
+  bounded waitUntil，无 timing 断言）：workerPids 空/undefined 排除/starting 无 pid 排除/
+  有效 pid 计入/重复 pid 去重/NaN/0/负/小数/非安全整数排除/rekey 不复制 PID/crash 保留至
+  清理/stop 精确清理；workersByStatus 全 key 精确 + zero-fill + sum==sessions/starting→
+  ready→busy 转换/多会话多状态/stopping 精确清理/stringified snapshot 无标识符无 PID。
+- 新增 packages/sessiond/test/rpc-methods.test.ts（3 用例 + 编译期断言）：predicate 恰等于
+  constant、constant==request schema、公开面无 diagnostics/PID。
+- daemon.test.ts 新增 2 用例：daemon.diagnostics 委托 live service（权威 PID + 有界计数 +
+  无标识符 + stop 清理）；handle-only（无 RPC/hello 增益、shutdown 后空且可调用）。
+- E2E runtime.mjs / sessions-history.mjs：删除 pgrep/listChildPids/collectWorkerPids，
+  改用 daemon.diagnostics.workerPids()（可断言真实 spawn/清理，pgrep 缺失时不再 false-green
+  到 []）；Startup E2E 未改。
+
+验证：sessiond typecheck/build/boundary PASS；sessiond 全量多轮 246-247 pass/0 fail/1 skip
+（唯一偶发失败为既存 `RPC authenticates locally` 的 socket-close 时序 flake，与本切片无关，
+单测隔离 3/3 PASS，baseline 229/229 PASS）；Runtime/Sessions E2E 各 2 轮 PASS；Startup
+E2E 回归 PASS；root typecheck/build/test PASS；check:architecture PASS；git diff-check 与
+工作树 clean。独立 verifier：请重放 workerPids/workersByStatus/daemon.diagnostics 测试与
+Runtime/Sessions E2E，确认 pgrep 移除与 no-false-green。
+
+残余/后续：诊断面仅进程内句柄，未接任何 CLI/Host/Protocol 公开输出；Windows 支持不宣称；
+Host rename §52、Client rename §53 待并行切片。
