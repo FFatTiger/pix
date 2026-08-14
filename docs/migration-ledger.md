@@ -1921,3 +1921,68 @@ PASS；git diff --check 与工作树 clean。独立 verifier 首轮复现 same-k
 残余/后续：Host PATCH rename route、Client rename UI、live set_session_name 的 catalog
 持久化收敛（worker 侧）、auto-name/trash/undo、side chat 仍后置。编号已在 current-main
 集成时顺延为 §51（Local Authority 占 §48/§49，Extension UI Client 占 §50）。
+
+## 53. D4 — Client Sidebar Session Rename UI 垂直切片记录
+
+```text
+实现：独立 worktree client-session-rename-ui，branch feat/d4-client-session-rename-ui，
+base main ef564b7，实现 commit 8d197f58。Client-only，未改 Host/Protocol/sessiond/
+adapter/package-lock/E2E backend/live service；实现阶段未改 main、未 merge/push。
+依赖 Host §52（PATCH /v1/sessions/:id，body `{name}`，成功 `{success:true}`，能力
+`session.write`）——本切片只消费该契约并做客户端能力门控，Host §52 并行分支负责挂载。
+状态 DONE（Fresh 独立验证 PASS）。
+
+API/cache（packages/client/src/api）：
+- sessions.ts：rename 与 remove 从错误的 `OkSchema`（`{ok:boolean}`）改为 `SuccessSchema`
+  （`{success:boolean}`）——Host DELETE 与 PATCH rename 均返回 `{success:true}`；autoName
+  保持其真实契约 `OkSchema` 不变。精确测试：PATCH 仅发 `{name}` 到 `/v1/sessions/:id`，
+  `{ok:true}` 对 rename/delete 是 decode 失败而非 false success，autoName 双向边界。
+- mutations.ts：rename onSuccess 先 `primeSessionTitle`（对已缓存 session list/detail 的
+  精确 session id/当前 query scope 仅写 `title` 字段——绝不合成 path/id/timestamps），
+  再 invalidate 相关 list/detail，消除 stale catalog 视觉回滚窗口；配合 §51 server-side
+  revisioned overlay，refetch 收敛到新标题。最佳可用顺序测试覆盖 list+detail 即时 prime、
+  仅 title 字段、不同 session 不动、invalidate 仍按既有 scope。
+
+Capability/product：
+- CapabilityProvider 新增 `canWriteSessions`（`session.write` token，仅 full/sessiond-up），
+  与 `canDeleteSessions` 并列；rename 对 live 与 history 行都可用（不同于 delete 隐藏
+  attached/live）。
+- Sidebar 是唯一可见 rename 产品面：行内 Rename 按钮（Link 的 sibling，绝不嵌套/导航）+
+  行局部编辑器（prefill 当前标题、focus+select、Enter 保存、Escape/Cancel 安全取消并把
+  焦点还给 Rename、服务端失败保留 draft 与焦点、成功关闭编辑器更新标题并还原焦点，绝不
+  改 URL/cwd/session、绝不 detach/reconnect）。
+- SessionActions 移除旧 rename form/control（`runtime.session.rename` 面不再渲染），保留
+  runtime 底层 `setSessionName` helper 与其 SessionStore 测试、其余全部 controls 不动。
+
+验证（client，镜像 Host canonicalize）：
+- trim、非空、≤200 UTF-16 JS code units（maxLength=200）、拒 NUL/C0/DEL；Unicode/emoji/
+  内部空格允许；无效不发请求、固定行局部错误；未改变更（trimmed === 当前 canonical
+  title）作为安全 no-op/cancel 并测试。
+- 一行 editor 一次；rename/delete 共享同步 busyRef 单飞行（同 tick 双击恰一 PATCH）；
+  delete confirm 与 rename editor 对同/异行永不共存；既有 D4 delete 语义/焦点/cap 保留。
+- late-settle identity：mount generation + capability generation（canWriteRef）+ cwd +
+  URL-selected session + edited row id + 可见行集合 + request generation；cap revoke/cwd/
+  URL session 变更/edit cancel/行消失/新 editor/unmount 使旧 success/error 惰性（不关闭/
+  覆盖新 editor/draft、不导航）。live 行 rename 只走 Host PATCH，零 WebSocket、不调
+  runtime.setSessionName。
+- describeSessionRenameError 仅 code/status/kind 映射（unauthorized / SESSION_NOT_FOUND /
+  INVALID_NAME / INVALID_INPUT / SESSION_IN_USE / SESSIONS_UNAVAILABLE / MUTATION_UNAVAILABLE
+  / network / timeout / aborted / fallback），绝不渲染 raw Host message/提交名/id/path/secret。
+- a11y：label 含安全当前行标题；failure role=alert 固定文案；无 modal/window.confirm、
+  无入场动画、reuse tokens；≥40px（移动 44px）触控；focus-visible outline；reduced-motion
+  不新增过渡。
+
+测试：api-groups +3（SuccessSchema/OkSchema 双向、PATCH 精确 method/body）、query-options +1
+（cache prime 先于 invalidate + 精确限制记录）、CapabilityProvider +1（canWriteSessions 门、
+  session.delete 不隐含 session.write）、Sidebar +22（cap 门/live+history 可用/sibling 不导航/
+  prefill+focus+select/Enter/Escape/Cancel/unchanged no-op/200+201+controls+Unicode+emoji+
+  trim/no raw leak+draft 保留/一行 editor/delete 共存/单飞行/live 行 Host-only/cap/cwd/URL/
+  cancel+reopen/unmount 惰性 + describeSessionRenameError + validateSessionName 直测）、
+  SessionActions -2 改 2（无 rename 面、不发 set_session_name）。既有 Sidebar delete/AppShell/
+  SessionActions/Extension UI 测试全保留（DELETE mock 从 `{ok:true}` 修正为 `{success:true}`，
+  体现 latent SuccessSchema 修复）。
+
+验证：Client 652/652（基线 626 + 26 定向）、client typecheck/build/boundary PASS、根
+check:architecture/typecheck/build/test（scripts 107 + 全 workspace）PASS、git diff --check
+与工作树 clean。无 Playwright 依赖、不声明浏览器视觉 PASS（DOM/a11y 证据 + 观感为非阻塞
+manual gap）。
