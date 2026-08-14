@@ -83,14 +83,26 @@ function toIdentity(info: { dev: number; ino: number; mode: number; nlink: numbe
   };
 }
 
-async function lstatRegularFile(path: string): Promise<{ dev: number; ino: number } | null> {
+type RegularFileInspection =
+  | { kind: "regular"; dev: number; ino: number }
+  | { kind: "missing" }
+  | { kind: "nonRegular" }
+  | { kind: "unreadable" };
+
+/**
+ * Non-throwing inspection of a regular file for identity pinning. A filesystem
+ * authority failure (EACCES, ELOOP, ...) NEVER surfaces as a raw os error with
+ * a path: it is classified `unreadable` so callers map it to their fixed
+ * fail-closed error (LOCK_UNSAFE / LOCK_LOST). Missing stays distinct.
+ */
+async function inspectRegularFile(path: string): Promise<RegularFileInspection> {
   try {
     const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isFile()) return null;
-    return { dev: info.dev, ino: info.ino };
+    if (info.isSymbolicLink() || !info.isFile()) return { kind: "nonRegular" };
+    return { kind: "regular", dev: info.dev, ino: info.ino };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
+    if (errnoCode(error) === "ENOENT") return { kind: "missing" };
+    return { kind: "unreadable" };
   }
 }
 
@@ -165,7 +177,7 @@ export async function canonicalizeAbsolutePath(path: string): Promise<string> {
       break;
     } catch (error) {
       if (errnoCode(error) !== "ENOENT") {
-        throw new LocalAuthorityError("INVALID_PATH", "Path component cannot be inspected");
+        throw new LocalAuthorityError("UNSAFE_COMPONENT", "Path component cannot be inspected");
       }
       const parent = dirname(existing);
       if (parent === existing) {
@@ -180,7 +192,7 @@ export async function canonicalizeAbsolutePath(path: string): Promise<string> {
   try {
     canonicalPrefix = await realpath(existing);
   } catch {
-    throw new LocalAuthorityError("INVALID_PATH", "Existing ancestor cannot be canonicalized");
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", "Existing ancestor cannot be canonicalized");
   }
   const result = missing.length === 0 ? canonicalPrefix : join(canonicalPrefix, ...missing);
 
@@ -195,7 +207,7 @@ export async function canonicalizeAbsolutePath(path: string): Promise<string> {
       info = await lstat(current);
     } catch (error) {
       if (errnoCode(error) === "ENOENT") break;
-      throw new LocalAuthorityError("INVALID_PATH", "Canonical path component cannot be inspected");
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", "Canonical path component cannot be inspected");
     }
     if (info.isSymbolicLink()) {
       throw new LocalAuthorityError("SYMLINK", "Canonical path must not contain a symbolic link");
@@ -217,7 +229,9 @@ export async function posixFileIdentity(path: string): Promise<PosixFileIdentity
     info = await lstat(path);
   } catch (error) {
     if (errnoCode(error) === "ENOENT") return null;
-    throw error;
+    // Filesystem authority failure (EACCES etc.): fixed sanitized error, never
+    // a raw os error/path. Reserve INVALID_PATH for syntactic invalid input.
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", "Path component cannot be inspected");
   }
   return toIdentity(info);
 }
@@ -303,7 +317,7 @@ export async function ensurePrivateDirectory(
         info = await lstat(current);
       } catch (error) {
         if (errnoCode(error) !== "ENOENT") {
-          throw new LocalAuthorityError("INVALID_PATH", "Directory path is unsafe");
+          throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
         }
         creating = true;
       }
@@ -323,14 +337,14 @@ export async function ensurePrivateDirectory(
       await mkdir(current, { recursive: false, mode: 0o700 });
     } catch (mkdirError) {
       if (errnoCode(mkdirError) !== "EEXIST") {
-        throw new LocalAuthorityError("INVALID_PATH", "Directory path is unsafe");
+        throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
       }
     }
     let createdInfo;
     try {
       createdInfo = await lstat(current);
     } catch {
-      throw new LocalAuthorityError("INVALID_PATH", "Directory path is unsafe");
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
     }
     if (createdInfo.isSymbolicLink() || !createdInfo.isDirectory()) {
       throw new LocalAuthorityError(
@@ -345,7 +359,7 @@ export async function ensurePrivateDirectory(
   try {
     finalInfo = await lstat(current);
   } catch {
-    throw new LocalAuthorityError("INVALID_PATH", "Directory path is unsafe");
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
   if (finalInfo.isSymbolicLink() || !finalInfo.isDirectory()) {
     throw new LocalAuthorityError(
@@ -388,10 +402,10 @@ export async function ensurePrivateDirectory(
   try {
     finalReal = await realpath(current);
   } catch {
-    throw new LocalAuthorityError("INVALID_PATH", "Directory path is unsafe");
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
   if (finalReal !== current) {
-    throw new LocalAuthorityError("INVALID_PATH", "Directory path is unsafe");
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
   }
   return { path: current, created: leafCreated, identity: toIdentity(finalInfo) };
 }
@@ -504,15 +518,16 @@ export async function writeStateDocument(
       await handle.close();
     }
     // Cross-process ownership re-verification immediately before publish: if
-    // the lifetime lock was lost (external removal/replacement), abort
-    // fail-closed instead of publishing under an unlocked dir.
+    // the lifetime lock was lost (external removal/replacement), or it cannot
+    // be inspected (EACCES / ELOOP) / is not a regular file / does not match,
+    // abort fail-closed with a fixed LOCK_LOST instead of publishing under an
+    // unlocked dir. Never a raw os error/path.
     if (options.lockCheck) {
-      const currentLock = await lstatRegularFile(options.lockCheck.path);
-      if (
-        !currentLock
-        || currentLock.dev !== options.lockCheck.ownership.dev
-        || currentLock.ino !== options.lockCheck.ownership.ino
-      ) {
+      const inspection = await inspectRegularFile(options.lockCheck.path);
+      const matches = inspection.kind === "regular"
+        && inspection.dev === options.lockCheck.ownership.dev
+        && inspection.ino === options.lockCheck.ownership.ino;
+      if (!matches) {
         throw new LocalAuthorityError("LOCK_LOST", "Lifetime lock ownership lost before publish");
       }
     }
@@ -574,17 +589,12 @@ function readLockRecord(text: string): { pid: number; instanceId: string; create
 }
 
 export async function readLifetimeLock(path: string): Promise<LifetimeLockReadResult> {
-  const identity = await lstatRegularFile(path);
-  if (identity === null) {
-    try {
-      const info = await lstat(path);
-      if (info.isSymbolicLink() || !info.isFile()) return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-    } catch (error) {
-      if (errnoCode(error) === "ENOENT") return { kind: "missing" };
-      return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-    }
-    return { kind: "missing" };
-  }
+  // Non-throwing inspection: a filesystem authority failure (EACCES etc.) is
+  // classified `unreadable` → `{kind:"unsafe", reason:"LOCK_UNSAFE"}` — the
+  // return union is preserved and no raw os error/path can escape.
+  const inspection = await inspectRegularFile(path);
+  if (inspection.kind === "missing") return { kind: "missing" };
+  if (inspection.kind !== "regular") return { kind: "unsafe", reason: "LOCK_UNSAFE" };
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -596,8 +606,40 @@ export async function readLifetimeLock(path: string): Promise<LifetimeLockReadRe
   return {
     kind: "valid",
     record,
-    identity: { dev: identity.dev, ino: identity.ino },
+    identity: { dev: inspection.dev, ino: inspection.ino },
   };
+}
+
+/**
+ * Classify an EXISTING lock record into a fixed fail-closed error. Never
+ * rethrows raw: a caller-supplied isPidAlive that throws is contained to
+ * LOCK_UNSAFE. `readLifetimeLock` itself never throws (returns the union).
+ */
+async function classifyExistingLock(
+  path: string,
+  isPidAlive: (pid: number) => boolean,
+): Promise<never> {
+  const existing = await readLifetimeLock(path);
+  if (existing.kind === "unsafe") {
+    throw new LocalAuthorityError("LOCK_UNSAFE", "Existing lifetime lock is unsafe");
+  }
+  if (existing.kind === "missing") {
+    // Lock existed at O_EXCL but vanished before the read — ambiguous.
+    throw new LocalAuthorityError("LOCK_AMBIGUOUS", "Lifetime lock identity is ambiguous");
+  }
+  let alive = false;
+  try {
+    alive = isPidAlive(existing.record.pid);
+  } catch {
+    throw new LocalAuthorityError("LOCK_UNSAFE", "Existing lifetime lock could not be classified");
+  }
+  if (alive) {
+    throw new LocalAuthorityError("LOCK_BUSY", "Another process holds the lifetime lock");
+  }
+  throw new LocalAuthorityError(
+    "LOCK_STALE",
+    "Lifetime lock is stale; verify the old process is dead and remove the lock explicitly",
+  );
 }
 
 /**
@@ -621,33 +663,19 @@ export async function acquireLifetimeLock(
     } finally {
       await handle.close();
     }
-    const owned = await lstatRegularFile(path);
-    if (!owned) {
-      // Lock vanished immediately after O_EXCL create: cannot pin identity →
-      // ambiguous → fail closed.
+    const inspection = await inspectRegularFile(path);
+    if (inspection.kind !== "regular") {
+      // Lock vanished immediately after O_EXCL create, is non-regular, or cannot
+      // be inspected: cannot pin identity → ambiguous → fail closed.
       throw new LocalAuthorityError("LOCK_UNSAFE", "Lifetime lock ownership could not be pinned");
     }
-    return { dev: owned.dev, ino: owned.ino };
+    return { dev: inspection.dev, ino: inspection.ino };
   } catch (error) {
     if (error instanceof LocalAuthorityError) throw error;
     if (errnoCode(error) !== "EEXIST") {
       throw new LocalAuthorityError("LOCK_UNSAFE", "Could not create lifetime lock");
     }
-    const existing = await readLifetimeLock(path);
-    if (existing.kind === "unsafe") {
-      throw new LocalAuthorityError("LOCK_UNSAFE", "Existing lifetime lock is unsafe");
-    }
-    if (existing.kind === "missing") {
-      // Lock existed at O_EXCL but vanished before the read — ambiguous.
-      throw new LocalAuthorityError("LOCK_AMBIGUOUS", "Lifetime lock identity is ambiguous");
-    }
-    if (options.isPidAlive(existing.record.pid)) {
-      throw new LocalAuthorityError("LOCK_BUSY", "Another process holds the lifetime lock");
-    }
-    throw new LocalAuthorityError(
-      "LOCK_STALE",
-      "Lifetime lock is stale; verify the old process is dead and remove the lock explicitly",
-    );
+    return classifyExistingLock(path, options.isPidAlive);
   }
 }
 

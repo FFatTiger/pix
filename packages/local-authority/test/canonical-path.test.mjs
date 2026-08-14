@@ -108,8 +108,9 @@ test("canonicalize: a symlink to a file fails closed", async () => {
   symlinkSync(file, link);
   // Canonicalizing the link itself resolves to a file → NOT_DIRECTORY.
   await expectReject(link, "NOT_DIRECTORY");
-  // Traversing under a file is ENOTDIR (fail-closed, INVALID_PATH).
-  await expectReject(join(link, "child"), "INVALID_PATH");
+  // Traversing under a file is ENOTDIR — a filesystem-authority failure
+  // (UNSAFE_COMPONENT, not the syntactic INVALID_PATH).
+  await expectReject(join(link, "child"), "UNSAFE_COMPONENT");
 });
 
 test("canonicalize: an existing non-directory component fails closed", async () => {

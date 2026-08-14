@@ -271,7 +271,11 @@ function toHostStateError(error: unknown): never {
       LOCAL_TO_HOST_MESSAGES[error.code] ?? "Host directory path is unsafe",
     );
   }
-  throw error;
+  // Defense in depth: an unexpected non-local-authority error (a raw fs error,
+  // a throwing test hook, or a policy-callback bug) must NEVER leak a raw
+  // path/os message across the Host boundary — map it to the fixed sanitized
+  // code/message.
+  throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
 }
 
 /**

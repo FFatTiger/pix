@@ -338,3 +338,78 @@ test("lease: recognized temp pattern covers both state documents", async () => {
 test("lease: DEFAULT_RECOGNIZED_DOCUMENTS covers the full Pix layout", () => {
   assert.deepEqual([...DEFAULT_RECOGNIZED_DOCUMENTS], [TRUSTED_ROOTS_STATE_DOCUMENT, MANAGED_WORKTREES_STATE_DOCUMENT]);
 });
+
+// ---------------------------------------------------------------------------
+// Raw-leak hardening (Slice 1 follow-up): EACCES / broken-symlink / parent-
+// is-file must surface as FIXED sanitized Host errors, never a raw os error
+// with a path — and base classifications (HOST_DIR_UNSAFE) are preserved.
+// ---------------------------------------------------------------------------
+
+function isRoot() {
+  return typeof process.getuid === "function" && process.getuid() === 0;
+}
+
+function assertSanitizedHostError(e, dir) {
+  assert.equal(e instanceof HostStateDirectoryError, true, "must be a HostStateDirectoryError, not a raw os error");
+  assert.equal(e.code, "HOST_DIR_UNSAFE", "fixed code");
+  assert.equal(e.message, "Host directory path is unsafe", "fixed sanitized message");
+  assert.ok(!e.message.includes(dir), `no temp path in message (got "${e.message}")`);
+  assert.ok(!e.message.includes("EACCES"), `no errno text in message (got "${e.message}")`);
+  assert.ok(!/eacces|permission denied|error: /i.test(e.message), `no raw os text in message (got "${e.message}")`);
+  return true;
+}
+
+test("lease: EACCES on the hostDir path → fixed HOST_DIR_UNSAFE (no raw path/os leak)", async (t) => {
+  if (isRoot()) { t.skip("root bypasses permission checks"); return; }
+  const dir = temp("lease-eacces-");
+  const hostDir = join(dir, "leaf");
+  chmodSync(dir, 0o000);
+  try {
+    await assert.rejects(
+      () => openHostStateDirectoryLease({ hostDir }),
+      (e) => assertSanitizedHostError(e, dir),
+    );
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+});
+
+test("lease: broken symlink intermediate → HOST_DIR_UNSAFE (base parity; nothing mutated)", async () => {
+  const outside = temp("lease-broken-out-");
+  const parent = temp("lease-broken-parent-");
+  const link = join(parent, "broken");
+  symlinkSync(join(outside, "missing-target"), link);
+  const hostDir = join(link, "child");
+  await assert.rejects(
+    () => openHostStateDirectoryLease({ hostDir }),
+    (e) => assertSanitizedHostError(e, hostDir),
+  );
+  assert.equal(existsSync(join(outside, "missing-target")), false);
+  assert.equal(existsSync(join(outside, "child")), false);
+});
+
+test("lease: parent-is-file intermediate → HOST_DIR_UNSAFE (base parity; nothing mutated)", async () => {
+  const parent = temp("lease-parentfile-");
+  const file = join(parent, "plain");
+  writeFileSync(file, "x");
+  const hostDir = join(file, "child");
+  await assert.rejects(
+    () => openHostStateDirectoryLease({ hostDir }),
+    (e) => assertSanitizedHostError(e, hostDir),
+  );
+  assert.equal(existsSync(join(file, "child")), false);
+});
+
+test("lease source: toHostStateError maps unknown errors to a fixed sanitized HOST_DIR_UNSAFE", () => {
+  const src = readFileSync(new URL("../src/resources/host-state-directory.ts", import.meta.url), "utf8");
+  assert.match(src, /function toHostStateError/);
+  assert.match(src, /if \(error instanceof HostStateDirectoryError\) throw error;/);
+  assert.match(src, /if \(error instanceof LocalAuthorityError\)/);
+  // The final unknown branch is a FIXED sanitized Host error (defense in depth).
+  assert.match(src, /throw new HostStateDirectoryError\("HOST_DIR_UNSAFE", "Host directory path is unsafe"\);/);
+  // No bare `throw error;` may exist anywhere in the lease (raw leaks fail closed).
+  for (const line of src.split("\n")) {
+    const t = line.trim();
+    if (t === "throw error;") assert.fail(`raw rethrow in lease: ${t}`);
+  }
+});
