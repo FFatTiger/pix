@@ -731,3 +731,18 @@ commit 边界重验（Existing AllowedRoot 语义）：
 独立验证：Fresh GPT 复验 root build/typecheck、Client 496/496、Adapter 172/172、其余 workspace 全绿、Runtime E2E 1轮+2轮、Startup/Sessions E2E、architecture/boundaries 全 PASS；另检查 capability 精确门控、bash/prompt pending 互斥、detach/switch/stop/dispose/epoch/reconnect、abort typed admission与竞态、delta不重复累积、same-WS真实链与无孤儿，verdict PASS。
 
 残余风险：① Host 单连接 serial lane 仍 HOL 普通命令（getSnapshot 等）于长 bash 之后（文档化 LOW，本 slice 不重设计 Host lane，abort_bash 走既有独立 interrupt 旁路已验证非阻塞）；② Bash 命令/abort 仅 capability 门控，UI（Composer 等）未在本 slice 暴露 bash 控件（显式排除，minimal API only）；③ Bash command text 沿用既有 Protocol 合约，无额外长度上限且允许 shell 控制字符；④ `fullOutputPath` 沿用既有 bash projection，可能包含服务端本地路径；⑤ interrupt ack 沿用既有 abort/clearQueue 设计，无独立客户端超时，依靠重连同步收敛。
+```
+
+## 37. D1 Sessions Read Path — backend hardening checkpoint（DONE）
+
+```text
+合入 main：WP3真实E2E `dfd552e`；WP2 shared session ports `8621383`；WP1 cache hardening `3fae308` + GPT FAIL修复 `faa0fe0`。
+
+WP1：pi-sdk-adapter session store 的 warm-index-miss rebuild 现在合并并发扫描；listInfos/scanOnce 共用单调 revision fence，旧扫描晚完成不能覆盖新缓存；resolveInfo 在记 not_found 前重查当前index。负结果按记录时刻固定30s过期，其他扫描不能延期，默认最多1024条并按最旧淘汰；invalidate/成功发现该id会清除。delete 在id校验后遇到ENOENT按已删除幂等成功并失效缓存，其他文件错误固定sanitize，路径复用时绝不删除别的session文件。Fresh GPT 首轮复现同generation覆盖、负期限可无限延期和容量无界并判FAIL；`faa0fe0` 修复后以原探针复验：F1从5/5失败降为0/5、F2超过100s场景恢复、F3容量有界；Adapter main复查189/189，verdict PASS。
+
+WP2：新增窄 `createPiSdkSessionPorts()`，production daemon 默认catalog与locator共享一个store；sessions.resolve定位后activation context读取复用同一cache，从两次listAll降为一次。显式catalog/locator/activationContext/null覆盖优先级不变，构造lazy且不同daemon不共享global cache。Fresh GPT以真实SDK临时语料、并发调用和daemon RPC复验，Adapter175/175、sessiond159 pass/1 skip，verdict PASS。
+
+WP3：仅扩 `tests/e2e/sessions-history.mjs`，覆盖limit/offset严格十进制分页、leafId可见分支上下文、sessiond delete后文件/list/read 404一致、非live rename固定unavailable、重复list零Worker；连续3轮Sessions E2E PASS。未新增Host mutation route，live rename仍留D4。
+
+残余：create/discovery/rename list头最长30s陈旧仍按既有hotfix约定；Host rename/delete/auto-name mutation route属于D4；SQLite JSONL投影和客户端虚拟列表属于Wave4 SCALE1/UX1，不作为D1当前底层正确性阻塞。
+```
