@@ -633,7 +633,7 @@ FilesPanel 搜索集成（冻结交互）：
 ## 33. session-list-piweb-parity — 全量会话列表性能 hotfix 记录
 
 ```text
-实现：590fa12（branch fix/session-list-piweb-parity，base 57ec4619becb1647ba672e51b46d1fcd7152c09c）
+实现：95f72a3（branch fix/session-list-piweb-parity，base 57ec4619becb1647ba672e51b46d1fcd7152c09c）
 实现模型：本任务执行体（Fresh session）
 范围：packages/pi-sdk-adapter/src/internal/session-store.ts、packages/pi-sdk-adapter/test/sessions.test.ts、packages/client/src/api/query-keys.ts、packages/client/src/api/query-options.test.ts、docs/refactor-execution-plan.md、docs/migration-ledger.md。未改 Protocol/runtime-core/sessiond service/daemon/Host/package-lock，未加 Host RPC 超时，未引入 SQLite/Next，未改 allowed-root/项目总览/无关 UI。
 
