@@ -676,12 +676,12 @@ FilesPanel 搜索集成（冻结交互）：
 ## 35. D3A-Upload-Transaction — 事务性多文件上传 C1 记录（DONE）
 
 ```text
-实现：Fresh DeepSeek；独立 worktree d3a-upload-transaction，branch feat/d3a-upload-transaction，base main 811c94e。目标：POST /v1/files 一次请求接受的文件创建/覆盖全量原子（all-or-nothing）。仅改 packages/host/src/routes/files.ts（生产）+ 新增 packages/host/test/uploads-transaction.test.mjs（12 用例）+ docs 两份。未改 UI/API schema/capability/依赖/package-lock/Client/CLI/protocol/sessiond/trusted-roots-ledger 相关文件。状态 DONE（Fresh DeepSeek 独立验证 PASS，未 merge main、未 push、未重启 live dev）。
+实现：Fresh DeepSeek；独立 worktree d3a-upload-transaction，branch feat/d3a-upload-transaction，base main 811c94e，source `5b4d1c7`，已 cherry-pick 至 main `18da293`。目标：POST /v1/files 一次请求接受的文件创建/覆盖全量原子（all-or-nothing）。仅改 packages/host/src/routes/files.ts（生产）+ 新增 packages/host/test/uploads-transaction.test.mjs（12 用例）+ docs 两份。未改 UI/API schema/capability/依赖/package-lock/Client/CLI/protocol/sessiond/trusted-roots-ledger 相关文件。状态 DONE（Fresh GPT 独立验证 PASS，未重启 live dev）。
 
 语义（相对旧行为）：旧实现逐个文件原子写，后失败时先前文件/覆盖已提交（部分可见最终态）。新实现三段式：
-- Preflight（零写入）：保持既有校验顺序与错误优先级（authorizeChild→duplicate→每文件 size→总 size→conflict），按 conflict 模式规划全批 create/overwrite/skip；conflict=error 对已存在目标在 preflight 即 409 FILE_EXISTS（整批拒绝，无 staging）。
-- Stage：每个接受文件写入目标 canonical 目录内唯一 `.pix-upload-<uuid>.tmp`（O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW，0600）；任一步失败清理全部已 stage temp、零 final 变更。
-- Commit（per-directory KeyedMutex 下，rollback journal）：create 用 `link(staged,target)`+`rm(staged)` 原子 create-if-absent（link 对已存在 target 返回 EEXIST，绝不覆盖/跟随）；overwrite 先 `link(target,backup)` 硬链接备份原 inode 于同目录（同 fs、字节/元数据精确、target 从不缺位）再 `rename(staged,target)`，成功统一 `rm(backup)`，失败 `rename(backup,target)` 精确还原；journal 记录每步，失败按逆序回滚（overwrite→rename backup 还原、create→rm target）。abort（c.req.raw.signal）在 stage/commit 每步检查，观察到的 abort→499 UPLOAD_ABORTED + 回滚已提交项 + 清理 temp。
+- Preflight（零写入）：保留授权、name/duplicate、每文件 size、总 size、symlink 与 conflict 校验并规划全批 create/overwrite/skip；conflict=error 对已存在目标在 preflight 即 409 FILE_EXISTS（整批拒绝，无 staging）。独立验证确认一个可观察变化：`INVALID_CONFLICT` 现在早于逐文件 name/duplicate/size 错误返回；均为零写入 4xx，无安全影响，但不再声称错误优先级逐字保持旧版。
+- Stage：每个接受文件写入目标 canonical 目录内唯一 `.pix-upload-<uuid>.tmp`（O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW，0600）；任一步失败 best-effort 清理已 stage temp、零 final 变更。若外部进程把整个目录改名，temp 会随 inode 移动而无法用旧路径清理，此例外明确记入残余风险。
+- Commit（per-directory KeyedMutex 下，rollback journal）：create 用 `link(staged,target)`+`rm(staged)` 原子 create-if-absent（link 对已存在 target 返回 EEXIST，绝不覆盖/跟随）；overwrite 先 `link(target,backup)` 硬链接备份原 inode 于同目录（同 fs、字节/元数据精确、target 从不缺位）再 `rename(staged,target)`，成功统一 `rm(backup)`，失败 `rename(backup,target)` 精确还原；journal 记录每步，失败按逆序回滚（overwrite→rename backup 还原、create→rm target）。abort（c.req.raw.signal）在 stage/commit 每步检查，观察到的 abort→499（按阶段为 UPLOAD_ABORTED 或 MUTATION_ABORTED）+ 回滚已提交项 + best-effort 清理 temp。
 
 commit 边界重验（Existing AllowedRoot 语义）：
 - 目录 canonical 路径不变 + dev/ino 身份不变（否则 403 PATH_FORBIDDEN / 409 DIRECTORY_REPLACED）；根身份由 authorizeExisting 现有 ROOT_REPLACED 保护。
@@ -698,11 +698,11 @@ commit 边界重验（Existing AllowedRoot 语义）：
 
 验证（候选 worktree 本地，Node v24.18.0）：
 - 定向 uploads-transaction 12/12（5 轮全过，无顺序依赖）；Host 全量 281/281（基线 269 + 12）；Host build/typecheck EXIT 0；check:boundaries PASS（38 files）；check:architecture PASS；git diff --check PASS。
-- 最新 dist 证明：dist/routes/files.js mtime（10:10:42）晚于 src（10:08:46），且含 DIRECTORY_REPLACED 检查、unhandled-error stack 解析到本 worktree dist 路径（排除 stale-main-dist 假验证）。
+- 独立验证：Fresh GPT 以全新 `/tmp` build 复跑 Host 281/281、focused 12用例多轮，并做约70项对抗探针，覆盖未授权零body写入、重复/越界/体积限制、硬链接/目录/symlink、回滚恢复失败、同目录别名锁、等待锁时abort、目录替换、各 conflict race、错误响应无路径/temp泄漏、fault hook非public等；verdict PASS。
 
 残余风险（诚实记录）：
 - 请求级回滚是强制的；进程在 commit 中段崩溃时无 durable journal，无法自动恢复（部分批可能已提交）——不承诺进程崩溃耐久；崩溃窗口内可能遗留 `.pix-upload-*.bak/.tmp`（best-effort 清理，不保证）。
 - overwrite 用硬链接备份，依赖文件系统支持硬链接（APFS/ext4 等目标平台支持）；不支持的文件系统会使 overwrite 失败（安全失败，非静默降级）。
 - overwrite 的 `link(target,backup)` 与 `rename` 之间 target 缺位窗口极小（硬链接方案下 target 从不缺位；rename backup 还原为原子单步）。
-- 并发锁仅串行化 Host 上传请求；外部进程（shell/git）对同目录的并发修改仍依赖 commit 边界重验兜底（TOCTOU 不可完全消除）。
+- 并发锁仅串行化 Host 上传请求；外部进程（shell/git）对同目录的并发修改仍依赖 commit 边界重验兜底（TOCTOU 不可完全消除）。外部重命名整个目标目录时 final 写入会拒绝，但移动后的目录中可能遗留0600 temp；大型上传时 temp 也可能短暂出现在 GET 文件列表。
 ```
