@@ -1925,11 +1925,7 @@ PASS；git diff --check 与工作树 clean。独立 verifier 首轮复现 same-k
 ## 52. D4 — Host Session Rename API（PATCH /v1/sessions/:id）记录
 
 ```text
-实现：branch `feat/d4-host-session-rename-api`，base current main `ef564b7`
-（D4 session-rename upper-layer 身份 lane 已集成/验证，见 §51）。Host-only：只改
-packages/host、packages/cli、tests/e2e、docs；无 Client source、无 package-lock、
-无 sessiond 改动、无 merge/push/deploy/live service。独立 verifier 未自判 PASS；
-下划线：本记录为可复验证据，独立结果以 verifier 结论为准。依赖 §51（sessiond 已支持
+实现：source `33f0fea` + capability honesty fix `ed733f5`（branch `feat/d4-host-session-rename-api`，base main `ef564b7`）；已快进合入 main。Host-only：只改 packages/host、packages/cli、tests/e2e、docs；无 Client source、无 package-lock、无 sessiond 改动、无 push/deploy/live service。独立 verifier 首轮发现 token-without-route 并判 FAIL，修复后重放 seam 矩阵、Host/CLI/E2E，最终对 `ed733f5` 给出 PASS。依赖 §51（sessiond 已支持
 live/offline `sessions.rename` 身份 lane）与 §47（Host DELETE 删除 seam 先例）。
 
 冻结契约（父级明确，必须实现）：
@@ -2021,7 +2017,7 @@ upCaps 含 session.write、degraded 不含；Sessions 验证 live+offline HTTP P
 收回+503、LAN auth、fail-closed 面）；git diff --check 干净。残余/后续：Client Sidebar
 rename UI 为独立切片（见 §53，本记录不含 Windows claim；未触碰 Client source）。
 
-独立验证 F1 修复（本分支 follow-up，verifier 复播后判）：verifier 发现 createHostApp 在
+独立验证 F1 修复（follow-up `ed733f5`，verifier 复播 PASS）：verifier 发现 createHostApp 在
 sessiond up + capabilities.full 含 session.write + sessions.rename 缺失时 /v1/capabilities
 仍返回 session.write 而 PATCH 路由 404 —— 能力 token 与路由挂载不同源。修复：health.ts 新增
 `normalizeSessionMutationCapabilities`（能力过滤与路由挂载同一 source of truth：仅当
