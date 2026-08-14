@@ -12,8 +12,13 @@ import { createQueryOptions } from "@/api/query-keys";
  * While attached AND the selected session matches the live runtime:
  *  - always-available queries: state / commands / last assistant text;
  *  - capability-gated actions shown ONLY when the runtime advertises them:
- *    session stats (`runtime.stats`), rename (`runtime.session.rename`),
- *    thinking level (`runtime.thinking.set`), model (`runtime.model.set`).
+ *    session stats (`runtime.stats`), thinking level (`runtime.thinking.set`),
+ *    model (`runtime.model.set`).
+ *
+ * The runtime rename (`runtime.session.rename`) surface is intentionally NOT
+ * rendered here — the Sidebar is the single visible rename product surface
+ * (D4, Host `session.write` PATCH). The lower-level `runtime.setSessionName`
+ * helper and its SessionStore tests are preserved unchanged.
  *
  * Success / error / loading are surfaced inline. Mutating actions resolve on
  * the runtime command result and then refresh the snapshot (fetchSnapshot) so
@@ -81,7 +86,6 @@ export function SessionActions({ live }: SessionActionsProps) {
   const [busy, setBusy] = useState<string | null>(null);
   const [output, setOutput] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState("");
   const [thinkingDraft, setThinkingDraft] = useState<ThinkingLevel | "">("");
   const [modelDraft, setModelDraft] = useState("");
 
@@ -131,7 +135,6 @@ export function SessionActions({ live }: SessionActionsProps) {
 
   const capabilities = runtime.capabilities?.capabilities ?? [];
   const hasStats = capabilities.includes("runtime.stats");
-  const hasRename = capabilities.includes("runtime.session.rename");
   const hasThinking = capabilities.includes("runtime.thinking.set");
   const hasModelSet = capabilities.includes("runtime.model.set");
 
@@ -262,35 +265,6 @@ export function SessionActions({ live }: SessionActionsProps) {
     }
   };
 
-  const handleRename = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    const trimmed = name.trim();
-    if (trimmed.length === 0 || busy !== null) return;
-    const sessionId = sessionIdRef.current;
-    const gen = ++requestGenRef.current;
-    setBusy("rename");
-    setError(null);
-    setOutput(null);
-    try {
-      // Honest rename: resolve on the runtime command result, then refresh the
-      // snapshot so the new sessionName is visible. No catalog write here.
-      await runtime.setSessionName(trimmed);
-      // Identity guard BEFORE fetchSnapshot so a late settle never refreshes
-      // (or errors on) a different session after selection switch.
-      if (!isCurrentRequest(gen, sessionId)) return;
-      await runtime.fetchSnapshot();
-      if (!isCurrentRequest(gen, sessionId)) return;
-      setName("");
-      setOutput(`Renamed session to "${trimmed}".`);
-    } catch (cause) {
-      // Bound consumption of store rejections (dispose / transport / capability).
-      if (!isCurrentRequest(gen, sessionId)) return;
-      setError(describeError(cause));
-    } finally {
-      if (isCurrentRequest(gen, sessionId)) setBusy(null);
-    }
-  };
-
   const handleThinkingSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (busy !== null || selectedThinking === "") return;
@@ -410,30 +384,6 @@ export function SessionActions({ live }: SessionActionsProps) {
           </button>
         ) : null}
       </div>
-      {hasRename ? (
-        <form className="session-actions-rename" onSubmit={handleRename}>
-          <input
-            type="text"
-            value={name}
-            onChange={(event) => {
-              setName(event.target.value);
-              if (error) setError(null);
-            }}
-            aria-label="Session name"
-            placeholder="Rename session…"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={200}
-          />
-          <button
-            type="submit"
-            className="text-btn"
-            disabled={busy !== null || name.trim().length === 0}
-          >
-            Rename
-          </button>
-        </form>
-      ) : null}
       {hasThinking ? (
         <form className="session-actions-thinking" onSubmit={handleThinkingSubmit}>
           <label className="session-actions-thinking-label">

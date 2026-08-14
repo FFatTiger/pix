@@ -17,14 +17,16 @@ export interface SidebarProps {
   /**
    * The currently attached/live runtime session id (AppShell knows it). The
    * D4 delete control is never shown for this session; other live sessions may
-   * still be rejected authoritatively by the server with a fixed 409.
+   * still be rejected authoritatively by the server with a fixed 409. Rename,
+   * unlike delete, is available for live AND history rows (the D4 rename lane
+   * serves live set_session_name) — only the `session.write` capability gates it.
    */
   liveSessionId?: string | null;
   /**
    * D4 delete-navigation callback. AppShell is the single navigation owner:
    * it clears only the `session` search param (preserving `cwd`) when the
    * deleted session equals the URL-selected session. Non-selected deletions
-   * never navigate.
+   * never navigate. Rename never navigates at all.
    */
   onSessionDeleted?: (sessionId: string) => void;
 }
@@ -78,38 +80,103 @@ export function describeSessionDeleteError(error: unknown): string {
   return "Unable to delete this session.";
 }
 
+/**
+ * Fixed D4 rename error copy. Code/status-first, transport-kind fallback; NEVER
+ * renders the Host raw message, the submitted name, or any id/path/secret.
+ * Unknown codes collapse to a fixed fallback sentence.
+ */
+export function describeSessionRenameError(error: unknown): string {
+  if (error instanceof HttpError) {
+    if (error.isUnauthorized) return "You are not authorized for this action.";
+    switch (error.code) {
+      case "SESSION_IN_USE":
+        return "This session is currently in use.";
+      case "SESSION_NOT_FOUND":
+        return "This session no longer exists.";
+      case "INVALID_NAME":
+      case "INVALID_INPUT":
+        return "That session name is not allowed.";
+      case "SESSIONS_UNAVAILABLE":
+      case "MUTATION_UNAVAILABLE":
+        return "Session renaming is temporarily unavailable.";
+      default:
+        break;
+    }
+    if (error.kind === "network") return "Network error — unable to reach the host.";
+    if (error.kind === "timeout") return "Request timed out — try again.";
+    if (error.kind === "aborted") return "The action was cancelled.";
+  }
+  return "Unable to rename this session.";
+}
+
+/**
+ * Client-side validation that mirrors the Host canonicalize rule (§44/§51):
+ * outer whitespace trimmed, blank rejected, at most 200 UTF-16 JS code units,
+ * and NUL / C0 (U+0000–U+001F) / DEL (U+007F) rejected. Internal spaces,
+ * Unicode and emoji are allowed. Returns the canonical trimmed name on success
+ * or a fixed row-local error message — no request is issued on invalid input.
+ */
+export function validateSessionName(
+  raw: string,
+): { ok: true; name: string } | { ok: false; message: string } {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return { ok: false, message: "Enter a session name." };
+  if (trimmed.length > 200) return { ok: false, message: "Session names are limited to 200 characters." };
+  for (let index = 0; index < trimmed.length; index++) {
+    const code = trimmed.charCodeAt(index);
+    if (code === 0 || code < 0x20 || code === 0x7f) {
+      return { ok: false, message: "Session names cannot contain control characters." };
+    }
+  }
+  return { ok: true, name: trimmed };
+}
+
 /** Fixed warning copy for the row-local irreversible confirmation. */
 const DELETE_WARNING = "Deleting this session is permanent and cannot be undone.";
 
 export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }: SidebarProps) {
   const http = useHttpClient();
   const queryClient = useQueryClient();
-  const { canBrowseSessions, canDeleteSessions } = useCapabilities();
+  const { canBrowseSessions, canDeleteSessions, canWriteSessions } = useCapabilities();
   // The session list is only requested when the host actually serves it
   // (sessiond connected). M1 wires no session catalog, so this stays disabled
   // and avoids an unconditional 404 against the unimplemented /v1/sessions.
   const sessions = useQuery({ ...createQueryOptions(http).sessions.list(search.cwd), enabled: canBrowseSessions });
-  // D4 delete mutation: existing `remove` option owns the standard list+byId
-  // invalidation; the UI adds only gated navigation/error handling on top.
+  // D4 delete + rename mutations: existing options own the standard list+byId
+  // invalidation (rename additionally primes the cached titles first). The UI
+  // adds only gated navigation/error handling on top.
   const removeMutation = useMutation(createMutationOptions(http, queryClient).sessions.remove());
+  const renameMutation = useMutation(createMutationOptions(http, queryClient).sessions.rename());
 
-  // D4 row-local delete state: one confirmation + one delete at a time.
+  // D4 row-local state: one confirmation + one rename editor + one mutation at
+  // a time. Rename and delete share the same `busy`/`busyRef` singleflight.
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<{ sessionId: string; message: string } | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameError, setRenameError] = useState<{ sessionId: string; message: string } | null>(null);
 
-  // Identity for race-safe late settles: mount generation + capability gate,
-  // read from refs so an in-flight async continuation observes the LATEST view.
+  // Identity for race-safe late settles: mount generation + capability gates +
+  // edited row id + visible row set, read from refs so an in-flight async
+  // continuation observes the LATEST view.
   const mountedRef = useRef(true);
   const requestGenRef = useRef(0);
   const canDeleteRef = useRef(canDeleteSessions);
+  const canWriteRef = useRef(canWriteSessions);
   // Synchronous singleflight: React state updates are async, so a second click
   // in the same tick cannot see `busy`/isPending yet. This ref guarantees exactly
-  // one in-flight delete across the whole list.
+  // one in-flight row mutation (rename OR delete) across the whole list.
   const busyRef = useRef<string | null>(null);
   const deleteButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const cancelButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const restoreFocusRef = useRef<string | null>(null);
+  const renameButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const renameRestoreFocusRef = useRef<string | null>(null);
+  const editingIdRef = useRef<string | null>(null);
+  // Current visible row ids (re-read at settle time for row-disappearance).
+  const visibleSessionIdsRef = useRef<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
     mountedRef.current = true;
@@ -120,16 +187,25 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
   }, []);
 
   // Capability revoke / cwd switch / URL session selection change: keep the
-  // gate ref current and drop all pending delete UI so stale state can never
-  // leak into the new context. A later re-grant does NOT resurrect it.
+  // gate refs current and drop ALL pending delete/rename UI so stale state can
+  // never leak into the new context. A later re-grant does NOT resurrect it.
   useLayoutEffect(() => {
     canDeleteRef.current = canDeleteSessions;
+    canWriteRef.current = canWriteSessions;
     requestGenRef.current += 1;
     busyRef.current = null;
     setBusy(null);
     setConfirmId(null);
     setDeleteError(null);
-  }, [search.cwd, search.session, canDeleteSessions]);
+    setEditingId(null);
+    setRenameDraft("");
+    setRenameError(null);
+  }, [search.cwd, search.session, canDeleteSessions, canWriteSessions]);
+
+  // Keep the edited-row identity synchronous for late-settle checks.
+  useLayoutEffect(() => {
+    editingIdRef.current = editingId;
+  }, [editingId]);
 
   // Default/returned focus favors Cancel (safe escape) when a row-local
   // confirmation appears.
@@ -137,6 +213,17 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
     if (confirmId === null) return;
     cancelButtonRefs.current.get(confirmId)?.focus();
   }, [confirmId]);
+
+  // When a rename editor opens: focus + select the prefilled input so the user
+  // can type over the current title immediately.
+  useLayoutEffect(() => {
+    if (editingId === null) return;
+    const input = renameInputRef.current;
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }, [editingId]);
 
   // After a cancel or a failure, return focus to the original delete control
   // once the row re-mounts it — the button is unmounted while the confirmation
@@ -148,6 +235,16 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
     restoreFocusRef.current = null;
     deleteButtonRefs.current.get(id)?.focus();
   }, [confirmId]);
+
+  // After the rename editor closes (success / cancel / escape), return focus to
+  // the Rename control once it re-mounts.
+  useEffect(() => {
+    if (editingId !== null) return;
+    const id = renameRestoreFocusRef.current;
+    if (id === null) return;
+    renameRestoreFocusRef.current = null;
+    renameButtonRefs.current.get(id)?.focus();
+  }, [editingId]);
 
   // Honesty / fail-closed: when the sessions capability is retracted the visible
   // list is pinned empty regardless of cache state or any in-flight response.
@@ -161,9 +258,26 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
   const showEmpty =
     canBrowseSessions && !sessions.isLoading && !sessions.isError && (sessions.data?.sessions.length ?? 0) === 0;
 
+  // Row-disappearance guard for late-settle identity: a settle for a row that is
+  // no longer in the visible list must be inert. Written on every render so the
+  // async continuation reads the LATEST list via the ref, never a stale closure.
+  visibleSessionIdsRef.current = new Set(visibleSessions.map((session) => session.sessionId));
+
   /** Identity guard uses only refs — a late settle must fail closed. */
   const isCurrentRequest = (gen: number): boolean =>
     mountedRef.current && gen === requestGenRef.current && canDeleteRef.current;
+
+  /** Alive (unmounted/gen-check) — used to release the shared busy slot. */
+  const isAliveRequest = (gen: number): boolean =>
+    mountedRef.current && gen === requestGenRef.current;
+
+  /** Rename identity: mount + gen + rename capability + edited row + row present. */
+  const isCurrentRenameRequest = (gen: number, id: string): boolean =>
+    mountedRef.current &&
+    gen === requestGenRef.current &&
+    canWriteRef.current &&
+    editingIdRef.current === id &&
+    visibleSessionIdsRef.current.has(id);
 
   const runDelete = (session: SessionHeader): void => {
     if (busyRef.current !== null || busy !== null || removeMutation.isPending || !canDeleteSessions) return;
@@ -190,7 +304,7 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
       })
       .finally(() => {
         // Clear the synchronous singleflight slot only while we still own it
-        // (a newer delete may have taken over after a cap/cwd/selection change).
+        // (a newer mutation may have taken over after a cap/cwd/selection change).
         if (busyRef.current === id) busyRef.current = null;
         if (isCurrentRequest(gen)) setBusy(null);
       });
@@ -199,6 +313,70 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
   const handleCancelDelete = (session: SessionHeader): void => {
     restoreFocusRef.current = session.sessionId;
     setConfirmId(null);
+  };
+
+  /** Open the row-local rename editor (one at a time; closes any delete confirm). */
+  const openRename = (session: SessionHeader): void => {
+    if (busyRef.current !== null || busy !== null || !canWriteSessions) return;
+    setConfirmId(null);
+    setDeleteError(null);
+    setRenameError(null);
+    setRenameDraft(session.title ?? "");
+    setEditingId(session.sessionId);
+  };
+
+  const handleCancelRename = (session: SessionHeader): void => {
+    renameRestoreFocusRef.current = session.sessionId;
+    setEditingId(null);
+    setRenameDraft("");
+    setRenameError(null);
+  };
+
+  const runRename = (session: SessionHeader): void => {
+    if (busyRef.current !== null || busy !== null || renameMutation.isPending || !canWriteSessions) return;
+    const id = session.sessionId;
+    const validation = validateSessionName(renameDraft);
+    if (!validation.ok) {
+      setRenameError({ sessionId: id, message: validation.message });
+      return;
+    }
+    const trimmed = validation.name;
+    // Unchanged canonical title is a safe no-op: close the editor, restore
+    // focus and never issue a request (the Host would just echo the same name).
+    if (session.title !== undefined && trimmed === session.title) {
+      renameRestoreFocusRef.current = id;
+      setEditingId(null);
+      setRenameError(null);
+      return;
+    }
+    const gen = ++requestGenRef.current;
+    busyRef.current = id;
+    setBusy(id);
+    setRenameError(null);
+    void renameMutation
+      .mutateAsync({ id, name: trimmed })
+      .then(() => {
+        if (!isCurrentRenameRequest(gen, id)) return;
+        // Success: the mutation already primed the cached list/detail titles
+        // before invalidation, so this row now shows the new name. Close the
+        // editor and return focus to the Rename control. URL/cwd/session and
+        // the runtime attachment are never touched.
+        setEditingId(null);
+        renameRestoreFocusRef.current = id;
+        setRenameError(null);
+      }, (cause: unknown) => {
+        if (!isCurrentRenameRequest(gen, id)) return;
+        // Server failure: keep the editor open, preserve the draft and keep
+        // focus on the input so the user can retry.
+        setRenameError({ sessionId: id, message: describeSessionRenameError(cause) });
+        renameInputRef.current?.focus();
+      })
+      .finally(() => {
+        // Release the shared synchronous singleflight slot + busy state while
+        // still owning this request generation.
+        if (busyRef.current === id) busyRef.current = null;
+        if (isAliveRequest(gen)) setBusy(null);
+      });
   };
 
   return (
@@ -225,6 +403,7 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
               canDeleteSessions && session.sessionId !== liveSessionId;
             const rowBusy = busy === session.sessionId;
             const confirmOpen = confirmId === session.sessionId;
+            const renameOpen = editingId === session.sessionId && canWriteSessions;
             return (
               <li key={session.sessionId}>
                 <div className="session-row-flex">
@@ -249,6 +428,27 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
                       <span className="session-row-id">Fork</span>
                     )}
                   </Link>
+                  {canWriteSessions && !renameOpen ? (
+                    <button
+                      type="button"
+                      className="text-btn session-rename-btn"
+                      ref={(el) => {
+                        if (el) renameButtonRefs.current.set(session.sessionId, el);
+                        else renameButtonRefs.current.delete(session.sessionId);
+                      }}
+                      onClick={(event) => {
+                        // Prevent any Link navigation/propagation from this
+                        // row-local control.
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openRename(session);
+                      }}
+                      disabled={busy !== null}
+                      aria-label={`Rename session ${label}`}
+                    >
+                      Rename
+                    </button>
+                  ) : null}
                   {canDeleteRow && !confirmOpen ? (
                     <button
                       type="button"
@@ -262,6 +462,11 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
                         // row-local control.
                         event.preventDefault();
                         event.stopPropagation();
+                        // A delete confirm and a rename editor never coexist:
+                        // opening the confirm closes any open editor.
+                        setEditingId(null);
+                        setRenameDraft("");
+                        setRenameError(null);
                         setConfirmId(session.sessionId);
                       }}
                       disabled={busy !== null}
@@ -272,6 +477,68 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
                     </button>
                   ) : null}
                 </div>
+                {renameOpen ? (
+                  <form
+                    className="session-rename-editor"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      runRename(session);
+                    }}
+                  >
+                    <input
+                      type="text"
+                      className="session-rename-input"
+                      value={renameDraft}
+                      onChange={(event) => {
+                        setRenameDraft(event.target.value);
+                        if (renameError !== null && renameError.sessionId === session.sessionId) {
+                          setRenameError(null);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          handleCancelRename(session);
+                        } else if (event.key === "Enter") {
+                          // Enter saves (explicit; prevents the implicit form
+                          // submit so the singleflight sees exactly one path).
+                          event.preventDefault();
+                          runRename(session);
+                        }
+                      }}
+                      aria-label={`New name for ${label}`}
+                      maxLength={200}
+                      autoComplete="off"
+                      spellCheck={false}
+                      ref={renameInputRef}
+                    />
+                    <div className="session-rename-actions">
+                      <button
+                        type="submit"
+                        className="text-btn"
+                        disabled={busy !== null}
+                        aria-busy={rowBusy}
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="text-btn"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          handleCancelRename(session);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {renameError !== null && renameError.sessionId === session.sessionId ? (
+                      <p className="session-rename-error" role="alert">
+                        {renameError.message}
+                      </p>
+                    ) : null}
+                  </form>
+                ) : null}
                 {confirmOpen ? (
                   <div
                     className="session-delete-confirm"
