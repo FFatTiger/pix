@@ -1004,7 +1004,10 @@ Busy 修正（isolated commit 8260b75）：
 
 ```text
 实现：本分支（branch feat/d2p7-compact-control，base main 13859b1），backend-first，
-未合入/未部署。生产 capability 面从 14 精确扩到 16 token：精确新增
+未合入/未部署。Rebase：7230f75 → 185b2de（onto main 4663691，D3A Worktree UI + exact
+409 hardening；本记录由 §42 重编号为 §43，main 的 §42 D3A UI 记录与其 hardening note
+完整保留；代码文件与 rebase 前逐字节一致，仅 docs 编号/测试数更新）。
+生产 capability 面从 14 精确扩到 16 token：精确新增
 `runtime.compact`（compact）、`runtime.compact.abort`（abort_compaction）。
 fork/navigate/extension_ui/auto_name 仍关闭。无 UI/CSS，无
 Host/Protocol/runtime-core 生产改动，无 D3A workspace 文件、package-lock、live
@@ -1079,9 +1082,10 @@ Host/Protocol/runtime-core 生产改动，无 D3A workspace 文件、package-loc
   worktrees、D1 sessions store。
 
 验证（本机 Node v24.18.0）：
-- root `npm test`：scripts 44 + cli 46 + agent-worker 105 + client 525（35 files）
+- root `npm test`：scripts 44 + cli 46 + agent-worker 105 + client 566（36 files，含
+  D3A Worktree UI 与 compact 测试）
   + host 372 + adapter 201 + protocol 116 + contract 75 + runtime-core 7 +
-  sessiond 178 pass/1 skip = 1669 pass/1 skip/0 fail。
+  sessiond 178 pass/1 skip = 1710 pass/1 skip/0 fail。
 - per-workspace typecheck（含 sessiond tsconfig.test）PASS；root typecheck EXIT 0；
   root build EXIT 0；check:architecture PASS；adapter/sessiond/agent-worker/client/
   host boundaries PASS；`git diff --check` 通过。
