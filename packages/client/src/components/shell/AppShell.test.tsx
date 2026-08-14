@@ -624,3 +624,81 @@ describe("AppShell D4 session delete navigation", () => {
     expect(SOCKETS.length).toBe(0);
   });
 });
+
+describe("AppShell D2-P8 extension-request mount placement", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+    globalThis.fetch = vi.fn(async () => contextResponse("s-a")) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    cleanup();
+  });
+
+  /** Attach live with extension_ui and push one pending confirm request. */
+  async function driveLiveWithExtension(ws: FakeWebSocket, sessionId = "s-a"): Promise<void> {
+    const store = capturedStore!;
+    await act(async () => {
+      void store.openSession(sessionId);
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, capabilities: ["runtime.prompt", "runtime.abort", "runtime.extension_ui"] }) });
+      await flush();
+      ws.serverSend({ type: "event", payload: { type: "extension_ui_request", sessionId, request: { id: "req-1", method: "confirm", title: "Proceed?", message: "Continue?" }, eventId: 1, epoch: "e1" } });
+      await flush();
+    });
+  }
+
+  it("mounts ExtensionRequests between TranscriptList and Composer when live + capability and renders the pending request", async () => {
+    mount({ session: "s-a", cwd: "/proj" }, { mode: "local", capabilities: ["agent"] });
+    const ws = await driveReady();
+    await driveLiveWithExtension(ws);
+    const region = screen.getByRole("region", { name: "Extension request" });
+    expect(region).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeTruthy();
+    // Mount placement: the extension region precedes the Composer footer.
+    const composer = document.querySelector(".composer")!;
+    expect(region.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Composer is disabled with the fixed reason while a request is pending.
+    expect((screen.getByLabelText("Message the agent") as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.getByText("Extension is waiting for input.")).toBeTruthy();
+  });
+
+  it("does not mount on a read-only history view (selection not live)", async () => {
+    mount({ session: "s-b", cwd: "/proj" }, { mode: "local", capabilities: ["agent", "sessions"] });
+    await flush();
+    expect(screen.queryByRole("region", { name: "Extension request" })).toBeNull();
+  });
+
+  it("does not mount when the runtime does not advertise extension_ui even while live", async () => {
+    mount({ session: "s-a", cwd: "/proj" }, { mode: "local", capabilities: ["agent"] });
+    const ws = await driveReady();
+    await driveLiveOnA(ws, "s-a"); // default caps: no runtime.extension_ui
+    expect(screen.queryByRole("region", { name: "Extension request" })).toBeNull();
+  });
+
+  it("session switch fail-closes: the extension panel unmounts and the D4 detach path is unaffected", async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("s-b")) return contextResponse("s-b", "hello history");
+      return contextResponse("s-a");
+    }) as unknown as typeof fetch;
+    const { rerender } = mount({ session: "s-a", cwd: "/proj" }, { mode: "local", capabilities: ["agent", "sessions"] });
+    const ws = await driveReady();
+    await driveLiveWithExtension(ws, "s-a");
+    expect(screen.getByRole("region", { name: "Extension request" })).toBeTruthy();
+
+    // Select B: mismatch detaches A; the extension panel must unmount immediately.
+    rerender({ session: "s-b", cwd: "/proj" });
+    await flush();
+    expect(screen.queryByRole("region", { name: "Extension request" })).toBeNull();
+    expect((screen.getByLabelText("Message the agent") as HTMLTextAreaElement).disabled).toBe(true);
+    const detachFrame = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
+    expect(detachFrame.payload.sessionId).toBe("s-a");
+    await ackAllDetaches(ws);
+    expect(screen.getByText("hello history")).toBeTruthy();
+  });
+});

@@ -1691,3 +1691,113 @@ E2E + docs：
 - package-lock 仅新增 workspace/link/Host dependency（无依赖版本漂移）；跨平台 clean/test wrapper 与 Host prebuild npm resolver 均保留
 - `git diff --check` → PASS；`npm pack --dry-run`（local-authority + host）→ 内容核对通过
 ```
+
+## 50. D2-P8 — Extension UI Client 垂直切片记录
+
+```text
+实现：branch feat/d2p8-extension-ui-client，base main e1249f4（D4 已集成），
+Client-only 公共 UI/并发切片。只改 packages/client（runtime + features + shell +
+styles）+ 两份 docs；未触碰 backend/Protocol/Host/sessiond/adapter/fixture/E2E 源/
+package-lock/live/deploy。提交干净，无 merge/push/deploy。
+
+后端契约已冻结于 main（§45）：capability `runtime.extension_ui`；快照
+`state.pendingExtensionUi`；共享 reducer 移除 closed tombstone；交互方法精确
+select/confirm/input/editor/custom；noninteractive notify/setStatus/setWidget/
+setTitle/set_editor_text 是事件/state 永无 response form；response 命令要求精确
+request id+method 与 selected/confirmed/value/cancelled shape；wrong method
+invalid_input 保持 pending、late unknown not_found；Host interleaving lane 已支持
+extension response/input 在 prompt HOL 时交错。
+
+关键 Client 传输实现（packages/client/src/runtime/session-store.ts）：
+1) 不用 `sendCommand`（触发 UI 的 prompt 仍是 pendingCommand → session_busy）。新增
+   专用有界单飞行 `pendingExtensionUiCommand` 槽（类比 D2-P4 pendingQueuedTurn），
+   独立于 prompt 与 queued-turn 槽；含 envelopeId/commandId/generation/sessionId/
+   requestId/method/command/promise。全局恰一个 extension reply 在飞；第二个固定
+   session_busy。无槽泄漏/无 double settle。
+2) 仅新增 typed `respondExtensionUi(request, reply): Promise<void>`（本切片不发
+   extension_ui_input）。构造精确 `extension_ui_response` 命令（commandId 内部铸造、
+   id/method 绑定自权威 pending request），检查 attached + `runtime.extension_ui`
+   能力 + request method/reply 兼容（cancelled 全交互方法；selected/confirmed/value
+   方法绑定；noninteractive 永不可答），解包 correlated ack；无 value coercion/trim。
+3) handleResponse 按 envelopeId+generation+commandId+result type 关联（wrong
+   commandId/wrong type 丢弃不 settle；late/duplicate 丢弃）；同 epoch snapshot/gap
+   重发 SAME commandId 新 envelope；epoch_changed 拒绝永不重发；routeSendFailure
+   拒绝清槽；detach/stop/dispose/session switch（detach-then-open 真实路径 + startAttach
+   防御分支）/capability loss（快照/事件权威撤销 → settle）恰一次 settle。prompt 在飞
+   不阻塞 extension reply；extension reply 在飞不阻塞 prompt。
+4) RuntimeView 暴露 `extensionUiReplyPending`（首可操作请求 aria-busy/disable）。
+
+UI 组件（packages/client/src/features/extension-request/）：
+- extension-request.ts 纯 helpers：交互/非交互分类（交互=select/confirm/input/editor/
+  custom；其余含未知 method 防御性被动）、activeInteractiveRequests 确定性投影序、
+  hasPendingInteractiveRequest（Composer 共享）、ExtensionUiReply 类型 +
+  isExtensionReplyCompatible、固定 describeExtensionUiError（code-first，永不上屏
+  Host/Protocol raw message/request 文本/用户输入/id/path）。
+- ExtensionRequests.tsx：AppShell 在 main.workspace 内 TranscriptList 与 Composer 之间
+  挂载，仅 selectionMatchesLive（组件另自检 capability）。渲染 pending 交互请求为
+  确定性数组序卡片；多请求堆叠但仅第一个可操作/聚焦目标，后续 disabled + 固定
+  waiting 文案。confirm（title+message、Cancel 安全默认聚焦、Confirm、Escape 取消、
+  永不自动确认）；select（options 为原生按钮列表、无预选自动提交、显式选项选择或
+  Cancel、原生键盘、Escape 取消）；input（单行、placeholder、显式 Submit、Enter
+  提交、IME 组合 Enter 不提交、空串仅显式 Submit 允许、Cancel）；editor（prefill 按
+  request identity 只 seed 一次、多行、Enter 换行、Cmd/Ctrl+Enter 提交、IME guard、
+  显式按钮、Cancel）；custom（lines 严格 React 文本节点无 HTML/dangerouslySetInnerHTML、
+  空时中性占位、安全文本输入+显式 Submit/Cancel，默认聚焦 Cancel）。仅最终
+  response，零 extension_ui_input 帧。noninteractive/未知防御变体：被动固定 notice，
+  无 response 命令。
+- 焦点：请求到达时安全/主要控件（Cancel）可预测聚焦，不反复抢焦（仅在 operable
+  request identity 变化时）；最终 close/cancel 后若仍同 session/live/capability 恢复
+  焦点到 Composer textarea（显式 textareaRef prop，无 document 查询）；跨多请求与
+  unmount 存活。
+- 竞态/安全/无障碍：同步 busyRef 挡同 tick 双击；mounted/generation/session/live/
+  capability refs（SessionActions/D4 Sidebar 模式）+ error 按 request CONTENT 键控
+  （request id 复用不能写入新 form 状态）→ detach/reconnect/session/cwd/cap loss/
+  request close 后 late success/error 惰性；固定错误文案；无 modal/window.confirm；
+  内联 region 保持 transcript 可读；role=region、polite arrival/status、表单 label、
+  aria-busy/disabled、≥40px 触控目标（移动 44px）、可见 focus；无入场动画，`:active`
+  scale 0.98（120ms transform only）、hover 仅 pointer-fine、reduced-motion 移除
+  transform transition；无 transition:all/keyframes/ease-in/scale(0)。
+
+Composer（packages/client/src/components/shell/Composer.tsx）：
+- 新增 textareaRef prop（显式 ref 传 ExtensionRequests 作聚焦返回目标）。
+- 至少一个交互请求 pending（live + capability）时 Composer disabled，状态区固定文案
+  “Extension is waiting for input.”；保留既有更严重 disable 优先级（stopped/无 agent/
+  非 live 优先），extension waiting 优先于 streamingBlocksSend。
+
+AppShell（packages/client/src/components/shell/AppShell.tsx）：
+- composerTextareaRef 持有一个显式 ref；`{selectionMatchesLive ? <ExtensionRequests
+  live composerTextareaRef={...} /> : null}` 挂在 TranscriptList 与 Composer 之间；
+  Composer 收 textareaRef。D4 session-delete 导航/卸载逻辑未改。
+
+CSS（packages/client/src/styles/app.css）：.extension-request-* 克制内联（复用
+token/radius/type），无渐变/玻璃/弹跳。
+
+测试：
+- SessionStore 定向 12 用例（session-store-extension-ui.test.ts）：全 reply 变体/方法
+  精确命令 shape + 零 extension_ui_input；prompt pending 时 reply 不 session_busy +
+  第二 reply busy + correlated ack 精确；wrong-method/noninteractive 发送前拒绝；
+  not attached/无 capability 拒绝；server invalid_input/not_found 固定拒绝；
+  same-epoch resync 同 commandId 重发、epoch_changed 不重发拒绝、detach/stop/dispose/
+  session switch/send failure 恰一次 settle、wrong envelope/commandId/type 丢弃 +
+  legit 帧一次 settle + 槽恢复、capability loss settle。
+- DOM 21 用例（ExtensionRequests.test.tsx）：5 表单渲染 + defensive noninteractive
+  被动 notice、capability/live 门、确定性多请求仅首可操作、默认聚焦、第二请求不抢焦、
+  Escape、Enter/CmdEnter、IME、空串显式提交、custom 文本不渲染 HTML、双击单发、
+  request close 后 late inert、capability revoke 惰性、固定错误文案、零 incremental 帧、
+  Composer disable/焦点恢复、无 composer ref 不崩。
+- 纯 helper 7 用例（extension-request.test.ts）。
+- AppShell 集成 +4（mount placement：region 在 Composer 前、history 不挂、无 capability
+  不挂、session switch fail-close 卸载且 D4 detach 路径不受影响）；既有 D4 delete 导航
+  测试原样通过（无回归）。
+
+验证（本机 Node v24.18.0）：
+- Client 全量 625/625（基线 581 + 新增 44：store 12 + helper 7 + DOM 21 + AppShell 4）；AppShell
+  25/25（既有 21 + 新增 4）。
+- Client typecheck PASS；client build（vite）PASS；check-boundaries PASS。
+- 根 check:architecture PASS；root typecheck PASS；root build PASS；`git diff --check`
+  通过。
+- 根 test（scripts 44 + 9 workspace 分包）全绿；Runtime E2E + Startup E2E + Sessions
+  E2E（backend 回归）PASS；shutdown 无孤儿；watchdog/temp config 有限。
+- 无 Playwright 依赖；无浏览器视觉 PASS 声明（仅 DOM/a11y 测试覆盖）；无 manual visual
+  gate。Client 并发/无障碍实现需独立 review（本记录不替代）。
+```

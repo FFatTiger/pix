@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, type RefObject } from "react";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useRuntime } from "@/runtime";
+import { EXTENSION_UI_CAPABILITY, hasPendingInteractiveRequest } from "@/features/extension-request/extension-request";
 
 /**
  * Runtime-aware composer. Send/Abort are driven by the live SessionStore:
@@ -30,6 +31,12 @@ export interface ComposerProps {
    * applies: usable whenever the runtime is attached.
    */
   live?: boolean;
+  /**
+   * Explicit ref to the composer textarea (D2-P8). ExtensionRequests restores
+   * focus here after the final extension request closes/cancels. No document
+   * queries.
+   */
+  textareaRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
 function imageCountLabel(count: number): string {
@@ -47,7 +54,7 @@ function isOkResult(value: unknown): boolean {
   return correlated?.result?.ok === true;
 }
 
-export function Composer({ live: liveProp }: ComposerProps) {
+export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
   const { canAgent } = useCapabilities();
   const runtime = useRuntime();
   const [text, setText] = useState("");
@@ -73,15 +80,23 @@ export function Composer({ live: liveProp }: ComposerProps) {
   // pending, Send and Steer are disabled (the draft stays editable).
   const queuedTurnPending = live && runtime.queuedTurnPending;
 
+  // D2-P8: while at least one interactive extension request is pending for the
+  // attached live session (and the runtime still advertises extension_ui), the
+  // composer is disabled — the extension is blocking the turn awaiting input.
+  const extensionUiWaiting =
+    live &&
+    runtime.capabilities?.capabilities.includes(EXTENSION_UI_CAPABILITY) === true &&
+    hasPendingInteractiveRequest(runtime.snapshot);
+
   const baseDisabled = !canAgent || !live || sessionStopped;
   // Without follow_up capability, the input/Send stay disabled while streaming
   // (existing behavior); with it they remain usable and Send follows up.
   const streamingBlocksSend = promptRunning && !hasFollowUp;
-  const textareaDisabled = baseDisabled || streamingBlocksSend;
+  const textareaDisabled = baseDisabled || extensionUiWaiting || streamingBlocksSend;
   const textNonEmpty = text.trim().length > 0;
-  const canSend = !baseDisabled && !queuedTurnPending && textNonEmpty && !streamingBlocksSend;
+  const canSend = !baseDisabled && !queuedTurnPending && !extensionUiWaiting && textNonEmpty && !streamingBlocksSend;
   const sendIsFollowUp = promptRunning && hasFollowUp;
-  const canSteer = !baseDisabled && promptRunning && hasSteer && !queuedTurnPending && textNonEmpty;
+  const canSteer = !baseDisabled && promptRunning && hasSteer && !queuedTurnPending && !extensionUiWaiting && textNonEmpty;
   // Show the compact Steer control whenever the live streaming session
   // advertises `runtime.steer`; it is disabled when there is no draft or a
   // queued turn is already in flight.
@@ -97,9 +112,11 @@ export function Composer({ live: liveProp }: ComposerProps) {
           : runtime.connection === "idle"
             ? "no project selected"
             : "runtime not attached"
-        : streamingBlocksSend
-          ? "agent is responding"
-          : "";
+        : extensionUiWaiting
+          ? "Extension is waiting for input."
+          : streamingBlocksSend
+            ? "agent is responding"
+            : "";
 
   const handleSend = (): void => {
     if (!canSend) return;
@@ -132,7 +149,7 @@ export function Composer({ live: liveProp }: ComposerProps) {
   const queueNonEmpty = steering.length > 0 || followUpItems.length > 0;
 
   return (
-    <footer className={`composer${baseDisabled || queuedTurnPending ? " composer--disabled" : ""}`}>
+    <footer className={`composer${baseDisabled || queuedTurnPending || extensionUiWaiting ? " composer--disabled" : ""}`}>
       <div className="composer-inner">
         {live && queueNonEmpty ? (
           <div className="composer-queue">
@@ -160,6 +177,7 @@ export function Composer({ live: liveProp }: ComposerProps) {
           </div>
         ) : null}
         <textarea
+          ref={textareaRef}
           className="composer-input"
           rows={2}
           value={text}
@@ -177,7 +195,7 @@ export function Composer({ live: liveProp }: ComposerProps) {
         />
         <div className="composer-toolbar">
           <span className="composer-status" aria-live="polite">
-            {streaming ? (sendIsFollowUp ? "streaming — Send follows up" : "streaming") : live ? "ready" : disabledReason || "readonly"}
+            {streaming ? (sendIsFollowUp ? "streaming — Send follows up" : "streaming") : extensionUiWaiting ? "Extension is waiting for input." : live ? "ready" : disabledReason || "readonly"}
           </span>
           <span className="composer-actions">
             {streaming ? (

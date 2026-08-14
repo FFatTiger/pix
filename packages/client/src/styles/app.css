@@ -817,6 +817,195 @@ html.dark .session-delete-error {
   flex-shrink: 0;
 }
 
+/* —— Extension requests (D2-P8) —— */
+
+.extension-requests {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  padding: 10px 12px 0;
+}
+.extension-request-list {
+  list-style: none;
+  margin: 0 auto;
+  padding: 0;
+  max-width: 920px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.extension-request-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  padding: 10px 12px;
+}
+.extension-request-card--active {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.extension-request-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.extension-request-message {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.extension-request-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.extension-request-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.extension-request-option {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text);
+  padding: 8px 12px;
+  min-height: 40px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.extension-request-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.extension-request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.extension-request-btn {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text);
+  padding: 8px 14px;
+  min-height: 40px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.extension-request-btn--primary {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.extension-request-btn:disabled,
+.extension-request-btn--primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.extension-request-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  resize: vertical;
+}
+.extension-request-input:disabled {
+  cursor: not-allowed;
+  color: var(--text-dim);
+}
+.extension-request-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.extension-request-line {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.extension-request-line--empty {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.extension-request-waiting {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.extension-request-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #b91c1c;
+  overflow-wrap: break-word;
+}
+html.dark .extension-request-error {
+  color: #fca5a5;
+}
+.extension-request-notice {
+  margin: 0 auto 10px;
+  max-width: 920px;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.extension-request-status {
+  margin: 0 auto 10px;
+  max-width: 920px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.extension-request-btn:focus-visible,
+.extension-request-option:focus-visible,
+.extension-request-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Restrained press feedback: transform only, 100–160ms, no entrance animation. */
+.extension-request-btn,
+.extension-request-option {
+  transition: transform 120ms ease-out;
+}
+.extension-request-btn:active:not(:disabled),
+.extension-request-option:active:not(:disabled) {
+  transform: scale(0.98);
+}
+@media (hover: hover) and (pointer: fine) {
+  .extension-request-btn:hover:not(:disabled),
+  .extension-request-option:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .extension-request-btn,
+  .extension-request-option {
+    transition: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .extension-request-option,
+  .extension-request-btn {
+    min-height: 44px;
+  }
+}
+
 /* —— Login —— */
 
 .login-page {

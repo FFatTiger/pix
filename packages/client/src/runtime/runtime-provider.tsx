@@ -113,6 +113,7 @@ export interface RuntimeApi extends RuntimeView {
   readonly fetchSnapshot: SessionStore["fetchSnapshot"];
   readonly sendCommand: SessionStore["sendCommand"];
   readonly sendPrompt: SessionStore["sendPrompt"];
+  readonly respondExtensionUi: SessionStore["respondExtensionUi"];
   readonly steer: SessionStore["steer"];
   readonly followUp: SessionStore["followUp"];
   readonly clearQueue: SessionStore["clearQueue"];
@@ -148,6 +149,7 @@ export function useRuntime(): RuntimeApi {
         fetchSnapshot: () => store.fetchSnapshot(),
         sendCommand: (command) => store.sendCommand(command),
         sendPrompt: (message) => store.sendPrompt(message),
+        respondExtensionUi: (request, reply) => store.respondExtensionUi(request, reply),
         steer: (message, images) => store.steer(message, images),
         followUp: (message, images) => store.followUp(message, images),
         clearQueue: () => store.clearQueue(),

@@ -24,6 +24,15 @@
  *    dispose / session-switch / epoch_changed, resent with the SAME commandId
  *    on snapshot/gap. clear_queue uses typed interrupt admission (never
  *    coalesces with abort; different interrupt type → session_busy).
+ *  - D2-P8 extension-UI slot: the reply to a pending extension request runs in
+ *    {@link ExtensionUiPending}, a THIRD independent single-in-flight slot. The
+ *    ordinary prompt that triggered the UI stays `pendingCommand`, so
+ *    `sendCommand` would return `session_busy` — the dedicated slot is what lets
+ *    a reply travel while the prompt is still pending. At most ONE extension
+ *    reply in flight globally (second → session_busy); cleared on send-failure /
+ *    stop / detach / dispose / session-switch / epoch_changed / capability
+ *    loss, resent with the SAME commandId on same-epoch snapshot/gap. Only the
+ *    final `extension_ui_response` is ever sent — never incremental input.
  *  - One-shot envelope requests (getSnapshot/detach/stop) are REJECTED on
  *    transport loss so they never leak across a generation (MEDIUM-3); create /
  *    command / interrupt / attach are retried on reconnect.
@@ -38,6 +47,8 @@ import {
   reduceRuntimeEventData,
   type AgentMessage,
   type CorrelatedRuntimeCommandResult,
+  type ExtensionUiInteractiveMethod,
+  type ExtensionUiRequest,
   type ImageAttachment,
   type ProtocolError,
   type RuntimeAttachParams,
@@ -102,6 +113,13 @@ export interface RuntimeView {
    */
   readonly queuedTurnPending: boolean;
   /**
+   * True while an extension-UI reply is in flight in the D2-P8 dedicated
+   * single-in-flight slot. The first operable extension request uses this to
+   * show `aria-busy` and disable its controls until the reply settles (the
+   * second reply is `session_busy` at the store regardless).
+   */
+  readonly extensionUiReplyPending: boolean;
+  /**
    * Authoritative runtime capability set from the latest snapshot
    * ({@link RuntimeCapabilitySet}), or null before the first attach snapshot.
    * This is the runtime capability authority — never inferred from the Host
@@ -125,6 +143,7 @@ const INITIAL_VIEW: RuntimeView = {
   fatal: false,
   canAgent: false,
   queuedTurnPending: false,
+  extensionUiReplyPending: false,
   capabilities: null,
 };
 
@@ -136,6 +155,33 @@ const INITIAL_VIEW: RuntimeView = {
  */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type RuntimeCommandWithoutId = DistributiveOmit<RuntimeCommand, "commandId">;
+
+/** Interactive extension request methods — the only ones that produce a response. */
+const INTERACTIVE_EXTENSION_METHODS: ReadonlySet<string> = new Set([
+  "select", "confirm", "input", "editor", "custom",
+]);
+
+function isInteractiveExtensionMethod(method: ExtensionUiRequest["method"]): method is ExtensionUiInteractiveMethod {
+  return INTERACTIVE_EXTENSION_METHODS.has(method);
+}
+
+/**
+ * Validate a reply against the request method (mirrors the Protocol response
+ * union). Returns a fixed incompatibility description or null when compatible.
+ * `cancelled` is valid for every interactive method; selected/confirmed/value
+ * are method-bound. NEVER trims/coerces the reply payload.
+ */
+function extensionReplyIncompatibility(method: ExtensionUiInteractiveMethod, reply: ExtensionUiReply): string | null {
+  switch (reply.responseKind) {
+    case "cancelled": return null;
+    case "selected": return method === "select" ? null : "selected reply is only valid for a select request";
+    case "confirmed": return method === "confirm" ? null : "confirmed reply is only valid for a confirm request";
+    case "value":
+      return method === "input" || method === "editor" || method === "custom"
+        ? null
+        : "value reply is only valid for an input/editor/custom request";
+  }
+}
 
 export interface SessionStoreOptions {
   readonly id?: IdFactory;
@@ -217,6 +263,38 @@ interface QueuedTurnPending {
   reject(error: unknown): void;
 }
 
+/**
+ * D2-P8 extension-UI reply slot. A THIRD single-in-flight slot, independent of
+ * {@link CommandPending} and {@link QueuedTurnPending}: the prompt that
+ * triggered the UI stays `pendingCommand` (so `sendCommand` is busy), and the
+ * reply must still travel. At most ONE extension reply in flight; the second is
+ * `session_busy`. commandId is stable across same-epoch resends so the runtime
+ * dedups by (sessionId, commandId). Only the final response command is sent.
+ */
+interface ExtensionUiPending {
+  readonly commandId: string;
+  envelopeId: string;
+  generation: number;
+  readonly sessionId: string;
+  readonly command: WsClientMessage;
+  readonly requestId: string;
+  readonly method: ExtensionUiInteractiveMethod;
+  resolve(): void;
+  reject(error: unknown): void;
+}
+
+/**
+ * D2-P8 final-response payload bound to an authoritative pending request. The
+ * store mints the commandId and binds `id`/`method` from the request; it NEVER
+ * trims/coerces the value. `cancelled` is the only reply valid for every
+ * interactive method.
+ */
+export type ExtensionUiReply =
+  | { responseKind: "selected"; selected: string }
+  | { responseKind: "confirmed"; confirmed: boolean }
+  | { responseKind: "value"; value: string }
+  | { responseKind: "cancelled"; cancelled: true };
+
 interface InterruptPending {
   readonly commandId: string;
   envelopeId: string;
@@ -265,6 +343,8 @@ export class SessionStore implements RuntimeSocketHandler {
   private pendingCommand: CommandPending | null = null;
   /** D2-P4 dual-slot: at most ONE queued turn (steer/follow_up) in flight, independent of prompt. */
   private pendingQueuedTurn: QueuedTurnPending | null = null;
+  /** D2-P8 extension-UI reply slot: at most ONE final response in flight, independent of prompt + queued turn. */
+  private pendingExtensionUiCommand: ExtensionUiPending | null = null;
   private pendingInterrupt: InterruptPending | null = null;
   /** At most ONE interrupt in flight (well under H1's 16-interrupt cap). */
   private pendingInterruptPromise: Promise<unknown> | null = null;
@@ -382,6 +462,10 @@ export class SessionStore implements RuntimeSocketHandler {
       // never overwritten here; it settles on its own correlated response or
       // transport loss).
       this.settlePendingControlCommand({ code: "interrupted", message: "detached", retryable: false });
+      // D2-P8: an in-flight extension reply is bound to the detached session —
+      // reject it exactly once so the dedicated slot frees and a late result can
+      // never settle a newly attached session.
+      this.settlePendingExtensionUi({ code: "interrupted", message: "detached", retryable: false });
       this.rejectAttach({ code: "interrupted", message: "detached", retryable: false });
       this.setConnection(this.socket.connectionState === "stopped" ? "stopped" : "ready");
       this.notify();
@@ -414,6 +498,8 @@ export class SessionStore implements RuntimeSocketHandler {
       this.settlePendingCommand({ code: "interrupted", message: "session stopped", retryable: false });
       // D2-P4: settle any in-flight queued turn exactly once (stop invalidates it).
       this.settlePendingQueuedTurn({ code: "interrupted", message: "session stopped", retryable: false });
+      // D2-P8: stop invalidates an in-flight extension reply exactly once.
+      this.settlePendingExtensionUi({ code: "interrupted", message: "session stopped", retryable: false });
       const sessionId = this.sessionId;
       if (!sessionId) return;
       // MEDIUM-5: honest stop — wait until sendable (bounded), then send + await ack (bounded).
@@ -565,6 +651,97 @@ export class SessionStore implements RuntimeSocketHandler {
   /** Send a prompt (ordinary command). commandId is stable across same-epoch retries. */
   sendPrompt(message: string): Promise<unknown> {
     return this.sendCommand({ commandId: this.id(), type: "prompt", message });
+  }
+
+  // --- D2-P8 extension-UI final response -------------------------------------
+  //
+  // `respondExtensionUi` is the ONLY Client transport for pending extension
+  // requests. It uses the dedicated single-in-flight {@link pendingExtensionUiCommand}
+  // slot (NOT {@link sendCommand}), because the prompt that triggered the UI is
+  // still the pending ordinary command — `sendCommand` would be `session_busy`.
+  // It builds the exact `extension_ui_response` command, mints the commandId,
+  // binds `id`/`method` from the authoritative pending request and unwraps the
+  // correlated ack. It NEVER sends `extension_ui_input` (final response only),
+  // never trims/coerces the reply, and validates attached + `runtime.extension_ui`
+  // + request method/reply compatibility before any send.
+
+  /**
+   * Send the final response to a pending interactive extension request.
+   * `request` must be the authoritative pending request from the snapshot; the
+   * command carries that exact `id`/`method`. `reply` shape must be compatible
+   * with the request method (see {@link ExtensionUiReply}). Resolves once the
+   * runtime acks the correlated `extension_ui_response`; rejects with the
+   * structured ProtocolError on any failure (busy / wrong method / not_found /
+   * transport / epoch change).
+   */
+  respondExtensionUi(request: ExtensionUiRequest, reply: ExtensionUiReply): Promise<void> {
+    if (!this.attached || !this.sessionId) {
+      return Promise.reject(this.notAttachedError());
+    }
+    if (!this.hasRuntimeCapability("runtime.extension_ui")) {
+      return Promise.reject({
+        code: "unsupported_capability",
+        message: "runtime does not support extension UI",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    const method = request.method;
+    if (!isInteractiveExtensionMethod(method)) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "a non-interactive extension request cannot be answered",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    const incompatibility = extensionReplyIncompatibility(method, reply);
+    if (incompatibility !== null) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: incompatibility,
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    if (this.pendingExtensionUiCommand) {
+      return Promise.reject({
+        code: "session_busy",
+        message: "an extension UI response is already in progress",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    const sessionId = this.sessionId;
+    const commandId = this.id();
+    const envelopeId = this.id();
+    // Compatibility is validated above (extensionReplyIncompatibility); the
+    // spread union is narrowed by `responseKind`, matching one of the Protocol
+    // `extension_ui_response` members (the outer union needs the explicit cast,
+    // same as runTypedCommand). No payload coercion/trim.
+    const command = {
+      commandId,
+      type: "extension_ui_response",
+      id: request.id,
+      method,
+      ...reply,
+    } as RuntimeCommand;
+    const wsMessage: WsClientMessage = {
+      type: "command",
+      id: envelopeId,
+      payload: { sessionId, command },
+    };
+    return new Promise<void>((resolve, reject) => {
+      this.pendingExtensionUiCommand = {
+        commandId,
+        envelopeId,
+        generation: this.socket.currentGeneration,
+        sessionId,
+        command: wsMessage,
+        requestId: request.id,
+        method,
+        resolve: () => resolve(),
+        reject,
+      };
+      this.notify();
+      this.send(wsMessage);
+    });
   }
 
   // --- D2-P4 queued-turn / queue-control API ---------------------------------
@@ -1043,6 +1220,8 @@ export class SessionStore implements RuntimeSocketHandler {
       try {
         this.snapshot = reduceRuntimeEventData(this.snapshot, event as RuntimeEventData);
         this.lastEventId = event.eventId;
+        // D2-P8: an event that drops `runtime.extension_ui` settles an in-flight reply.
+        this.settleExtensionUiOnCapabilityLoss();
       } catch {
         // Projection inconsistency (stream event out of order): re-attach.
         this.reattach();
@@ -1103,6 +1282,30 @@ export class SessionStore implements RuntimeSocketHandler {
       else { pending.reject(message.payload.error); this.setError(message.payload.error); }
       return;
     }
+    // D2-P8 extension-UI reply slot, correlated by envelope + generation +
+    // commandId + result type. A wrong commandId or a non-extension result can
+    // never settle the slot; a late/duplicate response is dropped and the slot
+    // stays pending until its own correlated frame (or lifecycle settle) fires.
+    if (this.pendingExtensionUiCommand && message.id === this.pendingExtensionUiCommand.envelopeId && generation === this.pendingExtensionUiCommand.generation) {
+      const pending = this.pendingExtensionUiCommand;
+      if (!ok) {
+        this.pendingExtensionUiCommand = null;
+        this.notify();
+        pending.reject(message.payload.error);
+        this.setError(message.payload.error);
+        return;
+      }
+      const correlated = message.payload.result as CorrelatedRuntimeCommandResult;
+      if (correlated.commandId !== pending.commandId || correlated.result.type !== "extension_ui_response") {
+        // Wrong commandId/type on the right envelope: drop, never settle the slot.
+        return;
+      }
+      this.pendingExtensionUiCommand = null;
+      this.notify();
+      if (correlated.result.ok) pending.resolve();
+      else { pending.reject(correlated.result.error); this.setError(correlated.result.error); }
+      return;
+    }
     // envelope-keyed one-shots: getSnapshot / detach / stop
     const entry = this.pendingByEnvelope.get(message.id);
     if (entry && entry.generation === generation) {
@@ -1156,6 +1359,11 @@ export class SessionStore implements RuntimeSocketHandler {
     // cannot settle the new session.
     if (this.pendingCommand && this.sessionId !== null && this.sessionId !== sessionId) {
       this.settlePendingControlCommand({ code: "interrupted", message: "session switched", retryable: false });
+    }
+    // D2-P8: an in-flight extension reply bound to the OLD session is rejected
+    // exactly once on a switch so its late result cannot settle the new session.
+    if (this.pendingExtensionUiCommand && this.sessionId !== null && this.sessionId !== sessionId) {
+      this.settlePendingExtensionUi({ code: "interrupted", message: "session switched", retryable: false });
     }
     this.attached = false;
     this.awaitingSnapshot = true;
@@ -1235,6 +1443,20 @@ export class SessionStore implements RuntimeSocketHandler {
         this.setError(decision.error);
       }
     }
+    // D2-P8 extension-UI reply: same-epoch snapshot/gap → resend with the SAME
+    // commandId on a fresh envelope (runtime dedups by sessionId+commandId);
+    // epoch_changed → reject, never resend (the effect is ambiguous).
+    if (this.pendingExtensionUiCommand) {
+      const decision = decideCommandRetry(epochSurvived ? resumeStatus : "epoch_changed");
+      if (decision.decision === "resend") {
+        this.resendExtensionUi();
+      } else {
+        this.pendingExtensionUiCommand.reject(decision.error);
+        this.pendingExtensionUiCommand = null;
+        this.notify();
+        this.setError(decision.error);
+      }
+    }
     if (this.pendingInterrupt) {
       if (epochSurvived) {
         this.resendInterrupt();
@@ -1277,6 +1499,16 @@ export class SessionStore implements RuntimeSocketHandler {
     this.send(command);
   }
 
+  /** Re-send a pending extension reply with the SAME commandId (at-most-once per epoch). */
+  private resendExtensionUi(): void {
+    const pending = this.pendingExtensionUiCommand;
+    if (!pending) return;
+    const envelopeId = this.id();
+    const command: WsClientMessage = { ...pending.command, id: envelopeId };
+    this.pendingExtensionUiCommand = { ...pending, envelopeId, generation: this.socket.currentGeneration, command };
+    this.send(command);
+  }
+
   /** Re-send a pending interrupt with the SAME commandId (at-most-once per epoch). */
   private resendInterrupt(): void {
     const pending = this.pendingInterrupt;
@@ -1294,6 +1526,8 @@ export class SessionStore implements RuntimeSocketHandler {
     this.epoch = payload.epoch;
     this.lastEventId = payload.lastEventId;
     this.snapshot = structuredClone(payload.snapshot);
+    // D2-P8: a snapshot that drops `runtime.extension_ui` settles an in-flight reply.
+    this.settleExtensionUiOnCapabilityLoss();
     this.notify();
   }
 
@@ -1349,6 +1583,10 @@ export class SessionStore implements RuntimeSocketHandler {
       this.pendingQueuedTurn.reject(error);
       this.pendingQueuedTurn = null;
       this.notify();
+    } else if (this.pendingExtensionUiCommand?.envelopeId === id) {
+      this.pendingExtensionUiCommand.reject(error);
+      this.pendingExtensionUiCommand = null;
+      this.notify();
     } else if (this.pendingInterrupt?.envelopeId === id) {
       this.pendingInterrupt.reject(error);
       this.pendingInterrupt = null;
@@ -1380,6 +1618,31 @@ export class SessionStore implements RuntimeSocketHandler {
       this.pendingQueuedTurn.reject(error);
       this.pendingQueuedTurn = null;
       this.notify();
+    }
+  }
+
+  /** Reject the in-flight extension reply exactly once (D2-P8 stop/detach/dispose/session switch). */
+  private settlePendingExtensionUi(error: ProtocolError): void {
+    if (this.pendingExtensionUiCommand) {
+      this.pendingExtensionUiCommand.reject(error);
+      this.pendingExtensionUiCommand = null;
+      this.notify();
+    }
+  }
+
+  /**
+   * D2-P8 capability-loss settle: when the runtime drops `runtime.extension_ui`
+   * (authoritative snapshot/event), an in-flight reply is rejected so the slot
+   * never leaks and the UI's capability refs make the rejection inert.
+   */
+  private settleExtensionUiOnCapabilityLoss(): void {
+    if (this.pendingExtensionUiCommand === null) return;
+    if (this.snapshot?.capabilities.capabilities.includes("runtime.extension_ui") !== true) {
+      this.settlePendingExtensionUi({
+        code: "unsupported_capability",
+        message: "runtime capability revoked",
+        retryable: false,
+      });
     }
   }
 
@@ -1461,6 +1724,7 @@ export class SessionStore implements RuntimeSocketHandler {
     this.rejectAttach(error);
     this.settlePendingCommand(error);
     this.settlePendingQueuedTurn(error);
+    this.settlePendingExtensionUi(error);
     this.pendingInterrupt?.reject(error);
     this.pendingInterrupt = null;
     this.pendingInterruptPromise = null;
@@ -1504,6 +1768,7 @@ export class SessionStore implements RuntimeSocketHandler {
       fatal: this.fatal,
       canAgent: this.host?.capabilities.includes("agent") === true,
       queuedTurnPending: this.pendingQueuedTurn !== null,
+      extensionUiReplyPending: this.pendingExtensionUiCommand !== null,
       capabilities: this.attached ? (snapshot?.capabilities ?? null) : null,
     };
   }

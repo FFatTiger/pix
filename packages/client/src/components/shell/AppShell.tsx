@@ -9,6 +9,7 @@ import { Sidebar } from "@/components/shell/Sidebar";
 import { VisibleBranchExportButton } from "@/components/shell/VisibleBranchExportButton";
 import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
 import { CatalogPanel, hasCatalogCapability } from "@/features/catalog/CatalogPanel";
+import { ExtensionRequests } from "@/features/extension-request/ExtensionRequests";
 import { useRuntime } from "@/runtime";
 import type { ConnectionState } from "@/runtime";
 
@@ -43,6 +44,10 @@ export function AppShell({ search }: AppShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
+  // D2-P8: the composer textarea is the focus-return target when the final
+  // extension request closes. Passed explicitly to both ExtensionRequests and
+  // Composer (no document queries).
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [projectPath, setProjectPath] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
   const [openingLive, setOpeningLive] = useState(false);
@@ -365,7 +370,11 @@ export function AppShell({ search }: AppShellProps) {
             {...(search.session === undefined ? {} : { sessionId: search.session })}
           />
 
-          <Composer live={selectionMatchesLive} />
+          {selectionMatchesLive ? (
+            <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
+          ) : null}
+
+          <Composer live={selectionMatchesLive} textareaRef={composerTextareaRef} />
         </main>
 
         <WorkspacePanel
