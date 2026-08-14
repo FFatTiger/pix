@@ -45,6 +45,63 @@ class CountingFactory implements PiRuntimeDriverFactory {
   async open(...args: Parameters<PiRuntimeDriverFactory["open"]>) { return this.latest = new CountingDriver(await this.inner.open(...args)); }
 }
 
+describe("adapter set_tools validation (malformed/unknown names, D2-P6 fix)", () => {
+  it("rejects unknown/blank/control names with invalid_input and no mutation; valid set + all-off still work", async () => {
+    const store = new ScriptedSdkStore();
+    const options = { capabilities: RUNTIME_CAPABILITIES };
+    tagFactoryOptions(options, { driverFactory: new ScriptedSdkDriverFactory(store) });
+    const port = await new PiSdkAgentRuntimeFactory(options).create({ cwd: "/workspace", toolNames: ["read"] });
+    try {
+      const before = await port.getSnapshot();
+      const beforeActive = (before.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
+
+      // Unknown tool → exact canonical invalid_input, no mutation.
+      const unknown = await port.execute({ type: "set_tools", toolNames: ["read", "does-not-exist"] });
+      assert.equal(unknown.ok, false, JSON.stringify(unknown));
+      if (!unknown.ok) {
+        assert.equal(unknown.type, "set_tools");
+        assert.equal(unknown.error.code, "invalid_input");
+        assert.equal(unknown.error.retryable, false);
+        assert.match(unknown.error.message, /^unknown tool: does-not-exist$/);
+      }
+
+      // Blank / control name → invalid_input before any mutation.
+      for (const bad of ["   ", "\n\t", "read\u0000evil", "\u001f"]) {
+        const blank = await port.execute({ type: "set_tools", toolNames: ["read", bad] });
+        assert.equal(blank.ok, false, JSON.stringify(blank));
+        if (!blank.ok) {
+          assert.equal(blank.error.code, "invalid_input");
+          assert.match(blank.error.message, /non-empty|unknown tool/i);
+        }
+      }
+
+      // No partial mutation: state unchanged after failures.
+      const after = await port.getSnapshot();
+      const afterActive = (after.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
+      assert.deepEqual(afterActive, beforeActive, "failed set_tools must not mutate active tools");
+
+      // Valid dynamic/builtin set still works (de-duplicated read+write).
+      const valid = await port.execute({ type: "set_tools", toolNames: ["read", "write", "read"] });
+      assert.equal(valid.ok, true, JSON.stringify(valid));
+      if (valid.ok) {
+        assert.equal(valid.type, "set_tools");
+      }
+      const validState = await port.getSnapshot();
+      const validActive = (validState.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
+      assert.deepEqual(validActive, ["read", "write"], JSON.stringify(validState.state.tools));
+
+      // All-off still works (systemPrompt cleared).
+      const off = await port.execute({ type: "set_tools", toolNames: [] });
+      assert.equal(off.ok, true, JSON.stringify(off));
+      const offState = await port.getSnapshot();
+      assert.ok((offState.state.tools ?? []).every((tool) => !tool.active));
+      assert.equal(offState.state.systemPrompt, "");
+    } finally {
+      await port.close("user");
+    }
+  });
+});
+
 describe("adapter cleanup and fork ordering", () => {
   it("unsubscribes the single SDK event bridge and closes the driver exactly once", async () => {
     const counting = new CountingFactory(new ScriptedSdkDriverFactory(new ScriptedSdkStore()));

@@ -28,6 +28,7 @@ import {
   unsupportedCapabilityError,
 } from "@fffattiger/pix-runtime-core";
 import { mapDriverError, mapMessage } from "../mappers/index.js";
+import { redactText } from "./sanitize.js";
 import type { DriverUiRequest, PiRuntimeDriver } from "./types.js";
 
 const COMMAND_TYPES = new Set<string>(RUNTIME_COMMAND_TYPES);
@@ -211,7 +212,22 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         case "set_auto_retry": this.driver.setAutoRetry(command.enabled); this.emitState(); return { ok: true, type: "set_auto_retry" };
         case "get_tools": return { ok: true, type: "get_tools", tools: this.driver.getState().tools };
         case "get_commands": return { ok: true, type: "get_commands", commands: this.driver.getState().commands ?? [] };
-        case "set_tools": this.driver.setTools(command.toolNames, command.includeExtensionTools !== false); this.emitState(); return { ok: true, type: "set_tools" };
+        case "set_tools": {
+          // Validate BEFORE mutation: the driver's setActiveToolsByName silently
+          // ignores unknown names (returns ok:true while dropping them), so the
+          // canonical boundary must reject malformed/unknown tools up-front and
+          // leave state/get_tools untouched on failure. The known catalog is the
+          // REAL session's complete registry (builtins + loaded extension/
+          // resource tools) surfaced through driver.getState().tools, which is
+          // derived from session.getAllTools(). Names are strictly trimmed and
+          // de-duplicated (preserving order) so the driver applies exactly what
+          // was validated; all-off [] stays valid.
+          const normalized = this.normalizeToolNames(command.toolNames);
+          if (!normalized.ok) return this.failure("set_tools", normalized.error);
+          this.driver.setTools(normalized.names, command.includeExtensionTools !== false);
+          this.emitState();
+          return { ok: true, type: "set_tools" };
+        }
         case "reload": {
           this.clearToolCorrelations();
           const capabilities = await this.driver.reload();
@@ -626,6 +642,33 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
 
   private failure(type: RuntimeCommandType, error: ReturnType<typeof makeRuntimeError>): RuntimeCommandResult {
     return { ok: false, type, error };
+  }
+
+  /**
+   * Normalize + validate a `set_tools` name list against the real session's
+   * complete known tool catalog (builtins + loaded extension/resource tools,
+   * surfaced from `session.getAllTools()` via the driver state). Strict
+   * trim/dedupe (order preserved) with all-off `[]` valid; the FIRST blank /
+   * control / unknown name fails as structured `invalid_input` with a
+   * bounded/sanitized display, and no mutation occurs.
+   */
+  private normalizeToolNames(
+    toolNames: readonly string[],
+  ): { ok: true; names: string[] } | { ok: false; error: ReturnType<typeof makeRuntimeError> } {
+    const known = new Set(this.driver.getState().tools.map((tool) => tool.name));
+    const names: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of toolNames) {
+      const name = typeof raw === "string" ? raw.trim() : "";
+      if (name.length === 0 || /[\u0000-\u001f\u007f]/.test(name)) {
+        return { ok: false, error: makeRuntimeError("invalid_input", "tool names must be non-empty") };
+      }
+      if (!known.has(name)) {
+        return { ok: false, error: makeRuntimeError("invalid_input", `unknown tool: ${redactText(name).slice(0, 200)}`) };
+      }
+      if (!seen.has(name)) { seen.add(name); names.push(name); }
+    }
+    return { ok: true, names };
   }
 
   private emitState(): void { this.emit({ type: "runtime_state_changed", sessionId: this.identity.sessionId }); }

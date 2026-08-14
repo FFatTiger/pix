@@ -434,4 +434,93 @@ describe("public production SDK factory smoke", () => {
       }
     });
   });
+
+  it("production set_tools rejects unknown/blank/control names with invalid_input and no mutation (D2-P6 fix)", async () => {
+    await withAgentDir(async (root) => {
+      const cwd = join(root, "workspace");
+      await mkdir(cwd, { recursive: true });
+      const port = await new PiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES }).create({
+        cwd,
+        toolNames: ["read", "bash"],
+        thinkingLevel: "off",
+        thinkingLevelPinned: true,
+        name: "D2-P6 Invalid Tools Smoke",
+      });
+      try {
+        // Baseline active set (create-time toolNames read+bash; extensions are
+        // auto-included by the real driver, so capture whatever is active).
+        const before = await port.execute({ type: "get_state" });
+        assert.equal(before.ok, true, JSON.stringify(before));
+        const beforeActive = before.ok && before.type === "get_state"
+          ? (before.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort()
+          : [];
+
+        // Unknown tool → structured invalid_input; the name is displayed sanely
+        // (no secret/path/object coercion) and retryable=false.
+        const unknown = await port.execute({ type: "set_tools", toolNames: ["read", "does-not-exist"] });
+        assert.equal(unknown.ok, false, JSON.stringify(unknown));
+        if (!unknown.ok) {
+          assert.equal(unknown.type, "set_tools");
+          assert.equal(unknown.error.code, "invalid_input");
+          assert.equal(unknown.error.retryable, false);
+          assert.match(unknown.error.message, /^unknown tool: does-not-exist$/);
+          assert.ok(!/sk-[A-Za-z0-9_-]+/.test(unknown.error.message), "no secret-shaped raw leak");
+        }
+
+        // A secret-shaped unknown name must be redacted in the message (no raw
+        // key material leaks into the structured error).
+        const secret = await port.execute({ type: "set_tools", toolNames: ["read", "sk-CANARY-SECRET-TOKEN"] });
+        assert.equal(secret.ok, false, JSON.stringify(secret));
+        if (!secret.ok) {
+          assert.equal(secret.error.code, "invalid_input");
+          assert.ok(!secret.error.message.includes("sk-CANARY-SECRET-TOKEN"), "secret must be redacted");
+        }
+
+        // Blank / control name → invalid_input before any mutation.
+        for (const bad of ["   ", "\n\t", "read\u0000evil", "\u001f"]) {
+          const blank = await port.execute({ type: "set_tools", toolNames: ["read", bad] });
+          assert.equal(blank.ok, false, JSON.stringify(blank));
+          if (!blank.ok) {
+            assert.equal(blank.error.code, "invalid_input");
+            assert.match(blank.error.message, /non-empty|unknown tool/i);
+          }
+        }
+
+        // No partial mutation: state AND get_tools unchanged after the failures.
+        const after = await port.execute({ type: "get_state" });
+        assert.equal(after.ok, true, JSON.stringify(after));
+        if (after.ok && after.type === "get_state") {
+          const afterActive = (after.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
+          assert.deepEqual(afterActive, beforeActive, "failed set_tools must not mutate active tools");
+        }
+        const getTools = await port.execute({ type: "get_tools" });
+        assert.equal(getTools.ok, true, JSON.stringify(getTools));
+
+        // Valid dynamic/builtin set still works (read + bash + edit active).
+        const valid = await port.execute({ type: "set_tools", toolNames: ["read", "bash", "edit"] });
+        assert.equal(valid.ok, true, JSON.stringify(valid));
+        if (valid.ok) {
+          assert.equal(valid.type, "set_tools");
+        }
+        const validState = await port.execute({ type: "get_state" });
+        assert.equal(validState.ok, true);
+        if (validState.ok && validState.type === "get_state") {
+          const active = (validState.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
+          assert.deepEqual(active, ["bash", "edit", "read"], JSON.stringify(validState.state.tools));
+        }
+
+        // All-off still works (systemPrompt cleared, no active tools).
+        const off = await port.execute({ type: "set_tools", toolNames: [] });
+        assert.equal(off.ok, true, JSON.stringify(off));
+        const offState = await port.execute({ type: "get_state" });
+        assert.equal(offState.ok, true);
+        if (offState.ok && offState.type === "get_state") {
+          assert.equal(offState.state.systemPrompt, "");
+          assert.ok((offState.state.tools ?? []).every((tool) => !tool.active));
+        }
+      } finally {
+        await port.close("user");
+      }
+    });
+  });
 });

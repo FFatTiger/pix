@@ -9,6 +9,7 @@ import type {
   ToolInfo,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError, RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
+import { redactText } from "./sanitize.js";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
@@ -145,13 +146,34 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
   setAutoRetry(enabled: boolean): void { this.session.setAutoRetryEnabled(enabled); }
   clearQueue(): void { this.session.clearQueue(); }
   setTools(toolNames: readonly string[], includeExtensionTools: boolean): void {
-    this.configuredTools = { toolNames: [...toolNames], includeExtensionTools };
-    this.forcedEmpty = toolNames.length === 0;
+    // Defense-in-depth at the driver boundary: the adapter validates at the
+    // canonical boundary, but a direct driver call or a stale reload
+    // re-application must NEVER silently drop unknown tools (the SDK's
+    // setActiveToolsByName ignores unknown names). Validate every name against
+    // the REAL session's complete registry (builtins + loaded extension/
+    // resource tools via session.getAllTools()) and throw a structured
+    // invalid_input that the adapter maps to the exact canonical error shape.
+    // Trim/dedupe here too so this driver applies exactly what it validated.
+    const known = new Set(this.session.getAllTools().map((tool) => tool.name));
+    const normalized: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of toolNames) {
+      const name = typeof raw === "string" ? raw.trim() : "";
+      if (name.length === 0 || /[\u0000-\u001f\u007f]/.test(name)) {
+        throw makeRuntimeError("invalid_input", "tool names must be non-empty");
+      }
+      if (!known.has(name)) {
+        throw makeRuntimeError("invalid_input", `unknown tool: ${redactText(name).slice(0, 200)}`);
+      }
+      if (!seen.has(name)) { seen.add(name); normalized.push(name); }
+    }
+    this.configuredTools = { toolNames: normalized, includeExtensionTools };
+    this.forcedEmpty = normalized.length === 0;
     const builtinNames = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
-    const selected = toolNames.length === 0
+    const selected = normalized.length === 0
       ? []
       : [
-          ...toolNames,
+          ...normalized,
           ...(includeExtensionTools
             ? this.session.getAllTools().map((tool) => tool.name).filter((name) => !builtinNames.has(name))
             : []),

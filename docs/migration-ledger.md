@@ -889,6 +889,21 @@ per-workspace typecheck PASS；architecture + 各包 boundaries PASS；
 Runtime E2E 2 轮 PASS（单连接真实 Host→sessiond→worker→fixture 贯通 D2-P6 切片，
 无孤儿 worker）；Startup/Sessions E2E PASS。
 
+GPT 验证修复（follow-up，本分支追加 commit）：真实 PiSdkAgentRuntimeFactory 的
+`set_tools` 曾把名字直接交给 SDK `setActiveToolsByName`，后者静默丢弃未知工具并返回
+ok:true（与 canonical fake / E2E fixture 的 invalid_input 不一致）。修复：adapter
+`set_tools` case 在 mutation 前用 `driver.getState().tools`（源自真实 `session.getAllTools()`，
+含 builtin + 已加载 extension/resource 工具）严格 trim/dedupe 并校验每个名字；首个 blank/
+control 名 → `invalid_input` "tool names must be non-empty"，首个未知名 →
+`invalid_input` "unknown tool: <sanitized>"（redactText 脱敏、200 字符截断）；失败不调 driver、
+不发 runtime_state_changed（无部分 mutation，state/get_tools 不变）；all-off [] 与 trim/dedupe
+语义保持。sdk-runtime.ts setTools 同步加防御性校验（对 `session.getAllTools()` 校验并抛结构化
+invalid_input），直接 driver 调用或 reload 重应用也绝不静默丢弃；两处规则/目录源一致（非不一致重复
+校验），adapter 为权威边界。未改 Protocol wire types/未拓宽 capability。新增真实 factory smoke
+回归（unknown/blank/control 失败 invalid_input + 状态不变 + 合法 builtin set + all-off）+ scripted
+driver 低层回归；adapter 192/192、command coverage 26/26、root test 1063(1 skip)、typecheck/
+architecture/boundaries、Runtime E2E 2 轮、Startup/Sessions E2E 全 PASS。
+
 残余/风险：
 - E2E 偶发 all-off 断言失败根因已定位为既有测试助手缺陷，非生产 authority/order bug：
   tests/e2e/runtime.mjs 的 RuntimeWsClient.getSnapshot 使用仅 `Date.now()` 的 wire id，
