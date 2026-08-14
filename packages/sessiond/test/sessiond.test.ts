@@ -552,6 +552,30 @@ test("set_model successful finalization cleans singleflight and cached retry doe
   await service.shutdown();
 });
 
+test("hasBusyCwd safety query covers exact + descendant; sibling prefix is not a descendant; stopByCwd stays exact", async () => {
+  const { service, workers } = harness({ worker: { commandDelayMs: 5_000 } });
+  await service.activate("s"); // activation cwd = /cwd/s
+  const pending = service.command("s", { type: "prompt", commandId: "busy-desc", message: "long" });
+  await wait(10);
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, true, "exact busy cwd is busy");
+  assert.equal(service.hasBusyCwd("/cwd").busy, true, "ancestor of a busy runtime cwd is busy (descendant containment)");
+  assert.equal(service.hasBusyCwd("/cwd/s/sub").busy, false, "a path INSIDE the busy cwd is not itself busy");
+  assert.equal(service.hasBusyCwd("/cwd/sx").busy, false, "sibling prefix (/cwd/sx) is NOT a descendant of /cwd/s");
+  assert.equal(service.hasBusyCwd("/other").busy, false, "unrelated cwd is not busy");
+  assert.equal(service.hasBusyCwd("/cwd/s").sessionIds?.includes("s"), true, "busy session id surfaced");
+
+  // stopByCwd keeps EXACT-match semantics (never descendant): an ancestor
+  // stopByCwd must not stop the exact-cwd busy session.
+  assert.deepEqual(await service.stopByCwd("/cwd"), [], "ancestor stopByCwd must not stop the exact-cwd session");
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, true, "session still busy after ancestor stopByCwd");
+  // Exact stopByCwd stops it.
+  assert.deepEqual(await service.stopByCwd("/cwd/s"), ["s"]);
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, false);
+  await pending.catch(() => {});
+  await service.shutdown();
+  void workers;
+});
+
 test("set_model refresh failure fail-closes all observers and cached retry", async () => {
   const { service, workers } = harness({
     worker: { dropPostCommandSnapshots: true },

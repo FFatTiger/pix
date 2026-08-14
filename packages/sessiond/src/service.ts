@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
   CorrelatedRuntimeCommandResult,
   CorrelatedRuntimeInterruptResult,
@@ -974,8 +975,22 @@ export class SessiondService {
   }
 
   hasBusyCwd(cwd: string): { cwd: string; busy: boolean; sessionIds?: string[] } {
-    const sessionIds = [...this.records.values()].filter((record) => record.cwd === cwd && this.isBusy(record)).map((record) => record.sessionId);
+    const sessionIds = [...this.records.values()].filter((record) => this.isBusy(record) && this.isBusyCwdFor(record.cwd, cwd)).map((record) => record.sessionId);
     return { cwd, busy: sessionIds.length > 0, ...(sessionIds.length ? { sessionIds } : {}) };
+  }
+
+  /**
+   * Busy-containment for the SAFETY QUERY only: busy when the normalized
+   * absolute runtime cwd equals the target OR is a descendant (path.relative
+   * containment; a sibling prefix like `/a/bc` vs `/a/b` is NOT a descendant).
+   * `stopByCwd` keeps its exact-match semantics and is unaffected. Non-absolute
+   * runtime cwds fall back to exact string equality (preserves legacy behavior;
+   * symlink-text paths match textually — a documented caveat, never a realpath).
+   */
+  private isBusyCwdFor(runtimeCwd: string, target: string): boolean {
+    if (!isAbsolute(runtimeCwd) || !isAbsolute(target)) return runtimeCwd === target;
+    const rel = relative(resolve(target), resolve(runtimeCwd));
+    return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
   }
 
   async stopByCwd(cwd: string, reason = "user"): Promise<string[]> {
