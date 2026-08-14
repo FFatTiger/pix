@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { open, readdir, rename, rm, stat } from "node:fs/promises";
+import { link, lstat, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import type { Context, Hono } from "hono";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import type { AllowedRootService } from "../resources/allowed-roots.js";
+import { KeyedMutex } from "../resources/mutex.js";
 import { readBoundedBody, readJsonObject } from "../resources/request-body.js";
 import type { DefaultCwdFactory, ResourceLimits } from "../resources/types.js";
 
@@ -25,6 +26,48 @@ interface FileRouteDeps {
   limits?: ResourceLimits;
   defaultCwd?: string;
   defaultCwdFactory?: DefaultCwdFactory;
+}
+
+/**
+ * Per-directory serialization for upload transactions. A batch commit mutates
+ * several directory entries and journals every step so it can roll back on a
+ * later failure; two batches targeting the same directory must never interleave
+ * their journals. Keying by the canonical parent path serializes only uploads
+ * that touch the same directory, so parallel uploads to unrelated directories
+ * proceed concurrently (the KeyedMutex removes idle keys automatically). Each
+ * request acquires exactly one lock (its own target directory) and never nests
+ * locks, so no lock ordering / deadlock is possible.
+ */
+const uploadMutations = new KeyedMutex();
+
+/**
+ * Test-only fault-injection seam. Not part of the package public surface; used
+ * by host tests to deterministically fail staging / commit / restore without
+ * chmod or timing hacks. Call {@link setUploadFaultHooks} with null to reset.
+ */
+export interface UploadFaultHooks {
+  beforeStage?: (index: number, name: string) => void | Promise<void>;
+  beforeCommit?: (index: number, name: string) => void | Promise<void>;
+  beforeRestore?: (index: number, name: string) => void | Promise<void>;
+}
+const faultState: { hooks: UploadFaultHooks | null } = { hooks: null };
+export function setUploadFaultHooks(hooks: UploadFaultHooks | null): void {
+  faultState.hooks = hooks;
+}
+
+/** One accepted (non-skip) file through its preflight → stage → commit lifecycle. */
+interface PlannedUpload {
+  name: string;
+  file: UploadFile;
+  /** Unique private temp under the target directory once staged. */
+  stagedPath?: string;
+}
+/** Reversible step recorded in the commit journal, restored in reverse order. */
+interface UploadJournalEntry {
+  kind: "create" | "overwrite";
+  target: string;
+  /** For overwrite: hard-link backup holding the original inode. */
+  backup?: string;
 }
 
 /**
@@ -153,32 +196,113 @@ async function streamAuthorizedFile(
   return new Response(body, { headers: { ...baseHeaders, "Content-Length": String(info.size) } });
 }
 
-async function writeUploadedFile(
-  roots: AllowedRootService, directory: string, file: UploadFile, overwrite: boolean,
-): Promise<void> {
-  const target = await roots.authorizeChild(directory, file.name);
-  const authorizedParent = await roots.authorizeExisting(directory, "directory");
-  const parent = authorizedParent.canonicalPath;
-  if (dirname(target.requestedPath) !== parent) throw new HttpError(403, "PATH_FORBIDDEN", "Upload target parent changed");
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new HttpError(499, "UPLOAD_ABORTED", "Upload request aborted");
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try { await stat(path); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return false; }
+}
+
+/** Stage one accepted file to a unique private temp (0600) under the parent. */
+async function stageUploadedFile(parent: string, file: UploadFile): Promise<string> {
   const temp = join(parent, `.pix-upload-${randomUUID()}.tmp`);
-  if (!overwrite) {
-    const handle = await open(target.requestedPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "EEXIST") throw new HttpError(409, "FILE_EXISTS", `File already exists: ${file.name}`);
+  const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
+  try { await handle.writeFile(new Uint8Array(await file.arrayBuffer())); }
+  finally { await handle.close(); }
+  return temp;
+}
+
+/** Best-effort reverse journal rollback: restore originals, remove creates. */
+async function rollbackUploadBatch(journal: UploadJournalEntry[]): Promise<void> {
+  for (let index = journal.length - 1; index >= 0; index -= 1) {
+    const entry = journal[index]!;
+    await faultState.hooks?.beforeRestore?.(index, entry.target);
+    try {
+      if (entry.kind === "overwrite") await rename(entry.backup!, entry.target);
+      else await rm(entry.target, { force: true });
+    } catch { /* best-effort; caller surfaces the original failure */ }
+  }
+}
+
+/**
+ * Commit a fully staged batch with a rollback journal, holding the
+ * per-directory mutex. Re-verifies the target directory identity and every
+ * child target (root / symlink / type re-checks via AllowedRoot semantics)
+ * before mutating finals, so a target whose identity changed between preflight
+ * and commit is refused instead of followed or overwritten.
+ */
+async function commitUploadBatch(
+  roots: AllowedRootService,
+  requestedDirectory: string,
+  preflightParent: string,
+  parentIdentity: { dev: number; ino: number },
+  plan: PlannedUpload[],
+  overwrite: boolean,
+  skip: boolean,
+  signal?: AbortSignal,
+): Promise<{ uploaded: string[]; skipped: string[] }> {
+  return uploadMutations.runExclusive(preflightParent, async () => {
+    // Re-verify the target directory at the commit boundary and again before
+    // each final mutation, using the same AllowedRoot semantics: if the allowed
+    // root or the target directory was replaced (identity or canonical path
+    // changed) since preflight, refuse instead of mutating a foreign directory.
+    const verifyDirectory = async (): Promise<void> => {
+      const current = await roots.authorizeExisting(requestedDirectory, "directory");
+      if (current.canonicalPath !== preflightParent) throw new HttpError(403, "PATH_FORBIDDEN", "Upload directory changed");
+      const info = await lstat(current.canonicalPath);
+      if (info.dev !== parentIdentity.dev || info.ino !== parentIdentity.ino) throw new HttpError(409, "DIRECTORY_REPLACED", "Upload directory was replaced during the transaction");
+    };
+    await verifyDirectory();
+    const journal: UploadJournalEntry[] = [];
+    const uploaded: string[] = [];
+    const skipped: string[] = [];
+    try {
+      for (let index = 0; index < plan.length; index += 1) {
+        throwIfAborted(signal);
+        const item = plan[index]!;
+        await faultState.hooks?.beforeCommit?.(index, item.name);
+        await verifyDirectory();
+        const authorized = await roots.authorizeChild(requestedDirectory, item.name);
+        const target = authorized.requestedPath;
+        const exists = await pathExists(target);
+        if (exists && skip) { skipped.push(item.name); continue; }
+        if (exists && !overwrite) throw new HttpError(409, "FILE_EXISTS", `File already exists: ${item.name}`);
+        if (exists) {
+          // Overwrite: preserve the original as a hard-link backup in the same
+          // directory (same filesystem), then swap the directory entry. The
+          // backup is dropped on success and restored on rollback, so the
+          // original is never absent while the request is in flight.
+          const info = await lstat(target);
+          if (info.isSymbolicLink() || !info.isFile()) throw new HttpError(409, "UNSAFE_TARGET", "Only regular file targets can be replaced");
+          const backup = join(dirname(target), `.pix-upload-${randomUUID()}.bak`);
+          await link(target, backup);
+          journal.push({ kind: "overwrite", target, backup });
+          // rename replaces the directory entry itself, never follows a symlink.
+          await rename(item.stagedPath!, target);
+        } else {
+          // Create: atomic create-if-absent (link fails with EEXIST if the
+          // target appeared since preflight; rename would silently replace it).
+          await link(item.stagedPath!, target);
+          journal.push({ kind: "create", target });
+          await rm(item.stagedPath!, { force: true });
+          delete item.stagedPath;
+        }
+        uploaded.push(item.name);
+      }
+      throwIfAborted(signal);
+      for (const entry of journal) {
+        if (entry.kind === "overwrite") await rm(entry.backup!, { force: true }).catch(() => undefined);
+      }
+      return { uploaded, skipped };
+    } catch (error) {
+      await rollbackUploadBatch(journal);
       throw error;
-    });
-    try { await handle.writeFile(new Uint8Array(await file.arrayBuffer())); }
-    catch (error) { await handle.close(); await rm(target.requestedPath, { force: true }).catch(() => undefined); throw error; }
-    await handle.close();
-    return;
-  }
-  try {
-    const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
-    try { await handle.writeFile(new Uint8Array(await file.arrayBuffer())); } finally { await handle.close(); }
-    // rename replaces the directory entry itself, never follows a final symlink.
-    await rename(temp, target.requestedPath);
-  } finally {
-    await rm(temp, { force: true }).catch(() => undefined);
-  }
+    } finally {
+      for (const item of plan) if (item.stagedPath) await rm(item.stagedPath, { force: true }).catch(() => undefined);
+    }
+  }, signal);
 }
 
 export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): void {
@@ -224,6 +348,7 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
     // capabilities. No mutation guard here — only sessiond-dependent worktree
     // writes are runtime-guarded (see routes/worktrees.ts).
     const target = requiredPath(c);
+    // Fail-fast path authorization before buffering the bounded multipart body.
     await deps.roots.authorizeExisting(target, "directory");
     const type = c.req.header("content-type") ?? "";
     if (!type.toLowerCase().startsWith("multipart/form-data;")) throw new HttpError(415, "UNSUPPORTED_MEDIA_TYPE", "multipart/form-data is required");
@@ -231,6 +356,16 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
     const parsed = await new Request(c.req.url, { method: "POST", headers: { "content-type": type }, body: bytes }).formData();
     const files = parsed.getAll("files").filter(isUploadFile);
     if (files.length === 0) throw new HttpError(400, "NO_FILES", "No files selected");
+    const overwrite = c.req.query("conflict") === "overwrite";
+    const skip = c.req.query("conflict") === "skip";
+    if (!overwrite && !skip && c.req.query("conflict") && c.req.query("conflict") !== "error") throw new HttpError(400, "INVALID_CONFLICT", "conflict must be error, overwrite, or skip");
+    const authorizedParent = await deps.roots.authorizeExisting(target, "directory");
+    const parent = authorizedParent.canonicalPath;
+    const parentInfo = await lstat(parent);
+
+    // Phase 1 — Preflight the full batch before any write. Keep the existing
+    // validation order (name / duplicate / per-file size, then total) so error
+    // precedence is unchanged, then resolve conflicts for the whole batch.
     const names = new Set<string>();
     let total = 0;
     for (const file of files) {
@@ -240,20 +375,32 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
       if (file.size > maxFile) throw new HttpError(413, "FILE_TOO_LARGE", `File is too large: ${file.name}`);
     }
     if (total > maxTotal) throw new HttpError(413, "UPLOAD_TOO_LARGE", "Upload total is too large");
-    const overwrite = c.req.query("conflict") === "overwrite";
-    const skip = c.req.query("conflict") === "skip";
-    if (!overwrite && !skip && c.req.query("conflict") && c.req.query("conflict") !== "error") throw new HttpError(400, "INVALID_CONFLICT", "conflict must be error, overwrite, or skip");
-    const uploaded: string[] = [];
+    const plan: PlannedUpload[] = [];
     const skipped: string[] = [];
     for (const file of files) {
-      if (skip) {
-        const targetPath = await deps.roots.authorizeChild(target, file.name);
-        try { await stat(targetPath.requestedPath); skipped.push(file.name); continue; }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (await pathExists(join(parent, file.name))) {
+        if (skip) { skipped.push(file.name); continue; }
+        if (!overwrite) throw new HttpError(409, "FILE_EXISTS", `File already exists: ${file.name}`);
       }
-      await writeUploadedFile(deps.roots, target, file, overwrite); uploaded.push(file.name);
+      plan.push({ name: file.name, file });
     }
-    return c.json({ uploaded, skipped }, 201);
+
+    const signal = c.req.raw.signal;
+    // Phase 2 — Stage every accepted file to a unique private temp under the
+    // target directory (0600, O_NOFOLLOW). Any staging failure cleans every
+    // temp already staged and commits nothing.
+    try {
+      for (let index = 0; index < plan.length; index += 1) {
+        throwIfAborted(signal);
+        await faultState.hooks?.beforeStage?.(index, plan[index]!.name);
+        plan[index]!.stagedPath = await stageUploadedFile(parent, plan[index]!.file);
+      }
+      // Phase 3 — Commit under a per-directory lock with a rollback journal.
+      const result = await commitUploadBatch(deps.roots, target, parent, { dev: parentInfo.dev, ino: parentInfo.ino }, plan, overwrite, skip, signal);
+      return c.json({ uploaded: result.uploaded, skipped: [...skipped, ...result.skipped] }, 201);
+    } finally {
+      for (const item of plan) if (item.stagedPath) await rm(item.stagedPath, { force: true }).catch(() => undefined);
+    }
   });
 
   app.post("/v1/cwd/validate", async (c) => {

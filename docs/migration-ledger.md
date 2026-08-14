@@ -672,3 +672,37 @@ FilesPanel 搜索集成（冻结交互）：
 ## 34. session-list-piweb-parity 实现模型说明
 
 本 hotfix 在独立 worktree `fix-session-list-piweb-parity` 完成（base 57ec461），随后以 `b5d6a4c` + `5f10352` 合入 main，并部署至当前测试服务。实现、测试、文档更新与真实语料探针均先在独立 worktree 完成；机器相关探针脚本 `.perf-probe.mjs` 未提交（提交前已删除）。
+
+## 35. D3A-Upload-Transaction — 事务性多文件上传 C1 记录（DONE）
+
+```text
+实现：Fresh DeepSeek；独立 worktree d3a-upload-transaction，branch feat/d3a-upload-transaction，base main 811c94e。目标：POST /v1/files 一次请求接受的文件创建/覆盖全量原子（all-or-nothing）。仅改 packages/host/src/routes/files.ts（生产）+ 新增 packages/host/test/uploads-transaction.test.mjs（12 用例）+ docs 两份。未改 UI/API schema/capability/依赖/package-lock/Client/CLI/protocol/sessiond/trusted-roots-ledger 相关文件。状态 DONE（Fresh DeepSeek 独立验证 PASS，未 merge main、未 push、未重启 live dev）。
+
+语义（相对旧行为）：旧实现逐个文件原子写，后失败时先前文件/覆盖已提交（部分可见最终态）。新实现三段式：
+- Preflight（零写入）：保持既有校验顺序与错误优先级（authorizeChild→duplicate→每文件 size→总 size→conflict），按 conflict 模式规划全批 create/overwrite/skip；conflict=error 对已存在目标在 preflight 即 409 FILE_EXISTS（整批拒绝，无 staging）。
+- Stage：每个接受文件写入目标 canonical 目录内唯一 `.pix-upload-<uuid>.tmp`（O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW，0600）；任一步失败清理全部已 stage temp、零 final 变更。
+- Commit（per-directory KeyedMutex 下，rollback journal）：create 用 `link(staged,target)`+`rm(staged)` 原子 create-if-absent（link 对已存在 target 返回 EEXIST，绝不覆盖/跟随）；overwrite 先 `link(target,backup)` 硬链接备份原 inode 于同目录（同 fs、字节/元数据精确、target 从不缺位）再 `rename(staged,target)`，成功统一 `rm(backup)`，失败 `rename(backup,target)` 精确还原；journal 记录每步，失败按逆序回滚（overwrite→rename backup 还原、create→rm target）。abort（c.req.raw.signal）在 stage/commit 每步检查，观察到的 abort→499 UPLOAD_ABORTED + 回滚已提交项 + 清理 temp。
+
+commit 边界重验（Existing AllowedRoot 语义）：
+- 目录 canonical 路径不变 + dev/ino 身份不变（否则 403 PATH_FORBIDDEN / 409 DIRECTORY_REPLACED）；根身份由 authorizeExisting 现有 ROOT_REPLACED 保护。
+- 每目标再次 authorizeChild（symlink/目录→409 UNSAFE_TARGET）；每次 beforeCommit seam 后重验目录身份，堵住 preflight→commit 间目录替换/root 替换/symlink 交换被误提交的窗口。
+
+并发：模块级 `uploadMutations = new KeyedMutex()`（复用既有 resources/mutex.ts 模式，同 worktrees.ts），key = canonical 父目录；同目录上传 FIFO 串行（两批 journal 不交错），异目录并行（keyed 自动回收 idle key）。每请求仅取一把锁、无嵌套，无 lock ordering/deadlock 可能。
+
+安全/错误：所有既有 path 授权、root identity、traversal/NUL/name 校验、25MiB/100MiB、multipart、conflict 语义、symlink 拒绝、O_NOFOLLOW/0600/temp+rename、精确字节、sanitized 错误全部保留；新增 code 仅 `DIRECTORY_REPLACED`(409)/`UPLOAD_ABORTED`(499)，无路径无内容。临时/备份名 `.pix-upload-<uuid>.tmp/.bak` 随机不可预测、成功/失败 best-effort 清理、绝不进入响应或日志。
+
+测试 seam：`setUploadFaultHooks(hooks)`/`UploadFaultHooks`（beforeStage/beforeCommit/beforeRestore）从 `dist/routes/files.js` 导出供测试确定性注败（chmod/timing 不用），未从 index.ts 导出、非 public surface；afterEach 复位。
+
+新增 12 用例全 PASS（5 轮无 flake）：
+1. 两个新文件、第二 commit 失败→第一个也移除；2. overwrite 原文件+后失败→原字节精确还原（含二进制）；3. 混合 create/overwrite（独立 root）与 skip 条目不参与回滚（独立 root）；4. staging 失败→零 final 变更/temp 残留；5. 重复文件名 preflight 400 零写入；6. symlink 交换于 preflight→commit→409 UNSAFE_TARGET、外部文件未被写、target 保持 symlink（lstat 验证）；7. 根替换→403 ROOT_REPLACED、子目录替换→409 DIRECTORY_REPLACED；8. 同目录并发 commit 串行（beforeCommit 阻塞证明）+异目录并行；9. error 模式批内目标中途出现→整批 409 回滚且外部文件保留；10. skip 模式批内目标中途出现→skip 不回滚、temp 清理；11. 成功上传无 temp/backup 残留且响应不泄漏 pix-upload/.tmp/.bak；12. abort 清理 temp+回滚已提交 overwrite。
+
+验证（候选 worktree 本地，Node v24.18.0）：
+- 定向 uploads-transaction 12/12（5 轮全过，无顺序依赖）；Host 全量 281/281（基线 269 + 12）；Host build/typecheck EXIT 0；check:boundaries PASS（38 files）；check:architecture PASS；git diff --check PASS。
+- 最新 dist 证明：dist/routes/files.js mtime（10:10:42）晚于 src（10:08:46），且含 DIRECTORY_REPLACED 检查、unhandled-error stack 解析到本 worktree dist 路径（排除 stale-main-dist 假验证）。
+
+残余风险（诚实记录）：
+- 请求级回滚是强制的；进程在 commit 中段崩溃时无 durable journal，无法自动恢复（部分批可能已提交）——不承诺进程崩溃耐久；崩溃窗口内可能遗留 `.pix-upload-*.bak/.tmp`（best-effort 清理，不保证）。
+- overwrite 用硬链接备份，依赖文件系统支持硬链接（APFS/ext4 等目标平台支持）；不支持的文件系统会使 overwrite 失败（安全失败，非静默降级）。
+- overwrite 的 `link(target,backup)` 与 `rename` 之间 target 缺位窗口极小（硬链接方案下 target 从不缺位；rename backup 还原为原子单步）。
+- 并发锁仅串行化 Host 上传请求；外部进程（shell/git）对同目录的并发修改仍依赖 commit 边界重验兜底（TOCTOU 不可完全消除）。
+```
