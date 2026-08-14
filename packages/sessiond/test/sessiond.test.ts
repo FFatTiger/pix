@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { RuntimeCapabilitySet, RuntimeSnapshot, SessiondMethodParams, SessiondRpcRequest, SessiondRuntimeAttachResult } from "@fffattiger/pix-protocol";
 import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
-import type { SessionCatalogPort, SessionLocatorPort } from "@fffattiger/pix-runtime-core";
+import { makeRuntimeError, type SessionCatalogPort, type SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondApplication } from "../src/application.js";
 import { EventJournal } from "../src/journal.js";
 import { acquireInstanceLock, loadOrCreateLocalSecret, sessiondPaths } from "../src/local.js";
@@ -2346,4 +2346,294 @@ test("RPC server survives late completion in a child process under Node default 
   });
   assert.equal(result.code, 0, `child exited ${result.code} (unhandled rejection escaped); stderr=${result.stderr}; stdout=${result.stdout}`);
   assert.match(result.stdout, /SURVIVED/);
+});
+
+// ---------------------------------------------------------------------------
+// D4 session-history delete: stopped/history only, no stop-then-delete.
+// ---------------------------------------------------------------------------
+
+const waitUntil = async (predicate: () => boolean, timeoutMs = 2_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("waitUntil timed out");
+    await wait(2);
+  }
+};
+
+const busySnapshot = (sessionId: string, state: Partial<RuntimeSnapshot["state"]>): RuntimeSnapshot => ({
+  ...snapshot(sessionId),
+  state: { ...snapshot(sessionId).state, ...state },
+});
+
+/** D4 delete harness: catalog + locator share a file-existence map (mirrors the
+ *  real adapter, where delete removes the file and locate then reports absent),
+ *  records deletions, and allows an injectable slow/gated deleteSession. */
+function deleteHarness(options: {
+  deleteSession?: (sessionId: string) => Promise<void>;
+  worker?: ConstructorParameters<typeof FakeWorkerFactory>[0];
+  service?: ConstructorParameters<typeof SessiondService>[1];
+} = {}) {
+  const files = new Map<string, boolean>();
+  const deleted: string[] = [];
+  const locator: SessionLocatorPort = {
+    async locate(sessionId) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: files.get(sessionId) ?? false }; },
+    async resolveLeafId() { return "leaf"; },
+  };
+  const catalog: SessionCatalogPort = {
+    async listSessions() { return [...files].filter(([, exists]) => exists).map(([sessionId]) => ({ sessionId, cwd: `/cwd/${sessionId}`, projectRoot: `/cwd/${sessionId}` })); },
+    async readSession(sessionId) {
+      if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);
+      return { sessionId, cwd: `/cwd/${sessionId}`, projectRoot: `/cwd/${sessionId}`, entries: [] };
+    },
+    async readSessionContext(sessionId) {
+      if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);
+      return { sessionId, entries: [] };
+    },
+    async deleteSession(sessionId) {
+      if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);
+      if (options.deleteSession) return options.deleteSession(sessionId);
+      files.set(sessionId, false);
+      deleted.push(sessionId);
+    },
+  };
+  const workers = new FakeWorkerFactory(options.worker);
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId, _location, requestedCwd) { return { cwd: requestedCwd ?? `/cwd/${sessionId}`, projectRoot: requestedCwd ?? `/cwd/${sessionId}` }; } },
+    workerFactory: workers,
+    sessionCatalog: catalog,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0, ...options.service });
+  return { service, workers, files, deleted, seed: (id: string) => files.set(id, true) };
+}
+
+test("D4 delete of a non-live session succeeds and invalidates the catalog", async () => {
+  const { service, deleted, files, seed } = deleteHarness();
+  seed("s1");
+  await service.deleteSession("s1");
+  assert.deepEqual(deleted, ["s1"]);
+  assert.equal(files.get("s1"), false);
+  assert.deepEqual(await service.listRunning(), { sessions: [] });
+  await service.shutdown();
+});
+
+test("D4 delete of a missing session fails with fixed not_found", async () => {
+  const { service, deleted } = deleteHarness();
+  await assert.rejects(service.deleteSession("missing"), (error: unknown) => {
+    const code = error !== null && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+    assert.equal(code, "not_found", "missing delete must fail with fixed not_found");
+    return true;
+  });
+  assert.deepEqual(deleted, []);
+  await service.shutdown();
+});
+
+test("D4 delete without a catalog fails closed with unavailable", async () => {
+  const locator: SessionLocatorPort = { async locate(id) { return { sessionId: id, sessionFile: `/sessions/${id}.jsonl`, exists: false }; }, async resolveLeafId() { return "leaf"; } };
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId, _l, requestedCwd) { return { cwd: requestedCwd ?? `/cwd/${sessionId}`, projectRoot: requestedCwd ?? `/cwd/${sessionId}` }; } },
+    workerFactory: new FakeWorkerFactory(),
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  await assert.rejects(service.deleteSession("s1"), (error: unknown) => {
+    assert.ok(error instanceof SessiondError);
+    assert.equal(error.code, "unavailable");
+    return true;
+  });
+  await service.shutdown();
+});
+
+test("D4 live idle/prompt/bash/compact sessions all reject with session_busy: no stop, no catalog delete, no worker shutdown", async () => {
+  const states: { label: string; state?: Partial<RuntimeSnapshot["state"]> }[] = [
+    { label: "idle" },
+    { label: "prompt", state: { isPromptRunning: true } },
+    { label: "bash", state: { isBashRunning: true } },
+    { label: "compact", state: { isCompacting: true } },
+  ];
+  for (const { label, state } of states) {
+    const { service, workers, deleted, files, seed } = deleteHarness({
+      worker: { readyDelayMs: 0, ...(state === undefined ? {} : { snapshot: busySnapshot("s1", state) }) },
+    });
+    seed("s1");
+    await service.activate("s1");
+    await assert.rejects(service.deleteSession("s1"), (error: unknown) => {
+      assert.ok(error instanceof SessiondError, `${label}: must reject with a SessiondError`);
+      assert.equal(error.code, "session_busy", `${label}: live delete must fail closed with session_busy`);
+      assert.equal(error.retryable, false, `${label}: live delete conflict is not retryable`);
+      return true;
+    });
+    assert.deepEqual(deleted, [], `${label}: catalog delete must never run`);
+    assert.equal(files.get("s1"), true, `${label}: file must be retained`);
+    assert.ok(!workers.workers[0]!.sent.some((item) => item.type === "worker.shutdown"), `${label}: worker must not be shut down`);
+    assert.ok(service.listRunning().sessions.some((s) => s.sessionId === "s1"), `${label}: record must remain live`);
+    await service.shutdown();
+  }
+});
+
+test("D4 activation-delete race: in-flight activation wins → delete conflicts with session_busy and removes nothing", async () => {
+  const { service, workers, deleted, files, seed } = deleteHarness({ worker: { readyDelayMs: 30 } });
+  seed("s1");
+  const activation = service.activate("s1");
+  await waitUntil(() => service.diagnostics().activations === 1);
+  await assert.rejects(service.deleteSession("s1"), (error: unknown) => {
+    assert.ok(error instanceof SessiondError);
+    assert.equal(error.code, "session_busy", "delete must conflict while an activation is in flight");
+    return true;
+  });
+  const result = await activation;
+  assert.equal(result.sessionId, "s1");
+  assert.deepEqual(deleted, [], "delete must not remove the file when the activation won");
+  assert.equal(files.get("s1"), true, "file must be retained after the activation won");
+  assert.equal(workers.starts, 1);
+  await service.shutdown();
+});
+
+test("D4 activation-delete race: delete commits first → activation fails not_found and starts no worker", async () => {
+  let releaseDelete!: () => void;
+  let deleteEntered = false;
+  const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
+  const { service, workers, files, deleted, seed } = deleteHarness({
+    deleteSession: async (sessionId) => {
+      deleteEntered = true;
+      await deleteGate;
+      files.set(sessionId, false);
+      deleted.push(sessionId);
+    },
+  });
+  seed("s1");
+  const del = service.deleteSession("s1");
+  await waitUntil(() => deleteEntered);
+  // The delete holds the fence inside catalog.deleteSession; an activation
+  // issued now must block until the delete commits, then fail not_found.
+  const activation = service.activate("s1");
+  await wait(20);
+  assert.equal(workers.starts, 0, "no worker may start while the delete holds the fence");
+  releaseDelete();
+  await del;
+  await assert.rejects(activation, (error: unknown) => {
+    assert.ok(error instanceof SessiondError);
+    assert.equal(error.code, "not_found", "activation after delete must fail closed with not_found");
+    return true;
+  });
+  assert.deepEqual(deleted, ["s1"]);
+  assert.equal(files.get("s1"), false);
+  assert.equal(workers.starts, 0, "no worker may ever start for a deleted session");
+  await service.shutdown();
+});
+
+test("D4 concurrent delete/delete serializes: exactly one success + one fixed not_found, no wrong-file risk", async () => {
+  const { service, files, deleted, seed } = deleteHarness();
+  seed("s1");
+  const results = await Promise.allSettled([service.deleteSession("s1"), service.deleteSession("s1")]);
+  const ok = results.filter((result) => result.status === "fulfilled").length;
+  const notFound = results.filter((result) => {
+    if (result.status !== "rejected") return false;
+    const reason = result.reason as { code?: unknown };
+    return reason !== null && typeof reason === "object" && reason.code === "not_found";
+  }).length;
+  assert.equal(ok, 1, "exactly one concurrent delete must succeed");
+  assert.equal(notFound, 1, "the serialized second delete must fail with fixed not_found");
+  assert.equal(files.get("s1"), false);
+  assert.deepEqual(deleted, ["s1"], "the file must be removed exactly once");
+  await service.shutdown();
+});
+
+// ---------------------------------------------------------------------------
+// D4 fence regression: activate must NOT hold the global mutex across worker
+// start (AsyncMutex.runExclusive awaits the callback result). The mutex is held
+// only for the synchronous admission; the async operation runs outside the lock.
+// ---------------------------------------------------------------------------
+
+test("D4 fence: activate with worker sessionDiscovered rekey completes before workerStartTimeout and leaves no orphan", async () => {
+  const { service, workers } = harness({
+    worker: (input) => ({ readyDelayMs: 5, discoveredSessionId: `real-${input.sessionId}` }),
+  });
+  const started = Date.now();
+  const result = await service.activate("s-requested");
+  const elapsed = Date.now() - started;
+  assert.equal(result.sessionId, "real-s-requested", "rekey must land on the authoritative id");
+  assert.ok(elapsed < 400, `activate must complete well before workerStartTimeout (500ms); took ${elapsed}ms`);
+  assert.equal(workers.starts, 1);
+  assert.equal(service.diagnostics().activations, 0, "no activation entry may remain");
+  assert.ok(service.listRunning().sessions.some((s) => s.sessionId === "real-s-requested"), "authoritative record must be live");
+  await service.shutdown();
+});
+
+test("D4 fence: different-id activations with delayed readiness overlap (not service-wide serialized)", async () => {
+  const { service, workers } = harness({ worker: { readyDelayMs: 40 } });
+  const p1 = service.activate("a");
+  const p2 = service.activate("b");
+  // Both start() invocations happen as soon as each admission passes the brief
+  // synchronous fence — never after the other's worker readiness.
+  await wait(10);
+  assert.equal(workers.starts, 2, "different-id activations must overlap, not serialize behind one worker start");
+  const [r1, r2] = await Promise.all([p1, p2]);
+  assert.equal(r1.sessionId, "a");
+  assert.equal(r2.sessionId, "b");
+  assert.equal(workers.starts, 2);
+  await service.shutdown();
+});
+
+test("D4 fence: same-id delete during a slow activation fails closed promptly; different-id delete is not blocked", async () => {
+  const { service, workers, deleted, seed } = deleteHarness({ worker: { readyDelayMs: 300 } });
+  seed("s1");
+  seed("s2");
+  const activation = service.activate("s1");
+  await waitUntil(() => service.diagnostics().activations === 1);
+
+  // Same-id delete: session_busy promptly, without waiting for the worker start.
+  const sameStarted = Date.now();
+  await assert.rejects(service.deleteSession("s1"), (error: unknown) => {
+    assert.ok(error instanceof SessiondError);
+    assert.equal(error.code, "session_busy");
+    return true;
+  });
+  // The old (broken) code held the mutex across the 300ms worker start, so the
+  // delete waited ~300ms. <250ms still fails old code while being generous for
+  // the new prompt fail-closed path under CI load.
+  assert.ok(Date.now() - sameStarted < 250, "same-id delete must fail closed promptly, not wait for the worker");
+
+  // Different-id delete: not blocked by s1's slow activation lock.
+  const otherStarted = Date.now();
+  await service.deleteSession("s2");
+  assert.ok(Date.now() - otherStarted < 250, "a different-id delete must not block behind another session's activation");
+  assert.deepEqual(deleted, ["s2"]);
+
+  await activation;
+  assert.equal(workers.starts, 1);
+  await service.shutdown();
+});
+
+test("D4 fence: joined same-id activate callers share one operation and only the admitted owner cleans the map", async () => {
+  const { service, workers } = harness({ worker: { readyDelayMs: 5 } });
+  const [a, b] = await Promise.all([service.activate("same"), service.activate("same")]);
+  assert.equal(a.sessionId, "same");
+  assert.equal(a.epoch, b.epoch, "joined callers must share the same operation/epoch");
+  assert.equal(workers.starts, 1, "exactly one worker starts for joined callers");
+  assert.equal(service.diagnostics().activations, 0, "the admitted owner must clean the activation map");
+  await service.shutdown();
+});
+
+test("D4 fence: a rejected activation cleans its map entry and a retry re-admits cleanly", async () => {
+  const locator: SessionLocatorPort = {
+    async locate(sessionId) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: false }; },
+    async resolveLeafId() { return "leaf"; },
+  };
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId, _l, requestedCwd) { return { cwd: requestedCwd ?? `/cwd/${sessionId}`, projectRoot: requestedCwd ?? `/cwd/${sessionId}` }; } },
+    workerFactory: new FakeWorkerFactory({ readyDelayMs: 0 }),
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  const checkReject = async () => {
+    await assert.rejects(service.activate("missing"), (error: unknown) => {
+      assert.ok(error instanceof SessiondError);
+      assert.equal(error.code, "not_found");
+      return true;
+    });
+  };
+  await checkReject();
+  assert.equal(service.diagnostics().activations, 0, "a rejected activation must clean the map");
+  // Retry re-admits cleanly (never stuck on a stale entry).
+  await checkReject();
+  assert.equal(service.diagnostics().activations, 0);
+  await service.shutdown();
 });

@@ -99,7 +99,10 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
   registerHealthRoutes(app, deps);
   registerBootstrapRoutes(app, deps, gateDeps);
   if (deps.sessions) {
-    registerSessionRoutes(app, { client: deps.sessions.client });
+    registerSessionRoutes(app, {
+      client: deps.sessions.client,
+      ...(deps.sessions.delete ? { delete: deps.sessions.delete } : {}),
+    });
   }
   if (deps.catalogs) {
     registerCatalogRoutes(app, deps.catalogs);

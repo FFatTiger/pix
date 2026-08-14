@@ -182,3 +182,70 @@ test("RPC boundary sanitizes an arbitrary thrown value to internal (round-trip)"
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("RPC boundary: sessions.delete of a missing session survives as canonical not_found (round-trip)", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-delete-boundary-"));
+  const endpoint = join(directory, "rpc.sock");
+  const { service } = rpcHarness();
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
+  await server.listen();
+  try {
+    const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 1_000 });
+    await assert.rejects(
+      client.call("sessions.delete", { sessionId: "missing-delete-secret-id" }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessiondError, "delete must reject with a SessiondError");
+        assert.equal(error.code, "not_found", "canonical not_found must survive the boundary");
+        assert.equal(error.message, "session not found", "message must be the fixed sanitized canonical message");
+        assert.ok(!String(error.message).includes("missing-delete-secret-id"), "raw id must never echo");
+        return true;
+      },
+    );
+  } finally {
+    await server.close();
+    await service.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("RPC boundary: sessions.delete of a live session survives as canonical session_busy (round-trip)", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-delete-busy-"));
+  const endpoint = join(directory, "rpc.sock");
+  // Locator reports the session as present so activation can start a worker.
+  const locator: SessionLocatorPort = {
+    async locate(sessionId) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: true }; },
+    async resolveLeafId(sessionId) { return sessionId; },
+  };
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId, _location, requestedCwd) { return { cwd: requestedCwd ?? `/cwd/${sessionId}`, projectRoot: requestedCwd ?? `/cwd/${sessionId}` }; } },
+    workerFactory: new FakeWorkerFactory({ readyDelayMs: 0 }),
+    sessionCatalog: {
+      async listSessions() { return []; },
+      async readSession() { throw makeRuntimeError("not_found", "session not found"); },
+      async readSessionContext() { throw makeRuntimeError("not_found", "session not found"); },
+      async deleteSession() { throw makeRuntimeError("not_found", "session not found"); },
+    },
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: new SessiondApplication(service) });
+  await server.listen();
+  try {
+    const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 1_000 });
+    await client.call("runtime.activate", { sessionId: "live-s1" });
+    await assert.rejects(
+      client.call("sessions.delete", { sessionId: "live-s1" }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessiondError, "live delete must reject with a SessiondError");
+        assert.equal(error.code, "session_busy", "live delete must surface canonical session_busy");
+        assert.equal(error.retryable, false, "the live-delete conflict is not retryable");
+        return true;
+      },
+    );
+  } finally {
+    await server.close();
+    await service.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

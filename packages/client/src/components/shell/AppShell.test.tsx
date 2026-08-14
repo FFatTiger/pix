@@ -581,3 +581,46 @@ describe("AppShell worktree Open/switch navigation (D3A)", () => {
     expect(screen.getByRole("button", { name: "Open worktree feature/x" })).toBeTruthy();
   });
 });
+
+describe("AppShell D4 session delete navigation", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+    navigateCalls.length = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://pix.local");
+      if (init?.method === "DELETE") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname === "/v1/sessions") {
+        return new Response(
+          JSON.stringify({ sessions: [{ sessionId: "del-1", cwd: "/proj", projectRoot: "/proj", title: "Delete Me" }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return contextResponse("del-1");
+    }) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    cleanup();
+  });
+
+  it("deleting the URL-selected session clears only session and preserves cwd", async () => {
+    mount({ cwd: "/proj", session: "del-1" }, { mode: "local", capabilities: ["sessions", "session.delete", "agent"] });
+    await screen.findByText("Delete Me"); // sidebar row rendered
+    screen.getByRole("button", { name: "Delete session Delete Me" }).click();
+    await screen.findByRole("alert", { name: "Confirm deleting Delete Me" });
+    screen.getByRole("button", { name: "Confirm delete Delete Me" }).click();
+    await waitFor(() =>
+      expect(navigateCalls).toContainEqual({ to: "/", search: { cwd: "/proj" } }),
+    );
+    const nav = navigateCalls.find((n) => n.to === "/");
+    expect(nav?.search).toEqual({ cwd: "/proj" });
+    expect(nav?.search).not.toHaveProperty("session");
+    // No runtime socket was opened for a history delete (no attach/stop/detach).
+    expect(SOCKETS.length).toBe(0);
+  });
+});

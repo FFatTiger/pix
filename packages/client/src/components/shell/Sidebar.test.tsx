@@ -3,7 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, cleanup, act, waitFor } from "@testing-library/react";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { HttpClientProvider } from "@/app/http-context";
-import { Sidebar } from "./Sidebar";
+import { Sidebar, describeSessionDeleteError } from "./Sidebar";
+import { HttpError } from "@/api/http-client";
 import type { ReactNode } from "react";
 import type { HostCapability, HostInfo, SessionHeader } from "@fffattiger/pix-protocol";
 import type { WorkspaceSearch } from "@/lib/search-params";
@@ -357,5 +358,293 @@ describe("Sidebar — strictly read-only", () => {
     } finally {
       globalThis.WebSocket = PreviousWS;
     }
+  });
+});
+
+describe("Sidebar — D4 session-history delete", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => { previousFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = previousFetch; cleanup(); });
+
+  function deleteMount(
+    search: WorkspaceSearch,
+    host: Partial<HostInfo>,
+    extra: { liveSessionId?: string | null; onSessionDeleted?: (id: string) => void } = {},
+  ) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={qc}>
+        <HttpClientProvider>
+          <CapabilityProvider host={host}>
+            <Sidebar
+              open
+              search={search}
+              liveSessionId={extra.liveSessionId ?? null}
+              {...(extra.onSessionDeleted === undefined ? {} : { onSessionDeleted: extra.onSessionDeleted })}
+            />
+          </CapabilityProvider>
+        </HttpClientProvider>
+      </QueryClientProvider>,
+    );
+    return { view, qc };
+  }
+
+  /** Fetch mock recording { url, method }; GET list, DELETE success by default. */
+  function recordingFetch(list: SessionHeader[] = [baseSession({ sessionId: "s-1", title: "One" })]) {
+    const calls: { url: string; method: string }[] = [];
+    const impl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push({ url, method });
+      if (method === "DELETE") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return listResponse(list);
+    });
+    return { impl: impl as unknown as typeof fetch, calls };
+  }
+
+  async function openConfirm(label: string) {
+    screen.getByRole("button", { name: `Delete session ${label}` }).click();
+    await waitFor(() => expect(screen.getByRole("alert", { name: `Confirm deleting ${label}` })).toBeTruthy());
+  }
+
+  it("no session.delete capability: zero delete controls and zero DELETE traffic", async () => {
+    const { impl, calls } = recordingFetch();
+    globalThis.fetch = impl;
+    deleteMount({ cwd: "/proj" }, { mode: "local", capabilities: ["sessions"] });
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /Delete session/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Confirm delete/ })).toBeNull();
+    expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("with session.delete: shows a Delete control per eligible row", async () => {
+    globalThis.fetch = recordingFetch([
+      baseSession({ sessionId: "s-1", title: "One" }),
+      baseSession({ sessionId: "s-2", title: "Two" }),
+    ]).impl;
+    deleteMount({ cwd: "/proj" }, { mode: "local", capabilities: ["sessions", "session.delete"] });
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Delete session One" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete session Two" })).toBeTruthy();
+  });
+
+  it("hides the delete control for the currently attached/live session only", async () => {
+    globalThis.fetch = recordingFetch([
+      baseSession({ sessionId: "live-1", title: "Live" }),
+      baseSession({ sessionId: "hist-1", title: "Hist" }),
+    ]).impl;
+    deleteMount({ cwd: "/proj" }, { mode: "local", capabilities: ["sessions", "session.delete"] }, { liveSessionId: "live-1" });
+    await waitFor(() => expect(screen.getByText("live-1")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Delete session Live" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete session Hist" })).toBeTruthy();
+  });
+
+  it("the delete control is a sibling of the row Link — clicking it never navigates", async () => {
+    globalThis.fetch = recordingFetch().impl;
+    deleteMount({ cwd: "/proj" }, { mode: "local", capabilities: ["sessions", "session.delete"] });
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    const button = screen.getByRole("button", { name: "Delete session One" });
+    expect(button.closest("a")).toBeNull(); // not nested in the row Link
+    // Opening the confirmation is a row-local effect; the row Link is untouched.
+    button.click();
+    await waitFor(() => expect(screen.getByRole("alert", { name: "Confirm deleting One" })).toBeTruthy());
+    expect(screen.getByRole("link").getAttribute("href")).toBe("/");
+  });
+
+  it("confirm shows Cancel with default focus; cancel returns focus to the delete control", async () => {
+    globalThis.fetch = recordingFetch().impl;
+    deleteMount({ cwd: "/proj" }, { mode: "local", capabilities: ["sessions", "session.delete"] });
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    const rowDelete = screen.getByRole("button", { name: "Delete session One" });
+    rowDelete.click();
+    await waitFor(() => expect(screen.getByRole("alert", { name: "Confirm deleting One" })).toBeTruthy());
+    const confirm = screen.getByRole("alert", { name: "Confirm deleting One" });
+    expect(confirm.textContent).toContain("permanent and cannot be undone");
+    // Cancel is the safe default focus.
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    await waitFor(() => expect(document.activeElement).toBe(cancel));
+    cancel.click();
+    await waitFor(() => expect(screen.queryByRole("alert", { name: "Confirm deleting One" })).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Delete session One" })));
+  });
+
+  it("delete of the URL-selected row sends exactly one DELETE and notifies AppShell (cwd preserved there)", async () => {
+    const { impl, calls } = recordingFetch();
+    globalThis.fetch = impl;
+    const deleted: string[] = [];
+    deleteMount({ cwd: "/proj", session: "s-1" }, { mode: "local", capabilities: ["sessions", "session.delete"] }, { onSessionDeleted: (id) => deleted.push(id) });
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    await openConfirm("One");
+    screen.getByRole("button", { name: "Confirm delete One" }).click();
+    await waitFor(() => expect(deleted).toEqual(["s-1"]));
+    const deletes = calls.filter((call) => call.method === "DELETE");
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.url).toBe("/v1/sessions/s-1");
+    // Mutation onSuccess invalidates the session lists + detail (existing option).
+    await waitFor(() => expect(calls.filter((call) => call.url.startsWith("/v1/sessions")).length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("deleting a NON-selected row leaves the URL untouched (no onSessionDeleted)", async () => {
+    const { impl, calls } = recordingFetch([
+      baseSession({ sessionId: "sel-1", title: "Selected" }),
+      baseSession({ sessionId: "other-2", title: "Other" }),
+    ]);
+    globalThis.fetch = impl;
+    const deleted: string[] = [];
+    deleteMount({ cwd: "/proj", session: "sel-1" }, { mode: "local", capabilities: ["sessions", "session.delete"] }, { onSessionDeleted: (id) => deleted.push(id) });
+    await waitFor(() => expect(screen.getByText("other-2")).toBeTruthy());
+    await openConfirm("Other");
+    screen.getByRole("button", { name: "Confirm delete Other" }).click();
+    await waitFor(() => expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1));
+    expect(deleted).toEqual([]); // non-selected deletion never navigates
+  });
+
+  it("live 409 maps to the fixed in-use copy and never leaks the raw host message", async () => {
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return new Response(
+          JSON.stringify({ error: "raw secret host in-use marker", code: "SESSION_IN_USE", message: "raw secret host in-use marker" }),
+          { status: 409, headers: { "content-type": "application/json" } },
+        );
+      }
+      return listResponse([baseSession({ sessionId: "s-1", title: "One" })]);
+    }) as unknown as typeof fetch;
+    deleteMount({ cwd: "/proj" }, { mode: "local", capabilities: ["sessions", "session.delete"] });
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    await openConfirm("One");
+    screen.getByRole("button", { name: "Confirm delete One" }).click();
+    await waitFor(() => expect(screen.getByText("This session is currently in use.")).toBeTruthy());
+    expect(screen.queryByText(/raw secret host in-use marker/)).toBeNull();
+  });
+
+  it("down 503 maps to the fixed unavailable copy with no leak", async () => {
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return new Response(
+          JSON.stringify({ error: "leak: /secret/sessiond.sock", code: "SESSIONS_UNAVAILABLE", message: "leak: /secret/sessiond.sock" }),
+          { status: 503, headers: { "content-type": "application/json" } },
+        );
+      }
+      return listResponse([baseSession({ sessionId: "s-1", title: "One" })]);
+    }) as unknown as typeof fetch;
+    deleteMount({ cwd: "/proj" }, { mode: "local", capabilities: ["sessions", "session.delete"] });
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    await openConfirm("One");
+    screen.getByRole("button", { name: "Confirm delete One" }).click();
+    await waitFor(() => expect(screen.getByText("Session deletion is temporarily unavailable.")).toBeTruthy());
+    expect(screen.queryByText(/leak/)).toBeNull();
+    expect(screen.queryByText(/secret\/sessiond/)).toBeNull();
+  });
+
+  it("double submit issues exactly one DELETE (singleflight)", async () => {
+    let resolveDelete: ((value: Response) => void) | undefined;
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return new Promise<Response>((resolve) => { resolveDelete = resolve; });
+      }
+      return listResponse([baseSession({ sessionId: "s-1", title: "One" })]);
+    }) as unknown as typeof fetch;
+    deleteMount({ cwd: "/proj" }, { mode: "local", capabilities: ["sessions", "session.delete"] });
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    await openConfirm("One");
+    const confirmDelete = screen.getByRole("button", { name: "Confirm delete One" });
+    confirmDelete.click();
+    confirmDelete.click(); // same-tick double submit
+    await act(async () => { await Promise.resolve(); });
+    expect(resolveDelete).toBeTypeOf("function");
+    await act(async () => {
+      resolveDelete?.(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
+      await Promise.resolve();
+    });
+    // Exactly one DELETE request was issued.
+    const deletes = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+    );
+    expect(deletes).toHaveLength(1);
+  });
+
+  it("capability revoke mid-flight makes the late result inert (no error, no navigation)", async () => {
+    let resolveDelete: ((value: Response) => void) | undefined;
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return new Promise<Response>((resolve) => { resolveDelete = resolve; });
+      }
+      return listResponse([baseSession({ sessionId: "s-1", title: "One" })]);
+    }) as unknown as typeof fetch;
+    const deleted: string[] = [];
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const build = (host: Partial<HostInfo>) => (
+      <QueryClientProvider client={qc}>
+        <HttpClientProvider>
+          <CapabilityProvider host={host}>
+            <Sidebar open search={{ cwd: "/proj", session: "s-1" }} liveSessionId={null} onSessionDeleted={(id) => deleted.push(id)} />
+          </CapabilityProvider>
+        </HttpClientProvider>
+      </QueryClientProvider>
+    );
+    const view = render(build({ mode: "local", capabilities: ["sessions", "session.delete"] }));
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    await openConfirm("One");
+    screen.getByRole("button", { name: "Confirm delete One" }).click();
+    await act(async () => { await Promise.resolve(); });
+    // Revoke the session.delete capability while the DELETE is in flight.
+    view.rerender(build({ mode: "local", capabilities: ["sessions"] }));
+    await act(async () => {
+      resolveDelete?.(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
+      await Promise.resolve();
+    });
+    expect(deleted).toEqual([]); // late success must not navigate
+    expect(screen.queryByRole("alert")).toBeNull(); // no stale error/status
+    expect(screen.queryByRole("button", { name: /Delete session/ })).toBeNull(); // controls gone
+  });
+
+  it("URL session selection change mid-flight makes the late success inert", async () => {
+    let resolveDelete: ((value: Response) => void) | undefined;
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return new Promise<Response>((resolve) => { resolveDelete = resolve; });
+      }
+      return listResponse([baseSession({ sessionId: "s-1", title: "One" })]);
+    }) as unknown as typeof fetch;
+    const deleted: string[] = [];
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const build = (search: WorkspaceSearch) => (
+      <QueryClientProvider client={qc}>
+        <HttpClientProvider>
+          <CapabilityProvider host={{ mode: "local", capabilities: ["sessions", "session.delete"] }}>
+            <Sidebar open search={search} liveSessionId={null} onSessionDeleted={(id) => deleted.push(id)} />
+          </CapabilityProvider>
+        </HttpClientProvider>
+      </QueryClientProvider>
+    );
+    const view = render(build({ cwd: "/proj", session: "s-1" }));
+    await waitFor(() => expect(screen.getByText("s-1")).toBeTruthy());
+    await openConfirm("One");
+    screen.getByRole("button", { name: "Confirm delete One" }).click();
+    await act(async () => { await Promise.resolve(); });
+    // The URL selection switches away mid-flight.
+    view.rerender(build({ cwd: "/proj", session: "other-9" }));
+    await act(async () => {
+      resolveDelete?.(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
+      await Promise.resolve();
+    });
+    expect(deleted).toEqual([]); // stale selection must not navigate
+  });
+});
+
+
+describe("describeSessionDeleteError — fixed copy, no raw leak", () => {
+  it("maps each status/code to fixed text and never renders raw messages", () => {
+    const raw = (msg: string) => ({ status: 500, code: "SESSION_IN_USE", path: "/v1/sessions/s", message: msg });
+    expect(describeSessionDeleteError(new HttpError(raw("raw in-use marker")))).toBe("This session is currently in use.");
+    expect(describeSessionDeleteError(new HttpError({ status: 404, code: "SESSION_NOT_FOUND", path: "/v1/sessions/s", message: "raw not-found marker" }))).toBe("This session no longer exists.");
+    expect(describeSessionDeleteError(new HttpError({ status: 503, code: "SESSIONS_UNAVAILABLE", path: "/v1/sessions/s", message: "raw down marker" }))).toBe("Session deletion is temporarily unavailable.");
+    expect(describeSessionDeleteError(new HttpError({ status: 401, path: "/v1/sessions/s", message: "unauth" }))).toBe("You are not authorized for this action.");
+    expect(describeSessionDeleteError(new HttpError({ kind: "network", status: 0, path: "/v1/sessions/s", message: "raw network marker" }))).toBe("Network error — unable to reach the host.");
+    expect(describeSessionDeleteError(new HttpError({ kind: "timeout", status: 0, path: "/v1/sessions/s", message: "raw timeout marker" }))).toBe("Request timed out — try again.");
+    expect(describeSessionDeleteError(new HttpError({ kind: "aborted", status: 0, path: "/v1/sessions/s", message: "raw aborted marker" }))).toBe("The action was cancelled.");
+    expect(describeSessionDeleteError(new Error("raw unknown marker"))).toBe("Unable to delete this session.");
   });
 });

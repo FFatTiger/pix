@@ -1,5 +1,5 @@
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
-import type { SessionHistoryReadClient } from "../types.js";
+import type { SessionDeleteClient, SessionHistoryReadClient } from "../types.js";
 
 /**
  * Narrow read-only session history client backed by the fixed sessiond RPC
@@ -44,6 +44,30 @@ export function createSessiondSessionsClient(
         sessionId,
         ...(leafId === undefined ? {} : { leafId }),
       });
+    },
+  };
+}
+
+/**
+ * D4 narrow session-history delete client backed by the fixed sessiond RPC
+ * endpoint+secret. It wraps exactly the `sessions.delete` RPC and never the
+ * runtime lifecycle (no activate/command/stop). The sessiond service is the
+ * authority: a live session fails closed with `session_busy` and is never
+ * stopped-then-deleted. The sessiond secret is captured once at Host startup
+ * and bound here; a rotation while the Host keeps running surfaces as an
+ * authentication failure ⇒ 503 on the delete route.
+ */
+export function createSessiondSessionDeleteClient(
+  options: SessiondSessionsClientOptions,
+): SessionDeleteClient {
+  const client = new SessiondRpcClient({
+    endpoint: options.endpoint,
+    secret: options.secret,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  });
+  return {
+    async delete(sessionId) {
+      return client.call("sessions.delete", { sessionId });
     },
   };
 }

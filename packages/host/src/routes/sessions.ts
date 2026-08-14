@@ -1,29 +1,37 @@
 import type { Hono } from "hono";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
-import type { SessionHistoryReadClient } from "../types.js";
+import { readBoundedBody } from "../resources/request-body.js";
+import type { SessionDeleteSeam, SessionHistoryReadClient } from "../types.js";
 
 /**
- * Read-only session history routes (D1A-2 phase 2).
+ * Session history routes (D1A-2 phase 2 read-only + D4 session-history delete).
  *
  * Three GET endpoints proxy the sessiond-backed catalog through a narrow
- * {@link SessionHistoryReadClient}: `sessions.list` / `sessions.read` /\n * `sessions.context`. None of them can activate a Worker — the catalog is pure
+ * {@link SessionHistoryReadClient}: `sessions.list` / `sessions.read` /
+ * `sessions.context`. None of them can activate a Worker — the catalog is pure
  * read-only JSONL access. The capability is advertised (`sessions` token) only
  * while sessiond is up; while down the RPC fails and these routes answer 503.
  *
- * This route module is deliberately protocol-independent: the narrow client
- * (wired in composition) returns the already schema-parsed sessiond result as
- * `unknown`, and this module narrows it to the response shape. Protocol schema
- * types stay confined to packages/pi-sdk-adapter + the composition layer.
+ * D4: when a {@link SessionDeleteSeam} is wired, DELETE /v1/sessions/:id is
+ * mounted. It runs the production mutation guard (sessiond `system.ping`) FIRST
+ * and only then validates id/body and issues the narrow delete RPC. The route is
+ * deliberately protocol-independent: the narrow delete client (wired in
+ * composition) returns the already schema-parsed sessiond result as `unknown`.
  */
 
 /** Hard bounds mirror the Protocol SessionsListParamsSchema (frozen). */
 export const SESSIONS_MAX_LIMIT = 1_000;
 export const SESSIONS_MAX_OFFSET = 100_000;
 
+/** Small ceiling for detecting an unexpected DELETE body (rejected 400). */
+const DELETE_BODY_LIMIT = 4 * 1024;
+
 interface SessionRouteDeps {
   /** Narrow read-only client (the sessiond RPC catalog). */
   client: SessionHistoryReadClient;
+  /** D4 mutation seam; when absent the DELETE route is NOT mounted. */
+  delete?: SessionDeleteSeam;
 }
 
 /**
@@ -49,6 +57,42 @@ function sessionErrorCode(error: unknown): string | undefined {
     return typeof value === "string" ? value : undefined;
   }
   return undefined;
+}
+
+/**
+ * Map a sessiond delete failure onto an honest HTTP error (D4).
+ *
+ *   not_found                       → 404 SESSION_NOT_FOUND
+ *   session_busy / conflict (live)  → 409 SESSION_IN_USE (fixed)
+ *   timeout / unavailable / auth /  → 503 SESSIONS_UNAVAILABLE
+ *   worker_unavailable / unknown    → 503 SESSIONS_UNAVAILABLE (sanitized)
+ *
+ * The message is always a fixed, sanitized string: session ids, the endpoint
+ * path, the secret and any stack are never forwarded to the caller.
+ */
+export function mapSessionDeleteError(error: unknown): HttpError {
+  const code = sessionErrorCode(error);
+  if (code === "not_found") {
+    return new HttpError(404, "SESSION_NOT_FOUND", "Session not found");
+  }
+  if (code === "session_busy" || code === "conflict") {
+    return new HttpError(409, "SESSION_IN_USE", "Session is currently in use");
+  }
+  return new HttpError(503, "SESSIONS_UNAVAILABLE", "Session history is unavailable");
+}
+
+/**
+ * DELETE takes no request body and no `force`. Any non-empty body (declared via
+ * Content-Length or streamed) is rejected with a fixed 400 BEFORE the RPC —
+ * there is no force/busy-bypass surface on this route.
+ */
+async function requireNoBody(c: import("hono").Context<HostEnv>): Promise<void> {
+  const declared = c.req.header("content-length");
+  if (declared !== undefined && Number(declared) === 0) return;
+  const bytes = await readBoundedBody(c.req.raw, DELETE_BODY_LIMIT).catch(() => new Uint8Array([1]));
+  if (bytes.byteLength > 0) {
+    throw new HttpError(400, "REQUEST_BODY_NOT_ALLOWED", "This endpoint does not accept a request body");
+  }
 }
 
 /** Parse a query integer with a closed, frozen range. Invalid → 400. */
@@ -132,4 +176,31 @@ export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps
     const parsed = result as SessionContextResult;
     return c.json({ context: { ...parsed, entries: [...parsed.entries] } });
   });
+
+  // D4 session-history delete. Mounted ONLY when the mutation seam is present
+  // (production: narrow delete client + sessiond `system.ping` mutation guard).
+  // A generic composition with no delete seam gets no DELETE route and no
+  // `session.delete` capability token.
+  if (deps.delete) {
+    app.delete("/v1/sessions/:id", async (c) => {
+      // Production mutation guard FIRST: sessiond must be up before any RPC or
+      // catalog effect. A down authority 503s before touching anything. The
+      // shared auth/LAN gate already ran in the global middleware chain.
+      await deps.delete!.mutationGuard.assertAvailable();
+      // No force/override/query surface: ANY query string (even a bare `?`) is
+      // rejected with a fixed 400 BEFORE session id/body validation and the
+      // delete RPC. There is no force/busy-bypass on this route.
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      const sessionId = requireSessionId(c.req.param("id"));
+      await requireNoBody(c);
+      try {
+        await deps.delete!.client.delete(sessionId);
+      } catch (error) {
+        throw mapSessionDeleteError(error);
+      }
+      return c.json({ success: true });
+    });
+  }
 }

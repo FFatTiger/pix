@@ -52,7 +52,10 @@ export function AppShell({ search }: AppShellProps) {
   //
   // The selected session is `search.session`. The runtime may be attached to a
   // DIFFERENT session (e.g. the user was live on A and then clicked B in the
-  // sidebar without going through Continue live). The page must then fail-closed
+  // sidebar without going through Continue live).
+  // D4: the currently attached/live session id is handed to the Sidebar so it
+  // never offers a delete control for the live session (the server rejects live
+  // deletes with 409 anyway). The page must then fail-closed
   // to the selected session's HISTORY view — never render A's live transcript,
   // never enable the Composer, never show SessionActions — and detach A so the
   // stale runtime stops streaming. The mismatch effect below owns that detach:
@@ -143,6 +146,19 @@ export function AppShell({ search }: AppShellProps) {
   const connectionTitle = isMismatched
     ? `Runtime attached to ${runtime.sessionId?.slice(0, 8) ?? "?"}…; detaching to show the selected session`
     : `Runtime connection: ${connection}`;
+
+  // D4 session-history delete navigation. AppShell is the single navigation
+  // owner: when the deleted session equals the URL-selected session it clears
+  // ONLY the `session` param while preserving the current `cwd`. It never
+  // detaches/stops a Runtime — deletion cannot succeed while a session is live
+  // (sessiond rejects with 409), so no runtime coordination is needed.
+  // Non-selected deletions leave the URL untouched (Sidebar only calls this for
+  // the URL-selected row).
+  const handleSessionDeleted = (deletedId: string): void => {
+    if (search.session === deletedId) {
+      void navigate({ to: "/", search: search.cwd === undefined ? {} : { cwd: search.cwd } });
+    }
+  };
 
   const handleCreate = (): void => {
     if (!search.cwd) return;
@@ -284,7 +300,12 @@ export function AppShell({ search }: AppShellProps) {
       </header>
 
       <div className="app-body">
-        <Sidebar open={sidebarOpen} search={search} />
+        <Sidebar
+          open={sidebarOpen}
+          search={search}
+          liveSessionId={runtime.attached ? runtime.sessionId : null}
+          onSessionDeleted={handleSessionDeleted}
+        />
 
         <main className="workspace">
           <div className="workspace-header">

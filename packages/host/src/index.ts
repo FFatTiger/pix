@@ -63,6 +63,7 @@ export { registerWorktreeRoutes } from "./routes/worktrees.js";
 export {
   registerSessionRoutes,
   mapSessionCatalogError,
+  mapSessionDeleteError,
   SESSIONS_MAX_LIMIT,
   SESSIONS_MAX_OFFSET,
 } from "./routes/sessions.js";
@@ -136,6 +137,7 @@ export {
 export type { ProductionCatalogsOptions } from "./composition/production-catalogs.js";
 export {
   createSessiondSessionsClient,
+  createSessiondSessionDeleteClient,
 } from "./composition/sessions-client.js";
 export type { SessiondSessionsClientOptions } from "./composition/sessions-client.js";
 export type {
@@ -167,6 +169,8 @@ export type {
   SessionRevocationStore,
   SessiondProbe,
   SessionHistoryReadClient,
+  SessionDeleteClient,
+  SessionDeleteSeam,
   CatalogDeps,
   CatalogModelsSeam,
   CatalogCredentialsSeam,

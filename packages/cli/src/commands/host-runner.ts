@@ -8,6 +8,7 @@ import {
   createProductionResources,
   createProductionCatalogs,
   createSessiondSessionsClient,
+  createSessiondSessionDeleteClient,
   InvalidAllowedRootsError,
   InvalidHostDirError,
   InvalidCatalogAgentDirError,
@@ -237,7 +238,16 @@ export async function runHost(
     // D1A-2 phase 2: read-only session history (/v1/sessions*) backed by the
     // fixed sessiond catalog. The capability token is driven by the resolver
     // above (sessions only while up); while down these routes answer 503.
-    sessions: { client: createSessiondSessionsClient({ endpoint: location.paths.endpoint, secret }) },
+    // D4: DELETE /v1/sessions/:id is mounted ONLY alongside the production
+    // mutation guard (sessiond system.ping) and the narrow delete RPC client;
+    // `session.delete` is advertised only while sessiond is up (full caps).
+    sessions: {
+      client: createSessiondSessionsClient({ endpoint: location.paths.endpoint, secret }),
+      delete: {
+        client: createSessiondSessionDeleteClient({ endpoint: location.paths.endpoint, secret }),
+        mutationGuard: production.adapter,
+      },
+    },
     gate: { config: createBootGateConfigSource() },
     logger: consoleLogger,
     runtimeWs,
@@ -257,7 +267,7 @@ export async function runHost(
   const url = `http://${options.hostname}:${handle.port}`;
   pixLog(`host listening on ${url}`);
   pixLog(`sessiond at ${location.directory} (endpoint ${location.endpoint})`);
-  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); sessions history read-only routes mounted; catalog surface mounted; press Ctrl+C to stop the host`);
+  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); sessions history routes mounted (read-only + delete); catalog surface mounted; press Ctrl+C to stop the host`);
 
   if (options.open) openBrowser(url);
 

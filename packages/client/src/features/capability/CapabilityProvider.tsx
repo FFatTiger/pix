@@ -25,6 +25,12 @@ export interface CapabilityContextValue {
   unavailable: boolean;
   /** True only when the host actually serves session history (sessiond up). */
   canBrowseSessions: boolean;
+  /**
+   * True only when the host actually serves the D4 session-history DELETE
+   * (sessiond up AND the mutation seam mounted). Discovery only — the server
+   * still enforces authorization and rejects live sessions with 409.
+   */
+  canDeleteSessions: boolean;
   can: (capability: HostCapability) => boolean;
   host: HostInfo;
 }
@@ -65,6 +71,7 @@ export function CapabilityProvider({ children, host }: CapabilityProviderProps) 
     // from sessiond liveness alone. While down the token is retracted, the
     // sidebar stays disabled, and the client never requests /v1/sessions.
     canBrowseSessions: hasCapability(capabilities, "sessions"),
+    canDeleteSessions: hasCapability(capabilities, "session.delete"),
     can: (capability) => hasCapability(capabilities, capability),
     host: { mode, capabilities: [...capabilities] },
   };

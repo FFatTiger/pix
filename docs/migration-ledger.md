@@ -1524,3 +1524,120 @@ bin.npm 精确映射到该文件），任意名为 npm-cli.js 的 env 文件不�
 PASS；F1/F2/F3/F4 定向对抗 PASS；root build/typecheck/test 与受影响 workspace
 （agent-worker/cli/host/pi-sdk-adapter/sessiond）测试通过；Startup/Sessions/Runtime
 E2E 从隔离临时配置 PASS，无孤儿。
+
+## 47. D4 — Session-History Delete 垂直切片记录
+
+```text
+实现：source branch feat/d4-session-delete（base main 125d0a6，source `1d05532`），
+backend-first：sessiond → Host → Client → E2E/docs。Fresh GPT 首轮发现 activate mutex
+跨 worker-start 自锁与 Query 契约缺口，修复后二轮独立验证 PASS；已集成 main，未部署。
+只删除；offline rename
+明确独立。未触碰 live 服务、package-lock、D2 extension/fork 工作、side chat 或无关
+UI。能力 token `session.delete`（协议 schema 已含）与 sessiond `sessions.delete`
+RPC/dispatch/Adapter SessionCatalogPort.deleteSession 均已存在；Client
+`sessions.remove` API + mutation option 已存在（本次开始使用）。
+
+冻结安全/产品决策（父级明确，必须实现）：
+1) DELETE 仅限 stopped/history session。`records.has(sessionId)` 即 fail closed
+   `session_busy`（retryable false，结构化固定），绝不 stop/interrupt/close/delete；
+   无 force、无 “stop then delete”、无 busy bypass。delete 与 activate 用同一
+   session-scoped fence 串行化，session 不可能在检查与 catalog 删除之间变 live。
+   并发 delete/delete 串行化 → 恰一次成功 + 固定 not_found（adapter ENOENT
+   open/rm 之间仍幂等），无 wrong-file。activation/delete 竞态二选一：delete 先提交
+   → activation not_found 且零 worker；activation 先赢 → delete conflict 且不删文件。
+2) Adapter delete 安全（id/path 校验、ENOENT 幂等、缓存失效、其他 fs 错误
+   sanitize）不动。
+3) Host `DELETE /v1/sessions/:id`：生产 mutation guard（system.ping）在 RPC/效果
+   之前；仅挂 mutation seam 时挂载路由；共享 auth/LAN gate 在最前。无 body/force。
+   返回严格 `{success:true}`。映射：invalid id/body→400；not_found→404
+   SESSION_NOT_FOUND；live/busy→409 SESSION_IN_USE（固定）；unavailable/timeout/
+   down→503 固定；unknown→503；不泄漏 id/path/SDK/sessiond message/log。
+4) 能力 `session.delete`：仅 sessiond up 且 mutation seam 挂载时，加入 Host
+   types/ALL/production FULL/CLI bootstrap/health/WS；degraded/down 排除；
+   `sessions` 读保留。能力是发现层，服务端授权仍强制。
+5) 生产 sessiond client 增加窄 delete method/RPC；read client 语义不变；只有真实
+   mutation guard 时 composition 才挂 delete 路由。启动/bind/shutdown 不变。
+6) Client Sidebar 行删除 UI 仅在 `session.delete`；attached/live 选中会话不显示
+   （AppShell 告知）；其他 live 会话可被服务端权威 409。行内两步不可逆确认
+   （Cancel 安全默认聚焦 + Delete session），无 window.confirm/modal。一次一个删除；
+   阻止 Link 导航/传播。固定错误文案；不泄漏 Host message/title/path。能力撤销/
+   cwd/session 选择/unmount 期间：generation/ref guard，late result inert。成功时经
+   既有 mutation options 失效 sessions list/detail。若删除行 == URL 选中会话，
+   AppShell 导航只清 `session` 保留 `cwd`（不 detach/stop Runtime——live 本就删
+   不成）；非选中删除不改 URL。Cancel/失败后焦点安全返回（行仍在时）。
+7) Sidebar 仅 `sessions` 时仍 list/read，无 action 控件；移动端/窄行不溢出；标签含
+   安全显示 title/short id，role=alert/status，disabled/aria-busy。无新动效。
+8) 本切片不做 rename/auto-name/session.write、trash/undo、bulk delete、cwd
+   scoping、side-chat filtering。
+
+sessiond（packages/sessiond/src/service.ts）：
+- `deleteSession` 重写：`records.has(sessionId)` → `SessiondError("session_busy",
+  "session is running", false)`；`activations.has` → `session_busy`（starting）。
+  整个 admission + catalog.deleteSession 在 `this.mutex`（类级 AsyncMutex）内执行，
+  与 activate admission 共用同一 fence。
+- `activate` 重构（含独立验证 FAIL 后的回归修复）：admission（records/activations
+  复检 + 注册进 `activations`）移入 `this.mutex.runExclusive`，但 mutex 只用于同步
+  admission——`AsyncMutex.runExclusive` 会 await 回调结果，所以回调必须返回 void，
+  异步 worker-start operation 在锁外 await。否则全局 mutex 会跨整个 worker start 持
+  有：worker ready/sessionDiscovered 的 rekey（自身也要取同一 mutex）自锁到
+  workerStartTimeout，不同 id 的 start 被串行化，delete 阻塞在慢 start 后面。修复后
+  mutex 仅持同步 admission，rekey 可正常取锁；同 id delete 在注册后立即
+  session_busy（不等待 worker），不同 id delete 不被阻塞；cleanup 身份安全：只有
+  精确 admitted owner 在短 mutex 段 `if (this.activations.get(sessionId) ===
+  operation) delete`，join 者永不误删。
+- 竞态结果：activate 先注册 → delete 见 activations → conflict 不删文件；delete 先
+  持锁删 catalog → activate admission 随后 locate not_found 且零 worker。
+- 测试：7 个 delete service 测试（非 live 成功并失效；missing not_found；无 catalog
+  unavailable；live idle/prompt/bash/compact 全 session_busy 且 no-stop/no-delete/
+  no-worker-shutdown；activation 赢 → delete conflict 不删文件；delete 赢 →
+  activation not_found 且零 worker；并发 delete/delete 恰一成功 + 一 not_found）+
+  5 个 fence 回归测试（rekey 在 workerStartTimeout 前完成且无 orphan；不同 id
+  activate 并发重叠不串行；慢 activate 期间同 id delete 立即 session_busy 且不同
+  id delete 不阻塞；join 同 id 共享 op 且仅 admitted owner 清 map；被拒 activate 清
+  map 且 retry 重新准入）+
+  2 个 RPC boundary round-trip（missing not_found、live session_busy 到客户端）。
+  5 个 fence 测试对旧（broken）代码确定性失败：rekey → `worker start timed out`
+  (508ms)、overlap → starts=1（串行化）、同 id delete → 303ms（等待 worker）。
+
+Host（packages/host）：
+- types.ts：HostCapability + ALL_HOST_CAPABILITIES 加入 `session.delete`；新增
+  `SessionDeleteClient`、`SessionDeleteSeam`（client + mutationGuard），挂到
+  `HostDeps.sessions.delete`。
+- routes/sessions.ts：`DELETE /v1/sessions/:id` 仅在 `deps.sessions.delete` 时挂载；
+  mutationGuard（system.ping）→ 任意非空 query string（含裸 `?`，force/override/
+  任意/重复/encoded）固定 400 INVALID_QUERY → id 校验 → body 校验（400
+  REQUEST_BODY_NOT_ALLOWED）→ 窄 delete RPC → `{success:true}`。无 force 面。
+  `mapSessionDeleteError`：not_found→404 SESSION_NOT_FOUND；session_busy/conflict→409
+  SESSION_IN_USE；其余→503 SESSIONS_UNAVAILABLE（固定 sanitize）。
+- composition/sessions-client.ts：`createSessiondSessionDeleteClient`（包
+  `sessions.delete` RPC）。
+- production-resources.ts：PRODUCTION_FULL_CAPABILITIES 加 `session.delete`
+  （sessiond-up 才广告）；RESOURCE_DEGRADED_CAPABILITIES 排除。
+- app.ts + CLI host-runner.ts：production 挂 delete seam（delete client +
+  production.adapter 作 mutation guard）。
+- 测试：11 个 delete 路由测试（成功、无 seam 不挂、guard-first、down 503 先于 RPC、
+  404、409 双码、503 固定、空 id 404、body 400、LAN auth gate 最前、任意 query 400
+  且零 delete RPC）+ production-resources/health 能力断言。
+
+Client（packages/client）：
+- CapabilityProvider：`canDeleteSessions`。
+- Sidebar.tsx：行内两步确认（Delete → Confirm：Cancel 安全默认聚焦 + Delete
+  session），`session.delete` 门控，attached/live 隐藏（AppShell 传 liveSessionId），
+  同步 busyRef 单飞行，generation/cap/cwd/selection refs 使 late settle inert，
+  固定错误文案（describeSessionDeleteError），复用既有 `sessions.remove` mutation
+  options（list+byId 失效）。Delete 按钮为 row Link 的 sibling（不导航）。
+- AppShell.tsx：`onSessionDeleted` → 只清 `session` 保留 `cwd`；不 detach/stop。
+- CSS：.session-delete-*（克制内联，无 modal/动效）。
+- 测试：12 个 Sidebar 测试 + 1 个 AppShell 导航测试 + 1 个 describeSessionDeleteError
+  单测。
+
+E2E + docs：
+- sessions-history.mjs：bootStack 挂 delete seam + 共享 daemon + LAN bind；D4 HTTP
+  delete 全流程（live 409 worker/file 保留；显式 stop 后 delete 成功；stopped JSONL
+  delete 后 file/list/read 404；body 400；LAN auth 401 且文件保留；down 后能力撤销 +
+  delete 503 且不碰文件）。
+- startup.mjs：FULL_CAPS 含 session.delete；DEGRADED 排除；断言。
+- 验证：root tests/build/typecheck/architecture/boundaries、Startup/Sessions/Runtime
+  E2E 全 PASS；真实 Host→sessiond→adapter 删除闭环。Fresh GPT 二轮以相同 F1 探针确认
+  rekey 14ms、不同 id activate 251ms 并行、同/异 id delete 0ms、全部 Query/auth/cap/UI
+  竞态与无孤儿门禁 PASS；source 提交干净，已集成 main，未 push/deploy。

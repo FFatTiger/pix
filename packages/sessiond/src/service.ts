@@ -304,22 +304,60 @@ export class SessiondService {
     if (active && active.status !== "crashed" && active.status !== "stopped") return this.activateResult(active);
     const inFlight = this.activations.get(sessionId);
     if (inFlight) return this.activateResult(await inFlight);
-    const operation = (async () => {
-      const location = await this.deps.sessionLocator.locate(sessionId);
-      if (!location.exists) throw new SessiondError("not_found", `session not found: ${sessionId}`);
-      const context = await this.deps.activationContext.resolve(sessionId, location, requestedCwd);
-      return this.start({
-        mode: "open",
-        activationId: randomUUID(),
-        sessionId,
-        cwd: context.cwd,
-        projectRoot: context.projectRoot,
-        sessionFile: location.sessionFile,
-      });
-    })();
-    this.activations.set(sessionId, operation);
+    // D4 session-delete fence: the mutex is held ONLY for the synchronous
+    // admission (recheck + registration into `this.activations`) and is NEVER
+    // held across locate/context/worker start. The mutex callback must therefore
+    // return void — AsyncMutex.runExclusive awaits the callback result, so
+    // returning the async operation here would hold the global mutex for the
+    // whole worker start. That would self-block a worker ready/sessionDiscovered
+    // rekey (which itself acquires the mutex) until the startup timeout, and
+    // serialize different-id starts behind a slow start. Instead the operation is
+    // created inside the section but awaited OUTSIDE the lock, so a delete
+    // observing this registered activation fails closed promptly with
+    // session_busy (never waiting for the worker), and a delete that wins the
+    // fence first removes the catalog entry so this admission locates not_found
+    // and never starts a worker for a deleted session.
+    let operation!: Promise<RecordState>;
+    let admitted = false;
+    await this.mutex.runExclusive(() => {
+      const activeNow = this.records.get(sessionId);
+      if (activeNow && activeNow.status !== "crashed" && activeNow.status !== "stopped") {
+        operation = Promise.resolve(activeNow);
+        return;
+      }
+      const inflightNow = this.activations.get(sessionId);
+      if (inflightNow) {
+        operation = inflightNow;
+        return;
+      }
+      admitted = true;
+      operation = (async () => {
+        const location = await this.deps.sessionLocator.locate(sessionId);
+        if (!location.exists) throw new SessiondError("not_found", `session not found: ${sessionId}`);
+        const context = await this.deps.activationContext.resolve(sessionId, location, requestedCwd);
+        return this.start({
+          mode: "open",
+          activationId: randomUUID(),
+          sessionId,
+          cwd: context.cwd,
+          projectRoot: context.projectRoot,
+          sessionFile: location.sessionFile,
+        });
+      })();
+      this.activations.set(sessionId, operation);
+    });
     try { return this.activateResult(await operation); }
-    finally { this.activations.delete(sessionId); }
+    finally {
+      // Identity-safe cleanup: only the exact admitted owner deletes its own
+      // entry, and only while it still owns it (a newer activation may have
+      // taken over the slot after this one settled). Joiners never delete
+      // another caller's entry. The cleanup section is a short mutex hold.
+      if (admitted) {
+        await this.mutex.runExclusive(() => {
+          if (this.activations.get(sessionId) === operation) this.activations.delete(sessionId);
+        });
+      }
+    }
   }
 
   private activateResult(record: RecordState): RuntimeActivateResult {
@@ -1169,10 +1207,30 @@ export class SessiondService {
     await this.deps.sessionMutation.rename(sessionId, name);
   }
 
+  /**
+   * D4 session-history delete: DELETE is for stopped/history sessions ONLY.
+   *
+   * A live session (any `records` entry — idle, prompt, bash, compact, crashed
+   * or stopping) fails closed with the canonical `session_busy` code and is
+   * NEVER stopped, interrupted, closed, or deleted. There is no `force` and no
+   * "stop then delete" path. The whole admission + catalog deletion runs under
+   * the same session-scoped fence as activate admission, so a session cannot
+   * become live between the busy check and the catalog deletion. Concurrent
+   * delete/delete serialize on the fence; the adapter is ENOENT-idempotent, so
+   * the second delete surfaces a fixed `not_found` (or an idempotent success)
+   * with no wrong-file risk.
+   */
   async deleteSession(sessionId: string): Promise<void> {
-    if (this.records.has(sessionId)) await this.stop(sessionId, "session_deleted");
     if (!this.deps.sessionCatalog) throw new SessiondError("unavailable", "session catalog is unavailable");
-    await this.deps.sessionCatalog.deleteSession(sessionId);
+    await this.mutex.runExclusive(async () => {
+      if (this.records.has(sessionId)) {
+        throw new SessiondError("session_busy", "session is running", false);
+      }
+      if (this.activations.has(sessionId)) {
+        throw new SessiondError("session_busy", "session is starting", false);
+      }
+      await this.deps.sessionCatalog!.deleteSession(sessionId);
+    });
   }
 
   /** Test/diagnostic view with no process internals. */

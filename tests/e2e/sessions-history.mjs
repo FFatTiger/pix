@@ -22,14 +22,17 @@
  *   8. GET context?leafId= — the Host forwards the leaf and the real stack
  *      returns the selected visible branch (trunk vs side) with no leakage;
  *      no Worker is spawned.
- *   9. Session mutation contracts at the correct layer: the Host has no
- *      mutation routes (read-only, D4) — none are invented here. Delete and
- *      rename are exercised directly against the sessiond RPC seam this E2E
- *      already owns. Delete removes the file and the subsequent Host read 404s.
- *      Non-live rename is fixed-unavailable; LIVE rename is deliberately NOT
- *      covered: it requires a Worker (set_session_name command) and would
- *      broaden this slice past zero-worker, so only the non-live contract is
- *      tested (per the WP-3 assignment).
+ *   9. Session mutation contracts at the correct layer. Rename is exercised
+ *      directly against the sessiond RPC seam this E2E already owns (non-live
+ *      rename is fixed-unavailable; LIVE rename is deliberately NOT covered: it
+ *      requires a Worker and would broaden this slice past zero-worker). D4
+ *      delete is exercised through the REAL HTTP route (DELETE /v1/sessions/:id)
+ *      with the production mutation seam: stopped/history delete succeeds and
+ *      removes the file; a live delete is 409 SESSION_IN_USE with the worker and
+ *      file retained; after an explicit runtime.stop the delete succeeds; a
+ *      request body is rejected 400; an unauthenticated LAN delete is gated 401
+ *      before the guard/RPC; and while sessiond is down the capability is
+ *      retracted and the delete 503s before touching the file.
  *  10. A repeated list stays correct and spawns no Worker (no timing asserts).
  *
  * The branched/pagination fixtures are written as raw JSONL in exactly the
@@ -57,6 +60,7 @@ import {
   createProductionCatalogs,
   createProductionCapabilityResolver,
   createSessiondSessionsClient,
+  createSessiondSessionDeleteClient,
   PRODUCTION_FULL_CAPABILITIES,
   RESOURCE_DEGRADED_CAPABILITIES,
   PRODUCTION_MAX_UPLOAD_BYTES,
@@ -228,7 +232,7 @@ function attachViaWs(wsUrl, sessionId, timeoutMs = STEP_TIMEOUT_MS) {
 // Stack
 // ---------------------------------------------------------------------------
 
-async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir }) {
+async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir, exposureMode = "local", gate, daemon } = {}) {
   assert.equal(existsSync(FIXTURE), true, `fixture missing: ${FIXTURE}`);
   const clientDist = existsSync(CLIENT_DIST)
     ? CLIENT_DIST
@@ -240,7 +244,9 @@ async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir }) {
         return dist;
       })(sessiondDir);
 
-  const daemon = await startDaemon({
+  // A second host (e.g. the LAN-auth probe) SHARES the already-running daemon
+  // instead of trying to start another instance on the same sessiond directory.
+  daemon ??= await startDaemon({
     directory: sessiondDir,
     // Default catalog + locator read from PI_CODING_AGENT_DIR (seeded JSONL).
     // The network-free fixture backs Continue live (open mode, self-contained).
@@ -274,22 +280,35 @@ async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir }) {
     roots: production.deps.allowedRoots,
   });
   const app = createHostApp({
-    exposureMode: "local",
+    exposureMode,
     clientDist,
     allowedHosts: ["127.0.0.1"],
     sessiond: resolver,
     capabilities: { full: [...PRODUCTION_FULL_CAPABILITIES], readonly: [...RESOURCE_DEGRADED_CAPABILITIES] },
-    sessions: { client: createSessiondSessionsClient({ endpoint: daemon.endpoint, secret: daemon.secret, timeoutMs: 5_000 }) },
+    // D4: production delete seam — narrow `sessions.delete` RPC client + the
+    // shared sessiond `system.ping` mutation guard. Mounted only here (the
+    // read-only M1 boot composition still wires no delete route).
+    sessions: {
+      client: createSessiondSessionsClient({ endpoint: daemon.endpoint, secret: daemon.secret, timeoutMs: 5_000 }),
+      delete: {
+        client: createSessiondSessionDeleteClient({ endpoint: daemon.endpoint, secret: daemon.secret, timeoutMs: 5_000 }),
+        mutationGuard: production.adapter,
+      },
+    },
     resources: production.deps,
     catalogs,
-    gate: { config: { read: () => ({ status: "disabled", source: "e2e" }) } },
+    gate: gate ?? { config: { read: () => ({ status: "disabled", source: "e2e" }) } },
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     runtimeWs,
     wsMaxPayloadBytes: PRODUCTION_MAX_UPLOAD_BYTES,
   });
 
   const port = await freePort();
-  const handle = await createNodeServer(app, { port, hostname: "127.0.0.1" });
+  // LAN exposure must bind a non-loopback address (createNodeServer cross-checks
+  // exposureMode against the bind); the health/probe fetch still reaches it via
+  // the loopback address.
+  const bindHostname = exposureMode === "lan" ? "0.0.0.0" : "127.0.0.1";
+  const handle = await createNodeServer(app, { port, hostname: bindHostname });
   const origin = `http://127.0.0.1:${handle.port}`;
   const wsUrl = `ws://127.0.0.1:${handle.port}/v1/runtime`;
 
@@ -547,7 +566,97 @@ async function main() {
     }
     assert.ok(runningAfterAttach.sessions.some((s) => s.sessionId === sessionId), "continue live must start a worker");
 
-    // 6. sessiond down → `sessions` retracted AND routes 503.
+    // 5b. D4 session-history delete (HTTP, real Host→sessiond→adapter). The
+    //     delete route is sessiond-guarded: live ⇒ 409 SESSION_IN_USE (never
+    //     stop-then-delete), stopped/history ⇒ success + file removed, and the
+    //     sessiond `system.ping` mutation guard runs before any RPC.
+    const del = (path, init = {}) =>
+      fetch(`${stack.origin}${path}`, { method: "DELETE", ...init }).then(async (r) => ({ status: r.status, body: r.status === 204 ? null : await r.json().catch(() => null) }));
+    // `session.delete` is advertised while sessiond is up (full caps).
+    assert.ok(boot.body.capabilities.includes("session.delete"), `full caps must include session.delete: ${JSON.stringify(boot.body.capabilities)}`);
+
+    // 5b-1. Live session delete ⇒ 409 SESSION_IN_USE; worker + file retained.
+    const liveDetail = await get(`/v1/sessions/${sessionId}`);
+    assert.equal(liveDetail.status, 200);
+    const liveFile = liveDetail.body.session.sessionFile;
+    assert.equal(existsSync(liveFile), true, "live session file must exist before delete");
+    const liveDelete = await del(`/v1/sessions/${sessionId}`);
+    assert.equal(liveDelete.status, 409, "live session delete must be 409");
+    assert.equal(liveDelete.body.code, "SESSION_IN_USE");
+    const runningAfterLiveDelete = await rpc.call("runtime.listRunning", {});
+    assert.ok(runningAfterLiveDelete.sessions.some((s) => s.sessionId === sessionId), "live delete must not stop the worker");
+    assert.equal(existsSync(liveFile), true, "live delete must retain the file");
+
+    // 5b-2. After an explicit runtime.stop, delete succeeds and removes the file.
+    const stopped = await rpc.call("runtime.stop", { sessionId, reason: "user" });
+    assert.equal(stopped.stopped, true);
+    for (let i = 0; i < 40; i++) {
+      const running = await rpc.call("runtime.listRunning", {});
+      if (!running.sessions.some((s) => s.sessionId === sessionId)) break;
+      await delay(50);
+    }
+    const stoppedDelete = await del(`/v1/sessions/${sessionId}`);
+    assert.equal(stoppedDelete.status, 200, "delete after explicit stop must succeed");
+    assert.deepEqual(stoppedDelete.body, { success: true });
+    assert.equal(existsSync(liveFile), false, "delete must remove the file after stop");
+    const sessionAfterDelete = await get(`/v1/sessions/${sessionId}`);
+    assert.equal(sessionAfterDelete.status, 404, "deleted session read must be 404");
+
+    // 5b-3. HTTP DELETE of a stopped JSONL session (never activated): file /
+    //       list / read all reflect the deletion.
+    const p1Detail = await get(`/v1/sessions/${FIXTURE_P1}`);
+    const p1File = p1Detail.body.session.sessionFile;
+    assert.equal(existsSync(p1File), true, "stopped P1 file must exist before delete");
+    const p1Delete = await del(`/v1/sessions/${FIXTURE_P1}`);
+    assert.equal(p1Delete.status, 200);
+    assert.deepEqual(p1Delete.body, { success: true });
+    assert.equal(existsSync(p1File), false, "delete must remove the stopped JSONL file");
+    const p1After = await get(`/v1/sessions/${FIXTURE_P1}`);
+    assert.equal(p1After.status, 404, "deleted P1 read must be 404");
+    const listAfterHttpDelete = await get("/v1/sessions");
+    assert.ok(!listAfterHttpDelete.body.sessions.some((s) => s.sessionId === FIXTURE_P1), "deleted P1 must vanish from the list");
+
+    // 5b-4. DELETE with a body/force is rejected 400; the file is retained.
+    const p2Detail = await get(`/v1/sessions/${FIXTURE_P2}`);
+    const p2File = p2Detail.body.session.sessionFile;
+    const bodyDelete = await del(`/v1/sessions/${FIXTURE_P2}`, {
+      body: JSON.stringify({ force: true }),
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(bodyDelete.status, 400, "a delete with a body must be 400");
+    assert.equal(bodyDelete.body.code, "REQUEST_BODY_NOT_ALLOWED");
+    assert.equal(existsSync(p2File), true, "a body-rejected delete must not touch the file");
+
+    // 5b-5. Auth LAN gate FIRST: an unauthenticated DELETE against a LAN-bound
+    //       Host with an enabled gate is rejected before the mutation guard /
+    //       RPC, and the session file is retained. (Separate Host-state dir:
+    //       the lifetime Host-dir lease is exclusive per host.)
+    const lanHostDir = join(realpathSync(tmpdir()), "pix-e2e-host-lan-" + process.pid);
+    mkdirSync(lanHostDir, { recursive: false, mode: 0o700 });
+    let lanStack;
+    try {
+      lanStack = await bootStack({
+        agentDir, sessiondDir, projectCwd, hostDir: lanHostDir,
+        exposureMode: "lan",
+        gate: { config: { read: () => ({ status: "enabled", password: "lan-secret", source: "e2e" }) } },
+        daemon: stack.daemon, // share the already-running sessiond
+      });
+      const lanDel = await fetch(`${lanStack.origin}/v1/sessions/${FIXTURE_P3}`, { method: "DELETE" });
+      assert.ok(lanDel.status === 401 || lanDel.status === 403, `LAN unauth delete must be rejected, got ${lanDel.status}`);
+      // The LAN gate also blocks reads, so verify the file retention on disk
+      // directly (the LAN-blocked delete must never touch the JSONL).
+      const p3File = join(encodedSessionDir(agentDir, projectCwd), `${FIXTURE_ENTRY_TS}_${FIXTURE_P3}.jsonl`);
+      assert.equal(existsSync(p3File), true, "LAN-blocked delete must retain the file");
+    } finally {
+      if (lanStack?.handle) {
+        try { await lanStack.handle.close(); } catch { /* ignore */ }
+      }
+      await rm(lanHostDir, { recursive: true, force: true });
+    }
+
+    // 6. sessiond down → `sessions` + `session.delete` retracted AND routes 503.
+    const p3FileBeforeDown = (await get(`/v1/sessions/${FIXTURE_P3}`)).body.session.sessionFile;
+    assert.equal(existsSync(p3FileBeforeDown), true, "P3 file must exist before the down-delete probe");
     await stack.daemon.shutdown();
     let downBoot;
     for (let i = 0; i < 40; i++) {
@@ -556,12 +665,18 @@ async function main() {
       await delay(50);
     }
     assert.ok(!downBoot.body.capabilities.includes("sessions"), "sessions token must be retracted when sessiond is down");
+    assert.ok(!downBoot.body.capabilities.includes("session.delete"), "session.delete must be retracted when sessiond is down");
     assert.deepEqual(downBoot.body.capabilities, [...RESOURCE_DEGRADED_CAPABILITIES]);
     const downList = await get("/v1/sessions");
     assert.equal(downList.status, 503, "read route must answer 503 when sessiond is down");
     assert.equal(downList.body.code, "SESSIONS_UNAVAILABLE");
+    // D4: a delete while sessiond is down 503s from the mutation guard BEFORE
+    // the RPC/effect — the file is never touched.
+    const downDelete = await del(`/v1/sessions/${FIXTURE_P3}`);
+    assert.equal(downDelete.status, 503, "delete must 503 when sessiond is down");
+    assert.equal(existsSync(p3FileBeforeDown), true, "a down 503 delete must never touch the file");
 
-    log(`PASS — session ${sessionId.slice(0, 8)} read-only with zero workers; continue live started a worker; down retraction + 503 verified`);
+    log(`PASS — session ${sessionId.slice(0, 8)} read-only with zero workers; continue live started a worker; D4 delete (live 409 / stop-then-delete / stopped HTTP / body 400 / LAN auth / down 503) verified; down retraction + 503 verified`);
   } catch (error) {
     exitCode = 1;
     log("FAIL", error?.stack ?? error);

@@ -23,6 +23,7 @@ export interface TrustedProxyOptions {
 export type HostCapability =
   | "agent"
   | "sessions"
+  | "session.delete"
   | "files"
   | "files.write"
   | "files.watch"
@@ -38,6 +39,7 @@ export type HostCapability =
 export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "agent",
   "sessions",
+  "session.delete",
   "files",
   "files.write",
   "files.watch",
@@ -161,7 +163,7 @@ export interface GateDeps {
 // Host deps
 // ---------------------------------------------------------------------------
 
-import type { ResourceDeps } from "./resources/types.js";
+import type { MutationGuard, ResourceDeps } from "./resources/types.js";
 import type { AllowedRootService } from "./resources/allowed-roots.js";
 
 /** sessiond availability probe for capability downgrade (protocol-independent). */
@@ -179,6 +181,30 @@ export interface SessionHistoryReadClient {
   list(params: { cwd?: string; limit?: number; offset?: number }): Promise<unknown>;
   read(sessionId: string): Promise<unknown>;
   context(sessionId: string, leafId?: string): Promise<unknown>;
+}
+
+/**
+ * D4 session-history delete port. A narrow, protocol-independent mutation seam:
+ * composition wires the real sessiond `sessions.delete` RPC and tests inject a
+ * fake. Returns `unknown` so this foundation module stays free of protocol DTO
+ * imports. Like the read client, this is deliberately NOT the runtime lifecycle
+ * (no activate/command/stop) — delete is sessiond-guarded (live ⇒ session_busy).
+ */
+export interface SessionDeleteClient {
+  delete(sessionId: string): Promise<unknown>;
+}
+
+/**
+ * D4 session-delete mutation seam. The production route is mounted ONLY when
+ * both the delete client AND a mutation guard (sessiond `system.ping`) are
+ * present; the `session.delete` capability is advertised only then (and only
+ * while sessiond is up). A generic composition that wires no delete seam gets
+ * no DELETE route and no capability token — no unsafe write is ever mounted.
+ */
+export interface SessionDeleteSeam {
+  client: SessionDeleteClient;
+  /** sessiond availability guard (production: `system.ping`). Fails closed 503. */
+  mutationGuard: MutationGuard;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,8 +316,12 @@ export interface HostDeps {
    * means the routes are unavailable. The client is the sessiond-backed catalog;
    * a sessiond outage surfaces as 503 on these routes and retracts the
    * `sessions` capability token (driven by the capability resolver, not here).
+   *
+   * D4: when `sessions.delete` is present, DELETE /v1/sessions/:id is mounted
+   * (production mutation guard first) and the `session.delete` capability is
+   * advertised only while sessiond is up. Omitted ⇒ no DELETE route, no token.
    */
-  sessions?: { client: SessionHistoryReadClient };
+  sessions?: { client: SessionHistoryReadClient; delete?: SessionDeleteSeam };
   /**
    * D3B-R1B: read-only catalog routes (models/auth/skills/plugins/commands/trust).
    * Omitted means the catalog routes are unavailable. Each sub-seam is optional;
