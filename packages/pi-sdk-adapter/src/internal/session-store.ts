@@ -2,13 +2,16 @@
 //
 // This is the ONLY module in the sessions domain that touches the Pi SDK. It
 // performs pure read-only JSONL access — SessionManager.listAll / open /
-// getEntries / getBranch / buildContextEntries / getLeafId / getEntry — plus a
-// single `rm` for deleteSession. It reuses the migrated `mapMessage` to project
-// SDK messages onto canonical runtime-core AgentMessages.
+// getEntries / getBranch / buildContextEntries / getLeafId / getEntry /
+// appendSessionInfo — plus a single `rm` for deleteSession and an
+// appendSessionInfo-based `renameSession` (offline rename appends a
+// session_info entry; it never rewrites the session header/file). It reuses the
+// migrated `mapMessage` to project SDK messages onto canonical runtime-core
+// AgentMessages.
 //
 // Hard boundary: no ModelRuntime, Agent, AgentSession, network, credentials,
 // resources or trust are imported or instantiated here. list / read / context /
-// locate / resolveLeafId run with zero Workers.
+// locate / resolveLeafId / renameSession / deleteSession run with zero Workers.
 //
 // Performance contract (hotfix `fix/session-list-piweb-parity`, mirrors the
 // legacy web frontend's `session-reader` algorithm):
@@ -45,6 +48,20 @@
 //   and the rm as already-deleted idempotent success and invalidates the list;
 //   other filesystem failures are mapped to a sanitized RuntimeError that
 //   never leaks the raw path.
+// - renameSession validates the name (trim, non-blank, ≤200 Unicode JS code
+//   units, no NUL/C0/DEL controls), appends a `session_info` entry via the
+//   SDK (no header/file rewrite), maps any append failure to a sanitized
+//   external/retryable file-kind error, and invalidates the list so the NEXT
+//   listSessions/readSession observes the new title immediately (no 30s stale
+//   window). The title source of truth is the latest `session_info` entry in
+//   the JSONL file (SDK listAll `name` / getSessionName both read it).
+// - rename AND delete for the SAME session id are serialized FIFO via a
+//   per-session mutation queue (different session ids proceed concurrently):
+//   rename/rename is deterministic (last committed append wins) and the
+//   rename/delete race is deterministic (delete first → rename returns
+//   not_found and never recreates/appends; rename first → delete removes the
+//   renamed file). Each mutation holds exactly one per-session slot (no
+//   nesting → no deadlock) and an emptied queue is removed (bounded cleanup).
 import { rm } from "node:fs/promises";
 import { join, posix, win32 } from "node:path";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -103,6 +120,8 @@ export interface PiSdkSessionManager {
   getEntry(targetId: string): SdkEntry | undefined;
   getSessionId(): string;
   getHeader(): { parentSession?: string } | null | undefined;
+  /** Append a session_info entry carrying the display name; returns the entry id. */
+  appendSessionInfo(name: string): string;
 }
 
 /** Injectable SDK read surface used by the store (real SessionManager is the default). */
@@ -204,6 +223,39 @@ function notFound(sessionId: string) {
   return makeRuntimeError("not_found", `session not found: ${sessionId}`);
 }
 
+/**
+ * Max session-name length in Unicode JS code units (UTF-16 `string.length`),
+ * consistent with the live rename UX cap. Frozen: see the D4 adapter tests.
+ */
+const MAX_SESSION_NAME_LENGTH = 200;
+
+/**
+ * Normalize + validate a session display name for offline rename, consistent
+ * with the live rename UX: outer whitespace trimmed, blank rejected, capped at
+ * {@link MAX_SESSION_NAME_LENGTH} Unicode JS code units, and NUL/C0/DEL control
+ * characters rejected outright rather than silently persisting invisible
+ * control text. Ordinary internal spaces and Unicode (incl. emoji) are
+ * allowed. Returns the canonical trimmed name on success or throws a
+ * sanitized `invalid_input` RuntimeError that never echoes the raw name.
+ */
+function normalizeSessionName(name: unknown): string {
+  if (typeof name !== "string") {
+    throw makeRuntimeError("invalid_input", "session name must be a non-empty string");
+  }
+  const trimmed = name.trim();
+  if (trimmed.length === 0) {
+    throw makeRuntimeError("invalid_input", "session name must be a non-empty string");
+  }
+  if (trimmed.length > MAX_SESSION_NAME_LENGTH) {
+    throw makeRuntimeError("invalid_input", "session name exceeds 200 characters");
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw makeRuntimeError("invalid_input", "session name contains control characters");
+  }
+  return trimmed;
+}
+
 /** True when `error` is a Node errno error carrying the given `code` (e.g. ENOENT). */
 function isErrno(error: unknown, code: string): boolean {
   return (
@@ -260,6 +312,17 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
    */
   private negatives = new Map<string, number>();
   private readonly maxNegatives: number;
+  /**
+   * Per-session mutation serialization (D4 adapter foundation): rename AND
+   * delete for the SAME session id share one FIFO queue so ordering is
+   * deterministic (last committed append wins for rename/rename; delete-first
+   * makes a later rename return not_found and never recreate/appends).
+   * Different session ids never share a queue and proceed concurrently. Each
+   * mutation acquires exactly one per-session slot (no nesting → no deadlock);
+   * an emptied queue is removed so the map is bounded by the number of
+   * sessions with in-flight mutations.
+   */
+  private readonly mutationQueues = new Map<string, Promise<void>>();
 
   constructor(options: PiSdkSessionStoreOptions = {}) {
     this.sessionDir = options.sessionDir;
@@ -489,6 +552,28 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     }
   }
 
+  /**
+   * Serialize a mutation for ONE session id behind a per-session FIFO queue.
+   * `task` runs only after all earlier mutations for the same id settle (the
+   * previous outcome is swallowed so a failure never blocks the next queued
+   * mutation); different ids never share a queue. Each task holds exactly one
+   * slot (no nesting → no deadlock) and an emptied queue is removed so the map
+   * stays bounded. The stored tail always resolves (its handlers swallow), so
+   * it can never become an unhandled rejection — the caller owns `run`'s
+   * outcome.
+   */
+  private enqueueMutation(sessionId: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.mutationQueues.get(sessionId) ?? Promise.resolve();
+    const run = previous.then(task, task);
+    let tail: Promise<void>;
+    const release = () => {
+      if (this.mutationQueues.get(sessionId) === tail) this.mutationQueues.delete(sessionId);
+    };
+    tail = run.then(release, release);
+    this.mutationQueues.set(sessionId, tail);
+    return run;
+  }
+
   // -- list / detail / context ----------------------------------------------
 
   async listSessions(): Promise<readonly SessionHeader[]> {
@@ -559,26 +644,57 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    const opened = await this.openSession(sessionId);
-    if (!opened) throw notFound(sessionId);
-    try {
-      await rm(opened.info.path);
-    } catch (error) {
-      if (isErrno(error, "ENOENT")) {
-        // The file vanished between the id-validated open and the rm: the
-        // session is already gone, so the delete is idempotent success. Drop
-        // the stale warm index so it can never serve the deleted session.
-        this.invalidateList();
-        return;
+    // Serialized per-session so rename/delete ordering is deterministic while
+    // different sessions proceed concurrently (see `enqueueMutation`).
+    return this.enqueueMutation(sessionId, async () => {
+      const opened = await this.openSession(sessionId);
+      if (!opened) throw notFound(sessionId);
+      try {
+        await rm(opened.info.path);
+      } catch (error) {
+        if (isErrno(error, "ENOENT")) {
+          // The file vanished between the id-validated open and the rm: the
+          // session is already gone, so the delete is idempotent success. Drop
+          // the stale warm index so it can never serve the deleted session.
+          this.invalidateList();
+          return;
+        }
+        // Map/sanitize any other filesystem failure; never leak the raw path.
+        throw makeRuntimeError("external", `failed to delete session: ${sessionId}`, {
+          retryable: true,
+          cause: { kind: "file", detail: "session file removal failed" },
+        });
       }
-      // Map/sanitize any other filesystem failure; never leak the raw path.
-      throw makeRuntimeError("external", `failed to delete session: ${sessionId}`, {
-        retryable: true,
-        cause: { kind: "file", detail: "session file removal failed" },
-      });
-    }
-    // Invalidate immediately so a warm list can never serve a deleted session.
-    this.invalidateList();
+      // Invalidate immediately so a warm list can never serve a deleted session.
+      this.invalidateList();
+    });
+  }
+
+  async renameSession(sessionId: string, name: string): Promise<void> {
+    // Validate eagerly (stateless, independent of queue order) so malformed
+    // names fail immediately with a sanitized invalid_input and never reach
+    // the SDK. Serialized per-session with delete for deterministic races.
+    const canonical = normalizeSessionName(name);
+    return this.enqueueMutation(sessionId, async () => {
+      // Resolve via the existing exact open/index path + manager.getSessionId
+      // identity check; a missing/stale/wrong id yields not_found and NEVER
+      // creates a new session or appends to a reused path.
+      const opened = await this.openSession(sessionId);
+      if (!opened) throw notFound(sessionId);
+      const { manager } = opened;
+      try {
+        manager.appendSessionInfo(canonical);
+      } catch {
+        // Map/sanitize any append failure; never leak the raw path or name.
+        throw makeRuntimeError("external", `failed to rename session: ${sessionId}`, {
+          retryable: true,
+          cause: { kind: "file", detail: "session info append failed" },
+        });
+      }
+      // Invalidate immediately so the SAME shared store's next
+      // listSessions/readSession observes the new title (no 30s stale window).
+      this.invalidateList();
+    });
   }
 
   async locate(sessionId: string): Promise<SessionLocation> {

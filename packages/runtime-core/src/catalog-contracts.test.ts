@@ -19,6 +19,8 @@ import type {
   ProjectTrustState,
   ResourceCatalogPort,
   ResourceCatalogStorePort,
+  SessionCatalogPort,
+  SessionMutationPort,
   TrustGateResult,
 } from "./index.js";
 
@@ -89,6 +91,26 @@ const _readIsNotStore: Assignable<ResourceCatalogPort, ResourceCatalogStorePort>
   false;
 const _queryIsNotPort: Assignable<ProjectTrustQueryPort, ProjectTrustPort> = false;
 
+// Session mutation (offline rename) is a SEPARATE, narrow port: it carries
+// only `renameSession` and never exposes the read-side catalog surface
+// (list/read/context) nor the legacy catalog deleteSession. The read-only
+// SessionCatalogPort keeps its existing deleteSession (unchanged contract).
+const _mutNoList: Missing<SessionMutationPort, "listSessions"> = true;
+const _mutNoRead: Missing<SessionMutationPort, "readSession"> = true;
+const _mutNoContext: Missing<SessionMutationPort, "readSessionContext"> = true;
+const _mutNoLocate: Missing<SessionMutationPort, "locate"> = true;
+const _mutNoDelete: Missing<SessionMutationPort, "deleteSession"> = true;
+const _mutOnlyRename: Assignable<
+  SessionMutationPort,
+  { renameSession(sessionId: string, name: string): Promise<void> }
+> = true;
+
+// The mutation port and the read-only catalog stay distinct: neither is
+// assignable to the other (a catalog object cannot serve as a rename port and
+// a rename port cannot serve as a catalog).
+const _mutNotCatalog: Assignable<SessionMutationPort, SessionCatalogPort> = false;
+const _catalogNotMut: Assignable<SessionCatalogPort, SessionMutationPort> = false;
+
 /* ------------------------------------------------------------------ */
 /* Runtime vocabulary checks                                          */
 /* ------------------------------------------------------------------ */
@@ -143,4 +165,25 @@ test("a read-only trust query object exposes no mutation methods", () => {
   const keys = Object.keys(query);
   assert.ok(!keys.includes("setTrust"));
   assert.ok(!keys.includes("getTrust"));
+});
+
+test("the session mutation port exposes only renameSession", () => {
+  const mutation: SessionMutationPort = {
+    renameSession: () => Promise.resolve(),
+  };
+  const keys = Object.keys(mutation);
+  assert.deepEqual(keys, ["renameSession"]);
+  assert.equal(typeof mutation.renameSession, "function");
+});
+
+test("a read-only session catalog object exposes no renameSession", () => {
+  const catalog: SessionCatalogPort = {
+    listSessions: () => Promise.resolve([]),
+    readSession: () => Promise.reject(new Error("not implemented")),
+    readSessionContext: () => Promise.reject(new Error("not implemented")),
+    deleteSession: () => Promise.resolve(),
+  };
+  const keys = Object.keys(catalog);
+  assert.ok(!keys.includes("renameSession"));
+  assert.ok(keys.includes("deleteSession"), "legacy deleteSession stays on the catalog");
 });

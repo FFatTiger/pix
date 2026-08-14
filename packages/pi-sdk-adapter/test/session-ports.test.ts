@@ -47,6 +47,7 @@ function fakeManager(id: string): PiSdkSessionManager {
     getEntry: () => undefined,
     getSessionId: () => id,
     getHeader: () => undefined,
+    appendSessionInfo: () => "",
   };
 }
 
@@ -124,5 +125,81 @@ describe("pi-sdk session ports (shared pair)", () => {
     const list = await catalog.listSessions();
     assert.ok(Array.isArray(list));
     assert.equal(typeof locator.locate, "function");
+  });
+
+  it("mutation shares the pair's one store: catalog warm list → rename → next list sees the new title with a bounded single rescan", async () => {
+    let scans = 0;
+    let name: string | undefined = "Old";
+    const appended: string[] = [];
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1", ...(name === undefined ? {} : { name }) })];
+      },
+      open() {
+        return {
+          getEntries: () => [],
+          getBranch: () => [],
+          buildContextEntries: () => [],
+          getLeafId: () => null,
+          getEntry: () => undefined,
+          getSessionId: () => "s1",
+          getHeader: () => undefined,
+          appendSessionInfo: (value: string) => { appended.push(value); name = value; return ""; },
+        };
+      },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    const { catalog, locator, mutation } = createPiSdkSessionPorts(store);
+
+    const warm = await catalog.listSessions(); // cold scan → cache [s1] "Old"
+    assert.equal(warm[0]?.title, "Old");
+    assert.equal(scans, 1);
+
+    await mutation.renameSession("s1", "New"); // warm open, no scan; shared store invalidated
+    assert.deepEqual(appended, ["New"]);
+    assert.equal(scans, 1, "rename on a warm shared store adds no scan");
+
+    // The NEXT catalog read (same store) observes the new title immediately.
+    const after = await catalog.listSessions();
+    assert.equal(after[0]?.title, "New");
+    assert.equal(scans, 2, "exactly one bounded rescan observes the rename");
+    // Locator (same store) still resolves the same session.
+    const located = await locator.locate("s1");
+    assert.equal(located.exists, true);
+    assert.equal(scans, 2);
+  });
+
+  it("separately created pairs are independent: a rename in one is invisible to the other's catalog", async () => {
+    let nameA: string | undefined = "A-Old";
+    let nameB: string | undefined = "B-Old";
+    const sdk = (mutable: () => string | undefined, onAppend: (value: string) => void): PiSdkSessionsSurface => ({
+      async listAll() {
+        const current = mutable();
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1", ...(current === undefined ? {} : { name: current }) })];
+      },
+      open() {
+        return {
+          getEntries: () => [],
+          getBranch: () => [],
+          buildContextEntries: () => [],
+          getLeafId: () => null,
+          getEntry: () => undefined,
+          getSessionId: () => "s1",
+          getHeader: () => undefined,
+          appendSessionInfo: (value: string) => { onAppend(value); return ""; },
+        };
+      },
+    });
+    const pairA = createPiSdkSessionPorts(createPiSdkSessionStore({ sdk: sdk(() => nameA, (value) => { nameA = value; }) }));
+    const pairB = createPiSdkSessionPorts(createPiSdkSessionStore({ sdk: sdk(() => nameB, (value) => { nameB = value; }) }));
+
+    assert.equal((await pairA.catalog.listSessions())[0]?.title, "A-Old");
+    assert.equal((await pairB.catalog.listSessions())[0]?.title, "B-Old");
+
+    // Rename via pair A only; pair B is a fully independent store/cache.
+    await pairA.mutation.renameSession("s1", "A-New");
+    assert.equal((await pairA.catalog.listSessions())[0]?.title, "A-New");
+    assert.equal((await pairB.catalog.listSessions())[0]?.title, "B-Old", "pair B must be unaffected");
   });
 });

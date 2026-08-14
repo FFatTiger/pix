@@ -145,6 +145,24 @@ export interface SessionLocatorPort {
   resolveLeafId(sessionId: string, targetId?: string): Promise<string>;
 }
 
+/**
+ * Backend-neutral OFFLINE session mutation (rename). Kept as a separate,
+ * narrowly-declared mutation contract so the read-only
+ * {@link SessionCatalogPort} surface stays mutation-free for rename; the
+ * catalog retains its existing deleteSession for backwards compatibility.
+ * Backends (Pi SDK today, Pi RPC later) implement this port with no Pi
+ * backend types crossing the boundary.
+ */
+export interface SessionMutationPort {
+  /**
+   * Rename an existing session by appending a session-info entry (never
+   * rewrites the session header/file). Rejects with `not_found` for a missing
+   * or stale id and NEVER creates a new session. Resolves once the new name
+   * is committed and the read-side catalog observes it immediately.
+   */
+  renameSession(sessionId: string, name: string): Promise<void>;
+}
+
 /* ------------------------------------------------------------------ */
 /* Model catalog (Host read side)                                      */
 /* ------------------------------------------------------------------ */

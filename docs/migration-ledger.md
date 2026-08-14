@@ -1148,3 +1148,88 @@ boundaries、Startup/Sessions E2E、diff-check 全 PASS。不自行判定 PASS�
   state change 规则另行执行（不自我宣称最终 PASS）。
 (feat(adapter,sessiond,client,e2e): D2-P7 manual compact + abort compaction slice)
 ```
+
+## 44. D4 Session-Rename Adapter Foundation — 离线重命名 adapter/runtime-core 地基记录
+
+```text
+实现：本分支（branch feat/d4-session-rename-adapter，base main 125d0a6），backend-first，
+FOUNDATION ONLY，未合入/未部署。后续 sessiond 切片负责选择 live vs offline 并加
+activation fence；本切片不开放任何 Host 路由/capability，不接 sessiond production
+（其 SessionMutationPort stub 未动），不改 live `set_session_name`，无 Client API/UI。
+
+范围（允许文件，全部在既有 domain 内，不重叠 session-delete Host/UI 分支或 extension UI
+adapter.ts/index 分支）：
+- packages/runtime-core/src/ports.ts：新增 `SessionMutationPort`——仅
+  `renameSession(sessionId, name): Promise<void>`，与只读 `SessionCatalogPort` 分离；
+  catalog 保留既有 deleteSession（向后兼容，不污染只读接口）。无 Pi SDK 类型。
+- packages/pi-sdk-adapter/src/sessions/index.ts：`PiSdkSessionStore` 增加
+  `renameSession`；新增 `PiSdkSessionMutation implements SessionMutationPort` 与
+  `createPiSdkSessionMutation()`；`createPiSdkSessionPorts()` 返回
+  catalog+locator+mutation 共享 ONE PiSdkSessionStore（既有 `{catalog,locator}`
+  destructure 向后兼容）。默认 store 私有、lazy、零网络/零 Worker，public d.ts 无 SDK 泄漏。
+- packages/pi-sdk-adapter/src/internal/session-store.ts：`PiSdkSessionManager` 增
+  `appendSessionInfo(name)`；`renameSession` 实现 + 名字规范化 + 错误 sanitize +
+  即时 invalidate；per-session 串行化队列（rename+delete 共享）。
+
+冻结契约实现：
+1) runtime-core `SessionMutationPort.renameSession` 仅此一法；read-only catalog 保持原样。
+2) `createPiSdkSessionPorts()` 三端口共享一 store；`createPiSdkSessionMutation` 提供。
+3) `PiSdkSessionStore.renameSession`：
+   - 用既有 exact open/index path + `manager.getSessionId` 身份校验；missing/stale/wrong
+     id → not_found，绝不新建 session、绝不 append 到复用路径（fail closed）。
+   - 名字规范化与 live rename UX 一致：trim 外层空白；空白拒绝；≤200 Unicode JS code
+     units（UTF-16 length，freeze 常量 MAX_SESSION_NAME_LENGTH=200 并测试 200/201/emoji
+     计数）；拒绝 NUL 与 C0(\u0000-\u001f)/DEL(\u007f) 控制字符而非静默存隐形控制文本；
+     内部空格与 Unicode/emoji 允许。canonical name 直传 SDK `appendSessionInfo`；不改
+     header/file。
+   - append 失败映射为结构化 sanitized external/retryable file-kind 错误（cause.kind=
+     "file"，无 path/raw SDK message/name 泄漏）；not_found 保持 canonical。
+   - 成功 append 后立即 invalidate 同一共享 store 的 list/index：next
+     listSessions/readSession 立即看到新标题（无 30s 陈旧窗口）。标题真相源 = JSONL 文件
+     最新 session_info entry（SDK listAll `name` 与 getSessionName 同源；detail 复用
+     listAll 的 info.name，故 list 与 detail 一致）。
+4) per-session mutation 串行化共享 rename 与 delete：同 id FIFO（rename/rename 最后提交
+   append 胜；rename/delete 两顺序确定性——delete 先则 rename not_found 且绝不重建/
+   append；rename 先则 delete 移除已改名文件）；不同 id 各自队列并行（无全局锁）；
+   每 mutation 只取一个 per-session slot（无嵌套→无死锁），空队列移除（bounded cleanup，
+   存储 tail 恒 resolve 无 unhandled rejection）；delete ENOENT 幂等语义与全部
+   revision/negative-cache fence 原样保留。
+5) 外部 path/file 身份竞争仍在既有 openSession 校验下 fail closed；不扩大到 filesystem
+   事务 redesign；绝不 delete/rename 一个被复用的不同 session path。
+6) live `set_session_name`（agent adapter）未动；无 capability 开放。
+
+验证（本机 Node v24.18.0）：
+- runtime-core 9/9（新增 2：mutation port 仅 renameSession 的 compile-time 精确断言 +
+  runtime 断言；read-only catalog 无 renameSession）；runtime-core typecheck/build PASS。
+- adapter 223/223（基线 206 + 新增 17 定向）：
+  - 真实 JSONL：rename append session_info、file/sessionId/history/context 不变、list 标题
+    即时可见（无 TTL wait）、全新独立 store 重开持久。
+  - 名字：trim、空白/201/NUL/全部 C0+DEL/非字符串拒绝且零 append、Unicode/emoji/内部空格
+    接受、恶意名绝不进入 error/log。
+  - 身份：missing/wrong id/stale path/path reuse 绝不改另一文件（append 计数 0）；
+    append 失败 sanitize（无 path/raw message/name）；共享缓存即时刷新且 bounded 单次
+    rescan（warm rename 零额外 scan）。
+  - 并发：同 id rename FIFO 最后提交者胜；delete→rename not_found 且文件保持删除；
+    rename→delete 移除；重复 delete not_found；不同 id 并行（一个 rename 在另一 session
+    mutation in-flight 时完成——无全局锁；被 supersede 的 in-flight rename fail closed
+    not_found 且零 append）。
+  - public surface：mutation factory 方法面恰 renameSession、无 SDK 名、lazy/零 Worker；
+    createPiSdkSessionPorts 三端口共享 store + 向后兼容 destructure；separately created
+    pair 独立（rename 不跨 pair 泄漏）。
+- adapter boundaries PASS（21 source / 10 public declarations 无 SDK/internal 泄漏）；
+  command coverage 26/26 PASS；`git diff --check` PASS；工作树 clean 后提交。
+- 未改 Protocol/runtime-core 生产行为（ports.ts 仅新增接口）、sessiond/Host/Client/
+  package-lock/daemon；未触碰 D3A 资源/ledger/worktrees。
+
+设计说明：
+- SDK `appendSessionInfo` 内部会 trim 并把 \r\n 替换为空格；本切片在 SDK 前已拒绝全部
+  C0/DEL，故传入 canonical name 时 SDK 的再清洗是无操作，绝不会引入隐形控制文本。
+- per-session 串行化不锁读路径（list/read 仍可并发），与既有 read 并发语义一致；
+  成功 mutation 的 invalidate 是保守的共享缓存失效，被 supersede 的 in-flight 扫描
+  fail closed（与既有 delete/read 行为一致，非数据损坏）。
+
+残余/风险：
+- 未做 Host/sessiond/Client 接线与 UI 验收（本切片无 UI/无路由）；sessiond 后续选择
+  live vs offline + activation fence。
+- 本分支未 merge/push/deploy；提交前工作树 clean。持久化与并发地基需独立 review 后合入。
+```

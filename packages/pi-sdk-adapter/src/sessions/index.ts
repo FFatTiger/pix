@@ -1,11 +1,13 @@
-// Public sessions surface of the pix Pi SDK Adapter (D1A-1).
+// Public sessions surface of the pix Pi SDK Adapter (D1A-1 / D4 adapter
+// foundation).
 //
-// Session catalog + locator backed by read-only Pi SDK JSONL access. This
-// module satisfies runtime-core SessionCatalogPort / SessionLocatorPort
+// Session catalog + locator backed by read-only Pi SDK JSONL access, plus a
+// narrow backend-neutral offline rename mutation port. This module satisfies
+// runtime-core SessionCatalogPort / SessionLocatorPort / SessionMutationPort
 // WITHOUT importing the Pi SDK: the SDK-coupled store lives in
 // src/internal/session-store.ts. No model runtime, live agent, network,
 // credentials, resources or trust are involved; list / read / context /
-// locate / resolveLeafId run with zero Workers.
+// locate / resolveLeafId / renameSession run with zero Workers.
 import type {
   SessionCatalogPort,
   SessionContext,
@@ -14,21 +16,24 @@ import type {
   SessionListFilter,
   SessionLocation,
   SessionLocatorPort,
+  SessionMutationPort,
 } from "@fffattiger/pix-runtime-core";
 import { createPiSdkSessionStore } from "../internal/session-store.js";
 
 /**
- * Injectable read-only session store contract. The default implementation
- * (created by the internal store factory) reads Pi SDK JSONL; tests and
- * composition may supply their own to exercise the catalog/locator in
- * isolation. Every method is pure read-only JSONL access (deleteSession removes
- * the session file).
+ * Injectable session store contract. The default implementation (created by
+ * the internal store factory) reads Pi SDK JSONL; tests and composition may
+ * supply their own to exercise the catalog/locator/mutation in isolation.
+ * list / read / context / locate / resolveLeafId are pure read-only JSONL
+ * access; deleteSession removes the session file; renameSession appends a
+ * session_info entry (offline rename, never rewrites the header/file).
  */
 export interface PiSdkSessionStore {
   listSessions(): Promise<readonly SessionHeader[]>;
   readSession(sessionId: string): Promise<SessionDetail>;
   readSessionContext(sessionId: string, leafId?: string): Promise<SessionContext>;
   deleteSession(sessionId: string): Promise<void>;
+  renameSession(sessionId: string, name: string): Promise<void>;
   locate(sessionId: string): Promise<SessionLocation>;
   resolveLeafId(sessionId: string, targetId?: string): Promise<string>;
 }
@@ -69,6 +74,14 @@ class PiSdkSessionLocator implements SessionLocatorPort {
   }
 }
 
+class PiSdkSessionMutation implements SessionMutationPort {
+  constructor(private readonly store: PiSdkSessionStore) {}
+
+  renameSession(sessionId: string, name: string): Promise<void> {
+    return this.store.renameSession(sessionId, name);
+  }
+}
+
 /**
  * Create a SessionCatalogPort backed by read-only Pi SDK JSONL. An optional
  * store may be injected for tests/composition; the default store reads from the
@@ -89,27 +102,43 @@ export function createPiSdkSessionLocator(store: PiSdkSessionStore = createPiSdk
   return new PiSdkSessionLocator(store);
 }
 
-/** Production session pair: catalog + locator sharing ONE Pi SDK session store. */
+/**
+ * Create a backend-neutral SessionMutationPort for OFFLINE session rename
+ * backed by Pi SDK JSONL. An optional store may be injected for
+ * tests/composition; the default store reads from the SDK's configured session
+ * directories. renameSession appends a session_info entry (never rewrites the
+ * header/file), runs with zero Workers, and exposes no Pi SDK types.
+ */
+export function createPiSdkSessionMutation(store: PiSdkSessionStore = createPiSdkSessionStore()): SessionMutationPort {
+  return new PiSdkSessionMutation(store);
+}
+
+/** Production session triple: catalog + locator + mutation sharing ONE Pi SDK session store. */
 export interface PiSdkSessionPorts {
   /** Read-side session catalog (list / read / context / delete). */
   readonly catalog: SessionCatalogPort;
   /** Activation-side session locator (locate / resolveLeafId). */
   readonly locator: SessionLocatorPort;
+  /** Backend-neutral offline session mutation (renameSession). */
+  readonly mutation: SessionMutationPort;
 }
 
 /**
- * Create the production session pair: a catalog and locator backed by ONE
- * shared Pi SDK session store, so a cold locate followed by a catalog read (the
- * sessiond `sessions.resolve` → catalog-derived activation-context path) runs a
- * single session-list scan against one shared cache instead of two independent
- * stores. The default store is private (created by the internal store factory);
- * an optional store may be injected for tests/composition, exactly like the
- * injectable catalog/locator factories above. All methods run with zero
- * Workers.
+ * Create the production session pair: a catalog, locator and mutation backed
+ * by ONE shared Pi SDK session store, so a cold locate → catalog read (the
+ * sessiond `sessions.resolve` → catalog-derived activation-context path) and a
+ * rename → next catalog read all run against one shared cache instead of
+ * independent stores; a rename invalidates the shared store so the next
+ * listSessions/readSession observes the new title immediately. The default
+ * store is private (created by the internal store factory); an optional store
+ * may be injected for tests/composition, exactly like the injectable
+ * catalog/locator factories above. Backward-compatible: existing destructuring
+ * of `{ catalog, locator }` keeps working. All methods run with zero Workers.
  */
 export function createPiSdkSessionPorts(store: PiSdkSessionStore = createPiSdkSessionStore()): PiSdkSessionPorts {
   return {
     catalog: createPiSdkSessionCatalog(store),
     locator: createPiSdkSessionLocator(store),
+    mutation: createPiSdkSessionMutation(store),
   };
 }

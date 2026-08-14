@@ -15,6 +15,8 @@ import type { PiSdkSessionManager, PiSdkSessionsSurface } from "../src/internal/
 import {
   createPiSdkSessionCatalog,
   createPiSdkSessionLocator,
+  createPiSdkSessionMutation,
+  createPiSdkSessionPorts,
   type PiSdkSessionStore,
 } from "../src/sessions/index.js";
 
@@ -143,6 +145,7 @@ function fakeManager(id: string): PiSdkSessionManager {
     getEntry: () => undefined,
     getSessionId: () => id,
     getHeader: () => undefined,
+    appendSessionInfo: () => "",
   };
 }
 
@@ -277,6 +280,67 @@ describe("pi-sdk sessions catalog (real JSONL)", () => {
       const headers = await f.catalog.listSessions();
       assert.equal(headers.length, 0);
       await assert.rejects(() => f.catalog.readSession(sessionId), isNotFound);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real temp-JSONL: offline rename (D4 adapter foundation)
+// ---------------------------------------------------------------------------
+
+describe("pi-sdk sessions rename (real JSONL)", () => {
+  it("appends session_info, keeps the same file/id/history/context, and makes the title immediate + persistent", async () => {
+    const f = await setup();
+    try {
+      const { sessionId, user, assistant } = await seedRichSession(f);
+      const before = await f.catalog.readSession(sessionId);
+      const beforeFile = before.sessionFile;
+      const beforeIds = (before.entries ?? []).map((entry) => entry.entryId);
+
+      await f.store.renameSession(sessionId, "  Renamed Session 🎉  ");
+
+      // List title is observable IMMEDIATELY (rename invalidates the shared
+      // store; no 30s TTL wait and no manual invalidation in the test).
+      const headers = await f.catalog.listSessions();
+      assert.equal(headers.length, 1);
+      assert.equal(headers[0]?.title, "Renamed Session 🎉");
+
+      // Detail header title reflects the same new name (source of truth: the
+      // latest session_info entry, read by listAll's `name`).
+      const detail = await f.catalog.readSession(sessionId);
+      assert.equal(detail.sessionId, sessionId);
+      assert.equal(detail.title, "Renamed Session 🎉");
+      assert.equal(detail.sessionFile, beforeFile, "file path must not change");
+
+      // sessionId / history / context unchanged by the rename.
+      const ctx = await f.catalog.readSessionContext(sessionId);
+      assert.equal(ctx.sessionId, sessionId);
+      assert.deepEqual(
+        (detail.entries ?? []).map((entry) => entry.entryId),
+        beforeIds,
+        "entries must be unchanged by rename",
+      );
+      assert.deepEqual(ctx.entries.map((entry) => entry.entryId), beforeIds);
+      // Locator still resolves the same canonical file.
+      const located = await f.locator.locate(sessionId);
+      assert.equal(located.exists, true);
+      assert.equal(located.sessionFile, beforeFile);
+      assert.equal(await f.locator.resolveLeafId(sessionId, assistant), assistant);
+      assert.ok(beforeIds.includes(user));
+
+      // A FRESH store/catalog (independent instance) observes the persisted
+      // rename — the session_info entry was written to the JSONL file. It must
+      // point at the SAME session dir to prove on-disk persistence.
+      const freshStore = createPiSdkSessionStore({ sessionDir: f.sessionDir });
+      const freshCatalog = createPiSdkSessionCatalog(freshStore);
+      const reopened = await freshCatalog.listSessions();
+      assert.equal(reopened.length, 1);
+      assert.equal(reopened[0]?.title, "Renamed Session 🎉");
+      const reopenedDetail = await freshCatalog.readSession(sessionId);
+      assert.equal(reopenedDetail.title, "Renamed Session 🎉");
+      assert.equal(reopenedDetail.sessionId, sessionId);
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }
@@ -496,6 +560,228 @@ describe("pi-sdk sessions list performance (injected SDK)", () => {
     // deleteSession of a wrong-id-resolved session fails closed and never
     // reaches rm (no file is removed).
     await assert.rejects(() => store.deleteSession("requested"), isNotFound);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Injected-SDK rename: name normalization/validation, identity safety, append
+// error sanitization, cache behavior (deterministic, no real filesystem)
+// ---------------------------------------------------------------------------
+
+describe("pi-sdk sessions rename validation + identity (injected SDK)", () => {
+  function isInvalidInput(error: unknown): error is RuntimeError {
+    return isRuntimeError(error) && error.code === "invalid_input";
+  }
+
+  /** An SDK surface whose fake managers record appended names per session id. */
+  function recordingSurface(infos: FakeSessionInfo[], appended: Map<string, string[]>): PiSdkSessionsSurface {
+    return {
+      async listAll() { return infos; },
+      open(path) {
+        const info = infos.find((item) => item.path === path);
+        const id = info?.id ?? idFromPath(path);
+        return {
+          getEntries: () => [],
+          getBranch: () => [],
+          buildContextEntries: () => [],
+          getLeafId: () => null,
+          getEntry: () => undefined,
+          getSessionId: () => id,
+          getHeader: () => undefined,
+          appendSessionInfo: (name: string) => {
+            appended.get(id)?.push(name);
+            return "";
+          },
+        };
+      },
+    };
+  }
+
+  it("trims outer whitespace and appends the canonical trimmed name", async () => {
+    const appended = new Map<string, string[]>();
+    const sdk = recordingSurface([mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })], appended);
+    const store = createPiSdkSessionStore({ sdk });
+    appended.set("s1", []);
+    await store.renameSession("s1", "   Hello   World   ");
+    assert.deepEqual(appended.get("s1"), ["Hello   World"]);
+  });
+
+  it("accepts Unicode, emoji, and internal spaces, and caps at 200 Unicode JS code units", async () => {
+    const appended = new Map<string, string[]>();
+    const sdk = recordingSurface([mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })], appended);
+    const store = createPiSdkSessionStore({ sdk });
+    appended.set("s1", []);
+
+    await store.renameSession("s1", "你好 🌍 世界 with spaces");
+    assert.deepEqual(appended.get("s1"), ["你好 🌍 世界 with spaces"]);
+
+    const exactly200 = "x".repeat(200);
+    appended.get("s1")!.length = 0;
+    await store.renameSession("s1", exactly200);
+    assert.deepEqual(appended.get("s1"), [exactly200]);
+
+    // 201 code units is rejected and nothing is appended.
+    appended.get("s1")!.length = 0;
+    await assert.rejects(() => store.renameSession("s1", "x".repeat(201)), isInvalidInput);
+    assert.deepEqual(appended.get("s1"), []);
+    // Emoji counts as 2 UTF-16 code units: 100 emoji = 200 is fine, 101 = 202 rejected.
+    appended.get("s1")!.length = 0;
+    await store.renameSession("s1", "😀".repeat(100));
+    assert.deepEqual(appended.get("s1"), ["😀".repeat(100)]);
+    appended.get("s1")!.length = 0;
+    await assert.rejects(() => store.renameSession("s1", "😀".repeat(101)), isInvalidInput);
+    assert.deepEqual(appended.get("s1"), []);
+  });
+
+  it("rejects blank, non-string, NUL, all C0, and DEL control characters without appending or leaking the name", async () => {
+    const appended = new Map<string, string[]>();
+    const sdk = recordingSurface([mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })], appended);
+    const store = createPiSdkSessionStore({ sdk });
+    appended.set("s1", []);
+
+    // Edge whitespace trims away, so a name that is only whitespace is BLANK
+    // (rejected as-is, nothing to leak).
+    for (const input of ["", "   ", "\t", "\n", "\r"]) {
+      await assert.rejects(() => store.renameSession("s1", input), isInvalidInput);
+    }
+    // NUL / C0 / DEL controls that are NOT trimmed away (internal or
+    // non-whitespace) are rejected outright; a malicious suffix must never
+    // leak into the error.
+    for (const input of ["a\u0000b", "a\u0001b", "a\u001fb", "a\u007fb", "a\tb", "a\nb", "a\rb", "\u0000", "\u0001", "\u001f", "\u007f"]) {
+      const marker = "MALICIOUS-NAME";
+      const raw = `${input}${marker}`;
+      await assert.rejects(
+        () => store.renameSession("s1", raw),
+        (error: unknown) => {
+          assert.ok(isRuntimeError(error));
+          if (!isRuntimeError(error)) return false;
+          assert.equal(error.code, "invalid_input");
+          // Never echo the raw name (incl. control bytes or the marker).
+          assert.ok(!JSON.stringify(error).includes(marker));
+          assert.ok(!JSON.stringify(error).includes(input));
+          return true;
+        },
+      );
+    }
+    // Non-string input is also rejected and nothing is appended.
+    await assert.rejects(
+      () => store.renameSession("s1", 42 as unknown as string),
+      isInvalidInput,
+    );
+    // Nothing was ever appended to the SDK for any rejected input.
+    assert.deepEqual(appended.get("s1"), []);
+  });
+
+  it("returns not_found for a missing id and never creates a session or appends", async () => {
+    const appended = new Map<string, string[]>();
+    const sdk = recordingSurface([mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" })], appended);
+    const store = createPiSdkSessionStore({ sdk });
+    appended.set("s1", []);
+    await assert.rejects(() => store.renameSession("missing", "X"), isNotFound);
+    assert.deepEqual(appended.get("s1"), []);
+  });
+
+  it("never mutates a reused/stale path whose on-disk id differs (fail closed, no append)", async () => {
+    let appendCalls = 0;
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        return [mkInfo({ path: "/repo/sessions/shared.jsonl", id: "requested" })];
+      },
+      open() {
+        return {
+          getEntries: () => [],
+          getBranch: () => [],
+          buildContextEntries: () => [],
+          getLeafId: () => null,
+          getEntry: () => undefined,
+          getSessionId: () => "different-session", // path was reused by another session
+          getHeader: () => undefined,
+          appendSessionInfo: () => { appendCalls += 1; return ""; },
+        };
+      },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await assert.rejects(() => store.renameSession("requested", "X"), isNotFound);
+    assert.equal(appendCalls, 0, "rename must never append to a reused path");
+  });
+
+  it("maps an append failure to a sanitized external/retryable file-kind error without leaking path or name", async () => {
+    const sessionFile = "/repo/sessions/s1.jsonl";
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        return [mkInfo({ path: sessionFile, id: "s1" })];
+      },
+      open() {
+        return {
+          getEntries: () => [],
+          getBranch: () => [],
+          buildContextEntries: () => [],
+          getLeafId: () => null,
+          getEntry: () => undefined,
+          getSessionId: () => "s1",
+          getHeader: () => undefined,
+          appendSessionInfo: () => { throw new Error("disk full raw-sdk-message"); },
+        };
+      },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await assert.rejects(
+      () => store.renameSession("s1", "TARGET-NAME"),
+      (error: unknown) => {
+        assert.ok(isRuntimeError(error));
+        if (!isRuntimeError(error)) return false;
+        assert.equal(error.code, "external");
+        assert.equal(error.retryable, true);
+        assert.equal(error.cause?.kind, "file");
+        // Never leak the raw path, the SDK message, or the target name.
+        assert.ok(!JSON.stringify(error).includes(sessionFile));
+        assert.ok(!JSON.stringify(error).includes("disk full raw-sdk-message"));
+        assert.ok(!JSON.stringify(error).includes("TARGET-NAME"));
+        return true;
+      },
+    );
+  });
+
+  it("invalidates the shared list so the next list/read observes the new title with a bounded single rescan", async () => {
+    let scans = 0;
+    let name: string | undefined = "Old Title";
+    const appended: string[] = [];
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        return [mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1", ...(name === undefined ? {} : { name }) })];
+      },
+      open() {
+        return {
+          getEntries: () => [],
+          getBranch: () => [],
+          buildContextEntries: () => [],
+          getLeafId: () => null,
+          getEntry: () => undefined,
+          getSessionId: () => "s1",
+          getHeader: () => undefined,
+          appendSessionInfo: (value: string) => { appended.push(value); name = value; return ""; },
+        };
+      },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+
+    await store.listSessions();        // cold scan → cache [s1] with "Old Title"
+    assert.equal(scans, 1);
+    const warm = await store.listSessions(); // warm hit, no scan
+    assert.equal(warm[0]?.title, "Old Title");
+    assert.equal(scans, 1);
+
+    await store.renameSession("s1", "New Title"); // warm open (no scan) + append + invalidate
+    assert.deepEqual(appended, ["New Title"]);
+    assert.equal(scans, 1, "rename must not add a scan for a warm index hit");
+
+    const after = await store.listSessions(); // cold rescan → new title
+    assert.equal(after[0]?.title, "New Title");
+    assert.equal(scans, 2, "exactly one rescan observes the new title");
+    const detail = await store.readSession("s1"); // warm after the rescan, no scan
+    assert.equal(detail.title, "New Title");
+    assert.equal(scans, 2);
   });
 });
 
@@ -897,6 +1183,151 @@ describe("pi-sdk sessions cache hardening (injected SDK)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Per-session mutation serialization: rename/rename FIFO, rename/delete
+// determinism, duplicate delete ENOENT, and different-id parallelism
+// ---------------------------------------------------------------------------
+
+describe("pi-sdk sessions mutation serialization (rename/delete)", () => {
+  it("same-session concurrent renames are FIFO and the last committed append wins (real JSONL)", async () => {
+    const f = await setup();
+    try {
+      const { sessionId } = await seedRichSession(f);
+      // Both renames enqueue synchronously (FIFO): A appends first, B second.
+      const [a, b] = await Promise.allSettled([
+        f.store.renameSession(sessionId, "First Name"),
+        f.store.renameSession(sessionId, "Second Name"),
+      ]);
+      assert.equal(a.status, "fulfilled");
+      assert.equal(b.status, "fulfilled");
+      const headers = await f.catalog.listSessions();
+      assert.equal(headers[0]?.title, "Second Name", "last committed append wins");
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("delete then rename: delete wins and rename returns not_found without recreating or appending", async () => {
+    const f = await setup();
+    try {
+      const { sessionId } = await seedRichSession(f);
+      const sessionFile = (await f.catalog.readSession(sessionId)).sessionFile;
+      assert.ok(sessionFile, "seeded session must have a file");
+      // Enqueue delete first, then rename (both FIFO on the same session id).
+      const deleteP = f.store.deleteSession(sessionId);
+      const renameP = f.store.renameSession(sessionId, "Ghost");
+      await deleteP;
+      await assert.rejects(() => renameP, isNotFound);
+      // The file is gone and the rename never recreated it / appended anything.
+      const headers = await f.catalog.listSessions();
+      assert.equal(headers.length, 0);
+      await assert.rejects(() => f.catalog.readSession(sessionId), isNotFound);
+      const { existsSync } = await import("node:fs");
+      assert.equal(existsSync(sessionFile), false, "delete wins: file must stay removed");
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("rename then delete: rename commits then delete removes the renamed session", async () => {
+    const f = await setup();
+    try {
+      const { sessionId } = await seedRichSession(f);
+      const sessionFile = (await f.catalog.readSession(sessionId)).sessionFile;
+      assert.ok(sessionFile, "seeded session must have a file");
+      const renameP = f.store.renameSession(sessionId, "Will Be Deleted");
+      const deleteP = f.store.deleteSession(sessionId);
+      await renameP;
+      await deleteP;
+      const { existsSync } = await import("node:fs");
+      assert.equal(existsSync(sessionFile), false, "rename-then-delete leaves no file");
+      const headers = await f.catalog.listSessions();
+      assert.equal(headers.length, 0);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("duplicate delete after a successful delete still reports not_found (ENOENT idempotency preserved elsewhere)", async () => {
+    const f = await setup();
+    try {
+      const { sessionId } = await seedRichSession(f);
+      await f.store.deleteSession(sessionId);
+      // A second delete of the now-missing session is not_found (never a
+      // per-session lock leak, never a crash).
+      await assert.rejects(() => f.store.deleteSession(sessionId), isNotFound);
+      // And a rename of the deleted session is not_found too (no recreation).
+      await assert.rejects(() => f.store.renameSession(sessionId, "Nope"), isNotFound);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("different session ids mutate concurrently (no global lock): one rename completes while another session's rename is in flight", async () => {
+    let scans = 0;
+    let releaseS1Scan: ((infos: FakeSessionInfo[]) => void) | undefined;
+    const appended = new Map<string, string[]>();
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() {
+        scans += 1;
+        if (scans === 1) return [mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" })];
+        if (scans === 2) return new Promise<FakeSessionInfo[]>((resolve) => { releaseS1Scan = resolve; });
+        return [
+          mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+          mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" }),
+        ];
+      },
+      open(path) {
+        const id = idFromPath(path);
+        return {
+          getEntries: () => [],
+          getBranch: () => [],
+          buildContextEntries: () => [],
+          getLeafId: () => null,
+          getEntry: () => undefined,
+          getSessionId: () => id,
+          getHeader: () => undefined,
+          appendSessionInfo: (name: string) => {
+            appended.get(id)?.push(name);
+            return "";
+          },
+        };
+      },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    appended.set("s1", []);
+    appended.set("s2", []);
+
+    await store.listSessions(); // scan 1 → cache [s2]; s1 is a warm miss
+
+    // s1's rename (enqueued FIRST) triggers a warm-miss scan (scan 2) that we
+    // hold open, so the s1 mutation stays in flight.
+    let s1Done = false;
+    const s1P = store.renameSession("s1", "Slow").then(() => { s1Done = true; });
+    await tick();
+    assert.ok(releaseS1Scan, "s1 mutation must be in flight (warm-miss scan held)");
+
+    // s2's rename — a DIFFERENT session id and a separate per-session queue —
+    // completes while s1's mutation is still pending. A global (all-session)
+    // lock would have blocked it behind s1's held task.
+    await store.renameSession("s2", "Fast");
+    assert.equal(s1Done, false, "s1 mutation must still be in flight");
+    assert.deepEqual(appended.get("s2"), ["Fast"]);
+    assert.deepEqual(appended.get("s1"), [], "s1 append must not have run yet");
+
+    // s2's committed rename invalidated the shared list, superseding s1's
+    // in-flight scan. Releasing it must fail CLOSED (no append, no recreation):
+    // s1's rename reports not_found because its scan is no longer the newest
+    // trusted snapshot — never a wrong-session mutation.
+    releaseS1Scan!([
+      mkInfo({ path: "/repo/sessions/s1.jsonl", id: "s1" }),
+      mkInfo({ path: "/repo/sessions/s2.jsonl", id: "s2" }),
+    ]);
+    await assert.rejects(() => s1P, isNotFound);
+    assert.deepEqual(appended.get("s1"), [], "superseded rename must never append");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Real-JSONL warm reads reuse the list index (scan counting via injected SDK)
 // ---------------------------------------------------------------------------
 
@@ -965,6 +1396,7 @@ describe("pi-sdk sessions catalog filter (injected store)", () => {
       async readSession(id) { return { ...headers.find((h) => h.sessionId === id)!, entries: [] }; },
       async readSessionContext(id) { return { sessionId: id, entries: [] }; },
       async deleteSession() {},
+      async renameSession() {},
       async locate(id) { return { sessionId: id, sessionFile: `${id}.jsonl`, exists: true }; },
       async resolveLeafId(id) { return id; },
     };
@@ -1037,5 +1469,38 @@ describe("pi-sdk sessions public surface", () => {
     const catalog = createPiSdkSessionCatalog();
     const list = await catalog.listSessions();
     assert.ok(Array.isArray(list));
+  });
+
+  it("exposes a narrow backend-neutral mutation factory with no SDK names and lazy/zero-worker construction", async () => {
+    const mutation = createPiSdkSessionMutation();
+    // Method surface is exactly renameSession (instance owns only the private
+    // store dependency; methods live on the prototype, matching catalog/locator).
+    const surface = [
+      ...Object.getOwnPropertyNames(mutation),
+      ...Object.getOwnPropertyNames(Object.getPrototypeOf(mutation)),
+    ];
+    const methods = surface.filter((name) => name !== "store" && name !== "constructor");
+    assert.deepEqual(methods, ["renameSession"], "mutation port method surface is exactly renameSession");
+    assert.equal(
+      surface.some((name) =>
+        /AgentSession|SessionManager|ModelRuntime|ResourceLoader|TrustStore|AuthStorage/.test(name),
+      ),
+      false,
+      "mutation port must not leak SDK names",
+    );
+    // Constructing and operating offline never touches the network or a worker.
+    await assert.rejects(() => mutation.renameSession("missing-id", "X"), isNotFound);
+  });
+
+  it("createPiSdkSessionPorts returns catalog + locator + mutation sharing one store (backward compatible destructuring)", async () => {
+    const { catalog, locator, mutation } = createPiSdkSessionPorts();
+    assert.equal(typeof catalog.listSessions, "function");
+    assert.equal(typeof locator.locate, "function");
+    assert.equal(typeof mutation.renameSession, "function");
+    // Backward compatible: the pair destructure still works.
+    const pair = createPiSdkSessionPorts();
+    const { catalog: c2, locator: l2 } = pair;
+    assert.equal(typeof c2.listSessions, "function");
+    assert.equal(typeof l2.locate, "function");
   });
 });
