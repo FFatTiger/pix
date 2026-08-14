@@ -1641,3 +1641,52 @@ E2E + docs：
   E2E 全 PASS；真实 Host→sessiond→adapter 删除闭环。Fresh GPT 二轮以相同 F1 探针确认
   rekey 14ms、不同 id activate 251ms 并行、同/异 id delete 0ms、全部 Query/auth/cap/UI
   竞态与无孤儿门禁 PASS；source 提交干净，已集成 main，未 push/deploy。
+
+## 48. (provisional) secure-Windows-state Slice 1 — `@fffattiger/pix-local-authority` POSIX 基础（平台中立 contracts + POSIX backend + Host 委托 + macOS `/var` 别名规范化）
+
+```text
+状态：IN_REVIEW（独立持久性/安全验证前不合入 main；未 merge/push/deploy，无 live service）
+分支：feat/local-authority-posix-host（isolated worktree `/Users/proxy/Documents/program/pix-worktrees/local-authority-posix-host`）
+Base：main 125d0a6
+实现：本次提交（见下）
+验证者：需独立 persistence/security verifier 复核（不自行判定最终 PASS）
+```
+
+目标：为 secure-Windows-state 计划铺设「平台中立 secure-state contracts + 当前高保真 POSIX 实现」的依赖无关基础设施工作区，并让 Host 内部 `HostStateDirectoryLease` 委托底层操作——不改 Host 公共/API/错误/布局/字节语义；同时修复 canonical alias 处理，使 macOS `/var/...` 可经「最近已存在祖先 realpath」安全规范化到 `/private/var/...` 而非误拒。
+
+范围（只动本切片；不 touch sessiond / Protocol / CLI 行为 / Windows 原生代码 / Client & runtime / package engines / persisted schema；不宣称原生 Windows 支持）：
+
+- 新增 dependency-free workspace `packages/local-authority`（`@fffattiger/pix-local-authority`，0.1.0，零 runtime deps，engine node>=22.19.0）：
+  - `src/state/contracts.ts`：平台中立 contracts（零 node: import）：`LocalAuthorityCode/LocalAuthorityError`、`PosixFileIdentity`、`PosixPrincipal`、`StateDocumentReadResult`、`LifetimeLockRecord/Ownership/ReadResult`、`SecureStateBackend` 接口，以及纯谓词 `isRecord/isSafeInteger/isIsoTimestamp/hasControlChar/isValidInstanceId/isAbsoluteCanonicalShape`（Host ledgers 继续经 host-state-directory 转发这些谓词）。
+  - `src/state/posix.ts`：从 Host `host-state-directory.ts` 抽取/适配的高保真 POSIX backend：`canonicalizeAbsolutePath`（最近已存在祖先 realpath + 校验缺失尾 + canonical 组件回走；拒绝根/父级逃逸/网络/Windows 声明，结果永不含符号链接中间组件）、`posixFileIdentity/currentPrincipal/isOwnedByCurrentUser`、`ensurePrivateDirectory`（逐组件回走、新 leaf fd 设 0700、既有 leaf 绝不 chmod——owner/精确 0700/validateExistingLeaf 钩子）、`readStateDocument`（bounded + symlink/非 regular/oversize/permissions/hardlink 全 fail-closed）、`writeStateDocument`（temp 同目录 O_EXCL|O_NOFOLLOW 0600→write+fsync→身份→原子 rename→目录 fsync，支持 lockCheck LOCK_LOST 与 test-only inject seam）、`acquireLifetimeLock/readLifetimeLock/releaseLifetimeLock`（O_EXCL、busy/stale/unsafe/ambiguous 分类、精确 dev/ino+instanceId 释放）、`isPidAlive`、`createPosixSecureStateBackend`。
+  - `src/state/index.ts` + `src/index.ts` 顶层导出；`test/*.test.mjs`（canonical-path/secure-directory/lifetime-lock/document/package-surface 33 用例）；`scripts/check-boundaries.mjs`。
+- Host `host-state-directory.ts` 重构为委托：recognized 布局策略、共享 in-process mutex、validate-before-lock 顺序、固定 Host 错误码/消息（`LOCAL_TO_HOST_CODES/LOCAL_TO_HOST_MESSAGES`，LocalAuthorityError→HostStateDirectoryError，绝不泄漏 raw path/os error）保留；低层 fs 操作（canonicalize/private-dir/doc read/write/lifetime lock）委托 `@fffattiger/pix-local-authority/state`。公共 API/error/layout/byte 语义不变：仍 `trusted-roots.json` / `managed-worktrees.json` / `trusted-roots.lock`（既有 lock 名，非 host.lock——若计划要求改名需独立切片，本切片不得改布局语义）、单一 lease/单一 mutex/单一 lifetime lock 由两账本共享。
+- canonical alias 修复：`ensurePixHostDir` 先 canonicalize（`/var/foo`→`/private/var/foo` 不再误拒），再按原始路径回走拒绝「除 canonical root alias（macOS /var→/private/var、/tmp、/etc）之外的符号链接中间组件」（既有「中间符号链接拒绝、外部树绝不突变」测试保持通过）；拒绝 lexical 父级逃逸、根、网络/Windows 声明。
+- Host dependency：`@fffattiger/pix-local-authority@0.1.0`；prebuild-deps 增 `packages/local-authority`；Host check-boundaries 只放行 `@fffattiger/pix-local-authority/state`（非 root/非其他 subpath）；check:architecture 新增 `local-authority boundary` 检查（禁 Protocol/Runtime Core/Pi SDK/Hono/React import 或依赖）+ 自测；package-lock 仅新增本新 workspace（未改其他依赖版本）。
+
+不变式验证（Host 既有测试未改即过 + 新增）：Host 373/373（基线 372 + 新增 macOS `/var` alias lease 测试；trusted-roots/managed-worktrees/production-resources 既有 79 用例字节与 lock 名语义不变）；local-authority 33/33；check:architecture PASS（含新增 local-authority boundary）；scripts 自测 20/20；Host boundary 42 files PASS；local-authority boundary 4 files PASS；逐包 typecheck/build PASS；root test 见下；Startup/Sessions/Runtime E2E 有限 watchdog 全 PASS；`git diff --check` 通过；npm pack --dry-run 检查两包内容。
+
+语义增量（相对旧 lease 行为）：
+- `PIX_HOST_DIR`（或 resolve 后）含 macOS 根级 canonical alias（/var、/tmp、/etc）时，hostDir 返回 canonical（/private/var/...）且不再误拒——这正是本切片目标；非根级用户符号链接中间组件仍 fail-closed（HOST_DIR_UNSAFE），外部树绝不突变。
+- 其余错误码/消息/字节/锁名/布局不变（见上）。
+
+残余风险 / 待办：
+- 未做原生 Windows backend（contracts 是平台中立接口；POSIX 为当前唯一实现）；原生 Windows 仍需：native backend + secure named pipe + CI 门禁（含 Windows 专用测试矩阵）后才可声明支持，本切片不宣称。
+- 同 UID 残余 TOCTOU（Node 无 openat）保持既有文档化处理；不削弱跨用户边界。
+- 本切片为 source-only 抽取/委托，无任何 persisted schema 迁移（lock/ledger 文件格式不变），无数据迁移脚本。
+- 独立 persistence/security 复核后再合入 main；本切片的 migration-ledger 序号在集成到 current main 时由父级统一为 §48（验证证据 §49）。
+```
+
+## 49. (provisional) secure-Windows-state Slice 1 — 验证证据
+
+```text
+- Host 全量 test：`node --test packages/host/test/*.test.mjs` → 373 pass / 0 fail（基线 372 + 1）
+- local-authority：`node --test 'packages/local-authority/test/*.test.mjs'` → 33 pass / 0 fail
+- `node scripts/check-architecture.mjs` → PASS（含 local-authority boundary）
+- `node --test scripts/check-architecture.test.mjs` → 20 pass / 0 fail
+- `node packages/host/scripts/check-boundaries.mjs` → PASS（42 files）
+- `node packages/local-authority/scripts/check-boundaries.mjs` → PASS（4 files）
+- 逐包 typecheck / build → PASS；root build / typecheck / test → 见下
+- Startup / Sessions / Runtime E2E（有限 watchdog、temp dirs）→ PASS
+- `git diff --check` → PASS；`npm pack --dry-run`（local-authority + host）→ 内容核对通过
+```

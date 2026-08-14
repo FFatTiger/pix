@@ -1,0 +1,36 @@
+{
+  "name": "@fffattiger/pix-local-authority",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Platform-neutral secure-state contracts + high-assurance POSIX secure-state backend (canonical absolute paths, stable POSIX identity/principal, secure private directory + atomic durable document publication, exclusive lifetime locks) used by pix-host state. Zero runtime dependencies.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./state": {
+      "types": "./dist/state/index.d.ts",
+      "import": "./dist/state/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "test": "npm run build && node --test 'test/*.test.mjs'",
+    "check:boundaries": "node ./scripts/check-boundaries.mjs",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}

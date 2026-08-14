@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import {
   checkBinTargets,
   checkDependencyBuildersSafe,
+  checkLocalAuthorityBoundary,
   checkNoAgentSession,
   checkNoNextDependency,
   checkNoNextImport,
@@ -240,6 +241,28 @@ test("boundary checks also flag offending package.json dependencies", (t) => {
   ];
   assert.equal(checkRuntimeCoreBoundary({ manifests, sourceFiles: [] }).ok, false);
   assert.equal(checkProtocolBoundary({ manifests, sourceFiles: [] }).ok, false);
+});
+
+test("checkLocalAuthorityBoundary forbids Protocol/Runtime Core/Pi SDK/Hono/React", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  const sourceFiles = [
+    write(dir, "packages/local-authority/src/a.ts", `import { p } from "@fffattiger/pix-protocol";`),
+    write(dir, "packages/local-authority/src/b.ts", `import { p } from "@fffattiger/pix-runtime-core";`),
+    write(dir, "packages/local-authority/src/c.ts", `import { p } from "hono";`),
+    write(dir, "packages/local-authority/src/d.ts", `import { p } from "react";`),
+    write(dir, "packages/local-authority/src/e.ts", `import { p } from "@earendil-works/pi-ai";`),
+    write(dir, "packages/local-authority/src/ok.ts", `import { fs } from "node:fs"; import { x } from "./contracts";`),
+    write(dir, "packages/protocol/src/ok.ts", `import { p } from "@fffattiger/pix-protocol";`),
+  ];
+  const result = checkLocalAuthorityBoundary({ manifests: [], sourceFiles });
+  assert.equal(result.ok, false);
+  for (const f of ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"]) {
+    assert.match(result.details, new RegExp(f));
+  }
+  assert.doesNotMatch(result.details, /ok\.ts/);
+  const clean = sourceFiles.filter((f) => f.endsWith("ok.ts"));
+  assert.equal(checkLocalAuthorityBoundary({ manifests: [], sourceFiles: clean }).ok, true);
 });
 
 // ---------------------------------------------------------------------------

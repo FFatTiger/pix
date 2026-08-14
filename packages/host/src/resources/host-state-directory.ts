@@ -10,6 +10,18 @@
  * worktrees) are thin wrappers over this lease; the lease is Host-internal and
  * is NOT exported from the package index.
  *
+ * Slice 1 (secure-Windows-state): the LOW-LEVEL secure-state operations now
+ * DELEGATE to the dependency-free infrastructure workspace
+ * `@fffattiger/pix-local-authority/state` — canonical absolute paths
+ * (nearest-existing-ancestor realpath, so the macOS `/var` → `/private/var`
+ * system alias canonicalizes instead of false-rejecting), stable POSIX
+ * identity/principal, secure private-directory + atomic durable document
+ * publication, and exclusive lifetime locks. This module keeps the Host
+ * orchestration: the recognized layout policy, the shared in-process mutex,
+ * validate-before-lock ordering, and the fixed Host error codes/messages
+ * (mapped from `LocalAuthorityError`, never leaking raw paths/os errors). Its
+ * public/API/error/layout/byte semantics are unchanged.
+ *
  * Layout (default `~/.pi/pix/host`, override via absolute `PIX_HOST_DIR`):
  *   trusted-roots.json     — trusted-roots schema v1 claims (0600)
  *   managed-worktrees.json — future managed-worktrees schema v1 records (0600)
@@ -55,20 +67,32 @@
  * names — fixed codes/counts only.
  */
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import {
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  rm,
-} from "node:fs/promises";
+import { lstat, realpath, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  createPosixSecureStateBackend,
+  LocalAuthorityError,
+  isRecord,
+  isSafeInteger,
+  isIsoTimestamp,
+  hasControlChar,
+  isValidInstanceId,
+  isAbsoluteCanonicalShape,
+  type LocalAuthorityCode,
+} from "@fffattiger/pix-local-authority/state";
 import { AsyncMutex } from "./mutex.js";
+
+// The Host ledgers consume these pure predicates through this module; they are
+// implemented in the local-authority contracts and re-exported unchanged.
+export {
+  isRecord,
+  isSafeInteger,
+  isIsoTimestamp,
+  hasControlChar,
+  isValidInstanceId,
+  isAbsoluteCanonicalShape,
+};
 
 /** Canonical host-dir default segments (`~/.pi/pix/host`). */
 export const DEFAULT_PIX_HOST_DIR_SEGMENTS = [".pi", "pix", "host"] as const;
@@ -184,57 +208,70 @@ export interface HostStateDirectoryLeaseOptions {
 
 const MAX_STATE_DOCUMENT_BYTES = 1_048_576;
 
-/**
- * Narrowly enumerated truly-unsupported directory-fsync error codes. These mean
- * "this OS/filesystem does not support fsync on a directory handle", never
- * "the durable write is lost" — so they are tolerated. Any other error (EIO,
- * EACCES, EROFS, ENOSPC, EMFILE, ENOMEM, ...) is FATAL and fails the publish.
- */
-const DIR_FSYNC_UNSUPPORTED_CODES = new Set(["EINVAL", "ENOTSUP", "EISDIR"]);
+/** Map a local-authority low-level code to the fixed Host lease code. */
+const LOCAL_TO_HOST_CODES: Record<LocalAuthorityCode, HostStateDirectoryCode> = {
+  INVALID_PATH: "HOST_DIR_INVALID",
+  ROOT_PATH: "HOST_DIR_INVALID",
+  PARENT_ESCAPE: "HOST_DIR_UNSAFE",
+  UNSAFE_COMPONENT: "HOST_DIR_UNSAFE",
+  WINDOWS_PATH: "HOST_DIR_INVALID",
+  NETWORK_PATH: "HOST_DIR_INVALID",
+  NOT_DIRECTORY: "HOST_DIR_UNSAFE",
+  SYMLINK: "HOST_DIR_UNSAFE",
+  NOT_OWNED: "HOST_DIR_UNSAFE",
+  NOT_PRIVATE: "HOST_DIR_UNSAFE",
+  NOT_REGULAR: "DOC_NOT_REGULAR",
+  DOC_SYMLINK: "DOC_SYMLINK",
+  DOC_UNREADABLE: "DOC_UNREADABLE",
+  DOC_OVERSIZE: "DOC_OVERSIZE",
+  DOC_PERMISSIONS: "DOC_PERMISSIONS",
+  DOC_HARD_LINK: "DOC_HARD_LINK",
+  WRITE_FAILED: "DOC_WRITE_FAILED",
+  DIR_FSYNC_FAILED: "DOC_WRITE_FAILED",
+  LOCK_UNSAFE: "LOCK_UNSAFE",
+  LOCK_BUSY: "LOCK_BUSY",
+  LOCK_STALE: "LOCK_STALE",
+  LOCK_LOST: "DOC_LOCK_LOST",
+  LOCK_AMBIGUOUS: "LOCK_UNSAFE",
+};
 
-// Shared pure validators used by the lease and both ledger adapters.
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+/** Fixed Host messages for each local-authority code (never leak paths/payloads). */
+const LOCAL_TO_HOST_MESSAGES: Record<LocalAuthorityCode, string> = {
+  INVALID_PATH: "Host directory path is invalid",
+  ROOT_PATH: "Host directory must not be the filesystem root",
+  PARENT_ESCAPE: "Host directory path is unsafe",
+  UNSAFE_COMPONENT: "Host directory path is unsafe",
+  WINDOWS_PATH: "Host directory path is invalid",
+  NETWORK_PATH: "Host directory path is invalid",
+  NOT_DIRECTORY: "Host directory path is unsafe",
+  SYMLINK: "Host directory path is unsafe",
+  NOT_OWNED: "Host directory is owned by another user",
+  NOT_PRIVATE: "Host directory mode must be 0700",
+  NOT_REGULAR: "State document must be a regular file",
+  DOC_SYMLINK: "State document must not be a symbolic link",
+  DOC_UNREADABLE: "State document is unreadable",
+  DOC_OVERSIZE: "State document exceeds the size bound",
+  DOC_PERMISSIONS: "State document permissions are unsafe",
+  DOC_HARD_LINK: "State document must not be hard-linked",
+  WRITE_FAILED: "Atomic state document write failed",
+  DIR_FSYNC_FAILED: "Atomic state document write failed",
+  LOCK_UNSAFE: "Host directory lock is unsafe",
+  LOCK_BUSY: "Another Host holds the Host directory lock",
+  LOCK_STALE: "Host directory lock is stale; verify the old process is dead and remove the lock explicitly",
+  LOCK_LOST: "Host directory lock ownership lost before publish",
+  LOCK_AMBIGUOUS: "Host directory lock identity is ambiguous",
+};
 
-export function isSafeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-export function isValidInstanceId(value: unknown): value is string {
-  return typeof value === "string"
-    && value.length >= 8
-    && value.length <= 128
-    && !/[\u0000-\u001f\u007f]/u.test(value);
-}
-
-export function isAbsoluteCanonicalShape(value: unknown): value is string {
-  return typeof value === "string"
-    && value.length > 0
-    && value.length <= 4096
-    && !value.includes("\0")
-    && isAbsolute(value)
-    && resolve(value) === value;
-}
-
-export function isIsoTimestamp(value: unknown): value is string {
-  if (typeof value !== "string" || value.length < 10 || value.length > 64) return false;
-  return Number.isFinite(Date.parse(value));
-}
-
-/** True when a string contains any C0 control character or DEL (metadata safety). */
-export function hasControlChar(value: string): boolean {
-  return /[\u0000-\u001f\u007f]/u.test(value);
-}
-
-function pidAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+/** Convert a local-authority error into the fixed Host lease error; rethrow others. */
+function toHostStateError(error: unknown): never {
+  if (error instanceof HostStateDirectoryError) throw error;
+  if (error instanceof LocalAuthorityError) {
+    throw new HostStateDirectoryError(
+      LOCAL_TO_HOST_CODES[error.code] ?? "HOST_DIR_UNSAFE",
+      LOCAL_TO_HOST_MESSAGES[error.code] ?? "Host directory path is unsafe",
+    );
   }
+  throw error;
 }
 
 /**
@@ -289,201 +326,134 @@ function buildTempPatterns(documents: readonly string[]): RegExp[] {
 }
 
 /**
+ * Reject a hostDir whose ORIGINAL path contains a symlinked intermediate
+ * component OTHER than a root-level canonical system alias (macOS
+ * `/var` → `/private/var`, `/tmp`, `/etc`). The canonicalize primitive resolves
+ * existing-prefix aliases generally; Host policy here keeps the frozen
+ * "no symlinked intermediate components beyond canonical alias" invariant:
+ * only a root-level system alias is accepted — a generic user symlink fails
+ * closed before any mutation (nothing is created behind it).
+ */
+async function assertNoUnsafeIntermediateSymlink(original: string): Promise<void> {
+  const normalized = resolve(original);
+  const segments = normalized === "/"
+    ? []
+    : normalized.slice(1).split("/").filter((segment) => segment.length > 0);
+  let current = "/";
+  for (const segment of segments) {
+    current = current === "/" ? `/${segment}` : `${current}/${segment}`;
+    let info;
+    try {
+      info = await lstat(current);
+    } catch {
+      // Missing component: the creation zone starts here; remaining components
+      // are created by the secure-directory walk. Nothing more to reject.
+      return;
+    }
+    if (info.isDirectory() && !info.isSymbolicLink()) continue;
+    if (info.isSymbolicLink()) {
+      // Root-level canonical system alias (macOS /var → /private/var etc.):
+      // accept only when it resolves to a real directory.
+      if (dirname(current) === "/") {
+        let target: string | undefined;
+        try {
+          target = await realpath(current);
+        } catch {
+          /* fall through to reject */
+        }
+        if (target && target !== current) {
+          let targetInfo;
+          try {
+            targetInfo = await lstat(target);
+          } catch {
+            /* reject */
+          }
+          if (targetInfo && targetInfo.isDirectory() && !targetInfo.isSymbolicLink()) {
+            continue;
+          }
+        }
+      }
+      throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
+    }
+    throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
+  }
+}
+
+/**
  * Ensure Host dir exists as a real non-symlink directory with mode 0700.
  *
- * Does not use mkdir({ recursive: true }) (which follows intermediate symlinks).
- * Walks every textual component of the absolute path from the root:
- * 1. Reserved destinations are rejected BEFORE any mutation: filesystem root,
- *    the user's home itself, shared tmp itself, and any repository/source tree.
- * 2. Build prefix segment-by-segment; lstat each existing prefix. Existing
- *    components must be non-symlink directories (a symlink at any depth is
- *    HOST_DIR_UNSAFE).
- * 3. On first ENOENT, create each remaining segment with mkdir(recursive:false);
- *    a newly created dedicated leaf is set to 0700 via fd-based fchmod (open the
- *    dir with O_RDONLY|O_NOFOLLOW, fchmod the opened handle — never path-chmod
- *    after a handle close, so a swapped-in symlink cannot be followed).
- * 4. An EXISTING final directory is NEVER chmod'd. It must be current-user owned
- *    (where supported), mode 0700, real non-symlink, and empty or contain only
- *    the recognized Pix state-document/lock/temp layout. A populated unrelated
- *    dir is rejected with no mode/content mutation.
+ * Delegates the low-level walk/create/validate to the local-authority POSIX
+ * backend; Host keeps the policy: reserved destinations (filesystem root,
+ * home itself, shared tmp itself) and repository/source trees are rejected
+ * BEFORE any mutation, and an existing leaf must contain only the recognized
+ * Pix state-document/lock/temp layout.
  *
- * Residual (Node has no openat): TOCTOU between lstat and mkdir remains under a
- * hostile concurrent actor on a shared parent; the final fchmod acts on the
- * opened inode and the re-lstat/realpath after it fail closed on any swap.
+ * The path is canonicalized FIRST via nearest-existing-ancestor realpath, so a
+ * `PIX_HOST_DIR` under the macOS `/var` system alias canonicalizes to
+ * `/private/var/...` instead of being false-rejected; the canonical result
+ * never contains a symlinked intermediate component. An existing final
+ * directory is NEVER chmod'd (validate-only: owner/exact 0700/entries).
  */
 async function ensurePixHostDir(
   hostDir: string,
   recognizedEntries: ReadonlySet<string>,
   tempPatterns: readonly RegExp[],
+  backend: ReturnType<typeof createPosixSecureStateBackend>,
 ): Promise<string> {
-  const normalized = resolve(hostDir);
-  if (!isAbsolute(normalized) || normalized.includes("\0")) {
-    throw new HostStateDirectoryError("HOST_DIR_INVALID", "Host directory path is invalid");
-  }
-  if (normalized === "/") {
-    throw new HostStateDirectoryError("HOST_DIR_INVALID", "Host directory must not be the filesystem root");
-  }
+  try {
+    const canonical = await backend.canonicalizePath(hostDir);
 
-  // Reserved destinations: home itself and shared tmp itself (never the leaf).
-  const home = homedir();
-  const tmp = tmpdir();
-  for (const candidate of [home, tmp]) {
-    if (!candidate || !isAbsolute(candidate) || candidate.includes("\0")) continue;
-    let canonical: string;
-    try {
-      canonical = await realpath(candidate);
-    } catch {
-      canonical = resolve(candidate);
-    }
-    if (normalized === resolve(candidate) || normalized === canonical) {
-      throw new HostStateDirectoryError("HOST_DIR_INVALID", "Host directory must not be a reserved shared directory");
-    }
-  }
+    // Strict original-path policy: generic user symlinks between the root and
+    // the leaf are rejected BEFORE any mutation; only a root-level canonical
+    // system alias (macOS /var → /private/var etc.) is accepted.
+    await assertNoUnsafeIntermediateSymlink(hostDir);
 
-  // Repository/source trees are not dedicated host dirs.
-  if (await isInsideRepository(normalized)) {
-    throw new HostStateDirectoryError("HOST_DIR_INVALID", "Host directory must not be inside a repository");
-  }
-
-  const segments = normalized === "/"
-    ? []
-    : normalized.slice(1).split("/").filter((segment) => segment.length > 0);
-  for (const segment of segments) {
-    if (
-      segment === "."
-      || segment === ".."
-      || segment.includes("\0")
-      || segment.includes("/")
-    ) {
-      throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-    }
-  }
-
-  let current = "/";
-  let creating = false;
-  let leafCreated = false;
-  for (const segment of segments) {
-    current = current === "/" ? `/${segment}` : `${current}/${segment}`;
-
-    if (!creating) {
-      let info;
+    // Reserved destinations: home itself and shared tmp itself (never the leaf).
+    const home = homedir();
+    const tmp = tmpdir();
+    for (const candidate of [home, tmp]) {
+      if (!candidate || !isAbsolute(candidate) || candidate.includes("\0")) continue;
+      let canonicalCandidate: string;
       try {
-        info = await lstat(current);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
+        canonicalCandidate = await realpath(candidate);
+      } catch {
+        canonicalCandidate = resolve(candidate);
+      }
+      if (canonical === resolve(candidate) || canonical === canonicalCandidate) {
+        throw new HostStateDirectoryError("HOST_DIR_INVALID", "Host directory must not be a reserved shared directory");
+      }
+    }
+
+    // Repository/source trees are not dedicated host dirs.
+    if (await isInsideRepository(canonical)) {
+      throw new HostStateDirectoryError("HOST_DIR_INVALID", "Host directory must not be inside a repository");
+    }
+
+    // Walk/create/validate via the backend; Host policy checks the existing
+    // leaf contents (recognized entries + temp patterns, no symlinks).
+    const result = await backend.ensurePrivateDirectory(canonical, {
+      requireOwnedByCurrentUser: true,
+      requireMode: 0o700,
+      validateExistingLeaf: async ({ path: leafPath }) => {
+        let entries;
+        try {
+          entries = await readdir(leafPath, { withFileTypes: true });
+        } catch {
+          throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory is not readable");
         }
-        creating = true;
-      }
-      if (!creating) {
-        // Existing component of the *original* absolute path: never a symlink.
-        // Covers `parent/link/child` even when outside/child already exists
-        // (lstat(hostDir) would see a directory via the link — we still reject).
-        if (info!.isSymbolicLink() || !info!.isDirectory()) {
-          throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
+        for (const entry of entries) {
+          if (entry.isSymbolicLink()) {
+            throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory contains a symbolic link");
+          }
+          if (!recognizedEntries.has(entry.name) && !tempPatterns.some((pattern) => pattern.test(entry.name))) {
+            throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory is not a dedicated empty Pix directory");
+          }
         }
-        continue;
-      }
-    }
-
-    try {
-      await mkdir(current, { recursive: false, mode: 0o700 });
-    } catch (mkdirError) {
-      if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-      }
-    }
-    let createdInfo;
-    try {
-      createdInfo = await lstat(current);
-    } catch {
-      throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-    }
-    if (createdInfo.isSymbolicLink() || !createdInfo.isDirectory()) {
-      throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-    }
-    if (current === normalized) leafCreated = true;
-  }
-
-  let finalInfo;
-  try {
-    finalInfo = await lstat(current);
-  } catch {
-    throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-  }
-  if (finalInfo.isSymbolicLink() || !finalInfo.isDirectory()) {
-    throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-  }
-
-  if (leafCreated) {
-    // Newly created dedicated leaf: enforce 0700 via fd-based fchmod. O_NOFOLLOW
-    // refuses a swapped-in symlink at open time (ELOOP → fail closed); fchmod
-    // applies to the opened inode regardless of path swaps. No path chmod.
-    let dirHandle;
-    try {
-      dirHandle = await open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      try {
-        await dirHandle.chmod(0o700);
-      } finally {
-        await dirHandle.close();
-      }
-    } catch {
-      throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-    }
-  } else {
-    // Existing directory: NEVER chmod. Require current-user ownership where
-    // supported, exact mode 0700, and only the recognized Pix
-    // state-document/lock/temp layout — a populated unrelated dir is rejected
-    // without mutation.
-    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-    if (typeof finalInfo.uid === "number" && typeof uid === "number" && finalInfo.uid !== uid) {
-      throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory is owned by another user");
-    }
-    if ((finalInfo.mode & 0o777) !== 0o700) {
-      throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory mode must be 0700");
-    }
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory is not readable");
-    }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) {
-        throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory contains a symbolic link");
-      }
-      if (!recognizedEntries.has(entry.name) && !tempPatterns.some((pattern) => pattern.test(entry.name))) {
-        throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory is not a dedicated empty Pix directory");
-      }
-    }
-  }
-
-  // Final re-verify the leaf is still a real canonical non-symlink directory.
-  let finalReal: string;
-  try {
-    finalReal = await realpath(current);
+      },
+    });
+    return result.path;
   } catch (error) {
-    if (error instanceof HostStateDirectoryError) throw error;
-    throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-  }
-  if (finalReal !== current) {
-    throw new HostStateDirectoryError("HOST_DIR_UNSAFE", "Host directory path is unsafe");
-  }
-  return current;
-}
-
-function openFlags(): number {
-  return constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0);
-}
-
-async function lstatRegularFile(path: string): Promise<{ dev: number; ino: number } | null> {
-  try {
-    const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isFile()) return null;
-    return { dev: info.dev, ino: info.ino };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
+    toHostStateError(error);
   }
 }
 
@@ -510,242 +480,58 @@ export async function openHostStateDirectoryLease(
   }
   const recognizedEntries = new Set<string>([...recognizedDocuments, HOST_STATE_LOCK_NAME]);
   const tempPatterns = buildTempPatterns(recognizedDocuments);
-  const hostDir = await ensurePixHostDir(options.hostDir, recognizedEntries, tempPatterns);
+  // Private backend injection seam: forwards the current fault-injection test
+  // hooks into the POSIX atomic-write primitive (never used in production).
+  const backend = createPosixSecureStateBackend(
+    options.failTempFsync || options.failRename || options.failDirFsync
+      ? {
+          inject: {
+            ...(options.failTempFsync ? { failTempFsync: options.failTempFsync } : {}),
+            ...(options.failRename ? { failRename: options.failRename } : {}),
+            ...(options.failDirFsync ? { failDirFsync: options.failDirFsync } : {}),
+          },
+        }
+      : {},
+  );
+  const hostDir = await ensurePixHostDir(options.hostDir, recognizedEntries, tempPatterns, backend);
   const lockPath = join(hostDir, HOST_STATE_LOCK_NAME);
   const maxDocumentBytes = options.maxDocumentBytes ?? MAX_STATE_DOCUMENT_BYTES;
-  const isAlive = options.isPidAlive ?? pidAlive;
+  const isAlive = options.isPidAlive ?? ((pid: number) => backend.isPidAlive(pid));
   const mutex = new AsyncMutex();
 
   async function readDocumentUnlocked(name: string): Promise<LeaseDocumentReadResult> {
     if (!recognizedEntries.has(name)) {
       throw new HostStateDirectoryError("DOC_UNKNOWN", "Unrecognized state document");
     }
-    const path = join(hostDir, name);
-    let info;
     try {
-      info = await lstat(path);
+      return await backend.readStateDocument(join(hostDir, name), { maxBytes: maxDocumentBytes });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return { missing: true };
-      }
-      throw new HostStateDirectoryError("DOC_UNREADABLE", "State document is unreadable");
+      toHostStateError(error);
     }
-    if (info.isSymbolicLink()) {
-      throw new HostStateDirectoryError("DOC_SYMLINK", "State document must not be a symbolic link");
-    }
-    if (!info.isFile()) {
-      throw new HostStateDirectoryError("DOC_NOT_REGULAR", "State document must be a regular file");
-    }
-    if (info.size > maxDocumentBytes) {
-      throw new HostStateDirectoryError("DOC_OVERSIZE", "State document exceeds the size bound");
-    }
-    // Wrong permission: no group/other read/write access on the document.
-    if ((info.mode & 0o077) !== 0) {
-      throw new HostStateDirectoryError("DOC_PERMISSIONS", "State document permissions are unsafe");
-    }
-    // Hard-linked document: extra names could alias a file we must not rewrite.
-    if (info.nlink > 1) {
-      throw new HostStateDirectoryError("DOC_HARD_LINK", "State document must not be hard-linked");
-    }
-    let text: string;
-    try {
-      text = await readFile(path, "utf8");
-    } catch {
-      throw new HostStateDirectoryError("DOC_UNREADABLE", "State document is unreadable");
-    }
-    return { content: text };
   }
 
   async function writeDocumentUnlocked(name: string, payload: string): Promise<void> {
     if (!recognizedEntries.has(name)) {
       throw new HostStateDirectoryError("DOC_UNKNOWN", "Unrecognized state document");
     }
-    if (Buffer.byteLength(payload, "utf8") > maxDocumentBytes) {
-      throw new HostStateDirectoryError("DOC_OVERSIZE", "Serialized state document exceeds size bound");
-    }
-    const targetPath = join(hostDir, name);
     try {
-      const existing = await lstat(targetPath);
-      if (existing.isSymbolicLink() || !existing.isFile()) {
-        throw new HostStateDirectoryError("DOC_NOT_REGULAR", "State document path is not a regular file");
-      }
+      await backend.writeStateDocument(join(hostDir, name), payload, {
+        maxBytes: maxDocumentBytes,
+        lockCheck: { path: lockPath, ownership: owned },
+      });
     } catch (error) {
-      if (error instanceof HostStateDirectoryError) throw error;
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw new HostStateDirectoryError("DOC_WRITE_FAILED", "State document path unsafe");
-      }
-    }
-    const temp = join(hostDir, `${name}.${process.pid}.${randomUUID()}.tmp`);
-    try {
-      // Mode is set on the O_EXCL open handle (and reinforced via handle.chmod)
-      // before close. Never path-chmod temp/document after close — a same-user
-      // swap to a symlink would be followed by chmod(path).
-      const handle = await open(temp, openFlags(), 0o600);
-      let tempIdentity: { dev: number; ino: number };
-      try {
-        await handle.chmod(0o600);
-        await handle.writeFile(payload, "utf8");
-        options.failTempFsync?.();
-        await handle.sync();
-        const st = await handle.stat();
-        tempIdentity = { dev: st.dev, ino: st.ino };
-      } finally {
-        await handle.close();
-      }
-      // Cross-process ownership re-verification immediately before publish: if
-      // the lifetime lock was lost (external removal/replacement), abort
-      // fail-closed instead of publishing under an unlocked dir.
-      const currentLock = await lstatRegularFile(lockPath);
-      if (!currentLock || currentLock.dev !== owned.dev || currentLock.ino !== owned.ino) {
-        throw new HostStateDirectoryError("DOC_LOCK_LOST", "Host directory lock ownership lost before publish");
-      }
-      options.failRename?.();
-      await rename(temp, targetPath);
-      // rename preserves mode/identity; verify final is the same regular file.
-      let published;
-      try {
-        published = await lstat(targetPath);
-      } catch {
-        throw new HostStateDirectoryError("DOC_WRITE_FAILED", "Atomic state document write failed");
-      }
-      if (
-        published.isSymbolicLink()
-        || !published.isFile()
-        || published.dev !== tempIdentity.dev
-        || published.ino !== tempIdentity.ino
-      ) {
-        throw new HostStateDirectoryError("DOC_WRITE_FAILED", "Published state document identity mismatch");
-      }
-      await fsyncDir();
-    } catch (error) {
-      await rm(temp, { force: true }).catch(() => {});
-      if (error instanceof HostStateDirectoryError) throw error;
-      throw new HostStateDirectoryError("DOC_WRITE_FAILED", "Atomic state document write failed");
+      toHostStateError(error);
     }
   }
 
-  /**
-   * Directory fsync after the atomic rename. FATAL on any error EXCEPT the
-   * narrowly enumerated truly-unsupported platform set (EINVAL / ENOTSUP /
-   * EISDIR) — those mean the OS/filesystem cannot fsync a directory handle, not
-   * that the publish is lost. Arbitrary errors are never swallowed: a returned
-   * success must mean the rename is durably on disk.
-   */
-  async function fsyncDir(): Promise<void> {
+  async function acquireOwnedLock(): Promise<{ dev: number; ino: number }> {
     try {
-      options.failDirFsync?.();
-      const handle = await open(hostDir, constants.O_RDONLY);
-      try {
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
+      return await backend.acquireLifetimeLock(lockPath, {
+        payload: `${JSON.stringify({ pid: process.pid, instanceId, createdAt: Date.now() })}\n`,
+        isPidAlive: isAlive,
+      });
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (typeof code === "string" && DIR_FSYNC_UNSUPPORTED_CODES.has(code)) {
-        // Truly-unsupported platform/filesystem: tolerate (documented above).
-        return;
-      }
-      throw new HostStateDirectoryError("DOC_WRITE_FAILED", "Directory fsync failed");
-    }
-  }
-
-  interface LockRecord {
-    pid: number;
-    instanceId: string;
-    createdAt: number;
-  }
-
-  async function readLock(): Promise<
-    | { kind: "missing" }
-    | { kind: "unsafe"; reason: HostStateDirectoryCode }
-    | { kind: "valid"; record: LockRecord; identity: { dev: number; ino: number } }
-  > {
-    const identity = await lstatRegularFile(lockPath);
-    if (identity === null) {
-      try {
-        const info = await lstat(lockPath);
-        if (info.isSymbolicLink() || !info.isFile()) return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
-        return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-      }
-      return { kind: "missing" };
-    }
-    let text: string;
-    try {
-      text = await readFile(lockPath, "utf8");
-    } catch {
-      return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-    }
-    if (!isRecord(parsed)) return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-    if (!isSafeInteger(parsed.pid) || parsed.pid <= 0) return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-    if (!isValidInstanceId(parsed.instanceId)) {
-      return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-    }
-    if (!isSafeInteger(parsed.createdAt)) return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-    return {
-      kind: "valid",
-      record: { pid: parsed.pid, instanceId: parsed.instanceId, createdAt: parsed.createdAt },
-      identity: { dev: identity.dev, ino: identity.ino },
-    };
-  }
-
-  interface LockOwnership { dev: number; ino: number }
-
-  /**
-   * Acquire the exclusive LIFETIME host-dir lock (O_EXCL). If any lock exists
-   * — live (LOCK_BUSY) or stale/ambiguous (LOCK_STALE / LOCK_UNSAFE) — fail
-   * closed with a fixed sanitized error. NEVER auto-reclaims a stale lock:
-   * after SIGKILL the next startup fails closed and the operator must explicitly
-   * remove the fixture lock after proving the old pid is dead.
-   */
-  async function acquireLifetimeLock(): Promise<LockOwnership> {
-    const payload = `${JSON.stringify({ pid: process.pid, instanceId, createdAt: Date.now() })}\n`;
-    try {
-      // Mode via O_EXCL open + handle.chmod only; never path-chmod after close.
-      const handle = await open(lockPath, openFlags(), 0o600);
-      try {
-        await handle.chmod(0o600);
-        await handle.writeFile(payload, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      const owned = await lstatRegularFile(lockPath);
-      if (!owned) {
-        // Lock vanished immediately after O_EXCL create: cannot pin identity →
-        // ambiguous → fail closed.
-        throw new HostStateDirectoryError("LOCK_UNSAFE", "Host directory lock ownership could not be pinned");
-      }
-      return { dev: owned.dev, ino: owned.ino };
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") {
-        if (error instanceof HostStateDirectoryError) throw error;
-        throw new HostStateDirectoryError("LOCK_UNSAFE", "Could not create Host directory lock");
-      }
-      const existing = await readLock();
-      if (existing.kind === "unsafe") {
-        throw new HostStateDirectoryError("LOCK_UNSAFE", "Existing Host directory lock is unsafe");
-      }
-      if (existing.kind === "missing") {
-        // Lock existed at O_EXCL but vanished before the read — ambiguous.
-        throw new HostStateDirectoryError("LOCK_UNSAFE", "Host directory lock identity is ambiguous");
-      }
-      if (isAlive(existing.record.pid)) {
-        throw new HostStateDirectoryError("LOCK_BUSY", "Another Host holds the Host directory lock");
-      }
-      throw new HostStateDirectoryError(
-        "LOCK_STALE",
-        "Host directory lock is stale; verify the old process is dead and remove the lock explicitly",
-      );
+      toHostStateError(error);
     }
   }
 
@@ -756,7 +542,7 @@ export async function openHostStateDirectoryLease(
     await options.validateBeforeLock({ readDocument: (name) => readDocumentUnlocked(name) });
   }
 
-  const owned = await acquireLifetimeLock();
+  const owned = await acquireOwnedLock();
   let closed = false;
 
   // Unlocked IO primitives (must only be used inside the shared mutex).
@@ -782,13 +568,9 @@ export async function openHostStateDirectoryLease(
         if (closed) return;
         closed = true;
         try {
-          const current = await readLock();
-          if (current.kind !== "valid") return;
           // Graceful shutdown removes only its exact lock identity: same
           // instanceId AND same dev/ino. A wrong instance cannot unlock.
-          if (current.record.instanceId !== instanceId) return;
-          if (current.identity.dev !== owned.dev || current.identity.ino !== owned.ino) return;
-          await rm(lockPath, { force: true });
+          await backend.releaseLifetimeLock(lockPath, { ownership: owned, instanceId });
         } catch {
           /* lock already gone or replaced */
         }

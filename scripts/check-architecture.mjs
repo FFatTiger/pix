@@ -88,6 +88,27 @@ const FORBIDDEN_PROTOCOL = [
   },
 ];
 
+// Slice 1 (secure-Windows-state): the dependency-free local-authority workspace
+// may import ONLY node builtins + its own relative modules. It must never
+// depend on Protocol, Runtime Core, Pi SDK, Hono or React (runtime or dev).
+const FORBIDDEN_LOCAL_AUTHORITY = [
+  {
+    label: "Protocol",
+    match: (s) => matchesSiblingPackage(s, PROTOCOL_SPECIFIERS, "protocol"),
+  },
+  {
+    label: "Runtime Core",
+    match: (s) => matchesSiblingPackage(s, RUNTIME_CORE_SPECIFIERS, "runtime-core"),
+  },
+  { label: "Pi SDK", match: (s) => s.startsWith(PI_SDK_PREFIX) },
+  { label: "Hono", match: (s) => s === "hono" || s.startsWith("hono/") },
+  {
+    label: "React",
+    match: (s) =>
+      s === "react" || s === "react-dom" || s.startsWith("react/") || s.startsWith("react-dom/"),
+  },
+];
+
 // ---------------------------------------------------------------------------
 // File discovery
 // ---------------------------------------------------------------------------
@@ -494,6 +515,16 @@ export function checkProtocolBoundary({ manifests, sourceFiles }) {
     : { ok: false, details: offenders.join("; ") };
 }
 
+export function checkLocalAuthorityBoundary({ manifests, sourceFiles }) {
+  const offenders = [
+    ...scanBoundary(sourceFiles, "local-authority", FORBIDDEN_LOCAL_AUTHORITY),
+    ...scanPackageDeps(manifests, "local-authority", FORBIDDEN_LOCAL_AUTHORITY),
+  ];
+  return offenders.length === 0
+    ? { ok: true, details: "local-authority has no Protocol/Runtime Core/Pi SDK/Hono/React import or dependency" }
+    : { ok: false, details: offenders.join("; ") };
+}
+
 export function checkNoAgentSession(sourceFiles) {
   const targetPackages = new Set(["host", "sessiond", "agent-worker"]);
   const offenders = [];
@@ -765,6 +796,10 @@ export function runChecks(rootDir = ROOT_DIR) {
     { name: "Pi SDK import boundary", result: checkPiSdkBoundary(ctx) },
     { name: "runtime-core boundary", result: checkRuntimeCoreBoundary(ctx) },
     { name: "protocol boundary", result: checkProtocolBoundary(ctx) },
+    {
+      name: "local-authority boundary",
+      result: checkLocalAuthorityBoundary(ctx),
+    },
     {
       name: "no AgentSession/SessionManager in host/sessiond/agent-worker",
       result: checkNoAgentSession(sourceFiles),

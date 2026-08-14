@@ -15,6 +15,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..", "..", "..");
 
 const targets = [
+  // local-authority: the secure-state backend the Host state lease delegates to
+  // (no prebuild of its own, so no recursion).
+  "packages/local-authority",
   "packages/protocol",
   "packages/runtime-core",
   "packages/sessiond",

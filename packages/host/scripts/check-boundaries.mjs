@@ -62,6 +62,9 @@ const ALLOWED_EXTERNAL_PREFIXES = [
   "hono",
   "@hono/node-server",
   "@hono/node-ws",
+  // Slice 1 (local-authority): the foundation may import ONLY the narrow
+  // `.../state` secure-state surface (enforced exactly below, not by prefix).
+  "@fffattiger/pix-local-authority/state",
 ];
 
 /** Externals that composition source may import in addition to hono. */
@@ -133,6 +136,15 @@ for (const file of walk(srcRoot)) {
       fail(`${relativePath} imports pi-sdk-adapter outside composition ("${specifier}")`);
     } else if (!COMPOSITION_ALLOWED_ADAPTER_SUBPATHS.has(specifier)) {
       fail(`${relativePath} imports non-catalog adapter surface "${specifier}"`);
+    }
+  }
+
+  // local-authority: allowed ONLY as the exact `.../state` secure-state subpath,
+  // never the package root or any other subpath.
+  for (const match of source.matchAll(/from\s+["'](@fffattiger\/pix-local-authority(?:\/[^"']+)?)["']/g)) {
+    const specifier = match[1];
+    if (specifier !== "@fffattiger/pix-local-authority/state") {
+      fail(`${relativePath} imports non-state local-authority surface "${specifier}"`);
     }
   }
 

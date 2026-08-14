@@ -990,25 +990,39 @@ test("string-only registerTrustedCreatedRoot remains memory-only (no ledger with
 // ---------------------------------------------------------------------------
 
 test("lease source: fd-based fchmod only; ownership re-verified before publish; lifetime lock no stale reclaim", async () => {
-  // D3A extraction moved the low-level primitives (host-dir fchmod, temp/lock
-  // fchmod, atomic rename, lifetime lock) into the shared host-state-directory
-  // lease; the trusted-roots ledger is now a thin adapter over it.
+  // Slice 1 (secure-Windows-state) extracted the low-level secure-state
+  // primitives (canonical paths, host-dir/temp/lock fd-based fchmod, atomic
+  // rename, lifetime lock) into @fffattiger/pix-local-authority/state; the
+  // shared host-state-directory lease now DELEGATES to that backend. The
+  // fd-only / ownership-before-rename / no-stale-reclaim invariants are
+  // asserted against the POSIX backend source.
   const leaseSrc = readFileSync(new URL("../src/resources/host-state-directory.ts", import.meta.url), "utf8");
   const ledgerSrc = readFileSync(new URL("../src/resources/trusted-roots-ledger.ts", import.meta.url), "utf8");
-  // No path-based chmod anywhere (dir/temp/lock/ledger); only fd-based `.chmod`.
-  assert.equal(/await chmod\(/.test(leaseSrc), false, "must never path-chmod");
-  assert.equal((leaseSrc.match(/\.chmod\(/g) ?? []).length, 3, "exactly three fd-based chmod call sites (dir, temp, lock)");
-  assert.match(leaseSrc, /dirHandle\.chmod\(0o700\)/);
-  assert.match(leaseSrc, /handle\.chmod\(0o600\)/);
-  // Ownership re-verification runs before the atomic publish (rename).
-  const renameIdx = leaseSrc.indexOf("await rename(temp, targetPath)");
-  const verifyIdx = leaseSrc.indexOf("ownership lost before publish");
+  const posixSrc = readFileSync(
+    new URL("../../local-authority/src/state/posix.ts", import.meta.url),
+    "utf8",
+  );
+  // The lease never path-chmods and holds no chmod call sites itself (all in
+  // the backend).
+  assert.equal(/await chmod\(/.test(leaseSrc), false, "lease must never path-chmod");
+  assert.equal(leaseSrc.includes(".chmod("), false, "lease has no chmod call sites (delegates to backend)");
+  // The POSIX backend has exactly three fd-based chmod call sites (dir, temp, lock).
+  assert.equal((posixSrc.match(/\.chmod\(/g) ?? []).length, 3, "backend has exactly three fd-based chmod call sites (dir, temp, lock)");
+  assert.match(posixSrc, /dirHandle\.chmod\(requireMode\)/);
+  assert.match(posixSrc, /handle\.chmod\(0o600\)/);
+  // Ownership re-verification runs before the atomic publish (rename), in the
+  // backend.
+  const renameIdx = posixSrc.indexOf("await rename(temp, targetPath)");
+  const verifyIdx = posixSrc.indexOf("ownership lost before publish");
   assert.ok(verifyIdx !== -1 && renameIdx !== -1 && verifyIdx < renameIdx, "ownership check must precede rename");
   // Lifetime lock: stale lock fails closed (LOCK_STALE), never auto-reclaimed.
-  assert.match(leaseSrc, /LOCK_STALE/);
-  assert.match(leaseSrc, /LOCK_BUSY/);
+  assert.match(posixSrc, /LOCK_STALE/);
+  assert.match(posixSrc, /LOCK_BUSY/);
   // The trusted-roots adapter delegates to the shared lease (no raw primitives).
   assert.match(ledgerSrc, /openHostStateDirectoryLease/);
   assert.equal(/await chmod\(/.test(ledgerSrc), false, "adapter must never path-chmod");
-  assert.equal(ledgerSrc.includes("await rename(temp,"), false, "atomic rename lives in the lease");
+  assert.equal(ledgerSrc.includes("await rename(temp,"), false, "atomic rename lives in the backend");
+  // The lease maps backend low-level codes to fixed Host codes/messages.
+  assert.match(leaseSrc, /LOCAL_TO_HOST_CODES/);
+  assert.match(leaseSrc, /@fffattiger\/pix-local-authority\/state/);
 });

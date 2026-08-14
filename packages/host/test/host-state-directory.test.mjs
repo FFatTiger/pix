@@ -88,6 +88,26 @@ test("lease: unrecognized host-dir entries still fail closed; recognized overrid
   await lease.close();
 });
 
+test("lease: macOS /var system alias hostDir canonicalizes under /private/var (no false reject)", async (t) => {
+  if (process.platform !== "darwin") {
+    t.skip("macOS system alias only");
+    return;
+  }
+  // Use the /var-form tmpdir (non-canonicalized) so the root-level `/var` →
+  // `/private/var` system alias is exercised through the lease. The leaf is
+  // created under the writable canonical temp path.
+  const hostDir = join(tmpdir(), `pi-var-alias-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
+  temporary.push(hostDir);
+  const lease = await openHostStateDirectoryLease({ hostDir });
+  temporary.push(lease.hostDir);
+  assert.equal(lease.hostDir, realpathSync(hostDir), "lease hostDir is canonicalized through the alias");
+  assert.equal(lease.hostDir.startsWith("/private/var/"), true);
+  assert.equal(lease.lockPath, join(lease.hostDir, HOST_STATE_LOCK_NAME));
+  await lease.writeDocument(TRUSTED_ROOTS_STATE_DOCUMENT, doc("t"));
+  assert.equal("content" in await lease.readDocument(TRUSTED_ROOTS_STATE_DOCUMENT), true);
+  await lease.close();
+});
+
 test("lease: unknown document name read/write fail closed (DOC_UNKNOWN)", async () => {
   const hostDir = temp("lease-doc-unknown-");
   const lease = await openHostStateDirectoryLease({ hostDir });
