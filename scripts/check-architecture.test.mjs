@@ -293,20 +293,40 @@ test("checkBinTargets verifies declared production bins exist", (t) => {
 // cross-platform tooling
 // ---------------------------------------------------------------------------
 
-test("checkNoRmRfInScripts flags rm -rf in any manifest script", () => {
+test("checkNoRmRfInScripts flags every recursive-rm form in command position", () => {
   const manifests = [
     { path: "a/package.json", manifest: { scripts: { clean: "rm -rf dist dist-test" } } },
-    { path: "b/package.json", manifest: { scripts: { build: "rm -r out && tsc" } } },
-    { path: "c/package.json", manifest: { scripts: { clean: "node ../../scripts/remove-paths.mjs dist" } } },
-    { path: "d/package.json", manifest: { scripts: { test: "echo ok" } } },
+    { path: "b/package.json", manifest: { scripts: { build: "rm -fr out && tsc" } } },
+    { path: "c/package.json", manifest: { scripts: { clean: "rm -r dist" } } },
+    { path: "d/package.json", manifest: { scripts: { clean: "rm -r -f dist" } } },
+    { path: "e/package.json", manifest: { scripts: { clean: "rm -f -r dist" } } },
+    { path: "f/package.json", manifest: { scripts: { clean: "rm -RF dist" } } },
+    { path: "g/package.json", manifest: { scripts: { clean: "rm --recursive --force dist" } } },
+    { path: "h/package.json", manifest: { scripts: { clean: "echo ok && rm -rf dist-test" } } },
+    { path: "i/package.json", manifest: { scripts: { clean: "foo; rm -R out" } } },
+    { path: "j/package.json", manifest: { scripts: { clean: "node ../../scripts/remove-paths.mjs dist" } } },
+    { path: "k/package.json", manifest: { scripts: { test: "echo rm -rf is just text" } } },
+    { path: "l/package.json", manifest: { scripts: { clean: "# rm -rf dist is commented out" } } },
+    { path: "m/package.json", manifest: { scripts: { clean: "rm -f single.txt" } } },
   ];
   const result = checkNoRmRfInScripts(manifests);
   assert.equal(result.ok, false);
-  assert.match(result.details, /a\/package\.json/);
-  assert.match(result.details, /b\/package\.json/);
-  assert.doesNotMatch(result.details, /c\/package\.json/);
-  assert.doesNotMatch(result.details, /d\/package\.json/);
-  assert.equal(checkNoRmRfInScripts(manifests.slice(2)).ok, true);
+  for (const p of ["a", "b", "c", "d", "e", "f", "g", "h", "i"]) {
+    assert.match(result.details, new RegExp(`${p}\\/package\\.json`), `should flag ${p}`);
+  }
+  for (const p of ["j", "k", "l", "m"]) {
+    assert.doesNotMatch(result.details, new RegExp(`${p}\\/package\\.json`), `should not flag ${p}`);
+  }
+  assert.equal(checkNoRmRfInScripts(manifests.slice(9)).ok, true);
+});
+
+test("checkNoRmRfInScripts does not flag a commented-out rm on a later segment", () => {
+  const manifests = [
+    { path: "a/package.json", manifest: { scripts: { clean: "foo # comment && rm -rf dist" } } },
+    { path: "b/package.json", manifest: { scripts: { clean: 'echo "rm -rf" && echo hi' } } },
+  ];
+  const result = checkNoRmRfInScripts(manifests);
+  assert.equal(result.ok, true, result.details);
 });
 
 test("checkNoRawNodeTestGlob flags shell-dependent node --test globs", () => {
@@ -314,19 +334,22 @@ test("checkNoRawNodeTestGlob flags shell-dependent node --test globs", () => {
     { path: "a/package.json", manifest: { scripts: { test: `node --test 'scripts/**/*.test.mjs'` } } },
     { path: "b/package.json", manifest: { scripts: { test: `node --test "dist-test/**/*.test.js"` } } },
     { path: "c/package.json", manifest: { scripts: { test: `node --test test/*.test.mjs` } } },
+    // F3: the glob is on a LATER command segment, not the first occurrence.
+    { path: "g/package.json", manifest: { scripts: { test: `node --test a.test.mjs && node --test 'b/**/*.test.js'` } } },
+    { path: "h/package.json", manifest: { scripts: { test: `npm run build && node --test "dist/**/*.test.js"` } } },
     { path: "d/package.json", manifest: { scripts: { test: `node scripts/run-node-test.mjs "scripts/**/*.test.mjs"` } } },
     { path: "e/package.json", manifest: { scripts: { test: `node --test a.test.mjs b.test.mjs` } } },
     { path: "f/package.json", manifest: { scripts: { test: `node --test` } } },
   ];
   const result = checkNoRawNodeTestGlob(manifests);
   assert.equal(result.ok, false);
-  assert.match(result.details, /a\/package\.json/);
-  assert.match(result.details, /b\/package\.json/);
-  assert.match(result.details, /c\/package\.json/);
-  assert.doesNotMatch(result.details, /d\/package\.json/);
-  assert.doesNotMatch(result.details, /e\/package\.json/);
-  assert.doesNotMatch(result.details, /f\/package\.json/);
-  assert.equal(checkNoRawNodeTestGlob(manifests.slice(3)).ok, true);
+  for (const p of ["a", "b", "c", "g", "h"]) {
+    assert.match(result.details, new RegExp(`${p}\\/package\\.json`), `should flag ${p}`);
+  }
+  for (const p of ["d", "e", "f"]) {
+    assert.doesNotMatch(result.details, new RegExp(`${p}\\/package\\.json`), `should not flag ${p}`);
+  }
+  assert.equal(checkNoRawNodeTestGlob(manifests.slice(5)).ok, true);
 });
 
 test("checkDependencyBuildersSafe flags npm.cmd / .bin/tsc / shell:true in builder code", (t) => {
@@ -357,6 +380,55 @@ test("checkDependencyBuildersSafe ignores forbidden tokens inside comments", (t)
     `const result = spawnSync(tsc.command, tsc.args, { cwd, stdio: "inherit" });`,
   ].join("\n");
   const file = write(dir, "packages/protocol/scripts/build-deps.mjs", body);
+  assert.equal(checkDependencyBuildersSafe([file]).ok, true);
+});
+
+test("comment stripping preserves URL strings so a same-line violation is seen (F4)", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  const body = `const u = "https://x.example/path"; spawnSync("npm.cmd", ["run", "build"]);\n`;
+  const file = write(dir, "packages/cli/scripts/prebuild-deps.mjs", body);
+  const result = checkDependencyBuildersSafe([file]);
+  assert.equal(result.ok, false);
+  assert.match(result.details, /npm\.cmd/);
+});
+
+test("comment stripping handles escaped quotes and template literals (F4)", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  const body = [
+    'const s = "escaped \\" quote";',
+    "const t = `npm.cmd // not a comment here`;",
+    'spawnSync("npm.cmd", []);',
+  ].join("\n");
+  const file = write(dir, "packages/host/scripts/prebuild-deps.mjs", body);
+  const result = checkDependencyBuildersSafe([file]);
+  assert.equal(result.ok, false);
+  assert.match(result.details, /npm\.cmd/);
+});
+
+test("comment stripping does not truncate at // inside a regex literal (F4)", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  const body = [
+    `const re = /https:\\/\\//;`,
+    `spawnSync("npm.cmd", []);`,
+  ].join("\n");
+  const file = write(dir, "packages/sessiond/scripts/build-deps.mjs", body);
+  const result = checkDependencyBuildersSafe([file]);
+  assert.equal(result.ok, false);
+  assert.match(result.details, /npm\.cmd/);
+});
+
+test("comment stripping keeps block comments off the executable scan (F4)", (t) => {
+  const dir = makeRoot();
+  t.after(() => cleanup(dir));
+  const body = [
+    `/* spawnSync("npm.cmd") */`,
+    `/* block with \n newline: shell: true */`,
+    `const ok = spawnSync(tsc.command, tsc.args);`,
+  ].join("\n");
+  const file = write(dir, "packages/pi-sdk-adapter/scripts/build-deps.mjs", body);
   assert.equal(checkDependencyBuildersSafe([file]).ok, true);
 });
 

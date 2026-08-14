@@ -45,6 +45,42 @@ test("parseArgs treats flags before patterns as flags", () => {
   });
 });
 
+test("parseArgs rejects every value-taking flag used without =value", () => {
+  const valueFlags = [
+    "--test-concurrency",
+    "--test-name-pattern",
+    "--test-skip-pattern",
+    "--test-reporter",
+    "--test-reporter-destination",
+    "--test-shard",
+    "--test-timeout",
+    "--test-isolation",
+    "--test-coverage-include",
+    "--test-coverage-exclude",
+  ];
+  for (const flag of valueFlags) {
+    assert.throws(() => parseArgs(["a.test.js", flag, "value"]), /use .*=<value>/, flag);
+  }
+});
+
+test("parseArgs accepts value flags in the --flag=value form and boolean flags coexist with patterns", () => {
+  const { patterns, flags } = parseArgs([
+    "a.test.js",
+    "--test-name-pattern=focused",
+    "--test-only",
+    "--test-force-exit",
+    "b.test.js",
+  ]);
+  assert.deepEqual(patterns, ["a.test.js", "b.test.js"]);
+  assert.deepEqual(flags, ["--test-name-pattern=focused", "--test-only", "--test-force-exit"]);
+});
+
+test("parseArgs rejects watch modes and unknown flags", () => {
+  assert.throws(() => parseArgs(["a.test.js", "--watch"]), /watch mode is not supported/);
+  assert.throws(() => parseArgs(["a.test.js", "--watch-path=src"]), /watch mode is not supported/);
+  assert.throws(() => parseArgs(["a.test.js", "--bogus"]), /unsupported node --test flag/);
+});
+
 test("parseArgs returns no patterns for empty argv", () => {
   assert.deepEqual(parseArgs([]), { patterns: [], flags: [] });
 });
@@ -252,4 +288,68 @@ test("main surfaces a spawn failure as exit 1", () => {
     spawnSyncImpl: () => ({ error: new Error("spawn ENOENT") }),
   });
   assert.equal(code, 1);
+});
+
+test("main rejects a space-separated flag value before discovery or spawn (F1)", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  mkdirSync(join(root, "sub"), { recursive: true });
+  writeFileSync(join(root, "sub", "pass.test.mjs"), "");
+  writeFileSync(join(root, "sub", "fail.test.mjs"), "");
+  let spawned = false;
+  const logs = [];
+  const original = console.error;
+  console.error = (msg) => logs.push(String(msg));
+  let code;
+  try {
+    code = main(["sub/*.test.mjs", "--test-name-pattern", "sub/*.test.mjs"], {
+      cwd: root,
+      spawnSyncImpl: () => {
+        spawned = true;
+        return { status: 0 };
+      },
+    });
+  } finally {
+    console.error = original;
+  }
+  assert.equal(code, 2);
+  assert.equal(spawned, false, "must not spawn when the flag form is invalid");
+  assert.ok(logs.some((line) => line.includes("--test-name-pattern=<value>")), logs.join("\n"));
+});
+
+test("REAL regression: a glob-valued separate flag can no longer hide a failing test (F1)", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  mkdirSync(join(root, "sub"), { recursive: true });
+  writeFileSync(
+    join(root, "sub", "pass.test.mjs"),
+    ['import test from "node:test";', 'import assert from "node:assert/strict";', 'test("pass", () => assert.equal(1, 1));'].join("\n"),
+  );
+  writeFileSync(
+    join(root, "sub", "fail.test.mjs"),
+    ['import test from "node:test";', 'import assert from "node:assert/strict";', 'test("fail", () => assert.equal(1, 2));'].join("\n"),
+  );
+
+  // 1. A plain run must surface the failing test (nonzero — no false green).
+  const plain = main(["sub/*.test.mjs"], { cwd: root, stdio: "ignore" });
+  assert.equal(plain, 1);
+
+  // 2. The equal-value form works: only the matching test runs and passes.
+  const filtered = main(["sub/*.test.mjs", "--test-name-pattern=pass"], { cwd: root, stdio: "ignore" });
+  assert.equal(filtered, 0);
+
+  // 3. The space-separated form is rejected before any spawn, so the old
+  //    false-green (glob value parsed as a pattern, failing test skipped) is
+  //    impossible.
+  let spawned = false;
+  const rejected = main(["sub/*.test.mjs", "--test-name-pattern", "sub/*.test.mjs"], {
+    cwd: root,
+    stdio: "ignore",
+    spawnSyncImpl: () => {
+      spawned = true;
+      return { status: 0 };
+    },
+  });
+  assert.equal(rejected, 2);
+  assert.equal(spawned, false);
 });

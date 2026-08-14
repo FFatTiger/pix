@@ -8,9 +8,9 @@
 // Why: `node --test '<glob>'` relies on Node's own glob matching, which on
 // Node 24 exits 0 when nothing matches and whose quoting is fragile under
 // Windows cmd. Passing an explicit sorted file list keeps CI fail-closed and
-// Windows safe. Arguments that start with `-` are forwarded verbatim to
-// `node --test` (for example `--test-concurrency=1`); use a `--` separator
-// for a pattern that itself starts with `-`.
+// Windows safe. Value-taking node test flags must be passed as `--flag=value`
+// (space-separated values are rejected) so a value can never be parsed as
+// another pattern; watch modes are not supported by this finite runner.
 
 import { spawnSync } from "node:child_process";
 import { globSync, realpathSync, statSync } from "node:fs";
@@ -19,17 +19,59 @@ import { fileURLToPath } from "node:url";
 
 const GLOB_MAGIC = /[*?{}[\]]/;
 
+// Value-taking node --test flags. The runner requires the `--flag=value`
+// form so a space-separated value can never be mistaken for another test
+// pattern (which would let `node --test` consume an explicit test file as
+// the flag value and silently skip it — a false green). Union of the flags
+// supported on Node 22.19 and Node 24.
+const VALUE_FLAGS = new Set([
+  "test-concurrency",
+  "test-coverage-branches",
+  "test-coverage-exclude",
+  "test-coverage-functions",
+  "test-coverage-include",
+  "test-coverage-lines",
+  "test-global-setup",
+  "test-isolation",
+  "experimental-test-isolation",
+  "test-name-pattern",
+  "test-random-seed",
+  "test-reporter",
+  "test-reporter-destination",
+  "test-rerun-failures",
+  "test-shard",
+  "test-skip-pattern",
+  "test-timeout",
+]);
+
+// Boolean node --test flags that may coexist with later patterns. `--test` is
+// included so an explicit pass-through is harmless (the runner adds it
+// itself).
+const BOOLEAN_FLAGS = new Set([
+  "experimental-test-coverage",
+  "experimental-test-module-mocks",
+  "test",
+  "test-force-exit",
+  "test-only",
+  "test-randomize",
+  "test-update-snapshots",
+]);
+
 function usage() {
   console.error("usage: node scripts/run-node-test.mjs <glob-or-path> [<glob-or-path>...] [node-test-options...]");
   console.error("       node scripts/run-node-test.mjs \"scripts/**/*.test.mjs\" --test-name-pattern=helper");
-  console.error("       node scripts/run-node-test.mjs \"dist-test/**/*.test.js\" -- --test-concurrency=1");
+  console.error("       node scripts/run-node-test.mjs \"dist-test/**/*.test.js\" --test-concurrency=1");
+  console.error("value-taking node test flags must use --flag=value; --watch modes are not supported");
 }
 
 /**
- * Split argv into glob/path patterns and Node test flags. A leading `--`
- * makes every following argument a flag (so a pattern starting with `-` can
- * still be passed); otherwise an argument that starts with `-` is a flag and
- * everything else is a pattern.
+ * Split argv into glob/path patterns and Node test flags. A literal `--`
+ * marks every following argument as a node test flag (no further pattern
+ * parsing). Value-taking flags MUST use the `--flag=value` form: the
+ * space-separated form is rejected so a separate value can never be parsed
+ * as another pattern. Watch modes and unknown flags are rejected fail-closed.
+ * Throws a fixed Error for every invalid flag; callers must surface it
+ * before any glob discovery or spawn.
  */
 export function parseArgs(argv) {
   const patterns = [];
@@ -40,8 +82,30 @@ export function parseArgs(argv) {
       afterSeparator = true;
       continue;
     }
-    if (afterSeparator || arg.startsWith("-")) flags.push(arg);
-    else patterns.push(arg);
+    if (afterSeparator || arg.startsWith("-")) {
+      const eq = arg.indexOf("=");
+      const name = eq === -1 ? arg : arg.slice(0, eq);
+      const short = name.replace(/^-+/, "");
+      if (short.startsWith("watch")) {
+        throw new Error(`--watch mode is not supported by this finite runner (got ${name})`);
+      }
+      if (VALUE_FLAGS.has(short)) {
+        if (eq === -1) {
+          throw new Error(
+            `${name} takes a value; use ${name}=<value> (space-separated flag values are rejected so they cannot be parsed as test patterns)`,
+          );
+        }
+        flags.push(arg);
+        continue;
+      }
+      if (BOOLEAN_FLAGS.has(short)) {
+        flags.push(arg);
+        continue;
+      }
+      throw new Error(`unsupported node --test flag: ${name}`);
+    } else {
+      patterns.push(arg);
+    }
   }
   return { patterns, flags };
 }
@@ -93,7 +157,15 @@ export function discoverTestFiles(cwd, pattern) {
  * list. Returns the child exit code (or re-raises the child's signal).
  */
 export function main(argv = process.argv.slice(2), options = {}) {
-  const { patterns, flags } = parseArgs(argv);
+  let patterns;
+  let flags;
+  try {
+    ({ patterns, flags } = parseArgs(argv));
+  } catch (err) {
+    console.error(`[pix] ${err.message}`);
+    usage();
+    return 2;
+  }
   if (patterns.length === 0) {
     usage();
     return 2;
@@ -126,9 +198,15 @@ export function main(argv = process.argv.slice(2), options = {}) {
 
   const spawnSyncImpl = options.spawnSyncImpl ?? spawnSync;
   const killImpl = options.killImpl ?? process.kill;
+  // Strip NODE_TEST_CONTEXT so a nested invocation (this runner started from
+  // inside a test) still runs as a fresh top-level test runner instead of
+  // silently skipping the file list and exiting 0 — a false green.
+  const env = { ...(options.env ?? process.env) };
+  delete env.NODE_TEST_CONTEXT;
   const result = spawnSyncImpl(process.execPath, ["--test", ...flags, ...files], {
     cwd,
-    stdio: "inherit",
+    stdio: options.stdio ?? "inherit",
+    env,
   });
   if (result.error) {
     console.error(`[pix] failed to start node --test: ${result.error.message}`);

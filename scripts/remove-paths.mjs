@@ -17,7 +17,7 @@
 //     sanitized message (no stack dump).
 
 import { lstatSync, realpathSync, rmSync } from "node:fs";
-import { dirname, parse, resolve, sep } from "node:path";
+import { dirname, isAbsolute, parse, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Bounded retry for Windows transient lock errors (EBUSY/EPERM/ENOTEMPTY). */
@@ -78,6 +78,14 @@ export function resolveTarget(cwd, input) {
   }
   if (input.includes("\0")) {
     throw new Error("path contains a NUL byte");
+  }
+  if (input.trim() === "") {
+    throw new Error("whitespace-only path");
+  }
+  // Relative-only contract: an absolute path is rejected even when it happens
+  // to point beneath cwd, so callers cannot bypass the cwd-relative intent.
+  if (isAbsolute(input)) {
+    throw new Error(`absolute path ${JSON.stringify(input)} is not allowed; pass a path relative to the working directory`);
   }
   if (DRIVE_ABSOLUTE.test(input)) {
     throw new Error(`absolute drive path ${JSON.stringify(input)} is outside the working directory`);

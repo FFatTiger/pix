@@ -16,10 +16,16 @@
 //   8. host / sessiond / agent-worker have no AgentSession / SessionManager usage
 //   9. production bin targets exist for every manifest that declares a bin
 //  10. no legacy product name in production source, manifests, README or docs
-//  11. no production/test script uses `rm -rf` (use scripts/remove-paths.mjs)
+//  11. no recursive `rm` in any production/test script (use scripts/remove-paths.mjs)
 //  12. no shell-dependent `node --test` glob in scripts (use scripts/run-node-test.mjs)
 //  13. dependency builders launch tsc/npm as JS CLIs through the current Node
 //      (no npm.cmd / .bin/tsc / shell:true)
+//
+// Checks 11-13 are precise normal-form regression enforcement for the repo's
+// documented cross-platform tooling conventions — they are NOT an exhaustive
+// shell parser or a security sandbox. They catch the forbidden forms used by
+// this repository (with comment/echo text ignored) but do not attempt to
+// model every possible shell or JS construct.
 //
 // Only Node builtins; runs with zero installed dependencies.
 
@@ -146,12 +152,151 @@ export function extractSpecifiers(body) {
   return specifiers;
 }
 
+/**
+ * Lexically strip JS comments while preserving string/template contents,
+ * block-comment newlines, and escaped characters. A line comment is only
+ * recognized when `/ /` is not inside a string or template literal, so
+ * `const u = "https://x"; spawnSync(...)` keeps the `//` in the URL and the
+ * violation on the same line stays visible. Regex literals are consumed
+ * after regex-allowing contexts so `//` inside a pattern is not read as a
+ * comment. This is token-aware enough for the pragmatic JS used in the
+ * repo's scripts; it is a normal-form scanner, not a full JS parser.
+ */
 function stripComments(body) {
-  return body
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .map((line) => line.replace(/\/\/.*$/, ""))
-    .join("\n");
+  let out = "";
+  let i = 0;
+  const n = body.length;
+  // Last significant token (identifier/keyword) and character written, used
+  // to decide whether a `/` begins a regex literal or a division.
+  let lastWord = "";
+  let lastChar = "";
+
+  while (i < n) {
+    const c = body[i];
+    const next = body[i + 1] ?? "";
+    if (c === "/" && next === "/") {
+      while (i < n && body[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      i += 2;
+      while (i < n) {
+        if (body[i] === "*" && body[i + 1] === "/") {
+          i += 2;
+          break;
+        }
+        if (body[i] === "\n") out += "\n"; // preserve line structure
+        i++;
+      }
+      continue;
+    }
+    if (c === "'" || c === '"' || c === "`") {
+      const quote = c;
+      out += c;
+      i++;
+      while (i < n) {
+        const sc = body[i];
+        if (sc === "\\") {
+          out += sc;
+          if (i + 1 < n) {
+            out += body[i + 1];
+            i++;
+          }
+          i++;
+          continue;
+        }
+        if (quote === "`" && sc === "$" && body[i + 1] === "{") {
+          // Template interpolation is code, not text: copy it verbatim so a
+          // comment or violation inside it stays visible.
+          out += sc + "{";
+          i += 2;
+          let depth = 1;
+          while (i < n && depth > 0) {
+            if (body[i] === "{") depth++;
+            else if (body[i] === "}") depth--;
+            out += body[i];
+            i++;
+          }
+          continue;
+        }
+        if (sc === quote) {
+          out += sc;
+          i++;
+          break;
+        }
+        out += sc;
+        i++;
+      }
+      lastWord = "";
+      lastChar = quote;
+      continue;
+    }
+    if (c === "/") {
+      // Regex literal (after operators/punctuation/keywords) vs division
+      // (after a value/identifier/close bracket).
+      const regexAllowed =
+        lastChar === "" ||
+        /[=({\[,:;!?&|+\-*%^<>~]/.test(lastChar) ||
+        /^(?:return|typeof|instanceof|in|of|case|do|else|new|delete|void|yield|await|throw)$/.test(lastWord);
+      if (regexAllowed) {
+        out += c;
+        i++;
+        let inClass = false;
+        while (i < n) {
+          const rc = body[i];
+          if (rc === "\\") {
+            out += rc;
+            if (i + 1 < n) {
+              out += body[i + 1];
+              i++;
+            }
+            i++;
+            continue;
+          }
+          if (rc === "[") inClass = true;
+          else if (rc === "]") inClass = false;
+          else if (rc === "/" && !inClass) {
+            out += rc;
+            i++;
+            while (i < n && /[A-Za-z]/.test(body[i])) {
+              out += body[i];
+              i++;
+            }
+            break;
+          } else if (rc === "\n") {
+            break; // unterminated regex: stop safely
+          }
+          out += rc;
+          i++;
+        }
+        lastWord = "";
+        lastChar = "/";
+        continue;
+      }
+      out += c;
+      lastWord = "";
+      lastChar = c;
+      i++;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(c)) {
+      let word = c;
+      i++;
+      while (i < n && /[A-Za-z0-9_$]/.test(body[i])) {
+        word += body[i];
+        i++;
+      }
+      out += word;
+      lastWord = word;
+      lastChar = word[word.length - 1];
+      continue;
+    }
+    out += c;
+    if (!/\s/.test(c)) lastChar = c;
+    lastWord = "";
+    i++;
+  }
+  return out;
 }
 
 function exists(path) {
@@ -386,38 +531,106 @@ export function checkBinTargets(manifests) {
 // Cross-platform tooling
 // ---------------------------------------------------------------------------
 
-// `rm -rf` / `rm -r` in a package.json script value. The lookbehind keeps
-// `remove-paths.mjs` (which contains “rm” inside “remove”) from matching.
-const RM_RF_IN_SCRIPT = /(?:^|[^A-Za-z0-9_.-])rm\s+-(?:r|R)(?:f|F)?\b/;
-const RAW_NODE_TEST = /\bnode\s+--test\b/;
-const GLOB_CHARS = /[*?{}[\]]/;
-const DEP_BUILDER_NAMES = new Set(["build-deps.mjs", "prebuild-deps.mjs"]);
+// `rm` with recursive/force flags in a package.json script value. The gate
+// is a precise normal-form regression check: it catches the repo's forbidden
+// recursive-rm forms in command position (including later `&&`/`;` segments)
+// and ignores shell comments and echoed text, but it is not an exhaustive
+// shell parser or a security sandbox.
+const RM_COMMAND = /(^|[;&|\n(])\s*rm\b/g;
 
-/** True when `script` runs `node --test` with a glob argument. */
-function isShellDependentNodeTestGlob(script) {
-  const match = RAW_NODE_TEST.exec(script);
-  if (!match) return false;
-  // Examine only the segment after `node --test` up to the next `&&` / `||`
-  // / `;` so unrelated later shell commands are not blamed.
-  const segment = script.slice(match.index + match[0].length).split(/\s*(?:&&|\|\||;)\s*/)[0];
-  return GLOB_CHARS.test(segment);
+/** Strip shell comments (`# …`) from a script value, preserving newlines and
+ * quoted contents so a `#` inside a string is not a comment. */
+function stripShellComments(script) {
+  let out = "";
+  let quote = "";
+  for (let i = 0; i < script.length; i++) {
+    const c = script[i];
+    if (quote) {
+      out += c;
+      if (c === "\\" && quote !== "'") {
+        if (i + 1 < script.length) {
+          out += script[i + 1];
+          i++;
+        }
+      } else if (c === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      out += c;
+      continue;
+    }
+    if (c === "#") {
+      while (i < script.length && script[i] !== "\n") i++;
+      if (i < script.length) out += "\n";
+      continue;
+    }
+    out += c;
+  }
+  return out;
 }
 
-/** No production/test script may shell out to `rm -rf`. */
+/** True when `script` invokes a recursive `rm` (`rm -rf`, `rm -fr`, `rm -r`,
+ * `rm -r -f`, `rm -f -r`, uppercase and `--recursive`/`--force` long forms) in
+ * command position. */
+function isRecursiveRm(script) {
+  const stripped = stripShellComments(script);
+  let match;
+  RM_COMMAND.lastIndex = 0;
+  while ((match = RM_COMMAND.exec(stripped))) {
+    const rest = stripped.slice(match.index + match[0].length);
+    const tokens = rest.match(/\S+/g) ?? [];
+    for (const token of tokens) {
+      if (token === "--") break; // end of flags
+      if (token.startsWith("--")) {
+        if (token === "--recursive") return true;
+        continue;
+      }
+      if (token.startsWith("-")) {
+        if (/[rR]/.test(token.slice(1))) return true;
+        continue;
+      }
+      break; // first operand ends the flag scan
+    }
+  }
+  return false;
+}
+
+/** No production/test script may shell out to a recursive `rm`. */
 export function checkNoRmRfInScripts(manifests) {
   const offenders = [];
   for (const { path, manifest } of manifests) {
     const scripts = manifest.scripts;
     if (!scripts) continue;
     for (const [name, script] of Object.entries(scripts)) {
-      if (typeof script === "string" && RM_RF_IN_SCRIPT.test(script)) {
-        offenders.push(`${path}: script "${name}" calls rm -rf (use scripts/remove-paths.mjs)`);
+      if (typeof script === "string" && isRecursiveRm(script)) {
+        offenders.push(`${path}: script "${name}" calls a recursive rm (use scripts/remove-paths.mjs)`);
       }
     }
   }
   return offenders.length === 0
-    ? { ok: true, details: "no production/test script uses rm -rf" }
+    ? { ok: true, details: "no production/test script uses a recursive rm" }
     : { ok: false, details: offenders.join("; ") };
+}
+
+const RAW_NODE_TEST = /\bnode\s+--test\b/g;
+const GLOB_CHARS = /[*?{}[\]]/;
+const DEP_BUILDER_NAMES = new Set(["build-deps.mjs", "prebuild-deps.mjs"]);
+
+/** True when ANY `node --test` command segment in `script` uses a glob. */
+function hasShellDependentNodeTestGlob(script) {
+  RAW_NODE_TEST.lastIndex = 0;
+  let match;
+  while ((match = RAW_NODE_TEST.exec(script))) {
+    // Inspect the segment after THIS `node --test` occurrence up to the next
+    // `&&` / `||` / `;` so an unrelated later shell command is not blamed and
+    // every occurrence is checked, not just the first.
+    const segment = script.slice(match.index + match[0].length).split(/\s*(?:&&|\|\||;)\s*/)[0];
+    if (GLOB_CHARS.test(segment)) return true;
+  }
+  return false;
 }
 
 /**
@@ -431,7 +644,7 @@ export function checkNoRawNodeTestGlob(manifests) {
     const scripts = manifest.scripts;
     if (!scripts) continue;
     for (const [name, script] of Object.entries(scripts)) {
-      if (typeof script === "string" && isShellDependentNodeTestGlob(script)) {
+      if (typeof script === "string" && hasShellDependentNodeTestGlob(script)) {
         offenders.push(
           `${path}: script "${name}" runs node --test with a shell-dependent glob (use scripts/run-node-test.mjs)`,
         );

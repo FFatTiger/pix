@@ -17,6 +17,16 @@ function cleanup(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+/** Build a realistic npm package at `root/node_modules/npm` with bin/npm-cli.js. */
+function addNpmPackage(root) {
+  const pkgDir = join(root, "node_modules", "npm");
+  mkdirSync(join(pkgDir, "bin"), { recursive: true });
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" } }));
+  const cli = join(pkgDir, "bin", "npm-cli.js");
+  writeFileSync(cli, "");
+  return cli;
+}
+
 test("resolveTscInvocation resolves typescript's JS CLI from package metadata", (t) => {
   const root = makeRoot();
   t.after(() => cleanup(root));
@@ -36,10 +46,7 @@ test("resolveTscInvocation resolves typescript's JS CLI from package metadata", 
 test("resolveTscInvocation fails closed when typescript is not installed", () => {
   const root = makeRoot();
   try {
-    assert.throws(
-      () => resolveTscInvocation(root),
-      /typescript is not installed/,
-    );
+    assert.throws(() => resolveTscInvocation(root), /typescript is not installed/);
   } finally {
     cleanup(root);
   }
@@ -63,11 +70,21 @@ test("resolveTscInvocation fails closed when the tsc bin file is missing", (t) =
   assert.throws(() => resolveTscInvocation(root), /TypeScript CLI not found/);
 });
 
-test("resolveNpmInvocation uses npm_execpath from the invoking npm", (t) => {
+test("resolveTscInvocation rejects a bin target that escapes the package root", (t) => {
   const root = makeRoot();
   t.after(() => cleanup(root));
-  const cli = join(root, "npm-cli.js");
-  writeFileSync(cli, "");
+  const pkgDir = join(root, "node_modules", "typescript");
+  mkdirSync(pkgDir, { recursive: true });
+  // Malicious `../` in the manifest's bin target pointing outside the package.
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ bin: { tsc: "../evil.js" } }));
+  writeFileSync(join(root, "node_modules", "evil.js"), "");
+  assert.throws(() => resolveTscInvocation(root), /escapes its package/);
+});
+
+test("resolveNpmInvocation uses npm_execpath validated against the npm package", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  const cli = addNpmPackage(root);
   const inv = resolveNpmInvocation({
     execPath: "/usr/bin/node",
     env: { npm_execpath: cli },
@@ -88,5 +105,41 @@ test("resolveNpmInvocation rejects a non npm-cli.js npm_execpath", () => {
   assert.throws(
     () => resolveNpmInvocation({ execPath: "/usr/bin/node", env: { npm_execpath: "npm.cmd" } }),
     /run this script through npm/,
+  );
+});
+
+test("resolveNpmInvocation rejects a directory named npm-cli.js", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  mkdirSync(join(root, "npm-cli.js"), { recursive: true });
+  assert.throws(
+    () => resolveNpmInvocation({ execPath: "/usr/bin/node", env: { npm_execpath: join(root, "npm-cli.js") } }),
+    /run this script through npm/,
+  );
+});
+
+test("resolveNpmInvocation rejects a stray file named npm-cli.js with no npm package", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  const cli = join(root, "npm-cli.js");
+  writeFileSync(cli, "");
+  assert.throws(
+    () => resolveNpmInvocation({ execPath: "/usr/bin/node", env: { npm_execpath: cli } }),
+    /not backed by an npm package|run this script through npm/,
+  );
+});
+
+test("resolveNpmInvocation rejects an npm package whose bin does not match npm_execpath", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  const pkgDir = join(root, "node_modules", "npm");
+  mkdirSync(join(pkgDir, "bin"), { recursive: true });
+  // Package claims bin.npm points elsewhere than the actual npm_execpath file.
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/other.js" } }));
+  const cli = join(pkgDir, "bin", "npm-cli.js");
+  writeFileSync(cli, "");
+  assert.throws(
+    () => resolveNpmInvocation({ execPath: "/usr/bin/node", env: { npm_execpath: cli } }),
+    /does not match the npm package's declared npm bin/,
   );
 });

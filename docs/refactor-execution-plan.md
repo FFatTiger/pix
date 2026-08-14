@@ -372,6 +372,14 @@ npm.cmd/.bin/tsc/shell:true，注释不误报）。
 注意：本工具化**不建立原生 Windows 产品支持**。Host state directory / Named Pipe /
 DACL / process-tree 生命周期仍是独立工作包（另见 migration-ledger §46），不在本子集宣称。
 
+硬化（§44.1，独立验证 FAIL 后修复）：run-node-test 解析器 fail-closed —— 取值型
+node test flag 必须 `--flag=value`，分离形式在 discovery/spawn 前以固定消息拒绝，
+布尔 flag 可与 pattern 共存，`--watch*` 与未知 flag 拒绝；嵌套调用剥离 `NODE_TEST_CONTEXT`
+防静默跳过。architecture 三把门禁按精确 normal-form 回归实现（命令位置 + 注释/echo
+文本不误报、全部 `node --test` 出现点、词法注释剥离），不是穷尽式 shell/JS 解析器或
+安全沙箱。remove-paths 只接受相对路径（拒绝绝对/纯空白路径）；tool-invocation 校验
+真实 npm/typescript 包元数据与路径约束。
+
 ---
 
 ## 6. 新仓库目标结构

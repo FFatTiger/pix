@@ -46,19 +46,24 @@ test("isWithin is true for children and false for parents or siblings", () => {
   assert.equal(isWithin("/a/b", "/a/bc/d"), false);
 });
 
-test("resolveTarget rejects empty, NUL and root paths", (t) => {
+test("resolveTarget rejects empty, NUL, whitespace-only and root paths", (t) => {
   const root = makeRoot();
   t.after(() => cleanup(root));
   assert.throws(() => resolveTarget(root, ""), /empty path/);
   assert.throws(() => resolveTarget(root, "a\0b"), /NUL/);
-  assert.throws(() => resolveTarget(root, "/"), /root path/);
+  assert.throws(() => resolveTarget(root, "   "), /whitespace-only path/);
+  assert.throws(() => resolveTarget(root, "\t \n"), /whitespace-only path/);
+  // "/" is both absolute and a root; the relative-only contract rejects it
+  // as an absolute path first.
+  assert.throws(() => resolveTarget(root, "/"), /absolute path|root path/);
 });
 
 test("resolveTarget rejects the working directory itself", (t) => {
   const root = makeRoot();
   t.after(() => cleanup(root));
   assert.throws(() => resolveTarget(root, "."), /working directory itself/);
-  assert.throws(() => resolveTarget(root, root), /working directory itself/);
+  // The absolute form is rejected as an absolute path (relative-only contract).
+  assert.throws(() => resolveTarget(root, root), /absolute path/);
 });
 
 test("resolveTarget rejects parent escape and absolute paths outside cwd", (t) => {
@@ -70,7 +75,14 @@ test("resolveTarget rejects parent escape and absolute paths outside cwd", (t) =
   });
   assert.throws(() => resolveTarget(root, ".."), /outside the working directory/);
   assert.throws(() => resolveTarget(root, "../other"), /outside the working directory/);
-  assert.throws(() => resolveTarget(root, join(outside, "x")), /outside the working directory/);
+  assert.throws(() => resolveTarget(root, join(outside, "x")), /absolute path/);
+});
+
+test("resolveTarget rejects an absolute path even when it is beneath cwd", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  mkdirSync(join(root, "dist"), { recursive: true });
+  assert.throws(() => resolveTarget(root, join(root, "dist")), /absolute path/);
 });
 
 test("resolveTarget rejects Windows drive paths and UNC roots as probes", (t) => {

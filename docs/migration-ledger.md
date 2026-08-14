@@ -1474,3 +1474,50 @@ live 服务，无 package-lock 依赖变化。
   构建），后续可统一，非本切片范围。
 - 本分支未 merge/push/deploy；工作树 clean。
 ```
+
+### 44.1 独立验证 FAIL → 硬化修复（follow-up 提交，同 worktree，未 merge/push/deploy）
+
+独立 verifier 复现失败并给出精确复现清单；以下为针对逐项的硬化修复（提交 atop
+§44，见 commit message）：
+
+F1（false-green，HIGH）：`node run-node-test.mjs "sub/*.test.mjs" --test-name-pattern
+"sub/*.test.mjs"` 旧解析器把分离的 flag value 当作另一个 pattern 展开，Node 再把首个
+显式测试文件当 flag value 消费，失败测试被跳过且 exit 0。修复：解析器 fail-closed ——
+已知取值型 node test flag（test-name-pattern / test-skip-pattern / test-concurrency /
+test-reporter / test-reporter-destination / test-shard / test-timeout / test-isolation /
+test-coverage-{include,exclude,branches,functions,lines} / test-global-setup /
+test-random-seed / test-rerun-failures / experimental-test-isolation，Node22.19/24 并集）
+必须用 `--flag=value`，分离形式在 discovery/spawn 之前以固定 usage 消息 + exit 2 拒绝；
+布尔 flag（test-only/test-force-exit/test-randomize/test-update-snapshots/
+experimental-test-coverage/experimental-test-module-mocks 等）可与后续 pattern 共存；
+未知 flag fail-closed；`--watch*` 在本有限 runner 拒绝。`--` 分隔符语义改为如实描述
+（其后的所有参数都是 flag），删除“允许 dash 开头 pattern”的虚假声明（未实现）。
+另修复嵌套调用 false-green：父 test runner 注入 `NODE_TEST_CONTEXT`，子进程继承后
+node --test 会“recursively within a test file”静默跳过文件列表并 exit 0 —— spawn 子
+进程前删除该 env。新增 REAL fixture 回归：一个 pass + 一个 fail 测试 + glob 值分离
+flag，证明 nonzero / 无 false-green；`--flag=value` 等价形式照常工作。
+
+F2（rm gate 覆盖面）：现在命中 `rm -rf` / `rm -fr` / `rm -r` / `rm -r -f` / `rm -f -r` /
+大写 `-RF` / 长形式 `--recursive --force`，且覆盖 `&&`/`;` 后续命令段；命令位置要求 +
+shell 注释剥离（引号感知）使 echo 文本 / `#` 注释不误报。文档明确为精确 normal-form
+回归门禁，不是穷尽式 shell 解析器/安全沙箱。
+
+F3（raw node-test gate）：改为检查脚本中**所有** `node --test` 出现点（不止第一处），
+fixture `node --test a.test.mjs && node --test 'b/**/*.test.js'` 必须 FAIL。
+
+F4（注释剥离）：替换为词法/记号感知剥离器——保留单/双引号与模板字符串内容及换行、
+转义字符、模板插值，处理块注释换行，并在正则允许上下文消费正则字面量，避免 `//` 在
+字符串/正则内被当注释截断而漏报同行可执行违规。import/legacy 既有门禁行为不变。新增
+探针：URL 字符串 + 同行违规、纯注释、块注释、转义引号/模板、正则 `\/\/`。
+
+安全小偏差：remove-paths 只接受相对路径——拒绝绝对 POSIX 路径（即使位于 cwd 之下）
+与纯空白路径，保留顶层 symlink 删除语义与 realpath 约束；resolveNpmInvocation 要求
+npm_execpath 是 regular file 且校验真实 npm 包元数据（package.json `name:"npm"` +
+bin.npm 精确映射到该文件），任意名为 npm-cli.js 的 env 文件不可执行；resolveTscInvocation
+要求 tsc bin 是 regular file 且被约束在解析出的 typescript 包根内（恶意 `../` bin
+元数据不逃逸）。
+
+验证（Node v24.18.0 与 v22.19.0 双跑）：scripts 全量 106 pass/0 fail；architecture
+PASS；F1/F2/F3/F4 定向对抗 PASS；root build/typecheck/test 与受影响 workspace
+（agent-worker/cli/host/pi-sdk-adapter/sessiond）测试通过；Startup/Sessions/Runtime
+E2E 从隔离临时配置 PASS，无孤儿。
