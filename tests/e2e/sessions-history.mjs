@@ -43,7 +43,7 @@
  * Run: npm run test:e2e:sessions
  */
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -228,7 +228,7 @@ function attachViaWs(wsUrl, sessionId, timeoutMs = STEP_TIMEOUT_MS) {
 // Stack
 // ---------------------------------------------------------------------------
 
-async function bootStack({ agentDir, sessiondDir, projectCwd }) {
+async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir }) {
   assert.equal(existsSync(FIXTURE), true, `fixture missing: ${FIXTURE}`);
   const clientDist = existsSync(CLIENT_DIST)
     ? CLIENT_DIST
@@ -264,6 +264,7 @@ async function bootStack({ agentDir, sessiondDir, projectCwd }) {
     cwd: projectCwd,
     endpoint: daemon.endpoint,
     secret: daemon.secret,
+    hostDirEnv: hostDir,
     logger: {},
   });
   // Catalogs use the same temp PI_CODING_AGENT_DIR the E2E already isolates;
@@ -312,6 +313,11 @@ async function main() {
   const agentDir = await mkdtemp(join(tmpdir(), "pix-e2e-agentdir-"));
   const sessiondDir = await mkdtemp(join(tmpdir(), "pix-e2e-sessiond-"));
   const projectCwd = await mkdtemp(join(tmpdir(), "pix-e2e-project-"));
+  // D3A-P0: isolate the Host durable trusted-roots ledger under a canonical
+  // temp (never the operator home); a canonical leaf avoids the macOS /var
+  // symlink walk that ensurePixHostDir correctly refuses.
+  const hostDir = join(realpathSync(tmpdir()), "pix-e2e-host-" + process.pid);
+  mkdirSync(hostDir, { recursive: false, mode: 0o700 });
   process.env.PI_CODING_AGENT_DIR = agentDir;
   let stack;
   let exitCode = 0;
@@ -358,7 +364,7 @@ async function main() {
       { id: FIXTURE_BRANCH_E6, parentId: FIXTURE_BRANCH_E5, role: "assistant", text: "branch a1", timestamp: branchTs + 5 },
     ]);
 
-    stack = await bootStack({ agentDir, sessiondDir, projectCwd });
+    stack = await bootStack({ agentDir, sessiondDir, projectCwd, hostDir });
     const rpc = new SessiondRpcClient({ endpoint: stack.daemon.endpoint, secret: stack.daemon.secret, timeoutMs: 5_000 });
     const get = (path) => fetch(`${stack.origin}${path}`).then(async (r) => ({ status: r.status, body: r.status === 204 ? null : await r.json().catch(() => null) }));
 
@@ -575,6 +581,7 @@ async function main() {
         /* ignore */
       }
     }
+    await rm(hostDir, { recursive: true, force: true });
     // Best-effort cleanup of any worker children spawned by the fixture.
     for (const pid of await listChildPids(process.pid)) {
       try {

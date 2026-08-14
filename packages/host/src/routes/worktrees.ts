@@ -78,6 +78,16 @@ async function branchExists(runner: ProcessRunner, root: string, branch: string,
   throw new HttpError(400, "BRANCH_PROBE_FAILED", result.stderr.trim() || "Failed to inspect branch");
 }
 
+/** Fixed code for rollback logs — never raw HttpError messages or git stderr. */
+function rollbackTriggerCode(error: unknown): string {
+  if (error instanceof HttpError) return error.code;
+  return "WORKTREE_CREATE_FAILED";
+}
+
+/**
+ * Best-effort create rollback. Returns only a failure count — never raw git
+ * stderr, paths, or original error messages (those can contain claim paths).
+ */
 async function rollbackCreate(
   runner: ProcessRunner,
   root: string,
@@ -86,23 +96,25 @@ async function rollbackCreate(
   branch: string,
   ledger: CreateLedger,
   max: number,
-): Promise<string[]> {
-  const errors: string[] = [];
+): Promise<number> {
+  let failureCount = 0;
   await ledger.registeredRoot?.rollback();
-  const cleanup = async (label: string, args: readonly string[]) => {
+  const cleanup = async (args: readonly string[]) => {
     try {
       const result = await runner.run({ command: "git", args, maxOutputBytes: max });
-      if (result.exitCode !== 0) errors.push(`${label}: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
-    } catch (error) { errors.push(`${label}: ${error instanceof Error ? error.message : String(error)}`); }
+      if (result.exitCode !== 0) failureCount += 1;
+    } catch {
+      failureCount += 1;
+    }
   };
-  if (ledger.addedWorktree && target) await cleanup("remove worktree", ["-C", root, "worktree", "remove", "--force", "--", target]);
-  await cleanup("prune worktrees", ["-C", root, "worktree", "prune"]);
-  if (ledger.createdBranch) await cleanup("delete branch", ["-C", root, "branch", "-D", "--", branch]);
+  if (ledger.addedWorktree && target) await cleanup(["-C", root, "worktree", "remove", "--force", "--", target]);
+  await cleanup(["-C", root, "worktree", "prune"]);
+  if (ledger.createdBranch) await cleanup(["-C", root, "branch", "-D", "--", branch]);
   if (ledger.createdBase && base) {
     try { await rmdir(base); }
-    catch (error) { errors.push(`remove base: ${error instanceof Error ? error.message : String(error)}`); }
+    catch { failureCount += 1; }
   }
-  return errors;
+  return failureCount;
 }
 
 export function registerWorktreeRoutes(app: Hono<HostEnv>, deps: WorktreeDeps): void {
@@ -179,7 +191,14 @@ export function registerWorktreeRoutes(app: Hono<HostEnv>, deps: WorktreeDeps): 
         if (await realpath(base) !== baseCanonical) throw new HttpError(409, "UNSAFE_WORKTREE_BASE", "Worktree base was replaced during creation");
         const canonical = await realpath(target);
         if (dirname(canonical) !== baseCanonical) throw new HttpError(409, "UNSAFE_WORKTREE_TARGET", "Worktree target escaped its verified base");
-        ledger.registeredRoot = await registerTrustedCreatedRoot(deps.roots, canonical);
+        // Register + durable persist (when ledger attached). Only 201 after
+        // memory+ledger commit; persist failure rolls back receipt+git.
+        ledger.registeredRoot = await registerTrustedCreatedRoot(deps.roots, {
+          path: canonical,
+          repoRoot: root,
+          base: baseCanonical,
+          branch,
+        });
         // Commit stability check while both repo lock and roots mutation completion are held in order.
         const committed = await list(runner, root, max);
         if (!committed.some((item) => item.path === canonical) || !(await deps.roots.isAuthorized(canonical, "directory"))) {
@@ -189,8 +208,13 @@ export function registerWorktreeRoutes(app: Hono<HostEnv>, deps: WorktreeDeps): 
       } catch (error) {
         // Rejected/timeout/output-limit commands are ambiguous and therefore
         // never grant ownership beyond operations that returned explicit success.
-        const rollbackErrors = await rollbackCreate(runner, root, baseCanonical, target, branch, ledger, max);
-        if (rollbackErrors.length > 0) deps.logger?.error?.("worktree create rollback incomplete", { originalError: error instanceof Error ? error.message : String(error), rollbackErrors });
+        const rollbackFailures = await rollbackCreate(runner, root, baseCanonical, target, branch, ledger, max);
+        if (rollbackFailures > 0) {
+          deps.logger?.error?.("worktree create rollback incomplete", {
+            code: rollbackTriggerCode(error),
+            rollbackFailureCount: rollbackFailures,
+          });
+        }
         throw error;
       }
     }, c.req.raw.signal);

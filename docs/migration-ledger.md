@@ -745,4 +745,57 @@ WP2：新增窄 `createPiSdkSessionPorts()`，production daemon 默认catalog与
 WP3：仅扩 `tests/e2e/sessions-history.mjs`，覆盖limit/offset严格十进制分页、leafId可见分支上下文、sessiond delete后文件/list/read 404一致、非live rename固定unavailable、重复list零Worker；连续3轮Sessions E2E PASS。未新增Host mutation route，live rename仍留D4。
 
 残余：create/discovery/rename list头最长30s陈旧仍按既有hotfix约定；Host rename/delete/auto-name mutation route属于D4；SQLite JSONL投影和客户端虚拟列表属于Wave4 SCALE1/UX1，不作为D1当前底层正确性阻塞。
+
+## 38. D3A-P0 — 可持久化 Trusted-Roots Ledger 记录
+
+```text
+实现：`dfb1759`（branch feat/d3a-p0-ledger-final，base main 811c94e），Fresh GPT 独立验证 PASS。本项为 D3A-P0「可持久化受信根」最终实现：把原先仅存于内存的 Host 创建 worktree 受信根 claim 持久化为 host 目录下的受信根账本，Host 重启后恢复文件授权；绝不扫描/导入任意既有 Git worktree。
+
+父架构/安全决策（必须实现）：
+1) 严格单 Host per PIX_HOST_DIR：openTrustedRootsLedger 在 listen 前获取排它「生命周期」host-dir 锁（O_EXCL 0600，{pid,instanceId,createdAt}），持有至优雅关闭 close()。任何既有锁（存活 OR stale）都以固定 sanitized 错误拒绝启动，绝无自动 stale 回收；SIGKILL 遗留 stale 锁时下次启动 fail closed 且不动账本，operator/test 可在证明旧 pid 已死后显式删除 fixture 锁；close() 只删除自身精确锁身份（dev/ino + instanceId），错误 instance 无法解锁他人目录。
+2) 安全专用 PIX_HOST_DIR：默认 `~/.pi/pix/host`，显式值必须非空绝对路径无 NUL。新建专用 leaf：安全创建并以 fd 设 0700；既有目录绝不被 chmod：要求当前用户所有权（平台支持时）、mode 0700、真实非 symlink、且只含已识别 Pix ledger/lock/temp 布局；在任一变更前拒绝文件系统根、home 本身、共享 tmp 本身、repository/source tree、以及被无关文件占用的目录。测试只用 fixture，绝不对真实 `/`、home、/tmp、repo 做 chmod。
+3) 损坏账本是不可变证据：缺失 ⇒ 空；corrupt/unknown-version/wrong-kind/duplicate/sparse/wrong-permission/hardlink/unsafe 使启动与一切 mutation fail closed 并给出固定 sanitized 错误；绝不被改写/截断/重命名/删除；测试断言 bytes+inode 不变。
+4) 持久性契约：temp 同目录 O_EXCL|O_NOFOLLOW 0600 → write+fsync → 身份校验 → 原子 rename → 目录 fsync。目录 fsync 错误 FATAL（除窄枚举真正不支持平台集 EINVAL/ENOTSUP/EISDIR，附测试/注释），任意错误绝不吞掉；返回成功/201 即代表按本契约完成发布。
+5) 启动锁竞争：listen 前以固定 sanitized 错误失败，无静默降级启动；Host runner 负责正常 SIGINT/SIGTERM 与启动失败的清理。
+6) LAN 策略：已认证 LAN worktree create/delete 允许并可写持久 claim；未认证请求由既有 gate 在任何 Git/fs 变更前阻止。无 capability/UI 变更。
+7) 最小公开面：index.ts 只导出窄 Host-dir/location/options/error facade（resolvePixHostDir / TrustedRootsLedgerError / 类型），不导出 raw ledger 内部（open/parse/serialize/lock 名）；ProductionResources 保留 trustedRootsLedger（Host runner 优雅关闭需 close() 释放生命周期锁），不保留候选多余输出。
+
+保留的正确性（来自候选，重新加固）：
+- 精确 claim schema v1 + 有界最大 claim 数（默认 128，硬上限 1024，确定性 JSON）。
+- rehydrate 门禁：canonical path/dev/ino + repo 身份 + worktree base 包含 + `git worktree list` 佐证；local rehydrate 保留 foreign peer claims（并发 Host 被禁，但旧 claim 可能带其它 instance id）；磁盘先于内存授权/提升提交。
+- 碰撞与身份替换 fail closed；create 回滚只删精确 owner claim；delete 在 git 删除成功后才移除 claim；restart 绝不复活已删 claim；容量下调/foreign 行为保留磁盘证据并失败，而非破坏性清空。
+
+来源迁移：只迁代码/测试（旧候选 commit db7ebaf / hardening 38c39ae / instance-id 4ba5f5b 从 integrate/d3a-p0-final-gpt-candidate），绝不迁旧文档；不 cherry-pick 文档 commit 6ac977b；当前 main 版本/语义在范围外保持原样。
+
+修改范围：
+- packages/host/src/resources/trusted-roots-ledger.ts（新增；生命周期锁、host-dir 安全、损坏账本 fail closed、持久性注入 hook）
+- packages/host/src/resources/allowed-roots.ts（ledger 接入：register 磁盘先于内存、unregister、rehydrate 佐证/foreign 保留/容量失败、durable 吸收）
+- packages/host/src/composition/production-resources.ts（PIX_HOST_DIR 接线、启动失败释放锁、rehydrate）
+- packages/host/src/routes/worktrees.ts（register 传 durable 元数据；回滚日志固定 code/count 不泄路径）
+- packages/host/src/index.ts（窄 facade 导出）
+- packages/cli/src/commands/host-runner.ts（PIX_HOST_DIR、生命周期锁优雅释放、sanitized 错误）
+- packages/host/test/trusted-roots-ledger.test.mjs（新增 28 项聚焦测试）、packages/host/test/production-resources.test.mjs
+- tests/e2e/startup.mjs、tests/e2e/sessions-history.mjs（fixture PIX_HOST_DIR）
+- docs/refactor-execution-plan.md、docs/migration-ledger.md
+- 未改 Protocol/runtime-core/sessiond/adapter/client/package-lock/UI；未触碰/重启 live test-pi.huu.im、端口 30144、默认 live host/sessiond state。
+
+验证（本机 Node v24.18.0）：
+- root npm run build EXIT 0；root npm run typecheck EXIT 0；check:architecture PASS；host check:boundaries PASS（39 files）。
+- host 297/297（基线 269 + 新增 28 聚焦 ledger 测试）；cli 46/46；adapter 171/171；sessiond 159（158 pass + 1 Windows skip）；runtime-core 7/7；protocol 116/116；runtime-contract-tests 75/75；agent-worker 105/105；client 482/482；scripts 44/44。
+- test:e2e:startup PASS（临时 PIX_HOST_DIR/PIX_SESSIOND_DIR/PI_CODING_AGENT_DIR、PIX_ALLOWED_ROOTS 指向一次性 repo、随机端口）：create→ledger→201、graceful Host-only 重启复用 sessiond PID 并恢复文件授权、删除→claim 移除→重启不复活、第二 Host 同目录 LEDGER_LOCK_BUSY 启动前失败、SIGKILL→stale 锁→重启 LEDGER_LOCK_STALE fail closed 且账本字节/inode 不变、显式删除 fixture 锁后重启恢复授权、sessiond down 时 GET 仍在且 POST 在 Git 前 503、无孤儿。
+- test:e2e:sessions PASS；test:e2e:runtime PASS。
+- git diff --check PASS；工作树 clean。
+
+独立验证：Fresh GPT 以全临时目录/端口复验 Host 297/297、CLI46、Adapter171、sessiond159（1 skip）、Core7、Protocol116、Contract75、Worker105、Client482、Scripts44、Startup/Sessions E2E、architecture/boundaries 全 PASS；另对锁替换/移除、恶意ledger字段、host-dir no-touch、live/stale/PID复用锁、并发register/route create、rehydrate/unregister、启动与bind失败清锁、最小public surface做独立探针，verdict PASS。
+
+残余风险：
+- 生命周期锁是「单 Host」的证据性机制而非 OS 强排它：同用户下若外部进程删除/替换锁文件（需同目录写权），严格单 Host 依赖目录权限与操作纪律；发布前每次写都会重验锁 dev/ino，丢失即 fail closed。
+- SIGKILL 后必须人工确认旧 pid 已死并显式删除 stale 锁；本切片不提供自动修复命令（父决策明确不做）。
+- 目录 fsync 在 EINVAL/ENOTSUP/EISDIR 平台被容忍（文档化）；其余 fsync 错误视为 FATAL，返回失败不报成功。
+- Windows 不支持 getuid → 所有权检查跳过（模式/布局检查仍生效）；未在 Windows 真机验证。
+- ledger `branch` 元数据当前只拒绝NUL，手工构造的其他C0控制字符可被接受；branch不参与路径、命令或rehydrate判定，属非阻塞输入收紧项。
+- production fresh boot会写出合法空ledger，而非等首个claim才创建；无安全影响。
+- macOS含symlink路径组件（如`/var`）的PIX_HOST_DIR会严格拒绝，部署应使用realpath。
+- 既有 `WORKTREE_CREATE_FAILED` 仍可能携带raw git stderr，这是base既有问题，本分支只收紧rollback日志，后续单独sanitize。
+- 未部署；合入 main 状态由本段后续记录。
 ```

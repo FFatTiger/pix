@@ -23,12 +23,22 @@
  * stays free of Pi SDK / runtime-core / the sessiond main entry.
  */
 import { delimiter, isAbsolute } from "node:path";
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
 import { HttpError } from "../errors.js";
-import { createAllowedRootService } from "../resources/allowed-roots.js";
-import { createProcessRunner } from "../resources/process-runner.js";
+import {
+  attachTrustedRootsLedger,
+  createAllowedRootService,
+  rehydrateTrustedCreatedRoots,
+} from "../resources/allowed-roots.js";
+import { createProcessRunner, runChecked } from "../resources/process-runner.js";
 import type { MutationGuard, ResourceDeps, ResourceLimits, WorktreeBusyPreflight } from "../resources/types.js";
+import {
+  openTrustedRootsLedger,
+  resolvePixHostDir,
+  TrustedRootsLedgerError,
+  type TrustedRootsLedger,
+} from "../resources/trusted-roots-ledger.js";
 import type { HostCapability, HostLogger } from "../types.js";
 
 /** Fixed ping / RPC timeout for the resolver and the worktree safety adapter. */
@@ -155,6 +165,75 @@ function sanitizeRootError(error: unknown): string {
   return `PIX_ALLOWED_ROOTS root rejected: ${error instanceof Error ? error.message : String(error)}`;
 }
 
+/** Single safe error for Host data directory / ledger open failures. */
+export class InvalidHostDirError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidHostDirError";
+  }
+}
+
+function sanitizeHostDirError(error: unknown): string {
+  if (error instanceof TrustedRootsLedgerError) {
+    return `PIX_HOST_DIR rejected (${error.code})`;
+  }
+  // Unknown errors must never echo raw message/path (permission, ENOENT, etc.).
+  return "PIX_HOST_DIR rejected (HOST_DIR_UNSAFE)";
+}
+
+/**
+ * Parse porcelain `git worktree list` for rehydrate corroboration.
+ * Only non-prunable, real non-symlink directories are returned. Paths are
+ * realpath-canonicalized. Never invents authorization.
+ */
+async function listWorktreesForRehydrate(
+  runner: ReturnType<typeof createProcessRunner>,
+  repoRoot: string,
+  maxOutputBytes: number,
+): Promise<readonly { path: string; isMain: boolean }[]> {
+  let out: string;
+  try {
+    out = await runChecked(runner, {
+      command: "git",
+      args: ["-C", repoRoot, "worktree", "list", "--porcelain", "-z"],
+      maxOutputBytes,
+    });
+  } catch {
+    return [];
+  }
+  const result: { path: string; isMain: boolean }[] = [];
+  let current: { path?: string; prunable?: boolean } = {};
+  const flush = () => {
+    if (current.path && !current.prunable) {
+      result.push({ path: current.path, isMain: result.length === 0 });
+    }
+    current = {};
+  };
+  for (const record of out.split("\0").filter(Boolean)) {
+    for (const line of record.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        flush();
+        current.path = line.slice(9);
+      } else if (line.startsWith("prunable")) {
+        current.prunable = true;
+      }
+    }
+  }
+  flush();
+  const existing: { path: string; isMain: boolean }[] = [];
+  for (const item of result) {
+    try {
+      const info = await lstat(item.path);
+      if (info.isDirectory() && !info.isSymbolicLink()) {
+        existing.push({ path: await realpath(item.path), isMain: item.isMain });
+      }
+    } catch {
+      /* stale */
+    }
+  }
+  return existing;
+}
+
 /**
  * Production capability resolver. Holds the fixed sessiond secret captured at
  * Host startup, so a secret rotation (daemon restarted with a new secret) while
@@ -277,6 +356,12 @@ export interface ProductionResourcesOptions {
   endpoint: string;
   /** Fixed sessiond secret (captured once at Host startup). */
   secret: string;
+  /**
+   * Raw `PIX_HOST_DIR` (undefined when unset). Absolute path only; default
+   * `~/.pi/pix/host`. Host-owned durable trusted-roots ledger lives here and
+   * an exclusive lifetime Host-dir lock is held from open until `close()`.
+   */
+  hostDirEnv?: string | undefined;
   logger?: HostLogger;
 }
 
@@ -284,6 +369,13 @@ export interface ProductionResources {
   deps: ResourceDeps;
   resolver: ProductionCapabilityResolver;
   adapter: SessiondWorktreeSafetyAdapter;
+  /**
+   * Host-owned durable trusted-roots ledger (holds the exclusive lifetime
+   * Host-dir lock). Consumed by the Host runner to release the lock on graceful
+   * shutdown / startup failure. Narrow facade; raw ledger internals are not
+   * part of the public package surface.
+   */
+  trustedRootsLedger: TrustedRootsLedger;
 }
 
 /**
@@ -328,6 +420,32 @@ export async function createProductionResources(
       `PIX_ALLOWED_ROOTS first segment cannot be canonicalized: ${JSON.stringify(firstSegment)}`,
     );
   }
+  // Host data dir + durable trusted-roots ledger (D3A-P0). Bad PIX_HOST_DIR,
+  // a held/stale Host-dir lock, or a corrupt/unsafe ledger fails BEFORE listen
+  // with a single sanitized reason (never rewriting/truncating evidence). The
+  // lifetime lock is held until the returned ledger is closed on graceful
+  // shutdown / startup failure. Rehydrate corroborates survivors via git list.
+  let trustedRootsLedger: TrustedRootsLedger;
+  try {
+    const hostDir = resolvePixHostDir(options.hostDirEnv);
+    trustedRootsLedger = await openTrustedRootsLedger({ hostDir });
+  } catch (error) {
+    throw new InvalidHostDirError(sanitizeHostDirError(error));
+  }
+  attachTrustedRootsLedger(allowedRoots, trustedRootsLedger, options.logger);
+  const processRunner = createProcessRunner();
+  try {
+    const maxOutput = PRODUCTION_RESOURCE_LIMITS.processOutputBytes ?? 8 * 1024 * 1024;
+    const ledgerSnapshot = await trustedRootsLedger.read();
+    await rehydrateTrustedCreatedRoots(allowedRoots, ledgerSnapshot.claims, {
+      listWorktrees: (repoRoot) => listWorktreesForRehydrate(processRunner, repoRoot, maxOutput),
+    });
+  } catch (error) {
+    // Release the lifetime lock so a failed startup does not leave a stale lock.
+    await trustedRootsLedger.close().catch(() => {});
+    throw new InvalidHostDirError(sanitizeHostDirError(error));
+  }
+
   const adapter = new SessiondWorktreeSafetyAdapter({ endpoint: options.endpoint, secret: options.secret });
   const resolver = createProductionCapabilityResolver({
     endpoint: options.endpoint,
@@ -336,11 +454,11 @@ export async function createProductionResources(
   });
   const deps: ResourceDeps = {
     allowedRoots,
-    processRunner: createProcessRunner(),
+    processRunner,
     busyPreflight: adapter,
     mutationGuard: adapter,
     limits: { ...PRODUCTION_RESOURCE_LIMITS },
     defaultCwd,
   };
-  return { deps, resolver, adapter };
+  return { deps, resolver, adapter, trustedRootsLedger };
 }

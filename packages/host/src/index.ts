@@ -84,6 +84,12 @@ export {
 } from "./routes/catalogs.js";
 export { createAllowedRootService, pathContainment } from "./resources/allowed-roots.js";
 export type { AllowedRootPolicy, AllowedRootService, AuthorizedPath, RootExpansionPlan, RootExpansionResult } from "./resources/allowed-roots.js";
+// D3A-P0 narrow facade: Host-dir location resolver + fixed error class. Raw
+// ledger internals (open/parse/serialize/lock names) are intentionally NOT
+// exported from the package surface; they are reachable only inside host
+// composition and by focused tests via the internal dist module.
+export { resolvePixHostDir, TrustedRootsLedgerError } from "./resources/trusted-roots-ledger.js";
+export type { TrustedRootsLedger, TrustedRootsReadResult } from "./resources/trusted-roots-ledger.js";
 export { createProcessRunner, runChecked } from "./resources/process-runner.js";
 export type { ProcessRequest, ProcessResult, ProcessRunner } from "./resources/process-runner.js";
 export { createFileWatchManager } from "./resources/file-watch.js";
@@ -114,6 +120,7 @@ export {
   createProductionCapabilityResolver,
   SessiondWorktreeSafetyAdapter,
   InvalidAllowedRootsError,
+  InvalidHostDirError,
   PRODUCTION_MAX_UPLOAD_BYTES,
   PRODUCTION_PING_TIMEOUT_MS,
   PRODUCTION_RESOURCE_LIMITS,

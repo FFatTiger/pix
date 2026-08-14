@@ -9,6 +9,7 @@ import {
   createProductionCatalogs,
   createSessiondSessionsClient,
   InvalidAllowedRootsError,
+  InvalidHostDirError,
   InvalidCatalogAgentDirError,
   PRODUCTION_MAX_UPLOAD_BYTES,
   PRODUCTION_FULL_CAPABILITIES,
@@ -154,9 +155,11 @@ export async function runHost(
   }
 
   // Assemble production ResourceDeps from PIX_ALLOWED_ROOTS + the fixed
-  // sessiond endpoint+secret. This canonicalizes/identity-pins roots BEFORE
-  // listen: any configuration failure exits 1 with a single safe line, leaving
-  // the running sessiond untouched and binding no socket.
+  // sessiond endpoint+secret. This canonicalizes/identity-pins roots AND opens
+  // the PIX_HOST_DIR durable trusted-roots ledger (acquiring the exclusive
+  // lifetime Host-dir lock) BEFORE listen: any configuration failure, a held or
+  // stale Host-dir lock, or a corrupt ledger exits 1 with a single safe line,
+  // leaving the running sessiond untouched and binding no socket.
   let production;
   try {
     production = await createProductionResources({
@@ -164,13 +167,16 @@ export async function runHost(
       cwd: process.cwd(),
       endpoint: location.paths.endpoint,
       secret,
+      hostDirEnv: process.env.PIX_HOST_DIR,
       logger: consoleLogger,
     });
   } catch (error) {
+    // InvalidHostDirError / InvalidAllowedRootsError are already sanitized.
+    // Unknown failures must not echo raw Error.message (may contain paths).
     pixErr(
-      error instanceof InvalidAllowedRootsError
+      error instanceof InvalidAllowedRootsError || error instanceof InvalidHostDirError
         ? error.message
-        : `allowed roots configuration failed: ${(error as Error).message}`,
+        : "host resource configuration failed",
     );
     return 1;
   }
@@ -185,6 +191,9 @@ export async function runHost(
       roots: production.deps.allowedRoots,
     });
   } catch (error) {
+    // Release the lifetime Host-dir lock: a failed startup must not leave a
+    // stale lock (the Host runner owns cleanup on startup failure).
+    await production.trustedRootsLedger.close().catch(() => {});
     pixErr(
       error instanceof InvalidCatalogAgentDirError
         ? error.message
@@ -239,6 +248,10 @@ export async function runHost(
   const handle: NodeServerHandle = await createNodeServer(host, {
     port: options.port,
     hostname: options.hostname,
+  }).catch(async (error) => {
+    // Host runner owns cleanup on startup failure: release the lifetime lock.
+    await production.trustedRootsLedger.close().catch(() => {});
+    throw error;
   });
   const url = `http://${options.hostname}:${handle.port}`;
   pixLog(`host listening on ${url}`);
@@ -256,6 +269,12 @@ export async function runHost(
       await handle.close();
     } catch (error) {
       pixErr(`host close error: ${(error as Error).message}`);
+    }
+    // Graceful shutdown releases only our exact Host-dir lock identity.
+    try {
+      await production.trustedRootsLedger.close();
+    } catch (error) {
+      pixErr(`host lock release error: ${(error as Error).message}`);
     }
     process.exit(0);
   };

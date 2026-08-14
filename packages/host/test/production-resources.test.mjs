@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { delimiter } from "node:path";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,8 +21,11 @@ import {
 } from "../dist/index.js";
 
 const temporary = [];
+// Canonicalize temp roots: ensurePixHostDir refuses intermediate path symlinks
+// (macOS `/var` → `/private/var`). Callers must pass canonical absolute hostDir.
+const CANON_TMP = realpathSync(tmpdir());
 function temp(prefix) {
-  const value = mkdtempSync(join(tmpdir(), prefix));
+  const value = mkdtempSync(join(CANON_TMP, prefix));
   temporary.push(value);
   return value;
 }
@@ -87,6 +90,7 @@ test("createProductionResources: unset env ⇒ single root = canonical cwd, defa
     cwd,
     endpoint: "unix:/nonexistent-prod-unset",
     secret: "s",
+    hostDirEnv: temp("pix-prod-hostdir-"),
   });
   const canonicalCwd = await realpath(cwd);
   assert.deepEqual(deps.allowedRoots.roots(), [canonicalCwd]);
@@ -112,6 +116,7 @@ test("createProductionResources: defaultCwd is the canonical of the FIRST config
     cwd: "/cwd",
     endpoint: "unix:/nonexistent-prod-order",
     secret: "s",
+    hostDirEnv: temp("pix-prod-hostdir-"),
   });
   const canonicalFirst = await realpath(first);
   assert.equal(deps.defaultCwd, canonicalFirst);
@@ -126,6 +131,7 @@ test("createProductionResources: missing root ⇒ InvalidAllowedRootsError befor
       cwd: "/cwd",
       endpoint: "unix:/nonexistent-prod-missing",
       secret: "s",
+      hostDirEnv: temp("pix-prod-hostdir-"),
     }),
     (e) => e instanceof InvalidAllowedRootsError && /PIX_ALLOWED_ROOTS/i.test(e.message),
   );
@@ -141,6 +147,7 @@ test("createProductionResources: file (not a directory) root ⇒ InvalidAllowedR
       cwd: "/cwd",
       endpoint: "unix:/nonexistent-prod-file",
       secret: "s",
+      hostDirEnv: temp("pix-prod-hostdir-"),
     }),
     (e) => e instanceof InvalidAllowedRootsError && /PIX_ALLOWED_ROOTS/i.test(e.message),
   );
@@ -153,6 +160,7 @@ test("createProductionResources: local expansion enabled, LAN expansion disabled
     cwd: root,
     endpoint: "unix:/nonexistent-prod-policy",
     secret: "s",
+    hostDirEnv: temp("pix-prod-hostdir-"),
   });
   // Local expansion of a brand-new sibling directory succeeds.
   const localTarget = temp("pix-prod-local-target-");
@@ -176,6 +184,7 @@ test("createProductionResources: a symlinked root is canonicalized to its real t
     cwd: "/cwd",
     endpoint: "unix:/nonexistent-prod-symlink",
     secret: "s",
+    hostDirEnv: temp("pix-prod-hostdir-"),
   });
   const canonicalReal = await realpath(real);
   assert.deepEqual(deps.allowedRoots.roots(), [canonicalReal]);

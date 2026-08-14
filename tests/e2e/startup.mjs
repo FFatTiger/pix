@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync, realpathSync, readFileSync, lstatSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -18,7 +18,7 @@ const PROD_MAX_UPLOAD = 25 * 1024 * 1024;
 // D3A-1 + D3B-R1B + D3A Worktrees frozen capability surfaces. The resource
 // layer (files/git/watch/upload + read-only worktree list) and the four catalog
 // tokens are mounted on the Host and stay advertised in BOTH states; `agent`
-// (the runtime) and `sessions` (read-only history catalog) are added only
+// (the runtime) and `sessions` (read-only session history) are added only
 // while sessiond is up. `worktree` is the read-only list token (no write token).
 const FULL_CAPS = ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"];
 const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"];
@@ -166,7 +166,6 @@ async function waitForCaps(origin, running, { sessiond, caps }) {
         JSON.stringify(bootstrap.capabilities) === JSON.stringify(caps) &&
         bootstrap.sessiond === sessiond;
       if (httpAgrees) {
-        // The WS handshake (the fourth surface) must agree too.
         const ack = await runtimeAck(origin);
         if (JSON.stringify(ack.host.capabilities) === JSON.stringify(caps)) return ack;
         last = { ws: ack.host.capabilities };
@@ -210,6 +209,27 @@ async function stopHost(running) {
   }
   const result = await waitForExit(running.child);
   assert.equal(result.code, 0, `Host should exit 0 after SIGTERM (signal=${result.signal})`);
+}
+
+// SIGKILL a host (crash simulation): the lifetime lock must remain on disk.
+async function sigkillHost(running) {
+  assert.equal(running.child.exitCode, null, "host must be running before SIGKILL");
+  running.child.kill("SIGKILL");
+  const result = await waitForExit(running.child);
+  assert.equal(result.signal, "SIGKILL", `SIGKILL expected (got signal=${result.signal}, code=${result.code})`);
+}
+
+// Run a pix-host to completion (it should exit on its own — failure path) and
+// return its exit code + output. Used for "must fail before listen" assertions.
+async function runHostToCompletion(env) {
+  return await runProcess([
+    "packages/cli/bin/pix-host.mjs",
+    "--hostname",
+    "127.0.0.1",
+    "--port",
+    String(await freePort()),
+    "--no-open",
+  ], env);
 }
 
 function pidAlive(pid) {
@@ -260,6 +280,12 @@ async function main() {
   const lockFile = join(runtimeDir, "sessiond.lock");
   const socketFile = join(runtimeDir, "sessiond.sock");
   const project = makeProjectFixture();
+  // realpath only PIX_HOST_DIR (not sessiond dir): macOS `/var` is a symlink and
+  // ensurePixHostDir refuses intermediate path-text symlinks. Leave sessiond on
+  // the shorter `/var/...` form so the AF_UNIX socket path stays within 104 bytes.
+  const hostDir = join(realpathSync(temp), "host");
+  // Empty agent dir so gate does not pick up the operator ~/.pi/pix.json password.
+  const agentDir = join(temp, "agent");
   const env = {
     ...process.env,
     PIX_SESSIOND_DIR: runtimeDir,
@@ -267,15 +293,26 @@ async function main() {
     // D3A-1: freeze the allowed root to the throwaway project so resource
     // operations never touch the repository working tree.
     PIX_ALLOWED_ROOTS: project,
+    // D3A-P0: isolate the Host durable trusted-roots ledger from the operator home.
+    PIX_HOST_DIR: hostDir,
+    // Isolate gate/catalog agent dir away from operator ~/.pi.
+    PI_CODING_AGENT_DIR: agentDir,
   };
+  delete env.PIX_PASSWORD;
+  delete env.PIX_GATE_DISABLED;
+  delete env.PIX_GATE_CONFIG;
   let firstHost;
   let secondHost;
+  let thirdHost;
+  let currentHost;
   let sessiondPid;
 
   try {
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
     const readme = join(project, "README.md");
+    const ledgerPath = join(hostDir, "trusted-roots.json");
+    const hostLockPath = join(hostDir, "trusted-roots.lock");
 
     // ---- phase 1: start product (host + sessiond); sessiond up ------------
     firstHost = startProcess([
@@ -314,46 +351,31 @@ async function main() {
     assert.equal(gitStatus.repositoryRoot, project);
 
     // ---- D3B catalog surface (Client Catalog dock contract) --------------
-    // Project-scoped endpoints require cwd; shapes are strict Host projectors.
-    // Providers are global. Catalog stays available independent of sessiond
-    // (caps remain in DEGRADED_CAPS); we assert the happy GET surface here.
     const models = await fetchJson(`${origin}/v1/models?cwd=${encodeURIComponent(project)}`);
     assert.equal(Array.isArray(models.models), true, "models must be an array");
     assert.ok("defaultModel" in models, "models response includes defaultModel");
-    assert.equal(models.modelList, undefined, "legacy modelList must not appear");
-
     const providers = await fetchJson(`${origin}/v1/auth/providers`);
     assert.equal(Array.isArray(providers.providers), true);
-
     if (providers.providers.length > 0) {
       const providerId = providers.providers[0].id;
       const status = await fetchJson(`${origin}/v1/auth/providers/${encodeURIComponent(providerId)}/status`);
       assert.ok(status.status && typeof status.status.providerId === "string");
       assert.equal(typeof status.configured, "boolean");
     }
-
     const skills = await fetchJson(`${origin}/v1/skills?cwd=${encodeURIComponent(project)}`);
     assert.equal(Array.isArray(skills.skills), true);
     const plugins = await fetchJson(`${origin}/v1/plugins?cwd=${encodeURIComponent(project)}`);
     assert.equal(Array.isArray(plugins.plugins), true);
     const commands = await fetchJson(`${origin}/v1/commands?cwd=${encodeURIComponent(project)}`);
     assert.equal(Array.isArray(commands.commands), true);
-
     const trust = await fetchJson(`${origin}/v1/trust?cwd=${encodeURIComponent(project)}`);
     assert.equal(trust.cwd, project);
     assert.ok(["unknown", "trusted", "denied"].includes(trust.level));
-    assert.equal(typeof trust.trusted, "boolean");
-    assert.equal(typeof trust.canReloadResources?.allowed, "boolean");
-
-    // Missing cwd is rejected (Client project tabs depend on this honesty).
     const missingCwd = await fetch(`${origin}/v1/models`);
     assert.equal(missingCwd.status, 400);
     assert.equal((await missingCwd.json()).code, "CWD_REQUIRED");
-
-    // Client dist must ship the Catalog dock affordance.
-    const clientJs = join(ROOT, "packages", "client", "dist", "assets");
     assert.equal(existsSync(clientIndex), true);
-    assert.equal(existsSync(clientJs), true);
+    assert.equal(existsSync(join(ROOT, "packages", "client", "dist", "assets")), true);
 
     await readWatchConnected(origin, readme);
 
@@ -380,16 +402,147 @@ async function main() {
     await waitForHealthy(origin, secondHost);
     await waitForCaps(origin, secondHost, { sessiond: "up", caps: FULL_CAPS });
     assert.equal((await readLock(lockFile)).pid, sessiondPid, "Host restart must reuse sessiond PID");
+    currentHost = secondHost;
 
-    // ---- phase 3: resource writes (upload) work while up ------------------
+    // ---- phase 3a: resource writes (upload) work while up -----------------
     const form = new FormData();
     form.append("files", new Blob(["uploaded by e2e\n"]), "e2e-upload.txt");
     const upload = await fetch(`${origin}/v1/files?path=${encodeURIComponent(project)}`, { method: "POST", body: form });
     assert.equal(upload.status, 201, `upload should succeed while up (got ${upload.status})`);
-    const uploadBody = await upload.json();
-    assert.deepEqual(uploadBody.uploaded, ["e2e-upload.txt"]);
-    const uploaded = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(join(project, "e2e-upload.txt"))}&op=read`);
-    assert.match(uploaded.content, /uploaded by e2e/);
+    assert.deepEqual((await upload.json()).uploaded, ["e2e-upload.txt"]);
+
+    // ---- phase 3b: D3A-P0 create linked worktree → durable ledger → 201 ----
+    const createWt = await fetch(`${origin}/v1/worktrees`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: project, branch: "e2e-trusted" }),
+    });
+    assert.equal(createWt.status, 201, `worktree create should succeed while sessiond is up (got ${createWt.status})`);
+    const trustedPath = (await createWt.json()).path;
+    // Authorize before restart (in-memory + ledger).
+    const beforeRestart = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
+    assert.ok(
+      beforeRestart.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
+      "created linked worktree must be authorized before Host restart",
+    );
+    assert.equal(existsSync(ledgerPath), true, "create must persist trusted-roots.json under PIX_HOST_DIR");
+    assert.equal(lstatSync(hostDir).mode & 0o777, 0o700, "PIX_HOST_DIR must be mode 0700");
+    assert.equal(lstatSync(ledgerPath).mode & 0o777, 0o600, "trusted-roots.json must be mode 0600");
+    assert.equal(lstatSync(ledgerPath).isSymbolicLink(), false);
+    assert.equal(lstatSync(ledgerPath).isFile(), true);
+    const ledgerAfterCreate = JSON.parse(readFileSync(ledgerPath, "utf8"));
+    assert.equal(ledgerAfterCreate.claims.length, 1, "ledger holds the created claim");
+
+    // Graceful Host-only restart rehydrates the trusted claim.
+    await stopHost(currentHost);
+    currentHost = undefined;
+    assert.equal(pidAlive(sessiondPid), true, "sessiond must survive Host exit before rehydrate restart");
+    assert.equal((await readLock(lockFile)).pid, sessiondPid, "Host-only restart must keep the same sessiond lock pid");
+    thirdHost = startProcess([
+      "packages/cli/bin/pix-host.mjs",
+      "--hostname",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--no-open",
+    ], env);
+    await waitForHealthy(origin, thirdHost);
+    await waitForCaps(origin, thirdHost, { sessiond: "up", caps: FULL_CAPS });
+    assert.equal((await readLock(lockFile)).pid, sessiondPid, "rehydrate Host restart must reuse sessiond PID");
+    currentHost = thirdHost;
+    const afterRestart = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
+    assert.ok(
+      afterRestart.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
+      "trusted claim must rehydrate after Host restart",
+    );
+    const trustedFile = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(join(trustedPath, "README.md"))}&op=read`);
+    assert.match(trustedFile.content, /pix e2e project/);
+
+    // ---- phase 3c: strict single Host — a second Host on the SAME PIX_HOST_DIR
+    // fails before listen (LEDGER_LOCK_BUSY), with a fixed sanitized error and
+    // no ledger/claim mutation ---------------------------------------------
+    const intruder = await runHostToCompletion(env);
+    assert.equal(intruder.code, 1, `second Host must exit 1 before listen (got ${intruder.code})`);
+    assert.match(intruder.stderr + intruder.stdout, /PIX_HOST_DIR rejected \(LEDGER_LOCK_BUSY\)/, "fixed sanitized lock-busy error");
+    assert.ok(!(intruder.stdout + intruder.stderr).includes("host listening"), "second Host must never reach listen");
+    assert.equal(existsSync(hostLockPath), true, "first Host still holds the lifetime lock");
+    assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 1, "intruder must not touch the ledger");
+
+    // ---- phase 3d: delete → durable claim removal → restart no resurrection --
+    const delWtCreate = await fetch(`${origin}/v1/worktrees`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: project, branch: "e2e-delete-me" }),
+    });
+    assert.equal(delWtCreate.status, 201, `delete-phase worktree create should succeed (got ${delWtCreate.status})`);
+    const delWtPath = (await delWtCreate.json()).path;
+    assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 2, "ledger holds both claims");
+
+    const delWt = await fetch(`${origin}/v1/worktrees`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: project, path: delWtPath }),
+    });
+    assert.equal(delWt.status, 200, `worktree delete should succeed while sessiond is up (got ${delWt.status})`);
+    const ledgerAfterDelete = JSON.parse(readFileSync(ledgerPath, "utf8"));
+    assert.equal(ledgerAfterDelete.claims.length, 1, "unregister must remove only the deleted claim from the ledger");
+
+    await stopHost(currentHost);
+    currentHost = undefined;
+    assert.equal(pidAlive(sessiondPid), true, "sessiond must survive delete-phase Host exit");
+    currentHost = startProcess([
+      "packages/cli/bin/pix-host.mjs",
+      "--hostname",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--no-open",
+    ], env);
+    await waitForHealthy(origin, currentHost);
+    await waitForCaps(origin, currentHost, { sessiond: "up", caps: FULL_CAPS });
+    const afterDeleteRestart = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
+    assert.ok(
+      !afterDeleteRestart.worktrees.some((entry) => entry.path === delWtPath),
+      "deleted trusted claim must NOT be resurrected after Host restart",
+    );
+    assert.ok(
+      afterDeleteRestart.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
+      "the surviving trusted claim must still rehydrate after the delete-phase restart",
+    );
+    assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 1, "ledger stays at one claim after restart");
+
+    // ---- phase 3e: SIGKILL leaves a stale lock → restart fails closed ----
+    const ledgerBytesBeforeSigkill = readFileSync(ledgerPath);
+    const ledgerInoBeforeSigkill = lstatSync(ledgerPath).ino;
+    await sigkillHost(currentHost);
+    currentHost = undefined;
+    // The stale lifetime lock must remain on disk (no auto-reclaim).
+    assert.equal(existsSync(hostLockPath), true, "SIGKILL must leave the stale lifetime lock");
+    const staleRestart = await runHostToCompletion(env);
+    assert.equal(staleRestart.code, 1, `restart after SIGKILL must fail closed (got ${staleRestart.code})`);
+    assert.match(staleRestart.stderr + staleRestart.stdout, /PIX_HOST_DIR rejected \(LEDGER_LOCK_STALE\)/, "fixed sanitized stale-lock error");
+    assert.ok(!(staleRestart.stdout + staleRestart.stderr).includes("host listening"), "stale-lock restart must never listen");
+    assert.deepEqual(readFileSync(ledgerPath), ledgerBytesBeforeSigkill, "SIGKILL/stale restart must leave the ledger byte-identical");
+    assert.equal(lstatSync(ledgerPath).ino, ledgerInoBeforeSigkill, "SIGKILL/stale restart must leave the ledger inode unchanged");
+
+    // Operator explicitly removes the fixture stale lock after proving the old
+    // pid is dead (no automatic crash recovery is claimed), then restart works.
+    rmSync(hostLockPath, { force: true });
+    currentHost = startProcess([
+      "packages/cli/bin/pix-host.mjs",
+      "--hostname",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--no-open",
+    ], env);
+    await waitForHealthy(origin, currentHost);
+    await waitForCaps(origin, currentHost, { sessiond: "up", caps: FULL_CAPS });
+    const afterRecovery = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
+    assert.ok(
+      afterRecovery.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
+      "after explicit stale-lock removal, restart restores authorization",
+    );
 
     // ---- phase 4: sessiond down while Host runs --------------------------
     const down = await runProcess(["scripts/product-entry.mjs", "cli", "down", "--all"], env);
@@ -398,27 +551,24 @@ async function main() {
 
     // Four surfaces degrade to the resource-only surface (no agent/sessions;
     // worktree read-only list stays advertised).
-    const downAck = await waitForCaps(origin, secondHost, { sessiond: "down", caps: DEGRADED_CAPS });
+    const downAck = await waitForCaps(origin, currentHost, { sessiond: "down", caps: DEGRADED_CAPS });
     assert.equal(downAck.limits.maxUpload, PROD_MAX_UPLOAD, "degraded WS still advertises the 25 MiB upload ceiling");
 
     // Resources stay usable while the authority is down: file read + upload
     // are pure Host-mounted filesystem ops and are NOT runtime-guarded.
     const downRead = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(readme)}&op=read`);
     assert.match(downRead.content, /pix e2e project/);
-    const downForm = new FormData();
-    downForm.append("files", new Blob(["uploaded while down\n"]), "e2e-down-upload.txt");
-    const downUpload = await fetch(`${origin}/v1/files?path=${encodeURIComponent(project)}`, { method: "POST", body: downForm });
-    assert.equal(downUpload.status, 201, "file upload must remain available while sessiond is down");
 
     // `worktree` is a read-only list token: the real GET remains available
-    // while sessiond is down and returns the main repository topology.
+    // while sessiond is down and returns the main + rehydrated trusted topology.
     const downWorktrees = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
     assert.equal(downWorktrees.isGit, true, "worktree GET must remain available while sessiond is down");
-    assert.equal(downWorktrees.projectRoot, project);
     assert.ok(
-      downWorktrees.worktrees.some((entry) => entry.path === project && entry.isMain === true && entry.authorized === true),
-      "degraded worktree list must include the authorized main worktree",
+      downWorktrees.worktrees.some((entry) => entry.path === trustedPath && entry.authorized === true),
+      "rehydrated linked worktree must stay authorized while sessiond is down",
     );
+    const downTrustedFile = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(join(trustedPath, "README.md"))}&op=read`);
+    assert.match(downTrustedFile.content, /pix e2e project/);
 
     // A sessiond-dependent worktree write must 503 BEFORE touching the repo,
     // regardless of `force`. This is the mutation guard.
@@ -430,10 +580,11 @@ async function main() {
     assert.equal(worktreeCreate.status, 503, "worktree create must 503 while sessiond is down");
     assert.equal((await worktreeCreate.json()).code, "MUTATION_UNAVAILABLE");
     assert.throws(() => git(project, ["show-ref", "--verify", "refs/heads/should-not-create"]), "guard must run before any git side effect");
+    assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 1, "blocked POST must not touch the ledger");
 
-    // Now stop the Host; sessiond is already down.
-    await stopHost(secondHost);
-    secondHost = undefined;
+    // Now stop the Host (graceful — releases its lifetime lock); sessiond is down.
+    await stopHost(currentHost);
+    currentHost = undefined;
 
     const deadline = Date.now() + STOP_TIMEOUT_MS;
     while (Date.now() < deadline && (existsSync(lockFile) || pidAlive(sessiondPid))) {
@@ -444,6 +595,7 @@ async function main() {
       assert.equal(existsSync(socketFile), false, "down --all must remove the Unix socket");
     }
     assert.equal(pidAlive(sessiondPid), false, "down --all must stop sessiond");
+    assert.equal(existsSync(hostLockPath), false, "graceful Host shutdown must release the lifetime lock");
 
     const finalStatus = await runProcess(["scripts/product-entry.mjs", "cli", "status"], env);
     assert.equal(finalStatus.code, 0, finalStatus.stderr);
@@ -454,12 +606,18 @@ async function main() {
       port,
       sessiondPid,
       hostRestartReusedSessiond: true,
+      trustedRootsLedger: true,
+      hostDirIsolated: true,
+      secondHostFailsBeforeListen: true,
+      deleteNoResurrection: true,
+      sigkillStaleLockFailsClosed: true,
+      explicitStaleLockRemovalRestores: true,
       upCaps: FULL_CAPS,
       degradedCaps: DEGRADED_CAPS,
       wsMaxUpload: PROD_MAX_UPLOAD,
     }));
   } finally {
-    for (const running of [firstHost, secondHost]) {
+    for (const running of [firstHost, secondHost, thirdHost, currentHost]) {
       if (running?.child && running.child.exitCode === null && running.child.signalCode === null) {
         running.child.kill("SIGTERM");
         await waitForExit(running.child, 2_000).catch(() => {

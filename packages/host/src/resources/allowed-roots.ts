@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { HttpError } from "../errors.js";
-import type { HostMode } from "../types.js";
+import type { HostLogger, HostMode } from "../types.js";
 import { AsyncMutex } from "./mutex.js";
+import {
+  TRUSTED_ROOTS_SOURCE,
+  TrustedRootsLedgerError,
+  type TrustedRootClaimRecord,
+  type TrustedRootsLedger,
+} from "./trusted-roots-ledger.js";
 
 export interface AllowedRootPolicy {
   roots: readonly string[];
@@ -23,7 +29,18 @@ export interface AllowedRootService {
   expandRoots(targets: readonly string[], mode: HostMode): Promise<RootExpansionResult>;
 }
 interface RootIdentity { dev: number; ino: number }
-interface TrustedClaim { path: string; identity: RootIdentity }
+interface TrustedClaim {
+  path: string;
+  identity: RootIdentity;
+  claimId: string;
+  /** Present when claim carries durable worktree metadata (ledger-eligible). */
+  repoRoot?: string;
+  repoIdentity?: RootIdentity;
+  base?: string;
+  createdAt?: string;
+  source?: typeof TRUSTED_ROOTS_SOURCE;
+  branch?: string;
+}
 interface RootRecord { identity: RootIdentity }
 interface RootState {
   /** Durable policy ownership, normalized so no path has a durable ancestor. */
@@ -35,12 +52,57 @@ interface RootState {
   maxRoots: number;
   policy: AllowedRootPolicy;
   mutation: AsyncMutex;
+  /** Optional Host-owned ledger; when set, durable register/unregister await it. */
+  ledger?: TrustedRootsLedger;
+  logger?: HostLogger;
 }
 export interface TrustedCreatedRootReceipt {
   canonicalPath: string;
   added: boolean;
+  claimId?: string;
   rollback(): Promise<void>;
 }
+
+/** Durable registration input for Host-created linked worktrees. */
+export interface TrustedCreatedRootInput {
+  path: string;
+  repoRoot: string;
+  base: string;
+  branch?: string;
+  claimId?: string;
+  createdAt?: string;
+}
+
+export interface TrustedClaimSnapshot {
+  claimId: string;
+  path: string;
+  identity: RootIdentity;
+  repoRoot?: string;
+  repoIdentity?: RootIdentity;
+  base?: string;
+  createdAt?: string;
+  branch?: string;
+}
+
+export interface RehydrateWorktreeEntry {
+  path: string;
+  isMain: boolean;
+}
+
+export interface RehydrateTrustedRootsOptions {
+  /**
+   * List non-prunable worktrees for a repository. Paths must be canonical real
+   * directories. Used only as corroboration — never invents authorization.
+   */
+  listWorktrees(repoRoot: string): Promise<readonly RehydrateWorktreeEntry[]>;
+}
+
+export interface RehydrateTrustedRootsResult {
+  restored: number;
+  dropped: number;
+  rewritten: boolean;
+}
+
 const states = new WeakMap<AllowedRootService, RootState>();
 
 function isWithin(root: string, target: string): boolean {
@@ -101,26 +163,259 @@ async function verifyAllClaims(durable: Map<string, RootIdentity>, trusted: Map<
 function cloneDurable(source: Map<string, RootIdentity>): Map<string, RootIdentity> { return new Map(source); }
 function cloneTrusted(source: Map<string, TrustedClaim>): Map<string, TrustedClaim> { return new Map(source); }
 
-/** Internal-only. Worktree routes call this while holding repo lock (repo→roots). */
-export async function registerTrustedCreatedRoot(service: AllowedRootService, target: string): Promise<TrustedCreatedRootReceipt> {
-  const candidate = await canonicalDirectoryWithIdentity(target);
+function hasDurableAncestor(durable: Map<string, RootIdentity>, path: string): boolean {
+  return [...durable.keys()].some((ancestor) => isWithin(ancestor, path));
+}
+
+function claimToRecord(claim: TrustedClaim): TrustedRootClaimRecord | null {
+  if (!claim.repoRoot || !claim.repoIdentity || !claim.base || !claim.createdAt || !claim.source) return null;
+  const record: TrustedRootClaimRecord = {
+    claimId: claim.claimId,
+    path: claim.path,
+    dev: claim.identity.dev,
+    ino: claim.identity.ino,
+    repoRoot: claim.repoRoot,
+    repoDev: claim.repoIdentity.dev,
+    repoIno: claim.repoIdentity.ino,
+    base: claim.base,
+    createdAt: claim.createdAt,
+    source: TRUSTED_ROOTS_SOURCE,
+  };
+  if (claim.branch !== undefined) record.branch = claim.branch;
+  return record;
+}
+
+function recordsEqual(a: TrustedRootClaimRecord, b: TrustedRootClaimRecord): boolean {
+  return a.claimId === b.claimId
+    && a.path === b.path
+    && a.dev === b.dev
+    && a.ino === b.ino
+    && a.repoRoot === b.repoRoot
+    && a.repoDev === b.repoDev
+    && a.repoIno === b.repoIno
+    && a.base === b.base
+    && a.createdAt === b.createdAt
+    && a.source === b.source
+    && a.branch === b.branch;
+}
+
+/**
+ * Upsert exact new claim into the on-disk set under the ledger writer lock.
+ * Preserves other Hosts' claims. Fail-closed on claimId/path collisions with
+ * different content (never overwrite a foreign or divergent claim).
+ */
+function upsertLedgerClaim(
+  disk: TrustedRootClaimRecord[],
+  next: TrustedRootClaimRecord,
+): TrustedRootClaimRecord[] {
+  const byId = disk.find((item) => item.claimId === next.claimId);
+  if (byId && !recordsEqual(byId, next)) {
+    throw new HttpError(500, "TRUSTED_ROOT_PERSIST_FAILED", "Failed to persist trusted root claim");
+  }
+  const byPath = disk.find((item) => item.path === next.path && item.claimId !== next.claimId);
+  if (byPath) {
+    throw new HttpError(500, "TRUSTED_ROOT_PERSIST_FAILED", "Failed to persist trusted root claim");
+  }
+  if (byId) {
+    return disk.map((item) => (item.claimId === next.claimId ? next : item));
+  }
+  return [...disk, next];
+}
+
+/** Remove only the exact owner claimId+path pair; retain every other disk claim. */
+function removeExactLedgerClaim(
+  disk: TrustedRootClaimRecord[],
+  claimId: string,
+  path: string,
+): TrustedRootClaimRecord[] {
+  return disk.filter((item) => !(item.claimId === claimId && item.path === path));
+}
+
+/** Remove all disk claims for a canonical path (stale owners); retain others. */
+function removeLedgerClaimsByPath(
+  disk: TrustedRootClaimRecord[],
+  path: string,
+): TrustedRootClaimRecord[] {
+  return disk.filter((item) => item.path !== path);
+}
+
+/** Remove disk claims absorbed under newly durable roots; retain others. */
+function removeLedgerClaimsUnderRoots(
+  disk: TrustedRootClaimRecord[],
+  roots: readonly string[],
+): TrustedRootClaimRecord[] {
+  return disk.filter((item) => !roots.some((root) => isWithin(root, item.path)));
+}
+
+/**
+ * Rehydrate rewrite under ledger RMW lock.
+ *
+ * Input snapshot IDs bound the rewrite; concurrent unknown IDs stay on disk.
+ * Survivors may only be written back when the same claimId still exists on
+ * current disk with content exactly equal to the input snapshot (no resurrection
+ * of concurrent deletes; no overwrite of concurrent content changes).
+ * Dropped input IDs are removed only when current disk still exact-equals the
+ * input record; if content changed, keep current and do not touch.
+ * Returns the survivors that were actually committed (for memory authorization).
+ */
+function rewriteLedgerForRehydrate(
+  disk: TrustedRootClaimRecord[],
+  inputById: ReadonlyMap<string, TrustedRootClaimRecord>,
+  candidateSurvivors: readonly TrustedRootClaimRecord[],
+): { next: TrustedRootClaimRecord[]; committedSurvivors: TrustedRootClaimRecord[] } {
+  const diskById = new Map(disk.map((item) => [item.claimId, item]));
+  const candidateById = new Map(candidateSurvivors.map((item) => [item.claimId, item]));
+  const committedSurvivors: TrustedRootClaimRecord[] = [];
+  const dropExactIds = new Set<string>();
+
+  for (const [claimId, input] of inputById) {
+    const current = diskById.get(claimId);
+    if (!current) {
+      // Concurrent delete (or never present): never re-add, never authorize.
+      continue;
+    }
+    if (!recordsEqual(current, input)) {
+      // Content diverged under another Host: fail closed — keep current, do not authorize.
+      throw new HttpError(500, "TRUSTED_ROOT_PERSIST_FAILED", "Failed to persist trusted root claim");
+    }
+    const survivor = candidateById.get(claimId);
+    if (survivor) {
+      // Exact match still on disk and gated: keep as committed survivor (no rewrite needed).
+      committedSurvivors.push(current);
+    } else {
+      // Gated-drop: only remove when current still exact-equals the input snapshot.
+      dropExactIds.add(claimId);
+    }
+  }
+
+  const committedPaths = new Set(committedSurvivors.map((item) => item.path));
+  const retained: TrustedRootClaimRecord[] = [];
+  for (const item of disk) {
+    if (dropExactIds.has(item.claimId)) continue;
+    if (inputById.has(item.claimId)) {
+      // Input ID still present and exact — keep the disk row (committed survivor).
+      retained.push(item);
+      continue;
+    }
+    // Concurrent unknown claim: keep, but fail closed on path clash with committed survivors.
+    if (committedPaths.has(item.path)) {
+      throw new HttpError(500, "TRUSTED_ROOT_PERSIST_FAILED", "Failed to persist trusted root claim");
+    }
+    retained.push(item);
+  }
+  return { next: retained, committedSurvivors };
+}
+
+/** Attach a Host-owned ledger for durable trusted claims. Internal composition only. */
+export function attachTrustedRootsLedger(
+  service: AllowedRootService,
+  ledger: TrustedRootsLedger,
+  logger?: HostLogger,
+): void {
   const state = stateFor(service);
-  const owner = randomUUID();
+  state.ledger = ledger;
+  if (logger) state.logger = logger;
+}
+
+/** Internal snapshot of in-memory trusted claims (not exported to Client). */
+export function listTrustedCreatedRoots(service: AllowedRootService): readonly TrustedClaimSnapshot[] {
+  const state = stateFor(service);
+  return [...state.trustedClaims.values()].map((claim) => {
+    const snap: TrustedClaimSnapshot = {
+      claimId: claim.claimId,
+      path: claim.path,
+      identity: { ...claim.identity },
+    };
+    if (claim.repoRoot !== undefined) snap.repoRoot = claim.repoRoot;
+    if (claim.repoIdentity !== undefined) snap.repoIdentity = { ...claim.repoIdentity };
+    if (claim.base !== undefined) snap.base = claim.base;
+    if (claim.createdAt !== undefined) snap.createdAt = claim.createdAt;
+    if (claim.branch !== undefined) snap.branch = claim.branch;
+    return snap;
+  });
+}
+
+function normalizeRegisterInput(target: string | TrustedCreatedRootInput): TrustedCreatedRootInput {
+  if (typeof target === "string") return { path: target, repoRoot: "", base: "" };
+  return target;
+}
+
+/** Internal-only. Worktree routes call this while holding repo lock (repo→roots). */
+export async function registerTrustedCreatedRoot(
+  service: AllowedRootService,
+  target: string | TrustedCreatedRootInput,
+): Promise<TrustedCreatedRootReceipt> {
+  const input = normalizeRegisterInput(target);
+  const candidate = await canonicalDirectoryWithIdentity(input.path);
+  const state = stateFor(service);
+  const owner = input.claimId ?? randomUUID();
+  const durableMeta = input.repoRoot !== "" && input.base !== "";
+
+  let repoCanonical: string | undefined;
+  let repoIdentity: RootIdentity | undefined;
+  let baseCanonical: string | undefined;
+  if (durableMeta) {
+    const repo = await canonicalDirectoryWithIdentity(input.repoRoot);
+    repoCanonical = repo.canonical;
+    // Cross-check repo identity via stat of repo root (dev/ino).
+    const repoStat = await stat(repoCanonical);
+    repoIdentity = { dev: repoStat.dev, ino: repoStat.ino };
+    const base = await canonicalDirectoryWithIdentity(input.base);
+    baseCanonical = base.canonical;
+    const expectedBase = resolve(`${repoCanonical}-worktrees`);
+    if (baseCanonical !== expectedBase) {
+      throw new HttpError(409, "UNSAFE_WORKTREE_BASE", "Worktree base must be the repository-linked base");
+    }
+    if (!isWithin(baseCanonical, candidate.canonical) || candidate.canonical === baseCanonical) {
+      throw new HttpError(409, "UNSAFE_WORKTREE_TARGET", "Worktree target must be strictly inside its base");
+    }
+  }
+
   return state.mutation.runExclusive(async () => {
     await verifyAllClaims(state.durableClaims, state.trustedClaims);
-    if (!(await identityStillMatches(candidate.canonical, candidate.identity))) throw new HttpError(409, "ROOT_IDENTITY_CHANGED", "Created root changed identity before registration");
+    if (!(await identityStillMatches(candidate.canonical, candidate.identity))) {
+      throw new HttpError(409, "ROOT_IDENTITY_CHANGED", "Created root changed identity before registration");
+    }
     // A durable ancestor already grants permanent access: no temporary owner is needed.
-    const durableAncestor = [...state.durableClaims.keys()].some((path) => isWithin(path, candidate.canonical));
+    const durableAncestor = hasDurableAncestor(state.durableClaims, candidate.canonical);
     if (!durableAncestor) {
       const proposedTrusted = cloneTrusted(state.trustedClaims);
-      proposedTrusted.set(owner, { path: candidate.canonical, identity: candidate.identity });
+      const claim: TrustedClaim = {
+        path: candidate.canonical,
+        identity: candidate.identity,
+        claimId: owner,
+      };
+      if (durableMeta && repoCanonical && repoIdentity && baseCanonical) {
+        claim.repoRoot = repoCanonical;
+        claim.repoIdentity = repoIdentity;
+        claim.base = baseCanonical;
+        claim.createdAt = input.createdAt ?? new Date().toISOString();
+        claim.source = TRUSTED_ROOTS_SOURCE;
+        if (input.branch !== undefined) claim.branch = input.branch;
+      }
+      proposedTrusted.set(owner, claim);
       const proposedRecords = deriveRecords(state.durableClaims, proposedTrusted);
       if (proposedRecords.size > state.maxRoots) throw new HttpError(429, "ROOT_LIMIT", "Allowed-root limit reached");
+      // Persist before publishing memory when a ledger is attached and the claim is ledger-eligible.
+      // RMW under ledger lock: upsert only this claim; preserve other Hosts' disk claims.
+      if (state.ledger && durableMeta) {
+        const record = claimToRecord(claim);
+        if (!record) {
+          throw new HttpError(500, "TRUSTED_ROOT_PERSIST_FAILED", "Failed to persist trusted root claim");
+        }
+        try {
+          await state.ledger.update((disk) => upsertLedgerClaim(disk, record));
+        } catch (error) {
+          state.logger?.warn?.("trusted-roots ledger", { code: "LEDGER_WRITE_FAILED" });
+          if (error instanceof HttpError) throw error;
+          throw new HttpError(500, "TRUSTED_ROOT_PERSIST_FAILED", "Failed to persist trusted root claim");
+        }
+      }
       state.trustedClaims = proposedTrusted;
       state.records = proposedRecords;
     }
     let rolledBack = false;
-    return {
+    const receipt: TrustedCreatedRootReceipt = {
       canonicalPath: candidate.canonical,
       added: !durableAncestor,
       async rollback() {
@@ -129,13 +424,24 @@ export async function registerTrustedCreatedRoot(service: AllowedRootService, ta
         await state.mutation.runExclusive(async () => {
           // Durable promotion invalidates/removes this token; stale receipts are no-op.
           if (!state.trustedClaims.has(owner)) return;
+          const existing = state.trustedClaims.get(owner);
           const proposedTrusted = cloneTrusted(state.trustedClaims);
           proposedTrusted.delete(owner);
+          // Remove only exact owner claimId+path from disk; never delete another Host's claim.
+          if (state.ledger && durableMeta && existing) {
+            try {
+              await state.ledger.update((disk) => removeExactLedgerClaim(disk, owner, existing.path));
+            } catch {
+              state.logger?.warn?.("trusted-roots ledger", { code: "LEDGER_WRITE_FAILED" });
+            }
+          }
           state.trustedClaims = proposedTrusted;
           state.records = deriveRecords(state.durableClaims, proposedTrusted);
         });
       },
     };
+    if (!durableAncestor) receipt.claimId = owner;
+    return receipt;
   });
 }
 
@@ -143,12 +449,203 @@ export async function unregisterTrustedCreatedRoot(service: AllowedRootService, 
   const state = stateFor(service);
   const canonical = resolve(target);
   await state.mutation.runExclusive(async () => {
-    try { await lstat(canonical); return; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return; }
+    // Existing semantics: only drop when the path is already gone (ENOENT).
+    // Worktree delete calls this after git remove succeeds, so the path is gone.
+    try {
+      await lstat(canonical);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return;
+    }
+    // Always strip local memory matches first (even if 0). Ledger RMW still runs
+    // when attached so a remote Host can drop another Host's stale path claim.
     const proposedTrusted = cloneTrusted(state.trustedClaims);
-    for (const [owner, claim] of proposedTrusted) if (claim.path === canonical) proposedTrusted.delete(owner);
+    for (const [owner, claim] of proposedTrusted) {
+      if (claim.path === canonical) proposedTrusted.delete(owner);
+    }
+    if (state.ledger) {
+      try {
+        // Drop every disk record for this path (stale owners), keep other Hosts' claims.
+        await state.ledger.update((disk) => removeLedgerClaimsByPath(disk, canonical));
+      } catch {
+        // Memory must not keep the claim (git worktree is gone). Stale ledger
+        // entries are dropped on rehydrate via git corroboration. Honest log only.
+        state.logger?.warn?.("trusted-roots ledger", { code: "LEDGER_WRITE_FAILED" });
+      }
+    }
     state.trustedClaims = proposedTrusted;
     state.records = deriveRecords(state.durableClaims, proposedTrusted);
   });
+}
+
+/**
+ * Rehydrate trusted claims from a fail-closed ledger snapshot.
+ * Restores trusted claims only (never upgrades durable policy). sessiond-independent.
+ *
+ * Fail-closed: any ledger read/rewrite failure, capacity overflow (maxRoots
+ * lowered below the on-disk claim count) or claim conflict THROWS so startup
+ * fails with a fixed sanitized error and the on-disk evidence is preserved
+ * (never destructively emptied). Foreign peer claims (repoRoot outside this
+ * Host's durable policy) are preserved untouched and never authorized.
+ */
+export async function rehydrateTrustedCreatedRoots(
+  service: AllowedRootService,
+  stored: readonly TrustedRootClaimRecord[],
+  options: RehydrateTrustedRootsOptions,
+): Promise<RehydrateTrustedRootsResult> {
+  const state = stateFor(service);
+  const survivors: TrustedRootClaimRecord[] = [];
+  let dropped = 0;
+
+  // Corroboration cache per repoRoot.
+  const listedByRepo = new Map<string, ReadonlySet<string>>();
+
+  async function listedPathsFor(repoRoot: string): Promise<ReadonlySet<string>> {
+    const cached = listedByRepo.get(repoRoot);
+    if (cached) return cached;
+    let entries: readonly RehydrateWorktreeEntry[] = [];
+    try {
+      entries = await options.listWorktrees(repoRoot);
+    } catch {
+      entries = [];
+    }
+    const set = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.isMain) set.add(entry.path);
+    }
+    listedByRepo.set(repoRoot, set);
+    return set;
+  }
+
+  async function durableAuthorizes(path: string): Promise<boolean> {
+    // Only durable policy may corroborate repoRoot — never pending trusted claims.
+    for (const [root, identity] of state.durableClaims) {
+      if (!isWithin(root, path)) continue;
+      if (await identityStillMatches(root, identity)) return true;
+    }
+    return false;
+  }
+
+  async function gate(record: TrustedRootClaimRecord): Promise<boolean> {
+    // Absolute canonical shapes (ledger parse already checks; re-check resolve identity).
+    if (resolve(record.path) !== record.path || resolve(record.repoRoot) !== record.repoRoot || resolve(record.base) !== record.base) {
+      return false;
+    }
+    // path real non-symlink dir with matching dev/ino
+    if (!(await identityStillMatches(record.path, { dev: record.dev, ino: record.ino }))) return false;
+    // repo identity match
+    if (!(await identityStillMatches(record.repoRoot, { dev: record.repoDev, ino: record.repoIno }))) return false;
+    // repoRoot still in current durable policy
+    if (!(await durableAuthorizes(record.repoRoot))) return false;
+    // base exact `${repoRoot}-worktrees` canonical real dir non-symlink
+    const expectedBase = resolve(`${record.repoRoot}-worktrees`);
+    if (record.base !== expectedBase) return false;
+    try {
+      if (await realpath(record.base) !== record.base) return false;
+      const baseInfo = await lstat(record.base);
+      if (!baseInfo.isDirectory() || baseInfo.isSymbolicLink()) return false;
+    } catch {
+      return false;
+    }
+    // path strictly inside base
+    if (!isWithin(record.base, record.path) || record.path === record.base) return false;
+    // git worktree list contains path, non-main (prunable already filtered by list)
+    const listed = await listedPathsFor(record.repoRoot);
+    if (!listed.has(record.path)) return false;
+    return true;
+  }
+
+  // Validate outside the mutation mutex (IO); memory commit only after RMW decides
+  // committedSurvivors (never authorize a concurrent-deleted or content-changed claim).
+  // Input snapshot IDs bound the rehydrate rewrite — concurrent unknown IDs stay on disk.
+  const inputById = new Map(stored.map((record) => [record.claimId, record]));
+  const acceptedById = new Map<string, TrustedClaim>();
+  for (const record of stored) {
+    if (!(await gate(record))) {
+      dropped += 1;
+      continue;
+    }
+    acceptedById.set(record.claimId, {
+      path: record.path,
+      identity: { dev: record.dev, ino: record.ino },
+      claimId: record.claimId,
+      repoRoot: record.repoRoot,
+      repoIdentity: { dev: record.repoDev, ino: record.repoIno },
+      base: record.base,
+      createdAt: record.createdAt,
+      source: TRUSTED_ROOTS_SOURCE,
+      ...(record.branch !== undefined ? { branch: record.branch } : {}),
+    });
+    survivors.push(record);
+  }
+
+  let rewritten = false;
+  let restored = 0;
+  await state.mutation.runExclusive(async () => {
+    // Durable ancestor absorbs a candidate: treat as drop (do not re-write as trusted claim).
+    const candidateSurvivors: TrustedRootClaimRecord[] = [];
+    for (const record of survivors) {
+      if (hasDurableAncestor(state.durableClaims, record.path)) {
+        dropped += 1;
+        acceptedById.delete(record.claimId);
+        continue;
+      }
+      candidateSurvivors.push(record);
+    }
+    survivors.length = 0;
+    survivors.push(...candidateSurvivors);
+
+    // Capacity gate on proposed projection (using candidate survivors) before any disk/memory publish.
+    // A lowered maxRoots must FAIL, never destructively empty the on-disk evidence.
+    const capacityProbe = cloneTrusted(state.trustedClaims);
+    for (const claim of acceptedById.values()) capacityProbe.set(claim.claimId, claim);
+    const capacityRecords = deriveRecords(state.durableClaims, capacityProbe);
+    if (capacityRecords.size > state.maxRoots) {
+      throw new TrustedRootsLedgerError("LEDGER_OVERSIZE", "Trusted-roots claim capacity exceeded");
+    }
+
+    let committedSurvivors: TrustedRootClaimRecord[] = [];
+    if (state.ledger) {
+      // Only claims whose repoRoot THIS Host durably authorizes (this Host is
+      // the corroboration authority for that repo) bound the rehydrate rewrite.
+      // Foreign peer claims (different repoRoot outside this Host's durable
+      // policy) are preserved on disk untouched — another Host owns them, so
+      // we neither authorize them in memory nor drop them. Without this guard,
+      // one Host's boot would rewrite away another Host's durable claims from
+      // the shared ledger (multi-Host disjoint-config data loss).
+      const corroborableById = new Map<string, TrustedRootClaimRecord>();
+      for (const [claimId, record] of inputById) {
+        if (await durableAuthorizes(record.repoRoot)) corroborableById.set(claimId, record);
+      }
+      // RMW decides which survivors still exact-exist on current disk.
+      // Memory authorization is deferred until after this decision. Any
+      // read/rewrite failure (corrupt ledger, write failure, conflict) throws
+      // so startup fails closed with the on-disk evidence untouched.
+      await state.ledger.update((disk) => {
+        const result = rewriteLedgerForRehydrate(disk, corroborableById, survivors);
+        committedSurvivors = result.committedSurvivors;
+        return result.next;
+      });
+      rewritten = true;
+    } else {
+      // No ledger attached: authorize gated candidates in memory only (legacy path).
+      committedSurvivors = [...survivors];
+    }
+
+    // Publish only truly committed survivors into memory.
+    const proposedTrusted = cloneTrusted(state.trustedClaims);
+    for (const record of committedSurvivors) {
+      const claim = acceptedById.get(record.claimId);
+      if (claim) proposedTrusted.set(claim.claimId, claim);
+    }
+    state.trustedClaims = proposedTrusted;
+    state.records = deriveRecords(state.durableClaims, proposedTrusted);
+    survivors.length = 0;
+    survivors.push(...committedSurvivors);
+    restored = committedSurvivors.length;
+  });
+
+  return { restored, dropped, rewritten };
 }
 
 export async function createAllowedRootService(policy: AllowedRootPolicy): Promise<AllowedRootService> {
@@ -230,6 +727,17 @@ export async function createAllowedRootService(policy: AllowedRootPolicy): Promi
           }
           const proposedRecords = deriveRecords(proposedDurable, proposedTrusted);
           if (proposedRecords.size > maxRoots) throw new HttpError(429, "ROOT_LIMIT", "Allowed-root limit reached");
+          // Persist trusted-claim absorption when a ledger is attached.
+          // RMW: remove only claims under newly durable roots; preserve other Hosts' claims.
+          if (changed && state.ledger) {
+            const absorbedRoots = candidates.map((candidate) => candidate.canonical);
+            try {
+              await state.ledger.update((disk) => removeLedgerClaimsUnderRoots(disk, absorbedRoots));
+            } catch {
+              state.logger?.warn?.("trusted-roots ledger", { code: "LEDGER_WRITE_FAILED" });
+              throw new HttpError(500, "TRUSTED_ROOT_PERSIST_FAILED", "Failed to persist trusted root claim");
+            }
+          }
           const before = new Set(state.records.keys());
           const added = [...proposedRecords.keys()].filter((path) => !before.has(path));
           state.durableClaims = proposedDurable;
