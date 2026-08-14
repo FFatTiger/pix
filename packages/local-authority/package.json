@@ -22,9 +22,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
-    "test": "npm run build && node --test 'test/*.test.mjs'",
+    "test": "npm run build && node ../../scripts/run-node-test.mjs \"test/*.test.mjs\"",
     "check:boundaries": "node ./scripts/check-boundaries.mjs",
-    "clean": "rm -rf dist"
+    "clean": "node ../../scripts/remove-paths.mjs dist"
   },
   "engines": {
     "node": ">=22.19.0"
