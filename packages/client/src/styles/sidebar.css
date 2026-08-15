@@ -1,0 +1,12 @@
+/* ============================================================
+   sidebar.css — OWNER: UX2-SIDEBAR (parallel writer, exclusive)
+   ------------------------------------------------------------
+   Left sidebar only:
+   - PROJECT / SESSIONS sections, cwd display
+   - session list rows (incl. virtualized rows — no width/
+     transform transitions on virtual rows)
+   - rename/delete inline editors, trust badge in sidebar
+   - hover/focus-within row actions
+   Shared primitives live in base.css; shell frame and mobile
+   overlay behavior live in shell.css / responsive.css.
+   ============================================================ */

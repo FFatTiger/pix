@@ -1,0 +1,11 @@
+/* ============================================================
+   panels.css — OWNER: UX2-PANELS (parallel writer, exclusive)
+   ------------------------------------------------------------
+   Right dock and its tabs:
+   - panel shell, tab bar grammar, headers
+   - Files (breadcrumbs, list, preview), Git (summary, status
+     badges using --git-status-* tokens, diff), Worktrees
+     (incl. force-confirm safety defaults), Catalog
+   - code/path/diff text uses var(--font-mono)
+   Mobile overlay behavior lives in responsive.css.
+   ============================================================ */

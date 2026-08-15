@@ -1,0 +1,13 @@
+/* ============================================================
+   shell.css — OWNER: UX2-SHELL (parallel writer, exclusive)
+   ------------------------------------------------------------
+   App shell only:
+   - .app-shell / .app-body column+grid frame, 100dvh layout
+   - topbar (brand, connection/capability status, actions)
+   - login page, error boundary
+   - theme-bootstrap surfaces
+   Do NOT put sidebar/chat/composer/panel internals here;
+   they live in their own files. Responsive overrides go in
+   responsive.css. Shared primitives (buttons, badges, form
+   controls) live in base.css — compose, don't redefine.
+   ============================================================ */

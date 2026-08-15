@@ -1,0 +1,12 @@
+/* ============================================================
+   chat.css — OWNER: UX2-CHAT (parallel writer, exclusive)
+   ------------------------------------------------------------
+   Transcript column only:
+   - user tinted bubbles / assistant open content flow
+   - tool, system, bash surfaces; thinking dim-accent blocks
+   - metadata rows, markdown/code rendering (Lilex via
+     var(--font-mono))
+   - transcript empty/loading/error states; keep role="log"
+     and virtualization-measurement styles intact
+   Shared primitives (badges, error surfaces) live in base.css.
+   ============================================================ */

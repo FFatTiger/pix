@@ -1,0 +1,13 @@
+/* ============================================================
+   responsive.css — OWNER: UX2-INTEGRATION / per-feature media
+   overrides (parallel writers coordinate here last)
+   ------------------------------------------------------------
+   Breakpoint overrides that cross file ownership:
+   - mobile (≤640px): sidebar/right panel become overlays,
+     desktop-only chrome hides
+   - touch targets step up to --control-height-lg where the
+     plan requires it
+   Feature files keep their own single-breakpoint tweaks only
+   when the rule is local to their selectors; anything touching
+   the shell frame or multiple layers belongs here.
+   ============================================================ */

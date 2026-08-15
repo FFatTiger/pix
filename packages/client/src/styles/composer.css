@@ -1,0 +1,10 @@
+/* ============================================================
+   composer.css — OWNER: UX2-CHAT (parallel writer, exclusive)
+   ------------------------------------------------------------
+   Composer and its attached request surfaces:
+   - centered max-width composer shell, textarea, toolbar
+   - send/abort/steer hierarchy, status line, queue chips
+   - session actions, extension-request UI (same surface
+     language as composer)
+   Do not change keyboard/send semantics — CSS only.
+   ============================================================ */
