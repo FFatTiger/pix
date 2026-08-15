@@ -1,5 +1,5 @@
 import { forwardRef, useState, useCallback, useEffect, useImperativeHandle, useRef, useMemo } from "react";
-import { At, CaretRight, Check, Copy, DownloadSimple, FolderOpen, Info, LinkSimple, MinusCircle, Spinner, UploadSimple, Warning, X } from "@phosphor-icons/react";
+import { At, CaretRight, Check, Copy, DownloadSimple, Info, LinkSimple, MinusCircle, Spinner, UploadSimple, Warning, X } from "@phosphor-icons/react";
 import { getFileIcon, FolderIcon } from "@/components/files/FileIcons";
 import { getRelativeFilePath, joinFilePath } from "@/lib/file-paths";
 import { copyText } from "@/lib/clipboard";
@@ -24,14 +24,6 @@ interface FileNode {
   size: number;
   children?: FileNode[] | undefined;
   loaded?: boolean | undefined;
-}
-
-declare global {
-  interface Window {
-    /** Desktop bridge. Absent on the pix web client — the reveal action in
-     *  the tree context menu stays disabled exactly as in the source web app. */
-    piDesktop?: { showItemInFolder: (fullPath: string) => Promise<boolean> };
-  }
 }
 
 interface Props {
@@ -260,14 +252,7 @@ function TreeNode({
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const revealDisabled = typeof window === "undefined" || !window.piDesktop;
     openMenu(e.clientX, e.clientY, [
-      {
-        label: t("desktop.revealInFolder"),
-        icon: <FolderOpen size={13} weight="regular" aria-hidden="true" />,
-        disabled: revealDisabled,
-        onSelect: () => { void window.piDesktop?.showItemInFolder(node.fullPath); },
-      },
       { type: "separator" },
       {
         label: t("desktop.copyRelativePath"),
