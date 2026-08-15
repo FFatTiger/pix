@@ -1966,8 +1966,13 @@ Capability/product：
   覆盖新 editor/draft、不导航）。live 行 rename 只走 Host PATCH，零 WebSocket、不调
   runtime.setSessionName。
 - describeSessionRenameError 仅 code/status/kind 映射（unauthorized / SESSION_NOT_FOUND /
-  INVALID_NAME / INVALID_INPUT / SESSION_IN_USE / SESSIONS_UNAVAILABLE / MUTATION_UNAVAILABLE
-  / network / timeout / aborted / fallback），绝不渲染 raw Host message/提交名/id/path/secret。
+  INVALID_SESSION_NAME / SESSION_CHANGED / SESSION_RENAME_UNAVAILABLE / SESSIONS_UNAVAILABLE /
+  MUTATION_UNAVAILABLE / network / timeout / aborted / fallback；主映射与已合入 Host §52
+  契约对齐：400 INVALID_SESSION_NAME / 404 SESSION_NOT_FOUND / 409 SESSION_CHANGED /
+  503 SESSION_RENAME_UNAVAILABLE；SESSIONS_UNAVAILABLE/MUTATION_UNAVAILABLE 保留为 transport
+  共享 503 兑底），绝不渲染 raw Host message/提交名/id/path/secret。verifier 轮次修正：初版
+  映射了旧代码（SESSION_IN_USE/INVALID_NAME/INVALID_INPUT，与 §52 实际错误码脱节，真实错误
+  落通用兑底），独立 verifier 判 Medium 后按契约重排并补测试。
 - a11y：label 含安全当前行标题；failure role=alert 固定文案；无 modal/window.confirm、
   无入场动画、reuse tokens；≥40px（移动 44px）触控；focus-visible outline；reduced-motion
   不新增过渡。

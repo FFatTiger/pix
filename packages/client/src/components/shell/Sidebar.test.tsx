@@ -1155,11 +1155,11 @@ describe("describeSessionRenameError — fixed copy, no raw leak", () => {
   it("maps each status/code/kind to fixed text and never renders raw messages", () => {
     const raw = (msg: string) => ({ status: 500, code: "SESSION_NOT_FOUND", path: "/v1/sessions/s", message: msg });
     expect(describeSessionRenameError(new HttpError(raw("raw not-found marker")))).toBe("This session no longer exists.");
-    expect(describeSessionRenameError(new HttpError({ status: 400, code: "INVALID_NAME", path: "/v1/sessions/s", message: "raw invalid marker" }))).toBe("That session name is not allowed.");
-    expect(describeSessionRenameError(new HttpError({ status: 400, code: "INVALID_INPUT", path: "/v1/sessions/s", message: "raw invalid marker" }))).toBe("That session name is not allowed.");
+    expect(describeSessionRenameError(new HttpError({ status: 400, code: "INVALID_SESSION_NAME", path: "/v1/sessions/s", message: "raw invalid marker" }))).toBe("That session name is not allowed.");
     expect(describeSessionRenameError(new HttpError({ status: 503, code: "SESSIONS_UNAVAILABLE", path: "/v1/sessions/s", message: "raw down marker" }))).toBe("Session renaming is temporarily unavailable.");
     expect(describeSessionRenameError(new HttpError({ status: 503, code: "MUTATION_UNAVAILABLE", path: "/v1/sessions/s", message: "raw down marker" }))).toBe("Session renaming is temporarily unavailable.");
-    expect(describeSessionRenameError(new HttpError({ status: 409, code: "SESSION_IN_USE", path: "/v1/sessions/s", message: "raw busy marker" }))).toBe("This session is currently in use.");
+    expect(describeSessionRenameError(new HttpError({ status: 503, code: "SESSION_RENAME_UNAVAILABLE", path: "/v1/sessions/s", message: "raw down marker" }))).toBe("Session renaming is temporarily unavailable.");
+    expect(describeSessionRenameError(new HttpError({ status: 409, code: "SESSION_CHANGED", path: "/v1/sessions/s", message: "raw changed marker" }))).toBe("This session changed while renaming — try again.");
     expect(describeSessionRenameError(new HttpError({ status: 401, path: "/v1/sessions/s", message: "unauth" }))).toBe("You are not authorized for this action.");
     expect(describeSessionRenameError(new HttpError({ kind: "network", status: 0, path: "/v1/sessions/s", message: "raw network marker" }))).toBe("Network error — unable to reach the host.");
     expect(describeSessionRenameError(new HttpError({ kind: "timeout", status: 0, path: "/v1/sessions/s", message: "raw timeout marker" }))).toBe("Request timed out — try again.");

@@ -89,13 +89,14 @@ export function describeSessionRenameError(error: unknown): string {
   if (error instanceof HttpError) {
     if (error.isUnauthorized) return "You are not authorized for this action.";
     switch (error.code) {
-      case "SESSION_IN_USE":
-        return "This session is currently in use.";
+      // §52 Host contract: PATCH /v1/sessions/:id fixed codes.
+      case "SESSION_CHANGED":
+        return "This session changed while renaming — try again.";
       case "SESSION_NOT_FOUND":
         return "This session no longer exists.";
-      case "INVALID_NAME":
-      case "INVALID_INPUT":
+      case "INVALID_SESSION_NAME":
         return "That session name is not allowed.";
+      case "SESSION_RENAME_UNAVAILABLE":
       case "SESSIONS_UNAVAILABLE":
       case "MUTATION_UNAVAILABLE":
         return "Session renaming is temporarily unavailable.";
