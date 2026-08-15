@@ -24,6 +24,9 @@ const workspaceRoot = join(packageRoot, "..", "..");
 const deps = [
   { name: "@fffattiger/pix-runtime-core", dir: join(workspaceRoot, "packages/runtime-core") },
   { name: "@fffattiger/pix-protocol", dir: join(workspaceRoot, "packages/protocol") },
+  // SCALE1 (§61): the adapter's session-projection imports the local-authority
+  // `/state` subpath, so its dist must exist BEFORE pi-sdk-adapter's tsc runs.
+  { name: "@fffattiger/pix-local-authority", dir: join(workspaceRoot, "packages/local-authority") },
   { name: "@fffattiger/pix-pi-sdk-adapter", dir: join(workspaceRoot, "packages/pi-sdk-adapter") },
   // Test-only oracle: agent-worker tests project deltas through the REAL
   // sessiond SnapshotProjection to avoid a duplicated projection implementation.

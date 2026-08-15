@@ -1922,7 +1922,7 @@ PASS；git diff --check 与工作树 clean。独立 verifier 首轮复现 same-k
 持久化收敛（worker 侧）、auto-name/trash/undo、side chat 仍后置。编号已在 current-main
 集成时顺延为 §51（Local Authority 占 §48/§49，Extension UI Client 占 §50）。
 
-## 52. D4 — Host Session Rename API（PATCH /v1/sessions/:id）记录
+## 52. D4 — Host Session Rename API（PATCH /v1/sessions/:id）记录（DONE，verifier 二轮 PASS）
 
 ```text
 实现：source `33f0fea` + capability honesty fix `ed733f5`（branch `feat/d4-host-session-rename-api`，base main `ef564b7`）；已快进合入 main。Host-only：只改 packages/host、packages/cli、tests/e2e、docs；无 Client source、无 package-lock、无 sessiond 改动、无 push/deploy/live service。独立 verifier 首轮发现 token-without-route 并判 FAIL，修复后重放 seam 矩阵、Host/CLI/E2E，最终对 `ed733f5` 给出 PASS。依赖 §51（sessiond 已支持
@@ -2033,7 +2033,7 @@ seam 与否都排除；自定义 readonly 列表含 mutation token 也在 down �
 三条 E2E 全 PASS。
 ```
 
-## 53. D4 — Client Sidebar Session Rename UI 垂直切片记录
+## 53. D4 — Client Sidebar Session Rename UI 垂直切片记录（DONE，verifier 两轮 PASS）
 
 ```text
 实现：独立 worktree client-session-rename-ui，branch feat/d4-client-session-rename-ui，
@@ -2257,7 +2257,7 @@ lease/open、trusted roots、managed worktrees、production resources 安全子�
 chmod、macOS 别名、raw leak 测试；root/架构 + Startup E2E。
 ```
 
-## 55.1 Local Authority — 独立 verifier CRITICAL 复现修复（14e7ca2 → follow-up；fd identity 校验）
+## 55.1 Local Authority — 独立 verifier CRITICAL 复现修复（14e7ca2 → follow-up；fd identity 校验）（DONE，二轮 PASS）
 
 ```text
 独立 verifier 对 14e7ca2 确定性 CRITICAL 复现并判 FAIL，本小节记录修复。范围不变（仅
@@ -2499,7 +2499,7 @@ boundary PASS；Startup + Sessions + Runtime E2E 全 PASS（Startup 确认 daemo
 残余/后续：Windows 支持不变（getuid 不可用时 ownership 校验按需关闭，仅此改动，不宣称原生 Windows）；
 本地 authority 未整体委托；Fresh verifier 独立 PASS 待补。
 ```
-## 60. UX1 — Chat/Sidebar 虚拟化垂直切片记录（Wave 4，Client-only）
+## 60. UX1 — Chat/Sidebar 虚拟化垂直切片记录（Wave 4，Client-only；DONE，verifier PASS）
 
 ```text
 实现：worktree ux1-virtualization，branch feat/ux1-virtualization，source `4b0bcf4`，base main
