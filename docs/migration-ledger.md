@@ -3147,7 +3147,7 @@ extension_ui（response/input）/navigate/fork/queue/stats/session.rename/auto_n
 ### Phase 2/3 实现与验证（接续：原实现 agent 因宿主磁盘耗尽（ENOSPC）中断于 D5 之前，父会话接手完成）
 
 - D1 版本单源：`scripts/sync-version.mjs`（check/write 双模式）+ 单测 6 用例（修复 1 处 fixture 正则）；
-  host/cli/client 0.0.0→0.1.0、cli 的 pix-host dep 0.0.0→0.1.0、adapter 的 runtime-core `file:../runtime-core`→`0.1.0`（D2 冻结
+  host/client 0.0.0→0.1.0（cli 本已 0.1.0，仅其 pix-host dep 0.0.0→0.1.0）、adapter 的 runtime-core `file:../runtime-core`→`0.1.0`（D2 冻结
   变更，package-lock 4 行同步；`npm ci` 全新解析验证通过）。
 - D3 `pix --version`/`-v`（读 bundle 相邻 manifest，workspace/bundle 双布局）。
 - D4 `resolveClientDist` 三级回退（PIX_CLIENT_DIST → workspace → `<cli-pkg-root>/client`），独立安装可服务 UI。

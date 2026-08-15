@@ -170,7 +170,7 @@ async function runAll(sandbox) {
   const npmInstall = (tgz) =>
     run(
       "npm",
-      ["install", "--global", "--prefix", prefix, "--cache", npmCache, "--offline", "--no-audit", "--no-fund", tgz],
+      ["install", "--global", "--prefix", prefix, "--cache", npmCache, "--offline", "--no-audit", "--no-fund", "--no-update-notifier", tgz],
       { cwd: sandbox },
     );
 
