@@ -37,7 +37,7 @@ describe("public agent factory surface", () => {
     });
   });
 
-  it("PRODUCTION_AGENT_CAPABILITIES is exactly the D2-P8 surface and leaks no broader capability", () => {
+  it("PRODUCTION_AGENT_CAPABILITIES is exactly the D2 navigate surface and leaks no broader capability", () => {
     assert.deepEqual([...PRODUCTION_AGENT_CAPABILITIES], [
       "runtime.prompt",
       "runtime.abort",
@@ -56,13 +56,14 @@ describe("public agent factory surface", () => {
       "runtime.compact",
       "runtime.compact.abort",
       "runtime.extension_ui",
+      "runtime.navigate",
     ]);
-    // Still-forbidden: fork/auto_name/navigate must NOT leak through the
-    // production surface. `runtime.extension_ui` (D2-P8), `runtime.compact` /
-    // `runtime.compact.abort` (D2-P7) ARE allowed here.
+    // Still-forbidden: fork/auto_name must NOT leak through the production
+    // surface. `runtime.navigate` (D2 navigate), `runtime.extension_ui` (D2-P8),
+    // `runtime.compact` / `runtime.compact.abort` (D2-P7) ARE allowed here.
     const leaked = [...PRODUCTION_AGENT_CAPABILITIES].filter((capability) =>
-      /fork|navigate|auto_name/.test(capability),
+      /fork|auto_name/.test(capability),
     );
-    assert.deepEqual(leaked, [], "production surface must not leak fork/navigate/auto_name capabilities");
+    assert.deepEqual(leaked, [], "production surface must not leak fork/auto_name capabilities");
   });
 });

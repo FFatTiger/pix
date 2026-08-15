@@ -43,6 +43,7 @@ function driverState(session: AgentSession, forcedEmpty: boolean): DriverState {
   const usage = session.getContextUsage();
   const stats = session.getSessionStats();
   const active = new Set(session.getActiveToolNames());
+  const leafId = session.sessionManager.getLeafId();
   return {
     model: model ? { provider: model.provider, id: model.id } : null,
     thinkingLevel: session.thinkingLevel as ThinkingLevel,
@@ -53,6 +54,7 @@ function driverState(session: AgentSession, forcedEmpty: boolean): DriverState {
     autoCompactionEnabled: session.autoCompactionEnabled,
     autoRetryEnabled: session.autoRetryEnabled,
     pendingMessageCount: session.pendingMessageCount,
+    ...(leafId === null || leafId === undefined ? {} : { leafId }),
     messages: session.messages,
     tools: session.getAllTools().map((tool): ToolInfo => ({ name: tool.name, ...(tool.description === undefined ? {} : { description: tool.description }), active: active.has(tool.name) })),
     ...(usage === undefined ? {} : { contextUsage: { percent: usage.percent ?? 0, contextWindow: usage.contextWindow, ...(usage.tokens === null ? {} : { tokens: usage.tokens }) } }),

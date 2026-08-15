@@ -11,6 +11,7 @@ import type {
   RuntimeCommand,
   RuntimeCommandResult,
   RuntimeCommandType,
+  RuntimeError,
   RuntimeEvent,
   RuntimeIdentity,
   RuntimeInterrupt,
@@ -32,6 +33,21 @@ import { redactText } from "./sanitize.js";
 import type { DriverUiRequest, PiRuntimeDriver } from "./types.js";
 
 const COMMAND_TYPES = new Set<string>(RUNTIME_COMMAND_TYPES);
+
+/**
+ * Fixed sanitized navigate-failure message per canonical code. The worker/adapter
+ * raw error text (which may carry the target leaf id, a path, or SDK/transport
+ * internals) never crosses the boundary — every navigate failure is re-projected
+ * onto a fixed message, preserving only the canonical code + retryable.
+ */
+const NAVIGATE_FAILURE_MESSAGES: Readonly<Partial<Record<RuntimeError["code"], string>>> = {
+  invalid_input: "navigation target is invalid",
+  not_found: "navigation target not found",
+  interrupted: "navigation was cancelled",
+  session_busy: "session is busy",
+  timeout: "navigation timed out",
+  unavailable: "navigation is unavailable",
+};
 
 interface PendingUi {
   request: ExtensionUiRequest;
@@ -370,7 +386,58 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           if (result.cancelled) return this.failure("bash", makeRuntimeError("interrupted", "bash aborted", { retryable: true }));
           return { ok: true, type: "bash" };
         }
-        case "navigate_tree": await this.driver.navigate(command.targetId); this.emitState(); return { ok: true, type: "navigate_tree" };
+        case "navigate_tree": {
+          // D2 navigate busy guard (mirrors the compact guard): navigate is a
+          // serial-lane mutating command that must NEVER overlap an in-flight
+          // prompt stream, an ACTIVE bash command, an already-running
+          // compaction, or a pending extension-UI wait (the adapter's
+          // promptRunning covers a prompt blocked on an extension request).
+          // Reject first with a structured session_busy and leave NO partial
+          // mutation/event behind — the in-flight turn is never corrupted. A
+          // bash is busy only while NONTERMINAL (the retained terminal bash
+          // projection must not block navigate).
+          const driverState = this.driver.getState();
+          if (
+            driverState.isStreaming ||
+            driverState.isBashRunning ||
+            driverState.isCompacting ||
+            this.promptRunning ||
+            (this.bash !== null && this.bash.completed === false) ||
+            this.compaction !== null
+          ) {
+            return this.failure("navigate_tree", makeRuntimeError("session_busy", "a prompt, bash command, or compaction is already in progress", { retryable: true }));
+          }
+          // Blank/missing leaf reference: structured invalid_input BEFORE any
+          // SDK call (the Protocol NonEmptyStringSchema already rejects it at
+          // the wire, but the canonical boundary must stay fail-closed).
+          if (typeof command.targetId !== "string" || !command.targetId.trim()) {
+            return this.failure("navigate_tree", makeRuntimeError("invalid_input", "navigation target is required"));
+          }
+          try {
+            await this.driver.navigate(command.targetId);
+          } catch (error) {
+            // Map the driver failure to a canonical code, but NEVER surface the
+            // raw SDK message (which may carry the target id / path / transport
+            // text) — project every navigate failure onto a fixed sanitized
+            // message keyed by the code.
+            const mapped = mapDriverError(error);
+            const fixed = NAVIGATE_FAILURE_MESSAGES[mapped.code] ?? "navigation failed";
+            return this.failure("navigate_tree", makeRuntimeError(mapped.code, fixed, { retryable: mapped.retryable }));
+          }
+          this.emitState();
+          return { ok: true, type: "navigate_tree" };
+          // NOTE (frozen semantics): unlike compact, navigate intentionally has
+          // NO dedicated in-flight marker. navigateTree-without-summarize is a
+          // quick in-memory leaf move (SessionManager.branch) that never blocks
+          // on a model, so overlapping navigates are benign and deterministic
+          // last-writer-wins (the sessiond lifecycle mutex serializes admission;
+          // the SDK resolves the target against a stable entry map). The busy
+          // guard above already rejects navigate against a real in-flight
+          // prompt/bash/compaction/extension-UI wait. A prompt issued after a
+          // navigate simply appends at the current (navigated) leaf — pi's own
+          // semantics. This asymmetry with compact is deliberate and covered by
+          // the concurrent-navigate test below.
+        }
         case "fork": {
           const forked = await this.driver.fork(command.entryId);
           setTimeout(() => void this.close("forked"), 0);
@@ -444,6 +511,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     return {
       sessionId: this.identity.sessionId,
       sessionFile: this.identity.sessionFile,
+      ...(state.leafId === undefined ? {} : { leafId: state.leafId }),
       isStreaming: state.isStreaming,
       isPromptRunning: this.promptRunning || state.isStreaming,
       isBashRunning: state.isBashRunning,

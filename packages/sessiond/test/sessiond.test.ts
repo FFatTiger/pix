@@ -925,6 +925,27 @@ const compactSnapshot = (sessionId: string, cwd = "/workspace", projectRoot = cw
   ],
 });
 
+/**
+ * D2 navigate authoritative snapshot: a 3-message session rooted at leaf
+ * `nav-3`. The fake worker's navigate to `nav-<keep>` trims the authoritative
+ * live snapshot to the first `<keep>` messages and moves the leaf, so a
+ * post-success worker.getSnapshot refresh converges leafId/messageCount/history
+ * deterministically (the wire carries only a runtime_state_changed signal).
+ */
+const navigateSnapshot = (sessionId: string, cwd = "/workspace", projectRoot = cwd): RuntimeSnapshot => ({
+  ...snapshot(sessionId, cwd, projectRoot),
+  state: {
+    ...snapshot(sessionId, cwd, projectRoot).state,
+    messageCount: 3,
+    leafId: "nav-3",
+  },
+  messages: [
+    { role: "user", content: "m1" },
+    { role: "user", content: "m2" },
+    { role: "user", content: "m3" },
+  ],
+});
+
 
 
 test("set_tools success refreshes authoritative snapshot before command returns (D2-P6)", async () => {
@@ -1443,9 +1464,267 @@ test("compaction_end before compact success still converges the full post-compac
   await service.shutdown();
 });
 
-test("get_tools is a query and never triggers an authority snapshot refresh", async () => {
-  const { service, workers } = harness({ worker: { snapshot: toolsSnapshot("s") } });
+test("navigate success refreshes authoritative snapshot with new leaf/messageCount/history before command returns (D2 navigate)", async () => {
+  const { service, workers } = harness({ worker: { snapshot: navigateSnapshot("s") } });
   await service.activate("s");
+  const before = service.getSnapshot("s");
+  assert.equal(before.state.messageCount, 3);
+  assert.equal(before.state.leafId, "nav-3");
+  assert.equal((before.messages ?? []).length, 3);
+  const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const result = await service.command("s", { type: "navigate_tree", commandId: "nav-1", targetId: "nav-1" });
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "navigate_tree");
+
+  // sessiond must issue a post-success worker.getSnapshot refresh so the
+  // projection converges the FULL navigated snapshot (leafId + history +
+  // messageCount) BEFORE the terminal result is released — the wire carries
+  // only a runtime_state_changed signal.
+  const snapshotsAfter = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  assert.ok(snapshotsAfter > snapshotsBefore, "expected post-success worker.getSnapshot refresh after navigate");
+
+  const snap = service.getSnapshot("s");
+  assert.equal(snap.state.messageCount, 1, JSON.stringify(snap.state));
+  assert.equal(snap.state.leafId, "nav-1", "projection must carry the navigated leaf");
+  assert.equal((snap.messages ?? []).length, 1, "messages must converge to the navigated leaf history");
+
+  // Attach boundary also carries the navigated projection.
+  const attach = service.attach({ sessionId: "s" });
+  assert.equal(attach.result.snapshot!.state.messageCount, 1);
+  assert.equal(attach.result.snapshot!.state.leafId, "nav-1");
+  assert.equal((attach.result.snapshot!.messages ?? []).length, 1);
+  await service.shutdown();
+});
+
+test("navigate same-id second caller waits for deferred authority refresh with one worker.command", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: navigateSnapshot("s"), postCommandSnapshotDelayMs: 80 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "navigate_tree" as const, commandId: "nav-same", targetId: "nav-1" };
+
+  const first = service.command("s", command);
+  await wait(30);
+  let firstSettled = false;
+  void first.then(() => { firstSettled = true; });
+  await wait(0);
+  assert.equal(firstSettled, false, "original caller must not settle while refresh is deferred");
+
+  const second = service.command("s", command);
+  let secondSettled = false;
+  void second.then(() => { secondSettled = true; });
+  await wait(20);
+  assert.equal(firstSettled, false);
+  assert.equal(secondSettled, false, "same-id caller must join finalization, not settle early");
+
+  const workerCommands = worker.sent.filter((item) => item.type === "worker.command");
+  assert.equal(workerCommands.length, 1, "exactly one worker.command for same navigate commandId");
+
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, true);
+  assert.equal(b.result.ok, true);
+  assert.deepEqual(a, b);
+  assert.equal(service.getSnapshot("s").state.messageCount, 1);
+  assert.equal(service.getSnapshot("s").state.leafId, "nav-1");
+  await service.shutdown();
+});
+
+test("navigate successful finalization cleans singleflight and cached retry does not refresh again", async () => {
+  const { service, workers } = harness({ worker: { snapshot: navigateSnapshot("s") } });
+  await service.activate("s");
+  const command = { type: "navigate_tree" as const, commandId: "nav-cleanup", targetId: "nav-1" };
+  const first = await service.command("s", command);
+  assert.equal(first.result.ok, true);
+  const snapshotsAfterSuccess = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, first);
+  assert.equal(
+    workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length,
+    snapshotsAfterSuccess,
+    "completed finalization must be gone: the retry comes from the terminal result cache",
+  );
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, false);
+  await service.shutdown();
+});
+
+test("navigate refresh failure fail-closes all observers and cached retry", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: navigateSnapshot("s"), dropPostCommandSnapshots: true },
+    service: { commandTimeoutMs: 80 },
+  });
+  await service.activate("s");
+  const command = { type: "navigate_tree" as const, commandId: "nav-fail", targetId: "nav-1" };
+
+  const first = service.command("s", command);
+  await wait(10);
+  const second = service.command("s", command);
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.result.ok, false);
+  assert.equal(b.result.ok, false);
+  assert.equal(a.result.type, "navigate_tree");
+  assert.equal(b.result.type, "navigate_tree");
+  assert.equal(a.commandId, "nav-fail");
+  assert.deepEqual(a, b);
+  if (!a.result.ok) {
+    assert.equal(a.result.error.code, "unavailable");
+    assert.match(a.result.error.message, /snapshot|authority|timed out/i);
+  }
+
+  // Projection must NOT claim a navigated state after fail-closed authority
+  // refresh: leafId/messageCount stay the pre-command authoritative values.
+  assert.equal(service.getSnapshot("s").state.messageCount, 3, "projection must not claim the failed navigation");
+  assert.equal(service.getSnapshot("s").state.leafId, "nav-3", "projection must not claim a navigated leaf");
+
+  const commandsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length;
+  const snapshotsBeforeRetry = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  const retry = await service.command("s", command);
+  assert.deepEqual(retry, a);
+  assert.equal(retry.result.ok, false);
+  assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length, commandsBeforeRetry, "cached failure must not re-send worker.command");
+  assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsBeforeRetry, "cached failure must not re-refresh snapshot");
+  await service.shutdown();
+});
+
+test("navigate wrong result type does not finalize; legitimate frame completes once", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: navigateSnapshot("s"), commandDelayMs: 80 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "navigate_tree" as const, commandId: "nav-wrongtype", targetId: "nav-1" };
+
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+  const wireId = wire.id;
+
+  // Correct wire id + inner commandId but WRONG result type — triple match
+  // fails, so no finalization, no cache, no resolve: the waiter keeps waiting.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wireId,
+    payload: {
+      sessionId: "s",
+      result: { commandId: command.commandId, result: { ok: true, type: "set_thinking_level" } },
+    },
+  });
+  await wait(10);
+  const snapshotsDuring = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+  let settled = false;
+  void pending.then(() => { settled = true; });
+  await wait(0);
+  assert.equal(settled, false, "wrong result type must not resolve or start finalization");
+
+  const result = await pending;
+  assert.equal(result.commandId, "nav-wrongtype");
+  assert.equal(result.result.ok, true);
+  assert.equal(result.result.type, "navigate_tree");
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command").length, 1);
+  // The legitimate frame triggered exactly one post-success refresh.
+  assert.equal(worker.sent.filter((item) => item.type === "worker.getSnapshot").length, snapshotsDuring + 1);
+  assert.equal(service.getSnapshot("s").state.leafId, "nav-1");
+  await service.shutdown();
+});
+
+test("navigate finalization during rekey never writes across epochs and new session can re-admit", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: navigateSnapshot("s"), postCommandSnapshotDelayMs: 200 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "navigate_tree" as const, commandId: "nav-rekey", targetId: "nav-1" };
+
+  const pending = service.command("s", command);
+  // Wait until finalization is registered (post-success refresh in flight).
+  await wait(30);
+  worker.emit({ type: "worker.sessionDiscovered", payload: { sessionId: "real-s", sessionFile: "/sessions/real-s.jsonl", cwd: "/cwd/s" } });
+  await wait(10);
+
+  const result = await pending;
+  assert.equal(result.commandId, "nav-rekey");
+  assert.equal(result.result.ok, false);
+  if (!result.result.ok) assert.equal(result.result.error.code, "unavailable");
+
+  // Old id is gone; the rekeyed record must not carry the navigate across epoch.
+  assert.throws(() => service.getSnapshot("s"));
+  const rekeyed = service.getSnapshot("real-s");
+  assert.equal(rekeyed.state.leafId, "nav-3", "no cross-epoch navigate leaf write");
+  assert.equal(rekeyed.state.messageCount, 3);
+
+  // Same commandId can be re-admitted in the new epoch (acceptedCommands cleared).
+  const readmitted = await service.command("real-s", command);
+  assert.equal(readmitted.result.ok, true);
+  assert.equal(service.getSnapshot("real-s").state.leafId, "nav-1");
+  assert.equal(service.getSnapshot("real-s").state.messageCount, 1);
+  await service.shutdown();
+});
+
+test("detach before navigate result + reattach sees the navigated snapshot (replay consistent)", async () => {
+  const { service, workers } = harness({
+    worker: { snapshot: navigateSnapshot("s"), commandDelayMs: 60, postCommandSnapshotDelayMs: 30 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const command = { type: "navigate_tree" as const, commandId: "nav-detach", targetId: "nav-1" };
+  const pending = service.command("s", command);
+  await wait(10);
+  // Detach while the navigate is in flight (before its terminal result).
+  service.detach("s");
+  const result = await pending;
+  assert.equal(result.result.ok, true);
+  // A later reattach reads the refreshed projection (authority finalization ran
+  // before the result was released) and must see the navigated snapshot.
+  const attach = service.attach({ sessionId: "s" });
+  assert.equal(attach.result.snapshot!.state.leafId, "nav-1");
+  assert.equal(attach.result.snapshot!.state.messageCount, 1);
+  assert.equal((attach.result.snapshot!.messages ?? []).length, 1);
+  await service.shutdown();
+});
+
+test("navigate finalization cleans singleflight when worker crashes before its first microtask", async () => {  const { service, workers } = harness({
+    worker: { snapshot: navigateSnapshot("s"), commandDelayMs: 5_000 },
+    service: { commandTimeoutMs: 500 },
+  });
+  await service.activate("s");
+  const worker = workers.workers[0]!;
+  const command = { type: "navigate_tree" as const, commandId: "nav-early-crash", targetId: "nav-1" };
+  const pending = service.command("s", command);
+  await wait(10);
+  const wire = worker.sent.find((item) => item.type === "worker.command");
+  assert.ok(wire && wire.type === "worker.command");
+
+  // Deliver a valid worker success, which registers authority finalization, then
+  // crash synchronously before its deferred body runs. The final result must be
+  // bounded and the singleflight must not remain as permanent busy state.
+  worker.emit({
+    type: "worker.commandResult",
+    id: wire.id,
+    payload: {
+      sessionId: "s",
+      result: { commandId: command.commandId, result: { ok: true, type: "navigate_tree" } },
+    },
+  });
+  worker.crash();
+
+  const result = await pending;
+  assert.equal(result.commandId, command.commandId);
+  assert.equal(result.result.ok, false);
+  assert.equal(result.result.type, "navigate_tree");
+  if (!result.result.ok) assert.equal(result.result.error.code, "unavailable");
+  await wait(0);
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, false, "settled finalization must be removed after early crash");
+  await service.shutdown();
+});
+
+test("get_tools is a query and never triggers an authority snapshot refresh", async () => {
+  const { service, workers } = harness({ worker: { snapshot: toolsSnapshot("s") } });  await service.activate("s");
   const worker = workers.workers[0]!;
   const snapshotsBefore = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
 

@@ -28,6 +28,13 @@ export interface DriverState {
   autoRetryEnabled: boolean;
   pendingMessageCount: number;
   sessionName?: string;
+  /**
+   * Active session-tree leaf (branch pointer) id, when the backend exposes one.
+   * `undefined` when the session has no entries yet (fresh session). Carried
+   * through the canonical snapshot so navigate/convergence observers can read
+   * the authoritative leaf without a separate lookup.
+   */
+  leafId?: string;
   messages: readonly unknown[];
   tools: readonly ToolInfo[];
   contextUsage?: { percent: number; contextWindow?: number; tokens?: number } | null;
