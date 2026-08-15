@@ -696,3 +696,45 @@ describe("AppShell D2-P8 extension-request mount placement", () => {
     expect(screen.getByText("hello history")).toBeTruthy();
   });
 });
+
+describe("AppShell — visible reconnect/resume state (PWA1)", () => {
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  function badge(): HTMLElement | null {
+    const el = screen.getByText(/^rt:/);
+    return el.closest(".topbar-badge") as HTMLElement | null;
+  }
+
+  it("exposes the runtime connection state as an aria-live status with no layout-breaking extra region", async () => {
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: ["agent"] });
+    expect(badge()!.textContent).toBe("rt:offline");
+    expect(badge()!.getAttribute("aria-live")).toBe("polite");
+    await driveReady();
+    expect(badge()!.textContent).toBe("rt:ready");
+  });
+
+  it("announces reconnecting and unavailable states during a network drop, then ready after reconnect", async () => {
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: ["agent"] });
+    const ws = await driveReady();
+    // Network drop → the badge must visibly announce the loss (no silent hang).
+    await act(async () => {
+      ws.serverClose(1006);
+      await flush();
+    });
+    expect(badge()!.textContent).toBe("rt:unavailable");
+    // Backoff → reconnect → ready (resume boundary reached).
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await flush();
+    });
+    const ws2 = SOCKETS[SOCKETS.length - 1]!;
+    expect(ws2).not.toBe(ws);
+    await act(async () => {
+      ws2.serverOpen();
+      ws2.serverSend(ack());
+      await flush();
+    });
+    expect(badge()!.textContent).toBe("rt:ready");
+  });
+});
