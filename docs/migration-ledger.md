@@ -2499,9 +2499,14 @@ boundary PASS；Startup + Sessions + Runtime E2E 全 PASS（Startup 确认 daemo
 残余/后续：Windows 支持不变（getuid 不可用时 ownership 校验按需关闭，仅此改动，不宣称原生 Windows）；
 本地 authority 未整体委托；Fresh verifier 独立 PASS 待补。
 ```
-## 61. SCALE1 — SQLite JSONL Projection（node:sqlite 零依赖投影索引，Phase 1 引擎决策 + Phase 2/3 实现与验证）
+## 61. SCALE1 — SQLite JSONL Projection（DONE，Fresh verifier PASS；node:sqlite 零依赖投影索引，Phase 1 引擎决策 + Phase 2/3 实现与验证）
 
 ```text
+状态：DONE——source `03abcd3`（branch feat/scale1-sqlite-projection，base main `38b4869`）快进合入
+main；Fresh verifier 全 7 门 PASS（零缺陷：行交换/校验和规避/物理元组交换全拦截、崩溃热日志不可
+加载、目录/symlink 替换权威回退、并发 append+delete 确定性、真实 agent 目录零残留、冻结 716 会话
+真实语料 build==raw==serve parity、基准 281ms→16ms 复现）；合并后 root build、adapter 255/255、
+architecture、Sessions+Startup E2E 全绿。与 §57/§59/§60 零源码重叠。
 编号：§56/§58 已占用，本切片占 §61（§59/§60 为并行 agent 预留）。未 push/deploy/live；未改
 package-lock/package.json 依赖（adapter 零新增依赖）；无 Windows 声明。base main `38b4869`，source:
 branch `feat/scale1-sqlite-projection` @ HEAD（worktree `pix-worktrees/scale1-sqlite-projection`，未 merge/push）。
