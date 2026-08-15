@@ -204,7 +204,7 @@ async function runAll(sandbox) {
   if (!existsSync(sessiondPkg)) fail(`bundled sessiond package missing at ${sessiondPkg}`);
 
   log("step 5/8: bundled daemon + real RPC session round-trip");
-  const daemon = spawn(sessiondBinPath, [], { env: sandboxEnv(), stdio: ["ignore", "ignore", "pipe"] });
+  const daemon = spawnChild(sessiondBinPath, [], { env: sandboxEnv(), stdio: ["ignore", "ignore", "pipe"] });
   let daemonErr = "";
   daemon.stderr.on("data", (c) => { daemonErr += c; });
   await waitFor("daemon socket", () => existsSync(join(sessiondDir, "sessiond.sock")));
@@ -279,7 +279,7 @@ console.log(JSON.stringify({ sessionId: manager.getSessionId(), file: manager.ge
   if (versionNext !== `pix ${nextVersion}`) fail(`post-upgrade --version mismatch: "${versionNext}"`);
   log(`  overlay install OK: ${versionNext}`);
 
-  const daemon2 = spawn(sessiondBinPath, [], { env: sandboxEnv(), stdio: ["ignore", "ignore", "pipe"] });
+  const daemon2 = spawnChild(sessiondBinPath, [], { env: sandboxEnv(), stdio: ["ignore", "ignore", "pipe"] });
   let daemon2Err = "";
   daemon2.stderr.on("data", (c) => { daemon2Err += c; });
   await waitFor("vNext daemon socket", () => existsSync(join(sessiondDir, "sessiond.sock")));
@@ -309,6 +309,19 @@ console.log(JSON.stringify({ sessionId: manager.getSessionId(), file: manager.ge
   log("RELEASE VERIFY: ALL PASS");
 }
 
+const children = new Set();
+function spawnChild(cmd, args, opts) {
+  const child = spawn(cmd, args, opts);
+  children.add(child);
+  child.once("exit", () => children.delete(child));
+  return child;
+}
+function killChildren() {
+  for (const child of children) {
+    try { child.kill("SIGTERM"); } catch { /* already gone */ }
+  }
+}
+
 async function main() {
   const sandbox = mkdtempSync(join(tmpdir(), "pix-rel1-"));
   try {
@@ -316,8 +329,12 @@ async function main() {
     if (KEEP) log(`--keep: sandbox retained at ${sandbox}`);
     else rmSync(sandbox, { recursive: true, force: true });
   } catch (error) {
+    killChildren();
     if (KEEP) log(`--keep: sandbox retained at ${sandbox}`);
-    else rmSync(sandbox, { recursive: true, force: true });
+    else {
+      // Give daemons a moment to release sockets before removing the sandbox.
+      setTimeout(() => rmSync(sandbox, { recursive: true, force: true }), 300);
+    }
     throw error;
   }
 }
