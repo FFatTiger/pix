@@ -351,7 +351,7 @@ stop
 
 | ID | 工作包 | 依赖 |
 |---|---|---|
-| `SCALE1` | SQLite JSONL Projection | `D1` |
+| `SCALE1` | SQLite JSONL Projection（**DONE**：Phase 1 引擎决策选 node:sqlite（22.13.0 起全矩阵无需 flag、零依赖，满足纯 node 启动/零 package-lock 变更约束；better-sqlite3 因依赖新增被拒；自定义 sidecar 偏离架构既定 SQLite 目标被拒）。Phase 2 实现零依赖 SQLite 投影索引于 adapter `session-projection.ts`（可弃/可重建、逐文件 mtime/size + 行校验和失效、任一不一致→权威回退，NEVER 服务错误 title/count/mtime；`createPiSdkSessionPorts` 生产默认开启）。Phase 3：合成 1000-session 语料 cold serve 18ms vs baseline 316ms（~17x），真实 714 语料 ~14ms vs ~4.1s（~300x），parity 三轮全 true；adapter 255/255、root 全绿、Startup/Runtime/Sessions E2E PASS。详见 migration-ledger §61） | `D1` |
 | `UX1` | Chat/Sidebar Virtualization | `D1`, `D2` |
 | `PWA1` | LAN Gate、配对、后台 Resume | `M2`, `D3A` |
 | `REL1` | 安装、升级、卸载、发布验证 | 发布范围功能完成 |

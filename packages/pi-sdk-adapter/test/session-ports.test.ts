@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createPiSdkSessionStore } from "../src/internal/session-store.js";
 import type { PiSdkSessionManager, PiSdkSessionsSurface } from "../src/internal/session-store.js";
 import {
@@ -120,11 +123,22 @@ describe("pi-sdk session ports (shared pair)", () => {
 
   it("default pair constructs lazily and lists without touching the network or a worker", async () => {
     // Constructing and listing must not throw even when the real agent dir is
-    // empty/absent — it is pure read-only filesystem access.
-    const { catalog, locator } = createPiSdkSessionPorts();
-    const list = await catalog.listSessions();
-    assert.ok(Array.isArray(list));
-    assert.equal(typeof locator.locate, "function");
+    // empty/absent — it is pure read-only filesystem access. Point the agent
+    // dir at a temp location so the SCALE1 projection index (written lazily on
+    // the first cold global-scope list) stays hermetic.
+    const agentDir = await mkdtemp(join(tmpdir(), "pix-ports-hermetic-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const { catalog, locator } = createPiSdkSessionPorts();
+      const list = await catalog.listSessions();
+      assert.ok(Array.isArray(list));
+      assert.equal(typeof locator.locate, "function");
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      await rm(agentDir, { recursive: true, force: true });
+    }
   });
 
   it("mutation shares the pair's one store: catalog warm list → rename → next list sees the new title with a bounded single rescan", async () => {

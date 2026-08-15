@@ -62,9 +62,31 @@
 //   not_found and never recreates/appends; rename first → delete removes the
 //   renamed file). Each mutation holds exactly one per-session slot (no
 //   nesting → no deadlock) and an emptied queue is removed (bounded cleanup).
+//
+// SCALE1 projection (see src/internal/session-projection.ts): the production
+// composition point (`createPiSdkSessionPorts`) opts into a disposable SQLite
+// projection index persisted in a Pix-owned directory. The projection caches
+// the SDK list headers per file keyed by file identity (mtimeMs + size); every
+// cold scan validates each row's checksum + backing file identity, re-reads
+// only new/changed files, and falls back to the authoritative `sdk.listAll` on
+// ANY index/scope inconsistency (never serves a wrong title/count/mtime). JSONL
+// files stay authoritative; delete the index and everything still works via the
+// store path. The existing invalidation seams (generation/revision fence,
+// mutation-driven `invalidateList`) are reused unchanged: rename/delete/append
+// change the file identity, so the next cold scan's per-file validation catches
+// them exactly as before.
 import { rm } from "node:fs/promises";
 import { join, posix, win32 } from "node:path";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  defaultProjectionDirectory,
+  defaultProjectionIndexPath,
+  ensureProjectionDirectory,
+  projectInfo,
+  reconcileProjection,
+  SessionProjectionIndex,
+  type ProjectedSession,
+} from "./session-projection.js";
 import type {
   AgentMessage,
   SessionContext,
@@ -106,6 +128,22 @@ export interface PiSdkSessionStoreOptions {
    * Defaults to the real `SessionManager`.
    */
   sdk?: PiSdkSessionsSurface;
+  /**
+   * SCALE1 disposable SQLite projection index. Defaults to DISABLED so the
+   * standalone store/catalog/mutation factories stay backend-neutral and
+   * side-effect-free; the production composition point (`createPiSdkSessionPorts`
+   * in `src/sessions/index.ts`) opts in explicitly. The index is persisted in a
+   * Pix-owned directory (default: `<agentDir>/pix` for the global scope,
+   * `<dirname(sessionDir)>/.pix` for an explicit sessionDir scope) and is fully
+   * disposable: delete it and the store falls back to the authoritative
+   * `listAll` path.
+   */
+  projection?: {
+    /** Force-enable/disable regardless of the SDK-surface default. */
+    enabled?: boolean;
+    /** Explicit Pix-owned index directory (defaults to the scope default). */
+    dir?: string;
+  };
 }
 
 type SdkSessionInfo = Awaited<ReturnType<typeof SessionManager.listAll>>[number];
@@ -168,6 +206,28 @@ function toHeader(info: SdkSessionInfo, provenance: { parentSessionId?: string; 
     messageCount: info.messageCount,
     ...(provenance.parentSessionId === undefined ? {} : { parentSessionId: provenance.parentSessionId }),
     ...(provenance.forkPointEntryId === undefined ? {} : { forkPointEntryId: provenance.forkPointEntryId }),
+  };
+}
+
+/**
+ * Map a persisted projection row back onto an SDK-shaped session info for the
+ * store's internal list/index path. `allMessagesText` is reconstructed as
+ * `firstMessage` — it is internal-only and never surfaced by the list path
+ * (SessionHeader carries no such field); the projection persists only
+ * `firstMessage` to keep the index bounded.
+ */
+function rowToInfo(row: ProjectedSession): SdkSessionInfo {
+  return {
+    path: row.path,
+    id: row.id,
+    cwd: row.cwd,
+    ...(row.name === undefined ? {} : { name: row.name }),
+    ...(row.parentSessionPath === undefined ? {} : { parentSessionPath: row.parentSessionPath }),
+    created: new Date(row.createdMs === null ? Number.NaN : row.createdMs),
+    modified: new Date(row.modifiedMs),
+    messageCount: row.messageCount,
+    firstMessage: row.firstMessage,
+    allMessagesText: row.firstMessage,
   };
 }
 
@@ -323,6 +383,16 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
    * sessions with in-flight mutations.
    */
   private readonly mutationQueues = new Map<string, Promise<void>>();
+  /**
+   * SCALE1 projection: defaults OFF so standalone store/catalog/mutation
+   * factories stay backend-neutral and side-effect-free; the production
+   * composition point (`createPiSdkSessionPorts`) opts in explicitly. Lazy:
+   * the index directory is created only on the first cold scan, so
+   * constructing the store stays side-effect-free.
+   */
+  private readonly projectionEnabled: boolean;
+  private readonly projectionDirOverride: string | undefined;
+  private projectionIndexPromise: Promise<SessionProjectionIndex | undefined> | undefined;
 
   constructor(options: PiSdkSessionStoreOptions = {}) {
     this.sessionDir = options.sessionDir;
@@ -330,6 +400,12 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     this.now = options.now ?? Date.now;
     this.maxNegatives = options.maxNegatives ?? 1024;
     this.sdk = options.sdk ?? realSdkSurface;
+    // SCALE1 projection defaults OFF so standalone store/catalog/mutation
+    // factories stay backend-neutral and side-effect-free (no writes to the
+    // agent dir) unless explicitly enabled. The production composition point
+    // (`createPiSdkSessionPorts`) opts in explicitly.
+    this.projectionEnabled = options.projection?.enabled ?? false;
+    this.projectionDirOverride = options.projection?.dir;
   }
 
   // -- list cache -----------------------------------------------------------
@@ -348,11 +424,68 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
 
   /** One cold scan. Never caches malformed/failed results. */
   private async scan(): Promise<readonly SdkSessionInfo[]> {
+    if (this.projectionEnabled) {
+      try {
+        const projected = await this.scanProjected();
+        if (projected !== undefined) return projected;
+      } catch {
+        // Projection path failed in an unexpected way: fall through to the
+        // authoritative store path (fail-closed, never break listing).
+      }
+    }
     const infos = await this.sdk.listAll(this.sessionDir);
     if (!Array.isArray(infos)) {
       throw new Error("session list scan returned a malformed result");
     }
     return infos;
+  }
+
+  /**
+   * SCALE1 projection-aware cold scan. Returns the projected list, or
+   * `undefined` to signal a fallback to the authoritative `sdk.listAll` path
+   * (index unavailable / scope unreliable / any non-regular session file). A
+   * full rebuild (unusable index) runs `sdk.listAll` itself and serves that
+   * result — parity by construction — while persisting the rows transactionally.
+   */
+  private async scanProjected(): Promise<readonly SdkSessionInfo[] | undefined> {
+    const index = await this.projectionIndex();
+    if (index === undefined) return undefined;
+    const rows = index.load();
+    if (rows === null) {
+      // Unusable/corrupt/stale-schema index → authoritative full rebuild.
+      const infos = await this.sdk.listAll(this.sessionDir);
+      if (!Array.isArray(infos)) {
+        throw new Error("session list scan returned a malformed result");
+      }
+      const projected: ProjectedSession[] = [];
+      for (const info of infos) {
+        const row = await projectInfo(info);
+        if (row !== null) projected.push(row);
+      }
+      index.replaceAll(projected);
+      return infos;
+    }
+    const reconciled = await reconcileProjection(index, this.sessionDir, rows);
+    if (reconciled === null) return undefined;
+    return reconciled.map(rowToInfo);
+  }
+
+  /**
+   * Lazily create (and cache) the projection index: safe-create the Pix-owned
+   * directory on first use, then build the index handle. Any failure (unsafe
+   * dir layout, unwritable agent dir) caches `undefined` so later scans fall
+   * back to the authoritative path. Construction of the store stays
+   * side-effect-free; the directory is only touched on the first cold scan.
+   */
+  private projectionIndex(): Promise<SessionProjectionIndex | undefined> {
+    if (this.projectionIndexPromise === undefined) {
+      this.projectionIndexPromise = (async () => {
+        const dir = this.projectionDirOverride ?? await defaultProjectionDirectory(this.sessionDir);
+        await ensureProjectionDirectory(dir);
+        return new SessionProjectionIndex(defaultProjectionIndexPath(dir));
+      })().catch(() => undefined);
+    }
+    return this.projectionIndexPromise;
   }
 
   /**

@@ -24,6 +24,12 @@ const workspaceRoot = join(packageRoot, "..", "..");
 const deps = [
   { name: "@fffattiger/pix-runtime-core", dir: join(workspaceRoot, "packages/runtime-core") },
   { name: "@fffattiger/pix-runtime-contract-tests", dir: join(workspaceRoot, "packages/runtime-contract-tests") },
+  // Secure-state primitives reused manifest-less by the SCALE1 projection index
+  // (session-projection.ts, mirroring sessiond's local-posix.ts): the
+  // `@fffattiger/pix-local-authority/state` import resolves via the workspace
+  // root symlink, and this entry ensures dist exists before adapter tsc runs.
+  // No package.json/package-lock change (workspace symlink + build order).
+  { name: "@fffattiger/pix-local-authority", dir: join(workspaceRoot, "packages/local-authority") },
 ];
 
 // Launch tsc as a JS CLI through the current Node — never the `.bin/tsc`
