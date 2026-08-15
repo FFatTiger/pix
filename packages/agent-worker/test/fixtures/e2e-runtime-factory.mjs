@@ -648,17 +648,18 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
           messages = trimmed;
           messageCount = trimmed.length;
           // Keep the D2 navigate branch model consistent with the trimmed
-          // history: the surviving entries are the last `messageCount` in
-          // insertion order, and the leaf stays the last surviving entry (the
-          // trimmed parents simply stop the walk — branchPath handles a missing
-          // parent by stopping at the first surviving entry).
-          if (trimmed.length === 0) {
-            entries = [];
-            leafId = null;
-          } else {
-            entries = entries.slice(-trimmed.length);
-            leafId = entries.at(-1).id;
-          }
+          // history: the surviving tree is the CURRENT LEAF's root→leaf path
+          // (messages are the navigated path, NOT the insertion tail — a
+          // slice(-N) of the insertion order would desync leafId from the
+          // visible history after a navigate). Trim the path's oldest two
+          // entries to mirror the message trim, keep the leaf as the path's
+          // last entry, and rebuild messages from the surviving path so
+          // leafId ↔ visible history stay mutually consistent.
+          const pathBefore = leafId === null ? [] : branchPath(leafId);
+          const survivingPath = pathBefore.length <= 2 ? [] : pathBefore.slice(2);
+          entries = survivingPath;
+          leafId = survivingPath.length === 0 ? null : survivingPath.at(-1).id;
+          if (leafId !== null) rebuildMessages(leafId);
           contextUsage = {
             percent: Math.max(0, contextUsage.percent - 30),
             contextWindow: contextUsage.contextWindow,
