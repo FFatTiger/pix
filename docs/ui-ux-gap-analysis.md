@@ -439,5 +439,5 @@ pix 必须采用：
 
 ### 验证状态
 
-- **未运行 UI tests、build、typecheck、lint、截图或浏览器验证**（与冻结约束一致）；Phosphor 图标与 JSX 用法仅通过读取已安装 `node_modules/@phosphor-icons/react` 类型导出静态核对（48/48 存在）；
+- **未运行 UI tests、build、typecheck、lint、截图或浏览器验证**（与冻结约束一致）；独立静态审查发现 `ActivityIcon` 不存在于 `@phosphor-icons/react@2.1.10`，已替换为该版本真实导出的 `PulseIcon`；其余图标仅通过读取已安装类型声明核对；
 - 待用户手工验收：桌面三栏/收起/dock、移动 overlay/触控、主题深浅色、各功能表面。

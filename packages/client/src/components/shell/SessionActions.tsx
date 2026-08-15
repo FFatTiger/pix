@@ -6,8 +6,8 @@ import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useHttpClient } from "@/app/http-context";
 import { createQueryOptions } from "@/api/query-keys";
 import {
-  ActivityIcon,
   BrainIcon,
+  PulseIcon,
   ChartBarIcon,
   ChatTextIcon,
   CpuIcon,
@@ -355,7 +355,7 @@ export function SessionActions({ live }: SessionActionsProps) {
               return `state: messageCount=${state.messageCount ?? 0}${state.sessionName ? `, name="${state.sessionName}"` : ""}, streaming=${state.isStreaming === true}`;
             })}
           >
-            <ActivityIcon size={13} aria-hidden="true" />
+            <PulseIcon size={13} aria-hidden="true" />
             State
           </button>
           <button
