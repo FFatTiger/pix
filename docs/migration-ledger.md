@@ -2037,11 +2037,17 @@ seam 与否都排除；自定义 readonly 列表含 mutation token 也在 down �
 
 ```text
 实现：独立 worktree client-session-rename-ui，branch feat/d4-client-session-rename-ui，
-base main ef564b7，实现 commit 8d197f58。Client-only，未改 Host/Protocol/sessiond/
-adapter/package-lock/E2E backend/live service；实现阶段未改 main、未 merge/push。
+base main ef564b7，实现 commit `8d197f5` + docs `5d025fe` + verifier 轮次错误码对齐 `34edde7`，
+合并 main merge commit `4dd83cc`（仅 ledger §53 插入冲突，源码零冲突）。Fresh verifier：决定性
+数据层门 PASS（G1-G4：stale in-flight list/detail refetch 无法回滚 prime 后新标题、双行 rename
+无交叉污染、rename→delete 无复活，即使 fake host 忽略 abort）；G5-G7 错误路径固定文案/无 raw 泄漏；
+652/652、typecheck/build/boundary/architecture 复现；Medium finding（错误码映射与 Host §52 脱节）
+由 `34edde7` 修复（SESSION_CHANGED/SESSION_RENAME_UNAVAILABLE/INVALID_SESSION_NAME 各归位
+专属文案、delete mapper 不动）后聚焦复验 PASS。Client-only，未改 Host/Protocol/sessiond/
+adapter/package-lock/E2E backend/live service。
 依赖 Host §52（PATCH /v1/sessions/:id，body `{name}`，成功 `{success:true}`，能力
-`session.write`）——本切片只消费该契约并做客户端能力门控，Host §52 并行分支负责挂载。
-状态 DONE（Fresh 独立验证 PASS）。
+`session.write`）——本切片只消费该契约并做客户端能力门控。
+状态 DONE（Fresh 独立验证 PASS，已合入 main）。
 
 API/cache（packages/client/src/api）：
 - sessions.ts：rename 与 remove 从错误的 `OkSchema`（`{ok:boolean}`）改为 `SuccessSchema`
@@ -2311,7 +2317,7 @@ realpath 检查之后的替换（句柄已关闭、无 openat 可重新钉住）
 merge-tree（仅 ledger 追加冲突），对 772269d 给出 PASS，并要求本节与 posix.ts 模块头枚举窗口
 (1)——本修订即该要求。
 
-## 56. authenticated-shutdown — sessiond 认证控制平面关闭 + ACK-before-close + CLI RPC-only down（PENDING 独立验证）
+## 56. authenticated-shutdown — sessiond 认证控制平面关闭 + ACK-before-close + CLI RPC-only down（DONE，verifier 二轮 PASS）
 
 ```text
 实现：source `dfabec2` + follow-up `bad2e0c`（branch feat/authenticated-shutdown，base main `5b8a7c9`），
