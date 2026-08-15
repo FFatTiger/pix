@@ -944,7 +944,7 @@ export class SessiondService {
   }
 
   /**
-   * D2-P2/P3/P4/P6/P7/P9 authority: `set_thinking_level` / `set_model` /
+   * D2-P2/P3/P4/P6/P7 authority + D2 navigate: `set_thinking_level` / `set_model` /
    * `set_auto_retry` / `set_tools` / `reload` / `compact` / `navigate_tree`
    * mutate runtime state
    * that is NOT carried on the wire `runtime_state_changed` event (signal-only;
