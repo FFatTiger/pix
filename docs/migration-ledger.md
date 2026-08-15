@@ -2346,11 +2346,14 @@ unsupported 拒绝，绝不 fallback kill；Local Authority race 仍在 §55 在
 待补。
 ```
 
-## 58. sessiond POSIX private-directory hardening slice（PENDING 独立验证）
+## 58. sessiond POSIX private-directory hardening slice（DONE，Fresh verifier PASS）
 
 ```text
-实现：source `4e74bd2`（branch feat/sessiond-private-dir，base main `d817a32`，tree 基线 clean；§57 并行在飞，本切片
-不触碰 §57 范围）。编号：§53/§55/§55.1/§56 已占用，本切片占 §58；§57 由并行 agent 独立推进，合并
+实现：source `4e74bd2` + docs `9ea55ad` + verifier 轮次措辞/计数修正 `12ebb25`（branch
+feat/sessiond-private-dir，base main `d817a32`），合并 main merge commit `a299c19`（merge-tree
+零冲突）；Fresh verifier 对 `9ea55ad` 全门 PASS（40 项独立对抗断言、独立重导 0755/raced-
+EEXIST/open-swap、行为保全、material-risk 逐项裁定、残余窗口四项代码匹配）。§57 并行在飞，
+本切片不触碰 §57 范围。编号：§53/§55/§55.1/§56 已占用，本切片占 §58；§57 由并行 agent 独立推进，合并
 main 时若 ledger 尾段冲突按 append 解决，不覆盖对方小节。未 push/deploy/live service，未改
 package-lock/deps（sessiond 未在 package.json 声明 local-authority，靠 npm workspace 顶层 symlink +
 sessiond build-deps.mjs 新增 local-authority 构建顺序提供 dist；package-lock 零变更）。
