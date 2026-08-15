@@ -2385,7 +2385,7 @@ local.ts 适配：移除旧 lax `ensurePrivateDirectory`（mkdir recursive + 无
 `recoverStalePublicSocket`/`recoverStalePrivateAliases` 仅在提供上下文时 re-verify（回收绝不自行创建
 目录，直调行为不变）；public socket "not a socket" 消息移除内嵌 endpoint 路径（raw 泄漏修复，无测试
 断言旧消息）。daemon.ts：startDaemon 首个动作即 preflight（.catch 映射），锁/恢复/secret/listen/发布
-全部透传 privateDir 并在 listen 前再 re-verify；catch 统一映射 LocalAuthorityError。
+全部透传 privateDir 并在 listen 后（发布 public endpoint 前）再 re-verify（private socket 绑定由 loadOrCreateLocalSecret 内的更早 reverify 守护；窗口内 swap 由本次 reverify 检出并 fail-closed 回滚）；catch 统一映射 LocalAuthorityError。
 
 残余窗口（诚实声明，均不宣称 fail-closed）：
 - 与 Local Authority §55.1 相同的两个 created-leaf 窗口：(1) fulfilled leaf mkdir 与紧随 identity 捕获
@@ -2412,7 +2412,7 @@ mkdir 置位。
 
 验证（实现者已执行，PENDING 独立 PASS）：sessiond 295 tests（294 pass + 1 Windows skip，多轮稳定无
 flake；基线 270 → 新增 25）；root build/typecheck/check:architecture（14 gates）PASS；root test 全
-workspace 绿（agent-worker 107 / cli 105 / client 52 / host 420 / local-authority 53 / pi-sdk-adapter
+workspace 绿（scripts 107 / agent-worker 105 / cli 52 / client 627 / host 420 / local-authority 53 / pi-sdk-adapter
 236 / protocol 132 / runtime-contract-tests 76 / runtime-core 12 / sessiond 295）；sessiond/host
 boundary PASS；Startup + Sessions + Runtime E2E 全 PASS（Startup 确认 daemon 在缺失 runtime 目录时创建
 0700 并正常启动、CLI down 清 lock/socket）；git diff --check 干净；package-lock 零变更；工作树

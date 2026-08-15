@@ -337,8 +337,10 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     await server.listen();
     teardown.push(() => server!.close());
     if (needsUnixSocketPublication()) {
-      // Re-verify the directory identity before binding the private socket and
-      // before the atomic hard-link publication of the stable public endpoint.
+      // Re-verify the directory identity after listen (the bind is guarded by the
+      // earlier reverify inside loadOrCreateLocalSecret) and before the atomic
+      // hard-link publication of the stable public endpoint. A swap in that window
+      // is detected here: startup fails closed and rollback is identity-scoped.
       await reverifySessiondPrivateDirectory(privateDir);
       publication = await publishPublicEndpoint(paths, privatePath!, lock.instanceId, privateDir);
     }
