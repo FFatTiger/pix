@@ -265,6 +265,26 @@ export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps
     return c.json({ context: { ...parsed, entries: [...parsed.entries] } });
   });
 
+  // Read-only normalized branch tree (BranchNavigator slice). Strict GET with
+  // NO query surface: ANY query string (even a bare `?`) is a fixed 400 before
+  // the session id is validated or the catalog is touched — leaf selection is
+  // the client's job (context?leafId), the tree itself takes no parameters.
+  // Errors reuse the shared catalog mapping (not_found → 404, everything else
+  // → sanitized 503); the response is the strict tree DTO under `tree`.
+  app.get("/v1/sessions/:id/tree", async (c) => {
+    if (c.req.url.includes("?")) {
+      throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+    }
+    const sessionId = requireSessionId(c.req.param("id"));
+    let result: unknown;
+    try {
+      result = await deps.client.tree(sessionId);
+    } catch (error) {
+      throw mapSessionCatalogError(error);
+    }
+    return c.json({ tree: { ...(result as Record<string, unknown>) } });
+  });
+
   // D4 session-history delete. Mounted ONLY when the mutation seam is present
   // (production: narrow delete client + sessiond `system.ping` mutation guard).
   // A generic composition with no delete seam gets no DELETE route and no

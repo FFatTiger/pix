@@ -188,6 +188,12 @@ export interface SessionHistoryReadClient {
   list(params: { cwd?: string; limit?: number; offset?: number }): Promise<unknown>;
   read(sessionId: string): Promise<unknown>;
   context(sessionId: string, leafId?: string): Promise<unknown>;
+  /**
+   * Read-only normalized branch tree (GET /v1/sessions/:id/tree). Backed by
+   * the `sessions.tree` RPC — a pure persisted-JSONL catalog projection that
+   * can never activate a Worker.
+   */
+  tree(sessionId: string): Promise<unknown>;
 }
 
 /**

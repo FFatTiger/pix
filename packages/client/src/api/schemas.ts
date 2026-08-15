@@ -10,6 +10,7 @@ import {
   SessionContextSchema,
   SessionDetailSchema,
   SessionHeaderSchema,
+  SessionTreeSchema,
   SkillInfoSchema,
   SlashCommandInfoSchema,
   TrustLevelSchema,
@@ -41,6 +42,17 @@ export const SessionContextResponseSchema = z.union([
   SessionContextSchema.transform((context) => ({ context })),
   z.strictObject({ context: SessionContextSchema, revision: QueryRevisionSchema.optional() }),
 ]);
+/**
+ * GET /v1/sessions/:id/tree — the normalized branch tree under `tree`
+ * (strict DTO: extra/malformed fields are rejected, never coerced). The tree
+ * carries the PERSISTED catalog head as `currentLeafId`; live mode overrides
+ * the active leaf from the runtime snapshot (see lib/session-tree).
+ */
+export const SessionTreeResponseSchema = z.union([
+  SessionTreeSchema.transform((tree) => ({ tree })),
+  z.strictObject({ tree: SessionTreeSchema, revision: QueryRevisionSchema.optional() }),
+]);
+export type SessionTreeResponse = z.infer<typeof SessionTreeResponseSchema>;
 export const ThinkingResponseSchema = z.strictObject({ thinking: z.string(), entryId: z.string().optional() });
 export const BashOutputResponseSchema = z.strictObject({ output: z.string(), truncated: z.boolean().optional(), fullOutputPath: z.string().optional() });
 

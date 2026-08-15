@@ -22,6 +22,9 @@ import type {
   ResourceCatalogStorePort,
   SessionCatalogPort,
   SessionMutationPort,
+  SessionTree,
+  SessionTreeNode,
+  SessionTreeNodeKind,
   ThemeCatalogPort,
   TrustGateResult,
 } from "./index.js";
@@ -114,11 +117,12 @@ const _queryIsNotPort: Assignable<ProjectTrustQueryPort, ProjectTrustPort> = fal
 
 // Session mutation (offline rename) is a SEPARATE, narrow port: it carries
 // only `renameSession` and never exposes the read-side catalog surface
-// (list/read/context) nor the legacy catalog deleteSession. The read-only
+// (list/read/context/tree) nor the legacy catalog deleteSession. The read-only
 // SessionCatalogPort keeps its existing deleteSession (unchanged contract).
 const _mutNoList: Missing<SessionMutationPort, "listSessions"> = true;
 const _mutNoRead: Missing<SessionMutationPort, "readSession"> = true;
 const _mutNoContext: Missing<SessionMutationPort, "readSessionContext"> = true;
+const _mutNoTree: Missing<SessionMutationPort, "readSessionTree"> = true;
 const _mutNoLocate: Missing<SessionMutationPort, "locate"> = true;
 const _mutNoDelete: Missing<SessionMutationPort, "deleteSession"> = true;
 const _mutOnlyRename: Assignable<
@@ -220,9 +224,84 @@ test("a read-only session catalog object exposes no renameSession", () => {
     listSessions: () => Promise.resolve([]),
     readSession: () => Promise.reject(new Error("not implemented")),
     readSessionContext: () => Promise.reject(new Error("not implemented")),
+    readSessionTree: () => Promise.reject(new Error("not implemented")),
     deleteSession: () => Promise.resolve(),
   };
   const keys = Object.keys(catalog);
   assert.ok(!keys.includes("renameSession"));
   assert.ok(keys.includes("deleteSession"), "legacy deleteSession stays on the catalog");
+  assert.ok(keys.includes("readSessionTree"), "the branch-tree read stays on the catalog");
+});
+
+/* ------------------------------------------------------------------ */
+/* Session branch-tree contract (BranchNavigator slice)               */
+/* ------------------------------------------------------------------ */
+
+// The tree node kind vocabulary is EXACT: six normalized pix-owned kinds and
+// no backend entry-type string ever leaks into the canonical model.
+const _treeKindExact: IsExact<
+  SessionTreeNodeKind,
+  "user" | "assistant" | "toolResult" | "bashExecution" | "custom" | "system"
+> = true;
+
+// The tree DTO carries structural ids/labels only — never a raw message
+// object, raw file path or any live-runtime state field.
+const _treeNoMessages: Missing<SessionTree, "messages"> = true;
+const _treeNoEntries: Missing<SessionTree, "entries"> = true;
+const _treeNoSessionFile: Missing<SessionTree, "sessionFile"> = true;
+const _treeNoWorkerState: Missing<SessionTree, "workerStatus"> = true;
+const _treeNodeNoMessage: Missing<SessionTreeNode, "message"> = true;
+const _treeNodeNoLabel: Missing<SessionTreeNode, "path"> = true;
+
+// readSessionTree returns the canonical tree and stays read-only (no
+// activation surface on the catalog).
+const _catalogNoActivate: Missing<SessionCatalogPort, "activate"> = true;
+const _catalogNoOpen: Missing<SessionCatalogPort, "open"> = true;
+
+test("the normalized session tree is JSON-serializable and carries no message payloads", () => {
+  const tree: SessionTree = {
+    sessionId: "s1",
+    currentLeafId: "e2",
+    entryCount: 3,
+    roots: [
+      {
+        entryId: "e1",
+        kind: "user",
+        label: "hello world",
+        truncated: false,
+        children: [
+          {
+            entryId: "e3",
+            parentEntryId: "e1",
+            kind: "assistant",
+            label: "sure",
+            truncated: false,
+            children: [],
+            skippedEntryIds: ["e2"],
+          },
+        ],
+      },
+    ],
+  };
+  assert.doesNotThrow(() => JSON.parse(JSON.stringify(tree)));
+  const json = JSON.stringify(tree);
+  assert.ok(!json.includes("message"), "tree must not carry message payloads");
+  assert.ok(!json.includes("thinking"), "tree must not carry thinking text");
+  assert.ok(!json.includes("toolCall"), "tree must not carry tool payloads");
+  assert.ok(!json.includes(".jsonl"), "tree must not carry raw file paths");
+});
+
+test("the session tree kinds are exactly the six normalized values", () => {
+  const kinds: readonly SessionTreeNodeKind[] = [
+    "user",
+    "assistant",
+    "toolResult",
+    "bashExecution",
+    "custom",
+    "system",
+  ];
+  assert.equal(new Set(kinds).size, 6);
+  for (const kind of kinds) {
+    assert.match(kind, /^(user|assistant|toolResult|bashExecution|custom|system)$/);
+  }
 });

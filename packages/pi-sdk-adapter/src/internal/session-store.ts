@@ -11,7 +11,11 @@
 //
 // Hard boundary: no ModelRuntime, Agent, AgentSession, network, credentials,
 // resources or trust are imported or instantiated here. list / read / context /
-// locate / resolveLeafId / renameSession / deleteSession run with zero Workers.
+// tree / locate / resolveLeafId / renameSession / deleteSession run with zero
+// Workers. `readSessionTree` (see src/internal/session-tree.ts) is a PURE
+// projection over the same cached getEntries() read: no SDK tree object, raw
+// path or raw message payload crosses out, and its `currentLeafId` mirrors
+// exactly the leaf a leaf-less context read resolves.
 //
 // Performance contract (hotfix `fix/session-list-piweb-parity`, mirrors the
 // legacy web frontend's `session-reader` algorithm):
@@ -94,9 +98,11 @@ import type {
   SessionEntry,
   SessionHeader,
   SessionLocation,
+  SessionTree,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
 import { mapMessage } from "../mappers/index.js";
+import { projectSessionTree } from "./session-tree.js";
 import type { PiSdkSessionStore } from "../sessions/index.js";
 
 /** Options for the SDK-backed session store. */
@@ -774,6 +780,21 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       ...(selectedLeaf === null || selectedLeaf === undefined ? {} : { leafId: selectedLeaf }),
       entries: selected.flatMap(mapEntry),
     };
+  }
+
+  /**
+   * Normalized branch-tree projection (BranchNavigator slice). Reuses the
+   * SAME shared list cache / revision fence / id-validated open as every other
+   * warm read (no second scan, no SDK tree object, zero workers), then runs
+   * the pure projector over the entries. `currentLeafId` mirrors exactly the
+   * leaf a leaf-less `readSessionContext` resolves (the persisted file-order
+   * head) — never a live worker leaf.
+   */
+  async readSessionTree(sessionId: string): Promise<SessionTree> {
+    const opened = await this.openSession(sessionId);
+    if (!opened) throw notFound(sessionId);
+    const { manager } = opened;
+    return projectSessionTree(sessionId, manager.getEntries(), manager.getLeafId());
   }
 
   async deleteSession(sessionId: string): Promise<void> {

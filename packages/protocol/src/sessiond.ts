@@ -12,6 +12,7 @@ import {
   SessionContextSchema,
   SessionDetailSchema,
   SessionHeaderSchema,
+  SessionTreeSchema,
 } from "./domain.js";
 import { CorrelatedRuntimeCommandResultSchema, CorrelatedRuntimeInterruptResultSchema, RuntimeInterruptSchema } from "./results.js";
 import { RuntimeEventSchema } from "./events.js";
@@ -148,6 +149,17 @@ export const SessionsContextParamsSchema = z.strictObject({
   leafId: NonEmptyStringSchema.optional(),
 });
 export type SessionsContextParams = z.infer<typeof SessionsContextParamsSchema>;
+
+/**
+ * Read-only normalized branch tree of one session (BranchNavigator slice).
+ * The tree is a pure persisted-JSONL projection (zero workers); leaf selection
+ * happens client-side via `sessions.context?leafId`, so this method takes no
+ * leaf parameter.
+ */
+export const SessionsTreeParamsSchema = z.strictObject({
+  sessionId: NonEmptyStringSchema,
+});
+export type SessionsTreeParams = z.infer<typeof SessionsTreeParamsSchema>;
 
 export const SessionsRenameParamsSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
@@ -307,6 +319,9 @@ export type SessionsReadResult = z.infer<typeof SessionsReadResultSchema>;
 export const SessionsContextResultSchema = SessionContextSchema;
 export type SessionsContextResult = z.infer<typeof SessionsContextResultSchema>;
 
+export const SessionsTreeResultSchema = SessionTreeSchema;
+export type SessionsTreeResult = z.infer<typeof SessionsTreeResultSchema>;
+
 export const SessionsRenameResultSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
   name: NonEmptyStringSchema,
@@ -419,6 +434,11 @@ export const SessiondRpcRequestSchema = z.discriminatedUnion("method", [
   }),
   z.strictObject({
     ...rpcEnvelope,
+    method: z.literal("sessions.tree"),
+    params: SessionsTreeParamsSchema,
+  }),
+  z.strictObject({
+    ...rpcEnvelope,
     method: z.literal("sessions.rename"),
     params: SessionsRenameParamsSchema,
   }),
@@ -450,6 +470,7 @@ export const SESSIOND_RPC_METHODS = [
   "sessions.resolve",
   "sessions.read",
   "sessions.context",
+  "sessions.tree",
   "sessions.rename",
   "sessions.delete",
 ] as const;
@@ -476,6 +497,7 @@ export type SessiondMethodParams = {
   "sessions.resolve": SessionsResolveParams;
   "sessions.read": SessionsReadParams;
   "sessions.context": SessionsContextParams;
+  "sessions.tree": SessionsTreeParams;
   "sessions.rename": SessionsRenameParams;
   "sessions.delete": SessionsDeleteParams;
 };
@@ -499,6 +521,7 @@ export type SessiondMethodResult = {
   "sessions.resolve": SessionsResolveResult;
   "sessions.read": SessionsReadResult;
   "sessions.context": SessionsContextResult;
+  "sessions.tree": SessionsTreeResult;
   "sessions.rename": SessionsRenameResult;
   "sessions.delete": SessionsDeleteResult;
 };
@@ -522,6 +545,7 @@ export const SessiondMethodResultSchemas = {
   "sessions.resolve": SessionsResolveResultSchema,
   "sessions.read": SessionsReadResultSchema,
   "sessions.context": SessionsContextResultSchema,
+  "sessions.tree": SessionsTreeResultSchema,
   "sessions.rename": SessionsRenameResultSchema,
   "sessions.delete": SessionsDeleteResultSchema,
 } as const;
@@ -545,6 +569,7 @@ export const SessiondRpcSuccessSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.resolve"), result: SessionsResolveResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.read"), result: SessionsReadResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.context"), result: SessionsContextResultSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.tree"), result: SessionsTreeResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.rename"), result: SessionsRenameResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.delete"), result: SessionsDeleteResultSchema }),
 ]);
@@ -568,6 +593,7 @@ export const SessiondRpcFailureSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.resolve"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.read"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.context"), error: ProtocolErrorSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.tree"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.rename"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.delete"), error: ProtocolErrorSchema }),
 ]);

@@ -5,6 +5,7 @@ import {
   OkSchema,
   SessionContextResponseSchema,
   SessionDetailResponseSchema,
+  SessionTreeResponseSchema,
   SessionListSchema,
   SuccessSchema,
   ThinkingResponseSchema,
@@ -15,6 +16,8 @@ export function createSessionsApi(http: HttpClient) {
     list: (input: { cwd?: string; signal?: AbortSignal } = {}) => http.get(urls.sessions.list(input.cwd), { schema: SessionListSchema, ...(input.signal === undefined ? {} : { signal: input.signal }) }),
     detail: (id: string, signal?: AbortSignal) => http.get(urls.sessions.byId(id), { schema: SessionDetailResponseSchema, ...(signal === undefined ? {} : { signal }) }),
     context: (id: string, signal?: AbortSignal) => http.get(urls.sessions.context(id), { schema: SessionContextResponseSchema, ...(signal === undefined ? {} : { signal }) }),
+    // Read-only branch tree for the BranchNavigator slice (history mode).
+    tree: (id: string, signal?: AbortSignal) => http.get(urls.sessions.tree(id), { schema: SessionTreeResponseSchema, ...(signal === undefined ? {} : { signal }) }),
     thinking: (id: string, entryId: string, signal?: AbortSignal) => http.get(urls.sessions.thinking(id, entryId), { schema: ThinkingResponseSchema, ...(signal === undefined ? {} : { signal }) }),
     bashOutput: (id: string, entryId: string, signal?: AbortSignal) => http.get(urls.sessions.bashOutput(id, entryId), { schema: BashOutputResponseSchema, ...(signal === undefined ? {} : { signal }) }),
     export: (id: string, format?: string, signal?: AbortSignal) => http.get<Blob>(urls.sessions.export(id, format), { responseMode: "blob", ...(signal === undefined ? {} : { signal }) }),

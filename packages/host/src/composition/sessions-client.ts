@@ -45,6 +45,11 @@ export function createSessiondSessionsClient(
         ...(leafId === undefined ? {} : { leafId }),
       });
     },
+    async tree(sessionId) {
+      // Read-only branch-tree RPC: the sessiond catalog handler projects the
+      // persisted JSONL with zero runtime involvement.
+      return client.call("sessions.tree", { sessionId });
+    },
   };
 }
 

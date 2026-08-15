@@ -515,6 +515,10 @@ async function startRuntimeStack(tempDir) {
       if (!fixtureSessions.has(sessionId)) throw { code: "not_found", message: "session not found", retryable: false };
       return { sessionId, entries: [] };
     },
+    async readSessionTree(sessionId) {
+      if (!fixtureSessions.has(sessionId)) throw { code: "not_found", message: "session not found", retryable: false };
+      return { sessionId, roots: [], entryCount: 0 };
+    },
     async deleteSession(sessionId) {
       fixtureSessions.delete(sessionId);
     },

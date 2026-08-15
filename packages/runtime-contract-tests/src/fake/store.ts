@@ -7,13 +7,18 @@
  */
 import type {
   AgentMessage,
+  AssistantMessage,
   ModelRef,
-  SideChatActivityItem,
-  SideChatMainSnapshot,
   SessionContext,
   SessionDetail,
   SessionHeader,
   SessionLocation,
+  SessionTree,
+  SessionTreeNode,
+  SessionTreeNodeKind,
+  SideChatActivityItem,
+  SideChatMainSnapshot,
+  UserMessage,
 } from "@fffattiger/pix-runtime-core";
 
 export interface StoredEntry {
@@ -227,6 +232,77 @@ export class ReferenceSessionStore {
         ? { leafId: leafId ?? session.leafId }
         : {}),
       entries,
+    };
+  }
+
+  /**
+   * Minimal reference branch-tree projection: parentEntryId links, single-child
+   * chain contraction, message-role kinds and 40-char text previews. Mirrors
+   * the adapter contract (persisted leaf head only, no raw payloads).
+   */
+  readSessionTree(sessionId: string): SessionTree {
+    const session = this.getSession(sessionId);
+    if (!session) throw new Error(`session not found: ${sessionId}`);
+    // Reference preview: single-line text blocks only, capped at 40 units.
+    const previewText = (content: UserMessage["content"] | AssistantMessage["content"]): string => {
+      const text = typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content.filter((block) => block.type === "text").map((block) => (block as { text: string }).text).join(" ")
+          : "";
+      return (text.split("\n")[0] ?? "").replace(/\s+/g, " ").trim();
+    };
+    const byId = new Map<string, { entry: StoredEntry; children: string[] }>();
+    for (const entry of session.entries) {
+      if (byId.has(entry.entryId)) continue;
+      byId.set(entry.entryId, { entry, children: [] });
+    }
+    const roots: string[] = [];
+    for (const [id, node] of byId) {
+      const parentId = node.entry.parentEntryId;
+      const parent = parentId === undefined ? undefined : byId.get(parentId);
+      if (parent === undefined || parent.entry.entryId === id) roots.push(id);
+      else parent.children.push(id);
+    }
+    const kindOf = (message: AgentMessage): SessionTreeNodeKind => {
+      switch (message.role) {
+        case "user":
+        case "assistant":
+        case "toolResult":
+        case "bashExecution":
+        case "custom":
+          return message.role;
+        default:
+          return "system";
+      }
+    };
+    const labelOf = (message: AgentMessage): { label: string; truncated: boolean } => {
+      const text = message.role === "user" || message.role === "assistant" || message.role === "custom"
+        ? previewText(message.content)
+        : "";
+      return text.length > 40 ? { label: text.slice(0, 40), truncated: true } : { label: text, truncated: false };
+    };    const build = (id: string, skipped: string[]): SessionTreeNode => {
+      const node = byId.get(id)!;
+      const children = node.children;
+      if (children.length === 1) {
+        return build(children[0]!, [...skipped, id]);
+      }
+      return {
+        entryId: id,
+        ...(node.entry.parentEntryId === undefined ? {} : { parentEntryId: node.entry.parentEntryId }),
+        kind: kindOf(node.entry.message),
+        label: labelOf(node.entry.message).label,
+        truncated: labelOf(node.entry.message).truncated,
+        children: children.map((child) => build(child, [])),
+        ...(skipped.length === 0 ? {} : { skippedEntryIds: skipped }),
+      };
+    };
+    const currentLeafId = session.leafId ?? session.entries.at(-1)?.entryId;
+    return {
+      sessionId,
+      ...(currentLeafId === undefined ? {} : { currentLeafId }),
+      roots: roots.map((root) => build(root, [])),
+      entryCount: byId.size,
     };
   }
 

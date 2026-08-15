@@ -39,8 +39,21 @@ function fakeClient(impl) {
     async context(id, leafId) {
       return impl.context(id, leafId);
     },
+    async tree(id) {
+      return impl.tree(id);
+    },
   };
 }
+
+/** Protocol-shaped branch-tree fixture (kept node + contracted chain). */
+const TREE_NODE = {
+  entryId: "e2",
+  kind: "assistant",
+  label: "answer",
+  truncated: false,
+  children: [],
+  skippedEntryIds: ["e1"],
+};
 
 function appWith(client, extra = {}) {
   return createHostApp({
@@ -163,6 +176,114 @@ test("GET /v1/sessions/:id/context returns context and forwards leafId", async (
   assert.equal(body.context.leafId, "e9");
   assert.equal(capturedLeaf, "e9");
   assert.equal(body.context.entries[0].entryId, "e1");
+});
+
+test("GET /v1/sessions/:id/tree returns the normalized tree DTO", async () => {
+  let capturedId;
+  const app = appWith(
+    fakeClient({
+      async list() {
+        return { sessions: [] };
+      },
+      async read() {
+        return { ...header() };
+      },
+      async context() {
+        return { sessionId: "s1", entries: [ENTRY] };
+      },
+      async tree(id) {
+        capturedId = id;
+        return { sessionId: id, currentLeafId: "e2", roots: [TREE_NODE], entryCount: 2 };
+      },
+    }),
+  );
+  const res = await call(app, "/v1/sessions/s1/tree");
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(capturedId, "s1");
+  assert.equal(body.tree.sessionId, "s1");
+  assert.equal(body.tree.currentLeafId, "e2");
+  assert.equal(body.tree.entryCount, 2);
+  assert.deepEqual(body.tree.roots, [TREE_NODE]);
+});
+
+test("tree: not_found maps to 404 SESSION_NOT_FOUND (no id echo)", async () => {
+  const app = appWith(
+    fakeClient({
+      async list() {
+        return { sessions: [] };
+      },
+      async read() {
+        return { ...header() };
+      },
+      async context() {
+        return { sessionId: "s1", entries: [] };
+      },
+      async tree() {
+        throw Object.assign(new Error("session not found: secret-id"), { code: "not_found" });
+      },
+    }),
+  );
+  const res = await call(app, "/v1/sessions/secret-id/tree");
+  assert.equal(res.status, 404);
+  const body = await res.json();
+  assert.equal(body.code, "SESSION_NOT_FOUND");
+  assert.equal(body.message, "Session not found");
+  assert.ok(!JSON.stringify(body).includes("secret-id"), "404 must not echo the session id");
+});
+
+test("tree: unavailable/unknown errors sanitize to a fixed 503", async () => {
+  for (const error of [Object.assign(new Error("boom"), { code: "unavailable" }), new Error("raw socket ECONNREFUSED")]) {
+    const app = appWith(
+      fakeClient({
+        async list() {
+          return { sessions: [] };
+        },
+        async read() {
+          return { ...header() };
+        },
+        async context() {
+          return { sessionId: "s1", entries: [] };
+        },
+        async tree() {
+          throw error;
+        },
+      }),
+    );
+    const res = await call(app, "/v1/sessions/s1/tree");
+    assert.equal(res.status, 503);
+    const body = await res.json();
+    assert.equal(body.code, "SESSIONS_UNAVAILABLE");
+    assert.equal(body.message, "Session history is unavailable");
+  }
+});
+
+test("tree rejects ANY query string with a fixed 400 and zero tree RPC", async () => {
+  let calls = 0;
+  const app = appWith(
+    fakeClient({
+      async list() {
+        return { sessions: [] };
+      },
+      async read() {
+        return { ...header() };
+      },
+      async context() {
+        return { sessionId: "s1", entries: [] };
+      },
+      async tree() {
+        calls += 1;
+        return { sessionId: "s1", roots: [], entryCount: 0 };
+      },
+    }),
+  );
+  for (const q of ["?", "?leafId=e1", "?leafId=", "?x=1", "?leafId=e1&x=2", "?%61=1"]) {
+    const res = await call(app, `/v1/sessions/s1/tree${q}`);
+    assert.equal(res.status, 400, `query ${q} must be a strict 400`);
+    const body = await res.json();
+    assert.equal(body.code, "INVALID_QUERY");
+  }
+  assert.equal(calls, 0, "no tree RPC may run for a rejected query");
 });
 
 test("context without leafId omits the leafId query", async () => {

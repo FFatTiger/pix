@@ -38,6 +38,7 @@ function harness(options: { worker?: ConstructorParameters<typeof FakeWorkerFact
     async listSessions() { return []; },
     async readSession(sessionId) { return { sessionId, cwd: "/workspace", projectRoot: "/workspace", entries: [] }; },
     async readSessionContext(sessionId) { return { sessionId, entries: [] }; },
+    async readSessionTree(sessionId) { return { sessionId, roots: [], entryCount: 0 }; },
     async deleteSession() {},
   };
   const workers = new FakeWorkerFactory(options.worker);
@@ -2042,6 +2043,7 @@ test("sessions.list forwards cwd/limit/offset and sessions.context forwards leaf
       contextCalls.push({ sessionId, ...(options?.leafId === undefined ? {} : { leafId: options.leafId }) });
       return { sessionId, entries: [] };
     },
+    async readSessionTree(sessionId) { return { sessionId, roots: [], entryCount: 0 }; },
     async deleteSession() {},
   };
   const service = new SessiondService(
@@ -2667,6 +2669,10 @@ function deleteHarness(options: {
     async readSessionContext(sessionId) {
       if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);
       return { sessionId, entries: [] };
+    },
+    async readSessionTree(sessionId) {
+      if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);
+      return { sessionId, roots: [], entryCount: 0 };
     },
     async deleteSession(sessionId) {
       if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);

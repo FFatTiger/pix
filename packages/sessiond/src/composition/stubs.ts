@@ -43,6 +43,9 @@ export function createStubSessionCatalog(): SessionCatalogPort {
     async readSessionContext(sessionId) {
       return { sessionId, entries: [] };
     },
+    async readSessionTree(sessionId) {
+      return { sessionId, roots: [], entryCount: 0 };
+    },
     async deleteSession() {
       /* no-op stub */
     },

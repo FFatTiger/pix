@@ -226,6 +226,7 @@ async function activationHarness(options: {
         : { sessionId, cwd: "/real/project", projectRoot: "/real/project", entries: [] };
     },
     async readSessionContext() { return { sessionId: "", entries: [] }; },
+    async readSessionTree() { return { sessionId: "", roots: [], entryCount: 0 }; },
     async deleteSession() {},
   };
   const locator: SessionLocatorPort = {

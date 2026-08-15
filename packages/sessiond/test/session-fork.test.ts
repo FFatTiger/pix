@@ -58,6 +58,10 @@ function forkHarness(options: ForkHarnessOptions = {}) {
       if (!files.get(sessionId)) throw { code: "not_found", message: "session not found", retryable: false };
       return { sessionId, entries: [] };
     },
+    async readSessionTree(sessionId) {
+      if (!files.get(sessionId)) throw { code: "not_found", message: "session not found", retryable: false };
+      return { sessionId, roots: [], entryCount: 0 };
+    },
     async deleteSession(sessionId) {
       if (!files.get(sessionId)) throw { code: "not_found", message: "session not found", retryable: false };
       files.set(sessionId, false);

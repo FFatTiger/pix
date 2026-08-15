@@ -1005,6 +1005,21 @@ describe("sessiond RPC", () => {
       "sessions.resolve": { sessionId: "s-1", cwd: "/tmp/p", projectRoot: "/tmp/p" },
       "sessions.read": { sessionId: "s-1", cwd: "/tmp/p", projectRoot: "/tmp/p", entries: [] },
       "sessions.context": { sessionId: "s-1", entries: [] },
+      "sessions.tree": {
+        sessionId: "s-1",
+        currentLeafId: "e2",
+        roots: [
+          {
+            entryId: "e2",
+            kind: "assistant",
+            label: "answer",
+            truncated: false,
+            children: [],
+            skippedEntryIds: ["e1"],
+          },
+        ],
+        entryCount: 2,
+      },
       "sessions.rename": { sessionId: "s-1", name: "New" },
       "sessions.delete": { sessionId: "s-1", deleted: true },
       "system.shutdown": { accepted: true },

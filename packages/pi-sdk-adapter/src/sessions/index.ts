@@ -17,6 +17,7 @@ import type {
   SessionLocation,
   SessionLocatorPort,
   SessionMutationPort,
+  SessionTree,
 } from "@fffattiger/pix-runtime-core";
 import { createPiSdkSessionStore } from "../internal/session-store.js";
 
@@ -32,6 +33,13 @@ export interface PiSdkSessionStore {
   listSessions(): Promise<readonly SessionHeader[]>;
   readSession(sessionId: string): Promise<SessionDetail>;
   readSessionContext(sessionId: string, leafId?: string): Promise<SessionContext>;
+  /**
+   * Normalized branch-tree projection over the SAME cached read-only JSONL
+   * (list/read/context parity): roots + branch points + leaves with contracted
+   * linear chains, safe length-capped labels, and the PERSISTED head as
+   * `currentLeafId` (never a live worker leaf). Zero workers.
+   */
+  readSessionTree(sessionId: string): Promise<SessionTree>;
   deleteSession(sessionId: string): Promise<void>;
   renameSession(sessionId: string, name: string): Promise<void>;
   locate(sessionId: string): Promise<SessionLocation>;
@@ -55,6 +63,10 @@ class PiSdkSessionCatalog implements SessionCatalogPort {
 
   readSessionContext(sessionId: string, options?: { leafId?: string }): Promise<SessionContext> {
     return this.store.readSessionContext(sessionId, options?.leafId);
+  }
+
+  readSessionTree(sessionId: string): Promise<SessionTree> {
+    return this.store.readSessionTree(sessionId);
   }
 
   deleteSession(sessionId: string): Promise<void> {

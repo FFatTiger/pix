@@ -6,6 +6,7 @@ import type {
 import {
   PROTOCOL_VERSION,
   SessionContextSchema,
+  SessionTreeSchema,
   type SessiondRuntimeAttachParams,
 } from "@fffattiger/pix-protocol";
 import { SessiondError } from "./errors.js";
@@ -92,6 +93,16 @@ export class SessiondApplication implements SessiondRpcHandler {
         const input = params as SessiondMethodParams["sessions.context"];
         const context = await catalog.readSessionContext(input.sessionId, input.leafId === undefined ? undefined : { leafId: input.leafId });
         return SessionContextSchema.parse(context);
+      }
+      case "sessions.tree": {
+        // Read-only normalized branch tree over the SAME persisted-JSONL
+        // catalog (zero workers, no runtime activation). Strict-parsed so the
+        // RPC boundary only ever releases schema-valid trees.
+        const catalog = this.service.sessionCatalog();
+        if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable");
+        const input = params as SessiondMethodParams["sessions.tree"];
+        const tree = await catalog.readSessionTree(input.sessionId);
+        return SessionTreeSchema.parse(tree);
       }
       case "sessions.rename": {
         const input = params as SessiondMethodParams["sessions.rename"];

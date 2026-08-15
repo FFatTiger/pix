@@ -25,6 +25,7 @@ import type {
   SessionListFilter,
   SessionLocation,
   SessionLocatorPort,
+  SessionTree,
   SkillInfo,
   SlashCommandInfo,
   TrustGateResult,
@@ -125,6 +126,10 @@ export class ReferenceSessionCatalog implements SessionCatalogPort {
     options?: { leafId?: string },
   ): Promise<SessionContext> {
     return Promise.resolve(this.store.readSessionContext(sessionId, options?.leafId));
+  }
+
+  readSessionTree(sessionId: string): Promise<SessionTree> {
+    return Promise.resolve(this.store.readSessionTree(sessionId));
   }
 
   deleteSession(sessionId: string): Promise<void> {

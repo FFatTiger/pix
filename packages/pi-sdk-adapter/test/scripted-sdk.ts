@@ -13,6 +13,8 @@ import type {
   RuntimeEvent,
   RuntimeStartInput,
   SessionContext,
+  SessionTree,
+  SessionTreeNode,
   SessionDetail,
   SessionEntry,
   SessionHeader,
@@ -73,6 +75,16 @@ export class ScriptedSdkStore implements PiSdkDataBackend {
   async listSessions() { return [...this.sessions.values()].map((s) => this.header(s)); }
   async readSession(id: string): Promise<SessionDetail> { const s = this.need(id); return { ...this.header(s), entries: structuredClone(s.entries) }; }
   async readSessionContext(id: string, leaf?: string): Promise<SessionContext> { const s = this.need(id); return { sessionId: id, ...(leaf ?? s.leaf ? { leafId: leaf ?? s.leaf! } : {}), entries: structuredClone(s.entries) }; }
+  async readSessionTree(id: string): Promise<SessionTree> {
+    const s = this.need(id);
+    // Linear-chain scripted sessions: one root kept, the rest contracted.
+    const currentLeafId = s.leaf ?? s.entries.at(-1)?.entryId;
+    return { sessionId: id, ...(currentLeafId === undefined ? {} : { currentLeafId }), roots: s.entries.length === 0 ? [] : [this.treeNode(s.entries[0]!, s.entries.slice(1).map((entry) => entry.entryId))], entryCount: s.entries.length };
+  }
+  private treeNode(entry: SessionEntry, skipped: string[]): SessionTreeNode {
+    const role = entry.message.role;
+    return { entryId: entry.entryId, ...(entry.parentEntryId === undefined ? {} : { parentEntryId: entry.parentEntryId }), kind: role === "user" || role === "assistant" || role === "toolResult" || role === "bashExecution" || role === "custom" ? role : "system", label: `[${role}]`, truncated: false, children: [], ...(skipped.length === 0 ? {} : { skippedEntryIds: skipped }) };
+  }
   async deleteSession(id: string) { this.sessions.delete(id); }
   async locate(id: string): Promise<SessionLocation> { const s = this.sessions.get(id); return { sessionId: id, sessionFile: s?.file ?? `/tmp/pi-sdk/${id}.jsonl`, exists: Boolean(s) }; }
   async resolveLeafId(id: string, target?: string) { const s = this.need(id); if (target && !s.entries.some((e) => e.entryId === target)) throw makeRuntimeError("not_found", "entry not found"); return target ?? s.leaf ?? id; }

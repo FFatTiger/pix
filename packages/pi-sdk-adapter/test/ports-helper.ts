@@ -23,6 +23,7 @@ import type {
   ResourceCatalogStorePort,
   SessionCatalogPort,
   SessionContext,
+  SessionTree,
   SessionDetail,
   SessionHeader,
   SessionListFilter,
@@ -38,6 +39,7 @@ export interface PiSdkDataBackend {
   listSessions(): Promise<readonly SessionHeader[]>;
   readSession(sessionId: string): Promise<SessionDetail>;
   readSessionContext(sessionId: string, leafId?: string): Promise<SessionContext>;
+  readSessionTree(sessionId: string): Promise<SessionTree>;
   deleteSession(sessionId: string): Promise<void>;
   locate(sessionId: string): Promise<SessionLocation>;
   resolveLeafId(sessionId: string, targetId?: string): Promise<string>;
@@ -80,6 +82,7 @@ export function createPortsFromBackend(backend: PiSdkDataBackend): {
       },
       readSession: (id) => backend.readSession(id),
       readSessionContext: (id, options) => backend.readSessionContext(id, options?.leafId),
+      readSessionTree: (id) => backend.readSessionTree(id),
       deleteSession: (id) => backend.deleteSession(id),
     },
     sessionLocator: {

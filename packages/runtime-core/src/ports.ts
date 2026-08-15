@@ -22,6 +22,7 @@ import type {
   SessionHeader,
   SessionListFilter,
   SessionLocation,
+  SessionTree,
 } from "./session.js";
 import type { RuntimeSnapshot } from "./state.js";
 import type { PluginInfo, PluginWriteInput, SkillInfo, SkillInstallInput, SlashCommandInfo } from "./resources.js";
@@ -127,7 +128,7 @@ export interface AgentRuntimeFactory {
 /* Session catalog / locator (Host read side + sessiond activation)    */
 /* ------------------------------------------------------------------ */
 
-/** Read-side session browsing (Host): list / read / context. */
+/** Read-side session browsing (Host): list / read / context / tree. */
 export interface SessionCatalogPort {
   listSessions(filter?: SessionListFilter): Promise<readonly SessionHeader[]>;
   readSession(sessionId: string): Promise<SessionDetail>;
@@ -135,6 +136,13 @@ export interface SessionCatalogPort {
     sessionId: string,
     options?: { leafId?: string },
   ): Promise<SessionContext>;
+  /**
+   * Normalized read-only branch tree of the whole session (BranchNavigator
+   * slice). Pure persisted-JSONL projection — zero workers, zero activation;
+   * `currentLeafId` is the persisted catalog head, never the live worker
+   * leaf (see {@link SessionTree}).
+   */
+  readSessionTree(sessionId: string): Promise<SessionTree>;
   deleteSession(sessionId: string): Promise<void>;
 }
 

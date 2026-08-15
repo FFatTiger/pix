@@ -57,7 +57,13 @@ Pi 防腐层（ACL）
 6. 未来的 `packages/pi-rpc-adapter` 是 Pi RPC 防腐层，也是唯一可启动/解析 `pi --mode rpc` 的包
 7. Protocol 是进程/网络边界；Runtime Port 是进程内应用边界；两者通过显式 Mapper 转换，不共享同一个类型作为捷径
 8. `pix-sessiond` 是 Session **唯一权威**；Web 只做代理与附着（attach）
-9. 只读浏览历史 → **0 Worker**
+9. 只读浏览历史 → **0 Worker**（含 `SessionCatalogPort.readSessionTree` 的分支树投影：纯持久化 JSONL 只读投影，0 Worker，不激活 runtime）
+
+### 会话分支树（BranchNavigator 切片）冻结语义
+
+- `SessionCatalogPort.readSessionTree(sessionId)` 返回规范化 `SessionTree`：节点仅携带 entryId、父子链接、规范化 kind（`user|assistant|toolResult|bashExecution|custom|system`）与安全截断的单行预览 label（≤40 码元，含脱敏）；线性链压缩进 `skippedEntryIds`，仅保留根/分叉点/叶子。绝不暴露 SDK TreeNode、raw path、raw message、thinking/tool 原文。
+- `currentLeafId` 是**持久化目录头**（无 leafId 的 `sessions.context` 所解析的同一叶子）；live 运行时的内存 navigate 叶子可能尚未落盘，树**不伪造持久化**：live 模式活动叶子以 runtime snapshot（`RuntimeState.leafId`）为准覆盖，history 模式用 selected context leaf。该语义已在 runtime-core/protocol DTO 与 Client 助手中冻结。
+- 链路：adapter 纯投影器（复用同一 list 缓存/revision fence/openSession 身份校验）→ sessiond `sessions.tree` RPC → Host `GET /v1/sessions/:id/tree`（`sessions` capability，无新 token，拒绝任何 query）→ Client typed query（key 按 sessionId 隔离）。
 10. 实时状态只走 **WebSocket + snapshot/resume**，不用轮询冒充
 11. `jsonl` / `~/.pi` 仍是真相源
 12. 对外 Client/Host 只认 Protocol；进程内应用服务只认 Runtime/Resource Ports；按 **capabilities** 降级
@@ -85,7 +91,7 @@ Runtime Core：AgentRuntimeFactory / AgentRuntimePort
 
 ```text
 AgentRuntimeFactory / AgentRuntimePort   # 单会话命令、事件、状态、停止
-SessionCatalogPort / SessionLocatorPort  # list/resolve/read/context 和激活定位
+SessionCatalogPort / SessionLocatorPort  # list/resolve/read/context/tree 和激活定位
 ModelCatalogPort                         # 模型、默认值、thinking 能力
 CredentialStorePort                      # provider auth，不暴露原始 credential
 ResourceCatalogPort                      # skills/plugins/commands

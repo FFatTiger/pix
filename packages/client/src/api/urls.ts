@@ -43,6 +43,8 @@ export const urls = {
     list: (cwd?: string) => resource("sessions", { cwd }),
     byId: (id: string) => resource(`sessions/${encodedSegment(id)}`),
     context: (id: string) => resource(`sessions/${encodedSegment(id)}/context`),
+    /** Read-only normalized branch tree (no query surface). */
+    tree: (id: string) => resource(`sessions/${encodedSegment(id)}/tree`),
     thinking: (id: string, entryId: string) => resource(`sessions/${encodedSegment(id)}/entries/${encodedSegment(entryId)}/thinking`),
     bashOutput: (id: string, entryId: string) => resource(`sessions/${encodedSegment(id)}/entries/${encodedSegment(entryId)}/bash-output`),
     export: (id: string, format?: string) => resource(`sessions/${encodedSegment(id)}/export`, { format }),

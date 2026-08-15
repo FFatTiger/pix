@@ -97,6 +97,7 @@ function rpcHarness() {
     async listSessions() { return []; },
     async readSession(sessionId) { throw makeRuntimeError("not_found", `session not found: ${sessionId}`); },
     async readSessionContext(sessionId) { throw makeRuntimeError("not_found", `session not found: ${sessionId}`); },
+    async readSessionTree(sessionId) { throw makeRuntimeError("not_found", `session not found: ${sessionId}`); },
     async deleteSession() { throw makeRuntimeError("not_found", "session not found"); },
   };
   const locator: SessionLocatorPort = {
@@ -226,6 +227,7 @@ test("RPC boundary: sessions.delete of a live session survives as canonical sess
       async listSessions() { return []; },
       async readSession() { throw makeRuntimeError("not_found", "session not found"); },
       async readSessionContext() { throw makeRuntimeError("not_found", "session not found"); },
+      async readSessionTree() { throw makeRuntimeError("not_found", "session not found"); },
       async deleteSession() { throw makeRuntimeError("not_found", "session not found"); },
     },
   }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });

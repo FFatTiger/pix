@@ -93,6 +93,82 @@ export const SessionContextSchema = z.strictObject({
 });
 export type SessionContext = z.infer<typeof SessionContextSchema>;
 
+/*
+ * Normalized read-only session branch tree (BranchNavigator slice).
+ *
+ * Strict DTO mirrors of the runtime-core canonical model (protocol never
+ * imports runtime-core): nodes carry entry ids, structural links, a
+ * normalized kind and a safe single-line preview label only — never an SDK
+ * tree node, raw path, raw message object, thinking text or tool
+ * input/output. Single-child linear chains are contracted into
+ * `skippedEntryIds` on the next kept node. `currentLeafId` is the PERSISTED
+ * catalog head (exactly the leaf a leaf-less `sessions.context` resolves);
+ * a live runtime's in-memory navigated leaf is NOT fabricated here — live
+ * consumers take the active leaf from the runtime snapshot.
+ */
+export const SessionTreeNodeKindSchema = z.enum([
+  "user",
+  "assistant",
+  "toolResult",
+  "bashExecution",
+  "custom",
+  "system",
+]);
+export type SessionTreeNodeKind = z.infer<typeof SessionTreeNodeKindSchema>;
+
+export interface SessionTreeNode {
+  entryId: string;
+  parentEntryId?: string | undefined;
+  kind: SessionTreeNodeKind;
+  /** Safe, single-line preview; length-capped (see truncated). */
+  label: string;
+  /** True when `label` was length-capped (display may add an ellipsis). */
+  truncated: boolean;
+  children: SessionTreeNode[];
+  /** Entry ids contracted into this node from a linear chain above it. */
+  skippedEntryIds?: string[] | undefined;
+}
+
+const SESSION_TREE_NODE_LABEL_MAX = 40;
+
+export const SessionTreeNodeSchema: z.ZodType<SessionTreeNode> = z.lazy(() =>
+  z.strictObject({
+    entryId: NonEmptyStringSchema,
+    parentEntryId: NonEmptyStringSchema.optional(),
+    kind: SessionTreeNodeKindSchema,
+    label: z.string().max(512),
+    truncated: z.boolean(),
+    children: z.array(SessionTreeNodeSchema),
+    skippedEntryIds: z.array(NonEmptyStringSchema).optional(),
+  }),
+);
+
+export const SessionTreeSchema = z.strictObject({
+  sessionId: NonEmptyStringSchema,
+  /** Persisted catalog head leaf; absent when the session has no entries. */
+  currentLeafId: NonEmptyStringSchema.optional(),
+  roots: z.array(SessionTreeNodeSchema),
+  /** Total entries represented (kept + contracted), bounded by the file. */
+  entryCount: z.number().int().nonnegative().safe(),
+}).superRefine((value, ctx) => {
+  // Frozen preview contract: labels are single-line and length-capped.
+  const check = (nodes: SessionTreeNode[], depth: number): void => {
+    for (const node of nodes) {
+      if (node.label.length > SESSION_TREE_NODE_LABEL_MAX) {
+        ctx.addIssue({ code: "custom", path: ["roots"], message: "tree node label exceeds the preview cap" });
+        return;
+      }
+      if (node.label.includes("\n")) {
+        ctx.addIssue({ code: "custom", path: ["roots"], message: "tree node label must be single-line" });
+        return;
+      }
+      if (depth < 256) check(node.children, depth + 1);
+    }
+  };
+  check(value.roots, 0);
+});
+export type SessionTree = z.infer<typeof SessionTreeSchema>;
+
 /* Host resource/auth DTOs that are stable product semantics. */
 export const AuthProviderKindSchema = z.enum(["oauth", "apiKey", "deviceCode"]);
 export type AuthProviderKind = z.infer<typeof AuthProviderKindSchema>;

@@ -41,6 +41,9 @@ function harness(workerOptions = {}) {
     async readSessionContext(sessionId) {
       return { sessionId, entries: [] };
     },
+    async readSessionTree(sessionId) {
+      return { sessionId, roots: [], entryCount: 0 };
+    },
     async deleteSession() {},
   };
   // Per-worker snapshot whose sessionId matches the real session, so projection
