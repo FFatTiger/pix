@@ -3,6 +3,14 @@ import { createRoot } from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "@/routes/router";
 import "@/styles/app.css";
+import "katex/dist/katex.min.css";
+import "@/styles/globals.css";
+import "@/styles/wallpaper.css";
+import "@fontsource/ia-writer-quattro";
+import "@fontsource/ia-writer-quattro/400-italic.css";
+import "@fontsource/ia-writer-quattro/700.css";
+import "@fontsource/ia-writer-quattro/700-italic.css";
+import "@fontsource/lilex";
 
 const el = document.getElementById("root");
 if (!el) {
