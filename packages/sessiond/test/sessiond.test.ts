@@ -1666,8 +1666,29 @@ test("navigate finalization during rekey never writes across epochs and new sess
   await service.shutdown();
 });
 
-test("navigate finalization cleans singleflight when worker crashes before its first microtask", async () => {
+test("detach before navigate result + reattach sees the navigated snapshot (replay consistent)", async () => {
   const { service, workers } = harness({
+    worker: { snapshot: navigateSnapshot("s"), commandDelayMs: 60, postCommandSnapshotDelayMs: 30 },
+    service: { commandTimeoutMs: 2_000 },
+  });
+  await service.activate("s");
+  const command = { type: "navigate_tree" as const, commandId: "nav-detach", targetId: "nav-1" };
+  const pending = service.command("s", command);
+  await wait(10);
+  // Detach while the navigate is in flight (before its terminal result).
+  service.detach("s");
+  const result = await pending;
+  assert.equal(result.result.ok, true);
+  // A later reattach reads the refreshed projection (authority finalization ran
+  // before the result was released) and must see the navigated snapshot.
+  const attach = service.attach({ sessionId: "s" });
+  assert.equal(attach.result.snapshot!.state.leafId, "nav-1");
+  assert.equal(attach.result.snapshot!.state.messageCount, 1);
+  assert.equal((attach.result.snapshot!.messages ?? []).length, 1);
+  await service.shutdown();
+});
+
+test("navigate finalization cleans singleflight when worker crashes before its first microtask", async () => {  const { service, workers } = harness({
     worker: { snapshot: navigateSnapshot("s"), commandDelayMs: 5_000 },
     service: { commandTimeoutMs: 500 },
   });

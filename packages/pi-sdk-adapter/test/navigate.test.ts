@@ -139,6 +139,33 @@ describe("adapter navigate busy guard + convergence (D2 navigate)", () => {
     assert.equal(snap.state.leafId, undefined, "no partial leaf mutation on rejection");
   });
 
+  it("navigate while queued turns exist (streaming + non-empty steer/follow_up queue) → session_busy, no driver call", async () => {
+    // Queued turns only exist while a stream is in flight (a steer/follow_up
+    // on an idle session runs a turn directly). So "queued turns present"
+    // implies streaming — navigate must reject session_busy and never corrupt
+    // the queued turn or the running stream.
+    const { driver, controls } = makeDriver({
+      isStreaming: true,
+      steering: [{ message: "queued steer" }],
+      followUp: [{ message: "queued follow-up" }],
+    });
+    const adapter = new CanonicalAgentRuntimeAdapter(driver);
+    await adapter.ready();
+
+    const result = await adapter.execute({ type: "navigate_tree", targetId: "entry-2" });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, "session_busy");
+      assert.equal(result.error.retryable, true);
+    }
+    assert.equal(controls.navigateCalls.length, 0, "the SDK navigate must never run with queued turns + a live stream");
+    // The queued turn (driver-side source of truth) must be untouched — no
+    // mutation, no clear, no reorder.
+    assert.equal(controls.state.steering.length, 1, "the queued turn must be untouched");
+    assert.equal(controls.state.followUp.length, 1);
+    assert.deepEqual(controls.state.steering[0], { message: "queued steer" });
+  });
+
   it("navigate while a bash command is running → session_busy, no driver call", async () => {
     const { driver, controls } = makeDriver({ isBashRunning: true });
     const adapter = new CanonicalAgentRuntimeAdapter(driver);

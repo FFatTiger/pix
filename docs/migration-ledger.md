@@ -2408,17 +2408,20 @@ pi-sdk-adapter + sessiond + agent-worker fixture + tests/e2e/runtime.mjs + docs 
   fork/auto_name；新增 scenarioD2NavigateControl。
 
 测试（新增）：
-- packages/pi-sdk-adapter/test/navigate.test.ts（11 用例）：空闲 navigate 成功且带 leafId 快照收敛；
+- packages/pi-sdk-adapter/test/navigate.test.ts（13 用例）：空闲 navigate 成功且带 leafId 快照收敛；
   streaming（in-flight prompt）/bash/compact/adapter-local compaction/extension-UI-wait（promptRunning）
-  → session_busy 零 SDK 调用零事件；blank → invalid_input；driver cancelled → interrupted 固定文案；
+  → session_busy 零 SDK 调用零事件；queued turns（streaming + 非空 steer/follow_up 队列）→ session_busy
+  队列未动；blank → invalid_input；driver cancelled → interrupted 固定文案；
   driver 未知 target → invalid_input 固定文案（无 raw leaf id）；closed capability（无 runtime.navigate）
-  → unsupported_capability 零 driver 调用；blocked prompt 继续到 completion。
-- packages/sessiond/test/sessiond.test.ts（+7）：navigate 成功→权威刷新在 result 前收敛
+  → unsupported_capability 零 driver 调用；blocked prompt 继续到 completion；read-after-navigate：
+  scripted SDK 共享 store 的 sessions.read/context 立即解析到 navigate 后 leaf（无 stale leaf）。
+- packages/sessiond/test/sessiond.test.ts（+8）：navigate 成功→权威刷新在 result 前收敛
   leafId/messageCount/history（getSnapshot + attach）；same-id 二调用者 join singleflight 一次
   worker.command；成功 finalization 清 singleflight 且 cached retry 不再 refresh；refresh 失败
   fail-closed 全部 observer + cached retry 不重执行、projection 不 claim failed navigate；wrong result
   type 不 finalize 合法帧恰一次；rekey 期间 finalization 不跨 epoch 写、新 epoch 同 commandId 重入成功；
-  worker 早崩 finalization 清理无 busy 泄漏。
+  worker 早崩 finalization 清理无 busy 泄漏；navigate 在飞时 detach + 之后 reattach 见 navigate 后快照
+  （replay 一致）。
 - tests/e2e/runtime.mjs scenarioD2NavigateControl（真实单连接链）：capability 广告（18 token）；
   3-prompt 建树→navigate 到较早 leaf 权威 messageCount/history/leafId 收敛（getSnapshot + get_state）→
   前进导航→detach/reattach 持久→block prompt + 第二连接 navigate session_busy（prompt 不受影响被
@@ -2426,7 +2429,7 @@ pi-sdk-adapter + sessiond + agent-worker fixture + tests/e2e/runtime.mjs + docs 
   closed。
 
 验证（实现者已执行，PENDING 独立 PASS）：
-- sessiond 277（276 pass + 1 skip；+7 navigate，270→277）；adapter 247（+11 navigate 等）；root
+- sessiond 278（277 pass + 1 skip；+8 navigate，270→278）；adapter 249（+13 navigate）；root
   build/typecheck EXIT 0；check:architecture PASS；sessiond/host boundary PASS；adapter check:commands
   26/26 PASS；Runtime E2E（含 navigate 场景）1 轮 PASS（将补 ≥2 轮）；Startup + Sessions E2E（回归）待
   重跑；git diff --check 干净；worktree 未 push/deploy，未触碰 live service。
