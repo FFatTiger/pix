@@ -15,6 +15,8 @@
 // the Runtime Core AgentRuntimeFactory / AgentRuntimePort surface.
 
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 // D2-P1/D2-P2/P3/P4/P5/P6/P7: production light-command + queue + bash +
 // tools/reload + manual-compact surface. Baseline queries
@@ -28,8 +30,8 @@ import { randomUUID } from "node:crypto";
 // / runtime.reload (reload), the D2-P7 manual-compact pair
 // runtime.compact (compact) / runtime.compact.abort (abort_compaction), the
 // D2-P8 extension-UI token runtime.extension_ui (extension_ui_response /
-// extension_ui_input) and the D2 navigate token runtime.navigate
-// (navigate_tree) are the capability-gated unlocks.
+// extension_ui_input), the D2 navigate token runtime.navigate (navigate_tree)
+// and the D2 fork token runtime.fork (fork) are the capability-gated unlocks.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
@@ -50,6 +52,7 @@ const CAPABILITIES = {
     "runtime.compact.abort",
     "runtime.extension_ui",
     "runtime.navigate",
+    "runtime.fork",
   ],
   version: 1,
 };
@@ -130,15 +133,42 @@ export default {
     });
   },
   async open(input) {
+    // A forked session (created by a prior worker that has since exited) is
+    // restored from the on-disk registry so its fork-point history survives the
+    // client-driven attach into a fresh worker.
+    const restored = loadForkedSession(input.cwd, input.sessionId);
     return makePort({
       cwd: input.cwd,
       sessionId: input.sessionId,
       mode: "open",
+      ...(restored === null ? {} : { restored }),
     });
   },
 };
 
-function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingLevel: initialThinkingLevel, thinkingLevelPinned: initialThinkingLevelPinned }) {
+// Persist a forked session under the project dir so a NEW worker (spawned for
+// client-driven attach after the fork returns) can restore its fork-point
+// history. The old worker process that performed the fork exits (sessiond
+// identity-lane stop), so the forked session data must survive on the shared
+// filesystem keyed by the session id. Mirrors the production SDK writing a new
+// JSONL session file that the read-only catalog later resolves.
+function persistForkedSession(cwd, data) {
+  const dir = join(cwd, ".pix-e2e-sessions");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${data.sessionId}.json`), JSON.stringify(data), "utf8");
+}
+
+function loadForkedSession(cwd, sessionId) {
+  const file = join(cwd, ".pix-e2e-sessions", `${sessionId}.json`);
+  if (!existsSync(file)) return null;
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingLevel: initialThinkingLevel, thinkingLevelPinned: initialThinkingLevelPinned, restored }) {
   const listeners = new Set();
   let closed = false;
   let executeCount = 0;
@@ -162,7 +192,8 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
   let messages = [];
   // D2 navigate deterministic session-tree model: every prompt appends one
   // assistant entry whose parent is the current leaf; navigate moves the leaf
-  // pointer and rebuilds the visible history from root→leaf.
+  // pointer and rebuilds the visible history from root→leaf. D2 fork forks at
+  // an entry: the forked session's tree is the root→fork-point path.
   /** @type {{ id: string, parentId: string | null, text: string }[]} */
   let entries = [];
   /** @type {string | null} */
@@ -175,6 +206,23 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
   let model = { provider: "anthropic", id: "claude-sonnet-4" };
   let autoCompactionEnabled = false;
   let autoRetryEnabled = false;
+  // Restore a forked session's fork-point history + state (client-driven attach
+  // after fork returns spawns a NEW worker; the data was persisted on disk by
+  // the forking worker).
+  if (restored) {
+    messageCount = restored.messageCount ?? 0;
+    messages = structuredClone(restored.messages ?? []);
+    entries = structuredClone(restored.entries ?? []);
+    leafId = restored.leafId ?? (entries.at(-1)?.id ?? null);
+    entrySeq = Math.max(0, ...entries.map((entry) => Number(/^entry-(\d+)$/.exec(entry.id)?.[1] ?? 0)));
+    if (restored.contextUsage) contextUsage = structuredClone(restored.contextUsage);
+    if (restored.sessionName) sessionName = restored.sessionName;
+    if (typeof restored.thinkingLevel === "string") thinkingLevel = restored.thinkingLevel;
+    if (typeof restored.thinkingLevelPinned === "boolean") thinkingLevelPinned = restored.thinkingLevelPinned;
+    if (restored.model) model = structuredClone(restored.model);
+    if (typeof restored.autoRetryEnabled === "boolean") autoRetryEnabled = restored.autoRetryEnabled;
+    if (typeof restored.autoCompactionEnabled === "boolean") autoCompactionEnabled = restored.autoCompactionEnabled;
+  }
   let queued = { steering: [], followUp: [] };
   // D2-P8 extension UI state. Each pending request carries the published
   // request, its settle promise, and the accumulated incremental input.
@@ -495,6 +543,50 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
           }
           autoCompactionEnabled = command.enabled;
           return { ok: true, type: "set_auto_compaction" };
+        }
+        case "fork": {
+          // D2 fork busy guard (mirrors the production adapter): reject with a
+          // structured session_busy while a prompt (incl. one blocked on an
+          // extension request), bash command, or compaction is in flight — the
+          // in-flight turn is never corrupted and the runtime is NOT closed.
+          if (isPromptRunning || isBashRunning || isCompacting) {
+            return { ok: false, type: "fork", error: { code: "session_busy", message: "a prompt, bash command, or compaction is already in progress", retryable: true } };
+          }
+          const forkEntryId = typeof command.entryId === "string" ? command.entryId : "";
+          const forkIndex = entries.findIndex((entry) => entry.id === forkEntryId);
+          if (forkEntryId === "" || forkIndex < 0) {
+            // The fork point never echoes the entry id (fixed sanitized error).
+            return { ok: false, type: "fork", error: { code: "invalid_input", message: "fork point not found", retryable: false } };
+          }
+          const forkedSessionId = `e2e-forked-${randomUUID().slice(0, 8)}`;
+          // Fork-point history: the root→fork-point path (mirrors the production
+          // SDK createBranchedSession + pix-fork-provenance entry — full
+          // provenance: parent session + fork point).
+          const forkedPath = branchPath(forkEntryId);
+          const forkedHistory = forkedPath.map((entry) => ({
+            role: "assistant",
+            content: [{ type: "text", text: entry.text }],
+            model: "e2e-fixture",
+            provider: "e2e",
+          }));
+          persistForkedSession(cwd, {
+            sessionId: forkedSessionId,
+            cwd,
+            messageCount: forkedHistory.length,
+            messages: structuredClone(forkedHistory),
+            entries: structuredClone(forkedPath),
+            leafId: forkEntryId,
+            forkPointEntryId: forkEntryId,
+            parentSessionId: sessionId,
+            contextUsage: { ...contextUsage },
+            sessionName,
+            thinkingLevel,
+            thinkingLevelPinned,
+            model: { ...model },
+            autoRetryEnabled,
+            autoCompactionEnabled,
+          });
+          return { ok: true, type: "fork", forkedSessionId, forkPointEntryId: forkEntryId };
         }
         case "abort_compaction":
           if (blockedCompact) {
@@ -865,8 +957,7 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
       const entry = { id: `entry-${entrySeq}`, parentId: leafId, text: "Hello world" };
       entries = [...entries, entry];
       leafId = entry.id;
-      rebuildMessages(leafId);
-      contextUsage = {
+      rebuildMessages(leafId);      contextUsage = {
         percent: Math.min(100, contextUsage.percent + 10),
         contextWindow: contextUsage.contextWindow,
         tokens: contextUsage.tokens + 20_000,

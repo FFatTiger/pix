@@ -126,11 +126,12 @@ const pendingIds = async (adapter: CanonicalAgentRuntimeAdapter): Promise<string
   (await adapter.getSnapshot()).state.pendingExtensionUi?.map((r) => r.id) ?? [];
 
 describe("adapter extension UI (D2-P8)", () => {
-  it("PRODUCTION_AGENT_CAPABILITIES opens extension_ui_response/input + navigate (18 tokens, no broader leak)", () => {
+  it("PRODUCTION_AGENT_CAPABILITIES opens extension_ui_response/input + navigate + fork (19 tokens, no broader leak)", () => {
     assert.ok(PRODUCTION_AGENT_CAPABILITIES.includes("runtime.extension_ui"));
     assert.ok(PRODUCTION_AGENT_CAPABILITIES.includes("runtime.navigate"));
-    assert.equal(PRODUCTION_AGENT_CAPABILITIES.length, 18);
-    assert.equal(PRODUCTION_AGENT_CAPABILITIES.filter((c) => /fork|auto_name/.test(c)).length, 0);
+    assert.ok(PRODUCTION_AGENT_CAPABILITIES.includes("runtime.fork"));
+    assert.equal(PRODUCTION_AGENT_CAPABILITIES.length, 19);
+    assert.equal(PRODUCTION_AGENT_CAPABILITIES.filter((c) => /auto_name/.test(c)).length, 0);
   });
 
   it("add → correct response → single close tombstone removes the pending request", async () => {

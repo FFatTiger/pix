@@ -1,4 +1,5 @@
 import type {
+  ProtocolError,
   RuntimeCommandOutcome,
   RuntimeEventData,
   RuntimeInterruptResult,
@@ -35,6 +36,16 @@ export interface FakeWorkerOptions {
   dropPostCommandSnapshots?: boolean;
   /** After the first snapshot, answer subsequent getSnapshot with a mismatched session id. */
   postCommandSnapshotMismatch?: boolean;
+  /**
+   * Deterministic fork outcome overrides. When `forkError` is set the fork
+   * command answers `{ok:false}` with that exact error (mirroring an adapter
+   * that re-projected a hostile SDK failure onto a canonical fixed error);
+   * otherwise the fork succeeds with `forkedSessionId`/`forkedSessionFile`
+   * (defaults "forked" / "/sessions/forked.jsonl").
+   */
+  forkError?: { code: string; message: string; retryable?: boolean };
+  forkedSessionId?: string;
+  forkedSessionFile?: string;
 }
 
 /**
@@ -207,7 +218,7 @@ export class FakeWorkerConnection implements WorkerConnection {
             messages: trimmed,
           };
         }
-        setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, outcome(command.type)), this.options.commandDelayMs ?? 0);
+        setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, outcome(command.type, this.options, (command as { entryId?: string }).entryId)), this.options.commandDelayMs ?? 0);
         return;
       }
       case "worker.interrupt": {
@@ -283,14 +294,25 @@ export class FakeWorkerConnection implements WorkerConnection {
   }
 }
 
-function outcome(type: RuntimeCommandOutcome["type"]): RuntimeCommandOutcome {
+function outcome(type: RuntimeCommandOutcome["type"], options: FakeWorkerOptions, entryId?: string): RuntimeCommandOutcome {
+  if (type === "fork" && options.forkError) {
+    return {
+      ok: false,
+      type,
+      error: {
+        code: options.forkError.code as ProtocolError["code"],
+        message: options.forkError.message,
+        retryable: options.forkError.retryable ?? false,
+      },
+    };
+  }
   switch (type) {
     case "get_state": return { ok: false, type, error: { code: "unsupported_capability", message: "not scripted", retryable: false } };
     case "get_tools": return { ok: true, type, tools: [] };
     case "get_commands": return { ok: true, type, commands: [] };
     case "get_session_stats": return { ok: true, type, stats: { messageCount: 0 } };
     case "get_last_assistant_text": return { ok: true, type, text: "" };
-    case "fork": return { ok: true, type, forkedSessionId: "forked", forkPointEntryId: "entry" };
+    case "fork": return { ok: true, type, forkedSessionId: options.forkedSessionId ?? "forked", forkPointEntryId: entryId ?? "entry" };
     default: return { ok: true, type };
   }
 }

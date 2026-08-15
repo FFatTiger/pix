@@ -3,8 +3,9 @@
  * upper-layer).
  *
  * Every identity mutation of one canonical session — activate, rename
- * (`sessions.rename` AND public `runtime.command(set_session_name)`), explicit
- * stop, and delete — is admitted into the SAME per-session FIFO lane. Same-id
+ * (`sessions.rename` AND public `runtime.command(set_session_name)`), fork
+ * (`runtime.command(fork)`), explicit stop, and delete — is admitted into the
+ * SAME per-session FIFO lane. Same-id
  * operations serialize; different ids progress independently (there is NO
  * global identity lock and NO long I/O under the short global
  * {@link SessiondService.mutex}).
@@ -33,7 +34,7 @@
 import type { SessionHeader } from "@fffattiger/pix-runtime-core";
 
 /** The identity operation kinds that share a per-session lane. */
-export type IdentityOperationKind = "activate" | "rename" | "stop" | "delete";
+export type IdentityOperationKind = "activate" | "rename" | "fork" | "stop" | "delete";
 
 interface Lane {
   /** Unique lane token (never re-created while the lane lives). */

@@ -2812,4 +2812,79 @@ SessionManager 一致，已由决定性 probe + 测试 13 记录）；adapter na
 （SDK 返回形状所限），收敛依赖 driver-state read-through——未来若 SDK 返回 leaf 或持久化 navigate 本身，
 可让 sessiond/locator 以该 id 为 canonical 直读；Client navigate UI 为独立切片（本 slice backend-first
 无 Client）；§53 Client rename 仍在飞待集成。Fresh verifier 独立 PASS 待补。
+
+## 59. D2 fork — Runtime Session Fork 生产切片记录（DONE，PENDING 独立验证）
+
+```text
+实现：本分支 feat/d2-fork，base main 38b4869（未 merge/push/deploy/live，未改 package-lock/deps，
+未改 Protocol/Host/CLI/Client source）。§57 navigate 并行在飞（d2-navigate worktree），本切片不触碰
+§57 范围；两分支合并时 PRODUCTION_AGENT_CAPABILITIES 共享列表按 append 解决（本切片在 17-token 无
+navigate 基线上精确加 runtime.fork → 18；§57 再加 runtime.navigate → 19）。编号：§58 已占用，本切片
+占 §59。backend-first，无 Client UI/CSS。No self-PASS。
+
+生产 capability 17→18：精确新增 `runtime.fork`（fork）；navigate/auto_name 仍关闭。
+
+Adapter（packages/pi-sdk-adapter）：
+- `fork` case 前置 busy guard（镜像 compact/navigate）：driver streaming / bash running / compacting /
+  promptRunning（含 blocked on extension UI）→ 结构化 session_busy，SDK 调用前，无部分状态/事件，且
+  失败/拒绝绝不 close 旧 runtime。
+- 固定 FORK_FAILURE_MESSAGES 消毒映射：unknown/raw SDK 错误按 canonical code 重投影到固定消息，
+  entryId（fork 参数）/ raw path / SDK 文本永不回显；失败不触发 setTimeout close（旧 worker 保持）。
+- 成功路径保留 `setTimeout(() => close("forked"), 0)` 延迟关闭——fork result 先 settle、runtime_closed
+  后 observable（契约 D-018 语义）。
+- sdk-runtime.ts fork seam 未改（真实 SDK `SessionManager.createBranchedSession` 将 source 变异为新
+  会话并写新 JSONL；`pix-fork-provenance` custom entry 持久化；list/detail catalog DTO 已解析
+  parentSessionId/forkPointEntryId，无绝对路径泄漏——见既有 session-store）。
+
+Sessiond（packages/sessiond）——核心：
+- `runtime.command(fork)` 经新 `commandFork` 入 per-session FIFO 身份 lane（coordinator
+  IdentityOperationKind 新增 "fork"，与 activate/rename/stop/delete 同 lane）。
+- 身份竞态确定性：delete/rename/stop 先赢 → fork 见 removed/stopped record → 固定 not_found /
+  unavailable，零新会话零 partial fork；fork 先赢 → lane 全程持有到旧 worker stop 完成，排队
+  rename/delete/stop 见 stopped record（无 double-stop、无 stale-lane write）。
+- result-before-stop 排序：fork lane op 用私有 deferred 先向 caller 交付 fork result（新 session id）
+  再经既有身份 lane stop 路径（stopRecord(record,"forked")）结束旧 worker；client 先收 fork result，
+  后见 runtime_closed("forked")。runExclusive 的 `await previous` 保证 caller 反应在 runtime_closed
+  事件推送之前。
+- 权威终态：fork 故意不加 AUTHORITY_COMMAND_TYPES——旧 runtime 结束，authoritative record 直接
+  transition 到 stopped（stopRecord 移除），无需 post-success worker.getSnapshot 刷新（与 set_model/
+  compact 的 snapshot-authority 终态化不同，理由：旧会话不再服务 attach/snapshot）。
+- rekey/epoch：commandOnRecord 既有三重匹配/epoch 守卫；stopRecord 所有权检查
+  `records.get(record.sessionId) !== record` 保证 fork 的 stop 永不跨记录/epoch 写。
+- frozen 语义（文档化，绝不回滚）：成功 fork 先创建新 session（adapter/SDK catalog），旧 worker stop
+  失败 → fork 不回滚（新 session 存在且可用），stop 失败 absorb 消毒（无 raw 文本、无假 fork 失败），
+  record 仍移除。新 session 激活 client-driven（client 收到新 id 后自行 attach，服务端无隐式 attach
+  切换）。
+
+Fake worker：新增 forkError/forkedSessionId/forkedSessionFile 可配置选项，outcome() 回显 entryId。
+
+测试与验证（实现者已执行，PENDING 独立 PASS）：
+- adapter 241（基线 236 + 新增 5：busy guard streaming/bash/compact/promptRunning + blank invalid_input
+  + scripted store fork 成功（distinct jsonl + fork-point history + parent/forkPoint provenance）+ hostile
+  SDK error 消毒（无 entryId/raw path、不 close）+ 既有 lifecycle result-before-runtime_closed 保持）。
+- sessiond 305 pass + 1 Windows skip（基线 294 + 新增 11：fork success stop 旧 worker + runtime_closed
+  forked + record removed；gated result-before-stop；fork failure 不 stop；delete-first not_found；
+  fork-first queued delete 见 stopped record；mid-fork delete session_busy；rename 后 fork offline；
+  stop 后 fork no-op 无 double-stop；rekeyed record；worker crash mid-fork sanitized + 无 partial new
+  session；concurrent fork/fork 恰一成功一 not_found 恰一 shutdown）。
+- root typecheck/build/check:architecture（14 gates）/pi-sdk-adapter check:commands(26/26) +
+  check:boundaries PASS；root test 全 workspace 绿（scripts 107 / agent-worker 105 / cli 52 / client
+  652 / host 420 / local-authority 53 / pi-sdk-adapter 241 / protocol 132 / runtime-contract-tests 76 /
+  runtime-core 12 / sessiond 305+1skip）。
+- Runtime E2E 2 轮 PASS（新增 scenarioD2ForkControl 单连接真实链：create → 2 转 → fork → 新 session id
+  + 旧 worker 退出（§54 workerPids）+ attach 新会话 fork-point history（messageCount=2）+ auto_name 仍
+  closed + stop 新会话无孤儿）+ Startup + Sessions E2E PASS；git diff --check 干净。
+- 已知根因外的负载 flake：sessiond "RPC authenticates locally" 在满载 root test 下一次偶发失败，单独
+  与复跑均稳定 PASS（RPC socket/secret 时序，与 fork 无关，预存在）。
+
+Material risk / 残余：
+- 真实 SDK fork seam 保真度 vs 假体：sessiond 用 fake worker（fork 成功/失败/崩溃脚本化）；adapter
+  成功路径经 scripted store 验证，真实 SDK 成功 fork 仅 production-smoke 覆盖失败路径（fresh session
+  entry 不存在）。真实 SDK createBranchedSession 的 hasAssistant/持久化分支行为已逐行核对
+  （node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js:1077），但未经真实
+  网络外的多轮次端到端真 fork 成功验证——建议独立 verifier 用真实 SDK 目录跑一次成功 fork。
+- fork 成功瞬间至 stop 完成的窄窗口内，旧 id 的 delete/rename 会因 record 仍 present 而 session_busy
+  （delete prompt check）/live rename（rename lane op），随后 stop 完成后再发操作见 stopped record——
+  确定性、无竞态损坏，已文档化。
+- 无 Windows 声明。
 ```

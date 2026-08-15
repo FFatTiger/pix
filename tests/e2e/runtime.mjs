@@ -41,11 +41,11 @@ const HOST_START_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 8_000;
 const ROUNDS = Math.max(1, Number(process.env.PIX_E2E_ROUNDS ?? "1") || 1);
 
-// D2 navigate production capability surface (18 tokens): the exact set the
-// attach snapshot must carry. Updating this constant keeps every scenario
-// honest about what is open (bash pair + tools read/write + reload +
-// manual-compact pair + extension UI + navigate) vs still closed
-// (fork/auto_name).
+// D2 navigate + D2 fork production capability surface (19 tokens): the exact
+// set the attach snapshot must carry. Updating this constant keeps every
+// scenario honest about what is open (bash pair + tools read/write + reload +
+// manual-compact pair + extension UI + navigate + fork) vs still closed
+// (auto_name).
 const PRODUCTION_CAPS = [
   "runtime.prompt",
   "runtime.abort",
@@ -65,6 +65,7 @@ const PRODUCTION_CAPS = [
   "runtime.compact.abort",
   "runtime.extension_ui",
   "runtime.navigate",
+  "runtime.fork",
 ];
 
 // In-memory registry of sessions created through the E2E client, backing both
@@ -1299,9 +1300,8 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     // envelope). set_model (D2-P3), queue (D2-P4), bash pair (D2-P5),
     // tools/reload (D2-P6), the manual-compact pair (D2-P7), extension UI
     // (D2-P8) and navigate (D2 navigate) are now open;
-    // fork/auto_name stay closed.
+    // auto_name stays closed.
     for (const [type, extra, token] of [
-      ["fork", { entryId: "entry-1" }, "runtime.fork"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, {
@@ -1437,7 +1437,6 @@ async function scenarioD2P4QueueControl(stack, projectDir) {
     // Closed caps still unsupported: fork/auto_name (queue, the
     // manual-compact pair and navigate are now open).
     for (const [type, extra, token] of [
-      ["fork", { entryId: "entry-1" }, "runtime.fork"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `queue-closed-${type}-${Date.now()}`, type, ...extra });
@@ -1582,7 +1581,6 @@ async function scenarioD2P5BashControl(stack, projectDir) {
     // 4. Closed caps still unsupported: fork/auto_name (tools/reload
     //    pair, the manual-compact pair and navigate are now OPEN — D2-P6/D2-P7/D2 navigate).
     for (const [type, extra, token] of [
-      ["fork", { entryId: "entry-1" }, "runtime.fork"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `bash-closed-${type}-${Date.now()}`, type, ...extra });
@@ -1724,7 +1722,6 @@ async function scenarioD2P6ToolsReload(stack, projectDir) {
     // 7. Closed caps remain unsupported: fork/auto_name (the
     //    manual-compact pair and navigate are now OPEN — D2-P7/D2 navigate).
     for (const [type, extra, token] of [
-      ["fork", { entryId: "entry-1" }, "runtime.fork"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `tools-closed-${type}-${Date.now()}`, type, ...extra });
@@ -1944,7 +1941,6 @@ async function scenarioD2P7CompactControl(stack, projectDir) {
     // 6. Closed caps remain unsupported: fork/auto_name (the
     //    manual-compact pair and navigate are now OPEN — D2-P7/D2 navigate).
     for (const [type, extra, token] of [
-      ["fork", { entryId: "entry-1" }, "runtime.fork"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `d2p7-closed-${type}-${Date.now()}`, type, ...extra });
@@ -2186,7 +2182,6 @@ async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
     //         broaden. navigate is now open (D2 navigate) — covered by the
     //         dedicated navigate scenario.
     for (const [type, extra, token] of [
-      ["fork", { entryId: "entry-1" }, "runtime.fork"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `d2p8-closed-${type}-${Date.now()}`, type, ...extra });
@@ -2346,7 +2341,6 @@ async function scenarioD2NavigateControl(stack, projectDir) {
 
     // 6. Closed caps remain unsupported: fork/auto_name (navigate is now open).
     for (const [type, extra, token] of [
-      ["fork", { entryId: "entry-1" }, "runtime.fork"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `nav-closed-${type}-${Date.now()}`, type, ...extra });
@@ -2358,6 +2352,91 @@ async function scenarioD2NavigateControl(stack, projectDir) {
     }
 
     return { sessionId, beforeCount: 3 };
+  } finally {
+    client.close();
+  }
+}
+
+async function scenarioD2ForkControl(stack, projectDir) {
+  // D2 fork backend vertical slice (single real chain):
+  //   Browser WS → Host gateway (serial lane) → sessiond → R2 child → R1
+  //   worker-main → fixture.
+  // create → 2 turns → fork → NEW session id + OLD worker exits (no orphan) →
+  // attach the forked session (fork-point history present) → auto_name still
+  // closed → stop the forked session (no extra orphan). The old worker ends via
+  // sessiond's identity-lane stop AFTER the fork result is delivered — the
+  // client receives the fork result + new session id first, then the old
+  // runtime_closed.
+  const before = new Set(stack.daemon.diagnostics.workerPids());
+  const client = new RuntimeWsClient(stack.host.wsUrl);
+  await client.connect();
+  try {
+    await client.handshake();
+    const created = await client.create({
+      cwd: projectDir,
+      projectRoot: projectDir,
+      createRequestId: `cr-fork-${Date.now()}`,
+    });
+    const sessionId = created.sessionId;
+    const snap = await client.attach(sessionId);
+    assert.equal(snap.type, "snapshot");
+    assert.deepEqual(snap.payload.snapshot.capabilities, { capabilities: PRODUCTION_CAPS, version: 1 });
+
+    // 2 turns (the fixture ledger assigns entry-1 / entry-2 deterministically).
+    for (const [commandId, message] of [["fork-turn-1", "first"], ["fork-turn-2", "second"]]) {
+      const turn = await client.command(sessionId, { commandId, type: "prompt", message });
+      assert.equal(turn.payload.result.result.ok, true, JSON.stringify(turn.payload));
+    }
+
+    // Isolate THIS scenario's old worker(s) — earlier scenarios may still hold
+    // live workers (authoritative in-process daemon diagnostics, no pgrep).
+    const afterCreate = stack.daemon.diagnostics.workerPids();
+    const oldPids = afterCreate.filter((pid) => !before.has(pid));
+    assert.ok(oldPids.length >= 1, `fork scenario worker expected; before=${[...before]} after=${afterCreate}`);
+
+    // Fork at the second turn's entry point.
+    const forkRes = await client.command(sessionId, { commandId: "fork-cmd", type: "fork", entryId: "entry-2" });
+    const forkOutcome = forkRes.payload.result.result;
+    assert.equal(forkOutcome.ok, true, JSON.stringify(forkOutcome));
+    assert.equal(forkOutcome.type, "fork");
+    const forkedSessionId = forkOutcome.forkedSessionId;
+    assert.ok(forkedSessionId && forkedSessionId !== sessionId, "fork must return a NEW session id");
+    assert.equal(forkOutcome.forkPointEntryId, "entry-2");
+
+    // The OLD worker ends (no orphan): every pre-fork pid for this scenario dies.
+    for (const pid of oldPids) {
+      const dead = await waitForPidDead(pid, 8_000);
+      assert.equal(dead, true, `old worker ${pid} must exit after fork`);
+    }
+
+    // Register the forked session in the shared in-memory catalog so a
+    // client-driven attach can resolve its cwd/projectRoot (the fixture created
+    // the forked session inside the now-exited old worker; the catalog must
+    // resolve it for the fresh worker the attach spawns).
+    fixtureSessions.set(forkedSessionId, { sessionId: forkedSessionId, cwd: projectDir, projectRoot: projectDir });
+
+    // Attach the NEW session → it opens with fork-point history (2 turns).
+    const forkedSnap = await client.attach(forkedSessionId);
+    assert.equal(forkedSnap.type, "snapshot", JSON.stringify(forkedSnap));
+    assert.equal(forkedSnap.payload.snapshot.state.messageCount, 2, "forked session must open with fork-point history (2 turns)");
+
+    // auto_name remains closed on the forked session (production surface).
+    const autoName = await client.command(forkedSessionId, { commandId: `fork-auto-${Date.now()}`, type: "generate_session_title" });
+    assert.equal(autoName.payload.result.result.ok, false, JSON.stringify(autoName.payload));
+    assert.equal(autoName.payload.result.result.error.code, "unsupported_capability");
+
+    // Stop the forked session: the forked worker must exit (no orphan growth
+    // from THIS scenario beyond the workers that existed before it).
+    const stopRes = await client.stop(forkedSessionId);
+    assert.equal(stopRes.payload.ok, true, JSON.stringify(stopRes.payload));
+    const afterAttach = stack.daemon.diagnostics.workerPids();
+    const forkedPids = afterAttach.filter((pid) => !before.has(pid) && !oldPids.includes(pid));
+    for (const pid of forkedPids) {
+      const dead = await waitForPidDead(pid, 8_000);
+      assert.equal(dead, true, `forked worker ${pid} must exit after stop`);
+    }
+
+    return { sessionId, forkedSessionId, messageCount: 2 };
   } finally {
     client.close();
   }
@@ -2520,6 +2599,8 @@ async function runRound(round) {
 
     results.navigate = await scenarioD2NavigateControl(stack, projectA);
     log(`round ${round}: D2 navigate control OK session=${results.navigate.sessionId} before=${results.navigate.beforeCount}`);
+    results.forkControl = await scenarioD2ForkControl(stack, projectA);
+    log(`round ${round}: D2 fork control OK old=${results.forkControl.sessionId} forked=${results.forkControl.forkedSessionId}`);
 
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
@@ -2581,12 +2662,13 @@ async function main() {
           "session isolation",
           "create then host-restart cold attach",
           "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + closed caps)",
-          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed fork/auto_name)",
-          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed fork/auto_name)",
-          "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + closed fork/auto_name)",
-          "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + closed fork/auto_name + no orphan)",
-          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + custom lines + abort clears + status/widget/title/notify events + closed fork/auto_name + reload cannot broaden)",
-          "D2 navigate control (3-prompt tree + navigate to earlier leaf authoritative messageCount/history/leafId convergence + navigate forward + detach/reattach persistence + blocking prompt + second-connection navigate session_busy (prompt untouched) + invalid leaf invalid_input sanitized + closed fork/auto_name + capability advertised)",
+          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed auto_name)",
+          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed auto_name)",
+          "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + closed auto_name)",
+          "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + closed auto_name + no orphan)",
+          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + custom lines + abort clears + status/widget/title/notify events + closed auto_name + reload cannot broaden)",
+          "D2 navigate control (3-prompt tree + navigate to earlier leaf authoritative messageCount/history/leafId convergence + navigate forward + detach/reattach persistence + blocking prompt + second-connection navigate session_busy (prompt untouched) + invalid leaf invalid_input sanitized + closed auto_name + capability advertised)",
+          "D2 fork control (create + 2 turns + fork → NEW session id + OLD worker exits via identity-lane stop after the result + attach forked session with fork-point history + auto_name still closed + forked worker exits on stop, no orphan)",,
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {
