@@ -440,7 +440,7 @@ test("private socket path length respects the platform sun_path limit", { skip: 
   const atLimit = join(tdir, "p".repeat(dirNameLen));
   const atLimitPriv = makePrivateEndpointPath(atLimit, "111111");
   assert.ok(Buffer.byteLength(atLimitPriv, "utf8") <= maxBytes, `private path within limit (${Buffer.byteLength(atLimitPriv, "utf8")})`);
-  await mkdir(atLimit, { recursive: true });
+  await mkdir(atLimit, { recursive: true, mode: 0o700 });
   try {
     const handle = await startDaemon({ directory: atLimit, serviceOptions: { idleTimeoutMs: 0 } });
     const rpc = client(handle);
@@ -452,7 +452,7 @@ test("private socket path length respects the platform sun_path limit", { skip: 
 
   // One byte over the limit: fail closed with a clear error, no partial state.
   const overLimit = join(tdir, "p".repeat(dirNameLen + 1));
-  await mkdir(overLimit, { recursive: true });
+  await mkdir(overLimit, { recursive: true, mode: 0o700 });
   try {
     const overPriv = makePrivateEndpointPath(overLimit, "222222");
     assert.ok(Buffer.byteLength(overPriv, "utf8") > maxBytes);
@@ -544,7 +544,7 @@ try {
       const paths = sessiondPaths(dir);
       // Clean slate each round.
       await rm(dir, { recursive: true, force: true });
-      await mkdir(dir, { recursive: true });
+      await mkdir(dir, { recursive: true, mode: 0o700 });
       const spawned: ReturnType<typeof spawn>[] = [];
       for (let i = 0; i < 4; i += 1) {
         const child = spawn(process.execPath, ["--input-type=module", "-e", childScript, dir], {

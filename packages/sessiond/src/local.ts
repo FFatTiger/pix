@@ -1,9 +1,14 @@
 import { constants } from "node:fs";
-import { chmod, link, lstat, mkdir, open, readdir, readFile, rm } from "node:fs/promises";
+import { chmod, link, lstat, open, readdir, readFile, rm } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { SessiondError } from "./errors.js";
+import {
+  ensureSessiondPrivateDirectory,
+  reverifySessiondPrivateDirectory,
+  type SessiondPrivateDirectory,
+} from "./local-posix.js";
 
 export interface SessiondPaths {
   directory: string;
@@ -102,11 +107,23 @@ export function sessiondPaths(directory: string): SessiondPaths {
   };
 }
 
-async function ensurePrivateDirectory(directory: string): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
-  const info = await lstat(directory);
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new SessiondError("forbidden", "sessiond directory is not a private directory");
+/**
+ * Resolve the sessiond private-directory context for a critical step.
+ *
+ * When the daemon already preflighted the directory (production), the context
+ * is re-verified (bounded dev/ino re-check) and reused. A direct caller without
+ * a context runs a full preflight itself (canonicalize + secure walk), so the
+ * exported functions stay self-contained and fail closed on any unsafe layout.
+ */
+async function resolveSessiondPrivateDirectory(
+  paths: SessiondPaths,
+  ctx?: SessiondPrivateDirectory,
+): Promise<SessiondPrivateDirectory> {
+  if (ctx !== undefined) {
+    await reverifySessiondPrivateDirectory(ctx);
+    return ctx;
+  }
+  return ensureSessiondPrivateDirectory(paths.directory);
 }
 
 function pidAlive(pid: number): boolean {
@@ -115,8 +132,13 @@ function pidAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
-export async function acquireInstanceLock(paths: SessiondPaths): Promise<InstanceLock> {
-  await ensurePrivateDirectory(paths.directory);
+export async function acquireInstanceLock(
+  paths: SessiondPaths,
+  privateDir?: SessiondPrivateDirectory,
+): Promise<InstanceLock> {
+  // The containing directory must be preflighted private FIRST, and its
+  // dev/ino identity re-verified immediately before the O_EXCL create below.
+  await resolveSessiondPrivateDirectory(paths, privateDir);
   const instanceId = randomUUID();
   const payload = JSON.stringify({ pid: process.pid, instanceId, createdAt: Date.now() });
   const flags = constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0);
@@ -191,8 +213,14 @@ export interface LocalSecretTestHooks {
  *     is sole owner, so a 0-byte regular non-symlink `final` is removed and
  *     rebuilt. Any other malformed `final` (non-zero, unreadable) is fail-closed.
  */
-export async function loadOrCreateLocalSecret(paths: SessiondPaths, hooks: LocalSecretTestHooks = {}): Promise<string> {
-  await ensurePrivateDirectory(dirname(paths.secretFile));
+export async function loadOrCreateLocalSecret(
+  paths: SessiondPaths,
+  hooks: LocalSecretTestHooks = {},
+  privateDir?: SessiondPrivateDirectory,
+): Promise<string> {
+  // The containing directory must be preflighted private FIRST, and its
+  // dev/ino identity re-verified immediately before any temp create/sweep.
+  await resolveSessiondPrivateDirectory(paths, privateDir);
   await sweepStaleSecretTemps(paths);
   for (let attempt = 0; ; attempt += 1) {
     const existing = await readExistingSecret(paths);
@@ -398,15 +426,19 @@ export async function listPrivateSocketAliases(directory: string): Promise<strin
  *             left untouched
  *       timeout/EACCES/unknown → fail closed
  */
-export async function recoverStalePublicSocket(paths: SessiondPaths): Promise<void> {
+export async function recoverStalePublicSocket(paths: SessiondPaths, privateDir?: SessiondPrivateDirectory): Promise<void> {
   if (process.platform === "win32") return; // named pipes leave no files
+  // When the daemon preflighted the directory, re-verify its dev/ino identity
+  // before removing debris. A direct caller without a context proceeds as
+  // before (recovery never creates the directory itself).
+  if (privateDir !== undefined) await reverifySessiondPrivateDirectory(privateDir);
   const info = await lstat(paths.endpoint, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
   });
   if (info === undefined) return;
   if (!info.isSocket()) {
-    throw new SessiondError("forbidden", `unsafe sessiond socket path (not a socket): ${paths.endpoint}`);
+    throw new SessiondError("forbidden", "unsafe sessiond socket path (not a socket)");
   }
   const result = await probeSocket(paths.endpoint);
   if (result === "live") {
@@ -433,8 +465,12 @@ export async function recoverStalePublicSocket(paths: SessiondPaths): Promise<vo
  * over it. Only a provably-dead alias (socket, ECONNREFUSED, identity stable)
  * is removed as debris. Windows: no-op.
  */
-export async function recoverStalePrivateAliases(paths: SessiondPaths): Promise<void> {
+export async function recoverStalePrivateAliases(paths: SessiondPaths, privateDir?: SessiondPrivateDirectory): Promise<void> {
   if (process.platform === "win32") return;
+  // When the daemon preflighted the directory, re-verify its dev/ino identity
+  // before removing debris. A direct caller without a context proceeds as
+  // before (recovery never creates the directory itself).
+  if (privateDir !== undefined) await reverifySessiondPrivateDirectory(privateDir);
   for (const alias of await listPrivateSocketAliases(paths.directory)) {
     const info = await lstat(alias, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined;
@@ -479,7 +515,11 @@ export async function publishPublicEndpoint(
   paths: SessiondPaths,
   privatePath: string,
   instanceId: string,
+  privateDir?: SessiondPrivateDirectory,
 ): Promise<OwnedSocketPublication> {
+  // The containing directory identity is re-verified before the atomic link
+  // publishes the stable public socket inside it.
+  await resolveSessiondPrivateDirectory(paths, privateDir);
   const info = await lstat(privatePath, { bigint: true });
   if (!info.isSocket()) {
     throw new SessiondError("internal", "private sessiond socket is missing after listen");
