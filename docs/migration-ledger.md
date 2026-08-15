@@ -3068,7 +3068,7 @@ prompt/steer/follow_up/abort/model.set/thinking.set/tools.read/tools.write/reloa
 extension_ui（response/input）/navigate/fork/queue/stats/session.rename/auto_name = 20 个 production token，
 26 个 runtime 命令全部可达。refactor-execution-plan D2 行已追加本切片记录。
 
-## 64. REL1 — 安装、升级、卸载、发布验证（Phase 1 冻结设计 + Phase 2/3 实现；worktree rel1-release，branch feat/rel1-release，base main `88b6693`；实现完成，待独立 verifier）
+## 64. REL1 — 安装、升级、卸载、发布验证（DONE，Fresh verifier 二轮 PASS：首轮 FAIL 于 npm update-notifier 真实 registry GET，`--no-update-notifier` 修复后聚焦复验 PASS 且 npm 日志零网络；合并 main `2a409bd`，合并后 npm ci/build/root 10 包/Runtime E2E×2/Sessions/Startup 全绿）
 
 ### PHASE 1 — Release Shape 冻结设计（mandatory gate，evidence-first）
 
