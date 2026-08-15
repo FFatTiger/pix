@@ -21,6 +21,12 @@ const TEXT_EXTENSIONS = new Set([
   ".bash", ".zsh", ".fish", ".sql", ".graphql", ".gql", ".tf", ".hcl", ".env", ".gitignore",
 ]);
 
+/** DOCX preview input cap (10 MiB), ported from the source route's DOCX_PREVIEW_MAX_BYTES. */
+const DOCX_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
+/** Sandboxed preview CSP: no origins, images only as inline data: URIs. */
+const DOCX_PREVIEW_CSP =
+  "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+
 interface FileRouteDeps {
   roots: AllowedRootService;
   limits?: ResourceLimits;
@@ -196,6 +202,119 @@ async function streamAuthorizedFile(
   return new Response(body, { headers: { ...baseHeaders, "Content-Length": String(info.size) } });
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Read-only preview wrapper (ported verbatim from the source route): inline
+ * styles only, no scripts, no external resources. Document content is inserted
+ * as mammoth-produced HTML between the escaped file title and </main>. */
+function wrapDocxPreviewHtml(bodyHtml: string, fileName: string): string {
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light; }
+  html, body { margin: 0; min-height: 100%; background: #eef1f5; color: #171717; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 28px; }
+  main {
+    box-sizing: border-box;
+    max-width: 840px;
+    min-height: calc(100vh - 56px);
+    margin: 0 auto;
+    padding: 56px 64px;
+    background: #fff;
+    box-shadow: 0 8px 28px rgba(15, 23, 42, 0.14);
+  }
+  .file-title {
+    margin: 0 0 28px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #e5e7eb;
+    color: #6b7280;
+    font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    word-break: break-word;
+  }
+  h1, h2, h3, h4, h5, h6 { line-height: 1.3; margin: 1.1em 0 0.45em; color: #111827; }
+  p { margin: 0.65em 0; line-height: 1.7; }
+  table { border-collapse: collapse; max-width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d1d5db; padding: 6px 9px; vertical-align: top; }
+  img { max-width: 100%; height: auto; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  a { color: #2563eb; }
+  @media (max-width: 720px) {
+    body { padding: 0; background: #fff; }
+    main { min-height: 100vh; padding: 28px 22px; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+<div class="file-title">${escapeHtml(fileName)}</div>
+${bodyHtml}
+</main>
+</body>
+</html>`;
+}
+
+/**
+ * GET /v1/files?op=docx-preview — sandboxed HTML rendering of a .docx file.
+ * Port of the upstream desktop repo's `app/api/files/[...path]/route.ts` (type=preview):
+ * .docx only (case-insensitive extension), 10 MiB cap, lazy mammoth import,
+ * `externalFileAccess: false` and `convertImage: mammoth.images.dataUri`,
+ * wrapped in an inline-styled HTML shell. Unlike the source, which hands
+ * mammoth a `{ path }` to re-open itself, pix keeps the AllowedRoot
+ * `authorizeExisting` + regular-file + O_NOFOLLOW/identity read semantics:
+ * the bytes handed to mammoth (`{ buffer }`) come from the same pinned handle
+ * raw streaming uses, so conversion can never follow a swapped symlink or
+ * read outside the authorized regular file. Conversion failures map to a
+ * fixed sanitized error (never the path, mammoth's raw message or document
+ * content); the wrapper itself allows no scripts or external resources.
+ */
+async function renderDocxPreview(roots: AllowedRootService, target: string): Promise<Response> {
+  const authorized = await roots.authorizeExisting(target, "file");
+  if (extname(authorized.canonicalPath).toLowerCase() !== ".docx") {
+    throw new HttpError(400, "DOCX_ONLY", "DOCX preview is only available for .docx files");
+  }
+  const handle = await open(authorized.canonicalPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let bytes: Buffer;
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new HttpError(400, "NOT_FILE", "Path is not a file");
+    if (info.size > DOCX_PREVIEW_MAX_BYTES) throw new HttpError(413, "DOCX_TOO_LARGE", "DOCX preview is limited to 10 MiB");
+    bytes = await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+  const mammoth = await import("mammoth");
+  let bodyHtml: string;
+  try {
+    const result = await mammoth.convertToHtml(
+      { buffer: bytes },
+      { externalFileAccess: false, convertImage: mammoth.images.dataUri },
+    );
+    bodyHtml = result.value;
+  } catch {
+    throw new HttpError(422, "DOCX_PREVIEW_FAILED", "Unable to render this DOCX document");
+  }
+  const html = wrapDocxPreviewHtml(bodyHtml, basename(authorized.canonicalPath));
+  return new Response(html, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Security-Policy": DOCX_PREVIEW_CSP,
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new HttpError(499, "UPLOAD_ABORTED", "Upload request aborted");
 }
@@ -316,6 +435,9 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
     const operation = c.req.query("op") ?? "list";
     if (operation === "download") return streamAuthorizedFile(c, deps.roots, target, true);
     if (operation === "raw") return streamAuthorizedFile(c, deps.roots, target, false);
+    // Distinct op on purpose: never fold DOCX rendering into text/binary
+    // `preview`, so the response kind is never ambiguous.
+    if (operation === "docx-preview") return renderDocxPreview(deps.roots, target);
     const authorized = await deps.roots.authorizeExisting(target);
     const info = await stat(authorized.canonicalPath);
     if (operation === "meta") return c.json({ path: authorized.canonicalPath, size: info.size, modified: info.mtime.toISOString(), isDirectory: info.isDirectory(), mime: info.isFile() ? mimeFor(authorized.canonicalPath) : null });

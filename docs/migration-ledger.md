@@ -3161,3 +3161,70 @@ extension_ui（response/input）/navigate/fork/queue/stats/session.rename/auto_n
   Sessions + Startup PASS；sync-version 6/6；release-verify 干净态全流程 ALL PASS。
 - 实测细节：离线安装 27s/次；升级覆盖安装 npm 报 "removed 268 packages, changed 1"（bundle 内联依赖重建，预期）；
   bundle tar 体积 ≈ root node_modules gz（含 Pi SDK 树，§64.1 冻结接受，后续可做闭包剪枝优化）。
+
+---
+
+## 65. Host DOCX Preview — mammoth 安全渲染切片（`GET /v1/files?op=docx-preview`）
+
+> 状态：DONE（branch `pi-agent-85d210cc`，base main `99f90b1`；独立 worktree 实现与实跑验证，未 push/deploy）
+
+### 来源与范围
+
+- 来源：`/tmp/pi-web-desktop`（旧产品独立 worktree 只读快照）`app/api/files/[...path]/route.ts` GET `type=preview` 分支的 DOCX preview 语义。
+- 高保真迁移语义：
+  - 仅 `.docx`（basename 扩展名小写比较，大小写不敏感）；非 docx 固定 `400 DOCX_ONLY`；目录 `400 NOT_FILE`（AllowedRoot `kind="file"`）。
+  - 10 MiB 上限（源 `DOCX_PREVIEW_MAX_BYTES = 10 * 1024 * 1024`）：`> 10 MiB` 固定 `413 DOCX_TOO_LARGE`（恰等于上限仍可转换，`>` 语义有定向测试钉住）。
+  - 动态 `import("mammoth")`（首次请求才加载）；`mammoth.convertToHtml(..., { externalFileAccess: false, convertImage: mammoth.images.dataUri })`。
+  - 包装 HTML：`escapeHtml`/`wrapDocxPreviewHtml` 字节级移植（内联样式、`.file-title` 文件名转义、无 script/外链）。
+  - 响应头：`Content-Type: text/html; charset=utf-8`；CSP `default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`；`Referrer-Policy: no-referrer`；`X-Content-Type-Options: nosniff`；`Cache-Control: no-store`（源为 `no-cache`，按本切片要求收紧为 `no-store`——对源头的唯一有意响应头偏离）。
+- 明确排除项：Client UI、Protocol、sessiond/Worker/adapter 零改动；capability 不扩（`files` 已覆盖）；源 route 的 list/read/download/meta/watch/upload 分支不迁移（pix 已有等价实现）；未新增 Client 消费方。
+
+### 与源的有意偏离（安全收紧）
+
+1. 输入通道：源把 `{ path }` 交给 mammoth 自行重新 open（路径重开、无 O_NOFOLLOW）；pix 保持 Host 既有读安全语义——`AllowedRoot.authorizeExisting(target, "file")`（绝对路径校验 + realpath canonical 化 + allowed-root + root identity fail-closed + regular file）→ `open(canonicalPath, O_RDONLY | O_NOFOLLOW)` → fd `stat()` 钉住身份与大小后 `readFile()`，把已钉住的 `{ buffer }` 交给 mammoth。转换字节永远绑定授权时刻的 regular file 身份，不可能跟随被交换的 symlink 或读出授权文件之外。
+2. 转换失败：源 500 回显 `String(error)`（jszip/mammoth 原始消息泄漏）；pix 固定 `422 DOCX_PREVIEW_FAILED` "Unable to render this DOCX document"，不回显 path/raw message/文档内容。
+3. 独立 op：不复用 `op=preview`（pix 的 preview/read 对二进制 docx 保持既有 `415 BINARY_FILE`、raw 保持 octet-stream 字节流），`op=docx-preview` 是唯一返回 HTML 的 op，响应类型永不歧义。
+
+### 依赖
+
+- `packages/host/package.json` dependencies 新增 `"mammoth": "1.12.0"`（精确 pin；源 package.json 为 `^1.12.0` 且源 lock 解析同为 1.12.0；BSD-2-Clause，自带 TS 声明 `lib/index.d.ts`，纯 JS 离线转换库，无网络行为）。
+- root `package-lock.json` 仅新增 mammoth 及其传递依赖（@xmldom/xmldom、argparse、bluebird、jszip、lop、underscore、xmlbuilder、dingbat-to-unicode、duck、lie/pako/immediate 等），diff 纯增量，无任何既有包升级。
+- boundary 说明（诚实记录）：host `check-boundaries.mjs` 以 `from "..."` 正则枚举外部 import，动态 `import("mammoth")` 不在该扫描形态内（确定性事实，非绕过意图）；mammoth 是 host 已声明 dependency，不属于任何禁用清单（Pi SDK/Protocol/sessiond/React/Next）。本切片允许文件清单不含 boundary 脚本，故未改其 allowlist——列为残余观察项。
+
+### 安全边界
+
+- 路径授权沿用既有 root 语义：`authorizeExisting` + regular file + `O_NOFOLLOW` + root identity fail-closed（symlink→realpath 越根 `403 PATH_FORBIDDEN`；根被替换 `ROOT_REPLACED`；路径逃逸/NUL `400`；缺失 `404 PATH_NOT_FOUND`）。
+- 输出防泄漏：包装 HTML 无 script/外链资源；内嵌图片仅 `data:` URI（`convertImage=dataUri` + CSP `img-src data:`）；`externalFileAccess:false` 使 `TargetMode="External"` 图片关系不被读取（定向测试断言外部 URL 绝不出现于响应）。
+- 错误面：400/403/404/413/422 全部固定 code+固定文案（DOCX_ONLY / NOT_FILE / PATH_FORBIDDEN / PATH_NOT_FOUND / DOCX_TOO_LARGE / DOCX_PREVIEW_FAILED），沿用现有 `HttpError`/`apiErrorBody` 风格。
+
+### 定向测试（`packages/host/test/docx-preview.test.mjs`，真实 docx fixture，零 mock）
+
+fixture 由测试内置最小 OPC/zip 构造器生成（deflateRaw + 手写 local header/central directory/EOCD；变体：嵌入 PNG 图片、外部图片关系、stored 垃圾 part 精确控尺寸）。11 用例：
+
+1. 最小 docx→200 + 全部安全头精确断言（CSP 逐字符）+ mammoth 段落 HTML + 无 `<script`；
+2. `.DOCX` 大小写不敏感→200；
+3. 文件名 HTML 转义（`a&b<c>"onerror=x.docx` → `a&amp;b&lt;c&gt;&quot;...`）；
+4. 嵌入图片→`src="data:image/png;base64,` 且无非 data `src`、无 http(s) 引用；
+5. 外部图片关系→安全解析（200 或 422），外部 URL 绝不出现、无 http(s) 引用；
+6. 10 MiB 上限 `>` 语义（恰 10 MiB→200；10 MiB+1B→413 DOCX_TOO_LARGE）；
+7. 非 docx（.txt/.doc/无扩展）→400 DOCX_ONLY；
+8. 目录（`folder.docx`）→400 NOT_FILE；
+9. 损坏 docx（非 zip）与"是 zip 但非 word 文档"→422 DOCX_PREVIEW_FAILED，响应无 path、无 "central directory"/"zip" 库细节；
+10. 越权/路径逃逸/NUL/symlink 越根/缺失→[400,403,404] 且不泄漏越根内容与路径（symlink 明确 403 PATH_FORBIDDEN）；
+11. 与 preview/read/raw 的非歧义契约（preview/read 保持 415 BINARY_FILE；raw 保持 octet-stream 精确字节流；docx-preview 唯一 text/html）。
+
+### 验证（本 worktree 实跑）
+
+- `cd packages/host && npm test`（build + 全量）：431/431 PASS（含新增 11）
+- `cd packages/host && npm run typecheck`：PASS（tsc 零输出）
+- `cd packages/host && npm run build`：PASS
+- `cd packages/host && npm run check:boundaries`：PASS（42 files）
+- root `npm run check:architecture`：PASS（14 gates；曾因新注释含 legacy 品牌词 FAIL 一次，改写为 "upstream desktop repo" 后 PASS）
+- `git diff --check`：clean（见提交）
+
+### 残余风险
+
+- mammoth/jszip 为第三方解析器：10 MiB 输入上限 + `externalFileAccess:false` + CSP sandbox 限制任何解析器缺陷爆炸半径，但转换无显式时间/内存预算（zip 炸弹型资源耗尽）；源同样没有，接受并记录（输入已被 10 MiB 封顶）。
+- 转换失败无服务端日志（route 无 logger 注入 seam，避免为本切片扩 route deps/公共面）；排障可拿原文件复现。
+- Client 消费方未接（后续 Client UI 切片另行立项）；本切片 Host 侧 API 契约已冻结可独立消费。
+- mammoth 动态 import 不被 boundary `from`-regex 扫描覆盖（见上文 boundary 说明）；若后续把 allowlist 升级为覆盖动态 import 形态，需同步登记 `mammoth`。
