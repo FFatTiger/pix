@@ -2984,7 +2984,7 @@ protocol/adapter/cli/agent-worker/package-lock/依赖/live。未 push/deploy。
 - base `cf40397`，source branch `feat/pwa1-lan-resume` @ HEAD（worktree `pix-worktrees/pwa1-lan-resume`，
   未 merge/push）。
 
-## 63. D2 auto_name — Runtime Session Auto-Title 生产后端切片（DONE，本分支 feat/d2-auto-name，base main ed86655；backend-first，无 Client UI；CLOSES D2 命令矩阵）
+## 63. D2 auto_name — generate_session_title（DONE，Fresh verifier PASS；合并 main `2272a91`，D2 命令矩阵 CLOSED 20/20；合并后 adapter 278/278、sessiond 323（322+1skip）、Runtime E2E×2 含 every-command-open 全绿）
 
 ```text
 实现：worktree `d2-auto-name`，branch `feat/d2-auto-name`，base main ed86655（未 merge/push/deploy/live）。
