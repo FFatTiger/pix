@@ -19,6 +19,7 @@ const ackCommandTypes = RUNTIME_COMMAND_TYPES.filter(
       "get_session_stats",
       "get_last_assistant_text",
       "fork",
+      "generate_session_title",
     ].includes(type),
 ) as [
   Exclude<
@@ -29,6 +30,7 @@ const ackCommandTypes = RUNTIME_COMMAND_TYPES.filter(
     | "get_session_stats"
     | "get_last_assistant_text"
     | "fork"
+    | "generate_session_title"
   >,
   ...Exclude<
     (typeof RUNTIME_COMMAND_TYPES)[number],
@@ -38,6 +40,7 @@ const ackCommandTypes = RUNTIME_COMMAND_TYPES.filter(
     | "get_session_stats"
     | "get_last_assistant_text"
     | "fork"
+    | "generate_session_title"
   >[],
 ];
 
@@ -66,6 +69,14 @@ export const RuntimeCommandOkSchema = z.discriminatedUnion("type", [
     type: z.literal("fork"),
     forkedSessionId: NonEmptyStringSchema,
     forkPointEntryId: NonEmptyStringSchema,
+  }),
+  z.strictObject({
+    ok: z.literal(true),
+    type: z.literal("generate_session_title"),
+    // The worker applies the generated title internally AND returns it: the
+    // RPC result is the single source of truth sessiond uses to publish the
+    // §51 revisioned title overlay (never derived from a racy wire event).
+    title: z.string(),
   }),
   z.strictObject({ ok: z.literal(true), type: z.enum(ackCommandTypes) }),
 ]);

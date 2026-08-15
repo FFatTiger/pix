@@ -209,6 +209,11 @@ export function mapCoreResultToProtocol(result: CoreRuntimeCommandResult) {
         forkedSessionId: result.forkedSessionId,
         forkPointEntryId: result.forkPointEntryId,
       };
+    case "generate_session_title":
+      // D2 auto_name: the generated title flows back in the RPC result so
+      // sessiond publishes the §51 revisioned title overlay from it (the
+      // single source of truth).
+      return { ok: true as const, type: "generate_session_title" as const, title: result.title };
     default:
       // Bare ack commands (prompt, abort, steer, …) carry no payload.
       return { ok: true as const, type: result.type };

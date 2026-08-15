@@ -799,6 +799,11 @@ export class SessiondService {
     // SessionActions path can never bypass Host/API rename ordering. The private
     // non-reentrant command operation is never re-admitted into the lane.
     if (command.type === "set_session_name") return this.commandRename(sessionId, command);
+    // D2 auto_name: public `runtime.command(generate_session_title)` shares the
+    // SAME per-session FIFO lane as rename (reusing the "rename" kind, the §51
+    // set_session_name semantics) so a user rename and an auto_name on the same
+    // session serialize FIFO with a deterministic last-committer-wins title.
+    if (command.type === "generate_session_title") return this.commandAutoName(sessionId, command);
     // D2 fork: `runtime.command(fork)` shares the same per-session FIFO lane as
     // activate/rename/stop/delete so a fork races old-id identity mutations
     // deterministically and ends the OLD worker through the identity stop path.
@@ -1021,6 +1026,64 @@ export class SessiondService {
       // The command settled but we no longer own the record/epoch (stop /
       // reactivate / crash during the flight): never publish, never false success.
       return unavailableCommand(commandId, "set_session_name", "runtime changed during rename");
+    }
+    return result;
+  }
+
+  /**
+   * D2 auto_name: the per-session FIFO identity lane for public
+   * `runtime.command(generate_session_title)`. Reuses the "rename" kind (the
+   * §51 set_session_name semantics): auto_name generates and applies a session
+   * title, so it FIFO-serializes with user renames/set_session_name and the
+   * deterministic winner is last-committer-wins per lane order. Stale/rekeyed
+   * requests are inert; there is NEVER an offline fallback (a title command
+   * never starts a worker for an offline session). Delete/stop interplay is
+   * preserved by the lane (a delete removes the overlay; a stop retains it).
+   */
+  private commandAutoName(sessionId: string, command: RuntimeCommand & { type: "generate_session_title" }): Promise<CorrelatedRuntimeCommandResult> {
+    return this.coordinator.admit(sessionId, "rename", async (ctx) => {
+      if (this.shuttingDown) return unavailableCommand(command.commandId, "generate_session_title", "sessiond is shutting down");
+      if (ctx.isStale()) return unavailableCommand(command.commandId, "generate_session_title", "session identity changed during title generation");
+      const record = this.records.get(ctx.canonicalId);
+      if (!record || record.status === "stopped") {
+        return unavailableCommand(command.commandId, "generate_session_title", "runtime is not active");
+      }
+      if (record.status === "crashed" || record.status === "stopping") {
+        // A crashed/stopping record remains a reservation: never fall back offline.
+        return unavailableCommand(command.commandId, "generate_session_title", "runtime is not active");
+      }
+      return this.executeLiveAutoName(record, command.commandId);
+    });
+  }
+
+  /**
+   * Live auto_name with the same D4 ownership guards as executeLiveRename. The
+   * captured record object + epoch are checked immediately before command
+   * admission and again before success publication, so an old record/epoch
+   * result after stop/reactivate/crash can never publish a title or affect a
+   * new Worker. The adapter applies the generated title to the worker AND
+   * returns it in the RPC result; sessiond publishes the revisioned title
+   * overlay from the RPC result — the single source of truth (the §51 overlay
+   * publication path), never from a racy wire event. `{ok:false}` is a failure
+   * and is never reported as success; a worker crash mid-auto_name surfaces a
+   * sanitized failure and publishes no overlay.
+   */
+  private async executeLiveAutoName(record: RecordState, commandId: string): Promise<CorrelatedRuntimeCommandResult> {
+    const epochAtCapture = record.epoch;
+    if (!this.ownsLiveRecord(record, epochAtCapture)) {
+      return unavailableCommand(commandId, "generate_session_title", "runtime stopped before title command");
+    }
+    const result = await this.commandOnRecord(record, { type: "generate_session_title", commandId });
+    const stillOwned = this.ownsLiveRecord(record, epochAtCapture);
+    const matchesCapture = result.commandId === commandId && result.result.type === "generate_session_title";
+    if (result.result.ok && stillOwned && matchesCapture && result.result.type === "generate_session_title") {
+      this.titleOverlay.publish(record.sessionId, result.result.title);
+      return result;
+    }
+    if (result.result.ok) {
+      // The command settled but we no longer own the record/epoch (stop /
+      // reactivate / crash during the flight): never publish, never false success.
+      return unavailableCommand(commandId, "generate_session_title", "runtime changed during title generation");
     }
     return result;
   }

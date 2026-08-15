@@ -2983,3 +2983,87 @@ protocol/adapter/cli/agent-worker/package-lock/依赖/live。未 push/deploy。
 - 未新增任何 runtime 依赖；未改 Host/sessiond/protocol；无 push/deploy/live；无 Windows 声明。
 - base `cf40397`，source branch `feat/pwa1-lan-resume` @ HEAD（worktree `pix-worktrees/pwa1-lan-resume`，
   未 merge/push）。
+
+## 63. D2 auto_name — Runtime Session Auto-Title 生产后端切片（DONE，本分支 feat/d2-auto-name，base main ed86655；backend-first，无 Client UI；CLOSES D2 命令矩阵）
+
+```text
+实现：worktree `d2-auto-name`，branch `feat/d2-auto-name`，base main ed86655（未 merge/push/deploy/live）。
+编号：§57-§62 已占用，本切片占 §63。backend-first，无 Client source/UI。生产 capability 19→20：精确新增
+`runtime.auto_name`（generate_session_title）。这是最后一个仍关闭的 runtime 命令 —— 本切片后 EVERY
+runtime command 全部 OPEN，E2E closed-cap 循环改为显式 every-command-open 完整性断言（倒置：断言不再有
+任何命令关闭，余集为空）。
+
+依赖：§51 身份 lane（session-operation-coordinator：activate/rename/fork/stop/delete + revisioned 标题
+overlay）与 §44/§52/§59（adapter 真实 seam、set_session_name 语义、fork 同 lane 先例）。
+
+冻结架构决策：
+1) 结果契约：generate_session_title 从裸 ack 改为携带生成标题的成功结果
+   `{ok:true,type:"generate_session_title",title}`（Protocol results.ts 从 ackCommandTypes 移出 +
+   runtime-core RuntimeCommandOk 增 title 变体 + worker mapper mapCoreResultToProtocol 增 case）。
+   理由（single source of truth）：adapter 既把标题应用到 worker/catalyst（driver seam
+   session.setSessionName）又返回标题；sessiond 用 §51 既有路径从 RPC 结果发布标题 overlay（新 revision），
+   绝不从 race 的 wire 事件派生（事件可能来自 SDK 内部 session_info_changed，未必对应确认的 auto_name）。
+2) Lane/overlay：`runtime.command(generate_session_title)` 经新 commandAutoName 入 per-session FIFO 身份
+   lane，REUSE "rename" kind（§51 set_session_name 语义）——与 sessions.rename / set_session_name 同 lane
+   同 kind 串行，确定性 winner 规则 = per-lane-order last-committer-wins；capture record+epoch ownership
+   双重检查（executeLiveAutoName，镜像 executeLiveRename）；stale/rekeyed 请求 inert（绝无 offline
+   fallback，标题命令绝不启动 worker）；delete 移除 overlay、stop 保留；offline/stopped 会话 → 固定
+   unavailable（不启动 worker）。不加 AUTHORITY_COMMAND_TYPES（session_title 事件直接收敛投影 sessionName，
+   与 set_session_name 一致，无需 post-success snapshot 刷新）。
+3) Busy guard：冻结为无 busy guard —— auto_name 是轻量 query-style 生成（adapter seam 读 last assistant
+   text、设 session name；无模型调用、无会话树变更、无 streaming 交互），与 navigate/fork/compact 的
+   session_busy 不对称是刻意的；允许在 prompt 流式期间并发执行，绝不破坏在飞 turn。
+4) 错误消毒：新增固定 AUTO_NAME_FAILURE_MESSAGES 投影（无 raw title/session id/path/SDK 文本；命令无
+   params 故无回显）；mapDriverError code + 固定 message，失败不发 session_title 事件、不关闭 runtime。
+
+Adapter（packages/pi-sdk-adapter）：
+- generate_session_title case 返回 title（await driver.generateSessionTitle() → emit session_title →
+  return {ok:true,type,title}）；失败 catch 投影固定 AUTO_NAME_FAILURE_MESSAGES。
+- agent/index.ts PRODUCTION_AGENT_CAPABILITIES 19→20 精确加 runtime.auto_name（全部 runtime 命令 OPEN）。
+
+Sessiond（packages/sessiond）：
+- service.ts：command() 对 generate_session_title 走 commandAutoName（lane kind "rename"）；executeLiveAutoName
+  在成功且 ownership 匹配时用 RPC 结果 title publish titleOverlay；失败/失权/崩溃绝不 publish、绝不 false
+  success。
+- testing/fake-worker.ts：outcome() 增 generate_session_title → {ok:true,type,title}（可配 autoTitle）。
+
+Fixture / E2E：
+- agent-worker e2e fixture：CAPABILITIES 加 runtime.auto_name（20 token）、REQUIRED_CAP 已有映射、
+  新增 generate_session_title case（从 lastAssistantText 派生 title，设 sessionName、emit session_title、
+  返回 title）。
+- tests/e2e/runtime.mjs：PRODUCTION_CAPS 19→20；6 处 closed-cap 循环 + fork 场景 auto_name-closed 断言
+  全部替换为 assertEveryCommandOpen 完整性倒置（生产面 = 完整 20-token 冻结集，且原最后关闭命令
+  generate_session_title 现在成功返回 title）；新增 scenarioD2AutoName 单连接真实链：create → prompt 1 转
+  → auto_name（title="Hello world"）→ 直接 sessiond RPC sessions.list/read 经 overlay 见标题 → 用户
+  set_session_name 在 auto_name 后 → later revision wins → auto_name 在用户 rename 后 → last-committer-wins
+  → every-command-open 断言。
+
+测试（实现者已执行，PENDING 独立 PASS）：
+- adapter 278/278（基线 274 + 新增 4：成功路径 title 回传+session_title 事件+快照 sessionName；流式期间
+  允许（冻结 busy 决策，与 navigate/fork 不对称）；hostile SDK 错误固定消毒无 raw/session/title/stack 且
+  不发事件；缺 capability 门禁 unsupported_capability 且零 driver 调用）。
+- sessiond 323（322 pass + 1 skip；基线 314 + 新增 9）：auto_name 成功回传 title + overlay publish +
+  list/read 经 overlay 见标题；与 user rename/set_session_name/sessions.rename 同 lane FIFO（commandDelayMs
+  证明第二个不先到）+ last-committer-wins；user rename 在 auto_name 后 wins / auto_name 在 user rename 后
+  wins（lane order）；older read 不清 new revision；delete 移除 overlay / stop 保留；offline/stopped 固定
+  unavailable 零 worker；delete-first 后 auto_name unavailable 不重建；rekey 旧 id stale inert、authoritative
+  id live publish；worker crash mid-auto_name sanitized failure 无 overlay pollution + 重激活后仅新 record
+  publish。
+- root build/typecheck/check:architecture（14 gates）/adapter check:commands(26/26) + check:boundaries PASS；
+  protocol 132 / runtime-core 12 / runtime-contract-tests 76 / agent-worker 105 / sessiond 323+1skip /
+  adapter 278 全 PASS；Runtime E2E 2 轮 + Startup + Sessions PASS；git diff --check 与工作树 clean。
+
+Material risk / 残余：
+- adapter 成功路径经 scripted seam + 真实 SDK 驱动 seam 逐行核对（getLastAssistantText → slice(0,80) →
+  setSessionName → return），但真实 SDK 的多轮次端到端 auto_name 未在真实网络外验证（建议独立 verifier
+  用真实 SDK 目录跑一次成功 auto_name）。
+- auto_name 与 in-flight prompt 并发时，若 prompt 尚未产生任何 assistant 文本，标题回退
+  `Session <id.slice(0,8)>`（含 session id 前缀的派生标题是产品行为，不是泄漏——RPC 回传该标题属正常）；
+  用户随后 rename 覆盖即可。
+- 无 Windows 声明。
+```
+
+【补充：D2 命令矩阵 CLOSED】本切片后 D2 Runtime Command Expansion 的生产命令矩阵全部 OPEN：
+prompt/steer/follow_up/abort/model.set/thinking.set/tools.read/tools.write/reload/compact/compact.abort/
+extension_ui（response/input）/navigate/fork/queue/stats/session.rename/auto_name = 20 个 production token，
+26 个 runtime 命令全部可达。refactor-execution-plan D2 行已追加本切片记录。

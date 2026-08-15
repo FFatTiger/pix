@@ -41,11 +41,12 @@ const HOST_START_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 8_000;
 const ROUNDS = Math.max(1, Number(process.env.PIX_E2E_ROUNDS ?? "1") || 1);
 
-// D2 navigate + D2 fork production capability surface (19 tokens): the exact
-// set the attach snapshot must carry. Updating this constant keeps every
-// scenario honest about what is open (bash pair + tools read/write + reload +
-// manual-compact pair + extension UI + navigate + fork) vs still closed
-// (auto_name).
+// D2 navigate + D2 fork + D2 auto_name production capability surface (20
+// tokens): the exact set the attach snapshot must carry. With auto_name the
+// runtime command matrix is COMPLETE — every runtime command is open (bash
+// pair + tools read/write + reload + manual-compact pair + extension UI +
+// navigate + fork + auto_name). The E2E closed-cap loops become an explicit
+// every-command-open assertion (see assertEveryCommandOpen below).
 const PRODUCTION_CAPS = [
   "runtime.prompt",
   "runtime.abort",
@@ -66,7 +67,58 @@ const PRODUCTION_CAPS = [
   "runtime.extension_ui",
   "runtime.navigate",
   "runtime.fork",
+  "runtime.auto_name",
 ];
+
+/** The canonical full frozen command surface (the 20 open production tokens). */
+const FROZEN_COMMAND_CAPS = [
+  "runtime.prompt",
+  "runtime.abort",
+  "runtime.stats",
+  "runtime.session.rename",
+  "runtime.thinking.set",
+  "runtime.model.set",
+  "runtime.steer",
+  "runtime.follow_up",
+  "runtime.queue",
+  "runtime.bash",
+  "runtime.bash.abort",
+  "runtime.tools.read",
+  "runtime.tools.write",
+  "runtime.reload",
+  "runtime.compact",
+  "runtime.compact.abort",
+  "runtime.extension_ui",
+  "runtime.navigate",
+  "runtime.fork",
+  "runtime.auto_name",
+];
+
+/**
+ * Completeness inversion of the former closed-cap loops. Every runtime command
+ * is now OPEN, so the closed-cap loop is replaced by: (1) the production
+ * surface carries the full frozen 20-token command set, and (2) the former
+ * last-closed command (generate_session_title) now SUCCEEDS with the generated
+ * title — never `unsupported_capability`. The closed remainder is empty.
+ */
+async function assertEveryCommandOpen(client, sessionId, label) {
+  assert.equal(PRODUCTION_CAPS.length, 20, `${label}: production surface must be the full 20-token frozen set`);
+  assert.deepEqual(
+    [...PRODUCTION_CAPS].sort(),
+    [...FROZEN_COMMAND_CAPS].sort(),
+    `${label}: the production surface must contain the full frozen command set (nothing closed)`,
+  );
+  const res = await client.command(sessionId, {
+    commandId: `open-${label}-${Date.now()}`,
+    type: "generate_session_title",
+  });
+  assert.equal(res.payload.ok, true, JSON.stringify(res.payload));
+  const outcome = res.payload.result.result;
+  assert.equal(outcome.ok, true, `${label}: generate_session_title must be open (no command is closed)`);
+  assert.equal(outcome.type, "generate_session_title");
+  assert.equal(typeof outcome.title, "string");
+  assert.ok(outcome.title.length > 0, `${label}: the RPC result must carry the generated title`);
+}
 
 // In-memory registry of sessions created through the E2E client, backing both
 // the fixture locator and the fixture catalog overrides passed to startDaemon.
@@ -444,12 +496,14 @@ async function startRuntimeStack(tempDir) {
   const fixtureSessionFile = (sessionId) => join(tempDir, "fixture-sessions", `${sessionId}.jsonl`);
   const fixtureCatalog = {
     async listSessions() {
+      // Header-only (SessionHeaderSchema is strict: no `entries`). The fixture
+      // never returns a title, so the §51 service-owned overlay is the ONLY
+      // thing bridging the auto_name title to sessions.list/read.
       return [...fixtureSessions.values()].map(({ sessionId, cwd, projectRoot }) => ({
         sessionId,
         sessionFile: fixtureSessionFile(sessionId),
         cwd,
         projectRoot,
-        entries: [],
       }));
     },
     async readSession(sessionId) {
@@ -1295,26 +1349,10 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
       version: 1,
     });
 
-    // Closed capabilities must remain unsupported on the production surface.
-    // Note: clear_queue is an interrupt-only wire type (cannot go via command
-    // envelope). set_model (D2-P3), queue (D2-P4), bash pair (D2-P5),
-    // tools/reload (D2-P6), the manual-compact pair (D2-P7), extension UI
-    // (D2-P8) and navigate (D2 navigate) are now open;
-    // auto_name stays closed.
-    for (const [type, extra, token] of [
-      ["generate_session_title", {}, "runtime.auto_name"],
-    ]) {
-      const closed = await client.command(sessionId, {
-        commandId: `light-closed-${type}-${Date.now()}`,
-        type,
-        ...extra,
-      });
-      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
-      const outcome = closed.payload.result.result;
-      assert.equal(outcome.ok, false, `${type} must be closed`);
-      assert.equal(outcome.error.code, "unsupported_capability");
-      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
-    }
+    // D2 auto_name completes the command matrix: every runtime command is now
+    // OPEN. The production surface carries the full frozen 20-token set and
+    // the former last-closed command (generate_session_title) succeeds.
+    await assertEveryCommandOpen(client, sessionId, "light");
 
     return {
       sessionId,
@@ -1434,18 +1472,10 @@ async function scenarioD2P4QueueControl(stack, projectDir) {
       version: 1,
     });
 
-    // Closed caps still unsupported: fork/auto_name (queue, the
-    // manual-compact pair and navigate are now open).
-    for (const [type, extra, token] of [
-      ["generate_session_title", {}, "runtime.auto_name"],
-    ]) {
-      const closed = await client.command(sessionId, { commandId: `queue-closed-${type}-${Date.now()}`, type, ...extra });
-      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
-      const outcome = closed.payload.result.result;
-      assert.equal(outcome.ok, false, `${type} must be closed`);
-      assert.equal(outcome.error.code, "unsupported_capability");
-      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\\.")));
-    }
+    // D2 auto_name completes the command matrix: every runtime command is now
+    // OPEN (queue). The production surface carries the full frozen 20-token set
+    // and the former last-closed command (generate_session_title) succeeds.
+    await assertEveryCommandOpen(client, sessionId, "queue");
 
     return { sessionId, promptId };
   } finally {
@@ -1578,18 +1608,10 @@ async function scenarioD2P5BashControl(stack, projectDir) {
       version: 1,
     });
 
-    // 4. Closed caps still unsupported: fork/auto_name (tools/reload
-    //    pair, the manual-compact pair and navigate are now OPEN — D2-P6/D2-P7/D2 navigate).
-    for (const [type, extra, token] of [
-      ["generate_session_title", {}, "runtime.auto_name"],
-    ]) {
-      const closed = await client.command(sessionId, { commandId: `bash-closed-${type}-${Date.now()}`, type, ...extra });
-      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
-      const outcome = closed.payload.result.result;
-      assert.equal(outcome.ok, false, `${type} must be closed`);
-      assert.equal(outcome.error.code, "unsupported_capability");
-      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
-    }
+    // D2 auto_name completes the command matrix: every runtime command is now
+    // OPEN (bash). The production surface carries the full frozen 20-token set
+    // and the former last-closed command (generate_session_title) succeeds.
+    await assertEveryCommandOpen(client, sessionId, "bash");
 
     return { sessionId, bashId, longBashId, abortElapsedMs: elapsed };
   } finally {
@@ -1719,18 +1741,10 @@ async function scenarioD2P6ToolsReload(stack, projectDir) {
       version: reloadCapVersion,
     });
 
-    // 7. Closed caps remain unsupported: fork/auto_name (the
-    //    manual-compact pair and navigate are now OPEN — D2-P7/D2 navigate).
-    for (const [type, extra, token] of [
-      ["generate_session_title", {}, "runtime.auto_name"],
-    ]) {
-      const closed = await client.command(sessionId, { commandId: `tools-closed-${type}-${Date.now()}`, type, ...extra });
-      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
-      const outcome = closed.payload.result.result;
-      assert.equal(outcome.ok, false, `${type} must be closed`);
-      assert.equal(outcome.error.code, "unsupported_capability");
-      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
-    }
+    // D2 auto_name completes the command matrix: every runtime command is now
+    // OPEN (tools). The production surface carries the full frozen 20-token set
+    // and the former last-closed command (generate_session_title) succeeds.
+    await assertEveryCommandOpen(client, sessionId, "tools");
 
     return { sessionId, getTools: getOutcome, reloadVersion: reloadCapVersion };
   } finally {
@@ -1938,18 +1952,10 @@ async function scenarioD2P7CompactControl(stack, projectDir) {
     const busySnap = await client.getSnapshot(sessionId);
     assert.equal(bstate(busySnap.payload.result).isCompacting, false);
 
-    // 6. Closed caps remain unsupported: fork/auto_name (the
-    //    manual-compact pair and navigate are now OPEN — D2-P7/D2 navigate).
-    for (const [type, extra, token] of [
-      ["generate_session_title", {}, "runtime.auto_name"],
-    ]) {
-      const closed = await client.command(sessionId, { commandId: `d2p7-closed-${type}-${Date.now()}`, type, ...extra });
-      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
-      const outcome = closed.payload.result.result;
-      assert.equal(outcome.ok, false, `${type} must be closed`);
-      assert.equal(outcome.error.code, "unsupported_capability");
-      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
-    }
+    // D2 auto_name completes the command matrix: every runtime command is now
+    // OPEN (compact). The production surface carries the full frozen 20-token set
+    // and the former last-closed command (generate_session_title) succeeds.
+    await assertEveryCommandOpen(client, sessionId, "compact");
 
     return { sessionId, beforeCount, afterCount };
   } finally {
@@ -2178,19 +2184,10 @@ async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
     assert.equal(notifyRes.payload.result.result.ok, true);
     await client.waitFor((m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "extension_error", { label: "extension_error" });
 
-    // ---- 9. closed caps remain unsupported (fork/auto_name); reload cannot
-    //         broaden. navigate is now open (D2 navigate) — covered by the
-    //         dedicated navigate scenario.
-    for (const [type, extra, token] of [
-      ["generate_session_title", {}, "runtime.auto_name"],
-    ]) {
-      const closed = await client.command(sessionId, { commandId: `d2p8-closed-${type}-${Date.now()}`, type, ...extra });
-      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
-      const outcome = closed.payload.result.result;
-      assert.equal(outcome.ok, false, `${type} must be closed`);
-      assert.equal(outcome.error.code, "unsupported_capability");
-      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
-    }
+    // D2 auto_name completes the command matrix: every runtime command is now
+    // OPEN (extui). The production surface carries the full frozen 20-token set
+    // and the former last-closed command (generate_session_title) succeeds.
+    await assertEveryCommandOpen(client, sessionId, "extui");
     const reload = await client.command(sessionId, { commandId: `d2p8-reload-${Date.now()}`, type: "reload" });
     assert.equal(reload.payload.result.result.ok, true, JSON.stringify(reload.payload));
     const afterReload = await client.getSnapshot(sessionId);
@@ -2213,7 +2210,8 @@ async function scenarioD2NavigateControl(stack, projectDir) {
   // navigate is an AUTHORITY command — sessiond refreshes the authoritative
   // snapshot from the worker before releasing the terminal result, so
   // getSnapshot / get_state / detach-reattach all converge to the new leaf
-  // (history/messageCount/leafId). fork/auto_name stay closed.
+  // (history/messageCount/leafId). The auto_name command matrix is now complete
+  // (every runtime command is open).
   const client = new RuntimeWsClient(stack.host.wsUrl);
   await client.connect();
   const bstate = (result) => result?.snapshot?.state ?? result?.state;
@@ -2339,17 +2337,10 @@ async function scenarioD2NavigateControl(stack, projectDir) {
     assert.ok(!badOutcome.error.message.includes("entry-999"), "no raw leaf id in the error message");
     assert.ok(!/\n|\tat |node:internal/i.test(badOutcome.error.message), "no raw stack text");
 
-    // 6. Closed caps remain unsupported: fork/auto_name (navigate is now open).
-    for (const [type, extra, token] of [
-      ["generate_session_title", {}, "runtime.auto_name"],
-    ]) {
-      const closed = await client.command(sessionId, { commandId: `nav-closed-${type}-${Date.now()}`, type, ...extra });
-      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
-      const outcome = closed.payload.result.result;
-      assert.equal(outcome.ok, false, `${type} must be closed`);
-      assert.equal(outcome.error.code, "unsupported_capability");
-      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
-    }
+    // D2 auto_name completes the command matrix: every runtime command is now
+    // OPEN (navigate). The production surface carries the full frozen 20-token set
+    // and the former last-closed command (generate_session_title) succeeds.
+    await assertEveryCommandOpen(client, sessionId, "navigate");
 
     return { sessionId, beforeCount: 3 };
   } finally {
@@ -2362,8 +2353,9 @@ async function scenarioD2ForkControl(stack, projectDir) {
   //   Browser WS → Host gateway (serial lane) → sessiond → R2 child → R1
   //   worker-main → fixture.
   // create → 2 turns → fork → NEW session id + OLD worker exits (no orphan) →
-  // attach the forked session (fork-point history present) → auto_name still
-  // closed → stop the forked session (no extra orphan). The old worker ends via
+  // attach the forked session (fork-point history present) → auto_name is now
+  // OPEN (the last runtime command) → stop the forked session (no extra
+  // orphan). The old worker ends via
   // sessiond's identity-lane stop AFTER the fork result is delivered — the
   // client receives the fork result + new session id first, then the old
   // runtime_closed.
@@ -2420,10 +2412,16 @@ async function scenarioD2ForkControl(stack, projectDir) {
     assert.equal(forkedSnap.type, "snapshot", JSON.stringify(forkedSnap));
     assert.equal(forkedSnap.payload.snapshot.state.messageCount, 2, "forked session must open with fork-point history (2 turns)");
 
-    // auto_name remains closed on the forked session (production surface).
+    // D2 auto_name completes the command matrix: auto_name is now OPEN on the
+    // forked session too (the production surface is the full 20-token set and
+    // the former last-closed command succeeds with the generated title).
     const autoName = await client.command(forkedSessionId, { commandId: `fork-auto-${Date.now()}`, type: "generate_session_title" });
-    assert.equal(autoName.payload.result.result.ok, false, JSON.stringify(autoName.payload));
-    assert.equal(autoName.payload.result.result.error.code, "unsupported_capability");
+    assert.equal(autoName.payload.ok, true, JSON.stringify(autoName.payload));
+    const autoOutcome = autoName.payload.result.result;
+    assert.equal(autoOutcome.ok, true, JSON.stringify(autoOutcome));
+    assert.equal(autoOutcome.type, "generate_session_title");
+    assert.equal(typeof autoOutcome.title, "string");
+    assert.ok(autoOutcome.title.length > 0, "the forked-session auto_name result must carry the generated title");
 
     // Stop the forked session: the forked worker must exit (no orphan growth
     // from THIS scenario beyond the workers that existed before it).
@@ -2437,6 +2435,83 @@ async function scenarioD2ForkControl(stack, projectDir) {
     }
 
     return { sessionId, forkedSessionId, messageCount: 2 };
+  } finally {
+    client.close();
+  }
+}
+
+async function scenarioD2AutoName(stack, projectDir) {
+  // D2 auto_name backend vertical slice (single real chain):
+  //   Browser WS → Host gateway → sessiond → R2 child → R1 worker-main →
+  //   fixture, plus DIRECT sessiond RPC reads to verify the §51 revisioned
+  //   title overlay on sessions.list/read (the fixture catalog returns no
+  //   title, so the overlay is the only thing bridging the auto_name title).
+  // create → prompt (1 turn) → auto_name → title in list/read via the overlay
+  // → user rename AFTER auto_name wins (later revision) → auto_name after user
+  // rename → deterministic last-committer-wins per lane order.
+  const client = new RuntimeWsClient(stack.host.wsUrl);
+  await client.connect();
+  try {
+    await client.handshake();
+    const created = await client.create({
+      cwd: projectDir,
+      projectRoot: projectDir,
+      createRequestId: `cr-auto-${Date.now()}`,
+    });
+    const sessionId = created.sessionId;
+    const snap = await client.attach(sessionId);
+    assert.equal(snap.type, "snapshot");
+    assert.deepEqual(snap.payload.snapshot.capabilities, { capabilities: PRODUCTION_CAPS, version: 1 });
+
+    // 1. Prompt (1 turn): the fixture sets lastAssistantText = "Hello world".
+    const turn = await client.command(sessionId, { commandId: `auto-turn-${Date.now()}`, type: "prompt", message: "hello" });
+    assert.equal(turn.payload.result.result.ok, true, JSON.stringify(turn.payload));
+
+    // 2. auto_name → derives "Hello world" from the last assistant text and
+    //    returns it in the RPC result (single source of truth).
+    const auto = await client.command(sessionId, { commandId: `auto-name-${Date.now()}`, type: "generate_session_title" });
+    const autoOutcome = auto.payload.result.result;
+    assert.equal(autoOutcome.ok, true, JSON.stringify(autoOutcome));
+    assert.equal(autoOutcome.type, "generate_session_title");
+    assert.equal(autoOutcome.title, "Hello world", "auto_name must derive the title from the last assistant text");
+    // The session_title event converges the worker/attach snapshot projection.
+    await client.waitFor(
+      (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "session_title",
+      { label: "session_title event" },
+    );
+    const stateSnap = await client.getSnapshot(sessionId);
+    const autoState = stateSnap.payload.result?.snapshot?.state ?? stateSnap.payload.result?.state;
+    assert.equal(autoState.sessionName, "Hello world", "the attach snapshot must carry the generated title");
+
+    // 3. Title visible in sessions list/read via the §51 overlay (direct RPC).
+    const { SessiondRpcClient } = await import("@fffattiger/pix-sessiond/client");
+    const probe = new SessiondRpcClient({
+      endpoint: stack.daemon.endpoint,
+      secret: stack.daemon.secret,
+      timeoutMs: 2_000,
+    });
+    const listed = await probe.call("sessions.list", {});
+    assert.equal(listed.sessions.find((s) => s.sessionId === sessionId)?.title, "Hello world", "sessions.list must surface the auto_name title via the overlay");
+    const read = await probe.call("sessions.read", { sessionId });
+    assert.equal(read.title, "Hello world", "sessions.read must surface the auto_name title via the overlay");
+
+    // 4. User rename AFTER auto_name wins (later overlay revision).
+    const rename = await client.command(sessionId, { commandId: `auto-rename-${Date.now()}`, type: "set_session_name", name: "User Rename" });
+    assert.equal(rename.payload.result.result.ok, true, JSON.stringify(rename.payload));
+    const listed2 = await probe.call("sessions.list", {});
+    assert.equal(listed2.sessions.find((s) => s.sessionId === sessionId)?.title, "User Rename", "user rename after auto_name wins (later overlay revision)");
+
+    // 5. auto_name after user rename → deterministic last-committer-wins per
+    //    lane order: auto_name commits later, so its overlay revision wins.
+    const auto2 = await client.command(sessionId, { commandId: `auto-name-2-${Date.now()}`, type: "generate_session_title" });
+    assert.equal(auto2.payload.result.result.ok, true, JSON.stringify(auto2.payload));
+    const listed3 = await probe.call("sessions.list", {});
+    assert.equal(listed3.sessions.find((s) => s.sessionId === sessionId)?.title, "Hello world", "auto_name after user rename commits later → wins per lane order");
+
+    // 6. Every-command-open completeness assertion (no closed commands remain).
+    await assertEveryCommandOpen(client, sessionId, "auto");
+
+    return { sessionId, title: "Hello world" };
   } finally {
     client.close();
   }
@@ -2602,6 +2677,9 @@ async function runRound(round) {
     results.forkControl = await scenarioD2ForkControl(stack, projectA);
     log(`round ${round}: D2 fork control OK old=${results.forkControl.sessionId} forked=${results.forkControl.forkedSessionId}`);
 
+    results.autoName = await scenarioD2AutoName(stack, projectA);
+    log(`round ${round}: D2 auto_name control OK session=${results.autoName.sessionId} title=${results.autoName.title}`);
+
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
 
@@ -2661,14 +2739,15 @@ async function main() {
           "commandId at-most-once + interrupt dedup + type conflict",
           "session isolation",
           "create then host-restart cold attach",
-          "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + closed caps)",
-          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed auto_name)",
-          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed auto_name)",
-          "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + closed auto_name)",
-          "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + closed auto_name + no orphan)",
-          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + custom lines + abort clears + status/widget/title/notify events + closed auto_name + reload cannot broaden)",
-          "D2 navigate control (3-prompt tree + navigate to earlier leaf authoritative messageCount/history/leafId convergence + navigate forward + detach/reattach persistence + blocking prompt + second-connection navigate session_busy (prompt untouched) + invalid leaf invalid_input sanitized + closed auto_name + capability advertised)",
-          "D2 fork control (create + 2 turns + fork → NEW session id + OLD worker exits via identity-lane stop after the result + attach forked session with fork-point history + auto_name still closed + forked worker exits on stop, no orphan)",,
+          "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + every-command-open)",
+          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + every-command-open)",
+          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + every-command-open)",
+          "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + every-command-open)",
+          "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + every-command-open + no orphan)",
+          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + custom lines + abort clears + status/widget/title/notify events + every-command-open + reload cannot broaden)",
+          "D2 navigate control (3-prompt tree + navigate to earlier leaf authoritative messageCount/history/leafId convergence + navigate forward + detach/reattach persistence + blocking prompt + second-connection navigate session_busy (prompt untouched) + invalid leaf invalid_input sanitized + every-command-open + capability advertised)",
+          "D2 fork control (create + 2 turns + fork → NEW session id + OLD worker exits via identity-lane stop after the result + attach forked session with fork-point history + auto_name open on the forked session + forked worker exits on stop, no orphan)",
+          "D2 auto_name control (create → prompt 1 turn → auto_name → title in sessions list/read via the §51 overlay → user rename AFTER auto_name wins (later revision) → auto_name after user rename → deterministic last-committer-wins per lane order → every-command-open)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {

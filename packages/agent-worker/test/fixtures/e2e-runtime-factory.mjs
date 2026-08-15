@@ -30,8 +30,10 @@ import { join } from "node:path";
 // / runtime.reload (reload), the D2-P7 manual-compact pair
 // runtime.compact (compact) / runtime.compact.abort (abort_compaction), the
 // D2-P8 extension-UI token runtime.extension_ui (extension_ui_response /
-// extension_ui_input), the D2 navigate token runtime.navigate (navigate_tree)
-// and the D2 fork token runtime.fork (fork) are the capability-gated unlocks.
+// extension_ui_input), the D2 navigate token runtime.navigate (navigate_tree),
+// the D2 fork token runtime.fork (fork) and the D2 auto_name token
+// runtime.auto_name (generate_session_title) are the capability-gated unlocks —
+// every runtime command is now open.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
@@ -53,6 +55,7 @@ const CAPABILITIES = {
     "runtime.extension_ui",
     "runtime.navigate",
     "runtime.fork",
+    "runtime.auto_name",
   ],
   version: 1,
 };
@@ -427,6 +430,18 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
           }
           sessionName = name;
           return { ok: true, type: "set_session_name" };
+        }
+        case "generate_session_title": {
+          // Mirrors the production adapter seam: derives a deterministic title
+          // from the last assistant text (or a session-id fallback), applies it
+          // as the session name, emits session_title, and returns it in the RPC
+          // result — sessiond publishes the §51 title overlay from the result
+          // (single source of truth).
+          const text = typeof lastAssistantText === "string" ? lastAssistantText.trim() : "";
+          const title = text ? text.slice(0, 80) : `Session ${sessionId.slice(0, 8)}`;
+          sessionName = title;
+          emit({ type: "session_title", sessionId, name: title });
+          return { ok: true, type: "generate_session_title", title };
         }
         case "set_thinking_level": {
           const level = command.level;

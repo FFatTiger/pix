@@ -65,6 +65,25 @@ const FORK_FAILURE_MESSAGES: Readonly<Partial<Record<RuntimeError["code"], strin
   internal: "fork failed",
 };
 
+/**
+ * Fixed sanitized auto_name (generate_session_title) failure message per
+ * canonical code. The worker/adapter raw error text (which may carry the
+ * generated title, a session id, a path, or SDK/transport internals) never
+ * crosses the boundary — every title-generation failure is re-projected onto a
+ * fixed message, preserving only the canonical code + retryable. The command
+ * has no parameters, so there is nothing to echo.
+ */
+const AUTO_NAME_FAILURE_MESSAGES: Readonly<Partial<Record<RuntimeError["code"], string>>> = {
+  invalid_input: "session title is invalid",
+  not_found: "session not found",
+  interrupted: "title generation was cancelled",
+  session_busy: "session is busy",
+  timeout: "title generation timed out",
+  unavailable: "title generation is unavailable",
+  external: "title generation failed",
+  internal: "title generation failed",
+};
+
 interface PendingUi {
   request: ExtensionUiRequest;
   driver: DriverUiRequest;
@@ -499,9 +518,33 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           }
         }
         case "generate_session_title": {
-          const name = await this.driver.generateSessionTitle();
-          this.emit({ type: "session_title", sessionId: this.identity.sessionId, name });
-          return { ok: true, type: "generate_session_title" };
+          // auto_name (runtime.auto_name) is a lightweight QUERY-STYLE title
+          // generation: the adapter seam derives a title from the last
+          // assistant text and applies it as the session name — no model call,
+          // no session-tree mutation, no streaming interaction. It therefore
+          // has NO dedicated busy guard and is ALLOWED while a prompt streams
+          // (it never corrupts the in-flight turn; a prompt issued around it is
+          // unaffected and the lane/worker serialization still orders it FIFO).
+          // This asymmetry with navigate/fork/compact is deliberate and frozen:
+          // those mutate the session tree / block on a model; auto_name does
+          // neither.
+          try {
+            const name = await this.driver.generateSessionTitle();
+            this.emit({ type: "session_title", sessionId: this.identity.sessionId, name });
+            // The adapter applies the title to the worker AND returns it: the
+            // RPC result is the single source of truth sessiond uses to publish
+            // the §51 revisioned title overlay (never derived from a racy wire
+            // event, mirroring the live rename overlay publication path).
+            return { ok: true, type: "generate_session_title", title: name };
+          } catch (error) {
+            // Map the driver failure to a canonical code, but NEVER surface the
+            // raw SDK message (which may carry the generated title / session id
+            // / path / transport text) — project every failure onto a fixed
+            // sanitized message keyed by the code.
+            const mapped = mapDriverError(error);
+            const fixed = AUTO_NAME_FAILURE_MESSAGES[mapped.code] ?? "title generation failed";
+            return this.failure("generate_session_title", makeRuntimeError(mapped.code, fixed, { retryable: mapped.retryable }));
+          }
         }
       }
     } catch (error) {
