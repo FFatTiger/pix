@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-import { Shield, ShieldCheck, ShieldSlash, ShieldWarning } from "@phosphor-icons/react";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
@@ -16,9 +15,6 @@ export interface TrustBadgeProps {
 /**
  * Project trust indicator. Queries only when resources cap is negotiated AND
  * cwd is present. Never displays host path/secret/raw error text.
- *
- * Surface note (UX2-PANELS): the level→class/title contract is unchanged;
- * only the glyph/DOM surface moved to the reference Phosphor shield grammar.
  */
 export function TrustBadge({ cwd, variant = "badge" }: TrustBadgeProps) {
   const http = useHttpClient();
@@ -39,24 +35,14 @@ export function TrustBadge({ cwd, variant = "badge" }: TrustBadgeProps) {
   if (trust.isLoading) {
     return variant === "summary"
       ? <p className="workspace-hint">Loading trust…</p>
-      : (
-        <span className="trust-badge trust-badge--muted" title="Loading trust">
-          <Shield size={12} className="trust-badge-icon" aria-hidden="true" />
-          <span className="trust-badge-label">Trust…</span>
-        </span>
-      );
+      : <span className="trust-badge trust-badge--muted" title="Loading trust">Trust…</span>;
   }
 
   if (trust.isError) {
     const copy = describeCatalogError(trust.error);
     return variant === "summary"
       ? <p className="workspace-hint workspace-hint--error" role="alert">{copy}</p>
-      : (
-        <span className="trust-badge trust-badge--error" title={copy}>
-          <ShieldWarning size={12} className="trust-badge-icon" aria-hidden="true" />
-          <span className="trust-badge-label">Trust?</span>
-        </span>
-      );
+      : <span className="trust-badge trust-badge--error" title={copy}>Trust?</span>;
   }
 
   const data = trust.data as TrustResponse | undefined;
@@ -70,16 +56,12 @@ export function TrustBadge({ cwd, variant = "badge" }: TrustBadgeProps) {
       : level === "denied"
         ? "trust-badge trust-badge--danger"
         : "trust-badge trust-badge--muted";
-  const Icon = level === "trusted" ? ShieldCheck : level === "denied" ? ShieldSlash : Shield;
 
   if (variant === "summary") {
     const reload = data.canReloadResources;
     return (
       <div className="catalog-trust-summary" data-level={level}>
-        <span className={className}>
-          <Icon size={12} className="trust-badge-icon" aria-hidden="true" />
-          <span className="trust-badge-label">{label}</span>
-        </span>
+        <span className={className}>{label}</span>
         <span className="catalog-trust-detail">
           {data.trusted ? "Project resources trusted" : "Project resources not trusted"}
           {reload.allowed ? " · reload allowed" : " · reload denied"}
@@ -90,8 +72,7 @@ export function TrustBadge({ cwd, variant = "badge" }: TrustBadgeProps) {
 
   return (
     <span className={className} title={`Project trust: ${label}`}>
-      <Icon size={12} className="trust-badge-icon" aria-hidden="true" />
-      <span className="trust-badge-label">{label}</span>
+      {label}
     </span>
   );
 }

@@ -13,10 +13,8 @@
 - [执行计划](docs/refactor-execution-plan.md) — 当前里程碑、任务看板、依赖、验收和执行规则
 - [目标架构](docs/refactor-architecture.md) — 进程边界、技术选型和长期不变量
 - [迁移台账](docs/migration-ledger.md) — 旧工作区成果来源、排除项和重验状态
-- [UI/UX 功能差异与范围对齐](docs/ui-ux-gap-analysis.md) — `pi-web-desktop` 与 pix 的功能矩阵、技术分类、冻结决策与实施边界结果
-- [UI/UX 对齐实施计划](docs/ui-redesign-plan.md) — 已实现，状态 `IMPLEMENTED_AWAITING_USER_REVIEW`；含实现 commit 记录，待用户手工验收
 
-`docs/refactor-execution-plan.md` 是架构执行单一事实源；UI/UX 专项以差异对齐文档的实施边界为准。
+`docs/refactor-execution-plan.md` 是当前执行单一事实源。
 
 ### 当前协作基线
 

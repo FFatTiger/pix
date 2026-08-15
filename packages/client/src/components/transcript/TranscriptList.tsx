@@ -26,14 +26,6 @@ import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 import { useRuntime } from "@/runtime";
-import {
-  CaretRightIcon,
-  ImageIcon,
-  InfoIcon,
-  SparkleIcon,
-  TerminalWindowIcon,
-  WrenchIcon,
-} from "@phosphor-icons/react";
 
 export interface TranscriptListProps {
   sessionId?: string;
@@ -363,19 +355,8 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
           );
         })}
       </div>
-      {isLive && runtime.streaming ? (
-        <div className="transcript-activity" role="status" aria-live="polite">
-          <span className="transcript-activity-dot" aria-hidden="true" />
-          Responding…
-        </div>
-      ) : null}
       {isLive || rowsProp !== undefined ? null : !canBrowseSessions ? (
         <div className="transcript-empty">Session history unavailable until the runtime connects.</div>
-      ) : context.isPending && sessionId ? (
-        <div className="transcript-loading" role="status">
-          <span className="spinner" aria-hidden="true" />
-          Loading session history…
-        </div>
       ) : context.isError && sessionId ? (
         <div className="transcript-empty">Session history unavailable</div>
       ) : rows.length === 0 ? (
@@ -387,111 +368,41 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
   );
 }
 
-/** Compact timestamp label (view-only): time today, date + time otherwise. */
-function formatTimestamp(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  const now = new Date();
-  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-  if (sameDay) return time;
-  const dateLabel = date.toLocaleDateString([], {
-    month: "short",
-    day: "numeric",
-    ...(date.getFullYear() !== now.getFullYear() ? { year: "numeric" as const } : {}),
-  });
-  return `${dateLabel} ${time}`;
-}
-
-function TimestampView({ createdAt }: { createdAt: string | undefined }) {
-  if (createdAt === undefined) return null;
-  const label = formatTimestamp(createdAt);
-  return label === "" ? null : <span className="transcript-row-time">{label}</span>;
-}
-
-function RowMeta({ createdAt, className }: { createdAt: string | undefined; className?: string }) {
-  if (createdAt === undefined) return null;
-  return (
-    <div className={`transcript-row-meta${className ? ` ${className}` : ""}`}>
-      <TimestampView createdAt={createdAt} />
-    </div>
-  );
-}
-
 function TranscriptRowView({ row }: { row: TranscriptRow }) {
   if (row.kind === "bash" && row.bash) {
-    return <BashRowView bash={row.bash} createdAt={row.meta?.createdAt} />;
+    return <BashRowView bash={row.bash} />;
   }
-  if (row.kind === "user") {
-    return (
-      <article className="transcript-row-card transcript-row-card--user">
-        <div className="transcript-user-bubble-wrap">
-          <div className="transcript-user-bubble">
-            <div className="transcript-row-body">{row.text}</div>
-          </div>
-        </div>
-        <RowMeta createdAt={row.meta?.createdAt} className="transcript-row-meta--user" />
-      </article>
-    );
-  }
-  if (row.kind === "assistant") {
-    return (
-      <article className="transcript-row-card transcript-row-card--assistant">
-        <div className="transcript-row-body">
-          {row.parts && row.parts.length > 0 ? (
-            row.parts.map((part, index) => <TranscriptPartView key={`${row.id}:part:${index}`} part={part} />)
-          ) : (
-            row.text
-          )}
-        </div>
-        <RowMeta createdAt={row.meta?.createdAt} className="transcript-row-meta--assistant" />
-      </article>
-    );
-  }
-  // tool / system — independent compact surfaces with their own header.
   const label = row.kind === "tool" && row.meta?.toolName ? row.meta.toolName : row.kind;
-  const KindIcon = row.kind === "tool" ? WrenchIcon : InfoIcon;
   return (
-    <article className={`transcript-row-card transcript-surface transcript-surface--${row.kind}`}>
+    <article className="transcript-row-card">
       <header className="transcript-row-meta">
-        <KindIcon size={12} weight="bold" aria-hidden="true" className="transcript-surface-icon" />
         <span className="transcript-row-kind">{label}</span>
-        <TimestampView createdAt={row.meta?.createdAt} />
       </header>
-      <div className="transcript-row-body">{row.text}</div>
+      <div className="transcript-row-body">
+        {row.parts && row.parts.length > 0 ? (
+          row.parts.map((part, index) => <TranscriptPartView key={`${row.id}:part:${index}`} part={part} />)
+        ) : (
+          row.text
+        )}
+      </div>
     </article>
   );
-}
-
-/** Status-chip tint for a bash status label (view-only, from the settled model). */
-function bashStatusModifier(label: string, bash: BashViewModel): string {
-  if (label === "running") return " transcript-bash-status--running";
-  if (label === "cancelled") return " transcript-bash-status--cancelled";
-  if (bash.exitCode !== undefined && bash.exitCode !== 0 && label.startsWith("exit ")) {
-    return " transcript-bash-status--error";
-  }
-  return "";
 }
 
 /**
  * Dedicated bash card. React pure-text only — command/output never placed in
  * attributes, titles, data-*, or logs. fullOutputPath is never on the view-model.
  */
-function BashRowView({ bash, createdAt }: { bash: BashViewModel; createdAt: string | undefined }) {
+function BashRowView({ bash }: { bash: BashViewModel }) {
   return (
-    <article className="transcript-row-card transcript-surface transcript-bash">
+    <article className="transcript-row-card transcript-bash">
       <header className="transcript-row-meta">
-        <TerminalWindowIcon size={12} weight="bold" aria-hidden="true" className="transcript-surface-icon" />
         <span className="transcript-row-kind">bash</span>
         {bash.statusLabels.map((label) => (
-          <span key={label} className={`transcript-bash-status${bashStatusModifier(label, bash)}`}>
+          <span key={label} className="transcript-bash-status">
             {label}
           </span>
         ))}
-        <TimestampView createdAt={createdAt} />
       </header>
       <div className="transcript-bash-command">{`$ ${bash.command}`}</div>
       <pre className="transcript-bash-output">{bash.output}</pre>
@@ -506,19 +417,9 @@ function TranscriptPartView({ part }: { part: TranscriptPart }) {
     case "text":
       return <div className="transcript-part transcript-part--text">{part.text}</div>;
     case "toolCall":
-      return (
-        <div className="transcript-part transcript-part--tool">
-          <WrenchIcon size={11} weight="bold" aria-hidden="true" />
-          <span className="transcript-part--tool-text">{part.text}</span>
-        </div>
-      );
+      return <div className="transcript-part transcript-part--tool">{part.text}</div>;
     case "image":
-      return (
-        <div className="transcript-part transcript-part--image">
-          <ImageIcon size={11} aria-hidden="true" />
-          <span>{part.text}</span>
-        </div>
-      );
+      return <div className="transcript-part transcript-part--image">{part.text}</div>;
     default: {
       const _exhaustive: never = part;
       return _exhaustive;
@@ -542,11 +443,7 @@ function ThinkingPart({ thinking, streaming }: { thinking: string; streaming: bo
         setOpen(event.currentTarget.open);
       }}
     >
-      <summary className="transcript-thinking-summary">
-        <CaretRightIcon size={11} weight="bold" aria-hidden="true" className="transcript-thinking-caret" />
-        <SparkleIcon size={12} aria-hidden="true" className="transcript-thinking-icon" />
-        Thinking
-      </summary>
+      <summary className="transcript-thinking-summary">Thinking</summary>
       <div className="transcript-thinking-body">{thinking}</div>
     </details>
   );

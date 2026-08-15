@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Cpu, Plug, PuzzlePiece, Stack, TerminalWindow, X } from "@phosphor-icons/react";
 import type { AuthProviderInfo, ModelInfo, PluginInfo, SkillInfo, SlashCommandInfo } from "@fffattiger/pix-protocol";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
@@ -25,15 +24,6 @@ const TAB_LABEL: Record<CatalogTab, string> = {
   skills: "Skills",
   plugins: "Plugins",
   commands: "Commands",
-};
-
-/** Reference tab grammar: compact leading icon per section. */
-const TAB_ICON: Record<CatalogTab, typeof Cpu> = {
-  models: Cpu,
-  providers: Plug,
-  skills: Stack,
-  plugins: PuzzlePiece,
-  commands: TerminalWindow,
 };
 
 function formatContextWindow(value: number | undefined): string | null {
@@ -322,39 +312,33 @@ export function CatalogPanel({ cwd, open, onClose }: CatalogPanelProps) {
   return (
     <aside className="workspace-panel catalog-panel" aria-label="Catalog">
       <div className="workspace-panel-tabs" role="tablist" aria-label="Catalog sections">
-        {TAB_ORDER.filter((id) => availableTabs.includes(id)).map((id) => {
-          const Icon = TAB_ICON[id];
-          const active = tab === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              id={`catalog-tab-${id}`}
-              aria-controls={`catalog-panel-${id}`}
-              aria-selected={active}
-              className={`workspace-panel-tab${active ? " workspace-panel-tab--active" : ""}`}
-              onClick={() => setTab(id)}
-            >
-              <Icon size={13} aria-hidden="true" />
-              <span className="workspace-panel-tab-label">{TAB_LABEL[id]}</span>
-            </button>
-          );
-        })}
+        {TAB_ORDER.filter((id) => availableTabs.includes(id)).map((id) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            id={`catalog-tab-${id}`}
+            aria-controls={`catalog-panel-${id}`}
+            aria-selected={tab === id}
+            className={`workspace-panel-tab${tab === id ? " workspace-panel-tab--active" : ""}`}
+            onClick={() => setTab(id)}
+          >
+            {TAB_LABEL[id]}
+          </button>
+        ))}
         <button
           type="button"
           className="icon-btn workspace-panel-close"
           aria-label="Close catalog panel"
-          title="Close catalog panel"
           onClick={onClose}
         >
-          <X size={13} aria-hidden="true" />
+          ×
         </button>
       </div>
       {showTrust ? (
-        <header className="workspace-panel-header catalog-panel-header">
+        <div className="catalog-panel-header">
           <TrustBadge cwd={cwd} variant="summary" />
-        </header>
+        </div>
       ) : null}
       <div
         className="workspace-panel-body"

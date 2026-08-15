@@ -1,14 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import {
-  Folders,
-  List,
-  LockKey,
-  Play,
-  Plus,
-  SidebarSimple,
-  SquaresFour,
-} from "@phosphor-icons/react";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { formatCwdLabel, type WorkspaceSearch } from "@/lib/search-params";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
@@ -228,34 +219,26 @@ export function AppShell({ search }: AppShellProps) {
               ? "Select a project to start a runtime session."
               : "Open a project to start a runtime session.";
 
-  // The Sidebar component owns its own `sidebar--collapsed` class (from the
-  // `open` prop) — the single state that drives desktop collapse and the
-  // mobile overlay drawer. No shell-level mirror class is needed.
   return (
-    <div className="app-shell">
+    <div className={`app-shell${sidebarOpen ? "" : " app-shell--sidebar-collapsed"}`}>
       <header className="app-topbar">
         <div className="app-topbar-left">
           <button
             type="button"
-            className="icon-btn topbar-toggle"
+            className="icon-btn"
             aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
             aria-pressed={sidebarOpen}
-            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
             onClick={() => setSidebarOpen((v) => !v)}
           >
-            {sidebarOpen ? <SidebarSimple size={16} aria-hidden="true" /> : <List size={16} aria-hidden="true" />}
+            ☰
           </button>
           <Link to="/" className="brand" search={{}}>
             pix
           </Link>
-          <span className="topbar-badge topbar-badge--mode" title={`Host mode: ${mode}`}>
+          <span className="topbar-badge" title={`Host mode: ${mode}`}>
             {mode}
           </span>
-          <span
-            className={`topbar-badge topbar-badge--${isMismatched ? "warn" : runtime.attached ? "ok" : connection === "unavailable" || runtime.fatal ? "warn" : "muted"}`}
-            title={connectionTitle}
-            aria-live="polite"
-          >
+          <span className={`topbar-badge topbar-badge--${isMismatched ? "warn" : runtime.attached ? "ok" : connection === "unavailable" || runtime.fatal ? "warn" : "muted"}`} title={connectionTitle} aria-live="polite">
             rt:{connectionLabel}
           </span>
         </div>
@@ -263,7 +246,6 @@ export function AppShell({ search }: AppShellProps) {
           <span className="topbar-cwd" title={search.cwd ?? ""}>
             {formatCwdLabel(search.cwd)}
           </span>
-          <span className="topbar-dot" aria-hidden="true">·</span>
           {shownSessionId ? (
             <span className="topbar-session" title={shownSessionId}>
               session:{shownSessionId.slice(0, 8)}
@@ -280,10 +262,9 @@ export function AppShell({ search }: AppShellProps) {
           {hasWorkspaceCap ? (
             <button
               type="button"
-              className={`text-btn topbar-btn${workspaceOpen ? " text-btn--active" : ""}`}
+              className={`text-btn${workspaceOpen ? " text-btn--active" : ""}`}
               aria-pressed={workspaceOpen}
               aria-label={workspaceOpen ? "Hide workspace panel" : "Show workspace panel"}
-              title={workspaceOpen ? "Hide workspace panel" : "Show workspace panel"}
               onClick={() => {
                 setWorkspaceOpen((v) => {
                   const next = !v;
@@ -292,17 +273,15 @@ export function AppShell({ search }: AppShellProps) {
                 });
               }}
             >
-              <Folders size={14} aria-hidden="true" />
-              <span className="topbar-btn-label">Workspace</span>
+              Workspace
             </button>
           ) : null}
           {hasCatalogCap ? (
             <button
               type="button"
-              className={`text-btn topbar-btn${catalogOpen ? " text-btn--active" : ""}`}
+              className={`text-btn${catalogOpen ? " text-btn--active" : ""}`}
               aria-pressed={catalogOpen}
               aria-label={catalogOpen ? "Hide catalog panel" : "Show catalog panel"}
-              title={catalogOpen ? "Hide catalog panel" : "Show catalog panel"}
               onClick={() => {
                 setCatalogOpen((v) => {
                   const next = !v;
@@ -311,31 +290,16 @@ export function AppShell({ search }: AppShellProps) {
                 });
               }}
             >
-              <SquaresFour size={14} aria-hidden="true" />
-              <span className="topbar-btn-label">Catalog</span>
+              Catalog
             </button>
           ) : null}
           {canCreate ? (
-            <button
-              type="button"
-              className="text-btn topbar-btn"
-              aria-label="New session"
-              title="New session"
-              onClick={handleCreate}
-            >
-              <Plus size={14} aria-hidden="true" />
-              <span className="topbar-btn-label">New session</span>
+            <button type="button" className="text-btn" onClick={handleCreate}>
+              New session
             </button>
           ) : null}
-          <Link
-            to="/login"
-            className="text-btn topbar-btn"
-            aria-label="Gate"
-            title="Gate"
-            search={{ next: "/" }}
-          >
-            <LockKey size={14} aria-hidden="true" />
-            <span className="topbar-btn-label">Gate</span>
+          <Link to="/login" className="text-btn" search={{ next: "/" }}>
+            Gate
           </Link>
         </div>
       </header>
@@ -350,35 +314,8 @@ export function AppShell({ search }: AppShellProps) {
 
         <main className="workspace">
           <div className="workspace-header">
-            <div className="workspace-header-main">
-              <h1 className="workspace-title">{runtime.attached ? "Session" : search.session ? "Session" : "Workstation"}</h1>
-              <p className="workspace-subtitle" title={subtitle}>{subtitle}</p>
-            </div>
-            <div className="workspace-header-actions">
-              {canAgent && search.session && !selectionMatchesLive ? (
-                <div className="continue-live">
-                  <button
-                    type="button"
-                    className="text-btn continue-live-btn"
-                    onClick={handleContinueLive}
-                    disabled={openingLive}
-                    aria-busy={openingLive}
-                  >
-                    {openingLive ? null : <Play size={13} aria-hidden="true" />}
-                    {openingLive ? "Connecting…" : "Continue live"}
-                  </button>
-                  {liveError ? (
-                    <p className="project-open-error" role="alert">{liveError}</p>
-                  ) : null}
-                </div>
-              ) : null}
-              {search.session ? (
-                <VisibleBranchExportButton
-                  sessionId={search.session}
-                  selectionMatchesLive={selectionMatchesLive}
-                />
-              ) : null}
-            </div>
+            <h1 className="workspace-title">{runtime.attached ? "Session" : search.session ? "Session" : "Workstation"}</h1>
+            <p className="workspace-subtitle">{subtitle}</p>
             {canAgent && !hasProject && !runtime.attached ? (
               <form className="project-open-form" onSubmit={handleOpenProject}>
                 <label htmlFor="project-path">Project path</label>
@@ -401,6 +338,28 @@ export function AppShell({ search }: AppShellProps) {
                 </div>
                 {projectError ? <p className="project-open-error" role="alert">{projectError}</p> : null}
               </form>
+            ) : null}
+            {canAgent && search.session && !selectionMatchesLive ? (
+              <div className="continue-live">
+                <button
+                  type="button"
+                  className="text-btn continue-live-btn"
+                  onClick={handleContinueLive}
+                  disabled={openingLive}
+                  aria-busy={openingLive}
+                >
+                  {openingLive ? "Connecting…" : "Continue live"}
+                </button>
+                {liveError ? (
+                  <p className="project-open-error" role="alert">{liveError}</p>
+                ) : null}
+              </div>
+            ) : null}
+            {search.session ? (
+              <VisibleBranchExportButton
+                sessionId={search.session}
+                selectionMatchesLive={selectionMatchesLive}
+              />
             ) : null}
           </div>
 

@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowClockwise, FolderOpen, Plus, Spinner, Trash, Warning } from "@phosphor-icons/react";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { createMutationOptions } from "@/api/mutations";
 import { HttpError } from "@/api/http-client";
@@ -404,15 +403,10 @@ export function WorktreePanel({
             />
             <button
               type="submit"
-              className="text-btn worktree-create-submit"
+              className="text-btn"
               disabled={busy !== null || createDraft.length === 0}
               aria-busy={busy?.op === "create"}
             >
-              {busy?.op === "create" ? (
-                <Spinner size={12} className="worktree-submit-spinner" aria-hidden="true" />
-              ) : (
-                <Plus size={12} aria-hidden="true" />
-              )}
               Create
             </button>
           </div>
@@ -435,17 +429,12 @@ export function WorktreePanel({
         </span>
         <button
           type="button"
-          className="icon-btn worktree-refresh"
+          className="text-btn"
           onClick={refresh}
           disabled={list.isFetching}
           title="Refresh worktrees"
-          aria-label="Refresh worktrees"
         >
-          {list.isFetching ? (
-            <Spinner size={13} className="worktree-refresh-spinner" aria-hidden="true" />
-          ) : (
-            <ArrowClockwise size={13} aria-hidden="true" />
-          )}
+          ↻ Refresh
         </button>
       </div>
 
@@ -474,7 +463,7 @@ export function WorktreePanel({
             const rowBusy = busy?.op === "delete" && busy.path === item.path;
             const confirmOpen = deleteConfirmPath === item.path;
             return (
-              <li key={item.path} className={`worktree-row${isCurrent ? " worktree-row--current" : ""}`} title={item.path}>
+              <li key={item.path} className="worktree-row" title={item.path}>
                 <div className="worktree-row-main">
                   <span className={`catalog-chip${item.isMain ? " catalog-chip--accent" : ""}`}>
                     {roleLabel}
@@ -506,7 +495,6 @@ export function WorktreePanel({
                         disabled={busy !== null}
                         aria-label={`Open worktree ${label}`}
                       >
-                        <FolderOpen size={12} aria-hidden="true" />
                         Open
                       </button>
                     ) : null}
@@ -523,7 +511,6 @@ export function WorktreePanel({
                         aria-busy={rowBusy}
                         aria-label={`Delete worktree ${label}`}
                       >
-                        <Trash size={12} aria-hidden="true" />
                         Delete
                       </button>
                     ) : null}
@@ -535,10 +522,7 @@ export function WorktreePanel({
                     role="alert"
                     aria-label={`Confirm deleting ${label}`}
                   >
-                    <p className="worktree-delete-confirm-warning">
-                      <Warning size={12} aria-hidden="true" />
-                      <span>{DELETE_DIRTY_WARNING}</span>
-                    </p>
+                    <p className="worktree-delete-confirm-warning">{DELETE_DIRTY_WARNING}</p>
                     <div className="worktree-delete-confirm-actions">
                       <button
                         type="button"
@@ -548,7 +532,6 @@ export function WorktreePanel({
                         aria-busy={rowBusy}
                         aria-label={`Delete worktree ${label} anyway`}
                       >
-                        <Trash size={12} aria-hidden="true" />
                         Delete anyway
                       </button>
                       <button
