@@ -2699,7 +2699,7 @@ serve==raw、serve==build 三轮全 true。
 - 投影仅在 `createPiSdkSessionPorts()`（生产组合点）默认开启；独立 store/catalog/mutation 工厂默认关
   闭（保守、hermetic），需要时经 `projection.enabled` 显式开启。
 
-## 57. D2 navigate — session-tree navigate 生产后端切片（PENDING 独立验证）
+## 57. D2 navigate — session-tree navigate 生产后端切片（DONE，Fresh verifier 二轮 PASS：首轮 PARTIAL 揭示真实 SDK catalog 分支，world-A pi-parity 语义冻结后复验 PASS；合并 main `fb28736`，合并后 adapter 269/269、sessiond 303（302+1skip）、Runtime E2E×2 含 navigate 场景全绿）
 
 ```text
 实现：source 分支 feat/d2-navigate，base main `d817a32`（worktree
