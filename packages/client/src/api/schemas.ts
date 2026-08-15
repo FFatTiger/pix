@@ -158,6 +158,23 @@ export const FileListResponseSchema = z.strictObject({ path: z.string(), entries
 export const FileMetaResponseSchema = z.strictObject({ path: z.string(), size: z.number().nonnegative(), modified: z.string(), isDirectory: z.boolean(), mime: z.string().nullable() });
 export const FileTextResponseSchema = z.strictObject({ content: z.string(), language: z.string(), size: z.number().nonnegative() });
 export const UploadResponseSchema = z.strictObject({ uploaded: z.array(z.string()), skipped: z.array(z.string()) });
+/**
+ * POST /v1/files?op=upload-check — conflict preflight for the file workspace
+ * upload state machine (source contract: names that already exist under the
+ * target directory and names that cannot be replaced). Host endpoint pending;
+ * the client schema/URL seam is frozen so the Host slice can land as-is.
+ */
+export const UploadCheckResponseSchema = z.strictObject({
+  conflicts: z.array(z.string()),
+  nonReplaceable: z.array(z.string()),
+});
+export type UploadCheckResponse = z.infer<typeof UploadCheckResponseSchema>;
+/**
+ * SSE `change` event payload of GET /v1/files?op=watch (Host endpoint
+ * pending). Loose: the viewer only reads `size` when present.
+ */
+export const FileWatchChangeSchema = z.looseObject({ size: z.number().optional() });
+export type FileWatchChange = z.infer<typeof FileWatchChangeSchema>;
 export const FileIndexItemSchema = z.strictObject({ path: z.string(), isDir: z.literal(false) });
 export const FileIndexResponseSchema = z.union([
   z.strictObject({ files: z.array(z.string()), truncated: z.boolean() }),

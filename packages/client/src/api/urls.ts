@@ -12,6 +12,19 @@ function resource(path: string, query?: Record<string, string | number | boolean
   return `${url.pathname}${url.search}`;
 }
 
+/** Files resource operations. `watch`/`upload-check`/`docx-preview` extend the
+ * source file-workspace contract; `docx-preview` is live on the Host,
+ * `watch`+`upload-check` are frozen URL contracts awaiting their endpoints. */
+export type FilesOperation =
+  | "list"
+  | "meta"
+  | "read"
+  | "preview"
+  | "raw"
+  | "download"
+  | "watch"
+  | "docx-preview";
+
 export function v1Url(...segments: string[]): string {
   return segments.length === 0 ? API_ROOT : resource(segments.map(encodedSegment).join("/"));
 }
@@ -46,8 +59,22 @@ export const urls = {
     resolve: (name: string, mode: "dark" | "light") => resource(`themes/${encodedSegment(name)}`, { mode }),
   },
   files: {
-    resource: (path: string, op?: "list" | "meta" | "read" | "preview" | "raw" | "download") => resource("files", { path, op }),
+    resource: (path: string, op?: FilesOperation) => resource("files", { path, op }),
+    /**
+     * Full files URL for element `src`/`href` and watch connections: op +
+     * optional session scoping + extra query params (e.g. cache-bust `v`).
+     * `sessionId` and undefined params are omitted; paths are URL-encoded.
+     */
+    file: (
+      path: string,
+      op: FilesOperation,
+      options?: { sessionId?: string | null | undefined; params?: Record<string, string | number | undefined> | undefined },
+    ) => resource("files", { path, op, sessionId: options?.sessionId ?? undefined, ...(options?.params ?? {}) }),
     upload: (path: string, conflict?: "error" | "overwrite" | "skip") => resource("files", { path, conflict }),
+    /** POST /v1/files?op=upload-check — conflict preflight (Host endpoint pending). */
+    uploadCheck: (path: string) => resource("files", { path, op: "upload-check" }),
+    /** GET /v1/files?op=watch — SSE change stream (Host endpoint pending). */
+    watch: (path: string, sessionId?: string | null) => resource("files", { path, op: "watch", sessionId: sessionId ?? undefined }),
     index: (cwd: string, q?: string) => resource("file-index", { cwd, q }),
   },
   git: {

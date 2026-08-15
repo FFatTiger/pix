@@ -1,14 +1,11 @@
-import { encodeFilePathForApi } from "./file-paths";
+import { urls } from "@/api/urls";
 import { resolveLocalFileHref } from "./file-links";
-
-/** pix adapter: the read endpoint is `/v1/files?op=read` (packages/host routes/files.ts). */
-const FILES_READ_URL = "/v1/files";
 
 /**
  * Resolve a markdown image src to a renderable URL.
  *
  * Local filesystem paths (relative to the markdown file / cwd, absolute
- * paths, and file: URIs) are rewritten to the pix files read endpoint so
+ * paths, and `file:` URIs) are rewritten to the pix files read endpoint so
  * the browser can actually fetch them. http(s) URLs and data:image URIs pass
  * through unchanged. Anything else (`javascript:`, `data:text/html`, …)
  * returns null so the caller can drop the image.
@@ -17,6 +14,10 @@ const FILES_READ_URL = "/v1/files";
  * `img src`: the sanitize schema (lib/markdown.ts) deliberately lets `src`
  * through untouched so local paths survive to the render component, and only
  * the URL shapes handled here are ever emitted into the DOM.
+ *
+ * pix adapter note: the source rewrote local paths to the legacy files read
+ * route; pix uses the same-origin /v1/files resource endpoint (op=read) via
+ * the shared URL builder in @/api/urls.
  */
 export function resolveMarkdownImageSrc(
   src: string | Blob | undefined,
@@ -28,12 +29,10 @@ export function resolveMarkdownImageSrc(
 
   const localPath = resolveLocalFileHref(src, baseDir, relativeRoot);
   if (localPath) {
-    const searchParams = new URLSearchParams({ path: encodeFilePathForApi(localPath), op: "read" });
-    if (sessionId) searchParams.set("sessionId", sessionId);
-    return `${FILES_READ_URL}?${searchParams.toString()}`;
+    return urls.files.file(localPath, "read", { sessionId });
   }
 
-  // Same-origin app endpoints are trusted.
+  // Same-origin pix API endpoints are trusted.
   if (/^\/v1\//.test(src)) return src;
   if (/^https?:\/\//i.test(src)) return src;
   if (/^data:image\//i.test(src)) return src;

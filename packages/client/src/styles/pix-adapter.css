@@ -1,0 +1,17 @@
+/*
+ * pix adapter wrapper styles for the ported file workspace components.
+ *
+ * The ported components ship their own styles: the source CSS triplet
+ * (globals/app/wallpaper) already landed verbatim in pix, so every selector
+ * the explorer/viewer/worktree DOM references exists. This file ONLY adds
+ * pix-side layout wrappers that the source never needed (panels composed
+ * outside the source sidebar / right-panel frames). It must never redefine a
+ * selector that globals.css or app.css already own.
+ */
+
+/* Explorer panel: the search-results section is the panel's scrollable body
+ * while a query is active (the tree section scrolls in its own wrapper). */
+.explorer-panel > .files-search {
+  flex: 1 1 auto;
+  min-height: 0;
+}

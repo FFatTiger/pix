@@ -11,6 +11,7 @@ import {
   FileTextResponseSchema,
   GitDiffResponseSchema,
   GitStatusResponseSchema,
+  UploadCheckResponseSchema,
   UploadResponseSchema,
   WorktreeCreateResponseSchema,
   WorktreeDeleteResponseSchema,
@@ -36,6 +37,13 @@ export function createResourcesApi(http: HttpClient) {
         for (const file of input.files) data.append("files", file, file.name);
         return http.raw(urls.files.upload(input.directory, input.conflict), data, { method: "POST", schema: UploadResponseSchema, ...(signal === undefined ? {} : { signal }) });
       },
+      /**
+       * POST /v1/files?path=&op=upload-check — conflict preflight. Host
+       * endpoint pending; the resource seam is frozen to the source contract
+       * (`conflicts` + `nonReplaceable`) so the endpoint can land as-is.
+       */
+      uploadCheck: (path: string, fileNames: string[], signal?: AbortSignal) =>
+        http.post(urls.files.uploadCheck(path), { fileNames }, { schema: UploadCheckResponseSchema, ...(signal === undefined ? {} : { signal }) }),
       index: (cwd: string, q?: string, signal?: AbortSignal) => http.get(urls.files.index(cwd, q), { schema: FileIndexResponseSchema, ...(signal === undefined ? {} : { signal }) }),
     },
     git: {

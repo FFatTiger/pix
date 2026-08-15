@@ -6,6 +6,7 @@ import "@/styles/app.css";
 import "katex/dist/katex.min.css";
 import "@/styles/globals.css";
 import "@/styles/wallpaper.css";
+import "@/styles/pix-adapter.css";
 import "@fontsource/ia-writer-quattro";
 import "@fontsource/ia-writer-quattro/400-italic.css";
 import "@fontsource/ia-writer-quattro/700.css";
