@@ -2889,7 +2889,7 @@ Material risk / 残余：
 - 无 Windows 声明。
 ```
 
-## 62. PWA1 — LAN Gate、配对、后台 Resume（Wave 4；后台 Resume 实现 + 配对 STOP scope，DONE，PENDING 独立 verifier）
+## 62. PWA1 — LAN Gate、配对、后台 Resume（Wave 4；后台 Resume 实现 + 配对 STOP scope，DONE，Fresh verifier PASS；合并 main 3bc34c5）
 
 ```text
 状态：DONE——worktree `pwa1-lan-resume`，branch `feat/pwa1-lan-resume`，base main `cf40397`（Worktree
