@@ -297,7 +297,7 @@ describe("public production SDK factory smoke", () => {
         name: "D2-P7 Compact Smoke",
       });
       try {
-        assert.equal(port.getCapabilities().capabilities.length, 18);
+        assert.equal(port.getCapabilities().capabilities.length, 19);
         assert.deepEqual([...port.getCapabilities().capabilities], [...PRODUCTION_AGENT_CAPABILITIES]);
 
         // A tiny/fresh session has nothing to compact: the real SDK compact
