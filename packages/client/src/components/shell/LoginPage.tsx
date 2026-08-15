@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { LockKey } from "@phosphor-icons/react";
 import { useGateLogin, useGateStatus } from "@/features/gate/useGate";
 import { HttpError } from "@/api/http-client";
 import { isMeaningfulNext, resolveSafeNext } from "@/lib/safe-next";
@@ -55,41 +56,54 @@ export function LoginPage({ next = "/" }: LoginPageProps) {
   return (
     <div className="login-page">
       <form className="login-card" onSubmit={onSubmit}>
-        <h1>pix Gate</h1>
-        <p className="login-lead">
-          Authenticate to the host. LAN deployments require gate credentials.
-        </p>
+        <div className="login-card-head">
+          <span className="login-card-icon">
+            <LockKey size={21} weight="duotone" aria-hidden="true" />
+          </span>
+          <div className="login-card-head-text">
+            <h1>pix Gate</h1>
+            <p className="login-lead">
+              Authenticate to the host. LAN deployments require gate credentials.
+            </p>
+          </div>
+        </div>
 
-        {status.isLoading ? (
-          <p className="login-meta">Checking gate status…</p>
-        ) : status.isError ? (
-          <p className="login-meta login-meta--warn">
-            Host gate status unavailable (shell can still render offline UI).
-          </p>
-        ) : status.data ? (
-          <p className="login-meta">
-            required: {String(status.data.required)} · authenticated:{" "}
-            {String(status.data.authenticated)}
-          </p>
-        ) : null}
+        <div className="login-card-body">
+          {status.isLoading ? (
+            <p className="login-meta">Checking gate status…</p>
+          ) : status.isError ? (
+            <p className="login-meta login-meta--warn">
+              Host gate status unavailable (shell can still render offline UI).
+            </p>
+          ) : status.data ? (
+            <p className="login-meta">
+              required: {String(status.data.required)} · authenticated:{" "}
+              {String(status.data.authenticated)}
+            </p>
+          ) : null}
 
-        <label className="login-field">
-          <span>Password</span>
-          <input
-            type="password"
-            name="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={login.isPending}
-          />
-        </label>
+          <label className="login-field">
+            <span>Password</span>
+            <input
+              type="password"
+              name="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={login.isPending}
+            />
+          </label>
 
-        {error ? <p className="login-error">{error}</p> : null}
+          {error ? (
+            <p className="login-error" role="alert">
+              {error}
+            </p>
+          ) : null}
 
-        <button type="submit" className="login-submit" disabled={login.isPending}>
-          {login.isPending ? "Signing in…" : "Sign in"}
-        </button>
+          <button type="submit" className="login-submit" disabled={login.isPending}>
+            {login.isPending ? "Signing in…" : "Sign in"}
+          </button>
+        </div>
 
         <p className="login-footer">
           <Link to="/" search={{}}>
