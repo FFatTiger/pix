@@ -962,7 +962,7 @@ Busy 修正（isolated commit 8260b75）：
 ## 42. D3A Managed-Worktree Client UI — 垂直切片记录
 
 ```text
-实现：独立 worktree d3a-worktree-ui，branch feat/d3a-worktree-ui，base main 13859b1。纯 Client 产品 UI + 测试 + 文档；未改 Host/Protocol/sessiond/adapter/backend 契约、package-lock、live 服务、无关 Runtime UI。实现阶段未改 main、未 merge/push/deploy、未另建 worktree。状态：实现完成，待独立验证（不自行判定 PASS）。
+实现：独立 worktree d3a-worktree-ui，branch feat/d3a-worktree-ui，base main 13859b1。纯 Client 产品 UI + 测试 + 文档；未改 Host/Protocol/sessiond/adapter/backend 契约、package-lock、live 服务、无关 Runtime UI。实现阶段未改 main、未 merge/push/deploy、未另建 worktree。状态：DONE——已合入 main（WorktreePanel create/open/delete 在 main client 源码中，worktree.write 门控）；本行早期“待独立验证”为陈旧文案，后续集成时未回写。
 
 后端契约已在 §39/§41 冻结于 main：GET 严格 `{path,branch,isMain,authorized,managedByPix}`（managedByPix 为 live authority）；POST `{cwd,branch}`→201 `{path,branch,managedByPix:true}`；DELETE `{cwd,path,force}`→200 `{success:true,fallbackCwd,branchRetained:true}`；unmanaged/identity 403、busy/dirty 409、service down 503。Client 既有 dormant mutation helper（resources.worktrees.create/remove）+ createMutationOptions.worktrees.create/remove（onSuccess invalidate worktrees.list(cwd)+cwd.roots）+ 严格 schema 全部原样复用，无后端改动。
 
