@@ -2499,96 +2499,15 @@ boundary PASS；Startup + Sessions + Runtime E2E 全 PASS（Startup 确认 daemo
 残余/后续：Windows 支持不变（getuid 不可用时 ownership 校验按需关闭，仅此改动，不宣称原生 Windows）；
 本地 authority 未整体委托；Fresh verifier 独立 PASS 待补。
 ```
-## 61. SCALE1 — SQLite JSONL Projection（DONE，Fresh verifier PASS；node:sqlite 零依赖投影索引，Phase 1 引擎决策 + Phase 2/3 实现与验证）
-
-```text
-状态：DONE——source `03abcd3`（branch feat/scale1-sqlite-projection，base main `38b4869`）快进合入
-main；Fresh verifier 全 7 门 PASS（零缺陷：行交换/校验和规避/物理元组交换全拦截、崩溃热日志不可
-加载、目录/symlink 替换权威回退、并发 append+delete 确定性、真实 agent 目录零残留、冻结 716 会话
-真实语料 build==raw==serve parity、基准 281ms→16ms 复现）；合并后 root build、adapter 255/255、
-architecture、Sessions+Startup E2E 全绿。与 §57/§59/§60 零源码重叠。
-编号：§56/§58 已占用，本切片占 §61（§59/§60 为并行 agent 预留）。未 push/deploy/live；未改
-package-lock/package.json 依赖（adapter 零新增依赖）；无 Windows 声明。base main `38b4869`，source:
-branch `feat/scale1-sqlite-projection` @ HEAD（worktree `pix-worktrees/scale1-sqlite-projection`，未 merge/push）。
-
-【Phase 1 引擎决策（证据驱动）】三种候选评估后选定「node:sqlite 内置引擎」（option a，即零依赖结构化
-索引 option c 的存储后端，二者混合）：
-- (a) node:sqlite：**整个受支持 Node 矩阵无需 flag 即可用**。官方记录：v22.13.0（LTS backport，
-  PR #55890 / commit 55239a4）起 `--experimental-sqlite` 解除——docs 明确 "v23.4.0, v22.13.0 | no longer
-  behind --experimental-sqlite but still experimental"。最低受支持 22.19.0 ≥ 22.13.0，故 daemon 以纯
-  `node` 启动即可用。本机直接验证（CREATE/INSERT/SELECT/事务/close）在 22.19.0 / 24.12.0 / 24.18.0 全部
-  通过（引擎 `>=22.19.0`，migration-ledger §49 亦以 22.19/24.12/24.18 为 focused 矩阵）。零依赖（Node
-  内置，无 package.json/package-lock 变更、无原生编译、无供应链面）。
-- (b) better-sqlite3：需新增依赖 → package.json/package-lock 变更 → 违反仓库「backend 切片零依赖」约定
-  → 按任务决策规则 STOP；另有 node-gyp 原生编译负担与供应链面。不选。
-- (c) 自定义二进制/JSON sidecar：无依赖无实验面，但偏离架构文档既定目标（refactor-architecture.md
-  "Host SQLite 投影 + SessionCatalogPort 回源" / "SQLite 索引 + watch"），自定义序列化格式风险更高、查询
-  能力弱；node:sqlite 以同等零依赖给出更可靠 B-tree 引擎。不选。
-**决策：node:sqlite** —— 满足全部硬约束：纯 node 启动 ✓、package-lock/package.json 零新增 ✓、JSONL
-保持权威 ✓、索引可弃/可重建 ✓、fail-closed 陈旧处理 ✓。这是任务决策规则中「(c) 或 hybrid」的落地
-（零依赖结构化索引 + SQL 存储），故按 Phase 1 证据继续实现，不触发 STOP。
-已知代价（如实记录）：Node 22.19/24.12 每次进程首次加载 node:sqlite 会在 stderr 打印一行
-ExperimentalWarning（24.18+ 已不打印）；该警告无法在不移除全部 warning listener 的前提下干净抑制，属
-文档化外观代价，不影响功能（投影可弃 + fail-closed 兜底）。
-
-【Phase 2 实现】新增 `packages/pi-sdk-adapter/src/internal/session-projection.ts`（node:sqlite +
-node 内建 + `@fffattiger/pix-local-authority/state` 原语，manifest-less 复用——仿 sessiond
-local-posix.ts：build-deps.mjs 新增 local-authority 构建顺序，root workspace symlink 提供解析，零依赖
-声明）。store（session-store.ts）`scan()` 接入：默认投影关闭（独立 store/catalog/mutation 工厂保持
-backend-neutral 无副作用），生产组合点 `createPiSdkSessionPorts()` 显式开启。
-- 索引：`<agentDir>/pix/session-index.sqlite`（全局 scope）/ `<dirname(sessionDir)>/.pix`（显式
-  sessionDir scope），均可注入。安全创建镜像 §58：`canonicalizeAbsolutePath`（解 macOS `/var` 系统别名）
-  → `ensurePrivateDirectory`（既有目录 validate-only：当前用户拥有 + 精确 0700 + 真实非符号链接目录，
-  绝不 chmod；缺失逐组件 0700 + fd 身份钉住；错误固定 LocalAuthorityError 消毒码，无 raw path/errno）。
-- schema：`session_projection`（path 主键 + id/cwd/name/parent_session_path/created_ms/modified_ms/
-  message_count/first_message/file_mtime_ms/file_size/checksum）+ `session_projection_meta`
-  （schema_version=1、format）。每行 sha256 行校验和覆盖全部服务字段。
-- fail-closed 契约：行仅在 (a) 行校验和通过（任何对 title/counts/mtime/identity 的朴素篡改 → load null
-  → 重建，永不服务）且 (b) 底层 JSONL 文件 mtimeMs+size 与行记录完全一致时服务；文件缺失 → 删行；文件
-  新增/变更 → 有界并发（8）重读重索引；任一非普通文件（symlink/dir）或枚举不可靠 → 整次回退权威
-  `sdk.listAll`；任何 load 失败（损坏/错误 schema/缺 meta/校验和失配）→ 权威回退 + 事务性重建（崩溃中
-  途部分索引永不可 load 故永不服务）。重建路径直接返回 `sdk.listAll` 结果（构造性等价）；增量重读用
-  自含解析器镜像 pinned SDK 0.84.0 `buildSessionInfo` 语义（latest trimmed session_info name、message
-  count、last-message-activity modified 同 fallback 链、header created/cwd/parentSessionPath），parity
-  测试 + 冻结真实语料三轮比对兜底。重建 `replaceAll` 先同步 rmSync 再重开（修复异步 rm 竞态）。
-- 复用既有失效 seam（§33/§44/§51 generation/revision fence + mutation invalidateList）不变：append/
-  rename/delete 都会改变文件 mtime/size，下一次冷扫描的逐文件校验自然检出。
-- adapter `check:boundaries` PASS（内部模块允许 local-authority 导入、public declaration 无泄漏）；
-  `check:commands` PASS；architecture 14 gates PASS。
-
-【Phase 3 验证】pi-sdk-adapter 255/255（236 既有 + 19 新：index module 6 + store integration 6 +
-adversarial 6 + parity 1）；root build/typecheck/check:architecture/test 全绿（scripts 107 /
-agent-worker 105 / cli 52 / host 420 / local-authority 53 / pi-sdk-adapter 255 / protocol 132 /
-runtime-contract-tests 76 / runtime-core 12 / sessiond 294+1 skip）；sessiond boundary PASS；Startup +
-Runtime + Sessions E2E 全 PASS；git diff --check 干净；真实冻结语料（714 sessions）build==raw、
-serve==raw、serve==build 三轮全 true。
-冷启动基准（scripts/scale1-cold-benchmark.mjs，合成 1000-session 语料，每次测量独立进程）：
-  baseline（SDK listAll）316ms / projection build 369ms / projection serve 18ms（~17x） / warm 1ms；
-真实语料：baseline ~4.1s / projection serve ~14ms（~300x）。warm 路径不变（30s TTL cache 命中不触
-投影）。存量测试改动：session-ports.test.ts 的「default pair」测试改点 PI_CODING_AGENT_DIR 到临时目录
-（该测试走 createPiSdkSessionPorts 生产默认 → 投影开启 → 全局 scope 会写真实 agent dir，改为临时目录
-保持 hermetic，断言不变）。
-
-残余/风险（诚实声明）：
-- 行校验和检测「朴素篡改 + 意外损坏」，非安全边界（能重算校验和的 actor 超出对抗模型）；保留
-  mtime/size 相等但内容被原地改写（SDK 从不原地改写，追加必改 size）的残余窗口。
-- node:sqlite 仍 experimental（22/24 为 stability 1.1），22.19/24.12 每次进程一次 ExperimentalWarning；
-  窄核心 API（DatabaseSync/exec/prepare/run/get/all/close）在矩阵上稳定，投影可弃 + 回退兜底。
-- `allMessagesText` 不持久化（列表路径不使用），load 时以 firstMessage 重建，仅内部 SdkSessionInfo
-  字段、永不进 SessionHeader。
-- 同 modifiedMs 的会话顺序在 SDK listAll 自身因并发加载即不确定，投影不做更强保证（parity 仅按集合
-  比较该场景）。
-- 投影仅在 `createPiSdkSessionPorts()`（生产组合点）默认开启；独立 store/catalog/mutation 工厂默认关
-  闭（保守、hermetic），需要时经 `projection.enabled` 显式开启。
-
 ## 60. UX1 — Chat/Sidebar 虚拟化垂直切片记录（Wave 4，Client-only）
 
 ```text
-实现：worktree ux1-virtualization，branch feat/ux1-virtualization，base main 38b4869
-（worktree 已建，未 push/deploy/live）。Client-only：只改 packages/client + 两份 docs，
-未触碰 Host/Protocol/sessiond/adapter/CLI source、未改 package.json/package-lock、未加任何
-运行时依赖。DONE（实现者验证，PENDING 独立 verifier PASS）。
-
+实现：worktree ux1-virtualization，branch feat/ux1-virtualization，source `4b0bcf4`，base main
+`38b4869`，合并 main merge commit `815fb3c`；未 push/deploy/live。Client-only：只改 packages/client
++ 两份 docs，未触碰 Host/Protocol/sessiond/adapter/CLI source、未改 package.json/package-lock、
+未加任何运行时依赖。DONE（Fresh verifier PASS：窗口数学对抗探针零 NaN/全覆盖/钳位，独立
+jsdom 集成探针验证焦点/编辑行/删除确认 pin 与 refetch 稳定性，既有断言零削弱，bundle 零
+react-virtual 痕迹；verifier 未重放的 Startup/Sessions E2E 由父级合并后补跑全绿）。
 目标：虚拟化两个无界列表——Sidebar 会话列表（真实语料 ≈600+ 会话）与 Transcript 聊天历史
 （长会话 1000+ message block）。HARD PREFERENCE 零新运行时依赖：手写窗口化
 （scroll container + 固定高度估计 + ResizeObserver 动态测量 + overscan + absolute/flex
@@ -2697,3 +2616,85 @@ client typecheck/build/boundary（94 files）PASS、根 check:architecture（14 
 6. 测试通过 mock ResizeObserver + defineProperty 模拟测量/滚动，确定性且无 timing 断言；
    真浏览器首帧/滚动行为以 headless Chrome 探针佐证（absolute-in-relative-scroll 随内容滚动）。
 ```
+
+## 61. SCALE1 — SQLite JSONL Projection（DONE，Fresh verifier PASS；node:sqlite 零依赖投影索引，Phase 1 引擎决策 + Phase 2/3 实现与验证）
+
+```text
+状态：DONE——source `03abcd3`（branch feat/scale1-sqlite-projection，base main `38b4869`）快进合入
+main；Fresh verifier 全 7 门 PASS（零缺陷：行交换/校验和规避/物理元组交换全拦截、崩溃热日志不可
+加载、目录/symlink 替换权威回退、并发 append+delete 确定性、真实 agent 目录零残留、冻结 716 会话
+真实语料 build==raw==serve parity、基准 281ms→16ms 复现）；合并后 root build、adapter 255/255、
+architecture、Sessions+Startup E2E 全绿。与 §57/§59/§60 零源码重叠。
+编号：§56/§58 已占用，本切片占 §61（§59/§60 为并行 agent 预留）。未 push/deploy/live；未改
+package-lock/package.json 依赖（adapter 零新增依赖）；无 Windows 声明。base main `38b4869`，source:
+branch `feat/scale1-sqlite-projection` @ HEAD（worktree `pix-worktrees/scale1-sqlite-projection`，未 merge/push）。
+
+【Phase 1 引擎决策（证据驱动）】三种候选评估后选定「node:sqlite 内置引擎」（option a，即零依赖结构化
+索引 option c 的存储后端，二者混合）：
+- (a) node:sqlite：**整个受支持 Node 矩阵无需 flag 即可用**。官方记录：v22.13.0（LTS backport，
+  PR #55890 / commit 55239a4）起 `--experimental-sqlite` 解除——docs 明确 "v23.4.0, v22.13.0 | no longer
+  behind --experimental-sqlite but still experimental"。最低受支持 22.19.0 ≥ 22.13.0，故 daemon 以纯
+  `node` 启动即可用。本机直接验证（CREATE/INSERT/SELECT/事务/close）在 22.19.0 / 24.12.0 / 24.18.0 全部
+  通过（引擎 `>=22.19.0`，migration-ledger §49 亦以 22.19/24.12/24.18 为 focused 矩阵）。零依赖（Node
+  内置，无 package.json/package-lock 变更、无原生编译、无供应链面）。
+- (b) better-sqlite3：需新增依赖 → package.json/package-lock 变更 → 违反仓库「backend 切片零依赖」约定
+  → 按任务决策规则 STOP；另有 node-gyp 原生编译负担与供应链面。不选。
+- (c) 自定义二进制/JSON sidecar：无依赖无实验面，但偏离架构文档既定目标（refactor-architecture.md
+  "Host SQLite 投影 + SessionCatalogPort 回源" / "SQLite 索引 + watch"），自定义序列化格式风险更高、查询
+  能力弱；node:sqlite 以同等零依赖给出更可靠 B-tree 引擎。不选。
+**决策：node:sqlite** —— 满足全部硬约束：纯 node 启动 ✓、package-lock/package.json 零新增 ✓、JSONL
+保持权威 ✓、索引可弃/可重建 ✓、fail-closed 陈旧处理 ✓。这是任务决策规则中「(c) 或 hybrid」的落地
+（零依赖结构化索引 + SQL 存储），故按 Phase 1 证据继续实现，不触发 STOP。
+已知代价（如实记录）：Node 22.19/24.12 每次进程首次加载 node:sqlite 会在 stderr 打印一行
+ExperimentalWarning（24.18+ 已不打印）；该警告无法在不移除全部 warning listener 的前提下干净抑制，属
+文档化外观代价，不影响功能（投影可弃 + fail-closed 兜底）。
+
+【Phase 2 实现】新增 `packages/pi-sdk-adapter/src/internal/session-projection.ts`（node:sqlite +
+node 内建 + `@fffattiger/pix-local-authority/state` 原语，manifest-less 复用——仿 sessiond
+local-posix.ts：build-deps.mjs 新增 local-authority 构建顺序，root workspace symlink 提供解析，零依赖
+声明）。store（session-store.ts）`scan()` 接入：默认投影关闭（独立 store/catalog/mutation 工厂保持
+backend-neutral 无副作用），生产组合点 `createPiSdkSessionPorts()` 显式开启。
+- 索引：`<agentDir>/pix/session-index.sqlite`（全局 scope）/ `<dirname(sessionDir)>/.pix`（显式
+  sessionDir scope），均可注入。安全创建镜像 §58：`canonicalizeAbsolutePath`（解 macOS `/var` 系统别名）
+  → `ensurePrivateDirectory`（既有目录 validate-only：当前用户拥有 + 精确 0700 + 真实非符号链接目录，
+  绝不 chmod；缺失逐组件 0700 + fd 身份钉住；错误固定 LocalAuthorityError 消毒码，无 raw path/errno）。
+- schema：`session_projection`（path 主键 + id/cwd/name/parent_session_path/created_ms/modified_ms/
+  message_count/first_message/file_mtime_ms/file_size/checksum）+ `session_projection_meta`
+  （schema_version=1、format）。每行 sha256 行校验和覆盖全部服务字段。
+- fail-closed 契约：行仅在 (a) 行校验和通过（任何对 title/counts/mtime/identity 的朴素篡改 → load null
+  → 重建，永不服务）且 (b) 底层 JSONL 文件 mtimeMs+size 与行记录完全一致时服务；文件缺失 → 删行；文件
+  新增/变更 → 有界并发（8）重读重索引；任一非普通文件（symlink/dir）或枚举不可靠 → 整次回退权威
+  `sdk.listAll`；任何 load 失败（损坏/错误 schema/缺 meta/校验和失配）→ 权威回退 + 事务性重建（崩溃中
+  途部分索引永不可 load 故永不服务）。重建路径直接返回 `sdk.listAll` 结果（构造性等价）；增量重读用
+  自含解析器镜像 pinned SDK 0.84.0 `buildSessionInfo` 语义（latest trimmed session_info name、message
+  count、last-message-activity modified 同 fallback 链、header created/cwd/parentSessionPath），parity
+  测试 + 冻结真实语料三轮比对兜底。重建 `replaceAll` 先同步 rmSync 再重开（修复异步 rm 竞态）。
+- 复用既有失效 seam（§33/§44/§51 generation/revision fence + mutation invalidateList）不变：append/
+  rename/delete 都会改变文件 mtime/size，下一次冷扫描的逐文件校验自然检出。
+- adapter `check:boundaries` PASS（内部模块允许 local-authority 导入、public declaration 无泄漏）；
+  `check:commands` PASS；architecture 14 gates PASS。
+
+【Phase 3 验证】pi-sdk-adapter 255/255（236 既有 + 19 新：index module 6 + store integration 6 +
+adversarial 6 + parity 1）；root build/typecheck/check:architecture/test 全绿（scripts 107 /
+agent-worker 105 / cli 52 / host 420 / local-authority 53 / pi-sdk-adapter 255 / protocol 132 /
+runtime-contract-tests 76 / runtime-core 12 / sessiond 294+1 skip）；sessiond boundary PASS；Startup +
+Runtime + Sessions E2E 全 PASS；git diff --check 干净；真实冻结语料（714 sessions）build==raw、
+serve==raw、serve==build 三轮全 true。
+冷启动基准（scripts/scale1-cold-benchmark.mjs，合成 1000-session 语料，每次测量独立进程）：
+  baseline（SDK listAll）316ms / projection build 369ms / projection serve 18ms（~17x） / warm 1ms；
+真实语料：baseline ~4.1s / projection serve ~14ms（~300x）。warm 路径不变（30s TTL cache 命中不触
+投影）。存量测试改动：session-ports.test.ts 的「default pair」测试改点 PI_CODING_AGENT_DIR 到临时目录
+（该测试走 createPiSdkSessionPorts 生产默认 → 投影开启 → 全局 scope 会写真实 agent dir，改为临时目录
+保持 hermetic，断言不变）。
+
+残余/风险（诚实声明）：
+- 行校验和检测「朴素篡改 + 意外损坏」，非安全边界（能重算校验和的 actor 超出对抗模型）；保留
+  mtime/size 相等但内容被原地改写（SDK 从不原地改写，追加必改 size）的残余窗口。
+- node:sqlite 仍 experimental（22/24 为 stability 1.1），22.19/24.12 每次进程一次 ExperimentalWarning；
+  窄核心 API（DatabaseSync/exec/prepare/run/get/all/close）在矩阵上稳定，投影可弃 + 回退兜底。
+- `allMessagesText` 不持久化（列表路径不使用），load 时以 firstMessage 重建，仅内部 SdkSessionInfo
+  字段、永不进 SessionHeader。
+- 同 modifiedMs 的会话顺序在 SDK listAll 自身因并发加载即不确定，投影不做更强保证（parity 仅按集合
+  比较该场景）。
+- 投影仅在 `createPiSdkSessionPorts()`（生产组合点）默认开启；独立 store/catalog/mutation 工厂默认关
+  闭（保守、hermetic），需要时经 `projection.enabled` 显式开启。
