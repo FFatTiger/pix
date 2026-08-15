@@ -79,6 +79,7 @@ describe("public production SDK factory smoke", () => {
           "runtime.compact",
           "runtime.compact.abort",
           "runtime.extension_ui",
+          "runtime.fork",
         ]);
 
         // Baseline query: get_state (always available, no capability gate).
@@ -250,12 +251,19 @@ describe("public production SDK factory smoke", () => {
           assert.equal(autoName.error.code, "unsupported_capability");
           assert.match(autoName.error.message, /runtime\.auto_name/);
         }
-        // runtime.fork is NOT in the production surface.
+        // D2 fork: runtime.fork IS in the production surface — the capability
+        // gate must report it OPEN. A fork to a non-existent entry on a fresh
+        // session must therefore reach the adapter and fail as a structured
+        // sanitized error (never unsupported_capability, which would prove the
+        // gate is still closed; never the raw entry id / SDK text).
+        const forkCap = port.getCapabilities().capabilities.includes("runtime.fork");
+        assert.equal(forkCap, true, "runtime.fork must be open");
         const fork = await port.execute({ type: "fork", entryId: "entry-1" });
-        assert.equal(fork.ok, false);
+        assert.equal(fork.ok, false, "fresh-session fork must not claim success");
         if (!fork.ok) {
-          assert.equal(fork.error.code, "unsupported_capability");
-          assert.match(fork.error.message, /runtime\.fork/);
+          assert.equal(fork.error.code, "external", "open gate must reach the adapter (not unsupported_capability)");
+          assert.ok(!fork.error.message.includes("entry-1"), "fork params must never be echoed in an error");
+          assert.ok(!/\n|\tat |node:internal/i.test(fork.error.message), "no raw stack text");
         }
         // runtime.navigate is NOT in the production surface.
         const navigate = await port.execute({ type: "navigate_tree", targetId: "entry-1" });
@@ -282,7 +290,7 @@ describe("public production SDK factory smoke", () => {
         name: "D2-P7 Compact Smoke",
       });
       try {
-        assert.equal(port.getCapabilities().capabilities.length, 17);
+        assert.equal(port.getCapabilities().capabilities.length, 18);
         assert.deepEqual([...port.getCapabilities().capabilities], [...PRODUCTION_AGENT_CAPABILITIES]);
 
         // A tiny/fresh session has nothing to compact: the real SDK compact

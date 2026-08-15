@@ -790,6 +790,10 @@ export class SessiondService {
     // SessionActions path can never bypass Host/API rename ordering. The private
     // non-reentrant command operation is never re-admitted into the lane.
     if (command.type === "set_session_name") return this.commandRename(sessionId, command);
+    // D2 fork: `runtime.command(fork)` shares the same per-session FIFO lane as
+    // activate/rename/stop/delete so a fork races old-id identity mutations
+    // deterministically and ends the OLD worker through the identity stop path.
+    if (command.type === "fork") return this.commandFork(sessionId, command);
     const record = this.requireActive(sessionId);
     return this.commandOnRecord(record, command);
   }
@@ -896,6 +900,92 @@ export class SessiondService {
       }
       return this.executeLiveRename(record, command.commandId, canonicalName);
     });
+  }
+
+  /**
+   * D2 fork: the per-session FIFO identity lane for `runtime.command(fork)`.
+   * Shares the exact same lane as activate / rename / stop / delete so a fork
+   * races identity mutations on the OLD session deterministically:
+   *
+   * - delete/rename/stop admitted FIRST → the fork's record lookup sees the
+   *   removed/stopped record and fails closed with a fixed sanitized
+   *   not_found / unavailable (never a partial fork, zero new sessions);
+   * - fork admitted FIRST → the lane stays HELD through the old-worker stop, so
+   *   a queued rename/delete/stop observes the stopped record (no double-stop,
+   *   no stale-lane write).
+   *
+   * Result-before-stop ordering: the caller's promise is resolved with the fork
+   * result as soon as the worker settles it (the fork lane op resolves a
+   * private deferred) and ONLY THEN the OLD worker is ended via the existing
+   * identity stop path — the client receives the fork result + new session id
+   * before the old runtime_closed is observable. The lane op itself continues
+   * to hold the lane until the stop completes, so queued identity ops wait for
+   * the stopped record.
+   *
+   * Frozen semantics (never rolled back): a successful fork creates the new
+   * session (in the adapter/SDK catalog) BEFORE the old worker stops. If the
+   * old-worker stop fails, the fork is NOT rolled back — the new session exists
+   * and remains usable; the stop failure is absorbed (never a raw error, never
+   * a false fork failure) and the record is still removed. Activation of the
+   * forked session id is client-driven (existing activate semantics); there is
+   * NO implicit attach switch server-side.
+   */
+  private commandFork(sessionId: string, command: RuntimeCommand & { type: "fork" }): Promise<CorrelatedRuntimeCommandResult> {
+    const settled = deferred<CorrelatedRuntimeCommandResult>();
+    void this.coordinator.admit(sessionId, "fork", async (ctx) => {
+      try {
+        if (this.shuttingDown) {
+          settled.resolve(unavailableCommand(command.commandId, "fork", "sessiond is shutting down"));
+          return;
+        }
+        if (ctx.isStale()) {
+          settled.resolve(unavailableCommand(command.commandId, "fork", "session identity changed during fork"));
+          return;
+        }
+        const record = this.records.get(ctx.canonicalId);
+        if (!record) {
+          // delete-first: the session's record is gone → fixed not_found, never
+          // a partial fork and never a raw session id echoed.
+          settled.resolve({
+            commandId: command.commandId,
+            result: { ok: false, type: "fork", error: { code: "not_found", message: "session not found", retryable: false } },
+          });
+          return;
+        }
+        if (["crashed", "stopped", "stopping"].includes(record.status)) {
+          settled.resolve(unavailableCommand(command.commandId, "fork", "runtime is not active"));
+          return;
+        }
+        const result = await this.commandOnRecord(record, command);
+        // Deliver the fork result to the caller BEFORE the old worker is ended.
+        settled.resolve(result);
+        if (result.result.ok && result.result.type === "fork") {
+          // End the OLD worker via the existing identity-lane stop path. The
+          // lane stays held through the stop so queued rename/delete/stop on the
+          // old id observe the stopped record (deterministic, no double-stop).
+          // stopRecord emits runtime_closed("forked") exactly once (the adapter
+          // may already have self-closed; `closedEventEmitted` makes it idempotent)
+          // and removes the record — snapshot authority finalization is NOT
+          // required because the authoritative record transitions to stopped
+          // rather than needing a post-success refresh (fork is deliberately NOT
+          // an AUTHORITY_COMMAND_TYPE).
+          try {
+            await record.lifecycle.runExclusive(() => this.stopRecord(record, "forked"));
+          } catch (stopError) {
+            // Fork success is never rolled back: the new session already exists.
+            // Absorb the stop failure sanitized — no raw text crosses, no false
+            // fork failure is reported to the caller (which already received the
+            // fork result).
+          }
+        }
+      } catch {
+        // Defensive bound: never hang the caller. A second resolve is a no-op
+        // (the first — real — result already won), so a late throw cannot
+        // replace an already-delivered fork result.
+        settled.resolve(unavailableCommand(command.commandId, "fork", "fork failed"));
+      }
+    });
+    return settled.promise;
   }
 
   /**

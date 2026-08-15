@@ -11,6 +11,7 @@ import type {
   RuntimeCommand,
   RuntimeCommandResult,
   RuntimeCommandType,
+  RuntimeError,
   RuntimeEvent,
   RuntimeIdentity,
   RuntimeInterrupt,
@@ -32,6 +33,22 @@ import { redactText } from "./sanitize.js";
 import type { DriverUiRequest, PiRuntimeDriver } from "./types.js";
 
 const COMMAND_TYPES = new Set<string>(RUNTIME_COMMAND_TYPES);
+
+/**
+ * Fixed sanitized fork-failure message per canonical code. The worker/adapter
+ * raw error text (which may carry the fork-point entry id, a session file path,
+ * or SDK/transport internals) never crosses the boundary — every fork failure
+ * is re-projected onto a fixed message, preserving only the canonical code +
+ * retryable. The fork params (`entryId`) are NEVER echoed in an error.
+ */
+const FORK_FAILURE_MESSAGES: Readonly<Partial<Record<RuntimeError["code"], string>>> = {
+  invalid_input: "fork point is invalid",
+  not_found: "fork point not found",
+  session_busy: "session is busy",
+  external: "fork failed",
+  unavailable: "fork is unavailable",
+  internal: "fork failed",
+};
 
 interface PendingUi {
   request: ExtensionUiRequest;
@@ -372,9 +389,48 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         }
         case "navigate_tree": await this.driver.navigate(command.targetId); this.emitState(); return { ok: true, type: "navigate_tree" };
         case "fork": {
-          const forked = await this.driver.fork(command.entryId);
-          setTimeout(() => void this.close("forked"), 0);
-          return { ok: true, type: "fork", forkedSessionId: forked.sessionId, forkPointEntryId: command.entryId };
+          // D2 fork busy guard (mirrors the compact/navigate guard): fork is a
+          // serial-lane mutating command that must NEVER overlap an in-flight
+          // prompt stream, an ACTIVE bash command, an already-running
+          // compaction, or a pending extension-UI wait. Reject first with a
+          // structured session_busy and leave NO partial fork/close state
+          // behind — the in-flight turn is never corrupted.
+          const driverState = this.driver.getState();
+          if (
+            driverState.isStreaming ||
+            driverState.isBashRunning ||
+            driverState.isCompacting ||
+            this.promptRunning ||
+            (this.bash !== null && this.bash.completed === false) ||
+            this.compaction !== null
+          ) {
+            return this.failure("fork", makeRuntimeError("session_busy", "a prompt, bash command, or compaction is already in progress", { retryable: true }));
+          }
+          // Blank/missing fork point: structured invalid_input BEFORE any SDK
+          // call (the Protocol NonEmptyStringSchema already rejects it at the
+          // wire, but the canonical boundary must stay fail-closed). The fork
+          // params are never echoed in any error.
+          if (typeof command.entryId !== "string" || !command.entryId.trim()) {
+            return this.failure("fork", makeRuntimeError("invalid_input", "fork point is required"));
+          }
+          try {
+            const forked = await this.driver.fork(command.entryId);
+            // D2 fork: the result must settle before runtime_closed is
+            // observable. The close is deferred by a timer turn (strictly after
+            // promise reactions queued by async callers), mirroring the fake
+            // runtime contract (D-018).
+            setTimeout(() => void this.close("forked"), 0);
+            return { ok: true, type: "fork", forkedSessionId: forked.sessionId, forkPointEntryId: command.entryId };
+          } catch (error) {
+            // Map the driver failure to a canonical code, but NEVER surface the
+            // raw SDK message (which may carry the entry id / path / transport
+            // text) — project every fork failure onto a fixed sanitized message
+            // keyed by the code. On failure the runtime is NOT closed (the old
+            // worker keeps running).
+            const mapped = mapDriverError(error);
+            const fixed = FORK_FAILURE_MESSAGES[mapped.code] ?? "fork failed";
+            return this.failure("fork", makeRuntimeError(mapped.code, fixed, { retryable: mapped.retryable }));
+          }
         }
         case "generate_session_title": {
           const name = await this.driver.generateSessionTitle();
