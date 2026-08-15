@@ -352,7 +352,7 @@ stop
 | ID | 工作包 | 依赖 |
 |---|---|---|
 | `SCALE1` | SQLite JSONL Projection | `D1` |
-| `UX1` | Chat/Sidebar Virtualization | `D1`, `D2` |
+| `UX1` | Chat/Sidebar Virtualization | `D1`, `D2` | **DONE（worktree ux1-virtualization，branch feat/ux1-virtualization，base main `38b4869`；Client-only，PENDING 独立 verifier PASS）**：手写窗口化零新依赖（不引入 TanStack Virtual，既有 `@tanstack/react-virtual` 保留未动但生产不再 import，bundle 无其代码）。新增 `src/lib/virtual-list.ts`：纯 `computeVirtualWindow`（累计 offset 二分 + overscan + pinned 并集 + viewport<=0 最小窗 + 超界 clamp）+ `useVirtualList`（固定估计 + ResizeObserver border-box 动态测量按稳定 item key 缓存、absolute/flex 定位 + spacer、overscan、pinned 行、render-all 回退当 ResizeObserver 缺失、可选 stick-to-bottom）。Sidebar：1000+ 会话虚拟化、按 sessionId 稳定身份无 refetch 跳变、D4 rename/delete 编辑行 pin 挂载、聚焦行 pin（焦点随内容）、`.session-list` position:relative + spacer `<li>` 保列表语义、能力门控/aria 全保留。Transcript：替换 TanStack Virtual，异高行（bash/tool/image/queued-turn/extension-UI pending）动态测量、auto-scroll 底部 pin + 上滚释放 + session/live 切换重 pin、`data-index`/`data-row-id`/role=log 保留。验证：Client 671/671（既有 652 + 新增 19：纯函数 11 + Transcript DOM 4 + Sidebar DOM 4，确定性无 timing/ms）、client typecheck/build/boundary、根 check:architecture、git diff-check 全 PASS；headless Chrome 探针佐证 absolute-in-relative-scroll 随内容滚动。残余：history 默认 pin 底部为新增行为；`@tanstack/react-virtual` 为死依赖（移除需单独动 package-lock 的 commit）；未新增 arrow-key 导航（今日无此行为）。详见 migration-ledger §60 |
 | `PWA1` | LAN Gate、配对、后台 Resume | `M2`, `D3A` |
 | `REL1` | 安装、升级、卸载、发布验证 | 发布范围功能完成 |
 

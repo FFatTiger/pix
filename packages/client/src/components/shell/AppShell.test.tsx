@@ -13,15 +13,9 @@ import type { SessionStore } from "@/runtime";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { useEffect, type ReactNode } from "react";
 
-// jsdom gives the scroll container 0 height; stub the virtualizer to render rows.
-vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({ count }: { count: number }) => ({
-    getTotalSize: () => count * 48,
-    getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ key: index, index, start: index * 48 })),
-    measureElement: () => undefined,
-  }),
-}));
-
+// AppShell renders TranscriptList, which uses the hand-rolled virtualizer
+// (src/lib/virtual-list). jsdom has no ResizeObserver, so the virtualizer
+// degrades to render-all and every row mounts — no mock needed here.
 // AppShell uses TanStack Router navigation; stub it so the component renders in
 // isolation without a router context, and capture navigation calls for the D3A
 // worktree Open/switch assertions.

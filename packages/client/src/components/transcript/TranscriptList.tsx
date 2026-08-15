@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useVirtualList } from "@/lib/virtual-list";
 import type {
   AgentMessage,
   BashProjection,
@@ -238,6 +238,8 @@ function liveBashStateToInput(
 
 export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: liveProp }: TranscriptListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
+  // Row that currently owns DOM focus (kept mounted so focus follows content).
+  const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
   const http = useHttpClient();
   const { isReadonly, canBrowseSessions } = useCapabilities();
   const runtime = useRuntime();
@@ -291,17 +293,43 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
     isReadonly,
   ]);
 
-  const virtualizer = useVirtualizer({
+  const virtualizer = useVirtualList({
     count: rows.length,
     getScrollElement: () => parentRef.current,
     estimateSize: (index) => estimateRowHeight(rows[index]!),
     overscan,
     getItemKey: (index) => getTranscriptRowKey(rows[index]!),
+    // A row that currently owns DOM focus must stay mounted so focus never
+    // drops to <body> when scrolling moves it off-viewport (focus follows
+    // content, not the viewport).
+    pinnedKeys: focusedRowId === null ? [] : [focusedRowId],
+    // Streaming chat: auto-scroll to bottom while the user is pinned at the
+    // bottom; scrolling up releases the pin (scroll-position preservation).
+    // Re-pin whenever the session or live/history mode changes.
+    stickToBottom: true,
+    stickToBottomKey: `${sessionId ?? ""}:${isLive ? "live" : "history"}`,
   });
   return (
-    <div ref={parentRef} className="transcript-scroll" role="log" aria-label="Conversation transcript" aria-relevant="additions">
-      <div className="transcript-inner" style={{ height: virtualizer.getTotalSize() }}>
-        {virtualizer.getVirtualItems().map((item) => {
+    <div
+      ref={parentRef}
+      className="transcript-scroll"
+      role="log"
+      aria-label="Conversation transcript"
+      aria-relevant="additions"
+      onFocus={(event) => {
+        const row = (event.target as HTMLElement).closest("[data-row-id]");
+        setFocusedRowId(row ? row.getAttribute("data-row-id") : null);
+      }}
+      onBlur={(event) => {
+        const next = event.relatedTarget as HTMLElement | null;
+        if (!next || !next.closest("[data-row-id]")) setFocusedRowId(null);
+      }}
+    >
+      <div
+        className="transcript-inner"
+        style={virtualizer.windowed ? { height: virtualizer.totalSize } : undefined}
+      >
+        {virtualizer.items.map((item) => {
           const row = rows[item.index]!;
           return (
             <div
@@ -310,7 +338,17 @@ export function TranscriptList({ sessionId, rows: rowsProp, overscan = 8, live: 
               data-row-id={row.id}
               ref={virtualizer.measureElement}
               className={`transcript-row transcript-row--${row.kind}`}
-              style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${item.start}px)` }}
+              style={
+                virtualizer.windowed
+                  ? {
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${item.start}px)`,
+                    }
+                  : undefined
+              }
             >
               <TranscriptRowView row={row} />
             </div>

@@ -12,15 +12,9 @@ import type { HostInfo } from "@fffattiger/pix-protocol";
 import type { SessionStore } from "@/runtime/session-store";
 import { useEffect, type ReactNode } from "react";
 
-// jsdom has no real virtualizer need for Composer; this mock is kept for parity
-// with the shared provider test harness.
-vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({ count }: { count: number }) => ({
-    getTotalSize: () => count * 48,
-    getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ key: index, index, start: index * 48 })),
-    measureElement: () => undefined,
-  }),
-}));
+// Composer renders TranscriptList, which uses the hand-rolled virtualizer
+// (src/lib/virtual-list). jsdom has no ResizeObserver, so it renders every row
+// (render-all fallback) — no mock needed.
 
 const SOCKETS: FakeWebSocket[] = [];
 function fakeDeps(): RuntimeSocketDeps {

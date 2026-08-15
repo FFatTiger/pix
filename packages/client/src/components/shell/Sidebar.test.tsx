@@ -5,6 +5,7 @@ import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { HttpClientProvider } from "@/app/http-context";
 import { Sidebar, describeSessionDeleteError, describeSessionRenameError, validateSessionName } from "./Sidebar";
 import { HttpError } from "@/api/http-client";
+import { installVirtualization, restoreVirtualization } from "@/lib/testing/virtualization";
 import type { ReactNode } from "react";
 import type { HostCapability, HostInfo, SessionHeader } from "@fffattiger/pix-protocol";
 import type { WorkspaceSearch } from "@/lib/search-params";
@@ -1184,5 +1185,129 @@ describe("validateSessionName — mirrors Host canonicalize", () => {
     expect(validateSessionName("a\u0001b")).toEqual({ ok: false, message: "Session names cannot contain control characters." });
     expect(validateSessionName("a\u001fb")).toEqual({ ok: false, message: "Session names cannot contain control characters." });
     expect(validateSessionName("a\u007fb")).toEqual({ ok: false, message: "Session names cannot contain control characters." });
+  });
+});
+
+describe("Sidebar — UX1 virtualization (windowed)", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => { previousFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = previousFetch; cleanup(); restoreVirtualization(); });
+
+  const WRITE_CAP: HostCapability[] = ["sessions", "session.write"];
+
+  function manySessions(count: number): SessionHeader[] {
+    return Array.from({ length: count }, (_, i) =>
+      baseSession({ sessionId: `s-${i}`, title: `Session ${i}`, cwd: "/proj", projectRoot: "/proj" }),
+    );
+  }
+
+  function listFetch(sessions: SessionHeader[]) {
+    return vi.fn(async () => listResponse(sessions)) as unknown as typeof fetch;
+  }
+
+  it("1000 sessions: bounded mounted row count regardless of data size, correct window at scrollTop 0", async () => {
+    const env = installVirtualization();
+    globalThis.fetch = listFetch(manySessions(1000));
+    const { view } = mount({ cwd: "/proj" }, { mode: "local", capabilities: SESSIONS_CAP });
+    await screen.findByText("Session 0");
+    const list = document.querySelector(".session-list") as HTMLElement;
+    expect(list).toBeTruthy();
+    act(() => {
+      env.setClientHeight(list, 600);
+      env.fireViewport(list);
+    });
+    const rows = Array.from(document.querySelectorAll(".session-list li[data-session-id]"));
+    const budget = Math.ceil(600 / 88) + 2 * 8 + 2;
+    expect(rows.length).toBeLessThanOrEqual(budget);
+    const indexes = rows.map((el) => Number((el as HTMLElement).dataset.index));
+    expect(Math.min(...indexes)).toBe(0);
+    expect(Math.max(...indexes)).toBeLessThan(1000);
+    // Spacer provides the full scrollable height.
+    const spacer = document.querySelector(".session-list-spacer") as HTMLElement;
+    expect(Number(spacer.style.height.replace("px", ""))).toBe(1000 * 88);
+    // First visible row is absolutely positioned at the top offset.
+    expect((rows[0] as HTMLElement).style.transform).toContain("translateY(0px)");
+    expect(view).toBeTruthy();
+  });
+
+  it("window content matches the scrollTop exactly (1000 sessions)", async () => {
+    const env = installVirtualization();
+    globalThis.fetch = listFetch(manySessions(1000));
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: SESSIONS_CAP });
+    await screen.findByText("Session 0");
+    const list = document.querySelector(".session-list") as HTMLElement;
+    act(() => {
+      env.setClientHeight(list, 600);
+      env.fireViewport(list);
+    });
+    act(() => {
+      env.setScrollTop(list, 88 * 500);
+    });
+    const rows = Array.from(document.querySelectorAll(".session-list li[data-session-id]"));
+    const indexes = rows.map((el) => Number((el as HTMLElement).dataset.index));
+    expect(Math.min(...indexes)).toBe(500 - 8);
+    expect(Math.max(...indexes)).toBe(500 + Math.floor(600 / 88) + 8);
+    expect((rows[0] as HTMLElement).style.transform).toContain(
+      `translateY(${88 * (500 - 8)}px)`,
+    );
+  });
+
+  it("rename editor row stays mounted (pinned) even when scrolled outside the window", async () => {
+    const env = installVirtualization();
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "PATCH") return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "content-type": "application/json" } });
+      return listResponse(manySessions(1000));
+    }) as unknown as typeof fetch;
+    mount({ cwd: "/proj" }, { mode: "local", capabilities: WRITE_CAP });
+    await screen.findByText("Session 0");
+    const list = document.querySelector(".session-list") as HTMLElement;
+    act(() => {
+      env.setClientHeight(list, 600);
+      env.fireViewport(list);
+    });
+    // Open the inline rename editor on a visible row near the top.
+    const renameBtn = document.querySelector('[data-session-id="s-3"] .session-rename-btn') as HTMLElement;
+    expect(renameBtn).toBeTruthy();
+    fireEvent.click(renameBtn);
+    expect(document.querySelector('[data-session-id="s-3"] .session-rename-input')).toBeTruthy();
+    // Scroll far down so the editing row leaves the visible window.
+    act(() => {
+      env.setScrollTop(list, 88 * 900);
+    });
+    // The editing row must remain mounted (pinned) with its editor intact.
+    const editingRow = document.querySelector('[data-session-id="s-3"]') as HTMLElement;
+    expect(editingRow).toBeTruthy();
+    expect(editingRow.querySelector(".session-rename-input")).toBeTruthy();
+    // And it is pinned far above the visible window (not part of the normal window).
+    expect(Number(editingRow.dataset.index)).toBe(3);
+    const renderedIndexes = Array.from(document.querySelectorAll(".session-list li[data-session-id]"))
+      .map((el) => Number((el as HTMLElement).dataset.index));
+    expect(renderedIndexes).toContain(3);
+  });
+
+  it("background refetch with stable identities preserves scroll position and window (no jump)", async () => {
+    const env = installVirtualization();
+    globalThis.fetch = listFetch(manySessions(1000));
+    const { qc } = mount({ cwd: "/proj" }, { mode: "local", capabilities: SESSIONS_CAP });
+    await screen.findByText("Session 0");
+    const list = document.querySelector(".session-list") as HTMLElement;
+    act(() => {
+      env.setClientHeight(list, 600);
+      env.fireViewport(list);
+      env.setScrollTop(list, 88 * 500);
+    });
+    const before = Array.from(document.querySelectorAll(".session-list li[data-session-id]"))
+      .map((el) => Number((el as HTMLElement).dataset.index));
+    expect(Math.min(...before)).toBe(500 - 8);
+    // Background invalidate refetches the same session identities.
+    await act(async () => {
+      qc.invalidateQueries();
+      await Promise.resolve();
+    });
+    const after = Array.from(document.querySelectorAll(".session-list li[data-session-id]"))
+      .map((el) => Number((el as HTMLElement).dataset.index));
+    expect(after).toEqual(before);
+    expect(list.scrollTop).toBe(88 * 500);
   });
 });

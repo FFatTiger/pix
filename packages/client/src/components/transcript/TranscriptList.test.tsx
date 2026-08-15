@@ -12,22 +12,13 @@ import type { HostInfo } from "@fffattiger/pix-protocol";
 import { useEffect, type ReactNode } from "react";
 import { TranscriptList, projectAssistantBlocks } from "./TranscriptList";
 import { buildTranscriptRows } from "./row-model";
+import { installVirtualization, restoreVirtualization } from "@/lib/testing/virtualization";
 import { LIVE_BASH_ROW_ID, projectBashViewModel } from "./bash-view-model";
 
-// jsdom gives the scroll container 0 height, so the real virtualizer renders no
-// rows. Stub it to render every row so runtime→row integration is testable.
-vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({ count, getItemKey }: { count: number; getItemKey?: (index: number) => string | number }) => ({
-    getTotalSize: () => count * 48,
-    getVirtualItems: () =>
-      Array.from({ length: count }, (_, index) => ({
-        key: getItemKey?.(index) ?? index,
-        index,
-        start: index * 48,
-      })),
-    measureElement: () => undefined,
-  }),
-}));
+// TranscriptList uses the hand-rolled virtualizer (src/lib/virtual-list). jsdom
+// has no ResizeObserver, so it degrades to render-all and every row mounts.
+// The dedicated UX1 windowed tests below install a mock ResizeObserver to
+// exercise the real windowed path deterministically.
 
 const SOCKETS: FakeWebSocket[] = [];
 function fakeDeps(): RuntimeSocketDeps {
@@ -1176,5 +1167,131 @@ describe("TranscriptList — history capability fail-closed", () => {
     expect(screen.getByText("LIVE MESSAGE")).toBeTruthy();
     expect(screen.queryByText("Session history unavailable until the runtime connects.")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("TranscriptList — UX1 virtualization (windowed)", () => {
+  let previousFetch: typeof fetch;
+  beforeEach(() => {
+    previousFetch = globalThis.fetch;
+    SOCKETS.length = 0;
+    capturedStore = null;
+  });
+  afterEach(() => {
+    cleanup();
+    restoreVirtualization();
+    globalThis.fetch = previousFetch;
+  });
+
+  function makeRows(count: number, estimateHeight = 48) {
+    return buildTranscriptRows(
+      Array.from({ length: count }, (_, i) => ({
+        id: `row-${i}`,
+        role: "user" as const,
+        text: `message ${i}`,
+        estimateHeight,
+      })),
+    );
+  }
+
+  function mountRows(rows: ReturnType<typeof makeRows>) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (r: ReturnType<typeof makeRows>): ReactNode => (
+      <ErrorBoundary>
+        <QueryClientProvider client={qc}>
+          <HttpClientProvider>
+            <CapabilityProvider host={{ mode: "local", capabilities: ["agent"] }}>
+              <RuntimeProvider deps={fakeDeps()}>
+                <TranscriptList rows={r} />
+              </RuntimeProvider>
+            </CapabilityProvider>
+          </HttpClientProvider>
+        </QueryClientProvider>
+      </ErrorBoundary>
+    );
+    const view = render(tree(rows));
+    return { rerender: (next: ReturnType<typeof makeRows>) => view.rerender(tree(next)) };
+  }
+
+  it("2000 rows: bounded mounted row count regardless of data size, correct window at scrollTop 0", () => {
+    const env = installVirtualization();
+    mountRows(makeRows(2000));
+    const scroller = document.querySelector(".transcript-scroll") as HTMLElement;
+    expect(scroller).toBeTruthy();
+    act(() => {
+      env.setClientHeight(scroller, 600);
+      env.fireViewport(scroller);
+    });
+    // Deterministic estimate-only window: rows are never measured in jsdom, so
+    // every row uses the 48px estimate.
+    const rows = Array.from(document.querySelectorAll(".transcript-row"));
+    const budget = Math.ceil(600 / 48) + 2 * 8 + 2;
+    expect(rows.length).toBeLessThanOrEqual(budget);
+    const indexes = rows.map((el) => Number((el as HTMLElement).dataset.index));
+    expect(Math.min(...indexes)).toBe(0);
+    expect(Math.max(...indexes)).toBeLessThan(2000);
+    // The inner spacer carries the full scroll height; rows are absolutely
+    // positioned at their content offsets.
+    const inner = document.querySelector(".transcript-inner") as HTMLElement;
+    expect(Number(inner.style.height.replace("px", ""))).toBe(2000 * 48);
+    expect((rows[0] as HTMLElement).style.transform).toContain("translateY(0px)");
+  });
+
+  it("window content matches the scrollTop exactly (2000 rows)", () => {
+    const env = installVirtualization();
+    mountRows(makeRows(2000));
+    const scroller = document.querySelector(".transcript-scroll") as HTMLElement;
+    act(() => {
+      env.setClientHeight(scroller, 600);
+      env.fireViewport(scroller);
+    });
+    act(() => {
+      env.setScrollTop(scroller, 48 * 500);
+    });
+    const rows = Array.from(document.querySelectorAll(".transcript-row"));
+    const indexes = rows.map((el) => Number((el as HTMLElement).dataset.index));
+    expect(Math.min(...indexes)).toBe(500 - 8);
+    expect(Math.max(...indexes)).toBe(500 + Math.floor(600 / 48) + 8);
+    expect((rows[0] as HTMLElement).style.transform).toContain(
+      `translateY(${48 * (500 - 8)}px)`,
+    );
+  });
+
+  it("dynamic measurement of a taller row updates total height (varying block heights)", () => {
+    const env = installVirtualization();
+    mountRows(makeRows(100));
+    const scroller = document.querySelector(".transcript-scroll") as HTMLElement;
+    act(() => {
+      env.setClientHeight(scroller, 600);
+      env.fireViewport(scroller);
+    });
+    const inner = document.querySelector(".transcript-inner") as HTMLElement;
+    expect(Number(inner.style.height.replace("px", ""))).toBe(100 * 48);
+    // Measure row 0 as a much taller block (e.g. a long tool output).
+    const row0 = document.querySelector('[data-index="0"]') as HTMLElement;
+    act(() => {
+      env.measureRow(row0, 200);
+    });
+    expect(Number(inner.style.height.replace("px", ""))).toBe(200 + 99 * 48);
+  });
+
+  it("auto-scrolls to bottom on content growth while pinned; scrolling up releases the pin", () => {
+    const env = installVirtualization();
+    const view = mountRows(makeRows(20));
+    const scroller = document.querySelector(".transcript-scroll") as HTMLElement;
+    act(() => {
+      env.setClientHeight(scroller, 600);
+      env.fireViewport(scroller);
+      env.setScrollHeight(scroller, 10000);
+    });
+    // Growth while pinned at the bottom auto-scrolls to the bottom edge.
+    view.rerender(makeRows(100));
+    expect(scroller.scrollTop).toBe(10000);
+    // User scrolls up -> pin released -> further growth preserves position.
+    act(() => {
+      env.setScrollTop(scroller, 200);
+    });
+    view.rerender(makeRows(150));
+    expect(scroller.scrollTop).toBe(200);
   });
 });

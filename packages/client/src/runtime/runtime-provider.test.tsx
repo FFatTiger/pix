@@ -13,15 +13,9 @@ import type { HostInfo } from "@fffattiger/pix-protocol";
 import type { SessionStore } from "./session-store";
 import { useEffect, type ReactNode } from "react";
 
-// jsdom gives the scroll container 0 height, so the real virtualizer renders no
-// rows. Stub it to render every row so runtime→row integration is testable.
-vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({ count }: { count: number }) => ({
-    getTotalSize: () => count * 48,
-    getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ key: index, index, start: index * 48 })),
-    measureElement: () => undefined,
-  }),
-}));
+// RuntimeProvider mounts TranscriptList, which uses the hand-rolled virtualizer
+// (src/lib/virtual-list). jsdom has no ResizeObserver, so it renders every row
+// (render-all fallback) — no mock needed.
 
 const SOCKETS: FakeWebSocket[] = [];
 function fakeDeps(): RuntimeSocketDeps {

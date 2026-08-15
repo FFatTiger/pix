@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { formatCwdLabel } from "@/lib/search-params";
+import { useVirtualList } from "@/lib/virtual-list";
 import { createQueryOptions } from "@/api/query-keys";
 import { createMutationOptions } from "@/api/mutations";
 import { HttpError } from "@/api/http-client";
@@ -135,6 +136,13 @@ export function validateSessionName(
 /** Fixed warning copy for the row-local irreversible confirmation. */
 const DELETE_WARNING = "Deleting this session is permanent and cannot be undone.";
 
+/**
+ * Fixed-height estimate for a session row before dynamic measurement. The
+ * virtualizer measures the real rendered height with ResizeObserver once the
+ * row mounts, so this is only a first-paint approximation.
+ */
+const SESSION_ROW_ESTIMATE = 88;
+
 export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }: SidebarProps) {
   const http = useHttpClient();
   const queryClient = useQueryClient();
@@ -148,6 +156,12 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
   // adds only gated navigation/error handling on top.
   const removeMutation = useMutation(createMutationOptions(http, queryClient).sessions.remove());
   const renameMutation = useMutation(createMutationOptions(http, queryClient).sessions.rename());
+
+  // UX1 virtualization: the session list scroll container + the row that
+  // currently owns DOM focus (kept mounted so focus follows content, not the
+  // viewport).
+  const sessionListRef = useRef<HTMLUListElement | null>(null);
+  const [focusedSessionId, setFocusedSessionId] = useState<string | null>(null);
 
   // D4 row-local state: one confirmation + one rename editor + one mutation at
   // a time. Rename and delete share the same `busy`/`busyRef` singleflight.
@@ -263,6 +277,22 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
   // no longer in the visible list must be inert. Written on every render so the
   // async continuation reads the LATEST list via the ref, never a stale closure.
   visibleSessionIdsRef.current = new Set(visibleSessions.map((session) => session.sessionId));
+
+  // UX1 virtualization of the session list. Measured sizes are keyed by
+  // sessionId (stable identity), so a background refetch that returns the same
+  // sessions keeps sizes and total height — no scroll jump on invalidate.
+  // The inline rename/delete editors AND the row owning DOM focus are pinned so
+  // they stay mounted even if scrolled outside the visible window.
+  const virtualizer = useVirtualList({
+    count: visibleSessions.length,
+    getScrollElement: () => sessionListRef.current,
+    getItemKey: (index) => visibleSessions[index]!.sessionId,
+    estimateSize: () => SESSION_ROW_ESTIMATE,
+    overscan: 8,
+    pinnedKeys: [editingId, confirmId, focusedSessionId].filter(
+      (id): id is string => id !== null && visibleSessionIdsRef.current.has(id),
+    ),
+  });
 
   /** Identity guard uses only refs — a late settle must fail closed. */
   const isCurrentRequest = (gen: number): boolean =>
@@ -391,8 +421,23 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
       </div>
       <div className="sidebar-section sidebar-section--grow">
         <div className="sidebar-section-title">Sessions</div>
-        <ul className="session-list">
-          {visibleSessions.map((session) => {
+        <ul
+          className="session-list"
+          ref={sessionListRef}
+          onFocus={(event) => {
+            const row = (event.target as HTMLElement).closest("[data-session-id]");
+            setFocusedSessionId(row ? row.getAttribute("data-session-id") : null);
+          }}
+          onBlur={(event) => {
+            const next = event.relatedTarget as HTMLElement | null;
+            if (!next || !next.closest("[data-session-id]")) setFocusedSessionId(null);
+          }}
+        >
+          {virtualizer.windowed ? (
+            <li aria-hidden="true" className="session-list-spacer" style={{ height: virtualizer.totalSize }} />
+          ) : null}
+          {virtualizer.items.map((item) => {
+            const session = visibleSessions[item.index]!;
             const active = search.session === session.sessionId;
             const activity = activityTime(session);
             const messages = session.messageCount;
@@ -406,7 +451,23 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
             const confirmOpen = confirmId === session.sessionId;
             const renameOpen = editingId === session.sessionId && canWriteSessions;
             return (
-              <li key={session.sessionId}>
+              <li
+                key={item.key}
+                data-session-id={session.sessionId}
+                data-index={item.index}
+                ref={virtualizer.measureElement}
+                style={
+                  virtualizer.windowed
+                    ? {
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${item.start}px)`,
+                      }
+                    : undefined
+                }
+              >
                 <div className="session-row-flex">
                   <Link
                     to="/"
