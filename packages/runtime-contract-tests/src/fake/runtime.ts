@@ -330,7 +330,7 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         const name = `Title for ${this.identity.sessionId}`;
         this.store.getSession(this.identity.sessionId)!.title = name;
         this.emit({ type: "session_title", sessionId: this.identity.sessionId, name });
-        return { ok: true, type: "generate_session_title" };
+        return { ok: true, type: "generate_session_title", title: name };
       }
       default: {
         const type = (command as { type: string }).type as RuntimeCommandType;

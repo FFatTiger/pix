@@ -18,6 +18,7 @@ export type RuntimeCommandOk =
   | { ok: true; type: "get_session_stats"; stats: SessionStats }
   | { ok: true; type: "get_last_assistant_text"; text: string }
   | { ok: true; type: "fork"; forkedSessionId: string; forkPointEntryId: string }
+  | { ok: true; type: "generate_session_title"; title: string }
   | {
       ok: true;
       type: Exclude<
@@ -28,6 +29,7 @@ export type RuntimeCommandOk =
         | "get_session_stats"
         | "get_last_assistant_text"
         | "fork"
+        | "generate_session_title"
       >;
     };
 

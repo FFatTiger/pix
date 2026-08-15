@@ -37,7 +37,7 @@ describe("public agent factory surface", () => {
     });
   });
 
-  it("PRODUCTION_AGENT_CAPABILITIES is exactly the D2 navigate+fork surface and leaks no broader capability", () => {    assert.deepEqual([...PRODUCTION_AGENT_CAPABILITIES], [
+  it("PRODUCTION_AGENT_CAPABILITIES is exactly the full 20-token command surface (D2 auto_name opens the last command)", () => {    assert.deepEqual([...PRODUCTION_AGENT_CAPABILITIES], [
       "runtime.prompt",
       "runtime.abort",
       "runtime.stats",
@@ -57,13 +57,11 @@ describe("public agent factory surface", () => {
       "runtime.extension_ui",
       "runtime.navigate",
       "runtime.fork",
+      "runtime.auto_name",
     ]);
-    // Still-forbidden: auto_name must NOT leak through the production
-    // surface. `runtime.navigate` (D2 navigate), `runtime.fork` (D2 fork),
-    // `runtime.extension_ui` (D2-P8), `runtime.compact` / `runtime.compact.abort`
-    // (D2-P7) ARE allowed here.
-    const leaked = [...PRODUCTION_AGENT_CAPABILITIES].filter((capability) =>
-      /auto_name/.test(capability),
-    );
-    assert.deepEqual(leaked, [], "production surface must not leak auto_name capabilities");  });
+    // The full frozen command surface: every runtime command is now open, so
+    // auto_name MUST be present (this is the completeness inversion — the last
+    // closed command is now open).
+    assert.ok(PRODUCTION_AGENT_CAPABILITIES.includes("runtime.auto_name"), "runtime.auto_name must be open");
+    assert.equal(PRODUCTION_AGENT_CAPABILITIES.length, 20, "exactly 20 production tokens");  });
 });

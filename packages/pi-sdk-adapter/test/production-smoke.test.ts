@@ -80,7 +80,9 @@ describe("public production SDK factory smoke", () => {
           "runtime.compact.abort",
           "runtime.extension_ui",
           "runtime.navigate",
-          "runtime.fork",        ]);
+          "runtime.fork",
+          "runtime.auto_name",
+        ]);
 
         // Baseline query: get_state (always available, no capability gate).
         // Real SDK may report a model-default thinking level other than the
@@ -244,12 +246,18 @@ describe("public production SDK factory smoke", () => {
         if (!extUi.ok) {
           assert.equal(extUi.error.code, "not_found", "open gate must reach the adapter (not unsupported_capability)");
         }
-        // runtime.auto_name is explicitly NOT unlocked in D2-P1..P8.
+        // D2 auto_name: runtime.auto_name IS in the production surface — the
+        // gate must report it OPEN. The scripted driver derives a deterministic
+        // title and returns it in the RPC result (the single source of truth
+        // sessiond uses to publish the §51 title overlay).
+        const autoNameCap = port.getCapabilities().capabilities.includes("runtime.auto_name");
+        assert.equal(autoNameCap, true, "runtime.auto_name must be open");
         const autoName = await port.execute({ type: "generate_session_title" });
-        assert.equal(autoName.ok, false);
-        if (!autoName.ok) {
-          assert.equal(autoName.error.code, "unsupported_capability");
-          assert.match(autoName.error.message, /runtime\.auto_name/);
+        assert.equal(autoName.ok, true, `auto_name must succeed on the open production surface: ${JSON.stringify(autoName)}`);
+        if (autoName.ok) {
+          assert.equal(autoName.type, "generate_session_title");
+          assert.equal(typeof autoName.title, "string");
+          assert.ok(autoName.title.length > 0, "the RPC result must carry the generated title");
         }
         // D2 fork: runtime.fork IS in the production surface — the capability
         // gate must report it OPEN. A fork to a non-existent entry on a fresh
@@ -297,7 +305,7 @@ describe("public production SDK factory smoke", () => {
         name: "D2-P7 Compact Smoke",
       });
       try {
-        assert.equal(port.getCapabilities().capabilities.length, 19);
+        assert.equal(port.getCapabilities().capabilities.length, 20);
         assert.deepEqual([...port.getCapabilities().capabilities], [...PRODUCTION_AGENT_CAPABILITIES]);
 
         // A tiny/fresh session has nothing to compact: the real SDK compact

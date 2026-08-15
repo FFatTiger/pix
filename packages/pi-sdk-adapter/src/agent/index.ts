@@ -26,15 +26,15 @@ export {
  * the single real extension-UI slice. D2 navigate precisely adds
  * `runtime.navigate` (navigate_tree) and D2 fork precisely adds `runtime.fork`
  * (fork) — the two real session-tree slices (backend-first; no Client UI).
+ * D2 auto_name precisely adds `runtime.auto_name` (generate_session_title) —
+ * the LAST closed runtime command (backend-first; no Client UI). With it every
+ * runtime command is open; the E2E closed-cap loops become an explicit
+ * every-command-open assertion.
  * The existing
  * semantic mapping also makes `set_auto_compaction` wire-open under
  * `runtime.compact` (honest, because the implementation exists), but D2-P7
  * deliberately adds NO Client helper/UI for auto compaction.
- * `runtime.auto_name`
- * (generate_session_title) are implemented by the adapter but gated out by
- * this set so composition (R1/R2) must explicitly opt into broader
- * capabilities. The constant is intentionally narrow and MUST NOT grow to
- * leak auto_name capabilities by default.
+ * This set is the FULL frozen command surface — every runtime command is open.
  */
 export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.prompt",
@@ -56,4 +56,5 @@ export const PRODUCTION_AGENT_CAPABILITIES = [
   "runtime.extension_ui",
   "runtime.navigate",
   "runtime.fork",
+  "runtime.auto_name",
 ] as const;

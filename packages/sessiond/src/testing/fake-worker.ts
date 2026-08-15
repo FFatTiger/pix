@@ -46,6 +46,8 @@ export interface FakeWorkerOptions {
   forkError?: { code: string; message: string; retryable?: boolean };
   forkedSessionId?: string;
   forkedSessionFile?: string;
+  /** Deterministic generated title answered for generate_session_title. */
+  autoTitle?: string;
 }
 
 /**
@@ -313,6 +315,7 @@ function outcome(type: RuntimeCommandOutcome["type"], options: FakeWorkerOptions
     case "get_session_stats": return { ok: true, type, stats: { messageCount: 0 } };
     case "get_last_assistant_text": return { ok: true, type, text: "" };
     case "fork": return { ok: true, type, forkedSessionId: options.forkedSessionId ?? "forked", forkPointEntryId: entryId ?? "entry" };
+    case "generate_session_title": return { ok: true, type, title: options.autoTitle ?? "auto title" };
     default: return { ok: true, type };
   }
 }

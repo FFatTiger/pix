@@ -724,6 +724,198 @@ test("delete removes the overlay; explicit stop retains it", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// D2 auto_name (runtime.command(generate_session_title)) — the LAST closed
+// runtime command. Shares the SAME "rename" lane kind as sessions.rename /
+// set_session_name, so user rename vs auto_name serialize FIFO with a
+// deterministic last-committer-wins title; the revisioned title overlay is
+// published from the RPC result (single source of truth). Never offline
+// fallback; delete removes the overlay, stop retains it; rekey staleness and
+// worker-crash mid-auto_name are inert (no overlay pollution).
+// ---------------------------------------------------------------------------
+
+test("auto_name success: result carries the title, overlay publishes, list/read surface it", async () => {
+  const h = renameHarness({ worker: { autoTitle: "Auto Title" } });
+  h.seed("s1");
+  await h.service.activate("s1");
+  const result = await h.service.command("s1", { type: "generate_session_title", commandId: "auto-1" });
+  assert.equal(result.commandId, "auto-1");
+  assert.equal(result.result.ok, true, JSON.stringify(result.result));
+  if (result.result.ok) {
+    assert.equal(result.result.type, "generate_session_title");
+    assert.equal(result.result.title, "Auto Title", "the RPC result must carry the generated title");
+  }
+  assert.equal(h.service.diagnostics().overlay, 1, "a confirmed auto_name must publish the title overlay");
+  const list = await h.service.listSessions();
+  assert.equal(list.find((s) => s.sessionId === "s1")?.title, "Auto Title", "sessions.list must surface the auto_name title via the overlay");
+  const read = await h.service.readSession("s1");
+  assert.equal(read.title, "Auto Title", "sessions.read must surface the auto_name title via the overlay");
+  await h.service.shutdown();
+});
+
+test("auto_name FIFO with user rename/set_session_name: same lane, deterministic last-committer-wins title", async () => {
+  const h = renameHarness({ worker: { commandDelayMs: 60, autoTitle: "Auto" } });
+  h.seed("s1");
+  await h.service.activate("s1");
+  const worker = h.workers.workers[0]!;
+  // auto_name → user set_session_name → sessions.rename, all admitted together.
+  const p1 = h.service.command("s1", { type: "generate_session_title", commandId: "auto-1" });
+  const p2 = h.service.command("s1", { type: "set_session_name", commandId: "cmd-2", name: "Two" });
+  const p3 = h.service.renameSession("s1", "Three");
+  await wait(10);
+  const sentAt10 = worker.sent.filter((m) => m.type === "worker.command").map((m) => m.payload.command.commandId);
+  assert.equal(sentAt10.length, 1, "the second/third identity op must not reach the worker before the first settles");
+  const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+  assert.equal(r1.result.ok, true);
+  assert.equal(r2.result.ok, true);
+  assert.equal(r3.name, "Three");
+  const sent = worker.sent.filter((m) => m.type === "worker.command").map((m) => m.payload.command.commandId);
+  assert.equal(sent.length, 3);
+  assert.equal(sent[0], "auto-1", "auto_name must be admitted first in FIFO order");
+  assert.equal(sent[1], "cmd-2", "the user set_session_name must share the same lane in order");
+  assert.ok(sent[2]!.startsWith("rename:"), "the third op must be the sessions.rename command");
+  assert.equal(h.service.diagnostics().overlay, 1, "last committer wins the overlay");
+  const list = await h.service.listSessions();
+  assert.equal(list.find((s) => s.sessionId === "s1")?.title, "Three", "the last-committed rename title wins");
+  await h.service.shutdown();
+});
+
+test("user rename AFTER auto_name wins (later overlay revision); auto_name after user rename wins in lane order", async () => {
+  const h = renameHarness({ worker: { autoTitle: "Auto Title" } });
+  h.seed("s1");
+  await h.service.activate("s1");
+  // auto_name first, then a user rename → the rename commits later → wins.
+  await h.service.command("s1", { type: "generate_session_title", commandId: "auto-1" });
+  assert.equal(h.service.diagnostics().overlay, 1);
+  await h.service.command("s1", { type: "set_session_name", commandId: "cmd-2", name: "User Rename" });
+  let list = await h.service.listSessions();
+  assert.equal(list.find((s) => s.sessionId === "s1")?.title, "User Rename", "user rename after auto_name wins (later revision)");
+  // auto_name after the user rename commits later → auto_name wins per lane order.
+  const auto2 = await h.service.command("s1", { type: "generate_session_title", commandId: "auto-3" });
+  assert.equal(auto2.result.ok, true);
+  list = await h.service.listSessions();
+  assert.equal(list.find((s) => s.sessionId === "s1")?.title, "Auto Title", "auto_name after user rename wins (later lane order)");
+  await h.service.shutdown();
+});
+
+test("an older catalog response cannot clear a newer auto_name overlay revision", async () => {
+  let releaseList!: () => void;
+  const listGate = new Promise<void>((resolve) => { releaseList = resolve; });
+  const h = renameHarness({ catalogListHook: () => listGate, worker: { autoTitle: "New" } });
+  h.seed("s1");
+  await h.service.activate("s1");
+  const listP = h.service.listSessions(); // begins before any auto_name publish
+  await h.service.command("s1", { type: "generate_session_title", commandId: "auto-1" }); // publishes revision N
+  releaseList();
+  const sessions = await listP;
+  assert.equal(sessions.find((s) => s.sessionId === "s1")?.title, "New", "a stale read must surface the current title");
+  assert.equal(h.service.diagnostics().overlay, 1, "the stale read must NOT clear the newer auto_name overlay revision");
+  await h.service.shutdown();
+});
+
+test("auto_name: delete removes the overlay; explicit stop retains it", async () => {
+  const h = renameHarness({ worker: { autoTitle: "Auto" } });
+  h.seed("s1");
+  await h.service.activate("s1");
+  await h.service.command("s1", { type: "generate_session_title", commandId: "auto-1" });
+  assert.equal(h.service.diagnostics().overlay, 1);
+  await h.service.stop("s1");
+  assert.equal(h.service.diagnostics().overlay, 1, "explicit stop must retain the auto_name overlay");
+  await h.service.deleteSession("s1");
+  assert.equal(h.service.diagnostics().overlay, 0, "delete must remove the auto_name overlay");
+  const d = h.service.diagnostics();
+  assert.equal(d.lanes, 0);
+  assert.equal(d.aliases, 0);
+  await h.service.shutdown();
+});
+
+test("auto_name on an offline/stopped session is structured unavailable, never an offline fallback (no worker start)", async () => {
+  const h = renameHarness();
+  h.seed("s1");
+  // No activation — an auto_name command must not start a worker.
+  const result = await h.service.command("s1", { type: "generate_session_title", commandId: "auto-offline" });
+  assert.equal(result.commandId, "auto-offline");
+  assert.equal(result.result.ok, false);
+  if (!result.result.ok) {
+    assert.equal(result.result.type, "generate_session_title");
+    assert.equal(result.result.error.code, "unavailable");
+    assert.ok(!result.result.error.message.includes("s1"), "no raw session id in the fixed message");
+  }
+  assert.equal(h.workers.starts, 0, "a title command must never start a worker for an offline session");
+  assert.equal(h.service.diagnostics().overlay, 0);
+  await h.service.shutdown();
+});
+
+test("auto_name behind delete fails unavailable and never recreates the session", async () => {
+  const h = renameHarness();
+  h.seed("s1");
+  const delP = h.service.deleteSession("s1");
+  const autoP = h.service.command("s1", { type: "generate_session_title", commandId: "auto-del" });
+  await delP;
+  const result = await autoP;
+  assert.equal(result.result.ok, false);
+  assert.equal(h.files.get("s1"), false, "auto_name must never recreate the session");
+  assert.equal(h.service.diagnostics().overlay, 0);
+  await h.service.shutdown();
+});
+
+test("auto_name rekey staleness: old-id request is inert (no overlay), authoritative-id request runs live", async () => {
+  const h = renameHarness({ worker: { discoveredSessionId: "real-s", primeSnapshotDelayMs: 120, autoTitle: "Auth Title" } });
+  h.seed("s");
+  const activationP = h.service.activate("s");
+  // Admitted synchronously before the rekey (generation 0 captured).
+  const staleAuto = h.service.command("s", { type: "generate_session_title", commandId: "auto-stale" });
+  await waitUntil(() => h.service.listRunning().sessions.some((item) => item.sessionId === "real-s"), 1_000);
+  await activationP;
+  const stale = await staleAuto;
+  assert.equal(stale.result.ok, false, "a request queued against the old id before rekey must fail stale");
+  if (!stale.result.ok) assert.equal(stale.result.error.code, "unavailable");
+  assert.equal(h.service.diagnostics().overlay, 0, "a stale auto_name must never publish a title");
+  // Authoritative-id auto_name after binding runs live on the rekeyed record.
+  const auth = await h.service.command("real-s", { type: "generate_session_title", commandId: "auto-auth" });
+  assert.equal(auth.result.ok, true);
+  assert.equal(h.service.diagnostics().overlay, 1, "the authoritative auto_name publishes on the rekeyed record");
+  // The overlay publishes under the authoritative id (real-s); the harness
+  // catalog only lists the requested id (s), so assert overlay publication and
+  // worker receipt rather than a catalog title lookup (production rekey updates
+  // the catalog to the authoritative id).
+  assert.ok(h.workers.workers[0]!.sent.some((m) => m.type === "worker.command" && m.payload.command.type === "generate_session_title"));
+  const d = h.service.diagnostics();
+  assert.equal(d.lanes, 0);
+  assert.equal(d.aliases, 0);
+  await h.service.shutdown();
+});
+
+test("worker crash mid-auto_name: sanitized failure, no overlay pollution; reactivated auto_name publishes on the new record only", async () => {
+  // Only the first worker delays its command result; the reactivated worker
+  // answers immediately so the "Fresh" auto_name succeeds deterministically.
+  const h = renameHarness({ worker: (input, index) => ({ commandDelayMs: index === 0 ? 5_000 : 0, autoTitle: "Fresh Title" }) });
+  h.seed("s1");
+  await h.service.activate("s1");
+  const worker = h.workers.workers[0]!;
+  const p = h.service.command("s1", { type: "generate_session_title", commandId: "auto-crash" });
+  await waitUntil(() => worker.sent.some((m) => m.type === "worker.command"));
+  worker.crash();
+  const result = await p;
+  assert.equal(result.commandId, "auto-crash");
+  assert.equal(result.result.ok, false, "a worker crash mid-auto_name must never report false success");
+  if (!result.result.ok) {
+    assert.equal(result.result.type, "generate_session_title");
+    assert.equal(result.result.error.code, "unavailable");
+  }
+  assert.equal(h.service.diagnostics().overlay, 0, "a crash mid-auto_name must never publish a title");
+  // Explicit stop clears the crashed reservation, then reactivate on a fresh worker.
+  await h.service.stop("s1");
+  await h.service.activate("s1");
+  assert.equal(h.workers.starts, 2);
+  const ok = await h.service.command("s1", { type: "generate_session_title", commandId: "auto-fresh" });
+  assert.equal(ok.result.ok, true);
+  assert.equal(h.service.diagnostics().overlay, 1, "the new Worker's auto_name publishes on the new record only");
+  const list = await h.service.listSessions();
+  assert.equal(list.find((s) => s.sessionId === "s1")?.title, "Fresh Title");
+  await h.service.shutdown();
+});
+
+// ---------------------------------------------------------------------------
 // Shutdown drain (requirement E): no lane recursion deadlock.
 // ---------------------------------------------------------------------------
 
