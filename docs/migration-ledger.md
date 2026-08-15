@@ -2698,3 +2698,98 @@ serve==raw、serve==build 三轮全 true。
   比较该场景）。
 - 投影仅在 `createPiSdkSessionPorts()`（生产组合点）默认开启；独立 store/catalog/mutation 工厂默认关
   闭（保守、hermetic），需要时经 `projection.enabled` 显式开启。
+
+## 62. PWA1 — LAN Gate、配对、后台 Resume（Wave 4；后台 Resume 实现 + 配对 STOP scope，DONE，PENDING 独立 verifier）
+
+```text
+状态：DONE——worktree `pwa1-lan-resume`，branch `feat/pwa1-lan-resume`，base main `cf40397`（Worktree
+已创建、工作树 clean、npm ci 完成）。Client-only + 两份 docs；未触碰 Host/sessiond/runtime-core/
+protocol/adapter/cli/agent-worker/package-lock/依赖/live。未 push/deploy。
+编号：§57/§58/§59/§60/§61 由并行 slices 占用（§57/§59 为并行 agent 预留，§60 UX1、§61 SCALE1 已占用），
+本切片占 §62（台账尾部，合并冲突预期；§62 专属，不重编号他人条目）。
+```
+
+【范围裁定（investigate-first 结论）】PWA1 计划行是单行“LAN Gate、配对、后台 Resume”。Investigate 后：
+- **LAN Gate 已存在（B2 DONE）**：`packages/host/src/gate/*`（config/decision/middleware/paths/
+  rate-limit/revocation/token/routes）+ `static/spa.ts`+`static/static-assets.ts`（PWA allowlist：
+  `/manifest.webmanifest` `/sw.js` `/offline.html` `/favicon.ico` + `/icons/` 前缀，精确匹配，无
+  lookalike）+ `packages/client/src/components/shell/LoginPage.tsx` + `api/gate.ts` + `features/gate/
+  useGate.ts`。Host gate.test.mjs 已覆盖 LAN fail-closed（AUTH_REQUIRED_FOR_LAN/配置错误 503/spoofed
+  loopback/rate-limit 指数退避/forwarding-header 防绕过）。逐项满足“LAN access = operator password”
+  的产品需要。
+- **配对（pairing）按任务规则 STOP scope**：现有密码 gate 已满足产品需要——operator 设密码即可共享
+  给 LAN 设备（同 cookie session 语义、无第二认证类）；mint 短时单次 pairing code 需要 operator 已
+  认证会话（与直接给密码同源），code 不提供超出密码的设备价值，只新增 code 校验端点/攻击面（≥64bit
+  熵、单次、TTL、constant-time、per-IP+per-code 限流、brute-force lockout 全部需新建且无产品收益），
+  违反“不 bolt on 未审计配对流”。**决策：不实现配对，实现后台 Resume + 文档推荐**（详见下方“配对
+  推荐”）。无 Windows 声明。
+- **后台 Resume 大部分已存在（M2 C1 及其后 D2 slices 硬化）**，本次 verify + 补唯一缺口的模式。
+
+【已存在并经本次 verify+test 的 Resume 机制（不重建）】
+- `packages/client/src/runtime/socket.ts`：WS 自动重连，bounded exponential **full-jitter** backoff
+  （`computeBackoffDelay` base 500ms/factor 2/cap 30s，注入 random），无 reconnect storm；online/
+  visibility → 即时重连（跳过 backoff）；generation token 丢弃 superseded socket 的 late frame；
+  handshake reject / invalid frame fail-closed 不重连；dispose 幂等。socket.test.ts 已覆盖（backoff
+  jitter、online/visibility 即时重连、late-frame drop、无 dispose 后重连）。
+- `packages/client/src/runtime/session-store.ts`：resume cursor 原子 `{sessionId, epoch, lastEventId}`
+  —— Protocol `RuntimeAttachParamsSchema` 为 union（epoch+lastEventId 一起出现或都不出现）；`sendAttachAttempt`
+  在 `mode==="resume"` 时一起发 epoch+lastEventId，fresh 只发 sessionId。snapshot 权威收敛：initial
+  attach 严格按 (generation, envelopeId, sessionId) 关联；gap/epoch_changed/投影不一致 → `reattach()`；
+  `resyncAfterAttach` 按 resumeStatus 决定同 commandId 重发（epoch 存活）或 reject（epoch_changed，绝不
+  重发，MEDIUM-3/5/6 + D2-P4/P8 槽位扩展）；单飞行槽位（pendingCommand/QueuedTurn/ExtensionUi）
+  + 每命令固定 commandId 跨 epoch 去重 → **重连窗口无重复命令发送**。offline → **不 queue**：
+  `sendCommand` 等前置 `notAttachedError()`（固定 unavailable）reject，HTTP 层 `HttpError kind:"network"`
+  fail visible and honest。session-store.test.ts 已覆盖 same-epoch resend/epoch_changed reject/gap/
+  PROBE 系列。E2E `tests/e2e/runtime.mjs` 已覆盖 host restart/resume + epoch/lastEventId 重放 + 冷 attach
+  epoch change（不触 runtime-gateway/sessiond/protocol 改动，非本次必需回归）。
+
+【本次新增（唯一 gap：后台恢复的 HTTP boot surface stale re-fetch + 可见重连状态 verify）】
+1. `packages/client/src/runtime/use-resume-refetch.ts`（新文件，生产）+ `src/runtime/index.ts` 导出 +
+   `src/app/AppProviders.tsx` 在 `RuntimeProvider` 下挂 `<ResumeRefetch />`。
+   - 触发：`visibilitychange → visible`（PWA 从后台/睡眠恢复）、`online`（网络恢复）、runtime WS 从
+     `unavailable|reconnecting` 恢复 `canSend`（重连+重握手完成，live 时 snapshot 已收敛）。
+   - 动作：同 tick 合并（`setTimeout(0)` + scheduled guard）invalidate boot surface：
+     `queryKeys.capabilities.all` + `capabilities.bootstrap()` + `gate.status()` + `sessions.lists`。
+   - 为什么这是缺口：`AppProviders` 设 `refetchOnWindowFocus:false`（迁移时遗留，无注释），TanStack
+     默认 `refetchOnReconnect:true` 只覆盖 `online` 事件；visibility 恢复时 HTTP 查询不 revalidate，
+     capability/bootstrap（canAgent/mode/sessiond 状态/capability token 的诚实来源）与 session 列表
+     保持 stale，与已重连的 WS runtime 不一致。本 hook 补齐 visibility + runtime-reconnect 两条路径
+     （`online` 由 TanStack 默认继续兜底，本 hook 额外保证 boot surface 即使未 stale 也收敛）。
+2. `packages/client/src/runtime/session-store.test.ts` +2：resume re-attach 原子 cursor（epoch+lastEventId
+   一起出现，值=e1/1）；fresh attach 无 epoch/lastEventId。assert 协议冻结的原子性在 Client 侧成立。
+3. `packages/client/src/runtime/use-resume-refetch.test.tsx` +6（新文件）：初始 mount/first-connect 不
+   refetch；visibility→visible refetch；online refetch；runtime WS 重连（unavailable→ready）refetch；
+   同 tick 多触发合并为一次 invalidate burst（每 key 一次调用）；非断开 transition 不 refetch。
+4. `packages/client/src/components/shell/AppShell.test.tsx` +2：可见重连状态 verify——既有 topbar badge
+   （`aria-live="polite"`、固定 flex 行内文本无 layout jank、无动画故 reduced-motion 天然满足）在
+   idle→ready 与 network drop→unavailable→(backoff)→ready 时文本正确（rt:offline/unavailable/ready）。
+   可见重连状态未新增 DOM（现有徽标已满足 aria-live/no-jank/reduced-motion，按“verify+test 而非重建”）。
+
+【验证（全部在本 worktree 实跑）】
+- client `vitest run`：681/681（基线 671 + 新增 10：resume-refetch 6 + session-store atomic-cursor 2 +
+  AppShell 可见重连 2）；client `tsc -b` EXIT 0；client `npm run build` 成功（既有 chunk-size 警告）；
+  client `check:boundaries` OK（96 files）。
+- 根 `check:architecture` PASS；`git diff --check` clean。
+- Startup/Sessions E2E 回归（见下）；Runtime E2E 未触 runtime-gateway/sessiond/protocol，非必须。
+
+【配对推荐（文档化，不实现）】
+- 现有密码 gate 已是 LAN 设备接入的充分认证（cookie session、constant-time、per-IP 指数退避限流、
+  revocation、LAN fail-closed、PWA allowlist）。如需“设备免密码”场景，推荐后续独立切片评估：
+  ① Host CLI `pix auth pair --ttl 600` 打印短时单次 code（≥64bit 熵、constant-time、per-IP+per-code
+  限流、brute-force lockout、TTL≤10min、mint 要求已认证 operator session、兑换走既有 login cookie
+  语义），或 ② 维持现状仅共享密码。两者都需 operator 参与，code 相对密码无净产品收益；在未独立
+  审计/验收前不引入。本 slice 不做。
+
+【残余 / 诚实声明】
+- Resume 冻结语义：reconnect（WS 重连+backoff+jitter）→ replay（原子 {epoch,lastEventId} 重放）→
+  snapshot convergence（authoritative 快照收敛，mismatch 不 hang），never silent loss；HTTP 侧 boot
+  surface revalidate 使 capability/sessiond/session 列表与 runtime 收敛。未做“增量离线队列”（offline
+  fail visible and honest 已由 notAttachedError/network error 满足）。
+- `online` 与 hook 的 visibility/runtime-reconnect 可能同事件两次 invalidate boot surface（TanStack
+  默认 refetchOnReconnect + 本 hook）；同 tick 内已合并，跨 tick（如 250ms backoff 后才 ready）是两个
+  合法 burst，轻量 boot 查询可接受。
+- sessions.lists 纳入 resume invalidate：resume 时 active session 列表会 refetch（SCALE1 投影下 ~18ms），
+  是“queries 透明恢复”的一部分；若未来关注极致省电可评估只保留 capability/bootstrap。
+- 未新增任何 runtime 依赖；未改 Host/sessiond/protocol；无 push/deploy/live；无 Windows 声明。
+- base `cf40397`，source branch `feat/pwa1-lan-resume` @ HEAD（worktree `pix-worktrees/pwa1-lan-resume`，
+  未 merge/push）。

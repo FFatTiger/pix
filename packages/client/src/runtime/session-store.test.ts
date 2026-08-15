@@ -310,6 +310,46 @@ describe("SessionStore — same-epoch resend vs epoch_changed reject", () => {
   });
 });
 
+describe("SessionStore — resume re-attach sends atomic {epoch, lastEventId}", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("re-attach after transport loss sends epoch AND lastEventId together (never one without the other)", async () => {
+    const h = createHarness();
+    let ws = await openAndAttach(h);
+    // Advance the cursor so lastEventId is non-zero and the resume cursor is meaningful.
+    ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
+    await flush();
+    expect(h.store.getSnapshot().epoch).toBe("e1");
+    expect(h.store.getSnapshot().snapshot?.state.isPromptRunning).toBe(true);
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+    const attachFrame = lastFrame<{
+      type: string;
+      payload: { sessionId: string; epoch?: string; lastEventId?: number };
+    }>(ws, "attach")!;
+    expect(attachFrame.payload.sessionId).toBe("s1");
+    // Resume cursor is atomic: epoch and lastEventId appear together.
+    expect(attachFrame.payload.epoch).toBe("e1");
+    expect(attachFrame.payload.lastEventId).toBe(1);
+    expect("epoch" in attachFrame.payload).toBe(true);
+    expect("lastEventId" in attachFrame.payload).toBe(true);
+  });
+
+  it("fresh attach never sends epoch/lastEventId (no resume cursor)", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h);
+    const attachFrame = lastFrame<{ type: string; payload: Record<string, unknown> }>(ws, "attach")!;
+    expect(attachFrame.payload.sessionId).toBe("s1");
+    expect("epoch" in attachFrame.payload).toBe(false);
+    expect("lastEventId" in attachFrame.payload).toBe(false);
+  });
+});
+
 describe("SessionStore — dispose / unavailable / strict result union", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });

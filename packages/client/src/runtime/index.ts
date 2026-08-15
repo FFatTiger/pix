@@ -16,4 +16,5 @@ export type { RuntimeLocation, BackoffOptions } from "./protocol-wire.js";
 export { FATAL_HANDSHAKE_CODES, isActive, canSend } from "./lifecycle.js";
 export type { ConnectionState } from "./lifecycle.js";
 export { createDefaultIdFactory, decideEvent, decideCommandRetry } from "./correlation.js";
+export { useResumeRefetch, ResumeRefetch } from "./use-resume-refetch.js";
 export type { IdFactory, PendingRequest, EventApplyDecision, CommandRetryDecision, RequestKind } from "./correlation.js";
