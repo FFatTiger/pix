@@ -284,6 +284,15 @@ html.dark .topbar-badge--ok {
   overflow: auto;
   flex: 1;
   min-height: 0;
+  /* UX1: virtualized rows are absolutely positioned against this scroll container. */
+  position: relative;
+}
+
+/* UX1: full-height spacer that gives the virtualized list its scrollable size. */
+.session-list-spacer {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 .session-row {
   display: flex;

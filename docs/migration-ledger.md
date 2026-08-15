@@ -2580,4 +2580,120 @@ serve==raw、serve==build 三轮全 true。
   比较该场景）。
 - 投影仅在 `createPiSdkSessionPorts()`（生产组合点）默认开启；独立 store/catalog/mutation 工厂默认关
   闭（保守、hermetic），需要时经 `projection.enabled` 显式开启。
+
+## 60. UX1 — Chat/Sidebar 虚拟化垂直切片记录（Wave 4，Client-only）
+
+```text
+实现：worktree ux1-virtualization，branch feat/ux1-virtualization，base main 38b4869
+（worktree 已建，未 push/deploy/live）。Client-only：只改 packages/client + 两份 docs，
+未触碰 Host/Protocol/sessiond/adapter/CLI source、未改 package.json/package-lock、未加任何
+运行时依赖。DONE（实现者验证，PENDING 独立 verifier PASS）。
+
+目标：虚拟化两个无界列表——Sidebar 会话列表（真实语料 ≈600+ 会话）与 Transcript 聊天历史
+（长会话 1000+ message block）。HARD PREFERENCE 零新运行时依赖：手写窗口化
+（scroll container + 固定高度估计 + ResizeObserver 动态测量 + overscan + absolute/flex
+定位），未引入 TanStack Virtual（既有 `@tanstack/react-virtual` 依赖保持原样未增删，
+但生产代码不再 import 它——bundle 中已无该库代码，见验证；移除依赖会动 package-lock，
+本切片按 client-only 最小 diff 原则保留，见材料风险）。
+
+### 新增 `packages/client/src/lib/virtual-list.ts`（手写窗口化 hook + 纯窗口计算）
+
+- `computeVirtualWindow`（纯函数，可确定性单测）：按累计 offset 二分定位首个可见行与
+  末可见行，加 overscan 对称扩窗，并并集 pinned 行（index 排序）；viewport<=0（首帧未
+  测量/隐藏容器）退化为最小顶部窗口（非全量渲染）；scrollTop 超界 clamp 到末尾行；
+  totalSize = 各行 height 精确求和。
+- `useVirtualList<K>`：
+  - 测量按 STABLE ITEM IDENTITY（item key，永不 index）缓存 sizes——Sidebar 按 sessionId、
+    Transcript 按 row id。后台 refetch 若保持同一批 key，则已测高度与 totalSize 不变，
+    滚动位置零跳变（无 scroll jump on background invalidate）。
+  - 固定高度估计 `estimateSize(index)` 首帧近似 + ResizeObserver 动态测量
+    （border-box 高度：content+padding，避免 `.transcript-row` padding-bottom 造成行重叠；
+    兼容回退 `contentRect.height`）。行 ref 用 React 19 ref cleanup 精确 unobserve。
+  - 绝对定位：scroll container 内一个 spacer（Sidebar 为 `<li class="session-list-spacer"
+    aria-hidden>` 直贴 `<ul>` 保证 `<li>` 仍是 ul 直接子元素；Transcript 为既有
+    `.transcript-inner` height=totalSize）提供滚动高度，每行 `position:absolute;
+    top:0; transform:translateY(start)`。浏览器实测（headless Chrome 探针）：`position:
+    relative` 滚动容器内的 absolute 子元素随内容滚动，方案成立。
+  - pinnedKeys：即使滚出可视窗口也保持挂载的行（编辑/确认/聚焦行），绝对定位仍落在正确
+    内容坐标。
+  - render-all 回退（jsdom/SSR/隐藏容器）：`typeof ResizeObserver === "undefined"` 时
+    windowed=false，全部行按普通流渲染——既有小组件测试的 DOM 与原实现逐字节兼容
+    （jsdom 无 ResizeObserver 且 clientHeight=0，天然触发回退）。
+  - 可选 stick-to-bottom（Transcript）：内容增长且用户仍在底部（scrollHeight-scrollTop-
+    clientHeight ≤ 8px）时瞬时 scrollTop=scrollHeight（非 smooth，尊重 reduced-motion）；
+    用户上滚释放 pin（此后增长保持位置不动）。`stickToBottomKey` 变化（session/live 切换）
+    重新 pin 到底部。
+  - 浏览器首帧即 windowed（useState 惰性初值 = ResizeObserver 存在），挂载不先渲染全量
+    行；RO 创建后补齐首帧已挂载行的观察与测量。
+
+### Sidebar（packages/client/src/components/shell/Sidebar.tsx + app.css）
+
+- `.session-list` 成为滚动容器（既有 flex:1/overflow:auto + 新增 position:relative），
+  虚拟化 1000+ 会话行，估计高度 88px。
+- 稳定身份：测量按 sessionId；后台 invalidate 相同 sessionId → totalSize/位置不变。
+- 编辑行 pin：`pinnedKeys = [editingId, confirmId, focusedSessionId].filter(可见)`——
+  D4 rename/delete 内联编辑器所在行即使滚出窗口仍挂载（编辑输入保持焦点可输入；绝对定位
+  仍在其内容坐标，用户滚回即见）。
+- 焦点随内容不随视口：ul 上 onFocus/onBlur 追踪当前聚焦行的 data-session-id 并 pin；
+  滚动把聚焦行移出窗口时它不会卸载、焦点不丢到 body（与虚拟化前 render-all 行为一致）。
+  Tab 逐行通过可见行的 Link/Rename/Delete（overscan 8 ≈ 700px 提供窗口边缘外 ~8 行的
+  Tab 余量）；不新增 arrow-key 导航（今日无此行为，correctness-parity 不含新功能）。
+- aria：`<ul>` 列表语义保留（`<li>` 仍是直接子元素）、每行原 Link/button/time/aria-label/
+  aria-current/role=alert 全保留；spacer aria-hidden。能力门控（session.delete/session.write/
+  sessions）零改动。无新增动画（reduced-motion 无感）。
+- 与既有 debounced search 无交叠：Sidebar 今日无文本过滤 UI（URL `search` = cwd/session），
+  虚拟化只须对 refetch 稳定（已做）与 cwd/session 切换重置（既有 useLayoutEffect 保留，
+  虚拟化不干扰）。搜索的虚拟化互通未来若加过滤 UI 时复用同一 hook。
+
+### Transcript（packages/client/src/components/transcript/TranscriptList.tsx）
+
+- 用 `useVirtualList` 替换 `@tanstack/react-virtual`（生产不再 import 该库）；estimate 复用
+  row-model 既有 `estimateRowHeight`（kind/text 近似），key 复用 `getTranscriptRowKey`。
+- streaming/高/矮异高行（bash 工具块、image 块、queued-turn、extension-UI pending）由
+  ResizeObserver 逐行实测，异高正确反映到 totalSize 与窗口；`data-index`/`data-row-id`
+  保留（既有测试依赖）。
+- auto-scroll：stick-to-bottom 默认开启；live 流式在底部时新消息自动滚底，用户上滚释放；
+  history 载入/session 切换默认 pin 到最新（首次 pin 到底部）。role="log"/aria-label/
+  aria-relevant 保留。焦点行（thinking summary 等可聚焦元素）pin 保持。
+- 空态/错误态/readonly banner 逻辑不变。
+
+### 测试（确定性，无 timing/ms 断言）
+
+- `src/lib/virtual-list.test.ts`（11 用例，纯函数）：空表、total 精确求和、scrollTop 0、
+  overscan 对称、2000 行中段 scrollTop 窗口精确、超界 clamp、viewport<=0 最小窗、pinned
+  远窗行保持挂载且 index 排序、异高偏移、measured/estimate 同构、isVirtualizationAvailable。
+- `src/components/transcript/TranscriptList.test.tsx` +4（DOM，mock ResizeObserver + jsdom
+  defineProperty clientHeight/scrollTop/scrollHeight）：2000 行挂载行数 ≤ viewport+2*overscan
+  +2（无论数据量）、给定 scrollTop 的窗口内容精确（500±8 行）、异高动态测量更新 totalSize、
+  auto-scroll（pin 时增长滚底 / 上滚释放后位置保持）。
+- `src/components/shell/Sidebar.test.tsx` +4（DOM）：1000 会话挂载行数有界 + spacer
+  height=1000*88、给定 scrollTop 窗口精确、rename 编辑行滚出窗口仍挂载且编辑器完好、
+  后台 invalidate（qc.invalidateQueries）后窗口与 scrollTop 不变（无跳变）。
+- 既有全部测试保持通过：jsdom 无 ResizeObserver → render-all 回退，TranscriptList 原
+  `vi.mock("@tanstack/react-virtual")` 已失效并移除（4 个测试文件改为注释说明），AppShell/
+  Composer/runtime-provider/Sidebar 小列表测试逐字兼容。
+
+### 验证
+
+Client 671/671（既有 652 + 新增 19：virtual-list 11 + transcript 4 + sidebar 4）、
+client typecheck/build/boundary（94 files）PASS、根 check:architecture（14 gates）PASS、
+`git diff --check` clean。bundle 无 `@tanstack/react-virtual` 代码（grep dist 0 命中）。
+待补：根 build/typecheck/test 全量、Startup/Sessions E2E 回归、独立 verifier PASS。
+
+### 材料风险 / 诚实声明
+
+1. 测量策略：ResizeObserver border-box 高度；不可用（jsdom/隐藏容器/SSR）→ render-all 回退
+   （jsdom 测试即此路径）。真实浏览器下隐藏容器（如折叠 Sidebar）windowed=true 且 viewport=0
+   → 渲染最小顶部窗口（便宜、正确，非全量）。行高突变（streaming 追加）由 RO 回调即时修正，
+   测量与 RO 回调之间有 <1 帧的 estimate 窗口。
+2. 滚动位置保持：Sidebar 后台 refetch 相同 sessionId 时位置稳定；删除/重排会话会改变 offset
+   （内容移动属虚拟化固有语义，非回归）。Transcript 用户上滚后新消息保持位置（不强制滚底）。
+3. history 默认 pin 到底部（最新消息）是本次引入的行为变化（此前无 auto-scroll 显示顶部）；
+   与需求 "bottom-pinned streaming" 一致，测试在 render-all 路径不受影响。
+4. `@tanstack/react-virtual` 依赖保留但生产不再使用（死依赖）。移除会改 package-lock，
+   违反 client-only 最小 diff；若后续要求零死依赖，单独一个 package.json/lock 移除 commit。
+5. 焦点随内容：聚焦行被 pin；Tab 越过 overscan 边界外的未渲染行会被跳过（需滚动），
+   属虚拟化标准行为。未新增 arrow-key 导航（今日 Sidebar/Transcript 无此行为）。
+6. 测试通过 mock ResizeObserver + defineProperty 模拟测量/滚动，确定性且无 timing 断言；
+   真浏览器首帧/滚动行为以 headless Chrome 探针佐证（absolute-in-relative-scroll 随内容滚动）。
 ```
