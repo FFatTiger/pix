@@ -121,8 +121,8 @@ export type ExtensionUiResponseCommand =
 export interface ExtensionUiInputCommand {
   type: "extension_ui_input";
   id: string;
-  /** Only input/editor accept incremental input. */
-  method: "input" | "editor";
+  /** input/editor/custom accept incremental input; select/confirm are final-response-only. */
+  method: "input" | "editor" | "custom";
   data: string;
 }
 

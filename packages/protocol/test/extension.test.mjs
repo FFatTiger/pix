@@ -203,9 +203,15 @@ describe("extension command correlation — exact method on the wire", () => {
     assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request, command }).success, false);
   });
 
-  it("ExtensionUiInputCommandSchema only permits input/editor", () => {
+  it("ExtensionUiInputCommandSchema permits input/editor/custom and rejects select/confirm + non-interactive", () => {
     assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "input", data: "x" }).success, true);
+    assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "editor", data: "x" }).success, true);
+    assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "custom", data: "\x1b[A" }).success, true, "E15 custom incremental key data");
     assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "confirm", data: "x" }).success, false);
+    assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method: "select", data: "x" }).success, false);
+    for (const method of ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"]) {
+      assert.equal(ExtensionUiInputCommandSchema.safeParse({ commandId: "c1", type: "extension_ui_input", id: "r1", method, data: "x" }).success, false, method);
+    }
   });
 
   it("wrong result variant is rejected at the schema (fail-closed, no coercion)", () => {

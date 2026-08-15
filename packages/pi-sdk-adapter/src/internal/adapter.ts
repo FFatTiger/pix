@@ -815,9 +815,10 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private inputUi(command: Extract<RuntimeCommand, { type: "extension_ui_input" }>): RuntimeCommandResult {
     const pending = this.pendingUi.get(command.id);
     if (!pending || !pending.driver.input) return this.failure("extension_ui_input", makeRuntimeError("not_found", `no pending extension UI input: ${command.id}`));
-    // Exact method correlation. The input command only carries input/editor, so
-    // a mismatch rejects select/confirm/custom with structured invalid_input;
-    // the request stays pending and usable (no SDK input call, no close).
+    // Exact method correlation. The input command carries input/editor/custom
+    // (E15: custom panels stream raw key data), so a mismatch rejects
+    // select/confirm with structured invalid_input; the request stays pending
+    // and usable (no SDK input call, no close).
     if (pending.request.method !== command.method) {
       return this.failure("extension_ui_input", makeRuntimeError("invalid_input", `extension input method mismatch for request ${command.id}`));
     }

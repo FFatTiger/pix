@@ -180,6 +180,7 @@ describe("C: extension method/response binding", () => {
     assert.equal(command({ method: "confirm", responseKind: "value", value: "x" }), false);
     assert.equal(command({ method: "select", responseKind: "confirmed", confirmed: true }), false);
     assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_input", commandId: "c", id: "ui", method: "confirm", data: "x" }).success, false);
+    assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_input", commandId: "c", id: "ui", method: "custom", data: "\x1b[A" }).success, true, "E15 custom incremental input");
     for (const method of ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"]) {
       assert.equal(command({ method, responseKind: "cancelled", cancelled: true }), false, method);
       assert.equal(RuntimeCommandSchema.safeParse({ type: "extension_ui_input", commandId: "c", id: "ui", method, data: "x" }).success, false, method);
@@ -196,6 +197,11 @@ describe("C: extension method/response binding", () => {
     const inputCommand = { type: "extension_ui_input", commandId: "c-2", id: "ui-input", method: "input", data: "x" };
     assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request: inputRequest, command: inputCommand }).success, true);
     assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request: { id: "ui-editor", method: "editor", title: "Edit" }, command: inputCommand }).success, false);
+    // E15: a custom request accepts custom incremental key data (exact method),
+    // but never an input/editor-method input command (mismatch).
+    const customInputCommand = { type: "extension_ui_input", commandId: "c-3", id: "ui-custom", method: "custom", data: "\x03" };
+    assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request: { id: "ui-custom", method: "custom", lines: ["x"] }, command: customInputCommand }).success, true);
+    assert.equal(ExtensionUiInputExchangeSchema.safeParse({ request: { id: "ui-custom", method: "custom", lines: ["x"] }, command: { ...customInputCommand, method: "input" } }).success, false);
     for (const request of [
       { id: "ui-custom", method: "custom", lines: ["x"] },
       { id: "ui-notify", method: "notify", message: "x", notifyType: "info" },

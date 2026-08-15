@@ -2143,15 +2143,85 @@ async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
     await promptP;
     await waitForClose(editorReqId, editorIndex);
 
-    // ---- 6. custom: lines shape exact; value response closes.
+    // ---- 6. custom (E15): incremental key data reaches the driver in FIFO
+    // ----    order and re-publishes updates (same id upsert); wrong-method
+    // ----    input is invalid_input; value response closes; late input
+    // ----    not_found; replay cannot resurrect the closed request.
     ({ promptP, request, commandId } = await startUiPrompt("custom", "custom"));
     const customReqId = request.id;
     assert.deepEqual([...request.lines], ["Custom UI lines"]);
     const customIndex = client.messages.length;
+
+    // A typing burst including terminal control bytes: arrow-up, characters,
+    // and Ctrl+C — each acked ok, delivered to the driver in exact order.
+    const customKeys = ["\u001b[A", "c", "u", "s", "t", "\u0003"];
+    let acc = "";
+    for (let i = 0; i < customKeys.length; i += 1) {
+      const chunk = customKeys[i];
+      acc = `${acc}${chunk}`;
+      const input = await uiCommand("extension_ui_input", `e15-custom-in-${i}-${Date.now()}`, { id: customReqId, method: "custom", data: chunk });
+      assert.equal(input.payload.result.result.ok, true, JSON.stringify(input.payload));
+      // Each chunk re-publishes the SAME request id with an updated line
+      // (seq + exact chunk + accumulated buffer) — the upsert projection.
+      const update = await client.waitFor(
+        (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "extension_ui_request" && m.payload?.request?.id === customReqId && !m.payload?.request?.closed && m.payload?.request?.lines?.some((line) => line === `seq:${i + 1} chunk=${JSON.stringify(chunk)} buf=${JSON.stringify(acc)}`),
+        { label: `custom update ${i + 1}`, afterIndex: customIndex },
+      );
+      assert.equal(update.payload.request.lines.length, 2, "base line + the update line");
+    }
+    // The live projection upserted the SAME id (never duplicated).
+    assert.equal(client.projection.state.pendingExtensionUi.filter((r) => r.id === customReqId).length, 1);
+    assert.equal(client.projection.state.pendingExtensionUi.length, 1);
+
+    // Wrong-method incremental input against the custom request (input/editor)
+    // is structured invalid_input; the request stays pending/usable.
+    for (const wrongMethod of ["input", "editor"]) {
+      const wrong = await uiCommand("extension_ui_input", `e15-custom-wrong-${wrongMethod}-${Date.now()}`, { id: customReqId, method: wrongMethod, data: "x" });
+      assert.equal(wrong.payload.result.result.ok, false);
+      assert.equal(wrong.payload.result.result.error.code, "invalid_input");
+    }
+    assert.equal(client.projection.state.pendingExtensionUi.length, 1, "wrong-method input must not close the request");
+
+    // Final value response closes exactly once and resumes the prompt.
     const customResp = await uiCommand("extension_ui_response", `d2p8-custom-${Date.now()}`, { id: customReqId, method: "custom", responseKind: "value", value: "custom-out" });
     assert.equal(customResp.payload.result.result.ok, true);
     await promptP;
     await waitForClose(customReqId, customIndex);
+    assert.equal(client.projection.state.pendingExtensionUi.length, 0);
+
+    // Late incremental input after the close: not_found, never reaches a driver.
+    const lateInput = await uiCommand("extension_ui_input", `e15-custom-late-${Date.now()}`, { id: customReqId, method: "custom", data: "z" });
+    assert.equal(lateInput.payload.result.result.ok, false);
+    assert.equal(lateInput.payload.result.result.error.code, "not_found");
+
+    // A custom-method input against a DIFFERENT interactive request kind
+    // (confirm) is also exact-method rejected (schema admits it; runtime
+    // refuses the correlation).
+    {
+      const started = await startUiPrompt("confirm", "e15-mismatch");
+      const mismatch = await uiCommand("extension_ui_input", `e15-confirm-mismatch-${Date.now()}`, { id: started.request.id, method: "custom", data: "x" });
+      assert.equal(mismatch.payload.result.result.ok, false);
+      assert.equal(mismatch.payload.result.result.error.code, "invalid_input");
+      const settle = await uiCommand("extension_ui_response", `e15-confirm-settle-${Date.now()}`, { id: started.request.id, method: "confirm", responseKind: "cancelled", cancelled: true });
+      assert.equal(settle.payload.result.result.ok, true);
+      await started.promptP;
+    }
+
+    // Detach/reattach (fresh attach replays the journal): the closed custom
+    // request is NOT resurrected and the last upsert does not outlive the close.
+    {
+      const client3 = new RuntimeWsClient(stack.host.wsUrl);
+      await client3.connect();
+      try {
+        await client3.handshake();
+        const snap3 = await client3.attach(sessionId);
+        assert.equal(snap3.type, "snapshot");
+        const pendingIds = pending(snap3.payload.snapshot).map((r) => r.id);
+        assert.equal(pendingIds.includes(customReqId), false, "replay must not resurrect the closed custom request");
+      } finally {
+        client3.close();
+      }
+    }
 
     // ---- 7. abort clears a pending request: one close + interrupted prompt.
     ({ promptP, request, commandId } = await startUiPrompt("editor", "abort-me"));
@@ -2744,7 +2814,7 @@ async function main() {
           "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + every-command-open)",
           "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + every-command-open)",
           "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + every-command-open + no orphan)",
-          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + custom lines + abort clears + status/widget/title/notify events + every-command-open + reload cannot broaden)",
+          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + E15 custom incremental FIFO key data (arrow/chars/Ctrl+C) with same-id upsert updates + wrong-method invalid_input + late input not_found + replay cannot resurrect + abort clears + status/widget/title/notify events + every-command-open + reload cannot broaden)",
           "D2 navigate control (3-prompt tree + navigate to earlier leaf authoritative messageCount/history/leafId convergence + navigate forward + detach/reattach persistence + blocking prompt + second-connection navigate session_busy (prompt untouched) + invalid leaf invalid_input sanitized + every-command-open + capability advertised)",
           "D2 fork control (create + 2 turns + fork → NEW session id + OLD worker exits via identity-lane stop after the result + attach forked session with fork-point history + auto_name open on the forked session + forked worker exits on stop, no orphan)",
           "D2 auto_name control (create → prompt 1 turn → auto_name → title in sessions list/read via the §51 overlay → user rename AFTER auto_name wins (later revision) → auto_name after user rename → deterministic last-committer-wins per lane order → every-command-open)",

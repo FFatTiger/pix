@@ -63,10 +63,15 @@ export const ExtensionUiResponseCommandSchema = z.union([
 ]);
 export type ExtensionUiResponseCommand = z.infer<typeof ExtensionUiResponseCommandSchema>;
 
-/** Incremental input is frozen to input/editor; custom only permits a final response. */
+/**
+ * Incremental input is valid for input/editor/custom (E15: custom UI panels
+ * stream raw key data — terminal bytes like `\x1b[A`, characters, `\x03`);
+ * select/confirm are final-response-only and never accept incremental input.
+ */
 export const ExtensionUiInputCommandSchema = z.discriminatedUnion("method", [
   z.strictObject({ commandId: NonEmptyStringSchema, type: z.literal("extension_ui_input"), id: NonEmptyStringSchema, method: z.literal("input"), data: z.string() }),
   z.strictObject({ commandId: NonEmptyStringSchema, type: z.literal("extension_ui_input"), id: NonEmptyStringSchema, method: z.literal("editor"), data: z.string() }),
+  z.strictObject({ commandId: NonEmptyStringSchema, type: z.literal("extension_ui_input"), id: NonEmptyStringSchema, method: z.literal("custom"), data: z.string() }),
 ]);
 export type ExtensionUiInputCommand = z.infer<typeof ExtensionUiInputCommandSchema>;
 
@@ -87,7 +92,10 @@ export const ExtensionUiResponseExchangeSchema = z
   });
 export type ExtensionUiResponseExchange = z.infer<typeof ExtensionUiResponseExchangeSchema>;
 
-/** See ExtensionUiResponseExchangeSchema; only input/editor accept incremental input. */
+/**
+ * See ExtensionUiResponseExchangeSchema; input/editor/custom accept incremental
+ * input (select/confirm and non-interactive methods never do).
+ */
 export const ExtensionUiInputExchangeSchema = z
   .strictObject({ request: ExtensionUiRequestSchema, command: ExtensionUiInputCommandSchema })
   .superRefine(({ request, command }, ctx) => {
@@ -112,9 +120,13 @@ export const ExtensionUiResponsePayloadSchema = z.discriminatedUnion("responseKi
 ]);
 export type ExtensionUiResponsePayload = z.infer<typeof ExtensionUiResponsePayloadSchema>;
 
-/** Streaming input updates are only valid for input/editor requests. */
+/**
+ * Streaming input updates are valid for input/editor/custom (E15 custom panels
+ * stream raw key data); select/confirm are final-response-only.
+ */
 export const ExtensionUiInputPayloadSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, method: z.literal("input"), data: z.string() }),
   z.strictObject({ id: NonEmptyStringSchema, method: z.literal("editor"), data: z.string() }),
+  z.strictObject({ id: NonEmptyStringSchema, method: z.literal("custom"), data: z.string() }),
 ]);
 export type ExtensionUiInputPayload = z.infer<typeof ExtensionUiInputPayloadSchema>;

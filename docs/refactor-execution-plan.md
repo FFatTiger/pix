@@ -452,7 +452,11 @@ pix/
    node_modules/**
    ```
 
-6. 旧 worktree 在迁移和 hash 校验完成前保持只读，不删除。
+6.
+16. `E15` Extension UI custom incremental input（后端/Client Runtime transport 地基）：DONE（独立 worktree `/tmp/pi-e15-worktree`，base main `99f90b1`，产品 parity 后端切片——上游桌面项目 `ExtensionCustomPanel`/`sendExtensionCustomInput`/`toTerminalKeyData` 的 transport 等价物；无 UI modal/CSS，UI 后续切片接面板）。capability 零变更（仍 `runtime.extension_ui`，无版本字段）。分层：Protocol `ExtensionUiInputCommandSchema`/`ExtensionUiInputPayloadSchema` 扩 input|editor|custom（select/confirm 仍 schema 拒绝 fail-protocol；type-contract/extension/semantic/verifier tests 更新）；runtime-core `ExtensionUiInputCommand.method` 扩三值（exact type test）；agent-worker mapper 零生产改动（passthrough 保 method）+ custom 用例；pi-sdk-adapter `inputUi` 语义已正确（custom + driver.input 存在→调用；unknown not_found、mismatch invalid_input 不 settle 不 close）+ 真实 custom incremental driver 定向用例（多块 FIFO/`\x1b[A`/`\x03`、final response 恰一 close、late input not_found、错误无键数据）；Host runtime-gateway 零生产改动（interleaving lane 按 command.type 路由不看 method）+3 定向用例（prompt HOL 不阻塞 FIFO、flood 1009 无键字节泄漏、browser close 短路、select/confirm schema 拒绝）；Client SessionStore 第四槽 typed `sendExtensionUiInput(request,data)` + RuntimeApi 暴露——专用有界 FIFO（不逐键等 ack：调用即入队、head 单飞行等 correlated ack、严格 FIFO；in-flight+waiting≤16，溢出固定 session_busy）、与 D2-P8 final-response 槽独立并行、不走普通 pendingCommand（prompt 等待 UI 不 session_busy）、detach/stop/dispose/session-switch/capability-revoke/epoch 恰一次 settle、same-epoch 重发 head 同 commandId（尾队未触网不重发）、data verbatim 不 trim 不入错误；fixture custom request 接受 method=custom 增量并同 id upsert 重发（lines 追加 seq/chunk/buf 行，reducer 按 id 替换、close 不可复活）；Runtime E2E D2-P8 §6 扩真实贯通（6 块键序逐块 ack+upsert、wrong-method invalid_input、final value close、late input not_found、fresh attach replay 不复活；input/editor 旧语义保留）。验证：protocol 132/runtime-core 12/agent-worker 105/adapter 279/client 全绿（新增 store 14 用例）/host 423（+3）、root npm test 10 包 1570 测试 0 fail、root build/typecheck、check:architecture 14 gates、client boundaries 97 files、adapter check:commands 26/26、Runtime E2E×2 全场景 PASS 无孤儿、git diff --check 干净。已知 pre-existing flake：host worktrees 并发用例整包高负载偶发（隔离 main/worktree 各 6/6 过，与本切片无关）。详见 migration-ledger §67。
+
+
+旧 worktree 在迁移和 hash 校验完成前保持只读，不删除。
 7. 每个迁入包记录来源 commit/path/tree hash，见 `migration-ledger.md`。
 8. 迁入后重新生成唯一 root lockfile。
 9. 迁入后必须重新运行 package tests；旧 PASS 只作参考。

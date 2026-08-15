@@ -356,7 +356,7 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
 
   function waitForUi(request) {
     return new Promise((resolve) => {
-      const entry = { request, resolve, data: "", settled: false };
+      const entry = { request, resolve, data: "", settled: false, baseLines: Array.isArray(request.lines) ? [...request.lines] : undefined, updates: 0 };
       pendingUi = [...pendingUi, entry];
       emit({ type: "extension_ui_request", sessionId, request });
       emit({ type: "runtime_state_changed", sessionId });
@@ -805,11 +805,29 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
           if (!entry) {
             return { ok: false, type: "extension_ui_input", error: { code: "not_found", message: `no pending extension UI input: ${command.id}`, retryable: false } };
           }
-          // Exact method correlation: only input/editor carry incremental input.
+          // Exact method correlation: only input/editor/custom carry incremental
+          // input (select/confirm are final-response-only and reject at the
+          // Protocol schema before ever reaching here).
           if (entry.request.method !== command.method) {
             return { ok: false, type: "extension_ui_input", error: { code: "invalid_input", message: `extension input method mismatch for request ${command.id}`, retryable: false } };
           }
           entry.data = `${entry.data}${command.data}`;
+          // E15: a custom panel re-publishes the SAME request id with updated
+          // lines (canonical upsert — the shared projection replaces by id, so
+          // live/replay observers see incremental updates; a close tombstone
+          // still removes it and can never be resurrected by replay).
+          if (entry.request.method === "custom") {
+            entry.updates += 1;
+            entry.request = {
+              ...entry.request,
+              lines: [
+                ...(entry.baseLines ?? []),
+                `seq:${entry.updates} chunk=${JSON.stringify(command.data)} buf=${JSON.stringify(entry.data)}`,
+              ],
+            };
+            emit({ type: "extension_ui_request", sessionId, request: structuredClone(entry.request) });
+            emit({ type: "runtime_state_changed", sessionId });
+          }
           return { ok: true, type: "extension_ui_input" };
         }
         default:

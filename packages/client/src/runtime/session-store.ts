@@ -31,8 +31,18 @@
  *    a reply travel while the prompt is still pending. At most ONE extension
  *    reply in flight globally (second → session_busy); cleared on send-failure /
  *    stop / detach / dispose / session-switch / epoch_changed / capability
- *    loss, resent with the SAME commandId on same-epoch snapshot/gap. Only the
- *    final `extension_ui_response` is ever sent — never incremental input.
+ *    loss, resent with the SAME commandId on same-epoch snapshot/gap.
+ *  - E15 extension-UI incremental input runs in a FOURTH slot: a bounded FIFO
+ *    ({@link ExtensionUiInputQueued} tail + one {@link ExtensionUiInputInFlight}
+ *    head) dedicated to `extension_ui_input` (input/editor/custom). Callers
+ *    never await a per-keystroke ack to keep typing responsive — chunks enqueue
+ *    and dispatch one at a time, each awaiting its correlated ack, preserving
+ *    exact FIFO order. In-flight + waiting is hard-capped; overflow is a FIXED
+ *    `session_busy` error. The final-response slot stays independent, so
+ *    incremental input and the final response may travel in parallel. Cleared
+ *    exactly once per entry on stop / detach / dispose / session-switch /
+ *    epoch_changed / capability loss; the in-flight head is resent with the
+ *    SAME commandId on same-epoch snapshot/gap resync.
  *  - One-shot envelope requests (getSnapshot/detach/stop) are REJECTED on
  *    transport loss so they never leak across a generation (MEDIUM-3); create /
  *    command / interrupt / attach are retried on reconnect.
@@ -166,6 +176,27 @@ function isInteractiveExtensionMethod(method: ExtensionUiRequest["method"]): met
 }
 
 /**
+ * Incremental-input extension request methods (E15). input/editor/custom accept
+ * streaming `extension_ui_input` data; select/confirm are final-response-only
+ * and every non-interactive method never accepts input.
+ */
+const INCREMENTAL_EXTENSION_METHODS: ReadonlySet<string> = new Set([
+  "input", "editor", "custom",
+]);
+
+function isIncrementalExtensionMethod(method: ExtensionUiRequest["method"]): method is "input" | "editor" | "custom" {
+  return INCREMENTAL_EXTENSION_METHODS.has(method);
+}
+
+/**
+ * E15 hard bound on the extension-UI incremental-input queue (the single
+ * in-flight entry PLUS the waiting tail). A caller that exceeds it gets a
+ * FIXED `session_busy` overflow error immediately (never an unbounded backlog,
+ * never a dropped keystroke without a settled promise).
+ */
+const MAX_EXTENSION_UI_INPUT_QUEUE = 16;
+
+/**
  * Validate a reply against the request method (mirrors the Protocol response
  * union). Returns a fixed incompatibility description or null when compatible.
  * `cancelled` is valid for every interactive method; selected/confirmed/value
@@ -295,6 +326,38 @@ export type ExtensionUiReply =
   | { responseKind: "value"; value: string }
   | { responseKind: "cancelled"; cancelled: true };
 
+/**
+ * E15 WAITING incremental-input queue entry. Bound to the session that was
+ * attached at enqueue time; the command frame is minted only at dispatch, so a
+ * waiting entry has no envelope/generation yet (it has not touched the wire —
+ * reconnect resync only ever concerns the single in-flight entry).
+ */
+interface ExtensionUiInputQueued {
+  readonly commandId: string;
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly method: "input" | "editor" | "custom";
+  readonly data: string;
+  resolve(): void;
+  reject(error: unknown): void;
+}
+
+/**
+ * E15 in-flight incremental input. Mirrors {@link ExtensionUiPending}: the
+ * head of the FIFO, correlated by (envelopeId, generation, commandId, result
+ * type), resent with the SAME commandId on same-epoch snapshot/gap resync.
+ */
+interface ExtensionUiInputInFlight {
+  readonly commandId: string;
+  envelopeId: string;
+  generation: number;
+  readonly sessionId: string;
+  readonly command: WsClientMessage;
+  readonly requestId: string;
+  resolve(): void;
+  reject(error: unknown): void;
+}
+
 interface InterruptPending {
   readonly commandId: string;
   envelopeId: string;
@@ -345,6 +408,9 @@ export class SessionStore implements RuntimeSocketHandler {
   private pendingQueuedTurn: QueuedTurnPending | null = null;
   /** D2-P8 extension-UI reply slot: at most ONE final response in flight, independent of prompt + queued turn. */
   private pendingExtensionUiCommand: ExtensionUiPending | null = null;
+  /** E15 extension-UI incremental-input FIFO: at most ONE in-flight head + a bounded waiting tail. */
+  private extensionUiInputInFlight: ExtensionUiInputInFlight | null = null;
+  private extensionUiInputQueue: ExtensionUiInputQueued[] = [];
   private pendingInterrupt: InterruptPending | null = null;
   /** At most ONE interrupt in flight (well under H1's 16-interrupt cap). */
   private pendingInterruptPromise: Promise<unknown> | null = null;
@@ -466,6 +532,9 @@ export class SessionStore implements RuntimeSocketHandler {
       // reject it exactly once so the dedicated slot frees and a late result can
       // never settle a newly attached session.
       this.settlePendingExtensionUi({ code: "interrupted", message: "detached", retryable: false });
+      // E15: queued/in-flight incremental input is bound to the detached
+      // session — settle every entry exactly once with the same fixed error.
+      this.settlePendingExtensionUiInputs({ code: "interrupted", message: "detached", retryable: false });
       this.rejectAttach({ code: "interrupted", message: "detached", retryable: false });
       this.setConnection(this.socket.connectionState === "stopped" ? "stopped" : "ready");
       this.notify();
@@ -500,6 +569,8 @@ export class SessionStore implements RuntimeSocketHandler {
       this.settlePendingQueuedTurn({ code: "interrupted", message: "session stopped", retryable: false });
       // D2-P8: stop invalidates an in-flight extension reply exactly once.
       this.settlePendingExtensionUi({ code: "interrupted", message: "session stopped", retryable: false });
+      // E15: stop invalidates queued/in-flight incremental input exactly once.
+      this.settlePendingExtensionUiInputs({ code: "interrupted", message: "session stopped", retryable: false });
       const sessionId = this.sessionId;
       if (!sessionId) return;
       // MEDIUM-5: honest stop — wait until sendable (bounded), then send + await ack (bounded).
@@ -655,14 +726,16 @@ export class SessionStore implements RuntimeSocketHandler {
 
   // --- D2-P8 extension-UI final response -------------------------------------
   //
-  // `respondExtensionUi` is the ONLY Client transport for pending extension
-  // requests. It uses the dedicated single-in-flight {@link pendingExtensionUiCommand}
-  // slot (NOT {@link sendCommand}), because the prompt that triggered the UI is
-  // still the pending ordinary command — `sendCommand` would be `session_busy`.
-  // It builds the exact `extension_ui_response` command, mints the commandId,
-  // binds `id`/`method` from the authoritative pending request and unwraps the
-  // correlated ack. It NEVER sends `extension_ui_input` (final response only),
-  // never trims/coerces the reply, and validates attached + `runtime.extension_ui`
+  // `respondExtensionUi` is the ONLY Client transport for the FINAL response to
+  // a pending extension request (incremental input has its own transport in
+  // {@link sendExtensionUiInput} below). It uses the dedicated single-in-flight
+  // {@link pendingExtensionUiCommand} slot (NOT {@link sendCommand}), because the
+  // prompt that triggered the UI is still the pending ordinary command —
+  // `sendCommand` would be `session_busy`. It builds the exact
+  // `extension_ui_response` command, mints the commandId, binds `id`/`method`
+  // from the authoritative pending request and unwraps the correlated ack. It
+  // NEVER sends `extension_ui_input` (final response only), never
+  // trims/coerces the reply, and validates attached + `runtime.extension_ui`
   // + request method/reply compatibility before any send.
 
   /**
@@ -742,6 +815,119 @@ export class SessionStore implements RuntimeSocketHandler {
       this.notify();
       this.send(wsMessage);
     });
+  }
+
+  // --- E15 extension-UI incremental input ------------------------------------
+  //
+  // `sendExtensionUiInput` is the ONLY Client transport for streaming input
+  // (custom panel key data, or live input/editor text). It NEVER uses the
+  // ordinary {@link sendCommand} slot (the triggering prompt is still the
+  // pending ordinary command — `sendCommand` would be `session_busy`), and it
+  // NEVER awaits a per-keystroke ack at the call site: each call ENQUEUES on a
+  // dedicated bounded FIFO (head in flight, tail waiting) so a typing/paste
+  // burst is never serialized behind caller-side awaits. Ordering is exact:
+  // entries dispatch one at a time, each awaiting its correlated ack
+  // (envelope + generation + commandId + result type), so the host
+  // interleaving lane receives them in enqueue order. The final-response slot
+  // ({@link pendingExtensionUiCommand}) stays independent — incremental input
+  // and the final response may travel in parallel, each in its own slot.
+  // Bounded: in-flight + waiting ≤ MAX_EXTENSION_UI_INPUT_QUEUE; overflow is a
+  // FIXED `session_busy` error (never an unbounded backlog). detach / stop /
+  // dispose / session switch / capability loss / epoch change settle every
+  // entry EXACTLY ONCE with a structured error; same-epoch reconnect resync
+  // resends the in-flight head with the SAME commandId (at-most-once per
+  // epoch), waiting entries are untouched (they have not touched the wire).
+  // `data` is forwarded EXACTLY as given (terminal bytes like `\x1b[A` / `\x03`
+  // and plain spaces are meaningful) — never trimmed/coerced — and NEVER
+  // copied into any error.
+
+  /**
+   * Stream one incremental input chunk to a pending extension request
+   * (`input` / `editor` / `custom` only; `select`/`confirm` and non-interactive
+   * methods reject `invalid_input`). `request` must be the authoritative
+   * pending request from the snapshot; the command binds its exact `id`/
+   * `method`. Resolves once the runtime acks the correlated `extension_ui_input`
+   * (FIFO — possibly after earlier chunks); rejects with the structured
+   * ProtocolError on any failure (overflow / wrong method / not_found /
+   * transport / epoch change).
+   */
+  sendExtensionUiInput(request: ExtensionUiRequest, data: string): Promise<void> {
+    if (!this.attached || !this.sessionId) {
+      return Promise.reject(this.notAttachedError());
+    }
+    if (!this.hasRuntimeCapability("runtime.extension_ui")) {
+      return Promise.reject({
+        code: "unsupported_capability",
+        message: "runtime does not support extension UI",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    if (typeof data !== "string") {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "extension UI input data must be a string",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    const method = request.method;
+    if (!isIncrementalExtensionMethod(method)) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "an extension request of this method does not accept incremental input",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    if (this.extensionUiInputQueue.length + (this.extensionUiInputInFlight ? 1 : 0) >= MAX_EXTENSION_UI_INPUT_QUEUE) {
+      return Promise.reject({
+        code: "session_busy",
+        message: "extension UI input queue is full",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    const sessionId = this.sessionId;
+    return new Promise<void>((resolve, reject) => {
+      this.extensionUiInputQueue.push({
+        commandId: this.id(),
+        sessionId,
+        requestId: request.id,
+        method,
+        data,
+        resolve: () => resolve(),
+        reject,
+      });
+      this.dispatchExtensionUiInput();
+    });
+  }
+
+  /**
+   * Dispatch the FIFO head when the lane is idle and the store is attached.
+   * Exactly ONE input is on the wire at a time; the next entry dispatches only
+   * after this one settles (ack / error / lifecycle settle).
+   */
+  private dispatchExtensionUiInput(): void {
+    if (this.extensionUiInputInFlight !== null || this.extensionUiInputQueue.length === 0) return;
+    if (!this.attached || !this.sessionId) return;
+    const next = this.extensionUiInputQueue.shift()!;
+    const envelopeId = this.id();
+    const command: RuntimeCommand = {
+      commandId: next.commandId,
+      type: "extension_ui_input",
+      id: next.requestId,
+      method: next.method,
+      data: next.data,
+    };
+    const wsMessage: WsClientMessage = { type: "command", id: envelopeId, payload: { sessionId: next.sessionId, command } };
+    this.extensionUiInputInFlight = {
+      commandId: next.commandId,
+      envelopeId,
+      generation: this.socket.currentGeneration,
+      sessionId: next.sessionId,
+      command: wsMessage,
+      requestId: next.requestId,
+      resolve: next.resolve,
+      reject: next.reject,
+    };
+    this.send(wsMessage);
   }
 
   // --- D2-P4 queued-turn / queue-control API ---------------------------------
@@ -1306,6 +1492,30 @@ export class SessionStore implements RuntimeSocketHandler {
       else { pending.reject(correlated.result.error); this.setError(correlated.result.error); }
       return;
     }
+    // E15 extension-UI incremental-input head, correlated by envelope +
+    // generation + commandId + result type. Same exactness rules as the reply
+    // slot: a wrong commandId/type frame is dropped and never settles the
+    // entry; a late/duplicate response is dropped.
+    if (this.extensionUiInputInFlight && message.id === this.extensionUiInputInFlight.envelopeId && generation === this.extensionUiInputInFlight.generation) {
+      const pending = this.extensionUiInputInFlight;
+      if (!ok) {
+        this.extensionUiInputInFlight = null;
+        pending.reject(message.payload.error);
+        this.setError(message.payload.error);
+        this.dispatchExtensionUiInput();
+        return;
+      }
+      const correlated = message.payload.result as CorrelatedRuntimeCommandResult;
+      if (correlated.commandId !== pending.commandId || correlated.result.type !== "extension_ui_input") {
+        // Wrong commandId/type on the right envelope: drop, never settle.
+        return;
+      }
+      this.extensionUiInputInFlight = null;
+      if (correlated.result.ok) pending.resolve();
+      else { pending.reject(correlated.result.error); this.setError(correlated.result.error); }
+      this.dispatchExtensionUiInput();
+      return;
+    }
     // envelope-keyed one-shots: getSnapshot / detach / stop
     const entry = this.pendingByEnvelope.get(message.id);
     if (entry && entry.generation === generation) {
@@ -1364,6 +1574,12 @@ export class SessionStore implements RuntimeSocketHandler {
     // exactly once on a switch so its late result cannot settle the new session.
     if (this.pendingExtensionUiCommand && this.sessionId !== null && this.sessionId !== sessionId) {
       this.settlePendingExtensionUi({ code: "interrupted", message: "session switched", retryable: false });
+    }
+    // E15: incremental input bound to the OLD session (in-flight head + waiting
+    // tail — entries are settled on switch, so any survivor belongs to the old
+    // session) is rejected exactly once on a switch.
+    if ((this.extensionUiInputInFlight !== null || this.extensionUiInputQueue.length > 0) && this.sessionId !== null && this.sessionId !== sessionId) {
+      this.settlePendingExtensionUiInputs({ code: "interrupted", message: "session switched", retryable: false });
     }
     this.attached = false;
     this.awaitingSnapshot = true;
@@ -1457,6 +1673,21 @@ export class SessionStore implements RuntimeSocketHandler {
         this.setError(decision.error);
       }
     }
+    // E15 extension-UI incremental input: same-epoch snapshot/gap → resend the
+    // in-flight head with the SAME commandId (at-most-once per epoch; the
+    // waiting tail has not touched the wire and stays queued). epoch_changed →
+    // the worker restarted and every pending extension request is gone, so the
+    // whole queue settles exactly once with the structured epoch error and
+    // nothing is resent (fail-closed, no pointless not_found frames).
+    if (this.extensionUiInputInFlight || this.extensionUiInputQueue.length > 0) {
+      const decision = decideCommandRetry(epochSurvived ? resumeStatus : "epoch_changed");
+      if (decision.decision === "resend") {
+        this.resendExtensionUiInput();
+      } else {
+        this.settlePendingExtensionUiInputs(decision.error);
+        this.setError(decision.error);
+      }
+    }
     if (this.pendingInterrupt) {
       if (epochSurvived) {
         this.resendInterrupt();
@@ -1506,6 +1737,16 @@ export class SessionStore implements RuntimeSocketHandler {
     const envelopeId = this.id();
     const command: WsClientMessage = { ...pending.command, id: envelopeId };
     this.pendingExtensionUiCommand = { ...pending, envelopeId, generation: this.socket.currentGeneration, command };
+    this.send(command);
+  }
+
+  /** Re-send the in-flight extension-UI input head with the SAME commandId (at-most-once per epoch). */
+  private resendExtensionUiInput(): void {
+    const pending = this.extensionUiInputInFlight;
+    if (!pending) return;
+    const envelopeId = this.id();
+    const command: WsClientMessage = { ...pending.command, id: envelopeId };
+    this.extensionUiInputInFlight = { ...pending, envelopeId, generation: this.socket.currentGeneration, command };
     this.send(command);
   }
 
@@ -1587,6 +1828,14 @@ export class SessionStore implements RuntimeSocketHandler {
       this.pendingExtensionUiCommand.reject(error);
       this.pendingExtensionUiCommand = null;
       this.notify();
+    } else if (this.extensionUiInputInFlight?.envelopeId === id) {
+      // E15: only the in-flight head touched this envelope — settle it exactly
+      // once, then keep draining the FIFO (each next entry gets its own frame
+      // and its own honest failure if the transport is still down).
+      const pending = this.extensionUiInputInFlight;
+      this.extensionUiInputInFlight = null;
+      pending.reject(error);
+      this.dispatchExtensionUiInput();
     } else if (this.pendingInterrupt?.envelopeId === id) {
       this.pendingInterrupt.reject(error);
       this.pendingInterrupt = null;
@@ -1631,18 +1880,39 @@ export class SessionStore implements RuntimeSocketHandler {
   }
 
   /**
+   * Reject the E15 incremental-input FIFO (in-flight head + waiting tail)
+   * exactly once per entry (stop/detach/dispose/session switch/capability
+   * loss/epoch change). Every entry settles; none is resent afterwards.
+   */
+  private settlePendingExtensionUiInputs(error: ProtocolError): void {
+    const inFlight = this.extensionUiInputInFlight;
+    const queued = this.extensionUiInputQueue;
+    this.extensionUiInputInFlight = null;
+    this.extensionUiInputQueue = [];
+    inFlight?.reject(error);
+    for (const entry of queued) entry.reject(error);
+  }
+
+  /**
    * D2-P8 capability-loss settle: when the runtime drops `runtime.extension_ui`
    * (authoritative snapshot/event), an in-flight reply is rejected so the slot
    * never leaks and the UI's capability refs make the rejection inert.
    */
   private settleExtensionUiOnCapabilityLoss(): void {
-    if (this.pendingExtensionUiCommand === null) return;
     if (this.snapshot?.capabilities.capabilities.includes("runtime.extension_ui") !== true) {
       this.settlePendingExtensionUi({
         code: "unsupported_capability",
         message: "runtime capability revoked",
         retryable: false,
       });
+      // E15: queued/in-flight incremental input dies with the same capability.
+      if (this.extensionUiInputInFlight !== null || this.extensionUiInputQueue.length > 0) {
+        this.settlePendingExtensionUiInputs({
+          code: "unsupported_capability",
+          message: "runtime capability revoked",
+          retryable: false,
+        });
+      }
     }
   }
 
@@ -1725,6 +1995,7 @@ export class SessionStore implements RuntimeSocketHandler {
     this.settlePendingCommand(error);
     this.settlePendingQueuedTurn(error);
     this.settlePendingExtensionUi(error);
+    this.settlePendingExtensionUiInputs(error);
     this.pendingInterrupt?.reject(error);
     this.pendingInterrupt = null;
     this.pendingInterruptPromise = null;

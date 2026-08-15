@@ -39,8 +39,8 @@ const _cancelledMethods: IsExact<
   "select" | "confirm" | "input" | "editor" | "custom"
 > = true;
 
-// Input is input/editor only.
-const _inputMethods: IsExact<ExtensionUiInputCommand["method"], "input" | "editor"> = true;
+// Incremental input is input/editor/custom (E15: custom panels stream raw key data).
+const _inputMethods: IsExact<ExtensionUiInputCommand["method"], "input" | "editor" | "custom"> = true;
 
 test("extension_ui_response carries the exact correlated method", () => {
   const selected: ExtensionUiResponseCommand = { type: "extension_ui_response", id: "r1", method: "select", value: "optA" };
@@ -56,8 +56,12 @@ test("extension_ui_response carries the exact correlated method", () => {
 test("extension_ui_input carries the exact correlated method", () => {
   const input: ExtensionUiInputCommand = { type: "extension_ui_input", id: "r1", method: "input", data: "x" };
   const editor: ExtensionUiInputCommand = { type: "extension_ui_input", id: "r1", method: "editor", data: "y" };
+  const custom: ExtensionUiInputCommand = { type: "extension_ui_input", id: "r1", method: "custom", data: "\x1b[A" };
   assert.equal(input.method, "input");
   assert.equal(editor.method, "editor");
+  assert.equal(custom.method, "custom");
+  // JSON-serializable, backend-neutral (terminal control bytes survive a wire hop).
+  assert.doesNotThrow(() => JSON.parse(JSON.stringify([input, editor, custom])));
 });
 
 test("ExtensionUiRequest models the canonical closed marker", () => {

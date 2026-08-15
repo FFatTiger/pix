@@ -3286,3 +3286,72 @@ localStorage 键全部保持源值（`pi-locale`/`pi-theme*`/`pi-border-depth`/`
 - `node ./scripts/check-boundaries.mjs`：PASS（121 files，新增 hooks/lib/features 全部合规：无 `/api/` 字面量、裸 fetch 仅在 `src/api`）。
 - 既有 API 单测 `vitest run src/api/{query-options,urls,resources}.test.ts`：21/21 PASS（未新增 UI 测试、未启动 dev，按切片要求）。
 - 无新依赖：`package.json`/lock 零变更（`@phosphor-icons/react`/react-query 均已有）。
+
+---
+
+## 67. E15 — Extension UI custom incremental input 后端/Client Runtime transport 地基（DONE，base main `99f90b1` 独立 worktree；产品 parity：pi-web-desktop `ExtensionCustomPanel`/`sendExtensionCustomInput`/`toTerminalKeyData` 的后端等价物）
+
+动机：pi-web-desktop 的 custom 扩展面板以终端键序（`\x1b[A` 方向键、字符、`\x03` Ctrl+C）驱动扩展 UI；
+pix 此前 Protocol 把 incremental input 冻结在 input/editor，custom 只允许 final response，UI modal 无法
+打通。本切片只做后端/Client Runtime transport 地基（schema→mapper→adapter→fixture→Client SessionStore
+helper），不实现 UI modal（后续切片接 ExtensionCustomPanel）。capability 不变：仍用现有
+`runtime.extension_ui`（无版本字段、无新 token）。
+
+分层变更（严格 method 边界：input/editor/custom 允许 incremental input；select/confirm 仍在 Protocol
+schema 拒绝——fail-protocol；非交互方法同拒）：
+1) Protocol（packages/protocol/src/extension.ts）：`ExtensionUiInputCommandSchema` /
+   `ExtensionUiInputPayloadSchema` 扩为 input|editor|custom（strict 三成员 discriminatedUnion）；
+   `ExtensionUiInputExchangeSchema` 语义注释更新（exact-method correlation 不变）。type-contract exact
+   type、extension/semantic/verifier tests 更新（正例 custom 终端字节 + 反例 select/confirm/非交互）。
+2) runtime-core：`ExtensionUiInputCommand.method` 扩 `"input" | "editor" | "custom"`（exact type test 更新）。
+3) agent-worker mapper：passthrough 已保留 method，无需生产改动；mapper test 增 custom（`\x1b[A`）保序用例。
+4) pi-sdk-adapter：`inputUi` 行为不变即正确——pending.request.method===custom 且 driver.input 存在时调用
+   driver.input(data)（真实 SDK 绑定层 custom 以 incremental:true 暴露 input）；unknown → not_found、
+   method mismatch → invalid_input 且 request 不 settle 不 close（注释更新）。adapter test 新增真实 custom
+   incremental driver 用例：多块数据（`\x1b[A`/a/b/`\x03`）FIFO 到 driver、final response 后恰一个 close
+   tombstone、late input not_found 且不触 driver、错误不含键数据。
+5) Host runtime-gateway：**零生产改动**——interleaving lane 按 command.type 路由（不看 method），custom
+   input 自动同 lane。定向测试新增 3 例证明：custom input 在 prompt HOL 时不被阻塞（FIFO r1→c1→c2）、
+   custom flood 不绕过 lane 上限（1009，日志无原始键字节）、browser close 短路排队帧；同文件验证
+   select/confirm method 仍在 schema 拒绝（fail-protocol）。
+6) Client（packages/client/src/runtime/session-store.ts）：新增第四槽——typed
+   `sendExtensionUiInput(request, data): Promise<void>` + RuntimeApi 暴露。专用有界 FIFO（不逐键等 ack：
+   调用即入队，head 单飞行，每个 awaited correlated ack（envelope+generation+commandId+result type
+   extension_ui_input），严格 FIFO；in-flight+waiting ≤16（MAX_EXTENSION_UI_INPUT_QUEUE），溢出固定
+   `session_busy` "extension UI input queue is full"）。与 D2-P8 final-response 槽独立并行；不走普通
+   pendingCommand（prompt 等待 Extension UI 时不 session_busy）。detach/stop/dispose/session switch/
+   capability revoke/epoch_changed 每项恰一次 settle；same-epoch snapshot/gap 重发 head 用 SAME
+   commandId（at-most-once/epoch），等待尾未触网不重发；epoch_changed 整队拒绝（worker 重启后 pending
+   UI 必然消失，fail-closed 不发无谓 not_found 帧）。data 原样透传（空格/控制字节有意义，不 trim），错误
+   永不含 data/用户键入。RuntimeView 未新增字段（后续 UI 切片按需）。
+7) fixture/E2E：e2e-runtime-factory custom request 现接受 method=custom incremental input——按序累积进
+   driver 并以同 id upsert 重发 `extension_ui_request`（lines 追加 `seq:N chunk=... buf=...` 行，共享
+   reducer 按 id 替换；close tombstone 仍移除、replay 不可复活）。runtime.mjs D2-P8 场景 §6 扩为：
+   6 块键序（含 `\x1b[A`、`c`/`u`/`s`/`t`、`\x03`）逐块 ack + 逐块 upsert 更新断言 + live projection 单
+   id 不重复；wrong-method（input/editor vs custom、custom vs confirm）invalid_input 且不 close；final
+   value response 恰一 close + prompt 恢复；late input not_found；fresh attach replay 不复活 closed
+   custom request。input/editor 旧语义用例原样保留。
+8) 错误消毒：Protocol/adapter raw 错误固定（只含 request id）；Host overflow 日志无键字节（定向测试断言）；
+   Client 拒绝错误固定字符串（定向测试断言无 SECRET 键数据）。
+
+验证（Node v24.x，worktree `/tmp/pi-e15-worktree`）：
+- protocol 132/132、runtime-core 12/12、agent-worker 105/105、pi-sdk-adapter 279/279（+custom 用例）、
+  client vitest 全绿（新增 session-store-extension-ui-input.test.ts 14 用例：FIFO/verbatim 键数据、
+  方法门、prompt pending 并行 + final response 并行、16 上限 + 溢出恢复、per-entry 错误后续排、
+  wrong envelope/commandId/type 丢弃、same-epoch SAME commandId 重发 + 尾队不动、epoch_changed 整队
+  拒绝不重发、detach/stop/dispose、session switch、capability loss、send failure 逐项 honest 拒绝、
+  错误无键数据）、host 423/423（+3 E15 lane 用例）、root `npm test` 10 包 1570 测试 0 fail（1 skip 为
+  sessiond 既有）。
+- root build/typecheck PASS、check:architecture（14 gates）PASS、client check:boundaries PASS（97 文件）、
+  pi-sdk-adapter check:commands 26/26 PASS、`git diff --check` PASS。
+- Runtime E2E ×2 全场景 PASS（含扩展后的 D2-P8/E15 custom incremental 场景；shutdown 无孤儿）。
+- 已知噪声（pre-existing，与本切片无关）：host `worktrees.test.mjs` "concurrent create/delete/recreate"
+  在整包并发高负载下偶发 409≠201；隔离复跑 main 与本 worktree 各 6/6 通过，无 custom-input 关联。
+
+残余风险 / 后续：
+- UI modal（ExtensionCustomPanel 等价物）未实现——本切片只打 transport；后续 UI 切片用
+  `sendExtensionUiInput` + upsert lines 渲染，建议暴露队列深度/flush 信号视 UX 需要。
+- 真实 Pi SDK 绑定层 custom 的 `input` 目前为 no-op（`incremental:true`，`sdk-runtime.ts`）——数据已按契
+  约送达 driver.input；待上游 SDK 暴露真实 custom 组件键消费后无需再动 transport。
+- MAX 16 为产品选择（每次仅 1 帧在飞、host lane 另有独立上限）；如后续面板支持粘贴大块数据，可按
+  UX 调整或合并 chunk。

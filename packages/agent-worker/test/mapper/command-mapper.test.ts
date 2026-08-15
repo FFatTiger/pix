@@ -90,6 +90,12 @@ describe("command-mapper (protocol → core, commandId stripped)", () => {
       coreFor({ type: "extension_ui_input", id: "r1", method: "editor", data: "edit" }),
       { type: "extension_ui_input", id: "r1", method: "editor", data: "edit" },
     );
+    // E15: custom incremental key data keeps its method (exact correlation is
+    // enforced downstream against the pending request, never widened here).
+    assert.deepEqual(
+      coreFor({ type: "extension_ui_input", id: "r1", method: "custom", data: "\x1b[A" }),
+      { type: "extension_ui_input", id: "r1", method: "custom", data: "\x1b[A" },
+    );
   });
 });
 
