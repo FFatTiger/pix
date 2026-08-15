@@ -2345,3 +2345,79 @@ lifecycle 语义（认证 instance-fenced 关闭 + 交付屏障），不复制 P
 unsupported 拒绝，绝不 fallback kill；Local Authority race 仍在 §55 在飞；Fresh verifier 独立 PASS
 待补。
 ```
+
+## 58. sessiond POSIX private-directory hardening slice（PENDING 独立验证）
+
+```text
+实现：source `4e74bd2`（branch feat/sessiond-private-dir，base main `d817a32`，tree 基线 clean；§57 并行在飞，本切片
+不触碰 §57 范围）。编号：§53/§55/§55.1/§56 已占用，本切片占 §58；§57 由并行 agent 独立推进，合并
+main 时若 ledger 尾段冲突按 append 解决，不覆盖对方小节。未 push/deploy/live service，未改
+package-lock/deps（sessiond 未在 package.json 声明 local-authority，靠 npm workspace 顶层 symlink +
+sessiond build-deps.mjs 新增 local-authority 构建顺序提供 dist；package-lock 零变更）。
+
+目标（父级冻结的 HYBRID 架构）：sessiond 不整体委托本地状态给 local-authority，只复用其
+canonical/error/identity 原语（canonicalizeAbsolutePath / posixFileIdentity / isOwnedByCurrentUser /
+currentPrincipal / LocalAuthorityError 固定消毒码），sessiond 保留自有策略（secret 0600 不覆盖原子发布、
+dead-pid stale lock 可回收、私有 socket alias/发布规则、实例锁语义）。
+
+新增模块 packages/sessiond/src/local-posix.ts（仅 node 内建 + `@fffattiger/pix-local-authority/state`，
+不含 Protocol/Runtime Core/Pi SDK/Hono/React，sessiond 边界检查保持通过）：
+1) 私有目录 preflight `ensureSessiondPrivateDirectory`：先拒绝 operational LEAF 符号链接（固定
+   SYMLINK，目标零触碰）；`canonicalizeAbsolutePath` 解析 macOS `/var`→`/private/var` 系统别名与既有
+   符号链接后，对 canonical 路径做逐组件 walk——缺失则逐组件 mkdir(recursive:false,0700)（created leaf
+   用 fd 身份钉住：open(O_RDONLY|O_NOFOLLOW) 后 fstat dev/ino 必须等于本次创建的 inode 才 fchmod 0700，
+   fchmod 后再次 fstat 复验身份+精确 mode，最后 pathname re-lstat + realpath）；既有 leaf 只读校验
+   （当前用户拥有 where supported、精确 0700、真实非符号链接目录）绝不 chmod。0755 既有布局 → 固定
+   NOT_PRIVATE + operator 修复提示（sessiond 绝不静默 chmod）；竞态 EEXIST leaf → 既有-leaf 校验路径
+   （created 永不为 true）；竞态缺失尾 INTERMEDIATE → 强策略（真实非 symlink + 当前用户拥有 + 精确
+   0700）才继续，其 dev/ino 在创建后代前复验，否则零后代零 chmod。所有错误固定 LocalAuthorityError
+   消毒码，无 raw path/errno。
+2) 有界 re-verify `reverifySessiondPrivateDirectory`：每次关键变异（实例锁 O_EXCL、secret temp/sweep/
+   发布、socket bind、public 发布、debris 回收）前，lstat operational 路径并钉住与 preflight 相同的
+   dev/ino/真实目录（任何 swap/缺失/symlink → 固定 UNSAFE_COMPONENT）。
+3) daemon 边界映射 `toSessiondPrivateDirError`（daemon.ts 内，local-posix 不 import Protocol）：仅
+   LocalAuthorityError → 固定 SessiondError forbidden + 固定消息（复用 SESSIOND_PRIVATE_DIR_MESSAGES，
+   永不回显 thrown message/path）；既有 SessiondError 与 raw 原样透传（保留既有 lock/socket 语义）。
+
+local.ts 适配：移除旧 lax `ensurePrivateDirectory`（mkdir recursive + 无条件 chmod 0700，无条件 chmod
+违反"既有目录绝不 chmod"）；`acquireInstanceLock`/`loadOrCreateLocalSecret`/`publishPublicEndpoint`
+新增可选 `privateDir` 上下文（提供则 re-verify，缺省则自行完整 preflight 保持自足与既有直调语义）；
+`recoverStalePublicSocket`/`recoverStalePrivateAliases` 仅在提供上下文时 re-verify（回收绝不自行创建
+目录，直调行为不变）；public socket "not a socket" 消息移除内嵌 endpoint 路径（raw 泄漏修复，无测试
+断言旧消息）。daemon.ts：startDaemon 首个动作即 preflight（.catch 映射），锁/恢复/secret/listen/发布
+全部透传 privateDir 并在 listen 前再 re-verify；catch 统一映射 LocalAuthorityError。
+
+残余窗口（诚实声明，均不宣称 fail-closed）：
+- 与 Local Authority §55.1 相同的两个 created-leaf 窗口：(1) fulfilled leaf mkdir 与紧随 identity 捕获
+  lstat 之间的替换会捕获替换者身份；(2) 最终 pathname re-lstat/realpath 之后（句柄已关、无 openat 可
+  重新钉住）的替换。
+- 有界 re-verify lstat 与随后实际变异非原子：re-verify 与 open 之间被同 UID 并发 actor 替换 → 变异落
+  入替换目录（Node 无 openat，无法消除）。
+- 既有 operational 中间符号链接（含 macOS `/var` 系统别名）由 canonicalize 解析而非拒绝；preflight
+  walk 只拒绝 canonical 路径上的符号链接（missing-tail 中或竞态被 planted）。op re-verify 钉住
+  operational 路径解析到的同一 inode，跨用户边界不变弱。
+
+既有测试语义保持：stale dead-pid lock 回收、并发单实例、public 替换保护、sun_path 限制、symlink/
+文件 debris fail-closed、Windows skip 全部不变。唯一既有测试适配（非期望变更，仅为与冻结策略对齐的
+setup 修正，已在 handoff 诚实记录）：socket-publish.test.ts 的 sun_path 限制测试与并发启动测试原本用
+`mkdir(dir,{recursive:true})`（0755）创建 runtime 目录，而冻结策略要求既有目录精确 0700 否则 fail
+closed——两处 mkdir 改为 `{recursive:true, mode:0o700}`，测试真实意图（socket 长度 / 并发单实例）
+与断言完全保留。新增 25 个对抗用例（local-posix 单测 16 + daemon 集成 9）：0755 既有 → NOT_PRIVATE
+mode 不变零变异；0700 错主（owner 注入）→ NOT_OWNED；symlink leaf/中间 → SYMLINK 目标零触碰；
+竞态 EEXIST leaf（0755 planted）→ validate-only 绝不 chmod 绝不为 created:true；全缺失嵌套 → 0700
+created:true fd 身份 fchmod；created leaf open 换真实 0755 目录 → UNSAFE_COMPONENT 零 chmod；preflight
+后目录 swap/missing/symlink → reverify UNSAFE_COMPONENT；lock/secret 换目录 ctx → UNSAFE_COMPONENT 且
+替换目录零变异；secret marker 探针无 raw path/errno 泄漏；静态源码审计 leafCreated 仅由 fulfilled
+mkdir 置位。
+
+验证（实现者已执行，PENDING 独立 PASS）：sessiond 295 tests（294 pass + 1 Windows skip，多轮稳定无
+flake；基线 270 → 新增 25）；root build/typecheck/check:architecture（14 gates）PASS；root test 全
+workspace 绿（agent-worker 107 / cli 105 / client 52 / host 420 / local-authority 53 / pi-sdk-adapter
+236 / protocol 132 / runtime-contract-tests 76 / runtime-core 12 / sessiond 295）；sessiond/host
+boundary PASS；Startup + Sessions + Runtime E2E 全 PASS（Startup 确认 daemon 在缺失 runtime 目录时创建
+0700 并正常启动、CLI down 清 lock/socket）；git diff --check 干净；package-lock 零变更；工作树
+未 push/deploy/live。
+
+残余/后续：Windows 支持不变（getuid 不可用时 ownership 校验按需关闭，仅此改动，不宣称原生 Windows）；
+本地 authority 未整体委托；Fresh verifier 独立 PASS 待补。
+```
