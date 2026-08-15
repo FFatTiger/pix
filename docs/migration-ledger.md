@@ -2813,7 +2813,7 @@ SessionManager 一致，已由决定性 probe + 测试 13 记录）；adapter na
 可让 sessiond/locator 以该 id 为 canonical 直读；Client navigate UI 为独立切片（本 slice backend-first
 无 Client）；§53 Client rename 仍在飞待集成。Fresh verifier 独立 PASS 待补。
 
-## 59. D2 fork — Runtime Session Fork 生产切片记录（DONE，PENDING 独立验证）
+## 59. D2 fork — Runtime Session Fork 生产切片记录（DONE，Fresh verifier PASS；合并 main `411373d`+`177c0d1`，与 §57 十文件冲突按 verifier 冲突图手工统一：capabilities 19 token、adapter 双 guard/双失败常量、fake-worker 双语义、fixture 树模型统一（fork 按 branchPath 路径持久化）、closed-cap 循环仅剩 auto_name；合并后 adapter 274/274、sessiond 314（313+1skip）、root 全绿（唯一 host worktrees 并发 flake 隔离复跑 20/20 确认 pre-existing）、Runtime E2E×2 同时跑通 navigate+fork 场景）
 
 ```text
 实现：本分支 feat/d2-fork，base main 38b4869（未 merge/push/deploy/live，未改 package-lock/deps，
