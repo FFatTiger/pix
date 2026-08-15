@@ -4,6 +4,7 @@ import type { RuntimeEvent } from "@fffattiger/pix-runtime-core";
 import { RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
 import { CanonicalAgentRuntimeAdapter } from "../src/internal/adapter.js";
 import type { DriverEventListener, DriverState, DriverUiRequest, PiRuntimeDriver } from "../src/internal/types.js";
+import { ScriptedSdkDriverFactory, ScriptedSdkStore } from "./scripted-sdk.js";
 
 /**
  * D2 navigate adapter tests. The canonical boundary must:
@@ -289,5 +290,28 @@ describe("adapter navigate busy guard + convergence (D2 navigate)", () => {
     releasePrompt!();
     const promptResult = await promptPromise;
     assert.equal(promptResult.ok, true, "the blocked prompt must continue to completion");
+  });
+
+  it("read-after-navigate: the session-store context resolves to the navigated leaf (sessions.read/context convergence)", async () => {
+    const store = new ScriptedSdkStore();
+    const factory = new ScriptedSdkDriverFactory(store, { cwd: "/workspace" });
+    const driver = await factory.create({ cwd: "/workspace" }, { capabilities: RUNTIME_CAPABILITIES });
+    const sessionId = driver.identity.sessionId;
+    // Build a 2-turn history (entries: user1, assistant1, user2, assistant2).
+    await driver.prompt("hello");
+    await driver.prompt("world");
+    const ctxBefore = await store.readSessionContext(sessionId);
+    assert.ok(ctxBefore.leafId, "the live leaf must be present");
+    const lastLeaf = ctxBefore.leafId!;
+    const firstEntryId = store.sessions.get(sessionId)!.entries[0]!.entryId;
+    assert.notEqual(firstEntryId, lastLeaf, "the earlier leaf must differ from the current leaf");
+
+    // Navigate back to the earlier leaf: the read-side catalog (same shared
+    // store that backs sessions.read/sessions.context) must immediately resolve
+    // to the navigated leaf — no stale leaf served after success.
+    await driver.navigate(firstEntryId);
+    const ctxAfter = await store.readSessionContext(sessionId);
+    assert.equal(ctxAfter.leafId, firstEntryId, "read-after-navigate must resolve to the navigated leaf");
+    await driver.close("user");
   });
 });
