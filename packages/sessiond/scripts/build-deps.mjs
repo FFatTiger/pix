@@ -24,6 +24,10 @@ const deps = [
   { name: "@fffattiger/pix-runtime-core", dir: join(workspaceRoot, "packages/runtime-core") },
   { name: "@fffattiger/pix-protocol", dir: join(workspaceRoot, "packages/protocol") },
   { name: "@fffattiger/pix-pi-sdk-adapter", dir: join(workspaceRoot, "packages/pi-sdk-adapter") },
+  // Secure-state primitives reused by sessiond's POSIX private-directory
+  // hardening (local-posix.ts): canonical paths + identity/error primitives
+  // only. dist must exist before sessiond's tsc resolves the `.../state` path.
+  { name: "@fffattiger/pix-local-authority", dir: join(workspaceRoot, "packages/local-authority") },
   // agent-worker dist is required so createRequire/import.meta.resolve can
   // locate worker-main. Building it via tsc (not npm run build) avoids the
   // agent-worker prebuild that would re-enter sessiond and recurse.

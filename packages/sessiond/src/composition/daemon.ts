@@ -23,6 +23,13 @@ import {
   type OwnedSocketPublication,
   type SessiondPaths,
 } from "../local.js";
+import {
+  ensureSessiondPrivateDirectory,
+  reverifySessiondPrivateDirectory,
+  SESSIOND_PRIVATE_DIR_MESSAGES,
+  type SessiondPrivateDirectory,
+} from "../local-posix.js";
+import { LocalAuthorityError, type LocalAuthorityCode } from "@fffattiger/pix-local-authority/state";
 import type { WorkerProcessFactory } from "../worker.js";
 import {
   createProductionWorkerProcessFactory,
@@ -208,6 +215,25 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
 }
 
 /**
+ * Map a private-directory hardening failure onto the fixed sessiond error
+ * surface. Only {@link LocalAuthorityError} (from local-posix preflight/re-verify)
+ * is translated — to a fixed sanitized `forbidden` code and the fixed message
+ * for that code (never the thrown message, never a path/errno). Everything else
+ * (existing {@link SessiondError} for lock/socket/secret policy, and raw errors)
+ * passes through unchanged so existing daemon semantics are preserved.
+ */
+function toSessiondPrivateDirError(error: unknown): never {
+  if (error instanceof LocalAuthorityError) {
+    throw new SessiondError(
+      "forbidden",
+      SESSIOND_PRIVATE_DIR_MESSAGES[error.code as LocalAuthorityCode]
+        ?? "sessiond private directory is unsafe",
+    );
+  }
+  throw error;
+}
+
+/**
  * Boot a standalone sessiond daemon in `directory` (resolved via
  * {@link resolveRuntimeDir}). Order (Unix): private dir → instance lock →
  * fail-closed stale public/private socket recovery → private socket path +
@@ -224,7 +250,14 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   }
   const directory = resolveRuntimeDir(options.directory);
   const paths = sessiondPaths(directory);
-  const lock = await acquireInstanceLock(paths);
+  // Private-directory preflight runs FIRST (before the instance lock): a
+  // missing directory is created 0700 (fd-pinned), an existing one is
+  // validate-only (owner / exact 0700 / no symlinks) and NEVER silently
+  // chmod'd. Every critical step below re-verifies the directory dev/ino.
+  // Preflight failures are mapped to the fixed sanitized sessiond error surface
+  // immediately (before any lock/socket state exists to roll back).
+  const privateDir: SessiondPrivateDirectory = await ensureSessiondPrivateDirectory(directory).catch(toSessiondPrivateDirError);
+  const lock = await acquireInstanceLock(paths, privateDir);
   const teardown: Array<() => Promise<void>> = [];
   let server: SessiondRpcServer | undefined;
   let publication: OwnedSocketPublication | undefined;
@@ -273,13 +306,13 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     // Fail-closed stale recovery BEFORE publishing anything new: an old orphan
     // daemon's debris must never be removed unconditionally, and a live orphan
     // (lost lock/public but still serving) must block this start.
-    await recoverStalePublicSocket(paths);
-    await recoverStalePrivateAliases(paths);
+    await recoverStalePublicSocket(paths, privateDir);
+    await recoverStalePrivateAliases(paths, privateDir);
     if (needsUnixSocketPublication()) {
       privatePath = makePrivateEndpointPath(directory);
       assertSocketPathLength(privatePath);
     }
-    const secret = await loadOrCreateLocalSecret(paths);
+    const secret = await loadOrCreateLocalSecret(paths, {}, privateDir);
     const service = new SessiondService(buildDependencies(directory, options), options.serviceOptions);
     // @internal handle-only diagnostics: delegates the LIVE service, so a
     // closed/shutdown daemon reports no workers and no leaked records.
@@ -304,7 +337,12 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     await server.listen();
     teardown.push(() => server!.close());
     if (needsUnixSocketPublication()) {
-      publication = await publishPublicEndpoint(paths, privatePath!, lock.instanceId);
+      // Re-verify the directory identity after listen (the bind is guarded by the
+      // earlier reverify inside loadOrCreateLocalSecret) and before the atomic
+      // hard-link publication of the stable public endpoint. A swap in that window
+      // is detected here: startup fails closed and rollback is identity-scoped.
+      await reverifySessiondPrivateDirectory(privateDir);
+      publication = await publishPublicEndpoint(paths, privatePath!, lock.instanceId, privateDir);
     }
 
     return {
@@ -324,7 +362,9 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     for (const step of teardown.splice(0).reverse()) await step().catch(() => {});
     if (privatePath) await removeOwnedPrivateSocket(privatePath).catch(() => {});
     await lock.release().catch(() => {});
-    throw error;
+    // Map any private-directory hardening failure (LocalAuthorityError from a
+    // bounded re-verify) to the fixed sanitized sessiond error surface.
+    toSessiondPrivateDirError(error);
   }
 }
 
