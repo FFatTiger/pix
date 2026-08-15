@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { Check, GitBranch, PencilSimple, Trash } from "@phosphor-icons/react";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { formatCwdLabel } from "@/lib/search-params";
 import { useVirtualList } from "@/lib/virtual-list";
@@ -53,6 +54,25 @@ function activityTime(session: SessionHeader): { iso: string; ms: number } | und
     return { iso: instant.toISOString(), ms: value };
   }
   return undefined;
+}
+
+/**
+ * Compact relative label for the session-row metadata line (pi-web-desktop
+ * sidebar language: "just now", "5m ago", "3h ago", "2d ago", then the locale
+ * date). Presentation only — the machine-readable instant stays on the
+ * `<time dateTime>` attribute; the full localized timestamp is kept as the
+ * element's tooltip.
+ */
+function formatRelativeTime(ms: number): string {
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(ms).toLocaleDateString();
 }
 
 /**
@@ -414,7 +434,12 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
     <aside className={`sidebar${open ? "" : " sidebar--collapsed"}`} aria-hidden={!open} aria-label="Sessions">
       <div className="sidebar-section">
         <div className="sidebar-section-title">Project</div>
-        <div className="sidebar-cwd" title={search.cwd ?? ""}>{formatCwdLabel(search.cwd)}</div>
+        <div
+          className={`sidebar-cwd${search.cwd ? "" : " sidebar-cwd--empty"}`}
+          title={search.cwd ?? ""}
+        >
+          {formatCwdLabel(search.cwd)}
+        </div>
         <div className="sidebar-trust">
           <TrustBadge cwd={search.cwd} variant="badge" />
         </div>
@@ -468,192 +493,217 @@ export function Sidebar({ open, search, liveSessionId = null, onSessionDeleted }
                     : undefined
                 }
               >
-                <div className="session-row-flex">
-                  <Link
-                    to="/"
-                    search={{ session: session.sessionId, ...(search.cwd === undefined ? {} : { cwd: search.cwd }) }}
-                    className={`session-row${active ? " session-row--active" : ""}`}
-                    aria-current={active ? "page" : undefined}
-                  >
-                    <span className="session-row-title">{label}</span>
-                    <span className="session-row-id">{session.sessionId}</span>
-                    <span className="session-row-id">{formatCwdLabel(session.cwd)}</span>
-                    {activity === undefined ? null : (
-                      <time className="session-row-id" dateTime={activity.iso}>
-                        {new Date(activity.ms).toLocaleString()}
-                      </time>
-                    )}
-                    {messages === undefined ? null : (
-                      <span className="session-row-id">{messages} {messages === 1 ? "message" : "messages"}</span>
-                    )}
-                    {session.parentSessionId === undefined ? null : (
-                      <span className="session-row-id">Fork</span>
-                    )}
-                  </Link>
-                  {canWriteSessions && !renameOpen ? (
-                    <button
-                      type="button"
-                      className="text-btn session-rename-btn"
-                      ref={(el) => {
-                        if (el) renameButtonRefs.current.set(session.sessionId, el);
-                        else renameButtonRefs.current.delete(session.sessionId);
-                      }}
-                      onClick={(event) => {
-                        // Prevent any Link navigation/propagation from this
-                        // row-local control.
-                        event.preventDefault();
-                        event.stopPropagation();
-                        openRename(session);
-                      }}
-                      disabled={busy !== null}
-                      aria-label={`Rename session ${label}`}
+                <div
+                  className={[
+                    "session-item",
+                    active ? "session-item--active" : "",
+                    confirmOpen ? "session-item--confirm" : "",
+                    rowBusy ? "session-item--busy" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                >
+                  <div className="session-row-flex">
+                    <Link
+                      to="/"
+                      search={{ session: session.sessionId, ...(search.cwd === undefined ? {} : { cwd: search.cwd }) }}
+                      className={`session-row${active ? " session-row--active" : ""}`}
+                      aria-current={active ? "page" : undefined}
+                      title={label}
                     >
-                      Rename
-                    </button>
-                  ) : null}
-                  {canDeleteRow && !confirmOpen ? (
-                    <button
-                      type="button"
-                      className="text-btn session-delete-btn"
-                      ref={(el) => {
-                        if (el) deleteButtonRefs.current.set(session.sessionId, el);
-                        else deleteButtonRefs.current.delete(session.sessionId);
-                      }}
-                      onClick={(event) => {
-                        // Prevent any Link navigation/propagation from this
-                        // row-local control.
-                        event.preventDefault();
-                        event.stopPropagation();
-                        // A delete confirm and a rename editor never coexist:
-                        // opening the confirm closes any open editor.
-                        setEditingId(null);
-                        setRenameDraft("");
-                        setRenameError(null);
-                        setConfirmId(session.sessionId);
-                      }}
-                      disabled={busy !== null}
-                      aria-busy={rowBusy}
-                      aria-label={`Delete session ${label}`}
-                    >
-                      Delete
-                    </button>
-                  ) : null}
-                </div>
-                {renameOpen ? (
-                  <form
-                    className="session-rename-editor"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      runRename(session);
-                    }}
-                  >
-                    <input
-                      type="text"
-                      className="session-rename-input"
-                      value={renameDraft}
-                      onChange={(event) => {
-                        setRenameDraft(event.target.value);
-                        if (renameError !== null && renameError.sessionId === session.sessionId) {
-                          setRenameError(null);
-                        }
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Escape") {
-                          event.preventDefault();
-                          handleCancelRename(session);
-                        } else if (event.key === "Enter") {
-                          // Enter saves (explicit; prevents the implicit form
-                          // submit so the singleflight sees exactly one path).
-                          event.preventDefault();
-                          runRename(session);
-                        }
-                      }}
-                      aria-label={`New name for ${label}`}
-                      maxLength={200}
-                      autoComplete="off"
-                      spellCheck={false}
-                      ref={renameInputRef}
-                    />
-                    <div className="session-rename-actions">
-                      <button
-                        type="submit"
-                        className="text-btn"
-                        disabled={busy !== null}
-                        aria-busy={rowBusy}
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        className="text-btn"
-                        onClick={(event) => {
-                          event.preventDefault();
-                          handleCancelRename(session);
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                    {renameError !== null && renameError.sessionId === session.sessionId ? (
-                      <p className="session-rename-error" role="alert">
-                        {renameError.message}
-                      </p>
-                    ) : null}
-                  </form>
-                ) : null}
-                {confirmOpen ? (
-                  <div
-                    className="session-delete-confirm"
-                    role="alert"
-                    aria-label={`Confirm deleting ${label}`}
-                  >
-                    <p className="session-delete-confirm-warning">{DELETE_WARNING}</p>
-                    <div className="session-delete-confirm-actions">
-                      <button
-                        type="button"
-                        className="text-btn session-delete-btn"
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          runDelete(session);
-                        }}
-                        disabled={busy !== null}
-                        aria-busy={rowBusy}
-                        aria-label={`Confirm delete ${label}`}
-                      >
-                        Delete session
-                      </button>
-                      <button
-                        type="button"
-                        className="text-btn"
-                        ref={(el) => {
-                          if (el) cancelButtonRefs.current.set(session.sessionId, el);
-                          else cancelButtonRefs.current.delete(session.sessionId);
-                        }}
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          handleCancelDelete(session);
-                        }}
-                      >
-                        Cancel
-                      </button>
+                      <span className="session-row-title">{label}</span>
+                      <span className="session-row-meta">
+                        <span className="session-row-id" title={session.sessionId}>{session.sessionId}</span>
+                        <span className="session-row-id" title={session.cwd}>{formatCwdLabel(session.cwd)}</span>
+                        {activity === undefined ? null : (
+                          <time dateTime={activity.iso} title={new Date(activity.ms).toLocaleString()}>
+                            {formatRelativeTime(activity.ms)}
+                          </time>
+                        )}
+                        {messages === undefined ? null : (
+                          <span>{messages} {messages === 1 ? "message" : "messages"}</span>
+                        )}
+                        {session.parentSessionId === undefined ? null : (
+                          <span className="session-row-fork">
+                            <GitBranch size={9} weight="regular" aria-hidden="true" />
+                            Fork
+                          </span>
+                        )}
+                      </span>
+                    </Link>
+                    <div className="session-row-actions">
+                      {canWriteSessions && !renameOpen ? (
+                        <button
+                          type="button"
+                          className="session-action session-rename-btn"
+                          ref={(el) => {
+                            if (el) renameButtonRefs.current.set(session.sessionId, el);
+                            else renameButtonRefs.current.delete(session.sessionId);
+                          }}
+                          onClick={(event) => {
+                            // Prevent any Link navigation/propagation from this
+                            // row-local control.
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openRename(session);
+                          }}
+                          disabled={busy !== null}
+                          aria-label={`Rename session ${label}`}
+                        >
+                          <PencilSimple size={13} weight="regular" aria-hidden="true" />
+                        </button>
+                      ) : null}
+                      {canDeleteRow && !confirmOpen ? (
+                        <button
+                          type="button"
+                          className="session-action session-action--danger session-delete-btn"
+                          ref={(el) => {
+                            if (el) deleteButtonRefs.current.set(session.sessionId, el);
+                            else deleteButtonRefs.current.delete(session.sessionId);
+                          }}
+                          onClick={(event) => {
+                            // Prevent any Link navigation/propagation from this
+                            // row-local control.
+                            event.preventDefault();
+                            event.stopPropagation();
+                            // A delete confirm and a rename editor never coexist:
+                            // opening the confirm closes any open editor.
+                            setEditingId(null);
+                            setRenameDraft("");
+                            setRenameError(null);
+                            setConfirmId(session.sessionId);
+                          }}
+                          disabled={busy !== null}
+                          aria-busy={rowBusy}
+                          aria-label={`Delete session ${label}`}
+                        >
+                          <Trash size={13} weight="regular" aria-hidden="true" />
+                        </button>
+                      ) : null}
                     </div>
                   </div>
-                ) : null}
-                {deleteError !== null && deleteError.sessionId === session.sessionId ? (
-                  <p className="session-delete-error" role="alert">
-                    {deleteError.message}
-                  </p>
-                ) : null}
+                  {renameOpen ? (
+                    <form
+                      className="session-rename-editor"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        runRename(session);
+                      }}
+                    >
+                      <input
+                        type="text"
+                        className="session-rename-input"
+                        value={renameDraft}
+                        onChange={(event) => {
+                          setRenameDraft(event.target.value);
+                          if (renameError !== null && renameError.sessionId === session.sessionId) {
+                            setRenameError(null);
+                          }
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            handleCancelRename(session);
+                          } else if (event.key === "Enter") {
+                            // Enter saves (explicit; prevents the implicit form
+                            // submit so the singleflight sees exactly one path).
+                            event.preventDefault();
+                            runRename(session);
+                          }
+                        }}
+                        aria-label={`New name for ${label}`}
+                        maxLength={200}
+                        autoComplete="off"
+                        spellCheck={false}
+                        ref={renameInputRef}
+                      />
+                      <div className="session-rename-actions">
+                        <button
+                          type="submit"
+                          className="session-btn session-btn--primary session-btn--sm"
+                          disabled={busy !== null}
+                          aria-busy={rowBusy}
+                        >
+                          <Check size={12} weight="bold" aria-hidden="true" />
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="session-btn session-btn--sm"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            handleCancelRename(session);
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {renameError !== null && renameError.sessionId === session.sessionId ? (
+                        <p className="session-rename-error" role="alert">
+                          {renameError.message}
+                        </p>
+                      ) : null}
+                    </form>
+                  ) : null}
+                  {confirmOpen ? (
+                    <div
+                      className="session-delete-confirm"
+                      role="alert"
+                      aria-label={`Confirm deleting ${label}`}
+                    >
+                      <p className="session-delete-confirm-warning">{DELETE_WARNING}</p>
+                      <div className="session-delete-confirm-actions">
+                        <button
+                          type="button"
+                          className="session-btn session-btn--danger"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            runDelete(session);
+                          }}
+                          disabled={busy !== null}
+                          aria-busy={rowBusy}
+                          aria-label={`Confirm delete ${label}`}
+                        >
+                          <Trash size={12} weight="regular" aria-hidden="true" />
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          className="session-btn"
+                          ref={(el) => {
+                            if (el) cancelButtonRefs.current.set(session.sessionId, el);
+                            else cancelButtonRefs.current.delete(session.sessionId);
+                          }}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            handleCancelDelete(session);
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {deleteError !== null && deleteError.sessionId === session.sessionId ? (
+                    <p className="session-delete-error" role="alert">
+                      {deleteError.message}
+                    </p>
+                  ) : null}
+                </div>
               </li>
             );
           })}
+          {showLoading ? <li className="sidebar-hint">Loading sessions…</li> : null}
+          {showError ? (
+            <li className="sidebar-hint sidebar-hint--error">Sessions unavailable. Read-only shell remains usable.</li>
+          ) : null}
+          {showEmpty ? <li className="sidebar-hint">No sessions</li> : null}
+          {!canBrowseSessions ? (
+            <li className="sidebar-hint">Session history unavailable until the runtime connects.</li>
+          ) : null}
         </ul>
-        {showLoading ? <p className="sidebar-hint">Loading sessions…</p> : null}
-        {showError ? <p className="sidebar-hint">Sessions unavailable. Read-only shell remains usable.</p> : null}
-        {showEmpty ? <p className="sidebar-hint">No sessions</p> : null}
-        {!canBrowseSessions ? <p className="sidebar-hint">Session history unavailable until the runtime connects.</p> : null}
       </div>
     </aside>
   );
