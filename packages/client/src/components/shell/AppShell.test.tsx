@@ -592,7 +592,7 @@ describe("AppShell D4 session delete navigation", () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), "http://pix.local");
       if (init?.method === "DELETE") {
-        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "content-type": "application/json" } });
       }
       if (url.pathname === "/v1/sessions") {
         return new Response(

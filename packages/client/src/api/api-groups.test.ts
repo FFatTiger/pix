@@ -7,6 +7,18 @@ import { createConfigurationApi } from "./configuration";
 
 function json(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }); }
 function client(body: unknown) { return createHttpClient({ fetchImpl: vi.fn().mockResolvedValue(json(body)) as unknown as typeof fetch }); }
+function recordingClient(calls: { url: string; method: string; body?: unknown }[]) {
+  const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({
+      url,
+      method: (init?.method ?? "GET").toUpperCase(),
+      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+    });
+    return json({ success: true });
+  }) as unknown as typeof fetch;
+  return createHttpClient({ fetchImpl });
+}
 
 const header = { sessionId: "s", cwd: "/repo", projectRoot: "/repo" };
 
@@ -19,6 +31,27 @@ describe("API domain response parsing", () => {
 
   it("rejects malformed sessions", async () => {
     await expect(createSessionsApi(client({ sessions: [{ sessionId: "s" }] })).list()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
+  it("parses the Host DELETE / PATCH success envelope and keeps the autoName contract", async () => {
+    // D4: DELETE and PATCH both settle with `{ success: true }` (SuccessSchema).
+    await expect(createSessionsApi(client({ success: true })).remove("s")).resolves.toEqual({ success: true });
+    await expect(createSessionsApi(client({ success: true })).rename("s", "New")).resolves.toEqual({ success: true });
+    // The OkSchema shape is NOT accepted for rename/delete — a latent
+    // { ok: true } response is a decode failure, never a false success.
+    await expect(createSessionsApi(client({ ok: true })).remove("s")).rejects.toMatchObject({ kind: "decode", code: "INVALID_RESPONSE" });
+    await expect(createSessionsApi(client({ ok: true })).rename("s", "New")).rejects.toMatchObject({ kind: "decode", code: "INVALID_RESPONSE" });
+    // autoName keeps its own contract (OkSchema) unchanged.
+    await expect(createSessionsApi(client({ ok: true })).autoName("s")).resolves.toEqual({ ok: true });
+    await expect(createSessionsApi(client({ success: true })).autoName("s")).rejects.toMatchObject({ kind: "decode", code: "INVALID_RESPONSE" });
+  });
+
+  it("rename sends exactly PATCH /v1/sessions/:id with body { name } and an AbortSignal", async () => {
+    const calls: { url: string; method: string; body?: unknown }[] = [];
+    const signal = new AbortController().signal;
+    await createSessionsApi(recordingClient(calls)).rename("s", "New Name", signal);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ url: "/v1/sessions/s", method: "PATCH", body: { name: "New Name" } });
   });
 
   it("parses Host model catalog and rejects legacy Next model shape", async () => {

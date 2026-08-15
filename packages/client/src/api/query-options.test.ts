@@ -137,12 +137,49 @@ describe("query keys and options", () => {
 
 describe("table-driven mutation invalidation", () => {
   it("invalidates session list and only the affected session prefix", async () => {
-    const { options, invalidate } = invalidationHarness({ ok: true });
+    const { options, invalidate } = invalidationHarness({ success: true });
     const mutation = options.sessions.rename();
     const input = { id: "s", name: "new" };
     await mutation.mutationFn(input); await mutation.onSuccess(undefined, input);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions.lists });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions.byId("s") });
+  });
+
+  it("rename success primes cached list/detail titles BEFORE invalidation (best available order)", async () => {
+    // A stale refetch (old title) cannot roll back the just-renamed title as
+    // long as the invalidation resolves after the cache primer — and the Host
+    // + sessiond overlay (§51) makes the refetch converge to the new title.
+    // Exact limitation: the client query model has no optimistic revision
+    // merge, so an in-flight refetch that resolved BEFORE the overlay published
+    // could still momentarily show the old title; the primer closes the
+    // mutation→refetch window and is the best available ordering.
+    const http = createHttpClient({ fetchImpl: vi.fn().mockResolvedValue(json({ success: true })) as unknown as typeof fetch });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const listKey = queryKeys.sessions.list("/repo");
+    const detailKey = queryKeys.sessions.detail("s");
+    // Pre-populate the current query scopes with the OLD title.
+    queryClient.setQueryData(listKey, { sessions: [{ ...session, title: "Old" }] });
+    queryClient.setQueryData(detailKey, { session: { ...session, title: "Old", entries: [] } });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    const mutation = createMutationOptions(http, queryClient).sessions.rename();
+    await mutation.mutationFn({ id: "s", name: "New" });
+    await mutation.onSuccess({ success: true }, { id: "s", name: "New" });
+    // The cached list + detail titles are primed with the new name immediately.
+    const list = queryClient.getQueryData<{ sessions: Array<{ sessionId: string; title?: string }> }>(listKey);
+    expect(list?.sessions[0]?.title).toBe("New");
+    const detail = queryClient.getQueryData<{ session: { sessionId: string; title?: string } }>(detailKey);
+    expect(detail?.session.title).toBe("New");
+    // Only the title field is written — path/id/timestamps/counts are preserved.
+    expect(list?.sessions[0]).toMatchObject({ sessionId: "s", cwd: "/repo", projectRoot: "/repo" });
+    // Invalidation still runs for the relevant list/detail scopes.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions.lists });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions.byId("s") });
+    // A different session in the same cached list is untouched.
+    queryClient.setQueryData(listKey, { sessions: [{ ...session, sessionId: "other", title: "Keep" }] });
+    const mutation2 = createMutationOptions(http, queryClient).sessions.rename();
+    await mutation2.onSuccess({ success: true }, { id: "s", name: "Other-new" });
+    const list2 = queryClient.getQueryData<{ sessions: Array<{ sessionId: string; title?: string }> }>(listKey);
+    expect(list2?.sessions[0]).toMatchObject({ sessionId: "other", title: "Keep" });
   });
 
   it("invalidates only upload directory, its index and git status", async () => {

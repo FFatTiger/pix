@@ -172,7 +172,7 @@ describe("SessionActions — D2-P1/D2-P2 UI", () => {
     expect(screen.queryByLabelText("Thinking level")).toBeNull();
   });
 
-  it("shows Stats, Rename and Thinking when the runtime advertises the D2 surface", async () => {
+  it("shows Stats and Thinking when the runtime advertises the D2 surface (no SessionActions rename — Sidebar owns rename)", async () => {
     mount();
     const ws = await driveReady();
     await driveAttach(
@@ -182,12 +182,15 @@ describe("SessionActions — D2-P1/D2-P2 UI", () => {
       { thinkingLevel: "off", thinkingLevelPinned: false },
     );
     expect(screen.getByRole("button", { name: "Stats" })).toBeTruthy();
-    expect(screen.getByLabelText("Session name")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Rename" })).toBeTruthy();
     expect(screen.getByLabelText("Thinking level")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Set thinking" })).toBeTruthy();
     expect(screen.getByText(/current: off/)).toBeTruthy();
     expect(screen.getByText(/not pinned/)).toBeTruthy();
+    // The rename surface is intentionally NOT rendered here even though the
+    // runtime advertises runtime.session.rename — the Sidebar is the single
+    // visible rename product surface (D4 Host session.write PATCH).
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    expect(screen.queryByLabelText("Session name")).toBeNull();
     // All Protocol levels are offered.
     const select = screen.getByLabelText("Thinking level") as HTMLSelectElement;
     const values = Array.from(select.options).map((option) => option.value).filter(Boolean);
@@ -230,56 +233,18 @@ describe("SessionActions — D2-P1/D2-P2 UI", () => {
     expect(screen.queryByText(/last assistant text/)).toBeNull();
   });
 
-  it("rename resolves on the command result, refreshes the snapshot, and never fakes a catalog write", async () => {
+  it("never offers a rename control in SessionActions (Sidebar owns rename); no set_session_name is ever issued", async () => {
     mount();
     const ws = await driveReady();
     await driveAttach(ws, ["runtime.prompt", "runtime.abort", "runtime.session.rename"]);
-    const input = screen.getByLabelText("Session name") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "  New Name  " } });
-    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
-    await flush();
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { type: string; commandId: string; name: string } } }>(ws, "command")!;
-    expect(cmd.payload.command.type).toBe("set_session_name");
-    expect(cmd.payload.command.name).toBe("New Name");
-    await serverSend(ws, {
-      type: "response",
-      id: cmd.id,
-      payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "set_session_name" } } },
-    });
-    // fetchSnapshot issues a getSnapshot envelope; answer it with the refreshed state.
-    await flush();
-    const snap = lastFrame<{ type: string; id: string }>(ws, "getSnapshot")!;
-    expect(snap.type).toBe("getSnapshot");
-    await serverSend(ws, {
-      type: "response",
-      id: snap.id,
-      payload: { ok: true, result: snapshotPayload({ sessionId: "s1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.session.rename"] }).snapshot },
-    });
-    expect(screen.getByText(/Renamed session to "New Name"/)).toBeTruthy();
-    expect((screen.getByLabelText("Session name") as HTMLInputElement).value).toBe("");
-    // No history/catalog write is ever attempted: only command + getSnapshot frames.
-    const nonControl = (ws.sent as { type: string }[]).filter((frame) => frame.type !== "handshake" && frame.type !== "attach" && frame.type !== "command" && frame.type !== "getSnapshot");
-    expect(nonControl).toHaveLength(0);
-  });
-
-  it("rename surfaces an unsupported_capability error when the runtime rejects it", async () => {
-    mount();
-    const ws = await driveReady();
-    await driveAttach(ws, ["runtime.prompt", "runtime.abort", "runtime.session.rename"]);
-    const input = screen.getByLabelText("Session name") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "Blocked" } });
-    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
-    await flush();
-    const cmd = lastFrame<{ type: string; id: string; payload: { command: { type: string; commandId: string; name: string } } }>(ws, "command")!;
-    await serverSend(ws, {
-      type: "response",
-      id: cmd.id,
-      payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: false, type: "set_session_name", error: { code: "unsupported_capability", message: "runtime.session.rename not available", retryable: false } } } },
-    });
-    expect(screen.getByRole("alert").textContent).toBe("runtime.session.rename not available");
-    // fetchSnapshot is NOT issued on failure (no fake success + no refresh).
-    await flush();
-    expect(lastFrame(ws, "getSnapshot")).toBeUndefined();
+    // Even with the runtime rename capability advertised, SessionActions renders
+    // no rename input/button and issues no set_session_name command frame.
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    expect(screen.queryByLabelText("Session name")).toBeNull();
+    const commands = (ws.sent as { type: string; payload?: { command?: { type?: string } } }[]).filter(
+      (frame) => frame.type === "command",
+    );
+    expect(commands.some((frame) => frame.payload?.command?.type === "set_session_name")).toBe(false);
   });
 
   it("thinking submit sends set_thinking_level, refreshes snapshot, shows current + pinned", async () => {

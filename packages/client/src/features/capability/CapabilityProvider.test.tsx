@@ -1,13 +1,23 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpClientProvider } from "@/app/http-context";
 import { CapabilityProvider, useCapabilities } from "./CapabilityProvider";
+import type { HostInfo } from "@fffattiger/pix-protocol";
 
 function Probe() {
   const value = useCapabilities();
   return <div>{value.mode}:{String(value.canAgent)}:{String(value.isReadonly)}:{String(value.unavailable)}:{String(value.canBrowseSessions)}:{value.capabilities.join(",")}</div>;
+}
+
+function WriteProbe() {
+  const value = useCapabilities();
+  return (
+    <div>
+      {String(value.canWriteSessions)}:{String(value.canDeleteSessions)}:{String(value.canBrowseSessions)}
+    </div>
+  );
 }
 
 function renderProvider(host?: Parameters<typeof CapabilityProvider>[0]["host"]) {
@@ -80,5 +90,25 @@ describe("CapabilityProvider", () => {
     renderProvider({ mode: "local", capabilities: ["files", "git"] });
     expect(screen.getByText("local:false:true:false:false:files,git")).toBeTruthy();
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("canWriteSessions follows the session.write token (rename gate) and never infers it", () => {
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const Wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}><HttpClientProvider>{children}</HttpClientProvider></QueryClientProvider>;
+    const renderWrite = (capabilities: string[]) => render(
+      <CapabilityProvider host={{ mode: "local", capabilities: capabilities as HostInfo["capabilities"] }}><WriteProbe /></CapabilityProvider>,
+      { wrapper: Wrapper },
+    );
+    renderWrite(["sessions", "session.write"]);
+    expect(screen.getByText("true:false:true")).toBeTruthy();
+    cleanup();
+    // session.delete alone does NOT imply session.write (and vice versa).
+    renderWrite(["sessions", "session.delete"]);
+    expect(screen.getByText("false:true:true")).toBeTruthy();
+    cleanup();
+    // No session token at all → rename gate closed.
+    renderWrite(["agent"]);
+    expect(screen.getByText("false:false:false")).toBeTruthy();
   });
 });

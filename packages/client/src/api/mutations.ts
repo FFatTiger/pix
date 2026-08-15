@@ -9,6 +9,52 @@ async function invalidate(queryClient: QueryClient, ...keys: readonly (readonly 
   await Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
 }
 
+function isQueryKeyPrefix(key: readonly unknown[], prefix: readonly unknown[]): boolean {
+  return key.length >= prefix.length && prefix.every((part, index) => key[index] === part);
+}
+
+/**
+ * D4 rename success cache primer: immediately update the already-cached session
+ * list/detail titles for the renamed session (exact session id, current query
+ * scopes only) BEFORE the mutation invalidates + refetches. This closes the
+ * visual rollback window where a stale catalog read (server-side list cache
+ * TTL / in-flight GET) could momentarily show the old title over the new one.
+ *
+ * Only the `title` field is written — path/id/timestamps/counts are preserved,
+ * never synthesized. Un-cached scopes are skipped; the subsequent invalidation
+ * covers them.
+ */
+function primeSessionTitle(queryClient: QueryClient, id: string, title: string): void {
+  const listPrefix = queryKeys.sessions.lists;
+  for (const query of queryClient.getQueryCache().getAll()) {
+    const key = query.queryKey;
+    if (isQueryKeyPrefix(key, listPrefix)) {
+      const data = query.state.data as { sessions?: ReadonlyArray<{ sessionId: string; title?: string }> } | undefined;
+      if (data && Array.isArray(data.sessions)) {
+        const sessions = data.sessions.map((session) =>
+          session.sessionId === id ? { ...session, title } : session,
+        );
+        queryClient.setQueryData(key, { ...data, sessions });
+      }
+      continue;
+    }
+    // Exact detail scope for this id: ["pix", "sessions", "session", id, "detail"].
+    if (
+      key.length === 5 &&
+      key[0] === "pix" &&
+      key[1] === "sessions" &&
+      key[2] === "session" &&
+      key[3] === id &&
+      key[4] === "detail"
+    ) {
+      const data = query.state.data as { session?: { sessionId: string; title?: string } } | undefined;
+      if (data && data.session && data.session.sessionId === id) {
+        queryClient.setQueryData(key, { ...data, session: { ...data.session, title } });
+      }
+    }
+  }
+}
+
 /**
  * Mutation options. D3B catalog domains (models / skills / plugins / auth
  * provider mutations) are intentionally absent — Host does not mount those
@@ -22,7 +68,17 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
   const sessions = createSessionsApi(http);
   return {
     sessions: {
-      rename: () => ({ mutationKey: ["pix", "sessions", "rename"] as const, mutationFn: (input: { id: string; name: string }) => sessions.rename(input.id, input.name), onSuccess: (_data: unknown, input: { id: string }) => invalidate(queryClient, queryKeys.sessions.lists, queryKeys.sessions.byId(input.id)) }),
+      // D4 rename: prime the cached list/detail titles for the exact session id
+      // across current query scopes FIRST, then invalidate the relevant
+      // list/detail so a stale refetch can never visually roll the title back.
+      rename: () => ({
+        mutationKey: ["pix", "sessions", "rename"] as const,
+        mutationFn: (input: { id: string; name: string }) => sessions.rename(input.id, input.name),
+        onSuccess: (_data: unknown, input: { id: string; name: string }) => {
+          primeSessionTitle(queryClient, input.id, input.name);
+          return invalidate(queryClient, queryKeys.sessions.lists, queryKeys.sessions.byId(input.id));
+        },
+      }),
       remove: () => ({ mutationKey: ["pix", "sessions", "remove"] as const, mutationFn: (id: string) => sessions.remove(id), onSuccess: (_data: unknown, id: string) => invalidate(queryClient, queryKeys.sessions.lists, queryKeys.sessions.byId(id)) }),
       autoName: () => ({ mutationKey: ["pix", "sessions", "auto-name"] as const, mutationFn: (id: string) => sessions.autoName(id), onSuccess: (_data: unknown, id: string) => invalidate(queryClient, queryKeys.sessions.lists, queryKeys.sessions.byId(id)) }),
     },

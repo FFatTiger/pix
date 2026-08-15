@@ -31,6 +31,12 @@ export interface CapabilityContextValue {
    * still enforces authorization and rejects live sessions with 409.
    */
   canDeleteSessions: boolean;
+  /**
+   * True only when the host actually serves the D4 session-history PATCH rename
+   * (`session.write` token; sessiond up AND the mutation seam mounted).
+   * Discovery only — the server still enforces authorization.
+   */
+  canWriteSessions: boolean;
   can: (capability: HostCapability) => boolean;
   host: HostInfo;
 }
@@ -72,6 +78,7 @@ export function CapabilityProvider({ children, host }: CapabilityProviderProps) 
     // sidebar stays disabled, and the client never requests /v1/sessions.
     canBrowseSessions: hasCapability(capabilities, "sessions"),
     canDeleteSessions: hasCapability(capabilities, "session.delete"),
+    canWriteSessions: hasCapability(capabilities, "session.write"),
     can: (capability) => hasCapability(capabilities, capability),
     host: { mode, capabilities: [...capabilities] },
   };
