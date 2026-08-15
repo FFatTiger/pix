@@ -20,8 +20,8 @@ const PROD_MAX_UPLOAD = 25 * 1024 * 1024;
 // tokens are mounted on the Host and stay advertised in BOTH states; `agent`
 // (the runtime) and `sessions` (read-only session history) are added only
 // while sessiond is up. `worktree` is the read-only list token (no write token).
-const FULL_CAPS = ["agent", "sessions", "session.delete", "session.write", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "auth.providers", "skills", "plugins"];
-const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins"];
+const FULL_CAPS = ["agent", "sessions", "session.delete", "session.write", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "auth.providers", "skills", "plugins", "themes"];
+const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins", "themes"];
 
 function delay(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -371,6 +371,36 @@ async function main() {
     const trust = await fetchJson(`${origin}/v1/trust?cwd=${encodeURIComponent(project)}`);
     assert.equal(trust.cwd, project);
     assert.ok(["unknown", "trusted", "denied"].includes(trust.level));
+
+    // ---- D3B-R6 read-only theme catalog surface ---------------------------
+    // Real catalog reads: builtin sets are listed/resolved with zero Workers,
+    // and strict query/name/mode validation answers fixed sanitized errors.
+    const themes = await fetchJson(`${origin}/v1/themes?cwd=${encodeURIComponent(project)}`);
+    assert.equal(Array.isArray(themes.themeSets), true, "themeSets must be an array");
+    const gruvbox = themes.themeSets.find((set) => set.name === "gruvbox");
+    assert.ok(gruvbox && gruvbox.builtin === true && gruvbox.hasDark === true && gruvbox.hasLight === true);
+    assert.equal(themes.themeSets.length, 5, "exactly the five built-in sets with an empty agent dir");
+    const gruvboxDark = await fetchJson(`${origin}/v1/themes/gruvbox?mode=dark&cwd=${encodeURIComponent(project)}`);
+    assert.equal(gruvboxDark.name, "gruvbox");
+    assert.equal(gruvboxDark.isDark, true);
+    assert.equal(gruvboxDark.cssVars["--bg"], "#282828");
+    assert.equal(Object.keys(gruvboxDark.cssVars).length, 29);
+    const gruvboxLight = await fetchJson(`${origin}/v1/themes/gruvbox?mode=light&cwd=${encodeURIComponent(project)}`);
+    assert.equal(gruvboxLight.isDark, false);
+    for (const value of Object.values(gruvboxDark.cssVars)) {
+      assert.match(value, /^(?:#[0-9a-f]{3,6}|rgba\(\d{1,3},\d{1,3},\d{1,3},(?:0(?:\.\d+)?|1(?:\.0+)?)\))$/);
+    }
+    const themesNoCwd = await fetch(`${origin}/v1/themes`);
+    assert.equal(themesNoCwd.status, 400);
+    assert.equal((await themesNoCwd.json()).code, "CWD_REQUIRED");
+    const themesBadMode = await fetch(`${origin}/v1/themes/gruvbox?mode=auto&cwd=${encodeURIComponent(project)}`);
+    assert.equal(themesBadMode.status, 400);
+    const themesBadName = await fetch(`${origin}/v1/themes/..?cwd=${encodeURIComponent(project)}`);
+    assert.ok(themesBadName.status === 400 || themesBadName.status === 404);
+    const themesMissing = await fetch(`${origin}/v1/themes/does-not-exist?cwd=${encodeURIComponent(project)}`);
+    assert.equal(themesMissing.status, 404);
+    assert.equal((await themesMissing.json()).code, "THEME_NOT_FOUND");
+
     const missingCwd = await fetch(`${origin}/v1/models`);
     assert.equal(missingCwd.status, 400);
     assert.equal((await missingCwd.json()).code, "CWD_REQUIRED");
@@ -632,6 +662,11 @@ async function main() {
     // `worktree` is a read-only list token: the real GET remains available
     // while sessiond is down and returns the main + rehydrated managed topology.
     const downWorktrees = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
+    assert.equal(downWorktrees.isGit, true, "worktree GET must remain available while sessiond is down");
+    // Themes are sessiond-independent: the degraded host honestly keeps the
+    // token AND serves real reads (no sessiond, no Worker).
+    const downThemes = await fetchJson(`${origin}/v1/themes?cwd=${encodeURIComponent(project)}`);
+    assert.equal(downThemes.themeSets.length, 5, "degraded host still lists built-in themes");
     assert.equal(downWorktrees.isGit, true, "worktree GET must remain available while sessiond is down");
     assert.ok(
       downWorktrees.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === true),

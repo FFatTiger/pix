@@ -9,6 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { THEME_CSS_VAR_KEYS } from "./index.js";
 import type {
   CredentialCatalogPort,
   CredentialStorePort,
@@ -21,6 +22,7 @@ import type {
   ResourceCatalogStorePort,
   SessionCatalogPort,
   SessionMutationPort,
+  ThemeCatalogPort,
   TrustGateResult,
 } from "./index.js";
 
@@ -70,6 +72,25 @@ const _resNoReload: Missing<ResourceCatalogPort, "reload"> = true;
 // Read-only trust query: no setTrust mutation and no full-status accessor.
 const _trustQueryNoSet: Missing<ProjectTrustQueryPort, "setTrust"> = true;
 const _trustQueryLeanOnly: Missing<ProjectTrustQueryPort, "getTrust"> = true;
+
+// Read-only theme catalog: exactly the two read methods — no write/reload and
+// NO expansion of ResourceCatalogPort (themes are a separate narrow port, not
+// a resource-catalog seam).
+const _themeNoWrite: Missing<ThemeCatalogPort, "writeTheme"> = true;
+const _themeNoReload: Missing<ThemeCatalogPort, "reload"> = true;
+const _themeNoListSkills: Missing<ThemeCatalogPort, "listSkills"> = true;
+const _themeNotResourceCatalog: Assignable<
+  ThemeCatalogPort,
+  ResourceCatalogPort
+> = false;
+const _resourceCatalogNotTheme: Assignable<
+  ResourceCatalogPort,
+  ThemeCatalogPort
+> = false;
+const _themeExact: IsExact<
+  keyof ThemeCatalogPort,
+  "listThemeSets" | "resolveTheme"
+> = true;
 
 // Mutation ports are separately declared and each EXTENDS its read-only port
 // (they are not a combined cross-domain writable object).
@@ -174,6 +195,24 @@ test("the session mutation port exposes only renameSession", () => {
   const keys = Object.keys(mutation);
   assert.deepEqual(keys, ["renameSession"]);
   assert.equal(typeof mutation.renameSession, "function");
+});
+
+test("a read-only theme catalog object exposes exactly the two read methods", () => {
+  const catalog: ThemeCatalogPort = {
+    listThemeSets: () => Promise.resolve([]),
+    resolveTheme: () => Promise.reject(new Error("not implemented")),
+  };
+  assert.deepEqual(Object.keys(catalog).sort(), ["listThemeSets", "resolveTheme"]);
+});
+
+test("the theme CSS variable whitelist is the frozen 29-key web-client surface", () => {
+  // Order is part of the frozen projection; every key is a custom property.
+  assert.equal(THEME_CSS_VAR_KEYS.length, 29);
+  for (const key of THEME_CSS_VAR_KEYS) {
+    assert.match(key, /^--[a-z-]+$/, `${key} must be a lowercase CSS custom property`);
+  }
+  // Defensive-corruption guard: no duplicates can ever enter the whitelist.
+  assert.equal(new Set(THEME_CSS_VAR_KEYS).size, THEME_CSS_VAR_KEYS.length);
 });
 
 test("a read-only session catalog object exposes no renameSession", () => {

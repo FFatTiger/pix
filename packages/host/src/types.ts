@@ -35,7 +35,8 @@ export type HostCapability =
   | "models"
   | "auth.providers"
   | "skills"
-  | "plugins";
+  | "plugins"
+  | "themes";
 
 export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "agent",
@@ -53,17 +54,21 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "auth.providers",
   "skills",
   "plugins",
+  "themes",
 ] as const;
 
 /**
  * Catalog capability tokens (D3B-R1B). Advertised only when the corresponding
- * catalog seam is actually mounted. Independent of sessiond.
+ * catalog seam is actually mounted. Independent of sessiond. `themes` is the
+ * read-only theme catalog token (D3B-R6): theme reads never depend on
+ * sessiond, so the token stays advertised in the degraded projection too.
  */
 export const CATALOG_CAPABILITIES: readonly HostCapability[] = [
   "models",
   "auth.providers",
   "skills",
   "plugins",
+  "themes",
 ] as const;
 
 /** Capabilities that remain usable when sessiond is unavailable (read-only). */
@@ -282,6 +287,22 @@ export interface CatalogTrustSeam {
 }
 
 /**
+ * Project-cwd-aware theme catalog (read-only theme sets + resolved CSS vars).
+ * Composition creates one per canonical cwd after consulting trust — the seam
+ * receives the trust-gated `trusted` flag so untrusted projects contribute no
+ * project-local themes (global + built-in themes remain readable).
+ */
+export interface CatalogThemesSeam {
+  forCwd(
+    cwd: string,
+    trusted: boolean,
+  ): {
+    listThemeSets(): Promise<unknown>;
+    resolveTheme(name: string, mode: "dark" | "light"): Promise<unknown>;
+  };
+}
+
+/**
  * Read-only catalog deps (D3B-R1B). Protocol-independent: every catalog method
  * returns `unknown`. Production composition reuses the same
  * {@link AllowedRootService} as resources so project routes share one roots
@@ -298,6 +319,7 @@ export interface CatalogDeps {
   credentials?: CatalogCredentialsSeam;
   resources?: CatalogResourcesSeam;
   trust?: CatalogTrustSeam;
+  themes?: CatalogThemesSeam;
 }
 
 export interface HostCapabilityDeps {

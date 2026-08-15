@@ -21,12 +21,14 @@ import { createPiSdkModelCatalog } from "@fffattiger/pix-pi-sdk-adapter/models";
 import { createPiSdkCredentialCatalog } from "@fffattiger/pix-pi-sdk-adapter/credentials";
 import { createPiSdkResourceCatalog } from "@fffattiger/pix-pi-sdk-adapter/resources";
 import { createPiSdkTrustCatalog } from "@fffattiger/pix-pi-sdk-adapter/trust";
+import { createPiSdkThemeCatalog } from "@fffattiger/pix-pi-sdk-adapter/themes";
 import type { AllowedRootService } from "../resources/allowed-roots.js";
 import type {
   CatalogCredentialsSeam,
   CatalogDeps,
   CatalogModelsSeam,
   CatalogResourcesSeam,
+  CatalogThemesSeam,
   CatalogTrustSeam,
   HostCapability,
 } from "../types.js";
@@ -37,6 +39,7 @@ export const CATALOG_CAPABILITY_TOKENS: readonly HostCapability[] = [
   "auth.providers",
   "skills",
   "plugins",
+  "themes",
 ] as const;
 
 /** Single safe error class for any agentDir configuration failure. */
@@ -121,5 +124,21 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     canReloadResources: (cwd: string) => trustPort.canReloadResources(cwd),
   };
 
-  return { roots, models, credentials, resources, trust };
+  // D3B-R6: read-only theme catalog. Fresh catalog per canonical cwd+trust so
+  // a trust flip is never masked by a long-lived store; the canonical cwd is
+  // passed explicitly to every port call (no implicit process.cwd anywhere).
+  // Untrusted projects contribute no project-local themes; global (agent-dir)
+  // and built-in themes stay readable in both states (sessiond-independent).
+  const themes: CatalogThemesSeam = {
+    forCwd(cwd: string, trusted: boolean) {
+      const catalog = createPiSdkThemeCatalog({ agentDir, cwd, trusted });
+      return {
+        listThemeSets: () => catalog.listThemeSets(cwd),
+        resolveTheme: (name: string, mode: "dark" | "light") =>
+          catalog.resolveTheme(name, mode, cwd),
+      };
+    },
+  };
+
+  return { roots, models, credentials, resources, trust, themes };
 }

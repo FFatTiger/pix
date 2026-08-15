@@ -11,6 +11,10 @@ import { z } from "zod";
  * token (`project.trust`); writes/mutations are deferred to later Host
  * composition milestones. Trust state is an internal gate for resource
  * visibility, not a negotiated capability.
+ *
+ * Read-only theme catalog token: `themes` — listed/advertised only while the
+ * Host actually mounts the theme catalog seam (theme reads never depend on
+ * sessiond, so the token stays advertised in the degraded projection too).
  */
 export const HostCapabilitySchema = z.enum([
   "agent",
@@ -28,6 +32,7 @@ export const HostCapabilitySchema = z.enum([
   "auth.providers",
   "skills",
   "plugins",
+  "themes",
   "export",
 ]);
 

@@ -22,3 +22,4 @@ export * from "./handshake.js";
 export * from "./ws.js";
 export * from "./sessiond.js";
 export * from "./worker.js";
+export * from "./themes.js";

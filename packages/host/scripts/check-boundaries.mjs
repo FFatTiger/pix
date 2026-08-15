@@ -42,6 +42,7 @@ const COMPOSITION_ALLOWED_ADAPTER_SUBPATHS = new Set([
   "@fffattiger/pix-pi-sdk-adapter/credentials",
   "@fffattiger/pix-pi-sdk-adapter/resources",
   "@fffattiger/pix-pi-sdk-adapter/trust",
+  "@fffattiger/pix-pi-sdk-adapter/themes",
 ]);
 
 // These identifiers are intentionally assembled from parts so this
@@ -77,6 +78,7 @@ const COMPOSITION_ALLOWED_EXTERNAL_PREFIXES = [
   "@fffattiger/pix-pi-sdk-adapter/credentials",
   "@fffattiger/pix-pi-sdk-adapter/resources",
   "@fffattiger/pix-pi-sdk-adapter/trust",
+  "@fffattiger/pix-pi-sdk-adapter/themes",
 ];
 
 function walk(dir, files = []) {

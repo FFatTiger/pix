@@ -85,6 +85,15 @@ export {
   projectTrustLevel,
   projectCanReloadResources,
 } from "./routes/catalogs.js";
+export {
+  registerThemeRoutes,
+  projectThemeSetInfo,
+  projectResolvedTheme,
+  requireValidThemeName,
+  requireValidThemeMode,
+  THEME_NAME_PATTERN,
+  THEME_UNAVAILABLE_MESSAGE,
+} from "./routes/themes.js";
 export { createAllowedRootService, pathContainment } from "./resources/allowed-roots.js";
 export type { AllowedRootPolicy, AllowedRootService, AuthorizedPath, RootExpansionPlan, RootExpansionResult } from "./resources/allowed-roots.js";
 // D3A-P0 narrow facade: Host-dir location resolver + fixed error class. Raw
@@ -181,6 +190,7 @@ export type {
   CatalogCredentialsSeam,
   CatalogResourcesSeam,
   CatalogTrustSeam,
+  CatalogThemesSeam,
   TrustedProxyOptions,
   WsSession,
 } from "./types.js";

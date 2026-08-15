@@ -96,6 +96,7 @@ describe("capabilities", () => {
       "auth.providers",
       "skills",
       "plugins",
+      "themes",
       "export",
     ];
     assert.deepEqual([...ALL_HOST_CAPABILITIES].sort(), [...expected].sort());
@@ -106,12 +107,15 @@ describe("capabilities", () => {
 
   it("rejects mutation/trust-management capability tokens (read-only foundation)", () => {
     // D3B-R1A freezes the resource/auth/model surface as read-only: there is
-    // no configure/manage/trust-mutation capability.
+    // no configure/manage/trust-mutation capability. Theme catalog stays
+    // read-only the same way: no themes.write/themes.reload token exists.
     for (const rejected of [
       "models.configure",
       "skills.manage",
       "plugins.manage",
       "project.trust",
+      "themes.write",
+      "themes.reload",
     ]) {
       assert.equal(HostCapabilitySchema.safeParse(rejected).success, false);
     }

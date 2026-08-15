@@ -22,6 +22,7 @@ import { registerGitRoutes } from "./routes/git.js";
 import { registerWorktreeRoutes } from "./routes/worktrees.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerCatalogRoutes } from "./routes/catalogs.js";
+import { registerThemeRoutes } from "./routes/themes.js";
 import { createFileWatchManager } from "./resources/file-watch.js";
 
 export interface HostApp {
@@ -107,6 +108,8 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
   }
   if (deps.catalogs) {
     registerCatalogRoutes(app, deps.catalogs);
+    // D3B-R6: read-only theme catalog routes; no-op without the themes seam.
+    registerThemeRoutes(app, deps.catalogs);
   }
   if (deps.resources) {
     registerFileRoutes(app, { roots: deps.resources.allowedRoots, ...(deps.resources.limits ? { limits: deps.resources.limits } : {}), ...(deps.resources.defaultCwd ? { defaultCwd: deps.resources.defaultCwd } : {}), ...(deps.resources.defaultCwdFactory ? { defaultCwdFactory: deps.resources.defaultCwdFactory } : {}) });

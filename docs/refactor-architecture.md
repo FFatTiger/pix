@@ -90,13 +90,14 @@ ModelCatalogPort                         # 模型、默认值、thinking 能力
 CredentialStorePort                      # provider auth，不暴露原始 credential
 ResourceCatalogPort                      # skills/plugins/commands
 ProjectTrustPort                         # 项目信任与资源 reload 边界
+ThemeCatalogPort                         # 只读主题目录（builtin/global/trusted project → CSS vars）
 ```
 
 各进程只注入自己需要的 Port：
 
 - Worker：`AgentRuntimeFactory`
 - sessiond：`SessionLocatorPort`
-- Host：`SessionCatalogPort`、`ModelCatalogPort`、`CredentialStorePort`、`ResourceCatalogPort`、`ProjectTrustPort`
+- Host：`SessionCatalogPort`、`ModelCatalogPort`、`CredentialStorePort`、`ResourceCatalogPort`、`ProjectTrustPort`、`ThemeCatalogPort`
 
 防腐层负责：
 
@@ -151,6 +152,7 @@ interface AgentRuntimePort {
 @fffattiger/pix-pi-sdk-adapter/sessions   # Host/session locator/catalog
 @fffattiger/pix-pi-sdk-adapter/models     # Host model application service
 @fffattiger/pix-pi-sdk-adapter/resources  # Host skills/plugins/trust service
+@fffattiger/pix-pi-sdk-adapter/themes     # Host 只读主题目录（builtin/global/project JSON 解析）
 ```
 
 各子路径不得通过聚合 barrel 提前加载其它 Adapter。未来 `pi-rpc-adapter` 可以先只实现 `/agent`，其余 Port 继续注入现有 SDK/文件系统实现，实现按 Port 渐进替换。
@@ -219,7 +221,7 @@ AgentSession 活在 Web/Next 进程内。重启 Web（或热更新拖垮进程�
 | 通道 | 用途 |
 |------|------|
 | `WS /v1/runtime` | prompt / steer / follow_up / abort / set_model / compact / fork… + 事件流 |
-| `HTTP /v1/*` | sessions、files、git、models、skills、plugins、gate 等资源 API；selected history visible-branch export 当前复用 sessions context 并在 Client 本地生成，不设专用 export endpoint |
+| `HTTP /v1/*` | sessions、files、git、models、skills、plugins、themes、gate 等资源 API；selected history visible-branch export 当前复用 sessions context 并在 Client 本地生成，不设专用 export endpoint |
 | Web ↔ sessiond | 本机 IPC/RPC（实现细节可演进；对外仍表现为上述协议） |
 
 ### 握手
@@ -264,6 +266,16 @@ Client 按 `capabilities` 显隐功能：
 | `agent` | 只读浏览 |
 | `files.write` | 禁用写入 |
 | `worktree` | 隐藏 worktree 切换 |
+| `themes` | 隐藏主题切换（内置/自定义主题不可用） |
+
+### 只读主题目录（D3B-R6）
+
+`ThemeCatalogPort`（runtime-core）→ `@fffattiger/pix-pi-sdk-adapter/themes`（高保真移植旧桌面 Web 端的 `lib/theme.ts`）→ Host `GET /v1/themes` / `GET /v1/themes/:name`（Protocol strict DTO：`ThemeSetInfo` / `ThemeListResponse` / `ResolvedThemeResponse`）：
+
+- 解析语义与源一致：5 套 builtin（gruvbox / miku-aqua / orbital-rose / scarlet-tether / solarized，dark+light）、`<agentDir>/themes/*.json` 全局主题、trusted 项目 `<cwd>/.pi/themes/*.json`；`-dark`/`-light` 文件名配对、单文件按 bg0 亮度推断极性、`vars` 引用/256 色/无 `#` 六位 hex/空串默认链、52 个 pi token → 固定 29 个 CSS vars；解析优先级 global → project → builtin（按源实际确认）。
+- 安全强化（相对源的固定偏差）：主题名先按 slug 白名单校验后才触碰文件系统，源里的「name 作为直接文件路径」回退被移除；发现/解析要求文件 realpath 仍在 themes 目录内且目录仍在 caller-owned base（agentDir / cwd）内（symlink 逃逸跳过）；主题文件有大小上限；非安全颜色字面量（`url()`、`expression()`、命名色等）一律按未设置 token 走默认链，绝不进 CSS vars；单个坏 JSON 不影响列表；错误结构化（`not_found`/`invalid_input`）且不泄路径/原始内容。
+- Host 边界：`?cwd=` 必须是 AllowedRoots 授权的绝对路径（无隐式 cwd）；未 trust 的项目不加载项目主题（global/builtin 仍可读）；`mode` 严格 `light|dark`（默认 `dark`）；cssVars 键 29 白名单、值仅安全 hex/rgba；固定消毒 400（`CWD_REQUIRED`/`INVALID_THEME_NAME`/`INVALID_THEME_MODE`）/404（`THEME_NOT_FOUND`）/503（`CATALOG_UNAVAILABLE`）。
+- capability：只读 `themes` token 仅在 seam 真实接线时广告；主题读取不依赖 sessiond，degraded（sessiond down）诚实保留 token 与真实读取；HTTP/bootstrap/health/WS 四面一致。
 
 ## 7. 数据流
 

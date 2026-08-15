@@ -64,6 +64,25 @@ function fakeCredentials(impl = {}) {
   };
 }
 
+function fakeThemes(impl = {}) {
+  return {
+    forCwd(cwd, trusted) {
+      return {
+        listThemeSets: async () =>
+          impl.listSets
+            ? impl.listSets(cwd, trusted)
+            : [{ name: "gruvbox", displayName: "Gruvbox", hasDark: true, hasLight: true, builtin: true }],
+        resolveTheme: async () => {
+          if (impl.resolveTheme) return impl.resolveTheme();
+          const error = new Error("not found");
+          error.code = "not_found";
+          throw error;
+        },
+      };
+    },
+  };
+}
+
 function fakeResources(impl = {}) {
   const seen = [];
   return {
@@ -362,6 +381,7 @@ test("catalog caps stay advertised when sessiond is down", async () => {
     models: fakeModels(),
     credentials: fakeCredentials(),
     resources: fakeResources(),
+    themes: fakeThemes(),
   };
   const { sessiond, capabilities } = await resolveCapabilities({
     catalogs,

@@ -25,6 +25,7 @@ import type {
 } from "./session.js";
 import type { RuntimeSnapshot } from "./state.js";
 import type { PluginInfo, PluginWriteInput, SkillInfo, SkillInstallInput, SlashCommandInfo } from "./resources.js";
+import type { ResolvedTheme, ThemeSetInfo, ThemeVariant } from "./themes.js";
 import type { ProjectTrustState, ProjectTrustStatus, TrustGateResult } from "./trust.js";
 
 /* ------------------------------------------------------------------ */
@@ -240,6 +241,31 @@ export interface ResourceCatalogStorePort extends ResourceCatalogPort {
   setSkillEnabled(name: string, enabled: boolean): Promise<SkillInfo>;
   /** Reload skills/plugins/tools (subject to project trust at the caller). */
   reload(): Promise<void>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Theme catalog (Host read side): theme sets + resolved CSS vars      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Read-only theme catalog. Lists theme sets (agent-dir global themes,
+ * trusted project `.pi/themes`, plus the built-in registry) and resolves one
+ * variant of a set into the fixed whitelisted CSS custom properties.
+ *
+ * Project-scoped reads take an optional canonical `cwd`; the caller gates the
+ * cwd by project trust BEFORE the read (untrusted projects contribute no
+ * project-local themes — the same resource-security principle as
+ * {@link ResourceCatalogPort}). No write/reload: themes are immutable data.
+ *
+ * `resolveTheme` rejects with a structured {@link RuntimeError} (`not_found`)
+ * when no user theme, project theme or built-in matches; malformed names
+ * reject with `invalid_input` before any filesystem access.
+ */
+export interface ThemeCatalogPort {
+  /** All available theme sets for the (optional) project cwd. */
+  listThemeSets(cwd?: string): Promise<readonly ThemeSetInfo[]>;
+  /** Resolve one variant of a theme set into whitelisted CSS variables. */
+  resolveTheme(name: string, mode: ThemeVariant, cwd?: string): Promise<ResolvedTheme>;
 }
 
 /* ------------------------------------------------------------------ */

@@ -22,8 +22,10 @@ export interface ResolvedCapabilities {
 
 /**
  * Catalog capability tokens for the seams that are actually mounted. Only the
- * four negotiated catalog tokens are advertised here; trust/commands have no
+ * negotiated catalog tokens are advertised here; trust/commands have no
  * independent capability token (routes still mount when their seams exist).
+ * `themes` mounts with the themes seam and is sessiond-independent, so it
+ * stays advertised in the degraded projection too.
  */
 export function catalogCapabilitiesFromDeps(
   catalogs: CatalogDeps | undefined,
@@ -36,6 +38,7 @@ export function catalogCapabilitiesFromDeps(
     // skills + plugins share the resources seam; both tokens advertise together.
     tokens.push("skills", "plugins");
   }
+  if (catalogs.themes) tokens.push("themes");
   // Defensive: only emit known catalog tokens (order matches CATALOG_CAPABILITIES).
   return CATALOG_CAPABILITIES.filter((token) => tokens.includes(token));
 }

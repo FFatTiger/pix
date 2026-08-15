@@ -22,6 +22,7 @@ export * from "./model.js";
 export * from "./ports.js";
 export * from "./queue.js";
 export * from "./resources.js";
+export * from "./themes.js";
 export * from "./result.js";
 export * from "./session.js";
 export * from "./side-chat.js";

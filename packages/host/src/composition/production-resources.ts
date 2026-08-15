@@ -107,6 +107,11 @@ export const PRODUCTION_LEDGER_MAX = 128;
  * advertised ONLY while sessiond is up and excluded from degraded. The token is
  * discovery, never authorization — the route still fail-closes on every
  * authority/ownership check.
+ *
+ * `themes` (D3B-R6) is the read-only theme catalog token: theme reads (global
+ * agent-dir themes + built-ins, plus trusted project themes) never depend on
+ * sessiond, so the token stays advertised in degraded too — the degraded host
+ * honestly still serves /v1/themes.
  */
 export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
   "files",
@@ -119,6 +124,7 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
   "auth.providers",
   "skills",
   "plugins",
+  "themes",
 ];
 
 /**
@@ -143,6 +149,8 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
  * is the honest product write capability for create/remove: full/sessiond-up
  * only (the mutations are sessiond-guarded and managed-ledger-backed), excluded
  * from degraded. The token is discovery, never authorization.
+ * `themes` is the read-only theme catalog token (D3B-R6), present in BOTH
+ * states (theme reads never depend on sessiond).
  */
 export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "agent",
@@ -160,6 +168,7 @@ export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "auth.providers",
   "skills",
   "plugins",
+  "themes",
 ];
 
 /** Single safe error class for any roots configuration/canonicalization failure. */
