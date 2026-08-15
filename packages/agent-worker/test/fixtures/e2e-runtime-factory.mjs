@@ -26,9 +26,10 @@ import { randomUUID } from "node:crypto";
 // runtime.bash (bash) / runtime.bash.abort (abort_bash), the D2-P6 tools+
 // reload triple runtime.tools.read (get_tools) / runtime.tools.write (set_tools)
 // / runtime.reload (reload), the D2-P7 manual-compact pair
-// runtime.compact (compact) / runtime.compact.abort (abort_compaction) and the
+// runtime.compact (compact) / runtime.compact.abort (abort_compaction), the
 // D2-P8 extension-UI token runtime.extension_ui (extension_ui_response /
-// extension_ui_input) are the capability-gated unlocks.
+// extension_ui_input) and the D2 navigate token runtime.navigate
+// (navigate_tree) are the capability-gated unlocks.
 const CAPABILITIES = {
   capabilities: [
     "runtime.prompt",
@@ -48,6 +49,7 @@ const CAPABILITIES = {
     "runtime.compact",
     "runtime.compact.abort",
     "runtime.extension_ui",
+    "runtime.navigate",
   ],
   version: 1,
 };
@@ -158,6 +160,14 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
   // D2-P7 deterministic message history + context usage (compact trims both).
   /** @type {{ role: string, content: unknown }[]} */
   let messages = [];
+  // D2 navigate deterministic session-tree model: every prompt appends one
+  // assistant entry whose parent is the current leaf; navigate moves the leaf
+  // pointer and rebuilds the visible history from root→leaf.
+  /** @type {{ id: string, parentId: string | null, text: string }[]} */
+  let entries = [];
+  /** @type {string | null} */
+  let leafId = null;
+  let entrySeq = 0;
   let contextUsage = { percent: 0, contextWindow: 200_000, tokens: 0 };
   let lastAssistantText = "";
   let thinkingLevel = "off";
@@ -214,6 +224,36 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
     }
   }
 
+  // D2 navigate deterministic branch helpers. `branchPath` walks the parent
+  // chain from a target entry to the root (the visible history of that leaf);
+  // `rebuildMessages` rewrites the authoritative `messages`/`messageCount` to
+  // the selected leaf's path so getSnapshot / get_state / detach/reattach all
+  // converge to the navigated state.
+  function branchPath(targetId) {
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const path = [];
+    const seen = new Set();
+    let current = targetId;
+    while (current !== null && current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const entry = byId.get(current);
+      if (!entry) break;
+      path.unshift(entry);
+      current = entry.parentId;
+    }
+    return path;
+  }
+
+  function rebuildMessages(targetId) {
+    messages = branchPath(targetId).map((entry) => ({
+      role: "assistant",
+      content: [{ type: "text", text: entry.text }],
+      model: "e2e-fixture",
+      provider: "e2e",
+    }));
+    messageCount = messages.length;
+  }
+
   function baseState() {
     return {
       sessionId,
@@ -221,6 +261,7 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
       isPromptRunning,
       isBashRunning,
       isCompacting,
+      ...(leafId === null ? {} : { leafId }),
       ...(compaction === null ? {} : { compaction: { ...compaction } }),
       model,
       messageCount,
@@ -514,6 +555,18 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
           const trimmed = messages.length <= 2 ? [] : messages.slice(2);
           messages = trimmed;
           messageCount = trimmed.length;
+          // Keep the D2 navigate branch model consistent with the trimmed
+          // history: the surviving entries are the last `messageCount` in
+          // insertion order, and the leaf stays the last surviving entry (the
+          // trimmed parents simply stop the walk — branchPath handles a missing
+          // parent by stopping at the first surviving entry).
+          if (trimmed.length === 0) {
+            entries = [];
+            leafId = null;
+          } else {
+            entries = entries.slice(-trimmed.length);
+            leafId = entries.at(-1).id;
+          }
           contextUsage = {
             percent: Math.max(0, contextUsage.percent - 30),
             contextWindow: contextUsage.contextWindow,
@@ -604,6 +657,27 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
             blockedBash.resolve({ kind: "aborted" });
           }
           return { ok: true, type: "abort_bash" };
+        case "navigate_tree": {
+          // D2 navigate (mirrors the production adapter guard): reject with
+          // session_busy while a prompt/bash/compaction is in flight BEFORE any
+          // mutation, reject blank/missing targets as invalid_input, and reject
+          // unknown leaf references as invalid_input (never a fake success). On
+          // success move the leaf and rebuild the authoritative history.
+          const targetId = typeof command.targetId === "string" ? command.targetId : "";
+          if (targetId.trim() === "") {
+            return { ok: false, type: "navigate_tree", error: { code: "invalid_input", message: "navigation target is required", retryable: false } };
+          }
+          if (isPromptRunning || isBashRunning || isCompacting) {
+            return { ok: false, type: "navigate_tree", error: { code: "session_busy", message: "a prompt, bash command, or compaction is already in progress", retryable: true } };
+          }
+          if (!entries.some((entry) => entry.id === targetId)) {
+            return { ok: false, type: "navigate_tree", error: { code: "invalid_input", message: "navigation target is invalid", retryable: false } };
+          }
+          leafId = targetId;
+          rebuildMessages(targetId);
+          emit({ type: "runtime_state_changed", sessionId });
+          return { ok: true, type: "navigate_tree" };
+        }
         case "extension_ui_response": {
           const entry = pendingUi.find((item) => item.request.id === command.id);
           if (!entry) {
@@ -785,8 +859,13 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
         model: "e2e-fixture",
         provider: "e2e",
       };
-      messages = [...messages, completedMessage];
-      messageCount = messages.length;
+      // D2 navigate: append one assistant entry as a child of the current leaf
+      // and move the leaf pointer (the visible history is rebuilt from root→leaf).
+      entrySeq += 1;
+      const entry = { id: `entry-${entrySeq}`, parentId: leafId, text: "Hello world" };
+      entries = [...entries, entry];
+      leafId = entry.id;
+      rebuildMessages(leafId);
       contextUsage = {
         percent: Math.min(100, contextUsage.percent + 10),
         contextWindow: contextUsage.contextWindow,

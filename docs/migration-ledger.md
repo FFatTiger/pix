@@ -2345,3 +2345,94 @@ lifecycle 语义（认证 instance-fenced 关闭 + 交付屏障），不复制 P
 unsupported 拒绝，绝不 fallback kill；Local Authority race 仍在 §55 在飞；Fresh verifier 独立 PASS
 待补。
 ```
+
+## 57. D2 navigate — session-tree navigate 生产后端切片（PENDING 独立验证）
+
+```text
+实现：source 分支 feat/d2-navigate，base main `d817a32`（worktree
+/Users/proxy/Documents/program/pix-worktrees/d2-navigate 全新，tree 干净；两名先前 agent 在 provider
+quota 上死掉未写代码）；backend-first，无 Client source/UI/CSS，无 Host HTTP/WS 公开面，无
+package-lock/live service/push/deploy。编号：§52/§53/§54/§55/§56 已占用，本切片占 §57。仅
+pi-sdk-adapter + sessiond + agent-worker fixture + tests/e2e/runtime.mjs + docs + 测试。
+
+目标/不变量（父级冻结）：
+1) 生产 capability：`runtime.navigate`（navigate_tree）加入生产 capability 列表
+   （PRODUCTION_AGENT_CAPABILITIES 17→18、E2E PRODUCTION_CAPS 17→18、fixture CAPABILITIES），仅此一
+   个 token；fork/auto_name 保持关闭。Protocol/runtime-core 未改：navigate_tree 命令、
+   `runtime.navigate` token（frozen capability 词表）、semantic mapping 均已存在；Protocol 契约测试
+   已覆盖 navigate_tree 样例与 26 命令矩阵。Host/CLI 无 frozen runtime.* 列表需改（runtime capability
+   从 adapter 经 attach snapshot 流到客户端；Host PRODUCTION_FULL_CAPABILITIES 是 Host 能力非
+   runtime.*）。E2E 各场景 closed-cap 断言从 fork/navigate/auto_name 改为 fork/auto_name。
+2) Busy guard：navigate 期间同 session 有 in-flight prompt/bash/compaction/extension-UI-wait 必须
+   fail closed `session_busy`（固定 sanitized、retryable、绝不 corrupt turn）；空闲成功。实现于 adapter
+   navigate_tree 分支（镜像 compact guard）：driver isStreaming/isBashRunning/isCompacting/promptRunning
+   （覆盖 extension-UI-wait）/非终态 bash 投影/adapter-local compaction 任一在途 → session_busy，零 SDK
+   调用、零事件、零 partial state。真实 SDK navigateTree 自身在 streaming 时抛
+   "Wait for the current response..."（防御纵深），但 adapter guard 是权威 fail-closed 边界，产出干净
+   session_busy 而非 raw SDK 文本。与 steer/follow_up 的关系已评估并记录：navigate 是 serial-lane
+   变更命令，steer/follow_up 走 interleaving lane 排队——adapter guard 的 isStreaming 在 prompt 流式中
+   拒 navigate；busy 测试用第二连接（自己 serial lane 立即派发）证明 sessiond 照常受理、worker adapter
+   拒 session_busy、prompt 不受影响继续到 completion。
+3) Sessiond authority finalization：`navigate_tree` 加入 AUTHORITY_COMMAND_TYPES（精确 7）。理由：SDK
+   navigateTree 移动 leaf 指针并持久化，但 wire 只带 runtime_state_changed 信号（无 leaf/messages），
+   所以成功 navigate 必须先经有界 worker.getSnapshot 权威刷新（新 leafId/history/messageCount）再
+   return/cache，复用 singleflight/triple-match/epoch/rekey/fail-closed；refresh 失败固定 unavailable
+   并缓存，同 commandId 重试不重执行；错 inner result type 丢弃（不 resolve 不 finalize）；finalization
+   中 rekey 绝不跨 epoch 写；失败/中断 navigate 不触发 refresh 不缓存假成功。
+4) leafId/snapshot 收敛：adapter DriverState 增 `leafId`（源 session.sessionManager.getLeafId()），
+   buildState 带入 state.leafId；权威刷新后 sessiond projection 携带新 leafId/history/messageCount，
+   getSnapshot/attach/sessions.read/sessions.context 读到 navigate 后状态；adapter navigate result 本身
+   **不携带**新 leaf identity（SDK navigateTree 只返回 editorText/cancelled/summaryEntry）——收敛靠
+   driver-state read-through（getLeafId→state.leafId→snapshot refresh），已用测试证明；无 stale snapshot
+   在成功后被 serve。
+5) 错误 sanitize：navigate 失败经 NAVIGATE_FAILURE_MESSAGES 固定文案投影（invalid_input/not_found/
+   interrupted/session_busy/timeout/unavailable），绝不含 raw leaf id/path/session name/OS text；
+   blank/missing target → invalid_input。
+6) 无 Host HTTP/WS 公开面变化：navigate 是普通 serial-lane 命令，Host runtime-gateway 零改动（
+   isInterleavingCommand 不含 navigate_tree，已验证）。
+
+实现（文件）：
+- packages/pi-sdk-adapter/src/agent/index.ts：PRODUCTION_AGENT_CAPABILITIES 精确加 "runtime.navigate"。
+- packages/pi-sdk-adapter/src/internal/types.ts：DriverState 增 leafId?: string。
+- packages/pi-sdk-adapter/src/internal/sdk-runtime.ts：driverState 读 sessionManager.getLeafId() → leafId。
+- packages/pi-sdk-adapter/src/internal/adapter.ts：navigate_tree 分支 busy guard + blank invalid_input +
+  固定 NAVIGATE_FAILURE_MESSAGES 错误投影；buildState 带 leafId。
+- packages/sessiond/src/service.ts：AUTHORITY_COMMAND_TYPES 精确加 navigate_tree（注释同步）。
+- packages/sessiond/src/testing/fake-worker.ts：navigate_tree 确定性改 liveSnapshot（`nav-<keep>` 截断
+  messages/leafId/messageCount）。
+- packages/agent-worker/test/fixtures/e2e-runtime-factory.mjs：CAPABILITIES 加 runtime.navigate；
+  确定性 branch 模型（entries/leafId/entrySeq/branchPath/rebuildMessages）+ navigate_tree 分支（busy
+  guard/invalid_input/未知 leaf invalid_input/成功移动 leaf 重建 history）+ prompt 路径维护 branch +
+  compact 路径同步 entries/leafId + baseState 带 leafId。
+- tests/e2e/runtime.mjs：PRODUCTION_CAPS 加 runtime.navigate；各场景 closed-cap 断言
+  fork/auto_name；新增 scenarioD2NavigateControl。
+
+测试（新增）：
+- packages/pi-sdk-adapter/test/navigate.test.ts（11 用例）：空闲 navigate 成功且带 leafId 快照收敛；
+  streaming（in-flight prompt）/bash/compact/adapter-local compaction/extension-UI-wait（promptRunning）
+  → session_busy 零 SDK 调用零事件；blank → invalid_input；driver cancelled → interrupted 固定文案；
+  driver 未知 target → invalid_input 固定文案（无 raw leaf id）；closed capability（无 runtime.navigate）
+  → unsupported_capability 零 driver 调用；blocked prompt 继续到 completion。
+- packages/sessiond/test/sessiond.test.ts（+7）：navigate 成功→权威刷新在 result 前收敛
+  leafId/messageCount/history（getSnapshot + attach）；same-id 二调用者 join singleflight 一次
+  worker.command；成功 finalization 清 singleflight 且 cached retry 不再 refresh；refresh 失败
+  fail-closed 全部 observer + cached retry 不重执行、projection 不 claim failed navigate；wrong result
+  type 不 finalize 合法帧恰一次；rekey 期间 finalization 不跨 epoch 写、新 epoch 同 commandId 重入成功；
+  worker 早崩 finalization 清理无 busy 泄漏。
+- tests/e2e/runtime.mjs scenarioD2NavigateControl（真实单连接链）：capability 广告（18 token）；
+  3-prompt 建树→navigate 到较早 leaf 权威 messageCount/history/leafId 收敛（getSnapshot + get_state）→
+  前进导航→detach/reattach 持久→block prompt + 第二连接 navigate session_busy（prompt 不受影响被
+  interrupt 正常结束，idle 后 navigate 再成功）→invalid leaf invalid_input sanitized→fork/auto_name 仍
+  closed。
+
+验证（实现者已执行，PENDING 独立 PASS）：
+- sessiond 277（276 pass + 1 skip；+7 navigate，270→277）；adapter 247（+11 navigate 等）；root
+  build/typecheck EXIT 0；check:architecture PASS；sessiond/host boundary PASS；adapter check:commands
+  26/26 PASS；Runtime E2E（含 navigate 场景）1 轮 PASS（将补 ≥2 轮）；Startup + Sessions E2E（回归）待
+  重跑；git diff --check 干净；worktree 未 push/deploy，未触碰 live service。
+
+残余/后续：adapter navigate result 不携带新 leaf identity（SDK 返回形状所限），收敛依赖
+driver-state read-through——未来若 SDK 返回 leaf，可让 sessiond/locator 以该 id 为 canonical 直读；
+Client navigate UI 为独立切片（本 slice backend-first 无 Client）；§53 Client rename 仍在飞待集成。
+Fresh verifier 独立 PASS 待补。
+```

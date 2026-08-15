@@ -152,7 +152,7 @@ interface RecordState {
   /**
    * Per-commandId singleflight for post-success snapshot authority
    * finalization (set_thinking_level / set_model / set_auto_retry / set_tools /
-   * reload / compact). These commands mutate runtime state that is NOT carried
+   * reload / compact / navigate_tree). These commands mutate runtime state that is NOT carried
    * on the wire `runtime_state_changed` event (signal-only), so sessiond must
    * refresh via a bounded worker.getSnapshot and only then publish a terminal
    * result.
@@ -184,8 +184,16 @@ interface RecordState {
  * post-compaction messages / messageCount / contextUsage, so a successful
  * compact must refresh via a bounded worker.getSnapshot before a terminal
  * result may be returned/cached (singleflight/triple-match/epoch/rekey/
- * fail-closed identical to set_tools/reload). Extend only for commands that
- * mutate state absent from the wire event.
+ * fail-closed identical to set_tools/reload). D2 navigate adds
+ * `navigate_tree`: the SDK `navigateTree` moves the session-tree leaf pointer
+ * and persists it to the session file, but the wire carries only a
+ * `runtime_state_changed` signal (the adapter emits no leaf/messages on the
+ * event), so a successful navigate must refresh via a bounded
+ * worker.getSnapshot before a terminal result may be returned/cached — the
+ * refreshed snapshot carries the new leafId / history / messageCount and is
+ * what the sessiond projection serves to getSnapshot / attach / sessions.read
+ * / sessions.context afterwards. Extend only for commands that mutate state
+ * absent from the wire event.
  */
 const AUTHORITY_COMMAND_TYPES = new Set<RuntimeCommand["type"]>([
   "set_thinking_level",
@@ -194,6 +202,7 @@ const AUTHORITY_COMMAND_TYPES = new Set<RuntimeCommand["type"]>([
   "set_tools",
   "reload",
   "compact",
+  "navigate_tree",
 ]);
 
 /**
@@ -616,7 +625,7 @@ export class SessiondService {
         clearTimeout(pending.timer);
         record.pendingCommands.delete(message.id);
         // set_thinking_level / set_model / set_auto_retry / set_tools / reload /
-        // compact success must not be cached or returned
+        // compact / navigate_tree success must not be cached or returned
         // until the projection has converged via a bounded worker.getSnapshot
         // refresh. Defer cache + resolve through the per-commandId singleflight
         // so same-id retries cannot observe a pre-authority success.
@@ -935,11 +944,15 @@ export class SessiondService {
   }
 
   /**
-   * D2-P2/P3/P4/P6/P7 authority: `set_thinking_level` / `set_model` /
-   * `set_auto_retry` / `set_tools` / `reload` / `compact` mutate runtime state
+   * D2-P2/P3/P4/P6/P7/P9 authority: `set_thinking_level` / `set_model` /
+   * `set_auto_retry` / `set_tools` / `reload` / `compact` / `navigate_tree`
+   * mutate runtime state
    * that is NOT carried on the wire `runtime_state_changed` event (signal-only;
    * for `compact` the `compaction_end` event only clears activity and does not
-   * carry the post-compaction messages/messageCount/contextUsage). Sessiond
+   * carry the post-compaction messages/messageCount/contextUsage; for
+   * `navigate_tree` the adapter emits only a state signal and the new
+   * leafId/history/messageCount must come from the authoritative snapshot
+   * refresh). Sessiond
    * projection is the attach/resume authority, so a successful authority
    * command must refresh via worker.getSnapshot and only then publish a
    * terminal success. Refresh failure is fail-closed: every observer receives

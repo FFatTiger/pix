@@ -187,6 +187,26 @@ export class FakeWorkerConnection implements WorkerConnection {
             messages: trimmed,
           };
         }
+        // D2 navigate: a successful navigate moves the authoritative leaf. The
+        // target encodes the number of retained messages (`nav-<keep>`), so a
+        // post-success worker.getSnapshot (sessiond authority refresh) converges
+        // leafId/messages/messageCount deterministically — the wire carries only
+        // a runtime_state_changed signal and NO leaf/history fields.
+        if (command.type === "navigate_tree" && typeof command.targetId === "string") {
+          const keepMatch = /^nav-(\d+)$/.exec(command.targetId.trim());
+          const messages = Array.isArray(this.liveSnapshot.messages) ? this.liveSnapshot.messages : [];
+          const keep = keepMatch ? Math.max(0, Math.min(messages.length, Number(keepMatch[1]))) : 0;
+          const trimmed = messages.slice(0, keep);
+          this.liveSnapshot = {
+            ...this.liveSnapshot,
+            state: {
+              ...this.liveSnapshot.state,
+              messageCount: trimmed.length,
+              ...(trimmed.length === 0 ? {} : { leafId: command.targetId }),
+            },
+            messages: trimmed,
+          };
+        }
         setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, outcome(command.type)), this.options.commandDelayMs ?? 0);
         return;
       }

@@ -41,10 +41,11 @@ const HOST_START_TIMEOUT_MS = 10_000;
 const CLEANUP_TIMEOUT_MS = 8_000;
 const ROUNDS = Math.max(1, Number(process.env.PIX_E2E_ROUNDS ?? "1") || 1);
 
-// D2-P8 production capability surface (17 tokens): the exact set the attach
-// snapshot must carry. Updating this constant keeps every scenario honest about
-// what is open (bash pair + tools read/write + reload + manual-compact pair +
-// extension UI) vs still closed (fork/navigate/auto_name).
+// D2 navigate production capability surface (18 tokens): the exact set the
+// attach snapshot must carry. Updating this constant keeps every scenario
+// honest about what is open (bash pair + tools read/write + reload +
+// manual-compact pair + extension UI + navigate) vs still closed
+// (fork/auto_name).
 const PRODUCTION_CAPS = [
   "runtime.prompt",
   "runtime.abort",
@@ -63,6 +64,7 @@ const PRODUCTION_CAPS = [
   "runtime.compact",
   "runtime.compact.abort",
   "runtime.extension_ui",
+  "runtime.navigate",
 ];
 
 // In-memory registry of sessions created through the E2E client, backing both
@@ -1295,11 +1297,11 @@ async function scenarioD2P1LightCommands(stack, projectDir) {
     // Closed capabilities must remain unsupported on the production surface.
     // Note: clear_queue is an interrupt-only wire type (cannot go via command
     // envelope). set_model (D2-P3), queue (D2-P4), bash pair (D2-P5),
-    // tools/reload (D2-P6) and the manual-compact pair (D2-P7) are now open;
-    // fork/navigate/auto_name stay closed.
+    // tools/reload (D2-P6), the manual-compact pair (D2-P7), extension UI
+    // (D2-P8) and navigate (D2 navigate) are now open;
+    // fork/auto_name stay closed.
     for (const [type, extra, token] of [
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
-      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, {
@@ -1432,11 +1434,10 @@ async function scenarioD2P4QueueControl(stack, projectDir) {
       version: 1,
     });
 
-    // Closed caps still unsupported: fork/navigate/auto_name (queue and the
-    // manual-compact pair are now open).
+    // Closed caps still unsupported: fork/auto_name (queue, the
+    // manual-compact pair and navigate are now open).
     for (const [type, extra, token] of [
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
-      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `queue-closed-${type}-${Date.now()}`, type, ...extra });
@@ -1578,11 +1579,10 @@ async function scenarioD2P5BashControl(stack, projectDir) {
       version: 1,
     });
 
-    // 4. Closed caps still unsupported: fork/navigate/auto_name (tools/reload
-    //    pair and the manual-compact pair are now OPEN — D2-P6/D2-P7).
+    // 4. Closed caps still unsupported: fork/auto_name (tools/reload
+    //    pair, the manual-compact pair and navigate are now OPEN — D2-P6/D2-P7/D2 navigate).
     for (const [type, extra, token] of [
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
-      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `bash-closed-${type}-${Date.now()}`, type, ...extra });
@@ -1721,11 +1721,10 @@ async function scenarioD2P6ToolsReload(stack, projectDir) {
       version: reloadCapVersion,
     });
 
-    // 7. Closed caps remain unsupported: fork/navigate/auto_name (the
-    //    manual-compact pair is now OPEN — D2-P7).
+    // 7. Closed caps remain unsupported: fork/auto_name (the
+    //    manual-compact pair and navigate are now OPEN — D2-P7/D2 navigate).
     for (const [type, extra, token] of [
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
-      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `tools-closed-${type}-${Date.now()}`, type, ...extra });
@@ -1942,11 +1941,10 @@ async function scenarioD2P7CompactControl(stack, projectDir) {
     const busySnap = await client.getSnapshot(sessionId);
     assert.equal(bstate(busySnap.payload.result).isCompacting, false);
 
-    // 6. Closed caps remain unsupported: fork/navigate/auto_name (the
-    //    manual-compact pair is now OPEN — D2-P7).
+    // 6. Closed caps remain unsupported: fork/auto_name (the
+    //    manual-compact pair and navigate are now OPEN — D2-P7/D2 navigate).
     for (const [type, extra, token] of [
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
-      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `d2p7-closed-${type}-${Date.now()}`, type, ...extra });
@@ -2184,10 +2182,11 @@ async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
     assert.equal(notifyRes.payload.result.result.ok, true);
     await client.waitFor((m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "extension_error", { label: "extension_error" });
 
-    // ---- 9. closed caps remain unsupported; reload cannot broaden.
+    // ---- 9. closed caps remain unsupported (fork/auto_name); reload cannot
+    //         broaden. navigate is now open (D2 navigate) — covered by the
+    //         dedicated navigate scenario.
     for (const [type, extra, token] of [
       ["fork", { entryId: "entry-1" }, "runtime.fork"],
-      ["navigate_tree", { targetId: "entry-1" }, "runtime.navigate"],
       ["generate_session_title", {}, "runtime.auto_name"],
     ]) {
       const closed = await client.command(sessionId, { commandId: `d2p8-closed-${type}-${Date.now()}`, type, ...extra });
@@ -2203,6 +2202,162 @@ async function scenarioD2P8ExtensionUiControl(stack, projectDir) {
     assert.deepEqual(afterReload.payload.result.capabilities, { capabilities: PRODUCTION_CAPS, version: 2 }, "reload must not broaden the capability set");
 
     return { sessionId, confirmReqId };
+  } finally {
+    client.close();
+  }
+}
+
+async function scenarioD2NavigateControl(stack, projectDir) {
+  // D2 navigate backend vertical slice (single real chain):
+  //   Browser WS → Host gateway (serial lane) → sessiond → R2 child → R1
+  //   worker-main → fixture.
+  // navigate is a serial-lane mutating command. It is capability-gated by
+  // `runtime.navigate`; the fixture (mirroring the production adapter) rejects
+  // an in-flight prompt/bash/compaction with `session_busy` before any
+  // mutation; an unknown leaf is structured `invalid_input`; a successful
+  // navigate is an AUTHORITY command — sessiond refreshes the authoritative
+  // snapshot from the worker before releasing the terminal result, so
+  // getSnapshot / get_state / detach-reattach all converge to the new leaf
+  // (history/messageCount/leafId). fork/auto_name stay closed.
+  const client = new RuntimeWsClient(stack.host.wsUrl);
+  await client.connect();
+  const bstate = (result) => result?.snapshot?.state ?? result?.state;
+  try {
+    await client.handshake();
+    const created = await client.create({
+      cwd: projectDir,
+      projectRoot: projectDir,
+      createRequestId: `cr-nav-${Date.now()}`,
+      toolNames: [],
+      thinkingLevel: "off",
+      thinkingLevelPinned: true,
+    });
+    const sessionId = created.sessionId;
+    const snap = await client.attach(sessionId);
+    assert.equal(snap.type, "snapshot");
+    assert.deepEqual(snap.payload.snapshot.capabilities, {
+      capabilities: PRODUCTION_CAPS,
+      version: 1,
+    });
+    assert.ok(
+      snap.payload.snapshot.capabilities.capabilities.includes("runtime.navigate"),
+      "capability negotiation must advertise runtime.navigate",
+    );
+
+    // Build a deterministic 3-entry tree (3 prompts → entry-1..entry-3).
+    for (let i = 1; i <= 3; i += 1) {
+      const p = await client.command(sessionId, {
+        commandId: `nav-prompt-${i}-${Date.now()}`,
+        type: "prompt",
+        message: `nav-prompt-${i}`,
+      });
+      assert.equal(p.payload.ok, true, JSON.stringify(p.payload));
+      assert.equal(p.payload.result.result.ok, true, JSON.stringify(p.payload));
+    }
+    const liveBefore = await client.command(sessionId, { commandId: `nav-live-before-${Date.now()}`, type: "get_state" });
+    const liveBeforeState = liveBefore.payload.result.result.state;
+    assert.equal(liveBeforeState.messageCount, 3, "3 prompts must build 3 messages");
+    assert.equal(liveBeforeState.leafId, "entry-3", "the live leaf must be the last entry");
+    const before = await client.getSnapshot(sessionId);
+    const beforeCount = bstate(before.payload.result).messageCount;
+    assert.equal(beforeCount, 3, "projection must accumulate 3 messages from message_end events");
+    assert.equal((before.payload.result.messages ?? []).length, 3);
+
+    // 1. Navigate to an earlier leaf (entry-2). The terminal result is released
+    //    only AFTER sessiond's authoritative snapshot refresh, so a post-ack
+    //    getSnapshot proves convergence (messageCount/history/leafId).
+    const navId = `nav-to-2-${Date.now()}`;
+    const nav = await client.command(sessionId, { commandId: navId, type: "navigate_tree", targetId: "entry-2" });
+    assert.equal(nav.payload.ok, true, JSON.stringify(nav.payload));
+    const navOutcome = nav.payload.result.result;
+    assert.equal(navOutcome.ok, true, JSON.stringify(navOutcome));
+    assert.equal(navOutcome.type, "navigate_tree");
+
+    const after = await client.getSnapshot(sessionId);
+    const afterState = bstate(after.payload.result);
+    assert.equal(afterState.messageCount, 2, "navigate to entry-2 must converge messageCount to 2");
+    assert.equal(afterState.leafId, "entry-2", "authoritative snapshot must carry the navigated leaf");
+    assert.equal((after.payload.result.messages ?? []).length, 2, "history must converge to the navigated leaf");
+    const liveAfter = await client.command(sessionId, { commandId: `nav-live-after-${Date.now()}`, type: "get_state" });
+    const liveAfterState = liveAfter.payload.result.result.state;
+    assert.equal(liveAfterState.messageCount, 2);
+    assert.equal(liveAfterState.leafId, "entry-2");
+
+    // 2. Navigate forward to entry-3 again — converges back to 3.
+    const nav3 = await client.command(sessionId, { commandId: `nav-to-3-${Date.now()}`, type: "navigate_tree", targetId: "entry-3" });
+    assert.equal(nav3.payload.result.result.ok, true, JSON.stringify(nav3.payload));
+    const snap3 = await client.getSnapshot(sessionId);
+    assert.equal(bstate(snap3.payload.result).messageCount, 3);
+    assert.equal(bstate(snap3.payload.result).leafId, "entry-3");
+
+    // 3. Detach/reattach persistence: the navigated projection persists.
+    await client.detach(sessionId);
+    const reattach = await client.attach(sessionId);
+    assert.equal(reattach.type, "snapshot");
+    assert.equal(reattach.payload.snapshot.state.messageCount, 3);
+    assert.equal(reattach.payload.snapshot.state.leafId, "entry-3");
+    assert.deepEqual(reattach.payload.snapshot.capabilities, { capabilities: PRODUCTION_CAPS, version: 1 });
+
+    // 4. Busy guard: a blocking prompt holds the session; a SECOND connection's
+    //    navigate (its own serial lane dispatches immediately) is rejected with
+    //    session_busy and the in-flight prompt is untouched (continues to its
+    //    aborted completion). After the prompt settles, navigate succeeds again.
+    const blockId = `nav-block-${Date.now()}`;
+    const blockIndex = client.messages.length;
+    const blockP = client.command(sessionId, { commandId: blockId, type: "prompt", message: "__block__ navigate busy" });
+    await client.waitFor(
+      (m) => m.type === "event" && m.payload?.sessionId === sessionId && m.payload?.type === "agent_start",
+      { label: "blocking agent_start", afterIndex: blockIndex },
+    );
+    const client2 = new RuntimeWsClient(stack.host.wsUrl);
+    await client2.connect();
+    try {
+      await client2.handshake();
+      const busy = await client2.command(sessionId, { commandId: `nav-busy-${Date.now()}`, type: "navigate_tree", targetId: "entry-2" });
+      assert.equal(busy.payload.ok, true, JSON.stringify(busy.payload));
+      const busyOutcome = busy.payload.result.result;
+      assert.equal(busyOutcome.ok, false, JSON.stringify(busyOutcome));
+      assert.equal(busyOutcome.error.code, "session_busy");
+      assert.equal(busyOutcome.error.retryable, true);
+    } finally {
+      client2.close();
+    }
+    // Release the blocking prompt via the independent interrupt; the prompt
+    // settles interrupted (never corrupted, never a false success).
+    await client.interrupt(sessionId, `nav-abort-${Date.now()}`, { type: "abort" });
+    const blockOutcome = await blockP;
+    assert.equal(blockOutcome.payload.result.result.ok, false);
+    assert.equal(blockOutcome.payload.result.result.error.code, "interrupted");
+    const idleSnap = await client.getSnapshot(sessionId);
+    assert.equal(bstate(idleSnap.payload.result).isPromptRunning, false, "prompt must not be left running");
+    const navAgain = await client.command(sessionId, { commandId: `nav-again-${Date.now()}`, type: "navigate_tree", targetId: "entry-2" });
+    assert.equal(navAgain.payload.result.result.ok, true, JSON.stringify(navAgain.payload));
+    assert.equal(bstate((await client.getSnapshot(sessionId)).payload.result).leafId, "entry-2");
+
+    // 5. Invalid leaf reference → structured invalid_input, sanitized (no raw
+    //    leaf id / path in the response).
+    const bad = await client.command(sessionId, { commandId: `nav-bad-${Date.now()}`, type: "navigate_tree", targetId: "entry-999" });
+    assert.equal(bad.payload.ok, true, JSON.stringify(bad.payload));
+    const badOutcome = bad.payload.result.result;
+    assert.equal(badOutcome.ok, false, JSON.stringify(badOutcome));
+    assert.equal(badOutcome.error.code, "invalid_input");
+    assert.ok(!badOutcome.error.message.includes("entry-999"), "no raw leaf id in the error message");
+    assert.ok(!/\n|\tat |node:internal/i.test(badOutcome.error.message), "no raw stack text");
+
+    // 6. Closed caps remain unsupported: fork/auto_name (navigate is now open).
+    for (const [type, extra, token] of [
+      ["fork", { entryId: "entry-1" }, "runtime.fork"],
+      ["generate_session_title", {}, "runtime.auto_name"],
+    ]) {
+      const closed = await client.command(sessionId, { commandId: `nav-closed-${type}-${Date.now()}`, type, ...extra });
+      assert.equal(closed.payload.ok, true, JSON.stringify(closed.payload));
+      const outcome = closed.payload.result.result;
+      assert.equal(outcome.ok, false, `${type} must be closed`);
+      assert.equal(outcome.error.code, "unsupported_capability");
+      assert.match(outcome.error.message, new RegExp(token.replace(/\./g, "\\.")));
+    }
+
+    return { sessionId, beforeCount: 3 };
   } finally {
     client.close();
   }
@@ -2363,6 +2518,9 @@ async function runRound(round) {
     results.extensionUi = await scenarioD2P8ExtensionUiControl(stack, projectA);
     log(`round ${round}: D2-P8 extension UI control OK session=${results.extensionUi.sessionId}`);
 
+    results.navigate = await scenarioD2NavigateControl(stack, projectA);
+    log(`round ${round}: D2 navigate control OK session=${results.navigate.sessionId} before=${results.navigate.beforeCount}`);
+
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
 
@@ -2423,11 +2581,12 @@ async function main() {
           "session isolation",
           "create then host-restart cold attach",
           "D2-P1/D2-P2/D2-P3 light commands (state/commands/last-text/stats/rename/thinking/model + closed caps)",
-          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed fork/navigate/auto_name)",
-          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed fork/navigate/auto_name)",
-          "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + closed fork/navigate/auto_name)",
-          "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + closed fork/navigate/auto_name + no orphan)",
-          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + custom lines + abort clears + status/widget/title/notify events + closed fork/navigate/auto_name + reload cannot broaden)",
+          "D2-P4 queue control (block prompt + steer/follow_up queue + clear_queue + set_auto_retry + detach/reattach + abort + closed fork/auto_name)",
+          "D2-P5 bash control (normal bash exact projection + blocking bash + abort_bash interrupt non-blocking + cancelled state + detach/reattach persistence + closed fork/auto_name)",
+          "D2-P6 tools+reload (get_tools query + set_tools subset/all-off authority + unknown-tool invalid_input + reload re-applies tools/systemPrompt/thinking + final capabilities version + detach/reattach persistence + closed fork/auto_name)",
+          "D2-P7 compact control (initial history + successful compact event sequence + authoritative post-snapshot messageCount/contextUsage/history before ack + detach/reattach persistence + blocking compact + abort_compaction non-HOL + interrupted result + aborted projection + idle abort + second-command session_busy + closed fork/auto_name + no orphan)",
+          "D2-P8 extension UI control (confirm wrong-method invalid_input stays pending + correct response resumes prompt on the same socket via the interleaving lane + unknown/late not_found + same-commandId at-most-once no duplicate close + detach before response then reattach sees pending + response then detach/reattach sees none + input/editor incremental exact-method + select cancel + custom lines + abort clears + status/widget/title/notify events + closed fork/auto_name + reload cannot broaden)",
+          "D2 navigate control (3-prompt tree + navigate to earlier leaf authoritative messageCount/history/leafId convergence + navigate forward + detach/reattach persistence + blocking prompt + second-connection navigate session_busy (prompt untouched) + invalid leaf invalid_input sanitized + closed fork/auto_name + capability advertised)",
           "shutdown: browser detach / stop / daemon no orphans",
         ],
         lastRound: {

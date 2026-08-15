@@ -79,6 +79,7 @@ describe("public production SDK factory smoke", () => {
           "runtime.compact",
           "runtime.compact.abort",
           "runtime.extension_ui",
+          "runtime.navigate",
         ]);
 
         // Baseline query: get_state (always available, no capability gate).
@@ -257,12 +258,19 @@ describe("public production SDK factory smoke", () => {
           assert.equal(fork.error.code, "unsupported_capability");
           assert.match(fork.error.message, /runtime\.fork/);
         }
-        // runtime.navigate is NOT in the production surface.
+        // runtime.navigate IS in the production surface — the capability gate
+        // must report it OPEN. A navigate to an unknown leaf on a fresh session
+        // must therefore reach the adapter and fail as structured invalid_input
+        // with a FIXED sanitized message (never unsupported_capability, which
+        // would prove the gate is still closed; never the raw leaf id).
+        const navigateCap = port.getCapabilities().capabilities.includes("runtime.navigate");
+        assert.equal(navigateCap, true, "runtime.navigate must be open");
         const navigate = await port.execute({ type: "navigate_tree", targetId: "entry-1" });
         assert.equal(navigate.ok, false);
         if (!navigate.ok) {
-          assert.equal(navigate.error.code, "unsupported_capability");
-          assert.match(navigate.error.message, /runtime\.navigate/);
+          assert.equal(navigate.error.code, "invalid_input", "open gate must reach the adapter (not unsupported_capability)");
+          assert.equal(navigate.error.message, "navigation target is invalid");
+          assert.ok(!navigate.error.message.includes("entry-1"), "no raw leaf id in the error message");
         }
       } finally {
         await port.close("user");
@@ -282,7 +290,7 @@ describe("public production SDK factory smoke", () => {
         name: "D2-P7 Compact Smoke",
       });
       try {
-        assert.equal(port.getCapabilities().capabilities.length, 17);
+        assert.equal(port.getCapabilities().capabilities.length, 18);
         assert.deepEqual([...port.getCapabilities().capabilities], [...PRODUCTION_AGENT_CAPABILITIES]);
 
         // A tiny/fresh session has nothing to compact: the real SDK compact
