@@ -1,12 +1,430 @@
 /* ============================================================
    chat.css — OWNER: UX2-CHAT (parallel writer, exclusive)
    ------------------------------------------------------------
-   Transcript column only:
+   Transcript column only, ported from pi-web-desktop
+   app/globals.css chat surfaces (MIT — see THIRD_PARTY_NOTICES.md)
+   and adapted to pix's row model:
    - user tinted bubbles / assistant open content flow
-   - tool, system, bash surfaces; thinking dim-accent blocks
-   - metadata rows, markdown/code rendering (Lilex via
-     var(--font-mono))
-   - transcript empty/loading/error states; keep role="log"
-     and virtualization-measurement styles intact
-   Shared primitives (badges, error surfaces) live in base.css.
+   - tool, system, bash independent surfaces; thinking dim/accent
+     collapsible blocks
+   - compact mono metadata rows, unified streaming / loading /
+     empty / error states
+   - role="log" and virtualization-measurement styles stay intact:
+     row spacing is PADDING (measured by the ResizeObserver), never
+     margin (margins are not measured and would overlap rows); the
+     absolutely-positioned virtual rows never get a transform
+     transition.
    ============================================================ */
+
+/* — scroll column — */
+.transcript-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 12px 16px 4px;
+}
+
+/* Centered content column (matches the composer column width). */
+.transcript-inner {
+  position: relative; /* anchor for absolutely-positioned virtual rows */
+  width: 100%;
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+}
+
+/* — rows —
+   Spacing is padding-bottom so the virtualizer measures it as part of
+   the row height (estimates stay honest and stick-to-bottom is exact). */
+.transcript-row {
+  padding-bottom: 20px;
+}
+
+.transcript-row:last-child {
+  padding-bottom: 8px;
+}
+
+/* — shared meta line (compact, mono, tabular) — */
+.transcript-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript-row-kind {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.transcript-row-time {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* — user: right-aligned tinted bubble — */
+.transcript-row-card--user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.transcript-user-bubble-wrap {
+  max-width: min(85%, var(--message-bubble-max-width));
+  min-width: 0;
+}
+
+.transcript-user-bubble {
+  min-width: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 9px 14px;
+  border-radius: 9px;
+  background: var(--user-bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.transcript-row-card--user .transcript-row-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.transcript-row-meta--user {
+  justify-content: flex-end;
+  margin-top: 3px;
+}
+
+.transcript-row-meta--user .transcript-row-time {
+  margin-left: 0;
+}
+
+/* — assistant: open content flow (no bubble) — */
+.transcript-row-card--assistant .transcript-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.transcript-row-meta--assistant {
+  margin-top: 4px;
+}
+
+.transcript-part {
+  min-width: 0;
+}
+
+.transcript-part--text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Inline tool-call part inside the assistant flow: compact green surface. */
+.transcript-part--tool {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-green) 28%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent-green) 4%, var(--bg-card));
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.58;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.transcript-part--tool > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent-green);
+}
+
+.transcript-part--tool-text {
+  min-width: 0;
+}
+
+/* Image placeholder part: quiet chip (image data is never rendered). */
+.transcript-part--image {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* — tool / system: independent surfaces — */
+.transcript-surface {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-card);
+}
+
+.transcript-surface .transcript-row-meta {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.transcript-surface-icon {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.transcript-surface .transcript-row-body {
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Tool results share the reference tool-call tint (green). */
+.transcript-surface--tool {
+  border-color: color-mix(in srgb, var(--accent-green) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-green) 4%, var(--bg-card));
+}
+
+.transcript-surface--tool .transcript-row-kind,
+.transcript-surface--tool .transcript-surface-icon {
+  color: var(--accent-green);
+}
+
+.transcript-surface--tool .transcript-row-meta {
+  border-bottom-color: color-mix(in srgb, var(--accent-green) 18%, var(--border));
+  background: color-mix(in srgb, var(--accent-green) 6%, var(--bg-panel));
+}
+
+/* System notices stay neutral on the panel material. */
+.transcript-surface--system .transcript-row-body {
+  color: var(--text-muted);
+}
+
+/* — thinking: dim body, accent rail, collapsible — */
+.transcript-thinking {
+  min-width: 0;
+}
+
+.transcript-thinking-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  padding: 5px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: color var(--dur-base) var(--ease-feedback);
+}
+
+.transcript-thinking-summary::-webkit-details-marker,
+.transcript-thinking-summary::marker {
+  content: "";
+}
+
+.transcript-thinking-summary:hover {
+  color: var(--text);
+}
+
+.transcript-thinking-caret {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  transition: transform var(--dur-base) var(--ease-feedback);
+}
+
+.transcript-thinking[open] > .transcript-thinking-summary .transcript-thinking-caret {
+  transform: rotate(90deg);
+}
+
+.transcript-thinking-icon {
+  flex-shrink: 0;
+  color: var(--thinking-accent);
+}
+
+.transcript-thinking-body {
+  margin: 2px 0 0;
+  padding: 8px 11px;
+  border-left: 2px solid var(--thinking-accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--bg-secondary);
+  color: var(--thinking-text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* — bash surface — */
+.transcript-bash {
+  border-color: color-mix(in srgb, var(--accent-green) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-green) 4%, var(--bg-card));
+}
+
+.transcript-bash .transcript-row-kind,
+.transcript-bash .transcript-surface-icon {
+  color: var(--accent-green);
+}
+
+.transcript-bash .transcript-row-meta {
+  gap: 5px;
+  border-bottom-color: color-mix(in srgb, var(--accent-green) 18%, var(--border));
+  background: color-mix(in srgb, var(--accent-green) 6%, var(--bg-panel));
+}
+
+.transcript-bash-status {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-subtle);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.transcript-bash-status--running {
+  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+  color: var(--accent-blue);
+}
+
+.transcript-bash-status--cancelled,
+.transcript-bash-status--error {
+  background: color-mix(in srgb, var(--status-danger) 10%, transparent);
+  color: var(--status-danger);
+}
+
+.transcript-bash-command {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.transcript-bash-output {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 400px;
+  overflow: auto;
+  background: var(--bg);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* — unified status surfaces — */
+.transcript-empty {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+  padding: 48px 16px;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+}
+
+.transcript-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+  padding: 32px 16px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* Live streaming activity line (functional pulse, no entrance motion). */
+.transcript-activity {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+  padding: 0 0 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.transcript-activity-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: transcript-pulse 1.4s var(--ease-feedback) infinite;
+}
+
+@keyframes transcript-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* — narrow viewport: keep the column readable — */
+@media (max-width: 640px) {
+  .transcript-scroll {
+    padding: 8px 10px 4px;
+  }
+
+  .transcript-user-bubble-wrap {
+    max-width: 92%;
+  }
+}

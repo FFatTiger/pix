@@ -5,6 +5,14 @@ import { useRuntime } from "@/runtime";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useHttpClient } from "@/app/http-context";
 import { createQueryOptions } from "@/api/query-keys";
+import {
+  ActivityIcon,
+  BrainIcon,
+  ChartBarIcon,
+  ChatTextIcon,
+  CpuIcon,
+  TerminalWindowIcon,
+} from "@phosphor-icons/react";
 
 /**
  * SessionActions — D2-P1/P2/P3 minimal runtime inspection/mutation panel.
@@ -336,142 +344,155 @@ export function SessionActions({ live }: SessionActionsProps) {
 
   return (
     <section className="session-actions" aria-label="Session actions">
-      <div className="session-actions-row">
-        <button
-          type="button"
-          className="text-btn"
-          disabled={busy !== null}
-          onClick={() => void run("state", () => runtime.getState(), (value) => {
-            const state = value as { messageCount?: number; sessionName?: string; isStreaming?: boolean };
-            return `state: messageCount=${state.messageCount ?? 0}${state.sessionName ? `, name="${state.sessionName}"` : ""}, streaming=${state.isStreaming === true}`;
-          })}
-        >
-          State
-        </button>
-        <button
-          type="button"
-          className="text-btn"
-          disabled={busy !== null}
-          onClick={() => void run("commands", () => runtime.getCommands(), (value) => {
-            const commands = value as readonly { name?: string }[];
-            return `commands (${commands.length}): ${commands.slice(0, 4).map((command) => command.name ?? "?").join(", ") || "none"}`;
-          })}
-        >
-          Commands
-        </button>
-        <button
-          type="button"
-          className="text-btn"
-          disabled={busy !== null}
-          onClick={() => void run("lastText", () => runtime.getLastAssistantText(), (value) => {
-            const text = String(value);
-            return `last assistant text: ${text.length > 0 ? `"${text.slice(0, 80)}${text.length > 80 ? "…" : ""}"` : "(none)"}`;
-          })}
-        >
-          Last text
-        </button>
-        {hasStats ? (
+      <div className="session-actions-strip">
+        <div className="session-actions-group" role="group" aria-label="Runtime queries">
           <button
             type="button"
-            className="text-btn"
+            className="session-actions-button"
             disabled={busy !== null}
-            onClick={() => void run("stats", () => runtime.getSessionStats(), (value) => {
-              const stats = value as { messageCount?: number; tokenCount?: number };
-              return `stats: messageCount=${stats.messageCount ?? 0}${stats.tokenCount === undefined ? "" : `, tokens=${stats.tokenCount}`}`;
+            onClick={() => void run("state", () => runtime.getState(), (value) => {
+              const state = value as { messageCount?: number; sessionName?: string; isStreaming?: boolean };
+              return `state: messageCount=${state.messageCount ?? 0}${state.sessionName ? `, name="${state.sessionName}"` : ""}, streaming=${state.isStreaming === true}`;
             })}
           >
-            Stats
+            <ActivityIcon size={13} aria-hidden="true" />
+            State
           </button>
+          <button
+            type="button"
+            className="session-actions-button"
+            disabled={busy !== null}
+            onClick={() => void run("commands", () => runtime.getCommands(), (value) => {
+              const commands = value as readonly { name?: string }[];
+              return `commands (${commands.length}): ${commands.slice(0, 4).map((command) => command.name ?? "?").join(", ") || "none"}`;
+            })}
+          >
+            <TerminalWindowIcon size={13} aria-hidden="true" />
+            Commands
+          </button>
+          <button
+            type="button"
+            className="session-actions-button"
+            disabled={busy !== null}
+            onClick={() => void run("lastText", () => runtime.getLastAssistantText(), (value) => {
+              const text = String(value);
+              return `last assistant text: ${text.length > 0 ? `"${text.slice(0, 80)}${text.length > 80 ? "…" : ""}"` : "(none)"}`;
+            })}
+          >
+            <ChatTextIcon size={13} aria-hidden="true" />
+            Last text
+          </button>
+          {hasStats ? (
+            <button
+              type="button"
+              className="session-actions-button"
+              disabled={busy !== null}
+              onClick={() => void run("stats", () => runtime.getSessionStats(), (value) => {
+                const stats = value as { messageCount?: number; tokenCount?: number };
+                return `stats: messageCount=${stats.messageCount ?? 0}${stats.tokenCount === undefined ? "" : `, tokens=${stats.tokenCount}`}`;
+              })}
+            >
+              <ChartBarIcon size={13} aria-hidden="true" />
+              Stats
+            </button>
+          ) : null}
+        </div>
+        {hasThinking ? (
+          <form className="session-actions-form session-actions-thinking" onSubmit={handleThinkingSubmit}>
+            <label className="session-actions-form-label">
+              <BrainIcon size={12} aria-hidden="true" />
+              Thinking
+              <select
+                aria-label="Thinking level"
+                value={selectedThinking}
+                disabled={busy !== null}
+                onChange={(event) => {
+                  setThinkingDraft(event.target.value as ThinkingLevel);
+                  if (error) setError(null);
+                }}
+              >
+                {selectedThinking === "" ? (
+                  <option value="" disabled>
+                    Select…
+                  </option>
+                ) : null}
+                {THINKING_LEVELS.map((level) => (
+                  <option key={level} value={level}>
+                    {level}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="session-actions-thinking-meta" aria-live="polite">
+              {snapshotThinking !== undefined ? `current: ${snapshotThinking}` : "current: —"}
+              {snapshotPinned ? " · pinned" : " · not pinned"}
+            </span>
+            <button
+              type="submit"
+              className="session-actions-button session-actions-button--primary"
+              disabled={busy !== null || selectedThinking === ""}
+            >
+              Set thinking
+            </button>
+          </form>
+        ) : null}
+        {hasModelSet ? (
+          <form className="session-actions-form session-actions-model" onSubmit={handleModelSubmit}>
+            <label className="session-actions-form-label">
+              <CpuIcon size={12} aria-hidden="true" />
+              Model
+              <select
+                aria-label="Model"
+                value={selectedKey}
+                disabled={modelSelectDisabled}
+                onChange={(event) => {
+                  setModelDraft(event.target.value);
+                  if (error) setError(null);
+                }}
+              >
+                {selectedKey === "" ? (
+                  <option value="" disabled>
+                    {currentModel === null
+                      ? "Select model…"
+                      : "Current model not listed"}
+                  </option>
+                ) : null}
+                {modelOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.provider}/{option.modelId}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="session-actions-model-meta" aria-live="polite">
+              {!canModels
+                ? "Model catalog is unavailable."
+                : modelsQuery.isLoading
+                  ? "Loading models…"
+                  : modelsQuery.isError
+                    ? "Model list unavailable."
+                    : modelOptions.length === 0
+                      ? "No models available."
+                      : currentModel === null
+                        ? "current: —"
+                        : `current: ${currentModel.provider}/${currentModel.id}`}
+            </span>
+            <button
+              type="submit"
+              className="session-actions-button session-actions-button--primary"
+              disabled={modelSubmitDisabled}
+            >
+              Set model
+            </button>
+          </form>
         ) : null}
       </div>
-      {hasThinking ? (
-        <form className="session-actions-thinking" onSubmit={handleThinkingSubmit}>
-          <label className="session-actions-thinking-label">
-            Thinking
-            <select
-              aria-label="Thinking level"
-              value={selectedThinking}
-              disabled={busy !== null}
-              onChange={(event) => {
-                setThinkingDraft(event.target.value as ThinkingLevel);
-                if (error) setError(null);
-              }}
-            >
-              {selectedThinking === "" ? (
-                <option value="" disabled>
-                  Select…
-                </option>
-              ) : null}
-              {THINKING_LEVELS.map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
-          </label>
-          <span className="session-actions-thinking-meta" aria-live="polite">
-            {snapshotThinking !== undefined ? `current: ${snapshotThinking}` : "current: —"}
-            {snapshotPinned ? " · pinned" : " · not pinned"}
-          </span>
-          <button
-            type="submit"
-            className="text-btn"
-            disabled={busy !== null || selectedThinking === ""}
-          >
-            Set thinking
-          </button>
-        </form>
+      {busy !== null ? (
+        <p className="session-actions-status" role="status">
+          <span className="spinner" aria-hidden="true" />
+          Loading…
+        </p>
       ) : null}
-      {hasModelSet ? (
-        <form className="session-actions-model" onSubmit={handleModelSubmit}>
-          <label className="session-actions-model-label">
-            Model
-            <select
-              aria-label="Model"
-              value={selectedKey}
-              disabled={modelSelectDisabled}
-              onChange={(event) => {
-                setModelDraft(event.target.value);
-                if (error) setError(null);
-              }}
-            >
-              {selectedKey === "" ? (
-                <option value="" disabled>
-                  {currentModel === null
-                    ? "Select model…"
-                    : "Current model not listed"}
-                </option>
-              ) : null}
-              {modelOptions.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.provider}/{option.modelId}
-                </option>
-              ))}
-            </select>
-          </label>
-          <span className="session-actions-model-meta" aria-live="polite">
-            {!canModels
-              ? "Model catalog is unavailable."
-              : modelsQuery.isLoading
-                ? "Loading models…"
-                : modelsQuery.isError
-                  ? "Model list unavailable."
-                  : modelOptions.length === 0
-                    ? "No models available."
-                    : currentModel === null
-                      ? "current: —"
-                      : `current: ${currentModel.provider}/${currentModel.id}`}
-          </span>
-          <button
-            type="submit"
-            className="text-btn"
-            disabled={modelSubmitDisabled}
-          >
-            Set model
-          </button>
-        </form>
-      ) : null}
-      {busy !== null ? <p className="session-actions-status" role="status">Loading…</p> : null}
       {output !== null ? <p className="session-actions-ok" role="status">{output}</p> : null}
       {error !== null ? <p className="session-actions-error" role="alert">{error}</p> : null}
     </section>

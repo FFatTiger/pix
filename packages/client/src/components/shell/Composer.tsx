@@ -2,6 +2,12 @@ import { useState, type RefObject } from "react";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useRuntime } from "@/runtime";
 import { EXTENSION_UI_CAPABILITY, hasPendingInteractiveRequest } from "@/features/extension-request/extension-request";
+import {
+  ArrowElbowUpLeftIcon,
+  PaperPlaneRightIcon,
+  StopIcon,
+  XIcon,
+} from "@phosphor-icons/react";
 
 /**
  * Runtime-aware composer. Send/Abort are driven by the live SessionStore:
@@ -171,47 +177,53 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
             </div>
             {hasQueue ? (
               <button type="button" className="composer-clear-queue" onClick={handleClearQueue} aria-label="Clear the queued turns">
+                <XIcon size={11} aria-hidden="true" />
                 Clear queue
               </button>
             ) : null}
           </div>
         ) : null}
-        <textarea
-          ref={textareaRef}
-          className="composer-input"
-          rows={2}
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              handleSend();
-            }
-          }}
-          placeholder={canAgent && live ? "Message the agent…" : "Composer disabled"}
-          disabled={textareaDisabled}
-          aria-disabled={!canAgent || !live}
-          aria-label="Message the agent"
-        />
-        <div className="composer-toolbar">
-          <span className="composer-status" aria-live="polite">
-            {streaming ? (sendIsFollowUp ? "streaming — Send follows up" : "streaming") : extensionUiWaiting ? "Extension is waiting for input." : live ? "ready" : disabledReason || "readonly"}
-          </span>
-          <span className="composer-actions">
-            {streaming ? (
-              <button type="button" className="composer-abort" onClick={() => { void runtime.abort().catch(() => undefined); }} aria-label="Abort the running response">
-                Abort
+        <div className="composer-shell">
+          <textarea
+            ref={textareaRef}
+            className="composer-input"
+            rows={2}
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                handleSend();
+              }
+            }}
+            placeholder={canAgent && live ? "Message the agent…" : "Composer disabled"}
+            disabled={textareaDisabled}
+            aria-disabled={!canAgent || !live}
+            aria-label="Message the agent"
+          />
+          <div className="composer-toolbar">
+            <span className="composer-status" aria-live="polite">
+              {streaming ? (sendIsFollowUp ? "streaming — Send follows up" : "streaming") : extensionUiWaiting ? "Extension is waiting for input." : live ? "ready" : disabledReason || "readonly"}
+            </span>
+            <span className="composer-actions">
+              {streaming ? (
+                <button type="button" className="composer-abort" onClick={() => { void runtime.abort().catch(() => undefined); }} aria-label="Abort the running response">
+                  <StopIcon size={13} weight="fill" aria-hidden="true" />
+                  Abort
+                </button>
+              ) : null}
+              {showSteer ? (
+                <button type="button" className="composer-steer" onClick={handleSteer} disabled={!canSteer} aria-label="Steer the running response">
+                  <ArrowElbowUpLeftIcon size={13} aria-hidden="true" />
+                  Steer
+                </button>
+              ) : null}
+              <button type="button" className="composer-send" onClick={handleSend} disabled={!canSend} aria-label={sendIsFollowUp ? "Send a follow-up" : "Send"}>
+                <PaperPlaneRightIcon size={13} weight="bold" aria-hidden="true" />
+                Send
               </button>
-            ) : null}
-            {showSteer ? (
-              <button type="button" className="composer-steer" onClick={handleSteer} disabled={!canSteer} aria-label="Steer the running response">
-                Steer
-              </button>
-            ) : null}
-            <button type="button" className="composer-send" onClick={handleSend} disabled={!canSend} aria-label={sendIsFollowUp ? "Send a follow-up" : "Send"}>
-              Send
-            </button>
-          </span>
+            </span>
+          </div>
         </div>
       </div>
     </footer>

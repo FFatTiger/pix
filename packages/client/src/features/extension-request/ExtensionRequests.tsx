@@ -29,6 +29,12 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 import type { ExtensionUiRequest } from "@fffattiger/pix-protocol";
 import { useRuntime } from "@/runtime";
 import {
+  CheckIcon,
+  PaperPlaneRightIcon,
+  PuzzlePieceIcon,
+  XIcon,
+} from "@phosphor-icons/react";
+import {
   EXTENSION_UI_CAPABILITY,
   activeInteractiveRequests,
   describeExtensionUiError,
@@ -79,9 +85,11 @@ function ExtensionRequestCard({ request, operable, waiting, replyPending, draft,
           <p className="extension-request-message">{request.message}</p>
           <div className="extension-request-actions">
             <button type="button" className="extension-request-btn extension-request-btn--primary" disabled={disabled} aria-busy={replyPending} onClick={() => submit({ responseKind: "confirmed", confirmed: true })}>
+              <CheckIcon size={12} weight="bold" aria-hidden="true" />
               Confirm
             </button>
             <button type="button" className="extension-request-btn" disabled={disabled} ref={cancelRef} onClick={() => submit({ responseKind: "cancelled", cancelled: true })}>
+              <XIcon size={12} aria-hidden="true" />
               Cancel
             </button>
           </div>
@@ -102,6 +110,7 @@ function ExtensionRequestCard({ request, operable, waiting, replyPending, draft,
           </ul>
           <div className="extension-request-actions">
             <button type="button" className="extension-request-btn" disabled={disabled} ref={cancelRef} onClick={() => submit({ responseKind: "cancelled", cancelled: true })}>
+              <XIcon size={12} aria-hidden="true" />
               Cancel
             </button>
           </div>
@@ -130,9 +139,11 @@ function ExtensionRequestCard({ request, operable, waiting, replyPending, draft,
           />
           <div className="extension-request-actions">
             <button type="button" className="extension-request-btn extension-request-btn--primary" disabled={disabled} aria-busy={replyPending} onClick={() => submit({ responseKind: "value", value: draft })}>
+              <PaperPlaneRightIcon size={12} aria-hidden="true" />
               Submit
             </button>
             <button type="button" className="extension-request-btn" disabled={disabled} ref={cancelRef} onClick={() => submit({ responseKind: "cancelled", cancelled: true })}>
+              <XIcon size={12} aria-hidden="true" />
               Cancel
             </button>
           </div>
@@ -160,9 +171,11 @@ function ExtensionRequestCard({ request, operable, waiting, replyPending, draft,
           />
           <div className="extension-request-actions">
             <button type="button" className="extension-request-btn extension-request-btn--primary" disabled={disabled} aria-busy={replyPending} onClick={() => submit({ responseKind: "value", value: draft })}>
+              <PaperPlaneRightIcon size={12} aria-hidden="true" />
               Submit
             </button>
             <button type="button" className="extension-request-btn" disabled={disabled} ref={cancelRef} onClick={() => submit({ responseKind: "cancelled", cancelled: true })}>
+              <XIcon size={12} aria-hidden="true" />
               Cancel
             </button>
           </div>
@@ -196,9 +209,11 @@ function ExtensionRequestCard({ request, operable, waiting, replyPending, draft,
           />
           <div className="extension-request-actions">
             <button type="button" className="extension-request-btn extension-request-btn--primary" disabled={disabled} aria-busy={replyPending} onClick={() => submit({ responseKind: "value", value: draft })}>
+              <PaperPlaneRightIcon size={12} aria-hidden="true" />
               Submit
             </button>
             <button type="button" className="extension-request-btn" disabled={disabled} ref={cancelRef} onClick={() => submit({ responseKind: "cancelled", cancelled: true })}>
+              <XIcon size={12} aria-hidden="true" />
               Cancel
             </button>
           </div>
@@ -213,7 +228,10 @@ function ExtensionRequestCard({ request, operable, waiting, replyPending, draft,
 
   return (
     <article className={`extension-request-card${operable ? " extension-request-card--active" : ""}`} aria-busy={replyPending}>
-      <h3 className="extension-request-title">{heading}</h3>
+      <h3 className="extension-request-title">
+        <PuzzlePieceIcon size={12} aria-hidden="true" />
+        {heading}
+      </h3>
       {body}
       {waiting ? <p className="extension-request-waiting" role="status">Waiting for the previous extension request to finish.</p> : null}
       {error !== null ? <p className="extension-request-error" role="alert">{error}</p> : null}
