@@ -1,6 +1,6 @@
 import type { LocalePlugin } from "../types";
 
-/** Pi Web built-in English locale. */
+/** pix built-in English locale. */
 export const enLocale = {
   id: "en",
   label: "English",
@@ -43,7 +43,7 @@ export const enLocale = {
     "desktop.system": "System",
     "desktop.english": "English",
     "desktop.chinese": "简体中文",
-    "desktop.themeDescription": "Choose the appearance of Pi Web.",
+    "desktop.themeDescription": "Choose the appearance of pix.",
     "desktop.languageDescription": "Choose the display language for the interface.",
     "desktop.colorScheme": "Color Scheme",
     "desktop.openThemeFolder": "Open Pi theme folder",

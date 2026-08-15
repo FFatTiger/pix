@@ -3,7 +3,7 @@ import { urls } from "./urls";
 import { ResolvedThemeSchema, ThemesResponseSchema, type ResolvedThemeDto } from "./schemas";
 
 /**
- * Read-only themes API. Mirrors the pi-web-desktop theme system:
+ * Read-only themes API. Mirrors the upstream desktop theme system:
  * - `GET /v1/themes` lists theme sets (global ~/.pi/agent/themes + project
  *   .pi/themes + builtins) — same `{ themeSets }` response shape.
  * - `GET /v1/themes/:name?mode=dark|light` resolves one variant to CSS vars.
@@ -29,7 +29,7 @@ export type ThemesApi = ReturnType<typeof createThemesApi>;
 
 /**
  * Context-free resolved-theme fetch for `useTheme` (ported verbatim from
- * pi-web-desktop; it keeps its own `name::mode` cache). Preserves the source
+ * upstream desktop client; it keeps its own `name::mode` cache). Preserves the source
  * semantics: null on HTTP failure / malformed body / schema mismatch, null on
  * network error — the hook then falls back to the default CSS theme.
  */

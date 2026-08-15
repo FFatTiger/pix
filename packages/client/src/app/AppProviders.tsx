@@ -36,7 +36,7 @@ export function AppProviders({ children, host }: AppProvidersProps) {
             <RuntimeProvider>
               {/* PWA resume: revalidate the boot surface on visibility/online/runtime reconnect. */}
               <ResumeRefetch />
-              {/* UI infrastructure providers (ported from pi-web-desktop
+              {/* UI infrastructure providers (ported from the upstream desktop app
                   app/page.tsx nesting): I18n outer, ContextMenu inner, both
                   wrapping the routed UI. Theme stays hook-consumed (useTheme)
                   like the source — no global theme provider. */}

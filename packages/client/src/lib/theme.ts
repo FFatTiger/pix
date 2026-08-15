@@ -1,5 +1,5 @@
 /**
- * Client-side theme shared types, ported from pi-web-desktop `lib/theme.ts`.
+ * Client-side theme shared types, ported from the upstream desktop theme module.
  *
  * The source module is a Node implementation (fs scan of
  * `~/.pi/agent/themes/` + `<cwd>/.pi/themes/`, pi CLI JSON parsing, color

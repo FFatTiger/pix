@@ -125,7 +125,7 @@ export const TrustResponseSchema = z.strictObject({
 });
 export type TrustResponse = z.infer<typeof TrustResponseSchema>;
 
-/* —— Themes (pi-web-desktop theme system; Host slice pending) —— */
+/* —— Themes (upstream desktop theme system; Host slice pending) —— */
 
 /** GET /v1/themes — theme-set catalog entry (mirrors lib/theme.ts ThemeSetInfo). */
 export const ThemeSetInfoSchema = z.strictObject({

@@ -522,11 +522,12 @@ test("checkNoLegacyProductName does not flag upstream Pi concepts", (t) => {
   assert.equal(result.ok, true, result.details);
 });
 
-test("checkNoLegacyProductName excludes migration-ledger and the gate self-test", (t) => {
+test("checkNoLegacyProductName excludes historical, legal, generated, and self-test evidence", (t) => {
   const dir = makeRoot();
   t.after(() => cleanup(dir));
   const files = [
     write(dir, "docs/migration-ledger.md", `# legacy source: ${LEGACY_HYPHEN} worktrees`),
+    write(dir, "THIRD_PARTY_NOTICES.md", `Upstream attribution: ${LEGACY_HYPHEN}`),
     write(dir, "scripts/check-architecture.test.mjs", `const t = "${LEGACY_HYPHEN}";`),
     write(dir, "package-lock.json", `"${LEGACY_HYPHEN}": {}`),
     write(dir, "packages/host/src/clean.ts", `export const ok = 1;`),

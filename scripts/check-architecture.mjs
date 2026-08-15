@@ -731,14 +731,16 @@ export function checkDependencyBuildersSafe(sourceFiles) {
 const LEGACY_PRODUCT_TOKENS = ["pi" + "-web", "pi" + "_web", "pi" + " web"];
 
 /**
- * Files that are allowed to keep the old brand as historical evidence or are
- * generated artifacts: the migration ledger (old source paths / commits), the
- * regenerated dependency lockfile, and this gate's own adversarial self-test.
+ * Files that are allowed to keep the old brand as historical or legal
+ * evidence, or are generated artifacts: the migration ledger (old source
+ * paths / commits), third-party attribution, the regenerated dependency
+ * lockfile, and this gate's own adversarial self-test.
  */
 function legacyProductNameSkipSet(rootDir) {
   return new Set(
     [
       join(rootDir, "docs", "migration-ledger.md"),
+      join(rootDir, "THIRD_PARTY_NOTICES.md"),
       join(rootDir, "package-lock.json"),
       join(rootDir, "scripts", "check-architecture.test.mjs"),
     ].map((p) => realpathIfExists(p) ?? p),

@@ -1,6 +1,6 @@
 import type { LocalePlugin } from "../types";
 
-/** Pi Web built-in Simplified Chinese locale. */
+/** pix built-in Simplified Chinese locale. */
 export const zhCNLocale = {
   id: "zh-CN",
   label: "简体中文",
@@ -43,7 +43,7 @@ export const zhCNLocale = {
     "desktop.system": "跟随系统",
     "desktop.english": "English",
     "desktop.chinese": "简体中文",
-    "desktop.themeDescription": "选择 Pi Web 的外观。",
+    "desktop.themeDescription": "选择 pix 的外观。",
     "desktop.languageDescription": "选择界面的显示语言。",
     "desktop.colorScheme": "配色方案",
     "desktop.openThemeFolder": "打开本地 Pi theme 文件夹",
