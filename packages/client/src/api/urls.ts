@@ -73,8 +73,8 @@ export const urls = {
     upload: (path: string, conflict?: "error" | "overwrite" | "skip") => resource("files", { path, conflict }),
     /** POST /v1/files?op=upload-check — conflict preflight (Host endpoint pending). */
     uploadCheck: (path: string) => resource("files", { path, op: "upload-check" }),
-    /** GET /v1/files?op=watch — SSE change stream (Host endpoint pending). */
-    watch: (path: string, sessionId?: string | null) => resource("files", { path, op: "watch", sessionId: sessionId ?? undefined }),
+    /** Existing GET /v1/files/watch?path= SSE change stream. */
+    watch: (path: string) => resource("files/watch", { path }),
     index: (cwd: string, q?: string) => resource("file-index", { cwd, q }),
   },
   git: {

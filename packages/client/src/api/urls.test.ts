@@ -11,6 +11,7 @@ describe("v1 URL builders", () => {
 
   it("encodes cwd and file paths as query values", () => {
     expect(urls.files.resource("/tmp/a b#c", "read")).toBe("/v1/files?path=%2Ftmp%2Fa+b%23c&op=read");
+    expect(urls.files.watch("/tmp/a b#c")).toBe("/v1/files/watch?path=%2Ftmp%2Fa+b%23c");
     expect(urls.git.diff("/repo x", "/repo x/a&b")).toBe("/v1/git/diff?cwd=%2Frepo+x&path=%2Frepo+x%2Fa%26b");
     expect(urls.worktrees.list("/repo?a=b")).toBe("/v1/worktrees?cwd=%2Frepo%3Fa%3Db");
   });

@@ -1,58 +1,97 @@
 /**
- * File watch seam (GET /v1/files?path=&op=watch).
+ * File watch transport for the existing GET /v1/files/watch?path= SSE route.
  *
- * The file viewer keeps the source watch wiring verbatim — one watch source
- * per open file, `change` events driving content/diff refresh, closed on
- * unmount. The concrete transport is injected here instead of constructed in
- * the component so the client boundary (which currently forbids the SSE
- * constructor surface) and the pending Host endpoint stay explicit:
- *
- *  - `openFileWatch(url)` is the single construction point. Until the Host
- *    `op=watch` endpoint lands, it returns an inert source that never fires
- *    and closes cleanly, so viewers render their initial fetch and simply do
- *    not live-refresh.
- *  - When the endpoint is ready, this module swaps the inert default for the
- *    browser SSE implementation (same-origin, `change` message events whose
- *    JSON payloads parse as `FileWatchChangeSchema`). No component changes.
+ * Client boundaries intentionally forbid direct browser SSE constructors, so
+ * this API-layer adapter consumes the same-origin event stream with fetch and
+ * exposes only the tiny source interface used by FileViewer. Host errors and
+ * payloads are never rendered; a failed stream simply stops live refresh.
  */
 
-/** Minimal `MessageEvent`-like shape the viewers listen for. */
+/** Minimal MessageEvent-like shape consumed by file viewers. */
 export interface FileWatchEvent {
   readonly data?: string;
 }
 
-/** Watch source surface consumed by the file viewers. */
+/** Watch source surface consumed by file viewers. */
 export interface FileWatchSource {
   addEventListener(type: "change", listener: (event: FileWatchEvent) => void): void;
   close(): void;
 }
 
-/** URL → watch source factory (transport-injectable). */
+/** URL → watch source factory, injectable for deterministic integration tests. */
 export type FileWatchFactory = (url: string) => FileWatchSource;
 
-function createInertFileWatchSource(): FileWatchSource {
+function parseEventBlock(block: string): { event: string; data: string } | null {
+  let event = "message";
+  const data: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith(":")) continue;
+    const separator = line.indexOf(":");
+    const field = separator < 0 ? line : line.slice(0, separator);
+    const value = separator < 0 ? "" : line.slice(separator + 1).replace(/^ /, "");
+    if (field === "event") event = value;
+    else if (field === "data") data.push(value);
+  }
+  return data.length > 0 ? { event, data: data.join("\n") } : null;
+}
+
+function createFetchFileWatchSource(url: string): FileWatchSource {
+  const controller = new AbortController();
+  const listeners = new Set<(event: FileWatchEvent) => void>();
+
+  void (async () => {
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: "text/event-stream" },
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) return;
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (!controller.signal.aborted) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done }).replace(/\r\n?/g, "\n");
+
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary >= 0) {
+          const parsed = parseEventBlock(buffer.slice(0, boundary));
+          buffer = buffer.slice(boundary + 2);
+          if (parsed?.event === "change") {
+            for (const listener of listeners) listener({ data: parsed.data });
+          }
+          boundary = buffer.indexOf("\n\n");
+        }
+
+        if (done) break;
+      }
+    } catch {
+      // Abort, network failure, gate expiry, and malformed streams all degrade
+      // to a static viewer. Fixed UI error handling remains outside this seam.
+    }
+  })();
+
   return {
-    addEventListener() {
-      // Inert: no Host watch endpoint yet, so nothing ever fires.
+    addEventListener(_type, listener) {
+      listeners.add(listener);
     },
     close() {
-      // Inert: nothing was opened.
+      listeners.clear();
+      controller.abort();
     },
   };
 }
 
-/**
- * Open a file watch stream. Current default is inert (Host endpoint pending);
- * the integration layer may override the factory without touching viewers.
- */
+let fileWatchFactory: FileWatchFactory = createFetchFileWatchSource;
+
+/** Open a same-origin watch stream for one authorized file. */
 export function openFileWatch(url: string): FileWatchSource {
   return fileWatchFactory(url);
 }
 
-/** Current factory — inert until the Host watch endpoint lands. */
-let fileWatchFactory: FileWatchFactory = createInertFileWatchSource;
-
-/** Replace the watch transport (integration seam, e.g. when the Host lands). */
+/** Replace the transport for deterministic tests or an alternate host bridge. */
 export function setFileWatchFactory(factory: FileWatchFactory): void {
   fileWatchFactory = factory;
 }

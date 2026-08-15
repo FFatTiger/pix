@@ -23,16 +23,16 @@ export interface ViewerFileData {
 /** Build a files URL exactly like the source `getFileApiUrl` helper. */
 export function getFileApiUrl(
   filePath: string,
-  type: "read" | "download" | "meta" | "docx-preview" | "watch",
+  type: "read" | "download" | "meta" | "docx-preview",
   sourceSessionId?: string | null,
   params: Record<string, string | number | undefined> = {},
 ): string {
   return urls.files.file(filePath, type, { sessionId: sourceSessionId, params });
 }
 
-/** Open the watch stream for a file (transport seam; see @/api/files-watch). */
-export function watchFile(filePath: string, sourceSessionId?: string | null): FileWatchSource {
-  return openFileWatch(getFileApiUrl(filePath, "watch", sourceSessionId));
+/** Open the existing Host SSE stream for a file. */
+export function watchFile(filePath: string, _sourceSessionId?: string | null): FileWatchSource {
+  return openFileWatch(urls.files.watch(filePath));
 }
 
 /** Read a text file. Throws HttpError with the Host's sanitized message. */
