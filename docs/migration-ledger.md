@@ -2379,12 +2379,18 @@ pi-sdk-adapter + sessiond + agent-worker fixture + tests/e2e/runtime.mjs + docs 
    return/cache，复用 singleflight/triple-match/epoch/rekey/fail-closed；refresh 失败固定 unavailable
    并缓存，同 commandId 重试不重执行；错 inner result type 丢弃（不 resolve 不 finalize）；finalization
    中 rekey 绝不跨 epoch 写；失败/中断 navigate 不触发 refresh 不缓存假成功。
-4) leafId/snapshot 收敛：adapter DriverState 增 `leafId`（源 session.sessionManager.getLeafId()），
-   buildState 带入 state.leafId；权威刷新后 sessiond projection 携带新 leafId/history/messageCount，
-   getSnapshot/attach/sessions.read/sessions.context 读到 navigate 后状态；adapter navigate result 本身
-   **不携带**新 leaf identity（SDK navigateTree 只返回 editorText/cancelled/summaryEntry）——收敛靠
-   driver-state read-through（getLeafId→state.leafId→snapshot refresh），已用测试证明；无 stale snapshot
-   在成功后被 serve。
+4) leafId/snapshot 收敛（精确冻结语义，真实 SDK 决定性 probe 证明，world A = pi-parity）：adapter
+   DriverState 增 `leafId`（源 session.sessionManager.getLeafId()），buildState 带入 state.leafId；
+   navigateTree-without-summarize 的 leaf move 是 `SessionManager.branch(newLeafId)`（内存内移动，不
+   `_persist`）——**live 立即收敛**（adapter/sessiond 权威刷新把 worker live snapshot 的 leafId/history/
+   messageCount 投影到 sessiond，getSnapshot/attach 读到 navigate 后状态）；但**文件/catalog 收敛发生在
+   下一次持久化 append**（prompt 轮次的 appendMessage 以 parentId=navigated leaf 落盘，文件最后条目成为
+   新 child，_buildIndex 重开后 leaf=新 child，sessions.read/sessions.context 随之收敛到 navigate 位置）；
+   **stop-without-turn 丢失导航**（与 pi 自身 SessionManager 语义一致）。adapter navigate result 本身**不
+   携带**新 leaf identity（SDK navigateTree 只返回 editorText/cancelled/summaryEntry）——收敛靠
+   driver-state read-through（getLeafId→state.leafId→snapshot refresh）。sessiond authority finalization
+   刷新的是 worker live snapshot，因此 sessiond 投影在 navigate 成功后即 navigate 后状态（无 stale）；
+   catalog 侧在 append 前诚实停留在 pre-navigate leaf（已用真实 SDK store probe + 测试 13 记录）。
 5) 错误 sanitize：navigate 失败经 NAVIGATE_FAILURE_MESSAGES 固定文案投影（invalid_input/not_found/
    interrupted/session_busy/timeout/unavailable），绝不含 raw leaf id/path/session name/OS text；
    blank/missing target → invalid_input。
@@ -2407,14 +2413,27 @@ pi-sdk-adapter + sessiond + agent-worker fixture + tests/e2e/runtime.mjs + docs 
 - tests/e2e/runtime.mjs：PRODUCTION_CAPS 加 runtime.navigate；各场景 closed-cap 断言
   fork/auto_name；新增 scenarioD2NavigateControl。
 
+决定性真实 SDK probe（isolated temp agent dir，PI_CODING_AGENT_DIR 指向临时目录，绝不碰 ~/.pi）：
+probe 输出——built（file=true, turn1Assistant, turn2Assistant, liveLeaf=turn2）→ navigate（branch 到
+turn1，liveLeaf=turn1，live 收敛立即）→ catalog-before-append（SessionManager.open 重开 file，
+fileLeaf=turn2 = pre-navigate leaf，catalog 分歧诚实）→ append-after-navigate（newUser.parentId=turn1 =
+landedAtNavigatedLeaf=true，liveLeaf=newUser）→ catalog-after-append（fileLeaf=newUser,
+convergedToNavigatedPosition=true, branch=[root→turn1→newUser] 不含 old tail）→ stop-without-turn
+（persistedLeaf≠navigated，navigationLost=true）。**World A（pi-parity）证明**：navigate 是 live 树移动，
+在下次 append 持久化；append-after-navigate 落在 navigated leaf 且文件/catalog 收敛；stop-without-turn
+丢失导航（与 pi 自身 SessionManager 一致）。
+
 测试（新增）：
 - packages/pi-sdk-adapter/test/navigate.test.ts（13 用例）：空闲 navigate 成功且带 leafId 快照收敛；
   streaming（in-flight prompt）/bash/compact/adapter-local compaction/extension-UI-wait（promptRunning）
   → session_busy 零 SDK 调用零事件；queued turns（streaming + 非空 steer/follow_up 队列）→ session_busy
   队列未动；blank → invalid_input；driver cancelled → interrupted 固定文案；
   driver 未知 target → invalid_input 固定文案（无 raw leaf id）；closed capability（无 runtime.navigate）
-  → unsupported_capability 零 driver 调用；blocked prompt 继续到 completion；read-after-navigate：
-  scripted SDK 共享 store 的 sessions.read/context 立即解析到 navigate 后 leaf（无 stale leaf）。
+  → unsupported_capability 零 driver 调用；blocked prompt 继续到 completion；real-SDK navigate
+  persistence semantics（world A）：真实 SessionManager.branch + 真实 PiSdkSessionStore 驱动——live 立即
+  收敛、append 前 catalog 诚实停在 pre-navigate leaf、append-after-navigate 落盘在 navigated leaf 且
+  catalog 收敛到 navigate 位置（navigated path 含 navigated leaf 不含 old tail）、stop-without-turn 丢
+  失导航。
 - packages/sessiond/test/sessiond.test.ts（+8）：navigate 成功→权威刷新在 result 前收敛
   leafId/messageCount/history（getSnapshot + attach）；same-id 二调用者 join singleflight 一次
   worker.command；成功 finalization 清 singleflight 且 cached retry 不再 refresh；refresh 失败
@@ -2434,8 +2453,10 @@ pi-sdk-adapter + sessiond + agent-worker fixture + tests/e2e/runtime.mjs + docs 
   26/26 PASS；Runtime E2E（含 navigate 场景）1 轮 PASS（将补 ≥2 轮）；Startup + Sessions E2E（回归）待
   重跑；git diff --check 干净；worktree 未 push/deploy，未触碰 live service。
 
-残余/后续：adapter navigate result 不携带新 leaf identity（SDK 返回形状所限），收敛依赖
-driver-state read-through——未来若 SDK 返回 leaf，可让 sessiond/locator 以该 id 为 canonical 直读；
-Client navigate UI 为独立切片（本 slice backend-first 无 Client）；§53 Client rename 仍在飞待集成。
-Fresh verifier 独立 PASS 待补。
+残余/后续：navigate 为 live-convergent（world A，pi-parity）——真实 SDK 的 navigateTree 无 summarize
+只在内存移动 leaf，文件/catalog 在下次持久化 append 才收敛，stop-without-turn 丢失导航（与 pi 自身
+SessionManager 一致，已由决定性 probe + 测试 13 记录）；adapter navigate result 不携带新 leaf identity
+（SDK 返回形状所限），收敛依赖 driver-state read-through——未来若 SDK 返回 leaf 或持久化 navigate 本身，
+可让 sessiond/locator 以该 id 为 canonical 直读；Client navigate UI 为独立切片（本 slice backend-first
+无 Client）；§53 Client rename 仍在飞待集成。Fresh verifier 独立 PASS 待补。
 ```

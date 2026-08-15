@@ -426,6 +426,17 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           }
           this.emitState();
           return { ok: true, type: "navigate_tree" };
+          // NOTE (frozen semantics): unlike compact, navigate intentionally has
+          // NO dedicated in-flight marker. navigateTree-without-summarize is a
+          // quick in-memory leaf move (SessionManager.branch) that never blocks
+          // on a model, so overlapping navigates are benign and deterministic
+          // last-writer-wins (the sessiond lifecycle mutex serializes admission;
+          // the SDK resolves the target against a stable entry map). The busy
+          // guard above already rejects navigate against a real in-flight
+          // prompt/bash/compaction/extension-UI wait. A prompt issued after a
+          // navigate simply appends at the current (navigated) leaf — pi's own
+          // semantics. This asymmetry with compact is deliberate and covered by
+          // the concurrent-navigate test below.
         }
         case "fork": {
           const forked = await this.driver.fork(command.entryId);

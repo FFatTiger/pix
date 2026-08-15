@@ -1,10 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RuntimeEvent } from "@fffattiger/pix-runtime-core";
 import { RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { CanonicalAgentRuntimeAdapter } from "../src/internal/adapter.js";
+import { createPiSdkSessionStore } from "../src/internal/session-store.js";
 import type { DriverEventListener, DriverState, DriverUiRequest, PiRuntimeDriver } from "../src/internal/types.js";
-import { ScriptedSdkDriverFactory, ScriptedSdkStore } from "./scripted-sdk.js";
 
 /**
  * D2 navigate adapter tests. The canonical boundary must:
@@ -118,6 +122,33 @@ describe("adapter navigate busy guard + convergence (D2 navigate)", () => {
 
     const snap = await adapter.getSnapshot();
     assert.equal(snap.state.leafId, "entry-3", "snapshot must carry the authoritative leaf id after navigate");
+  });
+
+  it("concurrent navigates are deterministic last-writer-wins (no in-flight marker needed for the quick in-memory leaf move)", async () => {
+    const { driver, controls } = makeDriver();
+    const adapter = new CanonicalAgentRuntimeAdapter(driver);
+    await adapter.ready();
+    // Navigate is a quick in-memory leaf move (never blocks on a model), so
+    // overlapping navigates are benign: both succeed and the final leaf is the
+    // last one applied — deterministic, no corruption, no rejected sibling.
+    let releases: Array<() => void> = [];
+    controls.setNavigateImpl((targetId) => new Promise<void>((resolve) => {
+      controls.setState({ leafId: targetId });
+      releases.push(resolve);
+    }));
+
+    const first = adapter.execute({ type: "navigate_tree", targetId: "entry-2" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = adapter.execute({ type: "navigate_tree", targetId: "entry-3" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    for (const release of releases.splice(0)) release();
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(a.ok, true);
+    assert.equal(b.ok, true);
+    // Last writer wins deterministically: both driver calls were issued, and the
+    // driver state (the source of truth) ends at the last target applied.
+    assert.deepEqual(controls.navigateCalls.slice(0, 2), ["entry-2", "entry-3"]);
+    assert.equal((await adapter.getSnapshot()).state.leafId, "entry-3");
   });
 
   it("navigate while the driver is streaming (in-flight prompt) → session_busy, no driver call, no events, no partial state", async () => {
@@ -319,26 +350,83 @@ describe("adapter navigate busy guard + convergence (D2 navigate)", () => {
     assert.equal(promptResult.ok, true, "the blocked prompt must continue to completion");
   });
 
-  it("read-after-navigate: the session-store context resolves to the navigated leaf (sessions.read/context convergence)", async () => {
-    const store = new ScriptedSdkStore();
-    const factory = new ScriptedSdkDriverFactory(store, { cwd: "/workspace" });
-    const driver = await factory.create({ cwd: "/workspace" }, { capabilities: RUNTIME_CAPABILITIES });
-    const sessionId = driver.identity.sessionId;
-    // Build a 2-turn history (entries: user1, assistant1, user2, assistant2).
-    await driver.prompt("hello");
-    await driver.prompt("world");
-    const ctxBefore = await store.readSessionContext(sessionId);
-    assert.ok(ctxBefore.leafId, "the live leaf must be present");
-    const lastLeaf = ctxBefore.leafId!;
-    const firstEntryId = store.sessions.get(sessionId)!.entries[0]!.entryId;
-    assert.notEqual(firstEntryId, lastLeaf, "the earlier leaf must differ from the current leaf");
+  it("real-SDK navigate persistence semantics (world A): live convergence immediate; catalog diverges until the next persisted append; append lands at the navigated leaf and sessions.read/context converge; stop-without-turn loses the navigation", async () => {
+    // Drives the REAL SDK SessionManager (the exact engine navigateTree calls:
+    // branch(newLeafId) for a non-user target) and the REAL PiSdkSessionStore
+    // (the exact catalog path sessions.read/sessions.context use). The
+    // navigate-without-summarize leaf move is in-memory only; the persisted
+    // file converges on the next append (a prompt turn's appendMessage), which
+    // lands at the navigated leaf. This is pi-parity semantics — navigate is
+    // live-convergent; stop-without-turn loses the navigation.
+    type SdkMessage = Parameters<typeof SessionManager.prototype.appendMessage>[0];
+    const userMsg = (content: string): SdkMessage => ({ role: "user", content, timestamp: Date.now() } as SdkMessage);
+    const assistantMsg = (text: string): SdkMessage => ({
+      role: "assistant",
+      content: [{ type: "text", text }],
+      api: "anthropic-messages",
+      provider: "probe",
+      model: "probe",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    } as SdkMessage);
 
-    // Navigate back to the earlier leaf: the read-side catalog (same shared
-    // store that backs sessions.read/sessions.context) must immediately resolve
-    // to the navigated leaf — no stale leaf served after success.
-    await driver.navigate(firstEntryId);
-    const ctxAfter = await store.readSessionContext(sessionId);
-    assert.equal(ctxAfter.leafId, firstEntryId, "read-after-navigate must resolve to the navigated leaf");
-    await driver.close("user");
+    const agentDir = join(tmpdir(), `pix-d2nav-test-${process.pid}-${Date.now()}`);
+    mkdirSync(agentDir, { recursive: true });
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(agentDir, "agent");
+    try {
+      const cwdPath = join(agentDir, "workspace");
+      mkdirSync(cwdPath, { recursive: true });
+      const cwd = cwdPath;
+      const manager = SessionManager.create(cwd);
+      // Two turns exactly like the prompt loop's append step.
+      manager.appendMessage(userMsg("turn 1"));
+      const navigatedLeaf = manager.appendMessage(assistantMsg("a1"));
+      manager.appendMessage(userMsg("turn 2"));
+      const oldTail = manager.appendMessage(assistantMsg("a2"));
+      const sessionId = manager.getSessionId();
+      assert.equal(manager.getLeafId(), oldTail);
+
+      // Real read-side store (sessions.read / sessions.context path).
+      const store = createPiSdkSessionStore();
+      let ctx = await store.readSessionContext(sessionId);
+      assert.equal(ctx.leafId, oldTail, "catalog initially at the old tail");
+
+      // (a) Live convergence is immediate: navigateTree-without-summarize moves
+      //     the in-memory leaf (branch(newLeafId)).
+      manager.branch(navigatedLeaf);
+      assert.equal(manager.getLeafId(), navigatedLeaf, "live convergence immediate");
+
+      // (b) Catalog divergence after navigate-without-append (honest): the
+      //     persisted file still has the old tail as its last entry, so a fresh
+      //     sessions.read/context open serves the PRE-navigate leaf.
+      ctx = await store.readSessionContext(sessionId);
+      assert.equal(ctx.leafId, oldTail, "catalog still shows the pre-navigate leaf until the next persisted append");
+
+      // (c) Append-after-navigate (the persistence step of a prompt turn)
+      //     lands at the navigated leaf and the file/catalog then converge to it.
+      const newUser = manager.appendMessage(userMsg("post-navigate"));
+      const entry = manager.getEntry(newUser);
+      assert.equal(entry?.parentId, navigatedLeaf, "append must land at the navigated leaf");
+      assert.equal(manager.getLeafId(), newUser, "live leaf advances to the appended entry");
+      ctx = await store.readSessionContext(sessionId);
+      assert.equal(ctx.leafId, newUser, "catalog converges to the navigated position after the append");
+      const path = manager.getBranch(newUser).map((e) => e.id);
+      assert.ok(path.includes(navigatedLeaf), "navigated path passes through the navigated leaf");
+      assert.ok(!path.includes(oldTail), "old tail is not on the navigated path");
+
+      // Stop-without-turn: a navigation that is never followed by an append is
+      // lost on reopen (same as pi's SessionManager semantics).
+      manager.branch(navigatedLeaf);
+      const sessionFile = manager.getSessionFile();
+      assert.ok(sessionFile, "persisted session file must exist");
+      const reopened = SessionManager.open(sessionFile, undefined, cwd);
+      assert.notEqual(reopened.getLeafId(), navigatedLeaf, "stop-without-turn loses the in-memory navigation");
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 });
