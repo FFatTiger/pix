@@ -1,0 +1,51 @@
+import type { AssistantContentBlock, AssistantMessage, ThinkingContent, ToolCallContent } from "./chat-view-model";
+
+/**
+ * pix adapter: Array.prototype.findLastIndex needs the ES2023 lib; pix
+ * compiles against ES2022, so this local helper keeps the source-identical
+ * semantics (last index matching the predicate, else -1).
+ */
+function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean): number {
+  for (let index = items.length - 1; index >= 0; index--) {
+    if (predicate(items[index]!)) return index;
+  }
+  return -1;
+}
+
+interface DisplayOptions {
+  isStreaming?: boolean | undefined;
+}
+
+export function isEmptyThinkingBlock(block: AssistantContentBlock, options: DisplayOptions = {}): block is ThinkingContent {
+  return block.type === "thinking" && !block.deferred && !options.isStreaming && block.thinking.trim() === "";
+}
+
+export function getDisplayableAssistantBlocks(
+  message: AssistantMessage,
+  options: DisplayOptions = {},
+): AssistantContentBlock[] {
+  return (message.content ?? []).filter((block) => !isEmptyThinkingBlock(block, options));
+}
+
+function isFinalAnswerBlock(block: AssistantContentBlock): boolean {
+  return block.type === "text" || block.type === "image";
+}
+
+export function splitFinalAssistantBlocks(
+  message: AssistantMessage,
+  options: DisplayOptions = {},
+): { answerBlocks: AssistantContentBlock[]; processBlocks: AssistantContentBlock[] } {
+  const blocks = getDisplayableAssistantBlocks(message, options);
+  const lastProcessIndex = findLastIndex(blocks, (block) => !isFinalAnswerBlock(block));
+  if (lastProcessIndex === -1) {
+    return { answerBlocks: blocks, processBlocks: [] };
+  }
+  return {
+    answerBlocks: blocks.slice(lastProcessIndex + 1),
+    processBlocks: blocks.slice(0, lastProcessIndex + 1),
+  };
+}
+
+export function countToolCallBlocks(blocks: AssistantContentBlock[]): number {
+  return blocks.filter((block): block is ToolCallContent => block.type === "toolCall").length;
+}
