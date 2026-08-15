@@ -8,4 +8,1066 @@
      (incl. force-confirm safety defaults), Catalog
    - code/path/diff text uses var(--font-mono)
    Mobile overlay behavior lives in responsive.css.
+   Visual language ported from pi-web-desktop (MIT — see
+   THIRD_PARTY_NOTICES.md): TabBar/FileExplorer/FileViewer/
+   QuickChangesPanel/SettingsModal panel-list grammar.
+   The dock keeps its existing fixed 360px width (no resize).
    ============================================================ */
+
+/* ============================================================
+   1. Dock shell (WorkspacePanel + CatalogPanel)
+   ============================================================ */
+
+.workspace-panel {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  height: 100%;
+  width: 360px;
+  flex: 0 0 360px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+
+/* — compact tab bar (reference TabBar: 36px rail, panel/inactive
+     backgrounds, 1px separators, active tab lifts onto --bg) — */
+.workspace-panel-tabs {
+  display: flex;
+  align-items: stretch;
+  height: var(--topbar-height);
+  min-height: 36px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-panel-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 72px;
+  max-width: 180px;
+  padding: 0 12px;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-feedback),
+    color var(--dur-fast) var(--ease-feedback);
+}
+
+.workspace-panel-tab svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.workspace-panel-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-panel-tab:hover:not(.workspace-panel-tab--active) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.workspace-panel-tab--active {
+  background: var(--bg);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.workspace-panel-tab--active svg {
+  opacity: 1;
+}
+
+/* Panel close: fills the tab rail's right end (reference close-icon cell). */
+.workspace-panel-close {
+  flex-shrink: 0;
+  align-self: stretch;
+  width: 36px;
+  height: auto;
+  margin-left: auto;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+}
+
+/* — panel header (reference settings header: title row over content) — */
+.workspace-panel-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+/* — scroll body: each tab owns its internal scroll areas — */
+.workspace-panel-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Panel-density controls: compact 24px buttons inside the dock. */
+.workspace-panel .text-btn {
+  min-height: var(--control-height-sm);
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+/* ============================================================
+   2. Shared surfaces: hints, toolbars, list rows
+   ============================================================ */
+
+.workspace-hint {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.workspace-hint--error {
+  color: var(--status-danger);
+}
+
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 3px 8px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.files-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* Entry glyph slot (reference FileExplorer 14px icon cell). */
+.files-entry-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.files-entry-icon--dir {
+  color: var(--accent);
+}
+
+.files-entry-icon--symlink {
+  color: var(--accent);
+}
+
+.files-entry-icon--code,
+.files-entry-icon--web {
+  color: var(--accent-blue);
+}
+
+.files-entry-icon--data {
+  color: var(--accent-orange);
+}
+
+/* ============================================================
+   3. Files (reference FileExplorer list + FileViewer preview)
+   ============================================================ */
+
+.files-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* — search (reference compact input with leading glyph) — */
+.files-search-form {
+  flex-shrink: 0;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.files-search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-height-sm);
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--bg);
+  color: var(--text-dim);
+  transition: border-color var(--dur-fast) var(--ease-feedback);
+}
+
+.files-search-box:focus-within {
+  border-color: var(--border-hover);
+}
+
+.files-search-box svg {
+  flex-shrink: 0;
+}
+
+.files-search-input {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.files-search-input:focus,
+.files-search-input:focus-visible {
+  outline: none;
+}
+
+/* — search results — */
+.files-search {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.files-search-results {
+  padding: 4px;
+}
+
+.files-search-status {
+  margin: 0;
+  padding: 4px 12px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* — breadcrumbs (clamped at the project root) — */
+.files-breadcrumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-height: 26px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.files-crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.files-crumb {
+  max-width: 120px;
+  padding: 1px 5px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.files-crumb:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.files-crumb:disabled {
+  cursor: default;
+}
+
+.files-crumb--current {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.files-crumb--muted {
+  color: var(--text-dim);
+}
+
+.files-crumb-sep {
+  padding: 0 1px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* — directory list (reference 24px tree rows) — */
+.files-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 4px 6px;
+}
+
+.files-list li {
+  min-width: 0;
+}
+
+.files-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease-feedback);
+}
+
+.files-entry:hover {
+  background: var(--bg-hover);
+}
+
+.files-entry--active {
+  background: var(--bg-selected);
+}
+
+.files-entry-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.files-entry-tag {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* — preview (reference FileViewer status bar + mono body) — */
+.files-detail {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  max-height: 55%;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.files-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.files-detail-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.files-detail-close {
+  flex-shrink: 0;
+}
+
+.files-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.files-meta > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.files-meta dt {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.files-meta dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.files-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 0 12px;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.files-preview code {
+  display: block;
+  min-width: max-content;
+  padding: 0 12px;
+  white-space: pre;
+  color: var(--text);
+}
+
+/* ============================================================
+   4. Git (reference QuickChangesPanel + FileViewer diff tokens)
+   ============================================================ */
+
+.git-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.git-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-summary-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.git-summary-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.git-summary-stats {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+/* — quick-changes header (reference uppercase section label,
+     git-changes indicator pill, ±counts, refresh glyph) — */
+.git-changes {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 3px 8px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.git-changes-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.git-indicator {
+  display: inline-flex;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-indicator-part {
+  padding: 1px 6px;
+}
+
+.git-indicator-part + .git-indicator-part {
+  border-left: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.git-indicator-part--modified {
+  color: var(--git-status-modified);
+  background: var(--git-status-modified-bg);
+}
+
+.git-indicator-part--added {
+  color: var(--git-status-added);
+  background: var(--git-status-added-bg);
+}
+
+.git-indicator-part--deleted {
+  color: var(--git-status-deleted);
+  background: var(--git-status-deleted-bg);
+}
+
+.git-changes-counts {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.git-refresh,
+.worktree-refresh {
+  flex-shrink: 0;
+}
+
+.git-refresh-spinner,
+.worktree-refresh-spinner,
+.worktree-submit-spinner {
+  animation: panels-spin 0.8s linear infinite;
+}
+
+@keyframes panels-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* — changed-file rows (reference ChangeRow) — */
+.git-split {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.git-file-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 45%;
+  overflow-y: auto;
+  padding: 2px 4px;
+}
+
+.git-file-list li {
+  min-width: 0;
+}
+
+.git-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease-feedback);
+}
+
+.git-file-row:hover {
+  background: var(--bg-hover);
+}
+
+.git-file-row--active {
+  background: var(--bg-selected);
+}
+
+.git-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  padding: 0 3px;
+  flex-shrink: 0;
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.git-status-badge--modified,
+.git-status-badge--renamed {
+  color: var(--git-status-modified);
+  background: var(--git-status-modified-bg);
+}
+
+.git-status-badge--added,
+.git-status-badge--untracked {
+  color: var(--git-status-added);
+  background: var(--git-status-added-bg);
+}
+
+.git-status-badge--deleted,
+.git-status-badge--conflict {
+  color: var(--git-status-deleted);
+  background: var(--git-status-deleted-bg);
+}
+
+.git-file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+/* — diff surface (reference GitDiffView: token backgrounds, block rail) — */
+.git-diff {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 55%;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+
+.git-diff-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-diff-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.git-diff-patch {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 0;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.git-diff-patch code {
+  display: block;
+  min-width: max-content;
+}
+
+.git-diff-line {
+  display: block;
+  padding: 0 12px;
+  white-space: pre;
+}
+
+.git-diff-line--add {
+  padding-left: 9px;
+  border-left: 3px solid var(--git-status-added);
+  background: var(--git-status-added-bg);
+}
+
+.git-diff-line--del {
+  padding-left: 9px;
+  border-left: 3px solid var(--git-status-deleted);
+  background: var(--git-status-deleted-bg);
+}
+
+.git-diff-line--hunk {
+  padding-top: 3px;
+  padding-bottom: 3px;
+  color: var(--accent-blue);
+  background: var(--bg-secondary);
+}
+
+.git-diff-line--meta {
+  color: var(--text-dim);
+}
+
+.git-diff-line--ctx {
+  padding-left: 9px;
+  border-left: 3px solid transparent;
+  color: var(--text-muted);
+}
+
+.git-diff-empty {
+  padding: 10px 12px;
+}
+
+/* ============================================================
+   5. Worktrees (list + create + force-confirm safety surface)
+   ============================================================ */
+
+.worktree-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.worktree-create {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 8px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.worktree-create-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.worktree-create-row {
+  display: flex;
+  gap: 6px;
+}
+
+.worktree-create-row input {
+  flex: 1;
+  min-width: 0;
+  height: var(--control-height-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.worktree-create-error {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--status-danger);
+  overflow-wrap: anywhere;
+}
+
+.worktree-status {
+  margin: 0;
+  padding: 4px 12px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.worktree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+}
+
+.worktree-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+
+.worktree-row--current {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.worktree-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.worktree-branch {
+  flex: 1;
+  min-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.worktree-path {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+/* Actions stay a wrapped flex row (mobile-safe, no overflow). */
+.worktree-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.worktree-row-error {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--status-danger);
+  overflow-wrap: anywhere;
+}
+
+.worktree-delete-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--status-danger) 45%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--status-danger) 5%, var(--bg-card));
+}
+
+.worktree-delete-confirm-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.worktree-delete-confirm-warning svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--status-danger);
+}
+
+.worktree-delete-confirm-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ============================================================
+   6. Catalog (read-only rows + chips + Trust summary)
+   ============================================================ */
+
+.catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+}
+
+.catalog-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+
+.catalog-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.catalog-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.catalog-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.catalog-meta-item {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.catalog-meta-item--error {
+  color: var(--status-danger);
+}
+
+.catalog-meta-item--wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-family: var(--font-sans);
+}
+
+/* Chips: shared pill grammar for status/role flags (reference
+     git-changes-indicator metrics). */
+.catalog-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.catalog-chip--ok {
+  color: var(--status-success);
+  border-color: color-mix(in srgb, var(--status-success) 35%, var(--border));
+  background: color-mix(in srgb, var(--status-success) 7%, transparent);
+}
+
+.catalog-chip--accent {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* Trust summary (panel variant only — the sidebar badge variant is
+   owned by sidebar.css). */
+.catalog-trust-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.catalog-trust-summary .trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.catalog-trust-summary .trust-badge--ok {
+  color: var(--status-success);
+  border-color: color-mix(in srgb, var(--status-success) 30%, transparent);
+  background: color-mix(in srgb, var(--status-success) 10%, transparent);
+}
+
+.catalog-trust-summary .trust-badge--danger,
+.catalog-trust-summary .trust-badge--error {
+  color: var(--status-danger);
+  border-color: color-mix(in srgb, var(--status-danger) 30%, transparent);
+  background: color-mix(in srgb, var(--status-danger) 10%, transparent);
+}
+
+.catalog-trust-summary .trust-badge--muted {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: var(--bg-subtle);
+}
+
+.trust-badge-icon {
+  flex-shrink: 0;
+}
+
+.trust-badge-label {
+  white-space: nowrap;
+}
+
+.catalog-trust-detail {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}

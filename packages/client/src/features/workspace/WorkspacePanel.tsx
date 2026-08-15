@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { FolderSimple, GitBranch, GitFork, X } from "@phosphor-icons/react";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { FilesPanel } from "./FilesPanel";
 import { GitPanel } from "./GitPanel";
@@ -26,6 +27,13 @@ const TAB_LABEL: Record<WorkspaceTab, string> = {
   files: "Files",
   git: "Git",
   worktrees: "Worktrees",
+};
+
+/** Reference tab-bar grammar: every tab carries a compact leading icon. */
+const TAB_ICON: Record<WorkspaceTab, typeof FolderSimple> = {
+  files: FolderSimple,
+  git: GitBranch,
+  worktrees: GitFork,
 };
 
 /**
@@ -69,30 +77,43 @@ export function WorkspacePanel({ cwd, open, onClose, onOpenWorktree }: Workspace
   const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0]!;
 
   return (
-    <aside className={`workspace-panel`} aria-label="Workspace">
-      <div className="workspace-panel-tabs" role="tablist">
-        {TAB_ORDER.filter((id) => availableTabs.includes(id)).map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === id}
-            className={`workspace-panel-tab${activeTab === id ? " workspace-panel-tab--active" : ""}`}
-            onClick={() => setTab(id)}
-          >
-            {TAB_LABEL[id]}
-          </button>
-        ))}
+    <aside className="workspace-panel" aria-label="Workspace">
+      <div className="workspace-panel-tabs" role="tablist" aria-label="Workspace sections">
+        {TAB_ORDER.filter((id) => availableTabs.includes(id)).map((id) => {
+          const Icon = TAB_ICON[id];
+          const active = activeTab === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              id={`workspace-tab-${id}`}
+              aria-controls={`workspace-panel-${id}`}
+              aria-selected={active}
+              className={`workspace-panel-tab${active ? " workspace-panel-tab--active" : ""}`}
+              onClick={() => setTab(id)}
+            >
+              <Icon size={13} aria-hidden="true" />
+              <span className="workspace-panel-tab-label">{TAB_LABEL[id]}</span>
+            </button>
+          );
+        })}
         <button
           type="button"
           className="icon-btn workspace-panel-close"
           aria-label="Close workspace panel"
+          title="Close workspace panel"
           onClick={onClose}
         >
-          ×
+          <X size={13} aria-hidden="true" />
         </button>
       </div>
-      <div className="workspace-panel-body">
+      <div
+        className="workspace-panel-body"
+        role="tabpanel"
+        id={`workspace-panel-${activeTab}`}
+        aria-labelledby={`workspace-tab-${activeTab}`}
+      >
         {activeTab === "files" && canFiles ? <FilesPanel cwd={cwd} canFiles={canFiles} /> : null}
         {activeTab === "git" && canGit ? <GitPanel cwd={cwd} canGit={canGit} /> : null}
         {activeTab === "worktrees" && canWorktree ? (

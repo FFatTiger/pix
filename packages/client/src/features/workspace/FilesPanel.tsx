@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ArrowUp, FileText, FolderSimple, LinkSimple, MagnifyingGlass, X } from "@phosphor-icons/react";
 import { createQueryOptions } from "@/api/query-keys";
 import { HttpError } from "@/api/http-client";
 import { useHttpClient } from "@/app/http-context";
@@ -118,6 +119,39 @@ function describeIndexError(error: unknown): string {
     if (error.kind === "timeout") return "Search timed out — try a more specific query.";
   }
   return "Unable to search files.";
+}
+
+/**
+ * Reference FileExplorer icon grammar, Phosphor edition: directories, symlinks
+ * and file types get a distinct glyph; file color comes from a small
+ * extension bucket so the list reads like the reference tree without porting
+ * the catppuccin asset pipeline.
+ */
+const EXT_ICON_KIND: Record<string, string> = {
+  ts: "code", tsx: "code", js: "code", jsx: "code", mjs: "code", cjs: "code",
+  py: "code", rs: "code", go: "code", java: "code", rb: "code", php: "code",
+  c: "code", h: "code", cpp: "code", hpp: "code", cs: "code", swift: "code",
+  kt: "code", sh: "code", bash: "code", zsh: "code",
+  json: "data", yml: "data", yaml: "data", toml: "data", xml: "data", csv: "data",
+  lock: "data",
+  md: "doc", mdx: "doc", txt: "doc", rst: "doc", adoc: "doc", log: "doc",
+  css: "web", scss: "web", sass: "web", less: "web", html: "web", htm: "web",
+};
+
+/** Icon kind for a file name: `dir`, `symlink`, or a color bucket for files. */
+export function fileIconKind(name: string, isDir = false, isSymlink = false): string {
+  if (isDir) return "dir";
+  if (isSymlink) return "symlink";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return "text";
+  return EXT_ICON_KIND[name.slice(dot + 1).toLowerCase()] ?? "text";
+}
+
+/** Compact entry glyph (aria-hidden decoration; names stay text-only). */
+function EntryIcon({ isDir, isSymlink }: { isDir: boolean; isSymlink: boolean }) {
+  if (isDir) return <FolderSimple size={14} aria-hidden="true" />;
+  if (isSymlink) return <LinkSimple size={14} aria-hidden="true" />;
+  return <FileText size={14} aria-hidden="true" />;
 }
 
 export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
@@ -288,14 +322,17 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
   return (
     <div className="files-panel" aria-label="Files">
       <form className="files-search-form" role="search" onSubmit={(event) => event.preventDefault()}>
-        <input
-          type="search"
-          className="files-search-input"
-          aria-label="Search files"
-          placeholder="Search files…"
-          value={raw}
-          onChange={(event) => setRaw(event.target.value)}
-        />
+        <div className="files-search-box">
+          <MagnifyingGlass size={12} aria-hidden="true" />
+          <input
+            type="search"
+            className="files-search-input"
+            aria-label="Search files"
+            placeholder="Search files…"
+            value={raw}
+            onChange={(event) => setRaw(event.target.value)}
+          />
+        </div>
       </form>
 
       {searchMode ? (
@@ -308,6 +345,7 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
               {matches.map((match) => {
                 const path = root ? joinRelative(root, match.path) : null;
                 const active = path !== null && canonicalSelected === path;
+                const kind = fileIconKind(baseName(match.path));
                 return (
                   <li key={match.path}>
                     <button
@@ -316,7 +354,9 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
                       onClick={() => handleSearchSelect(match.path)}
                       title={match.path}
                     >
-                      <span className="files-entry-icon" aria-hidden="true">📄</span>
+                      <span className={`files-entry-icon files-entry-icon--${kind}`} aria-hidden="true">
+                        <FileText size={14} />
+                      </span>
                       <span className="files-entry-name">{match.path}</span>
                     </button>
                   </li>
@@ -370,7 +410,8 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
               }}
               title={upTarget ? `Up to ${upTarget}` : "Already at project root"}
             >
-              ↑ Up
+              <ArrowUp size={12} aria-hidden="true" />
+              <span>Up</span>
             </button>
             <span className="files-count">{entries.length} entr{entries.length === 1 ? "y" : "ies"}</span>
           </div>
@@ -387,6 +428,7 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
               {entries.map((entry) => {
                 const entryPath = canonicalCurrent ? joinChild(canonicalCurrent, entry.name) : entry.name;
                 const active = canonicalSelected === entryPath;
+                const kind = fileIconKind(entry.name, entry.isDir, entry.isSymlink);
                 return (
                   <li key={entry.name}>
                     <button
@@ -397,7 +439,9 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
                       onClick={() => handleEnter(entry.name, entry.isDir)}
                       title={entry.isDir ? `Open ${entry.name}` : `Preview ${entry.name}`}
                     >
-                      <span className="files-entry-icon" aria-hidden="true">{entry.isDir ? "📁" : entry.isSymlink ? "↪" : "📄"}</span>
+                      <span className={`files-entry-icon files-entry-icon--${kind}`} aria-hidden="true">
+                        <EntryIcon isDir={entry.isDir} isSymlink={entry.isSymlink} />
+                      </span>
                       <span className="files-entry-name">{entry.name}</span>
                       {entry.isDir ? <span className="files-entry-tag">dir</span> : null}
                     </button>
@@ -413,7 +457,9 @@ export function FilesPanel({ cwd, canFiles }: FilesPanelProps) {
         <section className="files-detail" aria-label="File preview">
           <div className="files-detail-header">
             <span className="files-detail-name" title={canonicalSelected ?? selectedFile}>{baseName(canonicalSelected ?? selectedFile)}</span>
-            <button type="button" className="icon-btn files-detail-close" aria-label="Close preview" onClick={() => setSelectedFile(null)}>×</button>
+            <button type="button" className="icon-btn files-detail-close" aria-label="Close preview" onClick={() => setSelectedFile(null)}>
+              <X size={12} aria-hidden="true" />
+            </button>
           </div>
           {meta.data ? (
             <dl className="files-meta">
