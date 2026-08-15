@@ -11,12 +11,34 @@
  * resources and declares no capability beyond what the Host actually mounts.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { startCommand } from "./commands/start.js";
 import { hostCommand } from "./commands/host.js";
 import { statusCommand } from "./commands/status.js";
 import { downCommand } from "./commands/down.js";
 import { sessiondCommand } from "./commands/sessiond-foreground.js";
 import { pixErr, pixLog } from "./log.js";
+
+/**
+ * Read the CLI package version from the manifest adjacent to this compiled
+ * module (`dist/index.js` → `../package.json`), which holds in both the
+ * workspace layout and the REL1 self-contained release bundle.
+ */
+export function resolveCliVersion(fromUrl: string = import.meta.url): string {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(fromUrl)), "..", "package.json"), "utf8"),
+    ) as { version?: unknown };
+    if (typeof manifest.version === "string" && manifest.version.length > 0) {
+      return manifest.version;
+    }
+  } catch {
+    // fall through to a fixed unknown marker
+  }
+  return "unknown";
+}
 
 function printHelp(): void {
   pixLog("usage: pix <command> [options]");
@@ -36,6 +58,11 @@ export async function runCli(argv: string[]): Promise<number> {
   const command = argv[0];
   const rest = argv.slice(1);
   switch (command) {
+    case "--version":
+    case "-v": {
+      pixLog(`pix ${resolveCliVersion()}`);
+      return 0;
+    }
     case "start":
       return startCommand(rest);
     case "host":

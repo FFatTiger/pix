@@ -3067,3 +3067,97 @@ Material risk / 残余：
 prompt/steer/follow_up/abort/model.set/thinking.set/tools.read/tools.write/reload/compact/compact.abort/
 extension_ui（response/input）/navigate/fork/queue/stats/session.rename/auto_name = 20 个 production token，
 26 个 runtime 命令全部可达。refactor-execution-plan D2 行已追加本切片记录。
+
+## 64. REL1 — 安装、升级、卸载、发布验证（Phase 1 冻结设计 + Phase 2/3 实现；worktree rel1-release，branch feat/rel1-release，base main `88b6693`；实现完成，待独立 verifier）
+
+### PHASE 1 — Release Shape 冻结设计（mandatory gate，evidence-first）
+
+#### 64.1 发布形态决策：单自包含 bundled CLI 产物（NOT 多包发布）
+
+**决策**：发布/安装的端到端产物是 **一个自包含 bundled CLI tarball**（包名复用 `@fffattiger/pix-cli`，版本 = 工作区统一版本），把 CLI 运行时闭包全部内联（编译后 dist + 外部 node_modules + client dist）。**不**把 8 个 workspace 包各自发布到 registry；所有 workspace 包保持 `private: true`。理由（evidence）：
+
+1. **当前一切包均 `private: true`**（protocol/runtime-core/local-authority/pi-sdk-adapter/agent-worker/sessiond/host/cli/client/runtime-contract-tests），`npm publish` 全部拒绝。发布 8 个包需要成规模 un-private + 单源版本 + 发布纪律，远超本切片"离线验证发布"的范围，且本切片禁止 registry 访问。
+2. **外部依赖离线不可解析**：pi-sdk-adapter 内嵌 `@earendil-works/pi-*`（0.84.0，~184MB 树 + 模型 SDK：anthropic/openai/google/mistral/aws/…）。实证：`npm i --prefix <tmp> --offline <pi-sdk-adapter.tgz>` 报 `ENOTCACHED @earendil-works/pi-agent-core`（本地 `~/.npm/_cacache` 只有 tarball content、没有 packument metadata；`npm cache ls` 空）。多包离线安装完整闭包必须访问 registry → 违反"Everything must run offline-local"。
+3. **`npm pack` 硬排除 node_modules**（即使 `files` 列出 `node_modules`，tarball 仍无它，已实证）→ 自包含 tarball 必须由发布脚本手工组装（手动 tar.gz，顶层 `package/` 目录）。已实证：手工 tar.gz 含内联 node_modules + bin，`npm i --prefix <tmp>` 离线安装成功、bin 链接、ESM import 解析内联 zod。
+4. **fresh clone 后 `npm pack` tarball 缺 dist**：dist 全部 gitignored、无 `prepare`/`prepublishOnly` build hook。fresh clone 未 build 直接 pack → 只有 bin + package.json（CLI 4 files / 1.1kB），发布的 tarball 不可运行。发布流程必须先 build。
+5. **真实生产路径离线可用**（实证 probe）：真实 sessiond daemon + 真实 `ProductionWorkerProcessFactory` + 真实 SDK worker，`runtime.create` 离线成功（返回 sessionId/snapshot/workerStatus ready），无需 fixture、无网络、无模型调用；`system.shutdown`（RPC 认证）成功；CLI `pix down --all` 端到端成功（daemon exit 0）。隔离：`PIX_SESSIOND_DIR`/`PI_CODING_AGENT_DIR`/`HOME` 全指 temp 时，probe 未向真实 `~/.pi` 写入任何会话（grep sid 无命中）。
+
+**副作用（接受）**：bundle 体积大（root node_modules 426MB，其中 Pi SDK 树 184MB）。这是内嵌 Pi SDK 的诚实成本；JS 压缩后 tarball 更小。列为 material risk / 后续可做 minified closure 剪枝优化，本切片不剪枝（正确性 > 体积，剪枝=自研依赖解析器，风险高）。
+
+#### 64.2 制品盘点（`npm pack` dry-run，build 后）
+
+| 包 | version | private | tarball files | 备注 |
+|---|---|---|---|---|
+| protocol | 0.1.0 | true | 69 (dist) | 只依赖 zod |
+| runtime-core | 0.1.0 | true | 77 (dist) | 零依赖 |
+| local-authority | 0.1.0 | true | 17 (dist) | 零依赖 |
+| pi-sdk-adapter | 0.1.0 | true | 52 (dist) | **dep `@fffattiger/pix-runtime-core: file:../runtime-core` 需修复** |
+| agent-worker | 0.1.0 | true | 53 (dist) | 版本化 dep |
+| sessiond | 0.1.0 | true | 97 (dist) | 版本化 dep |
+| host | **0.0.0** | true | 169 (dist) | 版本不一致，需归一 0.1.0 |
+| cli | **0.0.0** | true | 56 (dist+bin) | bin: pix/pix-host/pix-sessiond 全在；版本不一致，需归一 |
+| client | **0.0.0** | true | 109 (dist) | Vite app，非 npm 库；dist 被 host 静态服务 |
+| runtime-contract-tests | 0.1.0 | true | 33 (dist) | TEST-ONLY，从不发布；file: 链接无害 |
+
+问题清单：① fresh clone 未 build → tarball 空 dist；② `pi-sdk-adapter` 的 `file:../runtime-core` 在发布 tarball 中不可解析（file: 相对路径在安装树不存在）——这是**真实依赖图修复**；`runtime-contract-tests` 的 `file:` 链接无害（test-only、不发布、不进 CLI 闭包）；③ 版本不一致（host/cli/client 0.0.0 vs 其余 0.1.0）且 cli 的 `@fffattiger/pix-host: 0.0.0` 需要同步；④ `npm pack` 排除 node_modules → 自包含需手工 tar；⑤ client dist 在独立安装中没有 workspace-root 可回退（`resolveClientDist` 会 throw）→ 需要 bundle-local 回退。
+
+#### 64.3 "install" 语义（end user）
+
+- **全局 CLI 安装**：`npm i -g <pix-cli-<v>.tgz>`（离线、自包含、零 registry 依赖）→ PATH 上得到 `pix` / `pix-host` / `pix-sessiond` 三个 bin。这是本发布形态的最小可安装集 = **单个自包含 bundle**（cli + host + sessiond + agent-worker + pi-sdk-adapter + protocol + runtime-core + local-authority 编译 dist + 外部 node_modules 闭包 + client dist 内联）。
+- **npx**：`npx <本地 tarball>` 亦可（npx 解析本地 tarball 并运行 bin）。
+- bundle 包名复用 `@fffattiger/pix-cli`：`resolveCliPackageRoot()`（按 manifest name 匹配）与 `resolveSessiondBin()`（`<cli-pkg-root>/bin/pix-sessiond.mjs`）在 bundle 内零改动工作。
+
+#### 64.4 升级 / 卸载
+
+- **持久化状态全部按路径键控、不按版本**（by design 验证）：
+  - Host ledger：`PIX_HOST_DIR`（默认 `~/.pi/pix/host`）下 `trusted-roots.json`（schema v1）、`managed-worktrees.json`、`trusted-roots.lock`（host-state-directory.ts）。
+  - 会话 JSONL：`PI_CODING_AGENT_DIR`（默认 `~/.pi`）下 `<agentDir>/sessions/<cwd-slug>/*.jsonl`（session-store.ts / session-projection.ts）。
+  - 守护进程：`PIX_SESSIOND_DIR`（默认 `~/.pi/pix/sessiond`）下 `sessiond.sock`/`sessiond.lock`/`sessiond.secret`（locator.ts / local.ts）。
+  - 全部由 env 绝对路径解析；与包版本无关。升级 = 覆盖安装同/新版本 bundle，路径不变 → 状态自然存活。**唯一升级兼容风险**：`trusted-roots.json` 的 `version` 字段（TRUSTED_ROOTS_VERSION=1）——未知版本 fail-closed（`LEDGER_UNKNOWN_VERSION`）；协议 `PROTOCOL_VERSION=1` 冻结。升级模拟验证旧版本状态被新 daemon/host 认可。
+- **卸载**：`npm uninstall -g @fffattiger/pix-cli`（或删除 prefix）移除包文件。残留 = 用户状态目录（`~/.pi/pix/*`、agent 会话目录），**按设计保留**（数据不随卸载销毁）；临时/进程残留 = daemon socket/lock/pid（由 `pix down --all` 的 RPC shutdown 清理；异常 SIGKILL 可能留 stale lock——既有 fail-closed 语义，见 host-state-directory）。卸载验证：删除 prefix 后，temp 沙箱内除声明的状态目录外无残留；真实全局位置（~/.pi/pix、~/.pi/agent/sessions、~/.npm）不被本流程写入。**不需要额外 uninstall surface**（OS 包管理 + `pix down --all` 已覆盖；不新增卸载命令）。
+
+#### 64.5 发布验证（release verification，全部离线）
+
+`scripts/release-verify.mjs` 确定性编排：**build → pack bundle → install 到 temp prefix → smoke（--version / daemon start / session round-trip / authenticated down）→ upgrade 模拟 → uninstall 残留检查**，全程零全局状态：
+- 使用显式 `--prefix`/`--cache`（temp），不碰 `~/.npm` config；`HOME`/`PIX_SESSIOND_DIR`/`PI_CODING_AGENT_DIR`/`PIX_HOST_DIR` 全指 temp。
+- smoke 的 daemon start 用 bundled `pix-sessiond` bin；session round-trip = RPC `runtime.create` → `runtime.getSnapshot` → `runtime.stop`（真实生产 worker，离线已实证）；authenticated down = bundled `pix down --all`（RPC `system.shutdown`，非 SIGTERM）。
+- upgrade 模拟：vPrev bundle 安装 → 生成持久状态（host ledger + SDK v3 session JSONL 于 temp 目录）→ 覆盖安装 vNext bundle → 验证 `pix --version` = vNext、新 daemon 认读旧 host ledger（不报 LEDGER_UNKNOWN_VERSION）、新 daemon `sessions.list` 读到旧 session 文件。
+- uninstall：删除 prefix → 枚举残留（除声明的 temp 状态目录外应为零）。
+
+#### 64.6 依赖图修复清单（frozen，Phase 2 执行）
+
+| # | 变更 | 位置 | 理由 |
+|---|---|---|---|
+| D1 | 版本单源 + 归一 | 全部 workspace package.json + 根 | 单源版本 `0.1.0`（根 package.json）；host/cli/client 0.0.0→0.1.0；cli 的 `@fffattiger/pix-host` dep `0.0.0`→`0.1.0`；新增 `scripts/sync-version.mjs`（check/write） |
+| D2 | `pi-sdk-adapter` dep `@fffattiger/pix-runtime-core: file:../runtime-core` → `0.1.0` | packages/pi-sdk-adapter/package.json + package-lock（frozen 单一变更） | 真实依赖图：发布 tarball 中 file: 相对路径不可解析；改为版本化 dep 使每包 `npm pack` tarball 可安装（同级包亦发布 0.1.0） |
+| D3 | CLI `--version`/`-v` 命令 | packages/cli/src/index.ts | 当前 `--version` 报 unknown command exit 2；发布产物必须有版本命令（smoke 依赖） |
+| D4 | `resolveClientDist` 增加 bundle-local 回退 `<cli-pkg-root>/client` | packages/cli/src/paths.ts | 独立安装无 workspace-root；bundle 内联 client dist 后 `pix start` 可服务 UI。PIX_CLIENT_DIST 与 workspace-root 优先级不变 |
+| D5 | bundle 组装 + 手工 tar.gz | 新增 `scripts/release-verify.mjs` | `npm pack` 排除 node_modules；自包含需手工 tar（`package/` 顶层布局） |
+| D6 | runtime-contract-tests file: 链接 | 不改 | test-only、private、不进 CLI 闭包；保持最小 churn |
+
+#### 64.7 分阶段实现计划（Phase 2 落地，全部离线）
+
+1. D1 版本归一 + sync-version.mjs（含单测）+ CLI --version。
+2. D2 依赖修复 + frozen lock 变更（最小 diff）。
+3. D4 client-dist 回退。
+4. D5 release-verify.mjs：bundle 组装（拷贝 root node_modules 外部闭包 + 8 个 workspace 包 dist + client dist + bin）→ 手工 tar.gz → temp prefix `npm i`（--cache temp）→ smoke（--version/daemon/session/down）→ upgrade 模拟 → uninstall 残留检查。
+5. Phase 3 验证：per-package + root build/typecheck/test、check:architecture（14 gates）、boundaries、三条 E2E 不变绿、release-verify 干净态 ×2、diff-check、clean tree、无全局残留。
+
+
+### Phase 2/3 实现与验证（接续：原实现 agent 因宿主磁盘耗尽（ENOSPC）中断于 D5 之前，父会话接手完成）
+
+- D1 版本单源：`scripts/sync-version.mjs`（check/write 双模式）+ 单测 6 用例（修复 1 处 fixture 正则）；
+  host/cli/client 0.0.0→0.1.0、cli 的 pix-host dep 0.0.0→0.1.0、adapter 的 runtime-core `file:../runtime-core`→`0.1.0`（D2 冻结
+  变更，package-lock 4 行同步；`npm ci` 全新解析验证通过）。
+- D3 `pix --version`/`-v`（读 bundle 相邻 manifest，workspace/bundle 双布局）。
+- D4 `resolveClientDist` 三级回退（PIX_CLIENT_DIST → workspace → `<cli-pkg-root>/client`），独立安装可服务 UI。
+- D5 `scripts/release-verify.mjs`（8 步确定性编排，全离线零全局状态）：build → sync-version check → 组装自包含
+  bundle（CLI bin/dist + client dist + root node_modules 外部闭包 + 7 个 workspace 包真实 dist 替换 @fffattiger 符号链接，
+  不剪枝）→ 手工 tar.gz ×2（v0.1.0/v0.1.1）→ temp prefix 离线 npm i → smoke（--version / bundled daemon / 真实 RPC
+  create→getSnapshot→stop / 认证 `pix down --all` daemon exit 0 socket 清除）→ 升级模拟（**vPrev 用 bundle 内嵌 Pi SDK
+  离线写真 session JSONL**——SDK 无 assistant 消息不落盘，空 create→stop 不持久化，§57 语义；覆盖安装 v0.1.1 → 新
+  daemon sessions.list 读到旧会话）→ 卸载残留检查（prefix 移除、声明的状态目录按设计保留）。
+- Phase 3：npm ci（lock 完整性）/build/typecheck/architecture PASS；root 10 workspace 全绿；Runtime E2E ×2 +
+  Sessions + Startup PASS；sync-version 6/6；release-verify 干净态全流程 ALL PASS。
+- 实测细节：离线安装 27s/次；升级覆盖安装 npm 报 "removed 268 packages, changed 1"（bundle 内联依赖重建，预期）；
+  bundle tar 体积 ≈ root node_modules gz（含 Pi SDK 树，§64.1 冻结接受，后续可做闭包剪枝优化）。
