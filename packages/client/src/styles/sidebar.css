@@ -11,28 +11,11 @@
    - inline rename editor + delete confirmation (compact form)
    - loading / empty / error / capability notes
    This file owns every Sidebar visual — it does not depend on
-   legacy selectors. Shared primitives live in base.css; the
-   shell frame and the mobile overlay live in shell.css /
-   responsive.css (only the Sidebar's own width/overflow are
-   defined here).
+   legacy selectors. Shared primitives live in base.css; the column
+   frame (width, collapse slide, border) lives in shell.css and the
+   mobile overlay in responsive.css — `sidebar--collapsed` is this
+   component's own class, driven by the same `open` state everywhere.
    ============================================================ */
-
-/* — frame — */
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  flex: none;
-  width: var(--sidebar-width);
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background: var(--bg-panel);
-  border-right: 1px solid var(--border);
-}
-
-.sidebar--collapsed {
-  display: none;
-}
 
 /* — sections — */
 .sidebar-section {
@@ -447,4 +430,12 @@
 
 .session-delete-error {
   padding: 0 8px 8px 14px;
+}
+
+/* — touch: the inline rename Save/Cancel pair steps up to 44px
+     (same breakpoint as the shell's mobile layer). — */
+@media (max-width: 768px) {
+  .session-rename-actions .session-btn {
+    height: 44px;
+  }
 }

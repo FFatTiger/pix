@@ -228,8 +228,11 @@ export function AppShell({ search }: AppShellProps) {
               ? "Select a project to start a runtime session."
               : "Open a project to start a runtime session.";
 
+  // The Sidebar component owns its own `sidebar--collapsed` class (from the
+  // `open` prop) — the single state that drives desktop collapse and the
+  // mobile overlay drawer. No shell-level mirror class is needed.
   return (
-    <div className={`app-shell${sidebarOpen ? "" : " app-shell--sidebar-collapsed"}`}>
+    <div className="app-shell">
       <header className="app-topbar">
         <div className="app-topbar-left">
           <button

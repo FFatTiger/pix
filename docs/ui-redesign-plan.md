@@ -1,11 +1,28 @@
 # pix UI/UX 对齐实施计划
 
-> 状态：`ACTIVE`  
-> 最后更新：2026-08-13  
+> 状态：`IMPLEMENTED_AWAITING_USER_REVIEW`  
+> 最后更新：2026-08-16  
 > 产品决策：只迁移 pix 当前已有功能；参考项目独有功能不进入本轮  
 > 参考：`/tmp/pi-web-desktop`（只读，Next.js/Electron）  
 > 目标：`packages/client`（Vite + React + PWA）  
 > 差异台账：[`ui-ux-gap-analysis.md`](./ui-ux-gap-analysis.md)
+
+---
+
+## 0. 实现记录（UX2 完成）
+
+实现 commits（均在 `main`）：
+
+| Commit | 内容 |
+|---|---|
+| `1dfc0ba` | UX2-F：字体/图标依赖、token、base、九文件 CSS 边界，旧 `app.css` 视觉整体废弃 |
+| `aeb9e31` | UX2-SHELL：AppShell/LoginPage/topbar、responsive 骨架 |
+| `4667f15` | UX2-SIDEBAR：Sidebar 会话行/rename/delete/虚拟化样式 |
+| `694d5f2` | UX2-PANELS：Workspace/Catalog/Files/Git/Worktree dock |
+| `06e6649` | UX2-CHAT：Transcript/Composer/SessionActions/Extension UI |
+| UX2-I（本 commit，见 git log） | 纯代码集成：单 owner 化 sidebar/dock 框架、统一 768px 断点、修复 icon/样式缺口、清理未用 CSS |
+
+验收约束（第 2 节第 11 条）：**未运行 UI tests、build、typecheck、lint 或任何视觉/浏览器验证；由用户手工验收。** 架构执行 SSOT（`docs/refactor-execution-plan.md`）的里程碑状态不受本文档影响。
 
 ---
 

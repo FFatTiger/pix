@@ -2,11 +2,12 @@
    responsive.css — OWNER: UX2-INTEGRATION / per-feature media
    overrides (parallel writers coordinate here last)
    ------------------------------------------------------------
-   Breakpoint overrides that cross file ownership:
-   - mobile (≤640px): sidebar/right panel become overlays,
+   Breakpoint overrides that cross file ownership (single mobile
+   breakpoint for the whole app: ≤768px, same value the feature
+   files use):
+   - mobile (≤768px): sidebar/right panel become overlays,
      desktop-only chrome hides
-   - touch targets step up to --control-height-lg where the
-     plan requires it
+   - touch targets step up to 44px where the plan requires it
    Feature files keep their own single-breakpoint tweaks only
    when the rule is local to their selectors; anything touching
    the shell frame or multiple layers belongs here.
@@ -90,7 +91,9 @@
 
   /* — Sidebar: left overlay drawer under the topbar.
      Open/close still comes from the component's own
-     `sidebar--collapsed` class (aria-hidden stays authoritative). */
+     `sidebar--collapsed` class (aria-hidden stays authoritative);
+     visibility is delayed ONLY on the way into hiding so the
+     slide-out finishes first — expanding flips it back instantly. */
   .app-shell .app-body > aside.sidebar {
     position: fixed;
     top: var(--shell-topbar);
@@ -103,8 +106,7 @@
     z-index: 300;
     transform: translateX(-100%);
     box-shadow: none;
-    transition: transform var(--dur-panel) var(--ease-feedback),
-      visibility 0s linear var(--dur-panel);
+    transition: transform var(--dur-panel) var(--ease-feedback);
   }
 
   .app-shell .app-body > aside.sidebar:not(.sidebar--collapsed) {
@@ -112,8 +114,14 @@
     box-shadow: 8px 0 24px rgba(0, 0, 0, 0.2);
   }
 
+  .app-shell .app-body > aside.sidebar.sidebar--collapsed {
+    transition: transform var(--dur-panel) var(--ease-feedback),
+      visibility 0s linear var(--dur-panel);
+  }
+
   /* — Right dock: full-width overlay under the topbar. The panel
-     mounts/unmounts with its own `open` prop — no transition. */
+     mounts/unmounts with its own `open` prop — no transition, and
+     it never occupies layout width while open. */
   .app-shell .app-body > aside.workspace-panel {
     position: fixed;
     top: var(--shell-topbar);
@@ -121,6 +129,7 @@
     bottom: 0;
     left: 0;
     width: 100%;
+    height: auto;
     max-width: none;
     border-left: none;
     border-top: 1px solid var(--border);

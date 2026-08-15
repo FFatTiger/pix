@@ -102,9 +102,9 @@
   --radius-lg: 8px;
   --radius-pill: 999px;
 
-  /* [pix] layout widths — reference defaults */
+  /* [pix] layout widths — the dock is a fixed 360px (panels.css);
+     no --panel-width token: the clamp experiment lost to it. */
   --sidebar-width: 260px;
-  --panel-width: clamp(360px, 42vw, 640px);
   --chat-max-width: 820px;
   --message-bubble-max-width: 680px;
   --topbar-height: 36px;

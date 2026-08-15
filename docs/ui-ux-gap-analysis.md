@@ -415,3 +415,29 @@ pix 必须采用：
 3. 冻结新增依赖、Host/Protocol capability 和安全切片；
 4. 开始 `UX2-0` CSS/组件边界准备；
 5. 按 Client-only、existing-backend UI、new-contract、高风险 mutation 四条轨道实施与验证。
+
+---
+
+## 10. 本轮实施边界结果（UX2 集成，2026-08-16）
+
+按第 1 节冻结范围完成的纯代码集成（foundation/shell/sidebar/chat/panels 五条并行实现合并后的 UX2-I pass）。边界结果：
+
+### 已实现（只覆盖 pix 已有功能）
+
+- 九文件 CSS 分层（tokens/base/shell/sidebar/chat/composer/panels/responsive）单一 owner 化：`.sidebar` 框架（宽度/收起滑出/1px 分隔线）只由 shell.css 声明；`.workspace-panel` 框架（固定 360px、1px 左边框）只由 panels.css 声明，不再有 double border / 重复 flex-basis；
+- 桌面侧栏收起与移动端 overlay 由同一 `sidebar--collapsed`（Sidebar 组件自身 class，`open` prop 驱动）实现；桌面 dock 关闭即卸载（不占宽），移动端全宽 overlay 由 responsive.css 承担；
+- 中心列固定 flex/滚动顺序（header → SessionActions → transcript 唯一滚动容器 → Extension → Composer），`.workspace` 补齐 `overflow:hidden`；
+- 移动端统一 768px 断点 + safe-area + 44px 触控（topbar、rename 按钮、extension request 控件）；
+- 集成修复：CatalogPanel `Puzzle` 图标不存在（换 `PuzzlePiece`）、TrustBadge sidebar 变体补齐 pill 样式、VisibleBranchExportButton 补回 hint/error 排版、Worktree 强删按钮补回 danger tint；
+- 清理：base.css 中无组件组合的 primitives（badge/form-field/surface/error/loading/empty、text-btn tint 变体）、废弃 `--panel-width` token、重复 selector 与旧遗留 selector；
+- Project/Session、rename/delete、live/history、Transcript、Composer queue/abort/steer/send、Extension UI、Files/Git/Worktree、Catalog/Trust、Login/Gate、responsive 全部保留，未替换任何 capability/虚拟化/焦点恢复/错误消毒实现。
+
+### 未做（维持台账，不新增功能）
+
+- 第 5 节全部差异项（Draft Session、附件/`@file`/Slash、Rich Markdown、文件多 Tab、Settings、Trust 写入、i18n、通知等）均未实现；
+- 未新增任何 state/backdrop/产品功能；未修改 backend/Protocol/sessiond/Worker。
+
+### 验证状态
+
+- **未运行 UI tests、build、typecheck、lint、截图或浏览器验证**（与冻结约束一致）；Phosphor 图标与 JSX 用法仅通过读取已安装 `node_modules/@phosphor-icons/react` 类型导出静态核对（48/48 存在）；
+- 待用户手工验收：桌面三栏/收起/dock、移动 overlay/触控、主题深浅色、各功能表面。

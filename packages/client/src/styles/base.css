@@ -1,12 +1,17 @@
 /* ============================================================
    base.css — UX2-F Foundation
    ------------------------------------------------------------
-   Element defaults and shared control primitives only.
+   Element defaults and the shared control primitives actually
+   composed by the feature layers (.icon-btn, .text-btn, .spinner).
    Visual language ported from pi-web-desktop app/globals.css
    (MIT — see THIRD_PARTY_NOTICES.md): compact density, 4px
    scrollbars, 2px accent focus ring, 30px controls, mono-font
    meta text. No feature selectors — those live in shell/
-   sidebar/chat/composer/panels.css (parallel UX2 writers).
+   sidebar/chat/composer/panels.css.
+   UX2-I: primitive groups no component composes (badges, generic
+   form fields, card/error/loading/empty surfaces, text-btn tint
+   variants) were removed instead of kept "for later" — feature
+   layers own their own surface styles.
    Feedback is transform/color only, 100–160ms; no entrance
    animations; prefers-reduced-motion disables transitions.
    ============================================================ */
@@ -238,108 +243,8 @@ select:disabled {
 .text-btn:disabled {
   opacity: 0.55;
 }
-.text-btn--primary {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-}
-.text-btn--danger {
-  color: var(--status-danger);
-  border-color: color-mix(in srgb, var(--status-danger) 35%, var(--border));
-}
 
-/* — badges & chips (reference git-changes-indicator metrics) — */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--bg-subtle);
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.4;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.badge--success {
-  color: var(--status-success);
-  border-color: color-mix(in srgb, var(--status-success) 35%, var(--border));
-}
-.badge--warning {
-  color: var(--status-warning);
-  border-color: color-mix(in srgb, var(--status-warning) 35%, var(--border));
-}
-.badge--danger {
-  color: var(--status-danger);
-  border-color: color-mix(in srgb, var(--status-danger) 35%, var(--border));
-}
-.badge--muted {
-  color: var(--text-dim);
-}
-
-/* — generic form surface — */
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
-}
-.form-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-.form-hint {
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text-dim);
-}
-.form-error {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--status-danger);
-  overflow-wrap: anywhere;
-}
-
-/* — generic loading / error / empty surfaces — */
-.surface-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-card);
-  padding: 10px 12px;
-  min-width: 0;
-}
-
-/* Error surface: reference chat-assistant-error language —
-   danger-tinted border/bg, mono, tight leading. */
-.error-surface {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 8px 11px;
-  border: 1px solid color-mix(in srgb, var(--status-danger) 48%, var(--border));
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--status-danger) 5%, var(--bg-card));
-  color: var(--status-danger);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.loading-surface {
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  padding: 24px 16px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-/* Functional (non-entrance) spinner: conveys ongoing work only. */
+/* — spinner — */
 .spinner {
   width: 14px;
   height: 14px;
@@ -355,16 +260,6 @@ select:disabled {
   to {
     transform: rotate(360deg);
   }
-}
-
-.empty-surface {
-  display: grid;
-  place-items: center;
-  gap: 6px;
-  padding: 48px 16px;
-  color: var(--text-dim);
-  font-size: 12px;
-  text-align: center;
 }
 
 /* — reduced motion: transitions off, functional loops stop — */

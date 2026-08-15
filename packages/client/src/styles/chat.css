@@ -418,8 +418,9 @@
   }
 }
 
-/* — narrow viewport: keep the column readable — */
-@media (max-width: 640px) {
+/* — narrow viewport: keep the column readable (the app-wide mobile
+     breakpoint — see responsive.css) — */
+@media (max-width: 768px) {
   .transcript-scroll {
     padding: 8px 10px 4px;
   }

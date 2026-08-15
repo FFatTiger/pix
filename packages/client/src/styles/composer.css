@@ -615,8 +615,10 @@ textarea.extension-request-input {
   font-size: 11px;
 }
 
-/* — narrow viewport — */
-@media (max-width: 640px) {
+/* — narrow viewport (the app-wide mobile breakpoint — see
+     responsive.css); extension request controls step up to 44px
+     touch targets — */
+@media (max-width: 768px) {
   .composer,
   .session-actions,
   .extension-requests {
@@ -626,5 +628,10 @@ textarea.extension-request-input {
 
   .session-actions-strip {
     gap: 4px 6px;
+  }
+
+  .extension-request-option,
+  .extension-request-btn {
+    min-height: 44px;
   }
 }

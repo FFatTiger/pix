@@ -11,7 +11,11 @@
    Visual language ported from pi-web-desktop (MIT — see
    THIRD_PARTY_NOTICES.md): TabBar/FileExplorer/FileViewer/
    QuickChangesPanel/SettingsModal panel-list grammar.
-   The dock keeps its existing fixed 360px width (no resize).
+   UX2-I: this file is the single owner of the dock frame — fixed
+   360px width, 1px left border, flex column (shell.css does not
+   re-declare it). The dock unmounts when closed, so it never
+   occupies width. TrustBadge (badge + summary variants) markup is
+   owned here together with its styles.
    ============================================================ */
 
 /* ============================================================
@@ -21,8 +25,6 @@
 .workspace-panel {
   display: flex;
   flex-direction: column;
-  align-self: stretch;
-  height: 100%;
   width: 360px;
   flex: 0 0 360px;
   min-width: 0;
@@ -920,6 +922,16 @@
   flex-wrap: wrap;
 }
 
+/* Force-delete affordance: danger tint on the shared .text-btn. */
+.worktree-btn--danger {
+  color: var(--status-danger);
+  border-color: color-mix(in srgb, var(--status-danger) 35%, var(--border));
+}
+.worktree-btn--danger:hover:not(:disabled) {
+  color: var(--status-danger);
+  border-color: color-mix(in srgb, var(--status-danger) 55%, var(--border));
+}
+
 /* ============================================================
    6. Catalog (read-only rows + chips + Trust summary)
    ============================================================ */
@@ -1017,17 +1029,10 @@
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-/* Trust summary (panel variant only — the sidebar badge variant is
-   owned by sidebar.css). */
-.catalog-trust-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.catalog-trust-summary .trust-badge {
+/* Trust badge — shared pill grammar for BOTH TrustBadge variants
+     (sidebar badge + catalog summary); the summary row below only
+     lays the badge and its detail out. */
+.trust-badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1039,20 +1044,20 @@
   font-weight: 500;
 }
 
-.catalog-trust-summary .trust-badge--ok {
+.trust-badge--ok {
   color: var(--status-success);
   border-color: color-mix(in srgb, var(--status-success) 30%, transparent);
   background: color-mix(in srgb, var(--status-success) 10%, transparent);
 }
 
-.catalog-trust-summary .trust-badge--danger,
-.catalog-trust-summary .trust-badge--error {
+.trust-badge--danger,
+.trust-badge--error {
   color: var(--status-danger);
   border-color: color-mix(in srgb, var(--status-danger) 30%, transparent);
   background: color-mix(in srgb, var(--status-danger) 10%, transparent);
 }
 
-.catalog-trust-summary .trust-badge--muted {
+.trust-badge--muted {
   color: var(--text-muted);
   border-color: var(--border);
   background: var(--bg-subtle);
@@ -1064,6 +1069,15 @@
 
 .trust-badge-label {
   white-space: nowrap;
+}
+
+/* Trust summary row (CatalogPanel header): badge + fixed detail. */
+.catalog-trust-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .catalog-trust-detail {

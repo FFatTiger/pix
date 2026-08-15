@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Cpu, Plug, Puzzle, Stack, TerminalWindow, X } from "@phosphor-icons/react";
+import { Cpu, Plug, PuzzlePiece, Stack, TerminalWindow, X } from "@phosphor-icons/react";
 import type { AuthProviderInfo, ModelInfo, PluginInfo, SkillInfo, SlashCommandInfo } from "@fffattiger/pix-protocol";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
@@ -32,7 +32,7 @@ const TAB_ICON: Record<CatalogTab, typeof Cpu> = {
   models: Cpu,
   providers: Plug,
   skills: Stack,
-  plugins: Puzzle,
+  plugins: PuzzlePiece,
   commands: TerminalWindow,
 };
 

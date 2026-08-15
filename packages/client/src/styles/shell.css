@@ -8,11 +8,14 @@
    - compact session header (.workspace-header) + its shell-level
      forms (Project path open, Continue live)
    - login page, error boundary, theme-bootstrap surfaces
-   Frame placement rules for .sidebar / .workspace-panel (width,
-   flex basis, 1px divider) live here; the components' internals
-   live in sidebar.css / panels.css. Responsive overrides go in
-   responsive.css. Shared primitives (buttons, badges, form
-   controls) live in base.css — compose, don't redefine.
+   UX2-I integration notes:
+   - The LEFT column frame (.sidebar width, collapse slide, 1px divider)
+     is owned HERE; sidebar.css owns only the Sidebar's internals.
+   - The RIGHT dock frame (.workspace-panel) is owned by panels.css
+     (fixed 360px, border-left, flex column) — do not re-declare width,
+     flex-basis or borders for it here (single-owner rule).
+   Responsive overrides go in responsive.css. Shared primitives (buttons,
+   badges, form controls) live in base.css — compose, don't redefine.
    ============================================================ */
 
 /* — app frame: topbar row above a three-column body — */
@@ -188,7 +191,10 @@
 /* Left column frame placement only (internals: sidebar.css).
    Collapse slides the fixed-width column out via negative margin
    so virtual rows never reflow; visibility (delayed to the end of
-   the slide) removes the hidden column from tab order. */
+   the slide ONLY while collapsing — see the collapsed rule below)
+   removes the hidden column from tab order. `sidebar--collapsed` is
+   the Sidebar component's own class: the single state that drives
+   desktop collapse AND the mobile overlay drawer (responsive.css). */
 .app-body > .sidebar {
   display: flex;
   flex-direction: column;
@@ -201,24 +207,29 @@
   border-right: 1px solid var(--border);
   overflow: hidden;
   visibility: visible;
-  transition: margin-left var(--dur-panel) var(--ease-feedback),
-    visibility 0s linear var(--dur-panel);
+  transition: margin-left var(--dur-panel) var(--ease-feedback);
 }
-.app-body > .sidebar--collapsed,
-.app-shell--sidebar-collapsed .app-body > .sidebar {
+.app-body > .sidebar--collapsed {
   margin-left: calc(-1 * var(--sidebar-width));
   border-right-color: transparent;
   visibility: hidden;
+  /* Delayed only on the way INto hiding so the slide-out finishes
+     first; expanding flips visibility back instantly (no pop-in). */
+  transition: margin-left var(--dur-panel) var(--ease-feedback),
+    visibility 0s linear var(--dur-panel);
 }
 
 /* Center column: the chat workspace (transcript/composer internals
-   live in chat.css / composer.css). */
+   live in chat.css / composer.css). Column order is fixed by the DOM:
+   session header → SessionActions → transcript (the ONLY center
+   scroll container) → extension requests → composer. */
 .workspace {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   background: var(--bg);
 }
 
@@ -267,6 +278,30 @@
   flex-wrap: wrap;
   gap: 8px;
   flex-shrink: 0;
+}
+
+/* Visible-branch export (D1B-3): quiet action + fixed hint/error copy.
+   The button itself composes the shared .text-btn primitive. */
+.visible-branch-export {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  min-width: 0;
+  max-width: min(520px, 100%);
+}
+.visible-branch-export-hint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.visible-branch-export-error {
+  margin: 0;
+  color: var(--status-danger);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 /* Continue live: the header's primary action (accent outline). */
@@ -318,19 +353,9 @@
   overflow-wrap: anywhere;
 }
 
-/* Right dock frame placement only (internals: panels.css).
-   Widths clamp like the reference right panel. */
-.app-body > .workspace-panel {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 auto;
-  width: var(--panel-width);
-  min-width: 0;
-  min-height: 0;
-  background: var(--bg);
-  border-left: 1px solid var(--border);
-  overflow: hidden;
-}
+/* Right dock: the frame (fixed 360px, border-left, flex column) is
+   owned by panels.css `.workspace-panel` — declared once, there.
+   The panel unmounts when closed, so it never occupies width. */
 
 /* — login page (reference modal/card grammar: dimmed backdrop
    surface, bordered bg-panel card, radius, soft shadow, footer
