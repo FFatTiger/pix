@@ -3228,3 +3228,61 @@ fixture 由测试内置最小 OPC/zip 构造器生成（deflateRaw + 手写 loca
 - 转换失败无服务端日志（route 无 logger 注入 seam，避免为本切片扩 route deps/公共面）；排障可拿原文件复现。
 - Client 消费方未接（后续 Client UI 切片另行立项）；本切片 Host 侧 API 契约已冻结可独立消费。
 - mammoth 动态 import 不被 boundary `from`-regex 扫描覆盖（见上文 boundary 说明）；若后续把 allowlist 升级为覆盖动态 import 形态，需同步登记 `mammoth`。
+
+---
+
+## 66. UI1 — pi-web-desktop 纯 Client UI infrastructure 严格 direct-copy 切片（DONE）
+
+来源：`/tmp/pi-web-desktop`（只读快照）。非参考重写：DOM/class/inline styles/纯逻辑逐文件复制，仅做 Vite 路径、pix API、严格 tsconfig 兼容 adapter。CSS 三件（app/globals/wallpaper.css）、monet-artworks、catppuccin-icons、index.html 预绘制 bootstrap（含 pix-theme→pi-theme-mode 一次性迁移）已由前序 commit `2dd3eea` 逐字落位，本切片不改。
+
+### 66.1 直接复制文件（源路径 → pix 路径）
+
+逐字节一致（0 diff）：
+
+| 源 | pix |
+|---|---|
+| `lib/i18n/types.ts` `format.ts` `registry.ts` `messages/en.ts` `messages/zh-CN.ts` | `packages/client/src/lib/i18n/...`（同构） |
+| `lib/ui-scale.ts` `panel-layout.ts` `title-settings.ts` | `packages/client/src/lib/...`（同构） |
+
+复制 + 最小 adapter（见 66.2）：
+
+| 源 | pix |
+|---|---|
+| `hooks/useI18n.tsx` | `src/hooks/useI18n.tsx` |
+| `hooks/useTheme.ts` | `src/hooks/useTheme.ts` |
+| `hooks/useWallpaper.ts` `useIsMobile.ts` `useResizablePanel.ts` | `src/hooks/...` |
+| `lib/wallpaper.ts` | `src/lib/wallpaper.ts` |
+| `components/ContextMenu.tsx`（含 Provider/useContextMenu） | `src/components/ContextMenu.tsx` |
+| `components/WallpaperLayer.tsx` `Toggle.tsx` `SettingToggle.tsx` | `src/components/...` |
+| `components/settings-ui.tsx` | `src/features/settings/settings-ui.tsx`（位置按切片规格） |
+| `components/DisplayConfig.tsx` `ChatConfig.tsx` | `src/features/settings/...` |
+| `lib/theme.ts`（仅共享 types） | `src/lib/theme.ts`（新增 `BUILTIN_THEME_SETS` 元数据，见 66.3） |
+
+localStorage 键全部保持源值（`pi-locale`/`pi-theme*`/`pi-border-depth`/`pi-font-scale`/`pi-wallpaper*`/`pi-input-shortcut`/`pi-markdown-list-continue`/`pi-notification-duration`/`pi-title-*`）；DOM data attr、ViewTransition 圆形擦除、3.9M 壁纸预算、SVG 拒绝、2560 缩边、`migrateEffectModes` 遗留迁移全部逐字保留。
+
+### 66.2 adapter 差异清单（相对源的全部有意修改）
+
+1. 全部客户端文件删除 Next `"use client";` 指令（Vite 无意义）。
+2. `useI18n.tsx`：删除 SSR hydration 等待（`hydrated` gate + `defaultLocale`），改为 `useState(readInitialLocale)` 同步初始化——行为等价（源用 gate 保证首绘不出现错误语言；CSR 直接同步读取），`document.documentElement.lang` 同步 effect 保留。localStorage 键仍为 `pi-locale`。
+3. `useTheme.ts`：`fetchTheme` 内联 fetch `/api/themes/:name` 改为调用 `@/api/themes` 的 `fetchResolvedTheme`（目标 `/v1/themes/:name?mode=`）。原因：client boundary 规则禁止 `src/api` 之外裸 `fetch`。`name::mode` 缓存、失败 null→`console.warn`+default CSS 降级语义不变。
+4. `DisplayConfig.tsx`：主题列表 `fetch("/api/themes")` effect 改为 `useQuery(createQueryOptions(http).themes.list())`；查询无数据（Host 路由未就绪/失败）固定降级到 `BUILTIN_THEME_SETS` + Default，不渲染 raw error。Electron 按钮改 Web 行为：`openThemeFolder` → `navigator.clipboard.writeText("~/.pi/agent/themes")`（复制主题目录路径），`openThemeDocs` → `window.open` 公开文档链接；按钮 DOM/styles/label 不变。
+5. `ChatConfig.tsx`：models 拉取改用 pix 现有 `GET /v1/models` query（`models.list(cwd)`，Host 需授权绝对 cwd；无 cwd/失败→空选项，不伪造 mutation）。label 映射 `m.name`→`m.displayName`（pix ModelInfo 字段）。其余（title auto/model、输入快捷键、markdown list、通知时长、storage 广播）逐字保留。
+6. 路径 adapter：`@/components/settings-ui`→`@/features/settings/settings-ui`、`./SettingToggle`→`@/components/SettingToggle`（切片指定目录布局，DOM 不变）。
+7. pix tsconfig 严格性补丁（源 tsconfig 未开 `noUncheckedIndexedAccess`/`exactOptionalPropertyTypes`，行为零变化）：
+   - `ContextMenu.tsx`：键盘导航处 `indices[next]!`/`indices[0]!`（长度守卫后，repo 既有惯例）+ `entry`/`parentEntry` undefined 守卫（原类型上不可达分支）。
+   - `Toggle.tsx`：`disabled?/loading?` 显式 `| undefined`。
+   - `wallpaper.ts`：`data[i]` alpha undefined 守卫。
+
+### 66.3 Client API themes 扩展与后端依赖
+
+- `schemas.ts` 新增 `ThemeSetInfoSchema`/`ThemesResponseSchema`（`{ themeSets }` 同源 API shape）/`ResolvedThemeSchema`（strict）。
+- `urls.ts` 新增 `themes.list(cwd?)`/`themes.resolve(name, mode)`；`themes.ts` 新增 `createThemesApi`（list/resolve）+ `fetchResolvedTheme`（useTheme 专用 context-free raw fetch，schema 校验失败→null）；`query-keys.ts` 新增 `queryKeys.themes` + `createQueryOptions().themes.{list,resolve}`（15s staleTime、retry:false）；`index.ts` 导出。
+- 后端依赖（另行切片，未就绪前固定降级）：Host 需提供 `GET /v1/themes`（返回 `{ themeSets: ThemeSetInfo[] }`，含 builtin 集）与 `GET /v1/themes/:name?mode=dark|light`（返回 `ResolvedTheme`）。就绪前：Display 列表降级 builtin+Default（可选中，选中后 `data-theme` 生效但 CSS vars 解析失败→default 主题安全回退）；capability `themes` 刻意未接线（不硬隐藏 Display）。源的 Node fs 实现（`~/.pi/agent/themes` 扫描、pi CLI JSON 解析、mapToCssVars 调色映射）不进 Client，归 Host themes 切片。
+- Provider 挂载：`AppProviders` 在 Runtime/Query/Gate/PWA 顺序不变的前提下，最内层按源 `app/page.tsx` 嵌套挂 `I18nProvider > ContextMenuProvider` 包住路由 UI；Theme 维持源形态由消费方调 `useTheme`（无全局 provider）；`main.tsx` 零修改。
+
+### 66.4 验证
+
+- `npm run typecheck`（packages/client，含 prebuild protocol）：PASS。
+- `node ./scripts/check-boundaries.mjs`：PASS（121 files，新增 hooks/lib/features 全部合规：无 `/api/` 字面量、裸 fetch 仅在 `src/api`）。
+- 既有 API 单测 `vitest run src/api/{query-options,urls,resources}.test.ts`：21/21 PASS（未新增 UI 测试、未启动 dev，按切片要求）。
+- 无新依赖：`package.json`/lock 零变更（`@phosphor-icons/react`/react-query 均已有）。

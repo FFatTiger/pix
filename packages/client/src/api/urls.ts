@@ -39,6 +39,12 @@ export const urls = {
     /** Project-scoped model catalog. Host requires absolute authorized cwd. */
     list: (cwd: string) => resource("models", { cwd }),
   },
+  themes: {
+    /** Theme-set catalog (global + project sets + builtins). cwd optional. */
+    list: (cwd?: string) => resource("themes", { cwd }),
+    /** Resolved variant (dark/light) of a theme set. */
+    resolve: (name: string, mode: "dark" | "light") => resource(`themes/${encodedSegment(name)}`, { mode }),
+  },
   files: {
     resource: (path: string, op?: "list" | "meta" | "read" | "preview" | "raw" | "download") => resource("files", { path, op }),
     upload: (path: string, conflict?: "error" | "overwrite" | "skip") => resource("files", { path, conflict }),

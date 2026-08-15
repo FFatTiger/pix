@@ -2,6 +2,7 @@ import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { HttpClient } from "./http-client";
 import { createGateApi } from "./gate";
 import { createModelsApi } from "./models";
+import { createThemesApi } from "./themes";
 import { createResourcesApi } from "./resources";
 import { createSessionsApi } from "./sessions";
 import { createConfigurationApi } from "./configuration";
@@ -28,6 +29,12 @@ export const queryKeys = {
     all: ["pix", "models"] as const,
     lists: ["pix", "models", "list"] as const,
     list: (cwd: string) => ["pix", "models", "list", cwd] as const,
+  },
+  themes: {
+    all: ["pix", "themes"] as const,
+    lists: ["pix", "themes", "list"] as const,
+    list: () => ["pix", "themes", "list"] as const,
+    resolve: (name: string, mode: "dark" | "light") => ["pix", "themes", "resolve", name, mode] as const,
   },
   files: { all: ["pix", "files"] as const, list: (path: string) => ["pix", "files", "list", path] as const, meta: (path: string) => ["pix", "files", "meta", path] as const, read: (path: string) => ["pix", "files", "read", path] as const, indexRoot: (cwd: string) => ["pix", "files", "index", cwd] as const, index: (cwd: string, q?: string) => ["pix", "files", "index", cwd, q ?? ""] as const },
   git: { all: ["pix", "git"] as const, status: (cwd: string) => ["pix", "git", "status", cwd] as const, diff: (cwd: string, path: string) => ["pix", "git", "diff", cwd, path] as const },
@@ -62,6 +69,7 @@ export function createQueryOptions(http: HttpClient) {
   const models = createModelsApi(http);
   const resources = createResourcesApi(http);
   const configuration = createConfigurationApi(http);
+  const themes = createThemesApi(http);
   return {
     gate: { status: () => queryOptions({ queryKey: queryKeys.gate.status(), queryFn: ({ signal }) => gate.status(signal), staleTime: 30_000, retry: false }) },
     capabilities: {
@@ -86,6 +94,26 @@ export function createQueryOptions(http: HttpClient) {
           queryKey: queryKeys.models.list(cwd),
           queryFn: ({ signal }) => models.list(cwd, signal),
           enabled: Boolean(cwd),
+          staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
+    },
+    themes: {
+      // Pre-Host degradation is deliberate: the query surfaces the failure to
+      // the caller (undefined data) and the settings UI falls back to the
+      // built-in/default theme sets — no raw error reaches the DOM.
+      list: (cwd?: string) =>
+        queryOptions({
+          queryKey: queryKeys.themes.list(),
+          queryFn: ({ signal }) => themes.list(cwd, signal),
+          staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
+      resolve: (name: string, mode: "dark" | "light") =>
+        queryOptions({
+          queryKey: queryKeys.themes.resolve(name, mode),
+          queryFn: ({ signal }) => themes.resolve(name, mode, signal),
+          enabled: Boolean(name),
           staleTime: CATALOG_STALE_MS,
           retry: false,
         }),

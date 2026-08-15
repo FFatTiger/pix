@@ -3,6 +3,7 @@ export { urls, v1Url } from "./urls";
 export { createGateApi } from "./gate";
 export { createSessionsApi } from "./sessions";
 export { createModelsApi } from "./models";
+export { createThemesApi, fetchResolvedTheme } from "./themes";
 export { createResourcesApi } from "./resources";
 export { createConfigurationApi } from "./configuration";
 export { createQueryOptions, queryKeys } from "./query-keys";
