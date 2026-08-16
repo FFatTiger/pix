@@ -3365,7 +3365,7 @@ schema 拒绝——fail-protocol；非交互方法同拒）：
 ### 来源与范围
 
 - 来源：`/tmp/pi-web-desktop` `app/api/files/[...path]/route.ts` POST `type=upload-check` 分支 + `lib/file-upload.ts`（`inspectUploadTargets`/`validateUploadFileNames`/207 多状态语义）。
-- 仅改 `packages/host/src/routes/files.ts`（生产）+ 新增 `packages/host/test/upload-check.test.mjs`（13 用例）+ `packages/host/test/resources.test.mjs`（symlink overwrite 断言按新 shape 调整）+ docs 两份。未改 Client/Protocol/capabilities/package-lock/依赖（Client 的 `uploadCheck` URL/schema seam 本就冻结等待本端点落地，explorer-api 的 list 降级 fallback 从此自然休眠）。
+- 原独立 Host worktree 仅改 `packages/host/src/routes/files.ts`（生产）+ 新增 `packages/host/test/upload-check.test.mjs`（13 用例）+ `packages/host/test/resources.test.mjs`（symlink overwrite 断言按新 shape 调整）+ docs 两份。合入 main 时同步更新 Client `UploadResponseSchema` 与 API mocks，使 strict schema 接受 Host 新的恒定 `errors` 数组；Protocol/capabilities/package-lock/依赖未改（Client 的 `uploadCheck` URL/schema seam 已冻结，explorer-api 的 list 降级 fallback 从此自然休眠）。
 
 ### H1 — `POST /v1/files?path=<authorized-dir>&op=upload-check`
 
@@ -3394,11 +3394,11 @@ AllowedRoot 授权/根身份逐名重验、bounded multipart（100MiB+1MiB）、
 
 ### 验证（本 worktree 实跑）
 
-- 定向 `upload-check` 13/13；uploads-transaction 12/12 与 resources/security/docx-preview 共 80/80 无回归；Host 全量 444/444（基线 431 + 13，多轮；唯二偶发失败为既有 worktree 并发用例 "concurrent create/delete/recreate"，base 88d6ca1 无本切片同样复现，与本切片无关）。
-- Host typecheck/build EXIT 0；`check:boundaries`（42 files）PASS；root `check:architecture` PASS；`git diff --check` PASS。
+- 原 worktree 定向 `upload-check` 13/13；uploads-transaction 12/12 与 resources/security/docx-preview 共 80/80 无回归。合入当前 main 后独立复核：Host 全量 460/460、Client 全量 729/729、Client API 201/207 strict schema 与 409 XHR 契约通过。
+- Host/Client typecheck PASS；Host `check:boundaries`（43 files）与 Client boundaries（188 files）PASS；root `check:architecture` PASS；`git diff --check` PASS。
 
 ### 残余风险
 
 - 207 语义：pix 的 207 仅表示「per-file preflight 拒绝（non-replaceable）」这一类可恢复失败，不似源端把 arrayBuffer/写失败也归入 207——那些在 pix 属 staging/commit 级，整批固定错误回滚（有意收紧，保护事务语义）。
 - upload-check 与真正上传之间无跨请求预留：TOCTOU 由上传自身 preflight/commit 重验兜底（upload-check 结果仅作 UI 预检）。
-- Client `resources.files.upload` 的 `UploadResponseSchema` 仍为 strictObject(uploaded, skipped)，多出的 `errors` 键会使该（当前无 UI 消费方的）schema 校验路径报 INVALID_RESPONSE；实际 UI 上传走 FileExplorer XHR（读 `errors ?? []`）不受影响。属 Client 侧后续切片。
+- Client strict schema 已在 main 合入时同步为 `{ uploaded, skipped, errors }`，并拒绝缺失/多余/畸形字段；FileExplorer XHR 的 207 与 409 列表读取也与 Host 响应一致。此项已关闭，不再是残余风险。
