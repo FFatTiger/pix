@@ -36,11 +36,23 @@ import { isCompactionBoundary } from "@/components/transcript/chat-projection";
 export const TRANSCRIPT_PAGE_SIZE = 50;
 
 /**
- * Upper bound on automatic turn-completion pages per history generation. A
- * single pathological turn cannot chain unbounded fetches; past the cap the
- * fragment renders as today (per-row) until the user scrolls further.
+ * Module-level single-flight lock for older-page fetches, keyed by the
+ * serialized query key. The hook is shared (TranscriptList + Composer both
+ * instantiate it), and React Query does not dedup back-to-back fetchNextPage
+ * calls across observers — the lock collapses concurrent triggers into one
+ * network request per key.
  */
-const MAX_TURN_COMPLETION_PAGES = 20;
+const olderFlightKeys = new Set<string>();
+
+/**
+ * Upper bound on automatic turn-completion pages per history generation.
+ * Opening a session must stay fast and calm: at most ONE automatic follow-up
+ * page (so a turn sliced near its tail still renders collapsed), and longer
+ * mid-turn fragments fall back to per-row rendering exactly like the legacy
+ * web until the user scrolls up. This used to be 20 pages, which made opening
+ * a tool-heavy session chain-load ~1000 entries with visible flicker.
+ */
+const MAX_TURN_COMPLETION_PAGES = 2;
 
 export interface SessionTranscript {
   /** Merged chronological entries (persisted pages + committed live entries). */
@@ -125,8 +137,9 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
   type HistoryPageParam = { readonly leafId?: string; readonly before?: string };
   const initialPageParam: HistoryPageParam = liveAnchor === null ? {} : { leafId: liveAnchor };
 
+  const queryKey = queryKeys.sessions.history(sessionId ?? "", liveGeneration, liveAnchor);
   const query = useInfiniteQuery({
-    queryKey: queryKeys.sessions.history(sessionId ?? "", liveGeneration, liveAnchor),
+    queryKey,
     queryFn: ({ pageParam, signal }) => sessionsApi.context(sessionId ?? "", {
       ...(pageParam.leafId === undefined ? {} : { leafId: pageParam.leafId }),
       ...(pageParam.before === undefined ? {} : { before: pageParam.before }),
@@ -173,7 +186,14 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
   const autoPagesRef = useRef({ key: "", count: 0 });
   if (autoPagesRef.current.key !== boundaryKey) autoPagesRef.current = { key: boundaryKey, count: 0 };
 
-  const { hasNextPage, isFetchingNextPage, fetchNextPage } = query;
+  const { hasNextPage, isFetchingNextPage } = query;
+  const flightKey = JSON.stringify(queryKey);
+  const fetchOlderOnce = useCallback((): void => {
+    if (olderFlightKeys.has(flightKey)) return;
+    if (!query.hasNextPage || query.isFetchingNextPage) return;
+    olderFlightKeys.add(flightKey);
+    void query.fetchNextPage().finally(() => olderFlightKeys.delete(flightKey));
+  }, [query, flightKey]);
   useEffect(() => {
     if (!hasNextPage || isFetchingNextPage) return;
     if (autoPagesRef.current.key !== boundaryKey) return;
@@ -183,14 +203,13 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
     const startsCompleteTurn = oldestMessage.role === "user" || isCompactionBoundary(oldestMessage);
     if (startsCompleteTurn) return;
     autoPagesRef.current.count += 1;
-    void fetchNextPage();
-  }, [persistedEntries, hasNextPage, isFetchingNextPage, fetchNextPage, boundaryKey]);
+    fetchOlderOnce();
+  }, [persistedEntries, hasNextPage, isFetchingNextPage, fetchOlderOnce, boundaryKey]);
 
   const hasOlder = query.hasNextPage === true && query.isFetchingNextPage === false;
   const loadOlder = useCallback(() => {
-    if (!query.hasNextPage || query.isFetchingNextPage) return;
-    void query.fetchNextPage();
-  }, [query]);
+    fetchOlderOnce();
+  }, [fetchOlderOnce]);
   const refetch = useCallback(() => { void query.refetch(); }, [query]);
 
   return {
