@@ -385,9 +385,12 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
           })}
         </div>
         {isLive ? null : !canBrowseSessions ? (
-          <div className="transcript-empty">Session history unavailable until the runtime connects.</div>
+          // UI-first: while the capability is being restored (weak link /
+          // sessiond warming up) show a calm loading placeholder — never a
+          // scary "unavailable" banner. Reconnect is silent in the background.
+          <div className="transcript-empty" aria-busy="true"><span className="transcript-loading-dot" aria-hidden="true" /> 加载中…</div>
         ) : transcript.error && sessionId ? (
-          <div className="transcript-empty">Session history unavailable</div>
+          <div className="transcript-empty" aria-busy="true"><span className="transcript-loading-dot" aria-hidden="true" /> 内容加载中…</div>
         ) : rows.length === 0 ? (
           <div className="transcript-empty">
             {sessionId ? "No messages" : "Select a session or open a deep link with ?session=…"}

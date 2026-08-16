@@ -131,7 +131,14 @@ export function AppShell({ search }: AppShellProps) {
         if (!mountedRef.current || gen !== openGenRef.current) return;
         const retryable =
           error !== null && typeof error === "object" && (error as { retryable?: unknown }).retryable === true;
-        if (retryable) retryTargetRef.current = target;
+        if (retryable) {
+          // Weak-network/transport failure: stay SILENT and let the bounded
+          // retry effect re-attempt once the socket is ready again (UI-first:
+          // no "unavailable" banner on a flaky link).
+          retryTargetRef.current = target;
+          return;
+        }
+        // Definite failure (fatal/unsupported/auth): surface a transient notice.
         setLiveError(describeError(error));
       }
     })();

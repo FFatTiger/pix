@@ -217,6 +217,8 @@ function isIncrementalExtensionMethod(method: ExtensionUiRequest["method"]): met
  * never a dropped keystroke without a settled promise).
  */
 const MAX_EXTENSION_UI_INPUT_QUEUE = 16;
+/** Streaming-partial publish interval (UI-smoothing throttle; ~11 updates/s). */
+const PARTIAL_PUBLISH_INTERVAL_MS = 90;
 
 /**
  * Validate a reply against the request method (mirrors the Protocol response
@@ -2266,9 +2268,32 @@ export class SessionStore implements RuntimeSocketHandler {
     this.notify();
   }
 
+  /**
+   * Streaming-partial publish throttle: deltas arrive many times per second
+   * and each one re-renders the transcript + markdown. Snapshot the partial
+   * at a bounded interval so UI updates stay smooth instead of strobing with
+   * every wire delta. A terminal (null) partial always publishes immediately.
+   */
+  private lastPartialPublishAt = Number.NEGATIVE_INFINITY;
+  private lastPublishedPartial: StreamingAgentMessage | null = null;
+
   private computeView(): RuntimeView {
     const snapshot = this.snapshot;
     const streaming = snapshot?.streaming?.active === true || snapshot?.state.isStreaming === true;
+    const livePartial = snapshot?.streaming?.partialMessage ?? null;
+    const now = Date.now();
+    let streamingPartial: StreamingAgentMessage | null;
+    if (livePartial === null) {
+      this.lastPartialPublishAt = now;
+      this.lastPublishedPartial = null;
+      streamingPartial = null;
+    } else if (now - this.lastPartialPublishAt >= PARTIAL_PUBLISH_INTERVAL_MS) {
+      this.lastPartialPublishAt = now;
+      this.lastPublishedPartial = livePartial;
+      streamingPartial = livePartial;
+    } else {
+      streamingPartial = this.lastPublishedPartial;
+    }
     return {
       connection: this.connection,
       host: this.host,
@@ -2278,7 +2303,7 @@ export class SessionStore implements RuntimeSocketHandler {
       epoch: this.epoch,
       snapshot,
       streaming,
-      streamingPartial: snapshot?.streaming?.partialMessage ?? null,
+      streamingPartial,
       historyGeneration: this.historyGeneration,
       historyAnchorLeafId: this.historyAnchorLeafId,
       liveEntries: [...this.optimisticUserEntries, ...this.liveEntries],

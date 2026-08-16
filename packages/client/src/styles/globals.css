@@ -1772,3 +1772,34 @@ body::before {
 html.pi-booted body::before {
   opacity: 0;
 }
+
+/* UI-first streaming: newly appeared assistant text blocks fade in instead of
+   the old strobing typewriter feel. The animation plays once per new block
+   (wrapper keyed by blockIndex); text growth inside an open block renders
+   smoothly under the store's partial throttle. Respects reduced motion. */
+@keyframes pix-stream-fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+.stream-block-enter {
+  animation: pix-stream-fade-in 0.28s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stream-block-enter { animation: none; }
+}
+
+/* Calm loading dot for the transcript empty state (UI-first silent reconnect). */
+@keyframes pix-loading-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+.transcript-loading-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  vertical-align: middle;
+  animation: pix-loading-pulse 1.1s ease-in-out infinite;
+}

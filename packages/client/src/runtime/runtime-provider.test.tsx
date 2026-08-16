@@ -289,6 +289,11 @@ describe("TranscriptList — runtime messages", () => {
     const ws = await driveReady();
     await driveAttach(ws);
     await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", content: [{ type: "text", text: "part" }], model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
+    // Streaming-partial publish throttle (UI smoothing) — advance past the
+    // 90ms interval, then a benign notify (queue_update) recomputes the view so
+    // the buffered partial reaches the transcript.
+    await act(async () => { vi.advanceTimersByTime(100); });
+    await serverSend(ws, { type: "event", payload: { type: "queue_update", sessionId: "s1", steering: [], followUp: [], eventId: 2, epoch: "e1" } });
     expect(screen.getByText("part")).toBeTruthy();
   });
 });
