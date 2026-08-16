@@ -18,7 +18,7 @@
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolResultMessage } from "@fffattiger/pix-protocol";
 import type { ProcessContentBlock } from "@/lib/process-content";
 import { collectProcessContentBlocks, splitAssistantContentBlocks } from "@/lib/process-content";
-import { getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { getAssistantErrorMessage, getDisplayableAssistantBlocks, lastContiguousTextRun, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 
 export interface ChatTranscriptMessageRow {
@@ -145,6 +145,10 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
   });
 
   const rows: ChatTranscriptRow[] = [];
+  // A standalone toolResult row always renders as null (MessageView renders
+  // results inline under their toolCall), so it must not occupy a virtual row
+  // slot — otherwise it becomes a stray empty 10px row at turn boundaries.
+  const isStandaloneRenderable = (message: AgentMessage): boolean => message.role !== "toolResult";
 
   // Defensive leaderless live tail: a runtime can stream an assistant turn
   // whose triggering user message is not in `messages` (e.g. a trimmed
@@ -233,7 +237,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     // boundary so its first following agent response still uses the
     // ProcessGroup rendering path rather than the legacy message renderer.
     if (msg.role !== "user" && !startsCompactionTurn) {
-      rows.push(renderMessage(idx));
+      if (isStandaloneRenderable(msg)) rows.push(renderMessage(idx));
       idx += 1;
       continue;
     }
@@ -312,7 +316,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
 
     if (finalAssistantIdx === -1) {
       for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
-        rows.push(renderMessage(renderIdx));
+        if (isStandaloneRenderable(messages[renderIdx]!)) rows.push(renderMessage(renderIdx));
       }
       idx = endIdx;
       continue;
@@ -330,8 +334,19 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     const finalProcessMessage = finalSplit.processBlocks.length > 0
       ? withAssistantBlocks(finalAssistant, finalSplit.processBlocks, { omitUsage: true })
       : null;
-    const finalAnswerMessage = finalSplit.answerBlocks.length > 0
-      ? withAssistantBlocks(finalAssistant, finalSplit.answerBlocks)
+    // pi-web parity: a provider-failed turn (stopReason "error") always
+    // renders its answer row (error text) even without answer blocks.
+    const finalError = getAssistantErrorMessage(finalAssistant);
+    // Interrupted-turn fallback (pix): no answer blocks AND no error — the
+    // final assistant message still carries the last generated text before
+    // its trailing tool calls. Surface that run instead of folding it away so
+    // the agent's last words remain visible after the turn ended abruptly
+    // (worker restart / kill mid-flight).
+    const fallbackAnswerBlocks = finalSplit.answerBlocks.length === 0 && finalError === null
+      ? lastContiguousTextRun(finalAssistant)
+      : finalSplit.answerBlocks;
+    const finalAnswerMessage = finalSplit.answerBlocks.length > 0 || finalError !== null || fallbackAnswerBlocks.length > 0
+      ? withAssistantBlocks(finalAssistant, fallbackAnswerBlocks)
       : null;
 
     let processBlocks = collectProcessContentBlocks(messages as AgentMessage[], [...entryIds], visibleProcessIndices, toolResults);
@@ -372,7 +387,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       rows.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles }));
     }
     for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
-      rows.push(renderMessage(renderIdx));
+      if (isStandaloneRenderable(messages[renderIdx]!)) rows.push(renderMessage(renderIdx));
     }
     idx = endIdx;
   }
