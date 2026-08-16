@@ -920,7 +920,7 @@ export function ProcessGroup({
               setDisplayMode(nextMode);
               setAreaExpanded(true);
             }}
-            className="shrink-0 p-1 text-text-dim opacity-0 transition-opacity hover:text-text group-hover/summary-row:opacity-100"
+            className="shrink-0 p-1 text-text-dim opacity-60 transition-opacity hover:text-text hover:opacity-100"
             title={displayMode === "timeline" ? t("desktop.processTabMode") : t("desktop.processTimelineMode")}
           >
             <DisplayModeIcon mode={displayMode} />

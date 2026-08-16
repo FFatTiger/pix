@@ -53,7 +53,7 @@ function describeError(cause: unknown): string {
  * read-only/live session center (TranscriptList + Composer stay in place).
  */
 export function AppShell({ search }: AppShellProps) {
-  const { canAgent, canBrowseSessions, unavailable, can } = useCapabilities();
+  const { canAgent, canBrowseSessions, can } = useCapabilities();
   const runtime = useRuntime();
   const navigate = useNavigate();
   const http = useHttpClient();
@@ -153,8 +153,6 @@ export function AppShell({ search }: AppShellProps) {
   // live takeover never lets an old promise clobber the new selection.
   const selectionMatchesLive =
     runtime.attached && (!search.session || search.session === runtime.sessionId);
-  const isMismatched =
-    runtime.attached && Boolean(search.session) && search.session !== runtime.sessionId;
 
   const mountedRef = useRef(true);
   const detachGenRef = useRef(0);
@@ -348,24 +346,6 @@ export function AppShell({ search }: AppShellProps) {
     setSidebarOpen((open) => !open);
   }, []);
 
-  const subtitle = !canAgent
-    ? unavailable
-      ? "Host runtime unavailable — no capability has been negotiated."
-      : "Read-only shell — host has no agent capability."
-    : runtime.fatal
-      ? "Runtime handshake rejected — connection stopped."
-      : isMismatched
-        ? `Detaching live session ${runtime.sessionId?.slice(0, 8) ?? "?"}… — showing selected session history.`
-        : runtime.attached
-          ? "Live runtime attached — send a prompt to begin."
-          : search.session
-            ? openingLive
-              ? `Opening live session ${search.session.slice(0, 8)}…`
-              : "Read-only session history — Continue live to attach a runtime."
-            : hasProject
-              ? "Select a session or start a new one."
-              : "Open a project to start a runtime session.";
-
   // ── Unauthenticated: full-screen wallpaper + gate ────────────────────────
   if (gateRequired) {
     return (
@@ -488,50 +468,6 @@ export function AppShell({ search }: AppShellProps) {
       <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           <main className="workspace">
-            <div className="workspace-header">
-              <h1 className="workspace-title">{runtime.attached ? "Session" : search.session ? "Session" : "Workstation"}</h1>
-              <p className="workspace-subtitle">{subtitle}</p>
-              {canAgent && !hasProject && !runtime.attached ? (
-                <form className="project-open-form" onSubmit={handleOpenProject}>
-                  <label htmlFor="project-path">Project path</label>
-                  <div className="project-open-row">
-                    <input
-                      id="project-path"
-                      type="text"
-                      value={projectPath}
-                      onChange={(event) => {
-                        setProjectPath(event.target.value);
-                        if (projectError) setProjectError(null);
-                      }}
-                      placeholder="/absolute/path/to/project"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                    <button type="submit" className="text-btn" disabled={projectPath.length === 0}>
-                      Open project
-                    </button>
-                  </div>
-                  {projectError ? <p className="project-open-error" role="alert">{projectError}</p> : null}
-                </form>
-              ) : null}
-              {canAgent && search.session && !selectionMatchesLive ? (
-                <div className="continue-live">
-                  <button
-                    type="button"
-                    className="text-btn continue-live-btn"
-                    onClick={handleContinueLive}
-                    disabled={openingLive}
-                    aria-busy={openingLive}
-                  >
-                    {openingLive ? "Connecting…" : "Continue live"}
-                  </button>
-                  {liveError ? (
-                    <p className="project-open-error" role="alert">{liveError}</p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-
             <TranscriptList
               live={selectionMatchesLive}
               {...(search.session === undefined ? {} : { sessionId: search.session })}
@@ -543,6 +479,51 @@ export function AppShell({ search }: AppShellProps) {
 
             <Composer live={selectionMatchesLive} textareaRef={composerTextareaRef} />
           </main>
+          {/* Edge-flow affordances — the workspace itself has NO top header
+              bar. The project-open form only appears (centered) when no
+              project is opened; Continue live only appears as a floating pill
+              while a history session is selected. */}
+          {canAgent && !hasProject && !runtime.attached ? (
+            <div className="project-open-overlay">
+              <form className="project-open-form" onSubmit={handleOpenProject}>
+                <label htmlFor="project-path">Project path</label>
+                <div className="project-open-row">
+                  <input
+                    id="project-path"
+                    type="text"
+                    value={projectPath}
+                    onChange={(event) => {
+                      setProjectPath(event.target.value);
+                      if (projectError) setProjectError(null);
+                    }}
+                    placeholder="/absolute/path/to/project"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button type="submit" className="text-btn" disabled={projectPath.length === 0}>
+                    Open project
+                  </button>
+                </div>
+                {projectError ? <p className="project-open-error" role="alert">{projectError}</p> : null}
+              </form>
+            </div>
+          ) : null}
+          {canAgent && search.session && !selectionMatchesLive ? (
+            <div className="continue-live-pill">
+              <button
+                type="button"
+                className="text-btn continue-live-btn"
+                onClick={handleContinueLive}
+                disabled={openingLive}
+                aria-busy={openingLive}
+              >
+                {openingLive ? "Connecting…" : "Continue live"}
+              </button>
+              {liveError ? (
+                <p className="project-open-error" role="alert">{liveError}</p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
 

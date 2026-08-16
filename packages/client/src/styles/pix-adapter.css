@@ -90,7 +90,12 @@ a:hover {
 }
 
 .workspace {
-  flex: 1;
+  /* The wrapper above main.workspace is a plain block with overflow:hidden
+     (source ChatWindow root uses h-full). Without a bounded height the flex
+     column grows with transcript content and the overflow clip cuts off the
+     composer at the bottom — height:100% keeps the transcript scrolling and
+     the composer pinned in view. */
+  height: 100%;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -98,10 +103,45 @@ a:hover {
   background: var(--bg);
 }
 
+.chat-composer-region {
+  flex-shrink: 0;
+}
+
 .workspace-header {
   padding: 12px 16px 8px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+/* Edge-flow affordances (the workspace has no top header bar). */
+.project-open-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.project-open-overlay .project-open-form {
+  margin-top: 0;
+  width: min(560px, 100%);
+}
+.continue-live-pill {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+.continue-live-pill .continue-live-btn,
+.continue-live-pill .project-open-error {
+  pointer-events: auto;
 }
 
 .workspace-title {
