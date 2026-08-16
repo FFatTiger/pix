@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { RuntimeProvider, useRuntimeStore, useRuntime } from "./runtime-provider";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
+import { I18nProvider } from "@/hooks/useI18n";
 import { HttpClientProvider } from "@/app/http-context";
 import { Composer } from "@/components/shell/Composer";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
@@ -32,6 +33,15 @@ function fakeDeps(): RuntimeSocketDeps {
   };
 }
 
+// jsdom has no ResizeObserver; the exact chat minimap needs a permissive
+// no-op stub (multiple instances, no callbacks).
+class ResizeObserverStub {
+  observe(): void { /* jsdom no-op */ }
+  unobserve(): void { /* jsdom no-op */ }
+  disconnect(): void { /* jsdom no-op */ }
+}
+(globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= ResizeObserverStub;
+
 let capturedStore: SessionStore | null = null;
 function Capture(): null {
   const store = useRuntimeStore();
@@ -52,8 +62,10 @@ function mount(children: ReactNode, host: Partial<HostInfo> | null | undefined =
         <HttpClientProvider>
           <CapabilityProvider {...(host === undefined ? {} : { host })}>
             <RuntimeProvider deps={fakeDeps()}>
-              <Capture />
-              {children}
+              <I18nProvider>
+                <Capture />
+                {children}
+              </I18nProvider>
             </RuntimeProvider>
           </CapabilityProvider>
         </HttpClientProvider>
@@ -217,7 +229,7 @@ describe("Composer — capability honesty + send/abort", () => {
 
   it("is disabled when the host has no agent capability", () => {
     mount(<Composer />, { mode: "local", capabilities: ["files"] });
-    const textarea = screen.getByLabelText("Message the agent") as HTMLTextAreaElement;
+    const textarea = document.querySelector("textarea.composer-input") as HTMLTextAreaElement;
     expect(textarea.disabled).toBe(true);
     expect(screen.getByText(/no agent capability|readonly/)).toBeTruthy();
   });
@@ -226,16 +238,16 @@ describe("Composer — capability honesty + send/abort", () => {
     mount(<Composer />);
     const ws = await driveReady();
     await driveAttach(ws);
-    const textarea = screen.getByLabelText("Message the agent") as HTMLTextAreaElement;
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
     expect(textarea.disabled).toBe(false);
     fireEvent.change(textarea, { target: { value: "hello world" } });
-    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(screen.getByLabelText("Send message"));
     await flush();
     const cmd = lastFrame<{ type: string; payload: { command: { type: string; message: string } } }>(ws, "command")!;
     expect(cmd.payload.command.message).toBe("hello world");
     // start streaming → Abort control appears
     await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
-    const abortBtn = screen.getByLabelText("Abort the running response");
+    const abortBtn = screen.getByLabelText("Stop agent");
     fireEvent.click(abortBtn);
     await flush();
     const interrupt = lastFrame<{ type: string; payload: { interrupt: { type: string } } }>(ws, "interrupt")!;
@@ -250,9 +262,9 @@ describe("Composer — capability honesty + send/abort", () => {
     await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
     // …but the selected session is NOT live, so this composer must stay honest:
     // no stale streaming state, no Abort for another session, input disabled.
-    const textarea = screen.getByLabelText("Message the agent") as HTMLTextAreaElement;
+    const textarea = document.querySelector("textarea.composer-input") as HTMLTextAreaElement;
     expect(textarea.disabled).toBe(true);
-    expect(screen.queryByLabelText("Abort the running response")).toBeNull();
+    expect(screen.queryByLabelText("Stop agent")).toBeNull();
     expect(screen.queryByText("streaming")).toBeNull();
     expect(screen.getByText(/selected session is not live/)).toBeTruthy();
   });

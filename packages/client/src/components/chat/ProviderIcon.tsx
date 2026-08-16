@@ -1,4 +1,3 @@
-"use client";
 
 import { useSyncExternalStore } from "react";
 import type { ComponentType, CSSProperties, ReactNode } from "react";

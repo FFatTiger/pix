@@ -1,4 +1,3 @@
-"use client";
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { CaretDown, GitBranch } from "@phosphor-icons/react";

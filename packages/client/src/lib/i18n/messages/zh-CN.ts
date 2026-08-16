@@ -160,6 +160,7 @@ export const zhCNLocale = {
     "desktop.thinking": "思考中...",
     "desktop.extensionRequest": "扩展请求",
     "desktop.extensionPanel": "扩展面板",
+    "desktop.extensionInput": "扩展输入",
     "desktop.cancel": "取消",
     "desktop.confirm": "确认",
     "desktop.submit": "提交",

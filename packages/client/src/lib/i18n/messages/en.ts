@@ -160,6 +160,7 @@ export const enLocale = {
     "desktop.thinking": "Thinking...",
     "desktop.extensionRequest": "extension request",
     "desktop.extensionPanel": "Extension panel",
+    "desktop.extensionInput": "Extension input",
     "desktop.cancel": "Cancel",
     "desktop.confirm": "Confirm",
     "desktop.submit": "Submit",

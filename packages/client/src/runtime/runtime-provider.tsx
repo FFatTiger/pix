@@ -16,16 +16,20 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { ClientIdentity, ClientPlatform } from "@fffattiger/pix-protocol";
+import type { ClientIdentity, ClientPlatform, ImageAttachment } from "@fffattiger/pix-protocol";
 import {
   SessionStore,
   type RuntimeView,
   type SessionStoreOptions,
 } from "./session-store.js";
+import { createDefaultIdFactory } from "./correlation.js";
 import {
   createBrowserWebSocket,
   type RuntimeSocketDeps,
 } from "./socket.js";
+
+/** Fresh command ids for the read-only UI helpers (navigateTree / prompt+images). */
+const uiCommandId = createDefaultIdFactory();
 
 /** Detect the client shell (pwa when running standalone) and platform. */
 export function detectClientIdentity(navigatorLike: Navigator, matchMedia?: (q: string) => { matches: boolean }): ClientIdentity {
@@ -112,7 +116,7 @@ export interface RuntimeApi extends RuntimeView {
   readonly stop: SessionStore["stop"];
   readonly fetchSnapshot: SessionStore["fetchSnapshot"];
   readonly sendCommand: SessionStore["sendCommand"];
-  readonly sendPrompt: SessionStore["sendPrompt"];
+  readonly sendPrompt: (message: string, images?: readonly ImageAttachment[]) => Promise<unknown>;
   readonly respondExtensionUi: SessionStore["respondExtensionUi"];
   readonly sendExtensionUiInput: SessionStore["sendExtensionUiInput"];
   readonly steer: SessionStore["steer"];
@@ -133,6 +137,14 @@ export interface RuntimeApi extends RuntimeView {
   readonly reload: SessionStore["reload"];
   readonly compact: SessionStore["compact"];
   readonly abortCompaction: SessionStore["abortCompaction"];
+  /**
+   * Read-only UI helper: navigate the LIVE session tree to a leaf entry via
+   * the ordinary `navigate_tree` runtime command. Reuses {@link
+   * SessionStore.sendCommand} (same single-in-flight slot, at-most-once
+   * commandId correlation) — no store/protocol semantics are added here. The
+   * caller gates on the `runtime.navigate` capability.
+   */
+  readonly navigateTree: (targetId: string) => Promise<unknown>;
 }
 
 export function useRuntime(): RuntimeApi {
@@ -149,7 +161,13 @@ export function useRuntime(): RuntimeApi {
         stop: (reason) => store.stop(reason),
         fetchSnapshot: () => store.fetchSnapshot(),
         sendCommand: (command) => store.sendCommand(command),
-        sendPrompt: (message) => store.sendPrompt(message),
+        // Images ride the same ordinary prompt command slot (the Protocol
+        // `prompt` command accepts optional images); text-only sends keep the
+        // store's sendPrompt helper unchanged.
+        sendPrompt: (message, images) =>
+          images === undefined || images.length === 0
+            ? store.sendPrompt(message)
+            : store.sendCommand({ commandId: uiCommandId(), type: "prompt", message, images: [...images] }),
         respondExtensionUi: (request, reply) => store.respondExtensionUi(request, reply),
         sendExtensionUiInput: (request, data) => store.sendExtensionUiInput(request, data),
         steer: (message, images) => store.steer(message, images),
@@ -170,6 +188,8 @@ export function useRuntime(): RuntimeApi {
         reload: () => store.reload(),
         compact: (customInstructions) => store.compact(customInstructions),
         abortCompaction: () => store.abortCompaction(),
+        navigateTree: (targetId) =>
+          store.sendCommand({ commandId: uiCommandId(), type: "navigate_tree", targetId }),
       }) as RuntimeApi,
     [store, view],
   );

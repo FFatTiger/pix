@@ -1,4 +1,3 @@
-"use client";
 
 import { memo, useState, useRef, useEffect, useMemo, useCallback, type MouseEvent } from "react";
 import { createPortal } from "react-dom";

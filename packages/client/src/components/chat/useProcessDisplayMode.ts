@@ -1,5 +1,3 @@
-"use client";
-
 import { useCallback, useSyncExternalStore } from "react";
 
 export type ProcessDisplayMode = "timeline" | "tabs";

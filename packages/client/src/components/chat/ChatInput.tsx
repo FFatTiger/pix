@@ -1,4 +1,3 @@
-"use client";
 
 import React, { useMemo, useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, type KeyboardEvent } from "react";
 import type { BuiltinSlashCommandResult, ChatFileIndexSnapshot, CompactResultInfo, QueuedMessages, SkillDormancyResponse, SlashCommandInfo } from "@/lib/chat-view-model";

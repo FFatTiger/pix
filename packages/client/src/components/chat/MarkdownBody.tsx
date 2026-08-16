@@ -1,4 +1,3 @@
-"use client";
 
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Check, Copy } from "@phosphor-icons/react";
