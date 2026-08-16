@@ -1408,6 +1408,9 @@ export class SessionStore implements RuntimeSocketHandler {
         this.lastEventId = event.eventId;
         // D2-P8: an event that drops `runtime.extension_ui` settles an in-flight reply.
         this.settleExtensionUiOnCapabilityLoss();
+        // F6: an `extension_ui_request` close for the EXACT pending reply settles
+        // its slot (capability loss above runs first → first-valid-reason wins).
+        this.settleExtensionUiOnRequestClose(event);
       } catch {
         // Projection inconsistency (stream event out of order): re-attach.
         this.reattach();
@@ -1914,6 +1917,43 @@ export class SessionStore implements RuntimeSocketHandler {
         });
       }
     }
+  }
+
+  /**
+   * F6 request-close settle: an `extension_ui_request` event carrying the
+   * canonical close marker (`request.closed: true`) is the wire for the runtime
+   * deciding a pending extension request is done — cancel, abort, timeout and
+   * normal completion all surface as close, so the in-flight reply can NEVER
+   * resolve success. `reduceRuntimeEventData` already removed the request from
+   * the projection above, but the {@link pendingExtensionUiCommand} promise
+   * slot would otherwise stay occupied until lifecycle cleanup. This settles it
+   * ONLY when every exact condition matches (same generation, sessionId,
+   * requestId, method); any mismatch means the close belongs to a different
+   * reply and is ignored. Deliberately NON-STICKY: a close for an unknown or
+   * already-settled request is a no-op, so a LATER pending reply is still
+   * settled by its own close. Never sets the global error (this is an expected,
+   * non-fatal interruption of a single request) and never touches the E15 input
+   * FIFO (its entries settle on their own correlated acks / lifecycle).
+   */
+  private settleExtensionUiOnRequestClose(event: RuntimeEventData & { readonly eventId: number; readonly epoch: string }): void {
+    if (event.type !== "extension_ui_request" || event.request.closed !== true) return;
+    const pending = this.pendingExtensionUiCommand;
+    if (!pending) return;
+    if (
+      pending.generation !== (this.attachGen ?? -1) ||
+      pending.sessionId !== event.sessionId ||
+      pending.requestId !== event.request.id ||
+      pending.method !== event.request.method
+    ) {
+      return;
+    }
+    this.pendingExtensionUiCommand = null;
+    this.notify();
+    pending.reject({
+      code: "interrupted",
+      message: "extension UI request closed",
+      retryable: false,
+    } satisfies ProtocolError);
   }
 
   /**

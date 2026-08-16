@@ -57,6 +57,29 @@ function respondErr(ws: FakeWebSocket, id: string, error: { code: string; messag
   ws.serverSend({ type: "response", id, payload: { ok: false, error } });
 }
 
+/** E15 incremental-input frame helper (mirrors the input suite; kept local). */
+interface InputCommandFrame {
+  type: string;
+  id: string;
+  payload: { sessionId: string; command: { commandId: string; type: string; id: string; method: string; data: string } };
+}
+const inputFrames = (ws: FakeWebSocket): InputCommandFrame[] =>
+  ws.sent.filter((f) => (f as InputCommandFrame).payload?.command?.type === "extension_ui_input") as InputCommandFrame[];
+
+function ackInput(ws: FakeWebSocket, frame: InputCommandFrame): void {
+  ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: "extension_ui_input" } } } });
+}
+
+/** Canonical close tombstone event (request.closed: true) for `requestId`. */
+function closeEvent(request: ExtensionUiRequest, eventId: number): { type: string; sessionId: string; eventId: number; epoch: string; request: ExtensionUiRequest & { closed: true } } {
+  return { type: "extension_ui_request", sessionId: "s1", eventId, epoch: "e1", request: { ...request, closed: true } };
+}
+
+/** Normal (non-close) upsert event for `requestId`. */
+function upsertEvent(request: ExtensionUiRequest, eventId: number): { type: string; sessionId: string; eventId: number; epoch: string; request: ExtensionUiRequest } {
+  return { type: "extension_ui_request", sessionId: "s1", eventId, epoch: "e1", request };
+}
+
 describe("SessionStore — D2-P8 extension-UI reply slot", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
@@ -374,5 +397,221 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
 
     // Capability revoked → subsequent replies are rejected up front.
     await expect(h.store.respondExtensionUi(confirmRequest, { responseKind: "cancelled", cancelled: true })).rejects.toMatchObject({ code: "unsupported_capability" });
+  });
+
+  // --- F6: settle extension replies on request close ----------------------------------
+  //
+  // A canonical close (`extension_ui_request` with `request.closed: true`) is the
+  // wire for the runtime deciding a pending request is done — cancel, abort,
+  // timeout and normal completion all surface as close, so the in-flight reply
+  // can NEVER resolve success. `reduceRuntimeEventData` removes the request from
+  // the projection, and the store settles the {@link pendingExtensionUiCommand}
+  // slot with a fixed `interrupted` error — but ONLY for the exact pending reply
+  // (same generation, sessionId, requestId, method). The settle is non-sticky and
+  // never touches the E15 input FIFO.
+
+  it("F6: an exact request close before the ack rejects with the fixed interrupted error and frees the slot (projection removed, no global error)", async () => {
+    const h = createHarness();
+    const ws = await attach(h, EXT_CAPS);
+    // Upsert the pending request into the projection.
+    ws.serverSend({ type: "event", payload: upsertEvent(confirmRequest, 1) });
+    await flush();
+    expect(h.store.getSnapshot().snapshot?.state.pendingExtensionUi).toEqual([confirmRequest]);
+
+    const p = h.store.respondExtensionUi(confirmRequest, { responseKind: "confirmed", confirmed: true });
+    await flush();
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(true);
+    const frame = extFrame(ws);
+
+    // Runtime closes the request before the ack (cancel/abort/timeout all surface as close).
+    ws.serverSend({ type: "event", payload: closeEvent(confirmRequest, 2) });
+    await flush();
+    await expect(p).rejects.toMatchObject({ code: "interrupted", message: "extension UI request closed", retryable: false });
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+    // The projection removed the request.
+    expect(h.store.getSnapshot().snapshot?.state.pendingExtensionUi ?? []).toHaveLength(0);
+    // Non-fatal expected interruption: the global error is NOT set.
+    expect(h.store.getSnapshot().error).toBeNull();
+    expect(frame.payload.command.commandId).toBeTruthy();
+  });
+
+  it("F6: a late close for the OLD request never settles a NEW reply", async () => {
+    const h = createHarness();
+    const ws = await attach(h, EXT_CAPS);
+
+    // Reply A (req-confirm) settles via its own close.
+    const pA = h.store.respondExtensionUi(confirmRequest, { responseKind: "confirmed", confirmed: true });
+    await flush();
+    const frameA = extFrame(ws);
+    ws.serverSend({ type: "event", payload: closeEvent(confirmRequest, 1) });
+    await flush();
+    await expect(pA).rejects.toMatchObject({ code: "interrupted" });
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+
+    // A NEW reply (req-select) now occupies the slot.
+    const pB = h.store.respondExtensionUi(selectRequest, { responseKind: "selected", selected: "Alpha" });
+    await flush();
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(true);
+    const frameB = extFrame(ws);
+
+    // A LATE duplicate close for the OLD request must NOT pollute/settle reply B.
+    ws.serverSend({ type: "event", payload: closeEvent(confirmRequest, 2) });
+    await flush();
+    let settled = false;
+    void pB.then(() => { settled = true; }, () => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(true);
+
+    // Reply B settles only by its OWN close (requestId match).
+    ws.serverSend({ type: "event", payload: closeEvent(selectRequest, 3) });
+    await flush();
+    await expect(pB).rejects.toMatchObject({ code: "interrupted" });
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+    expect(frameA).toBeTruthy();
+    expect(frameB).toBeTruthy();
+  });
+
+  it("F6: only an EXACT close (same id + method) settles; id/method mismatches are no-ops", async () => {
+    const h = createHarness();
+    const ws = await attach(h, EXT_CAPS);
+    const p = h.store.respondExtensionUi(confirmRequest, { responseKind: "confirmed", confirmed: true });
+    await flush();
+    const frame = extFrame(ws);
+
+    // Same method, DIFFERENT request id → no-op.
+    ws.serverSend({ type: "event", payload: closeEvent({ ...confirmRequest, id: "req-other" }, 1) });
+    await flush();
+    // Same request id, DIFFERENT method → no-op.
+    ws.serverSend({ type: "event", payload: { type: "extension_ui_request", sessionId: "s1", eventId: 2, epoch: "e1", request: { id: "req-confirm", method: "input", title: "Name", closed: true } } });
+    await flush();
+
+    let settled = false;
+    void p.then(() => { settled = true; }, () => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(true);
+
+    // EXACT close (same id + method) settles.
+    ws.serverSend({ type: "event", payload: closeEvent(confirmRequest, 3) });
+    await flush();
+    await expect(p).rejects.toMatchObject({ code: "interrupted" });
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+    expect(frame).toBeTruthy();
+  });
+
+  it("F6: a close with no pending reply is a no-op (non-sticky) — a later reply works normally", async () => {
+    const h = createHarness();
+    const ws = await attach(h, EXT_CAPS);
+
+    // Close arrives while NO reply is pending.
+    ws.serverSend({ type: "event", payload: closeEvent(confirmRequest, 1) });
+    await flush();
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+    expect(h.store.getSnapshot().error).toBeNull();
+
+    // The earlier close must NOT tombstone the request: a fresh reply goes out and
+    // resolves normally via its ack (no sticky tombstone).
+    const p = h.store.respondExtensionUi(confirmRequest, { responseKind: "confirmed", confirmed: true });
+    await flush();
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(true);
+    const frame = extFrame(ws);
+    respondOk(ws, frame.id, frame.payload.command.commandId!);
+    await expect(p).resolves.toBeUndefined();
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+  });
+
+  it("F6: an ack that resolves first makes a subsequent (or duplicate) close a harmless no-op", async () => {
+    const h = createHarness();
+    const ws = await attach(h, EXT_CAPS);
+    const p = h.store.respondExtensionUi(confirmRequest, { responseKind: "confirmed", confirmed: true });
+    await flush();
+    const frame = extFrame(ws);
+
+    // Ack resolves the reply first.
+    respondOk(ws, frame.id, frame.payload.command.commandId!);
+    await expect(p).resolves.toBeUndefined();
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+
+    // A close after the slot is already empty is a no-op — no double-settle, no error.
+    ws.serverSend({ type: "event", payload: closeEvent(confirmRequest, 1) });
+    await flush();
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+    expect(h.store.getSnapshot().error).toBeNull();
+
+    // A duplicate close is likewise a no-op.
+    ws.serverSend({ type: "event", payload: closeEvent(confirmRequest, 2) });
+    await flush();
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+    expect(h.store.getSnapshot().error).toBeNull();
+
+    // Slot recovered: a fresh reply works.
+    const p2 = h.store.respondExtensionUi(confirmRequest, { responseKind: "cancelled", cancelled: true });
+    await flush();
+    const frame2 = extFrame(ws);
+    respondOk(ws, frame2.id, frame2.payload.command.commandId!);
+    await expect(p2).resolves.toBeUndefined();
+  });
+
+  it("F6: a request close settles only the FINAL-response slot — the E15 input FIFO stays independent", async () => {
+    const h = createHarness();
+    const ws = await attach(h, EXT_CAPS);
+    // An in-flight input head + a queued tail for the same request.
+    const input1 = h.store.sendExtensionUiInput(customRequest, "a");
+    const input2 = h.store.sendExtensionUiInput(customRequest, "b");
+    await flush();
+    const inputFrame = inputFrames(ws)[0]!;
+
+    // The final response occupies its own independent slot.
+    const reply = h.store.respondExtensionUi(customRequest, { responseKind: "value", value: "done" });
+    await flush();
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(true);
+
+    // The close settles ONLY the reply slot — the input FIFO is never cleared.
+    ws.serverSend({ type: "event", payload: closeEvent(customRequest, 1) });
+    await flush();
+    await expect(reply).rejects.toMatchObject({ code: "interrupted" });
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
+
+    // The input head still settles on its own ack and the queued tail dispatches
+    // + settles normally.
+    ackInput(ws, inputFrame);
+    await expect(input1).resolves.toBeUndefined();
+    const tail = inputFrames(ws)[1]!;
+    expect(tail.payload.command.data).toBe("b");
+    ackInput(ws, tail);
+    await expect(input2).resolves.toBeUndefined();
+  });
+
+  it("F6: a close on the CURRENT generation settles the resynced reply (stale-generation close is socket-dropped)", async () => {
+    const h = createHarness();
+    let ws = await attach(h, EXT_CAPS);
+    const p = h.store.respondExtensionUi(confirmRequest, { responseKind: "confirmed", confirmed: true });
+    await flush();
+    const frame1 = extFrame(ws);
+    const commandId = frame1.payload.command.commandId!;
+
+    // Reconnect → new socket generation; the pending reply is resynced with the SAME commandId.
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot", capabilities: EXT_CAPS }) });
+    await flush();
+    const resent = extFrame(ws);
+    expect(resent.payload.command.commandId).toBe(commandId);
+
+    // A close on the CURRENT generation for the exact request settles the reply.
+    // A stale-generation close would be dropped by the socket BEFORE the store
+    // (covered by socket.test.ts "generation drops late frames from a superseded
+    // socket"); the store's `pending.generation === attachGen` guard is the same
+    // defense-in-depth and cannot be driven through this socket-backed harness.
+    ws.serverSend({ type: "event", payload: closeEvent(confirmRequest, 1) });
+    await flush();
+    await expect(p).rejects.toMatchObject({ code: "interrupted" });
+    expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);
   });
 });
