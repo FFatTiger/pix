@@ -129,12 +129,25 @@ a:hover {
   min-height: 0;
   overflow: auto;
   position: relative;
-  padding: 12px 16px;
+  /* Breathing room around the conversation: generous top/bottom padding and
+     side padding so bubbles never touch the panel edges (mobile tightens
+     below). */
+  padding: 20px 28px 32px;
 }
 
 .transcript-inner {
   width: 100%;
   position: relative;
+  /* Source column cap: content centers in an 820px column like the desktop
+     app, so wide windows get natural whitespace on both sides. */
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+@media (max-width: 768px) {
+  .transcript-scroll {
+    padding: 14px 12px 20px;
+  }
 }
 
 .transcript-row {
