@@ -10,7 +10,7 @@ import {
 } from "./common.js";
 import { QueuedMessagesSchema, RuntimeCapabilitySetSchema } from "./domain.js";
 import { ExtensionUiRequestSchema } from "./extension.js";
-import { AgentMessageSchema, StreamingAgentMessageSchema } from "./messages.js";
+import { StreamingAgentMessageSchema } from "./messages.js";
 
 export const PendingExtensionUiSchema = ExtensionUiRequestSchema;
 export type PendingExtensionUi = z.infer<typeof PendingExtensionUiSchema>;
@@ -110,9 +110,16 @@ export const RuntimeSnapshotSchema = z
     state: RuntimeStateSchema,
     capabilities: RuntimeCapabilitySetSchema,
     streaming: StreamingProjectionSchema.optional(),
-    messages: z.array(AgentMessageSchema).optional(),
   })
   .superRefine((snapshot, ctx) => {
+    // Protocol v2 hard invariant: a RuntimeSnapshot is control/reconnect state
+    // only and must NEVER carry completed transcript history (a huge JSONL
+    // would blow the Worker 2 MiB / Host ~4 MiB frame budgets during
+    // primeProjection). The strict object already rejects an unknown
+    // `messages` key; this adds a dedicated, discoverable error.
+    if ("messages" in (snapshot as Record<string, unknown>)) {
+      ctx.addIssue({ code: "custom", path: ["messages"], message: "runtime snapshots must not carry transcript history; use the cursor-paginated session context endpoint" });
+    }
     if (snapshot.sessionId !== snapshot.state.sessionId) {
       ctx.addIssue({ code: "custom", path: ["state", "sessionId"], message: "state.sessionId must match snapshot.sessionId" });
     }

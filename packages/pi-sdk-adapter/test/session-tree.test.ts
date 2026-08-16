@@ -134,7 +134,7 @@ describe("session tree projection (real JSONL)", () => {
       assert.deepEqual(root.children.map((child) => child.label), ["root answer", "side answer"]);
       // Both leaves resolve inside the tree (selectable without a worker).
       for (const leaf of [a1, side]) {
-        const selected = await store.readSessionContext(sessionId, leaf);
+        const selected = await store.readSessionContext(sessionId, { leafId: leaf });
         assert.equal(selected.leafId, leaf);
       }
     } finally {

@@ -86,7 +86,7 @@ export function renameHarness(options: RenameHarnessOptions = {}): RenameHarness
     },
     async readSessionContext(sessionId) {
       if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);
-      return { sessionId, entries: [] };
+      return { sessionId, entries: [], pageInfo: { hasMore: false } };
     },
     async readSessionTree(sessionId) {
       if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);

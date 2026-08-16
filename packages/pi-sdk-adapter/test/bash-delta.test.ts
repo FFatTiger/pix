@@ -25,7 +25,7 @@ function makeDriver(scenario: BashScenario): PiRuntimeDriver {
     autoCompactionEnabled: false,
     autoRetryEnabled: false,
     pendingMessageCount: 0,
-    messages: [],
+    messageCount: 0,
     tools: [],
     steering: [],
     followUp: [],
@@ -61,6 +61,7 @@ function makeDriver(scenario: BashScenario): PiRuntimeDriver {
       };
     },
     abortBash: () => {},
+    resolveLeafEntry: () => ({ entryId: "entry-bash-1", parentEntryId: "entry-0" }),
     navigate: unused,
     fork: unused,
     generateSessionTitle: async () => "title",

@@ -23,7 +23,7 @@ const snapshot = (sessionId: string, cwd = "/workspace", projectRoot = cwd): Run
   sessionId, cwd, projectRoot,
   state: { sessionId, isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0, queuedMessages: { steering: [], followUp: [] }, pendingMessageCount: 0, writtenFiles: [] },
   capabilities: { capabilities: ["runtime.prompt", "runtime.abort", "runtime.fork"], version: 1 },
-  streaming: { active: false, phase: "idle" }, messages: [],
+  streaming: { active: false, phase: "idle" },
 });
 
 interface ForkHarnessOptions {
@@ -56,7 +56,7 @@ function forkHarness(options: ForkHarnessOptions = {}) {
     },
     async readSessionContext(sessionId) {
       if (!files.get(sessionId)) throw { code: "not_found", message: "session not found", retryable: false };
-      return { sessionId, entries: [] };
+      return { sessionId, entries: [], pageInfo: { hasMore: false } };
     },
     async readSessionTree(sessionId) {
       if (!files.get(sessionId)) throw { code: "not_found", message: "session not found", retryable: false };

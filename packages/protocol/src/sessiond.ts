@@ -147,6 +147,14 @@ export type SessionsReadParams = z.infer<typeof SessionsReadParamsSchema>;
 export const SessionsContextParamsSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
   leafId: NonEmptyStringSchema.optional(),
+  /**
+   * Exclusive, stable projected entryId cursor. Omitted = the newest page of
+   * the selected branch. Clients pin the first page's leafId and use it for all
+   * older-page requests so later appends cannot shift pagination.
+   */
+  before: NonEmptyStringSchema.optional(),
+  /** Page size, bounded 1..200 (default 50). */
+  limit: z.number().int().min(1).max(200).optional(),
 });
 export type SessionsContextParams = z.infer<typeof SessionsContextParamsSchema>;
 

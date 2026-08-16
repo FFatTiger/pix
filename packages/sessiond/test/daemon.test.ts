@@ -225,7 +225,7 @@ async function activationHarness(options: {
         ? options.readSession(sessionId)
         : { sessionId, cwd: "/real/project", projectRoot: "/real/project", entries: [] };
     },
-    async readSessionContext() { return { sessionId: "", entries: [] }; },
+    async readSessionContext() { return { sessionId: "", entries: [], pageInfo: { hasMore: false } }; },
     async readSessionTree() { return { sessionId: "", roots: [], entryCount: 0 }; },
     async deleteSession() {},
   };

@@ -15,7 +15,21 @@ export function createSessionsApi(http: HttpClient) {
   return {
     list: (input: { cwd?: string; signal?: AbortSignal } = {}) => http.get(urls.sessions.list(input.cwd), { schema: SessionListSchema, ...(input.signal === undefined ? {} : { signal: input.signal }) }),
     detail: (id: string, signal?: AbortSignal) => http.get(urls.sessions.byId(id), { schema: SessionDetailResponseSchema, ...(signal === undefined ? {} : { signal }) }),
-    context: (id: string, signal?: AbortSignal) => http.get(urls.sessions.context(id), { schema: SessionContextResponseSchema, ...(signal === undefined ? {} : { signal }) }),
+    // Cursor-paginated context (Protocol v2): `leafId` pins the branch,
+    // `before` is an exclusive projected entryId cursor (omitted = newest
+    // page), `limit` is the page size (default 50, bounded 1..200). The
+    // AbortSignal is passed through so session/branch/generation changes can
+    // abort in-flight pages.
+    context: (id: string, options: { leafId?: string; before?: string; limit?: number; signal?: AbortSignal } = {}) => {
+      const params: { leafId?: string; before?: string; limit?: number } = {};
+      if (options.leafId !== undefined) params.leafId = options.leafId;
+      if (options.before !== undefined) params.before = options.before;
+      if (options.limit !== undefined) params.limit = options.limit;
+      return http.get(urls.sessions.context(id, params), {
+        schema: SessionContextResponseSchema,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
+    },
     // Read-only branch tree for the BranchNavigator slice (history mode).
     tree: (id: string, signal?: AbortSignal) => http.get(urls.sessions.tree(id), { schema: SessionTreeResponseSchema, ...(signal === undefined ? {} : { signal }) }),
     thinking: (id: string, entryId: string, signal?: AbortSignal) => http.get(urls.sessions.thinking(id, entryId), { schema: ThinkingResponseSchema, ...(signal === undefined ? {} : { signal }) }),

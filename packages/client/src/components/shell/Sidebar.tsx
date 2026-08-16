@@ -17,6 +17,8 @@ import type { SessionHeader } from "@fffattiger/pix-protocol";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { createQueryOptions } from "@/api/query-keys";
 import { createMutationOptions } from "@/api/mutations";
+import { urls } from "@/api/urls";
+import { SessionContextResponseSchema } from "@/api/schemas";
 import { HttpError } from "@/api/http-client";
 import { useHttpClient } from "@/app/http-context";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
@@ -1192,7 +1194,6 @@ function SessionItem({
 }) {
   const { t } = useI18n();
   const http = useHttpClient();
-  const queryClient = useQueryClient();
   const { openMenu } = useContextMenu();
   const [hovered, setHovered] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -1202,6 +1203,8 @@ function SessionItem({
   const [deleting, setDeleting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // In-flight visible-branch export walk (aborted on a new export / unmount).
+  const exportControllerRef = useRef<AbortController | null>(null);
 
   const title = sessionRowTitle(session);
   // One row mutation (rename OR delete) at a time.
@@ -1262,30 +1265,68 @@ function SessionItem({
   /**
    * Export the selected history session's visible branch as normalized JSON
    * (D1B-3, moved from the old workspace-header button into the row context
-   * menu). Shares the TranscriptList context cache key; live sessions are not
-   * exportable (v1 exports the persisted context branch only).
+   * menu). Protocol v2: walks ALL persisted pages sequentially — the newest
+   * page resolves the branch leafId, then older pages use the pinned leaf +
+   * exclusive cursor. Accumulates the full history ONLY for explicit export;
+   * dedupes by persisted entryId. Supports abort / session-generation: a new
+   * export (or a row unmount) aborts the previous in-flight walk.
    */
   const exportVisibleBranch = useCallback(() => {
-    const options = createQueryOptions(http);
     setExportError(null);
-    void queryClient
-      .fetchQuery({ ...options.sessions.context(session.sessionId) })
-      .then((data) => {
-        const context = data.context;
-        if (!context) {
-          setExportError("Could not export visible branch.");
-          return;
+    const controller = new AbortController();
+    // Abort any prior in-flight export for this row.
+    if (exportControllerRef.current !== null) exportControllerRef.current.abort();
+    exportControllerRef.current = controller;
+    const sessionId = session.sessionId;
+    void (async () => {
+      try {
+        const entries: import("@fffattiger/pix-protocol").SessionEntry[] = [];
+        const seen = new Set<string>();
+        let before: string | undefined;
+        let pinnedLeaf: string | undefined;
+        let hasMore = true;
+        let guard = 0;
+        // Defensive hard cap: a pathological/corrupt page chain can never loop forever.
+        const MAX_PAGES = 100_000;
+        while (hasMore && guard < MAX_PAGES) {
+          guard += 1;
+          const page = await http.get(urls.sessions.context(sessionId, {
+            ...(pinnedLeaf === undefined ? {} : { leafId: pinnedLeaf }),
+            ...(before === undefined ? {} : { before }),
+            limit: 200,
+          }), {
+            schema: SessionContextResponseSchema,
+            signal: controller.signal,
+          });
+          const ctx = page.context;
+          if (pinnedLeaf === undefined && ctx.leafId !== undefined) pinnedLeaf = ctx.leafId;
+          for (const entry of ctx.entries) {
+            if (seen.has(entry.entryId)) continue;
+            seen.add(entry.entryId);
+            entries.push(entry);
+          }
+          hasMore = ctx.pageInfo.hasMore;
+          if (hasMore && ctx.pageInfo.nextCursor === undefined) {
+            // Fail-safe: hasMore without a cursor cannot be advanced.
+            hasMore = false;
+          }
+          before = ctx.pageInfo.nextCursor;
         }
-        try {
-          downloadVisibleBranch(context);
-        } catch {
-          setExportError("Could not export visible branch.");
-        }
-      })
-      .catch(() => {
+        if (controller.signal.aborted) return;
+        downloadVisibleBranch({
+          sessionId,
+          ...(pinnedLeaf === undefined ? {} : { leafId: pinnedLeaf }),
+          entries,
+          pageInfo: { hasMore: false },
+        });
+      } catch {
+        if (controller.signal.aborted) return;
         setExportError("Could not export visible branch.");
-      });
-  }, [http, queryClient, session.sessionId]);
+      } finally {
+        if (exportControllerRef.current === controller) exportControllerRef.current = null;
+      }
+    })();
+  }, [http, session.sessionId]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

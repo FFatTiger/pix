@@ -1394,7 +1394,7 @@ describe("pi-sdk sessions catalog filter (injected store)", () => {
     const base: PiSdkSessionStore = {
       async listSessions() { return headers; },
       async readSession(id) { return { ...headers.find((h) => h.sessionId === id)!, entries: [] }; },
-      async readSessionContext(id) { return { sessionId: id, entries: [] }; },
+      async readSessionContext(id) { return { sessionId: id, entries: [], pageInfo: { hasMore: false } }; },
       async readSessionTree(id) { return { sessionId: id, roots: [], entryCount: 0 }; },
       async deleteSession() {},
       async renameSession() {},

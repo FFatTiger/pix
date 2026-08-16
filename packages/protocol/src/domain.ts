@@ -90,6 +90,16 @@ export const SessionContextSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
   leafId: NonEmptyStringSchema.optional(),
   entries: z.array(SessionEntrySchema),
+  /**
+   * Cursor-pagination info (Protocol v2). `hasMore` is true when older entries
+   * exist before this page; `nextCursor` is the stable projected entryId cursor
+   * to pass as `before` for the next older page (absent when hasMore is false).
+   * Entries are ALWAYS chronological within a page.
+   */
+  pageInfo: z.strictObject({
+    hasMore: z.boolean(),
+    nextCursor: NonEmptyStringSchema.optional(),
+  }),
 });
 export type SessionContext = z.infer<typeof SessionContextSchema>;
 

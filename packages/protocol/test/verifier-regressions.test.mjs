@@ -100,14 +100,14 @@ describe("B: streaming correlation and snapshot invariants", () => {
     assert.equal(StreamingMessageLifecycleSchema.safeParse([
       { type: "message_start", sessionId: "s-1", streamId: "stream-a", messageId: "msg-a", message: { role: "assistant", content: [{ type: "text", text: "A" }] } },
       { type: "message_update", sessionId: "s-1", streamId: "stream-b", messageId: "msg-a", delta: { role: "assistant", delta: { type: "text", text: "B" } } },
-      { type: "message_end", sessionId: "s-1", streamId: "stream-a", messageId: "msg-a", message: { role: "assistant", content: [], model: "m", provider: "p" } },
+      { type: "message_end", sessionId: "s-1", streamId: "stream-a", messageId: "msg-a", message: { role: "assistant", content: [], model: "m", provider: "p" }, entryId: "entry-1" },
     ]).success, false);
   });
 
   it("enforces exact lifecycle sequence, correlation and role", () => {
     const start = { type: "message_start", sessionId: "s-1", streamId: "stream-a", messageId: "msg-a", message: { role: "assistant", content: [{ type: "text", text: "A" }] } };
     const update = { type: "message_update", sessionId: "s-1", streamId: "stream-a", messageId: "msg-a", delta: { role: "assistant", delta: { type: "text", text: "B" } } };
-    const end = { type: "message_end", sessionId: "s-1", streamId: "stream-a", messageId: "msg-a", message: { role: "assistant", content: [], model: "m", provider: "p" } };
+    const end = { type: "message_end", sessionId: "s-1", streamId: "stream-a", messageId: "msg-a", message: { role: "assistant", content: [], model: "m", provider: "p" }, entryId: "entry-1" };
     assert.equal(StreamingMessageLifecycleSchema.safeParse([start, update, end]).success, true);
     assert.equal(StreamingMessageLifecycleSchema.safeParse([{ ...start, streamId: "stream-b", messageId: "msg-b" }, { ...end, streamId: "stream-b", messageId: "msg-b" }]).success, true);
     assert.equal(StreamingMessageLifecycleSchema.safeParse([start, { ...update, sessionId: "s-2" }, end]).success, false);

@@ -32,7 +32,10 @@ import { createPiSdkSessionStore } from "../internal/session-store.js";
 export interface PiSdkSessionStore {
   listSessions(): Promise<readonly SessionHeader[]>;
   readSession(sessionId: string): Promise<SessionDetail>;
-  readSessionContext(sessionId: string, leafId?: string): Promise<SessionContext>;
+  readSessionContext(
+    sessionId: string,
+    options?: { leafId?: string; before?: string; limit?: number },
+  ): Promise<SessionContext>;
   /**
    * Normalized branch-tree projection over the SAME cached read-only JSONL
    * (list/read/context parity): roots + branch points + leaves with contracted
@@ -61,8 +64,8 @@ class PiSdkSessionCatalog implements SessionCatalogPort {
     return this.store.readSession(sessionId);
   }
 
-  readSessionContext(sessionId: string, options?: { leafId?: string }): Promise<SessionContext> {
-    return this.store.readSessionContext(sessionId, options?.leafId);
+  readSessionContext(sessionId: string, options?: { leafId?: string; before?: string; limit?: number }): Promise<SessionContext> {
+    return this.store.readSessionContext(sessionId, { ...(options?.leafId === undefined ? {} : { leafId: options.leafId }), ...(options?.before === undefined ? {} : { before: options.before }), ...(options?.limit === undefined ? {} : { limit: options.limit }) });
   }
 
   readSessionTree(sessionId: string): Promise<SessionTree> {

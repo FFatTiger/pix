@@ -25,6 +25,7 @@
 import { delimiter, isAbsolute } from "node:path";
 import { lstat, realpath } from "node:fs/promises";
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import { HttpError } from "../errors.js";
 import {
   attachTrustedRootsLedger,
@@ -353,6 +354,16 @@ export function createProductionCapabilityResolver(
     const result = await client.call("system.ping", {});
     return result.pong === true;
   }
+  // Protocol v2 stale-daemon safety: an authenticated `system.hello` returns the
+  // daemon's negotiated protocol version. A v1 (or any mismatched) daemon is
+  // INCOMPATIBLE — the Host must NOT silently reuse it. This projects degraded
+  // capabilities (retracting `agent`/`sessions`/`worktree.write`) so the HTTP
+  // and WS surfaces both fail closed against the wrong daemon. The raw version
+  // is never logged/echoed; only a fixed sanitized warning is emitted.
+  async function compatible(): Promise<boolean> {
+    const result = await client.call("system.hello", {});
+    return result.protocolVersion === PROTOCOL_VERSION;
+  }
   return {
     async isAvailable(): Promise<boolean> {
       try {
@@ -363,7 +374,12 @@ export function createProductionCapabilityResolver(
     },
     async resolve(): Promise<readonly HostCapability[]> {
       try {
-        return (await ping()) ? [...PRODUCTION_FULL_CAPABILITIES] : [...RESOURCE_DEGRADED_CAPABILITIES];
+        if (!(await ping())) return [...RESOURCE_DEGRADED_CAPABILITIES];
+        if (!(await compatible())) {
+          logger.warn?.("sessiond is running an incompatible protocol version; advertising degraded capabilities");
+          return [...RESOURCE_DEGRADED_CAPABILITIES];
+        }
+        return [...PRODUCTION_FULL_CAPABILITIES];
       } catch {
         logger.warn?.("production capability resolver failed; advertising degraded capabilities");
         return [...RESOURCE_DEGRADED_CAPABILITIES];

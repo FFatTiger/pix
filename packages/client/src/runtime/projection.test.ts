@@ -17,7 +17,6 @@ function base(sessionId = "s"): RuntimeSnapshot {
     },
     capabilities: { capabilities: ["runtime.prompt"], version: 1 },
     streaming: { active: false, phase: "idle" },
-    messages: [],
   };
 }
 
@@ -48,12 +47,14 @@ describe("reduceRuntimeEventData — message stream deltas append (never merge)"
       { type: "thinking", thinking: "hmm" },
     ]);
   });
-  it("commits the message on message_end and clears the stream", () => {
+  it("commits the message on message_end (advances leaf/count) and clears the stream without history", () => {
     let snap = base();
     snap = reduceRuntimeEventData(snap, { type: "message_start", sessionId: "s", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" } });
-    snap = reduceRuntimeEventData(snap, { type: "message_end", sessionId: "s", streamId: "st", messageId: "m", message: { role: "assistant", content: [{ type: "text", text: "hi" }], model: "m", provider: "p" } });
+    snap = reduceRuntimeEventData(snap, { type: "message_end", sessionId: "s", streamId: "st", messageId: "m", entryId: "entry-1", message: { role: "assistant", content: [{ type: "text", text: "hi" }], model: "m", provider: "p" } });
     expect(snap.streaming?.active).toBe(false);
-    expect(snap.messages?.length).toBe(1);
+    // Protocol v2: the snapshot carries control state only — no transcript.
+    expect("messages" in snap).toBe(false);
+    expect(snap.state.leafId).toBe("entry-1");
     expect(snap.state.messageCount).toBe(1);
     expect(snap.state.isStreaming).toBe(false);
   });

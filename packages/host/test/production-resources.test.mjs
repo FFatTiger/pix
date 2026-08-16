@@ -3,6 +3,7 @@ import test from "node:test";
 import { delimiter } from "node:path";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
@@ -279,6 +280,83 @@ test("resolver: RPC error ⇒ degraded capabilities + one sanitized log line", a
   assert.equal(line.includes("nonexistent-prod-resolver-fail"), false);
   assert.equal(line.includes("secret"), false);
   assert.equal(await resolver.isAvailable(), false);
+});
+
+/**
+ * Minimal fake sessiond RPC endpoint speaking the real AUTH handshake, used to
+ * exercise the Protocol v2 stale-daemon retraction WITHOUT a real v1 daemon.
+ * `helloVersion` controls the negotiated system.hello protocolVersion.
+ */
+function startFakeRpc(helloVersion) {
+  return new Promise((resolve) => {
+    const socketPath = join(CANON_TMP, `pix-fake-rpc-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
+    const server = createServer((socket) => {
+      socket.setNoDelay(true);
+      let authenticated = false;
+      let buffered = "";
+      socket.on("data", (chunk) => {
+        buffered += chunk.toString("utf8");
+        let nl;
+        while ((nl = buffered.indexOf("\n")) >= 0) {
+          const line = buffered.slice(0, nl);
+          buffered = buffered.slice(nl + 1);
+          if (!authenticated) {
+            authenticated = line.startsWith("AUTH ");
+            if (!authenticated) { socket.destroy(); return; }
+            socket.write("OK\n");
+            continue;
+          }
+          let request;
+          try { request = JSON.parse(line); } catch { socket.destroy(); return; }
+          const method = request && request.method;
+          if (method === "system.hello") {
+            socket.write(JSON.stringify({ id: request.id, ok: true, method, result: { protocolVersion: helloVersion, capabilities: ["runtime.authority", "runtime.resume"] } }) + "\n");
+          } else if (method === "system.ping") {
+            socket.write(JSON.stringify({ id: request.id, ok: true, method, result: { pong: true } }) + "\n");
+          } else {
+            socket.write(JSON.stringify({ id: request.id, ok: false, method, error: { code: "unsupported_capability", message: "unsupported", retryable: false } }) + "\n");
+          }
+        }
+      });
+    });
+    server.listen(socketPath, () => resolve({ socketPath, server }));
+  });
+}
+
+test("resolver: a pingable but protocol-v1 daemon degrades (stale daemon fail-closed)", async () => {
+  const fake = await startFakeRpc(1);
+  try {
+    const logs = [];
+    const resolver = createProductionCapabilityResolver({
+      endpoint: fake.socketPath,
+      secret: "s",
+      logger: { warn: (msg) => logs.push(msg) },
+    });
+    // The daemon answers ping AND hello, but at the stale v1 version.
+    assert.equal(await resolver.isAvailable(), true);
+    assert.deepEqual(await resolver.resolve(), [...RESOURCE_DEGRADED_CAPABILITIES]);
+    assert.equal(logs.length, 1, "one sanitized incompatible-version warning");
+    assert.equal(String(logs[0]).includes(fake.socketPath), false);
+  } finally {
+    fake.server.close();
+    rmSync(fake.socketPath, { force: true });
+  }
+});
+
+test("resolver: a compatible protocol-v2 daemon advertises the full surface", async () => {
+  const fake = await startFakeRpc(2);
+  try {
+    const resolver = createProductionCapabilityResolver({
+      endpoint: fake.socketPath,
+      secret: "s",
+      logger: {},
+    });
+    assert.equal(await resolver.isAvailable(), true);
+    assert.deepEqual(await resolver.resolve(), [...PRODUCTION_FULL_CAPABILITIES]);
+  } finally {
+    fake.server.close();
+    rmSync(fake.socketPath, { force: true });
+  }
 });
 
 test("resolver PRODUCTION_PING_TIMEOUT_MS is the frozen 2s", () => {

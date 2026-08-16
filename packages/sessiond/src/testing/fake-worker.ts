@@ -63,7 +63,6 @@ const fakeDefaultSnapshot = (sessionId: string, cwd: string, projectRoot: string
   state: { sessionId, isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0, queuedMessages: { steering: [], followUp: [] }, pendingMessageCount: 0, writtenFiles: [] },
   capabilities: { capabilities: [], version: 0 },
   streaming: { active: false, phase: "idle" },
-  messages: [],
 });
 
 export class FakeWorkerConnection implements WorkerConnection {
@@ -177,9 +176,7 @@ export class FakeWorkerConnection implements WorkerConnection {
         // converges messages/messageCount/contextUsage (the wire compaction_end
         // event only clears activity and does NOT carry these fields).
         if (command.type === "compact") {
-          const messages = Array.isArray(this.liveSnapshot.messages) ? this.liveSnapshot.messages : [];
-          const keep = Math.max(0, messages.length - 2);
-          const trimmed = messages.slice(-keep);
+          const keep = Math.max(0, (this.liveSnapshot.state.messageCount ?? 0) - 2);
           const usage = this.liveSnapshot.state.contextUsage;
           this.liveSnapshot = {
             ...this.liveSnapshot,
@@ -197,7 +194,6 @@ export class FakeWorkerConnection implements WorkerConnection {
                     },
                   }),
             },
-            messages: trimmed,
           };
         }
         // D2 navigate: a successful navigate moves the authoritative leaf. The
@@ -207,17 +203,15 @@ export class FakeWorkerConnection implements WorkerConnection {
         // a runtime_state_changed signal and NO leaf/history fields.
         if (command.type === "navigate_tree" && typeof command.targetId === "string") {
           const keepMatch = /^nav-(\d+)$/.exec(command.targetId.trim());
-          const messages = Array.isArray(this.liveSnapshot.messages) ? this.liveSnapshot.messages : [];
-          const keep = keepMatch ? Math.max(0, Math.min(messages.length, Number(keepMatch[1]))) : 0;
-          const trimmed = messages.slice(0, keep);
+          const current = this.liveSnapshot.state.messageCount ?? 0;
+          const keep = keepMatch ? Math.max(0, Math.min(current, Number(keepMatch[1]))) : 0;
           this.liveSnapshot = {
             ...this.liveSnapshot,
             state: {
               ...this.liveSnapshot.state,
-              messageCount: trimmed.length,
-              ...(trimmed.length === 0 ? {} : { leafId: command.targetId }),
+              messageCount: keep,
+              ...(keep === 0 ? {} : { leafId: command.targetId }),
             },
-            messages: trimmed,
           };
         }
         setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, outcome(command.type, this.options, (command as { entryId?: string }).entryId)), this.options.commandDelayMs ?? 0);

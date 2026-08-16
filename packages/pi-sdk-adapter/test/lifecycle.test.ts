@@ -29,6 +29,7 @@ class CountingDriver implements PiRuntimeDriver {
   clearQueue() { return this.inner.clearQueue(); }
   setTools(...args: Parameters<PiRuntimeDriver["setTools"]>) { return this.inner.setTools(...args); }
   reload() { return this.inner.reload(); }
+  resolveLeafEntry(...args: Parameters<PiRuntimeDriver["resolveLeafEntry"]>) { return this.inner.resolveLeafEntry(...args); }
   bash(...args: Parameters<PiRuntimeDriver["bash"]>) { return this.inner.bash(...args); }
   abortBash() { return this.inner.abortBash(); }
   navigate(...args: Parameters<PiRuntimeDriver["navigate"]>) { return this.inner.navigate(...args); }

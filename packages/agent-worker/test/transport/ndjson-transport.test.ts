@@ -59,8 +59,8 @@ const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 describe("NdjsonStdioTransport framing", () => {
   it("parses multiple frames in a single chunk and frames split across chunks", async () => {
     const h = createHarness();
-    h.stdin.write('{"type":"worker.ping","id":"p1","protocolVersion":1,"payload":{}}');
-    h.stdin.write('\n{"type":"worker.ping","id":"p2","protocolVersion":1,"payload":{}}\n');
+    h.stdin.write('{"type":"worker.ping","id":"p1","protocolVersion":2,"payload":{}}');
+    h.stdin.write('\n{"type":"worker.ping","id":"p2","protocolVersion":2,"payload":{}}\n');
     await tick();
     assert.equal(h.messages.length, 2);
     assert.deepEqual(h.messages.map((m) => (m as { id: string }).id), ["p1", "p2"]);
@@ -68,7 +68,7 @@ describe("NdjsonStdioTransport framing", () => {
 
   it("tolerates CRLF line endings", async () => {
     const h = createHarness();
-    h.stdin.write('{"type":"worker.ping","id":"p1","protocolVersion":1,"payload":{}}\r\n');
+    h.stdin.write('{"type":"worker.ping","id":"p1","protocolVersion":2,"payload":{}}\r\n');
     await tick();
     assert.equal(h.messages.length, 1);
   });
@@ -76,7 +76,7 @@ describe("NdjsonStdioTransport framing", () => {
   it("ignores empty lines", async () => {
     const h = createHarness();
     h.stdin.write("\n\n");
-    h.stdin.write('{"type":"worker.ping","id":"p1","protocolVersion":1,"payload":{}}\n');
+    h.stdin.write('{"type":"worker.ping","id":"p1","protocolVersion":2,"payload":{}}\n');
     await tick();
     assert.equal(h.messages.length, 1);
   });
@@ -93,7 +93,7 @@ describe("NdjsonStdioTransport framing", () => {
 
   it("schema-violating frame emits worker.fatal and exits 1", async () => {
     const h = createHarness();
-    h.stdin.write('{"type":"bogus.type","id":"x","protocolVersion":1,"payload":{}}\n');
+    h.stdin.write('{"type":"bogus.type","id":"x","protocolVersion":2,"payload":{}}\n');
     const out = await collect(h.stdout);
     assert.deepEqual(h.exitCodes, [1]);
     assert.equal(JSON.parse(out.trim().split("\n")[0]!).type, "worker.fatal");
@@ -101,7 +101,7 @@ describe("NdjsonStdioTransport framing", () => {
 
   it("oversized frame emits worker.fatal and exits 1", async () => {
     const h = createHarness({ maxFrameBytes: 16 });
-    h.stdin.write(`${JSON.stringify({ type: "worker.ping", id: "x", protocolVersion: 1, payload: {} })}\n`);
+    h.stdin.write(`${JSON.stringify({ type: "worker.ping", id: "x", protocolVersion: 2, payload: {} })}\n`);
     const out = await collect(h.stdout);
     assert.deepEqual(h.exitCodes, [1]);
     assert.equal(JSON.parse(out.trim().split("\n")[0]!).payload.error.code, "invalid_request");
@@ -109,7 +109,7 @@ describe("NdjsonStdioTransport framing", () => {
 
   it("a frame without a trailing newline that exceeds the limit fails closed", async () => {
     const h = createHarness({ maxFrameBytes: 16 });
-    h.stdin.write(JSON.stringify({ type: "worker.ping", id: "x", protocolVersion: 1, payload: {} }));
+    h.stdin.write(JSON.stringify({ type: "worker.ping", id: "x", protocolVersion: 2, payload: {} }));
     await tick();
     assert.deepEqual(h.exitCodes, [1]);
   });

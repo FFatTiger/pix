@@ -848,11 +848,11 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         assert.equal(snapshot.state.isStreaming, false);
         assert.equal(snapshot.streaming?.active, false);
         assert.equal(snapshot.state.messageCount, 3);
-        assert.ok(
-          snapshot.messages?.some(
-            (message) => message.role === "assistant" && message.content.length > 0,
-          ),
-        );
+        // Protocol v2: the snapshot is control state only — it never carries
+        // transcript history. The committed completion is instead observable as
+        // an advanced authoritative leaf identity on the snapshot.
+        assert.ok(snapshot.state.leafId !== undefined);
+        assert.equal("messages" in snapshot, false);
         await port.close("user");
       });
 

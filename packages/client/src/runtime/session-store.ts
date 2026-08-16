@@ -55,7 +55,6 @@
  */
 import {
   reduceRuntimeEventData,
-  type AgentMessage,
   type CorrelatedRuntimeCommandResult,
   type ExtensionUiInteractiveMethod,
   type ExtensionUiRequest,
@@ -69,6 +68,7 @@ import {
   type RuntimeCreateParams,
   type RuntimeEventData,
   type RuntimeInterrupt,
+  type SessionEntry,
   type RuntimeSnapshot,
   type RuntimeState,
   type SessionStats,
@@ -110,7 +110,27 @@ export interface RuntimeView {
   readonly snapshot: RuntimeSnapshot | null;
   readonly streaming: boolean;
   readonly streamingPartial: StreamingAgentMessage | null;
-  readonly messages: readonly AgentMessage[];
+  /**
+   * History-layer generation (Protocol v2). Increments on a fresh attach,
+   * epoch/branch/count rebase, detach, session switch or stop. The transcript
+   * hook keys its infinite query on this value so any anchor change
+   * invalidates/refetches history.
+   */
+  readonly historyGeneration: number;
+  /**
+   * Anchor leaf for the live history layer: `snapshot.state.leafId` at the
+   * last fresh attach/rebase. Null when the session has no committed entries.
+   * The transcript hook pins this anchor (via the resolved page leaf) for all
+   * older-page requests so later appends cannot shift pagination.
+   */
+  readonly historyAnchorLeafId: string | null;
+  /**
+   * Committed live SessionEntries accumulated since the last fresh attach/
+   * rebase, keyed by persisted entryId: completed message_end events and
+   * terminal bash completions. Persisted pages merge with these by entryId
+   * (never by content/timestamp/array overlap).
+   */
+  readonly liveEntries: readonly SessionEntry[];
   readonly error: ProtocolError | null;
   readonly fatal: boolean;
   readonly canAgent: boolean;
@@ -148,7 +168,9 @@ const INITIAL_VIEW: RuntimeView = {
   snapshot: null,
   streaming: false,
   streamingPartial: null,
-  messages: [],
+  historyGeneration: 0,
+  historyAnchorLeafId: null,
+  liveEntries: [],
   error: null,
   fatal: false,
   canAgent: false,
@@ -390,6 +412,10 @@ export class SessionStore implements RuntimeSocketHandler {
   private epoch: string | null = null;
   private lastEventId = 0;
   private snapshot: RuntimeSnapshot | null = null;
+  /** History-layer state (Protocol v2): generation + anchor + committed live entries. */
+  private historyGeneration = 0;
+  private historyAnchorLeafId: string | null = null;
+  private liveEntries: SessionEntry[] = [];
   private error: ProtocolError | null = null;
   private fatal = false;
 
@@ -518,6 +544,8 @@ export class SessionStore implements RuntimeSocketHandler {
       this.attached = false;
       this.awaitingSnapshot = false;
       this.intendedSession = null;
+      // Protocol v2: detach clears the history layer (anchor/generation/live entries).
+      this.clearHistoryLayer();
       // D2-P4: a queued turn is bound to the live streaming session; detaching
       // invalidates it (fixed error, never overwrites a prompt promise).
       this.settlePendingQueuedTurn({ code: "interrupted", message: "detached", retryable: false });
@@ -590,6 +618,8 @@ export class SessionStore implements RuntimeSocketHandler {
       this.awaitingSnapshot = false;
       this.sessionStopped = true;
       this.intendedSession = null;
+      // Protocol v2: stop clears the history layer.
+      this.clearHistoryLayer();
       this.rejectAttach({ code: "interrupted", message: "stopped", retryable: false });
       this.notify();
     } finally {
@@ -1373,7 +1403,7 @@ export class SessionStore implements RuntimeSocketHandler {
       payload.sessionId === this.attachAttempt.sessionId
     ) {
       this.attachAttempt = null;
-      this.applySnapshot(payload);
+      this.applySnapshot(payload, "fresh");
       this.attachGen = generation;
       this.awaitingSnapshot = false;
       this.attached = true;
@@ -1386,7 +1416,17 @@ export class SessionStore implements RuntimeSocketHandler {
     }
     // Replay / live snapshot (gap / epoch_changed mid-stream): full replace + cursor.
     if (this.attached && generation === this.attachGen && payload.sessionId === this.sessionId) {
-      this.applySnapshot(payload);
+      // Protocol v2: epoch_changed rebases the history layer (new anchor,
+      // generation++, clear live entries → the transcript refetches); a
+      // same-epoch gap snapshot preserves the anchor + live entries and only
+      // dedupes replayed events via the resume cursor.
+      // A journal gap means events may be missing even when the epoch survived.
+      // Rebase the paginated history anchor/live delta layer from the
+      // authoritative snapshot; preserving it would leave a permanent hole.
+      this.applySnapshot(
+        payload,
+        payload.resumeStatus === "epoch_changed" || payload.resumeStatus === "gap" ? "rebase" : "same-epoch",
+      );
       this.notify();
     }
   }
@@ -1412,6 +1452,8 @@ export class SessionStore implements RuntimeSocketHandler {
         // F6: an `extension_ui_request` close for the EXACT pending reply settles
         // its slot (capability loss above runs first → first-valid-reason wins).
         this.settleExtensionUiOnRequestClose(event);
+        // Protocol v2: committed completions append keyed live SessionEntries.
+        this.recordCommittedLiveEntries(event);
       } catch {
         // Projection inconsistency (stream event out of order): re-attach.
         this.reattach();
@@ -1768,14 +1810,81 @@ export class SessionStore implements RuntimeSocketHandler {
 
   // --- helpers -----------------------------------------------------------
 
-  private applySnapshot(payload: WsSnapshotMessage["payload"]): void {
+  private applySnapshot(
+    payload: WsSnapshotMessage["payload"],
+    mode: "fresh" | "same-epoch" | "rebase" = "same-epoch",
+  ): void {
     this.sessionId = payload.sessionId;
     this.epoch = payload.epoch;
     this.lastEventId = payload.lastEventId;
     this.snapshot = structuredClone(payload.snapshot);
+    // Protocol v2 history layer:
+    //  - fresh attach: anchor to snapshot.state.leafId, increment generation,
+    //    clear live entries (later committed events re-accumulate);
+    //  - rebase (epoch_changed / branch / count): new anchor, generation++,
+    //    clear live entries → the transcript hook refetches the first page;
+    //  - same-epoch reconnect (gap / replay): PRESERVE anchor + live entries
+    //    (the resume cursor dedupes replayed events, and appendLiveEntry is
+    //    idempotent by entryId).
+    if (mode !== "same-epoch") {
+      this.historyGeneration += 1;
+      this.historyAnchorLeafId = this.snapshot.state.leafId ?? null;
+      this.liveEntries = [];
+    }
     // D2-P8: a snapshot that drops `runtime.extension_ui` settles an in-flight reply.
     this.settleExtensionUiOnCapabilityLoss();
     this.notify();
+  }
+
+  /**
+   * Append a committed live SessionEntry keyed by its persisted entryId.
+   * Idempotent by entryId (never by content/timestamp/array overlap) so
+   * same-epoch replay and duplicate completions can never double-append.
+   */
+  private appendLiveEntry(entry: SessionEntry): void {
+    if (this.liveEntries.some((existing) => existing.entryId === entry.entryId)) return;
+    this.liveEntries = [...this.liveEntries, entry];
+  }
+
+  /**
+   * Record committed live entries from a message_end / terminal bash_update.
+   * Runs AFTER the shared projection reduced the event, so the terminal bash
+   * entry is built from the authoritative cumulative snapshot bash state.
+   */
+  private recordCommittedLiveEntries(event: RuntimeEventData & { readonly eventId: number; readonly epoch: string }): void {
+    if (event.type === "message_end") {
+      this.appendLiveEntry({
+        entryId: event.entryId,
+        ...(event.parentEntryId === undefined ? {} : { parentEntryId: event.parentEntryId }),
+        message: event.message,
+      });
+      return;
+    }
+    if (event.type === "bash_update" && (event.exitCode !== undefined || event.cancelled === true) && event.entryId !== undefined) {
+      const bash = this.snapshot?.state.bash;
+      if (!bash) return;
+      this.appendLiveEntry({
+        entryId: event.entryId,
+        ...(event.parentEntryId === undefined ? {} : { parentEntryId: event.parentEntryId }),
+        message: {
+          role: "bashExecution",
+          command: bash.command,
+          output: bash.output,
+          ...(bash.exitCode === undefined ? {} : { exitCode: bash.exitCode }),
+          ...(bash.cancelled === undefined ? {} : { cancelled: bash.cancelled }),
+          ...(bash.truncated === undefined ? {} : { truncated: bash.truncated }),
+          ...(bash.fullOutputPath === undefined ? {} : { fullOutputPath: bash.fullOutputPath }),
+          ...(bash.excludeFromContext === undefined ? {} : { excludeFromContext: bash.excludeFromContext }),
+        },
+      });
+    }
+  }
+
+  /** Clear the history layer (detach / stop / session switch). */
+  private clearHistoryLayer(): void {
+    this.historyGeneration += 1;
+    this.historyAnchorLeafId = null;
+    this.liveEntries = [];
   }
 
   /**
@@ -2091,7 +2200,9 @@ export class SessionStore implements RuntimeSocketHandler {
       snapshot,
       streaming,
       streamingPartial: snapshot?.streaming?.partialMessage ?? null,
-      messages: snapshot?.messages ?? [],
+      historyGeneration: this.historyGeneration,
+      historyAnchorLeafId: this.historyAnchorLeafId,
+      liveEntries: this.liveEntries,
       error: this.error,
       fatal: this.fatal,
       canAgent: this.host?.capabilities.includes("agent") === true,

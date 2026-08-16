@@ -196,7 +196,12 @@ export interface SessiondProbe {
 export interface SessionHistoryReadClient {
   list(params: { cwd?: string; limit?: number; offset?: number }): Promise<unknown>;
   read(sessionId: string): Promise<unknown>;
-  context(sessionId: string, leafId?: string): Promise<unknown>;
+  /**
+   * Cursor-paginated context read (Protocol v2). `leafId` pins the branch;
+   * `before` is an exclusive, stable projected entryId cursor (omitted = newest
+   * page); `limit` is the page size (default 50, bounded 1..200).
+   */
+  context(sessionId: string, options?: { leafId?: string; before?: string; limit?: number }): Promise<unknown>;
   /**
    * Read-only normalized branch tree (GET /v1/sessions/:id/tree). Backed by
    * the `sessions.tree` RPC — a pure persisted-JSONL catalog projection that

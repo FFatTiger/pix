@@ -124,6 +124,7 @@ export class ReferenceSessionStore {
       message,
     };
     session.entries.push(entry);
+    session.leafId = entry.entryId;
     session.updatedAt = Date.now();
     session.lastMessageAt = Date.now();
     return entry;
@@ -232,6 +233,7 @@ export class ReferenceSessionStore {
         ? { leafId: leafId ?? session.leafId }
         : {}),
       entries,
+      pageInfo: { hasMore: false },
     };
   }
 

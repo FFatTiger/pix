@@ -39,7 +39,7 @@ import type {
 export interface PiSdkDataBackend {
   listSessions(): Promise<readonly SessionHeader[]>;
   readSession(sessionId: string): Promise<SessionDetail>;
-  readSessionContext(sessionId: string, leafId?: string): Promise<SessionContext>;
+  readSessionContext(sessionId: string, options?: { leafId?: string }): Promise<SessionContext>;
   readSessionTree(sessionId: string): Promise<SessionTree>;
   deleteSession(sessionId: string): Promise<void>;
   locate(sessionId: string): Promise<SessionLocation>;
@@ -83,7 +83,7 @@ export function createPortsFromBackend(backend: PiSdkDataBackend): {
         return sessions;
       },
       readSession: (id) => backend.readSession(id),
-      readSessionContext: (id, options) => backend.readSessionContext(id, options?.leafId),
+      readSessionContext: (id, options) => backend.readSessionContext(id, { ...(options?.leafId === undefined ? {} : { leafId: options.leafId }) }),
       readSessionTree: (id) => backend.readSessionTree(id),
       deleteSession: (id) => backend.deleteSession(id),
     },

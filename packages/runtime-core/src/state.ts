@@ -7,7 +7,6 @@
  */
 import type { RuntimeCapabilitySet } from "./capabilities.js";
 import type {
-  AgentMessage,
   ContextUsage,
   StreamingAgentMessage,
   ThinkingLevel,
@@ -94,6 +93,4 @@ export interface RuntimeSnapshot {
   state: RuntimeState;
   capabilities: RuntimeCapabilitySet;
   streaming?: StreamingProjection;
-  /** Recent complete messages (cold-attach convenience; not a full dump). */
-  messages?: readonly AgentMessage[];
 }

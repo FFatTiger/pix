@@ -39,10 +39,12 @@ export function createSessiondSessionsClient(
     async read(sessionId) {
       return client.call("sessions.read", { sessionId });
     },
-    async context(sessionId, leafId) {
+    async context(sessionId, options) {
       return client.call("sessions.context", {
         sessionId,
-        ...(leafId === undefined ? {} : { leafId }),
+        ...(options?.leafId === undefined ? {} : { leafId: options.leafId }),
+        ...(options?.before === undefined ? {} : { before: options.before }),
+        ...(options?.limit === undefined ? {} : { limit: options.limit }),
       });
     },
     async tree(sessionId) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { AgentMessage, ToolResultMessage } from "@fffattiger/pix-protocol";
 import { useVirtualList } from "@/lib/virtual-list";
@@ -13,6 +13,7 @@ import { useHttpClient } from "@/app/http-context";
 import { useRuntime } from "@/runtime";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useSessionTranscript } from "@/features/session-history/use-session-transcript";
 import { MessageView } from "@/components/chat/MessageView";
 import { ProcessGroup } from "@/components/chat/ProcessGroup";
 import { ChatMinimap, useMessageRefs } from "@/components/chat/ChatMinimap";
@@ -74,29 +75,28 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
   // the legacy behavior (live whenever attached) so standalone mounts keep
   // working. A non-selected attached session never contributes rows here.
   const isLive = (liveProp ?? runtime.attached) === true;
-  // Fetch session history only when the host actually serves it (sessiond
-  // connected) AND the selected session is not the live projection.
-  // Intentionally uses sessions.context only — never bash-output or /thinking.
-  const sessionsEnabled = Boolean(sessionId) && canBrowseSessions && !isLive;
-  const context = useQuery({ ...createQueryOptions(http).sessions.context(sessionId ?? ""), enabled: sessionsEnabled });
+  // Protocol v2: persisted history comes from the cursor-paginated context
+  // endpoint; committed live entries come from the SessionStore history layer.
+  // The single shared hook merges both by persisted entryId.
+  const transcript = useSessionTranscript({
+    sessionId: sessionId ?? null,
+    enabled: Boolean(sessionId) && canBrowseSessions,
+    live: isLive,
+  });
 
   const snapshot = isLive ? runtime.snapshot : null;
   const liveState = snapshot?.state;
   const running = isLive && (liveState?.isStreaming === true || liveState?.isPromptRunning === true);
 
   // Fail-closed: while the sessions capability is retracted the transcript
-  // never derives rows from cached context (stale history) and never trusts a
+  // never derives rows from cached history (stale) and never trusts a
   // late-arriving response after revocation. The empty-state JSX renders the
   // honest "history unavailable" message.
-  const entries = !isLive && canBrowseSessions ? context.data?.context.entries : undefined;
-  const messages = useMemo<readonly AgentMessage[]>(() => {
-    if (isLive) return runtime.messages;
-    return entries ? entries.map((entry) => entry.message) : [];
-  }, [isLive, runtime.messages, entries]);
-  const entryIds = useMemo<readonly string[]>(() => {
-    if (isLive) return runtime.messages.map(() => "");
-    return entries ? entries.map((entry) => entry.entryId) : [];
-  }, [isLive, runtime.messages, entries]);
+  const messages = useMemo<readonly AgentMessage[]>(
+    () => transcript.entries.map((entry) => entry.message),
+    [transcript.entries],
+  );
+  const entryIds = useMemo<readonly string[]>(() => transcript.entryIds, [transcript.entryIds]);
 
   const streamingPartial = isLive ? runtime.streamingPartial : null;
   const streamingMessage = (streamingPartial ?? null) as AgentMessage | null;
@@ -260,10 +260,62 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
     pinnedKeys: focusedRowId === null ? [] : [focusedRowId],
     // Streaming chat: auto-scroll to bottom while the user is pinned at the
     // bottom; scrolling up releases the pin (scroll-position preservation).
-    // Re-pin whenever the session or live/history mode changes.
+    // Re-pin whenever the session or live/history mode changes. Prepending
+    // older pages never jumps to bottom (the user is above the bottom then).
     stickToBottom: true,
     stickToBottomKey: `${effectiveSessionId ?? ""}:${isLive ? "live" : "history"}`,
   });
+
+  // Protocol v2 upward loading: a top sentinel observed with root = the scroll
+  // container and a ~200px top rootMargin triggers older-page fetches. Loads
+  // ONLY while older entries exist, nothing is already fetching, and the
+  // history generation is still current (the hook guards hasOlder/isFetching).
+  const topSentinelRef = useRef<HTMLDivElement | null>(null);
+  // ScrollHeight of the scroll container captured BEFORE an older page prepends;
+  // used to preserve the visual anchor (scroll-height delta fallback).
+  const prependHeightRef = useRef<number | null>(null);
+  const loadOlderRef = useRef(transcript.loadOlder);
+  loadOlderRef.current = transcript.loadOlder;
+  const hasOlderRef = useRef(transcript.hasOlder);
+  hasOlderRef.current = transcript.hasOlder;
+  const fetchingOlderRef = useRef(transcript.isFetchingOlder);
+  fetchingOlderRef.current = transcript.isFetchingOlder;
+
+  useEffect(() => {
+    const root = parentRef.current;
+    const sentinel = topSentinelRef.current;
+    if (!root || !sentinel || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting === true) {
+          // Load only when older exists, not already fetching, and the
+          // generation is still current (the hook's hasOlder is generation-now).
+          if (hasOlderRef.current && !fetchingOlderRef.current) {
+            prependHeightRef.current = root.scrollHeight;
+            loadOlderRef.current();
+          }
+        }
+      },
+      { root, rootMargin: "200px 0px 0px 0px", threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, []);
+
+  // Preserve the visual anchor across an older-page prepend: the scroll-height
+  // delta (the content above the viewport grew by exactly the prepended height).
+  const previousRowCountRef = useRef(rows.length);
+  useLayoutEffect(() => {
+    const el = parentRef.current;
+    const previous = previousRowCountRef.current;
+    previousRowCountRef.current = rows.length;
+    if (!el || prependHeightRef.current === null) return;
+    if (rows.length > previous) {
+      const delta = el.scrollHeight - prependHeightRef.current;
+      prependHeightRef.current = null;
+      if (delta > 0) el.scrollTop += delta;
+    }
+  }, [rows.length]);
 
   return (
     <div
@@ -286,6 +338,7 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
           if (!next || !next.closest("[data-row-id]")) setFocusedRowId(null);
         }}
       >
+        <div ref={topSentinelRef} data-upward-load-sentinel style={{ height: 1 }} />
         <div
           className="transcript-inner"
           style={virtualizer.windowed ? { height: virtualizer.totalSize } : undefined}
@@ -333,7 +386,7 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
         </div>
         {isLive ? null : !canBrowseSessions ? (
           <div className="transcript-empty">Session history unavailable until the runtime connects.</div>
-        ) : context.isError && sessionId ? (
+        ) : transcript.error && sessionId ? (
           <div className="transcript-empty">Session history unavailable</div>
         ) : rows.length === 0 ? (
           <div className="transcript-empty">

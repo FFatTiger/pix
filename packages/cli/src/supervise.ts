@@ -13,7 +13,12 @@ import {
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
 import { SessiondError } from "@fffattiger/pix-sessiond";
 import { readLocalSecret, UnsafeSecretError } from "./secret.js";
-import { pingSessiond } from "./probe.js";
+import {
+  isProtocolCurrent,
+  pingLegacyV1Sessiond,
+  pingSessiond,
+  shutdownLegacyV1Sessiond,
+} from "./probe.js";
 import { resolveSessiondBin } from "./paths.js";
 
 const READINESS_TIMEOUT_MS = 10_000;
@@ -161,7 +166,9 @@ export async function inspectSessiond(directory?: string): Promise<SessiondStatu
       endpoint,
     };
   }
-  const pingable = secret !== undefined ? await pingSessiond(endpoint, secret) : false;
+  const pingable = secret !== undefined
+    ? (await pingSessiond(endpoint, secret)) || (await pingLegacyV1Sessiond(endpoint, secret))
+    : false;
   // A live pid that is unreachable is authoritative until it dies or is
   // explicitly downed: never spawn a replacement over it.
   return {
@@ -243,9 +250,21 @@ async function waitForReadiness(paths: SessiondPaths, child: ChildProcess): Prom
 }
 
 /**
+ * Fixed operator instruction when a stale (protocol-v1) sessiond cannot be
+ * safely replaced. Never echoes the endpoint, pid, instance id or raw error.
+ */
+const STALE_DAEMON_INSTRUCTION =
+  "[pix] a sessiond with an incompatible protocol version is running and could not be safely replaced; stop it with `pix sessiond-down` (or stop the stale daemon process manually) and run `pix start` again";
+
+/**
  * Ensure a pingable sessiond is running for `directory`. Reuses an existing,
- * reachable instance; otherwise spawns a detached daemon and waits for it to
- * answer a ping. Never returns until the daemon is pingable or startup fails.
+ * reachable instance ONLY when it is authenticated AND speaks the current
+ * protocol version (Protocol v2 stale-daemon safety: a pingable v1 daemon is
+ * never silently reused). A pingable but incompatible instance is replaced by
+ * shutting down exactly the owned/authenticated instance (lock/instance
+ * identity verified) and spawning a fresh daemon; if it cannot be safely
+ * owned/shut down, startup fails closed with a fixed operator instruction and
+ * NEVER signals arbitrary PIDs.
  */
 export async function ensureSessiond(
   directory?: string,
@@ -254,10 +273,31 @@ export async function ensureSessiond(
   const { directory: dir, endpoint, paths } = locateSessiond(directory);
   const existing = await inspectSessiond(dir);
   if (existing.pingable) {
-    log(`reusing sessiond (pid ${existing.pid}) at ${dir}`);
-    return { directory: dir, endpoint, pid: existing.pid, instanceId: existing.instanceId, reused: true };
-  }
-  if (existing.obstructed) {
+    let secret: string | undefined;
+    try {
+      secret = await readLocalSecret(paths.secretFile);
+    } catch {
+      secret = undefined;
+    }
+    // Reuse only an authenticated, protocol-CURRENT daemon.
+    if (secret !== undefined && (await isProtocolCurrent(endpoint, secret))) {
+      log(`reusing sessiond (pid ${existing.pid}) at ${dir}`);
+      return { directory: dir, endpoint, pid: existing.pid, instanceId: existing.instanceId, reused: true };
+    }
+    // Pingable but stale (v1) or unverifiable. Safely shut down ONLY the
+    // owned/authenticated instance (shutdownSessiond verifies the strict lock
+    // identity and uses authenticated RPC — never arbitrary PIDs), then spawn a
+    // fresh protocol-current daemon below. A failed/obstructed shutdown fails
+    // closed with the fixed operator instruction.
+    const shutdown = await shutdownSessiond(dir);
+    if (shutdown.action === "obstructed" || shutdown.action === "failed") {
+      throw new Error(STALE_DAEMON_INSTRUCTION);
+    }
+    if (shutdown.action === "terminated") {
+      log(`replaced stale sessiond (pid ${existing.pid})`);
+    }
+    // Fall through to spawn a fresh daemon.
+  } else if (existing.obstructed) {
     // Fail closed: never spawn over a live listener without a lock, an unsafe
     // lock, or a live-but-unreachable pid.
     throw new Error(`[pix] cannot start sessiond: ${existing.obstruction ?? "sessiond state is unsafe"}`);
@@ -335,14 +375,34 @@ export async function shutdownSessiond(
   // a successful call means the transition was authorized and accepted.
   const rpcTimeoutMs = options.timeoutMs ?? SHUTDOWN_RPC_TIMEOUT_MS;
   const client = new SessiondRpcClient({ endpoint: paths.endpoint, secret, timeoutMs: rpcTimeoutMs });
+  let accepted = false;
+  let currentFailure: unknown;
   try {
     const result = await client.call("system.shutdown", { instanceId: status.instanceId });
-    if (result.accepted !== true) {
-      return { action: "failed", pid: status.pid, reason: "sessiond did not accept shutdown" };
-    }
+    accepted = result.accepted === true;
   } catch (error) {
+    currentFailure = error;
+  }
+  if (!accepted) {
+    // Coordinated v1→v2 rollout: a current client cannot schema-parse a v1
+    // control response. Retry exactly once with the narrow legacy envelope,
+    // still authenticated and fenced by the SAME strict-lock instance id.
+    accepted = await shutdownLegacyV1Sessiond(
+      paths.endpoint,
+      secret,
+      status.instanceId,
+      rpcTimeoutMs,
+    );
+  }
+  if (!accepted) {
     // Never echo the secret, endpoint, instance id, or a raw error/stack.
-    return { action: "failed", pid: status.pid, reason: sanitizeShutdownFailure(error) };
+    return {
+      action: "failed",
+      pid: status.pid,
+      reason: currentFailure === undefined
+        ? "sessiond did not accept shutdown"
+        : sanitizeShutdownFailure(currentFailure),
+    };
   }
   // Wait boundedly for the authenticated instance to exit: the owned socket and
   // lock disappear and the pid (final observation only) dies.

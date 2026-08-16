@@ -64,7 +64,7 @@ describe("independent interrupt wire path", () => {
   for (const type of ["abort", "abort_compaction", "abort_bash", "clear_queue"]) {
     it(`round-trips ${type} through sessiond and worker envelopes`, () => {
       const request = {
-        protocolVersion: 1,
+        protocolVersion: 2,
         id: `rpc-${type}`,
         method: "runtime.interrupt",
         params: { sessionId: "s-1", commandId: `cmd-${type}`, interrupt: { type } },
@@ -73,7 +73,7 @@ describe("independent interrupt wire path", () => {
       assert.equal(SessiondToWorkerMessageSchema.safeParse({
         type: "worker.interrupt",
         id: `worker-${type}`,
-        protocolVersion: 1,
+        protocolVersion: 2,
         payload: request.params,
       }).success, true);
       const result = { ok: false, type, error: error("unsupported_capability") };
@@ -95,7 +95,7 @@ describe("independent interrupt wire path", () => {
 
   it("rejects runtime.interrupt params missing the browser commandId", () => {
     assert.equal(SessiondRpcRequestSchema.safeParse({
-      protocolVersion: 1, id: "rpc-x", method: "runtime.interrupt",
+      protocolVersion: 2, id: "rpc-x", method: "runtime.interrupt",
       params: { sessionId: "s-1", interrupt: { type: "abort" } },
     }).success, false, "commandId is required on the interrupt RPC");
   });
@@ -174,7 +174,7 @@ describe("event vocabulary and cursor ownership", () => {
     prompt_error: { errorMessage: "x" },
     message_start: { streamId: "stream-1", messageId: "message-1", message: { role: "assistant", content: [{ type: "text", text: "x" }] } },
     message_update: { streamId: "stream-1", messageId: "message-1", delta: { role: "assistant", delta: { type: "text", text: "x" } } },
-    message_end: { streamId: "stream-1", messageId: "message-1", message: { role: "assistant", content: [], model: "m", provider: "p" } },
+    message_end: { streamId: "stream-1", messageId: "message-1", message: { role: "assistant", content: [], model: "m", provider: "p" }, entryId: "entry-1" },
     tool_execution_start: { toolCallId: "t", toolName: "bash" },
     tool_execution_update: { toolCallId: "t" },
     tool_execution_end: { toolCallId: "t", writtenFiles: ["/p/a"] },

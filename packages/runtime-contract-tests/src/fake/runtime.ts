@@ -174,7 +174,8 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
               toolCallIds: [],
             }
           : { active: false, phase: "idle" },
-      messages: session ? session.entries.map((entry) => entry.message) : [],
+      // Protocol v2: the snapshot is control/reconnect state only and never
+      // carries completed transcript history.
     };
   }
 
@@ -610,6 +611,15 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         completed: true,
         updateCount: 4,
       };
+      const bashMessage: AgentMessage = {
+        role: "bashExecution",
+        command: command.command,
+        output: "line 1\nline 2\n",
+        cancelled: true,
+        truncated: false,
+        excludeFromContext: command.excludeFromContext ?? false,
+      };
+      const bashEntry = this.store.appendEntry(sessionId, bashMessage);
       this.emit({
         type: "bash_update",
         sessionId,
@@ -617,6 +627,8 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         output: "line 1\nline 2\n",
         cancelled: true,
         truncated: false,
+        entryId: bashEntry.entryId,
+        ...(bashEntry.parentEntryId === undefined ? {} : { parentEntryId: bashEntry.parentEntryId }),
       });
       this.status = "idle";
       return {
@@ -631,6 +643,15 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       completed: true,
       updateCount: 4,
     };
+    const bashMessage: AgentMessage = {
+      role: "bashExecution",
+      command: command.command,
+      output: "line 1\nline 2\n",
+      exitCode: 0,
+      truncated: false,
+      excludeFromContext: command.excludeFromContext ?? false,
+    };
+    const bashEntry = this.store.appendEntry(sessionId, bashMessage);
     this.emit({
       type: "bash_update",
       sessionId,
@@ -638,6 +659,8 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       output: "line 1\nline 2\n",
       exitCode: 0,
       truncated: false,
+      entryId: bashEntry.entryId,
+      ...(bashEntry.parentEntryId === undefined ? {} : { parentEntryId: bashEntry.parentEntryId }),
     });
     this.status = "idle";
     return { ok: true, type: "bash" };
@@ -887,8 +910,8 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         timestamp: Date.now(),
       };
       this.emit({ type: "message_start", sessionId, message: { role: "toolResult", toolCallId, toolName } });
-      this.emit({ type: "message_end", sessionId, message: toolResult });
-      this.store.appendEntry(sessionId, toolResult);
+      const failEntry = this.store.appendEntry(sessionId, toolResult);
+      this.emit({ type: "message_end", sessionId, message: toolResult, entryId: failEntry.entryId, ...(failEntry.parentEntryId === undefined ? {} : { parentEntryId: failEntry.parentEntryId }) });
       await delay(STEP_MS);
       if (this.wasAborted()) return "aborted";
     } else if (this.tools.get("write") && !message.includes("no-write")) {
@@ -930,8 +953,8 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         timestamp: Date.now(),
       };
       this.emit({ type: "message_start", sessionId, message: { role: "toolResult", toolCallId, toolName } });
-      this.emit({ type: "message_end", sessionId, message: toolResult });
-      this.store.appendEntry(sessionId, toolResult);
+      const toolEntry = this.store.appendEntry(sessionId, toolResult);
+      this.emit({ type: "message_end", sessionId, message: toolResult, entryId: toolEntry.entryId, ...(toolEntry.parentEntryId === undefined ? {} : { parentEntryId: toolEntry.parentEntryId }) });
       await delay(STEP_MS);
       if (this.wasAborted()) return "aborted";
     }
@@ -957,8 +980,8 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
     };
     this.turnWrittenFiles = [];
     this.partialMessage = null;
-    this.emit({ type: "message_end", sessionId, message: assistantMessage });
-    this.store.appendEntry(sessionId, assistantMessage);
+    const assistantEntry = this.store.appendEntry(sessionId, assistantMessage);
+    this.emit({ type: "message_end", sessionId, message: assistantMessage, entryId: assistantEntry.entryId, ...(assistantEntry.parentEntryId === undefined ? {} : { parentEntryId: assistantEntry.parentEntryId }) });
     this.lastAssistantText = finalText;
     this.emit({ type: "agent_end", sessionId });
     this.emit({ type: "agent_settled", sessionId });

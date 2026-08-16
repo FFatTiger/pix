@@ -64,6 +64,12 @@ export function mapSessionCatalogError(error: unknown): HttpError {
   if (sessionErrorCode(error) === "not_found") {
     return new HttpError(404, "SESSION_NOT_FOUND", "Session not found");
   }
+  // Protocol v2: an invalid/absent history cursor fails closed with a FIXED
+  // 400 INVALID_HISTORY_CURSOR. The cursor value, branch/path and any backend
+  // text are never echoed.
+  if (sessionErrorCode(error) === "invalid_input") {
+    return new HttpError(400, "INVALID_HISTORY_CURSOR", "History cursor is invalid");
+  }
   return new HttpError(503, "SESSIONS_UNAVAILABLE", "Session history is unavailable");
 }
 
@@ -217,7 +223,7 @@ function requireSessionId(id: string): string {
 
 // Structural views over the already-parsed sessiond results (no protocol import).
 interface SessionListResult { sessions: Record<string, unknown>[] }
-interface SessionContextResult { sessionId: string; leafId?: string; entries: unknown[] }
+interface SessionContextResult { sessionId: string; leafId?: string; entries: unknown[]; pageInfo: { hasMore: boolean; nextCursor?: string } }
 
 export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps): void {
   app.get("/v1/sessions", async (c) => {
@@ -255,14 +261,31 @@ export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps
     const sessionId = requireSessionId(c.req.param("id"));
     const leafIdRaw = c.req.query("leafId");
     const leafId = leafIdRaw && leafIdRaw.length > 0 ? leafIdRaw : undefined;
+    const beforeRaw = c.req.query("before");
+    const before = beforeRaw && beforeRaw.length > 0 ? beforeRaw : undefined;
+    const limit = boundedInt(c.req.query("limit"), "limit", 1, 200);
+    const params: { leafId?: string; before?: string; limit?: number } = {};
+    if (leafId !== undefined) params.leafId = leafId;
+    if (before !== undefined) params.before = before;
+    if (limit !== undefined) params.limit = limit;
     let result: unknown;
     try {
-      result = await deps.client.context(sessionId, leafId);
+      result = await deps.client.context(sessionId, params);
     } catch (error) {
       throw mapSessionCatalogError(error);
     }
     const parsed = result as SessionContextResult;
-    return c.json({ context: { ...parsed, entries: [...parsed.entries] } });
+    return c.json({
+      context: {
+        sessionId: parsed.sessionId,
+        ...(parsed.leafId === undefined ? {} : { leafId: parsed.leafId }),
+        entries: [...parsed.entries],
+        pageInfo: {
+          hasMore: parsed.pageInfo.hasMore,
+          ...(parsed.pageInfo.nextCursor === undefined ? {} : { nextCursor: parsed.pageInfo.nextCursor }),
+        },
+      },
+    });
   });
 
   // Read-only normalized branch tree (BranchNavigator slice). Strict GET with

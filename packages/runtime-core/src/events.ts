@@ -61,10 +61,18 @@ export interface MessageUpdateEvent extends RuntimeEventBase {
   message: StreamingAgentMessage;
 }
 
-/** message_end carries a complete message only. */
+/**
+ * message_end carries a complete message plus the canonical persisted identity
+ * of the just-committed leaf entry (Protocol v2). The adapter resolves
+ * `entryId`/`parentEntryId` against the backend's committed leaf BEFORE
+ * publishing; an unkeyed completion is never emitted (fail closed).
+ */
 export interface MessageEndEvent extends RuntimeEventBase {
   type: "message_end";
   message: AgentMessage;
+  /** Canonical persisted entryId of the just-committed entry. */
+  entryId: string;
+  parentEntryId?: string;
 }
 
 export interface ToolExecutionStartEvent extends RuntimeEventBase {
@@ -149,6 +157,12 @@ export interface BashUpdateEvent extends RuntimeEventBase {
   truncated?: boolean;
   fullOutputPath?: string;
   excludeFromContext?: boolean;
+  /**
+   * Canonical persisted entryId of the committed bash entry. Terminal events
+   * (exitCode or cancelled present) carry it; delta-only events do not.
+   */
+  entryId?: string;
+  parentEntryId?: string;
 }
 
 export interface ExtensionErrorEvent extends RuntimeEventBase {

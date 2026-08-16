@@ -50,7 +50,7 @@ describe("StatefulRuntimeMapper + sessiond projection oracle", () => {
       model: "m1",
       provider: "p1",
     };
-    const end = mapper.mapEvent({ type: "message_end", sessionId: SESSION, message: complete });
+    const end = mapper.mapEvent({ type: "message_end", sessionId: SESSION, message: complete, entryId: "entry-1" });
     assert.equal(end.length, 1);
     assert.equal(end[0]?.type, "message_end");
     events.push(...end);
@@ -58,8 +58,11 @@ describe("StatefulRuntimeMapper + sessiond projection oracle", () => {
 
     const snapshot = oracle.snapshot();
     assert.equal(snapshot.streaming!.active, false);
-    assert.equal(snapshot.messages?.length, 1);
-    assert.equal(textOf(snapshot.messages![0] as unknown as StreamLike), "Let me planThe answer is 42");
+    // Protocol v2: message_end advances the authoritative leaf/count; it never
+    // appends transcript history onto the snapshot.
+    assert.equal(snapshot.state.messageCount, 1);
+    assert.equal(snapshot.state.leafId, "entry-1");
+    assert.equal("messages" in snapshot, false);
 
     // The full lifecycle must satisfy the frozen StreamingMessageLifecycleSchema.
     const lifecycle = StreamingMessageLifecycleSchema.safeParse(events);
@@ -111,6 +114,7 @@ describe("StatefulRuntimeMapper + sessiond projection oracle", () => {
       type: "message_end",
       sessionId: SESSION,
       message: { role: "assistant", content: [{ type: "text", text: "done" }], model: "m", provider: "p" },
+      entryId: "entry-1",
     });
     assert.equal(events.length, 2);
     assert.equal(events[0]?.type, "message_start");

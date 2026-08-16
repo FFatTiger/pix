@@ -65,7 +65,7 @@ describe("core-to-protocol DTO mapping", () => {
 });
 
 describe("snapshot-mapper", () => {
-  it("injects cwd/projectRoot, maps state/capabilities/messages, and passes the schema", () => {
+  it("injects cwd/projectRoot, maps state/capabilities, passes the schema, and never carries history", () => {
     const coreSnapshot: RuntimeSnapshot = {
       sessionId: "s1",
       state: {
@@ -76,9 +76,9 @@ describe("snapshot-mapper", () => {
         isCompacting: false,
         model: null,
         messageCount: 1,
+        leafId: "entry-1",
       },
       capabilities: createCapabilitySet(["runtime.prompt", "runtime.abort"]),
-      messages: [{ role: "assistant", content: [{ type: "text", text: "hi" }], model: "m", provider: "p" }],
     };
     const mapper = new SnapshotMapper(new StatefulRuntimeMapper());
     const mapped = mapper.map(coreSnapshot, { cwd: "/w", projectRoot: "/w" });
@@ -87,6 +87,9 @@ describe("snapshot-mapper", () => {
     assert.equal(mapped.cwd, "/w");
     assert.equal(mapped.projectRoot, "/w");
     assert.equal(mapped.sessionId, "s1");
+    assert.equal(mapped.state.leafId, "entry-1");
+    // Protocol v2: the mapped snapshot carries no transcript history.
+    assert.equal("messages" in mapped, false);
   });
 
   it("coordinates streaming ids with the live stateful mapper", () => {

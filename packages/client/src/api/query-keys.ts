@@ -22,6 +22,12 @@ export const queryKeys = {
     byId: (id: string) => ["pix", "sessions", "session", id] as const,
     detail: (id: string) => ["pix", "sessions", "session", id, "detail"] as const,
     context: (id: string) => ["pix", "sessions", "session", id, "context"] as const,
+    /**
+     * Protocol v2 transcript history: keyed by (session, historyGeneration,
+     * anchor leaf) so a fresh attach/rebase invalidates and refetches the
+     * first page. Older pages use the pinned resolved leaf + `before` cursor.
+     */
+    history: (id: string, generation: number, anchor: string | null) => ["pix", "sessions", "session", id, "history", generation, anchor ?? null] as const,
     tree: (id: string) => ["pix", "sessions", "session", id, "tree"] as const,
     thinking: (id: string, entryId: string) => ["pix", "sessions", "session", id, "thinking", entryId] as const,
     bash: (id: string, entryId: string) => ["pix", "sessions", "session", id, "bash", entryId] as const,
@@ -85,7 +91,7 @@ export function createQueryOptions(http: HttpClient) {
       // per request. The cold-open all-project request still fires on first mount.
       list: (cwd?: string) => queryOptions({ queryKey: queryKeys.sessions.list(cwd), queryFn: ({ signal }) => sessions.list({ ...(cwd === undefined ? {} : { cwd }), signal }), staleTime: 30_000 }),
       detail: (id: string) => queryOptions({ queryKey: queryKeys.sessions.detail(id), queryFn: ({ signal }) => sessions.detail(id, signal), enabled: Boolean(id) }),
-      context: (id: string) => queryOptions({ queryKey: queryKeys.sessions.context(id), queryFn: ({ signal }) => sessions.context(id, signal), enabled: Boolean(id) }),
+      context: (id: string) => queryOptions({ queryKey: queryKeys.sessions.context(id), queryFn: ({ signal }) => sessions.context(id, { signal }), enabled: Boolean(id) }),
       // Branch tree: isolated per-session key (never shared with context/list),
       // history-mode read only — live leaf selection happens client-side.
       tree: (id: string) => queryOptions({ queryKey: queryKeys.sessions.tree(id), queryFn: ({ signal }) => sessions.tree(id, signal), enabled: Boolean(id) }),

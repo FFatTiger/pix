@@ -27,7 +27,7 @@ const attachResponse = (sessionId) => ({
 
 const hello = JSON.stringify({
   type: "handshake",
-  payload: { protocolVersion: 1, client: { shell: "web", platform: "mac" }, features: [] },
+  payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [] },
 });
 
 // --- fakes ----------------------------------------------------------------
@@ -153,12 +153,12 @@ async function connect(gateway) {
 
 // --- tests ----------------------------------------------------------------
 
-test("handshake valid → handshake_ack with protocolVersion 1 and empty capabilities", async () => {
+test("handshake valid → handshake_ack with protocolVersion 2 and empty capabilities", async () => {
   const gw = makeGateway(new FakeClient());
   const session = await connect(gw);
   const ack = session.jsonAt(0);
   assert.equal(ack.type, "handshake_ack");
-  assert.equal(ack.payload.protocolVersion, 1);
+  assert.equal(ack.payload.protocolVersion, 2);
   assert.equal(ack.payload.host.mode, "local");
   assert.deepEqual(ack.payload.host.capabilities, []);
   assert.equal(ack.payload.sessionSnapshotSupport, true);
@@ -179,7 +179,7 @@ test("handshake rejects bad JSON / version mismatch with close 1008", async () =
 
 const repeatHello = JSON.stringify({
   type: "handshake",
-  payload: { protocolVersion: 1, client: { shell: "web", platform: "mac" }, features: [] },
+  payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [] },
 });
 
 test("capability resolver: healthy sessiond → handshake advertises [\"agent\"]", async () => {

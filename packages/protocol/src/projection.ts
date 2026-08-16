@@ -89,10 +89,17 @@ function applyEventToSnapshot(snapshot: RuntimeSnapshot, event: RuntimeEventData
     case "message_end": {
       const stream = snapshot.streaming;
       if (!stream?.active || stream.streamId !== event.streamId || stream.messageId !== event.messageId) throw new Error("stale or uncorrelated stream end");
-      snapshot.messages = [...(snapshot.messages ?? []), clone(event.message)];
+      // Protocol v2: the snapshot is control/reconnect state only. A completion
+      // advances the authoritative leaf to the committed entry, increments the
+      // message count, and clears the stream — it does NOT append transcript
+      // history (persisted history comes from the cursor-paginated catalog).
+      // entryId is REQUIRED on the wire (the adapter resolves the committed
+      // leaf before publishing); the reducer enforces it fail-closed.
+      if (event.entryId === undefined) throw new Error("message_end requires a committed entryId");
+      state.leafId = event.entryId;
+      state.messageCount += 1;
       snapshot.streaming = { active: false, phase: "idle" };
       state.isStreaming = false;
-      state.messageCount = snapshot.messages.length;
       break;
     }
     case "queue_update":
@@ -137,6 +144,14 @@ function applyEventToSnapshot(snapshot: RuntimeSnapshot, event: RuntimeEventData
       };
       state.isBashRunning = !completed;
       snapshot.streaming = completed ? { active: false, phase: "idle" } : { active: true, phase: "bash" };
+      // Protocol v2: a TERMINAL bash_update carries the persisted bash entry
+      // identity. The reducer advances the leaf to the committed entry and
+      // increments the message count so leaf/count converge with the persisted
+      // catalog. Delta-only events (not completed) advance nothing.
+      if (completed && event.entryId !== undefined) {
+        state.leafId = event.entryId;
+        state.messageCount += 1;
+      }
       break;
     }
     case "compaction_start":

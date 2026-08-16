@@ -42,7 +42,13 @@ export const urls = {
   sessions: {
     list: (cwd?: string) => resource("sessions", { cwd }),
     byId: (id: string) => resource(`sessions/${encodedSegment(id)}`),
-    context: (id: string) => resource(`sessions/${encodedSegment(id)}/context`),
+    context: (id: string, params?: { leafId?: string; before?: string; limit?: number }) => {
+      const query: { leafId?: string; before?: string; limit?: number } = {};
+      if (params?.leafId !== undefined) query.leafId = params.leafId;
+      if (params?.before !== undefined) query.before = params.before;
+      if (params?.limit !== undefined) query.limit = params.limit;
+      return resource(`sessions/${encodedSegment(id)}/context`, query);
+    },
     /** Read-only normalized branch tree (no query surface). */
     tree: (id: string) => resource(`sessions/${encodedSegment(id)}/tree`),
     thinking: (id: string, entryId: string) => resource(`sessions/${encodedSegment(id)}/entries/${encodedSegment(entryId)}/thinking`),

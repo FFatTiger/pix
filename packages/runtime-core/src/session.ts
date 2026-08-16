@@ -40,10 +40,19 @@ export interface SessionEntry {
   message: AgentMessage;
 }
 
+export interface SessionContextPageInfo {
+  /** True when older entries exist before this page (before the first entry). */
+  hasMore: boolean;
+  /** Stable projected entryId cursor for the next older page (absent when !hasMore). */
+  nextCursor?: string;
+}
+
 export interface SessionContext {
   sessionId: string;
   leafId?: string;
   entries: readonly SessionEntry[];
+  /** Cursor-pagination info (Protocol v2). Entries are chronological per page. */
+  pageInfo: SessionContextPageInfo;
 }
 
 /* ------------------------------------------------------------------ */

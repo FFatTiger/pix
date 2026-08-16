@@ -186,7 +186,7 @@ export class StatefulRuntimeMapper {
       case "message_update":
         return this.handleUpdate(sessionId, event.message, event.ts);
       case "message_end":
-        return this.handleEnd(sessionId, event.message, event.ts);
+        return this.handleEnd(sessionId, event.message, event.entryId, event.parentEntryId, event.ts);
       case "tool_execution_start":
         return [
           {
@@ -299,6 +299,8 @@ export class StatefulRuntimeMapper {
             ...(event.truncated === undefined ? {} : { truncated: event.truncated }),
             ...(event.fullOutputPath === undefined ? {} : { fullOutputPath: event.fullOutputPath }),
             ...(event.excludeFromContext === undefined ? {} : { excludeFromContext: event.excludeFromContext }),
+            ...(event.entryId === undefined ? {} : { entryId: event.entryId }),
+            ...(event.parentEntryId === undefined ? {} : { parentEntryId: event.parentEntryId }),
             ...ts(event),
           },
         ];
@@ -397,7 +399,7 @@ export class StatefulRuntimeMapper {
     });
   }
 
-  private handleEnd(sessionId: string, message: AgentMessage, eventTs: number | undefined): RuntimeEventData[] {
+  private handleEnd(sessionId: string, message: AgentMessage, entryId: string, parentEntryId: string | undefined, eventTs: number | undefined): RuntimeEventData[] {
     const current = this.stream;
     const out: RuntimeEventData[] = [];
     if (current === null || current.role !== message.role) {
@@ -427,6 +429,8 @@ export class StatefulRuntimeMapper {
         streamId: startIds.streamId,
         messageId: startIds.messageId,
         message: mapAgentMessage(message),
+        entryId,
+        ...(parentEntryId === undefined ? {} : { parentEntryId }),
       };
       if (eventTs !== undefined) (end as { ts?: number }).ts = eventTs;
       this.stream = null;
@@ -439,6 +443,8 @@ export class StatefulRuntimeMapper {
       streamId: current.streamId,
       messageId: current.messageId,
       message: mapAgentMessage(message),
+      entryId,
+      ...(parentEntryId === undefined ? {} : { parentEntryId }),
       ...(eventTs === undefined ? {} : { ts: eventTs }),
     };
     this.stream = null;

@@ -35,7 +35,14 @@ export interface DriverState {
    * the authoritative leaf without a separate lookup.
    */
   leafId?: string;
-  messages: readonly unknown[];
+  /**
+   * Total committed message entries (user/assistant/toolResult/bashExecution)
+   * derived WITHOUT mapping the full message history (Protocol v2: snapshots
+   * must not carry transcript history). Uses the backend session stats when
+   * available; falls back to the in-memory message array length only when the
+   * backend exposes no stats.
+   */
+  messageCount: number;
   tools: readonly ToolInfo[];
   contextUsage?: { percent: number; contextWindow?: number; tokens?: number } | null;
   steering: readonly { message: string; images?: readonly ImageAttachment[] }[];
@@ -87,6 +94,22 @@ export interface PiRuntimeDriver {
   clearQueue(): void;
   setTools(toolNames: readonly string[], includeExtensionTools: boolean): void;
   reload(): Promise<readonly RuntimeCapability[]>;
+  /**
+   * Resolve the CURRENTLY committed leaf entry identity (Protocol v2). Returns
+   * undefined when the leaf is not a committed message-like entry matching the
+   * expected role (no entries yet, or a structural entry like a model change
+   * sits at the leaf — meaning the correlation cannot be made and the caller
+   * must fail closed). `expectedRole` is the message role being completed:
+   * `custom` → custom_message entry, otherwise a `message` entry (including
+   * bashExecution). Structural identity only — never derived by
+   * content/timestamp matching.
+   */
+  resolveLeafEntry(expectedRole?: string): { entryId: string; parentEntryId?: string } | undefined;
+  /** Resolve the exact committed tail entries for deferred same-turn bash flushes. */
+  resolveLeafEntries?(
+    expectedRole: string,
+    count: number,
+  ): readonly { entryId: string; parentEntryId?: string }[] | undefined;
   bash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void): Promise<{
     output: string;
     exitCode?: number;

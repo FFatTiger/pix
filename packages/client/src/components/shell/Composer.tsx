@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { useQuery } from "@tanstack/react-query";
 import type { SlashCommandInfo, ThinkingLevel, ToolInfo } from "@fffattiger/pix-protocol";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
+import { useSessionTranscript } from "@/features/session-history/use-session-transcript";
 import { useRuntime } from "@/runtime";
 import { useHttpClient } from "@/app/http-context";
 import { createQueryOptions } from "@/api/query-keys";
@@ -231,20 +232,33 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
     ? state?.leafId ?? treeQuery.data?.tree.currentLeafId ?? null
     : treeQuery.data?.tree.currentLeafId ?? null;
 
+  // Protocol v2: rows/input-history/labels/stats/minimap share the same merged
+  // transcript (persisted pages + committed live entries by entryId).
+  const transcript = useSessionTranscript({
+    sessionId: sessionId ?? null,
+    enabled: true,
+    live,
+  });
+  const transcriptMessages = useMemo(
+    () => transcript.entries.map((entry) => entry.message),
+    [transcript.entries],
+  );
+  const transcriptEntryIds = transcript.entryIds;
+
   const toolResults = useMemo(() => {
     const map = new Map<string, import("@fffattiger/pix-protocol").ToolResultMessage>();
-    for (const msg of runtime.messages) {
+    for (const msg of transcriptMessages) {
       if (msg.role === "toolResult") map.set(msg.toolCallId, msg);
     }
     return map;
-  }, [runtime.messages]);
+  }, [transcriptMessages]);
 
-  const entryIds = useMemo(() => runtime.messages.map(() => ""), [runtime.messages]);
+  const entryIds = useMemo(() => transcriptEntryIds, [transcriptEntryIds]);
 
   const stepLabel = useMemo(
     () =>
       buildStepLabel({
-        messages: runtime.messages,
+        messages: transcriptMessages,
         entryIds,
         streamingMessage: runtime.streamingPartial as import("@fffattiger/pix-protocol").AgentMessage | null,
         running: promptRunning,
@@ -253,10 +267,10 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
         toolResults,
         t,
       }),
-    [runtime.messages, runtime.streamingPartial, runtime.snapshot, promptRunning, isCompacting, toolResults, t, entryIds],
+    [transcriptMessages, runtime.streamingPartial, runtime.snapshot, promptRunning, isCompacting, toolResults, t, entryIds],
   );
 
-  const inputHistory = useMemo(() => getUserInputTexts(runtime.messages), [runtime.messages]);
+  const inputHistory = useMemo(() => getUserInputTexts(transcriptMessages), [transcriptMessages]);
 
   const queuedMessages = useMemo<QueuedMessagesView | null>(
     () => (live ? toQueuedMessagesView(state?.queuedMessages) : null),
@@ -293,8 +307,8 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
   }, [live, hasStats, sessionId, statsMessageCount, statsPendingCount, runtime]);
 
   const sessionStats = useMemo(
-    () => (live && state ? buildSessionStatsView(state, runtime.messages, hasStats ? sessionStatsData : null) : null),
-    [live, state, runtime.messages, hasStats, sessionStatsData],
+    () => (live && state ? buildSessionStatsView(state, transcriptMessages, hasStats ? sessionStatsData : null) : null),
+    [live, state, transcriptMessages, hasStats, sessionStatsData],
   );
   // Context usage prefers the real stats projection; falls back to the snapshot state.
   const contextUsage = useMemo(

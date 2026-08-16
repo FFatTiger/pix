@@ -4,7 +4,7 @@ import { FakeWebSocket } from "./testing/harness";
 import type { ClientIdentity, HostCapability, ProtocolHandshakeResponse, WsHostMessage } from "@fffattiger/pix-protocol";
 
 function ackPayload(caps: HostCapability[] = ["agent"]): ProtocolHandshakeResponse {
-  return { protocolVersion: 1, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true };
+  return { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true };
 }
 
 interface Recorded {

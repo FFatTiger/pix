@@ -21,6 +21,7 @@ function ctx(entries: SessionEntry[], overrides: Partial<SessionContext> = {}): 
   return {
     sessionId: "sess-1",
     entries,
+    pageInfo: { hasMore: false },
     ...overrides,
   };
 }

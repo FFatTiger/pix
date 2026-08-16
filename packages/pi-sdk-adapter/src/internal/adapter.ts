@@ -89,6 +89,16 @@ interface PendingUi {
   driver: DriverUiRequest;
 }
 
+interface PendingBashTerminal {
+  command: string;
+  output?: string;
+  exitCode?: number;
+  cancelled?: boolean;
+  truncated?: boolean;
+  fullOutputPath?: string;
+  excludeFromContext?: boolean;
+}
+
 export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   readonly identity: RuntimeIdentity;
   private capabilities: RuntimeCapabilitySet;
@@ -113,6 +123,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private writtenFiles = new Set<string>();
   private pendingToolWrites = new Map<string, { toolName: string; path: string }>();
   private completedToolCalls = new Set<string>();
+  private pendingBashTerminals: PendingBashTerminal[] = [];
   private thinkingPinned = false;
   private pinnedThinkingLevel: RuntimeState["thinkingLevel"] | undefined;
   private queued: QueuedMessages = { steering: [], followUp: [] };
@@ -157,7 +168,10 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
             phase: state.isCompacting ? "compacting" : state.isBashRunning ? "bash" : "streaming",
           }
         : { active: false, phase: "idle" },
-      messages: this.driver.getState().messages.map((message) => mapMessage(message) as never),
+      // Protocol v2: the snapshot is control/reconnect state only — it NEVER
+      // carries completed transcript history (a huge JSONL would blow the
+      // Worker 2 MiB / Host ~4 MiB frame budgets during primeProjection).
+      // Persisted history comes from the cursor-paginated session context.
     };
   }
 
@@ -321,7 +335,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         }
         case "get_session_stats": {
           const stats = this.driver.getState().sessionStats;
-          return { ok: true, type: "get_session_stats", stats: stats ?? { messageCount: this.driver.getState().messages.length } };
+          return { ok: true, type: "get_session_stats", stats: stats ?? { messageCount: this.driver.getState().messageCount } };
         }
         case "get_last_assistant_text": return { ok: true, type: "get_last_assistant_text", text: this.driver.getState().lastAssistantText ?? "" };
         case "set_auto_compaction": this.driver.setAutoCompaction(command.enabled); this.emitState(); return { ok: true, type: "set_auto_compaction" };
@@ -355,6 +369,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         case "extension_ui_response": return this.resolveUi(command);
         case "extension_ui_input": return this.inputUi(command);
         case "bash": {
+          const deferCommitUntilSettled = this.driver.getState().isStreaming;
           // R0 frozen bash semantics:
           //  - `bash_update.output` events carry a DELTA chunk (the original
           //    chunk), never the accumulated value; the snapshot/state
@@ -366,6 +381,13 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           //    snapshot stays authoritative (fail-closed). This guarantees a
           //    consumer concatenating `bash_update.output` deltas never sees
           //    the accumulated output spliced more than once.
+          //  - Protocol v2: the terminal bash_update (exitCode/cancelled)
+          //    carries the persisted entry identity so the client can create
+          //    one committed live SessionEntry from the cumulative bash state.
+          //    The committed identity is resolved AFTER the driver settles (the
+          //    SDK appends via recordBashResult inside executeBash); a failure
+          //    to correlate stops the terminal publication fail-closed with a
+          //    sanitized runtime error.
           this.bash = { command: command.command, output: "", excludeFromContext: command.excludeFromContext ?? false, truncated: false, cancelled: false, completed: false, updateCount: 0 };
           const result = await this.driver.bash(command.command, command.excludeFromContext ?? false, (chunk) => {
             const current = this.bash;
@@ -407,9 +429,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
                 completed: true,
                 updateCount: prior.updateCount + 1,
               };
-          this.emit({
-            type: "bash_update",
-            sessionId: this.identity.sessionId,
+          const terminal: PendingBashTerminal = {
             command: command.command,
             ...(suffix.length > 0 ? { output: suffix } : {}),
             ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
@@ -417,7 +437,15 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
             ...(result.truncated === undefined ? {} : { truncated: result.truncated }),
             ...(result.fullOutputPath === undefined ? {} : { fullOutputPath: result.fullOutputPath }),
             ...(command.excludeFromContext === undefined ? {} : { excludeFromContext: command.excludeFromContext }),
-          });
+          };
+          if (deferCommitUntilSettled) {
+            // The SDK queues bash results while an agent turn is active and
+            // appends them only immediately before agent_settled. Publishing a
+            // terminal event now would bind it to the wrong current leaf.
+            this.pendingBashTerminals.push(terminal);
+          } else {
+            this.publishCommittedBashTerminals([terminal]);
+          }
           if (result.cancelled) return this.failure("bash", makeRuntimeError("interrupted", "bash aborted", { retryable: true }));
           return { ok: true, type: "bash" };
         }
@@ -619,7 +647,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       autoCompactionEnabled: state.autoCompactionEnabled,
       autoRetryEnabled: state.autoRetryEnabled,
       model: state.model,
-      messageCount: state.messages.length,
+      messageCount: state.messageCount,
       pendingMessageCount: state.pendingMessageCount,
       queuedMessages,
       ...(state.contextUsage === undefined ? {} : { contextUsage: state.contextUsage }),
@@ -642,7 +670,18 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     switch (type) {
       case "agent_start": this.emit({ type, sessionId }); return;
       case "agent_end": this.clearPendingToolWrites(); this.emit({ type, sessionId }); return;
-      case "agent_settled": this.emit({ type, sessionId }); return;
+      case "agent_settled": {
+        // SDK _runAgentPrompt flushes queued same-turn bash messages before it
+        // emits agent_settled, so their exact consecutive tail identities are
+        // authoritative now (but were not available at bash command return).
+        if (this.pendingBashTerminals.length > 0) {
+          const pending = this.pendingBashTerminals;
+          this.pendingBashTerminals = [];
+          this.publishCommittedBashTerminals(pending);
+        }
+        this.emit({ type, sessionId });
+        return;
+      }
       case "prompt_done": return;
       case "prompt_error": {
         const error = mapDriverError(raw.error ?? raw.errorMessage ?? "prompt failed");
@@ -669,7 +708,35 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       case "message_end": {
         const message = mapMessage(raw.message) as never;
         this.partialMessage = null;
-        this.emit({ type, sessionId, message });
+        // Protocol v2: the SDK emits message_end BEFORE synchronously appending
+        // the persisted entry. Defer the canonical completion to a microtask so
+        // the just-committed leaf entry is resolvable, resolve the EXACT
+        // persisted entryId/parentEntryId, and fail closed with a sanitized
+        // runtime error (never an unkeyed completion) when the correlation
+        // cannot be made. The persisted entry is the ONLY completion identity;
+        // content/timestamp/array-overlap matching is never used.
+        const role = typeof raw.message === "object" && raw.message !== null
+          ? String((raw.message as Record<string, unknown>).role ?? "")
+          : "";
+        void Promise.resolve().then(() => {
+          if (this.closed) return;
+          const committed = this.driver.resolveLeafEntry(role);
+          if (committed === undefined) {
+            this.emit({
+              type: "runtime_error",
+              sessionId,
+              error: makeRuntimeError("internal", "message completion could not be correlated to a persisted entry", { retryable: true }),
+            });
+            return;
+          }
+          this.emit({
+            type,
+            sessionId,
+            message,
+            entryId: committed.entryId,
+            ...(committed.parentEntryId === undefined ? {} : { parentEntryId: committed.parentEntryId }),
+          });
+        });
         return;
       }
       case "tool_execution_start": {
@@ -852,6 +919,35 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       }
       return `/${segments.join("/")}`;
     } catch { return undefined; }
+  }
+
+  private publishCommittedBashTerminals(terminals: readonly PendingBashTerminal[]): void {
+    if (terminals.length === 0) return;
+    const commits = terminals.length === 1
+      ? (() => {
+          const commit = this.driver.resolveLeafEntry("bashExecution");
+          return commit === undefined ? undefined : [commit];
+        })()
+      : this.driver.resolveLeafEntries?.("bashExecution", terminals.length);
+    if (commits === undefined || commits.length !== terminals.length) {
+      this.emit({
+        type: "runtime_error",
+        sessionId: this.identity.sessionId,
+        error: makeRuntimeError("internal", "bash completion could not be correlated to a persisted entry", { retryable: true }),
+      });
+      return;
+    }
+    for (let index = 0; index < terminals.length; index += 1) {
+      const terminal = terminals[index]!;
+      const committed = commits[index]!;
+      this.emit({
+        type: "bash_update",
+        sessionId: this.identity.sessionId,
+        ...terminal,
+        entryId: committed.entryId,
+        ...(committed.parentEntryId === undefined ? {} : { parentEntryId: committed.parentEntryId }),
+      });
+    }
   }
 
   private clearPendingToolWrites(): void { this.pendingToolWrites.clear(); }

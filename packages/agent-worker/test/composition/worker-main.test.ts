@@ -149,7 +149,7 @@ describe("worker-main composition (in-process)", () => {
         if (command.type === "prompt") {
           runtime.emit({ type: "agent_start", sessionId: "sess-real" });
           runtime.emit({ type: "message_update", sessionId: "sess-real", message: { role: "assistant", content: [{ type: "text", text: "hi" }] } });
-          runtime.emit({ type: "message_end", sessionId: "sess-real", message: { role: "assistant", content: [{ type: "text", text: "hi" }], model: "m", provider: "p" } });
+          runtime.emit({ type: "message_end", sessionId: "sess-real", message: { role: "assistant", content: [{ type: "text", text: "hi" }], model: "m", provider: "p" }, entryId: "entry-1" });
           return { ok: true, type: "prompt" };
         }
         return { ok: true, type: command.type } as CoreRuntimeCommandResult;
@@ -167,13 +167,13 @@ describe("worker-main composition (in-process)", () => {
       for (const line of chunk.split("\n").filter((l) => l.length > 0)) frames.push(JSON.parse(line));
     });
 
-    writeFrame(stdin, { type: "worker.init", id: "init-1", protocolVersion: 1, payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" } });
+    writeFrame(stdin, { type: "worker.init", id: "init-1", protocolVersion: 2, payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" } });
     await tick();
     await tick();
     assert.ok(frames.some((f) => f.type === "worker.sessionDiscovered"));
     assert.ok(frames.some((f) => f.type === "worker.ready"));
 
-    writeFrame(stdin, { type: "worker.command", id: "wire-1", protocolVersion: 1, payload: { sessionId: "sess-real", command: { commandId: "cmd-1", type: "prompt", message: "hi" } } });
+    writeFrame(stdin, { type: "worker.command", id: "wire-1", protocolVersion: 2, payload: { sessionId: "sess-real", command: { commandId: "cmd-1", type: "prompt", message: "hi" } } });
     await tick();
     await tick();
     await tick();
@@ -183,7 +183,7 @@ describe("worker-main composition (in-process)", () => {
     assert.equal(results.length, 1);
     assert.equal(results[0]!.payload.result.commandId, "cmd-1");
 
-    writeFrame(stdin, { type: "worker.shutdown", id: "sh-1", protocolVersion: 1, payload: { reason: "user" } });
+    writeFrame(stdin, { type: "worker.shutdown", id: "sh-1", protocolVersion: 2, payload: { reason: "user" } });
     const code = await handle.closed;
     assert.equal(code, 0);
   });
@@ -238,7 +238,7 @@ describe("worker-main composition (real child process)", () => {
     writeFrame(child.stdin, {
       type: "worker.init",
       id: "init-1",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
     });
 
@@ -251,7 +251,7 @@ describe("worker-main composition (real child process)", () => {
     writeFrame(child.stdin, {
       type: "worker.command",
       id: "wire-1",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: { sessionId: "sess-created-real", command: { commandId: "cmd-1", type: "prompt", message: "hi" } },
     });
     const eventFrames = await Promise.all([
@@ -271,7 +271,7 @@ describe("worker-main composition (real child process)", () => {
     writeFrame(child.stdin, {
       type: "worker.getSnapshot",
       id: "snap-1",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: { sessionId: "sess-created-real" },
     });
     const snapshot = await ndjson.waitFor((f) => f.type === "worker.snapshot");
@@ -300,7 +300,7 @@ describe("worker-main composition (real child process)", () => {
     writeFrame(child.stdin, {
       type: "worker.init",
       id: "init-live",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
     });
     await ndjson.waitFor((f) => f.type === "worker.ready");
@@ -393,7 +393,7 @@ describe("worker-main parent-death orphan hardening (real process)", () => {
     writeFrame(child.stdin, {
       type: "worker.init",
       id: "init-br-err",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
     });
     await ndjson.waitFor((f) => f.type === "worker.ready");
@@ -414,7 +414,7 @@ describe("worker-main parent-death orphan hardening (real process)", () => {
     writeFrame(child.stdin, {
       type: "worker.init",
       id: "init-br-out",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
     });
     await ndjson.waitFor((f) => f.type === "worker.ready");
@@ -436,7 +436,7 @@ describe("worker-main parent-death orphan hardening (real process)", () => {
     writeFrame(child.stdin, {
       type: "worker.init",
       id: "init-br-both",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: { mode: "create", sessionId: "provisional", cwd: "/workspace", projectRoot: "/workspace" },
     });
     await ndjson.waitFor((f) => f.type === "worker.ready");

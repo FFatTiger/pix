@@ -56,10 +56,13 @@ function makePort(cwd, sessionId) {
           sessionId,
           message: { role: "assistant", content: [{ type: "text", text: "Hello world" }] },
         });
+        // Protocol v2: message_end must carry the committed persisted entryId.
         this.emit({
           type: "message_end",
           sessionId,
           message: { role: "assistant", content: [{ type: "text", text: "Hello world" }], model: "m", provider: "p" },
+          entryId: "entry-1",
+          parentEntryId: "entry-0",
         });
         this.emit({ type: "prompt_done", sessionId });
         return { ok: true, type: "prompt" };

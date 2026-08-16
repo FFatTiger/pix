@@ -232,7 +232,6 @@ const defaultSnapshot = (sessionId: string, cwd: string, projectRoot: string): R
   },
   capabilities: { capabilities: [], version: 0 },
   streaming: { active: false, phase: "idle" },
-  messages: [],
 });
 
 const stripCursor = (event: RuntimeEvent): RuntimeEventData => {

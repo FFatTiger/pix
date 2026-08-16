@@ -41,7 +41,7 @@ export function createStubSessionCatalog(): SessionCatalogPort {
       return { sessionId, cwd: "/workspace", projectRoot: "/workspace", entries: [] };
     },
     async readSessionContext(sessionId) {
-      return { sessionId, entries: [] };
+      return { sessionId, entries: [], pageInfo: { hasMore: false } };
     },
     async readSessionTree(sessionId) {
       return { sessionId, roots: [], entryCount: 0 };

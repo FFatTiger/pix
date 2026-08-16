@@ -55,7 +55,7 @@ function driverState(session: AgentSession, forcedEmpty: boolean): DriverState {
     autoRetryEnabled: session.autoRetryEnabled,
     pendingMessageCount: session.pendingMessageCount,
     ...(leafId === null || leafId === undefined ? {} : { leafId }),
-    messages: session.messages,
+    messageCount: stats.totalMessages,
     tools: session.getAllTools().map((tool): ToolInfo => ({ name: tool.name, ...(tool.description === undefined ? {} : { description: tool.description }), active: active.has(tool.name) })),
     ...(usage === undefined ? {} : { contextUsage: { percent: usage.percent ?? 0, contextWindow: usage.contextWindow, ...(usage.tokens === null ? {} : { tokens: usage.tokens }) } }),
     steering: session.getSteeringMessages().map((message) => ({ message })),
@@ -193,6 +193,58 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     this.applyForcedEmptySystemPrompt();
     return this.reloadCapabilities ?? this.capabilities;
   }
+
+  /**
+   * Resolve the currently committed leaf entry identity (Protocol v2). The
+   * SDK appends the just-committed message entry synchronously after its
+   * `message_end` emit (and bash results append via recordBashResult), so a
+   * microtask/awaited resolution sees the exact committed entry. Returns
+   * undefined (fail closed, never content-matched) when the leaf is not a
+   * committed message-like entry matching the expected role.
+   */
+  resolveLeafEntry(expectedRole?: string): { entryId: string; parentEntryId?: string } | undefined {
+    const entry = this.session.sessionManager.getLeafEntry();
+    if (!entry || !this.entryMatchesRole(entry, expectedRole)) return undefined;
+    return {
+      entryId: entry.id,
+      ...(entry.parentId === null || entry.parentId === undefined ? {} : { parentEntryId: entry.parentId }),
+    };
+  }
+
+  resolveLeafEntries(
+    expectedRole: string,
+    count: number,
+  ): readonly { entryId: string; parentEntryId?: string }[] | undefined {
+    if (!Number.isInteger(count) || count < 1) return undefined;
+    const manager = this.session.sessionManager;
+    const resolved: { entryId: string; parentEntryId?: string }[] = [];
+    let entry = manager.getLeafEntry();
+    // Deferred bash messages are flushed consecutively at the session tail
+    // immediately before agent_settled. Require that exact structural shape;
+    // never skip intervening entries or content-match a command/output.
+    while (entry && resolved.length < count) {
+      if (!this.entryMatchesRole(entry, expectedRole)) return undefined;
+      resolved.push({
+        entryId: entry.id,
+        ...(entry.parentId === null || entry.parentId === undefined ? {} : { parentEntryId: entry.parentId }),
+      });
+      entry = entry.parentId === null || entry.parentId === undefined
+        ? undefined
+        : manager.getEntry(entry.parentId);
+    }
+    if (resolved.length !== count) return undefined;
+    return resolved.reverse();
+  }
+
+  private entryMatchesRole(entry: unknown, expectedRole?: string): boolean {
+    if (typeof entry !== "object" || entry === null) return false;
+    const candidate = entry as { type?: unknown; message?: { role?: unknown } };
+    const expectedType = expectedRole === "custom" ? "custom_message" : "message";
+    if (candidate.type !== expectedType) return false;
+    if (expectedRole === undefined || expectedRole === "custom") return true;
+    return candidate.message?.role === expectedRole;
+  }
+
   async bash(command: string, excludeFromContext: boolean, onChunk: (chunk: string) => void) {
     this.bashChunks = onChunk;
     try {

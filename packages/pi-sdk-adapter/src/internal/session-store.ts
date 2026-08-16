@@ -81,7 +81,11 @@
 // them exactly as before.
 import { rm } from "node:fs/promises";
 import { join, posix, win32 } from "node:path";
-import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  SessionManager,
+  buildContextEntries as buildSdkContextEntries,
+  getAgentDir,
+} from "@earendil-works/pi-coding-agent";
 import {
   defaultProjectionDirectory,
   defaultProjectionIndexPath,
@@ -769,16 +773,53 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     return { ...toHeader(info, await this.provenanceFor(manager)), entries: manager.getEntries().flatMap(mapEntry) };
   }
 
-  async readSessionContext(sessionId: string, leafId?: string): Promise<SessionContext> {
+  async readSessionContext(
+    sessionId: string,
+    options: { leafId?: string; before?: string; limit?: number } = {},
+  ): Promise<SessionContext> {
     const opened = await this.openSession(sessionId);
     if (!opened) throw notFound(sessionId);
     const { manager } = opened;
-    const selected = leafId ? manager.getBranch(leafId) : manager.buildContextEntries();
+    // Select the ACTIVE branch FIRST (getBranch(leafId) / buildContextEntries),
+    // then map canonically, then paginate the PROJECTED entries. We never
+    // paginate raw JSONL/file order, so branch isolation and cursor stability
+    // are guaranteed by the projection itself.
+    const { leafId, before, limit } = options;
+    const pageSize = limit === undefined ? 50 : Math.max(1, Math.min(200, Math.floor(limit)));
+    const selected = leafId
+      ? (() => {
+          // Use the SAME compaction-aware projection as the leaf-less first
+          // page. getBranch(leafId) would reintroduce summarized-away entries
+          // on page 2+, making one cursor traversal switch semantics midway.
+          const entries = [...manager.getEntries()];
+          const byId = new Map(entries.map((entry) => [entry.id, entry]));
+          return buildSdkContextEntries(entries, leafId, byId);
+        })()
+      : manager.buildContextEntries();
     const selectedLeaf = leafId ?? manager.getLeafId();
+    const projected = selected.flatMap(mapEntry);
+    const beforeIndex = before === undefined
+      ? projected.length
+      : projected.findIndex((entry) => entry.entryId === before);
+    // Cursor absent from the selected projected branch → fail closed with a
+    // sanitized invalid_input (never echoed back to the caller).
+    if (before !== undefined && beforeIndex === -1) {
+      throw makeRuntimeError("invalid_input", "history cursor is invalid");
+    }
+    // `beforeIndex` is the EXCLUSIVE upper bound (entries strictly before it).
+    const end = beforeIndex;
+    const start = Math.max(0, end - pageSize);
+    const page = projected.slice(start, end);
+    const hasMore = start > 0;
+    const nextCursor = hasMore && page.length > 0 ? page[0]!.entryId : undefined;
     return {
       sessionId,
       ...(selectedLeaf === null || selectedLeaf === undefined ? {} : { leafId: selectedLeaf }),
-      entries: selected.flatMap(mapEntry),
+      entries: page,
+      pageInfo: {
+        hasMore,
+        ...(nextCursor === undefined ? {} : { nextCursor }),
+      },
     };
   }
 

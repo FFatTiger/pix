@@ -19,7 +19,6 @@ import type {
 } from "@fffattiger/pix-runtime-core";
 import type { StatefulRuntimeMapper } from "./runtime-mapper.js";
 import {
-  mapAgentMessages,
   mapCapabilitySet,
   mapRuntimeState,
   mapStreamingMessage,
@@ -86,7 +85,9 @@ export class SnapshotMapper {
       state: mapRuntimeState(state),
       capabilities: mapCapabilitySet(snapshot.capabilities),
       ...(streaming === undefined ? {} : { streaming }),
-      ...(snapshot.messages === undefined ? {} : { messages: mapAgentMessages(snapshot.messages) }),
+      // Protocol v2: the snapshot is control/reconnect state only — it never
+      // carries completed transcript history. Persisted history comes from the
+      // cursor-paginated session context endpoint.
     };
   }
 }

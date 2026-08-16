@@ -233,3 +233,46 @@ test("locateSessiond honors an explicit directory", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("ensureSessiond never reuses a pingable protocol-v1 daemon; replaces it and starts a fresh one", async () => {
+  const dir = await tempDir();
+  const fixturePath = join(resolveCliPackageRoot(), "test", "fixtures", "fake-v1-daemon.mjs");
+  let stale: ChildProcess | undefined;
+  try {
+    // Boot the stale v1 daemon as a separate process (writes its own lock).
+    stale = spawn(process.execPath, [fixturePath], {
+      env: { ...process.env, PIX_SESSIOND_DIR: dir },
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    await new Promise<void>((resolve, reject) => {
+      let out = "";
+      const timer = setTimeout(() => reject(new Error("fake v1 daemon did not become ready")), 5_000);
+      stale!.stdout?.on("data", (chunk) => {
+        out += String(chunk);
+        if (out.includes("fake-v1-ready")) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      stale!.on("exit", (code) => { clearTimeout(timer); reject(new Error(`fake v1 daemon exited early (${code})`)); });
+    });
+
+    // The stale instance is pingable (but protocol v1).
+    const before = await inspectSessiond(dir);
+    assert.equal(before.pingable, true, "stale v1 daemon must be pingable");
+    assert.equal(before.pid, stale.pid);
+
+    // ensureSessiond must NOT silently reuse it.
+    const ensured = await ensureSessiond(dir);
+    assert.equal(ensured.reused, false, "a stale v1 daemon must never be reused");
+    assert.notEqual(ensured.pid, stale.pid, "a fresh daemon must replace the stale one");
+    // The fresh daemon is genuinely protocol-current and pingable.
+    const status = await inspectSessiond(dir);
+    assert.equal(status.pingable, true);
+    assert.equal(status.pid, ensured.pid);
+    await shutdownSessiond(dir);
+  } finally {
+    if (stale && stale.exitCode === null) stale.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+});

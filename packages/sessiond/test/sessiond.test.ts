@@ -25,7 +25,7 @@ const snapshot = (sessionId: string, cwd = "/workspace", projectRoot = cwd): Run
   sessionId, cwd, projectRoot,
   state: { sessionId, isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0, queuedMessages: { steering: [], followUp: [] }, pendingMessageCount: 0, writtenFiles: [] },
   capabilities: { capabilities: ["runtime.prompt", "runtime.abort", "runtime.bash", "runtime.bash.abort", "runtime.compact", "runtime.compact.abort", "runtime.queue"], version: 1 },
-  streaming: { active: false, phase: "idle" }, messages: [],
+  streaming: { active: false, phase: "idle" },
 });
 
 function harness(options: { worker?: ConstructorParameters<typeof FakeWorkerFactory>[0]; service?: ConstructorParameters<typeof SessiondService>[1] } = {}) {
@@ -37,7 +37,7 @@ function harness(options: { worker?: ConstructorParameters<typeof FakeWorkerFact
   const catalog: SessionCatalogPort = {
     async listSessions() { return []; },
     async readSession(sessionId) { return { sessionId, cwd: "/workspace", projectRoot: "/workspace", entries: [] }; },
-    async readSessionContext(sessionId) { return { sessionId, entries: [] }; },
+    async readSessionContext(sessionId) { return { sessionId, entries: [], pageInfo: { hasMore: false } }; },
     async readSessionTree(sessionId) { return { sessionId, roots: [], entryCount: 0 }; },
     async deleteSession() {},
   };
@@ -915,15 +915,9 @@ const compactSnapshot = (sessionId: string, cwd = "/workspace", projectRoot = cw
   state: {
     ...snapshot(sessionId, cwd, projectRoot).state,
     messageCount: 5,
+    leafId: "entry-5",
     contextUsage: { percent: 72, contextWindow: 200_000, tokens: 144_000 },
   },
-  messages: [
-    { role: "user", content: "m1" },
-    { role: "user", content: "m2" },
-    { role: "user", content: "m3" },
-    { role: "user", content: "m4" },
-    { role: "user", content: "m5" },
-  ],
 });
 
 /**
@@ -940,11 +934,6 @@ const navigateSnapshot = (sessionId: string, cwd = "/workspace", projectRoot = c
     messageCount: 3,
     leafId: "nav-3",
   },
-  messages: [
-    { role: "user", content: "m1" },
-    { role: "user", content: "m2" },
-    { role: "user", content: "m3" },
-  ],
 });
 
 
@@ -1165,7 +1154,9 @@ test("compact success refreshes authoritative snapshot with trimmed messages/con
   const before = service.getSnapshot("s");
   assert.equal(before.state.messageCount, 5);
   assert.equal(before.state.contextUsage?.percent, 72);
-  assert.equal((before.messages ?? []).length, 5);
+  assert.equal(before.state.leafId, "entry-5");
+  // Protocol v2: snapshots are control state only — no transcript history.
+  assert.equal("messages" in before, false);
   const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
 
   const result = await service.command("s", { type: "compact", commandId: "compact-1", customInstructions: "keep decisions" });
@@ -1182,14 +1173,14 @@ test("compact success refreshes authoritative snapshot with trimmed messages/con
   const snap = service.getSnapshot("s");
   assert.equal(snap.state.messageCount, 3, JSON.stringify(snap.state));
   assert.equal(snap.state.isCompacting, false);
-  assert.equal((snap.messages ?? []).length, 3, "messages must converge to the trimmed history");
+  assert.equal("messages" in snap, false, "snapshot must never carry transcript history");
   assert.equal(snap.state.contextUsage?.percent, 32, JSON.stringify(snap.state.contextUsage));
   assert.equal(snap.state.contextUsage?.tokens, 143_600);
 
   // Attach boundary also carries the post-compaction projection.
   const attach = service.attach({ sessionId: "s" });
   assert.equal(attach.result.snapshot!.state.messageCount, 3);
-  assert.equal((attach.result.snapshot!.messages ?? []).length, 3);
+  assert.equal("messages" in attach.result.snapshot!, false);
   await service.shutdown();
 });
 
@@ -1460,7 +1451,7 @@ test("compaction_end before compact success still converges the full post-compac
   const snap = service.getSnapshot("s");
   assert.equal(snap.state.isCompacting, false);
   assert.equal(snap.state.messageCount, 3, "snapshot must converge messageCount after compact (not the event)");
-  assert.equal((snap.messages ?? []).length, 3, "snapshot must converge the trimmed history after compact");
+  assert.equal("messages" in snap, false, "snapshot must never carry transcript history");
   assert.equal(snap.state.contextUsage?.percent, 32, "snapshot must converge contextUsage after compact");
   await service.shutdown();
 });
@@ -1471,7 +1462,7 @@ test("navigate success refreshes authoritative snapshot with new leaf/messageCou
   const before = service.getSnapshot("s");
   assert.equal(before.state.messageCount, 3);
   assert.equal(before.state.leafId, "nav-3");
-  assert.equal((before.messages ?? []).length, 3);
+  assert.equal("messages" in before, false, "snapshot must never carry transcript history");
   const snapshotsBefore = workers.workers[0]!.sent.filter((item) => item.type === "worker.getSnapshot").length;
 
   const result = await service.command("s", { type: "navigate_tree", commandId: "nav-1", targetId: "nav-1" });
@@ -1488,13 +1479,13 @@ test("navigate success refreshes authoritative snapshot with new leaf/messageCou
   const snap = service.getSnapshot("s");
   assert.equal(snap.state.messageCount, 1, JSON.stringify(snap.state));
   assert.equal(snap.state.leafId, "nav-1", "projection must carry the navigated leaf");
-  assert.equal((snap.messages ?? []).length, 1, "messages must converge to the navigated leaf history");
+  assert.equal("messages" in snap, false, "snapshot must never carry transcript history");
 
   // Attach boundary also carries the navigated projection.
   const attach = service.attach({ sessionId: "s" });
   assert.equal(attach.result.snapshot!.state.messageCount, 1);
   assert.equal(attach.result.snapshot!.state.leafId, "nav-1");
-  assert.equal((attach.result.snapshot!.messages ?? []).length, 1);
+  assert.equal("messages" in attach.result.snapshot!, false);
   await service.shutdown();
 });
 
@@ -1685,7 +1676,7 @@ test("detach before navigate result + reattach sees the navigated snapshot (repl
   const attach = service.attach({ sessionId: "s" });
   assert.equal(attach.result.snapshot!.state.leafId, "nav-1");
   assert.equal(attach.result.snapshot!.state.messageCount, 1);
-  assert.equal((attach.result.snapshot!.messages ?? []).length, 1);
+  assert.equal("messages" in attach.result.snapshot!, false);
   await service.shutdown();
 });
 
@@ -2040,8 +2031,8 @@ test("sessions.list forwards cwd/limit/offset and sessions.context forwards leaf
     },
     async readSession(sessionId) { return { sessionId, cwd: "/workspace", projectRoot: "/workspace", entries: [] }; },
     async readSessionContext(sessionId, options) {
-      contextCalls.push({ sessionId, ...(options?.leafId === undefined ? {} : { leafId: options.leafId }) });
-      return { sessionId, entries: [] };
+      contextCalls.push({ sessionId, ...(options?.leafId === undefined ? {} : { leafId: options.leafId }), ...(options?.before === undefined ? {} : { before: options.before }), ...(options?.limit === undefined ? {} : { limit: options.limit }) });
+      return { sessionId, entries: [], pageInfo: { hasMore: false } };
     },
     async readSessionTree(sessionId) { return { sessionId, roots: [], entryCount: 0 }; },
     async deleteSession() {},
@@ -2668,7 +2659,7 @@ function deleteHarness(options: {
     },
     async readSessionContext(sessionId) {
       if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);
-      return { sessionId, entries: [] };
+      return { sessionId, entries: [], pageInfo: { hasMore: false } };
     },
     async readSessionTree(sessionId) {
       if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);

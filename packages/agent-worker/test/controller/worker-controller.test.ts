@@ -42,7 +42,7 @@ function initMessage(
   return {
     type: "worker.init",
     id: "init-1",
-    protocolVersion: 1,
+    protocolVersion: 2,
     payload: {
       sessionId: "provisional-session",
       cwd: "/workspace",
@@ -56,7 +56,7 @@ function commandMessage(command: DistributiveOmit<ProtocolRuntimeCommand, "comma
   return {
     type: "worker.command",
     id,
-    protocolVersion: 1,
+    protocolVersion: 2,
     payload: { sessionId, command: { ...command, commandId: "cmd-1" } },
   };
 }
@@ -65,7 +65,7 @@ function interruptMessage(sessionId = "sess-real", id = "wire-i"): SessiondToWor
   return {
     type: "worker.interrupt",
     id,
-    protocolVersion: 1,
+    protocolVersion: 2,
     payload: { sessionId, commandId: "cmd-1", interrupt: { type: "abort" } },
   };
 }
@@ -139,7 +139,7 @@ describe("WorkerController", () => {
           runtime.emit({ type: "agent_start", sessionId: "sess-real" });
           runtime.emit({ type: "message_update", sessionId: "sess-real", message: { role: "assistant", content: [{ type: "text", text: "Hel" }] } });
           runtime.emit({ type: "message_update", sessionId: "sess-real", message: { role: "assistant", content: [{ type: "text", text: "Hello" }] } });
-          runtime.emit({ type: "message_end", sessionId: "sess-real", message: { role: "assistant", content: [{ type: "text", text: "Hello" }], model: "m", provider: "p" } });
+          runtime.emit({ type: "message_end", sessionId: "sess-real", message: { role: "assistant", content: [{ type: "text", text: "Hello" }], model: "m", provider: "p" }, entryId: "entry-1" });
           runtime.emit({ type: "prompt_done", sessionId: "sess-real" });
           return { ok: true, type: "prompt" };
         }
@@ -191,7 +191,7 @@ describe("WorkerController", () => {
     factory.script = () => ({ sessionId: "sess-real" });
     const { controller, recorder } = createHarness(factory);
     await controller.handleMessage(initMessage({ mode: "create" }));
-    await controller.handleMessage({ type: "worker.getSnapshot", id: "snap-1", protocolVersion: 1, payload: { sessionId: "sess-real" } });
+    await controller.handleMessage({ type: "worker.getSnapshot", id: "snap-1", protocolVersion: 2, payload: { sessionId: "sess-real" } });
 
     const snapshots = recorder.messages.filter(isSnapshot);
     assert.equal(snapshots.length, 1);
@@ -254,7 +254,7 @@ describe("WorkerController", () => {
     const factory = new FakeAgentRuntimeFactory();
     factory.script = () => ({ sessionId: "sess-real" });
     const { controller, recorder, exitCodes } = createHarness(factory);
-    await controller.handleMessage({ type: "worker.hostResponse", id: "h1", protocolVersion: 1, payload: { requestId: "r1", ok: true, data: {} } });
+    await controller.handleMessage({ type: "worker.hostResponse", id: "h1", protocolVersion: 2, payload: { requestId: "r1", ok: true, data: {} } });
 
     const fatal = recorder.messages.filter(isFatal);
     assert.equal(fatal.length, 1);
@@ -298,7 +298,7 @@ describe("WorkerController", () => {
     });
     const { controller, exitCodes, factory: f } = createHarness(factory);
     await controller.handleMessage(initMessage({ mode: "create" }));
-    await controller.handleMessage({ type: "worker.shutdown", id: "sh-1", protocolVersion: 1, payload: { sessionId: "sess-real", reason: "user" } });
+    await controller.handleMessage({ type: "worker.shutdown", id: "sh-1", protocolVersion: 2, payload: { sessionId: "sess-real", reason: "user" } });
 
     assert.equal(closeReason, "shutdown");
     assert.equal(f.created[0]?.closeReasons.length, 1);
@@ -314,7 +314,7 @@ describe("WorkerController", () => {
     });
     const { controller, exitCodes } = createHarness(factory);
     await controller.handleMessage(initMessage({ mode: "create" }));
-    await controller.handleMessage({ type: "worker.shutdown", id: "sh-1", protocolVersion: 1, payload: { reason: "user" } });
+    await controller.handleMessage({ type: "worker.shutdown", id: "sh-1", protocolVersion: 2, payload: { reason: "user" } });
 
     assert.deepEqual(exitCodes, [1]);
     assert.equal(controller.phase, "stopped");

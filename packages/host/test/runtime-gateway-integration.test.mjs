@@ -105,7 +105,7 @@ class FakeSession {
   }
 }
 
-const hello = JSON.stringify({ type: "handshake", payload: { protocolVersion: 1, client: { shell: "web", platform: "mac" }, features: [] } });
+const hello = JSON.stringify({ type: "handshake", payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [] } });
 
 async function startServer(service) {
   const directory = await mkdtemp(join(tmpdir(), "h1-integ-"));

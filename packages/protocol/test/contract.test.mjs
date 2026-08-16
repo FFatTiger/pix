@@ -64,13 +64,13 @@ const baseSnapshotState = {
 };
 
 describe("protocol version", () => {
-  it("freezes protocolVersion at 1", () => {
-    assert.equal(PROTOCOL_VERSION, 1);
+  it("freezes protocolVersion at 2", () => {
+    assert.equal(PROTOCOL_VERSION, 2);
   });
 
-  it("rejects non-v1 handshake", () => {
+  it("rejects non-v2 handshake", () => {
     const result = ProtocolHandshakeRequestSchema.safeParse({
-      protocolVersion: 2,
+      protocolVersion: 1,
       client: { shell: "web", platform: "mac" },
       features: [],
     });
@@ -158,16 +158,16 @@ describe("identifiers and cursors", () => {
 describe("handshake round-trip", () => {
   it("parses request and response", () => {
     const req = roundTrip(ProtocolHandshakeRequestSchema, {
-      protocolVersion: 1,
+      protocolVersion: 2,
       client: { shell: "pwa", platform: "ios" },
       features: ["virtual-scroll"],
       auth: "gate-token",
     });
-    assert.equal(req.protocolVersion, 1);
+    assert.equal(req.protocolVersion, 2);
     assert.equal(req.client.shell, "pwa");
 
     const res = roundTrip(ProtocolHandshakeResponseSchema, {
-      protocolVersion: 1,
+      protocolVersion: 2,
       host: {
         mode: "lan",
         capabilities: ["agent", "files", "files.write", "git", "worktree"],
@@ -470,6 +470,7 @@ describe("messages and RuntimeEvent", () => {
         streamId: "stream-1",
         messageId: "message-1",
         message: { role: "assistant", content: [{ type: "text", text: "x" }] },
+        entryId: "entry-1",
       }).success,
       false,
     );
@@ -485,8 +486,25 @@ describe("messages and RuntimeEvent", () => {
           model: "gpt-4.1",
           provider: "openai",
         },
+        entryId: "entry-1",
       }).success,
       true,
+    );
+    // Protocol v2: message_end REQUIRES the committed persisted entryId.
+    assert.equal(
+      safeParseRuntimeEvent({
+        type: "message_end",
+        ...baseEvent,
+        streamId: "stream-1",
+        messageId: "message-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+          model: "gpt-4.1",
+          provider: "openai",
+        },
+      }).success,
+      false,
     );
   });
 
@@ -776,7 +794,7 @@ describe("WS envelopes", () => {
 
 describe("sessiond RPC", () => {
   const rpc = (method, params) => ({
-    protocolVersion: 1,
+    protocolVersion: 2,
     id: `rpc-${method}`,
     method,
     params,
@@ -865,7 +883,7 @@ describe("sessiond RPC", () => {
     );
     assert.equal(
       safeParseSessiondRpcRequest({
-        protocolVersion: 1,
+        protocolVersion: 2,
         id: "x",
         method: "worker.status",
         params: {},
@@ -945,7 +963,7 @@ describe("sessiond RPC", () => {
   it("parses all core method result schemas", () => {
     const results = {
       "system.ping": { pong: true, serverTime: 1 },
-      "system.hello": { protocolVersion: 1, sessiondVersion: "0.1.0" },
+      "system.hello": { protocolVersion: 2, sessiondVersion: "0.1.0" },
       "runtime.create": {
         sessionId: "s-1",
         epoch: "e1",
@@ -1010,7 +1028,7 @@ describe("sessiond RPC", () => {
       "sessions.list": { sessions: [{ sessionId: "s-1", cwd: "/tmp/p", projectRoot: "/tmp/p" }] },
       "sessions.resolve": { sessionId: "s-1", cwd: "/tmp/p", projectRoot: "/tmp/p" },
       "sessions.read": { sessionId: "s-1", cwd: "/tmp/p", projectRoot: "/tmp/p", entries: [] },
-      "sessions.context": { sessionId: "s-1", entries: [] },
+      "sessions.context": { sessionId: "s-1", entries: [], pageInfo: { hasMore: false } },
       "sessions.tree": {
         sessionId: "s-1",
         currentLeafId: "e2",
@@ -1061,7 +1079,7 @@ describe("worker IPC", () => {
     const init = roundTrip(SessiondToWorkerMessageSchema, {
       type: "worker.init",
       id: "w-1",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: {
         mode: "create",
         sessionId: "s-1",
@@ -1076,7 +1094,7 @@ describe("worker IPC", () => {
     const openInit = roundTrip(SessiondToWorkerMessageSchema, {
       type: "worker.init",
       id: "w-open",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: {
         mode: "open",
         sessionId: "s-1",
@@ -1090,7 +1108,7 @@ describe("worker IPC", () => {
       safeParseSessiondToWorkerMessage({
         type: "worker.init",
         id: "w-bad",
-        protocolVersion: 1,
+        protocolVersion: 2,
         payload: { mode: "resume", sessionId: "s-1", cwd: "/p", projectRoot: "/p" },
       }).success,
       false,
@@ -1100,7 +1118,7 @@ describe("worker IPC", () => {
     const interrupt = roundTrip(SessiondToWorkerMessageSchema, {
       type: "worker.interrupt",
       id: "w-int",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: { sessionId: "s-1", commandId: "cmd-1", interrupt: { type: "abort" } },
     });
     assert.equal(interrupt.payload.commandId, "cmd-1");
@@ -1108,7 +1126,7 @@ describe("worker IPC", () => {
     const command = roundTrip(SessiondToWorkerMessageSchema, {
       type: "worker.command",
       id: "w-2",
-      protocolVersion: 1,
+      protocolVersion: 2,
       payload: {
         sessionId: "s-1",
         command: { type: "get_state", commandId: "c-1" },
@@ -1132,7 +1150,7 @@ describe("worker IPC", () => {
         safeParseSessiondToWorkerMessage({
           type,
           id: "w-x",
-          protocolVersion: 1,
+          protocolVersion: 2,
           payload,
         }).success,
         true,
@@ -1146,7 +1164,7 @@ describe("worker IPC", () => {
       safeParseSessiondToWorkerMessage({
         type: "worker.init",
         id: "w-1",
-        protocolVersion: 1,
+        protocolVersion: 2,
         payload: { sessionId: "s-1", cwd: "/p", projectRoot: "/p" },
       }).success,
       false,
@@ -1156,7 +1174,7 @@ describe("worker IPC", () => {
       safeParseSessiondToWorkerMessage({
         type: "worker.command",
         id: "w-1",
-        protocolVersion: 1,
+        protocolVersion: 2,
         payload: {
           sessionId: "s-1",
           command: { type: "prompt", message: "hi" },

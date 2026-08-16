@@ -305,6 +305,16 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
     messageCount = messages.length;
   }
 
+  // Protocol v2: commit a message entry to the session tree (append as child of
+  // the current leaf, advance the leaf) and return its persisted identity.
+  function commitEntry(text) {
+    entrySeq += 1;
+    const entry = { id: `entry-${entrySeq}`, parentId: leafId, text };
+    entries = [...entries, entry];
+    leafId = entry.id;
+    return entry;
+  }
+
   function baseState() {
     return {
       sessionId,
@@ -391,7 +401,8 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
         sessionId,
         state: baseState(),
         capabilities: structuredClone(CAPABILITIES),
-        messages: structuredClone(messages),
+        // Protocol v2: the snapshot is control/reconnect state only — it never
+        // carries completed transcript history.
       };
     },
     subscribe(fn) {
@@ -738,13 +749,15 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
             });
             if (result?.kind === "aborted") {
               bashProjection = { ...bashProjection, cancelled: true, completed: true, updateCount: bashProjection.updateCount + 1 };
-              emit({ type: "bash_update", sessionId, command: bashText, cancelled: true, truncated: false });
+              const abortedEntry = commitEntry(bashText);
+              emit({ type: "bash_update", sessionId, command: bashText, cancelled: true, truncated: false, entryId: abortedEntry.id, ...(abortedEntry.parentId === null ? {} : { parentEntryId: abortedEntry.parentId }) });
               isBashRunning = false;
               return { ok: false, type: "bash", error: { code: "interrupted", message: "bash aborted", retryable: true } };
             }
             // Timeout fallback: still settle so the E2E never hangs.
             bashProjection = { ...bashProjection, exitCode: 0, completed: true, updateCount: bashProjection.updateCount + 1 };
-            emit({ type: "bash_update", sessionId, command: bashText, exitCode: 0, truncated: false });
+            const timeoutEntry = commitEntry(bashText);
+            emit({ type: "bash_update", sessionId, command: bashText, exitCode: 0, truncated: false, entryId: timeoutEntry.id, ...(timeoutEntry.parentId === null ? {} : { parentEntryId: timeoutEntry.parentId }) });
             isBashRunning = false;
             return { ok: true, type: "bash" };
           }
@@ -753,7 +766,8 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
           pushChunk("line 2\n");
           await delay(10);
           bashProjection = { ...bashProjection, exitCode: 0, completed: true, updateCount: bashProjection.updateCount + 1 };
-          emit({ type: "bash_update", sessionId, command: bashText, exitCode: 0, truncated: false });
+          const bashEntry = commitEntry(bashText);
+          emit({ type: "bash_update", sessionId, command: bashText, exitCode: 0, truncated: false, entryId: bashEntry.id, ...(bashEntry.parentId === null ? {} : { parentEntryId: bashEntry.parentId }) });
           isBashRunning = false;
           return { ok: true, type: "bash" };
         }
@@ -967,6 +981,10 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
         message: { role: "assistant", content: [{ type: "text", text: "Hello world" }] },
       });
       await delay(5);
+      // Protocol v2: commit the assistant entry (append as child of the current
+      // leaf, advance the leaf) and publish message_end WITH the exact persisted
+      // entryId/parentEntryId — never an unkeyed completion.
+      const promptEntry = commitEntry("Hello world");
       emit({
         type: "message_end",
         sessionId,
@@ -976,21 +994,11 @@ function makePort({ cwd, sessionId, mode, toolNames: initialToolNames, thinkingL
           model: "e2e-fixture",
           provider: "e2e",
         },
+        entryId: promptEntry.id,
+        ...(promptEntry.parentId === null ? {} : { parentEntryId: promptEntry.parentId }),
       });
       emit({ type: "prompt_done", sessionId });
       isPromptRunning = false;
-      const completedMessage = {
-        role: "assistant",
-        content: [{ type: "text", text: "Hello world" }],
-        model: "e2e-fixture",
-        provider: "e2e",
-      };
-      // D2 navigate: append one assistant entry as a child of the current leaf
-      // and move the leaf pointer (the visible history is rebuilt from root→leaf).
-      entrySeq += 1;
-      const entry = { id: `entry-${entrySeq}`, parentId: leafId, text: "Hello world" };
-      entries = [...entries, entry];
-      leafId = entry.id;
       rebuildMessages(leafId);      contextUsage = {
         percent: Math.min(100, contextUsage.percent + 10),
         contextWindow: contextUsage.contextWindow,

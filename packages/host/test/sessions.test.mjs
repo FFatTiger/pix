@@ -36,8 +36,8 @@ function fakeClient(impl) {
     async read(id) {
       return impl.read(id);
     },
-    async context(id, leafId) {
-      return impl.context(id, leafId);
+    async context(id, options) {
+      return impl.context(id, options);
     },
     async tree(id) {
       return impl.tree(id);
@@ -80,7 +80,7 @@ test("GET /v1/sessions returns the session list", async () => {
         return { ...header(), entries: [ENTRY] };
       },
       async context() {
-        return { sessionId: "s1", leafId: "e1", entries: [ENTRY] };
+        return { sessionId: "s1", leafId: "e1", entries: [ENTRY], pageInfo: { hasMore: false } };
       },
     }),
   );
@@ -103,7 +103,7 @@ test("GET /v1/sessions forwards cwd/limit/offset params to the client (bounded)"
         return { ...header() };
       },
       async context() {
-        return { sessionId: "s1", entries: [] };
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
       },
     }),
   );
@@ -124,7 +124,7 @@ test("empty cwd is treated as no filter", async () => {
         return { ...header() };
       },
       async context() {
-        return { sessionId: "s1", entries: [] };
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
       },
     }),
   );
@@ -142,7 +142,7 @@ test("GET /v1/sessions/:id returns session detail", async () => {
         return { ...header({ sessionId: id }), entries: [ENTRY] };
       },
       async context() {
-        return { sessionId: "s1", entries: [] };
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
       },
     }),
   );
@@ -163,9 +163,9 @@ test("GET /v1/sessions/:id/context returns context and forwards leafId", async (
       async read() {
         return { ...header() };
       },
-      async context(id, leafId) {
-        capturedLeaf = leafId;
-        return { sessionId: id, leafId: leafId ?? "e1", entries: [ENTRY] };
+      async context(id, options) {
+        capturedLeaf = options?.leafId;
+        return { sessionId: id, leafId: options?.leafId ?? "e1", entries: [ENTRY], pageInfo: { hasMore: false } };
       },
     }),
   );
@@ -176,6 +176,64 @@ test("GET /v1/sessions/:id/context returns context and forwards leafId", async (
   assert.equal(body.context.leafId, "e9");
   assert.equal(capturedLeaf, "e9");
   assert.equal(body.context.entries[0].entryId, "e1");
+});
+
+test("GET /v1/sessions/:id/context forwards before/limit and returns pageInfo (Protocol v2)", async () => {
+  let captured;
+  const app = appWith(
+    fakeClient({
+      async list() {
+        return { sessions: [] };
+      },
+      async read() {
+        return { ...header() };
+      },
+      async context(id, options) {
+        captured = options;
+        return {
+          sessionId: id,
+          leafId: "e9",
+          entries: [{ entryId: "e5", message: { role: "user", content: "older" } }],
+          pageInfo: { hasMore: true, nextCursor: "e5" },
+        };
+      },
+    }),
+  );
+  const res = await call(app, "/v1/sessions/s1/context?leafId=e9&before=e10&limit=25");
+  assert.equal(res.status, 200);
+  assert.deepEqual(captured, { leafId: "e9", before: "e10", limit: 25 });
+  const body = await res.json();
+  assert.equal(body.context.pageInfo.hasMore, true);
+  assert.equal(body.context.pageInfo.nextCursor, "e5");
+});
+
+test("context limit out of range → fixed 400 (no cursor leak)", async () => {
+  const app = appWith(
+    fakeClient({
+      async list() {
+        return { sessions: [] };
+      },
+      async read() {
+        return { ...header() };
+      },
+      async context() {
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
+      },
+    }),
+  );
+  assert.equal((await call(app, "/v1/sessions/s1/context?limit=0")).status, 400);
+  assert.equal((await call(app, "/v1/sessions/s1/context?limit=201")).status, 400);
+  assert.equal((await call(app, "/v1/sessions/s1/context?limit=1.5")).status, 400);
+});
+
+test("invalid history cursor maps to fixed 400 INVALID_HISTORY_CURSOR (sanitized)", async () => {
+  const app = appWith(failingClient({ code: "invalid_input", message: "history cursor is invalid: entry-xyz", retryable: false }));
+  const res = await call(app, "/v1/sessions/s1/context?before=entry-xyz");
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.equal(body.code, "INVALID_HISTORY_CURSOR");
+  assert.equal(body.message, "History cursor is invalid");
+  assert.ok(!body.message.includes("entry-xyz"), "cursor value must never be echoed");
 });
 
 test("GET /v1/sessions/:id/tree returns the normalized tree DTO", async () => {
@@ -217,7 +275,7 @@ test("tree: not_found maps to 404 SESSION_NOT_FOUND (no id echo)", async () => {
         return { ...header() };
       },
       async context() {
-        return { sessionId: "s1", entries: [] };
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
       },
       async tree() {
         throw Object.assign(new Error("session not found: secret-id"), { code: "not_found" });
@@ -243,7 +301,7 @@ test("tree: unavailable/unknown errors sanitize to a fixed 503", async () => {
           return { ...header() };
         },
         async context() {
-          return { sessionId: "s1", entries: [] };
+          return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
         },
         async tree() {
           throw error;
@@ -269,7 +327,7 @@ test("tree rejects ANY query string with a fixed 400 and zero tree RPC", async (
         return { ...header() };
       },
       async context() {
-        return { sessionId: "s1", entries: [] };
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
       },
       async tree() {
         calls += 1;
@@ -296,9 +354,9 @@ test("context without leafId omits the leafId query", async () => {
       async read() {
         return { ...header() };
       },
-      async context(id, leafId) {
-        capturedLeaf = leafId;
-        return { sessionId: id, entries: [] };
+      async context(id, options) {
+        capturedLeaf = options?.leafId;
+        return { sessionId: id, entries: [], pageInfo: { hasMore: false } };
       },
     }),
   );
@@ -383,7 +441,7 @@ test("limit out of range → 400", async () => {
         return { ...header() };
       },
       async context() {
-        return { sessionId: "s1", entries: [] };
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
       },
     }),
   );
@@ -405,7 +463,7 @@ test("offset out of range / negative → 400", async () => {
         return { ...header() };
       },
       async context() {
-        return { sessionId: "s1", entries: [] };
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
       },
     }),
   );
@@ -430,7 +488,7 @@ test("non-canonical integer forms are rejected (1e3 / 0x10 / sign / decimal / wh
         return { ...header() };
       },
       async context() {
-        return { sessionId: "s1", entries: [] };
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
       },
     }),
   );
@@ -491,7 +549,7 @@ function appWithDelete({ deleteImpl, guardImpl } = {}) {
       client: fakeClient({
         async list() { return { sessions: [] }; },
         async read() { return { ...header() }; },
-        async context() { return { sessionId: "s1", entries: [] }; },
+        async context() { return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } }; },
       }),
       delete: { client: dc.client, mutationGuard: fakeGuard(guardImpl) },
     },
@@ -519,7 +577,7 @@ test("DELETE route is NOT mounted without the mutation seam (no delete → 404)"
   const app = createHostApp({
     logger: {},
     gate: { config: DISABLED_GATE },
-    sessions: { client: fakeClient({ async list() { return { sessions: [] }; }, async read() { return { ...header() }; }, async context() { return { sessionId: "s1", entries: [] }; } }) },
+    sessions: { client: fakeClient({ async list() { return { sessions: [] }; }, async read() { return { ...header() }; }, async context() { return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } }; } }) },
   }).app;
   const res = await del(app, "s-1");
   assert.equal(res.status, 404);
@@ -627,7 +685,7 @@ test("DELETE: LAN auth gate blocks BEFORE the mutation guard and the RPC", async
     exposureMode: "lan",
     gate: { config: { read: () => ({ status: "enabled", password: "secret", source: "test" }) } },
     sessions: {
-      client: fakeClient({ async list() { return { sessions: [] }; }, async read() { return { ...header() }; }, async context() { return { sessionId: "s1", entries: [] }; } }),
+      client: fakeClient({ async list() { return { sessions: [] }; }, async read() { return { ...header() }; }, async context() { return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } }; } }),
       delete: {
         client: dc.client,
         mutationGuard: fakeGuard({ async assertAvailable() { guardCalled += 1; } }),
@@ -671,7 +729,7 @@ function appWithRename({ renameImpl, guardImpl, wireDelete = true } = {}) {
       client: fakeClient({
         async list() { return { sessions: [] }; },
         async read() { return { ...header() }; },
-        async context() { return { sessionId: "s1", entries: [] }; },
+        async context() { return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } }; },
       }),
       ...(wireDelete ? { delete: { client: dc.client, mutationGuard: fakeGuard() } } : {}),
       rename: { client: rc.client, mutationGuard: fakeGuard(guardImpl) },
@@ -710,7 +768,7 @@ test("PATCH route is NOT mounted without the rename seam (no rename → 404)", a
     logger: {},
     gate: { config: DISABLED_GATE },
     sessions: {
-      client: fakeClient({ async list() { return { sessions: [] }; }, async read() { return { ...header() }; }, async context() { return { sessionId: "s1", entries: [] }; } }),
+      client: fakeClient({ async list() { return { sessions: [] }; }, async read() { return { ...header() }; }, async context() { return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } }; } }),
       delete: { client: fakeDeleteClient().client, mutationGuard: fakeGuard() },
     },
   }).app;
@@ -787,7 +845,7 @@ test("PATCH: LAN auth gate blocks BEFORE the mutation guard and the rename RPC",
     exposureMode: "lan",
     gate: { config: { read: () => ({ status: "enabled", password: "secret", source: "test" }) } },
     sessions: {
-      client: fakeClient({ async list() { return { sessions: [] }; }, async read() { return { ...header() }; }, async context() { return { sessionId: "s1", entries: [] }; } }),
+      client: fakeClient({ async list() { return { sessions: [] }; }, async read() { return { ...header() }; }, async context() { return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } }; } }),
       rename: {
         client: rc.client,
         mutationGuard: fakeGuard({ async assertAvailable() { guardCalled += 1; } }),

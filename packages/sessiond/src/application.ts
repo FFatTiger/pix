@@ -91,7 +91,11 @@ export class SessiondApplication implements SessiondRpcHandler {
         const catalog = this.service.sessionCatalog();
         if (!catalog) throw new SessiondError("unavailable", "session catalog is unavailable");
         const input = params as SessiondMethodParams["sessions.context"];
-        const context = await catalog.readSessionContext(input.sessionId, input.leafId === undefined ? undefined : { leafId: input.leafId });
+        const context = await catalog.readSessionContext(input.sessionId, {
+          ...(input.leafId === undefined ? {} : { leafId: input.leafId }),
+          ...(input.before === undefined ? {} : { before: input.before }),
+          ...(input.limit === undefined ? {} : { limit: input.limit }),
+        });
         return SessionContextSchema.parse(context);
       }
       case "sessions.tree": {

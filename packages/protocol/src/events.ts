@@ -68,6 +68,14 @@ export const MessageEndEventDataSchema = z.strictObject({
   streamId: NonEmptyStringSchema,
   messageId: NonEmptyStringSchema,
   message: AgentMessageSchema,
+  /**
+   * Canonical persisted entryId of the just-committed entry (Protocol v2).
+   * The worker resolves this against the backend's committed leaf BEFORE
+   * publishing the completion — a message_end without a committed entry id is
+   * never emitted (the adapter fails closed with a sanitized runtime error).
+   */
+  entryId: NonEmptyStringSchema,
+  parentEntryId: NonEmptyStringSchema.optional(),
 });
 export const StreamingMessageLifecycleSchema = z
   .array(z.union([MessageStartEventDataSchema, MessageUpdateEventDataSchema, MessageEndEventDataSchema]))
@@ -196,6 +204,16 @@ export const BashUpdateEventDataSchema = z.strictObject({
   truncated: z.boolean().optional(),
   fullOutputPath: z.string().optional(),
   excludeFromContext: z.boolean().optional(),
+  /**
+   * Canonical persisted entryId of the committed bash entry (Protocol v2).
+   * Terminal bash_update events (exitCode or cancelled present) MUST carry the
+   * identity of the persisted bash entry so the client can create one committed
+   * live SessionEntry from the cumulative bash state. Delta-only bash_update
+   * events (no exitCode/cancelled) carry NO entryId — the entry is not yet
+   * persisted. Structural identity only; never derived by content matching.
+   */
+  entryId: NonEmptyStringSchema.optional(),
+  parentEntryId: NonEmptyStringSchema.optional(),
 });
 export const ExtensionErrorEventDataSchema = z.strictObject({
   ...eventDataBase,

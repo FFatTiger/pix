@@ -134,7 +134,7 @@ export interface SessionCatalogPort {
   readSession(sessionId: string): Promise<SessionDetail>;
   readSessionContext(
     sessionId: string,
-    options?: { leafId?: string },
+    options?: { leafId?: string; before?: string; limit?: number },
   ): Promise<SessionContext>;
   /**
    * Normalized read-only branch tree of the whole session (BranchNavigator

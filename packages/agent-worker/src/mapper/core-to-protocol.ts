@@ -477,10 +477,5 @@ export function mapAgentMessage(message: AgentMessage): ProtocolAgentMessage {
   }
 }
 
-export function mapAgentMessages(messages: readonly AgentMessage[] | undefined) {
-  if (messages === undefined) return undefined;
-  return messages.map((message) => mapAgentMessage(message));
-}
-
 // Re-export PendingExtensionUi for callers that build snapshot projections.
 export type { PendingExtensionUi };
