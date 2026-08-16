@@ -129,24 +129,31 @@ a:hover {
   min-height: 0;
   overflow: auto;
   position: relative;
-  /* Breathing room around the conversation: generous top/bottom padding and
-     side padding so bubbles never touch the panel edges (mobile tightens
-     below). */
-  padding: 20px 28px 32px;
+  /* Horizontal padding mirrors the composer (ChatInput root: 16px left,
+     34px right on desktop for the minimap gutter, 16px on mobile) so the
+     bubble column's edges align exactly with the input box below. Vertical
+     padding adds breathing room top/bottom. */
+  padding: 20px 16px 32px;
+}
+
+@media (min-width: 641px) {
+  .transcript-scroll {
+    padding-right: 34px;
+  }
 }
 
 .transcript-inner {
   width: 100%;
   position: relative;
-  /* Source column cap: content centers in an 820px column like the desktop
-     app, so wide windows get natural whitespace on both sides. */
+  /* Same 820px column cap as the composer's content column, so bubbles and
+     the input box share identical edges at every window width. */
   max-width: 820px;
   margin: 0 auto;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 640px) {
   .transcript-scroll {
-    padding: 14px 12px 20px;
+    padding: 14px 16px 20px;
   }
 }
 
@@ -291,11 +298,24 @@ a:hover {
   opacity: 0.72;
 }
 
+.composer {
+  /* Mirror the exact ChatInput root geometry (padding 0 16px 15px, right 34
+     on desktop for the minimap gutter) so the disabled-state input aligns
+     with both the live composer and the transcript bubble column. */
+  padding: 0 16px 15px;
+}
+
+@media (min-width: 641px) {
+  .composer {
+    padding-right: 34px;
+  }
+}
+
 .composer-inner {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 920px;
+  max-width: 820px;
   margin: 0 auto;
 }
 
