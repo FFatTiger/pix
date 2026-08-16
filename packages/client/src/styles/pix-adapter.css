@@ -58,7 +58,6 @@ a:hover {
 /* —— pix-owned component styles (migrated from the deleted styles/app.css) —— */
 
 .icon-btn,
-.text-btn,
 .composer-send,
 .login-submit {
   border: 1px solid var(--border);
@@ -69,16 +68,9 @@ a:hover {
 }
 
 .icon-btn:hover,
-.text-btn:hover,
 .composer-send:hover:not(:disabled),
 .login-submit:hover:not(:disabled) {
   background: var(--bg-hover);
-}
-
-.text-btn--active {
-  background: var(--bg-selected);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-  color: var(--accent);
 }
 
 .icon-btn {
@@ -113,86 +105,23 @@ a:hover {
   flex-shrink: 0;
 }
 
-/* Edge-flow affordances (the workspace has no top header bar). */
-.project-open-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 30;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-}
-.project-open-overlay .project-open-form {
-  margin-top: 0;
-  width: min(560px, 100%);
-}
-.continue-live-pill {
+/* Transient auto-attach failure notice (no top header bar exists). */
+.live-attach-notice {
   position: absolute;
   top: 10px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 30;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  pointer-events: none;
-}
-.continue-live-pill .continue-live-btn,
-.continue-live-pill .project-open-error {
-  pointer-events: auto;
-}
-
-.workspace-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 650;
-}
-
-.workspace-subtitle {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.project-open-form {
-  margin-top: 12px;
-  max-width: 680px;
-}
-
-.project-open-form label {
-  display: block;
-  margin-bottom: 5px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.project-open-row {
-  display: flex;
-  gap: 8px;
-}
-
-.project-open-row input {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-card);
-  color: var(--text);
-  padding: 7px 9px;
-  font: inherit;
-}
-
-.project-open-row input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.project-open-error {
-  margin: 5px 0 0;
+  max-width: min(520px, 80%);
+  background: var(--bg-panel);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
   color: var(--danger);
   font-size: 12px;
+  line-height: 1.4;
+  padding: 5px 10px;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
 }
 
 .transcript-scroll {

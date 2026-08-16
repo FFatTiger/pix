@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
@@ -88,10 +88,80 @@ export function AppShell({ search }: AppShellProps) {
   // extension request closes. Passed explicitly to both ExtensionRequests and
   // Composer (no document queries).
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const [projectPath, setProjectPath] = useState("");
-  const [projectError, setProjectError] = useState<string | null>(null);
-  const [openingLive, setOpeningLive] = useState(false);
+  // ── Session selection → live attach (desktop behavior) ─────────────────────
+  // Selecting a session (sidebar click or a ?session= deep link) opens it LIVE
+  // directly — no separate "Continue live" step. The flow below owns the
+  // open: one attempt per (selection nonce, target) pair, superseded
+  // automatically when the user clicks another row mid-open (generation
+  // guard). Weak-network failures (retryable transport errors) re-attempt
+  // once the socket is ready again — bounded to 3 retries per selection; the
+  // store's reconnect already resumes the intended attach, so this is a
+  // safety net, not a polling loop. Hard failures fail closed to the
+  // read-only history view with a transient notice.
+  const [selectionNonce, setSelectionNonce] = useState(0);
+  const [openAttempt, setOpenAttempt] = useState(0);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const openKeyRef = useRef<string | null>(null);
+  const openGenRef = useRef(0);
+  const openRetriesRef = useRef(0);
+  const retryTargetRef = useRef<string | null>(null);
+  const connection = runtime.connection;
+
+  useEffect(() => {
+    const target = search.session;
+    if (!canAgent || !target) return;
+    if (runtime.attached && runtime.sessionId === target) return;
+    const key = `${selectionNonce}:${target}`;
+    if (openKeyRef.current === key) return; // this selection already has a flow
+    openKeyRef.current = key;
+    openRetriesRef.current = 0;
+    retryTargetRef.current = null;
+    const gen = ++openGenRef.current;
+    detachGenRef.current += 1; // error ownership moves to this open flow
+    setLiveError(null);
+    void (async () => {
+      try {
+        // A stale runtime attached to another session is detached first
+        // (idempotent; the worker is preserved server-side).
+        if (runtime.attached && runtime.sessionId && runtime.sessionId !== target) {
+          await runtime.detach();
+        }
+        await runtime.openSession(target);
+      } catch (error) {
+        if (!mountedRef.current || gen !== openGenRef.current) return;
+        const retryable =
+          error !== null && typeof error === "object" && (error as { retryable?: unknown }).retryable === true;
+        if (retryable) retryTargetRef.current = target;
+        setLiveError(describeError(error));
+      }
+    })();
+  }, [canAgent, search.session, runtime, selectionNonce, openAttempt]);
+
+  // Weak-network recovery: retry a retryable auto-open failure when the
+  // socket becomes ready again (bounded; superseded selections never retry).
+  useEffect(() => {
+    if (connection !== "ready") return;
+    const target = retryTargetRef.current;
+    if (!target || !canAgent) return;
+    if (runtime.attached && runtime.sessionId === target) {
+      retryTargetRef.current = null;
+      return;
+    }
+    if (openRetriesRef.current >= 3) return;
+    openRetriesRef.current += 1;
+    retryTargetRef.current = null;
+    openKeyRef.current = null; // allow the open effect to run again
+    setLiveError(null);
+    setOpenAttempt((n) => n + 1);
+  }, [connection, canAgent, runtime.attached, runtime.sessionId]);
+
+  // Transient failure notice: auto-clears so a recovered session is not left
+  // with a stale error banner.
+  useEffect(() => {
+    if (!liveError) return;
+    const timer = window.setTimeout(() => setLiveError(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [liveError]);
 
   // Title-bar workspace-controls portal host (Sidebar portals its project +
   // worktree controls in here; the sidebar fallback renders while null).
@@ -178,35 +248,6 @@ export function AppShell({ search }: AppShellProps) {
     });
   }, [runtime.attached, runtime.sessionId, search.session]);
 
-  // Read-only deep link (D1A-2 phase 2): a `?session=` link renders history via
-  // the read-only context GET and NEVER auto-activates a Worker. The user must
-  // explicitly Continue live (and only when the `agent` capability is present)
-  // before openSession attaches a runtime. When the runtime is attached to a
-  // DIFFERENT session, Continue live first awaits detach (never stop), then
-  // opens the selected session; only an actual attach to the selection is live.
-  const handleContinueLive = (): void => {
-    if (!canAgent || !search.session || openingLive) return;
-    const sessionId = search.session; // narrowed to string; stable for this action
-    setLiveError(null);
-    detachGenRef.current += 1; // hand error ownership to this explicit action
-    setOpeningLive(true);
-    void (async () => {
-      try {
-        // If a stale runtime is still attached to another session, fail-closed
-        // detach it before opening the selected session (double-click/race safe:
-        // detach() is idempotent and this runs under the openingLive guard).
-        if (runtime.attached && runtime.sessionId && runtime.sessionId !== sessionId) {
-          await runtime.detach();
-        }
-        await runtime.openSession(sessionId);
-      } catch (error) {
-        setLiveError(describeError(error));
-      } finally {
-        setOpeningLive(false);
-      }
-    })();
-  };
-
   const hasProject = Boolean(search.cwd);
   const canCreate = canAgent && hasProject && !runtime.attached && !runtime.sessionStopped;
 
@@ -223,15 +264,6 @@ export function AppShell({ search }: AppShellProps) {
     }
   };
 
-  // Sidebar row selection: URL navigation only (`?session=`); the runtime is
-  // never implicitly attached or detached by a list click.
-  const handleSelectSession = useCallback((sessionId: string): void => {
-    void navigate({
-      to: "/",
-      search: { session: sessionId, ...(search.cwd === undefined ? {} : { cwd: search.cwd }) },
-    });
-  }, [navigate, search.cwd]);
-
   const handleCreate = (): void => {
     if (!search.cwd) return;
     // New session is an explicit create. Clear any stale ?session= selection so
@@ -245,19 +277,17 @@ export function AppShell({ search }: AppShellProps) {
     void runtime.createSession({ cwd: search.cwd, projectRoot: search.cwd }).catch(() => undefined);
   };
 
-  const handleOpenProject = (event: FormEvent<HTMLFormElement>): void => {
-    event.preventDefault();
-    const cwd = projectPath;
-    const absolute = cwd.startsWith("/") || /^[A-Za-z]:[\\/]/.test(cwd);
-    if (!absolute) {
-      setProjectError("Enter an absolute project path.");
-      return;
-    }
-    setProjectError(null);
-    // Open project ONLY sets the workspace cwd — it must never implicitly create
-    // a session. Starting a runtime is an explicit New session / Continue live.
-    void navigate({ to: "/", search: { cwd } });
-  };
+  // Sidebar row selection: URL navigation (`?session=`) plus a selection
+  // nonce. The nonce lets the auto-attach flow above re-run when the user
+  // re-clicks the SAME row after a stop/failure (the URL alone would not
+  // change). It never stops or creates anything by itself.
+  const handleSelectSession = useCallback((sessionId: string): void => {
+    setSelectionNonce((n) => n + 1);
+    void navigate({
+      to: "/",
+      search: { session: sessionId, ...(search.cwd === undefined ? {} : { cwd: search.cwd }) },
+    });
+  }, [navigate, search.cwd]);
 
   // D3A managed-worktree switch/Open: Client URL cwd navigation ONLY. Never Git
   // checkout, never create/attach/stop/move a Session, never a server endpoint.
@@ -479,50 +509,11 @@ export function AppShell({ search }: AppShellProps) {
 
             <Composer live={selectionMatchesLive} textareaRef={composerTextareaRef} />
           </main>
-          {/* Edge-flow affordances — the workspace itself has NO top header
-              bar. The project-open form only appears (centered) when no
-              project is opened; Continue live only appears as a floating pill
-              while a history session is selected. */}
-          {canAgent && !hasProject && !runtime.attached ? (
-            <div className="project-open-overlay">
-              <form className="project-open-form" onSubmit={handleOpenProject}>
-                <label htmlFor="project-path">Project path</label>
-                <div className="project-open-row">
-                  <input
-                    id="project-path"
-                    type="text"
-                    value={projectPath}
-                    onChange={(event) => {
-                      setProjectPath(event.target.value);
-                      if (projectError) setProjectError(null);
-                    }}
-                    placeholder="/absolute/path/to/project"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <button type="submit" className="text-btn" disabled={projectPath.length === 0}>
-                    Open project
-                  </button>
-                </div>
-                {projectError ? <p className="project-open-error" role="alert">{projectError}</p> : null}
-              </form>
-            </div>
-          ) : null}
-          {canAgent && search.session && !selectionMatchesLive ? (
-            <div className="continue-live-pill">
-              <button
-                type="button"
-                className="text-btn continue-live-btn"
-                onClick={handleContinueLive}
-                disabled={openingLive}
-                aria-busy={openingLive}
-              >
-                {openingLive ? "Connecting…" : "Continue live"}
-              </button>
-              {liveError ? (
-                <p className="project-open-error" role="alert">{liveError}</p>
-              ) : null}
-            </div>
+          {/* Transient auto-attach failure notice (weak network / stopped
+              runtime): the session stays readable while the retry safety net
+              runs; the notice auto-clears. */}
+          {liveError ? (
+            <div className="live-attach-notice" role="alert">{liveError}</div>
           ) : null}
         </div>
       </div>
