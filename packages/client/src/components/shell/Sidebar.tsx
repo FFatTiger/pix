@@ -27,6 +27,7 @@ import { useContextMenu, type ContextMenuEntry } from "@/components/ContextMenu"
 import { ExplorerPanel } from "@/features/workspace/explorer/ExplorerPanel";
 import { WorktreeSelector } from "@/features/workspace/worktree/WorktreeSelector";
 import { bucketOf, timeBucketKey, TIME_BUCKET_ORDER, type TimeBucket } from "@/lib/time-groups";
+import { loadForkCollapsed, saveForkCollapsed } from "@/lib/fork-collapse-state";
 import {
   loadCollapsedTimeGroups,
   saveCollapsedTimeGroups,
@@ -1058,7 +1059,19 @@ function SessionTreeItem({
   onSelectSession: (sessionId: string) => void;
   depth: number;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const subtreeContains = (current: SessionTreeNode, targetId: string): boolean => {
+    if (current.session.sessionId === targetId) return true;
+    return current.children.some((child) => subtreeContains(child, targetId));
+  };
+
+  // Persisted fork-tree collapse: default COLLAPSED (never "all expanded"),
+  // remembered per parent session id in localStorage. A subtree containing the
+  // selected session starts expanded so the selected row is never hidden.
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    const stored = loadForkCollapsed(node.session.sessionId);
+    if (stored !== undefined) return stored;
+    return !subtreeContains(node, selectedSessionId ?? "");
+  });
   const hasChildren = node.children.length > 0;
 
   const isSelected = node.session.sessionId === selectedSessionId;
@@ -1092,7 +1105,11 @@ function SessionTreeItem({
           depth={depth}
           hasChildren={hasChildren}
           collapsed={collapsed}
-          onToggleCollapse={() => setCollapsed((v) => !v)}
+          onToggleCollapse={() => setCollapsed((v) => {
+            const next = !v;
+            saveForkCollapsed(node.session.sessionId, next);
+            return next;
+          })}
         />
       </div>
       {hasChildren && !collapsed && (
