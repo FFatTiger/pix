@@ -552,3 +552,78 @@ describe("RuntimeProvider — D2-P7 compact/abortCompaction exposure", () => {
     expect(abortSettled).toBe(true);
   });
 });
+
+describe("Composer — F9 stats late-settle generation on session switch", () => {
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  function statsFrame(ws: FakeWebSocket): { id: string; payload: { sessionId: string; command: { commandId: string; type: string } } } {
+    const frame = lastFrame<{ type: string; id: string; payload: { sessionId: string; command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(frame.payload.command.type).toBe("get_session_stats");
+    return frame;
+  }
+
+  function statsAck(ws: FakeWebSocket, frame: { id: string; payload: { command: { commandId: string; type: string } } }, tokenCount: number): Promise<void> {
+    return serverSend(ws, {
+      type: "response",
+      id: frame.id,
+      payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: "get_session_stats", stats: { messageCount: 1, tokenCount } } } },
+    });
+  }
+
+  it("a new session never shows the OLD session's stats: a late old ack is dropped and the own fetch wins", async () => {
+    mount(<Composer />);
+    const ws = await driveReady();
+    const store = capturedStore!;
+    const caps = ["runtime.prompt", "runtime.abort", "runtime.stats"];
+
+    // Attach s1 (runtime.stats) → the Composer stats effect fires a fetch. The
+    // fetch is left UNACKED so it is genuinely in-flight (pending slot) at the
+    // switch — the exact F9 scenario.
+    await act(async () => {
+      const p = store.openSession("s1");
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", capabilities: caps }) });
+      await flush();
+      await p;
+    });
+    const s1Stats = statsFrame(ws);
+
+    // Switch to s2 (detach-then-open, the AppShell path). With the store fix the
+    // pending s1 get_session_stats is settled on detach and the s2 attach fires
+    // a FRESH fetch bound to s2. A resent OLD commandId/sessionId frame here
+    // would mean the F9 slot leak is back.
+    await act(async () => {
+      const detachP = store.detach();
+      await flush();
+      const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+      ws.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+      await detachP;
+    });
+    await act(async () => {
+      const p = store.openSession("s2");
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s2", capabilities: caps }) });
+      await flush();
+      await p;
+    });
+    const s2Stats = statsFrame(ws);
+    // The new fetch is a FRESH command on s2 — never the old s1 sessionId/commandId.
+    expect(s2Stats.payload.sessionId).toBe("s2");
+    expect(s2Stats.id).not.toBe(s1Stats.id);
+    expect(s2Stats.payload.command.commandId).not.toBe(s1Stats.payload.command.commandId);
+
+    // Deliver the OLD s1 stats ack LATE — must not pollute the new session.
+    await statsAck(ws, s1Stats, 99999);
+    expect(screen.queryByLabelText("Session info")).toBeNull();
+
+    // Ack s2's OWN fetch → the new session shows ITS tokens (222), never s1's.
+    await statsAck(ws, s2Stats, 222);
+    const btn = screen.getByLabelText("Session info");
+    fireEvent.click(btn);
+    expect(screen.getAllByText("222").length).toBeGreaterThan(0);
+    expect(screen.queryByText("99,999")).toBeNull();
+  });
+});

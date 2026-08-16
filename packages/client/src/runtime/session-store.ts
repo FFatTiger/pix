@@ -521,12 +521,13 @@ export class SessionStore implements RuntimeSocketHandler {
       // D2-P4: a queued turn is bound to the live streaming session; detaching
       // invalidates it (fixed error, never overwrites a prompt promise).
       this.settlePendingQueuedTurn({ code: "interrupted", message: "detached", retryable: false });
-      // D2-P5/D2-P7: a pending bash command or compact command bound to the
-      // detached session — reject it exactly once so the single ordinary-command
-      // slot frees and a late result/event can never settle a newly attached
-      // session. Ordinary prompt semantics are preserved (the prompt promise is
-      // never overwritten here; it settles on its own correlated response or
-      // transport loss).
+      // D2-P5/D2-P7/F9: a pending control command bound to the detached
+      // session — bash / compact / read-only queries (get_state, get_tools,
+      // get_commands, get_session_stats, get_last_assistant_text) — is rejected
+      // exactly once so the single ordinary-command slot frees and a late
+      // result/event can never settle a newly attached session. Ordinary prompt
+      // semantics are preserved (the prompt promise is never overwritten here;
+      // it settles on its own correlated response or transport loss).
       this.settlePendingControlCommand({ code: "interrupted", message: "detached", retryable: false });
       // D2-P8: an in-flight extension reply is bound to the detached session —
       // reject it exactly once so the dedicated slot frees and a late result can
@@ -1567,9 +1568,11 @@ export class SessionStore implements RuntimeSocketHandler {
     if (this.pendingQueuedTurn && this.sessionId !== null && this.sessionId !== sessionId) {
       this.settlePendingQueuedTurn({ code: "interrupted", message: "session switched", retryable: false });
     }
-    // D2-P5/D2-P7: a pending bash command or compact command bound to the OLD
-    // session is rejected exactly once on a switch so its late result/events
-    // cannot settle the new session.
+    // D2-P5/D2-P7/F9: a pending control command bound to the OLD session
+    // (bash / compact / read-only queries) is rejected exactly once on a switch
+    // so its late result/events cannot settle the new session (a frequent
+    // getSessionStats poll otherwise survives the switch and re-blocks the new
+    // session's prompt with session_busy).
     if (this.pendingCommand && this.sessionId !== null && this.sessionId !== sessionId) {
       this.settlePendingControlCommand({ code: "interrupted", message: "session switched", retryable: false });
     }
@@ -1957,20 +1960,34 @@ export class SessionStore implements RuntimeSocketHandler {
   }
 
   /**
-   * Reject an in-flight BASH or COMPACT command exactly once (D2-P5/D2-P7
-   * detach/session-switch). Both occupy the single ordinary-command slot
-   * ({@link pendingCommand}) like prompts, but are long-running control
-   * resources with their own abort path: on detach/switch they must be settled
-   * so the slot frees and a late result/event can never settle a newly attached
-   * session. A pending PROMPT is deliberately left untouched here (prompt
-   * promise semantics are preserved — it settles on its own correlated response
-   * or transport loss).
+   * Reject an in-flight CONTROL command exactly once (D2-P5/D2-P7 detach/
+   * session-switch, F9). This covers BASH / COMPACT (long-running control
+   * resources with their own abort path) AND the read-only QUERY commands
+   * (`get_state`, `get_tools`, `get_commands`, `get_session_stats`,
+   * `get_last_assistant_text`). All occupy the single ordinary-command slot
+   * ({@link pendingCommand}) like prompts, but are bound to the detached/old
+   * session: on detach/switch they must be settled so the slot frees and a late
+   * result/event can never settle a newly attached session. Without the query
+   * coverage, a frequent `get_session_stats` poll (Composer runtime.stats
+   * polling) survives the switch, resync re-sends the OLD payload.sessionId +
+   * commandId onto the new attach, keeps the slot busy, and the new session's
+   * prompt fails `session_busy`. A pending PROMPT is deliberately left
+   * untouched here (prompt promise semantics are preserved — it settles on its
+   * own correlated response or transport loss).
    */
   private settlePendingControlCommand(error: ProtocolError): void {
     const pending = this.pendingCommand;
     if (pending && pending.command.type === "command") {
       const commandType = pending.command.payload.command.type;
-      if (commandType === "bash" || commandType === "compact") {
+      if (
+        commandType === "bash" ||
+        commandType === "compact" ||
+        commandType === "get_state" ||
+        commandType === "get_tools" ||
+        commandType === "get_commands" ||
+        commandType === "get_session_stats" ||
+        commandType === "get_last_assistant_text"
+      ) {
         this.pendingCommand = null;
         pending.reject(error);
       }

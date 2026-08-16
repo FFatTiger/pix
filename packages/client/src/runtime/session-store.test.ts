@@ -1904,6 +1904,202 @@ describe("SessionStore — D2-P7 compact runtime control (compact / abortCompact
   });
 });
 
+describe("SessionStore — F9 read-only query cleanup on detach / session switch", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function attachWithCaps(h: RuntimeHarness, capabilities: string[], sessionId = "s1"): Promise<FakeWebSocket> {
+    h.store.connect();
+    const ws = openReady(h);
+    const p = h.store.openSession(sessionId);
+    return flush().then(() => {
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, capabilities }) });
+      return flush().then(() => p.then(() => ws));
+    });
+  }
+
+  function statsFrame(ws: FakeWebSocket): { id: string; payload: { sessionId: string; command: { commandId: string; type: string } } } {
+    const frame = lastFrame<{ type: string; id: string; payload: { sessionId: string; command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(frame).toBeTruthy();
+    expect(frame.payload.command.type).toBe("get_session_stats");
+    return frame;
+  }
+
+  function promptFrame(ws: FakeWebSocket): { id: string; payload: { sessionId: string; command: { commandId: string; type: string; message: string } } } {
+    const frame = lastFrame<{ type: string; id: string; payload: { sessionId: string; command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(frame).toBeTruthy();
+    expect(frame.payload.command.type).toBe("prompt");
+    return frame;
+  }
+
+  function respondOk(ws: FakeWebSocket, id: string, commandId: string, type: string): void {
+    ws.serverSend({ type: "response", id, payload: { ok: true, result: { commandId, result: { ok: true, type } } } });
+  }
+
+  /** Detach s1 (AppShell switch path: detach-then-open) and ack the detach. */
+  async function detachAck(ws: FakeWebSocket, h: RuntimeHarness): Promise<void> {
+    const detachP = h.store.detach();
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    ws.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await expect(detachP).resolves.toBeUndefined();
+  }
+
+  /** Open s2 with the SAME epoch so a stale resync would (if not settled) re-send the old commandId. */
+  async function openNewSession(ws: FakeWebSocket, h: RuntimeHarness, capabilities: string[], sessionId = "s2"): Promise<void> {
+    const openP = h.store.openSession(sessionId);
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, epoch: "e1", capabilities }) });
+    await flush();
+    await openP;
+  }
+
+  it("detach settles a pending get_session_stats exactly once and frees the ordinary slot", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.stats"], "s1");
+    const statsP = h.store.getSessionStats();
+    await flush();
+    const statsCmd = statsFrame(ws);
+    expect(statsCmd.payload.sessionId).toBe("s1");
+
+    await detachAck(ws, h);
+    // The pending stats query bound to the detached session is rejected once.
+    await expect(statsP).rejects.toMatchObject({ code: "interrupted", message: "detached", retryable: false });
+
+    // A late ack for the OLD stats envelope is dropped — it must settle nothing.
+    ws.serverSend({ type: "response", id: statsCmd.id, payload: { ok: true, result: { commandId: statsCmd.payload.command.commandId, result: { ok: true, type: "get_session_stats", stats: { messageCount: 99, tokenCount: 999 } } } } });
+    await flush();
+    expect(h.store.getSnapshot().error).toBeNull();
+
+    // The ordinary slot is free: a fresh command goes out on the new session.
+    await openNewSession(ws, h, ["runtime.prompt", "runtime.abort"]);
+    const promptP = h.store.sendPrompt("hello new session");
+    await flush();
+    const cmd = promptFrame(ws);
+    expect(cmd.payload.sessionId).toBe("s2");
+    expect(cmd.payload.command.commandId).not.toBe(statsCmd.payload.command.commandId);
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "prompt");
+    await expect(promptP).resolves.toBeTruthy();
+  });
+
+  it("session switch never re-sends the OLD get_session_stats commandId/sessionId; the new prompt is not session_busy", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.stats"], "s1");
+    const statsP = h.store.getSessionStats();
+    statsP.catch(() => undefined);
+    await flush();
+    const statsCmd = statsFrame(ws);
+    const oldEnvelope = statsCmd.id;
+    const oldCommandId = statsCmd.payload.command.commandId;
+
+    // AppShell switch path: detach s1, then open s2 (same epoch — the same
+    // resync that used to re-send the OLD sessionId+commandId onto the new attach).
+    await detachAck(ws, h);
+    await expect(statsP).rejects.toMatchObject({ code: "interrupted", message: "detached", retryable: false });
+    await openNewSession(ws, h, ["runtime.prompt", "runtime.abort", "runtime.stats"]);
+
+    // No command was resent carrying the old commandId / old sessionId.
+    const resent = (ws.sent as { type: string; id?: string; payload?: { sessionId?: string; command?: { commandId?: string } } }[]).filter(
+      (frame) => frame.type === "command" && frame.id !== oldEnvelope && frame.payload?.command?.commandId === oldCommandId,
+    );
+    expect(resent).toHaveLength(0);
+
+    // The new session's prompt sends immediately — never session_busy.
+    const promptP = h.store.sendPrompt("first prompt on s2");
+    await flush();
+    const cmd = promptFrame(ws);
+    expect(cmd.payload.sessionId).toBe("s2");
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "prompt");
+    await expect(promptP).resolves.toBeTruthy();
+  });
+
+  it("a late OLD stats ack never settles or pollutes the new session's prompt", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.stats"], "s1");
+    const statsP = h.store.getSessionStats();
+    statsP.catch(() => undefined);
+    await flush();
+    const statsCmd = statsFrame(ws);
+    const oldEnvelope = statsCmd.id;
+    const oldCommandId = statsCmd.payload.command.commandId;
+
+    await detachAck(ws, h);
+    await expect(statsP).rejects.toMatchObject({ code: "interrupted", message: "detached" });
+    await openNewSession(ws, h, ["runtime.prompt", "runtime.abort"]);
+
+    const promptP = h.store.sendPrompt("hi");
+    await flush();
+    const promptCmd = promptFrame(ws);
+
+    // Deliver the OLD stats ack while the new prompt is in flight: it is
+    // dropped (wrong envelope), so the prompt must still be pending.
+    ws.serverSend({ type: "response", id: oldEnvelope, payload: { ok: true, result: { commandId: oldCommandId, result: { ok: true, type: "get_session_stats", stats: { messageCount: 77, tokenCount: 777 } } } } });
+    await flush();
+    let settled = false;
+    promptP.then(() => { settled = true; }, () => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    expect(h.store.getSnapshot().error).toBeNull();
+
+    // Only the prompt's OWN correlated ack settles it.
+    respondOk(ws, promptCmd.id, promptCmd.payload.command.commandId, "prompt");
+    await expect(promptP).resolves.toBeTruthy();
+  });
+
+  it.each([
+    ["getState", "get_state"],
+    ["getTools", "get_tools"],
+    ["getCommands", "get_commands"],
+    ["getLastAssistantText", "get_last_assistant_text"],
+  ] as const)("detach/switch settle a pending %s query and free the slot (table-driven)", async (_helper, type) => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"], "s1");
+    const helper = (): Promise<unknown> => {
+      if (_helper === "getState") return h.store.getState();
+      if (_helper === "getTools") return h.store.getTools();
+      if (_helper === "getCommands") return h.store.getCommands();
+      return h.store.getLastAssistantText();
+    };
+    const p = helper();
+    p.catch(() => undefined);
+    await flush();
+    const frame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(frame.payload.command.type).toBe(type);
+
+    await detachAck(ws, h);
+    await expect(p).rejects.toMatchObject({ code: "interrupted", message: "detached", retryable: false });
+    await openNewSession(ws, h, ["runtime.prompt", "runtime.abort"]);
+    // Slot freed: a fresh query on the new session sends immediately.
+    const freshP = h.store.getCommands();
+    await flush();
+    const fresh = lastFrame<{ type: string; id: string; payload: { sessionId: string; command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(fresh.payload.sessionId).toBe("s2");
+    expect(fresh.payload.command.type).toBe("get_commands");
+    ws.serverSend({ type: "response", id: fresh.id, payload: { ok: true, result: { commandId: fresh.payload.command.commandId, result: { ok: true, type: "get_commands", commands: [] } } } });
+    await expect(freshP).resolves.toEqual([]);
+  });
+
+  it("a pending PROMPT is NOT settled by detach (prompt promise semantics untouched)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"], "s1");
+    const promptP = h.store.sendPrompt("hello");
+    await flush();
+    const promptCmd = promptFrame(ws);
+
+    await detachAck(ws, h);
+    // The prompt is still pending — detach/settlePendingControlCommand never
+    // touches a prompt promise. It settles only on its own correlated response.
+    let settled = false;
+    promptP.then(() => { settled = true; }, () => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    respondOk(ws, promptCmd.id, promptCmd.payload.command.commandId, "prompt");
+    await expect(promptP).resolves.toBeTruthy();
+  });
+});
+
 function wsEvent(h: RuntimeHarness, payload: Record<string, unknown>): void {
   h.lastSocket().serverSend({ type: "event", payload });
 }
