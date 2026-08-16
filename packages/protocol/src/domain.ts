@@ -72,6 +72,8 @@ export const SessionHeaderSchema = z.strictObject({
   cwd: NonEmptyStringSchema,
   projectRoot: NonEmptyStringSchema,
   title: z.string().optional(),
+  /** First user message text (sanitized, one line, bounded) — display fallback. */
+  firstMessage: z.string().optional(),
   createdAt: z.number().optional(),
   updatedAt: z.number().optional(),
   lastMessageAt: z.number().optional(),

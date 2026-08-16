@@ -198,18 +198,33 @@ function sessionPathKey(filePath: string, platform: NodeJS.Platform = process.pl
 }
 
 /**
+ * Sanitized display fallback from the SDK's firstMessage: the "(no messages)"
+ * sentinel and empty text are omitted; whitespace collapses to one line and the
+ * value is bounded so list payloads stay small.
+ */
+function displayFirstMessage(info: SdkSessionInfo): string | undefined {
+  const raw = info.firstMessage;
+  if (typeof raw !== "string" || raw.length === 0 || raw === "(no messages)") return undefined;
+  const oneLine = raw.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+  if (oneLine.length === 0) return undefined;
+  return oneLine.length > 200 ? `${oneLine.slice(0, 200)}…` : oneLine;
+}
+
+/**
  * Map a single SDK session info onto a canonical SessionHeader. `provenance`
  * supplies the fork linkage: the list path resolves `parentSessionId` from
  * `info.parentSessionPath` via the path map (no `forkPointEntryId`), while the
  * detail path passes full provenance read from the session's entries.
  */
 function toHeader(info: SdkSessionInfo, provenance: { parentSessionId?: string; forkPointEntryId?: string }): SessionHeader {
+  const firstMessage = displayFirstMessage(info);
   return {
     sessionId: info.id,
     sessionFile: info.path,
     cwd: info.cwd,
     projectRoot: info.cwd,
     ...(info.name === undefined ? {} : { title: info.name }),
+    ...(firstMessage === undefined ? {} : { firstMessage }),
     createdAt: info.created.getTime(),
     updatedAt: info.modified.getTime(),
     lastMessageAt: info.modified.getTime(),

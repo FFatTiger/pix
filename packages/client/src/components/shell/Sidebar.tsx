@@ -939,9 +939,18 @@ export function Sidebar({
   );
 }
 
-/** The exact title a session row shows (name, else a short id). */
+/**
+ * The exact title a session row shows: explicit name, else the first user
+ * message (bounded one-line summary), else a short id.
+ */
 function sessionRowTitle(session: SessionHeader): string {
-  return session.title || session.sessionId.slice(0, 12);
+  if (session.title) return session.title;
+  const first = session.firstMessage;
+  if (typeof first === "string" && first.trim().length > 0) {
+    const oneLine = first.replace(/[\r\n\t]+/g, " ").trim();
+    return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+  }
+  return session.sessionId.slice(0, 12);
 }
 
 /** Total number of session rows in a tree, including fork children. */
