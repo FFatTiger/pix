@@ -416,6 +416,15 @@ export class SessionStore implements RuntimeSocketHandler {
   private historyGeneration = 0;
   private historyAnchorLeafId: string | null = null;
   private liveEntries: SessionEntry[] = [];
+  /**
+   * Optimistic UI layer (Apple-style instant feedback): a sent prompt is
+   * appended here IMMEDIATELY (own `optimistic:<n>` id) and consumed FIFO by
+   * the first real user `message_end`. Retryable failures keep the entry (the
+   * turn usually IS running behind a transport timeout); a definite failure
+   * removes it. Rebase/detach clears it with the rest of the live layer.
+   */
+  private optimisticUserEntries: SessionEntry[] = [];
+  private optimisticSeq = 0;
   private error: ProtocolError | null = null;
   private fatal = false;
 
@@ -731,6 +740,14 @@ export class SessionStore implements RuntimeSocketHandler {
         retryable: false,
       } satisfies ProtocolError);
     }
+    // Optimistic UI parity with sendPrompt: a queued turn's user bubble also
+    // appears immediately (it commits as a user message_end once the current
+    // turn reaches it). The RUNNING indicator is NOT touched: a queued turn by
+    // definition rides an already-running turn (real isStreaming is on), and
+    // optimistically setting isPromptRunning here would flip stop's honest
+    // abort-first ordering. Pushed only after the definite-failure checks so
+    // an early reject never leaks an optimistic bubble.
+    const optimisticId = this.appendOptimisticUserEntry(trimmed);
     const commandId = this.id();
     const imagePayload = images === undefined || images.length === 0 ? {} : { images: [...images] as ImageAttachment[] };
     const command: RuntimeCommand = type === "steer"
@@ -743,16 +760,69 @@ export class SessionStore implements RuntimeSocketHandler {
       id: envelopeId,
       payload: { sessionId, command },
     };
-    return new Promise((resolve, reject) => {
+    return this.withOptimisticGuard(optimisticId, new Promise((resolve, reject) => {
       this.pendingQueuedTurn = { commandId: command.commandId, envelopeId, generation: this.socket.currentGeneration, sessionId, command: wsMessage, type, resolve, reject };
       this.notify();
       this.send(wsMessage);
-    });
+    }));
+  }
+
+  /** Append the optimistic user bubble (bounded) and return its local id. */
+  private appendOptimisticUserEntry(message: string): string {
+    const optimisticId = `optimistic:${(this.optimisticSeq += 1)}`;
+    this.optimisticUserEntries = [
+      ...this.optimisticUserEntries.slice(-4),
+      { entryId: optimisticId, message: { role: "user", content: message } },
+    ];
+    return optimisticId;
+  }
+
+  /** Optimistic running indicator (cleared by the first real event / failure). */
+  private markOptimisticRunning(): void {
+    if (this.snapshot) {
+      this.snapshot = {
+        ...this.snapshot,
+        state: { ...this.snapshot.state, isPromptRunning: true },
+        streaming: { ...this.snapshot.streaming, active: true, phase: "waiting_model" },
+      };
+    }
+  }
+
+  /**
+   * Definite failure → drop the optimistic bubble (the turn never started).
+   * Retryable failure (timeout / transport) keeps it: the turn is usually
+   * already running server-side and the real message_end (or a rebase)
+   * settles it.
+   */
+  private withOptimisticGuard(optimisticId: string, promise: Promise<unknown>): Promise<unknown> {
+    return promise.then(
+      (value) => value,
+      (cause: unknown) => {
+        const retryable = cause !== null && typeof cause === "object"
+          && (cause as { retryable?: unknown }).retryable === true;
+        if (!retryable) {
+          this.optimisticUserEntries = this.optimisticUserEntries.filter(
+            (entry) => entry.entryId !== optimisticId,
+          );
+          this.notify();
+        }
+        throw cause;
+      },
+    );
   }
 
   /** Send a prompt (ordinary command). commandId is stable across same-epoch retries. */
   sendPrompt(message: string): Promise<unknown> {
-    return this.sendCommand({ commandId: this.id(), type: "prompt", message });
+    // Optimistic UI: the user bubble + a running agent indicator appear the
+    // moment Enter is pressed. The wire round-trip continues in the background;
+    // the real committed entry replaces the optimistic one via message_end.
+    const optimisticId = this.appendOptimisticUserEntry(message);
+    this.markOptimisticRunning();
+    this.notify();
+    return this.withOptimisticGuard(
+      optimisticId,
+      this.sendCommand({ commandId: this.id(), type: "prompt", message }),
+    );
   }
 
   // --- D2-P8 extension-UI final response -------------------------------------
@@ -1830,6 +1900,7 @@ export class SessionStore implements RuntimeSocketHandler {
       this.historyGeneration += 1;
       this.historyAnchorLeafId = this.snapshot.state.leafId ?? null;
       this.liveEntries = [];
+      this.optimisticUserEntries = [];
     }
     // D2-P8: a snapshot that drops `runtime.extension_ui` settles an in-flight reply.
     this.settleExtensionUiOnCapabilityLoss();
@@ -1853,6 +1924,13 @@ export class SessionStore implements RuntimeSocketHandler {
    */
   private recordCommittedLiveEntries(event: RuntimeEventData & { readonly eventId: number; readonly epoch: string }): void {
     if (event.type === "message_end") {
+      // Consume the OLDEST optimistic user bubble FIFO — the real committed
+      // entry replaces it regardless of content (the sent prompt and its
+      // committed twin are adjacent by construction).
+      if (event.message.role === "user" && this.optimisticUserEntries.length > 0) {
+        const [, ...rest] = this.optimisticUserEntries;
+        this.optimisticUserEntries = rest;
+      }
       this.appendLiveEntry({
         entryId: event.entryId,
         ...(event.parentEntryId === undefined ? {} : { parentEntryId: event.parentEntryId }),
@@ -1885,6 +1963,7 @@ export class SessionStore implements RuntimeSocketHandler {
     this.historyGeneration += 1;
     this.historyAnchorLeafId = null;
     this.liveEntries = [];
+    this.optimisticUserEntries = [];
   }
 
   /**
@@ -2202,7 +2281,7 @@ export class SessionStore implements RuntimeSocketHandler {
       streamingPartial: snapshot?.streaming?.partialMessage ?? null,
       historyGeneration: this.historyGeneration,
       historyAnchorLeafId: this.historyAnchorLeafId,
-      liveEntries: this.liveEntries,
+      liveEntries: [...this.optimisticUserEntries, ...this.liveEntries],
       error: this.error,
       fatal: this.fatal,
       canAgent: this.host?.capabilities.includes("agent") === true,

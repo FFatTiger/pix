@@ -377,6 +377,14 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
     [sessionId],
   );
 
+  /** True when a failure is DEFINITE (the turn never started) — only then restore the draft. */
+  const isDefiniteFailure = useCallback((cause: unknown): boolean => {
+    if (cause !== null && typeof cause === "object" && (cause as { retryable?: unknown }).retryable === true) {
+      return false;
+    }
+    return true;
+  }, []);
+
   /** Restore the text into the composer when a send-path command fails. */
   const restoreDraft = useCallback((message: string) => {
     inputRef.current?.insertIfEmpty(message);
@@ -389,31 +397,35 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
       const wireImages = toImageAttachments(images);
       runtime
         .sendPrompt(message, wireImages)
-        .catch(() => {
-          if (isCurrent()) restoreDraft(message);
+        .catch((cause: unknown) => {
+          // Optimistic UI: the bubble is already on screen. Only a DEFINITE
+          // failure (not accepted) rolls the text back into the composer; a
+          // retryable timeout/transport failure usually has the turn running
+          // server-side — the optimistic bubble stays until message_end/rebase.
+          if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(message);
         });
     },
-    [live, runtime, isCurrent, restoreDraft],
+    [live, runtime, isCurrent, restoreDraft, isDefiniteFailure],
   );
 
   const handleSteer = useCallback(
     (message: string, images?: AttachedImage[]) => {
       if (!hasSteer) return;
-      runtime.steer(message, toImageAttachments(images)).catch(() => {
-        if (isCurrent()) restoreDraft(message);
+      runtime.steer(message, toImageAttachments(images)).catch((cause: unknown) => {
+        if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(message);
       });
     },
-    [hasSteer, runtime, isCurrent, restoreDraft],
+    [hasSteer, runtime, isCurrent, restoreDraft, isDefiniteFailure],
   );
 
   const handleFollowUp = useCallback(
     (message: string, images?: AttachedImage[]) => {
       if (!hasFollowUp) return;
-      runtime.followUp(message, toImageAttachments(images)).catch(() => {
-        if (isCurrent()) restoreDraft(message);
+      runtime.followUp(message, toImageAttachments(images)).catch((cause: unknown) => {
+        if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(message);
       });
     },
-    [hasFollowUp, runtime, isCurrent, restoreDraft],
+    [hasFollowUp, runtime, isCurrent, restoreDraft, isDefiniteFailure],
   );
 
   const handlePromptWithStreamingBehavior = useCallback(
