@@ -312,6 +312,7 @@ export const zhCNLocale = {
     "desktop.deleteDraft": "删除草稿“{title}”？",
     "desktop.delete": "删除",
     "desktop.rename": "重命名",
+    "desktop.exportVisibleBranch": "导出可见分支",
     "desktop.regenerateTitle": "重新生成标题",
     "desktop.titleModelMissing": "尚未配置标题生成模型——请在 设置 → 聊天 中选择一个",
     "desktop.regenerateTitleDraft": "草稿尚无已保存的历史可供命名",

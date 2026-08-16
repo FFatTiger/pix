@@ -1,33 +1,39 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
-import { formatCwdLabel, type WorkspaceSearch } from "@/lib/search-params";
+import { createQueryOptions } from "@/api/query-keys";
+import type { WorkspaceSearch } from "@/lib/search-params";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
-import { SessionActions } from "@/components/shell/SessionActions";
 import { Sidebar } from "@/components/shell/Sidebar";
-import { VisibleBranchExportButton } from "@/components/shell/VisibleBranchExportButton";
-import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
-import { CatalogPanel, hasCatalogCapability } from "@/features/catalog/CatalogPanel";
+import { AppTitleBar } from "@/components/shell/AppTitleBar";
+import { SettingsModal, type SettingsTab } from "@/components/shell/SettingsModal";
+import { WallpaperLayer } from "@/components/WallpaperLayer";
+import { LoginPage } from "@/components/shell/LoginPage";
+import { FileViewerPanel, type FileViewerPanelHandle } from "@/features/workspace/viewer/FileViewerPanel";
+import { ProjectTrustDialog } from "@/features/settings/ProjectTrustDialog";
 import { ExtensionRequests } from "@/features/extension-request/ExtensionRequests";
 import { useRuntime } from "@/runtime";
-import type { ConnectionState } from "@/runtime";
+import { useTheme } from "@/hooks/useTheme";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { useGateStatus } from "@/features/gate/useGate";
+import { useHttpClient } from "@/app/http-context";
+import { useResizablePanel } from "@/hooks/useResizablePanel";
+import {
+  getDefaultRightPanelWidth,
+  getRightPanelMaxWidth,
+  getSidebarMaxWidth,
+  RIGHT_PANEL_MAX_WIDTH,
+  RIGHT_PANEL_MIN_WIDTH,
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+} from "@/lib/panel-layout";
 
 export interface AppShellProps {
   search: WorkspaceSearch;
 }
-
-const CONNECTION_LABEL: Record<ConnectionState, string> = {
-  idle: "offline",
-  connecting: "connecting",
-  handshaking: "handshake",
-  ready: "ready",
-  attaching: "attaching",
-  attached: "live",
-  reconnecting: "reconnecting",
-  unavailable: "unavailable",
-  stopped: "stopped",
-};
 
 function describeError(cause: unknown): string {
   if (cause && typeof cause === "object" && "message" in cause) {
@@ -37,13 +43,44 @@ function describeError(cause: unknown): string {
   return String(cause);
 }
 
+/**
+ * Desktop shell v3 — the upstream desktop app's AppShell DOM (title bar,
+ * wallpaper-backed sidebar / chat / right-panel row, resizable panels,
+ * settings modal, project-trust dialog) with the pix runtime wired in:
+ * URL-driven workspace/session selection, honest capability gates and the
+ * read-only/live session center (TranscriptList + Composer stay in place).
+ */
 export function AppShell({ search }: AppShellProps) {
-  const { canAgent, mode, capabilities, unavailable } = useCapabilities();
+  const { canAgent, canBrowseSessions, unavailable } = useCapabilities();
   const runtime = useRuntime();
   const navigate = useNavigate();
+  const http = useHttpClient();
+  const { isDark, toggleTheme } = useTheme();
+  const isMobile = useIsMobile();
+  const gate = useGateStatus();
+
+  // ── Gate guard: an unauthenticated user gets a full-screen wallpaper + gate
+  // (no desktop shell, no unauthorized API surface). The /login route stays
+  // available for direct links.
+  const gateRequired = gate.data?.required === true && gate.data.authenticated !== true;
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [workspaceOpen, setWorkspaceOpen] = useState(false);
-  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
+  // On mobile the sidebar is an overlay drawer; hide it by default so the chat
+  // is visible on load. Runs once the breakpoint resolves after hydration.
+  useEffect(() => {
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
+  useEffect(() => {
+    setMobileSidebarReady(true);
+  }, []);
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("models");
+  const openSettings = useCallback((tab: SettingsTab) => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }, []);
+
   // D2-P8: the composer textarea is the focus-return target when the final
   // extension request closes. Passed explicitly to both ExtensionRequests and
   // Composer (no document queries).
@@ -52,6 +89,34 @@ export function AppShell({ search }: AppShellProps) {
   const [projectError, setProjectError] = useState<string | null>(null);
   const [openingLive, setOpeningLive] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
+
+  // Title-bar workspace-controls portal host (Sidebar portals its project +
+  // worktree controls in here; the sidebar fallback renders while null).
+  const [titleWorkspaceControlsHost, setTitleWorkspaceControlsHost] = useState<HTMLDivElement | null>(null);
+
+  // Session title for the top bar — resolved from the shared sessions-list
+  // cache (same key the Sidebar queries), never a separate request.
+  const options = createQueryOptions(http);
+  const sessionsQuery = useQuery({ ...options.sessions.list(), enabled: canBrowseSessions });
+  const titleSessionId = search.session ?? runtime.sessionId ?? null;
+  const titleSession = titleSessionId === null
+    ? null
+    : (sessionsQuery.data?.sessions ?? []).find((session) => session.sessionId === titleSessionId) ?? null;
+  const sessionTitle = titleSession
+    ? (titleSession.title || titleSession.sessionId.slice(0, 12))
+    : titleSessionId === null
+      ? null
+      : titleSessionId.slice(0, 12);
+
+  // ── Project trust (read-only Host projector) ─────────────────────────────
+  // The REF floating warning + dialog surface real server state; the confirm
+  // action stays hidden until a trust-write capability exists (no POST route).
+  const trustQuery = useQuery({
+    ...options.trust.get(search.cwd ?? ""),
+    enabled: search.cwd !== undefined,
+  });
+  const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
+  const showTrustWarning = Boolean(search.cwd) && trustQuery.data !== undefined && trustQuery.data.trusted === false;
 
   // History/live coordination (D1A-2 phase 2 + history-switching fix).
   //
@@ -62,7 +127,7 @@ export function AppShell({ search }: AppShellProps) {
   // never offers a delete control for the live session (the server rejects live
   // deletes with 409 anyway). The page must then fail-closed
   // to the selected session's HISTORY view — never render A's live transcript,
-  // never enable the Composer, never show SessionActions — and detach A so the
+  // never enable the Composer, never show runtime actions — and detach A so the
   // stale runtime stops streaming. The mismatch effect below owns that detach:
   // it fires once per (attached, selected) pair (no loops), is fire-and-forget
   // (errors are surfaced but the page stays fail-closed), and a generation
@@ -126,31 +191,8 @@ export function AppShell({ search }: AppShellProps) {
     })();
   };
 
-  const connection = runtime.connection;
   const hasProject = Boolean(search.cwd);
   const canCreate = canAgent && hasProject && !runtime.attached && !runtime.sessionStopped;
-  const hasWorkspaceCap =
-    capabilities.includes("files") ||
-    capabilities.includes("git") ||
-    capabilities.includes("worktree");
-  const hasCatalogCap = hasCatalogCapability((cap) => capabilities.includes(cap));
-
-  // Cap revocation: hide Catalog button and close the dock so no stale UI stays open.
-  // A later re-grant does NOT auto-reopen (same contract as Catalog).
-  useEffect(() => {
-    if (!hasCatalogCap && catalogOpen) setCatalogOpen(false);
-  }, [hasCatalogCap, catalogOpen]);
-  useEffect(() => {
-    if (!hasWorkspaceCap && workspaceOpen) setWorkspaceOpen(false);
-  }, [hasWorkspaceCap, workspaceOpen]);
-  // Topbar always shows the SELECTED session (search.session first) so it never
-  // claims live B while the runtime is still attached to A; a detached-to-history
-  // view falls back to the live session id only when nothing is selected.
-  const shownSessionId = search.session ?? runtime.sessionId;
-  const connectionLabel = isMismatched ? "attached" : CONNECTION_LABEL[connection];
-  const connectionTitle = isMismatched
-    ? `Runtime attached to ${runtime.sessionId?.slice(0, 8) ?? "?"}…; detaching to show the selected session`
-    : `Runtime connection: ${connection}`;
 
   // D4 session-history delete navigation. AppShell is the single navigation
   // owner: when the deleted session equals the URL-selected session it clears
@@ -164,6 +206,15 @@ export function AppShell({ search }: AppShellProps) {
       void navigate({ to: "/", search: search.cwd === undefined ? {} : { cwd: search.cwd } });
     }
   };
+
+  // Sidebar row selection: URL navigation only (`?session=`); the runtime is
+  // never implicitly attached or detached by a list click.
+  const handleSelectSession = useCallback((sessionId: string): void => {
+    void navigate({
+      to: "/",
+      search: { session: sessionId, ...(search.cwd === undefined ? {} : { cwd: search.cwd }) },
+    });
+  }, [navigate, search.cwd]);
 
   const handleCreate = (): void => {
     if (!search.cwd) return;
@@ -201,6 +252,73 @@ export function AppShell({ search }: AppShellProps) {
     void navigate({ to: "/", search: { cwd: path } });
   };
 
+  // ── Right panel (file viewer) ────────────────────────────────────────────
+  const fileViewerRef = useRef<FileViewerPanelHandle>(null);
+  const handleOpenFile = useCallback((filePath: string, fileName: string, openOptions?: { initialDisplayMode?: "diff" }): void => {
+    fileViewerRef.current?.openFile(filePath, fileName, null, openOptions);
+    setRightPanelOpen(true);
+    // On mobile the file panel is full-screen; close the drawer so it shows.
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
+
+  // ── Resizable panels (source layout semantics) ───────────────────────────
+  const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH);
+  const rightPanelWidthRef = useRef(getDefaultRightPanelWidth(1366));
+  const getResponsiveRightPanelWidth = useCallback(
+    () => getDefaultRightPanelWidth(window.innerWidth),
+    [],
+  );
+  const getResponsiveSidebarMaxWidth = useCallback(
+    () => getSidebarMaxWidth({
+      viewportWidth: window.innerWidth,
+      rightPanelOpen,
+      rightPanelWidth: rightPanelWidthRef.current,
+    }),
+    [rightPanelOpen],
+  );
+  const getResponsiveRightPanelMaxWidth = useCallback(
+    () => getRightPanelMaxWidth({
+      viewportWidth: window.innerWidth,
+      sidebarOpen,
+      sidebarWidth: sidebarWidthRef.current,
+    }),
+    [sidebarOpen],
+  );
+  const sidebarPanel = useResizablePanel({
+    ariaLabel: "Resize sidebar",
+    cssVariable: "--sidebar-width",
+    defaultWidth: SIDEBAR_DEFAULT_WIDTH,
+    getMaxWidth: getResponsiveSidebarMaxWidth,
+    growthDirection: "right",
+    maxWidth: SIDEBAR_MAX_WIDTH,
+    minWidth: SIDEBAR_MIN_WIDTH,
+    storageKey: "pi-sidebar-width",
+    widthRef: sidebarWidthRef,
+  });
+  const rightPanel = useResizablePanel({
+    ariaLabel: "Resize file panel",
+    cssVariable: "--right-panel-width",
+    defaultWidth: getDefaultRightPanelWidth(1366),
+    getDefaultWidth: getResponsiveRightPanelWidth,
+    getMaxWidth: getResponsiveRightPanelMaxWidth,
+    growthDirection: "left",
+    maxWidth: RIGHT_PANEL_MAX_WIDTH,
+    minWidth: RIGHT_PANEL_MIN_WIDTH,
+    storageKey: "pi-right-panel-width",
+    widthRef: rightPanelWidthRef,
+  });
+  const reclampSidebarWidth = sidebarPanel.reclampWidth;
+  const reclampRightPanelWidth = rightPanel.reclampWidth;
+  useEffect(() => {
+    if (!rightPanelOpen) return;
+    reclampSidebarWidth();
+    reclampRightPanelWidth();
+  }, [reclampRightPanelWidth, reclampSidebarWidth, rightPanelOpen]);
+
+  const handleSidebarToggle = useCallback(() => {
+    setSidebarOpen((open) => !open);
+  }, []);
+
   const subtitle = !canAgent
     ? unavailable
       ? "Host runtime unavailable — no capability has been negotiated."
@@ -216,175 +334,225 @@ export function AppShell({ search }: AppShellProps) {
               ? `Opening live session ${search.session.slice(0, 8)}…`
               : "Read-only session history — Continue live to attach a runtime."
             : hasProject
-              ? "Select a project to start a runtime session."
+              ? "Select a session or start a new one."
               : "Open a project to start a runtime session.";
 
-  return (
-    <div className={`app-shell${sidebarOpen ? "" : " app-shell--sidebar-collapsed"}`}>
-      <header className="app-topbar">
-        <div className="app-topbar-left">
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-            aria-pressed={sidebarOpen}
-            onClick={() => setSidebarOpen((v) => !v)}
-          >
-            ☰
-          </button>
-          <Link to="/" className="brand" search={{}}>
-            pix
-          </Link>
-          <span className="topbar-badge" title={`Host mode: ${mode}`}>
-            {mode}
-          </span>
-          <span className={`topbar-badge topbar-badge--${isMismatched ? "warn" : runtime.attached ? "ok" : connection === "unavailable" || runtime.fatal ? "warn" : "muted"}`} title={connectionTitle} aria-live="polite">
-            rt:{connectionLabel}
-          </span>
-        </div>
-        <div className="app-topbar-center">
-          <span className="topbar-cwd" title={search.cwd ?? ""}>
-            {formatCwdLabel(search.cwd)}
-          </span>
-          {shownSessionId ? (
-            <span className="topbar-session" title={shownSessionId}>
-              session:{shownSessionId.slice(0, 8)}
-              {shownSessionId.length > 8 ? "…" : ""}
-            </span>
-          ) : (
-            <span className="topbar-session topbar-session--muted">no session</span>
-          )}
-        </div>
-        <div className="app-topbar-right">
-          <span className="topbar-caps" title={capabilities.join(", ")}>
-            caps:{capabilities.length}
-          </span>
-          {hasWorkspaceCap ? (
-            <button
-              type="button"
-              className={`text-btn${workspaceOpen ? " text-btn--active" : ""}`}
-              aria-pressed={workspaceOpen}
-              aria-label={workspaceOpen ? "Hide workspace panel" : "Show workspace panel"}
-              onClick={() => {
-                setWorkspaceOpen((v) => {
-                  const next = !v;
-                  if (next) setCatalogOpen(false);
-                  return next;
-                });
-              }}
-            >
-              Workspace
-            </button>
-          ) : null}
-          {hasCatalogCap ? (
-            <button
-              type="button"
-              className={`text-btn${catalogOpen ? " text-btn--active" : ""}`}
-              aria-pressed={catalogOpen}
-              aria-label={catalogOpen ? "Hide catalog panel" : "Show catalog panel"}
-              onClick={() => {
-                setCatalogOpen((v) => {
-                  const next = !v;
-                  if (next) setWorkspaceOpen(false);
-                  return next;
-                });
-              }}
-            >
-              Catalog
-            </button>
-          ) : null}
-          {canCreate ? (
-            <button type="button" className="text-btn" onClick={handleCreate}>
-              New session
-            </button>
-          ) : null}
-          <Link to="/login" className="text-btn" search={{ next: "/" }}>
-            Gate
-          </Link>
-        </div>
-      </header>
+  // ── Unauthenticated: full-screen wallpaper + gate ────────────────────────
+  if (gateRequired) {
+    return (
+      <div style={{ position: "fixed", inset: 0, overflow: "hidden", background: "var(--bg)" }}>
+        <WallpaperLayer />
+        <LoginPage next="/" />
+      </div>
+    );
+  }
 
-      <div className="app-body">
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100dvh / var(--app-ui-scale, 1))", overflow: "hidden", background: "var(--bg)" }}>
+      <AppTitleBar
+        sidebarOpen={sidebarOpen}
+        onSidebarToggle={handleSidebarToggle}
+        isDark={isDark}
+        toggleTheme={toggleTheme}
+        rightPanelOpen={rightPanelOpen}
+        onToggleFilePanel={() => setRightPanelOpen((v) => !v)}
+        onOpenSettings={() => openSettings("models")}
+        sessionTitle={sessionTitle}
+        onWorkspaceControlsHostChange={setTitleWorkspaceControlsHost}
+      />
+      {showTrustWarning && (
+        <button
+          type="button"
+          onClick={() => {
+            setProjectTrustDialogOpen(true);
+          }}
+          title="Project resources are restricted"
+          aria-label="Project resources are restricted — trust project"
+          style={{
+            position: "fixed",
+            top: 48,
+            right: isMobile ? 12 : 20,
+            zIndex: 700,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 7,
+            padding: "8px 11px",
+            border: "1px solid color-mix(in srgb, var(--accent-orange) 52%, var(--border))",
+            borderRadius: 7,
+            background: "color-mix(in srgb, var(--accent-orange) 11%, var(--bg-panel))",
+            color: "var(--accent-orange)",
+            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.16)",
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          <span aria-hidden="true">⚠</span>
+          Trust project
+        </button>
+      )}
+      <div
+        style={{
+          "--sidebar-width": `${sidebarPanel.width}px`,
+          "--right-panel-width": `${rightPanel.width}px`,
+          flex: 1,
+          display: "flex",
+          overflow: "hidden",
+          minWidth: 0,
+          position: "relative",
+        } as React.CSSProperties}
+      >
+      {/* Full-window wallpaper behind sidebar, chat and right panel — see
+          components/WallpaperLayer.tsx and styles/wallpaper.css. First child
+          of the workspace row so every later sibling paints above it. */}
+      <WallpaperLayer />
+      {/* Mobile overlay backdrop */}
+      <div
+        className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
+        onClick={() => setSidebarOpen(false)}
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 199,
+          background: "rgba(0,0,0,0.4)",
+          opacity: sidebarOpen ? 1 : 0,
+          pointerEvents: sidebarOpen ? "auto" : "none",
+          transition: "opacity 0.25s ease",
+        }}
+      />
+
+      {/* Left sidebar */}
+      <div
+        ref={sidebarPanel.panelRef}
+        className={`sidebar-container${sidebarOpen ? " sidebar-open" : " sidebar-closed"}${mobileSidebarReady ? "" : " sidebar-mobile-pending"}${sidebarPanel.isResizing ? " panel-is-resizing" : ""}`}
+        style={{
+          "--sidebar-width": `${sidebarPanel.width}px`,
+          background: "var(--bg-panel)",
+          display: "flex",
+          flexDirection: "column",
+          flexShrink: 0,
+          zIndex: 200,
+        } as React.CSSProperties}
+      >
         <Sidebar
-          open={sidebarOpen}
           search={search}
           liveSessionId={runtime.attached ? runtime.sessionId : null}
+          liveStreaming={runtime.attached && runtime.streaming}
           onSessionDeleted={handleSessionDeleted}
-        />
-
-        <main className="workspace">
-          <div className="workspace-header">
-            <h1 className="workspace-title">{runtime.attached ? "Session" : search.session ? "Session" : "Workstation"}</h1>
-            <p className="workspace-subtitle">{subtitle}</p>
-            {canAgent && !hasProject && !runtime.attached ? (
-              <form className="project-open-form" onSubmit={handleOpenProject}>
-                <label htmlFor="project-path">Project path</label>
-                <div className="project-open-row">
-                  <input
-                    id="project-path"
-                    type="text"
-                    value={projectPath}
-                    onChange={(event) => {
-                      setProjectPath(event.target.value);
-                      if (projectError) setProjectError(null);
-                    }}
-                    placeholder="/absolute/path/to/project"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <button type="submit" className="text-btn" disabled={projectPath.length === 0}>
-                    Open project
-                  </button>
-                </div>
-                {projectError ? <p className="project-open-error" role="alert">{projectError}</p> : null}
-              </form>
-            ) : null}
-            {canAgent && search.session && !selectionMatchesLive ? (
-              <div className="continue-live">
-                <button
-                  type="button"
-                  className="text-btn continue-live-btn"
-                  onClick={handleContinueLive}
-                  disabled={openingLive}
-                  aria-busy={openingLive}
-                >
-                  {openingLive ? "Connecting…" : "Continue live"}
-                </button>
-                {liveError ? (
-                  <p className="project-open-error" role="alert">{liveError}</p>
-                ) : null}
-              </div>
-            ) : null}
-            {search.session ? (
-              <VisibleBranchExportButton
-                sessionId={search.session}
-                selectionMatchesLive={selectionMatchesLive}
-              />
-            ) : null}
-          </div>
-
-          <SessionActions live={selectionMatchesLive} />
-
-          <TranscriptList
-            live={selectionMatchesLive}
-            {...(search.session === undefined ? {} : { sessionId: search.session })}
-          />
-
-          {selectionMatchesLive ? (
-            <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
-          ) : null}
-
-          <Composer live={selectionMatchesLive} textareaRef={composerTextareaRef} />
-        </main>
-
-        <WorkspacePanel
-          cwd={search.cwd}
-          open={workspaceOpen}
-          onClose={() => setWorkspaceOpen(false)}
+          onSelectSession={handleSelectSession}
           onOpenWorktree={handleOpenWorktree}
+          onNewSession={handleCreate}
+          canNewSession={canCreate}
+          onOpenFile={handleOpenFile}
+          workspaceControlsHosts={{ title: titleWorkspaceControlsHost }}
         />
-        <CatalogPanel cwd={search.cwd} open={catalogOpen} onClose={() => setCatalogOpen(false)} />
       </div>
+      {sidebarOpen && (
+        <div
+          {...sidebarPanel.separatorProps}
+          className="workspace-panel-splitter sidebar-panel-splitter"
+        />
+      )}
+
+      {/* Center: chat */}
+      <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+        <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+          <main className="workspace">
+            <div className="workspace-header">
+              <h1 className="workspace-title">{runtime.attached ? "Session" : search.session ? "Session" : "Workstation"}</h1>
+              <p className="workspace-subtitle">{subtitle}</p>
+              {canAgent && !hasProject && !runtime.attached ? (
+                <form className="project-open-form" onSubmit={handleOpenProject}>
+                  <label htmlFor="project-path">Project path</label>
+                  <div className="project-open-row">
+                    <input
+                      id="project-path"
+                      type="text"
+                      value={projectPath}
+                      onChange={(event) => {
+                        setProjectPath(event.target.value);
+                        if (projectError) setProjectError(null);
+                      }}
+                      placeholder="/absolute/path/to/project"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button type="submit" className="text-btn" disabled={projectPath.length === 0}>
+                      Open project
+                    </button>
+                  </div>
+                  {projectError ? <p className="project-open-error" role="alert">{projectError}</p> : null}
+                </form>
+              ) : null}
+              {canAgent && search.session && !selectionMatchesLive ? (
+                <div className="continue-live">
+                  <button
+                    type="button"
+                    className="text-btn continue-live-btn"
+                    onClick={handleContinueLive}
+                    disabled={openingLive}
+                    aria-busy={openingLive}
+                  >
+                    {openingLive ? "Connecting…" : "Continue live"}
+                  </button>
+                  {liveError ? (
+                    <p className="project-open-error" role="alert">{liveError}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            <TranscriptList
+              live={selectionMatchesLive}
+              {...(search.session === undefined ? {} : { sessionId: search.session })}
+            />
+
+            {selectionMatchesLive ? (
+              <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
+            ) : null}
+
+            <Composer live={selectionMatchesLive} textareaRef={composerTextareaRef} />
+          </main>
+        </div>
+      </div>
+
+      {/* Right panel: file viewer — always mounted, width animated via CSS */}
+      {rightPanelOpen && (
+        <div
+          {...rightPanel.separatorProps}
+          className="workspace-panel-splitter right-panel-splitter"
+        />
+      )}
+      <div
+        ref={rightPanel.panelRef}
+        className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          background: "var(--bg)",
+        }}
+      >
+        <FileViewerPanel
+          ref={fileViewerRef}
+          {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
+          onOpenLinkedFile={(filePath) => handleOpenFile(filePath, filePath.split("/").pop() ?? filePath)}
+        />
+      </div>
+    </div>
+    {projectTrustDialogOpen && search.cwd ? (
+      <ProjectTrustDialog
+        cwd={search.cwd}
+        error={null}
+        onCancelAction={() => setProjectTrustDialogOpen(false)}
+      />
+    ) : null}
+    {settingsOpen ? (
+      <SettingsModal
+        initialTab={settingsTab}
+        cwd={search.cwd ?? null}
+        onCloseAction={() => setSettingsOpen(false)}
+      />
+    ) : null}
     </div>
   );
 }

@@ -312,6 +312,7 @@ export const enLocale = {
     "desktop.deleteDraft": "Delete draft {title}?",
     "desktop.delete": "Delete",
     "desktop.rename": "Rename",
+    "desktop.exportVisibleBranch": "Export visible branch",
     "desktop.regenerateTitle": "Regenerate title",
     "desktop.titleModelMissing": "No title model configured — pick one in Settings → Chat",
     "desktop.regenerateTitleDraft": "Drafts have no saved history to name yet",
