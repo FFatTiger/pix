@@ -305,8 +305,10 @@ export function projectSessionTree(sessionId: string, entries: readonly unknown[
       if (keep.has(node.id) && node.id !== parent.entryId) {
         parent.children.push(toProjected(node, [...skipped]));
       }
-      for (const childId of node.childIds) {
-        const child = byId.get(childId);
+      // `pending` is LIFO: push children newest-first so they are consumed in
+      // the canonical oldest-first order used by the non-flattened tree.
+      for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+        const child = byId.get(node.childIds[index]!);
         if (child === undefined || flattenedSeen.has(child.id)) continue;
         pending.push({
           node: child,

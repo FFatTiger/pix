@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { isRuntimeError } from "@fffattiger/pix-runtime-core";
 import { createPiSdkSessionStore } from "../src/internal/session-store.js";
-import { MAX_TREE_LABEL_LENGTH, projectSessionTree } from "../src/internal/session-tree.js";
+import { MAX_PROJECTED_TREE_DEPTH, MAX_TREE_LABEL_LENGTH, projectSessionTree } from "../src/internal/session-tree.js";
 
 const NOW = 1_700_000_000_000;
 const TS = (index: number) => new Date(NOW + index).toISOString();
@@ -452,6 +452,31 @@ describe("session tree cache sharing (injected SDK)", () => {
     const tree = projectSessionTree("s", [messageLine("e1", null, "user", "q", 1)], "ghost-leaf");
     assert.equal(tree.currentLeafId, undefined);
     assert.equal(tree.entryCount, 1);
+  });
+
+  it("depth-cap flattening preserves canonical oldest-first DFS order", () => {
+    const entries: unknown[] = [messageLine("n0", null, "user", "root", 0)];
+    for (let index = 1; index <= MAX_PROJECTED_TREE_DEPTH + 2; index += 1) {
+      entries.push(messageLine(`n${index}`, `n${index - 1}`, "assistant", `main ${index}`, index * 2));
+      entries.push(messageLine(`s${index}`, `n${index - 1}`, "assistant", `side ${index}`, index * 2 + 1));
+    }
+
+    const tree = projectSessionTree("deep", entries, `n${MAX_PROJECTED_TREE_DEPTH + 2}`);
+    let ancestor = tree.roots[0]!;
+    for (let depth = 1; depth < MAX_PROJECTED_TREE_DEPTH; depth += 1) {
+      ancestor = ancestor.children.find((child) => child.entryId === `n${depth}`)!;
+    }
+    assert.deepEqual(
+      ancestor.children.map((child) => child.entryId),
+      [
+        `n${MAX_PROJECTED_TREE_DEPTH}`,
+        `n${MAX_PROJECTED_TREE_DEPTH + 1}`,
+        `n${MAX_PROJECTED_TREE_DEPTH + 2}`,
+        `s${MAX_PROJECTED_TREE_DEPTH + 2}`,
+        `s${MAX_PROJECTED_TREE_DEPTH + 1}`,
+        `s${MAX_PROJECTED_TREE_DEPTH}`,
+      ],
+    );
   });
 
   it("structural entries map to the system kind with fixed labels", async () => {
