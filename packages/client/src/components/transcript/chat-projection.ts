@@ -83,7 +83,7 @@ function hasDisplayableProcessMessage(message: AgentMessage): boolean {
   return message.role === "custom";
 }
 
-function isCompactionBoundary(message: AgentMessage): boolean {
+export function isCompactionBoundary(message: AgentMessage): boolean {
   return message.role === "custom" && message.customType === "compaction";
 }
 

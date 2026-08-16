@@ -23,16 +23,24 @@
  * consume this single merged entry list so no surface can drift.
  */
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { SessionEntry } from "@fffattiger/pix-protocol";
 import { createSessionsApi } from "@/api/sessions";
 import { queryKeys } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 import { useRuntime } from "@/runtime";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
+import { isCompactionBoundary } from "@/components/transcript/chat-projection";
 
 /** Default first-page size (Protocol v2 default; bounded 1..200 server-side). */
 export const TRANSCRIPT_PAGE_SIZE = 50;
+
+/**
+ * Upper bound on automatic turn-completion pages per history generation. A
+ * single pathological turn cannot chain unbounded fetches; past the cap the
+ * fragment renders as today (per-row) until the user scrolls further.
+ */
+const MAX_TURN_COMPLETION_PAGES = 20;
 
 export interface SessionTranscript {
   /** Merged chronological entries (persisted pages + committed live entries). */
@@ -151,6 +159,32 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
     [persistedEntries, liveEntries],
   );
   const entryIds = useMemo(() => entries.map((entry) => entry.entryId), [entries]);
+
+  // --- Turn-boundary completion ---------------------------------------------
+  // The chat projection only renders the collapsed ProcessGroup for a turn
+  // when it sees the turn's opening message (user prompt or compaction
+  // boundary). A page boundary can slice a turn so the oldest loaded entry is
+  // a mid-turn fragment (assistant / toolResult / bash) — those rows would
+  // degrade to one-by-one rendering until the user scrolls enough to load the
+  // turn's head. When the oldest loaded entry is a fragment, keep pulling
+  // older pages automatically (bounded) so a whole turn is always rendered
+  // collapsed.
+  const boundaryKey = `${sessionId ?? ""}:${liveGeneration}:${liveAnchor ?? ""}`;
+  const autoPagesRef = useRef({ key: "", count: 0 });
+  if (autoPagesRef.current.key !== boundaryKey) autoPagesRef.current = { key: boundaryKey, count: 0 };
+
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = query;
+  useEffect(() => {
+    if (!hasNextPage || isFetchingNextPage) return;
+    if (autoPagesRef.current.key !== boundaryKey) return;
+    if (autoPagesRef.current.count >= MAX_TURN_COMPLETION_PAGES) return;
+    const oldestMessage = persistedEntries[0]?.message;
+    if (oldestMessage === undefined) return;
+    const startsCompleteTurn = oldestMessage.role === "user" || isCompactionBoundary(oldestMessage);
+    if (startsCompleteTurn) return;
+    autoPagesRef.current.count += 1;
+    void fetchNextPage();
+  }, [persistedEntries, hasNextPage, isFetchingNextPage, fetchNextPage, boundaryKey]);
 
   const hasOlder = query.hasNextPage === true && query.isFetchingNextPage === false;
   const loadOlder = useCallback(() => {
