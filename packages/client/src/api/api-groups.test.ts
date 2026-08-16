@@ -26,7 +26,7 @@ describe("API domain response parsing", () => {
   it("parses session list/detail/context baselines with revision", async () => {
     await expect(createSessionsApi(client({ sessions: [header], revision: 2 })).list()).resolves.toEqual({ sessions: [header], revision: 2 });
     await expect(createSessionsApi(client({ session: header, revision: 3 })).detail("s")).resolves.toEqual({ session: header, revision: 3 });
-    await expect(createSessionsApi(client({ context: { sessionId: "s", entries: [] }, revision: 4 })).context("s")).resolves.toEqual({ context: { sessionId: "s", entries: [] }, revision: 4 });
+    await expect(createSessionsApi(client({ context: { sessionId: "s", entries: [], pageInfo: { hasMore: false } }, revision: 4 })).context("s")).resolves.toEqual({ context: { sessionId: "s", entries: [], pageInfo: { hasMore: false } }, revision: 4 });
   });
 
   it("rejects malformed sessions", async () => {

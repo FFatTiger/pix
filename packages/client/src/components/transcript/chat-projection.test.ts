@@ -65,9 +65,11 @@ describe("chat-projection — user → process → final", () => {
       assistant([{ type: "toolCall", toolCallId: "tc1", toolName: "read", input: {} }]),
       toolResult("tc1", "ok"),
     ]);
-    // No final answer → the tool-call assistant becomes a process row (never a
-    // fake answer row) and the trailing toolResult renders after it.
-    expect(kinds(rows)).toEqual(["message", "process", "message"]);
+    // No final answer and NO text in the final assistant → the tool-call
+    // assistant becomes a process row (never a fabricated answer row). The
+    // trailing toolResult renders inline under its toolCall, so it never
+    // occupies a standalone (formerly empty) row.
+    expect(kinds(rows)).toEqual(["message", "process"]);
   });
 
   it("attaches the turn's written files to the final answer row", () => {

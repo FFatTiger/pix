@@ -334,7 +334,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     const finalProcessMessage = finalSplit.processBlocks.length > 0
       ? withAssistantBlocks(finalAssistant, finalSplit.processBlocks, { omitUsage: true })
       : null;
-    // pi-web parity: a provider-failed turn (stopReason "error") always
+    // Legacy-web parity: a provider-failed turn (stopReason "error") always
     // renders its answer row (error text) even without answer blocks.
     const finalError = getAssistantErrorMessage(finalAssistant);
     // Interrupted-turn fallback (pix): no answer blocks AND no error — the

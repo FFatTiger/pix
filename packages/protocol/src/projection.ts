@@ -42,17 +42,30 @@ export function applyStreamingDelta(
     case "assistant": {
       if (message.role !== "assistant") throw new Error("stream role mismatch");
       const content = [...(message.content ?? [])];
-      if (delta.delta.type === "text") content.push({ type: "text", text: delta.delta.text });
-      else if (delta.delta.type === "thinking") content.push({ type: "thinking", thinking: delta.delta.thinking });
-      else content.push({ type: "toolCall", toolCallId: delta.delta.toolCallId, toolName: delta.delta.toolName, input: delta.delta.input });
+      const last = content[content.length - 1];
+      // Same-kind suffix deltas APPEND to the last block so a growing answer
+      // renders as ONE continuously extending text/thinking run (chunks must
+      // never become separate blocks → separate rendered lines). A different
+      // last-block kind starts a new block (thinking→text, text→thinking,
+      // anything→toolCall).
+      if (delta.delta.type === "text") {
+        if (last?.type === "text") content[content.length - 1] = { type: "text", text: last.text + delta.delta.text };
+        else content.push({ type: "text", text: delta.delta.text });
+      } else if (delta.delta.type === "thinking") {
+        if (last?.type === "thinking") content[content.length - 1] = { type: "thinking", thinking: last.thinking + delta.delta.thinking };
+        else content.push({ type: "thinking", thinking: delta.delta.thinking });
+      } else content.push({ type: "toolCall", toolCallId: delta.delta.toolCallId, toolName: delta.delta.toolName, input: delta.delta.input });
       return { ...message, content };
     }
     case "toolResult": {
       if (message.role !== "toolResult") throw new Error("stream role mismatch");
       if (message.toolCallId !== undefined && message.toolCallId !== delta.toolCallId) throw new Error("tool call mismatch");
       const content = [...(message.content ?? [])];
-      if (delta.delta.type === "text") content.push({ type: "text", text: delta.delta.text });
-      else content.push(delta.delta.image);
+      if (delta.delta.type === "text") {
+        const last = content[content.length - 1];
+        if (last?.type === "text") content[content.length - 1] = { type: "text", text: last.text + delta.delta.text };
+        else content.push({ type: "text", text: delta.delta.text });
+      } else content.push(delta.delta.image);
       return { ...message, toolCallId: delta.toolCallId, content };
     }
     case "custom": {

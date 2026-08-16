@@ -33,18 +33,18 @@ describe("reduceRuntimeEventData — purity & session guard", () => {
   });
 });
 
-describe("reduceRuntimeEventData — message stream deltas append (never merge)", () => {
-  it("appends adjacent text/thinking blocks without merging", () => {
+describe("reduceRuntimeEventData — message stream deltas merge same-kind blocks", () => {
+  it("appends text chunks into ONE growing block; a different kind starts a new block", () => {
     let snap = base();
     snap = reduceRuntimeEventData(snap, { type: "message_start", sessionId: "s", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" } });
     snap = reduceRuntimeEventData(snap, { type: "message_update", sessionId: "s", streamId: "st", messageId: "m", delta: { role: "assistant", delta: { type: "text", text: "Hel" } } });
     snap = reduceRuntimeEventData(snap, { type: "message_update", sessionId: "s", streamId: "st", messageId: "m", delta: { role: "assistant", delta: { type: "text", text: "lo" } } });
     snap = reduceRuntimeEventData(snap, { type: "message_update", sessionId: "s", streamId: "st", messageId: "m", delta: { role: "assistant", delta: { type: "thinking", thinking: "hmm" } } });
+    snap = reduceRuntimeEventData(snap, { type: "message_update", sessionId: "s", streamId: "st", messageId: "m", delta: { role: "assistant", delta: { type: "thinking", thinking: " more" } } });
     expect(snap.streaming?.partialMessage).toMatchObject({ role: "assistant" });
     expect(snap.streaming?.partialMessage?.role === "assistant" && snap.streaming.partialMessage.content).toEqual([
-      { type: "text", text: "Hel" },
-      { type: "text", text: "lo" },
-      { type: "thinking", thinking: "hmm" },
+      { type: "text", text: "Hello" },
+      { type: "thinking", thinking: "hmm more" },
     ]);
   });
   it("commits the message on message_end (advances leaf/count) and clears the stream without history", () => {

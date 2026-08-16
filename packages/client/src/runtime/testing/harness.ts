@@ -186,7 +186,6 @@ export function snapshotPayload(overrides: Partial<{
       },
       capabilities: { capabilities: overrides.capabilities ?? ["runtime.prompt", "runtime.abort"], version: 1 },
       streaming: { active: false, phase: "idle" },
-      messages: [],
     },
   };
 }

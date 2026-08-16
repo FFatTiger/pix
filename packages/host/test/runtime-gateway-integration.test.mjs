@@ -18,7 +18,6 @@ const snapshot = (sessionId) => ({
   state: { sessionId, isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, model: null, messageCount: 0 },
   capabilities: { capabilities: ["runtime.prompt", "runtime.abort"], version: 1 },
   streaming: { active: false, phase: "idle" },
-  messages: [],
 });
 
 function harness(workerOptions = {}) {

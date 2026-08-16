@@ -50,7 +50,7 @@ function mount(): QueryClient {
 }
 
 function ack() {
-  return { type: "handshake_ack", payload: { protocolVersion: 1, host: { mode: "local", capabilities: ["agent"] }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
+  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: ["agent"] }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
 }
 
 async function driveReady(): Promise<FakeWebSocket> {

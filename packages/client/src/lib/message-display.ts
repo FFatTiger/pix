@@ -22,7 +22,7 @@ export function isEmptyThinkingBlock(block: AssistantContentBlock, options: Disp
 
 /**
  * Error text for a completed assistant message whose provider turn failed
- * (stopReason "error"). Ported verbatim from pi-web lib/message-display.ts so a
+ * (stopReason "error"). Ported verbatim from the legacy web lib/message-display so a
  * failed turn always renders an answer row instead of silently vanishing.
  */
 export function getAssistantErrorMessage(
@@ -36,7 +36,7 @@ export function getAssistantErrorMessage(
 /**
  * Fallback answer for an INTERRUPTED turn: the final assistant message ends
  * with tool calls (stopReason "toolUse") and no later answer message exists —
- * the turn died mid-flight (e.g. worker/host restart). pi-web folds its text
+ * the turn died mid-flight (e.g. worker/host restart). the legacy web folds its text
  * into the collapsed process group and shows nothing; pi desktop shows the
  * last generated text inline. Pix surfaces the message's LAST contiguous run
  * of text blocks as the final answer so the agent's last words stay visible

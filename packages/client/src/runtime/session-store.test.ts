@@ -3,7 +3,7 @@ import { createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness }
 import type { FakeWebSocket } from "./testing/harness";
 
 function ack(caps: string[] = ["agent"]) {
-  return { type: "handshake_ack", payload: { protocolVersion: 1, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
+  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
 }
 
 function openReady(h: RuntimeHarness, caps: string[] = ["agent"]): FakeWebSocket {

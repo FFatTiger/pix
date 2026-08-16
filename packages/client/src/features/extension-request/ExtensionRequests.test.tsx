@@ -65,7 +65,7 @@ function mountExtension(host: Partial<HostInfo> = { mode: "local", capabilities:
 }
 
 function ack() {
-  return { type: "handshake_ack", payload: { protocolVersion: 1, host: { mode: "local", capabilities: ["agent"] }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
+  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: ["agent"] }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
 }
 
 function extensionSnapshot() {
@@ -93,7 +93,6 @@ function extensionSnapshot() {
       },
       capabilities: { capabilities: EXT_CAPS, version: 1 },
       streaming: { active: false, phase: "idle" },
-      messages: [],
     },
   };
 }
@@ -107,7 +106,7 @@ async function attachWithExtension(): Promise<FakeWebSocket> {
     ws.serverOpen();
     ws.serverSend(ack());
     await flush();
-    void store.openSession("s1");
+    void store.openSession("s1").catch(() => {});
     await flush();
     const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
     ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: extensionSnapshot() });
@@ -181,7 +180,7 @@ describe("ExtensionRequests — custom input error surfacing (F7)", () => {
       ws.serverOpen();
       ws.serverSend(ack());
       await flush();
-      void store.openSession("s1");
+      void store.openSession("s1").catch(() => {});
       await flush();
       const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
       ws.serverSend({

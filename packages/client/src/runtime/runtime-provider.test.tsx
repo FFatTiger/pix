@@ -75,7 +75,7 @@ function mount(children: ReactNode, host: Partial<HostInfo> | null | undefined =
 }
 
 function ack(caps: string[] = ["agent"]) {
-  return { type: "handshake_ack", payload: { protocolVersion: 1, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
+  return { type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: caps }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } };
 }
 
 async function driveReady(): Promise<FakeWebSocket> {
@@ -280,7 +280,7 @@ describe("TranscriptList — runtime messages", () => {
     await driveAttach(ws);
     // full stream lifecycle commits a user message
     await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "user", content: "hi there" }, eventId: 1, epoch: "e1" } });
-    await serverSend(ws, { type: "event", payload: { type: "message_end", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "user", content: "hi there" }, eventId: 2, epoch: "e1" } });
+    await serverSend(ws, { type: "event", payload: { type: "message_end", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "user", content: "hi there" }, entryId: "en1", eventId: 2, epoch: "e1" } });
     expect(screen.getByText("hi there")).toBeTruthy();
   });
 

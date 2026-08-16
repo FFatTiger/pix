@@ -25,9 +25,9 @@ describe("buildRuntimeWsUrl", () => {
 });
 
 describe("buildHandshakeRequest", () => {
-  it("builds a strict protocolVersion=1 handshake with client identity + features", () => {
+  it("builds a strict protocolVersion=2 handshake with client identity + features", () => {
     const req = buildHandshakeRequest({ shell: "pwa", platform: "ios" }, ["x"]);
-    expect(req).toEqual({ protocolVersion: 1, client: { shell: "pwa", platform: "ios" }, features: ["x"] });
+    expect(req).toEqual({ protocolVersion: 2, client: { shell: "pwa", platform: "ios" }, features: ["x"] });
   });
   it("defaults features to empty", () => {
     expect(buildHandshakeRequest({ shell: "web", platform: "mac" }).features).toEqual([]);
@@ -62,7 +62,7 @@ describe("error classification", () => {
 
 describe("parseHostFrame (fail-closed)", () => {
   it("parses a valid handshake_ack", () => {
-    const r = parseHostFrame(JSON.stringify({ type: "handshake_ack", payload: { protocolVersion: 1, host: { mode: "local", capabilities: ["agent"] }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } }));
+    const r = parseHostFrame(JSON.stringify({ type: "handshake_ack", payload: { protocolVersion: 2, host: { mode: "local", capabilities: ["agent"] }, limits: { maxUpload: 0, maxOpenSessions: 4 }, sessionSnapshotSupport: true } }));
     expect(r.ok).toBe(true);
   });
   it("rejects malformed JSON", () => {
