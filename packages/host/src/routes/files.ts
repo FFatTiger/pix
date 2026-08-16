@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { link, lstat, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import type { Context, Hono } from "hono";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
-import type { AllowedRootService } from "../resources/allowed-roots.js";
+import type { AllowedRootService, AuthorizedPath } from "../resources/allowed-roots.js";
 import { KeyedMutex } from "../resources/mutex.js";
 import { readBoundedBody, readJsonObject } from "../resources/request-body.js";
 import type { DefaultCwdFactory, ResourceLimits } from "../resources/types.js";
@@ -14,6 +14,16 @@ const IGNORED_NAMES = new Set([
   "node_modules", ".git", ".next", "dist", "build", "__pycache__", ".turbo", ".cache",
   "coverage", ".pytest_cache", ".mypy_cache", "target", "vendor", ".DS_Store",
 ]);
+
+/** Upload-check (H1) JSON body caps: bounded request so a preflight can never
+ * turn into an unbounded parse or an unbounded lstat fan-out. Names are also
+ * capped per-entry (a single filesystem component is at most 255 bytes on the
+ * target platforms, so longer names could never be uploaded anyway). */
+const MAX_UPLOAD_CHECK_NAMES = 256;
+const MAX_UPLOAD_NAME_CHARS = 255;
+const MAX_UPLOAD_CHECK_BODY_BYTES = 128 * 1024;
+/** Fixed per-file error for an existing entry that no strategy may replace. */
+const NON_REPLACEABLE_ERROR = "Cannot replace a directory or symbolic link";
 const TEXT_EXTENSIONS = new Set([
   ".txt", ".md", ".mdx", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".xml", ".html",
   ".css", ".scss", ".less", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rb",
@@ -324,6 +334,71 @@ async function pathExists(path: string): Promise<boolean> {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return false; }
 }
 
+/** Classification of one upload target name under an authorized directory. */
+type UploadTargetKind = "absent" | "regular-file" | "non-replaceable";
+
+/**
+ * Classify a single upload target name without ever following it out of the
+ * authorized root. Reuses the existing `authorizeChild` defense verbatim per
+ * name (illegal basename, root containment, parent-directory identity and
+ * AllowedRoot re-verification — every non-UNSAFE_TARGET failure propagates so
+ * the check fails closed). `authorizeChild` throws `UNSAFE_TARGET` exactly when
+ * the existing entry is a symlink or not a regular file: that is the
+ * non-replaceable class. When it returns, a follow-up `lstat` (never `stat`, so
+ * a symlink swapped in the race window is still never followed) distinguishes
+ * an existing regular file from an absent target; anything that re-appeared as
+ * a directory/symlink/non-regular entry in that window classifies
+ * non-replaceable, never as replaceable. Raw fs errors other than ENOENT
+ * propagate to the unified handler, which answers with the fixed sanitized
+ * 500 body (no path, no raw errno text).
+ */
+async function classifyUploadTarget(
+  roots: AllowedRootService,
+  directory: string,
+  name: string,
+): Promise<UploadTargetKind> {
+  let authorized: AuthorizedPath;
+  try {
+    authorized = await roots.authorizeChild(directory, name);
+  } catch (error) {
+    if (error instanceof HttpError && error.code === "UNSAFE_TARGET") return "non-replaceable";
+    throw error;
+  }
+  let info: Stats;
+  try { info = await lstat(authorized.requestedPath); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+    throw error;
+  }
+  return info.isFile() && !info.isSymbolicLink() ? "regular-file" : "non-replaceable";
+}
+
+/**
+ * Resolve the conflict classification for a batch of upload target names.
+ * `conflicts` lists every name that already exists under the directory in
+ * stable input order (duplicates collapsed to their first occurrence);
+ * `nonReplaceable` is the subset that is a directory, symlink or other
+ * non-regular entry and can therefore never be replaced by any strategy.
+ */
+async function inspectUploadTargets(
+  roots: AllowedRootService,
+  directory: string,
+  names: Iterable<string>,
+): Promise<{ conflicts: string[]; nonReplaceable: string[] }> {
+  const conflicts: string[] = [];
+  const nonReplaceable: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const kind = await classifyUploadTarget(roots, directory, name);
+    if (kind === "absent") continue;
+    conflicts.push(name);
+    if (kind === "non-replaceable") nonReplaceable.push(name);
+  }
+  return { conflicts, nonReplaceable };
+}
+
 /** Stage one accepted file to a unique private temp (0600) under the parent. */
 async function stageUploadedFile(parent: string, file: UploadFile): Promise<string> {
   const temp = join(parent, `.pix-upload-${randomUUID()}.tmp`);
@@ -470,6 +545,24 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
     // capabilities. No mutation guard here — only sessiond-dependent worktree
     // writes are runtime-guarded (see routes/worktrees.ts).
     const target = requiredPath(c);
+    // H1 — JSON conflict preflight on the same route (source contract
+    // `type=upload-check`). Distinct op on purpose: it never buffers a
+    // multipart body and shares only the per-name target defenses below.
+    if (c.req.query("op") === "upload-check") {
+      // Fail-closed directory/AllowedRoot authorization before reading the body.
+      await deps.roots.authorizeExisting(target, "directory");
+      const body = await readJsonObject(c, MAX_UPLOAD_CHECK_BODY_BYTES);
+      const raw = body.fileNames;
+      if (!Array.isArray(raw) || raw.length === 0 || !raw.every((item): item is string => typeof item === "string")) {
+        throw new HttpError(400, "FILE_NAMES_REQUIRED", "fileNames must be a non-empty array of strings");
+      }
+      if (raw.length > MAX_UPLOAD_CHECK_NAMES) throw new HttpError(400, "TOO_MANY_FILE_NAMES", "Too many file names in one upload check");
+      for (const name of raw) {
+        if (name.length > MAX_UPLOAD_NAME_CHARS) throw new HttpError(400, "FILE_NAME_TOO_LONG", "File name is too long");
+      }
+      const inspection = await inspectUploadTargets(deps.roots, target, raw);
+      return c.json({ conflicts: inspection.conflicts, nonReplaceable: inspection.nonReplaceable });
+    }
     // Fail-fast path authorization before buffering the bounded multipart body.
     await deps.roots.authorizeExisting(target, "directory");
     const type = c.req.header("content-type") ?? "";
@@ -488,21 +581,54 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
     // Phase 1 — Preflight the full batch before any write. Keep the existing
     // validation order (name / duplicate / per-file size, then total) so error
     // precedence is unchanged, then resolve conflicts for the whole batch.
+    // Unlike the prior route (which aborted the whole batch on the first
+    // UNSAFE_TARGET), an existing symlink/directory/non-regular entry is now
+    // classified per name so the conflict strategy below can address it; every
+    // other authorizeChild failure (illegal name, containment, identity) still
+    // fails the whole request closed.
     const names = new Set<string>();
     let total = 0;
+    const conflicts: string[] = [];
+    const nonReplaceable: string[] = [];
     for (const file of files) {
-      await deps.roots.authorizeChild(target, file.name);
+      const kind = await classifyUploadTarget(deps.roots, target, file.name);
       if (names.has(file.name)) throw new HttpError(400, "DUPLICATE_FILE", `Duplicate file name: ${file.name}`);
       names.add(file.name); total += file.size;
       if (file.size > maxFile) throw new HttpError(413, "FILE_TOO_LARGE", `File is too large: ${file.name}`);
+      if (kind === "absent") continue;
+      conflicts.push(file.name);
+      if (kind === "non-replaceable") nonReplaceable.push(file.name);
     }
     if (total > maxTotal) throw new HttpError(413, "UPLOAD_TOO_LARGE", "Upload total is too large");
+    // conflict=error: refuse the whole batch up front with the FULL conflict
+    // lists (never a single name) so the client can render every collision.
+    // Same fixed message/envelope as any HttpError, plus the two lists.
+    if (conflicts.length > 0 && !overwrite && !skip) {
+      return c.json({
+        error: "One or more files already exist",
+        code: "FILE_EXISTS",
+        message: "One or more files already exist",
+        conflicts,
+        nonReplaceable,
+      }, 409);
+    }
+    const conflictSet = new Set(conflicts);
+    const nonReplaceableSet = new Set(nonReplaceable);
     const plan: PlannedUpload[] = [];
     const skipped: string[] = [];
+    const errors: Array<{ name: string; error: string }> = [];
     for (const file of files) {
-      if (await pathExists(join(parent, file.name))) {
+      if (conflictSet.has(file.name)) {
+        // skip leaves every existing entry untouched, replaceable or not.
         if (skip) { skipped.push(file.name); continue; }
-        if (!overwrite) throw new HttpError(409, "FILE_EXISTS", `File already exists: ${file.name}`);
+        // overwrite: an existing directory / symlink / non-regular entry is
+        // never replaceable — report it as a per-file error and never stage or
+        // touch it (the commit-level UNSAFE_TARGET re-check stays as defense
+        // in depth for entries swapped after this preflight).
+        if (nonReplaceableSet.has(file.name)) {
+          errors.push({ name: file.name, error: NON_REPLACEABLE_ERROR });
+          continue;
+        }
       }
       plan.push({ name: file.name, file });
     }
@@ -519,7 +645,16 @@ export function registerFileRoutes(app: Hono<HostEnv>, deps: FileRouteDeps): voi
       }
       // Phase 3 — Commit under a per-directory lock with a rollback journal.
       const result = await commitUploadBatch(deps.roots, target, parent, { dev: parentInfo.dev, ino: parentInfo.ino }, plan, overwrite, skip, signal);
-      return c.json({ uploaded: result.uploaded, skipped: [...skipped, ...result.skipped] }, 201);
+      // 207 only reports per-file preflight rejections (non-replaceable
+      // targets under overwrite). Staging or commit failures never reach this
+      // return: they fail the whole batch with a fixed error after rollback.
+      // `errors` is always an array so older schema-driven clients keep
+      // parsing the envelope.
+      return c.json({
+        uploaded: result.uploaded,
+        skipped: [...skipped, ...result.skipped],
+        errors,
+      }, errors.length > 0 ? 207 : 201);
     } finally {
       for (const item of plan) if (item.stagedPath) await rm(item.stagedPath, { force: true }).catch(() => undefined);
     }

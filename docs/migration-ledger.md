@@ -3355,3 +3355,50 @@ schema 拒绝——fail-protocol；非交互方法同拒）：
   约送达 driver.input；待上游 SDK 暴露真实 custom 组件键消费后无需再动 transport。
 - MAX 16 为产品选择（每次仅 1 帧在飞、host lane 另有独立上限）；如后续面板支持粘贴大块数据，可按
   UX 调整或合并 chunk。
+
+---
+
+## 68. Files H1/H2 — upload conflict preflight（`POST /v1/files?op=upload-check`）与 multipart 批量冲突语义
+
+> 状态：DONE（branch `pi-agent-ef5002ac`，base main `88d6ca1`；独立 worktree 实现与实跑验证，未 push/deploy）
+
+### 来源与范围
+
+- 来源：`/tmp/pi-web-desktop` `app/api/files/[...path]/route.ts` POST `type=upload-check` 分支 + `lib/file-upload.ts`（`inspectUploadTargets`/`validateUploadFileNames`/207 多状态语义）。
+- 仅改 `packages/host/src/routes/files.ts`（生产）+ 新增 `packages/host/test/upload-check.test.mjs`（13 用例）+ `packages/host/test/resources.test.mjs`（symlink overwrite 断言按新 shape 调整）+ docs 两份。未改 Client/Protocol/capabilities/package-lock/依赖（Client 的 `uploadCheck` URL/schema seam 本就冻结等待本端点落地，explorer-api 的 list 降级 fallback 从此自然休眠）。
+
+### H1 — `POST /v1/files?path=<authorized-dir>&op=upload-check`
+
+- 严格 JSON body：`readJsonObject`（content-type 必须 `application/json` 否则 `415 UNSUPPORTED_MEDIA_TYPE`；bounded 128 KiB 否则 `413 BODY_TOO_LARGE`；非法 JSON `400 INVALID_JSON`）；`fileNames` 必须非空 string[]（`400 FILE_NAMES_REQUIRED`）；≤256 名（`400 TOO_MANY_FILE_NAMES`）；每名 ≤255 字符（`400 FILE_NAME_TOO_LONG`）。
+- 目录先 fail-closed 授权（`authorizeExisting(directory)`：越根 `403 PATH_FORBIDDEN`、根替换 `403 ROOT_REPLACED`、不存在 `404 PATH_NOT_FOUND`、非目录 `400 NOT_DIRECTORY`，全部固定文案），在读取 body 之前。
+- 每名复用既有 `authorizeChild` 防御（非法 basename/`validateChildName`、根包含、父目录身份与 AllowedRoot 逐名重验）：其 `UNSAFE_TARGET`（存在 symlink/目录/非 regular）即 non-replaceable 类；返回后再以 `lstat`（绝不 `stat`/realpath 跟随）区分「已存在 regular file」（conflicts）与「不存在」（不列出）；竞态窗口内被换成 symlink/目录的条目一律归类 non-replaceable，绝不判为可替换。非 ENOENT 的 raw fs 错误走统一 handler 固定 `500 INTERNAL`（无路径无 errno）。
+- 响应严格 `{ conflicts, nonReplaceable }`（无多余字段，匹配 Client `UploadCheckResponseSchema` strictObject）；`nonReplaceable ⊆ conflicts`（与源 `inspectUploadTargets` 语义一致：一切已存在条目都是 conflict，目录/symlink/非 regular 同时不可替换）；结果按输入首现顺序去重。
+- 与源的有意偏离：源对每名直接 `lstat(join(directory,name))`（仅靠 path join）；pix 逐名走 AllowedRoot `authorizeChild`（含身份/包含/非法名防御 + fail-closed），越根/换根时整个请求拒绝而非仅跳过。
+
+### H2 — multipart 上传（`POST /v1/files?path=&conflict=error|overwrite|skip`）
+
+- Phase 1 逐名分类（同 H1 共享 `classifyUploadTarget`）：保持既有校验顺序（非法名 → 重复名 400 → 单文件 25MiB 413 → 总量 100MiB 413）→ 然后整批冲突规划。
+- `conflict=error` 且任一冲突：preflight 即 `409`，body 为标准错误信封 + `code:"FILE_EXISTS"`、固定 `message/error:"One or more files already exist"`、`conflicts:[全部冲突名]`、`nonReplaceable:[...]`（不再只回第一名），零写入。Client `performUpload` 的 `status===409 && data.conflicts?.length` 分支自此可用。
+- `conflict=skip`：一切已存在条目（含目录/symlink）→ `skipped`，绝不触碰。
+- `conflict=overwrite`：regular file 冲突正常覆盖（staged commit + 硬链接备份 + journal 回滚全部保留）；目录/symlink/非 regular → 不入计划、不 stage、不触碰，逐名进 `errors:[{name,error:"Cannot replace a directory or symbolic link"}]`（固定文案，无路径）。commit 级 `UNSAFE_TARGET` 重验保留为纵深防御（preflight→commit 间被换成的 symlink 仍整批回滚 409）。
+- 响应：成功 `201 { uploaded, skipped, errors:[] }`；仅当存在 per-file preflight 拒绝（overwrite 下 non-replaceable）时 `207 { uploaded, skipped, errors }`（源 207 语义）。`errors` 恒为数组（Client 旧 schema 兼容）。staging/commit 级失败仍整批回滚 + 固定错误（500 INTERNAL / 409 / 499 / 403），绝不降级为 207 部分成功——事务语义未削弱。
+- 对旧 pix 行为的可观察变化（有意）：preflight 遇已存在 symlink/目录不再直接 `409 UNSAFE_TARGET` 整批中止——error 模式 → 409 FILE_EXISTS 附完整列表；skip 模式 → skipped；overwrite 模式 → 207 per-file errors。混合批次中「非法名 + 超 25MiB」的 400/413 优先级不变；「已存在 symlink + 超限文件」从 UNSAFE_TARGET 先触发变为按批内顺序（分类不再中断），属可观察错误优先级变化（同 D3A C1 已记录的 INVALID_CONFLICT 前移先例）。
+
+### 安全不变量（全部保留 + 测试钉住）
+
+AllowedRoot 授权/根身份逐名重验、bounded multipart（100MiB+1MiB）、目录锁（per-directory KeyedMutex）、staged commit（`.pix-upload-<uuid>.tmp` O_EXCL/O_NOFOLLOW/0600）、rollback journal（硬链接备份精确还原）、25MiB/文件与 100MiB/总量、O_NOFOLLOW 读取、固定 sanitized 错误（无绝对路径/raw fs 错误/temp 名回显）。upload-check 只读，不写任何条目。
+
+### 定向测试（`packages/host/test/upload-check.test.mjs`，真实 fs，零 mock）
+
+1. 分类四态 + 严格响应 shape（regular→conflicts；目录/symlink→+nonReplaceable；不存在不列；symlink 不被跟随/替换）；2. FIFO 非 regular → non-replaceable；3. 重复名去重 + 首现输入序；4. 非法 basename 全家族 400 `INVALID_FILE_NAME` 零写入；5. 越根 403/根替换 403 `ROOT_REPLACED`（body 无路径回显）；6. 非目录 400/不存在 404；7. body limits（415/INVALID_JSON/FILE_NAMES_REQUIRED×5/TOO_MANY_FILE_NAMES/FILE_NAME_TOO_LONG/BODY_TOO_LARGE）；8. error 模式多冲突 409 全列表 + 固定文案 + 零写入 + 无路径/temp 泄漏；9. overwrite 混合批 207（uploaded/errors 分离、目录与 symlink 原封、symlink 指向的外部文件不被写）；10. skip 混合批 201（skipped 含 non-replaceable、`errors:[]` 恒数组）；11. staging 失败整批 500 固定错误（不降级 207）；12. commit 失败回滚已提交 overwrite、non-replaceable 不受影响；13. upload-check 与 multipart preflight 分类一致性。
+
+### 验证（本 worktree 实跑）
+
+- 定向 `upload-check` 13/13；uploads-transaction 12/12 与 resources/security/docx-preview 共 80/80 无回归；Host 全量 444/444（基线 431 + 13，多轮；唯二偶发失败为既有 worktree 并发用例 "concurrent create/delete/recreate"，base 88d6ca1 无本切片同样复现，与本切片无关）。
+- Host typecheck/build EXIT 0；`check:boundaries`（42 files）PASS；root `check:architecture` PASS；`git diff --check` PASS。
+
+### 残余风险
+
+- 207 语义：pix 的 207 仅表示「per-file preflight 拒绝（non-replaceable）」这一类可恢复失败，不似源端把 arrayBuffer/写失败也归入 207——那些在 pix 属 staging/commit 级，整批固定错误回滚（有意收紧，保护事务语义）。
+- upload-check 与真正上传之间无跨请求预留：TOCTOU 由上传自身 preflight/commit 重验兜底（upload-check 结果仅作 UI 预检）。
+- Client `resources.files.upload` 的 `UploadResponseSchema` 仍为 strictObject(uploaded, skipped)，多出的 `errors` 键会使该（当前无 UI 消费方的）schema 校验路径报 INVALID_RESPONSE；实际 UI 上传走 FileExplorer XHR（读 `errors ?? []`）不受影响。属 Client 侧后续切片。

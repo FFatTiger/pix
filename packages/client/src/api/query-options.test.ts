@@ -183,7 +183,7 @@ describe("table-driven mutation invalidation", () => {
   });
 
   it("invalidates only upload directory, its index and git status", async () => {
-    const { options, invalidate } = invalidationHarness({ uploaded: ["a"], skipped: [] });
+    const { options, invalidate } = invalidationHarness({ uploaded: ["a"], skipped: [], errors: [] });
     const input = { directory: "/repo", files: [new File(["x"], "a")] };
     const mutation = options.files.upload();
     await mutation.mutationFn(input); await mutation.onSuccess(undefined, input);

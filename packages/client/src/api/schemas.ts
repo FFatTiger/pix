@@ -169,7 +169,12 @@ export const FileEntrySchema = z.strictObject({ name: z.string(), isDir: z.boole
 export const FileListResponseSchema = z.strictObject({ path: z.string(), entries: z.array(FileEntrySchema) });
 export const FileMetaResponseSchema = z.strictObject({ path: z.string(), size: z.number().nonnegative(), modified: z.string(), isDirectory: z.boolean(), mime: z.string().nullable() });
 export const FileTextResponseSchema = z.strictObject({ content: z.string(), language: z.string(), size: z.number().nonnegative() });
-export const UploadResponseSchema = z.strictObject({ uploaded: z.array(z.string()), skipped: z.array(z.string()) });
+export const UploadErrorSchema = z.strictObject({ name: z.string(), error: z.string() });
+export const UploadResponseSchema = z.strictObject({
+  uploaded: z.array(z.string()),
+  skipped: z.array(z.string()),
+  errors: z.array(UploadErrorSchema),
+});
 /**
  * POST /v1/files?op=upload-check — conflict preflight for the file workspace
  * upload state machine (source contract: names that already exist under the

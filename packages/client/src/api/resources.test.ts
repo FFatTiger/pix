@@ -21,7 +21,7 @@ describe("resource APIs", () => {
   });
 
   it("sends upload FormData without forcing JSON content type", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(json({ uploaded: ["a.txt"], skipped: [] }, 201));
+    const fetchImpl = vi.fn().mockResolvedValue(json({ uploaded: ["a.txt"], skipped: [], errors: [] }, 201));
     const api = createResourcesApi(createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch }));
     await api.files.upload({ directory: "/tmp", files: [new File(["x"], "a.txt")] });
     const init = fetchImpl.mock.calls[0]?.[1] as RequestInit;

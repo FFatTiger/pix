@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readdirSync, renameSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, renameSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, realpathSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AsyncMutex, KeyedMutex } from "../dist/resources/mutex.js";
@@ -177,7 +177,14 @@ test("uploads enforce names, size, conflicts and never follow symlink targets", 
   res = await upload([["../evil", "x"]]); assert.equal(res.status, 400);
   res = await upload([["big", "123456"]]); assert.equal(res.status, 413);
   const outside = temp("pi-upload-outside-"); const secret = join(outside, "secret"); writeFileSync(secret, "safe"); symlinkSync(secret, join(root, "linked"));
-  res = await upload([["linked", "owned"]], "overwrite"); assert.equal(res.status, 409); assert.equal(readFileSync(secret, "utf8"), "safe");
+  // A symlink target is non-replaceable under every strategy: overwrite now
+  // reports it as a per-file error (207) and stages/touches nothing.
+  res = await upload([["linked", "owned"]], "overwrite"); assert.equal(res.status, 207);
+  const partial = await res.json();
+  assert.deepEqual(partial.uploaded, []); assert.deepEqual(partial.skipped, []);
+  assert.deepEqual(partial.errors, [{ name: "linked", error: "Cannot replace a directory or symbolic link" }]);
+  assert.equal(readFileSync(secret, "utf8"), "safe");
+  assert.equal(lstatSync(join(root, "linked")).isSymbolicLink(), true, "symlink target never replaced");
 });
 
 test("uploads ignore non-file text fields sharing the files name and still write real files byte-exactly", async () => {
