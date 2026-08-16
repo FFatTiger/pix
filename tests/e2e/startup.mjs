@@ -20,8 +20,8 @@ const PROD_MAX_UPLOAD = 25 * 1024 * 1024;
 // tokens are mounted on the Host and stay advertised in BOTH states; `agent`
 // (the runtime) and `sessions` (read-only session history) are added only
 // while sessiond is up. `worktree` is the read-only list token (no write token).
-const FULL_CAPS = ["agent", "sessions", "session.delete", "session.write", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "auth.providers", "skills", "plugins", "themes"];
-const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins", "themes"];
+const FULL_CAPS = ["agent", "sessions", "session.delete", "session.write", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "auth.providers", "skills", "plugins", "themes", "project.trust"];
+const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins", "themes", "project.trust"];
 
 function delay(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -372,6 +372,55 @@ async function main() {
     assert.equal(trust.cwd, project);
     assert.ok(["unknown", "trusted", "denied"].includes(trust.level));
 
+    // ---- D3B trust-mutation surface (POST /v1/trust) ----------------------
+    // Real end-to-end persistence: the production trust-mutation seam writes
+    // the agent-dir trust.json through the real Pi SDK trust API and the read
+    // surface reflects it immediately. Adversarial probes: strict body, no
+    // query surface, out-of-root cwd and unauthorized-shape cwd fail closed
+    // with fixed sanitized codes, and the persisted file is owner-only.
+    const badQuery = await fetch(`${origin}/v1/trust?cwd=${encodeURIComponent(project)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: project, level: "trusted" }),
+    });
+    assert.equal(badQuery.status, 400);
+    assert.equal((await badQuery.json()).code, "INVALID_QUERY");
+
+    const badLevel = await fetch(`${origin}/v1/trust`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: project, level: "denied" }),
+    });
+    assert.equal(badLevel.status, 400);
+    assert.equal((await badLevel.json()).code, "UNSUPPORTED_TRUST_LEVEL");
+
+    const escape = await fetch(`${origin}/v1/trust`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: temp, level: "trusted" }),
+    });
+    assert.equal(escape.status, 403, "out-of-root cwd must be rejected");
+
+    const mutated = await fetch(`${origin}/v1/trust`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: project, level: "trusted" }),
+    });
+    assert.equal(mutated.status, 200);
+    const mutatedBody = await mutated.json();
+    assert.equal(mutatedBody.cwd, project);
+    assert.equal(mutatedBody.level, "trusted");
+    assert.equal(mutatedBody.trusted, true);
+    assert.deepEqual(mutatedBody.canReloadResources, { allowed: true, level: "trusted" });
+    // Read-after-write through the GET surface + real persisted trust.json.
+    const trustAfter = await fetchJson(`${origin}/v1/trust?cwd=${encodeURIComponent(project)}`);
+    assert.equal(trustAfter.level, "trusted");
+    assert.equal(trustAfter.trusted, true);
+    const persisted = JSON.parse(readFileSync(join(agentDir, "trust.json"), "utf8"));
+    assert.equal(persisted[project], true, "real Pi SDK trust.json must carry the decision");
+    const persistedStat = lstatSync(join(agentDir, "trust.json"));
+    assert.equal(persistedStat.mode & 0o077, 0, "persisted trust.json must be owner-only");
+
     // ---- D3B-R6 read-only theme catalog surface ---------------------------
     // Real catalog reads: builtin sets are listed/resolved with zero Workers,
     // and strict query/name/mode validation answers fixed sanitized errors.
@@ -689,6 +738,17 @@ async function main() {
     assert.equal(worktreeCreate.status, 503, "worktree create must 503 while sessiond is down");
     assert.equal((await worktreeCreate.json()).code, "MUTATION_UNAVAILABLE");
     assert.throws(() => git(project, ["show-ref", "--verify", "refs/heads/should-not-create"]), "guard must run before any git side effect");
+
+    // The trust mutation is a Host catalog capability and is NOT sessiond-
+    // guarded: it keeps working while the Worker authority is down (the seam
+    // fail-closes on its own trust-store authority, not on sessiond).
+    const downTrust = await fetch(`${origin}/v1/trust`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: project, level: "trusted" }),
+    });
+    assert.equal(downTrust.status, 200, "trust mutation must work while sessiond is down");
+    assert.equal((await downTrust.json()).level, "trusted");
     const worktreeDelete = await fetch(`${origin}/v1/worktrees`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },

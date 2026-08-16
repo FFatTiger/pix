@@ -205,6 +205,28 @@ describe("table-driven mutation invalidation", () => {
     ]);
   });
 
+  it("invalidates the trust summary and every trust-gated catalog after set-trusted", async () => {
+    const body = { cwd: "/repo", level: "trusted", trusted: true, canReloadResources: { allowed: true, level: "trusted" } };
+    const { options, invalidate } = invalidationHarness(body);
+    const input = { cwd: "/repo" };
+    const mutation = options.trust.setTrusted();
+    await mutation.mutationFn(input);
+    await mutation.onSuccess(undefined, input);
+    expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
+      { queryKey: queryKeys.trust.get("/repo") },
+      { queryKey: queryKeys.skills.list("/repo") },
+      { queryKey: queryKeys.plugins.list("/repo") },
+      { queryKey: queryKeys.commands.list("/repo") },
+      { queryKey: queryKeys.themes.all },
+    ]);
+    // Other cwd scopes and unrelated domains are untouched.
+    for (const call of invalidate.mock.calls) {
+      const key = (call[0] as { queryKey: readonly unknown[] }).queryKey;
+      expect(key).not.toEqual(queryKeys.trust.get("/other"));
+      expect(key).not.toEqual(queryKeys.sessions.lists);
+    }
+  });
+
   it("retains gate/cwd invalidation and has no D3B catalog mutation domains", async () => {
     const { options, invalidate } = invalidationHarness({ ok: true });
     await options.gate.login().onSuccess();
@@ -219,10 +241,12 @@ describe("table-driven mutation invalidation", () => {
       { queryKey: queryKeys.cwd.all },
     ]);
 
-    // Frozen: no models/skills/plugins/auth catalog mutations.
+    // Frozen: no models/skills/plugins/auth catalog mutations. Trust set-trusted
+    // is the ONE mounted catalog mutation — a single-method domain.
     expect(options).not.toHaveProperty("models");
     expect(options).not.toHaveProperty("skills");
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");
+    expect(Object.keys(options.trust)).toEqual(["setTrusted"]);
   });
 });

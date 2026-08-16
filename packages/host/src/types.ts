@@ -36,7 +36,8 @@ export type HostCapability =
   | "auth.providers"
   | "skills"
   | "plugins"
-  | "themes";
+  | "themes"
+  | "project.trust";
 
 export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "agent",
@@ -55,6 +56,7 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "skills",
   "plugins",
   "themes",
+  "project.trust",
 ] as const;
 
 /**
@@ -62,6 +64,12 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
  * catalog seam is actually mounted. Independent of sessiond. `themes` is the
  * read-only theme catalog token (D3B-R6): theme reads never depend on
  * sessiond, so the token stays advertised in the degraded projection too.
+ * `project.trust` is the trust-mutation token (D3B trust-mutation slice):
+ * advertised only while the trust-mutation seam is mounted — production wires
+ * the real Pi-SDK-backed mutation port. The persisted trust decision is a
+ * Host catalog capability that never depends on the per-session Worker, so
+ * the token stays advertised in the degraded projection too; the route
+ * fail-closes on its own authority at request time.
  */
 export const CATALOG_CAPABILITIES: readonly HostCapability[] = [
   "models",
@@ -69,6 +77,7 @@ export const CATALOG_CAPABILITIES: readonly HostCapability[] = [
   "skills",
   "plugins",
   "themes",
+  "project.trust",
 ] as const;
 
 /** Capabilities that remain usable when sessiond is unavailable (read-only). */
@@ -293,6 +302,19 @@ export interface CatalogTrustSeam {
 }
 
 /**
+ * Trust-mutation seam (D3B trust-mutation slice): records an explicit
+ * "trusted" decision (set trusted ONLY — no denied write, no level enum).
+ * Protocol-independent like every catalog seam: returns `unknown`, the route
+ * projects. When this seam is absent the POST /v1/trust route is NOT mounted
+ * and the `project.trust` capability token is never advertised. This is a
+ * Host catalog capability: it never consults sessiond, but the seam must
+ * fail closed on its own authority (the persisted trust store) per request.
+ */
+export interface CatalogTrustMutationSeam {
+  setTrusted(cwd: string): Promise<unknown>;
+}
+
+/**
  * Project-cwd-aware theme catalog (read-only theme sets + resolved CSS vars).
  * Composition creates one per canonical cwd after consulting trust — the seam
  * receives the trust-gated `trusted` flag so untrusted projects contribute no
@@ -313,7 +335,9 @@ export interface CatalogThemesSeam {
  * returns `unknown`. Production composition reuses the same
  * {@link AllowedRootService} as resources so project routes share one roots
  * policy. Sub-seams are independent — omit any seam to leave its routes and
- * capability tokens unmounted. No mutation/OAuth/install/reload/trust-set.
+ * capability tokens unmounted. The ONLY mutation seam is `trustMutation`
+ * (set trusted; POST /v1/trust + the `project.trust` token) — there is still
+ * no OAuth/install/reload/configure surface.
  */
 export interface CatalogDeps {
   /**
@@ -325,6 +349,12 @@ export interface CatalogDeps {
   credentials?: CatalogCredentialsSeam;
   resources?: CatalogResourcesSeam;
   trust?: CatalogTrustSeam;
+  /**
+   * Trust-mutation seam. Omitted ⇒ no POST /v1/trust route and no
+   * `project.trust` capability token. Requires the `trust` read seam for the
+   * strict post-write state projection; production always mounts both.
+   */
+  trustMutation?: CatalogTrustMutationSeam;
   themes?: CatalogThemesSeam;
 }
 

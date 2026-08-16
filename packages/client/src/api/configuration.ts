@@ -10,11 +10,14 @@ import {
 } from "./schemas";
 
 /**
- * Read-only configuration / catalog APIs (D3B).
+ * Read-only configuration / catalog APIs (D3B) + the one mounted catalog
+ * mutation (trust set-trusted).
  *
  * Frozen product decision: Client does not expose Host-unmounted mutation /
  * OAuth call surfaces (skills search/install/update/toggle, plugins mutate,
- * auth allProviders/apiKey/login/logout). Only honest GET wrappers remain.
+ * auth allProviders/apiKey/login/logout). Only honest GET wrappers remain —
+ * plus `trust.setTrusted`, the D3B trust-mutation slice (POST /v1/trust,
+ * `project.trust` capability): strictly `{cwd, level: "trusted"}`.
  */
 export function createConfigurationApi(http: HttpClient) {
   return {
@@ -45,6 +48,20 @@ export function createConfigurationApi(http: HttpClient) {
           schema: TrustResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
+      /**
+       * Record an explicit trusted decision. The request body is exactly
+       * `{cwd, level: "trusted"}` and the response reuses the strict GET
+       * trust-state schema (read-after-write projection from the Host).
+       */
+      setTrusted: (cwd: string, signal?: AbortSignal) =>
+        http.post(
+          urls.trust.mutate(),
+          { cwd, level: "trusted" },
+          {
+            schema: TrustResponseSchema,
+            ...(signal === undefined ? {} : { signal }),
+          },
+        ),
     },
     auth: {
       providers: (signal?: AbortSignal) =>

@@ -3402,3 +3402,45 @@ AllowedRoot 授权/根身份逐名重验、bounded multipart（100MiB+1MiB）、
 - 207 语义：pix 的 207 仅表示「per-file preflight 拒绝（non-replaceable）」这一类可恢复失败，不似源端把 arrayBuffer/写失败也归入 207——那些在 pix 属 staging/commit 级，整批固定错误回滚（有意收紧，保护事务语义）。
 - upload-check 与真正上传之间无跨请求预留：TOCTOU 由上传自身 preflight/commit 重验兜底（upload-check 结果仅作 UI 预检）。
 - Client strict schema 已在 main 合入时同步为 `{ uploaded, skipped, errors }`，并拒绝缺失/多余/畸形字段；FileExplorer XHR 的 207 与 409 列表读取也与 Host 响应一致。此项已关闭，不再是残余风险。
+
+---
+
+## 69. D3B Trust-Mutation — Project Trust set-trusted 全链路后端切片（`POST /v1/trust`、`project.trust` token）
+
+### 来源与范围
+
+branch `pi-agent-068d7d97`，base main `00063ca`，独立 worktree 实现+实跑验证，未 push/deploy。允许面：Protocol / runtime-core / pi-sdk-adapter / Host / Client API（仅 trust mutation 资源/schema/query invalidation）/ 后端测试 / docs。禁改面：UI、AppShell、Settings 组件（未触碰；Client 仅 `api/urls.ts`、`api/configuration.ts`、`api/mutations.ts` 与对应 api 测试）。
+
+### 逐层契约
+
+- **Protocol**（`packages/protocol/src/capabilities.ts`）：`HostCapabilitySchema` 新增 `"project.trust"`（逐能力 token，非 level 枚举：`project.trust.denied`/`project.untrust` 不可表示）。读侧 `trust` 无 token（沿用 GET seam 挂载即服务语义，未变）。
+- **runtime-core**（`src/ports.ts` / `src/trust.ts` / `src/catalog-contracts.test.ts`）：新增**独立窄** `ProjectTrustMutationPort { setProjectTrusted(cwd): Promise<ProjectTrustStatus> }`——不继承 `ProjectTrustQueryPort`（双向不可赋值、compile-time exactness 钉住），仅 set trusted（无 denied/level 枚举/read 方法）。原占位组合 port `ProjectTrustPort`（声明于 D3B-R1A、从未接线）移除，contract fake/suite/adapter test-helper 同步拆分为 query+mutation 双 port（`ReferenceTrustDecisions` 共享状态）。
+- **pi-sdk-adapter**（`src/trust/index.ts` / `src/internal/trust-store.ts`）：`createPiSdkTrustMutation(storeOrOptions)` → `ProjectTrustMutationPort`。持久化走**真实 SDK 公开 API** `ProjectTrustStore.set(cwd, true)`（agent-dir `trust.json`，与 read catalog 同一文件）：
+  - 输入校验先行（非空绝对路径、无 NUL，否则 `TRUST_INPUT_INVALID`，零 fs/SDK 触碰）；
+  - per-agentDir 进程内互斥（preflight↔同步写不交错、不吃 SDK lockSync 重试上限），SDK 自身 proper-lockfile 继续负责跨进程（pi CLI）串行；
+  - 写前安全检查：既有 trust.json 必须是真实 regular file——planted symlink/非 regular 一律 `TRUST_STORE_UNSAFE` fail-closed（不写穿 symlink）；既有 group/other 权限位**先**收紧 0600（失败即中止、零写入）；
+  - 同步写窗口 `umask(0o077)`（新建 trust.json 0600、新建 agentDir 0700；Node 单线程同步段无 interleave，finally 恢复 umask）；
+  - 写后验证：trust.json 仍为 regular 非 symlink、无 group/other 位、**同一 store** 读回 decision===true（与既有 read catalog 即时一致，resource catalog 的 `readTrustDecision` 新建 store 读盘，天然一致）；
+  - 失败固定 code（`TRUST_INPUT_INVALID` / `TRUST_STORE_UNSAFE` / `TRUST_WRITE_FAILED` / `TRUST_WRITE_UNVERIFIED`）+ 固定 message，原始 SDK 错误/fs 路径/文件内容/stack 全部在边界丢弃；SDK 写前 lock+parse 失败 ⇒ 零写入（字节不可变）。
+- **Host**（`src/types.ts` / `src/routes/health.ts` / `src/routes/catalogs.ts` / `src/composition/production-catalogs.ts` / `production-resources.ts`）：
+  - `CatalogDeps.trustMutation?: CatalogTrustMutationSeam`；`hasTrustMutationSeam = trust && trustMutation` 是路由挂载与 token 广告的**同一事实源**（不可能有未广告的路由或未挂载的 token；显式 capabilities override 中未挂载 seam 的 `project.trust` 会被 `normalizeCatalogCapabilities` 剥除）；
+  - `POST /v1/trust`：全局 gate 先行（LAN 未认证 403 `AUTH_REQUIRED_FOR_LAN`、enabled gate 未登录 401，均先于 seam）；**无 sessiond mutation guard**（信任写是 Host catalog 能力，不依赖 Worker；自身 authority 由 seam 每请求 fail-closed）；任意 query string（含裸 `?`）400 `INVALID_QUERY`；严格 bounded JSON（4 KiB、application/json、415/413/400 固定错误）；body 必须精确 `{cwd:string, level:"trusted"}`（extra/missing/非 string cwd/其他 level → `INVALID_TRUST_BODY`/`CWD_REQUIRED`/`UNSUPPORTED_TRUST_LEVEL`）；cwd 走 `authorizeExisting("directory")`（canonical、越根 403、symlink 逃逸 403/404、missing 404、file 400/403/404、无 process.cwd 回退）；成功 200 返回严格 trust 状态（read seam + 与 GET 相同 projector；写后读不一致 ⇒ 500 `TRUST_MUTATION_FAILED`，绝不假成功）；mutation 错误映射固定 sanitized（`TRUST_STORE_UNSAFE`→503 `TRUST_MUTATION_UNAVAILABLE`，写失败/未知→500 `TRUST_MUTATION_FAILED`，无 path/raw 文本回显）；
+  - 生产 composition 挂真实 SDK mutation port（同 agentDir），`PRODUCTION_FULL_CAPABILITIES` / `RESOURCE_DEGRADED_CAPABILITIES` 均含 `project.trust`（sessiond-independent）。
+- **Client**（`api/urls.ts` `trust.mutate()`、`api/configuration.ts` `trust.setTrusted`、`api/mutations.ts` `trust.setTrusted()`）：POST 体严格 `{cwd, level:"trusted"}`，响应复用 strict `TrustResponseSchema`（extra 字段 decode 失败）；mutation key `["pix","trust","set-trusted"]`；成功 invalidate `trust.get(cwd)` + `skills.list(cwd)` + `plugins.list(cwd)` + `commands.list(cwd)`（trust-gated resource catalog，同 cwd scope）+ `themes.all`（project theme trust 影响；theme list key 无 cwd，整域失效）。无 UI 控件接线（同 worktrees.remove 的 dormant helper 模式；`project.trust` 能力门控留给后续 ProjectTrustDialog 切片）。
+
+### 对抗测试（全部实跑通过）
+
+- adapter `test/trust-mutation.test.ts`（10 用例）：真实 SDK 持久化 + read catalog 即时一致 + SDK CLI parity（`new ProjectTrustStore(agentDir).get(cwd)===true`）；新建 trust.json 0600/新建 agentDir 0700/umask 恢复；预存 0644 收紧且外来 key 无 lost update；symlink trust.json 拒绝且目标字节不变；corrupt trust.json `TRUST_WRITE_FAILED` 且字节不变、read catalog 仍 fail-closed unknown；agentDir 0555 无 partial 写；非法 cwd 家族零触碰；24 并发不同 cwd 全部持久化 + 12 并发同 cwd 收敛 trusted；port 单方法面（无 setTrust/getTrust/query 方法）；injected store seam。
+- host `test/trust-mutation.test.mjs`（13 用例）：成功路径（canonical cwd、no-store、read seam 写后投影、seam 调用序）；缺 mutation seam/缺 read seam 均 404 不挂载；token 仅 seam 挂载时广告（up+degraded）且显式 override 未挂载即剥除；gate 先行（enabled 401 / LAN 403，seam 零调用）；sessiond probe down 时 POST 仍 200；query string 400；body 全家族（empty/missing/extra/denied/unknown/boolean/大小写/非 string cwd）；415/INVALID_JSON/array body/413（内容与 content-length 双路）；越根/symlink 逃逸/missing/file/relative/traversal cwd 全拒且 seam 零调用；seam 各固定 code 错误映射 + raw Error（含路径）不泄漏；写后读不一致 500 不假成功。
+- E2E `tests/e2e/startup.mjs`：真实生产 composition 下 POST 成功（200 strict body）→ GET 读回 trusted → 真实 trust.json 含 decision 且 0600；INVALID_QUERY / UNSUPPORTED_TRUST_LEVEL / 越根 403；degraded（sessiond down）阶段 POST 仍 200；FULL_CAPS/DEGRADED_CAPS 冻结数组更新。
+
+### 验证（本 worktree 实跑）
+
+protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-adapter 322/322、host 473/473、client 731/731；逐包 typecheck、host/adapter `check:boundaries`、root `check:architecture`、`git diff --check` 全 PASS；Startup/Runtime/Sessions E2E（见执行记录）。
+
+### 残余风险（诚实枚举）
+
+- SDK 写入器本身是 locked read-merge-`writeFileSync`，非 temp+rename 崩溃原子：进程在写入中段崩溃可留下截断 trust.json——所有读者（SDK get、read catalog）已 fail-closed 为 unknown（资源扣留），不会出现 false-trusted，但用户需手工修复该文件。选择 SDK 公开 API（任务「优先使用SDK公开API」）即接受此窗口，未复制 SDK 文件格式自写 rename（避免格式漂移）。
+- umask 窗口是进程级：仅覆盖同步 SDK 写段（无 await interleave），其它异步任务不可能在该窗口创建文件。
+- 同 UID 攻击者在 preflight lstat 与 SDK 写之间替换 trust.json 为 symlink 的 TOCTOU 残余窗口：写后验证会捕获并报 `TRUST_WRITE_UNVERIFIED`（不静默），但内容可能已写穿（与 D3A-P0/local-authority 同类「同 UID 残余窗口」诚实枚举，不宣称 fail-closed）。
+- Client mutation 暂无 UI 门控消费（`project.trust` capability 检查留给 ProjectTrustDialog 切片）；API 层已就绪且与 worktrees dormant-helper 模式一致。

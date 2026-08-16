@@ -277,7 +277,7 @@ export async function runHost(
   const url = `http://${options.hostname}:${handle.port}`;
   pixLog(`host listening on ${url}`);
   pixLog(`sessiond at ${location.directory} (endpoint ${location.endpoint})`);
-  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); sessions history routes mounted (read-only + delete + rename); catalog surface mounted (models/auth/skills/plugins/trust + read-only themes, sessiond-independent); press Ctrl+C to stop the host`);
+  pixLog(`resource surface mounted (roots: ${production.deps.allowedRoots.roots().length}; capabilities up: ${JSON.stringify(PRODUCTION_FULL_CAPABILITIES)}); sessions history routes mounted (read-only + delete + rename); catalog surface mounted (models/auth/skills/plugins/trust read + trust mutation + read-only themes, sessiond-independent); press Ctrl+C to stop the host`);
 
   if (options.open) openBrowser(url);
 

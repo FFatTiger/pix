@@ -293,13 +293,24 @@ export interface ProjectTrustQueryPort {
 }
 
 /**
- * Project trust (Host) — extends the read-only query with the trust-mutation
- * method. Kept as a separate, declared mutation contract; there is no combined
- * cross-domain writable factory.
+ * Project trust (Host) — the trust-mutation contract. A SEPARATE, narrow
+ * mutation port (the session-rename precedent): it carries ONLY the
+ * set-trusted mutation and deliberately does NOT extend
+ * {@link ProjectTrustQueryPort}, so no mutation method can ever leak onto the
+ * read-only query surface and a query port object can never serve as a
+ * mutation port. There is no combined cross-domain writable factory.
+ *
+ * This slice records an explicit "trusted" decision only. `denied` writes are
+ * NOT part of the contract: the SDK trust vocabulary supports a persisted
+ * `false` decision, but no pix surface needs it yet, so the port stays a
+ * single-method, single-level contract (strictly enumerable if ever needed).
  */
-export interface ProjectTrustPort extends ProjectTrustQueryPort {
-  getTrust(cwd: string): Promise<ProjectTrustStatus>;
-  setTrust(cwd: string, level: ProjectTrustState): Promise<ProjectTrustStatus>;
+export interface ProjectTrustMutationPort {
+  /**
+   * Record an explicit "trusted" decision for the project at the canonical
+   * `cwd` and return the strict post-write trust status (read-after-write).
+   */
+  setProjectTrusted(cwd: string): Promise<ProjectTrustStatus>;
 }
 
 /* ------------------------------------------------------------------ */

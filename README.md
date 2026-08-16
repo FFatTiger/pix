@@ -6,7 +6,7 @@
 
 ## 当前里程碑
 
-**M3 — Read and Operate**：M2 Minimal Runtime Happy Path 已完成并通过独立验证。当前 `main` 已包含真实对话、只读历史、History/Live Thinking/Bash 语义展示、selected history visible-branch normalized JSON 导出、Files/Git/Worktrees 只读工作区，以及 Models/Auth Providers/Skills/Plugins/Commands/Trust 的端到端只读 Domain Catalog。OAuth、配置写入、安装、资源重载、Trust 修改和 Extension 执行仍明确后置。
+**M3 — Read and Operate**：M2 Minimal Runtime Happy Path 已完成并通过独立验证。当前 `main` 已包含真实对话、只读历史、History/Live Thinking/Bash 语义展示、selected history visible-branch normalized JSON 导出、Files/Git/Worktrees 只读工作区，以及 Models/Auth Providers/Skills/Plugins/Commands/Trust 的端到端只读 Domain Catalog。Trust 已支持 set-trusted mutation（独立 `project.trust` token、`POST /v1/trust`、Pi SDK trust.json 持久化）。OAuth、配置写入、安装、资源重载和 Extension 执行仍明确后置。
 
 ## 从这里开始
 

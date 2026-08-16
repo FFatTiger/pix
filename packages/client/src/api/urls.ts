@@ -108,6 +108,8 @@ export const urls = {
   trust: {
     /** Project trust summary. Host requires absolute authorized cwd. */
     get: (cwd: string) => resource("trust", { cwd }),
+    /** POST /v1/trust — set-project-trusted mutation (body {cwd, level:"trusted"}). */
+    mutate: () => resource("trust"),
   },
   auth: {
     /** Global auth provider list (no cwd). */

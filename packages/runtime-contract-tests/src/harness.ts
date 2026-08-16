@@ -10,7 +10,8 @@ import type {
   CredentialStorePort,
   ModelCatalogPort,
   ModelSelector,
-  ProjectTrustPort,
+  ProjectTrustMutationPort,
+  ProjectTrustQueryPort,
   ResourceCatalogStorePort,
   RuntimeCapability,
   SessionCatalogPort,
@@ -35,7 +36,8 @@ export interface AdapterPortBundle {
   modelCatalog: ModelCatalogPort;
   credentialStore: CredentialStorePort;
   resourceCatalog: ResourceCatalogStorePort;
-  projectTrust: ProjectTrustPort;
+  projectTrust: ProjectTrustQueryPort;
+  projectTrustMutation: ProjectTrustMutationPort;
 }
 
 export interface AdapterContractHarness {

@@ -1605,11 +1605,12 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
       it("project trust gate controls resource reload", async () => {
         const factory = await harness.createFactory();
         const ports = await harness.createPorts!(factory);
-        const initial = await ports.projectTrust.getTrust("/workspace");
-        assert.equal(initial.level, "unknown");
+        const initial = await ports.projectTrust.getProjectTrustState("/workspace");
+        assert.equal(initial, "unknown");
         const blocked = await ports.projectTrust.canReloadResources("/workspace");
         assert.equal(blocked.allowed, false);
-        await ports.projectTrust.setTrust("/workspace", "trusted");
+        const saved = await ports.projectTrustMutation.setProjectTrusted("/workspace");
+        assert.equal(saved.level, "trusted");
         assert.equal(await ports.projectTrust.isTrusted("/workspace"), true);
         const allowed = await ports.projectTrust.canReloadResources("/workspace");
         assert.equal(allowed.allowed, true);

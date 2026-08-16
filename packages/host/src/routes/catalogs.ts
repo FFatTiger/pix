@@ -14,6 +14,8 @@
 import type { Hono } from "hono";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
+import { hasTrustMutationSeam } from "./health.js";
+import { readJsonObject } from "../resources/request-body.js";
 import type { CatalogDeps } from "../types.js";
 
 /** Fixed sanitized catalog-unavailable body. Never includes raw Error/path/stack/secret. */
@@ -21,6 +23,13 @@ export const CATALOG_UNAVAILABLE_MESSAGE = "Catalog is unavailable";
 
 /** Fixed trust reason when reload is denied. Never forwards free-form backend text. */
 export const TRUST_NOT_TRUSTED_REASON = "Project resources are not trusted";
+
+/** Fixed sanitized trust-mutation failure messages (never raw seam text). */
+export const TRUST_MUTATION_UNAVAILABLE_MESSAGE = "Trust mutation is unavailable";
+export const TRUST_MUTATION_FAILED_MESSAGE = "Trust mutation failed";
+
+/** Frozen POST /v1/trust body ceiling (the strict body is a handful of bytes). */
+const TRUST_MUTATION_BODY_LIMIT = 4 * 1024;
 
 const AUTH_METHODS = new Set(["oauth", "apiKey", "deviceCode"]);
 const COMMAND_SOURCES = new Set(["extension", "prompt", "skill"]);
@@ -336,6 +345,51 @@ function noStore(c: { header: (name: string, value: string) => void }): void {
 }
 
 /**
+ * Strict POST /v1/trust body: EXACTLY `{ cwd: string, level: "trusted" }` —
+ * no extra fields, no missing fields, no coercion. This slice records an
+ * explicit trusted decision only; any other level is a fixed 400 (never
+ * forwarded to the seam).
+ */
+export function parseTrustMutationBody(
+  body: Record<string, unknown>,
+): { cwd: string } {
+  const keys = Object.keys(body);
+  if (
+    keys.length !== 2 ||
+    !Object.prototype.hasOwnProperty.call(body, "cwd") ||
+    !Object.prototype.hasOwnProperty.call(body, "level")
+  ) {
+    throw new HttpError(400, "INVALID_TRUST_BODY", "Body must be exactly {cwd, level}");
+  }
+  const cwd = body.cwd;
+  if (typeof cwd !== "string" || cwd === "") {
+    throw new HttpError(400, "CWD_REQUIRED", "cwd is required");
+  }
+  if (body.level !== "trusted") {
+    throw new HttpError(400, "UNSUPPORTED_TRUST_LEVEL", 'Only level "trusted" is supported');
+  }
+  return { cwd };
+}
+
+/**
+ * Map a trust-mutation seam exception onto an honest HTTP error. The seam
+ * raises fixed-code sanitized errors; anything else (including raw Error
+ * objects carrying paths/stacks) collapses to a fixed 500. Raw messages,
+ * paths, trust.json content and stacks are never forwarded.
+ */
+export function mapTrustMutationError(error: unknown): HttpError {
+  if (error instanceof HttpError) return error;
+  const code = catalogErrorCode(error);
+  if (code === "TRUST_INPUT_INVALID") {
+    return new HttpError(400, "INVALID_TRUST_BODY", "Body must be exactly {cwd, level}");
+  }
+  if (code === "TRUST_STORE_UNSAFE") {
+    return new HttpError(503, "TRUST_MUTATION_UNAVAILABLE", TRUST_MUTATION_UNAVAILABLE_MESSAGE);
+  }
+  return new HttpError(500, "TRUST_MUTATION_FAILED", TRUST_MUTATION_FAILED_MESSAGE);
+}
+
+/**
  * Register catalog routes for every mounted sub-seam. Skills/plugins/commands
  * require the resources seam; trust is independent; models and credentials are
  * independent of each other. Seam call + projection are always in one try so
@@ -448,6 +502,57 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
           canReloadResources,
         });
       } catch (error) {
+        throw mapCatalogError(error, "trust");
+      }
+    });
+  }
+
+  // D3B trust-mutation slice: mounted ONLY when the mutation seam (and the
+  // trust read seam for the strict post-write projection) exists — the same
+  // source of truth as the `project.trust` capability token, so a route can
+  // never exist unadvertised and a token can never exist unmounted.
+  if (hasTrustMutationSeam(deps)) {
+    app.post("/v1/trust", async (c) => {
+      noStore(c);
+      // The auth/LAN gate already ran in the global middleware chain (gate
+      // first). NO sessiond mutation guard: the persisted trust decision is a
+      // Host catalog capability that never depends on the per-session Worker;
+      // the seam's own authority (the trust store) fail-closes per request.
+      // No query surface at all: ANY query string (even a bare `?`) is a
+      // fixed 400 before body parsing (cwd travels in the strict body only).
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      // Content-type must be application/json (415), body bounded (413),
+      // malformed/non-object JSON is the fixed 400 from readJsonObject.
+      const body = await readJsonObject(c, TRUST_MUTATION_BODY_LIMIT);
+      const { cwd: rawCwd } = parseTrustMutationBody(body);
+      // AllowedRoot authorization BEFORE the seam: canonical existing
+      // absolute directory only (no process.cwd fallback, no traversal, no
+      // symlink-escaped root — the shared 400/403/404 roots semantics).
+      const cwd = await requireAuthorizedCwd(deps, rawCwd);
+      try {
+        await deps.trustMutation!.setTrusted(cwd);
+      } catch (error) {
+        throw mapTrustMutationError(error);
+      }
+      // Strict post-write state from the READ seam (same projectors as GET) —
+      // honest read-after-write, never the mutation return value verbatim.
+      try {
+        const levelRaw = await deps.trust!.getProjectTrustState(cwd);
+        const trustedRaw = await deps.trust!.isTrusted(cwd);
+        const canReloadRaw = await deps.trust!.canReloadResources(cwd);
+        if (typeof trustedRaw !== "boolean") throw catalogUnavailable();
+        const level = projectTrustLevel(levelRaw);
+        const canReloadResources = projectCanReloadResources(canReloadRaw, level);
+        if (level !== "trusted" || trustedRaw !== true) {
+          // The write reported success but the read surface disagrees — never
+          // publish a stale/contradictory state to the client.
+          throw new HttpError(500, "TRUST_MUTATION_FAILED", TRUST_MUTATION_FAILED_MESSAGE);
+        }
+        return c.json({ cwd, level, trusted: true, canReloadResources });
+      } catch (error) {
+        if (error instanceof HttpError) throw error;
         throw mapCatalogError(error, "trust");
       }
     });

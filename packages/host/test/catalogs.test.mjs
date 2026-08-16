@@ -382,6 +382,8 @@ test("catalog caps stay advertised when sessiond is down", async () => {
     credentials: fakeCredentials(),
     resources: fakeResources(),
     themes: fakeThemes(),
+    trust: fakeTrust(),
+    trustMutation: { setTrusted: async () => ({ cwd: "x", level: "trusted" }) },
   };
   const { sessiond, capabilities } = await resolveCapabilities({
     catalogs,

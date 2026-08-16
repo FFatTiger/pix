@@ -14,7 +14,9 @@ import type {
   ModelRef,
   ModelSelector,
   PluginInfo,
-  ProjectTrustPort,
+  PluginWriteInput,
+  ProjectTrustMutationPort,
+  ProjectTrustQueryPort,
   ProjectTrustState,
   ProjectTrustStatus,
   ResourceCatalogStorePort,
@@ -295,33 +297,48 @@ export class ReferenceResourceCatalog implements ResourceCatalogStorePort {
 /* Project trust                                                       */
 /* ------------------------------------------------------------------ */
 
-export class ReferenceProjectTrust implements ProjectTrustPort {
+/**
+ * Shared in-memory trust decisions so the read-only query port and the
+ * narrow mutation port observe ONE state (the persisted-decision model).
+ */
+export class ReferenceTrustDecisions {
   private levels = new Map<string, ProjectTrustState>();
 
-  getProjectTrustState(cwd: string): Promise<ProjectTrustState> {
-    return Promise.resolve(this.levels.get(cwd) ?? "unknown");
+  level(cwd: string): ProjectTrustState {
+    return this.levels.get(cwd) ?? "unknown";
   }
 
-  getTrust(cwd: string): Promise<ProjectTrustStatus> {
-    const level = this.levels.get(cwd) ?? "unknown";
-    return Promise.resolve({ cwd, level });
+  setTrusted(cwd: string): void {
+    this.levels.set(cwd, "trusted");
+  }
+}
+
+export class ReferenceProjectTrust implements ProjectTrustQueryPort {
+  constructor(private readonly decisions = new ReferenceTrustDecisions()) {}
+
+  getProjectTrustState(cwd: string): Promise<ProjectTrustState> {
+    return Promise.resolve(this.decisions.level(cwd));
   }
 
   isTrusted(cwd: string): Promise<boolean> {
-    return Promise.resolve((this.levels.get(cwd) ?? "unknown") === "trusted");
-  }
-
-  setTrust(cwd: string, level: ProjectTrustState): Promise<ProjectTrustStatus> {
-    this.levels.set(cwd, level);
-    return Promise.resolve({ cwd, level });
+    return Promise.resolve(this.decisions.level(cwd) === "trusted");
   }
 
   canReloadResources(cwd: string): Promise<TrustGateResult> {
-    const level = this.levels.get(cwd) ?? "unknown";
+    const level = this.decisions.level(cwd);
     return Promise.resolve({
       allowed: level === "trusted",
       level,
       ...(level === "trusted" ? {} : { reason: "project is not trusted" }),
     });
+  }
+}
+
+export class ReferenceProjectTrustMutation implements ProjectTrustMutationPort {
+  constructor(private readonly decisions = new ReferenceTrustDecisions()) {}
+
+  setProjectTrusted(cwd: string): Promise<ProjectTrustStatus> {
+    this.decisions.setTrusted(cwd);
+    return Promise.resolve({ cwd, level: "trusted", source: "saved" });
   }
 }

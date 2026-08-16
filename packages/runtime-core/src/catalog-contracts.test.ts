@@ -15,7 +15,7 @@ import type {
   CredentialStorePort,
   ModelCatalogPort,
   ProjectCatalogContext,
-  ProjectTrustPort,
+  ProjectTrustMutationPort,
   ProjectTrustQueryPort,
   ProjectTrustState,
   ResourceCatalogPort,
@@ -105,15 +105,34 @@ const _resStoreExtendsRead: Assignable<
   ResourceCatalogStorePort,
   ResourceCatalogPort
 > = true;
-const _trustPortExtendsQuery: Assignable<ProjectTrustPort, ProjectTrustQueryPort> =
-  true;
 
 // The reverse is NOT assignable: a read-only port is not a mutation port.
 const _catalogIsNotStore: Assignable<CredentialCatalogPort, CredentialStorePort> =
   false;
 const _readIsNotStore: Assignable<ResourceCatalogPort, ResourceCatalogStorePort> =
   false;
-const _queryIsNotPort: Assignable<ProjectTrustQueryPort, ProjectTrustPort> = false;
+
+// Trust mutation (D3B trust-mutation slice) is a SEPARATE, narrow port (the
+// session-rename precedent): it carries ONLY `setProjectTrusted` — no denied
+// write, no level enum, no read-side accessor — and NEVER extends the
+// read-only query port. Neither port is assignable to the other, so a query
+// object can never serve as a mutation port and no mutation method can ever
+// leak onto the query surface.
+const _trustMutationExact: IsExact<
+  keyof ProjectTrustMutationPort,
+  "setProjectTrusted"
+> = true;
+const _trustMutationNoDenied: Missing<ProjectTrustMutationPort, "setTrust"> =
+  true;
+const _trustMutationNoGet: Missing<ProjectTrustMutationPort, "getTrust"> = true;
+const _trustMutationNoQueryMethods: Assignable<
+  ProjectTrustMutationPort,
+  ProjectTrustQueryPort
+> = false;
+const _trustQueryNotMutation: Assignable<
+  ProjectTrustQueryPort,
+  ProjectTrustMutationPort
+> = false;
 
 // Session mutation (offline rename) is a SEPARATE, narrow port: it carries
 // only `renameSession` and never exposes the read-side catalog surface
@@ -190,6 +209,15 @@ test("a read-only trust query object exposes no mutation methods", () => {
   const keys = Object.keys(query);
   assert.ok(!keys.includes("setTrust"));
   assert.ok(!keys.includes("getTrust"));
+  assert.ok(!keys.includes("setProjectTrusted"));
+});
+
+test("the trust mutation port exposes only setProjectTrusted", () => {
+  const mutation: ProjectTrustMutationPort = {
+    setProjectTrusted: () => Promise.resolve({ cwd: "/workspace", level: "trusted" }),
+  };
+  assert.deepEqual(Object.keys(mutation), ["setProjectTrusted"]);
+  assert.equal(typeof mutation.setProjectTrusted, "function");
 });
 
 test("the session mutation port exposes only renameSession", () => {

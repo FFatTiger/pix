@@ -9,9 +9,11 @@ import {
   ReferenceCredentialStore,
   ReferenceModelCatalog,
   ReferenceProjectTrust,
+  ReferenceProjectTrustMutation,
   ReferenceResourceCatalog,
   ReferenceSessionCatalog,
   ReferenceSessionLocator,
+  ReferenceTrustDecisions,
 } from "./fake/ports.js";
 
 export { ReferenceRuntimeFactory } from "./fake/factory.js";
@@ -25,9 +27,11 @@ export {
   ReferenceCredentialStore,
   ReferenceModelCatalog,
   ReferenceProjectTrust,
+  ReferenceProjectTrustMutation,
   ReferenceResourceCatalog,
   ReferenceSessionCatalog,
   ReferenceSessionLocator,
+  ReferenceTrustDecisions,
 } from "./fake/ports.js";
 
 export function createReferenceHarness(options?: { baseDir?: string }): AdapterContractHarness {
@@ -45,13 +49,17 @@ export function createReferenceHarness(options?: { baseDir?: string }): AdapterC
 
     async createPorts(factory: AgentRuntimeFactory): Promise<AdapterPortBundle> {
       const reference = factory as ReferenceRuntimeFactory;
+      // One shared decision store: the mutation port's writes are immediately
+      // visible to the query port (the persisted-decision model).
+      const decisions = new ReferenceTrustDecisions();
       return {
         sessionCatalog: new ReferenceSessionCatalog(reference.store),
         sessionLocator: new ReferenceSessionLocator(reference.store),
         modelCatalog: new ReferenceModelCatalog(),
         credentialStore: new ReferenceCredentialStore(),
         resourceCatalog: new ReferenceResourceCatalog(),
-        projectTrust: new ReferenceProjectTrust(),
+        projectTrust: new ReferenceProjectTrust(decisions),
+        projectTrustMutation: new ReferenceProjectTrustMutation(decisions),
       };
     },
 

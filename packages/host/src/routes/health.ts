@@ -22,10 +22,14 @@ export interface ResolvedCapabilities {
 
 /**
  * Catalog capability tokens for the seams that are actually mounted. Only the
- * negotiated catalog tokens are advertised here; trust/commands have no
- * independent capability token (routes still mount when their seams exist).
- * `themes` mounts with the themes seam and is sessiond-independent, so it
- * stays advertised in the degraded projection too.
+ * negotiated catalog tokens are advertised here; trust reads have no
+ * independent capability token (the GET route still mounts when the seam
+ * exists). `themes` mounts with the themes seam and is sessiond-independent, so
+ * it stays advertised in the degraded projection too. `project.trust` is the
+ * trust-mutation token: advertised ONLY when the trust-mutation seam is really
+ * mounted (production wires the real Pi-SDK-backed mutation port) — the same
+ * source of truth as the POST /v1/trust route mount. Like every catalog token
+ * it is discovery, never authorization.
  */
 export function catalogCapabilitiesFromDeps(
   catalogs: CatalogDeps | undefined,
@@ -39,8 +43,19 @@ export function catalogCapabilitiesFromDeps(
     tokens.push("skills", "plugins");
   }
   if (catalogs.themes) tokens.push("themes");
+  if (hasTrustMutationSeam(catalogs)) tokens.push("project.trust");
   // Defensive: only emit known catalog tokens (order matches CATALOG_CAPABILITIES).
   return CATALOG_CAPABILITIES.filter((token) => tokens.includes(token));
+}
+
+/**
+ * The trust-mutation surface is mounted only when BOTH the mutation seam and
+ * the trust read seam exist (the route needs the read seam for its strict
+ * post-write state projection). Single source of truth for the route mount
+ * and the `project.trust` capability token, so the two can never disagree.
+ */
+export function hasTrustMutationSeam(catalogs: CatalogDeps): boolean {
+  return catalogs.trust !== undefined && catalogs.trustMutation !== undefined;
 }
 
 /**

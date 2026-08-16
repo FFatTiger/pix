@@ -17,7 +17,8 @@ import type {
   ModelSelector,
   PluginInfo,
   PluginWriteInput,
-  ProjectTrustPort,
+  ProjectTrustMutationPort,
+  ProjectTrustQueryPort,
   ProjectTrustState,
   ProjectTrustStatus,
   ResourceCatalogStorePort,
@@ -69,7 +70,8 @@ export function createPortsFromBackend(backend: PiSdkDataBackend): {
   modelCatalog: ModelCatalogPort;
   credentialStore: CredentialStorePort;
   resourceCatalog: ResourceCatalogStorePort;
-  projectTrust: ProjectTrustPort;
+  projectTrust: ProjectTrustQueryPort;
+  projectTrustMutation: ProjectTrustMutationPort;
 } {
   return {
     sessionCatalog: {
@@ -114,10 +116,11 @@ export function createPortsFromBackend(backend: PiSdkDataBackend): {
     },
     projectTrust: {
       async getProjectTrustState(cwd): Promise<ProjectTrustState> { return (await backend.getTrust(cwd)).level; },
-      async getTrust(cwd): Promise<ProjectTrustStatus> { const status = await backend.getTrust(cwd); return { cwd, ...status }; },
       async isTrusted(cwd) { return (await backend.getTrust(cwd)).level === "trusted"; },
-      async setTrust(cwd, level): Promise<ProjectTrustStatus> { await backend.setTrust(cwd, level); const status = await backend.getTrust(cwd); return { cwd, ...status }; },
       async canReloadResources(cwd): Promise<TrustGateResult> { const status = await backend.getTrust(cwd); return { allowed: status.level === "trusted", level: status.level, ...(status.level === "trusted" ? {} : { reason: status.reason ?? "project is not trusted" }) }; },
+    },
+    projectTrustMutation: {
+      async setProjectTrusted(cwd): Promise<ProjectTrustStatus> { await backend.setTrust(cwd, "trusted"); const status = await backend.getTrust(cwd); return { cwd, ...status }; },
     },
   };
 }

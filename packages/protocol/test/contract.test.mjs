@@ -97,6 +97,7 @@ describe("capabilities", () => {
       "skills",
       "plugins",
       "themes",
+      "project.trust",
       "export",
     ];
     assert.deepEqual([...ALL_HOST_CAPABILITIES].sort(), [...expected].sort());
@@ -107,18 +108,23 @@ describe("capabilities", () => {
 
   it("rejects mutation/trust-management capability tokens (read-only foundation)", () => {
     // D3B-R1A freezes the resource/auth/model surface as read-only: there is
-    // no configure/manage/trust-mutation capability. Theme catalog stays
-    // read-only the same way: no themes.write/themes.reload token exists.
+    // no configure/manage capability. Theme catalog stays read-only the same
+    // way: no themes.write/themes.reload token exists. The ONE negotiated
+    // catalog mutation token is `project.trust` (D3B trust-mutation slice, set
+    // trusted only): it is deliberately NOT enumerable as a level token —
+    // denied/untrust variants must stay unrepresentable at the protocol layer.
     for (const rejected of [
       "models.configure",
       "skills.manage",
       "plugins.manage",
-      "project.trust",
+      "project.trust.denied",
+      "project.untrust",
       "themes.write",
       "themes.reload",
     ]) {
       assert.equal(HostCapabilitySchema.safeParse(rejected).success, false);
     }
+    assert.equal(HostCapabilitySchema.safeParse("project.trust").success, true);
   });
 
   it("rejects unknown capabilities", () => {

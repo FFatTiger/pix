@@ -4,7 +4,8 @@
  * Trust is an exact tri-state: `unknown` (no decision recorded), `trusted`,
  * or `denied`. The read-only query port
  * ({@link ProjectTrustQueryPort} in `./ports.js`) surfaces this exact state;
- * the mutation port ({@link ProjectTrustPort}) records an explicit decision.
+ * the independent narrow mutation port ({@link ProjectTrustMutationPort})
+ * records an explicit decision (this slice: set trusted only).
  *
  * Project-scoped trust reads always take an explicit `cwd` (see
  * {@link ProjectCatalogContext}) and never rely on implicit process.cwd. The

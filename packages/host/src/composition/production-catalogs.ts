@@ -20,7 +20,7 @@ import { isAbsolute } from "node:path";
 import { createPiSdkModelCatalog } from "@fffattiger/pix-pi-sdk-adapter/models";
 import { createPiSdkCredentialCatalog } from "@fffattiger/pix-pi-sdk-adapter/credentials";
 import { createPiSdkResourceCatalog } from "@fffattiger/pix-pi-sdk-adapter/resources";
-import { createPiSdkTrustCatalog } from "@fffattiger/pix-pi-sdk-adapter/trust";
+import { createPiSdkTrustCatalog, createPiSdkTrustMutation } from "@fffattiger/pix-pi-sdk-adapter/trust";
 import { createPiSdkThemeCatalog } from "@fffattiger/pix-pi-sdk-adapter/themes";
 import type { AllowedRootService } from "../resources/allowed-roots.js";
 import type {
@@ -29,6 +29,7 @@ import type {
   CatalogModelsSeam,
   CatalogResourcesSeam,
   CatalogThemesSeam,
+  CatalogTrustMutationSeam,
   CatalogTrustSeam,
   HostCapability,
 } from "../types.js";
@@ -40,6 +41,7 @@ export const CATALOG_CAPABILITY_TOKENS: readonly HostCapability[] = [
   "skills",
   "plugins",
   "themes",
+  "project.trust",
 ] as const;
 
 /** Single safe error class for any agentDir configuration failure. */
@@ -79,8 +81,9 @@ export function validateCatalogAgentDir(agentDir: string): string {
 
 /**
  * Assemble production {@link CatalogDeps} from an absolute agentDir and the
- * shared allowed-roots service. Four independent seams; credentials/trust are
- * singletons; models/resources are per-canonical-cwd factories.
+ * shared allowed-roots service. Independent seams (models / credentials /
+ * resources / trust read / trust mutation / themes); credentials and trust are
+ * singletons; models/resources/themes are per-canonical-cwd factories.
  */
 export function createProductionCatalogs(options: ProductionCatalogsOptions): CatalogDeps {
   const agentDir = validateCatalogAgentDir(options.agentDir);
@@ -124,6 +127,16 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     canReloadResources: (cwd: string) => trustPort.canReloadResources(cwd),
   };
 
+  // D3B trust-mutation slice: the REAL Pi-SDK-backed mutation port (set trusted
+  // only). Mounting this seam is what mounts POST /v1/trust and advertises the
+  // `project.trust` capability token — production is the only place the token
+  // is ever truthful. Same agentDir as the read catalog, so a write is
+  // immediately visible to every read seam above.
+  const trustMutationPort = createPiSdkTrustMutation({ agentDir });
+  const trustMutation: CatalogTrustMutationSeam = {
+    setTrusted: (cwd: string) => trustMutationPort.setProjectTrusted(cwd),
+  };
+
   // D3B-R6: read-only theme catalog. Fresh catalog per canonical cwd+trust so
   // a trust flip is never masked by a long-lived store; the canonical cwd is
   // passed explicitly to every port call (no implicit process.cwd anywhere).
@@ -140,5 +153,5 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     },
   };
 
-  return { roots, models, credentials, resources, trust, themes };
+  return { roots, models, credentials, resources, trust, trustMutation, themes };
 }

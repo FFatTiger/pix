@@ -3,6 +3,7 @@ import type { HttpClient } from "./http-client";
 import { createGateApi, type GateLoginInput } from "./gate";
 import { createResourcesApi, type UploadInput } from "./resources";
 import { createSessionsApi } from "./sessions";
+import { createConfigurationApi } from "./configuration";
 import { queryKeys } from "./query-keys";
 
 async function invalidate(queryClient: QueryClient, ...keys: readonly (readonly unknown[])[]) {
@@ -58,7 +59,9 @@ function primeSessionTitle(queryClient: QueryClient, id: string, title: string):
 /**
  * Mutation options. D3B catalog domains (models / skills / plugins / auth
  * provider mutations) are intentionally absent — Host does not mount those
- * routes and Client must not offer a callable surface for them.
+ * routes and Client must not offer a callable surface for them. The ONE
+ * mounted catalog mutation is trust set-trusted (POST /v1/trust, gated by the
+ * `project.trust` capability at the call site).
  *
  * Gate login/logout and non-catalog workspace mutations remain.
  */
@@ -66,6 +69,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
   const gate = createGateApi(http);
   const resources = createResourcesApi(http);
   const sessions = createSessionsApi(http);
+  const configuration = createConfigurationApi(http);
   return {
     sessions: {
       // D4 rename: prime the cached list/detail titles for the exact session id
@@ -96,6 +100,28 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
     worktrees: {
       create: () => ({ mutationKey: ["pix", "worktrees", "create"] as const, mutationFn: (input: { cwd: string; branch: string }) => resources.worktrees.create(input), onSuccess: (_data: unknown, input: { cwd: string }) => invalidate(queryClient, queryKeys.worktrees.list(input.cwd), queryKeys.cwd.roots()) }),
       remove: () => ({ mutationKey: ["pix", "worktrees", "remove"] as const, mutationFn: (input: { cwd: string; path: string; force?: boolean }) => resources.worktrees.remove(input), onSuccess: (_data: unknown, input: { cwd: string }) => invalidate(queryClient, queryKeys.worktrees.list(input.cwd), queryKeys.cwd.roots()) }),
+    },
+    trust: {
+      /**
+       * Set-project-trusted (D3B trust-mutation slice). A trust flip changes
+       * every project-scoped trust-gated catalog, so success invalidates the
+       * trust summary PLUS skills/plugins/commands (resource seam, gated by
+       * trust) and ALL theme queries (project themes become readable — the
+       * theme list key carries no cwd, so the whole domain is invalidated).
+       */
+      setTrusted: () => ({
+        mutationKey: ["pix", "trust", "set-trusted"] as const,
+        mutationFn: (input: { cwd: string }) => configuration.trust.setTrusted(input.cwd),
+        onSuccess: (_data: unknown, input: { cwd: string }) =>
+          invalidate(
+            queryClient,
+            queryKeys.trust.get(input.cwd),
+            queryKeys.skills.list(input.cwd),
+            queryKeys.plugins.list(input.cwd),
+            queryKeys.commands.list(input.cwd),
+            queryKeys.themes.all,
+          ),
+      }),
     },
   };
 }

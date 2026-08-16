@@ -73,6 +73,30 @@ describe("API domain response parsing", () => {
     await expect(createModelsApi(client({ models: [{ id: 1 }], defaultModel: null })).list("/repo")).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 
+  it("trust setTrusted sends exactly POST /v1/trust with body {cwd, level:\"trusted\"}", async () => {
+    const state = { cwd: "/repo", level: "trusted", trusted: true, canReloadResources: { allowed: true, level: "trusted" } };
+    const calls: { url: string; method: string; body?: unknown }[] = [];
+    const recording = createHttpClient({
+      fetchImpl: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({
+          url: String(input),
+          method: (init?.method ?? "GET").toUpperCase(),
+          ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+        });
+        return json(state);
+      }) as unknown as typeof fetch,
+    });
+    const signal = new AbortController().signal;
+    await expect(createConfigurationApi(recording).trust.setTrusted("/repo", signal)).resolves.toEqual(state);
+    expect(calls).toEqual([{ url: "/v1/trust", method: "POST", body: { cwd: "/repo", level: "trusted" } }]);
+    // Strict response: an extra field is a decode failure, never a silent accept.
+    const extra = createConfigurationApi(client({ ...state, source: "saved" }));
+    await expect(extra.trust.setTrusted("/repo")).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    // A response missing the strict state fields is a decode failure too.
+    const partial = createConfigurationApi(client({ cwd: "/repo", level: "trusted" }));
+    await expect(partial.trust.setTrusted("/repo")).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
   it("parses cwd/git/worktree domains and rejects malformed values", async () => {
     await expect(createResourcesApi(client({ roots: ["/repo"], defaultCwd: "/repo" })).cwd.roots()).resolves.toEqual({ roots: ["/repo"], defaultCwd: "/repo" });
     await expect(createResourcesApi(client({ isGitRepository: false, repositoryRoot: null, files: [], additions: 0, deletions: 0 })).git.status("/repo")).resolves.toMatchObject({ isGitRepository: false });

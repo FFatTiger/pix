@@ -22,6 +22,8 @@ describe("v1 URL builders", () => {
     expect(urls.plugins.list("/tmp/a b")).toBe("/v1/plugins?cwd=%2Ftmp%2Fa+b");
     expect(urls.commands.list("/proj#1")).toBe("/v1/commands?cwd=%2Fproj%231");
     expect(urls.trust.get("/proj/x")).toBe("/v1/trust?cwd=%2Fproj%2Fx");
+    // Trust mutation (POST): the bare resource, body carries {cwd, level}.
+    expect(urls.trust.mutate()).toBe("/v1/trust");
     expect(urls.auth.providers()).toBe("/v1/auth/providers");
     expect(urls.auth.providerStatus("a/b ?#")).toBe("/v1/auth/providers/a%2Fb%20%3F%23/status");
   });

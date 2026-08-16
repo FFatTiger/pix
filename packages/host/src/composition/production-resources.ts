@@ -112,6 +112,13 @@ export const PRODUCTION_LEDGER_MAX = 128;
  * agent-dir themes + built-ins, plus trusted project themes) never depend on
  * sessiond, so the token stays advertised in degraded too — the degraded host
  * honestly still serves /v1/themes.
+ *
+ * `project.trust` (D3B trust-mutation slice) is the trust-mutation token: the
+ * persisted trust decision is written by the Host catalog itself (real
+ * Pi-SDK-backed mutation port over the agent-dir trust.json) and never depends
+ * on the per-session Worker, so it is advertised in BOTH states. The token is
+ * discovery, never authorization — POST /v1/trust still fail-closes on
+ * gate/auth/AllowedRoot checks and its own store authority per request.
  */
 export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
   "files",
@@ -125,6 +132,7 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
   "skills",
   "plugins",
   "themes",
+  "project.trust",
 ];
 
 /**
@@ -150,7 +158,10 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
  * only (the mutations are sessiond-guarded and managed-ledger-backed), excluded
  * from degraded. The token is discovery, never authorization.
  * `themes` is the read-only theme catalog token (D3B-R6), present in BOTH
- * states (theme reads never depend on sessiond).
+ * states (theme reads never depend on sessiond). `project.trust` is the
+ * trust-mutation token (D3B trust-mutation slice), also present in BOTH
+ * states: the write is a Host catalog capability over the agent-dir trust.json
+ * and never consults sessiond; the route fail-closes on its own authority.
  */
 export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "agent",
@@ -169,6 +180,7 @@ export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "skills",
   "plugins",
   "themes",
+  "project.trust",
 ];
 
 /** Single safe error class for any roots configuration/canonicalization failure. */

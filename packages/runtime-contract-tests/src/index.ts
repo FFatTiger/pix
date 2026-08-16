@@ -23,6 +23,8 @@ export {
   ReferenceCredentialStore,
   ReferenceResourceCatalog,
   ReferenceProjectTrust,
+  ReferenceProjectTrustMutation,
+  ReferenceTrustDecisions,
   KNOWN_TOOLS,
   THINKING_LEVELS,
 } from "./reference.js";

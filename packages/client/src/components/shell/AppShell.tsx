@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { createQueryOptions } from "@/api/query-keys";
+import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
@@ -51,10 +52,11 @@ function describeError(cause: unknown): string {
  * read-only/live session center (TranscriptList + Composer stay in place).
  */
 export function AppShell({ search }: AppShellProps) {
-  const { canAgent, canBrowseSessions, unavailable } = useCapabilities();
+  const { canAgent, canBrowseSessions, unavailable, can } = useCapabilities();
   const runtime = useRuntime();
   const navigate = useNavigate();
   const http = useHttpClient();
+  const queryClient = useQueryClient();
   const { isDark, toggleTheme } = useTheme();
   const isMobile = useIsMobile();
   const gate = useGateStatus();
@@ -108,15 +110,30 @@ export function AppShell({ search }: AppShellProps) {
       ? null
       : titleSessionId.slice(0, 12);
 
-  // ── Project trust (read-only Host projector) ─────────────────────────────
-  // The REF floating warning + dialog surface real server state; the confirm
-  // action stays hidden until a trust-write capability exists (no POST route).
+  // ── Project trust ─────────────────────────────────────────────────────────
+  // Read and write stay independently capability-gated. The dialog only shows
+  // its confirm action when the Host advertises the real mutation seam.
   const trustQuery = useQuery({
     ...options.trust.get(search.cwd ?? ""),
     enabled: search.cwd !== undefined,
   });
+  const trustMutation = useMutation(createMutationOptions(http, queryClient).trust.setTrusted());
+  const canTrustProject = can("project.trust");
   const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
   const showTrustWarning = Boolean(search.cwd) && trustQuery.data !== undefined && trustQuery.data.trusted === false;
+  const trustMutationError = trustMutation.error === null ? null : "Unable to trust this project.";
+  const closeProjectTrustDialog = useCallback(() => {
+    if (trustMutation.isPending) return;
+    trustMutation.reset();
+    setProjectTrustDialogOpen(false);
+  }, [trustMutation]);
+  const confirmProjectTrust = useCallback(() => {
+    if (!search.cwd || !canTrustProject || trustMutation.isPending) return;
+    trustMutation.mutate(
+      { cwd: search.cwd },
+      { onSuccess: () => setProjectTrustDialogOpen(false) },
+    );
+  }, [canTrustProject, search.cwd, trustMutation]);
 
   // History/live coordination (D1A-2 phase 2 + history-switching fix).
   //
@@ -364,6 +381,7 @@ export function AppShell({ search }: AppShellProps) {
         <button
           type="button"
           onClick={() => {
+            trustMutation.reset();
             setProjectTrustDialogOpen(true);
           }}
           title="Project resources are restricted"
@@ -542,8 +560,10 @@ export function AppShell({ search }: AppShellProps) {
     {projectTrustDialogOpen && search.cwd ? (
       <ProjectTrustDialog
         cwd={search.cwd}
-        error={null}
-        onCancelAction={() => setProjectTrustDialogOpen(false)}
+        busy={trustMutation.isPending}
+        error={trustMutationError}
+        onCancelAction={closeProjectTrustDialog}
+        {...(canTrustProject ? { onConfirmAction: confirmProjectTrust } : {})}
       />
     ) : null}
     {settingsOpen ? (
