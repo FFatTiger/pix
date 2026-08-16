@@ -144,6 +144,23 @@ test("buildWorkerEnv only injects PIX_AGENT_WORKER_FACTORY via explicit options"
   assert.equal(env.PIX_AGENT_WORKER_FACTORY, "/from-options.mjs");
 });
 
+test("buildWorkerEnv never fabricates PI_CODING_AGENT_DIR (SDK default ~/.pi/agent must stay in effect)", () => {
+  // Regression: defaulting the worker env to ~/.pi pointed the SDK agent dir
+  // at the wrong root (real sessions live under ~/.pi/agent), so every worker
+  // failed session lookup with not_found and activate timed out. The var must
+  // only be forwarded when the operator environment (or an explicit test
+  // default) provides one; otherwise it stays UNSET so the SDK default wins.
+  const unset = buildWorkerEnv({ sourceEnv: { PATH: "/bin", HOME: "/home/user" } });
+  assert.equal(unset.PI_CODING_AGENT_DIR, undefined);
+  const explicitDefault = buildWorkerEnv({
+    sourceEnv: { PATH: "/bin" },
+    defaultPiCodingAgentDir: "/tmp/test-agent-dir",
+  });
+  assert.equal(explicitDefault.PI_CODING_AGENT_DIR, "/tmp/test-agent-dir");
+  const fromEnv = buildWorkerEnv({ sourceEnv: { PATH: "/bin", PI_CODING_AGENT_DIR: "/custom/pi" } });
+  assert.equal(fromEnv.PI_CODING_AGENT_DIR, "/custom/pi");
+});
+
 test("redactStderr strips secrets and paths", () => {
   const raw =
     "Authorization: Bearer supersecrettokenvalue path=/Users/proxy/.pi/key.json OPENAI_API_KEY=sk-abcdefghijklmnop";

@@ -130,7 +130,10 @@ export interface WorkerEnvBuildInput {
 /**
  * Build the minimal worker environment. Never spreads process.env.
  * Always sets PIX_AGENT_BACKEND=sdk. Forwards PATH/HOME, PI_CODING_AGENT_DIR
- * (default ~/.pi), and an explicit provider credential allowlist. Rejects
+ * (ONLY when the operator environment or an explicit test default provides
+ * one — never a hardcoded fallback; the SDK's own default resolves to
+ * ~/.pi/agent, and forcing ~/.pi here would point workers at the wrong
+ * sessions root), and an explicit provider credential allowlist. Rejects
  * sessiond secrets and any other PIX_* keys.
  */
 export function buildWorkerEnv(input: WorkerEnvBuildInput = {}): NodeJS.ProcessEnv {
@@ -150,11 +153,11 @@ export function buildWorkerEnv(input: WorkerEnvBuildInput = {}): NodeJS.ProcessE
   if (typeof source.TEMP === "string" && source.TEMP.length > 0) env.TEMP = source.TEMP;
   if (typeof source.TMP === "string" && source.TMP.length > 0) env.TMP = source.TMP;
 
-  const piDir =
+  const explicitPiDir =
     typeof source.PI_CODING_AGENT_DIR === "string" && source.PI_CODING_AGENT_DIR.length > 0
       ? source.PI_CODING_AGENT_DIR
-      : (input.defaultPiCodingAgentDir ?? resolve(homedir(), ".pi"));
-  env.PI_CODING_AGENT_DIR = piDir;
+      : input.defaultPiCodingAgentDir;
+  if (explicitPiDir !== undefined) env.PI_CODING_AGENT_DIR = explicitPiDir;
 
   for (const key of WORKER_ENV_KEY_ALLOWLIST) {
     const value = source[key];
