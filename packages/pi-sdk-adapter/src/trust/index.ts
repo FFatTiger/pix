@@ -9,11 +9,15 @@
 //
 // The mutation surface (createPiSdkTrustMutation) satisfies the separate,
 // narrow ProjectTrustMutationPort (set trusted ONLY — no denied write, no
-// level enum, no read methods). It persists through the REAL Pi SDK public
-// trust API (the SDK store's public set(cwd, true)) under the same agent-dir trust.json the
-// query/resource catalogs read, so a write is immediately visible to every
-// read. Errors are fixed-code and sanitized: raw SDK messages, paths, file
-// content and stacks never propagate.
+// level enum, no read methods). It persists through a self-contained ATOMIC
+// writer over the agent-dir trust.json — the exact file the query/resource
+// catalogs read — under the SAME proper-lockfile cross-process lock the Pi
+// SDK/CLI use (realpath:false, trust.json.lock). Production never calls the
+// SDK's set(); the write is a strict bounded RMW persisted crash-atomically
+// (same-dir temp + fsync + atomic rename + dir fsync), so a write is
+// immediately visible to every read and a crash can never truncate the store.
+// Errors are fixed-code and sanitized: raw SDK messages, paths, file content
+// and stacks never propagate.
 import type {
   ProjectTrustMutationPort,
   ProjectTrustQueryPort,
@@ -37,10 +41,13 @@ export interface PiSdkTrustStore {
 
 /**
  * Injectable trust-mutation store contract (set trusted only). The default
- * implementation persists through the real Pi SDK public trust API with
- * serialization, permission hardening (0600), path safety (no symlinked
- * trust.json) and read-after-write verification. Fixed sanitized error codes —
- * no raw SDK message/path/content/stack ever propagates.
+ * implementation persists through a self-contained ATOMIC writer over the
+ * agent-dir trust.json under the same proper-lockfile cross-process lock the
+ * Pi SDK/CLI use: strict bounded RMW, permission hardening (0600), path
+ * safety (no symlink/hardlink/swap trust.json, nlink===1, O_NOFOLLOW) and
+ * crash-atomic temp+fsync+rename persistence, verified by a fresh read-back
+ * through the exact public SDK store the read catalogs use. Fixed sanitized
+ * error codes — no raw SDK message/path/content/stack ever propagates.
  */
 export interface PiSdkTrustMutationStore {
   setProjectTrusted(cwd: string): Promise<ProjectTrustStatus>;
@@ -121,18 +128,21 @@ export interface PiSdkTrustMutationOptions {
 }
 
 /**
- * Create the narrow trust-mutation port (set trusted only) backed by the real
- * Pi SDK public trust API (the SDK store's public set(cwd, true) under the agent-dir
- * trust.json). The write is serialized per agent dir (in-process mutex over
- * the SDK's own inter-process lock), permission-hardened (0600 file, 0700 new
- * dirs via a restrictive umask around the synchronous SDK write),
- * path-safe (an existing trust.json must be a real regular file — a planted
- * symlink is rejected fail-closed) and verified read-after-write against the
- * same store the read catalogs use, so persistence and every read surface are
- * immediately consistent. Failures throw fixed-code sanitized errors and leave
- * the persisted state immutable (the SDK writes nothing when its own
- * read/lock/validation fails). No network, no Worker/Agent, no raw
- * config/secret/path in any error.
+ * Create the narrow trust-mutation port (set trusted only) backed by a
+ * self-contained ATOMIC writer over the agent-dir trust.json — the exact file
+ * the read catalogs use — under the SAME proper-lockfile cross-process lock
+ * the Pi SDK/CLI use (realpath:false, lockfilePath trust.json.lock, SDK/CLI
+ * retry semantics). The write is a strict bounded RMW (missing → {}; existing
+ * must be O_NOFOLLOW regular, nlink===1, owner-only, ≤1MiB, strict
+ * plain-object JSON with true/false/null values) persisted crash-atomically
+ * (same-dir temp O_EXCL|O_NOFOLLOW 0600 → write all → fsync → identity check →
+ * re-verify dir+target identity/absence → atomic rename → directory fsync →
+ * post-verify dev/ino === temp identity; temp cleaned up on every failure),
+ * then verified by a fresh read-back through the exact public SDK store the
+ * read catalogs use. Failures throw
+ * fixed-code sanitized errors; a failure before rename leaves the old bytes
+ * immutable and a rename-then-dir-fsync failure never reports success. No
+ * network, no Worker/Agent, no raw config/secret/path in any error.
  */
 export function createPiSdkTrustMutation(
   storeOrOptions: PiSdkTrustMutationStore | PiSdkTrustMutationOptions = {},

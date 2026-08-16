@@ -3415,13 +3415,16 @@ branch `pi-agent-068d7d97`，base main `00063ca`，独立 worktree 实现+实跑
 
 - **Protocol**（`packages/protocol/src/capabilities.ts`）：`HostCapabilitySchema` 新增 `"project.trust"`（逐能力 token，非 level 枚举：`project.trust.denied`/`project.untrust` 不可表示）。读侧 `trust` 无 token（沿用 GET seam 挂载即服务语义，未变）。
 - **runtime-core**（`src/ports.ts` / `src/trust.ts` / `src/catalog-contracts.test.ts`）：新增**独立窄** `ProjectTrustMutationPort { setProjectTrusted(cwd): Promise<ProjectTrustStatus> }`——不继承 `ProjectTrustQueryPort`（双向不可赋值、compile-time exactness 钉住），仅 set trusted（无 denied/level 枚举/read 方法）。原占位组合 port `ProjectTrustPort`（声明于 D3B-R1A、从未接线）移除，contract fake/suite/adapter test-helper 同步拆分为 query+mutation 双 port（`ReferenceTrustDecisions` 共享状态）。
-- **pi-sdk-adapter**（`src/trust/index.ts` / `src/internal/trust-store.ts`）：`createPiSdkTrustMutation(storeOrOptions)` → `ProjectTrustMutationPort`。持久化走**真实 SDK 公开 API** `ProjectTrustStore.set(cwd, true)`（agent-dir `trust.json`，与 read catalog 同一文件）：
+- **pi-sdk-adapter**（`src/trust/index.ts` / `src/internal/trust-store.ts`）：`createPiSdkTrustMutation(storeOrOptions)` → `ProjectTrustMutationPort`。持久化为**自包含原子写入器**（F1 修复，见文末 §69 追加记录）：生产**不再调用** SDK `ProjectTrustStore.set`，而是持有与 SDK/CLI **同一把跨进程锁**（新增直接依赖 `proper-lockfile@4.1.2`，锁 `dirname(trust.json)`、`realpath:false`、`lockfilePath=trust.json.lock`，重试语义不弱于 SDK lockSync 的 10×20ms）下，对 agent-dir `trust.json`（与 read catalog 同一文件）做**严格有界 RMW + 崩溃原子 temp+fsync+rename 持久化**：
   - 输入校验先行（非空绝对路径、无 NUL，否则 `TRUST_INPUT_INVALID`，零 fs/SDK 触碰）；
-  - per-agentDir 进程内互斥（preflight↔同步写不交错、不吃 SDK lockSync 重试上限），SDK 自身 proper-lockfile 继续负责跨进程（pi CLI）串行；
-  - 写前安全检查：既有 trust.json 必须是真实 regular file——planted symlink/非 regular 一律 `TRUST_STORE_UNSAFE` fail-closed（不写穿 symlink）；既有 group/other 权限位**先**收紧 0600（失败即中止、零写入）；
-  - 同步写窗口 `umask(0o077)`（新建 trust.json 0600、新建 agentDir 0700；Node 单线程同步段无 interleave，finally 恢复 umask）；
-  - 写后验证：trust.json 仍为 regular 非 symlink、无 group/other 位、**同一 store** 读回 decision===true（与既有 read catalog 即时一致，resource catalog 的 `readTrustDecision` 新建 store 读盘，天然一致）；
-  - 失败固定 code（`TRUST_INPUT_INVALID` / `TRUST_STORE_UNSAFE` / `TRUST_WRITE_FAILED` / `TRUST_WRITE_UNVERIFIED`）+ 固定 message，原始 SDK 错误/fs 路径/文件内容/stack 全部在边界丢弃；SDK 写前 lock+parse 失败 ⇒ 零写入（字节不可变）。
+  - per-agentDir 进程内互斥（RMW↔rename 不与同进程并发交错、不吃锁重试上限）；proper-lockfile 锁与 SDK/CLI 完全兼容（同一 lockfile 目录），跨进程（pi CLI）串行不变；
+  - 严格有界读：缺失 → `{}`；既有必须 O_NOFOLLOW 打开且 fstat 为 regular、`nlink===1`（硬链接受害 inode 先于任何 chmod 即拒绝）、owner-only（先经 fd chmod 收紧 0600）、≤1MiB、strict plain-object JSON（值仅 true/false/null）——symlink/swap/hardlink/dir-identity 违规全部 fail-closed；
+  - key 规范化与 SDK 一致（`canonicalizePath(resolvePath(cwd))`，Host 已传 existing AllowedRoot canonical path；仅用公开 Node API 重实现，禁止 SDK internal import）；写后以 **fresh** `ProjectTrustStore.get(cwd)` 读回 true 作为 key 与 SDK canonicalization 一致的权威证明；
+  - **精确 SDK 序列化**：keys 排序、2 空格缩进、末尾 newline；
+  - **崩溃原子写**：same-dir temp（O_EXCL|O_NOFOLLOW 0600）→ write all → fsync → fstat identity → rename 前重验目录身份与 target identity/absence → atomic rename → directory fsync → post-verify regular/nlink1/0600/dev+ino===temp identity；temp 在每次失败路径都清理；
+  - 诚实失败语义：rename 前失败 ⇒ 旧字节不可变；rename 后 dir fsync 失败 ⇒ 不宣称成功（`TRUST_WRITE_UNVERIFIED`）但已发布文件有效可读；
+  - 失败固定 code（`TRUST_INPUT_INVALID` / `TRUST_STORE_UNSAFE` / `TRUST_WRITE_FAILED` / `TRUST_WRITE_UNVERIFIED`）+ 固定 message，原始 SDK 错误/fs 路径/文件内容/stack 全部在边界丢弃；
+  - 保留窄 non-hardened seam：仅当测试注入 `projectTrustStore` 且**无** `agentDir`（路径未知）时才调用 SDK 公开 `set`；production composition 必带 `agentDir` ⇒ 恒走原子路径。
 - **Host**（`src/types.ts` / `src/routes/health.ts` / `src/routes/catalogs.ts` / `src/composition/production-catalogs.ts` / `production-resources.ts`）：
   - `CatalogDeps.trustMutation?: CatalogTrustMutationSeam`；`hasTrustMutationSeam = trust && trustMutation` 是路由挂载与 token 广告的**同一事实源**（不可能有未广告的路由或未挂载的 token；显式 capabilities override 中未挂载 seam 的 `project.trust` 会被 `normalizeCatalogCapabilities` 剥除）；
   - `POST /v1/trust`：全局 gate 先行（LAN 未认证 403 `AUTH_REQUIRED_FOR_LAN`、enabled gate 未登录 401，均先于 seam）；**无 sessiond mutation guard**（信任写是 Host catalog 能力，不依赖 Worker；自身 authority 由 seam 每请求 fail-closed）；任意 query string（含裸 `?`）400 `INVALID_QUERY`；严格 bounded JSON（4 KiB、application/json、415/413/400 固定错误）；body 必须精确 `{cwd:string, level:"trusted"}`（extra/missing/非 string cwd/其他 level → `INVALID_TRUST_BODY`/`CWD_REQUIRED`/`UNSUPPORTED_TRUST_LEVEL`）；cwd 走 `authorizeExisting("directory")`（canonical、越根 403、symlink 逃逸 403/404、missing 404、file 400/403/404、无 process.cwd 回退）；成功 200 返回严格 trust 状态（read seam + 与 GET 相同 projector；写后读不一致 ⇒ 500 `TRUST_MUTATION_FAILED`，绝不假成功）；mutation 错误映射固定 sanitized（`TRUST_STORE_UNSAFE`→503 `TRUST_MUTATION_UNAVAILABLE`，写失败/未知→500 `TRUST_MUTATION_FAILED`，无 path/raw 文本回显）；
@@ -3430,17 +3433,19 @@ branch `pi-agent-068d7d97`，base main `00063ca`，独立 worktree 实现+实跑
 
 ### 对抗测试（全部实跑通过）
 
-- adapter `test/trust-mutation.test.ts`（10 用例）：真实 SDK 持久化 + read catalog 即时一致 + SDK CLI parity（`new ProjectTrustStore(agentDir).get(cwd)===true`）；新建 trust.json 0600/新建 agentDir 0700/umask 恢复；预存 0644 收紧且外来 key 无 lost update；symlink trust.json 拒绝且目标字节不变；corrupt trust.json `TRUST_WRITE_FAILED` 且字节不变、read catalog 仍 fail-closed unknown；agentDir 0555 无 partial 写；非法 cwd 家族零触碰；24 并发不同 cwd 全部持久化 + 12 并发同 cwd 收敛 trusted；port 单方法面（无 setTrust/getTrust/query 方法）；injected store seam。
+- adapter `test/trust-mutation.test.ts`（24 用例）：真实 SDK 持久化 + read catalog 即时一致 + SDK CLI parity（`new ProjectTrustStore(agentDir).get(cwd)===true`）；新建 trust.json 0600/新建 agentDir 0700/umask 恢复；预存 0644 收紧且外来 key 无 lost update；symlink trust.json 拒绝且目标字节不变；corrupt trust.json `TRUST_WRITE_FAILED` 且字节不变、read catalog 仍 fail-closed unknown；agentDir 0555 无 partial 写；非法 cwd 家族零触碰；24 并发不同 cwd 全部持久化 + 12 并发同 cwd 收敛 trusted；port 单方法面（无 setTrust/getTrust/query 方法）；injected store seam；**F1 原子对抗追加**：硬链接受害 inode 拒绝且 victim 字节+权限不变；crash window #1（rename 前失败 ⇒ 旧字节不可变 + temp 清理）；crash window #2（rename 后 dir-fsync 失败 ⇒ 不宣称成功但 published valid 可读 + temp 清理）；swap/hardlink/symlink 替换、agentDir→symlink、agentDir→异目录（dir identity）均在 rename 前重验 fail-closed；**跨进程并发与真实 Pi SDK writer 无 lost update**（子进程 `ProjectTrustStore.set` ×4 + 本 writer ×4）；oversize（>1MiB）拒绝且不可变；mode 000 不可读拒绝且权限/字节不变；字节级精确 SDK 序列化（排序+2 空格+尾 newline）+ fresh SDK read；`/` root key canonicalization 一致；non-hardened seam（注入 store 无 agentDir）。
 - host `test/trust-mutation.test.mjs`（13 用例）：成功路径（canonical cwd、no-store、read seam 写后投影、seam 调用序）；缺 mutation seam/缺 read seam 均 404 不挂载；token 仅 seam 挂载时广告（up+degraded）且显式 override 未挂载即剥除；gate 先行（enabled 401 / LAN 403，seam 零调用）；sessiond probe down 时 POST 仍 200；query string 400；body 全家族（empty/missing/extra/denied/unknown/boolean/大小写/非 string cwd）；415/INVALID_JSON/array body/413（内容与 content-length 双路）；越根/symlink 逃逸/missing/file/relative/traversal cwd 全拒且 seam 零调用；seam 各固定 code 错误映射 + raw Error（含路径）不泄漏；写后读不一致 500 不假成功。
 - E2E `tests/e2e/startup.mjs`：真实生产 composition 下 POST 成功（200 strict body）→ GET 读回 trusted → 真实 trust.json 含 decision 且 0600；INVALID_QUERY / UNSUPPORTED_TRUST_LEVEL / 越根 403；degraded（sessiond down）阶段 POST 仍 200；FULL_CAPS/DEGRADED_CAPS 冻结数组更新。
 
+### §69 追加（F1：trust 持久化原子化，verifier 缺陷修复）
+
+独立 worktree 修复 verifier F1：生产 trust mutation 不再调用 SDK `set`（其 `trust.json.lock` proper-lockfile 下 read+writeFileSync、无 temp rename，crash 可截断；preflight 未拒 `nlink>1`，硬链接可写穿 victim）。改为与 SDK/CLI **同一把锁**（直接依赖 `proper-lockfile@4.1.2`，锁 `dirname(trust.json)`、`realpath:false`、`lockfilePath=trust.json.lock`、重试 10×20ms）内**严格有界 RMW + 崩溃原子写**：O_NOFOLLOW regular / `nlink===1` / owner-only / ≤1MiB / strict JSON（仅 true/false/null）；SDK 精确序列化（排序 keys、2 空格、尾 newline）；same-dir temp O_EXCL|O_NOFOLLOW 0600 → write all → fsync → identity → rename 前重验目录+target identity/absence → atomic rename → directory fsync → post-verify dev/ino===temp；temp 每次失败清理；固定 sanitized code；返回前 fresh `ProjectTrustStore.get(cwd)` readback true。锁与 SDK/CLI 跨进程兼容（同 lockfile 目录），SDK writer 与本 writer 并发无 lost update；rename 前失败旧字节不可变、rename 后 dir-fsync 失败不宣称成功但 published 可读。Host/Client/Protocol/UI 语义零变化（Host 仍传 canonical AllowedRoot cwd，路由/契约/能力面不变）。
+
 ### 验证（本 worktree 实跑）
 
-protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-adapter 322/322、host 473/473、client 731/731；逐包 typecheck、host/adapter `check:boundaries`、root `check:architecture`、`git diff --check` 全 PASS；Startup/Runtime/Sessions E2E（见执行记录）。
+protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-adapter 336/336（新增 14 项 F1 原子对抗）、host 473/473、client 731/731；逐包 typecheck、host/adapter `check:boundaries`、root `check:architecture`、`git diff --check` 全 PASS；Startup/Runtime/Sessions E2E（见执行记录）。
 
 ### 残余风险（诚实枚举）
 
-- SDK 写入器本身是 locked read-merge-`writeFileSync`，非 temp+rename 崩溃原子：进程在写入中段崩溃可留下截断 trust.json——所有读者（SDK get、read catalog）已 fail-closed 为 unknown（资源扣留），不会出现 false-trusted，但用户需手工修复该文件。选择 SDK 公开 API（任务「优先使用SDK公开API」）即接受此窗口，未复制 SDK 文件格式自写 rename（避免格式漂移）。
-- umask 窗口是进程级：仅覆盖同步 SDK 写段（无 await interleave），其它异步任务不可能在该窗口创建文件。
-- 同 UID 攻击者在 preflight lstat 与 SDK 写之间替换 trust.json 为 symlink 的 TOCTOU 残余窗口：写后验证会捕获并报 `TRUST_WRITE_UNVERIFIED`（不静默），但内容可能已写穿（与 D3A-P0/local-authority 同类「同 UID 残余窗口」诚实枚举，不宣称 fail-closed）。
+- 同 UID 攻击者在 rename 前重验 lstat 与 `rename()` 之间替换 trust.json/agentDir 的极窄 TOCTOU 残余窗口（与 D3A-P0/local-authority 同类「同 UID 残余窗口」诚实枚举，不宣称 fail-closed）。窗口已最小化：rename 前重验目录+target identity/absence，rename 后 post-verify dev/ino===temp identity，任何可观测替换均 fail-closed 为固定 sanitized code；不宣称可对抗与持有 agentDir 写权限的恶意同 UID 进程的纳秒级竞态。
 - Client mutation 暂无 UI 门控消费（`project.trust` capability 检查留给 ProjectTrustDialog 切片）；API 层已就绪且与 worktrees dormant-helper 模式一致。

@@ -33,11 +33,13 @@
     "@earendil-works/pi-agent-core": "0.84.0",
     "@earendil-works/pi-ai": "0.84.0",
     "@earendil-works/pi-coding-agent": "0.84.0",
-    "@fffattiger/pix-runtime-core": "0.1.0"
+    "@fffattiger/pix-runtime-core": "0.1.0",
+    "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
     "@fffattiger/pix-runtime-contract-tests": "file:../runtime-contract-tests",
     "@types/node": "^22",
+    "@types/proper-lockfile": "4.1.4",
     "typescript": "^5"
   }
 }
