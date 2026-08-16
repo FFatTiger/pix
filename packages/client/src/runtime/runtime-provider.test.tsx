@@ -428,6 +428,78 @@ describe("RuntimeProvider — D2-P6 getTools/setTools/reload exposure", () => {
   });
 });
 
+describe("RuntimeProvider — sendPrompt images + navigateTree detached", () => {
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("sendPrompt with images sends an exact prompt command carrying the image attachments", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    const ws = await driveReady();
+    await driveAttach(ws);
+
+    let settled = false;
+    let rejection: unknown = null;
+    const p = exposed.sendPrompt("look at this", [{ type: "image", data: "AAAA", mimeType: "image/png" }]);
+    p.then(() => { settled = true; }, (error: unknown) => { rejection = error; });
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string; images?: unknown[] } } }>(ws, "command")!;
+    expect(cmd.payload.command.type).toBe("prompt");
+    expect(cmd.payload.command.message).toBe("look at this");
+    expect(cmd.payload.command.images).toEqual([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
+    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    expect(settled).toBe(true);
+    expect(rejection).toBeNull();
+  });
+
+  it("navigateTree is exposed and rejects without sending when detached", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    expect(typeof exposed.navigateTree).toBe("function");
+    // Socket ready but NOT attached to any session — navigating must fail
+    // closed (reject) and never put a navigate_tree frame on the wire.
+    const ws = await driveReady();
+    await expect(exposed.navigateTree("leaf-1")).rejects.toMatchObject({ code: "unavailable" });
+    expect(ws.sent.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "navigate_tree")).toHaveLength(0);
+  });
+
+  it("navigateTree sends an exact navigate_tree command when attached + runtime.navigate", async () => {
+    let exposed!: ReturnType<typeof useRuntime>;
+    function Probe(): null {
+      exposed = useRuntime();
+      return null;
+    }
+    mount(<Probe />);
+    const ws = await driveReady();
+    const store = capturedStore!;
+    await act(async () => {
+      void store.openSession("s1");
+      await flush();
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.navigate"] }) });
+      await flush();
+    });
+
+    let settled = false;
+    const p = exposed.navigateTree("leaf-1");
+    p.then(() => { settled = true; }, () => {});
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; targetId: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.type).toBe("navigate_tree");
+    expect(cmd.payload.command.targetId).toBe("leaf-1");
+    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "navigate_tree" } } } });
+    expect(settled).toBe(true);
+  });
+});
+
 describe("RuntimeProvider — D2-P7 compact/abortCompaction exposure", () => {
   beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
   afterEach(() => { cleanup(); vi.useRealTimers(); });

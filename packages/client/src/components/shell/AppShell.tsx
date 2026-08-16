@@ -8,6 +8,7 @@ import type { WorkspaceSearch } from "@/lib/search-params";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
 import { Sidebar } from "@/components/shell/Sidebar";
+import { registerChatOpenFileTarget } from "@/components/chat/chat-experience-bridge";
 import { AppTitleBar } from "@/components/shell/AppTitleBar";
 import { SettingsModal, type SettingsTab } from "@/components/shell/SettingsModal";
 import { WallpaperLayer } from "@/components/WallpaperLayer";
@@ -277,6 +278,17 @@ export function AppShell({ search }: AppShellProps) {
     // On mobile the file panel is full-screen; close the drawer so it shows.
     if (isMobile) setSidebarOpen(false);
   }, [isMobile]);
+
+  // Chat → file-viewer bridge (F2): while the viewer is mounted, register the
+  // exact components' chat file-open receiver (MessageView links, written-file
+  // rows) onto the AppShell file-open handler. The adapter derives the basename
+  // the source handler expects; unregister on unmount/change so a dead shell
+  // never holds a target.
+  useEffect(() => {
+    return registerChatOpenFileTarget((filePath, options) => {
+      handleOpenFile(filePath, filePath.split("/").pop() ?? filePath, options);
+    });
+  }, [handleOpenFile]);
 
   // ── Resizable panels (source layout semantics) ───────────────────────────
   const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH);

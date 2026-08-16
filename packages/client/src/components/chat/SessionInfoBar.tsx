@@ -131,7 +131,14 @@ export function SessionInfoBar({
   }
 
   const hasSystemPrompt = systemPrompt !== null && systemPrompt !== "";
-  const hasStats = sessionStats && t && (t.input > 0 || t.output > 0);
+  // Real-data gate: the stats button + popover render whenever the runtime
+  // actually reports something — a real total token count, real message
+  // counts, or context usage — even when input/output are unknown (0). The
+  // bar never shows for an empty live session with no stats.
+  const hasRealTokens = (t?.total ?? 0) > 0;
+  const hasRealMessages = (sessionStats?.totalMessages ?? 0) > 0;
+  const hasRealContext = Boolean(contextUsage && (contextUsage.contextWindow > 0 || contextUsage.percent !== null));
+  const hasStats = Boolean(sessionStats) && (hasRealTokens || hasRealMessages || hasRealContext);
 
   // Usage donut — arc length = context usage %. Only rendered once percent is
   // known, so it always receives a concrete value (no null dead-branch).
@@ -218,7 +225,7 @@ export function SessionInfoBar({
           )}
         </button>
       )}
-      {hasSession && (
+      {hasSession && onViewFullHistory && (
         <button
           type="button"
           className="session-info-bar-button"
@@ -373,6 +380,11 @@ export function SessionInfoBar({
             ) : (
               // Context usage unknown → keep the other (full) info, incl. cost.
               <>
+                {t && t.total > 0 && (
+                  <span className="session-info-bar-token-chip">
+                    {formatTokenCount(t.total)}
+                  </span>
+                )}
                 {t && t.input > 0 && (
                   <span className="session-info-bar-token-chip">
                     <ArrowUp size={10} aria-hidden="true" />

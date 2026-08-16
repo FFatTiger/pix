@@ -160,8 +160,21 @@ export function ExtensionRequests({ live, composerTextareaRef }: ExtensionReques
   const runInput = (request: ExtensionCustomRequest, data: string): void => {
     if (!mountedRef.current || !liveRef.current || !capabilityRef.current) return;
     // Per-key FIFO ordering, overflow handling and same-epoch resend are owned
-    // by the store's extension-UI input lane; the panel never awaits an ack.
-    void runtime.sendExtensionUiInput(request, data).catch(() => undefined);
+    // by the store's extension-UI input lane. A rejection here (FIFO overflow,
+    // capability loss, session change…) surfaces a transient FIXED error via
+    // describeExtensionUiError — never raw key/data/message. A generation +
+    // session guard drops late settles, and the next successful input (or the
+    // pending-landscape effect) clears the error.
+    const sessionId = sessionIdRef.current;
+    const gen = ++requestGenRef.current;
+    void runtime.sendExtensionUiInput(request, data).then(
+      () => {
+        if (isCurrent(gen, sessionId)) setError(null);
+      },
+      (cause: unknown) => {
+        if (isCurrent(gen, sessionId)) setError(describeExtensionUiError(cause));
+      },
+    );
   };
 
   return (

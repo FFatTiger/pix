@@ -9,10 +9,11 @@
  *    MessageView "edit" action restores the user message into the composer).
  *  - `transcriptScrollRef`: the TranscriptList scroll element (ChatInput caps
  *    its floating menus at the transcript's top edge, exactly like source).
- *  - `openFileTarget`: the optional file-open receiver. The pix shell does
- *    not mount a file viewer yet, so `useChatOpenFile()` only hands MessageView
- *    an onOpenFile once a target registers — until then the source components
- *    keep their built-in plain-anchor fallback (no dead handlers).
+ *  - `openFileTarget`: the file-open receiver. AppShell registers the mounted
+ *    FileViewerPanel onto it (see AppShell's registerChatOpenFileTarget wiring);
+ *    `useChatOpenFile()` hands MessageView an onOpenFile as soon as a target
+ *    registers. Before/after registration the source components keep their
+ *    built-in plain-anchor fallback (no dead handlers).
  *
  * Nothing here touches runtime/protocol state: pure refs + a subscribe gate.
  */

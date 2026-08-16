@@ -12,6 +12,7 @@ import type {
   ImageAttachment,
   QueuedMessages,
   RuntimeState,
+  SessionStats,
   ToolResultMessage,
 } from "@fffattiger/pix-protocol";
 import type { SessionTreeNode as ProtocolSessionTreeNode } from "@/lib/session-tree";
@@ -50,8 +51,21 @@ export interface ChatSessionStatsView {
   contextUsage: { percent: number | null; contextWindow: number; tokens: number | null } | null;
 }
 
-/** Build the SessionInfoBar stats view from the authoritative runtime state. */
-export function buildSessionStatsView(state: RuntimeState, messages: readonly AgentMessage[]): ChatSessionStatsView {
+/**
+ * Build the SessionInfoBar stats view from the authoritative runtime state.
+ *
+ * `stats` is the optional Protocol {@link SessionStats} (runtime `get_session_stats`)
+ * and is mapped HONESTLY: `tokenCount` lands in `tokens.total` only; pix has no
+ * input/output/cache/cost split, so those stay 0 (never fabricated).
+ * `contextUsage` prefers the stats projection and falls back to the snapshot
+ * state. Message totals prefer the worker's authoritative `messageCount` and
+ * fall back to the live projection length.
+ */
+export function buildSessionStatsView(
+  state: RuntimeState,
+  messages: readonly AgentMessage[],
+  stats?: SessionStats | null,
+): ChatSessionStatsView {
   let userMessages = 0;
   let assistantMessages = 0;
   let toolCalls = 0;
@@ -65,7 +79,14 @@ export function buildSessionStatsView(state: RuntimeState, messages: readonly Ag
       }
     } else if (message.role === "toolResult") toolResults += 1;
   }
-  const ctx = state.contextUsage ?? null;
+  const statsContext = stats?.contextUsage ?? null;
+  const contextUsage = statsContext
+    ? {
+        percent: statsContext.percent ?? null,
+        contextWindow: statsContext.contextWindow ?? state.contextUsage?.contextWindow ?? 0,
+        tokens: statsContext.tokens ?? state.contextUsage?.tokens ?? null,
+      }
+    : toContextUsageView(state.contextUsage);
   return {
     sessionId: state.sessionId,
     ...(state.sessionFile === undefined ? {} : { sessionFile: state.sessionFile }),
@@ -74,10 +95,16 @@ export function buildSessionStatsView(state: RuntimeState, messages: readonly Ag
     assistantMessages,
     toolCalls,
     toolResults,
-    totalMessages: messages.length,
-    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    totalMessages: stats?.messageCount ?? messages.length,
+    tokens: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: stats?.tokenCount ?? 0,
+    },
     cost: 0,
-    contextUsage: toContextUsageView(ctx),
+    contextUsage,
   };
 }
 

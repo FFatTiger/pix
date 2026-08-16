@@ -53,7 +53,14 @@ function compress(node: SessionTreeNode): { node: SessionTreeNode; skipped: numb
   return { node: current, skipped };
 }
 
-function getLabel(entry: SessionTreeEntry, assistantLabel: string): string {
+function getLabel(entry: SessionTreeEntry, nodeLabel: string | undefined, assistantLabel: string): string {
+  // Protocol preview label wins: the server hands BranchNavigator a safe,
+  // single-line, length-capped preview per node (never a raw kind string).
+  if (nodeLabel !== undefined && nodeLabel !== "") {
+    let text = nodeLabel;
+    if (text.length > 40) text = text.slice(0, 40) + "…";
+    return text;
+  }
   if (entry.type === "message" && "message" in entry) {
     const msg = entry.message as { role: string; content: unknown };
     const content = msg.content;
@@ -70,7 +77,19 @@ function getLabel(entry: SessionTreeEntry, assistantLabel: string): string {
     if (text) return text;
     if (msg.role === "assistant") return `[${assistantLabel}]`;
   }
+  // Honest fallback for unknown kinds — never a fabricated label.
   return entry.type;
+}
+
+// User/assistant role for the U/A badge. Only real user/assistant kinds get a
+// badge; toolResult/bashExecution/custom/system keep an honest no-badge row.
+function getRole(entry: SessionTreeEntry): "user" | "assistant" | null {
+  if (entry.type === "user" || entry.type === "assistant") return entry.type;
+  if (entry.type === "message" && "message" in entry) {
+    const role = (entry.message as { role?: string }).role;
+    if (role === "user" || role === "assistant") return role;
+  }
+  return null;
 }
 
 // Does the tree have any branching at all?
@@ -96,10 +115,8 @@ function TreeNodeView({ node, assistantLabel, activePathIds, depth, isLast, pare
   const { node: rep, skipped } = compress(node);
   const isActive = activePathIds.has(rep.entry.id);
   const isOnPath = activePathIds.has(node.entry.id) || activePathIds.has(rep.entry.id);
-  const label = getLabel(rep.entry, assistantLabel);
-  const role = rep.entry.type === "message" && "message" in rep.entry
-    ? (rep.entry.message as { role: string }).role
-    : null;
+  const label = getLabel(rep.entry, rep.label, assistantLabel);
+  const role = getRole(rep.entry);
 
   return (
     <div>

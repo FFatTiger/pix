@@ -36,6 +36,16 @@ export function ExtensionDialog({
     }
   };
 
+  /**
+   * IME-composition guard: while the browser is committing a composition
+   * (nativeEvent.isComposing or the legacy 229 keyCode), Enter / Ctrl+Enter
+   * must NEVER submit — the keydown is the composition commit itself and the
+   * value is not final. Real submits and Escape still preventDefault so they
+   * can never double-fire through the default action.
+   */
+  const isComposing = (event: React.KeyboardEvent): boolean =>
+    event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
+
   return (
     <div
       style={{
@@ -100,8 +110,16 @@ export function ExtensionDialog({
               placeholder={request.placeholder}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") submitValue();
-                if (e.key === "Escape") onRespond(request, { cancelled: true });
+                if (e.key === "Enter" && isComposing(e)) return;
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitValue();
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  onRespond(request, { cancelled: true });
+                }
               }}
               style={{
                 width: "100%",
@@ -121,8 +139,16 @@ export function ExtensionDialog({
               value={value}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Escape") onRespond(request, { cancelled: true });
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submitValue();
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  onRespond(request, { cancelled: true });
+                  return;
+                }
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  if (isComposing(e)) return;
+                  e.preventDefault();
+                  submitValue();
+                }
               }}
               style={{
                 width: "100%",

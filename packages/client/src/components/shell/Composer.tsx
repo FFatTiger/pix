@@ -157,6 +157,7 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
   const hasToolsRead = hasCap("runtime.tools.read");
   const hasToolsWrite = hasCap("runtime.tools.write");
   const hasNavigate = hasCap("runtime.navigate");
+  const hasStats = hasCap("runtime.stats");
   const canModels = can("models");
   const canFilesIndex = can("files");
   const canUpload = can("files.upload");
@@ -262,11 +263,44 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
     [live, state?.queuedMessages],
   );
 
+  // --- real session stats (runtime get_session_stats; runtime.stats gate) ---
+  // Fetched only while live + capability present. Refreshes when the session
+  // or its message/pending counts settle; cleared on capability revoke or
+  // session switch. A generation + cancel guard drops late settles so a stale
+  // response can never pollute a newer session (no raw error is surfaced).
+  const statsMessageCount = state?.messageCount ?? 0;
+  const statsPendingCount = state?.pendingMessageCount ?? 0;
+  const [sessionStatsData, setSessionStatsData] = useState<import("@fffattiger/pix-protocol").SessionStats | null>(null);
+  const sessionStatsGenRef = useRef(0);
+  useEffect(() => {
+    if (!live || !hasStats || !sessionId) {
+      setSessionStatsData(null);
+      return;
+    }
+    const gen = ++sessionStatsGenRef.current;
+    let cancelled = false;
+    void runtime.getSessionStats().then(
+      (stats) => {
+        if (cancelled || gen !== sessionStatsGenRef.current) return;
+        setSessionStatsData(stats);
+      },
+      () => {
+        // Best-effort: a failed stats read never surfaces a raw error; the
+        // bar simply keeps the message-derived view.
+      },
+    );
+    return () => { cancelled = true; };
+  }, [live, hasStats, sessionId, statsMessageCount, statsPendingCount, runtime]);
+
   const sessionStats = useMemo(
-    () => (live && state ? buildSessionStatsView(state, runtime.messages) : null),
-    [live, state, runtime.messages],
+    () => (live && state ? buildSessionStatsView(state, runtime.messages, hasStats ? sessionStatsData : null) : null),
+    [live, state, runtime.messages, hasStats, sessionStatsData],
   );
-  const contextUsage = useMemo(() => toContextUsageView(state?.contextUsage), [state?.contextUsage]);
+  // Context usage prefers the real stats projection; falls back to the snapshot state.
+  const contextUsage = useMemo(
+    () => (sessionStatsData?.contextUsage ? toContextUsageView(sessionStatsData.contextUsage) : toContextUsageView(state?.contextUsage)),
+    [sessionStatsData, state?.contextUsage],
+  );
 
   // --- tools preset (runtime getTools/setTools; none/full are real) ----------
   const [tools, setToolsState] = useState<readonly ToolInfo[] | null>(null);
