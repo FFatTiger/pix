@@ -493,6 +493,7 @@ export function AppShell({ search }: AppShellProps) {
           onNewSession={handleCreate}
           canNewSession={canCreate}
           onOpenFile={handleOpenFile}
+          onOpenSettings={openSettings}
           workspaceControlsHosts={{ title: titleWorkspaceControlsHost }}
         />
       </div>

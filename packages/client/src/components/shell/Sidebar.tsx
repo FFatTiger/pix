@@ -5,11 +5,15 @@ import {
   ArrowClockwise,
   CaretRight,
   Check,
+  Folder,
   FolderOpen,
+  GearSix,
   GitBranch,
   MagnifyingGlass,
+  NotePencil,
   PencilSimple,
-  Plus,
+  Plugs,
+  Stack,
   Trash,
   X,
 } from "@phosphor-icons/react";
@@ -34,6 +38,7 @@ import {
   type CollapsedTimeGroups,
 } from "@/lib/time-group-state";
 import { downloadVisibleBranch } from "@/lib/visible-branch-export";
+import type { SettingsTab } from "@/components/shell/SettingsModal";
 
 export interface SidebarProps {
   /** Current URL workspace/session search state (AppShell is the owner). */
@@ -73,6 +78,8 @@ export interface SidebarProps {
   };
   /** Open a file in the right panel (viewer tab ownership stays with the shell). */
   onOpenFile: (filePath: string, fileName: string, options?: { initialDisplayMode?: "diff" }) => void;
+  /** Open the existing SettingsModal on a specific tab (plugins / skills / settings). */
+  onOpenSettings?: (tab: SettingsTab) => void;
 }
 
 /**
@@ -346,6 +353,7 @@ export function Sidebar({
   canNewSession,
   workspaceControlsHosts,
   onOpenFile,
+  onOpenSettings,
 }: SidebarProps) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -671,200 +679,83 @@ export function Sidebar({
         host,
         location,
       ))}
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      {/* Header */}
-      <div style={{ flexShrink: 0 }}>
-        {searchOpen ? (
-          /* ── Search mode: the header becomes a quick-filter box ── */
-          /* height matches the natural section-header row (11px text at the
-             inherited line-height 1.5 + 6px padding) so toggling does not jump. */
-          <div style={{ display: "flex", alignItems: "center", gap: 4, height: 28.5, boxSizing: "border-box", padding: "0 8px" }}>
-            <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-              <MagnifyingGlass size={13} color="var(--text-dim)" style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} aria-hidden="true" />
-              <input
-                value={sessionSearch}
-                onChange={(e) => setSessionSearch(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    if (sessionSearch) setSessionSearch("");
-                    else setSearchOpen(false);
-                  }
-                }}
-                placeholder={t("desktop.searchSessionsPlaceholder")}
-                aria-label={t("desktop.searchSessions")}
-                autoFocus
-                style={{
-                  width: "100%", height: 24, boxSizing: "border-box",
-                  padding: "0 8px 0 27px", background: "var(--bg-hover)",
-                  border: "1px solid var(--accent)", borderRadius: 6,
-                  outline: "none", color: "var(--text)", fontSize: 12,
-                  fontFamily: "var(--font-mono)",
-                }}
-              />
-            </div>
-            <button
-              onClick={() => { setSearchOpen(false); setSessionSearch(""); }}
-              title={t("desktop.exitSearch")}
-              aria-label={t("desktop.exitSearch")}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 24, height: 24, padding: 0,
-                background: "none", border: "none",
-                color: "var(--text-dim)", cursor: "pointer",
-                borderRadius: 5, flexShrink: 0,
-                transition: "color 0.12s, background 0.12s",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
-            >
-              <X size={13} weight="regular" aria-hidden="true" />
-            </button>
-          </div>
-        ) : (
-        <div style={{ display: "flex", alignItems: "center" }}>
+    <div className="sidebar-rail" data-testid="sidebar">
+      <div className="sidebar-rail-chrome">
+        <div className="sidebar-home-header" data-testid="sidebar-home-header">
+          <span className="sidebar-brand" data-testid="sidebar-brand">{t("desktop.appName")}</span>
           <button
-            onClick={() => setSessionsOpen((v) => !v)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              flex: 1,
-              padding: "6px 10px",
-              background: "none",
-              border: "none",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: "0.05em",
-              textTransform: "uppercase",
-              textAlign: "left",
-            }}
-          >
-            <CaretRight size={9} weight="regular" style={{ transform: sessionsOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }} aria-hidden="true" />
-            {t("desktop.sessions")}
-          </button>
-          <button
-            onClick={() => {
-              setSessionsOpen(true);
-              setSearchOpen(true);
-            }}
+            type="button"
+            className="sidebar-icon-btn"
+            data-testid="sidebar-search"
             title={t("desktop.searchSessions")}
             aria-label={t("desktop.searchSessions")}
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "center",
-              width: 26, height: 26, padding: 0,
-              background: "none",
-              border: "none",
-              color: "var(--text-dim)",
-              cursor: "pointer",
-              borderRadius: 5,
-              flexShrink: 0,
-              transition: "color 0.3s, background 0.3s",
+            onClick={() => {
+              setSessionsOpen(true);
+              setSearchOpen((open) => !open);
+              if (searchOpen) setSessionSearch("");
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
           >
-            <MagnifyingGlass size={13} weight="regular" aria-hidden="true" />
+            <MagnifyingGlass size={16} weight="regular" aria-hidden="true" />
           </button>
+        </div>
+
+        <nav className="sidebar-primary-nav" aria-label="Primary">
           <button
-            onClick={onNewSession}
+            type="button"
+            className="sidebar-nav-item"
+            data-testid="sidebar-new-session"
             disabled={!canNewSession}
             title={search.cwd ? t("desktop.newSessionIn", { cwd: search.cwd }) : t("desktop.selectProjectFirst")}
             aria-label={t("desktop.newSession")}
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "center",
-              width: 26, height: 26, padding: 0,
-              background: "none",
-              border: "none",
-              color: "var(--text-dim)",
-              cursor: canNewSession ? "pointer" : "default",
-              borderRadius: 5,
-              flexShrink: 0,
-              opacity: canNewSession ? 1 : 0.6,
-              transition: "color 0.3s, background 0.3s",
-            }}
-            onMouseEnter={(e) => { if (canNewSession) { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-hover)"; } }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
+            onClick={onNewSession}
           >
-            <Plus size={13} weight="regular" aria-hidden="true" />
+            <NotePencil size={16} weight="regular" aria-hidden="true" />
+            <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.newSession")}</span>
           </button>
           <button
-            onClick={handleRefreshSessions}
-            title={t("desktop.refresh")}
-            aria-label={t("desktop.refresh")}
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "center",
-              width: 26, height: 26, padding: 0, marginRight: 6,
-              background: sessionRefreshDone ? "rgba(74,222,128,0.18)" : "none",
-              border: "none",
-              color: sessionRefreshDone ? "#4ade80" : "var(--text-dim)",
-              cursor: "pointer",
-              borderRadius: 5,
-              flexShrink: 0,
-              transition: "color 0.3s, background 0.3s",
-            }}
-            onMouseEnter={(e) => { if (!sessionRefreshDone) { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-hover)"; } }}
-            onMouseLeave={(e) => { if (!sessionRefreshDone) { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; } }}
+            type="button"
+            className="sidebar-nav-item"
+            data-testid="sidebar-nav-plugins"
+            title={t("desktop.plugins")}
+            aria-label={t("desktop.plugins")}
+            onClick={() => onOpenSettings?.("plugins")}
           >
-            {sessionRefreshDone ? (
-              <Check size={13} color="#4ade80" weight="regular" aria-hidden="true" />
-            ) : (
-              <ArrowClockwise size={13} weight="regular" aria-hidden="true" />
-            )}
+            <Plugs size={16} weight="regular" aria-hidden="true" />
+            <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.plugins")}</span>
           </button>
-        </div>
-        )}
+          <button
+            type="button"
+            className="sidebar-nav-item"
+            data-testid="sidebar-nav-resources"
+            title={t("desktop.resources")}
+            aria-label={t("desktop.resources")}
+            onClick={() => onOpenSettings?.("skills")}
+          >
+            <Stack size={16} weight="regular" aria-hidden="true" />
+            <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.resources")}</span>
+          </button>
+        </nav>
 
-        {/* CWD picker — sidebar fallback when no workspace-controls portal
-            host is mounted (the portal in the title bar takes priority). */}
         {!hasWorkspaceControlsHosts && (
           <div style={{ position: "relative", marginTop: 2 }}>
             <button
+              type="button"
               onClick={() => setDropdownOpen((v) => !v)}
               title={selectedProject ?? search.cwd ?? ""}
-              style={{
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                padding: "6px 10px",
-                background: search.cwd ? "var(--bg-hover)" : "rgba(37,99,235,0.06)",
-                border: search.cwd ? "1px solid var(--border)" : "1px solid rgba(37,99,235,0.4)",
-                borderRadius: 7,
-                cursor: "pointer",
-                fontSize: 12,
-                color: "var(--text)",
-                textAlign: "left",
-                transition: "border-color 0.15s, background 0.15s",
-              }}
+              className="sidebar-list-row"
+              data-active={dropdownOpen ? "true" : "false"}
             >
               {search.cwd ? (
                 <PathLabel
                   text={selectedProject ?? search.cwd}
-                  style={{
-                    flex: 1,
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11,
-                    color: "var(--text)",
-                  }}
+                  style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text)" }}
                 />
               ) : (
-                <span
-                  style={{
-                    flex: 1,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11,
-                    color: "var(--text-dim)",
-                  }}
-                >
+                <span className="sidebar-nav-item-label sidebar-title-fade" style={{ color: "var(--text-dim)" }}>
                   {t("desktop.selectProject")}…
                 </span>
               )}
             </button>
-
             <AnimatedDropdown
               open={dropdownOpen}
               style={{
@@ -889,60 +780,173 @@ export function Sidebar({
             </AnimatedDropdown>
           </div>
         )}
-        {/* Worktree switcher — same portal-priority rule as the CWD picker. */}
         {!hasWorkspaceControlsHosts && (
-          <div style={{ padding: "0 10px", marginTop: 6 }}>
+          <div style={{ padding: "0 2px", marginTop: 4 }}>
             {worktreeControl}
           </div>
         )}
       </div>
 
-      {/* Session list */}
-      {sessionsOpen && (
-        <div style={{ flex: search.cwd ? "0 1 auto" : "1 1 0", overflowY: "auto", padding: "0", minHeight: 0, maxHeight: search.cwd ? "min(40%, 360px)" : "none" }}>
-          {showLoading && (
-            <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
-              {t("desktop.loading")}
-            </div>
-          )}
-          {showError && (
-            <div style={{ padding: "12px 14px", color: "#f87171", fontSize: 12 }}>
-              {t("desktop.noSessionsFound")}
-            </div>
-          )}
-          {!canBrowseSessions && (
-            <div style={{ padding: "12px 14px", color: "var(--text-muted)", fontSize: 12 }}>
-              Session history unavailable until the runtime connects.
-            </div>
-          )}
-          {canBrowseSessions && !showLoading && !showError && searchScopedSessions.length === 0 && (
-            <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
-              {searchQuery ? t("desktop.noMatchingSessions") : t("desktop.noSessionsFound")}
-            </div>
-          )}
-          {sessionGroups.map(({ bucket, nodes }) => (
-            <div key={bucket}>
-              <TimeGroupHeader
-                bucket={bucket}
-                count={countSessionRows(nodes)}
-                collapsed={isFilteredView ? false : collapsedGroups[bucket]}
-                onToggle={() => toggleGroup(bucket)}
-              />
-              {(isFilteredView || !collapsedGroups[bucket]) && nodes.map((node) => renderTreeItem(node))}
-            </div>
-          ))}
-        </div>
-      )}
+      <div className="sidebar-rail-scroll">
+        <section className="sidebar-section" data-testid="sidebar-projects">
+          <div className="sidebar-section-head" data-expanded="true">
+            <span className="sidebar-section-toggle" style={{ cursor: "default", paddingRight: 0 }}>
+              {t("desktop.projects")}
+            </span>
+          </div>
+          <div data-testid="sidebar-project-list">
+            {recentProjects.length === 0 ? (
+              <div className="sidebar-empty">{t("desktop.noProjectsYet")}</div>
+            ) : recentProjects.map((project) => {
+              const selected = project === selectedProject;
+              return (
+                <button
+                  key={project}
+                  type="button"
+                  className="sidebar-list-row"
+                  data-testid="sidebar-project-row"
+                  data-active={selected ? "true" : "false"}
+                  title={project}
+                  aria-pressed={selected}
+                  onClick={() => onOpenWorktree(project)}
+                >
+                  <Folder size={16} weight="regular" aria-hidden="true" />
+                  <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
 
-      {/* File workspace (explorer + quick changes) */}
-      {search.cwd ? (
-        <ExplorerPanel
-          cwd={search.cwd}
-          canFiles={canFiles}
-          canGit={canGit}
-          onOpenFile={onOpenFile}
-        />
-      ) : null}
+        <section className="sidebar-section sidebar-section-sessions" data-testid="sidebar-sessions">
+          <div className="sidebar-section-head" data-expanded={sessionsOpen ? "true" : "false"}>
+            <button
+              type="button"
+              className="sidebar-section-toggle"
+              data-testid="sessions-section-toggle"
+              aria-expanded={sessionsOpen}
+              onClick={() => setSessionsOpen((open) => !open)}
+            >
+              <span className="sidebar-title-fade">{t("desktop.sessions")}</span>
+              <CaretRight
+                className="sidebar-section-chevron"
+                size={14}
+                weight="bold"
+                style={{ transform: sessionsOpen ? "rotate(90deg)" : "none" }}
+                aria-hidden="true"
+              />
+            </button>
+            <div className="sidebar-section-actions">
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                title={t("desktop.searchSessions")}
+                aria-label={t("desktop.searchSessions")}
+                onClick={() => {
+                  setSessionsOpen(true);
+                  setSearchOpen(true);
+                }}
+              >
+                <MagnifyingGlass size={14} weight="regular" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                title={t("desktop.refresh")}
+                aria-label={t("desktop.refresh")}
+                onClick={handleRefreshSessions}
+              >
+                {sessionRefreshDone ? (
+                  <Check size={14} color="#4ade80" weight="regular" aria-hidden="true" />
+                ) : (
+                  <ArrowClockwise size={14} weight="regular" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          </div>
+
+          {searchOpen && (
+            <div className="sidebar-search-field">
+              <div className="sidebar-search-wrap">
+                <MagnifyingGlass size={13} className="sidebar-search-icon" aria-hidden="true" />
+                <input
+                  value={sessionSearch}
+                  onChange={(e) => setSessionSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      if (sessionSearch) setSessionSearch("");
+                      else setSearchOpen(false);
+                    }
+                  }}
+                  placeholder={t("desktop.searchSessionsPlaceholder")}
+                  aria-label={t("desktop.searchSessions")}
+                  autoFocus
+                />
+              </div>
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                onClick={() => { setSearchOpen(false); setSessionSearch(""); }}
+                title={t("desktop.exitSearch")}
+                aria-label={t("desktop.exitSearch")}
+              >
+                <X size={13} weight="regular" aria-hidden="true" />
+              </button>
+            </div>
+          )}
+
+          {sessionsOpen && (
+            <div className="sidebar-session-list">
+              {showLoading && <div className="sidebar-status">{t("desktop.loading")}</div>}
+              {showError && <div className="sidebar-status sidebar-status--error">{t("desktop.noSessionsFound")}</div>}
+              {!canBrowseSessions && (
+                <div className="sidebar-status">Session history unavailable until the runtime connects.</div>
+              )}
+              {canBrowseSessions && !showLoading && !showError && searchScopedSessions.length === 0 && (
+                <div className="sidebar-status">
+                  {searchQuery ? t("desktop.noMatchingSessions") : t("desktop.noSessionsFound")}
+                </div>
+              )}
+              {sessionGroups.map(({ bucket, nodes }) => (
+                <div key={bucket}>
+                  <TimeGroupHeader
+                    bucket={bucket}
+                    count={countSessionRows(nodes)}
+                    collapsed={isFilteredView ? false : collapsedGroups[bucket]}
+                    onToggle={() => toggleGroup(bucket)}
+                  />
+                  {(isFilteredView || !collapsedGroups[bucket]) && nodes.map((node) => renderTreeItem(node))}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {search.cwd ? (
+          <section className="sidebar-files" data-testid="sidebar-files">
+            <ExplorerPanel
+              cwd={search.cwd}
+              canFiles={canFiles}
+              canGit={canGit}
+              onOpenFile={onOpenFile}
+            />
+          </section>
+        ) : null}
+      </div>
+
+      <div className="sidebar-footer">
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          data-testid="sidebar-nav-settings"
+          title={t("desktop.settings")}
+          aria-label={t("desktop.settings")}
+          onClick={() => onOpenSettings?.("display")}
+        >
+          <GearSix size={16} weight="regular" aria-hidden="true" />
+          <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.settings")}</span>
+        </button>
+      </div>
     </div>
     </>
   );
@@ -1023,29 +1027,12 @@ function TimeGroupHeader({
         }}
         aria-expanded={!collapsed}
         title={collapsed ? t("desktop.expandGroup") : t("desktop.collapseGroup")}
-      style={{
-        position: "sticky",
-        top: 0,
-        zIndex: 1,
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "5px 8px 3px",
-        cursor: "pointer",
-        userSelect: "none",
-        fontSize: 10,
-        fontWeight: 600,
-        color: "var(--text-dim)",
-        textTransform: "uppercase",
-        letterSpacing: "0.07em",
-        background: stuck ? "var(--bg-panel)" : "transparent",
-        transition: "background 0.15s",
-      }}
-    >
-      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {t(timeBucketKey(bucket), { count })}
-      </span>
-    </div>
+        style={{ background: stuck ? "var(--bg-panel)" : "transparent" }}
+      >
+        <span className="sidebar-title-fade" style={{ flex: 1, minWidth: 0 }}>
+          {t(timeBucketKey(bucket), { count })}
+        </span>
+      </div>
     </>
   );
 }
@@ -1453,31 +1440,20 @@ function SessionItem({
     openMenu(e.clientX, e.clientY, items);
   }, [confirmDelete, renaming, deleting, openMenu, session.sessionId, liveSessionId, canRename, canDelete, canExport, startRename, handleDeleteClick, exportVisibleBranch, t]);
 
-  // Fixed-height outer wrapper — content swaps in place so the list never reflows
-  const ITEM_HEIGHT = 50;
-
   return (
     <div
+      className={`sidebar-list-row${confirmDelete ? " sidebar-list-row--confirm" : ""}`}
+      data-active={isSelected ? "true" : "false"}
+      data-pending={isPending ? "true" : undefined}
+      data-running={isRunning ? "true" : undefined}
       onClick={confirmDelete || renaming ? undefined : () => onSelectSession(session.sessionId)}
       onContextMenu={handleContextMenu}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); }}
       style={{
-        height: ITEM_HEIGHT,
-        display: "flex",
-        alignItems: "center",
-        paddingLeft: depth > 0 ? depth * 12 + 14 : 14,
-        paddingRight: 8,
+        paddingLeft: depth > 0 ? depth * 12 + 10 : 10,
         cursor: confirmDelete || renaming ? "default" : "pointer",
-        background: confirmDelete
-          ? "rgba(239,68,68,0.06)"
-          : isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
-        borderLeft: "none",
-        transition: "background 0.1s",
-        position: "relative",
         opacity: deleting ? 0.5 : 1,
-        gap: 6,
-        overflow: "hidden",
       }}
     >
       {/* Left accent line overlay: delete-confirm red, otherwise none. */}
@@ -1499,208 +1475,90 @@ function SessionItem({
         />
       )}
       {confirmDelete ? (
-        /* ── Delete confirmation: same height, two flat buttons ── */
         <>
-          <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <div className="sidebar-row-title sidebar-title-fade">
             {t("desktop.deleteSession", { title: `“${title.slice(0, 22)}${title.length > 22 ? "…" : ""}”` })}
           </div>
-          <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
-            <button
-              onClick={handleDeleteConfirm}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
-                height: 30, padding: "0 11px",
-                background: "#ef4444", border: "none",
-                borderRadius: 6, color: "#fff",
-                cursor: "pointer", fontSize: 12, fontWeight: 600,
-                whiteSpace: "nowrap",
-              }}
-            >
-              <Trash size={12} weight="regular" aria-hidden="true" />
-              {t("desktop.delete")}
+          <div className="sidebar-row-actions" style={{ opacity: 1, pointerEvents: "auto" }}>
+            <button type="button" className="sidebar-icon-btn" onClick={handleDeleteConfirm} title={t("desktop.delete")} aria-label={t("desktop.delete")}>
+              <Trash size={14} weight="regular" aria-hidden="true" />
             </button>
-            <button
-              onClick={handleDeleteCancel}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                height: 30, padding: "0 11px",
-                background: "var(--bg)", border: "1px solid var(--border)",
-                borderRadius: 6, color: "var(--text-muted)",
-                cursor: "pointer", fontSize: 12, fontWeight: 500,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {t("desktop.cancel")}
+            <button type="button" className="sidebar-icon-btn" onClick={handleDeleteCancel} title={t("desktop.cancel")} aria-label={t("desktop.cancel")}>
+              <X size={14} weight="regular" aria-hidden="true" />
             </button>
           </div>
         </>
       ) : (
-        /* ── Session content; renaming swaps only the title text in place ── */
         <>
-          {/* Fork indicator for child sessions */}
           {depth > 0 && (
-            <GitBranch size={10} color="var(--text-dim)" weight="regular" style={{ flexShrink: 0 }} aria-hidden="true" />
+            <GitBranch size={14} weight="regular" aria-hidden="true" />
           )}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            {/* Title row: indicator + text + collapse + action buttons — all inline, same height */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-                minWidth: 0,
-                height: 20,
-                fontSize: 12,
-                fontWeight: isSelected ? 500 : 400,
-                lineHeight: "20px",
-                color: "var(--text)",
+          {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}
+          {renaming ? (
+            <input
+              ref={inputRef}
+              value={renameValue}
+              onChange={(e) => { setRenameValue(e.target.value); setRenameError(null); }}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitRename();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setRenaming(false);
+                  setRenameError(null);
+                }
               }}
+              aria-label={t("desktop.rename")}
+              autoFocus
+              className="sidebar-row-title"
+              style={{ height: 22, border: 0, outline: "none", background: "color-mix(in srgb, var(--accent) 16%, transparent)", borderRadius: 4, color: "inherit", font: "inherit" }}
+            />
+          ) : (
+            <span
+              className="sidebar-row-title sidebar-title-fade"
               title={
                 isRunning
                   ? `${title} · ${t("desktop.agentRunning")}`
                   : isPending
                     ? `${title} · ${t("desktop.openingSession")}`
-                    : title
+                    : (() => {
+                        const activity = activityMs(session);
+                        return activity === undefined ? title : `${title} · ${formatRelativeTime(activity, t)}`;
+                      })()
               }
             >
-              {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}
-              {renaming ? (
-                <div
-                  style={{
-                    position: "relative",
-                    flex: "1 1 0",
-                    alignSelf: "stretch",
-                    width: "100%",
-                    minWidth: 0,
-                    height: 20,
-                    background: "color-mix(in srgb, var(--accent) 18%, var(--bg))",
-                    borderRadius: 3,
-                  }}
-                >
-                  <input
-                  ref={inputRef}
-                  value={renameValue}
-                  onChange={(e) => { setRenameValue(e.target.value); setRenameError(null); }}
-                  onBlur={commitRename}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      commitRename();
-                    }
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      setRenaming(false);
-                      setRenameError(null);
-                    }
-                  }}
-                  aria-label={t("desktop.rename")}
-                  autoFocus
-                  style={{
-                    width: "100%",
-                    minWidth: 0,
-                    height: 20,
-                    margin: 0,
-                    padding: 0,
-                    border: "none",
-                    outline: "none",
-                    background: "transparent",
-                    borderRadius: "inherit",
-                    color: "inherit",
-                    font: "inherit",
-                    lineHeight: "inherit",
-                    caretColor: "var(--text)",
-                  }}
-                  />
-                </div>
-              ) : (
-                <span
-                  style={{
-                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1,
-                  }}
-                >
-                  {title}
-                </span>
-              )}
-              {/* Collapse toggle — always visible when has children */}
-              {hasChildren && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
-                  title={collapsed ? t("desktop.expandForks") : t("desktop.collapseForks")}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    width: 20, height: 20, padding: 0, flexShrink: 0,
-                    background: "none", border: "none",
-                    color: "var(--text-dim)", cursor: "pointer",
-                    transform: collapsed ? "rotate(-90deg)" : "none",
-                    transition: "transform 0.15s",
-                  }}
-                >
-                  <CaretRight size={10} weight="regular" aria-hidden="true" />
+              {title}
+            </span>
+          )}
+          {hasChildren && (
+            <button
+              type="button"
+              className="sidebar-icon-btn"
+              onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
+              title={collapsed ? t("desktop.expandForks") : t("desktop.collapseForks")}
+              aria-label={collapsed ? t("desktop.expandForks") : t("desktop.collapseForks")}
+              style={{ transform: collapsed ? "rotate(-90deg)" : "none" }}
+            >
+              <CaretRight size={12} weight="regular" aria-hidden="true" />
+            </button>
+          )}
+          {!renaming && !busy && (
+            <div className="sidebar-row-actions">
+              {canRename ? (
+                <button type="button" className="sidebar-icon-btn" onClick={startRename} title={t("desktop.rename")} aria-label={t("desktop.rename")}>
+                  <PencilSimple size={14} weight="regular" aria-hidden="true" />
                 </button>
-              )}
-              {/* Action buttons — shown on hover */}
-              {hovered && !renaming && !busy && (
-                <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
-                  {canRename ? (
-                    <button
-                      onClick={startRename}
-                      title={t("desktop.rename")}
-                      style={{
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        width: 20, height: 20, padding: 0,
-                        background: "none", border: "none",
-                        borderRadius: 4, color: "var(--text-dim)",
-                        cursor: "pointer", flexShrink: 0,
-                        transition: "color 0.12s",
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.color = "var(--accent)";
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.color = "var(--text-dim)";
-                      }}
-                    >
-                      <PencilSimple size={13} weight="regular" aria-hidden="true" />
-                    </button>
-                  ) : null}
-                  {canDelete && session.sessionId !== liveSessionId ? (
-                    <button
-                      onClick={handleDeleteClick}
-                      title={t("desktop.delete")}
-                      style={{
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        width: 20, height: 20, padding: 0,
-                        background: "none", border: "none",
-                        borderRadius: 4, color: "var(--text-dim)",
-                        cursor: "pointer", flexShrink: 0,
-                        transition: "color 0.12s",
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.color = "#ef4444";
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.color = "var(--text-dim)";
-                      }}
-                    >
-                      <Trash size={13} weight="regular" aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-              )}
+              ) : null}
+              {canDelete && session.sessionId !== liveSessionId ? (
+                <button type="button" className="sidebar-icon-btn" onClick={handleDeleteClick} title={t("desktop.delete")} aria-label={t("desktop.delete")}>
+                  <Trash size={14} weight="regular" aria-hidden="true" />
+                </button>
+              ) : null}
             </div>
-            {/* Metadata row */}
-            <div style={{ marginTop: 2, display: "flex", gap: 8, color: "var(--text-dim)", fontSize: 11, minWidth: 0 }}>
-              {(() => {
-                const activity = activityMs(session);
-                return activity === undefined ? null : (
-                  <span title={new Date(activity).toLocaleString()}>{formatRelativeTime(activity, t)}</span>
-                );
-              })()}
-              {session.messageCount === undefined ? null : (
-                <span>{t("desktop.messagesCount", { count: session.messageCount })}</span>
-              )}
-            </div>
-          </div>
+          )}
         </>
       )}
       {renameError !== null && (

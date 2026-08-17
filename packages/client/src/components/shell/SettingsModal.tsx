@@ -14,6 +14,10 @@ interface SettingsModalProps {
   onCloseAction: () => void;
 }
 
+function resolveSettingsTab(tab: SettingsTab, cwd: string | null): SettingsTab {
+  return tab === "skills" || tab === "plugins" ? (cwd ? tab : "display") : tab;
+}
+
 const tabs: { id: SettingsTab; labelKey: string; Icon: typeof Cpu }[] = [
   { id: "display", labelKey: "desktop.display", Icon: Monitor },
   { id: "chat", labelKey: "desktop.chat", Icon: ChatCenteredText },
@@ -36,15 +40,17 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const isMobile = useIsMobile();
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<SettingsTab>(
-    initialTab === "skills" || initialTab === "plugins" ? (cwd ? initialTab : "display") : initialTab,
-  );
+  const [activeTab, setActiveTab] = useState<SettingsTab>(resolveSettingsTab(initialTab, cwd));
   const dialogRef = useRef<HTMLElement>(null);
 
   // Focus the dialog on open so keyboard users land inside immediately.
   useEffect(() => {
     dialogRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    setActiveTab(resolveSettingsTab(initialTab, cwd));
+  }, [cwd, initialTab]);
 
   return (
     <div

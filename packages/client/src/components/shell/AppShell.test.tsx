@@ -681,3 +681,161 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     expect(ws.sent.some((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt")).toBe(false);
   });
 });
+
+const PROJECT_SESSIONS: readonly SessionHeader[] = [
+  ...SESSION_HEADERS,
+  { sessionId: "D", cwd: "/y", projectRoot: "/y", title: "Session D", createdAt: 1000, updatedAt: Date.now(), messageCount: 1 },
+];
+
+describe("AppShell — source-like sidebar rail", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    SOCKETS.length = 0;
+    capturedStore = null;
+    navigateMock.mockReset();
+    previousFetch = globalThis.fetch;
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
+  });
+  afterEach(() => { cleanup(); globalThis.fetch = previousFetch; vi.useRealTimers(); });
+
+  async function settle(): Promise<void> {
+    await act(async () => {
+      for (let round = 0; round < 3; round += 1) {
+        await flush(20);
+        vi.advanceTimersByTime(0);
+      }
+      await flush(20);
+    });
+  }
+
+  function railOrder(): string[] {
+    return [
+      "sidebar-home-header",
+      "sidebar-new-session",
+      "sidebar-nav-plugins",
+      "sidebar-nav-resources",
+      "sidebar-projects",
+      "sidebar-sessions",
+      "sidebar-files",
+      "sidebar-nav-settings",
+    ].filter((id) => document.querySelector(`[data-testid="${id}"]`));
+  }
+
+  it("renders the source hierarchy: Pix, New Session, Plugins, Resources, Projects, Sessions, Files, Settings", async () => {
+    mountApp({ cwd: "/x" });
+    await settle();
+    expect(screen.getByTestId("sidebar-brand").textContent).toBe("Pix");
+    expect(screen.getByTestId("sidebar-new-session").textContent).toContain("New Session");
+    expect(screen.getByTestId("sidebar-nav-plugins").textContent).toBe("Plugins");
+    expect(screen.getByTestId("sidebar-nav-resources").textContent).toBe("Resources");
+    expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
+    expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
+    expect(screen.getByTestId("sidebar-files")).toBeTruthy();
+    expect(screen.getByTestId("sidebar-nav-settings").textContent).toBe("Settings");
+    expect(railOrder()).toEqual([
+      "sidebar-home-header",
+      "sidebar-new-session",
+      "sidebar-nav-plugins",
+      "sidebar-nav-resources",
+      "sidebar-projects",
+      "sidebar-sessions",
+      "sidebar-files",
+      "sidebar-nav-settings",
+    ]);
+  });
+
+  it("maps Plugins/Resources/Settings onto existing SettingsModal tabs and invents no counts", async () => {
+    mountApp({ cwd: "/x" });
+    await settle();
+    expect(screen.queryByTestId("nav-packages-badge")).toBeNull();
+    expect(screen.queryByTestId("sidebar-update-btn")).toBeNull();
+    expect(screen.queryByTestId("crash-host")).toBeNull();
+    expect(screen.queryByTestId("stop-host")).toBeNull();
+    expect(screen.queryByTestId("fork-thread")).toBeNull();
+    expect(screen.getByTestId("sidebar-nav-plugins").textContent).toBe("Plugins");
+    expect(screen.getByTestId("sidebar-nav-resources").textContent).toBe("Resources");
+
+    fireEvent.click(screen.getByTestId("sidebar-nav-plugins"));
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(dialog).toBeTruthy();
+    expect(dialog.querySelector('[aria-current="page"]')?.textContent).toBe("Plugins");
+
+    fireEvent.click(screen.getByTestId("sidebar-nav-resources"));
+    expect(dialog.querySelector('[aria-current="page"]')?.textContent).toBe("Skills");
+
+    fireEvent.click(screen.getByTestId("sidebar-nav-settings"));
+    expect(dialog.querySelector('[aria-current="page"]')?.textContent).toBe("Display");
+  });
+
+  it("New Session uses the existing create path and invents no extra catalog chrome", async () => {
+    mountApp({ cwd: "/x" });
+    await settle();
+    fireEvent.click(screen.getByTestId("sidebar-new-session"));
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/", search: { cwd: "/x" } }));
+    expect(screen.getByTestId("sidebar-nav-plugins").textContent).toBe("Plugins");
+    expect(screen.getByTestId("sidebar-nav-resources").textContent).toBe("Resources");
+  });
+
+  it("selects a project via existing worktree navigation and keeps the file section", async () => {
+    mountApp({ cwd: "/x" });
+    await settle();
+    const rows = screen.getAllByTestId("sidebar-project-row");
+    expect(rows.some((row) => row.textContent === "x" && row.getAttribute("data-active") === "true")).toBe(true);
+    const other = rows.find((row) => row.textContent === "y");
+    expect(other).toBeTruthy();
+    fireEvent.click(other!);
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/", search: { cwd: "/y" } }));
+    expect(screen.getByTestId("sidebar-files")).toBeTruthy();
+    expect(screen.getByLabelText("Files")).toBeTruthy();
+  });
+
+  it("keeps no-flicker latest-intent session authority and a pending cue", async () => {
+    const contextDeferreds = new Map<string, Deferred>();
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS, contextDeferreds });
+    mountApp({ cwd: "/x" });
+    await settle();
+    fireEvent.click(screen.getByText("Session B"));
+    await act(async () => { await flush(6); });
+    fireEvent.click(screen.getByText("Session C"));
+    await act(async () => { await flush(6); });
+    expect(screen.getByLabelText("Opening session…")).toBeTruthy();
+    expect(document.querySelector('[data-pending="true"]')?.textContent).toContain("Session C");
+    await act(async () => {
+      contextDeferreds.get("B")!.resolve(contextResponse("B"));
+      await flush(12);
+    });
+    expect(navigateMock).not.toHaveBeenCalled();
+    await act(async () => {
+      contextDeferreds.get("C")!.resolve(contextResponse("C"));
+      await flush(12);
+    });
+    expect(navigateMock).toHaveBeenCalledTimes(1);
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { session: "C", cwd: "/x" } }));
+    expect(screen.queryByLabelText("Opening session…")).toBeNull();
+  });
+
+  it("shows a running cue on the live attached session without extra chrome", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
+    mountApp({ cwd: "/x" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("A");
+      await flush();
+      const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "A" }) });
+      await flush();
+      void capturedStore!.sendPrompt("hi");
+      await flush();
+    });
+    await settle();
+    expect(capturedStore!.getSnapshot().streaming).toBe(true);
+    expect(screen.getByLabelText("Agent running")).toBeTruthy();
+    expect(document.querySelector('[data-running="true"]')?.textContent).toContain("Session A");
+    expect(screen.queryByTestId("sidebar-update-btn")).toBeNull();
+    const prompt = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    await act(async () => {
+      ws.serverSend({ type: "response", id: prompt.id, payload: { ok: true, result: { commandId: prompt.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+      await flush();
+    });
+  });
+});

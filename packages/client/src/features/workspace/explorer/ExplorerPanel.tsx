@@ -269,7 +269,6 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
       ) : (
         <div
           style={{
-            borderTop: "1px solid var(--border)",
             display: "flex",
             flexDirection: "column",
             flex: explorerOpen ? "1 1 0" : "0 0 auto",
@@ -277,80 +276,54 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
             overflow: "hidden",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+          <div className="sidebar-section-head" data-expanded={explorerOpen ? "true" : "false"}>
             <button
+              type="button"
+              className="sidebar-section-toggle"
+              data-testid="files-section-toggle"
+              aria-expanded={explorerOpen}
               onClick={() => setExplorerOpen((open) => {
                 const next = !open;
                 saveExplorerOpen(next);
                 return next;
               })}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                flex: 1,
-                padding: "6px 10px",
-                background: "none",
-                border: "none",
-                color: "var(--text-muted)",
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.05em",
-                textTransform: "uppercase",
-                textAlign: "left",
-              }}
             >
-              <CaretRight size={9} weight="regular" style={{ transform: explorerOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }} aria-hidden="true" />
-              {t("desktop.explorer")}
+              <span className="sidebar-title-fade">{t("desktop.files")}</span>
+              <CaretRight
+                className="sidebar-section-chevron"
+                size={14}
+                weight="bold"
+                style={{ transform: explorerOpen ? "rotate(90deg)" : "none" }}
+                aria-hidden="true"
+              />
             </button>
-            {explorerOpen && (
-              <button
-                onClick={() => fileExplorerRef.current?.openUploadPicker()}
-                disabled={explorerUploadBusy}
-                title={t("desktop.uploadFilesToProjectRoot")}
-                aria-label={t("desktop.uploadFiles")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 26, height: 26, padding: 0,
-                  background: "none",
-                  border: "none",
-                  color: "var(--text-dim)",
-                  cursor: explorerUploadBusy ? "default" : "pointer",
-                  borderRadius: 5,
-                  flexShrink: 0,
-                  opacity: explorerUploadBusy ? 0.6 : 1,
-                  transition: "color 0.3s, background 0.3s",
-                }}
-                onMouseEnter={(e) => { if (explorerUploadBusy) return; e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-                onMouseLeave={(e) => { if (explorerUploadBusy) return; e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
-              >
-                <UploadSimple size={13} weight="regular" aria-hidden="true" />
-              </button>
-            )}
-            <button
-              onClick={handleRefreshExplorer}
-              title={t("desktop.refreshExplorer")}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 26, height: 26, padding: 0, marginRight: 6,
-                background: explorerRefreshDone ? "rgba(74,222,128,0.18)" : "none",
-                border: "none",
-                color: explorerRefreshDone ? "#4ade80" : "var(--text-dim)",
-                cursor: "pointer",
-                borderRadius: 5,
-                flexShrink: 0,
-                transition: "color 0.3s, background 0.3s",
-              }}
-              onMouseEnter={(e) => { if (explorerRefreshDone) return; e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-              onMouseLeave={(e) => { if (explorerRefreshDone) return; e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
-            >
-              {explorerRefreshDone ? (
-                <Check size={13} color="#4ade80" weight="regular" aria-hidden="true" />
-              ) : (
-                <ArrowClockwise size={13} weight="regular" aria-hidden="true" />
+            <div className="sidebar-section-actions">
+              {explorerOpen && (
+                <button
+                  type="button"
+                  className="sidebar-icon-btn"
+                  onClick={() => fileExplorerRef.current?.openUploadPicker()}
+                  disabled={explorerUploadBusy}
+                  title={t("desktop.uploadFilesToProjectRoot")}
+                  aria-label={t("desktop.uploadFiles")}
+                >
+                  <UploadSimple size={14} weight="regular" aria-hidden="true" />
+                </button>
               )}
-            </button>
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                onClick={handleRefreshExplorer}
+                title={t("desktop.refreshExplorer")}
+                aria-label={t("desktop.refreshExplorer")}
+              >
+                {explorerRefreshDone ? (
+                  <Check size={14} color="#4ade80" weight="regular" aria-hidden="true" />
+                ) : (
+                  <ArrowClockwise size={14} weight="regular" aria-hidden="true" />
+                )}
+              </button>
+            </div>
           </div>
           {explorerOpen && (
             <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
