@@ -55,6 +55,7 @@ test("lock: acquire pins dev/ino identity; release removes only the exact owner"
     payload: lockPayload(process.pid, "instance-a-aaaa", 1),
     isPidAlive: alwaysAlive,
   });
+  assert.equal(owned.kind, "posix");
   assert.equal(owned.dev, lstatSync(lockPath).dev);
   assert.equal(owned.ino, lstatSync(lockPath).ino);
   assert.equal((lstatSync(lockPath).mode & 0o077), 0, "lock is 0600");
@@ -131,6 +132,7 @@ test("lock: readLifetimeLock classifies missing / unsafe / valid", async () => {
     assert.equal(result.record.pid, process.pid);
     assert.equal(result.record.instanceId, "instance-e-eeee");
     assert.equal(result.record.createdAt, 42);
+    assert.equal(result.identity.kind, "posix");
     assert.equal(result.identity.ino, lstatSync(lockPath).ino);
   }
 });

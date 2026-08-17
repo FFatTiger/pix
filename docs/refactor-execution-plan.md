@@ -97,7 +97,9 @@ CP-00 docs/SSOT
 | `CP-03` | Windows 根工具：`run-workspaces` 复用 `tool-invocation` npm JS CLI；集中 path containment；修 `scripts/**/*.test.mjs` Windows 失败；不削弱 fail-closed flag 合同 | `DONE` | root `scripts/*` | `CP-00` | Windows scripts 120 total / 119 pass / 1 intentional signal skip / 0 fail；root typecheck、architecture PASS |
 | `CP-04` | CI 诚实骨架：三端 required tooling jobs（Node `22.19.x` + pin LTS `24.12.x`）执行 install/architecture/portable script tests/typecheck/build；Linux/macOS 另有 required product tests；Windows 整 job 不得 `continue-on-error`，产品启动缺口单独 non-blocking known-gap | `DONE` | `.github/workflows` | `CP-01`, `CP-02`, `CP-03` | workflow 存在；三端 tooling 不运行已知 POSIX-only 产品测试；POSIX product tests required；known-gap 检查固定 `sessiond private directory path is invalid` |
 
-后续 lane 依赖（本切片不实现）：G1/`CP-A` path-identity → G2A POSIX lock/secret 与 G2B Windows backend 并行 → G3 IPC → G4 Host files/git/watch → G5 Client/PWA → G6/G8 release。G0 完成后才能把对应测试从 known-gap 移入 required。
+| `CP-05` | Secure-state public contract platformization：discriminated backend/file identity/principal；`createSecureStateBackend()` 在 path walk 前选择平台；Windows 以固定 `UNSUPPORTED_PLATFORM` fail-closed；Host 不再直接构造 POSIX backend；sessiond 声明 local-authority 依赖；无 persisted schema 变化 | `DONE` | `packages/local-authority`（owner）+ Host/sessiond consumers | `CP-04` | local-authority factory/surface 7/7；root/三个包 typecheck；local-authority/Host/sessiond boundaries；architecture/diff-check PASS。POSIX chmod/0700 行为测试在 Windows 不作为成功证据 |
+
+后续 lane：`CP-06` POSIX lock/secret hardening → `CP-07` Windows native-helper decision → Windows secure-state/IPC/process tree。
 
 ---
 

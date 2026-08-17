@@ -119,6 +119,7 @@ test("backend.ensurePrivateDirectory: factory delegates with Host policy hook", 
   const dir = temp("priv-backend-");
   chmodSync(dir, 0o700);
   const backend = createPosixSecureStateBackend();
+  assert.equal(backend.kind, "posix");
   let hookCalls = 0;
   const result = await backend.ensurePrivateDirectory(dir, {
     validateExistingLeaf: async () => { hookCalls += 1; },
@@ -132,8 +133,10 @@ test("backend identity/principal helpers", async () => {
   const backend = createPosixSecureStateBackend();
   const identity = await backend.fileIdentity(dir);
   assert.ok(identity);
+  assert.equal(identity.kind, "posix");
   assert.equal(identity.ino, lstatSync(dir).ino);
   const principal = backend.principal();
+  assert.equal(principal.kind, "posix");
   if (typeof process.getuid === "function") {
     assert.equal(principal.uid, process.getuid());
     assert.equal(backend.isOwnedByCurrentUser(identity), true);

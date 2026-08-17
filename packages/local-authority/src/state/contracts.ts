@@ -6,7 +6,8 @@
  *
  *   1. canonical absolute paths  — nearest-existing-ancestor realpath with
  *      validated missing-component tail and a canonical component re-walk;
- *   2. stable POSIX identity / principal — dev/ino + uid/gid ownership;
+ *   2. stable platform identity / principal — POSIX dev/ino + uid/gid today,
+ *      with a reserved native Windows SID/file-id contract for the future;
  *   3. secure directory + state-document publication — dedicated 0700 private
  *      dir, bounded fail-closed reads, temp same-dir O_EXCL → fsync → identity
  *      re-verification → atomic rename → directory fsync;
@@ -33,6 +34,7 @@ export type LocalAuthorityCode =
   | "UNSAFE_COMPONENT"    // NUL / "/" embedded in a single component
   | "WINDOWS_PATH"        // drive-letter claim (C:\...) — unsupported
   | "NETWORK_PATH"        // network/UNC claim (//host/... or \\host\...) — unsupported
+  | "UNSUPPORTED_PLATFORM" // selected platform has no secure native backend
   | "NOT_DIRECTORY"       // an existing path component is not a directory
   | "SYMLINK"             // an existing path component is a symbolic link
   | "NOT_OWNED"           // existing directory owned by another user
@@ -62,6 +64,7 @@ export class LocalAuthorityError extends Error {
 
 /** Stable lstat identity of a POSIX path (never names, never content). */
 export interface PosixFileIdentity {
+  readonly kind: "posix";
   dev: number;
   ino: number;
   mode: number;
@@ -74,11 +77,33 @@ export interface PosixFileIdentity {
   isSymbolicLink: boolean;
 }
 
-/** Current process principal (uid/gid when the platform exposes them). */
+/** Reserved native Windows identity shape; no Windows backend ships yet. */
+export interface WindowsFileIdentity {
+  readonly kind: "windows";
+  volumeSerial: string;
+  fileId: string;
+  size: number;
+  isFile: boolean;
+  isDirectory: boolean;
+  isReparsePoint: boolean;
+}
+
+export type FileIdentity = PosixFileIdentity | WindowsFileIdentity;
+
+/** Current process POSIX principal (uid/gid when exposed). */
 export interface PosixPrincipal {
+  readonly kind: "posix";
   uid: number | undefined;
   gid: number | undefined;
 }
+
+/** Reserved Windows principal shape; no Windows backend ships yet. */
+export interface WindowsPrincipal {
+  readonly kind: "windows";
+  sid: string;
+}
+
+export type Principal = PosixPrincipal | WindowsPrincipal;
 
 /** Bounded fail-closed state-document read result. Missing ⇒ `{ missing: true }`. */
 export type StateDocumentReadResult = { content: string } | { missing: true };
@@ -92,6 +117,7 @@ export interface LifetimeLockRecord {
 
 /** dev/ino identity of the lock inode this handle created/owns. */
 export interface LifetimeLockOwnership {
+  readonly kind: "posix";
   dev: number;
   ino: number;
 }
@@ -154,16 +180,18 @@ export interface ReleaseLifetimeLockOptions {
  * (`createPosixSecureStateBackend`) satisfies it today; a future native Windows
  * backend would satisfy the same interface.
  */
-export interface SecureStateBackend {
-  readonly kind: "posix";
+export type SecureStateBackendKind = "posix" | "windows";
+
+interface SecureStateBackendBase {
+  readonly kind: SecureStateBackendKind;
   /** Canonicalize an absolute path (nearest-existing-ancestor realpath + validated tail + canonical re-walk). */
   canonicalizePath(path: string): Promise<string>;
-  /** Stable lstat identity, or null when the path is missing. */
-  fileIdentity(path: string): Promise<PosixFileIdentity | null>;
+  /** Stable native identity, or null when the path is missing. */
+  fileIdentity(path: string): Promise<FileIdentity | null>;
   /** Current process principal. */
-  principal(): PosixPrincipal;
-  /** True when an identity is owned by the current process user. */
-  isOwnedByCurrentUser(identity: PosixFileIdentity): boolean;
+  principal(): Principal;
+  /** True when an identity is owned by the current process principal. */
+  isOwnedByCurrentUser(identity: FileIdentity): boolean;
   /** Ensure a dedicated private directory exists (walk + create 0700 via fd; existing leaf validate-only). */
   ensurePrivateDirectory(path: string, options?: EnsurePrivateDirectoryOptions): Promise<EnsurePrivateDirectoryResult>;
   /** Bounded fail-closed state-document read. */
@@ -176,9 +204,25 @@ export interface SecureStateBackend {
   readLifetimeLock(path: string): Promise<LifetimeLockReadResult>;
   /** Release the lock only when record instanceId AND dev/ino match this handle. */
   releaseLifetimeLock(path: string, options: ReleaseLifetimeLockOptions): Promise<void>;
-  /** POSIX pid-liveness probe (kill 0). */
+  /** Platform-native pid-liveness probe. */
   isPidAlive(pid: number): boolean;
 }
+
+export interface PosixSecureStateBackend extends SecureStateBackendBase {
+  readonly kind: "posix";
+  fileIdentity(path: string): Promise<PosixFileIdentity | null>;
+  principal(): PosixPrincipal;
+  isOwnedByCurrentUser(identity: PosixFileIdentity): boolean;
+}
+
+export interface WindowsSecureStateBackend extends SecureStateBackendBase {
+  readonly kind: "windows";
+  fileIdentity(path: string): Promise<WindowsFileIdentity | null>;
+  principal(): WindowsPrincipal;
+  isOwnedByCurrentUser(identity: WindowsFileIdentity): boolean;
+}
+
+export type SecureStateBackend = PosixSecureStateBackend | WindowsSecureStateBackend;
 
 // ---------------------------------------------------------------------------
 // Pure shared predicates (platform-neutral; Host ledgers re-export these).

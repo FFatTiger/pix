@@ -54,9 +54,9 @@ import {
   type LifetimeLockReadResult,
   type PosixFileIdentity,
   type PosixPrincipal,
+  type PosixSecureStateBackend,
   type ReadStateDocumentOptions,
   type ReleaseLifetimeLockOptions,
-  type SecureStateBackend,
   type StateDocumentReadResult,
   type WriteStateDocumentOptions,
 } from "./contracts.js";
@@ -78,6 +78,7 @@ function openFlags(): number {
 
 function toIdentity(info: { dev: number; ino: number; mode: number; nlink: number; size: number; uid: number; gid: number; isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean }): PosixFileIdentity {
   return {
+    kind: "posix",
     dev: info.dev,
     ino: info.ino,
     mode: info.mode,
@@ -246,6 +247,7 @@ export async function posixFileIdentity(path: string): Promise<PosixFileIdentity
 
 export function currentPrincipal(): PosixPrincipal {
   return {
+    kind: "posix",
     uid: typeof process.getuid === "function" ? process.getuid() : undefined,
     gid: typeof process.getgid === "function" ? process.getgid() : undefined,
   };
@@ -806,7 +808,7 @@ export async function readLifetimeLock(path: string): Promise<LifetimeLockReadRe
   return {
     kind: "valid",
     record,
-    identity: { dev: inspection.dev, ino: inspection.ino },
+    identity: { kind: "posix", dev: inspection.dev, ino: inspection.ino },
   };
 }
 
@@ -869,7 +871,7 @@ export async function acquireLifetimeLock(
       // be inspected: cannot pin identity → ambiguous → fail closed.
       throw new LocalAuthorityError("LOCK_UNSAFE", "Lifetime lock ownership could not be pinned");
     }
-    return { dev: inspection.dev, ino: inspection.ino };
+    return { kind: "posix", dev: inspection.dev, ino: inspection.ino };
   } catch (error) {
     if (error instanceof LocalAuthorityError) throw error;
     if (errnoCode(error) !== "EEXIST") {
@@ -912,7 +914,7 @@ export interface PosixSecureStateBackendOptions {
 /** Build the POSIX `SecureStateBackend` implementation. */
 export function createPosixSecureStateBackend(
   options: PosixSecureStateBackendOptions = {},
-): SecureStateBackend {
+): PosixSecureStateBackend {
   const inject = options.inject ?? {};
   return {
     kind: "posix",

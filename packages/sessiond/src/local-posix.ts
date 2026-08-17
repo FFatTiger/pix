@@ -70,6 +70,7 @@ export const SESSIOND_PRIVATE_DIR_MESSAGES: Record<LocalAuthorityCode, string> =
   UNSAFE_COMPONENT: "sessiond private directory could not be verified",
   WINDOWS_PATH: "sessiond private directory path is invalid",
   NETWORK_PATH: "sessiond private directory path is invalid",
+  UNSUPPORTED_PLATFORM: "sessiond secure state is unavailable on this platform",
   NOT_DIRECTORY: "sessiond private directory path is not a directory",
   SYMLINK: "sessiond private directory must not contain symbolic links",
   NOT_OWNED: "sessiond private directory must be owned by the current user",
@@ -100,6 +101,7 @@ function toIdentity(info: {
   isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean;
 }): PosixFileIdentity {
   return {
+    kind: "posix",
     dev: info.dev,
     ino: info.ino,
     mode: info.mode,

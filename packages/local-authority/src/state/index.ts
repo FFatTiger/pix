@@ -13,6 +13,10 @@
  */
 export * from "./contracts.js";
 export {
+  createSecureStateBackend,
+  type SecureStateBackendFactoryOptions,
+} from "./platform.js";
+export {
   canonicalizeAbsolutePath,
   posixFileIdentity,
   currentPrincipal,

@@ -71,7 +71,7 @@ import { lstat, realpath, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
-  createPosixSecureStateBackend,
+  createSecureStateBackend,
   LocalAuthorityError,
   isRecord,
   isSafeInteger,
@@ -80,6 +80,8 @@ import {
   isValidInstanceId,
   isAbsoluteCanonicalShape,
   type LocalAuthorityCode,
+  type LifetimeLockOwnership,
+  type SecureStateBackend,
 } from "@fffattiger/pix-local-authority/state";
 import { AsyncMutex } from "./mutex.js";
 
@@ -216,6 +218,7 @@ const LOCAL_TO_HOST_CODES: Record<LocalAuthorityCode, HostStateDirectoryCode> = 
   UNSAFE_COMPONENT: "HOST_DIR_UNSAFE",
   WINDOWS_PATH: "HOST_DIR_INVALID",
   NETWORK_PATH: "HOST_DIR_INVALID",
+  UNSUPPORTED_PLATFORM: "HOST_DIR_INVALID",
   NOT_DIRECTORY: "HOST_DIR_UNSAFE",
   SYMLINK: "HOST_DIR_UNSAFE",
   NOT_OWNED: "HOST_DIR_UNSAFE",
@@ -243,6 +246,7 @@ const LOCAL_TO_HOST_MESSAGES: Record<LocalAuthorityCode, string> = {
   UNSAFE_COMPONENT: "Host directory path is unsafe",
   WINDOWS_PATH: "Host directory path is invalid",
   NETWORK_PATH: "Host directory path is invalid",
+  UNSUPPORTED_PLATFORM: "Native secure state is unavailable on this platform",
   NOT_DIRECTORY: "Host directory path is unsafe",
   SYMLINK: "Host directory path is unsafe",
   NOT_OWNED: "Host directory is owned by another user",
@@ -402,7 +406,7 @@ async function ensurePixHostDir(
   hostDir: string,
   recognizedEntries: ReadonlySet<string>,
   tempPatterns: readonly RegExp[],
-  backend: ReturnType<typeof createPosixSecureStateBackend>,
+  backend: SecureStateBackend,
 ): Promise<string> {
   try {
     const canonical = await backend.canonicalizePath(hostDir);
@@ -484,19 +488,25 @@ export async function openHostStateDirectoryLease(
   }
   const recognizedEntries = new Set<string>([...recognizedDocuments, HOST_STATE_LOCK_NAME]);
   const tempPatterns = buildTempPatterns(recognizedDocuments);
-  // Private backend injection seam: forwards the current fault-injection test
-  // hooks into the POSIX atomic-write primitive (never used in production).
-  const backend = createPosixSecureStateBackend(
-    options.failTempFsync || options.failRename || options.failDirFsync
-      ? {
-          inject: {
-            ...(options.failTempFsync ? { failTempFsync: options.failTempFsync } : {}),
-            ...(options.failRename ? { failRename: options.failRename } : {}),
-            ...(options.failDirFsync ? { failDirFsync: options.failDirFsync } : {}),
-          },
-        }
-      : {},
-  );
+  // Private backend injection seam: the platform factory selects the backend
+  // before any path walk. POSIX write-fault hooks remain test-only; Windows
+  // fails closed until its native SID/DACL/file-id backend is implemented.
+  let backend: SecureStateBackend;
+  try {
+    backend = createSecureStateBackend({
+      posix: options.failTempFsync || options.failRename || options.failDirFsync
+        ? {
+            inject: {
+              ...(options.failTempFsync ? { failTempFsync: options.failTempFsync } : {}),
+              ...(options.failRename ? { failRename: options.failRename } : {}),
+              ...(options.failDirFsync ? { failDirFsync: options.failDirFsync } : {}),
+            },
+          }
+        : {},
+    });
+  } catch (error) {
+    toHostStateError(error);
+  }
   const hostDir = await ensurePixHostDir(options.hostDir, recognizedEntries, tempPatterns, backend);
   const lockPath = join(hostDir, HOST_STATE_LOCK_NAME);
   const maxDocumentBytes = options.maxDocumentBytes ?? MAX_STATE_DOCUMENT_BYTES;
@@ -528,7 +538,7 @@ export async function openHostStateDirectoryLease(
     }
   }
 
-  async function acquireOwnedLock(): Promise<{ dev: number; ino: number }> {
+  async function acquireOwnedLock(): Promise<LifetimeLockOwnership> {
     try {
       return await backend.acquireLifetimeLock(lockPath, {
         payload: `${JSON.stringify({ pid: process.pid, instanceId, createdAt: Date.now() })}\n`,

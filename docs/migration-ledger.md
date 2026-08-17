@@ -3487,3 +3487,25 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Root `npm run typecheck`、`npm run check:architecture`（14 gates）、`git diff --check` PASS。
 - 完整 Host/sessiond/root product tests 在 Windows 仍按预期被 POSIX secure-state 阻断（`HOST_DIR_INVALID` / sessiond private-dir invalid）；已记录为 G2B/Windows known-gap，不伪报全量测试成功。
 - `.github/workflows/cross-platform-baseline.yml`：三端 required tooling 只跑跨端已绿门禁；Linux/macOS required product tests；Windows product startup 是独立 non-blocking fixed-error known-gap。
+
+---
+
+## 71. Cross-platform CP-05 — secure-state contract platformization
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `c0cccd1`.
+- Owner: `packages/local-authority`; Host/sessiond remain policy consumers.
+- Public contract now carries discriminated backend/file identity/principal evidence. POSIX evidence is explicitly `kind: "posix"`; the reserved Windows shapes carry SID and volume/file-id semantics without fabricating POSIX fields.
+- Added `createSecureStateBackend()` as the single platform-selection point. POSIX platforms receive the existing high-fidelity backend. Windows throws fixed sanitized `UNSUPPORTED_PLATFORM` **before any POSIX path walk or mutation**; no Windows support is claimed.
+- Host state lease now consumes the platform factory and retains its existing test-only POSIX atomic-write fault injection. Host maps unsupported platform to fixed `HOST_DIR_INVALID` text. No compatibility alias or persisted document/ledger migration was introduced.
+- sessiond's existing local POSIX identity gains the explicit discriminant, and `packages/sessiond/package.json` now declares its already-used `@fffattiger/pix-local-authority` dependency; matching lockfile metadata changed for that real dependency only.
+- No lock/secret behavior, endpoint naming, process lifecycle, capability, wire DTO, or persisted bytes changed in this slice.
+
+### Validation (Windows native / Node 25.9.0)
+
+- `npm run typecheck --workspace` for local-authority, Host, sessiond: PASS.
+- Root `npm run typecheck`: PASS.
+- local-authority package surface + platform factory: 7/7 PASS.
+- local-authority, Host, sessiond boundary gates: PASS.
+- `npm run check:architecture`: PASS (14 gates).
+- `git diff --check`: PASS.
+- POSIX filesystem behavior tests that assert chmod/0700 semantics were not reported as passing on Windows; one focused lifetime-lock run failed only on Windows mode-bit semantics, confirming why POSIX behavior evidence remains a Linux/macOS CI responsibility.

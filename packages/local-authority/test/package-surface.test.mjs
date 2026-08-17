@@ -33,8 +33,9 @@ const STATE_EXPORTS = [
   "readLifetimeLock",
   "acquireLifetimeLock",
   "releaseLifetimeLock",
-  // backend factory
+  // backend factories
   "createPosixSecureStateBackend",
+  "createSecureStateBackend",
 ].sort();
 
 test("state surface: exact export set (no raw fs/os APIs leaked)", async () => {
@@ -62,6 +63,10 @@ test("contracts.ts is platform-neutral: zero node: / external imports", () => {
     const specifier = match[1];
     const ok = specifier.startsWith("node:") || specifier.startsWith("./");
     assert.ok(ok, `posix.ts imports undeclared specifier "${specifier}"`);
+  }
+  const platformSource = readFileSync(join(packageRoot, "src", "state", "platform.ts"), "utf8");
+  for (const match of platformSource.matchAll(/from\s+["']([^"']+)["']/g)) {
+    assert.equal(match[1].startsWith("./"), true, `platform.ts imports non-relative specifier "${match[1]}"`);
   }
 });
 

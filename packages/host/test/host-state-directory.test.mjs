@@ -400,6 +400,25 @@ test("lease: parent-is-file intermediate → HOST_DIR_UNSAFE (base parity; nothi
   assert.equal(existsSync(join(file, "child")), false);
 });
 
+test("lease: unsupported Windows backend is mapped before any path walk", async (t) => {
+  if (process.platform !== "win32") {
+    t.skip("native Windows selection only");
+    return;
+  }
+  const marker = "C:\\Users\\private-marker\\.pi\\pix\\host";
+  await assert.rejects(
+    () => openHostStateDirectoryLease({ hostDir: marker }),
+    (error) => {
+      assert.equal(error instanceof HostStateDirectoryError, true);
+      assert.equal(error.code, "HOST_DIR_INVALID");
+      assert.equal(error.message, "Native secure state is unavailable on this platform");
+      assert.equal(error.message.includes(marker), false);
+      return true;
+    },
+  );
+  assert.equal(existsSync(marker), false, "factory failure must happen before filesystem mutation");
+});
+
 test("lease source: toHostStateError maps unknown errors to a fixed sanitized HOST_DIR_UNSAFE", () => {
   const src = readFileSync(new URL("../src/resources/host-state-directory.ts", import.meta.url), "utf8");
   assert.match(src, /function toHostStateError/);
