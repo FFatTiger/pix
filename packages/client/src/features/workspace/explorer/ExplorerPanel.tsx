@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowClockwise, Check, CaretRight, MagnifyingGlass, UploadSimple, X } from "@phosphor-icons/react";
+import { ArrowClockwise, Check, MagnifyingGlass, UploadSimple, X } from "@phosphor-icons/react";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { HttpError } from "@/api/http-client";
 import { useHttpClient } from "@/app/http-context";
@@ -11,7 +11,6 @@ import { getFileName } from "@/lib/file-paths";
 import { baseName, joinRelative } from "../paths";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
 import { QuickChangesPanel } from "./QuickChangesPanel";
-import { loadExplorerOpen, saveExplorerOpen } from "./file-explorer-state";
 
 /**
  * Files explorer panel — the source sidebar's file-workspace composition
@@ -82,8 +81,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
   const queryClient = useQueryClient();
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
 
-  // Explorer section state (source sidebar semantics, verbatim).
-  const [explorerOpen, setExplorerOpen] = useState(true);
+  // Explorer refresh affordance state.
   const [explorerUploadBusy, setExplorerUploadBusy] = useState(false);
   const [explorerRefreshDone, setExplorerRefreshDone] = useState(false);
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -95,7 +93,6 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
   const [invalidSearchResult, setInvalidSearchResult] = useState(false);
 
   useEffect(() => {
-    setExplorerOpen(loadExplorerOpen());
     return () => {
       if (explorerRefreshTimerRef.current) clearTimeout(explorerRefreshTimerRef.current);
     };
@@ -310,27 +307,8 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
             flex: "0 0 auto",
           }}
         >
-          <div className="sidebar-section-head" data-expanded={explorerOpen ? "true" : "false"}>
-            <button
-              type="button"
-              className="sidebar-section-toggle"
-              data-testid="files-section-toggle"
-              aria-expanded={explorerOpen}
-              onClick={() => setExplorerOpen((open) => {
-                const next = !open;
-                saveExplorerOpen(next);
-                return next;
-              })}
-            >
-              <span className="sidebar-section-label-text">{t("desktop.files")}</span>
-              <CaretRight
-                className="sidebar-section-chevron"
-                size={14}
-                weight="bold"
-                style={{ transform: explorerOpen ? "rotate(90deg)" : "none" }}
-                aria-hidden="true"
-              />
-            </button>
+          <div className="sidebar-section-head">
+            <span className="sidebar-section-label-text">{t("desktop.files")}</span>
             <div className="sidebar-section-actions">
               <button
                 type="button"
@@ -346,18 +324,16 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
               >
                 <MagnifyingGlass size={14} weight="regular" aria-hidden="true" />
               </button>
-              {explorerOpen && (
-                <button
-                  type="button"
-                  className="sidebar-icon-btn"
-                  onClick={() => fileExplorerRef.current?.openUploadPicker()}
-                  disabled={explorerUploadBusy}
-                  title={t("desktop.uploadFilesToProjectRoot")}
-                  aria-label={t("desktop.uploadFiles")}
-                >
-                  <UploadSimple size={14} weight="regular" aria-hidden="true" />
-                </button>
-              )}
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                onClick={() => fileExplorerRef.current?.openUploadPicker()}
+                disabled={explorerUploadBusy}
+                title={t("desktop.uploadFilesToProjectRoot")}
+                aria-label={t("desktop.uploadFiles")}
+              >
+                <UploadSimple size={14} weight="regular" aria-hidden="true" />
+              </button>
               <button
                 type="button"
                 className="sidebar-icon-btn"
@@ -374,7 +350,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
             </div>
             {headerAction ? <div className="explorer-header-action">{headerAction}</div> : null}
           </div>
-          {explorerOpen && visible && (
+          {visible && (
             <div>
               <FileExplorer
                 ref={fileExplorerRef}

@@ -796,8 +796,14 @@ export function AppShell({ search }: AppShellProps) {
       </div>
 
       {/* Right file panel: always mounted so the width TRANSITIONS on both
-          open and close. The toggle lives on the Files header when open; a
-          slim rail carries it when closed. */}
+          open and close. The splitter restores drag-resize while open; the
+          toggle lives on the Files header, a slim rail carries it when closed. */}
+      {fileBrowserOpen && (
+        <div
+          {...rightPanel.separatorProps}
+          className="workspace-panel-splitter right-panel-splitter"
+        />
+      )}
       <div
         ref={rightPanel.panelRef}
         className={`right-panel-container ${fileBrowserOpen ? "right-panel-open" : "right-panel-closed"}${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
