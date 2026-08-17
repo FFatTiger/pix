@@ -88,6 +88,7 @@ describe("SessionInfoBar — real-stats gating + popover (F4)", () => {
     renderBar({ sessionStats, contextUsage: sessionStats.contextUsage });
     const statsBtn = screen.getByLabelText("Session info");
     expect(statsBtn).toBeTruthy();
+    expect(screen.getByText("50%")).toBeTruthy();
     fireEvent.click(statsBtn);
     // The popover opens and shows the honest total (and context) rows.
     expect(screen.getAllByText("Total").length).toBeGreaterThan(0);

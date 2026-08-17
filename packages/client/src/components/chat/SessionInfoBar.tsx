@@ -352,6 +352,7 @@ export function SessionInfoBar({
             aria-label={isCompacting ? translate("desktop.compacting") : translate("desktop.compactContext")}
           >
             <ArrowsInLineVertical size={13} />
+            <span>{translate("desktop.compact")}</span>
           </button>
         </div>
       )}
@@ -374,6 +375,7 @@ export function SessionInfoBar({
                 <span className="session-info-bar-token-chip" style={{ color: ctxColor, marginLeft: costStr ? 5 : 0 }}>
                   {contextUsage.tokens !== null ? formatTokenCount(contextUsage.tokens) : "?"}
                   /{formatTokenCount(contextUsage.contextWindow)}
+                  <span>{Math.round(contextUsage.percent)}%</span>
                   {usageRing(contextUsage.percent)}
                 </span>
               </>
