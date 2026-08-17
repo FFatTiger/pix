@@ -1,14 +1,7 @@
-import { SidebarSimple } from "@phosphor-icons/react";
-import { useI18n } from "@/hooks/useI18n";
 import { WorkspaceTabBar } from "@/features/workspace/tabs/WorkspaceTabBar";
 import type { WorkspaceTab } from "@/features/workspace/tabs/workspace-tab-state";
 
 interface AppTitleBarProps {
-  /** Whether the right-side file browser panel is open (drives button state). */
-  fileBrowserOpen: boolean;
-  onToggleFileBrowser: () => void;
-  /** Honest gate — the file browser button is disabled when the host cannot browse files. */
-  canFiles: boolean;
   /** The unified top-level tab strip (session + file tabs). */
   tabs: WorkspaceTab[];
   activeTabId: string | null;
@@ -31,9 +24,6 @@ interface AppTitleBarProps {
  * strip replaces the centered title and settings stays in the sidebar footer.
  */
 export function AppTitleBar({
-  fileBrowserOpen,
-  onToggleFileBrowser,
-  canFiles,
   tabs,
   activeTabId,
   onSelectTab,
@@ -41,8 +31,6 @@ export function AppTitleBar({
   sessionLabels,
   runningSessionIds,
 }: AppTitleBarProps) {
-  const { t: translate } = useI18n();
-
   return (
     <div
       className="app-title-bar"
@@ -68,30 +56,6 @@ export function AppTitleBar({
           runningSessionIds={runningSessionIds}
         />
       </div>
-
-      {/* File browser toggle (top-right). The right panel holds the single
-          ExplorerPanel instance; the button is disabled when the host does not
-          advertise file browsing. */}
-      <button
-        className="app-no-drag"
-        onClick={onToggleFileBrowser}
-        disabled={!canFiles}
-        title={fileBrowserOpen ? translate("desktop.hideFileBrowser") : translate("desktop.showFileBrowser")}
-        aria-label={fileBrowserOpen ? translate("desktop.hideFileBrowser") : translate("desktop.showFileBrowser")}
-        aria-pressed={fileBrowserOpen}
-        style={{
-          display: "flex", alignItems: "center", justifyContent: "center",
-          width: 36, height: 36, padding: 0,
-          background: fileBrowserOpen ? "var(--bg-selected)" : "none", border: "none",
-          color: fileBrowserOpen ? "var(--text)" : (canFiles ? "var(--text-muted)" : "var(--text-dim)"),
-          cursor: canFiles ? "pointer" : "not-allowed", flexShrink: 0, transition: "background 0.12s, color 0.12s",
-          opacity: canFiles ? 1 : 0.5,
-        }}
-        onMouseEnter={(e) => { if (!canFiles) return; e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
-        onMouseLeave={(e) => { if (!canFiles) return; e.currentTarget.style.background = fileBrowserOpen ? "var(--bg-selected)" : "none"; e.currentTarget.style.color = fileBrowserOpen ? "var(--text)" : "var(--text-muted)"; }}
-      >
-        <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
-      </button>
     </div>
   );
 }

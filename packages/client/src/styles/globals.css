@@ -1750,9 +1750,26 @@ span.linenumber {
     min-width: 0;
     border-left: none !important;
   }
-  .right-panel-container > * {
+  .right-panel-container.right-panel-open > * {
     width: var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px));
     min-width: var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px));
+  }
+  .file-browser-rail {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    width: 36px;
+    min-width: 36px;
+    height: 100%;
+    padding-top: 0;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .file-browser-rail .sidebar-icon-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 0;
   }
 
   .workspace-panel-splitter {

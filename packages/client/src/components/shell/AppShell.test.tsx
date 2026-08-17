@@ -881,9 +881,10 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
     expect(screen.queryByTestId("sidebar-files")).toBeNull();
     expect(screen.getByTestId("sidebar-nav-settings").textContent).toBe("Settings");
-    // The file browser moved out of the sidebar into the title bar's top-right
-    // button (toggles the right-side FILE BROWSER panel).
-    expect(screen.getByRole("button", { name: "Show file browser" })).toBeTruthy();
+    // The file browser toggle stays on the window's right edge so the panel
+    // expands left from that button.
+    expect(screen.getByTestId("file-browser-toggle")).toBeTruthy();
+    expect(screen.getByTestId("file-browser-rail")).toBeTruthy();
     expect(railOrder()).toEqual([
       "sidebar-home-header",
       "sidebar-new-session",
@@ -998,7 +999,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
     expect(screen.getAllByTestId("session-select-A").length).toBeGreaterThan(0);
     expect(screen.getAllByTestId("session-select-D").length).toBeGreaterThan(1);
-    expect(screen.getByRole("button", { name: "Show file browser" })).toBeTruthy();
+    expect(screen.getByTestId("file-browser-toggle")).toBeTruthy();
   });
 
   it("collapses and expands the Projects section via its toggle", async () => {
@@ -1367,17 +1368,16 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(screen.getAllByRole("tab").filter((tab) => tab.textContent?.includes("a.ts"))).toHaveLength(1);
   });
 
-  it("the title-bar file browser button toggles the right FILE BROWSER panel", async () => {
+  it("the right-edge file browser button toggles the FILE BROWSER panel", async () => {
     globalThis.fetch = fileFetch();
     mountApp({ cwd: "/x" });
     await settle();
-    const panel = document.querySelector(".right-panel-container");
-    expect(panel?.className).toContain("right-panel-closed");
-    expect(screen.getByRole("button", { name: "Show file browser" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Show file browser" }));
-    expect(panel?.className).toContain("right-panel-open");
+    expect(document.querySelector(".right-panel-container")).toBeNull();
+    expect(screen.getByTestId("file-browser-rail")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("file-browser-toggle"));
+    expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-open");
     expect(screen.getByRole("button", { name: "Hide file browser" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Hide file browser" }));
-    expect(panel?.className).toContain("right-panel-closed");
+    fireEvent.click(screen.getByTestId("file-browser-toggle"));
+    expect(document.querySelector(".right-panel-container")).toBeNull();
   });
 });

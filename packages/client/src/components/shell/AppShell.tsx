@@ -734,9 +734,6 @@ export function AppShell({ search }: AppShellProps) {
           full-height sidebar instead of spanning the whole window. */}
       <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <AppTitleBar
-          fileBrowserOpen={fileBrowserOpen}
-          onToggleFileBrowser={handleToggleFileBrowser}
-          canFiles={canFiles}
           tabs={tabs}
           activeTabId={activeTabId}
           onSelectTab={handleSelectTab}
@@ -798,28 +795,45 @@ export function AppShell({ search }: AppShellProps) {
         </div>
       </div>
 
-      {/* Right panel: file browser (single ExplorerPanel instance) */}
+      {/* Right file rail: the toggle stays on the window's right edge. The
+          explorer expands left from that button and never covers it. */}
       {fileBrowserOpen && (
         <div
           {...rightPanel.separatorProps}
           className="workspace-panel-splitter right-panel-splitter"
         />
       )}
-      <div
-        ref={rightPanel.panelRef}
-        className={`right-panel-container${fileBrowserOpen ? " right-panel-open" : " right-panel-closed"}${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          background: "var(--bg)",
-        }}
-      >
-        <ExplorerPanel
-          cwd={search.cwd}
-          canFiles={canFiles}
-          canGit={canGit}
-          onOpenFile={handleOpenFile}
-        />
+      {fileBrowserOpen ? (
+        <div
+          ref={rightPanel.panelRef}
+          className={`right-panel-container right-panel-open${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            background: "var(--bg)",
+          }}
+        >
+          <ExplorerPanel
+            cwd={search.cwd}
+            canFiles={canFiles}
+            canGit={canGit}
+            onOpenFile={handleOpenFile}
+          />
+        </div>
+      ) : null}
+      <div className="file-browser-rail" data-testid="file-browser-rail">
+        <button
+          type="button"
+          className="sidebar-icon-btn"
+          data-testid="file-browser-toggle"
+          disabled={!canFiles}
+          title={fileBrowserOpen ? t("desktop.hideFileBrowser") : t("desktop.showFileBrowser")}
+          aria-label={fileBrowserOpen ? t("desktop.hideFileBrowser") : t("desktop.showFileBrowser")}
+          aria-pressed={fileBrowserOpen}
+          onClick={handleToggleFileBrowser}
+        >
+          <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
+        </button>
       </div>
     </div>
     {projectTrustDialogOpen && search.cwd ? (
