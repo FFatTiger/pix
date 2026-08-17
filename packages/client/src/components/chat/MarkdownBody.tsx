@@ -12,6 +12,7 @@ import { headingId, markdownRehypePlugins, markdownRemarkPlugins, normalizeDispl
 import { extendStreamBirths, rehypeStreamFade, sliceStreamBirths, STREAM_FADE_DURATION_MS } from "@/lib/rehype-stream-fade";
 import { mentionRemarkPlugin, type MentionValidators } from "@/lib/mention-tokens";
 import { prismTheme } from "@/lib/prism-theme";
+import { useSmoothStream } from "@/hooks/useSmoothStream";
 
 
 
@@ -175,12 +176,16 @@ const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpen
 
 export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, highlightMentions, mentionValidators }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
+  // Smooth the streamed reveal at frame cadence (LobeUI Streamdown): the
+  // displayed text grows 1-3 chars per rAF frame instead of per publish
+  // burst, which is what keeps the per-char fade timeline continuous.
+  const smoothedMarkdown = useSmoothStream(normalizedMarkdown, !!isStreaming);
   // Interning map: stable chunk text stays reference-stable so MarkdownPart
   // memo comparisons hit with === and skip the parse/render work entirely.
   const partCacheRef = useRef<Map<string, string>>(new Map());
   const parts = useMemo(
-    () => splitStableParts(normalizedMarkdown, partCacheRef.current),
-    [normalizedMarkdown],
+    () => splitStableParts(smoothedMarkdown, partCacheRef.current),
+    [smoothedMarkdown],
   );
   const streamingSplit = isStreaming && parts.length > 1;
   const components = useMemo(
@@ -202,11 +207,11 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
   if (isStreaming) {
     birthsRef.current = extendStreamBirths(
       previousTextRef.current,
-      normalizedMarkdown,
+      smoothedMarkdown,
       birthsRef.current,
       nowMs,
     );
-    previousTextRef.current = normalizedMarkdown;
+    previousTextRef.current = smoothedMarkdown;
   }
   const fadeActive = isStreaming || holdStreaming;
   useEffect(() => {
@@ -223,23 +228,23 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       birthsRef.current = [];
     }, remaining);
     return () => window.clearTimeout(timer);
-  }, [isStreaming, holdStreaming, normalizedMarkdown]);
+  }, [isStreaming, holdStreaming, smoothedMarkdown]);
   const streamRehypePlugins = useMemo(
     () => {
-      const births = sliceStreamBirths(normalizedMarkdown, normalizedMarkdown, birthsRef.current);
+      const births = sliceStreamBirths(smoothedMarkdown, smoothedMarkdown, birthsRef.current);
       return [
         ...(markdownRehypePlugins ?? []),
         [rehypeStreamFade, { births, nowMs }],
       ] as ReactMarkdownOptions["rehypePlugins"];
     },
-    [fadeActive, normalizedMarkdown, nowMs],
+    [fadeActive, smoothedMarkdown, nowMs],
   );
 
   return (
     <div className={["markdown-body", fadeActive ? "is-streaming" : "", className].filter(Boolean).join(" ")}>
       {streamingSplit ? (
         parts.map((part, index) => {
-          const partBirths = sliceStreamBirths(normalizedMarkdown, part.text, birthsRef.current);
+          const partBirths = sliceStreamBirths(smoothedMarkdown, part.text, birthsRef.current);
           const partPlugins = part.tail && fadeActive
             ? [
                 ...(markdownRehypePlugins ?? []),
@@ -264,7 +269,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
           rehypePlugins={fadeActive ? streamRehypePlugins : markdownRehypePlugins}
           components={components}
         >
-          {normalizedMarkdown}
+          {smoothedMarkdown}
         </ReactMarkdown>
       )}
     </div>
