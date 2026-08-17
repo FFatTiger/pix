@@ -14,6 +14,7 @@ import {
   PencilSimple,
   Plugs,
   PushPin,
+  SidebarSimple,
   Stack,
   Trash,
   X,
@@ -72,6 +73,8 @@ export interface SidebarProps {
   canNewSession: boolean;
   /** Open the existing SettingsModal on a specific tab (plugins / skills / settings). */
   onOpenSettings?: (tab: SettingsTab) => void;
+  /** Collapse the full-height rail; the toggle stays on the rail's right edge. */
+  onCollapseSidebar?: () => void;
 }
 
 /**
@@ -98,15 +101,25 @@ function formatRelativeTime(
   ms: number,
   t: (key: string, params?: Record<string, string | number>) => string,
 ): string {
-  const diff = Date.now() - ms;
+  const compact = formatCompactActivity(ms);
+  if (compact === "NOW") return t("desktop.justNow");
+  if (compact.endsWith("M")) return t("desktop.minutesAgo", { count: Number(compact.slice(0, -1)) });
+  if (compact.endsWith("H")) return t("desktop.hoursAgo", { count: Number(compact.slice(0, -1)) });
+  if (compact.endsWith("D")) return t("desktop.daysAgo", { count: Number(compact.slice(0, -1)) });
+  return compact;
+}
+
+/** Compact idle-time chip: NOW / 3M / 1H / 2D / 12-24. */
+export function formatCompactActivity(ms: number, now = Date.now()): string {
+  const diff = Math.max(0, now - ms);
   const mins = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
   const days = Math.floor(diff / 86400000);
-  if (mins < 1) return t("desktop.justNow");
-  if (mins < 60) return t("desktop.minutesAgo", { count: mins });
-  if (hours < 24) return t("desktop.hoursAgo", { count: hours });
-  if (days < 7) return t("desktop.daysAgo", { count: days });
-  return new Date(ms).toLocaleDateString();
+  if (mins < 1) return "NOW";
+  if (mins < 60) return `${mins}M`;
+  if (hours < 24) return `${hours}H`;
+  if (days < 7) return `${days}D`;
+  return new Date(ms).toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
 }
 
 /**
@@ -281,6 +294,7 @@ export function Sidebar({
   onNewSession,
   canNewSession,
   onOpenSettings,
+  onCollapseSidebar,
 }: SidebarProps) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -443,6 +457,11 @@ export function Sidebar({
     const projectRunning = runningProjectRoots.has(project)
       || nestedSessions.some((session) => runningSessionIds.has(session.sessionId));
     const pinned = pinnedProjectRoots.has(project);
+    const projectActivity = nestedSessions.reduce<number | undefined>((latest, session) => {
+      const current = activityMs(session);
+      if (current === undefined) return latest;
+      return latest === undefined || current > latest ? current : latest;
+    }, undefined);
     return (
       <div key={project} data-testid="sidebar-project-card" data-expanded={expanded ? "true" : "false"}>
         <ProjectRow
@@ -451,6 +470,7 @@ export function Sidebar({
           expanded={expanded}
           running={projectRunning}
           pinned={pinned}
+          {...(projectActivity === undefined ? {} : { activity: projectActivity })}
           onToggle={() => toggleProjectExpanded(project)}
           onPin={(nextPinned) => pinProject(project, nextPinned)}
           onArchive={(archived) => archiveProject(project, archived)}
@@ -487,20 +507,34 @@ export function Sidebar({
       <div className="sidebar-rail-chrome">
         <div className="sidebar-home-header" data-testid="sidebar-home-header">
           <span className="sidebar-brand" data-testid="sidebar-brand">{t("desktop.appName")}</span>
-          <button
-            type="button"
-            className="sidebar-icon-btn"
-            data-testid="sidebar-search"
-            title={t("desktop.searchSessions")}
-            aria-label={t("desktop.searchSessions")}
-            onClick={() => {
-              setSessionsOpen(true);
-              setSearchOpen((open) => !open);
-              if (searchOpen) setSessionSearch("");
-            }}
-          >
-            <MagnifyingGlass size={16} weight="regular" aria-hidden="true" />
-          </button>
+          <div className="sidebar-home-actions">
+            <button
+              type="button"
+              className="sidebar-icon-btn"
+              data-testid="sidebar-search"
+              title={t("desktop.searchSessions")}
+              aria-label={t("desktop.searchSessions")}
+              onClick={() => {
+                setSessionsOpen(true);
+                setSearchOpen((open) => !open);
+                if (searchOpen) setSessionSearch("");
+              }}
+            >
+              <MagnifyingGlass size={16} weight="regular" aria-hidden="true" />
+            </button>
+            {onCollapseSidebar ? (
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                data-testid="sidebar-collapse"
+                title={t("desktop.hideSidebar")}
+                aria-label={t("desktop.hideSidebar")}
+                onClick={onCollapseSidebar}
+              >
+                <SidebarSimple size={16} aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
         </div>
 
         <nav className="sidebar-primary-nav" aria-label={t("desktop.primaryNav")}>
@@ -760,6 +794,7 @@ function ProjectRow({
   expanded,
   running,
   pinned,
+  activity,
   onToggle,
   onPin,
   onArchive,
@@ -769,6 +804,7 @@ function ProjectRow({
   expanded: boolean;
   running: boolean;
   pinned: boolean;
+  activity?: number;
   onToggle: () => void;
   onPin: (pinned: boolean) => void;
   onArchive: (archived: boolean) => void;
@@ -814,14 +850,10 @@ function ProjectRow({
         )}
         <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
         {running ? <RunningSessionIndicator /> : null}
-        <CaretRight
-          className="sidebar-section-chevron"
-          size={14}
-          weight="bold"
-          style={{ transform: expanded ? "rotate(90deg)" : "none", opacity: 0.7, pointerEvents: "none" }}
-          aria-hidden="true"
-        />
       </button>
+      {activity !== undefined ? (
+        <span className="sidebar-row-meta" aria-hidden="true">{formatCompactActivity(activity)}</span>
+      ) : null}
       <div className="sidebar-row-actions">
         <button
           type="button"
@@ -934,13 +966,6 @@ function SessionTreeItem({
             onSelectSession(sessionId, cwd);
           }}
           depth={depth}
-          hasChildren={hasChildren}
-          collapsed={collapsed}
-          onToggleCollapse={() => setCollapsed((v) => {
-            const next = !v;
-            saveForkCollapsed(node.session.sessionId, next);
-            return next;
-          })}
         />
       </div>
       {hasChildren && !collapsed && (
@@ -1097,9 +1122,6 @@ function SessionItem({
   onSessionDeleted,
   onSelectSession,
   depth = 0,
-  hasChildren = false,
-  collapsed = false,
-  onToggleCollapse,
 }: {
   session: SessionHeader;
   isSelected: boolean;
@@ -1119,9 +1141,6 @@ function SessionItem({
   onSessionDeleted?: ((sessionId: string) => void) | undefined;
   onSelectSession: (sessionId: string, cwd?: string) => void;
   depth?: number;
-  hasChildren?: boolean;
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
 }) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -1403,18 +1422,12 @@ function SessionItem({
             {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}
             <span className="sidebar-row-title sidebar-title-fade">{title}</span>
           </button>
-          {hasChildren && (
-            <button
-              type="button"
-              className="sidebar-icon-btn sidebar-fork-caret"
-              onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
-              title={collapsed ? t("desktop.expandForks") : t("desktop.collapseForks")}
-              aria-label={collapsed ? t("desktop.expandForks") : t("desktop.collapseForks")}
-              style={{ transform: collapsed ? "rotate(-90deg)" : "none" }}
-            >
-              <CaretRight size={12} weight="regular" aria-hidden="true" />
-            </button>
-          )}
+          {(() => {
+            const activity = activityMs(session);
+            return activity === undefined ? null : (
+              <span className="sidebar-row-meta" aria-hidden="true">{formatCompactActivity(activity)}</span>
+            );
+          })()}
           {!busy && (
             <div className="sidebar-row-actions">
               <button type="button" className="sidebar-icon-btn" onClick={(event) => { event.stopPropagation(); onPin(!pinned); }} title={pinned ? t("desktop.unpin") : t("desktop.pin")} aria-label={pinned ? t("desktop.unpin") : t("desktop.pin")}>

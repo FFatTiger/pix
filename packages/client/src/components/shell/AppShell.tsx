@@ -8,6 +8,7 @@ import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { isHiddenRailSession, primaryRealProjectPath } from "@/lib/workspace-paths";
 import { getFileName } from "@/lib/file-paths";
+import { SidebarSimple } from "@phosphor-icons/react";
 import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
@@ -692,19 +693,35 @@ export function AppShell({ search }: AppShellProps) {
           zIndex: 200,
         } as React.CSSProperties}
       >
-        <Sidebar
-          cwd={search.cwd}
-          selectedSessionId={search.session ?? null}
-          liveSessionId={runtime.attached ? runtime.sessionId : null}
-          runningSessionIds={runningSessionIds}
-          runningProjectRoots={runningProjectRoots}
-          pendingSessionId={pendingSessionId}
-          onSessionDeleted={handleSessionDeleted}
-          onSelectSession={handleSelectSession}
-          onNewSession={handleCreate}
-          canNewSession={canCreate}
-          onOpenSettings={openSettings}
-        />
+        {sidebarOpen ? (
+          <Sidebar
+            cwd={search.cwd}
+            selectedSessionId={search.session ?? null}
+            liveSessionId={runtime.attached ? runtime.sessionId : null}
+            runningSessionIds={runningSessionIds}
+            runningProjectRoots={runningProjectRoots}
+            pendingSessionId={pendingSessionId}
+            onSessionDeleted={handleSessionDeleted}
+            onSelectSession={handleSelectSession}
+            onNewSession={handleCreate}
+            canNewSession={canCreate}
+            onOpenSettings={openSettings}
+            onCollapseSidebar={handleSidebarToggle}
+          />
+        ) : (
+          <div className="sidebar-collapsed-rail" data-testid="sidebar-collapsed-rail">
+            <button
+              type="button"
+              className="sidebar-icon-btn"
+              data-testid="sidebar-expand"
+              title={t("desktop.showSidebar")}
+              aria-label={t("desktop.showSidebar")}
+              onClick={handleSidebarToggle}
+            >
+              <SidebarSimple size={16} aria-hidden="true" />
+            </button>
+          </div>
+        )}
       </div>
       {sidebarOpen && (
         <div
@@ -717,8 +734,6 @@ export function AppShell({ search }: AppShellProps) {
           full-height sidebar instead of spanning the whole window. */}
       <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <AppTitleBar
-          sidebarOpen={sidebarOpen}
-          onSidebarToggle={handleSidebarToggle}
           fileBrowserOpen={fileBrowserOpen}
           onToggleFileBrowser={handleToggleFileBrowser}
           canFiles={canFiles}

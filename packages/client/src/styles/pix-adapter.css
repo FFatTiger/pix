@@ -1033,6 +1033,13 @@ html.dark .catalog-meta-item--error {
   margin-bottom: 2px;
 }
 
+.sidebar-home-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
 .sidebar-brand {
   min-width: 0;
   padding: 2px 10px;
@@ -1194,6 +1201,19 @@ html.dark .catalog-meta-item--error {
   transform: none;
 }
 
+.sidebar-row-meta {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-right: 2px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
 .sidebar-list-row:hover .sidebar-row-title,
 .sidebar-list-row:focus-within .sidebar-row-title {
   padding-right: 52px;
@@ -1215,6 +1235,8 @@ html.dark .catalog-meta-item--error {
   transition: opacity 120ms ease;
 }
 
+.sidebar-list-row:hover .sidebar-row-meta,
+.sidebar-list-row:focus-within .sidebar-row-meta,
 .sidebar-list-row:hover .sidebar-fork-caret,
 .sidebar-list-row:focus-within .sidebar-fork-caret {
   opacity: 0;

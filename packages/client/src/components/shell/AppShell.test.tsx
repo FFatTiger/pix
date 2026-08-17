@@ -1206,6 +1206,18 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(within(recent).getByTestId("session-select-S7")).toBeTruthy();
   });
 
+  it("keeps project pin/archive actions separate from the expand caret", async () => {
+    mountApp({ cwd: "/x" });
+    await settle();
+    const projectButton = screen.getAllByTestId("sidebar-project-row").find((row) => row.getAttribute("title") === "/x");
+    expect(projectButton).toBeTruthy();
+    const row = projectButton!.closest(".sidebar-list-row") as HTMLElement;
+    expect(within(row).getByLabelText("Pin to top")).toBeTruthy();
+    expect(within(row).getByLabelText("Archive")).toBeTruthy();
+    expect(within(row).getByText("NOW")).toBeTruthy();
+    expect(row.querySelector(".sidebar-fork-caret")).toBeNull();
+  });
+
   it("keeps the title bar to the right of the full-height sidebar", async () => {
     mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
     await settle();
@@ -1214,6 +1226,11 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(sidebar.compareDocumentPosition(titleBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(titleBar.closest(".chat-column")).toBeTruthy();
     expect(sidebar.closest(".chat-column")).toBeNull();
+    expect(screen.getByTestId("sidebar-collapse")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Hide sidebar" })?.closest(".app-title-bar")).toBeNull();
+    fireEvent.click(screen.getByTestId("sidebar-collapse"));
+    expect(screen.getByTestId("sidebar-expand")).toBeTruthy();
+    expect(screen.queryByTestId("sidebar-brand")).toBeNull();
   });
 });
 
