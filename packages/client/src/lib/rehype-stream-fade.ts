@@ -94,6 +94,10 @@ export function rehypeStreamFade(options: StreamFadeOptions = {}) {
   };
 }
 
+function chars(text: string): string[] {
+  return [...text];
+}
+
 /** Record birth timestamps for newly appended streaming characters. */
 export function extendStreamBirths(
   previousText: string,
@@ -101,12 +105,33 @@ export function extendStreamBirths(
   previousBirths: readonly number[],
   nowMs: number,
 ): number[] {
-  if (nextText.startsWith(previousText)) {
-    const births = previousBirths.slice(0, previousText.length);
-    for (let index = previousText.length; index < nextText.length; index += 1) {
+  const previous = chars(previousText);
+  const next = chars(nextText);
+  const prefixMatches = next.length >= previous.length
+    && previous.every((char, index) => next[index] === char);
+  if (prefixMatches) {
+    const births = previousBirths.slice(0, previous.length);
+    for (let index = previous.length; index < next.length; index += 1) {
       births[index] = nowMs;
     }
     return births;
   }
-  return Array.from({ length: nextText.length }, () => nowMs);
+  return next.map(() => nowMs);
+}
+
+/** Slice full-document births down to one Markdown part. */
+export function sliceStreamBirths(
+  fullText: string,
+  partText: string,
+  births: readonly number[],
+): number[] {
+  if (partText.length === 0) return [];
+  const full = chars(fullText);
+  const part = chars(partText);
+  if (part.length > full.length) return [...births];
+  const start = full.length - part.length;
+  if (start >= 0 && part.every((char, index) => full[start + index] === char)) {
+    return births.slice(start, start + part.length);
+  }
+  return part.map(() => births[births.length - 1] ?? 0);
 }

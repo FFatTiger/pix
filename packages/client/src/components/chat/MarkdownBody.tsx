@@ -9,7 +9,7 @@ import { resolveLocalFileHref } from "@/lib/file-links";
 import { resolveMarkdownImageSrc } from "@/lib/markdown-images";
 import { splitStableParts } from "@/lib/markdown-incremental";
 import { headingId, markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
-import { extendStreamBirths, rehypeStreamFade } from "@/lib/rehype-stream-fade";
+import { extendStreamBirths, rehypeStreamFade, sliceStreamBirths, STREAM_FADE_DURATION_MS } from "@/lib/rehype-stream-fade";
 import { mentionRemarkPlugin, type MentionValidators } from "@/lib/mention-tokens";
 import { prismTheme } from "@/lib/prism-theme";
 
@@ -197,6 +197,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
   );
   const previousTextRef = useRef("");
   const birthsRef = useRef<number[]>([]);
+  const [holdStreaming, setHoldStreaming] = useState(false);
   const nowMs = Date.now();
   if (isStreaming) {
     birthsRef.current = extendStreamBirths(
@@ -206,36 +207,61 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       nowMs,
     );
     previousTextRef.current = normalizedMarkdown;
-  } else {
-    previousTextRef.current = "";
-    birthsRef.current = [];
   }
+  const fadeActive = isStreaming || holdStreaming;
+  useEffect(() => {
+    if (isStreaming) {
+      setHoldStreaming(true);
+      return;
+    }
+    if (!holdStreaming) return;
+    const latestBirth = birthsRef.current.reduce((latest, birth) => Math.max(latest, birth), 0);
+    const remaining = latestBirth === 0 ? 0 : Math.max(0, STREAM_FADE_DURATION_MS - (Date.now() - latestBirth));
+    const timer = window.setTimeout(() => {
+      setHoldStreaming(false);
+      previousTextRef.current = "";
+      birthsRef.current = [];
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [isStreaming, holdStreaming, normalizedMarkdown]);
   const streamRehypePlugins = useMemo(
-    () => [
-      ...(markdownRehypePlugins ?? []),
-      [rehypeStreamFade, { births: birthsRef.current, nowMs }],
-    ] as ReactMarkdownOptions["rehypePlugins"],
-    [isStreaming, normalizedMarkdown, nowMs],
+    () => {
+      const births = sliceStreamBirths(normalizedMarkdown, normalizedMarkdown, birthsRef.current);
+      return [
+        ...(markdownRehypePlugins ?? []),
+        [rehypeStreamFade, { births, nowMs }],
+      ] as ReactMarkdownOptions["rehypePlugins"];
+    },
+    [fadeActive, normalizedMarkdown, nowMs],
   );
 
   return (
-    <div className={["markdown-body", isStreaming ? "is-streaming" : "", className].filter(Boolean).join(" ")}>
+    <div className={["markdown-body", fadeActive ? "is-streaming" : "", className].filter(Boolean).join(" ")}>
       {streamingSplit ? (
-        parts.map((part, index) => (
-          <MarkdownPart
-            key={`${index}-${part.id}`}
-            text={part.text}
-            isStreaming={part.tail ? isStreaming : false}
-            cwd={cwd}
-            onOpenFile={onOpenFile}
-            remarkPlugins={remarkPlugins}
-            rehypePlugins={part.tail && isStreaming ? streamRehypePlugins : markdownRehypePlugins}
-          />
-        ))
+        parts.map((part, index) => {
+          const partBirths = sliceStreamBirths(normalizedMarkdown, part.text, birthsRef.current);
+          const partPlugins = part.tail && fadeActive
+            ? [
+                ...(markdownRehypePlugins ?? []),
+                [rehypeStreamFade, { births: partBirths, nowMs }],
+              ] as ReactMarkdownOptions["rehypePlugins"]
+            : markdownRehypePlugins;
+          return (
+            <MarkdownPart
+              key={`${index}-${part.id}`}
+              text={part.text}
+              isStreaming={part.tail ? fadeActive : false}
+              cwd={cwd}
+              onOpenFile={onOpenFile}
+              remarkPlugins={remarkPlugins}
+              rehypePlugins={partPlugins}
+            />
+          );
+        })
       ) : (
         <ReactMarkdown
           remarkPlugins={remarkPlugins}
-          rehypePlugins={isStreaming ? streamRehypePlugins : markdownRehypePlugins}
+          rehypePlugins={fadeActive ? streamRehypePlugins : markdownRehypePlugins}
           components={components}
         >
           {normalizedMarkdown}

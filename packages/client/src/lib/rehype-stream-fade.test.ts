@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extendStreamBirths } from "./rehype-stream-fade";
+import { extendStreamBirths, sliceStreamBirths } from "./rehype-stream-fade";
 
 describe("extendStreamBirths", () => {
   it("keeps previous births and stamps only newly appended characters", () => {
@@ -11,5 +11,11 @@ describe("extendStreamBirths", () => {
 
   it("restarts births when the streamed text is replaced", () => {
     expect(extendStreamBirths("old", "new", [1, 2, 3], 50)).toEqual([50, 50, 50]);
+  });
+});
+
+describe("sliceStreamBirths", () => {
+  it("keeps the tail-aligned births for a later markdown part", () => {
+    expect(sliceStreamBirths("ab\n\ncd", "cd", [1, 1, 1, 1, 2, 2])).toEqual([2, 2]);
   });
 });
