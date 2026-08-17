@@ -727,6 +727,7 @@ export async function writeStateDocument(
     if (options.lockCheck) {
       const inspection = await inspectRegularFile(options.lockCheck.path);
       const matches = inspection.kind === "regular"
+        && options.lockCheck.ownership.kind === "posix"
         && inspection.dev === options.lockCheck.ownership.dev
         && inspection.ino === options.lockCheck.ownership.ino;
       if (!matches) {
@@ -892,7 +893,12 @@ export async function releaseLifetimeLock(
   const current = await readLifetimeLock(path);
   if (current.kind !== "valid") return;
   if (current.record.instanceId !== options.instanceId) return;
-  if (current.identity.dev !== options.ownership.dev || current.identity.ino !== options.ownership.ino) {
+  if (
+    options.ownership.kind !== "posix"
+    || current.identity.kind !== "posix"
+    || current.identity.dev !== options.ownership.dev
+    || current.identity.ino !== options.ownership.ino
+  ) {
     return;
   }
   await rm(path, { force: true }).catch(() => {});

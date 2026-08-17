@@ -1,8 +1,10 @@
 import { LocalAuthorityError, type SecureStateBackend } from "./contracts.js";
+import { loadNativeWindowsBinding } from "./native-windows.js";
 import {
   createPosixSecureStateBackend,
   type PosixSecureStateBackendOptions,
 } from "./posix.js";
+import { createWindowsSecureStateBackend } from "./windows.js";
 
 export interface SecureStateBackendFactoryOptions {
   /** Injectable platform for deterministic selection tests. */
@@ -13,19 +15,22 @@ export interface SecureStateBackendFactoryOptions {
 
 /**
  * Select the native secure-state backend before any caller performs a path walk
- * or filesystem mutation. Windows remains fail-closed until its native
- * SID/DACL/file-id backend is implemented; this factory must never route a
- * Windows path through the POSIX implementation.
+ * or filesystem mutation. Windows never routes through the POSIX implementation.
  */
 export function createSecureStateBackend(
   options: SecureStateBackendFactoryOptions = {},
 ): SecureStateBackend {
   const platform = options.platform ?? process.platform;
   if (platform === "win32") {
-    throw new LocalAuthorityError(
-      "UNSUPPORTED_PLATFORM",
-      "Native Windows secure state is unavailable",
-    );
+    try {
+      loadNativeWindowsBinding();
+    } catch {
+      throw new LocalAuthorityError(
+        "UNSUPPORTED_PLATFORM",
+        "Native Windows secure state is unavailable",
+      );
+    }
+    return createWindowsSecureStateBackend();
   }
   return createPosixSecureStateBackend(options.posix);
 }

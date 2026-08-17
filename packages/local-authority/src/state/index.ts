@@ -30,3 +30,4 @@ export {
   releaseLifetimeLock,
   createPosixSecureStateBackend,
 } from "./posix.js";
+export { createWindowsSecureStateBackend } from "./windows.js";

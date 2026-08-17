@@ -12,16 +12,15 @@ test("platform factory selects the POSIX backend deterministically", () => {
   assert.equal(principal.kind, "posix");
 });
 
-test("platform factory rejects Windows before any POSIX backend/path operation", () => {
-  const marker = "C:\\Users\\secret-marker";
-  assert.throws(
-    () => createSecureStateBackend({ platform: "win32" }),
-    (error) => {
-      assert.equal(error instanceof LocalAuthorityError, true);
-      assert.equal(error.code, "UNSUPPORTED_PLATFORM");
-      assert.equal(error.message, "Native Windows secure state is unavailable");
-      assert.equal(error.message.includes(marker), false);
-      return true;
-    },
-  );
+test("platform factory selects the Windows backend on win32-x64", () => {
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    assert.throws(
+      () => createSecureStateBackend({ platform: "win32" }),
+      (error) => error instanceof LocalAuthorityError && error.code === "UNSUPPORTED_PLATFORM",
+    );
+    return;
+  }
+  const backend = createSecureStateBackend({ platform: "win32" });
+  assert.equal(backend.kind, "windows");
+  assert.equal(backend.principal().kind, "windows");
 });

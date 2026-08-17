@@ -400,23 +400,38 @@ test("lease: parent-is-file intermediate → HOST_DIR_UNSAFE (base parity; nothi
   assert.equal(existsSync(join(file, "child")), false);
 });
 
-test("lease: unsupported Windows backend is mapped before any path walk", async (t) => {
+test("lease: Windows native backend can open a dedicated host dir", async (t) => {
   if (process.platform !== "win32") {
     t.skip("native Windows selection only");
     return;
   }
-  const marker = "C:\\Users\\private-marker\\.pi\\pix\\host";
+  const parent = temp("lease-win-");
+  const hostDir = join(parent, "host");
+  const lease = await openHostStateDirectoryLease({ hostDir });
+  try {
+    assert.equal(lease.hostDir, hostDir);
+    await lease.writeDocument(TRUSTED_ROOTS_STATE_DOCUMENT, doc("trusted"));
+    const read = await lease.readDocument(TRUSTED_ROOTS_STATE_DOCUMENT);
+    assert.equal("content" in read && read.content, doc("trusted"));
+  } finally {
+    await lease.close();
+  }
+});
+
+test("lease: Windows reserved destinations stay rejected after native backend selection", async (t) => {
+  if (process.platform !== "win32") {
+    t.skip("native Windows selection only");
+    return;
+  }
   await assert.rejects(
-    () => openHostStateDirectoryLease({ hostDir: marker }),
+    () => openHostStateDirectoryLease({ hostDir: "C:\\" }),
     (error) => {
       assert.equal(error instanceof HostStateDirectoryError, true);
       assert.equal(error.code, "HOST_DIR_INVALID");
-      assert.equal(error.message, "Native secure state is unavailable on this platform");
-      assert.equal(error.message.includes(marker), false);
+      assert.equal(error.message.includes("C:\\"), false);
       return true;
     },
   );
-  assert.equal(existsSync(marker), false, "factory failure must happen before filesystem mutation");
 });
 
 test("lease source: toHostStateError maps unknown errors to a fixed sanitized HOST_DIR_UNSAFE", () => {

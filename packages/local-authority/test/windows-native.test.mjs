@@ -7,6 +7,12 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createSecureStateBackend } from "../dist/state/platform.js";
 import { loadNativeWindowsBinding } from "../dist/state/native-windows.js";
+import { currentWindowsPrincipal } from "../dist/state/windows-identity.js";
+import {
+  WINDOWS_ADMINISTRATORS_SID,
+  WINDOWS_LOCAL_SYSTEM_SID,
+  rejectUnsafeWindowsSecurityEvidence,
+} from "../dist/state/windows-security.js";
 
 const isWindowsX64 = process.platform === "win32" && process.arch === "x64";
 
@@ -18,7 +24,7 @@ test("public state surface does not export the private native loader", async () 
 
 test("native Windows binding exposes SID and handle-based path evidence", { skip: !isWindowsX64 }, () => {
   const binding = loadNativeWindowsBinding();
-  assert.equal(binding.apiVersion, 1);
+  assert.equal(binding.apiVersion, 2);
   const userSid = binding.currentUserSid();
   assert.match(userSid, /^S-1-[0-9-]+$/u);
 
@@ -46,6 +52,7 @@ test("native Windows binding exposes SID and handle-based path evidence", { skip
     assert.match(first.ownerSid, /^S-1-[0-9-]+$/u);
     assert.equal(typeof first.daclPresent, "boolean");
     assert.equal(typeof first.daclProtected, "boolean");
+    assert.equal(Array.isArray(first.aces), true);
     assert.equal(binding.inspectPath(join(dir, "missing")), null);
     assert.throws(() => binding.inspectPath(""), /path is invalid|path is required/);
     const keep = join(dir, "keep");
@@ -73,10 +80,44 @@ test("native Windows binding exposes SID and handle-based path evidence", { skip
   }
 });
 
-test("Windows product backend remains fail-closed after the native spike", () => {
-  assert.throws(
-    () => createSecureStateBackend({ platform: "win32" }),
-    (error) => error?.code === "UNSUPPORTED_PLATFORM"
-      && error.message === "Native Windows secure state is unavailable",
-  );
+test("createPrivateObject writes a current-user+SYSTEM protected DACL", { skip: !isWindowsX64 }, () => {
+  const binding = loadNativeWindowsBinding();
+  const parent = mkdtempSync(join(tmpdir(), "pix-private-"));
+  const directory = join(parent, "leaf");
+  const file = join(directory, "secret.txt");
+  try {
+    assert.equal(binding.createPrivateObject(directory, "directory"), true);
+    assert.equal(binding.createPrivateObject(file, "file"), true);
+    const dirInfo = binding.inspectPath(directory);
+    const fileInfo = binding.inspectPath(file);
+    assert.ok(dirInfo);
+    assert.ok(fileInfo);
+    const principal = currentWindowsPrincipal();
+    rejectUnsafeWindowsSecurityEvidence(dirInfo, principal);
+    rejectUnsafeWindowsSecurityEvidence(fileInfo, principal);
+    const sids = new Set(dirInfo.aces.map((ace) => ace.sid.toUpperCase()));
+    assert.equal(sids.has(principal.sid.toUpperCase()), true);
+    assert.equal(sids.has(WINDOWS_LOCAL_SYSTEM_SID), true);
+    assert.equal(sids.has(WINDOWS_ADMINISTRATORS_SID), false);
+    assert.equal(dirInfo.daclProtected, true);
+    assert.equal(fileInfo.daclProtected, true);
+    assert.throws(
+      () => binding.createPrivateObject(directory, "directory"),
+      (error) => error?.code === "NATIVE_ALREADY_EXISTS",
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("Windows factory selects the native backend on this target", () => {
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    assert.throws(
+      () => createSecureStateBackend({ platform: "win32" }),
+      (error) => error?.code === "UNSUPPORTED_PLATFORM",
+    );
+    return;
+  }
+  const backend = createSecureStateBackend({ platform: "win32" });
+  assert.equal(backend.kind, "windows");
 });

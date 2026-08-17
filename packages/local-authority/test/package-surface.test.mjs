@@ -35,6 +35,7 @@ const STATE_EXPORTS = [
   "releaseLifetimeLock",
   // backend factories
   "createPosixSecureStateBackend",
+  "createWindowsSecureStateBackend",
   "createSecureStateBackend",
 ].sort();
 

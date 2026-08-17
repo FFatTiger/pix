@@ -3551,3 +3551,21 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - local-authority typecheck/boundaries, architecture 14 gates, `git diff --check`: PASS.
 - Independent verifier first FAIL: `inspectPath(keep+"\\0X")` returned `keep`'s file ID. Fix: C-layer `memchr` reject + explicit-length `MultiByteToWideChar`, plus JS loader reject. Resumed verifier: PASS on loader and raw `.node` (`NATIVE_INVALID_ARGUMENT`).
 - Product factory remains `UNSUPPORTED_PLATFORM`. No Windows private-directory, DACL mutation, lock/secret, Named Pipe, Job Object, or support claim.
+
+---
+
+## 74. Cross-platform CP-07B — Windows secure-state backend
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `6566288`.
+- Owner remains `packages/local-authority`. Host consumes the factory; sessiond still uses its own POSIX preflight.
+- Native API v2 adds ACE enumeration and `createPrivateObject`. Frozen private DACL is current-user + SYSTEM only; Administrators are fail-closed; existing wide ACLs are never repaired.
+- `WindowsFileIdentity` now carries `ownerSid`. Lifetime-lock ownership is a posix/windows discriminated union. Private-directory identity/hooks are `FileIdentity`, not POSIX-only.
+- `createSecureStateBackend()` on win32 loads the native binding first; missing/non-x64 stays `UNSUPPORTED_PLATFORM`. Linux/darwin still get the POSIX backend.
+- Host lease uses the Windows backend for canonicalize/create/lock/document. Intermediate symlink walk stays POSIX-only. `NOT_PRIVATE` Host copy is now `Host directory must be private`.
+- No persisted schema, capability, Named Pipe, Job Object, sessiond factory adoption, or Windows product-support claim.
+
+### Validation (Windows native / Node 25.9.0)
+
+- Focused local-authority backend/native/path/identity/security/factory tests PASS.
+- Host dedicated Windows lease open/write/read PASS; `C:\\` remains `HOST_DIR_INVALID` without path leak.
+- Independent verifier PASS: DACL allowlist, inherited/unprotected fail-closed, junction create-behind rejected, NUL no mix-up, `LOCK_BUSY` + identity-pinned release, factory selection, public surface isolation, sessiond still POSIX-preflight blocked.

@@ -13,6 +13,9 @@
 
 #ifdef _WIN32
 
+#define PIX_NATIVE_API_VERSION 2
+#define PIX_MAX_REPORTED_ACES 32
+
 static napi_value throw_fixed(napi_env env, const char* code, const char* message) {
   napi_value error;
   napi_value text;
@@ -68,6 +71,17 @@ static wchar_t* utf8_to_wide(const char* text, size_t utf8_length) {
     return NULL;
   }
   return wide;
+}
+
+static wchar_t* wide_path_from_js(napi_env env, napi_value value) {
+  napi_valuetype value_type = napi_undefined;
+  if (napi_typeof(env, value, &value_type) != napi_ok || value_type != napi_string) return NULL;
+  size_t utf8_length = 0;
+  char* utf8 = utf8_copy(env, value, &utf8_length);
+  if (!utf8) return NULL;
+  wchar_t* path = utf8_to_wide(utf8, utf8_length);
+  free(utf8);
+  return path;
 }
 
 static napi_status set_utf8(napi_env env, napi_value object, const char* name, const char* text) {
@@ -126,6 +140,104 @@ static napi_status set_hex_bytes(
   return set_utf8(env, object, name, buffer);
 }
 
+static napi_status set_acl_aces(napi_env env, napi_value object, PACL dacl, BOOL dacl_present) {
+  napi_value aces;
+  if (napi_create_array(env, &aces) != napi_ok) return napi_generic_failure;
+  if (!dacl_present || dacl == NULL) {
+    return napi_set_named_property(env, object, "aces", aces);
+  }
+
+  ACL_SIZE_INFORMATION info;
+  ZeroMemory(&info, sizeof(info));
+  if (!GetAclInformation(dacl, &info, sizeof(info), AclSizeInformation)) {
+    return napi_generic_failure;
+  }
+  if (info.AceCount > PIX_MAX_REPORTED_ACES) {
+    return napi_generic_failure;
+  }
+
+  uint32_t written = 0;
+  for (DWORD i = 0; i < info.AceCount; i++) {
+    void* ace_ptr = NULL;
+    if (!GetAce(dacl, i, &ace_ptr) || ace_ptr == NULL) return napi_generic_failure;
+    ACE_HEADER* header = (ACE_HEADER*)ace_ptr;
+    PSID sid = NULL;
+    DWORD mask = 0;
+    const char* type = "other";
+    if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+      ACCESS_ALLOWED_ACE* ace = (ACCESS_ALLOWED_ACE*)ace_ptr;
+      sid = (PSID)&ace->SidStart;
+      mask = ace->Mask;
+      type = "allow";
+    } else if (header->AceType == ACCESS_DENIED_ACE_TYPE) {
+      ACCESS_DENIED_ACE* ace = (ACCESS_DENIED_ACE*)ace_ptr;
+      sid = (PSID)&ace->SidStart;
+      mask = ace->Mask;
+      type = "deny";
+    }
+
+    napi_value entry;
+    if (napi_create_object(env, &entry) != napi_ok) return napi_generic_failure;
+    if (set_utf8(env, entry, "type", type) != napi_ok) return napi_generic_failure;
+    if (set_uint32(env, entry, "mask", mask) != napi_ok) return napi_generic_failure;
+    if (set_uint32(env, entry, "flags", header->AceFlags) != napi_ok) return napi_generic_failure;
+    if (set_bool(env, entry, "inherited", (header->AceFlags & INHERITED_ACE) != 0) != napi_ok) {
+      return napi_generic_failure;
+    }
+    if (sid != NULL && IsValidSid(sid)) {
+      LPSTR sid_text = NULL;
+      if (!ConvertSidToStringSidA(sid, &sid_text) || sid_text == NULL || sid_text[0] == '\0') {
+        return napi_generic_failure;
+      }
+      napi_status status = set_utf8(env, entry, "sid", sid_text);
+      LocalFree(sid_text);
+      if (status != napi_ok) return status;
+    } else if (set_utf8(env, entry, "sid", "") != napi_ok) {
+      return napi_generic_failure;
+    }
+    if (napi_set_element(env, aces, written, entry) != napi_ok) return napi_generic_failure;
+    written += 1;
+  }
+  return napi_set_named_property(env, object, "aces", aces);
+}
+
+static PSID copy_current_user_sid(void) {
+  HANDLE token = NULL;
+  DWORD length = 0;
+  TOKEN_USER* user = NULL;
+  PSID copy = NULL;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return NULL;
+  GetTokenInformation(token, TokenUser, NULL, 0, &length);
+  if (length == 0) {
+    CloseHandle(token);
+    return NULL;
+  }
+  user = (TOKEN_USER*)calloc(length, 1);
+  if (!user || !GetTokenInformation(token, TokenUser, user, length, &length) || !IsValidSid(user->User.Sid)) {
+    free(user);
+    CloseHandle(token);
+    return NULL;
+  }
+  DWORD sid_length = GetLengthSid(user->User.Sid);
+  copy = (PSID)calloc(sid_length, 1);
+  if (!copy || !CopySid(sid_length, copy, user->User.Sid)) {
+    free(copy);
+    copy = NULL;
+  }
+  free(user);
+  CloseHandle(token);
+  return copy;
+}
+
+static PSID create_local_system_sid(void) {
+  SID_IDENTIFIER_AUTHORITY authority = SECURITY_NT_AUTHORITY;
+  PSID sid = NULL;
+  if (!AllocateAndInitializeSid(&authority, 1, SECURITY_LOCAL_SYSTEM_RID, 0, 0, 0, 0, 0, 0, 0, &sid)) {
+    return NULL;
+  }
+  return sid;
+}
+
 static napi_value current_user_sid(napi_env env, napi_callback_info info) {
   (void)info;
   HANDLE token = NULL;
@@ -167,7 +279,6 @@ fail:
 static napi_value inspect_path(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value argv[1];
-  char* utf8 = NULL;
   wchar_t* path = NULL;
   HANDLE handle = INVALID_HANDLE_VALUE;
   PSECURITY_DESCRIPTOR descriptor = NULL;
@@ -179,16 +290,7 @@ static napi_value inspect_path(napi_env env, napi_callback_info info) {
   if (status != napi_ok || argc != 1) {
     return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is required");
   }
-  napi_valuetype value_type = napi_undefined;
-  if (napi_typeof(env, argv[0], &value_type) != napi_ok || value_type != napi_string) {
-    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is invalid");
-  }
-  size_t utf8_length = 0;
-  utf8 = utf8_copy(env, argv[0], &utf8_length);
-  if (!utf8) return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is invalid");
-  path = utf8_to_wide(utf8, utf8_length);
-  free(utf8);
-  utf8 = NULL;
+  path = wide_path_from_js(env, argv[0]);
   if (!path) return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is invalid");
 
   handle = CreateFileW(
@@ -285,7 +387,8 @@ static napi_value inspect_path(napi_env env, napi_callback_info info) {
       set_bool(env, result, "isFile", (tag_info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) != napi_ok ||
       set_utf8(env, result, "ownerSid", owner_text) != napi_ok ||
       set_bool(env, result, "daclPresent", dacl_present != FALSE) != napi_ok ||
-      set_bool(env, result, "daclProtected", (control & SE_DACL_PROTECTED) != 0) != napi_ok) {
+      set_bool(env, result, "daclProtected", (control & SE_DACL_PROTECTED) != 0) != napi_ok ||
+      set_acl_aces(env, result, descriptor_dacl, dacl_present) != napi_ok) {
     LocalFree(owner_text);
     LocalFree(descriptor);
     CloseHandle(handle);
@@ -298,17 +401,150 @@ static napi_value inspect_path(napi_env env, napi_callback_info info) {
   return result;
 }
 
+static void free_explicit_acl(PACL acl) {
+  if (acl) LocalFree(acl);
+}
+
+static napi_value create_private_object(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  wchar_t* path = NULL;
+  char* kind = NULL;
+  size_t kind_length = 0;
+  PSID user_sid = NULL;
+  PSID system_sid = NULL;
+  PACL acl = NULL;
+  SECURITY_DESCRIPTOR descriptor;
+  int is_directory = 0;
+
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 2) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path and kind are required");
+  }
+  path = wide_path_from_js(env, argv[0]);
+  if (!path) return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is invalid");
+  kind = utf8_copy(env, argv[1], &kind_length);
+  if (!kind) {
+    free(path);
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "kind is invalid");
+  }
+  if (strcmp(kind, "directory") == 0) {
+    is_directory = 1;
+  } else if (strcmp(kind, "file") != 0) {
+    free(kind);
+    free(path);
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "kind is invalid");
+  }
+  free(kind);
+
+  user_sid = copy_current_user_sid();
+  system_sid = create_local_system_sid();
+  if (!user_sid || !system_sid) {
+    if (user_sid) free(user_sid);
+    if (system_sid) FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "current user identity could not be inspected");
+  }
+
+  EXPLICIT_ACCESS_W access[2];
+  ZeroMemory(access, sizeof(access));
+  DWORD inheritance = is_directory ? (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) : NO_INHERITANCE;
+  access[0].grfAccessPermissions = GENERIC_ALL;
+  access[0].grfAccessMode = SET_ACCESS;
+  access[0].grfInheritance = inheritance;
+  access[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  access[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+  access[0].Trustee.ptstrName = (LPWSTR)user_sid;
+  access[1].grfAccessPermissions = GENERIC_ALL;
+  access[1].grfAccessMode = SET_ACCESS;
+  access[1].grfInheritance = inheritance;
+  access[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  access[1].Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+  access[1].Trustee.ptstrName = (LPWSTR)system_sid;
+
+  if (SetEntriesInAclW(2, access, NULL, &acl) != ERROR_SUCCESS || acl == NULL) {
+    free(user_sid);
+    FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "private security descriptor could not be created");
+  }
+  if (!InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION) ||
+      !SetSecurityDescriptorOwner(&descriptor, user_sid, FALSE) ||
+      !SetSecurityDescriptorDacl(&descriptor, TRUE, acl, FALSE) ||
+      !SetSecurityDescriptorControl(&descriptor, SE_DACL_PROTECTED, SE_DACL_PROTECTED)) {
+    free_explicit_acl(acl);
+    free(user_sid);
+    FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "private security descriptor could not be created");
+  }
+
+  SECURITY_ATTRIBUTES attributes;
+  ZeroMemory(&attributes, sizeof(attributes));
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = &descriptor;
+  attributes.bInheritHandle = FALSE;
+
+  BOOL created = FALSE;
+  DWORD error = 0;
+  if (is_directory) {
+    created = CreateDirectoryW(path, &attributes);
+    error = created ? 0 : GetLastError();
+  } else {
+    HANDLE handle = CreateFileW(
+      path,
+      GENERIC_READ | GENERIC_WRITE,
+      0,
+      &attributes,
+      CREATE_NEW,
+      FILE_ATTRIBUTE_NORMAL,
+      NULL
+    );
+    if (handle != INVALID_HANDLE_VALUE) {
+      created = TRUE;
+      CloseHandle(handle);
+    } else {
+      error = GetLastError();
+    }
+  }
+
+  free_explicit_acl(acl);
+  free(user_sid);
+  FreeSid(system_sid);
+  free(path);
+
+  if (!created) {
+    if (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS) {
+      return throw_fixed(env, "NATIVE_ALREADY_EXISTS", "path already exists");
+    }
+    if (error == ERROR_PATH_NOT_FOUND || error == ERROR_FILE_NOT_FOUND) {
+      return throw_fixed(env, "NATIVE_NOT_FOUND", "parent path does not exist");
+    }
+    return throw_fixed(
+      env,
+      error == ERROR_ACCESS_DENIED ? "NATIVE_ACCESS_DENIED" : "NATIVE_CREATE_FAILED",
+      "private object could not be created"
+    );
+  }
+
+  napi_value result;
+  if (napi_get_boolean(env, 1, &result) != napi_ok) {
+    return throw_fixed(env, "NATIVE_INTERNAL", "native operation failed");
+  }
+  return result;
+}
+
 static napi_value init(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
     {"currentUserSid", NULL, current_user_sid, NULL, NULL, NULL, napi_default, NULL},
     {"inspectPath", NULL, inspect_path, NULL, NULL, NULL, napi_default, NULL},
+    {"createPrivateObject", NULL, create_private_object, NULL, NULL, NULL, napi_default, NULL},
   };
   if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
     napi_throw_error(env, "NATIVE_INTERNAL", "native operation failed");
     return NULL;
   }
   napi_value version;
-  if (napi_create_uint32(env, 1, &version) != napi_ok ||
+  if (napi_create_uint32(env, PIX_NATIVE_API_VERSION, &version) != napi_ok ||
       napi_set_named_property(env, exports, "apiVersion", version) != napi_ok) {
     napi_throw_error(env, "NATIVE_INTERNAL", "native operation failed");
     return NULL;

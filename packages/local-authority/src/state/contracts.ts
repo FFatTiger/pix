@@ -84,6 +84,7 @@ export interface WindowsFileIdentity {
   fileId: string;
   /** Decimal byte size as a string; never a JS number. */
   size: string;
+  ownerSid: string;
   isFile: boolean;
   isDirectory: boolean;
   isReparsePoint: boolean;
@@ -116,12 +117,21 @@ export interface LifetimeLockRecord {
   createdAt: number;
 }
 
-/** dev/ino identity of the lock inode this handle created/owns. */
-export interface LifetimeLockOwnership {
+/** POSIX lock inode this handle created/owns. */
+export interface PosixLifetimeLockOwnership {
   readonly kind: "posix";
   dev: number;
   ino: number;
 }
+
+/** Windows lock identity this handle created/owns. */
+export interface WindowsLifetimeLockOwnership {
+  readonly kind: "windows";
+  volumeSerial: string;
+  fileId: string;
+}
+
+export type LifetimeLockOwnership = PosixLifetimeLockOwnership | WindowsLifetimeLockOwnership;
 
 export type LifetimeLockReadResult =
   | { kind: "missing" }
@@ -134,7 +144,7 @@ export interface EnsurePrivateDirectoryOptions {
   /** Existing leaf exact mode (default 0o700). Never applied to an existing dir. */
   requireMode?: number;
   /** Host policy hook for an EXISTING leaf (entries allowlist). Throwing rejects. */
-  validateExistingLeaf?: (ctx: { identity: PosixFileIdentity; path: string }) => void | Promise<void>;
+  validateExistingLeaf?: (ctx: { identity: FileIdentity; path: string }) => void | Promise<void>;
 }
 
 export interface EnsurePrivateDirectoryResult {
@@ -142,7 +152,7 @@ export interface EnsurePrivateDirectoryResult {
   path: string;
   /** True when the final leaf was newly created (empty, 0700 via fd). */
   created: boolean;
-  identity: PosixFileIdentity;
+  identity: FileIdentity;
 }
 
 export interface ReadStateDocumentOptions {

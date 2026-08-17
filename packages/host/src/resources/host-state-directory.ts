@@ -250,7 +250,7 @@ const LOCAL_TO_HOST_MESSAGES: Record<LocalAuthorityCode, string> = {
   NOT_DIRECTORY: "Host directory path is unsafe",
   SYMLINK: "Host directory path is unsafe",
   NOT_OWNED: "Host directory is owned by another user",
-  NOT_PRIVATE: "Host directory mode must be 0700",
+  NOT_PRIVATE: "Host directory must be private",
   NOT_REGULAR: "State document must be a regular file",
   DOC_SYMLINK: "State document must not be a symbolic link",
   DOC_UNREADABLE: "State document is unreadable",
@@ -411,10 +411,13 @@ async function ensurePixHostDir(
   try {
     const canonical = await backend.canonicalizePath(hostDir);
 
-    // Strict original-path policy: generic user symlinks between the root and
-    // the leaf are rejected BEFORE any mutation; only a root-level canonical
-    // system alias (macOS /var → /private/var etc.) is accepted.
-    await assertNoUnsafeIntermediateSymlink(hostDir);
+    // POSIX-only original-path policy: generic user symlinks between the root
+    // and the leaf are rejected BEFORE any mutation; only a root-level
+    // canonical system alias (macOS /var → /private/var etc.) is accepted.
+    // Windows reparse intermediates are rejected by the native backend itself.
+    if (backend.kind === "posix") {
+      await assertNoUnsafeIntermediateSymlink(hostDir);
+    }
 
     // Reserved destinations: home itself and shared tmp itself (never the leaf).
     const home = homedir();
