@@ -3600,3 +3600,11 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - `ProductionWorkerConnection.close()` now fails closed if the same OS child is still alive after the bounded final-kill wait. The failed close is not cached forever, so a later retry can observe a subsequent exit.
 - `stopRecord` no longer swallows that failure as `stopped`. The record stays `crashed` and pending commands are rejected. `runtime_closed` is emitted only after a successful close.
 - This does not implement Job Objects, process-group descendant cleanup, or Windows product support.
+
+---
+
+## 78. Cross-platform CP-10 — Host process-runner final-kill honesty
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `20ba4e9`.
+- `createProcessRunner` now waits a bounded interval after SIGKILL. If the direct child is still alive, it rejects with `PROCESS_UNAVAILABLE` / `Process did not terminate` instead of hanging until `close`.
+- Existing timeout/abort/output-limit codes are unchanged when the child actually exits. This still only kills the direct child; Job Object / process-group descendant cleanup is later work.

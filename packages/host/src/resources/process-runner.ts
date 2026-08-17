@@ -33,9 +33,12 @@ export function createProcessRunner(defaults: {
   timeoutMs?: number;
   maxOutputBytes?: number;
   allowedCommands?: readonly string[];
+  /** Bounded wait after SIGKILL before reporting that the child did not die. */
+  terminateWaitMs?: number;
 } = {}): ProcessRunner {
   const defaultTimeout = defaults.timeoutMs ?? 10_000;
   const defaultMaxOutput = defaults.maxOutputBytes ?? 8 * 1024 * 1024;
+  const terminateWaitMs = defaults.terminateWaitMs ?? 2_000;
   const allowed = new Set(defaults.allowedCommands ?? ["git"]);
 
   return {
@@ -66,8 +69,24 @@ export function createProcessRunner(defaults: {
         let truncated = false;
         let settled = false;
         let termination: "abort" | "timeout" | "output" | null = null;
+        let terminateTimer: ReturnType<typeof setTimeout> | undefined;
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (terminateTimer) clearTimeout(terminateTimer);
+          request.signal?.removeEventListener("abort", onAbort);
+          fn();
+        };
         const stop = () => {
           if (!child.killed) child.kill("SIGKILL");
+          if (terminateTimer || settled) return;
+          terminateTimer = setTimeout(() => {
+            settle(() => {
+              reject(new HttpError(503, "PROCESS_UNAVAILABLE", "Process did not terminate"));
+            });
+          }, terminateWaitMs);
+          terminateTimer.unref?.();
         };
         const timer = setTimeout(() => {
           if (!termination) termination = "timeout";
@@ -94,34 +113,28 @@ export function createProcessRunner(defaults: {
           }
         });
         child.once("error", (error) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          request.signal?.removeEventListener("abort", onAbort);
-          reject(new HttpError(503, "PROCESS_UNAVAILABLE", error.message));
+          settle(() => reject(new HttpError(503, "PROCESS_UNAVAILABLE", error.message)));
         });
         child.once("close", (code, signal) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          request.signal?.removeEventListener("abort", onAbort);
-          if (termination === "abort") {
-            reject(new HttpError(499, "PROCESS_ABORTED", "Process aborted"));
-            return;
-          }
-          if (termination === "timeout") {
-            reject(new HttpError(504, "PROCESS_TIMEOUT", "Process timed out"));
-            return;
-          }
-          if (termination === "output") {
-            reject(new HttpError(413, "PROCESS_OUTPUT_LIMIT", "Process output exceeded the configured limit"));
-            return;
-          }
-          resolve({
-            stdout: Buffer.concat(stdout).toString("utf8"),
-            stderr: Buffer.concat(stderr).toString("utf8"),
-            exitCode: code ?? (signal ? 128 : 1),
-            truncated: false,
+          settle(() => {
+            if (termination === "abort") {
+              reject(new HttpError(499, "PROCESS_ABORTED", "Process aborted"));
+              return;
+            }
+            if (termination === "timeout") {
+              reject(new HttpError(504, "PROCESS_TIMEOUT", "Process timed out"));
+              return;
+            }
+            if (termination === "output") {
+              reject(new HttpError(413, "PROCESS_OUTPUT_LIMIT", "Process output exceeded the configured limit"));
+              return;
+            }
+            resolve({
+              stdout: Buffer.concat(stdout).toString("utf8"),
+              stderr: Buffer.concat(stderr).toString("utf8"),
+              exitCode: code ?? (signal ? 128 : 1),
+              truncated: false,
+            });
           });
         });
       });

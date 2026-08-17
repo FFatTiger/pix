@@ -541,6 +541,21 @@ test("bounded process runner does not spawn pre-aborted work and distinguishes t
   const controller = new AbortController(); const pending = runner.run({ command: process.execPath, args: ["-e", "setTimeout(()=>{},1000)"], signal: controller.signal }); controller.abort(); await assert.rejects(() => pending, (e) => e.code === "PROCESS_ABORTED");
 });
 
+test("bounded process runner fails closed when the child survives SIGKILL", async () => {
+  const { ChildProcess } = await import("node:child_process");
+  const runner = createProcessRunner({ allowedCommands: [process.execPath], terminateWaitMs: 30 });
+  const originalKill = ChildProcess.prototype.kill;
+  ChildProcess.prototype.kill = function killStub() { return true; };
+  try {
+    await assert.rejects(
+      runner.run({ command: process.execPath, args: ["-e", "setTimeout(()=>{},200)"], timeoutMs: 20 }),
+      (e) => e.code === "PROCESS_UNAVAILABLE" && e.message === "Process did not terminate",
+    );
+  } finally {
+    ChildProcess.prototype.kill = originalKill;
+  }
+});
+
 test("file watch manager reserves atomically and releases on creation failure, abort, cancel, and closeAll", async () => {
   const root = temp("pi-watch-"); const file = join(root, "a.txt"); writeFileSync(file, "a"); const manager = createFileWatchManager(1);
   const first = manager.open(file); assert.equal(manager.reservedCount(), 1);

@@ -106,7 +106,8 @@ CP-00 docs/SSOT
 | `CP-07B` | Windows secure-state backend：ACE 枚举 + 当前用户/SYSTEM 受保护 DACL 创建；drive-absolute canonicalize；private dir/document/lock 走 file-ID pin；`createSecureStateBackend()` 在 win32-x64 选择该 backend；Host lease 可打开专用 host dir | `DONE` | `packages/local-authority` + Host lease consumer | `CP-07A` | 定向 backend/Host Windows tests PASS；factory 不走 POSIX；independent verifier PASS |
 | `CP-07C` | sessiond 在 path walk 前选择 `createSecureStateBackend()`；Windows private dir/lock/secret 使用 SID/file-ID/DACL；dedicated Windows sessiond 可启动 named pipe 并二次启动 conflict | `DONE` | `packages/sessiond` | `CP-07B` | Windows start/shutdown + fail-closed 0755/symlink/swap 定向 PASS；POSIX lock/secret race tests 仍在 Linux/macOS required；不宣称 named-pipe DACL / Job Object / 完整 Windows 产品支持 |
 | `CP-08` | Windows named-pipe DACL：listen 后 protect+回读当前用户/SYSTEM protected DACL；pipe 名使用目录 SHA-256 前缀，不嵌入 home path | `DONE` | `packages/local-authority` + `packages/sessiond` | `CP-07C` | 定向 pipe protect/inspect PASS；Windows sessiond start 后 DACL 回读 PASS；secret+instance fence 仍在；不宣称 Job Object / 完整产品支持 |
-| `CP-09` | Worker final-kill honesty：`close()` 在 bounded SIGKILL wait 后仍存活则失败；service 不得把该失败标成 `stopped`；成功关闭后才发 `runtime_closed` | `IN_PROGRESS` | `packages/sessiond` | `CP-08` | worker-process 定向 tests PASS；不实现 Job Object / descendant tree |
+| `CP-09` | Worker final-kill honesty：`close()` 在 bounded SIGKILL wait 后仍存活则失败；service 不得把该失败标成 `stopped`；成功关闭后才发 `runtime_closed` | `DONE` | `packages/sessiond` | `CP-08` | worker-process 定向 tests PASS；不实现 Job Object / descendant tree |
+| `CP-10` | Host Git runner bounded final-kill：timeout/abort/output-limit 后等待子进程退出；仍存活则 `PROCESS_UNAVAILABLE`，不再无限挂起 | `IN_PROGRESS` | `packages/host` | `CP-09` | resources 定向 tests PASS；不实现 descendant Job Object |
 
 后续 lane：完成 CP-08 独立验证 + CP-09 → process tree / Job Object。
 
