@@ -3591,3 +3591,12 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Pipe name uses a SHA-256 prefix of the runtime directory instead of hex-encoding the path, so the home path is not embedded in the endpoint.
 - Secret + instance fence remain required. This does not implement Job Objects or claim Windows product support.
 - Validation: local-authority named-pipe protect/inspect PASS; Windows sessiond start/shutdown + hashed pipe name PASS; architecture/boundaries PASS.
+
+---
+
+## 77. Cross-platform CP-09 — Worker final-kill honesty
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `2acac60`.
+- `ProductionWorkerConnection.close()` now fails closed if the same OS child is still alive after the bounded final-kill wait. The failed close is not cached forever, so a later retry can observe a subsequent exit.
+- `stopRecord` no longer swallows that failure as `stopped`. The record stays `crashed` and pending commands are rejected. `runtime_closed` is emitted only after a successful close.
+- This does not implement Job Objects, process-group descendant cleanup, or Windows product support.

@@ -737,7 +737,10 @@ export class SessiondService {
   }
 
   private acceptEvent(record: RecordState, data: RuntimeEventData): void {
-    if (record.status === "crashed" || record.status === "stopped" || record.status === "stopping") return;
+    if (
+      (record.status === "crashed" || record.status === "stopped" || record.status === "stopping")
+      && data.type !== "runtime_closed"
+    ) return;
     if (data.type === "runtime_closed") {
       if (record.closedEventEmitted) return;
       record.closedEventEmitted = true;
@@ -1452,14 +1455,21 @@ export class SessiondService {
 
   private async stopRecord(record: RecordState, reason: string): Promise<boolean> {
     if (this.records.get(record.sessionId) !== record) return false;
-    if (!record.closedEventEmitted) this.acceptEvent(record, { type: "runtime_closed", sessionId: record.sessionId, reason: normalizeCloseReason(reason) });
     record.status = "stopping";
     record.expectedExitReason = reason;
     if (record.idleTimer) clearTimeout(record.idleTimer);
     try {
       await record.worker.send({ type: "worker.shutdown", id: `shutdown:${randomUUID()}`, protocolVersion: PROTOCOL_VERSION, payload: { sessionId: record.sessionId, reason } });
     } catch { /* close below */ }
-    await record.worker.close().catch(() => {});
+    try {
+      await record.worker.close();
+    } catch {
+      this.rejectPending(record, "worker process did not terminate");
+      record.status = "crashed";
+      this.broadcastRunningChanged(record.sessionId);
+      return false;
+    }
+    if (!record.closedEventEmitted) this.acceptEvent(record, { type: "runtime_closed", sessionId: record.sessionId, reason: normalizeCloseReason(reason) });
     record.unsubscribeWorker();
     record.unsubscribeExit();
     this.rejectPending(record, "runtime stopped");

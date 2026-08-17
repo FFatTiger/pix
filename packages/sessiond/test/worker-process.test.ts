@@ -596,6 +596,33 @@ test("close escalates hang → SIGTERM", async () => {
   assert.equal(alive, false);
 });
 
+test("close fails when the child is still alive after the final kill wait", async () => {
+  const factory = factoryWithArgvMode("hang", { stdinEndMs: 20, sigtermMs: 20, sigkillMs: 20 });
+  const connection = await factory.start(startInput);
+  const pid = connection.pid;
+  assert.ok(pid);
+  const { ChildProcess } = await import("node:child_process");
+  const originalKill = ChildProcess.prototype.kill;
+  ChildProcess.prototype.kill = function killStub() {
+    return true;
+  };
+  try {
+    await assert.rejects(
+      connection.close(),
+      (error: unknown) => error instanceof SessiondError
+        && error.code === "worker_unavailable"
+        && error.message === "worker process did not terminate",
+    );
+  } finally {
+    ChildProcess.prototype.kill = originalKill;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+});
+
 test("close escalates hang-term → SIGKILL", async () => {
   if (process.platform === "win32") return;
   const factory = factoryWithArgvMode("hang-term", { stdinEndMs: 30, sigtermMs: 30, sigkillMs: 500 });
@@ -684,7 +711,8 @@ test("env secret leakage probe: child does not see sessiond secrets", async () =
 });
 
 test("daemon defaults to production factory; explicit Unavailable still works", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "sessiond-r2-"));
+  const parent = await mkdtemp(join(tmpdir(), "sessiond-r2-"));
+  const dir = join(parent, "runtime");
   try {
     // Default path constructs a real factory (smoke: daemon boots).
     const handle = await startDaemon({
@@ -700,10 +728,11 @@ test("daemon defaults to production factory; explicit Unavailable still works", 
     assert.equal((await rpc.call("system.ping", {})).pong, true);
     await handle.shutdown();
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
   }
 
-  const dir2 = await mkdtemp(join(tmpdir(), "sessiond-r2u-"));
+  const parent2 = await mkdtemp(join(tmpdir(), "sessiond-r2u-"));
+  const dir2 = join(parent2, "runtime");
   try {
     const unavailable = new UnavailableWorkerFactory();
     const handle = await startDaemon({
@@ -719,7 +748,7 @@ test("daemon defaults to production factory; explicit Unavailable still works", 
     assert.equal(unavailable.attempts, 1);
     await handle.shutdown();
   } finally {
-    await rm(dir2, { recursive: true, force: true });
+    await rm(parent2, { recursive: true, force: true });
   }
 });
 

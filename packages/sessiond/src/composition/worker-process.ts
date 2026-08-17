@@ -350,7 +350,12 @@ class ProductionWorkerConnection implements WorkerConnection {
   async close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
-    this.closePromise = this.runClose();
+    this.closePromise = this.runClose().catch((error) => {
+      // Allow a later close() to observe a subsequent OS exit instead of
+      // permanently replaying this failure.
+      this.closePromise = undefined;
+      throw error;
+    });
     return this.closePromise;
   }
 
@@ -394,7 +399,9 @@ class ProductionWorkerConnection implements WorkerConnection {
       return;
     }
 
-    // 3) SIGKILL last resort.
+    // 3) SIGKILL last resort. Windows maps this to TerminateProcess; the name
+    // is not POSIX two-level semantics. If the OS process is still the same
+    // child after the bounded wait, close must fail — never report success.
     if (this.isSameProcess()) {
       try {
         this.child.kill("SIGKILL");
@@ -402,8 +409,11 @@ class ProductionWorkerConnection implements WorkerConnection {
         // already gone
       }
     }
-    await this.waitForExit(this.sigkillMs);
+    const terminated = await this.waitForExit(this.sigkillMs);
     this.cleanupStreams();
+    if (!terminated && !this.hasExited() && this.isSameProcess()) {
+      throw new SessiondError("worker_unavailable", "worker process did not terminate", false);
+    }
   }
 
   private hasExited(): boolean {
