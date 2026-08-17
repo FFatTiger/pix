@@ -32,7 +32,6 @@ import { ImageIcon } from "@phosphor-icons/react/Image";
 import { SortDescendingIcon } from "@phosphor-icons/react/SortDescending";
 
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
-import { ClockIcon } from "@phosphor-icons/react/Clock";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CheckIcon } from "@phosphor-icons/react/Check";
 import { LightbulbIcon } from "@phosphor-icons/react/Lightbulb";
@@ -395,18 +394,6 @@ function QueuedMessageRow({ kind, text, label }: { kind: "steer" | "follow-up"; 
   );
 }
 
-// Pinned at the top of the model / thinking / tools dropdowns while the
-// agent is running: config changes apply from the next turn, not to the
-// response currently streaming.
-function NextTurnBanner() {
-  const { t } = useI18n();
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", fontSize: 11, color: "var(--accent)", borderBottom: "1px solid var(--border)", background: "var(--bg-subtle)" }}>
-      <ClockIcon size={12} weight="bold" aria-hidden="true" />
-      {t("desktop.configAppliesNextTurn")}
-    </div>
-  );
-}
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, onAbortCompaction, stepLabel, model, isAutoModelSelection, modelNames, modelList, imageInputByModel, modelScopeWarnings, onModelChange,
@@ -2622,7 +2609,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 >
                   <ThinkingLevelIcon level={thinkingLevel ?? "auto"} />
                   {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>}
-                  {isStreaming && <ClockIcon size={11} weight="bold" color="var(--accent)" aria-hidden="true" />}
                   <CaretDownIcon
                     size={11}
                     weight="bold"
@@ -2645,7 +2631,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
                     overflow: "hidden", minWidth: 200, maxWidth: panelMaxW, maxHeight: maxH, overflowY: "auto",
                   }}>
-                    {isStreaming && <NextTurnBanner />}
                     <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
                     {filterThinkingLevelOptions(availableThinkingLevels).map((lvl) => {
                       const isActive = (thinkingLevel ?? "auto") === lvl;
@@ -2794,7 +2779,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   }}
                 >
                   {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{toolPresetLabel}</span>}
-                  {isStreaming && <ClockIcon size={11} weight="bold" color="var(--accent)" aria-hidden="true" />}
                   <CaretDownIcon
                     size={11}
                     weight="bold"
@@ -2819,7 +2803,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
                     overflow: "hidden", minWidth: 120, maxWidth: panelMaxW, maxHeight: maxH, overflowY: "auto",
                   }}>
-                    {isStreaming && <NextTurnBanner />}
                     <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
                     {TOOL_PRESETS.map((lvl) => {
                       const preset = TOOL_PRESET_MAP[lvl];
@@ -2896,7 +2879,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   >
                     <ProviderIcon id={model?.provider ?? "unknown"} api={currentModelOption?.api ?? null} size={14} />
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{currentName}</span>
-                    {isStreaming && <ClockIcon size={11} weight="bold" color="var(--accent)" aria-hidden="true" />}
                     <CaretDownIcon
                       size={11}
                       weight="bold"
@@ -2960,7 +2942,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       overflow: "hidden", maxHeight: maxH,
                       display: "flex", flexDirection: "column",
                       }}>
-                      {isStreaming && <NextTurnBanner />}
                       {/* Search area — pinned above the list, separated by a divider */}
                       <div style={{ borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
                         <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
