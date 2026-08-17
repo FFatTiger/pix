@@ -2765,3 +2765,167 @@ describe("SessionStore — sendPromptToSession activation-then-send (single stat
     expect(h.store.getSnapshot().promptPending).toBe(false);
   });
 });
+
+describe("SessionStore — sendPromptToSession staged activation settings", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function countType(ws: FakeWebSocket, type: string): number {
+    return ws.sent.filter((f) => (f as { type: string }).type === type).length;
+  }
+
+  function countCommandType(ws: FakeWebSocket, type: string): number {
+    return ws.sent.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === type).length;
+  }
+
+  async function detachAck(ws: FakeWebSocket, h: RuntimeHarness, sessionId = "s1"): Promise<void> {
+    const detachP = h.store.detach();
+    await flush();
+    const frame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    ws.serverSend({ type: "response", id: frame.id, payload: { ok: true, result: { sessionId, detached: true } } });
+    await detachP;
+  }
+
+  /** Ack a command frame with an `ok:true` correlated result of the given type. */
+  function ackCommand<T extends { type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws: FakeWebSocket, frame: T, ok: boolean, error?: unknown): void {
+    ws.serverSend({
+      type: "response",
+      id: frame.id,
+      payload: ok
+        ? { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: frame.payload.command.type } } }
+        : { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: false, type: frame.payload.command.type, error } } },
+    });
+  }
+
+  function entryText(entry: { message: unknown }): string {
+    return (entry.message as { content: string }).content;
+  }
+
+  it("detached B with staged model + thinking: set_model THEN set_thinking_level AFTER attach, then prompt exactly once", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1");
+    await detachAck(ws, h);
+    const promptP = h.store.sendPromptToSession("s2", "staged send", undefined, {
+      model: { provider: "anthropic", modelId: "claude-opus-4" },
+      thinkingLevel: "high",
+    });
+    await flush();
+    // Nothing before the attach: no settings, no prompt command.
+    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    expect(attach.payload.sessionId).toBe("s2");
+    expect(countType(ws, "command")).toBe(0);
+    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
+    await flush();
+    // 1) set_model first.
+    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
+    expect(modelCmd.payload.command.type).toBe("set_model");
+    expect(modelCmd.payload.command.provider).toBe("anthropic");
+    expect(modelCmd.payload.command.modelId).toBe("claude-opus-4");
+    ackCommand(ws, modelCmd, true);
+    await flush();
+    // 2) set_thinking_level only AFTER the model resolved.
+    const thinkingCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
+    expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
+    expect(thinkingCmd.payload.command.level).toBe("high");
+    ackCommand(ws, thinkingCmd, true);
+    await flush();
+    // 3) prompt exactly once, after the settings resolved.
+    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(promptCmd.payload.command.type).toBe("prompt");
+    expect(promptCmd.payload.command.message).toBe("staged send");
+    expect(countCommandType(ws, "prompt")).toBe(1);
+    ackCommand(ws, promptCmd, true);
+    await expect(promptP).resolves.toBeTruthy();
+  });
+
+  it("already attached + staged settings: apply model then thinking then prompt (no re-attach)", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1");
+    const promptP = h.store.sendPromptToSession("s1", "direct staged", undefined, {
+      model: { provider: "openai", modelId: "gpt-5" },
+      thinkingLevel: "low",
+    });
+    await flush();
+    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
+    expect(modelCmd.payload.command.type).toBe("set_model");
+    expect(modelCmd.payload.command.provider).toBe("openai");
+    ackCommand(ws, modelCmd, true);
+    await flush();
+    const thinkingCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
+    expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
+    expect(thinkingCmd.payload.command.level).toBe("low");
+    ackCommand(ws, thinkingCmd, true);
+    await flush();
+    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(promptCmd.payload.command.type).toBe("prompt");
+    expect(promptCmd.payload.command.message).toBe("direct staged");
+    expect(countType(ws, "attach")).toBe(1);
+    ackCommand(ws, promptCmd, true);
+    await expect(promptP).resolves.toBeTruthy();
+  });
+
+  it("staged settings failure (unsupported_capability) → NO prompt, phantom bubble removed, phase activation", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1");
+    await detachAck(ws, h);
+    const promptP = h.store.sendPromptToSession("s2", "staged send", undefined, {
+      model: { provider: "anthropic", modelId: "claude-opus-4" },
+    });
+    await flush();
+    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
+    await flush();
+    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
+    expect(modelCmd.payload.command.type).toBe("set_model");
+    // The runtime rejects the staged model — PRE-PROMPT: proven non-delivery.
+    ackCommand(ws, modelCmd, false, { code: "unsupported_capability", message: "runtime.model.set not available", retryable: false });
+    await expect(promptP).rejects.toMatchObject({ code: "unsupported_capability", phase: "activation" });
+    expect(countCommandType(ws, "prompt")).toBe(0);
+    expect(countCommandType(ws, "set_thinking_level")).toBe(0);
+    expect(h.store.getSnapshot().liveEntries.some((e) => entryText(e) === "staged send")).toBe(false);
+    expect(h.store.getSnapshot().promptPending).toBe(false);
+    expect(h.store.getSnapshot().streaming).toBe(false);
+  });
+
+  it("staged THINKING failure after a successful model apply → no prompt, phase activation", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1");
+    await detachAck(ws, h);
+    const promptP = h.store.sendPromptToSession("s2", "staged send", undefined, {
+      model: { provider: "openai", modelId: "gpt-5" },
+      thinkingLevel: "high",
+    });
+    await flush();
+    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
+    await flush();
+    const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
+    expect(modelCmd.payload.command.type).toBe("set_model");
+    ackCommand(ws, modelCmd, true);
+    await flush();
+    const thinkingCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; level: string } } }>(ws, "command")!;
+    expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
+    ackCommand(ws, thinkingCmd, false, { code: "unsupported_capability", message: "runtime.thinking.set not available", retryable: false });
+    await expect(promptP).rejects.toMatchObject({ code: "unsupported_capability", phase: "activation" });
+    expect(countCommandType(ws, "prompt")).toBe(0);
+    expect(h.store.getSnapshot().liveEntries.some((e) => entryText(e) === "staged send")).toBe(false);
+    expect(h.store.getSnapshot().promptPending).toBe(false);
+  });
+
+  it("no staged settings → prompt directly, zero set_model/set_thinking_level commands", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1");
+    await detachAck(ws, h);
+    const promptP = h.store.sendPromptToSession("s2", "plain");
+    await flush();
+    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
+    await flush();
+    const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(promptCmd.payload.command.type).toBe("prompt");
+    expect(countCommandType(ws, "set_model")).toBe(0);
+    expect(countCommandType(ws, "set_thinking_level")).toBe(0);
+    ackCommand(ws, promptCmd, true);
+    await expect(promptP).resolves.toBeTruthy();
+  });
+});

@@ -21,6 +21,7 @@ import type { ClientIdentity, ClientPlatform, ImageAttachment } from "@fffattige
 import {
   SessionStore,
   type RuntimeView,
+  type PromptActivationSettings,
   type SessionStoreOptions,
 } from "./session-store.js";
 import { createDefaultIdFactory } from "./correlation.js";
@@ -120,12 +121,15 @@ export interface RuntimeApi extends RuntimeView {
   /**
    * Activation-then-send (single state machine in the store): ensure the exact
    * `sessionId` is attached (open if absent/stale/stopped; detach+open if a
-   * different session is attached), await the authoritative attach, then send
+   * different session is attached), await the authoritative attach, apply any
+   * optional staged activation settings (model, then thinking level — the ONLY
+   * transport for detached Composer staging) in deterministic order, then send
    * the prompt exactly once. Optimistic bubble/overlay are preserved through
-   * activation; definite activation failure removes the phantom bubble and
-   * rejects (Composer retains the draft); never creates a session.
+   * activation; definite activation failure (incl. a staged-settings failure)
+   * removes the phantom bubble and rejects (Composer retains the draft and
+   * preserves the staged settings); never creates a session.
    */
-  readonly sendPromptToSession: (sessionId: string, message: string, images?: readonly ImageAttachment[]) => Promise<unknown>;
+  readonly sendPromptToSession: (sessionId: string, message: string, images?: readonly ImageAttachment[], activationSettings?: PromptActivationSettings) => Promise<unknown>;
   readonly respondExtensionUi: SessionStore["respondExtensionUi"];
   readonly sendExtensionUiInput: SessionStore["sendExtensionUiInput"];
   readonly steer: SessionStore["steer"];
@@ -180,7 +184,7 @@ export function useRuntime(): RuntimeApi {
       // mints the commandId and appends the speculative user bubble + running
       // overlay for BOTH text-only and image sends.
       sendPrompt: (message, images) => store.sendPrompt(message, images),
-      sendPromptToSession: (sessionId, message, images) => store.sendPromptToSession(sessionId, message, images),
+      sendPromptToSession: (sessionId, message, images, activationSettings) => store.sendPromptToSession(sessionId, message, images, activationSettings),
       respondExtensionUi: (request, reply) => store.respondExtensionUi(request, reply),
       sendExtensionUiInput: (request, data) => store.sendExtensionUiInput(request, data),
       steer: (message, images) => store.steer(message, images),

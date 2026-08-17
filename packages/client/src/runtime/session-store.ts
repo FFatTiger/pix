@@ -342,6 +342,23 @@ interface PromptTransaction {
 }
 
 /**
+ * Optional staged activation settings applied by {@link SessionStore.sendPromptToSession}
+ * AFTER `transitionTo(B)` succeeds and BEFORE the prompt command is dispatched.
+ * This is the ONLY transport for per-session staged model/thinking choices made
+ * while the selected session is detached (read-only history): a detached Composer
+ * selection never issues a runtime command on its own — it stages the value here
+ * and the single send transaction applies it in deterministic order (model first,
+ * then thinking level), awaiting each, so there is no parallel component-side
+ * activation/control race. Any failure applying a staged setting is PRE-PROMPT
+ * (no prompt command has been dispatched): proven non-delivery, tagged
+ * `phase: "activation"`, optimistic bubble cleared.
+ */
+export interface PromptActivationSettings {
+  readonly model?: { readonly provider: string; readonly modelId: string } | null;
+  readonly thinkingLevel?: ThinkingLevel | null;
+}
+
+/**
  * D2-P4 dual-slot queued turn (steer / follow_up only). Independent of
  * {@link CommandPending} so a long-running prompt never blocks steering or
  * following-up. At most ONE queued turn in flight; the second is
@@ -1061,7 +1078,12 @@ export class SessionStore implements RuntimeSocketHandler {
    * "dispatching"`) may a retryable failure be treated as uncertain delivery.
    * NEVER creates a session: a genuinely unknown id rejects `not_found`.
    */
-  sendPromptToSession(sessionId: string, message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
+  sendPromptToSession(
+    sessionId: string,
+    message: string,
+    images?: readonly ImageAttachment[],
+    activationSettings?: PromptActivationSettings,
+  ): Promise<unknown> {
     if (!sessionId) {
       return Promise.reject({
         code: "invalid_input",
@@ -1072,7 +1094,9 @@ export class SessionStore implements RuntimeSocketHandler {
     const tx = this.beginPromptTransaction(message);
     if (!tx) return Promise.reject(this.promptBusyError());
     return this.transitionTo(sessionId).then(
-      () => this.dispatchPrompt(tx, message, images),
+      () => this.applyStagedActivationSettings(tx, activationSettings).then(
+        () => this.dispatchPrompt(tx, message, images),
+      ),
       (cause: unknown) => {
         // Activation-phase failure: the prompt was NEVER dispatched — proven
         // non-delivery. Remove the phantom bubble + overlay and reject tagged
@@ -1081,6 +1105,45 @@ export class SessionStore implements RuntimeSocketHandler {
         throw this.activationFailure(cause);
       },
     );
+  }
+
+  /**
+   * Apply staged activation settings (model, then thinking level) in
+   * deterministic order AFTER the transition succeeded and BEFORE the prompt
+   * command is dispatched. Each setting runs over the SINGLE ordinary-command
+   * slot (setModel resolves and frees the slot before setThinkingLevel sends,
+   * and only then does the prompt dispatch), so the order is exact and there is
+   * no parallel control race. The transaction stays in the `activating` phase
+   * throughout — no prompt command is on the wire, so ANY settings failure is
+   * PROVEN non-delivery: the phantom bubble/overlay are removed and the
+   * rejection is tagged `phase: "activation"` (the Composer then restores the
+   * draft and PRESERVES the staged settings so the user's intent is not lost).
+   */
+  private applyStagedActivationSettings(
+    tx: PromptTransaction,
+    settings: PromptActivationSettings | undefined,
+  ): Promise<void> {
+    const model = settings?.model;
+    const thinking = settings?.thinkingLevel;
+    if (!model && !thinking) return Promise.resolve();
+    return (async () => {
+      if (model) {
+        try {
+          await this.setModel(model.provider, model.modelId);
+        } catch (cause: unknown) {
+          this.settlePromptTransaction(tx, { removeBubble: true });
+          throw this.activationFailure(cause);
+        }
+      }
+      if (thinking) {
+        try {
+          await this.setThinkingLevel(thinking);
+        } catch (cause: unknown) {
+          this.settlePromptTransaction(tx, { removeBubble: true });
+          throw this.activationFailure(cause);
+        }
+      }
+    })();
   }
 
   /**

@@ -80,6 +80,14 @@ export interface ComposerProps {
    * queries.
    */
   textareaRef?: RefObject<HTMLTextAreaElement | null>;
+  /**
+   * Canonical project cwd (AppShell passes `search.cwd`). Used for the Host
+   * model catalog and @ file/skill scope INDEPENDENT of the live runtime
+   * snapshot, so a detached (read-only) selected session still gets an honest
+   * project-scoped catalog. Omitted → falls back to the live snapshot's cwd
+   * (legacy standalone mounts; null while detached).
+   */
+  cwd?: string | null;
 }
 
 /** Fixed safe copy — never surface a raw ProtocolError in the info bar. */
@@ -116,7 +124,7 @@ function getUserInputTexts(messages: readonly { role: string; content?: unknown 
   return history;
 }
 
-export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp }: ComposerProps) {
+export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp }: ComposerProps) {
   const runtime = useRuntime();
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   const http = useHttpClient();
@@ -132,7 +140,12 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // The ATTACHED session (only meaningful while live) for live-only reads.
   const attachedSessionId = live ? runtime.sessionId : null;
   const state = live ? runtime.snapshot?.state : undefined;
-  const cwd = live ? runtime.snapshot?.cwd ?? null : null;
+  // Canonical project cwd: the explicit URL-scoped cwd (AppShell passes
+  // `search.cwd`) when provided — honest project scope INDEPENDENT of the live
+  // snapshot, so a detached read-only selection still has a project to query
+  // catalogs against. Falls back to the live snapshot's cwd when the prop is
+  // omitted (legacy standalone mounts).
+  const cwd = projectCwdProp ?? (live ? runtime.snapshot?.cwd ?? null : null);
   // Draft persistence key: the selected session id, or a per-cwd placeholder
   // while a brand-new (not-yet-created) session is selected.
   const draftKey = selectedSessionId ?? (cwd ? `new:${cwd}` : undefined);
@@ -188,9 +201,15 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const isCompacting = live && state?.isCompacting === true;
 
   // --- Host catalog queries (read-only) --------------------------------------
+  // The MODEL catalog is queried for the canonical project cwd EVEN WHEN
+  // DETACHED: a read-only selected session must keep its model selector visible
+  // and interactive (staged), backed by the Host catalog — never by the attached
+  // runtime's state. File/skill indexes stay LIVE-gated (their snapshots feed
+  // @ mention highlighting in the live transcript); the loaders below still run
+  // project-cwd-scoped when the @ menu is used.
   const modelsQuery = useQuery({
     ...createQueryOptions(http).models.list(cwd ?? ""),
-    enabled: live && canModels && Boolean(cwd),
+    enabled: canModels && Boolean(cwd),
   });
   const filesIndexQuery = useQuery({
     ...createQueryOptions(http).files.index(cwd ?? ""),
@@ -263,6 +282,91 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     [transcript.entries],
   );
   const transcriptEntryIds = transcript.entryIds;
+
+  // --- per-selected-session STAGED activation settings --------------------------
+  // A detached (read-only) selected session cannot issue runtime commands; its
+  // model/thinking choices are STAGED here (session-tagged) and applied by the
+  // single send transaction (`sendPromptToSession` activation settings) AFTER
+  // attach and BEFORE the prompt dispatch — no parallel component-side
+  // control race. Values are only visible while owned by the CURRENT selected
+  // session (`staged.sessionId === selectedSessionId`), so stale session A
+  // staged settings are NEVER displayed under B. Cleared only after a send
+  // successfully applied them (success path below); preserved on proven
+  // activation/config failure so the user's intent is not silently dropped.
+  interface StagedActivation {
+    readonly sessionId: string | null;
+    readonly model: { provider: string; modelId: string } | null;
+    readonly thinking: ThinkingLevel | null;
+  }
+  const [staged, setStaged] = useState<StagedActivation>({ sessionId: null, model: null, thinking: null });
+  const stagedModel = staged.sessionId === selectedSessionId ? staged.model : null;
+  const stagedThinking = staged.sessionId === selectedSessionId ? staged.thinking : null;
+  const stageModel = useCallback((provider: string, modelId: string) => {
+    setStaged((prev) => ({
+      sessionId: selectedSessionId,
+      model: { provider, modelId },
+      thinking: prev.sessionId === selectedSessionId ? prev.thinking : null,
+    }));
+  }, [selectedSessionId]);
+  const stageThinking = useCallback((level: ThinkingLevel | null) => {
+    setStaged((prev) => ({
+      sessionId: selectedSessionId,
+      model: prev.sessionId === selectedSessionId ? prev.model : null,
+      thinking: level,
+    }));
+  }, [selectedSessionId]);
+  const clearStaged = useCallback(() => {
+    setStaged((prev) => (prev.sessionId === selectedSessionId ? { sessionId: null, model: null, thinking: null } : prev));
+  }, [selectedSessionId]);
+
+  // --- detached model / thinking baseline (honest, NEVER the attached A state) ---
+  // A read-only selected session B shows its OWN projected model + thinking:
+  //  - model baseline: staged selection → latest persisted assistant message of
+  //    B (provider/model inferred) if present in the Host catalog → Host
+  //    defaultModel → null (honest: nothing known). The attached runtime's
+  //    state (A) is NEVER reused for B.
+  //  - thinking baseline: staged value or the neutral `auto` (never claims A's
+  //    value).
+  const detachedInferredModel = useMemo(() => {
+    for (let index = transcriptMessages.length - 1; index >= 0; index -= 1) {
+      const message = transcriptMessages[index];
+      if (message?.role === "assistant" && typeof message.model === "string" && typeof message.provider === "string") {
+        return { provider: message.provider, modelId: message.model };
+      }
+    }
+    return null;
+  }, [transcriptMessages]);
+  const isModelInCatalog = useCallback(
+    (candidate: { provider: string; modelId: string }): boolean =>
+      modelList.some((model) => model.provider === candidate.provider && model.id === candidate.modelId),
+    [modelList],
+  );
+  const detachedModel = useMemo<{ provider: string; modelId: string } | null>(() => {
+    // 1. prefer the staged selection (explicit user intent for B).
+    if (stagedModel) return stagedModel;
+    // 2. infer from B's latest persisted assistant message when catalog-valid.
+    if (detachedInferredModel && isModelInCatalog(detachedInferredModel)) return detachedInferredModel;
+    // 3. Host defaultModel for the project cwd (never A's runtime model).
+    const defaultModel = modelsQuery.data?.defaultModel;
+    if (defaultModel && isModelInCatalog({ provider: defaultModel.provider, modelId: defaultModel.id })) {
+      return { provider: defaultModel.provider, modelId: defaultModel.id };
+    }
+    return null;
+  }, [stagedModel, detachedInferredModel, isModelInCatalog, modelsQuery.data]);
+  const detachedThinking = stagedThinking ?? "auto";
+  // The model/thinking surfaced to ChatInput: live → the authoritative runtime
+  // snapshot state (existing behavior); detached → the honest B baseline above.
+  const model = live
+    ? (state?.model ? { provider: state.model.provider, modelId: state.model.id } : null)
+    : detachedModel;
+  const isAutoModelSelection = live ? state?.model == null : detachedModel == null;
+  const thinkingLevel: ThinkingLevelOption | undefined = live
+    ? (state?.thinkingLevel === undefined ? undefined : state.thinkingLevel as ThinkingLevelOption)
+    : detachedThinking;
+  // Whether the model/thinking change handlers run immediately (live, existing
+  // setModel/setThinkingLevel) or only stage for the send transaction (detached).
+  const modelChangeInteractive = live ? hasModelSet && canModels : true;
+  const thinkingChangeInteractive = live ? hasThinkingSet : true;
 
   const toolResults = useMemo(() => {
     const map = new Map<string, import("@fffattiger/pix-protocol").ToolResultMessage>();
@@ -454,12 +558,26 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
       if (!selectedSessionId) return;
       const wireImages = toImageAttachments(images);
       runtime
-        .sendPromptToSession(selectedSessionId, message, wireImages)
+        .sendPromptToSession(selectedSessionId, message, wireImages, {
+          // Detached staging rides the SINGLE activation transaction: applied
+          // after attach, before the prompt, in deterministic order. Null
+          // values are no-ops (already-live sends just dispatch directly).
+          model: stagedModel,
+          thinkingLevel: stagedThinking,
+        })
+        .then(() => {
+          // The send transaction (incl. any staged settings) succeeded — the
+          // runtime now owns the model/thinking, so clear the staged values
+          // (a later re-selection must not re-apply them).
+          if (isCurrent()) clearStaged();
+        })
         .catch((cause: unknown) => {
+          // Staged settings are PRESERVED on activation/config failure: only a
+          // successfully applied setting may be cleared.
           if (isCurrent() && (isActivationFailure(cause) || isDefiniteFailure(cause))) restoreDraft(message);
         });
     },
-    [selectedSessionId, runtime, isCurrent, restoreDraft, isActivationFailure, isDefiniteFailure],
+    [selectedSessionId, runtime, isCurrent, restoreDraft, isActivationFailure, isDefiniteFailure, stagedModel, stagedThinking, clearStaged],
   );
 
   const handleSteer = useCallback(
@@ -517,26 +635,44 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
 
   const handleModelChange = useCallback(
     (provider: string, modelId: string) => {
-      if (!hasModelSet) return;
-      runtime
-        .setModel(provider, modelId)
-        .then(() => (isCurrent() ? runtime.fetchSnapshot() : undefined))
-        .catch(() => undefined);
+      if (live) {
+        // LIVE selected session: keep the existing immediate setModel behavior
+        // (capability-gated).
+        if (!hasModelSet) return;
+        runtime
+          .setModel(provider, modelId)
+          .then(() => (isCurrent() ? runtime.fetchSnapshot() : undefined))
+          .catch(() => undefined);
+        return;
+      }
+      // DETACHED selected session: stage ONLY — no runtime command/attach here.
+      // The staged model is applied by the send transaction (after attach,
+      // before the prompt).
+      stageModel(provider, modelId);
     },
-    [hasModelSet, runtime, isCurrent],
+    [live, hasModelSet, runtime, isCurrent, stageModel],
   );
 
   const handleThinkingLevelChange = useCallback(
     (level: ThinkingLevelOption) => {
-      // The Protocol has no "auto" level (no unpin command exists); the auto
-      // option stays display-only until the runtime grows an explicit unpin.
-      if (!hasThinkingSet || level === "auto") return;
-      runtime
-        .setThinkingLevel(level as ThinkingLevel)
-        .then(() => (isCurrent() ? runtime.fetchSnapshot() : undefined))
-        .catch(() => undefined);
+      if (live) {
+        // LIVE selected session: keep the existing immediate setThinkingLevel
+        // behavior. The Protocol has no "auto" level (no unpin command exists);
+        // the auto option stays display-only until the runtime grows an explicit
+        // unpin.
+        if (!hasThinkingSet || level === "auto") return;
+        runtime
+          .setThinkingLevel(level as ThinkingLevel)
+          .then(() => (isCurrent() ? runtime.fetchSnapshot() : undefined))
+          .catch(() => undefined);
+        return;
+      }
+      // DETACHED selected session: stage ONLY — no runtime command/attach here.
+      // "auto" is the neutral detached baseline: staging it clears the staged
+      // thinking back to `auto` (nothing is sent on the next send).
+      stageThinking(level === "auto" ? null : (level as ThinkingLevel));
     },
-    [hasThinkingSet, runtime, isCurrent],
+    [live, hasThinkingSet, runtime, isCurrent, stageThinking],
   );
 
   const handleToolPresetChange = useCallback(
@@ -684,15 +820,15 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         isCompacting={isCompacting}
         {...(hasCompactAbort ? { onAbortCompaction: handleAbortCompaction } : {})}
         stepLabel={stepLabel}
-        model={state?.model ? { provider: state.model.provider, modelId: state.model.id } : null}
-        isAutoModelSelection={state?.model == null}
+        model={model}
+        isAutoModelSelection={isAutoModelSelection}
         modelNames={modelNames}
         modelList={modelList}
-        {...(hasModelSet && canModels ? { onModelChange: handleModelChange } : {})}
+        {...(modelChangeInteractive ? { onModelChange: handleModelChange } : {})}
         {...(toolPreset === undefined ? {} : { toolPreset })}
         {...(hasToolsWrite && toolPreset !== undefined ? { onToolPresetChange: handleToolPresetChange } : {})}
-        {...(state?.thinkingLevel === undefined ? {} : { thinkingLevel: state.thinkingLevel as ThinkingLevelOption })}
-        {...(hasThinkingSet ? { onThinkingLevelChange: handleThinkingLevelChange } : {})}
+        {...(thinkingLevel === undefined ? {} : { thinkingLevel })}
+        {...(thinkingChangeInteractive ? { onThinkingLevelChange: handleThinkingLevelChange } : {})}
         availableThinkingLevels={null}
         retryInfo={null}
         queuedMessages={queuedMessages}

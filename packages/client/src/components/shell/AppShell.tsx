@@ -519,6 +519,7 @@ export function AppShell({ search }: AppShellProps) {
             <Composer
               live={selectionMatchesLive}
               textareaRef={composerTextareaRef}
+              {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
               {...(search.session === undefined ? {} : { sessionId: search.session })}
             />
           </main>
