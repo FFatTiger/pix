@@ -26,6 +26,14 @@ describe("isWithinRoot", () => {
     expect(isWithinRoot("C:\\proj\\src", "C:\\proj")).toBe(true);
     expect(isWithinRoot("/proj/", "/proj")).toBe(true);
   });
+
+  it("keeps a Windows drive root as C:/ and compares drive paths case-insensitively", () => {
+    expect(isWithinRoot("C:/", "C:/")).toBe(true);
+    expect(isWithinRoot("C:/Users", "C:/")).toBe(true);
+    expect(isWithinRoot("c:/Users/yzq", "C:/users")).toBe(true);
+    expect(isWithinRoot("D:/Users", "C:/")).toBe(false);
+    expect(isWithinRoot("C:Users", "C:/")).toBe(false);
+  });
 });
 
 describe("joinChild", () => {
@@ -45,6 +53,11 @@ describe("joinChild", () => {
     expect(() => joinChild("/proj", "..%2fetc")).not.toThrow();
     expect(joinChild("/proj", "..%2fetc")).toBe("/proj/..%2fetc");
   });
+
+  it("joins onto a Windows drive root without dropping the slash", () => {
+    expect(joinChild("C:/", "Users")).toBe("C:/Users");
+    expect(joinChild("C:\\", "Users")).toBe("C:/Users");
+  });
 });
 
 describe("parentWithinRoot", () => {
@@ -63,6 +76,13 @@ describe("parentWithinRoot", () => {
     // /var is a symlink to /private/var on macOS; the canonical root the Host
     // returns must still clamp a canonical child correctly.
     expect(parentWithinRoot("/private/var/proj/src", "/private/var/proj")).toBe("/private/var/proj");
+  });
+
+  it("walks up a Windows drive tree without collapsing C:/ to C:", () => {
+    expect(parentWithinRoot("C:/Users/yzq", "C:/")).toBe("C:/Users");
+    expect(parentWithinRoot("C:/Users", "C:/")).toBe("C:/");
+    expect(parentWithinRoot("C:/", "C:/")).toBeNull();
+    expect(parentWithinRoot("c:/Users", "C:/")).toBe("C:/");
   });
 });
 
@@ -87,6 +107,15 @@ describe("breadcrumbs", () => {
       { label: "home", path: "/home" },
     ]);
   });
+
+  it("keeps a Windows drive-root crumb as C:/", () => {
+    expect(breadcrumbs("C:/", "C:/")).toEqual([{ label: "C:/", path: "C:/" }]);
+    expect(breadcrumbs("C:/Users/yzq", "C:/")).toEqual([
+      { label: "C:/", path: "C:/" },
+      { label: "Users", path: "C:/Users" },
+      { label: "yzq", path: "C:/Users/yzq" },
+    ]);
+  });
 });
 
 describe("joinRelative", () => {
@@ -95,6 +124,7 @@ describe("joinRelative", () => {
     expect(joinRelative("/proj", "sub/a.ts")).toBe("/proj/sub/a.ts");
     expect(joinRelative("/proj", "src/deep/nested file (2).ts")).toBe("/proj/src/deep/nested file (2).ts");
     expect(joinRelative("/", "a/b.ts")).toBe("/a/b.ts");
+    expect(joinRelative("C:/", "Users/yzq")).toBe("C:/Users/yzq");
   });
 
   it("rejects absolute paths and traversal segments", () => {
@@ -141,5 +171,8 @@ describe("relativePath / baseName", () => {
     expect(baseName("/proj/src/a.ts")).toBe("a.ts");
     expect(baseName("/proj")).toBe("proj");
     expect(baseName("/")).toBe("/");
+    expect(baseName("C:/")).toBe("C:/");
+    expect(baseName("C:/Users/yzq")).toBe("yzq");
+    expect(relativePath("C:/", "C:/Users/yzq")).toBe("Users/yzq");
   });
 });

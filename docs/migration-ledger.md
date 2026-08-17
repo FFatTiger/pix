@@ -3591,6 +3591,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Pipe name uses a SHA-256 prefix of the runtime directory instead of hex-encoding the path, so the home path is not embedded in the endpoint.
 - Secret + instance fence remain required. This does not implement Job Objects or claim Windows product support.
 - Validation: local-authority named-pipe protect/inspect PASS; Windows sessiond start/shutdown + hashed pipe name PASS; architecture/boundaries PASS.
+- Independent verifier PASS: live inspectNamedPipe is current-user+SYSTEM protected DACL; missing/invalid/NUL protect fail-closed; hashed pipe name; second start still `conflict`; AUTH/instance fences unchanged; public surface isolation; POSIX listen path unchanged.
 
 ---
 
@@ -3608,3 +3609,12 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `20ba4e9`.
 - `createProcessRunner` now waits a bounded interval after SIGKILL. If the direct child is still alive, it rejects with `PROCESS_UNAVAILABLE` / `Process did not terminate` instead of hanging until `close`.
 - Existing timeout/abort/output-limit codes are unchanged when the child actually exits. This still only kills the direct child; Job Object / process-group descendant cleanup is later work.
+
+---
+
+## 79. Cross-platform CP-11 — Client Windows drive-root path helpers
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `8e71f2a`.
+- Client workspace helpers now keep a Windows drive root as `C:/` instead of collapsing it to `C:`.
+- Drive-absolute containment, parent, breadcrumbs, join, and relative display compare case-insensitively. POSIX `/` behavior is unchanged.
+- This is display/navigation only. It does not add Protocol path-flavor DTOs, PWA secure-context productization, or Windows product support.

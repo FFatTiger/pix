@@ -18,45 +18,67 @@
  * "what the UI offers" and "what the Host allows" stays defense-in-depth.
  */
 
+const WINDOWS_DRIVE_ROOT = /^[A-Za-z]:\/?$/;
+const WINDOWS_DRIVE_ABSOLUTE = /^[A-Za-z]:\//;
+
 /** Normalize platform separators to POSIX for consistent lexical reasoning. */
 export function normalizeSeparators(input: string): string {
   return input.includes("\\") ? input.split("\\").join("/") : input;
 }
 
-/** Strip trailing separators (POSIX-normalized). Preserves a bare root "/". */
+function isWindowsDriveRoot(normalized: string): boolean {
+  return WINDOWS_DRIVE_ROOT.test(normalized);
+}
+
+function isWindowsDriveAbsolute(normalized: string): boolean {
+  return WINDOWS_DRIVE_ABSOLUTE.test(normalized) || isWindowsDriveRoot(normalized);
+}
+
+function compareForm(normalized: string): string {
+  return isWindowsDriveAbsolute(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+/** Strip trailing separators. Preserves POSIX `/` and Windows `C:/`. */
 function stripTrailing(normalized: string): string {
-  if (normalized === "/") return normalized;
+  if (normalized === "/" || isWindowsDriveRoot(normalized)) {
+    return normalized.length >= 2 ? `${normalized[0]!.toUpperCase()}:/` : "/";
+  }
   return normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
 }
 
-/** POSIX-style parent of an absolute path. Returns "/" at the filesystem root. */
+/** Parent of an absolute path. Drive roots stay `C:/`; POSIX root stays `/`. */
 function posixParent(normalized: string): string {
   const path = stripTrailing(normalized);
-  if (path === "/") return "/";
+  if (path === "/" || isWindowsDriveRoot(path)) return path;
   const idx = path.lastIndexOf("/");
   if (idx <= 0) return "/";
-  return path.slice(0, idx);
+  const parent = path.slice(0, idx);
+  return isWindowsDriveRoot(`${parent}/`) ? `${parent}/` : parent;
 }
 
 /** Trailing label of a path, used for the root crumb and file display. */
 export function baseName(input: string): string {
   const path = stripTrailing(normalizeSeparators(input));
   if (path === "/" || path === "") return "/";
+  if (isWindowsDriveRoot(path)) return path;
   const idx = path.lastIndexOf("/");
   return idx <= 0 ? path.slice(1) || "/" : path.slice(idx + 1);
 }
 
 /**
  * True when `target` is equal to or lexically nested inside `root`, after
- * POSIX normalization. A root of "/" matches everything; otherwise the target
- * must equal root or start with `root + "/"`.
+ * POSIX normalization. A root of "/" matches everything. Windows drive paths
+ * compare case-insensitively; a drive root (`C:/`) does not collapse to `C:`.
  */
 export function isWithinRoot(target: string, root: string): boolean {
   const t = stripTrailing(normalizeSeparators(target));
   const r = stripTrailing(normalizeSeparators(root));
   if (r === "" || r === "/") return true;
-  if (t === r) return true;
-  return t.startsWith(`${r}/`);
+  const tCmp = compareForm(t);
+  const rCmp = compareForm(r);
+  if (tCmp === rCmp) return true;
+  const prefix = rCmp.endsWith("/") ? rCmp : `${rCmp}/`;
+  return tCmp.startsWith(prefix);
 }
 
 /**
@@ -77,6 +99,7 @@ export function joinChild(parent: string, name: string): string {
   }
   const base = stripTrailing(normalizeSeparators(parent));
   if (base === "/") return `/${name}`;
+  if (isWindowsDriveRoot(base)) return `${base}${name}`;
   return `${base}/${name}`;
 }
 
@@ -102,7 +125,7 @@ export function joinRelative(root: string, rel: string): string | null {
   }
   const base = stripTrailing(normalizeSeparators(root));
   if (base === "") return null;
-  const joined = base === "/" ? `/${rel}` : `${base}/${rel}`;
+  const joined = base === "/" ? `/${rel}` : isWindowsDriveRoot(base) ? `${base}${rel}` : `${base}/${rel}`;
   return isWithinRoot(joined, base) ? joined : null;
 }
 
@@ -115,9 +138,13 @@ export function parentWithinRoot(dir: string, root: string): string | null {
   if (!isWithinRoot(dir, root)) return null;
   const normalizedDir = stripTrailing(normalizeSeparators(dir));
   const normalizedRoot = stripTrailing(normalizeSeparators(root));
-  if (normalizedDir === normalizedRoot) return null;
+  if (compareForm(normalizedDir) === compareForm(normalizedRoot)) return null;
   const parent = posixParent(normalizedDir);
-  return isWithinRoot(parent, normalizedRoot) ? parent : null;
+  if (!isWithinRoot(parent, normalizedRoot)) return null;
+  if (isWindowsDriveRoot(parent) && compareForm(parent) === compareForm(normalizedRoot)) {
+    return normalizedRoot;
+  }
+  return parent;
 }
 
 export interface Breadcrumb {
@@ -138,11 +165,11 @@ export function breadcrumbs(dir: string, root: string): Breadcrumb[] {
   const crumbs: Breadcrumb[] = [
     { label: rootLabel || "/", path: normalizedRoot },
   ];
-  if (normalizedDir === normalizedRoot) return crumbs;
+  if (compareForm(normalizedDir) === compareForm(normalizedRoot)) return crumbs;
   const relative = normalizedDir.slice(normalizedRoot.length).replace(/^\/+/, "");
   let acc = normalizedRoot;
   for (const segment of relative.split("/").filter(Boolean)) {
-    acc = acc === "/" ? `/${segment}` : `${acc}/${segment}`;
+    acc = acc === "/" || isWindowsDriveRoot(acc) ? `${acc}${segment}` : `${acc}/${segment}`;
     crumbs.push({ label: segment, path: acc });
   }
   return crumbs;
@@ -157,7 +184,9 @@ export function breadcrumbs(dir: string, root: string): Breadcrumb[] {
 export function relativePath(from: string, to: string): string {
   const f = stripTrailing(normalizeSeparators(from));
   const t = stripTrailing(normalizeSeparators(to));
-  if (f === "" || f === "/" || t === f) return baseName(t);
-  if (!t.startsWith(`${f}/`)) return baseName(t);
-  return t.slice(f.length + 1);
+  if (f === "" || f === "/") return baseName(t);
+  if (compareForm(t) === compareForm(f)) return baseName(t);
+  const prefix = isWindowsDriveRoot(f) ? compareForm(f) : `${compareForm(f)}/`;
+  if (!compareForm(t).startsWith(prefix)) return baseName(t);
+  return t.slice(f.length + (isWindowsDriveRoot(f) ? 0 : 1));
 }
