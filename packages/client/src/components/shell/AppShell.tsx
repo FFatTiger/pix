@@ -706,7 +706,6 @@ export function AppShell({ search }: AppShellProps) {
             onNewSession={handleCreate}
             canNewSession={canCreate}
             onOpenSettings={openSettings}
-            onCollapseSidebar={handleSidebarToggle}
           />
         ) : (
           <div className="sidebar-collapsed-rail" data-testid="sidebar-collapsed-rail">

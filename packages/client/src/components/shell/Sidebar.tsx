@@ -14,7 +14,6 @@ import {
   PencilSimple,
   Plugs,
   PushPin,
-  SidebarSimple,
   Stack,
   Trash,
   X,
@@ -73,8 +72,6 @@ export interface SidebarProps {
   canNewSession: boolean;
   /** Open the existing SettingsModal on a specific tab (plugins / skills / settings). */
   onOpenSettings?: (tab: SettingsTab) => void;
-  /** Collapse the full-height rail; the toggle stays on the rail's right edge. */
-  onCollapseSidebar?: () => void;
 }
 
 /**
@@ -294,7 +291,6 @@ export function Sidebar({
   onNewSession,
   canNewSession,
   onOpenSettings,
-  onCollapseSidebar,
 }: SidebarProps) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -522,18 +518,6 @@ export function Sidebar({
             >
               <MagnifyingGlass size={16} weight="regular" aria-hidden="true" />
             </button>
-            {onCollapseSidebar ? (
-              <button
-                type="button"
-                className="sidebar-icon-btn"
-                data-testid="sidebar-collapse"
-                title={t("desktop.hideSidebar")}
-                aria-label={t("desktop.hideSidebar")}
-                onClick={onCollapseSidebar}
-              >
-                <SidebarSimple size={16} aria-hidden="true" />
-              </button>
-            ) : null}
           </div>
         </div>
 

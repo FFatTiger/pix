@@ -1245,11 +1245,11 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(sidebar.compareDocumentPosition(titleBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(titleBar.closest(".chat-column")).toBeTruthy();
     expect(sidebar.closest(".chat-column")).toBeNull();
-    expect(screen.getByTestId("sidebar-collapse")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Hide sidebar" })?.closest(".app-title-bar")).toBeNull();
-    fireEvent.click(screen.getByTestId("sidebar-collapse"));
-    expect(screen.getByTestId("sidebar-expand")).toBeTruthy();
-    expect(screen.queryByTestId("sidebar-brand")).toBeNull();
+    // The collapsed rail owns the expand button. Once expanded, the duplicate
+    // sidebar toggle disappears instead of becoming a second collapse button.
+    expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Hide sidebar" })).toBeNull();
+    expect(screen.getByTestId("sidebar-brand")).toBeTruthy();
   });
 });
 

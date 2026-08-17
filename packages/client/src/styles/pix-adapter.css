@@ -1230,9 +1230,9 @@ html.dark .catalog-meta-item--error {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 1px;
-  padding: 1px;
-  border-radius: 8px;
+  gap: 0;
+  padding: 0;
+  border-radius: 0;
   background: var(--bg-panel);
   transform: translateY(-50%);
   opacity: 0;
@@ -1241,15 +1241,17 @@ html.dark .catalog-meta-item--error {
 }
 
 .sidebar-list-row[data-active="true"] .sidebar-row-actions {
-  background: var(--bg-selected);
+  background: var(--bg-panel);
 }
 
-.sidebar-row-actions .sidebar-icon-btn {
+.sidebar-row-actions .sidebar-icon-btn,
+.sidebar-section-actions .sidebar-icon-btn {
+  border-radius: 0;
   background: var(--bg-panel);
 }
 
 .sidebar-list-row[data-active="true"] .sidebar-row-actions .sidebar-icon-btn {
-  background: var(--bg-selected);
+  background: var(--bg-panel);
 }
 
 .sidebar-row-actions .sidebar-icon-btn:hover {
@@ -1410,23 +1412,29 @@ html.dark .catalog-meta-item--error {
 .sidebar-search-field {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 32px;
-  margin: 2px 0 4px;
+  gap: 2px;
+  height: 26px;
+  margin: 1px 4px 3px;
 }
 
 .sidebar-search-field input {
   width: 100%;
   min-width: 0;
-  height: 28px;
+  height: 24px;
   box-sizing: border-box;
-  padding: 0 8px 0 28px;
+  padding: 0 6px 0 24px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-hover);
+  border-radius: 6px;
+  background: var(--bg-panel);
   color: var(--text);
-  font-size: 13px;
+  font-size: 12px;
   outline: none;
+}
+
+.sidebar-search-field > .sidebar-icon-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
 }
 
 .sidebar-search-field input:focus-visible {
@@ -1435,7 +1443,7 @@ html.dark .catalog-meta-item--error {
 
 .sidebar-search-field .sidebar-search-icon {
   position: absolute;
-  left: 8px;
+  left: 6px;
   pointer-events: none;
   color: var(--text-dim);
 }
