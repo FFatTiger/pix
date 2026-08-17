@@ -801,6 +801,20 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-files")).toBeTruthy();
   });
 
+  it("collapses and expands the Projects section via its toggle", async () => {
+    mountApp({ cwd: "/x" });
+    await settle();
+    const toggle = screen.getByTestId("projects-section-toggle");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("sidebar-project-list")).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("sidebar-project-list")).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("sidebar-project-list")).toBeTruthy();
+  });
+
   it("keeps no-flicker latest-intent session authority and a pending cue", async () => {
     const contextDeferreds = new Map<string, Deferred>();
     globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS, contextDeferreds });

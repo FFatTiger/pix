@@ -38,6 +38,7 @@ import {
   type CollapsedTimeGroups,
 } from "@/lib/time-group-state";
 import { downloadVisibleBranch } from "@/lib/visible-branch-export";
+import { loadProjectsSectionOpen, saveProjectsSectionOpen } from "@/lib/sidebar-section-state";
 import { isHiddenRailSession, isNonProjectWorkspacePath } from "@/lib/workspace-paths";
 import type { SettingsTab } from "@/components/shell/SettingsModal";
 
@@ -388,6 +389,13 @@ export function Sidebar({
   const renameMutation = useMutation(createMutationOptions(http, queryClient).sessions.rename());
 
   const [sessionsOpen, setSessionsOpen] = useState(true);
+  const [projectsOpen, setProjectsOpen] = useState<boolean>(() => loadProjectsSectionOpen());
+  const toggleProjects = useCallback(() => {
+    setProjectsOpen((open) => {
+      saveProjectsSectionOpen(!open);
+      return !open;
+    });
+  }, []);
   const [expandedProjects, setExpandedProjects] = useState<ReadonlySet<string>>(() => new Set());
   // Session-list quick-search: searchOpen swaps the header for a filter box,
   // and sessionSearch drives live filtering of the visible session rows.
@@ -808,11 +816,25 @@ export function Sidebar({
 
       <div className="sidebar-rail-scroll">
         <section className="sidebar-section" data-testid="sidebar-projects">
-          <div className="sidebar-section-head" data-expanded="true">
-            <span className="sidebar-section-toggle" style={{ cursor: "default", paddingRight: 0 }}>
-              {t("desktop.projects")}
-            </span>
+          <div className="sidebar-section-head" data-expanded={projectsOpen ? "true" : "false"}>
+            <button
+              type="button"
+              className="sidebar-section-toggle"
+              data-testid="projects-section-toggle"
+              aria-expanded={projectsOpen}
+              onClick={toggleProjects}
+            >
+              <span className="sidebar-title-fade">{t("desktop.projects")}</span>
+              <CaretRight
+                className="sidebar-section-chevron"
+                size={14}
+                weight="bold"
+                style={{ transform: projectsOpen ? "rotate(90deg)" : "none" }}
+                aria-hidden="true"
+              />
+            </button>
           </div>
+          {projectsOpen ? (
           <div data-testid="sidebar-project-list">
             {recentProjects.length === 0 ? (
               <div className="sidebar-empty">{t("desktop.noProjectsYet")}</div>
@@ -861,6 +883,7 @@ export function Sidebar({
               );
             })}
           </div>
+          ) : null}
         </section>
 
         <section className="sidebar-section sidebar-section-sessions" data-testid="sidebar-sessions">
