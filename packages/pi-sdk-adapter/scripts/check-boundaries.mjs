@@ -1,7 +1,8 @@
 import { readFile, readdir } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const packageRoot = new URL("../", import.meta.url).pathname;
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const srcRoot = join(packageRoot, "src");
 const distRoot = join(packageRoot, "dist");
 // The agent runtime surface (A1), the read-only sessions catalog/locator
@@ -32,10 +33,14 @@ async function walk(dir, suffix) {
   return files;
 }
 
+function toPosix(path) {
+  return path.replaceAll("\\", "/");
+}
+
 const failures = [];
 const sourceFiles = await walk(srcRoot, ".ts");
 for (const file of sourceFiles) {
-  const rel = relative(srcRoot, file);
+  const rel = toPosix(relative(srcRoot, file));
   const first = rel.split("/")[0];
   const text = await readFile(file, "utf8");
   if ((publicSourceDirs.has(first) || rel === "index.ts") && (sdkImport.test(text) || sdkNames.test(text))) {
@@ -61,9 +66,9 @@ for (const file of sourceFiles) {
 }
 
 const declarationFiles = (await walk(distRoot, ".d.ts"))
-  .filter((file) => !relative(distRoot, file).startsWith(`internal/`));
+  .filter((file) => !toPosix(relative(distRoot, file)).startsWith("internal/"));
 for (const file of declarationFiles) {
-  const rel = relative(distRoot, file);
+  const rel = toPosix(relative(distRoot, file));
   const text = await readFile(file, "utf8");
   if (sdkImport.test(text) || sdkNames.test(text) || /(?:from|import\()\s*["'][^"']*internal\//.test(text)) {
     failures.push(`${rel}: public declaration leaks SDK/internal type`);

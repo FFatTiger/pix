@@ -3627,3 +3627,12 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Worker `redactText` now collapses Windows drive, UNC, `\\?\`, and `file://` paths in addition to POSIX absolute paths.
 - Host `runChecked` / spawn-unavailable messages use the same sanitizer so Git stderr and raw OS messages do not echo user paths.
 - Public error codes stay `COMMAND_FAILED` / `PROCESS_UNAVAILABLE`. This is not adapter exact-open or AllowedRoot identity work.
+
+---
+
+## 81. Cross-platform CP-13 — adapter exact-open identity check
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `2a952cb`.
+- Runtime `openSession` now uses `openListedSessionExact`: list match → open → `getSessionId()` equality. Missing, unreadable, or reused paths are sanitized `not_found` and never start a Worker against another session.
+- Catalog `session-store.tryOpen` already had this check; this slice closes the runtime open path that previously called `SessionManager.open` without an identity fence.
+- Adapter `check-boundaries.mjs` now resolves the package root with `fileURLToPath` and POSIX-normalizes relatives so Windows `\` paths are not treated as public leaks.

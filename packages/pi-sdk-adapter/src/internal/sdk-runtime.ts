@@ -401,15 +401,45 @@ export interface SdkRuntimeComposition {
   createSession(options: Parameters<typeof createAgentSessionFromServices>[0]): ReturnType<typeof createAgentSessionFromServices>;
 }
 
+export interface ListedSessionInfo {
+  readonly id: string;
+  readonly path: string;
+}
+
+export interface ExactOpenSessionSdk {
+  listAll(): Promise<readonly ListedSessionInfo[]>;
+  open(path: string, sessionDir?: string, cwd?: string): SessionManager;
+}
+
+/**
+ * Open a listed session only when the on-disk manager identity matches the
+ * requested id. A missing, unreadable, or reused path is `not_found` and never
+ * starts a Worker against another session.
+ */
+export async function openListedSessionExact(
+  input: { sessionId: string; cwd?: string },
+  sdk: ExactOpenSessionSdk = SessionManager,
+): Promise<{ manager: SessionManager; cwd: string }> {
+  const sessions = await sdk.listAll();
+  const info = sessions.find((item) => item.id === input.sessionId);
+  if (!info) throw makeRuntimeError("not_found", "session not found");
+  let manager: SessionManager;
+  try {
+    manager = sdk.open(info.path, undefined, input.cwd);
+  } catch {
+    throw makeRuntimeError("not_found", "session not found");
+  }
+  if (manager.getSessionId() !== input.sessionId) {
+    throw makeRuntimeError("not_found", "session not found");
+  }
+  return { manager, cwd: manager.getCwd() };
+}
+
 function defaultComposition(): SdkRuntimeComposition {
   return {
     async openSession(input) {
       if ("sessionId" in input) {
-        const sessions = await SessionManager.listAll();
-        const info = sessions.find((item) => item.id === input.sessionId);
-        if (!info) throw new Error(`session not found: ${input.sessionId}`);
-        const manager = SessionManager.open(info.path, undefined, input.cwd);
-        return { manager, cwd: manager.getCwd() };
+        return openListedSessionExact(input);
       }
       const manager = SessionManager.create(input.cwd);
       mkdirSync(manager.getSessionDir(), { recursive: true, mode: 0o700 });
