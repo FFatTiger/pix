@@ -319,6 +319,14 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
       className="transcript-region"
       style={{ position: "relative", display: "flex", flex: isHomeEmpty ? "0 0 auto" : "1 1 auto", minHeight: 0, minWidth: 0 }}
     >
+      {isMobile ? null : (
+        <ChatMinimap
+          messages={messages as AgentMessage[]}
+          streamingMessage={streamingPartial as Partial<AgentMessage> | null}
+          scrollContainer={parentRef}
+          messageRefs={messageRefs}
+        />
+      )}
       <div
         ref={parentRef}
         className="transcript-scroll chat-scroll-container"
@@ -404,14 +412,6 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
           )
         ) : null}
       </div>
-      {isMobile ? null : (
-        <ChatMinimap
-          messages={messages as AgentMessage[]}
-          streamingMessage={streamingPartial as Partial<AgentMessage> | null}
-          scrollContainer={parentRef}
-          messageRefs={messageRefs}
-        />
-      )}
     </div>
   );
 }

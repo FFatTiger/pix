@@ -361,6 +361,25 @@ html {
   background: var(--text-dim);
 }
 
+/* Sidebar rail scroll: the gutter stays reserved (no layout shift), but the
+   thumb is invisible until the rail is hovered. */
+.sidebar-rail-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.sidebar-rail-scroll:hover {
+  scrollbar-color: var(--border) transparent;
+}
+.sidebar-rail-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.sidebar-rail-scroll:hover::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+.sidebar-rail-scroll:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
 /* Chat message list scroll container: the scrollbar is hidden on purpose —
    the right-edge minimap is the designated scroll-position indicator. The
    Tailwind arbitrary class [scrollbar-width:none] is unreliable here (Turbopack
