@@ -37,14 +37,6 @@ export interface AppShellProps {
   search: WorkspaceSearch;
 }
 
-function describeError(cause: unknown): string {
-  if (cause && typeof cause === "object" && "message" in cause) {
-    const message = (cause as { message: unknown }).message;
-    if (typeof message === "string" && message.length > 0) return message;
-  }
-  return String(cause);
-}
-
 /**
  * Desktop shell v3 — the upstream desktop app's AppShell DOM (title bar,
  * wallpaper-backed sidebar / chat / right-panel row, resizable panels,
@@ -88,110 +80,23 @@ export function AppShell({ search }: AppShellProps) {
   // extension request closes. Passed explicitly to both ExtensionRequests and
   // Composer (no document queries).
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  // ── Session selection → live attach (desktop behavior) ─────────────────────
-  // ONE owner coordinates the ENTIRE URL-session lifecycle: detaching a stale
-  // attached session, attaching the selected one, superseding in-flight opens
-  // when a newer selection wins, dropping late settles, and retrying
-  // weak-network failures once the socket is ready again. There is deliberately
-  // NO competing detach effect and no per-effect generation refs — a single
-  // generation counter owns supersession, and the store's identity-scoped
-  // attach settles any superseded open so no promise ever hangs. Selecting a
-  // session (sidebar click or a ?session= deep link) opens it LIVE directly —
-  // no separate "Continue live" step. Weak-network failures (retryable
-  // transport errors) re-attempt once the socket is ready again — bounded to 3
-  // retries per selection; the store's reconnect already resumes the intended
-  // attach, so this is a safety net, not a polling loop. Hard failures fail
-  // closed to the read-only history view with a transient notice.
-  const [selectionNonce, setSelectionNonce] = useState(0);
-  const [openAttempt, setOpenAttempt] = useState(0);
-  const [liveError, setLiveError] = useState<string | null>(null);
-  const openKeyRef = useRef<string | null>(null);
-  const openGenRef = useRef(0);
-  const openRetriesRef = useRef(0);
-  const retryTargetRef = useRef<string | null>(null);
-  const mountedRef = useRef(true);
+  // ── Session selection is READ-ONLY (0-Worker history invariant) ───────────
+  // Selecting/browsing a session in the sidebar or via a ?session= deep link
+  // MUST NOT activate/open a worker: the selected session stays a read-only
+  // history view with the Composer editable but inactive. The ONLY activation
+  // trigger is `sendPromptToSession` (the Composer's send) or an explicit
+  // non-history runtime action (e.g. create). If the runtime is currently
+  // attached to a DIFFERENT session, it is detached (fail-closed: stop the
+  // stale live stream / free its worker) but the newly selected history session
+  // is NEVER attached here. The detach is single-flight in the store, so a
+  // concurrent send-time transition cannot emit duplicate detach frames.
   useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  const { connection, attached, sessionId: attachedSessionId } = runtime;
-  useEffect(() => {
-    const target = search.session;
-    if (!canAgent || !target) return;
-    if (attached && attachedSessionId === target) {
-      // Already live on the selected session: clear any pending retry.
-      retryTargetRef.current = null;
-      return;
-    }
-    const key = `${selectionNonce}:${target}`;
-    if (openKeyRef.current === key) return; // this selection already has a flow
-    if (openRetriesRef.current >= 3) return; // retry budget exhausted
-    openKeyRef.current = key;
-    openRetriesRef.current = 0;
-    retryTargetRef.current = null;
-    const gen = ++openGenRef.current;
-    setLiveError(null);
-    void (async () => {
-      try {
-        // A stale runtime attached to another session is detached first
-        // (idempotent; the worker is preserved server-side). This is the ONLY
-        // detach in the shell — the fail-closed history view is just the
-        // transient attached=false state while this flow runs.
-        if (attached && attachedSessionId && attachedSessionId !== target) {
-          await runtime.detach();
-          if (!mountedRef.current || gen !== openGenRef.current) return; // superseded mid-detach
-        }
-        await runtime.openSession(target);
-      } catch (error) {
-        if (!mountedRef.current || gen !== openGenRef.current) return;
-        const retryable =
-          error !== null && typeof error === "object" && (error as { retryable?: unknown }).retryable === true;
-        if (retryable) {
-          // Weak-network/transport failure: stay SILENT and let the bounded
-          // retry effect re-attempt once the socket is ready again (UI-first:
-          // no "unavailable" banner on a flaky link).
-          retryTargetRef.current = target;
-          return;
-        }
-        // Definite failure (fatal/unsupported/auth): surface a transient notice.
-        setLiveError(describeError(error));
-      }
-    })();
-    // Deps are stable reactive values (never the whole `runtime` object, which
-    // changes on every stream event) so a streaming session cannot re-trigger
-    // this flow; `openAttempt` drives the bounded retry re-run. `runtime.detach`
-    // / `runtime.openSession` are STABLE command references (see useRuntime), so
-    // the captured `runtime` closure stays correct across renders.
-  }, [canAgent, search.session, attached, attachedSessionId, connection, selectionNonce, openAttempt]);
-
-  // Weak-network recovery: retry a retryable auto-open failure when the socket
-  // becomes ready again (bounded; superseded selections never retry). Owned by
-  // the same selection flow via openKeyRef/retryTargetRef — this is the bounded
-  // safety net, not a competing lifecycle owner.
-  useEffect(() => {
-    if (connection !== "ready") return;
-    const target = retryTargetRef.current;
-    if (!target || !canAgent) return;
-    if (attached && attachedSessionId === target) {
-      retryTargetRef.current = null;
-      return;
-    }
-    if (openRetriesRef.current >= 3) return;
-    openRetriesRef.current += 1;
-    retryTargetRef.current = null;
-    openKeyRef.current = null; // allow the open effect to run again
-    setLiveError(null);
-    setOpenAttempt((n) => n + 1);
-  }, [connection, canAgent, attached, attachedSessionId]);
-
-  // Transient failure notice: auto-clears so a recovered session is not left
-  // with a stale error banner.
-  useEffect(() => {
-    if (!liveError) return;
-    const timer = window.setTimeout(() => setLiveError(null), 8000);
-    return () => window.clearTimeout(timer);
-  }, [liveError]);
+    if (!runtime.attached || !search.session) return;
+    if (search.session === runtime.sessionId) return;
+    // Mismatch: fail-closed — detach the currently attached (non-selected)
+    // session. Never attach the selected one.
+    void runtime.detach().catch(() => undefined);
+  }, [runtime.attached, runtime.sessionId, search.session]);
 
   // Title-bar workspace-controls portal host (Sidebar portals its project +
   // worktree controls in here; the sidebar fallback renders while null).
@@ -280,12 +185,10 @@ export function AppShell({ search }: AppShellProps) {
     void runtime.createSession({ cwd: search.cwd, projectRoot: search.cwd }).catch(() => undefined);
   };
 
-  // Sidebar row selection: URL navigation (`?session=`) plus a selection
-  // nonce. The nonce lets the auto-attach flow above re-run when the user
-  // re-clicks the SAME row after a stop/failure (the URL alone would not
-  // change). It never stops or creates anything by itself.
+  // Sidebar row selection: URL navigation (`?session=`) ONLY — read-only
+  // history browsing. It never attaches/activates, never stops, never creates;
+  // the Composer's send is the sole activation trigger.
   const handleSelectSession = useCallback((sessionId: string): void => {
-    setSelectionNonce((n) => n + 1);
     void navigate({
       to: "/",
       search: { session: sessionId, ...(search.cwd === undefined ? {} : { cwd: search.cwd }) },
@@ -516,12 +419,6 @@ export function AppShell({ search }: AppShellProps) {
               {...(search.session === undefined ? {} : { sessionId: search.session })}
             />
           </main>
-          {/* Transient auto-attach failure notice (weak network / stopped
-              runtime): the session stays readable while the retry safety net
-              runs; the notice auto-clears. */}
-          {liveError ? (
-            <div className="live-attach-notice" role="alert">{liveError}</div>
-          ) : null}
         </div>
       </div>
 

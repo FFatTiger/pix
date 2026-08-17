@@ -953,4 +953,56 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     // …and the draft is preserved in the composer.
     expect(textarea.value).toBe("will fail");
   });
+
+  it("RETRYABLE activation failure is proven non-delivery: no phantom bubble, draft retained", async () => {
+    mount(<Composer sessionId="ghost" live={false} />);
+    const ws = await driveReady();
+    await driveAttach(ws); // attached to s1
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    typeAndSend("stuck");
+    await flush();
+    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "stuck")).toBe(true);
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    await serverSend(ws, { type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    // The attach fails with a RETRYABLE error — still the ACTIVATION phase (no
+    // prompt command was dispatched), so it is PROVEN non-delivery.
+    await serverSend(ws, { type: "response", id: attach.id, payload: { ok: false, error: { code: "unavailable", message: "busy", retryable: true } } });
+    // No phantom bubble, no pending transaction…
+    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "stuck")).toBe(false);
+    expect(capturedStore!.getSnapshot().promptPending).toBe(false);
+    // …and the draft is RETAINED in the composer.
+    expect(textarea.value).toBe("stuck");
+  });
+
+  it("two submits during activation: the second is rejected (session_busy), its draft restored, the first untouched", async () => {
+    mount(<Composer sessionId="s2" live={false} />);
+    const ws = await driveReady();
+    await driveAttach(ws); // attached to s1 → activation must detach s1 + attach s2
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    typeAndSend("first message");
+    await flush();
+    // The first transaction is in flight (activation phase)…
+    expect(capturedStore!.getSnapshot().promptPending).toBe(true);
+    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "first message")).toBe(true);
+    // Second submit (Enter; the Send button is a busy Stop during activation).
+    fireEvent.change(textarea, { target: { value: "second message" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await flush();
+    // The second is rejected (session_busy) and its draft restored…
+    expect(textarea.value).toBe("second message");
+    // …and the first is untouched (no phantom bubble for the second).
+    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "second message")).toBe(false);
+    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "first message")).toBe(true);
+    expect(capturedStore!.getSnapshot().promptPending).toBe(true);
+    // The first completes normally.
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    await serverSend(ws, { type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.message).toBe("first message");
+    await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    expect(capturedStore!.getSnapshot().promptPending).toBe(false);
+  });
 });

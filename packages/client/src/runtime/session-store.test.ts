@@ -2167,7 +2167,7 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     expect(view.liveEntries.some((e) => (e.message as { content: string }).content === "hi")).toBe(false);
   });
 
-  it("uncertain (retryable) delivery keeps bubble + overlay until a real event proves the authoritative turn", async () => {
+  it("uncertain (retryable) dispatch keeps the bubble (may have been delivered) but ends the speculative overlay", async () => {
     const h = createHarness();
     const ws = await openAndAttach(h);
     const promptP = h.store.sendPrompt("hi");
@@ -2175,12 +2175,15 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
     const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
     ws.serverSend({ type: "response", id: cmd.id, payload: { ok: false, error: { code: "unavailable", message: "busy", retryable: true } } });
     await expect(promptP).rejects.toMatchObject({ retryable: true });
-    // Uncertain: bubble + running overlay are KEPT.
+    // Uncertain DISPATCH (the prompt command was sent): the bubble is KEPT (the
+    // turn may have been delivered) and the SPECULATIVE overlay is cleared —
+    // the authoritative event stream takes over if the turn is actually running.
     let view = h.store.getSnapshot();
-    expect(view.streaming).toBe(true);
+    expect(view.streaming).toBe(false);
+    expect(view.promptPending).toBe(false);
     expect(view.liveEntries.some((e) => (e.message as { content: string }).content === "hi")).toBe(true);
     // A real applied event that proves the turn's authoritative running state
-    // reconciles the overlay (authoritative handoff, no double-flag).
+    // drives the running indicator (authoritative handoff).
     ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", streamId: "st", messageId: "m", message: { role: "assistant", model: "m", provider: "p" }, eventId: 1, epoch: "e1" } });
     await flush();
     view = h.store.getSnapshot();
@@ -2436,5 +2439,86 @@ describe("SessionStore — sendPromptToSession activation-then-send (single stat
     expect(h.store.getSnapshot().sessionStopped).toBe(false);
     ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
     await expect(promptP).resolves.toBeTruthy();
+  });
+
+  it("select-B + immediate-send-B race: ONE detach(old), ONE attach(B), ONE prompt (single-flight detach)", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1");
+    // AppShell fail-closed selection detach (selecting B while attached to s1)…
+    const shellDetach = h.store.detach();
+    await flush();
+    // …and IMMEDIATELY the composer's send for B, while the detach is in flight.
+    const promptP = h.store.sendPromptToSession("s2", "race message");
+    await flush();
+    // Exactly ONE detach frame — the send-time transition coalesced (single-flight).
+    const detachFrames = ws.sent.filter((f) => (f as { type: string }).type === "detach") as { type: string; id: string; payload: { sessionId: string } }[];
+    expect(detachFrames).toHaveLength(1);
+    expect(detachFrames[0]!.payload.sessionId).toBe("s1");
+    ws.serverSend({ type: "response", id: detachFrames[0]!.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await flush();
+    await shellDetach;
+    // ONE attach for the selected B.
+    const attachB = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    expect(attachB.payload.sessionId).toBe("s2");
+    const attachFrames = ws.sent.filter((f) => (f as { type: string }).type === "attach") as { payload: { sessionId: string } }[];
+    expect(attachFrames.map((f) => f.payload.sessionId)).toEqual(["s1", "s2"]);
+    ws.serverSend({ type: "snapshot", id: attachB.id, payload: snapshotPayload({ sessionId: "s2" }) });
+    await flush();
+    // Exactly ONE prompt command.
+    const promptFrames = ws.sent.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt");
+    expect(promptFrames).toHaveLength(1);
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.message).toBe("race message");
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    await expect(promptP).resolves.toBeTruthy();
+    expect(h.store.getSnapshot().sessionId).toBe("s2");
+    expect(h.store.getSnapshot().attached).toBe(true);
+  });
+
+  it("retryable ACTIVATION failure is proven non-delivery: phantom bubble removed, no pending transaction (phase tagged)", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1");
+    await detachAck(ws, h, "s1");
+    const promptP = h.store.sendPromptToSession("ghost", "gone");
+    await flush();
+    expect(h.store.getSnapshot().liveEntries.some((e) => entryText(e) === "gone")).toBe(true);
+    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    // The attach fails with a RETRYABLE error — but it is still the ACTIVATION
+    // phase (no prompt command was dispatched), so it is PROVEN non-delivery.
+    ws.serverSend({ type: "response", id: attach.id, payload: { ok: false, error: { code: "unavailable", message: "busy", retryable: true } } });
+    await expect(promptP).rejects.toMatchObject({ retryable: true, phase: "activation" });
+    // No phantom bubble, no pending transaction, no speculative overlay.
+    expect(h.store.getSnapshot().liveEntries.some((e) => entryText(e) === "gone")).toBe(false);
+    expect(h.store.getSnapshot().promptPending).toBe(false);
+    expect(h.store.getSnapshot().streaming).toBe(false);
+  });
+
+  it("two submits during activation: the second is rejected session_busy WITHOUT touching the first's speculative state", async () => {
+    const h = createHarness();
+    const ws = await openAndAttach(h, "s1");
+    await detachAck(ws, h, "s1");
+    const firstP = h.store.sendPromptToSession("s2", "first");
+    await flush();
+    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    expect(attach.payload.sessionId).toBe("s2");
+    // The first transaction is in flight (activation phase)…
+    expect(h.store.getSnapshot().promptPending).toBe(true);
+    expect(h.store.getSnapshot().liveEntries.some((e) => entryText(e) === "first")).toBe(true);
+    // A second submit while the first is activating is rejected immediately…
+    const secondP = h.store.sendPromptToSession("s2", "second");
+    await expect(secondP).rejects.toMatchObject({ code: "session_busy" });
+    // …and does NOT corrupt the first: no phantom bubble for the second, the
+    // first's bubble/overlay stay owned, promptPending stays true.
+    expect(h.store.getSnapshot().liveEntries.some((e) => entryText(e) === "second")).toBe(false);
+    expect(h.store.getSnapshot().liveEntries.some((e) => entryText(e) === "first")).toBe(true);
+    expect(h.store.getSnapshot().promptPending).toBe(true);
+    // The first transaction completes normally.
+    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "s2" }) });
+    await flush();
+    const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(cmd.payload.command.message).toBe("first");
+    ws.serverSend({ type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    await expect(firstP).resolves.toBeTruthy();
+    expect(h.store.getSnapshot().promptPending).toBe(false);
   });
 });

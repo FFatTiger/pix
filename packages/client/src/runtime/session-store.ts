@@ -111,6 +111,12 @@ export interface RuntimeView {
   readonly streaming: boolean;
   readonly streamingPartial: StreamingAgentMessage | null;
   /**
+   * True while a prompt transaction (activation + dispatch) is in flight. Lets
+   * the UI treat an in-progress send — including the activation of a read-only
+   * selected session — as BUSY (never idle), and never as a fresh idle input.
+   */
+  readonly promptPending: boolean;
+  /**
    * Attach lifecycle generation (explicit refresh signal for UI reads like
    * runtime stats/tools). Increments on a FRESH attach (incl. session switch),
    * a rebase (gap / epoch_changed reconnect) and on detach/stop — NOT on
@@ -176,6 +182,7 @@ const INITIAL_VIEW: RuntimeView = {
   snapshot: null,
   streaming: false,
   streamingPartial: null,
+  promptPending: false,
   attachGeneration: 0,
   historyGeneration: 0,
   historyAnchorLeafId: null,
@@ -310,6 +317,19 @@ interface CommandPending {
 }
 
 /**
+ * A real prompt transaction (activation + dispatch). Single-flight: at most ONE
+ * exists at a time, so concurrent submits are rejected deterministically and a
+ * second submit can never touch the first's speculative state. `phase` is
+ * explicit: `activating` (no prompt command on the wire yet — a failure here is
+ * PROVEN non-delivery regardless of retryable metadata) vs `dispatching` (the
+ * prompt command is on the wire — a failure here may be uncertain delivery).
+ */
+interface PromptTransaction {
+  readonly optimisticId: string;
+  phase: "activating" | "dispatching";
+}
+
+/**
  * D2-P4 dual-slot queued turn (steer / follow_up only). Independent of
  * {@link CommandPending} so a long-running prompt never blocks steering or
  * following-up. At most ONE queued turn in flight; the second is
@@ -434,14 +454,23 @@ export class SessionStore implements RuntimeSocketHandler {
   private attachGeneration = 0;
   /**
    * Speculative (optimistic) running overlay for a sent prompt — SEPARATE from
-   * the authoritative {@link snapshot}. set on sendPrompt, cleared when the
-   * authoritative state proves the real turn (a real applied event shows
-   * isPromptRunning/isStreaming), on command settle (accepted or definite
-   * rejection), on a fresh authoritative snapshot replace (fetchSnapshot) and
-   * on detach/rebase/stop. The view's `snapshot` is a projection that overlays
-   * this flag; the authoritative snapshot is NEVER mutated for optimism.
+   * the authoritative {@link snapshot}. Set while a prompt transaction is in
+   * flight, cleared when the authoritative state proves the real turn (a real
+   * applied event shows isPromptRunning/isStreaming), on transaction settle
+   * (accepted / any failure), on a fresh authoritative snapshot replace
+   * (fetchSnapshot) and on detach/rebase/stop. The view's `snapshot` is a
+   * projection that overlays this flag; the authoritative snapshot is NEVER
+   * mutated for optimism.
    */
   private optimisticPromptRunning = false;
+  /**
+   * Single-flight prompt transaction (activation + dispatch). At most ONE in
+   * flight; a concurrent sendPrompt/sendPromptToSession is rejected with
+   * `session_busy` BEFORE touching any speculative state, so it can never
+   * clear/corrupt the active transaction's overlay or bubble. `phase` is the
+   * explicit activation vs dispatch boundary (see {@link PromptTransaction}).
+   */
+  private promptTransaction: PromptTransaction | null = null;
   /**
    * Optimistic UI layer (Apple-style instant feedback): a sent prompt is
    * appended here IMMEDIATELY (own `optimistic:<n>` id) and consumed FIFO by
@@ -478,6 +507,9 @@ export class SessionStore implements RuntimeSocketHandler {
   /** At most ONE stop in flight (LOW: concurrent stops merge into one frame). */
   private stopPromise: Promise<void> | null = null;
   private stopping = false;
+  /** At most ONE detach in flight per source session (single-flight coalescing). */
+  private detachPromise: Promise<void> | null = null;
+  private detachSessionId: string | null = null;
 
   private readyWaiters: Waiter[] = [];
   private sendableWaiters: TimedWaiter[] = [];
@@ -591,7 +623,13 @@ export class SessionStore implements RuntimeSocketHandler {
   detach(): Promise<void> {
     const sessionId = this.sessionId;
     if (!sessionId) return Promise.resolve();
-    return this.sendEnvelope({ type: "detach", id: this.id(), payload: { sessionId } }).then(() => {
+    // Single-flight per source session: the shell's fail-closed selection
+    // detach and a send-time transition can both ask for the SAME session while
+    // the first is in flight — coalesce into one wire frame / one promise (no
+    // duplicate detach frames, no duplicate teardown).
+    if (this.detachPromise && this.detachSessionId === sessionId) return this.detachPromise;
+    this.detachSessionId = sessionId;
+    this.detachPromise = this.sendEnvelope({ type: "detach", id: this.id(), payload: { sessionId } }).then(() => {
       // Identity-scoped attach teardown: a NEWER attach (rapid B→C) may be in
       // flight — or may have ALREADY COMPLETED — by the time this detach (for
       // the OLD session) settles. A late detach settle must NEVER strand or
@@ -630,7 +668,11 @@ export class SessionStore implements RuntimeSocketHandler {
         this.settlePendingExtensionUiInputs({ code: "interrupted", message: "detached", retryable: false });
       }
       this.notify();
+    }).finally(() => {
+      this.detachPromise = null;
+      this.detachSessionId = null;
     });
+    return this.detachPromise;
   }
 
   /**
@@ -838,26 +880,13 @@ export class SessionStore implements RuntimeSocketHandler {
   }
 
   /**
-   * Optimistic running overlay (Apple-style instant feedback): the sent prompt
-   * flips the speculative running flag so the whole UI (transcript pulse,
-   * composer Stop) reacts the moment Enter is pressed. This is SEPARATE
-   * speculative state — the authoritative snapshot is never mutated; the view
-   * overlays the flag in computeView and clears it once a real event proves the
-   * turn's authoritative state, or on command settle / detach / rebase.
-   */
-  private markOptimisticRunning(): void {
-    if (this.optimisticPromptRunning) return;
-    this.optimisticPromptRunning = true;
-    this.notify();
-  }
-
-  /**
    * Definite failure → drop the optimistic bubble (the turn never started) and
    * the speculative running overlay. Retryable failure (timeout / transport)
    * keeps it: the turn is usually already running server-side and the real
    * message_end (or a rebase) settles it. NOTE: this guard ONLY owns the
-   * optimistic USER ENTRY; the running overlay is settled separately in
-   * {@link sendPrompt} (steer/follow_up never set the overlay by design).
+   * optimistic USER ENTRY for QUEUED TURNS (steer/follow_up never set the
+   * running overlay by design); PROMPTS use the prompt-transaction helpers
+   * below (single-flight, explicit phase).
    */
   private withOptimisticGuard(optimisticId: string, promise: Promise<unknown>): Promise<unknown> {
     return promise.then(
@@ -877,58 +906,107 @@ export class SessionStore implements RuntimeSocketHandler {
   }
 
   /**
-   * Send a prompt (ordinary command) with optional images. commandId is stable
-   * across same-epoch retries. Text and image sends share ONE optimistic path
-   * (bubble + speculative running overlay) — full parity.
+   * Begin a single-flight prompt transaction: reject (return null) if a prompt
+   * transaction is already active — WITHOUT touching the active transaction's
+   * speculative state, so a concurrent submit can never clear/corrupt its
+   * overlay or bubble. Otherwise append the optimistic bubble, set the
+   * speculative running overlay and return the transaction (phase
+   * "activating").
    */
-  sendPrompt(message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
-    // Optimistic UI: the user bubble + a running agent indicator appear the
-    // moment Enter is pressed (text AND image sends alike). The wire
-    // round-trip continues in the background; the real committed entry replaces
-    // the optimistic one via message_end. The running overlay is speculative
-    // state, never a mutation of the authoritative snapshot.
-    const optimisticId = this.appendOptimisticUserEntry(message);
-    this.markOptimisticRunning();
+  private beginPromptTransaction(message: string): PromptTransaction | null {
+    if (this.promptTransaction) return null;
+    const optimisticId = `optimistic:${(this.optimisticSeq += 1)}`;
+    this.promptTransaction = { optimisticId, phase: "activating" };
+    this.optimisticUserEntries = [
+      ...this.optimisticUserEntries.slice(-4),
+      { entryId: optimisticId, message: { role: "user", content: message } },
+    ];
+    if (!this.optimisticPromptRunning) this.optimisticPromptRunning = true;
+    this.notify();
+    return this.promptTransaction;
+  }
+
+  /**
+   * Settle a prompt transaction (owner identity-scoped): release the
+   * single-flight slot, optionally remove the optimistic bubble, and clear the
+   * speculative running overlay — the authoritative projection/events take over
+   * from here. Never touches another transaction.
+   */
+  private settlePromptTransaction(tx: PromptTransaction, options: { removeBubble: boolean }): void {
+    if (this.promptTransaction !== tx) return;
+    this.promptTransaction = null;
+    if (options.removeBubble) {
+      this.optimisticUserEntries = this.optimisticUserEntries.filter(
+        (entry) => entry.entryId !== tx.optimisticId,
+      );
+    }
+    if (this.optimisticPromptRunning) {
+      this.optimisticPromptRunning = false;
+    }
+    this.notify();
+  }
+
+  /**
+   * Dispatch the prompt command (phase → "dispatching") and settle the
+   * transaction on its outcome:
+   *  - accepted → keep the bubble (the real message_end consumes it), clear the
+   *    speculative overlay (authoritative state takes over);
+   *  - definite rejection → remove the bubble + clear the overlay (non-delivery);
+   *  - uncertain (retryable) rejection → KEEP the bubble (the turn may have
+   *    been dispatched/delivered), clear the speculative overlay (authoritative
+   *    events take over if the turn is actually running).
+   */
+  private dispatchPrompt(tx: PromptTransaction, message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
+    tx.phase = "dispatching";
     const imagePayload = images === undefined || images.length === 0
       ? {}
       : { images: [...images] as ImageAttachment[] };
     const sendP = this.sendCommand({ commandId: this.id(), type: "prompt", message, ...imagePayload });
-    // Settle the speculative running overlay exactly once, with the same
-    // definite/uncertain split as the bubble: accepted → drop (the authoritative
-    // projection now reflects the real turn); definite rejection → drop;
-    // uncertain (retryable) delivery → keep until a real event reconciles it.
-    sendP.then(
-      () => {
-        if (!this.optimisticPromptRunning) return;
-        this.optimisticPromptRunning = false;
-        this.notify();
-      },
+    return sendP.then(
+      (value) => { this.settlePromptTransaction(tx, { removeBubble: false }); return value; },
       (cause: unknown) => {
         const retryable = cause !== null && typeof cause === "object"
           && (cause as { retryable?: unknown }).retryable === true;
-        if (retryable || !this.optimisticPromptRunning) return;
-        this.optimisticPromptRunning = false;
-        this.notify();
+        this.settlePromptTransaction(tx, { removeBubble: !retryable });
+        throw cause;
       },
     );
-    return this.withOptimisticGuard(optimisticId, sendP);
+  }
+
+  /** Fixed error for a second concurrent prompt submit (single-flight). */
+  private promptBusyError(): ProtocolError {
+    return { code: "session_busy", message: "a prompt is already being sent", retryable: false };
   }
 
   /**
-   * Activation-then-send — the SINGLE activation state machine shared by the
-   * Composer (send intent) and the shell selection controller (both delegate to
-   * {@link openSession} / {@link ensureAttached}). Sending is the activation
-   * intent: if the selected session has no active worker/attachment, or the
-   * attachment is stale/stopped, or a DIFFERENT session is attached, this
-   * ensures the exact selected session is attached (awaits the authoritative
+   * Send a prompt (ordinary command) with optional images. commandId is stable
+   * across same-epoch retries. Text and image sends share ONE optimistic path
+   * (bubble + speculative running overlay) — full parity. Single-flight: a
+   * concurrent submit rejects `session_busy` before touching speculative state.
+   * Requires the runtime already attached to the target session (activation is
+   * {@link sendPromptToSession}'s job).
+   */
+  sendPrompt(message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
+    const tx = this.beginPromptTransaction(message);
+    if (!tx) return Promise.reject(this.promptBusyError());
+    return this.dispatchPrompt(tx, message, images);
+  }
+
+  /**
+   * Activation-then-send — the SINGLE activation state machine. Sending is the
+   * activation intent: if the selected session has no active worker/attachment,
+   * or the attachment is stale/stopped, or a DIFFERENT session is attached,
+   * this transitions to the exact selected session (awaits the authoritative
    * attach), then sends the prompt EXACTLY ONCE. If already attached to the
-   * selected session, it sends directly (no re-attach).
+   * selected session it sends directly. Single-flight: a concurrent submit
+   * rejects `session_busy` BEFORE touching any speculative state.
    *
-   * Optimistic bubble + speculative running overlay are appended IMMEDIATELY
-   * and preserved through activation. A DEFINITE failure (activation or send —
-   * e.g. `not_found`, `invalid_input`, auth) removes the phantom bubble and
-   * clears the overlay so the Composer restores/retains the draft; UNCERTAIN
-   * (retryable) delivery keeps both until a real event reconciles them.
+   * Explicit PHASES: while `phase === "activating"` no prompt command is on the
+   * wire, so ANY failure there is PROVEN non-delivery — the phantom bubble and
+   * running overlay are removed and the rejection is tagged `phase:
+   * "activation"` so the Composer restores/retains the draft REGARDLESS of
+   * retryable transport metadata. Only after dispatch (`phase ===
+   * "dispatching"`) may a retryable failure be treated as uncertain delivery.
    * NEVER creates a session: a genuinely unknown id rejects `not_found`.
    */
   sendPromptToSession(sessionId: string, message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
@@ -939,44 +1017,34 @@ export class SessionStore implements RuntimeSocketHandler {
         retryable: false,
       } satisfies ProtocolError);
     }
-    const optimisticId = this.appendOptimisticUserEntry(message);
-    this.markOptimisticRunning();
-    const imagePayload = images === undefined || images.length === 0
-      ? {}
-      : { images: [...images] as ImageAttachment[] };
-    const activateThenSend = this.ensureAttached(sessionId).then(() =>
-      this.sendCommand({ commandId: this.id(), type: "prompt", message, ...imagePayload }),
-    );
-    // Settle the speculative running overlay exactly once (same definite /
-    // uncertain split as the bubble): accepted → drop; definite → drop;
-    // uncertain → keep until a real event reconciles it.
-    activateThenSend.then(
-      () => {
-        if (!this.optimisticPromptRunning) return;
-        this.optimisticPromptRunning = false;
-        this.notify();
-      },
+    const tx = this.beginPromptTransaction(message);
+    if (!tx) return Promise.reject(this.promptBusyError());
+    return this.transitionTo(sessionId).then(
+      () => this.dispatchPrompt(tx, message, images),
       (cause: unknown) => {
-        const retryable = cause !== null && typeof cause === "object"
-          && (cause as { retryable?: unknown }).retryable === true;
-        if (retryable || !this.optimisticPromptRunning) return;
-        this.optimisticPromptRunning = false;
-        this.notify();
+        // Activation-phase failure: the prompt was NEVER dispatched — proven
+        // non-delivery. Remove the phantom bubble + overlay and reject tagged
+        // `phase: "activation"` so the Composer restores/retains the draft.
+        this.settlePromptTransaction(tx, { removeBubble: true });
+        const activationError = cause !== null && typeof cause === "object"
+          ? { ...(cause as Record<string, unknown>), phase: "activation" }
+          : { message: String(cause), retryable: false, phase: "activation" };
+        throw activationError;
       },
     );
-    return this.withOptimisticGuard(optimisticId, activateThenSend);
   }
 
   /**
-   * Ensure the exact `sessionId` is the attached/authoritative session:
+   * Transition to the exact `sessionId` as the attached/authoritative session:
    *  - already attached → resolve immediately (send directly);
-   *  - attached to a DIFFERENT session → detach it (stops the stale stream;
-   *    idempotent, worker preserved), then open the selected session;
+   *  - attached to a DIFFERENT session → detach it (single-flight per source
+   *    session — coalesces with the shell's fail-closed selection detach so no
+   *    duplicate detach frames), then open the selected session;
    *  - absent / stale / stopped / in-flight attach → open the selected session
    *    (openSession resets sessionStopped, supersedes any in-flight attach
    *    identity-scoped, and NEVER creates — `not_found` rejects).
    */
-  private ensureAttached(sessionId: string): Promise<void> {
+  private transitionTo(sessionId: string): Promise<void> {
     if (this.attached && this.sessionId === sessionId) return Promise.resolve();
     if (this.attached && this.sessionId && this.sessionId !== sessionId) {
       return this.detach().then(() => this.openSession(sessionId));
@@ -2438,9 +2506,11 @@ export class SessionStore implements RuntimeSocketHandler {
     this.pendingInterruptPromise = null;
     for (const [, entry] of this.pendingByEnvelope) entry.reject(error);
     this.pendingByEnvelope.clear();
-    // Teardown: drop the speculative live layer (bubbles + running overlay).
+    // Teardown: drop the speculative live layer (bubbles + running overlay) and
+    // release the single-flight prompt transaction slot.
     this.optimisticUserEntries = [];
     this.optimisticPromptRunning = false;
+    this.promptTransaction = null;
   }
 
   private isPromptRunning(): boolean {
@@ -2516,6 +2586,7 @@ export class SessionStore implements RuntimeSocketHandler {
       snapshot,
       streaming,
       streamingPartial,
+      promptPending: this.promptTransaction !== null,
       attachGeneration: this.attachGeneration,
       historyGeneration: this.historyGeneration,
       historyAnchorLeafId: this.historyAnchorLeafId,

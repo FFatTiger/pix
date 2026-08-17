@@ -145,17 +145,11 @@ async function connectReady(): Promise<FakeWebSocket> {
   return ws!;
 }
 
-function attachFrame(ws: FakeWebSocket, sessionId: string): { type: string; id: string } {
-  const frame = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-  expect(frame.payload.sessionId).toBe(sessionId);
-  return frame;
-}
-
 function countType(ws: FakeWebSocket, type: string): number {
   return ws.sent.filter((f) => (f as { type: string }).type === type).length;
 }
 
-describe("AppShell — single-owner URL session selection (rapid A→B→C / reordered settles)", () => {
+describe("AppShell — read-only session selection (0-Worker history; send is the only activation)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     SOCKETS.length = 0;
@@ -166,44 +160,10 @@ describe("AppShell — single-owner URL session selection (rapid A→B→C / reo
   });
   afterEach(() => { cleanup(); globalThis.fetch = previousFetch; vi.useRealTimers(); });
 
-  it("rapid A→B→C selection supersedes in-flight opens; only the last selection attaches", async () => {
+  it("selecting a session is read-only: NEVER attaches it; a mismatched attached session is fail-closed detached once", async () => {
     const { rerender } = mountApp({ cwd: "/x" });
     const ws = await connectReady();
-    // Select A — attach A goes on the wire.
-    rerender({ cwd: "/x", session: "A" });
-    await flush();
-    const attachA = attachFrame(ws, "A");
-    // Select B before A's snapshot — supersedes A.
-    rerender({ cwd: "/x", session: "B" });
-    await flush();
-    const attachB = attachFrame(ws, "B");
-    // Select C before B's snapshot — supersedes B.
-    rerender({ cwd: "/x", session: "C" });
-    await flush();
-    const attachC = attachFrame(ws, "C");
-    // Only the last selection's attach completes.
-    await act(async () => {
-      ws.serverSend({ type: "snapshot", id: attachC.id, payload: snapshotPayload({ sessionId: "C" }) });
-      await flush();
-    });
-    expect(capturedStore!.getSnapshot().sessionId).toBe("C");
-    expect(capturedStore!.getSnapshot().attached).toBe(true);
-    // The superseded opens never attach: no snapshots for A/B, no error notice.
-    expect(capturedStore!.getSnapshot().error).toBeNull();
-    // Re-a proving no clobber: deliver A's and B's LATE snapshots — dropped.
-    await act(async () => {
-      ws.serverSend({ type: "snapshot", id: attachA.id, payload: snapshotPayload({ sessionId: "A", epoch: "eA" }) });
-      ws.serverSend({ type: "snapshot", id: attachB.id, payload: snapshotPayload({ sessionId: "B", epoch: "eB" }) });
-      await flush();
-    });
-    expect(capturedStore!.getSnapshot().sessionId).toBe("C");
-    expect(capturedStore!.getSnapshot().epoch).toBe("e1");
-  });
-
-  it("reordered settles: a superseded B→C flow never detaches into a stale attach, and no error surfaces", async () => {
-    const { rerender } = mountApp({ cwd: "/x" });
-    const ws = await connectReady();
-    // Attach fully to A first (live).
+    // Attach fully to A (live).
     await act(async () => {
       void capturedStore!.openSession("A");
       await flush();
@@ -212,35 +172,52 @@ describe("AppShell — single-owner URL session selection (rapid A→B→C / reo
       await flush();
     });
     expect(capturedStore!.getSnapshot().sessionId).toBe("A");
-    // Click B → the single owner starts detaching A, then would open B.
+    expect(capturedStore!.getSnapshot().attached).toBe(true);
+    const attachCountBefore = countType(ws, "attach");
+    // Select B → read-only history: NO attach/open for B.
     rerender({ cwd: "/x", session: "B" });
     await flush();
-    // Click C before B's detach resolves → supersedes B; the owner detaches A again.
+    // Exactly ONE fail-closed detach for the mismatched A (single-flight)…
+    const detachFrames = ws.sent.filter((f) => (f as { type: string }).type === "detach") as { type: string; id: string; payload: { sessionId: string } }[];
+    expect(detachFrames).toHaveLength(1);
+    expect(detachFrames[0]!.payload.sessionId).toBe("A");
+    await act(async () => {
+      ws.serverSend({ type: "response", id: detachFrames[0]!.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
+      await flush();
+    });
+    // …and NO attach frame for the selected B (0-Worker history invariant).
+    expect(countType(ws, "attach")).toBe(attachCountBefore);
+    expect(capturedStore!.getSnapshot().attached).toBe(false);
+    expect(capturedStore!.getSnapshot().sessionId).not.toBe("B");
+  });
+
+  it("rapid selection B→C while attached: only fail-closed detaches (single-flight, one frame), never any attach", async () => {
+    const { rerender } = mountApp({ cwd: "/x" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("A");
+      await flush();
+      const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "A" }) });
+      await flush();
+    });
+    const attachCountBefore = countType(ws, "attach");
+    // Select B, then C before the detach resolves — both mismatch A.
+    rerender({ cwd: "/x", session: "B" });
+    await flush();
     rerender({ cwd: "/x", session: "C" });
     await flush();
-    // Exactly TWO detach envelopes (B's flow and C's flow, both for A) are in flight.
-    expect(countType(ws, "detach")).toBe(2);
-    const detaches = ws.sent.filter((f) => (f as { type: string }).type === "detach") as { type: string; id: string }[];
-    // Resolve C's detach FIRST → C's flow proceeds to open C.
+    // The two selection effects coalesce into ONE single-flight detach for A.
+    const detachFrames = ws.sent.filter((f) => (f as { type: string }).type === "detach") as { type: string; id: string; payload: { sessionId: string } }[];
+    expect(detachFrames).toHaveLength(1);
+    expect(detachFrames[0]!.payload.sessionId).toBe("A");
     await act(async () => {
-      ws.serverSend({ type: "response", id: detaches[1]!.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
+      ws.serverSend({ type: "response", id: detachFrames[0]!.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
       await flush();
     });
-    const attachC = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
-    expect(attachC.payload.sessionId).toBe("C");
-    // Resolve B's detach LATE → the superseded flow is dropped (gen guard): it
-    // must NOT open B on top of C.
-    await act(async () => {
-      ws.serverSend({ type: "response", id: detaches[0]!.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
-      ws.serverSend({ type: "snapshot", id: attachC.id, payload: snapshotPayload({ sessionId: "C" }) });
-      await flush();
-    });
-    expect(countType(ws, "attach")).toBe(2); // initial A + C only — B never attaches
-    const attachIds = (ws.sent.filter((f) => (f as { type: string }).type === "attach") as { payload: { sessionId: string } }[])
-      .map((f) => f.payload.sessionId);
-    expect(attachIds).toEqual(["A", "C"]);
-    expect(capturedStore!.getSnapshot().sessionId).toBe("C");
-    expect(capturedStore!.getSnapshot().attached).toBe(true);
+    // No session (B or C) was ever attached by selection.
+    expect(countType(ws, "attach")).toBe(attachCountBefore);
+    expect(capturedStore!.getSnapshot().attached).toBe(false);
     expect(capturedStore!.getSnapshot().error).toBeNull();
   });
 });

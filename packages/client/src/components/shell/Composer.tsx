@@ -49,9 +49,14 @@ import type { SessionTreeNode } from "@/lib/chat-view-model";
  *    instead of fetching a route that is not there.
  *
  * A failed send/steer/follow-up restores the text into the composer (the
- * source kept the draft through its notice shelf; pix has none). When the
- * selected session is not live the composer degrades to an honestly disabled
- * surface — the exact ChatInput is only mounted when it can actually send.
+ * source kept the draft through its notice shelf; pix has none). The composer
+ * stays EDITABLE for ANY selected existing session — there is NO history/
+ * detached/live split. Selecting/browsing a session is read-only (0-Worker
+ * history); sending is the activation intent: `sendPromptToSession` activates
+ * the exact selected session if needed, then sends exactly once. The exact
+ * ChatInput is mounted whenever a session is selected and the host can agent;
+ * the only disabled surfaces are genuine global inability (no selected session
+ * or no agent capability).
  */
 export interface ComposerProps {
   /**
@@ -175,8 +180,11 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const canUpload = can("files.upload");
   const canSkills = can("skills");
 
-  // Authoritative running state (never inferred).
-  const promptRunning = live && (state?.isStreaming === true || state?.isPromptRunning === true);
+  // Authoritative running state (never inferred) OR a prompt transaction in
+  // flight (activation + dispatch) — so an in-progress send is never treated as
+  // idle, including while a read-only selected session is being activated.
+  const promptRunning = live && (state?.isStreaming === true || state?.isPromptRunning === true)
+    || runtime.promptPending;
   const isCompacting = live && state?.isCompacting === true;
 
   // --- Host catalog queries (read-only) --------------------------------------
@@ -418,16 +426,29 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     return true;
   }, []);
 
+  /**
+   * True when a failure happened in the ACTIVATION phase (before the prompt
+   * command was dispatched) — the prompt is PROVEN non-delivery regardless of
+   * any retryable transport metadata, so the draft must be restored/retained
+   * and no phantom bubble may remain. Tagged by the store (`phase:
+   * "activation"`).
+   */
+  const isActivationFailure = useCallback((cause: unknown): boolean => {
+    return cause !== null && typeof cause === "object" && (cause as { phase?: unknown }).phase === "activation";
+  }, []);
+
   /** Restore the text into the composer when a send-path command fails. */
   const restoreDraft = useCallback((message: string) => {
     inputRef.current?.insertIfEmpty(message);
   }, []);
 
   // --- send paths -------------------------------------------------------------
-  // Sending is the ACTIVATION intent: `sendPromptToSession` ensures the exact
-  // selected session is attached (open if absent/stale/stopped, detach+open if
-  // a different session is attached), awaits the authoritative attach, then
-  // sends the prompt exactly once. If already attached it sends directly.
+  // Sending is the ACTIVATION intent: `sendPromptToSession` transitions to the
+  // exact selected session (open if absent/stale/stopped, detach+open if a
+  // different session is attached), awaits the authoritative attach, then sends
+  // the prompt exactly once. If already attached it sends directly. The draft
+  // is restored on ANY activation-phase failure (proven non-delivery) and on
+  // definite dispatch failures; uncertain dispatch keeps the bubble.
   const handleSend = useCallback(
     (message: string, images?: AttachedImage[]) => {
       if (!selectedSessionId) return;
@@ -435,15 +456,10 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
       runtime
         .sendPromptToSession(selectedSessionId, message, wireImages)
         .catch((cause: unknown) => {
-          // Optimistic UI: the bubble is already on screen. Only a DEFINITE
-          // failure (not accepted — incl. a definite ACTIVATION failure such as
-          // not_found) rolls the text back into the composer; a retryable
-          // timeout/transport failure usually has the turn running server-side
-          // — the optimistic bubble stays until message_end/rebase.
-          if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(message);
+          if (isCurrent() && (isActivationFailure(cause) || isDefiniteFailure(cause))) restoreDraft(message);
         });
     },
-    [selectedSessionId, runtime, isCurrent, restoreDraft, isDefiniteFailure],
+    [selectedSessionId, runtime, isCurrent, restoreDraft, isActivationFailure, isDefiniteFailure],
   );
 
   const handleSteer = useCallback(
