@@ -14,7 +14,6 @@ import { Composer } from "@/components/shell/Composer";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { AppTitleBar } from "@/components/shell/AppTitleBar";
 import { SettingsModal, type SettingsTab } from "@/components/shell/SettingsModal";
-import { WallpaperLayer } from "@/components/WallpaperLayer";
 import { LoginPage } from "@/components/shell/LoginPage";
 import { ProjectTrustDialog } from "@/features/settings/ProjectTrustDialog";
 import { ExtensionRequests } from "@/features/extension-request/ExtensionRequests";
@@ -67,7 +66,7 @@ function sessionLabelFor(session: { title?: string | undefined; firstMessage?: s
 
 /**
  * Desktop shell v3 — the upstream desktop app's AppShell DOM (title bar,
- * wallpaper-backed sidebar / chat / right-panel row, resizable panels,
+ * sidebar / chat / right-panel row, resizable panels,
  * settings modal, project-trust dialog) with the pix runtime wired in:
  *
  * Top-level unified workspace tabs live in the title bar (session + file
@@ -88,8 +87,8 @@ export function AppShell({ search }: AppShellProps) {
   const isMobile = useIsMobile();
   const gate = useGateStatus();
 
-  // ── Gate guard: an unauthenticated user gets a full-screen wallpaper + gate
-  // (no desktop shell, no unauthorized API surface). The /login route stays
+  // ── Gate guard: an unauthenticated user gets a full-screen gate (no
+  // desktop shell, no unauthorized API surface). The /login route stays
   // available for direct links.
   const gateRequired = gate.data?.required === true && gate.data.authenticated !== true;
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -572,11 +571,10 @@ export function AppShell({ search }: AppShellProps) {
     });
   }, [isMobile]);
 
-  // ── Unauthenticated: full-screen wallpaper + gate ────────────────────────
+  // ── Unauthenticated: full-screen gate ────────────────────────────────────
   if (gateRequired) {
     return (
       <div style={{ position: "fixed", inset: 0, overflow: "hidden", background: "var(--bg)" }}>
-        <WallpaperLayer />
         <LoginPage next="/" />
       </div>
     );
@@ -639,10 +637,7 @@ export function AppShell({ search }: AppShellProps) {
           position: "relative",
         } as React.CSSProperties}
       >
-      {/* Full-window wallpaper behind sidebar, chat and right panel — see
-          components/WallpaperLayer.tsx and styles/wallpaper.css. First child
-          of the workspace row so every later sibling paints above it. */}
-      <WallpaperLayer />
+      {/* First child of the workspace row — later siblings paint above it. */}
       {/* Mobile overlay backdrop */}
       <div
         className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}

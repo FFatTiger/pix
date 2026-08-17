@@ -28,12 +28,6 @@ describe("v1 URL builders", () => {
     expect(urls.auth.providerStatus("a/b ?#")).toBe("/v1/auth/providers/a%2Fb%20%3F%23/status");
   });
 
-  it("scopes theme list and resolve to the mandatory project cwd", () => {
-    expect(urls.themes.list("/repo a")).toBe("/v1/themes?cwd=%2Frepo+a");
-    expect(urls.themes.resolve("gruvbox", "dark", "/repo a")).toBe("/v1/themes/gruvbox?mode=dark&cwd=%2Frepo+a");
-    expect(urls.themes.resolve("miku-aqua", "light", "/proj?x=1")).toBe("/v1/themes/miku-aqua?mode=light&cwd=%2Fproj%3Fx%3D1");
-  });
-
   it("does not export removed catalog mutation paths", () => {
     const catalog = urls as Record<string, unknown>;
     expect(catalog).not.toHaveProperty("models-config");

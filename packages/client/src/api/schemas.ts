@@ -137,32 +137,6 @@ export const TrustResponseSchema = z.strictObject({
 });
 export type TrustResponse = z.infer<typeof TrustResponseSchema>;
 
-/* —— Themes (upstream desktop theme system; Host slice pending) —— */
-
-/** GET /v1/themes — theme-set catalog entry (mirrors lib/theme.ts ThemeSetInfo). */
-export const ThemeSetInfoSchema = z.strictObject({
-  name: z.string(),
-  displayName: z.string(),
-  hasDark: z.boolean(),
-  hasLight: z.boolean(),
-  builtin: z.boolean(),
-});
-export type ThemeSetInfoDto = z.infer<typeof ThemeSetInfoSchema>;
-
-/** GET /v1/themes — catalog response ({ themeSets } matches the source API shape). */
-export const ThemesResponseSchema = z.strictObject({
-  themeSets: z.array(ThemeSetInfoSchema),
-});
-export type ThemesResponse = z.infer<typeof ThemesResponseSchema>;
-
-/** GET /v1/themes/:name?mode= — resolved theme variant (CSS var → hex). */
-export const ResolvedThemeSchema = z.strictObject({
-  name: z.string(),
-  isDark: z.boolean(),
-  cssVars: z.record(z.string(), z.string()),
-});
-export type ResolvedThemeDto = z.infer<typeof ResolvedThemeSchema>;
-
 /* —— Workspace / files / git (unchanged non-catalog domains) —— */
 
 export const FileEntrySchema = z.strictObject({ name: z.string(), isDir: z.boolean(), isSymlink: z.boolean() });

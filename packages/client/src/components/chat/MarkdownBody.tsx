@@ -4,7 +4,6 @@ import { Check, Copy } from "@phosphor-icons/react";
 import ReactMarkdown, { type Components, type ExtraProps, type Options as ReactMarkdownOptions } from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { useI18n } from "@/hooks/useI18n";
-import { useTheme } from "@/hooks/useTheme";
 import { copyText } from "@/lib/clipboard";
 import { resolveLocalFileHref } from "@/lib/file-links";
 import { resolveMarkdownImageSrc } from "@/lib/markdown-images";
@@ -223,7 +222,9 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
 
 export function MermaidBlock({ code, isStreaming }: { code: string; isStreaming?: boolean | undefined }) {
   const { t } = useI18n();
-  const { isDark } = useTheme();
+  // pix ships a fixed dark appearance (html.dark is applied permanently), so
+  // Mermaid always renders its dark theme — there is no runtime theme to read.
+  const isDark = true;
   const [showPreview, setShowPreview] = useState(false);
   const [svg, setSvg] = useState<string | null>(null);
   const [renderedKey, setRenderedKey] = useState("");

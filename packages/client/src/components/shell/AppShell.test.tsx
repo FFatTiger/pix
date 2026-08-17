@@ -10,7 +10,6 @@ import type { SessionHeader } from "@fffattiger/pix-protocol";
 import { RuntimeProvider, useRuntimeStore } from "@/runtime/runtime-provider";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
-import { ThemeProvider } from "@/hooks/useTheme";
 import { HttpClientProvider } from "@/app/http-context";
 import { ContextMenuProvider } from "@/components/ContextMenu";
 import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "@/runtime/testing/harness";
@@ -134,7 +133,6 @@ function controllableStubFetch(opts: {
     }
     if (p.includes("/v1/sessions")) return json({ sessions, revision: 0 });
     if (p.includes("/v1/worktrees")) return json({ projectRoot: "/x", isGit: true, isTopLevel: true, worktrees: [] });
-    if (p.includes("/v1/themes")) return json({ themeSets: [] });
     if (p.includes("/v1/models")) return json(modelsCatalog);
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
@@ -166,7 +164,6 @@ function stubFetch(): typeof fetch {
     }
     if (p.includes("/v1/sessions")) return json({ sessions: [], revision: 0 });
     if (p.includes("/v1/worktrees")) return json({ projectRoot: "/x", isGit: true, isTopLevel: true, worktrees: [] });
-    if (p.includes("/v1/themes")) return json({ themeSets: [] });
     if (p.includes("/v1/models")) return json(modelsCatalog);
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
@@ -200,12 +197,10 @@ function mountApp(search: WorkspaceSearch, opts: { queryClient?: QueryClient; ca
         <CapabilityProvider host={host}>
           <RuntimeProvider deps={fakeDeps()}>
             <I18nProvider>
-              <ThemeProvider cwd={s.cwd ?? null}>
-                <ContextMenuProvider>
-                  <Capture />
-                  <AppShell search={s} />
-                </ContextMenuProvider>
-              </ThemeProvider>
+              <ContextMenuProvider>
+                <Capture />
+                <AppShell search={s} />
+              </ContextMenuProvider>
             </I18nProvider>
           </RuntimeProvider>
         </CapabilityProvider>
@@ -1028,7 +1023,6 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
       if (p.includes("/v1/git/diff")) return json({ supported: false });
       if (p.includes("/v1/sessions")) return json({ sessions: [], revision: 0 });
       if (p.includes("/v1/worktrees")) return json({ projectRoot: "/x", isGit: true, isTopLevel: true, worktrees: [] });
-      if (p.includes("/v1/themes")) return json({ themeSets: [] });
       if (p.includes("/v1/models")) return json({ models: [], defaultModel: null });
       if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
       if (p.includes("/v1/skills")) return json({ skills: [] });

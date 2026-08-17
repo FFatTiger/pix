@@ -5,9 +5,8 @@ the pix client visual foundation, ported from the `pi-web-desktop` project.
 
 ## pi-web-desktop (MIT License)
 
-The design tokens, `globals.css`, `wallpaper.css`, the pre-paint theme
-bootstrap script in `index.html`, the Catppuccin icon set, and the Monet
-artwork wallpapers are ported from
+The design tokens, `globals.css`, the pre-paint bootstrap script in
+`index.html`, and the Catppuccin icon set are ported from
 [pi-web-desktop](https://github.com/isWittHere/pi-web-desktop) (upstream:
 pi-web by agegr), licensed under the MIT License:
 
@@ -49,16 +48,6 @@ Copyright (c) 2023 thang-nm, licensed under the MIT License (see
 - **Lilex** — bundled via `@fontsource/lilex@5.3.0`. Copyright 2019 The Lilex
   Project Authors (https://github.com/mishamyrt/Lilex). Licensed under the SIL
   Open Font License, Version 1.1.
-
-## Monet artwork wallpapers
-
-`packages/client/public/monet-artworks/` is copied verbatim from
-pi-web-desktop. These JPEG wallpapers are derived works based on paintings by
-Claude Monet (1840–1926). The underlying paintings date from the 19th and early
-20th centuries and the source project ships them as wallpaper assets without a
-per-file provenance record; beyond the above attribution no further
-representation is made about the photographic/scans' rights status or
-provenance of these specific files.
 
 ## num-scope/pix sidebar visual language (MIT License)
 

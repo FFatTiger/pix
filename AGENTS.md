@@ -59,9 +59,12 @@ fork the logic.
   **never** flows through TanStack Query, and the projection is **never** forked
   or re-implemented client-side.
 - **Durable client preferences → one dedicated preference store/provider per
-  domain** (theme, locale, wallpaper, layout). Only that owner reads/writes
-  browser persistence and synchronizes DOM/bootstrap state; components do not
-  access `localStorage` or duplicate preference caches directly.
+  domain** (ui-scale, locale, layout). Only that owner reads/writes browser
+  persistence and synchronizes DOM/bootstrap state; components do not access
+  `localStorage` or duplicate preference caches directly. The theme and
+  wallpaper preferences were removed client-side (pix ships a fixed dark
+  appearance; the backend theme contracts remain backward-compatible but
+  unused by this client).
 - **Component-local state → ephemeral UI only** (draft text, panel open/close,
   debounce, focus). If a value must survive reload, derive from a session or
   branch, or reflect remote truth, it belongs to one of the owners above.
@@ -75,7 +78,7 @@ fork the logic.
   legitimately need raw primitives (for example SSE/watch streams or upload
   progress) live in `packages/client/src/api/`, preserve the same typed error /
   schema / abort contract, and expose narrow injectable surfaces. Ordinary
-  request/response domains such as theme resolution still use `HttpClient`.
+  request/response domains still use `HttpClient`.
   A component doing its own XHR is a violation — route it through the typed
   transport and mutation lifecycle.
 - WebSocket goes only through `RuntimeSocket`/`SessionStore`. No component
@@ -178,16 +181,13 @@ layering defect.
 ## 11. CSS token ownership
 
 - Design tokens are defined **once**. `pix-adapter.css` owns only pix-specific
-  fallback tokens and must **never redefine** a source `globals.css`/`wallpaper.css`
-  selector. Theme tokens are projected through the canonical whitelist/value
-  grammar owned by the theme domain; Host/Protocol/Client never mirror fixed
-  token counts or validation regexes. Unsafe values such as `url()` and
-  `expression()` never reach CSS vars.
+  fallback tokens and must **never redefine** a source `globals.css` selector.
+  Unsafe values such as `url()` and `expression()` never reach CSS vars.
 - **No `!important` as a bug fix.** Only where the source contract already
-  requires it (wallpaper layer), with a comment explaining why; never add
-  `!important` to override a defect.
-- **No adapter/override as bug fix**: fixing a theme or token by layering an
-  override that masks the root cause is forbidden — fix the owner of the token.
+  requires it, with a comment explaining why; never add `!important` to
+  override a defect.
+- **No adapter/override as bug fix**: fixing a token by layering an override
+  that masks the root cause is forbidden — fix the owner of the token.
 
 ## 12. i18n
 

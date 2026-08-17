@@ -116,8 +116,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
        * Set-project-trusted (D3B trust-mutation slice). A trust flip changes
        * every project-scoped trust-gated catalog, so success invalidates the
        * trust summary PLUS skills/plugins/commands (resource seam, gated by
-       * trust) and ALL theme queries (project themes become readable — the
-       * theme list key carries no cwd, so the whole domain is invalidated).
+       * trust).
        */
       setTrusted: () => ({
         mutationKey: ["pix", "trust", "set-trusted"] as const,
@@ -129,7 +128,6 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
             queryKeys.skills.list(input.cwd),
             queryKeys.plugins.list(input.cwd),
             queryKeys.commands.list(input.cwd),
-            queryKeys.themes.all,
           ),
       }),
     },

@@ -274,6 +274,8 @@ Client 按 `capabilities` 显隐功能：
 | `worktree` | 隐藏 worktree 切换 |
 | `themes` | 隐藏主题切换（内置/自定义主题不可用） |
 
+> **当前状态（客户端）**：pix client 已移除主题功能（运行时切换、主题目录请求、设置、持久化/bootstrap、View Transitions）与壁纸（WallpaperLayer/设置/资源）。Client 固定深色外观（`html.dark` 常驻），不再消费 `/v1/themes`。下方 Host/runtime-core/pi-sdk-adapter 的只读主题契约保持不变（向后兼容、当前客户端未使用）。
+
 ### 只读主题目录（D3B-R6）
 
 `ThemeCatalogPort`（runtime-core）→ `@fffattiger/pix-pi-sdk-adapter/themes`（高保真移植旧桌面 Web 端的 `lib/theme.ts`）→ Host `GET /v1/themes` / `GET /v1/themes/:name`（Protocol strict DTO：`ThemeSetInfo` / `ThemeListResponse` / `ResolvedThemeResponse`）：

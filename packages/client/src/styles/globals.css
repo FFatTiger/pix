@@ -165,21 +165,10 @@ html.dark {
   --hatch-color: rgba(100, 193, 182, 0.16);
 }
 
-/* Theme toggle: circular wipe via View Transitions API.
-   Disable the UA cross-fade; the actual clip-path animation is driven by
-   Element.animate() in hooks/useTheme.ts after transition.ready resolves. */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation: none;
-  mix-blend-mode: normal;
-}
-::view-transition-old(root) {
-  z-index: 1;
-}
-::view-transition-new(root) {
-  z-index: 2;
-}
-
+/* Theme toggle: circular wipe via View Transitions API — removed with the
+   client theme switcher. pix ships a fixed dark appearance (html.dark is
+   applied permanently by the index.html bootstrap), so there is no runtime
+   theme transition anymore. */
 * {
   box-sizing: border-box;
 }
@@ -209,7 +198,7 @@ html {
   text-rendering: geometricPrecision;
   /* User-adjustable UI/text scale (Text Size setting): zoom scales fonts,
      icons, spacing and panel widths proportionally. Set pre-hydration by
-     app/layout.tsx and by hooks/useTheme.ts; defaults to 1 (100%). */
+     index.html and owned at runtime by hooks/useUiScale.ts; defaults to 1. */
   zoom: var(--app-ui-scale, 1);
 }
 
@@ -224,7 +213,7 @@ html, body {
   overscroll-behavior: none;
 }
 
-/* Safety net for the Text Size zoom (var --app-ui-scale, see hooks/useTheme.ts):
+/* Safety net for the Text Size zoom (var --app-ui-scale, see hooks/useUiScale.ts):
    CSS zoom on <html> shrinks the layout viewport's width but not its height,
    and vh/vw/dvh units never shrink, so every viewport-unit sizing in the app
    divides by var(--app-ui-scale) (see AppShell, layout.tsx, modals). This
@@ -1751,10 +1740,10 @@ span.linenumber {
     bottom: 0;
     left: 4px;
     width: 1px;
-    /* The splitter line is the panel divider in both wallpaper modes: the
-       sidebar/right-panel border was removed (it overlapped this line into
-       a 2px rule), so the line renders in the theme border color by
-       default and the accent on hover/focus as drag feedback. */
+    /* The splitter line is the panel divider: the sidebar/right-panel
+       border was removed (it overlapped this line into a 2px rule), so the
+       line renders in the theme border color by default and the accent on
+       hover/focus as drag feedback. */
     background: var(--border);
     content: "";
     transition: background 0.12s ease;
