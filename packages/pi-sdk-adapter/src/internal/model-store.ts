@@ -1,7 +1,7 @@
 // Read-only model catalog store backed by the Pi SDK ModelRuntime.
 //
 // This is the ONLY module in the models domain that touches the Pi SDK. It
-// performs sync catalog reads only — ModelRuntime.getModels / getModel — plus
+// performs sync catalog reads only — getAvailableSnapshot / getModel — plus
 // a SettingsManager read for the configured default/enabled scope.
 //
 // Hard read-only boundary:
@@ -21,7 +21,7 @@ import {
   resolveModelScopeWithDiagnostics,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
+import { InMemoryModelsStore } from "@earendil-works/pi-ai";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
   ModelInfo,
@@ -29,6 +29,7 @@ import type {
   ModelSelector,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
+import { loadInMemoryCredentials } from "./in-memory-credentials.js";
 import type { PiSdkModelStore } from "../models/index.js";
 
 /** Options for the SDK-backed read-only model store. */
@@ -59,18 +60,33 @@ function toModelInfo(model: Model<Api>): ModelInfo {
 }
 
 /**
- * Resolve the enabled-model scope against the offline catalog. `undefined`/empty
- * enabledModels means all catalog models are enabled; otherwise the SDK scope
- * resolver matches the patterns offline (no network).
+ * Models that belong to locally configured providers (custom models.json,
+ * stored credentials, or environment auth). This is the picker surface: never
+ * dump the SDK builtin catalog for providers the operator did not configure.
+ */
+function configuredModels(runtime: ModelRuntime): readonly Model<Api>[] {
+  return runtime.getAvailableSnapshot();
+}
+
+/**
+ * Resolve the enabled-model scope against locally configured models.
+ * `undefined`/empty enabledModels means all configured models are enabled;
+ * otherwise the SDK scope resolver matches the patterns offline (no network).
+ * A pattern set that matches nothing stays empty — it never falls back to the
+ * unused builtin catalog.
  */
 async function enabledModels(
   manager: SettingsManager,
   runtime: ModelRuntime,
 ): Promise<readonly Model<Api>[]> {
+  const configured = configuredModels(runtime);
   const patterns = manager.getEnabledModels();
-  if (!patterns || patterns.length === 0) return runtime.getModels();
+  if (!patterns || patterns.length === 0) return configured;
   const result = await resolveModelScopeWithDiagnostics(patterns, runtime);
-  return result.scopedModels.map((entry) => entry.model);
+  const configuredKeys = new Set(configured.map((model) => `${model.provider}\0${model.id}`));
+  return result.scopedModels
+    .map((entry) => entry.model)
+    .filter((model) => configuredKeys.has(`${model.provider}\0${model.id}`));
 }
 
 /**
@@ -96,7 +112,10 @@ export function createPiSdkModelStore(options: PiSdkModelStoreOptions): PiSdkMod
     // create() never writes auth.json/models-store.json placeholders.
     cachedRuntime ??= await ModelRuntime.create({
       allowModelNetwork: false,
-      credentials: new InMemoryCredentialStore(),
+      // Presence-only credentials from auth.json: needed so locally configured
+      // providers surface in getAvailableSnapshot(). Secrets never leave the
+      // in-memory store and are never returned by this catalog.
+      credentials: await loadInMemoryCredentials(join(agentDir, "auth.json")),
       modelsStore: new InMemoryModelsStore(),
       // Pin models.json resolution to the (possibly injected) agentDir so the
       // SDK never falls back to the real ~/.pi/agent/models.json. An
@@ -115,7 +134,8 @@ export function createPiSdkModelStore(options: PiSdkModelStoreOptions): PiSdkMod
 
   return {
     async listModels(): Promise<readonly ModelInfo[]> {
-      return (await runtime()).getModels().map(toModelInfo);
+      const instance = await runtime();
+      return (await enabledModels(settings(), instance)).map(toModelInfo);
     },
     async getDefaultModel(): Promise<ModelRef | null> {
       const instance = await runtime();

@@ -20,17 +20,17 @@
 //    there is never an `authorized:true/configured:false` split for stored OAuth.
 //  - No OAuth/login/logout/write; no key/token/header/raw store or log.
 //  - Returns canonical runtime-core AuthProviderInfo / AuthProviderStatus only.
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
-import type { Credential, Provider } from "@earendil-works/pi-ai";
+import { InMemoryModelsStore } from "@earendil-works/pi-ai";
+import type { Provider } from "@earendil-works/pi-ai";
 import type {
   AuthProviderInfo,
   AuthProviderKind,
   AuthProviderStatus,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
+import { loadInMemoryCredentials } from "./in-memory-credentials.js";
 import type { PiSdkCredentialStore } from "../credentials/index.js";
 
 /** Options for the SDK-backed read-only credential/provider store. */
@@ -57,40 +57,6 @@ function toProviderInfo(provider: Provider): AuthProviderInfo {
     ...(provider.name ? { name: provider.name } : {}),
     methods: toMethods(provider),
   };
-}
-
-function isCredential(value: unknown): value is Credential {
-  // Explicit null/object guard: a null/undefined/non-object entry must be
-  // SKIPPED (return false) — never throw, never abort later credentials. The
-  // earlier `a && b && c || d` form dereferenced null when value was null and
-  // threw inside the seed loop, aborting all remaining entries.
-  if (typeof value !== "object" || value === null) return false;
-  const type = (value as { type?: unknown }).type;
-  return type === "api_key" || type === "oauth";
-}
-
-/**
- * Read auth.json ONCE into an in-memory credential store (read-only: the
- * adapter never writes it). Missing/malformed auth.json yields an empty store.
- * Raw credential material stays in memory only and is never returned by the
- * catalog; only non-secret configured/authorized status crosses the boundary.
- */
-async function loadInMemoryCredentials(authPath: string): Promise<InMemoryCredentialStore> {
-  const store = new InMemoryCredentialStore();
-  try {
-    const raw = readFileSync(authPath, "utf8");
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    // Await every seed so the map is populated before ModelRuntime reads it
-    // (InMemoryCredentialStore.read does not wait on the modify chain).
-    for (const [providerId, credential] of Object.entries(data)) {
-      if (isCredential(credential)) {
-        await store.modify(providerId, async () => credential);
-      }
-    }
-  } catch {
-    // Missing or malformed auth.json: report no stored credentials.
-  }
-  return store;
 }
 
 /**
