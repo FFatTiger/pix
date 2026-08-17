@@ -322,7 +322,7 @@ export const enLocale = {
     "desktop.force": "Force",
     "desktop.appName": "Pix",
     "desktop.sessions": "Sessions",
-    "desktop.conversations": "Conversations",
+    "desktop.primaryNav": "Primary",
     "desktop.projects": "Projects",
     "desktop.files": "Files",
     "desktop.newSession": "New Session",

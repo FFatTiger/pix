@@ -322,7 +322,7 @@ export const zhCNLocale = {
     "desktop.force": "强制移除",
     "desktop.appName": "Pix",
     "desktop.sessions": "会话",
-    "desktop.conversations": "对话",
+    "desktop.primaryNav": "主要操作",
     "desktop.projects": "项目",
     "desktop.files": "文件",
     "desktop.newSession": "新建会话",

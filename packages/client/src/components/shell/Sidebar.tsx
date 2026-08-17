@@ -364,6 +364,8 @@ export function Sidebar({
   const canWorktreeWrite = can("worktree.write");
   const canFiles = can("files");
   const canGit = can("git");
+  const canPlugins = can("plugins");
+  const canSkills = can("skills");
 
   // Full (all-project) session list; the sidebar filters per project
   // client-side (worktrees of one repo share a projectRoot and are shown
@@ -699,7 +701,7 @@ export function Sidebar({
           </button>
         </div>
 
-        <nav className="sidebar-primary-nav" aria-label="Primary">
+        <nav className="sidebar-primary-nav" aria-label={t("desktop.primaryNav")}>
           <button
             type="button"
             className="sidebar-nav-item"
@@ -712,28 +714,32 @@ export function Sidebar({
             <NotePencil size={16} weight="regular" aria-hidden="true" />
             <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.newSession")}</span>
           </button>
-          <button
-            type="button"
-            className="sidebar-nav-item"
-            data-testid="sidebar-nav-plugins"
-            title={t("desktop.plugins")}
-            aria-label={t("desktop.plugins")}
-            onClick={() => onOpenSettings?.("plugins")}
-          >
-            <Plugs size={16} weight="regular" aria-hidden="true" />
-            <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.plugins")}</span>
-          </button>
-          <button
-            type="button"
-            className="sidebar-nav-item"
-            data-testid="sidebar-nav-resources"
-            title={t("desktop.resources")}
-            aria-label={t("desktop.resources")}
-            onClick={() => onOpenSettings?.("skills")}
-          >
-            <Stack size={16} weight="regular" aria-hidden="true" />
-            <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.resources")}</span>
-          </button>
+          {canPlugins ? (
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-testid="sidebar-nav-plugins"
+              title={t("desktop.plugins")}
+              aria-label={t("desktop.plugins")}
+              onClick={() => onOpenSettings?.("plugins")}
+            >
+              <Plugs size={16} weight="regular" aria-hidden="true" />
+              <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.plugins")}</span>
+            </button>
+          ) : null}
+          {canSkills ? (
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-testid="sidebar-nav-resources"
+              title={t("desktop.resources")}
+              aria-label={t("desktop.resources")}
+              onClick={() => onOpenSettings?.("skills")}
+            >
+              <Stack size={16} weight="regular" aria-hidden="true" />
+              <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.resources")}</span>
+            </button>
+          ) : null}
         </nav>
 
         {!hasWorkspaceControlsHosts && (
@@ -1440,19 +1446,27 @@ function SessionItem({
     openMenu(e.clientX, e.clientY, items);
   }, [confirmDelete, renaming, deleting, openMenu, session.sessionId, liveSessionId, canRename, canDelete, canExport, startRename, handleDeleteClick, exportVisibleBranch, t]);
 
+  const rowTitle = isRunning
+    ? `${title} · ${t("desktop.agentRunning")}`
+    : isPending
+      ? `${title} · ${t("desktop.openingSession")}`
+      : (() => {
+          const activity = activityMs(session);
+          return activity === undefined ? title : `${title} · ${formatRelativeTime(activity, t)}`;
+        })();
+
   return (
     <div
       className={`sidebar-list-row${confirmDelete ? " sidebar-list-row--confirm" : ""}`}
       data-active={isSelected ? "true" : "false"}
       data-pending={isPending ? "true" : undefined}
       data-running={isRunning ? "true" : undefined}
-      onClick={confirmDelete || renaming ? undefined : () => onSelectSession(session.sessionId)}
       onContextMenu={handleContextMenu}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); }}
       style={{
         paddingLeft: depth > 0 ? depth * 12 + 10 : 10,
-        cursor: confirmDelete || renaming ? "default" : "pointer",
+        cursor: confirmDelete || renaming ? "default" : undefined,
         opacity: deleting ? 0.5 : 1,
       }}
     >
@@ -1488,51 +1502,46 @@ function SessionItem({
             </button>
           </div>
         </>
+      ) : renaming ? (
+        <>
+          {depth > 0 && <GitBranch size={14} weight="regular" aria-hidden="true" />}
+          {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}
+          <input
+            ref={inputRef}
+            value={renameValue}
+            onChange={(e) => { setRenameValue(e.target.value); setRenameError(null); }}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitRename();
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setRenaming(false);
+                setRenameError(null);
+              }
+            }}
+            aria-label={t("desktop.rename")}
+            autoFocus
+            className="sidebar-row-title"
+            style={{ height: 22, border: 0, outline: "none", background: "color-mix(in srgb, var(--accent) 16%, transparent)", borderRadius: 4, color: "inherit", font: "inherit" }}
+          />
+        </>
       ) : (
         <>
-          {depth > 0 && (
-            <GitBranch size={14} weight="regular" aria-hidden="true" />
-          )}
-          {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}
-          {renaming ? (
-            <input
-              ref={inputRef}
-              value={renameValue}
-              onChange={(e) => { setRenameValue(e.target.value); setRenameError(null); }}
-              onBlur={commitRename}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  commitRename();
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setRenaming(false);
-                  setRenameError(null);
-                }
-              }}
-              aria-label={t("desktop.rename")}
-              autoFocus
-              className="sidebar-row-title"
-              style={{ height: 22, border: 0, outline: "none", background: "color-mix(in srgb, var(--accent) 16%, transparent)", borderRadius: 4, color: "inherit", font: "inherit" }}
-            />
-          ) : (
-            <span
-              className="sidebar-row-title sidebar-title-fade"
-              title={
-                isRunning
-                  ? `${title} · ${t("desktop.agentRunning")}`
-                  : isPending
-                    ? `${title} · ${t("desktop.openingSession")}`
-                    : (() => {
-                        const activity = activityMs(session);
-                        return activity === undefined ? title : `${title} · ${formatRelativeTime(activity, t)}`;
-                      })()
-              }
-            >
-              {title}
-            </span>
-          )}
+          <button
+            type="button"
+            className="sidebar-session-select"
+            data-testid={`session-select-${session.sessionId}`}
+            aria-current={isSelected ? "true" : undefined}
+            title={rowTitle}
+            onClick={() => onSelectSession(session.sessionId)}
+          >
+            {depth > 0 && <GitBranch size={14} weight="regular" aria-hidden="true" />}
+            {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}
+            <span className="sidebar-row-title sidebar-title-fade">{title}</span>
+          </button>
           {hasChildren && (
             <button
               type="button"
@@ -1545,7 +1554,7 @@ function SessionItem({
               <CaretRight size={12} weight="regular" aria-hidden="true" />
             </button>
           )}
-          {!renaming && !busy && (
+          {!busy && (
             <div className="sidebar-row-actions">
               {canRename ? (
                 <button type="button" className="sidebar-icon-btn" onClick={startRename} title={t("desktop.rename")} aria-label={t("desktop.rename")}>

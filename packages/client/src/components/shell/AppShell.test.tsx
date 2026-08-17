@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, cleanup, act, screen, fireEvent } from "@testing-library/react";
+import { render, cleanup, act, screen, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useEffect } from "react";
@@ -187,9 +187,12 @@ function Capture(): null {
 }
 
 let previousFetch: typeof fetch;
-function mountApp(search: WorkspaceSearch, opts: { queryClient?: QueryClient } = {}) {
+function mountApp(search: WorkspaceSearch, opts: { queryClient?: QueryClient; capabilities?: HostInfo["capabilities"] } = {}) {
   const qc = opts.queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const host: Partial<HostInfo> = { mode: "local", capabilities: ["agent", "sessions", "files", "models"] };
+  const host: Partial<HostInfo> = {
+    mode: "local",
+    capabilities: opts.capabilities ?? ["agent", "sessions", "files", "models"],
+  };
   const Tree = ({ search: s }: { search: WorkspaceSearch }): ReactNode => (
     <QueryClientProvider client={qc}>
       <HttpClientProvider>
@@ -721,8 +724,10 @@ describe("AppShell — source-like sidebar rail", () => {
     ].filter((id) => document.querySelector(`[data-testid="${id}"]`));
   }
 
+  const catalogCaps: HostInfo["capabilities"] = ["agent", "sessions", "files", "models", "plugins", "skills"];
+
   it("renders the source hierarchy: Pix, New Session, Plugins, Resources, Projects, Sessions, Files, Settings", async () => {
-    mountApp({ cwd: "/x" });
+    mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
     await settle();
     expect(screen.getByTestId("sidebar-brand").textContent).toBe("Pix");
     expect(screen.getByTestId("sidebar-new-session").textContent).toContain("New Session");
@@ -745,7 +750,7 @@ describe("AppShell — source-like sidebar rail", () => {
   });
 
   it("maps Plugins/Resources/Settings onto existing SettingsModal tabs and invents no counts", async () => {
-    mountApp({ cwd: "/x" });
+    mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
     await settle();
     expect(screen.queryByTestId("nav-packages-badge")).toBeNull();
     expect(screen.queryByTestId("sidebar-update-btn")).toBeNull();
@@ -768,7 +773,7 @@ describe("AppShell — source-like sidebar rail", () => {
   });
 
   it("New Session uses the existing create path and invents no extra catalog chrome", async () => {
-    mountApp({ cwd: "/x" });
+    mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
     await settle();
     fireEvent.click(screen.getByTestId("sidebar-new-session"));
     expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/", search: { cwd: "/x" } }));
@@ -837,5 +842,45 @@ describe("AppShell — source-like sidebar rail", () => {
       ws.serverSend({ type: "response", id: prompt.id, payload: { ok: true, result: { commandId: prompt.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
       await flush();
     });
+  });
+
+  it("selects a session from a real button via keyboard and keeps sibling actions reachable", async () => {
+    const contextDeferreds = new Map<string, Deferred>();
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS, contextDeferreds });
+    mountApp({ cwd: "/x" }, { capabilities: ["agent", "sessions", "files", "models", "session.write", "session.delete"] });
+    await settle();
+    const select = screen.getByTestId("session-select-B");
+    expect(select.tagName).toBe("BUTTON");
+    expect(select.getAttribute("type")).toBe("button");
+    expect(select.closest(".sidebar-list-row")?.tagName).toBe("DIV");
+    expect(select.querySelector("button")).toBeNull();
+    select.focus();
+    fireEvent.keyDown(select, { key: "Enter" });
+    fireEvent.click(select);
+    await act(async () => { await flush(8); });
+    expect(screen.getByLabelText("Opening session…")).toBeTruthy();
+    const row = select.closest(".sidebar-list-row");
+    expect(row).toBeTruthy();
+    const actions = row!.querySelector(".sidebar-row-actions");
+    expect(actions).toBeTruthy();
+    expect(within(actions as HTMLElement).getByLabelText("Rename").tagName).toBe("BUTTON");
+    expect(within(actions as HTMLElement).getByLabelText("Delete").tagName).toBe("BUTTON");
+    (actions as HTMLElement).querySelectorAll("button").forEach((button) => {
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+    });
+    await act(async () => {
+      contextDeferreds.get("B")!.resolve(contextResponse("B"));
+      await flush(12);
+    });
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { session: "B", cwd: "/x" } }));
+  });
+
+  it("omits Plugins and Resources when those capabilities are absent", async () => {
+    mountApp({ cwd: "/x" });
+    await settle();
+    expect(screen.queryByTestId("sidebar-nav-plugins")).toBeNull();
+    expect(screen.queryByTestId("sidebar-nav-resources")).toBeNull();
+    expect(screen.getByTestId("sidebar-new-session")).toBeTruthy();
+    expect(screen.getByTestId("sidebar-nav-settings")).toBeTruthy();
   });
 });
