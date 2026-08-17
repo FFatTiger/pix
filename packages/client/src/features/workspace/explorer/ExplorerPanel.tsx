@@ -161,11 +161,22 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
     fileExplorerRef.current?.prepareUpload(files);
   });
 
-  if (!canFiles) {
-    return <p className="workspace-hint">File browsing is not available on this host.</p>;
-  }
-  if (!cwd) {
-    return <p className="workspace-hint">Open a project to browse its files.</p>;
+  if (!canFiles || !cwd) {
+    // The header (with the fused always-visible browser toggle) must render
+    // even in the inactive states, or an open panel could never be closed.
+    return (
+      <div className="explorer-panel" aria-label="Files">
+        <div className="sidebar-section-head">
+          <span className="sidebar-section-label-text">{t("desktop.files")}</span>
+          {headerAction ? <div className="explorer-header-action">{headerAction}</div> : null}
+        </div>
+        <p className="workspace-hint">
+          {!canFiles
+            ? "File browsing is not available on this host."
+            : "Open a project to browse its files."}
+        </p>
+      </div>
+    );
   }
 
   const searchData = search.data;
@@ -323,8 +334,8 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
                   <ArrowClockwise size={14} weight="regular" aria-hidden="true" />
                 )}
               </button>
-              {headerAction}
             </div>
+            {headerAction ? <div className="explorer-header-action">{headerAction}</div> : null}
           </div>
           {explorerOpen && (
             <div>

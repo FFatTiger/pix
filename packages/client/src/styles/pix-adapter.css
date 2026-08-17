@@ -1230,32 +1230,22 @@ html.dark .catalog-meta-item--error {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 0;
-  padding: 0;
-  border-radius: 0;
-  background: var(--bg-panel);
+  gap: 1px;
   transform: translateY(-50%);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
 }
 
-.sidebar-list-row[data-active="true"] .sidebar-row-actions {
-  background: var(--bg-panel);
-}
-
-.sidebar-row-actions .sidebar-icon-btn,
-.sidebar-section-actions .sidebar-icon-btn {
-  border-radius: 0;
-  background: var(--bg-panel);
-}
-
-.sidebar-list-row[data-active="true"] .sidebar-row-actions .sidebar-icon-btn {
-  background: var(--bg-panel);
+/* Row pin/archive chips: the icon-button HOVER look is the resting state —
+   opaque background per button, no container background and no shape. */
+.sidebar-row-actions .sidebar-icon-btn {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .sidebar-row-actions .sidebar-icon-btn:hover {
-  background: var(--bg-hover);
+  color: var(--accent);
 }
 
 .sidebar-list-row:hover .sidebar-row-meta,
@@ -1275,6 +1265,24 @@ html.dark .catalog-meta-item--error {
 .sidebar-section-head[data-actions-open="true"] .sidebar-section-actions {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* File explorer header: the fused browser toggle is ALWAYS visible (it is
+   the panel's right edge); upload/refresh stay in the hover overlay, which
+   is offset left of the toggle so it never covers the Files label. */
+.explorer-header-action {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+.explorer-panel .sidebar-section-actions {
+  right: 38px;
+}
+
+.explorer-panel .sidebar-section-toggle {
+  padding-right: 76px;
 }
 
 .sidebar-section-head {

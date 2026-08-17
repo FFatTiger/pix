@@ -1763,19 +1763,12 @@ span.linenumber {
     height: 100%;
     padding-top: 0;
     background: var(--bg-panel);
-    border-left: 1px solid var(--border);
     flex-shrink: 0;
-  }
-  .file-browser-rail--open {
-    border-left: none;
   }
   .file-browser-rail .sidebar-icon-btn {
     width: 28px;
     height: 28px;
     margin-top: 4px;
-  }
-  .app-shell-body:has(.right-panel-open) .right-panel-splitter {
-    display: none;
   }
 
   .workspace-panel-splitter {

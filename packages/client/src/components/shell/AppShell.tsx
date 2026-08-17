@@ -794,14 +794,9 @@ export function AppShell({ search }: AppShellProps) {
         </div>
       </div>
 
-      {/* Right file rail: the toggle stays on the window's right edge. The
-          explorer expands left from that button and never covers it. */}
-      {fileBrowserOpen && (
-        <div
-          {...rightPanel.separatorProps}
-          className="workspace-panel-splitter right-panel-splitter"
-        />
-      )}
+      {/* Right file panel: fused with its toggle — no rail, no splitter.
+          The toggle lives on the Files header (always visible) and the panel
+          expands left from it, flush with the window edge. */}
       {fileBrowserOpen ? (
         <div
           ref={rightPanel.panelRef}
@@ -809,7 +804,7 @@ export function AppShell({ search }: AppShellProps) {
           style={{
             display: "flex",
             flexDirection: "column",
-            background: "var(--bg)",
+            background: "var(--bg-panel)",
           }}
         >
           <ExplorerPanel
