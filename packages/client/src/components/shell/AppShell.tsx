@@ -11,26 +11,18 @@ import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
 import { Sidebar } from "@/components/shell/Sidebar";
-import { registerChatOpenFileTarget } from "@/components/chat/chat-experience-bridge";
 import { AppTitleBar } from "@/components/shell/AppTitleBar";
 import { SettingsModal, type SettingsTab } from "@/components/shell/SettingsModal";
 import { WallpaperLayer } from "@/components/WallpaperLayer";
 import { LoginPage } from "@/components/shell/LoginPage";
-import { FileViewerPanel, type FileViewerPanelHandle } from "@/features/workspace/viewer/FileViewerPanel";
 import { ProjectTrustDialog } from "@/features/settings/ProjectTrustDialog";
 import { ExtensionRequests } from "@/features/extension-request/ExtensionRequests";
 import { useRuntime } from "@/runtime";
-import { useTheme } from "@/hooks/useTheme";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useGateStatus } from "@/features/gate/useGate";
 import { useHttpClient } from "@/app/http-context";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import {
-  getDefaultRightPanelWidth,
-  getRightPanelMaxWidth,
-  getSidebarMaxWidth,
-  RIGHT_PANEL_MAX_WIDTH,
-  RIGHT_PANEL_MIN_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
@@ -54,7 +46,6 @@ export function AppShell({ search }: AppShellProps) {
   const navigate = useNavigate();
   const http = useHttpClient();
   const queryClient = useQueryClient();
-  const { isDark, toggleTheme } = useTheme();
   const isMobile = useIsMobile();
   const gate = useGateStatus();
 
@@ -72,7 +63,6 @@ export function AppShell({ search }: AppShellProps) {
   useEffect(() => {
     setMobileSidebarReady(true);
   }, []);
-  const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("models");
   const openSettings = useCallback((tab: SettingsTab) => {
@@ -130,10 +120,6 @@ export function AppShell({ search }: AppShellProps) {
   useEffect(() => {
     setPendingSessionId(null);
   }, [search.session]);
-
-  // Title-bar workspace-controls portal host (Sidebar portals its project +
-  // worktree controls in here; the sidebar fallback renders while null).
-  const [titleWorkspaceControlsHost, setTitleWorkspaceControlsHost] = useState<HTMLDivElement | null>(null);
 
   // Session title for the top bar — resolved from the shared sessions-list
   // cache (same key the Sidebar queries), never a separate request.
@@ -322,85 +308,26 @@ export function AppShell({ search }: AppShellProps) {
   // `session` selection so a stale session is never displayed under the new
   // workspace; existing runtime sessions stay alive untouched. The generation
   // bump invalidates any in-flight prepare (its prepared-from cwd is gone).
-  const handleOpenWorktree = (path: string): void => {
-    selectionGenerationRef.current += 1;
-    setPendingSessionId(null);
-    void navigate({ to: "/", search: { cwd: path } });
-  };
+  // ── File open (viewer panel removed) ────────────────────────────────────
+  // The right-side file viewer was removed; opening a file is a no-op while
+  // keeping the prop plumbing stable for the sidebar/explorer/transcript.
+  const handleOpenFile = useCallback((_filePath: string, _fileName: string, _options?: { initialDisplayMode?: "diff" }): void => {
+    // no-op — no file viewer
+  }, []);
 
-  // ── Right panel (file viewer) ────────────────────────────────────────────
-  const fileViewerRef = useRef<FileViewerPanelHandle>(null);
-  const handleOpenFile = useCallback((filePath: string, fileName: string, openOptions?: { initialDisplayMode?: "diff" }): void => {
-    fileViewerRef.current?.openFile(filePath, fileName, null, openOptions);
-    setRightPanelOpen(true);
-    // On mobile the file panel is full-screen; close the drawer so it shows.
-    if (isMobile) setSidebarOpen(false);
-  }, [isMobile]);
-
-  // Chat → file-viewer bridge (F2): while the viewer is mounted, register the
-  // exact components' chat file-open receiver (MessageView links, written-file
-  // rows) onto the AppShell file-open handler. The adapter derives the basename
-  // the source handler expects; unregister on unmount/change so a dead shell
-  // never holds a target.
-  useEffect(() => {
-    return registerChatOpenFileTarget((filePath, options) => {
-      handleOpenFile(filePath, filePath.split("/").pop() ?? filePath, options);
-    });
-  }, [handleOpenFile]);
-
-  // ── Resizable panels (source layout semantics) ───────────────────────────
+  // ── Resizable sidebar panel ─────────────────────────────────────────────
   const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH);
-  const rightPanelWidthRef = useRef(getDefaultRightPanelWidth(1366));
-  const getResponsiveRightPanelWidth = useCallback(
-    () => getDefaultRightPanelWidth(window.innerWidth),
-    [],
-  );
-  const getResponsiveSidebarMaxWidth = useCallback(
-    () => getSidebarMaxWidth({
-      viewportWidth: window.innerWidth,
-      rightPanelOpen,
-      rightPanelWidth: rightPanelWidthRef.current,
-    }),
-    [rightPanelOpen],
-  );
-  const getResponsiveRightPanelMaxWidth = useCallback(
-    () => getRightPanelMaxWidth({
-      viewportWidth: window.innerWidth,
-      sidebarOpen,
-      sidebarWidth: sidebarWidthRef.current,
-    }),
-    [sidebarOpen],
-  );
   const sidebarPanel = useResizablePanel({
     ariaLabel: "Resize sidebar",
     cssVariable: "--sidebar-width",
     defaultWidth: SIDEBAR_DEFAULT_WIDTH,
-    getMaxWidth: getResponsiveSidebarMaxWidth,
+    getMaxWidth: () => SIDEBAR_MAX_WIDTH,
     growthDirection: "right",
     maxWidth: SIDEBAR_MAX_WIDTH,
     minWidth: SIDEBAR_MIN_WIDTH,
     storageKey: "pi-sidebar-width",
     widthRef: sidebarWidthRef,
   });
-  const rightPanel = useResizablePanel({
-    ariaLabel: "Resize file panel",
-    cssVariable: "--right-panel-width",
-    defaultWidth: getDefaultRightPanelWidth(1366),
-    getDefaultWidth: getResponsiveRightPanelWidth,
-    getMaxWidth: getResponsiveRightPanelMaxWidth,
-    growthDirection: "left",
-    maxWidth: RIGHT_PANEL_MAX_WIDTH,
-    minWidth: RIGHT_PANEL_MIN_WIDTH,
-    storageKey: "pi-right-panel-width",
-    widthRef: rightPanelWidthRef,
-  });
-  const reclampSidebarWidth = sidebarPanel.reclampWidth;
-  const reclampRightPanelWidth = rightPanel.reclampWidth;
-  useEffect(() => {
-    if (!rightPanelOpen) return;
-    reclampSidebarWidth();
-    reclampRightPanelWidth();
-  }, [reclampRightPanelWidth, reclampSidebarWidth, rightPanelOpen]);
 
   const handleSidebarToggle = useCallback(() => {
     setSidebarOpen((open) => !open);
@@ -421,13 +348,7 @@ export function AppShell({ search }: AppShellProps) {
       <AppTitleBar
         sidebarOpen={sidebarOpen}
         onSidebarToggle={handleSidebarToggle}
-        isDark={isDark}
-        toggleTheme={toggleTheme}
-        rightPanelOpen={rightPanelOpen}
-        onToggleFilePanel={() => setRightPanelOpen((v) => !v)}
-        onOpenSettings={() => openSettings("models")}
         sessionTitle={sessionTitle}
-        onWorkspaceControlsHostChange={setTitleWorkspaceControlsHost}
       />
       {showTrustWarning && (
         <button
@@ -464,7 +385,6 @@ export function AppShell({ search }: AppShellProps) {
       <div
         style={{
           "--sidebar-width": `${sidebarPanel.width}px`,
-          "--right-panel-width": `${rightPanel.width}px`,
           flex: 1,
           display: "flex",
           overflow: "hidden",
@@ -511,12 +431,10 @@ export function AppShell({ search }: AppShellProps) {
           pendingSessionId={pendingSessionId}
           onSessionDeleted={handleSessionDeleted}
           onSelectSession={handleSelectSession}
-          onOpenWorktree={handleOpenWorktree}
           onNewSession={handleCreate}
           canNewSession={canCreate}
           onOpenFile={handleOpenFile}
           onOpenSettings={openSettings}
-          workspaceControlsHosts={{ title: titleWorkspaceControlsHost }}
         />
       </div>
       {sidebarOpen && (
@@ -565,29 +483,6 @@ export function AppShell({ search }: AppShellProps) {
             )}
           </main>
         </div>
-      </div>
-
-      {/* Right panel: file viewer — always mounted, width animated via CSS */}
-      {rightPanelOpen && (
-        <div
-          {...rightPanel.separatorProps}
-          className="workspace-panel-splitter right-panel-splitter"
-        />
-      )}
-      <div
-        ref={rightPanel.panelRef}
-        className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          background: "var(--bg)",
-        }}
-      >
-        <FileViewerPanel
-          ref={fileViewerRef}
-          {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
-          onOpenLinkedFile={(filePath) => handleOpenFile(filePath, filePath.split("/").pop() ?? filePath)}
-        />
       </div>
     </div>
     {projectTrustDialogOpen && search.cwd ? (

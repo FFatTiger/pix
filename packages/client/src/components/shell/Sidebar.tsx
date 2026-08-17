@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowClockwise,
@@ -29,7 +28,6 @@ import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
 import { useContextMenu, type ContextMenuEntry } from "@/components/ContextMenu";
 import { ExplorerPanel } from "@/features/workspace/explorer/ExplorerPanel";
-import { WorktreeSelector } from "@/features/workspace/worktree/WorktreeSelector";
 import { bucketOf, timeBucketKey, TIME_BUCKET_ORDER, type TimeBucket } from "@/lib/time-groups";
 import { loadForkCollapsed, saveForkCollapsed } from "@/lib/fork-collapse-state";
 import {
@@ -68,16 +66,10 @@ export interface SidebarProps {
   onSessionDeleted?: (sessionId: string) => void;
   /** Select a session row (AppShell-owned URL navigation to `?session=`). */
   onSelectSession: (sessionId: string) => void;
-  /** Client URL cwd navigation (project/worktree switch; AppShell-owned). */
-  onOpenWorktree: (path: string) => void;
   /** Start a new session in the current workspace (AppShell-owned). */
   onNewSession: () => void;
   /** Honest gate for the new-session action (capability + cwd + not attached). */
   canNewSession: boolean;
-  /** Portal hosts for the workspace (project/worktree) controls. */
-  workspaceControlsHosts?: {
-    title?: HTMLElement | null;
-  };
   /** Open a file in the right panel (viewer tab ownership stays with the shell). */
   onOpenFile: (filePath: string, fileName: string, options?: { initialDisplayMode?: "diff" }) => void;
   /** Open the existing SettingsModal on a specific tab (plugins / skills / settings). */
@@ -229,71 +221,6 @@ function pathBaseName(path: string): string {
  * to the left edge; the inner plaintext bidi isolation keeps the path itself
  * rendered strictly left-to-right (no punctuation reordering).
  */
-function PathLabel({ text, style }: { text: string; style?: CSSProperties }) {
-  return (
-    <span
-      style={{
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        display: "block",
-        minWidth: 0,
-        lineHeight: 1.35,
-        direction: "rtl",
-        textAlign: "left",
-        ...style,
-      }}
-    >
-      <span style={{ unicodeBidi: "plaintext" }}>{text}</span>
-    </span>
-  );
-}
-
-const DROPDOWN_ANIMATION_MS = 140;
-
-function AnimatedDropdown({ open, children, style }: { open: boolean; children: ReactNode; style: CSSProperties }) {
-  const [mounted, setMounted] = useState(open);
-  const [visible, setVisible] = useState(open);
-
-  useEffect(() => {
-    let frame: number | undefined;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-
-    if (open) {
-      setMounted(true);
-      setVisible(false);
-      frame = window.requestAnimationFrame(() => {
-        frame = window.requestAnimationFrame(() => setVisible(true));
-      });
-    } else {
-      setVisible(false);
-      timeout = setTimeout(() => setMounted(false), DROPDOWN_ANIMATION_MS);
-    }
-
-    return () => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
-      if (timeout) clearTimeout(timeout);
-    };
-  }, [open]);
-
-  if (!mounted) return null;
-
-  return (
-    <div
-      style={{
-        ...style,
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0) scale(1)" : "translateY(-8px) scale(0.96)",
-        transformOrigin: "top center",
-        transition: `opacity ${DROPDOWN_ANIMATION_MS}ms ease, transform ${DROPDOWN_ANIMATION_MS}ms ease`,
-        pointerEvents: open ? "auto" : "none",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
 interface SessionTreeNode {
   session: SessionHeader;
   children: SessionTreeNode[];
@@ -351,10 +278,8 @@ export function Sidebar({
   pendingSessionId,
   onSessionDeleted,
   onSelectSession,
-  onOpenWorktree,
   onNewSession,
   canNewSession,
-  workspaceControlsHosts,
   onOpenFile,
   onOpenSettings,
 }: SidebarProps) {
@@ -364,7 +289,6 @@ export function Sidebar({
   const options = createQueryOptions(http);
   const { can, canBrowseSessions, canDeleteSessions, canWriteSessions } = useCapabilities();
   const canWorktree = can("worktree");
-  const canWorktreeWrite = can("worktree.write");
   const canFiles = can("files");
   const canGit = can("git");
   const canPlugins = can("plugins");
@@ -488,193 +412,6 @@ export function Sidebar({
 
   const runningSessionIds = liveStreaming && liveSessionId ? new Set([liveSessionId]) : new Set<string>();
 
-  // ── Workspace controls (project picker + worktree switcher) ──────────────
-  // Portaled into the title bar when a host element exists; otherwise the
-  // sidebar renders the same controls inline (source fallback rule).
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [projectFilter, setProjectFilter] = useState("");
-  const [customPathOpen, setCustomPathOpen] = useState(false);
-  const [customPathValue, setCustomPathValue] = useState("");
-  const [customPathError, setCustomPathError] = useState<string | null>(null);
-  const customPathInputRef = useRef<HTMLInputElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  const hasWorkspaceControlsHosts = Boolean(workspaceControlsHosts?.title);
-
-  const visibleProjects = projectFilter.trim()
-    ? recentProjects.filter((p) => p.toLowerCase().includes(projectFilter.trim().toLowerCase()))
-    : recentProjects;
-
-  const selectProject = (project: string) => {
-    setProjectFilter("");
-    setCustomPathOpen(false);
-    setCustomPathValue("");
-    setCustomPathError(null);
-    setDropdownOpen(false);
-    onOpenWorktree(project);
-  };
-
-  /** Client-side path validation (mirrors the AppShell project-open rule):
-   *  only absolute paths are accepted; no server endpoint is implied. */
-  const commitCustomPath = () => {
-    const path = customPathValue.trim();
-    if (!path) return;
-    const absolute = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
-    if (!absolute) {
-      setCustomPathError("Enter an absolute project path.");
-      return;
-    }
-    setCustomPathError(null);
-    setCustomPathOpen(false);
-    setCustomPathValue("");
-    setDropdownOpen(false);
-    onOpenWorktree(path);
-  };
-
-  // Close dropdowns on outside click (source rule, scoped to this control).
-  useEffect(() => {
-    if (!dropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current?.contains(e.target as Node)) return;
-      setDropdownOpen(false);
-      setProjectFilter("");
-      setCustomPathOpen(false);
-      setCustomPathValue("");
-      setCustomPathError(null);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [dropdownOpen]);
-
-  const projectSearch = (
-    <div style={{ borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-      <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-        <MagnifyingGlass size={13} color="var(--text-dim)" style={{ position: "absolute", left: 12, pointerEvents: "none" }} aria-hidden="true" />
-        <input
-          value={projectFilter}
-          onChange={(e) => setProjectFilter(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              if (projectFilter) setProjectFilter("");
-              else setDropdownOpen(false);
-            }
-          }}
-          placeholder={t("desktop.searchProjects")}
-          aria-label={t("desktop.searchProjects")}
-          autoFocus
-          style={{ width: "100%", padding: "8px 12px 8px 34px", background: "transparent", border: "none", outline: "none", color: "var(--text)", fontSize: 12, fontFamily: "var(--font-mono)", boxSizing: "border-box" }}
-        />
-      </div>
-    </div>
-  );
-  const projectItem = (project: string) => {
-    const isSelected = project === selectedProject;
-    return (
-      <button key={project} onClick={() => selectProject(project)} title={project} style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "3px 8px", background: isSelected ? "var(--bg-selected)" : "transparent", border: "none", borderRadius: 5, color: isSelected ? "var(--accent)" : "var(--text)", cursor: "pointer", textAlign: "left", fontSize: 12, fontFamily: "var(--font-mono)", minWidth: 0 }} onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}>
-        {isSelected ? (
-          <Check size={12} color="var(--accent)" weight="bold" style={{ flexShrink: 0 }} aria-hidden="true" />
-        ) : (
-          <span style={{ width: 12, flexShrink: 0 }} />
-        )}
-        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pathBaseName(project)}</span>
-      </button>
-    );
-  };
-  const projectList = (
-    <div style={{ maxHeight: "min(calc(32vh / var(--app-ui-scale, 1)), 240px)", overflowY: "auto", flex: 1, minHeight: 0, padding: "4px" }}>
-      {visibleProjects.length > 0 && (
-        <>
-          <div style={{ padding: "5px 8px 3px", fontSize: 10, fontWeight: 600, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.07em" }}>{t("desktop.recentProjects")}</div>
-          {visibleProjects.map(projectItem)}
-        </>
-      )}
-      {visibleProjects.length === 0 && <div style={{ padding: "8px", fontSize: 12, color: "var(--text-dim)" }}>{projectFilter.trim() ? t("desktop.noMatchingProjects") : t("desktop.noProjectsYet")}</div>}
-    </div>
-  );
-  const projectActions = (
-    <div style={{ borderTop: "1px solid var(--border)", padding: "4px", flexShrink: 0 }}>
-      {!customPathOpen ? (
-        <button onClick={(e) => { e.stopPropagation(); setCustomPathOpen(true); setCustomPathError(null); setTimeout(() => customPathInputRef.current?.focus(), 0); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", background: "transparent", border: "none", borderRadius: 5, color: "var(--text-muted)", cursor: "pointer", textAlign: "left", fontSize: 12 }} onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-muted)"; }}>
-          <FolderOpen size={14} weight="regular" style={{ flexShrink: 0 }} aria-hidden="true" />
-          <span>{t("desktop.selectFolder")}</span>
-        </button>
-      ) : (
-        <div style={{ padding: "6px 4px 4px" }}>
-          <input ref={customPathInputRef} value={customPathValue} onChange={(e) => { setCustomPathValue(e.target.value); setCustomPathError(null); }} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitCustomPath(); } if (e.key === "Escape") { setCustomPathOpen(false); setCustomPathValue(""); setCustomPathError(null); } }} placeholder={t("desktop.projectPathPlaceholder")} style={{ width: "100%", fontSize: 11, fontFamily: "var(--font-mono)", padding: "5px 8px", border: "1px solid var(--accent)", borderRadius: 5, outline: "none", background: "var(--bg)", color: "var(--text)", boxSizing: "border-box" }} />
-          {customPathError && <div style={{ marginTop: 5, color: "#dc2626", fontSize: 11, lineHeight: 1.35, overflowWrap: "anywhere" }}>{customPathError}</div>}
-          <div style={{ display: "flex", gap: 5, marginTop: 5 }}>
-            <button onClick={commitCustomPath} disabled={!customPathValue.trim()} style={{ flex: 1, padding: "4px 0", background: "var(--accent)", border: "none", borderRadius: 5, color: "#fff", fontSize: 11, fontWeight: 600, cursor: !customPathValue.trim() ? "not-allowed" : "pointer", opacity: !customPathValue.trim() ? 0.65 : 1 }}>{t("desktop.open")}</button>
-            <button onClick={() => { setCustomPathOpen(false); setCustomPathValue(""); setCustomPathError(null); }} style={{ flex: 1, padding: "4px 0", background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-muted)", fontSize: 11, cursor: "pointer" }}>{t("desktop.cancel")}</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-  const compactProjectLabel = search.cwd
-    ? pathBaseName(selectedProject ?? search.cwd)
-    : `${t("desktop.selectProject")}…`;
-
-  const worktreeControl = (
-    <WorktreeSelector
-      cwd={search.cwd}
-      canWorktree={canWorktree}
-      {...(canWorktreeWrite ? { canWorktreeWrite } : {})}
-      onSelectWorktree={onOpenWorktree}
-    />
-  );
-
-  const workspaceControls = (
-    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "flex-start", height: "100%", minWidth: 0 }}>
-      <div ref={dropdownRef} style={{ position: "relative", minWidth: 0 }}>
-        <button
-          className="app-no-drag app-titlebar-context-control"
-          onClick={() => setDropdownOpen((v) => !v)}
-          title={selectedProject ?? search.cwd ?? t("desktop.selectProject")}
-          aria-label={t("desktop.selectProject")}
-          aria-expanded={dropdownOpen}
-          style={{
-            height: 36,
-            maxWidth: 260,
-            minWidth: 0,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "0 8px",
-            background: dropdownOpen ? "var(--bg-selected)" : "none",
-            border: "none",
-            color: dropdownOpen ? "var(--text)" : search.cwd ? "var(--text-muted)" : "var(--text-dim)",
-            cursor: "pointer",
-            fontSize: 12,
-            fontWeight: 500,
-            fontFamily: "var(--font-mono)",
-            lineHeight: 1,
-            letterSpacing: 0,
-            textAlign: "left",
-            transition: "background 0.12s, color 0.12s, border-color 0.12s",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "var(--bg-hover)";
-            e.currentTarget.style.color = search.cwd ? "var(--text)" : "var(--text-muted)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = dropdownOpen ? "var(--bg-selected)" : "none";
-            e.currentTarget.style.color = dropdownOpen ? "var(--text)" : search.cwd ? "var(--text-muted)" : "var(--text-dim)";
-          }}
-        >
-          <PathLabel text={compactProjectLabel} style={{ flex: 1, minWidth: 0, color: "inherit", direction: "ltr", fontFamily: "inherit" }} />
-          <CaretRight size={12} weight="regular" style={{ flexShrink: 0, transition: "transform 0.12s", transform: dropdownOpen ? "rotate(90deg)" : "none" }} aria-hidden="true" />
-        </button>
-        <AnimatedDropdown open={dropdownOpen} style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, width: 320, zIndex: 1000, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 6px 20px rgba(0,0,0,0.16)", overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: "min(calc(38vh / var(--app-ui-scale, 1)), 300px)" }}>
-          {projectSearch}
-          {projectList}
-          {projectActions}
-        </AnimatedDropdown>
-      </div>
-      {worktreeControl}
-    </div>
-  );
-
   // Shared row renderer for every session row in a time group.
   const renderTreeItem = (node: SessionTreeNode) => (
     <SessionTreeItem
@@ -696,12 +433,6 @@ export function Sidebar({
   );
 
   return (
-    <>
-      {(Object.entries({ title: workspaceControlsHosts?.title }) as Array<["title", HTMLElement | null | undefined]>).map(([location, host]) => host && createPortal(
-        <div>{workspaceControls}</div>,
-        host,
-        location,
-      ))}
     <div className="sidebar-rail" data-testid="sidebar">
       <div className="sidebar-rail-chrome">
         <div className="sidebar-home-header" data-testid="sidebar-home-header">
@@ -762,56 +493,6 @@ export function Sidebar({
             </button>
           ) : null}
         </nav>
-
-        {!hasWorkspaceControlsHosts && (
-          <div style={{ position: "relative", marginTop: 2 }}>
-            <button
-              type="button"
-              onClick={() => setDropdownOpen((v) => !v)}
-              title={selectedProject ?? search.cwd ?? ""}
-              className="sidebar-list-row"
-              data-active={dropdownOpen ? "true" : "false"}
-            >
-              {search.cwd ? (
-                <PathLabel
-                  text={selectedProject ?? search.cwd}
-                  style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text)" }}
-                />
-              ) : (
-                <span className="sidebar-nav-item-label sidebar-title-fade" style={{ color: "var(--text-dim)" }}>
-                  {t("desktop.selectProject")}…
-                </span>
-              )}
-            </button>
-            <AnimatedDropdown
-              open={dropdownOpen}
-              style={{
-                position: "absolute",
-                top: "calc(100% + 4px)",
-                left: 0,
-                right: 0,
-                zIndex: 100,
-                background: "var(--bg)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                boxShadow: "0 6px 20px rgba(0,0,0,0.10)",
-                overflow: "hidden",
-                display: "flex",
-                flexDirection: "column",
-                maxHeight: "min(calc(38vh / var(--app-ui-scale, 1)), 300px)",
-              }}
-            >
-              {projectSearch}
-              {projectList}
-              {projectActions}
-            </AnimatedDropdown>
-          </div>
-        )}
-        {!hasWorkspaceControlsHosts && (
-          <div style={{ padding: "0 2px", marginTop: 4 }}>
-            {worktreeControl}
-          </div>
-        )}
       </div>
 
       <div className="sidebar-rail-scroll">
@@ -1016,7 +697,6 @@ export function Sidebar({
         </button>
       </div>
     </div>
-    </>
   );
 }
 
