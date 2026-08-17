@@ -262,6 +262,27 @@ export function AppShell({ search }: AppShellProps) {
     return ids;
   }, [runtime.attached, runtime.optimisticRunningSessionId, runtime.runningSessionIds, runtime.sessionId, runtime.snapshot, runtime.streaming]);
 
+  // ── Live takeover for a BUSY selected session (refresh mid-stream) ──
+  // Read-only history browsing stays 0-Worker by design, but a session whose
+  // worker is currently RUNNING is not history: attaching re-subscribes to its
+  // live stream — the attach snapshot carries state.isStreaming/isPromptRunning
+  // plus streaming.partialMessage, and live message_update events resume — so a
+  // refreshed page continues the in-flight turn instead of freezing on a stale
+  // settled view. Sending remains the ONLY activation trigger for idle sessions.
+  // Bounded retries: a session that fails takeover twice is left as history.
+  const liveTakeoverRef = useRef<{ sessionId: string; attempts: number } | null>(null);
+  useEffect(() => {
+    if (activeSessionId === null || selectionMatchesLive) return;
+    if (!runningSessionIds.has(activeSessionId)) return;
+    const prior = liveTakeoverRef.current;
+    if (prior?.sessionId === activeSessionId && prior.attempts >= 2) return;
+    liveTakeoverRef.current = {
+      sessionId: activeSessionId,
+      attempts: prior?.sessionId === activeSessionId ? prior.attempts + 1 : 1,
+    };
+    runtime.openSession(activeSessionId).catch(() => undefined);
+  }, [activeSessionId, runtime, runningSessionIds, selectionMatchesLive]);
+
   const runningProjectRoots = useMemo<ReadonlySet<string>>(() => {
     const roots = new Set<string>();
     for (const session of sessionsQuery.data?.sessions ?? []) {

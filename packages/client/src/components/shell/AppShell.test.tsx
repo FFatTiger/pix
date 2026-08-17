@@ -269,6 +269,113 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     expect(capturedStore!.getSnapshot().sessionId).toBe("A");
   });
 
+  it("auto-attaches a BUSY selected session after refresh and resumes the live stream", async () => {
+    // Refresh mid-stream: the URL session's worker is still running server-side
+    // (listRunning reports busy). The read-only rule covers IDLE history only —
+    // a running session must be taken over live: attach, restore the in-flight
+    // partial from the snapshot, and keep receiving message_update events.
+    mountApp({ cwd: "/x", session: "A" });
+    const ws = await connectReady();
+    const list = lastFrame<{ type: string; id: string }>(ws, "listRunning")!;
+    await act(async () => {
+      ws.serverSend({
+        type: "response",
+        id: list.id,
+        payload: {
+          ok: true,
+          result: { sessions: [{ sessionId: "A", cwd: "/x", projectRoot: "/x", workerStatus: "busy", epoch: "e1" }] },
+        },
+      });
+      await flush();
+    });
+    // The busy baseline alone must trigger the takeover attach for A.
+    const attach = lastFrame<{ type: string; id: string; payload?: { sessionId?: string } }>(ws, "attach")!;
+    expect(attach.payload?.sessionId ?? undefined).toBe("A");
+    const base = snapshotPayload({ sessionId: "A", model: { provider: "openai", id: "gpt-5" }, capabilities: ["runtime.prompt", "runtime.abort"] });
+    const baseSnapshot = base.snapshot as {
+      state: Record<string, unknown>;
+      streaming: Record<string, unknown>;
+    };
+    await act(async () => {
+      ws.serverSend({
+        type: "snapshot",
+        id: attach.id,
+        payload: {
+          ...base,
+          snapshot: {
+            ...baseSnapshot,
+            state: { ...baseSnapshot.state, isStreaming: true, isPromptRunning: true },
+            streaming: {
+              active: true,
+              streamId: "st1",
+              messageId: "m1",
+              phase: "streaming",
+              partialMessage: {
+                role: "assistant",
+                content: [{ type: "text", text: "partial so far" }],
+                model: "gpt-5",
+                provider: "openai",
+              },
+            },
+          },
+        },
+      });
+      await flush();
+    });
+    expect(capturedStore!.getSnapshot().attached).toBe(true);
+    expect(capturedStore!.getSnapshot().sessionId).toBe("A");
+    // The streaming partial publishes on a ~90ms throttle: advance the fake
+    // clock and let a benign event recompute the view.
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      ws.serverSend({ type: "event", payload: { type: "queue_update", sessionId: "A", steering: [], followUp: [], eventId: 1, epoch: "e1" } });
+      await flush();
+    });
+    // Live view active: the running turn shows the recovered partial (each
+    // char is wrapped in a fade span, so assert on the composite text) and the
+    // composer offers Stop (the session reads as in-progress again).
+    expect(document.body.textContent).toContain("partial so far");
+    expect(screen.getByLabelText("Stop agent")).toBeTruthy();
+    // A later delta continues the stream on the wire.
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "message_update",
+          sessionId: "A",
+          streamId: "st1",
+          messageId: "m1",
+          delta: { role: "assistant", content: [{ type: "text", text: " …continued" }] },
+          eventId: 2,
+          epoch: "e1",
+        },
+      });
+      await flush();
+      // Publish throttle for the streaming partial: advance past the interval.
+      vi.advanceTimersByTime(200);
+      await flush();
+    });
+    expect(capturedStore!.getSnapshot().streamingPartial?.role).toBe("assistant");
+  });
+
+  it("does NOT attach an idle selected session (read-only history invariant)", async () => {
+    mountApp({ cwd: "/x", session: "B" });
+    const ws = await connectReady();
+    const list = lastFrame<{ type: string; id: string }>(ws, "listRunning")!;
+    await act(async () => {
+      ws.serverSend({
+        type: "response",
+        id: list.id,
+        payload: {
+          ok: true,
+          result: { sessions: [{ sessionId: "A", cwd: "/x", projectRoot: "/x", workerStatus: "busy", epoch: "e1" }] },
+        },
+      });
+      await flush();
+    });
+    expect(lastFrame(ws, "attach")).toBeUndefined();
+  });
+
   it("keeps New Session available while another session tab is attached", async () => {
     mountApp({ cwd: "/x", session: "A" });
     const ws = await connectReady();
