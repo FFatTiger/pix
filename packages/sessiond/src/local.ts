@@ -1,9 +1,10 @@
 import { constants } from "node:fs";
-import { chmod, link, lstat, open, readdir, readFile, rm } from "node:fs/promises";
+import { link, lstat, open, readdir, readFile, rm } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { SessiondError } from "./errors.js";
+import { readExistingSecret, SESSIOND_SECRET_MIN_BYTES } from "./internal/local-state-security.js";
 import {
   ensureSessiondPrivateDirectory,
   reverifySessiondPrivateDirectory,
@@ -36,9 +37,14 @@ export interface InstanceLockRecord {
  * owners and supervisors can fail closed instead of treating an unsafe lock as
  * a missing one and auto-removing it.
  */
+export interface InstanceLockIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
 export type InstanceLockRead =
   | { kind: "missing" }
-  | { kind: "ok"; record: InstanceLockRecord }
+  | { kind: "ok"; record: InstanceLockRecord; identity: InstanceLockIdentity }
   | { kind: "unsafe"; reason: string };
 
 /**
@@ -50,7 +56,7 @@ export type InstanceLockRead =
 export async function readInstanceLockStrict(paths: SessiondPaths): Promise<InstanceLockRead> {
   let info;
   try {
-    info = await lstat(paths.lockFile);
+    info = await lstat(paths.lockFile, { bigint: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
     return { kind: "unsafe", reason: "sessiond lock file is not readable" };
@@ -64,6 +70,19 @@ export async function readInstanceLockStrict(paths: SessiondPaths): Promise<Inst
   } catch {
     return { kind: "unsafe", reason: "sessiond lock file is unreadable" };
   }
+  const after = await lstat(paths.lockFile, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    return undefined;
+  });
+  if (
+    after === undefined
+    || after.isSymbolicLink()
+    || !after.isFile()
+    || after.dev !== info.dev
+    || after.ino !== info.ino
+  ) {
+    return { kind: "unsafe", reason: "sessiond lock file identity changed during read" };
+  }
   try {
     const parsed = JSON.parse(text) as Partial<InstanceLockRecord>;
     if (typeof parsed.pid !== "number" || typeof parsed.instanceId !== "string") {
@@ -76,6 +95,7 @@ export async function readInstanceLockStrict(paths: SessiondPaths): Promise<Inst
         instanceId: parsed.instanceId,
         createdAt: typeof parsed.createdAt === "number" ? parsed.createdAt : 0,
       },
+      identity: { dev: info.dev, ino: info.ino },
     };
   } catch {
     return { kind: "unsafe", reason: "sessiond lock file is corrupt" };
@@ -132,9 +152,24 @@ function pidAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
+export interface InstanceLockTestHooks {
+  /** After stale classification, before identity re-check/removal. */
+  beforeStaleLockRemoval?: () => void | Promise<void>;
+  /** After owner validation, before final identity re-check/removal. */
+  beforeReleaseRemoval?: () => void | Promise<void>;
+}
+
+function sameLockIdentity(
+  left: InstanceLockIdentity,
+  right: InstanceLockIdentity,
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
 export async function acquireInstanceLock(
   paths: SessiondPaths,
   privateDir?: SessiondPrivateDirectory,
+  hooks: InstanceLockTestHooks = {},
 ): Promise<InstanceLock> {
   // The containing directory must be preflighted private FIRST, and its
   // dev/ino identity re-verified immediately before the O_EXCL create below.
@@ -145,9 +180,28 @@ export async function acquireInstanceLock(
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const handle = await open(paths.lockFile, flags, 0o600);
-      try { await handle.writeFile(payload); await handle.sync(); }
-      finally { await handle.close(); }
-      await chmod(paths.lockFile, 0o600);
+      let createdIdentity: InstanceLockIdentity;
+      try {
+        await handle.chmod(0o600);
+        await handle.writeFile(payload);
+        await handle.sync();
+        const created = await handle.stat({ bigint: true });
+        if (!created.isFile()) {
+          throw new SessiondError("forbidden", "sessiond lock ownership could not be verified");
+        }
+        createdIdentity = { dev: created.dev, ino: created.ino };
+      } finally {
+        await handle.close();
+      }
+      const owned = await readInstanceLockStrict(paths);
+      if (
+        owned.kind !== "ok"
+        || owned.record.instanceId !== instanceId
+        || owned.record.pid !== process.pid
+        || !sameLockIdentity(owned.identity, createdIdentity)
+      ) {
+        throw new SessiondError("forbidden", "sessiond lock ownership could not be verified");
+      }
       let released = false;
       return {
         instanceId,
@@ -155,12 +209,29 @@ export async function acquireInstanceLock(
           if (released) return;
           released = true;
           try {
-            const current = JSON.parse(await readFile(paths.lockFile, "utf8")) as { instanceId?: string };
-            if (current.instanceId === instanceId) await rm(paths.lockFile, { force: true });
+            const current = await readInstanceLockStrict(paths);
+            if (
+              current.kind !== "ok"
+              || current.record.instanceId !== instanceId
+              || !sameLockIdentity(current.identity, createdIdentity)
+            ) {
+              return;
+            }
+            await hooks.beforeReleaseRemoval?.();
+            const beforeRemove = await readInstanceLockStrict(paths);
+            if (
+              beforeRemove.kind !== "ok"
+              || beforeRemove.record.instanceId !== instanceId
+              || !sameLockIdentity(beforeRemove.identity, createdIdentity)
+            ) {
+              return;
+            }
+            await rm(paths.lockFile, { force: true });
           } catch { /* lock already gone or replaced */ }
         },
       };
     } catch (error) {
+      if (error instanceof SessiondError) throw error;
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST" || attempt > 0) throw new SessiondError("conflict", "another sessiond instance is running");
       // EEXIST: inspect the existing lock and fail closed on anything unsafe.
@@ -171,7 +242,23 @@ export async function acquireInstanceLock(
       if (existing.kind === "missing") continue; // raced with another acquirer; retry
       if (existing.kind === "unsafe") throw new SessiondError("forbidden", existing.reason);
       if (pidAlive(existing.record.pid)) throw new SessiondError("conflict", "another sessiond instance is running");
-      // Valid lock naming a dead pid → stale debris; remove and retry.
+      // Valid lock naming a dead pid → stale debris. Re-check record + inode
+      // immediately before removal so a concurrent/live replacement is never
+      // deleted based on stale evidence.
+      await hooks.beforeStaleLockRemoval?.();
+      const beforeRemove = await readInstanceLockStrict(paths);
+      if (beforeRemove.kind === "missing") continue;
+      if (beforeRemove.kind === "unsafe") throw new SessiondError("forbidden", beforeRemove.reason);
+      if (
+        !sameLockIdentity(beforeRemove.identity, existing.identity)
+        || beforeRemove.record.instanceId !== existing.record.instanceId
+        || beforeRemove.record.pid !== existing.record.pid
+      ) {
+        throw new SessiondError("conflict", "sessiond lock identity changed during stale recovery");
+      }
+      if (pidAlive(beforeRemove.record.pid)) {
+        throw new SessiondError("conflict", "another sessiond instance is running");
+      }
       await rm(paths.lockFile, { force: true });
     }
   }
@@ -179,7 +266,7 @@ export async function acquireInstanceLock(
 }
 
 /** Minimum secret entropy, in bytes, before base64url encoding. */
-const SECRET_MIN_BYTES = 32;
+const SECRET_MIN_BYTES = SESSIOND_SECRET_MIN_BYTES;
 /** Suffix (and naming pattern) for in-progress publish temps. */
 const SECRET_TEMP_SUFFIX = ".tmp";
 
@@ -191,6 +278,10 @@ const SECRET_TEMP_SUFFIX = ".tmp";
  */
 export interface LocalSecretTestHooks {
   beforePublish?: () => void | Promise<void>;
+  /** After pre-read validation, before reading the existing secret. */
+  beforeSecretRead?: () => void | Promise<void>;
+  /** After classifying zero-byte legacy debris, before identity re-check/removal. */
+  beforeZeroByteRemoval?: () => void | Promise<void>;
 }
 
 /**
@@ -223,7 +314,7 @@ export async function loadOrCreateLocalSecret(
   await resolveSessiondPrivateDirectory(paths, privateDir);
   await sweepStaleSecretTemps(paths);
   for (let attempt = 0; ; attempt += 1) {
-    const existing = await readExistingSecret(paths);
+    const existing = await readExistingSecret(paths, hooks);
     if (existing !== undefined) return existing;
     if (attempt > 8) throw new SessiondError("conflict", "sessiond secret publish did not converge");
     const secret = randomBytes(SECRET_MIN_BYTES).toString("base64url");
@@ -251,30 +342,6 @@ export async function loadOrCreateLocalSecret(
       await rm(temp, { force: true }).catch(() => {});
     }
   }
-}
-
-/**
- * Read and validate an existing `final`. Returns the secret, or `undefined`
- * when no secret exists yet (caller should create). Self-heals a 0-byte
- * legacy-debris `final`; fails closed on symlinks, non-regular files, and
- * non-zero malformed content.
- */
-async function readExistingSecret(paths: SessiondPaths): Promise<string | undefined> {
-  const info = await lstat(paths.secretFile).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  });
-  if (info === undefined) return undefined;
-  if (info.isSymbolicLink() || !info.isFile()) throw new SessiondError("forbidden", "unsafe sessiond secret file");
-  if (info.size === 0) {
-    // Legacy non-atomic publish debris; safe to rebuild under the instance lock.
-    await rm(paths.secretFile, { force: true });
-    return undefined;
-  }
-  const secret = (await readFile(paths.secretFile, "utf8")).trim();
-  if (secret.length < SECRET_MIN_BYTES) throw new SessiondError("internal", "invalid sessiond secret");
-  await chmod(paths.secretFile, 0o600);
-  return secret;
 }
 
 /**

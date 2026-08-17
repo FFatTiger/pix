@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import type { BigIntStats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { SessiondError } from "../src/errors.js";
+import { readExistingSecret, validateExistingSecretInfo } from "../src/internal/local-state-security.js";
 import { loadOrCreateLocalSecret, sessiondPaths } from "../src/local.js";
 
 const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "sessiond-secret-"));
@@ -13,6 +15,42 @@ const cleanup = async (dir: string): Promise<void> => {
 };
 const isSessiondError = (codeOrMessage: RegExp) => (error: unknown): boolean =>
   error instanceof SessiondError && (codeOrMessage.test(error.code) || codeOrMessage.test(error.message));
+const validatedExistingSecret = (
+  paths: ReturnType<typeof sessiondPaths>,
+  hooks: Parameters<typeof loadOrCreateLocalSecret>[1] = {},
+): Promise<string | undefined> => readExistingSecret(paths, hooks);
+const forgedSecretInfo = (overrides: Partial<BigIntStats>): BigIntStats => ({
+  dev: 1n,
+  ino: 2n,
+  mode: 0o100600n,
+  nlink: 1n,
+  uid: typeof process.getuid === "function" ? BigInt(process.getuid()) : 0n,
+  gid: 0n,
+  rdev: 0n,
+  size: 64n,
+  blksize: 4096n,
+  blocks: 1n,
+  atimeMs: 0n,
+  mtimeMs: 0n,
+  ctimeMs: 0n,
+  birthtimeMs: 0n,
+  atimeNs: 0n,
+  mtimeNs: 0n,
+  ctimeNs: 0n,
+  birthtimeNs: 0n,
+  atime: new Date(0),
+  mtime: new Date(0),
+  ctime: new Date(0),
+  birthtime: new Date(0),
+  isFile: () => true,
+  isDirectory: () => false,
+  isBlockDevice: () => false,
+  isCharacterDevice: () => false,
+  isSymbolicLink: () => false,
+  isFIFO: () => false,
+  isSocket: () => false,
+  ...overrides,
+} as BigIntStats);
 
 test("creates a fresh secret at 0600 when none exists", async () => {
   const dir = await tempDir();
@@ -113,6 +151,97 @@ test("an existing valid secret is returned unchanged", async () => {
     // Content untouched (not regenerated/overwritten).
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), preset);
     assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("secret validator rejects wrong owner deterministically", { skip: typeof process.getuid !== "function" }, () => {
+  const uid = BigInt(process.getuid!());
+  assert.throws(
+    () => validateExistingSecretInfo(forgedSecretInfo({ uid: uid + 1n })),
+    isSessiondError(/forbidden/),
+  );
+});
+
+test("existing secret validation fails closed before read and never repairs permissions", async () => {
+  const dir = await tempDir();
+  const paths = sessiondPaths(dir);
+  const preset = randomBytes(32).toString("base64url");
+  try {
+    await writeFile(paths.secretFile, `${preset}\n`, { mode: 0o600 });
+    await chmod(paths.secretFile, 0o644);
+    await assert.rejects(validatedExistingSecret(paths), isSessiondError(/forbidden/));
+    const after = await stat(paths.secretFile);
+    if (process.platform === "win32") {
+      assert.notEqual(after.mode & 0o777, 0o600, "unsafe mode is not silently repaired");
+    } else {
+      assert.equal(after.mode & 0o777, 0o644, "unsafe mode is not silently repaired");
+    }
+    assert.equal((await readFile(paths.secretFile, "utf8")).trim(), preset);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("hard-linked and oversized existing secrets are rejected untouched", async () => {
+  const dir = await tempDir();
+  const paths = sessiondPaths(dir);
+  try {
+    const preset = randomBytes(32).toString("base64url");
+    const alias = join(dir, "secret-alias");
+    await writeFile(paths.secretFile, `${preset}\n`, { mode: 0o600 });
+    await link(paths.secretFile, alias);
+    await assert.rejects(validatedExistingSecret(paths), isSessiondError(/forbidden/));
+    assert.equal((await lstat(paths.secretFile)).nlink > 1, true);
+
+    await rm(alias, { force: true });
+    await writeFile(paths.secretFile, "x".repeat(2048), { mode: 0o600 });
+    await assert.rejects(validatedExistingSecret(paths), isSessiondError(/forbidden/));
+    assert.equal((await stat(paths.secretFile)).size, 2048);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("existing secret identity replacement during read is rejected", { skip: process.platform === "win32" }, async () => {
+  const dir = await tempDir();
+  const paths = sessiondPaths(dir);
+  const original = randomBytes(32).toString("base64url");
+  const replacement = randomBytes(32).toString("base64url");
+  try {
+    await writeFile(paths.secretFile, `${original}\n`, { mode: 0o600 });
+    await assert.rejects(
+      validatedExistingSecret(paths, {
+        beforeSecretRead: async () => {
+          await rm(paths.secretFile, { force: true });
+          await writeFile(paths.secretFile, `${replacement}\n`, { flag: "wx", mode: 0o600 });
+        },
+      }),
+      isSessiondError(/forbidden/),
+    );
+    assert.equal((await readFile(paths.secretFile, "utf8")).trim(), replacement);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("zero-byte self-heal never deletes a concurrent valid replacement", { skip: process.platform === "win32" }, async () => {
+  const dir = await tempDir();
+  const paths = sessiondPaths(dir);
+  const replacement = randomBytes(32).toString("base64url");
+  try {
+    await writeFile(paths.secretFile, "", { mode: 0o600 });
+    const first = await validatedExistingSecret(paths, {
+      beforeZeroByteRemoval: async () => {
+        await rm(paths.secretFile, { force: true });
+        await writeFile(paths.secretFile, `${replacement}\n`, { flag: "wx", mode: 0o600 });
+      },
+    });
+    assert.equal(first, undefined);
+    const got = await validatedExistingSecret(paths);
+    assert.equal(got, replacement);
+    assert.equal((await readFile(paths.secretFile, "utf8")).trim(), replacement);
   } finally {
     await cleanup(dir);
   }

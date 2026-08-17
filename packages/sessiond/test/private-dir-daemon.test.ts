@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmod, mkdtemp, readFile, rm as rmAsync, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { afterEach } from "node:test";
 import { LocalAuthorityError } from "@fffattiger/pix-local-authority/state";
 import { SessiondError } from "../src/errors.js";
-import { acquireInstanceLock, loadOrCreateLocalSecret, sessiondPaths } from "../src/local.js";
+import { acquireInstanceLock, loadOrCreateLocalSecret, readInstanceLockStrict, sessiondPaths } from "../src/local.js";
 import { ensureSessiondPrivateDirectory } from "../src/local-posix.js";
 import { startDaemon } from "../src/composition/index.js";
 
@@ -26,6 +26,58 @@ afterEach(() => {
 
 const isForbidden = (error: unknown): boolean =>
   error instanceof SessiondError && error.code === "forbidden";
+
+test("instance lock stale recovery never deletes a concurrent replacement", { skip: isWindows }, async () => {
+  const dir = await tempDir();
+  chmodSync(dir, 0o700);
+  const paths = sessiondPaths(dir);
+  try {
+    await writeFile(paths.lockFile, JSON.stringify({ pid: 999_999_999, instanceId: "stale-owner", createdAt: 0 }), { mode: 0o600 });
+    await assert.rejects(
+      acquireInstanceLock(paths, undefined, {
+        beforeStaleLockRemoval: async () => {
+          await rmAsync(paths.lockFile, { force: true });
+          await writeFile(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "live-replacement", createdAt: 1 }), { mode: 0o600 });
+        },
+      }),
+      (error: unknown) => error instanceof SessiondError && error.code === "conflict",
+    );
+    const after = await readInstanceLockStrict(paths);
+    assert.equal(after.kind, "ok");
+    if (after.kind === "ok") assert.equal(after.record.instanceId, "live-replacement");
+  } finally {
+    await rmAsync(dir, { recursive: true, force: true });
+  }
+});
+
+test("instance lock release requires exact inode and regular-file type", { skip: isWindows }, async () => {
+  const dir = await tempDir();
+  chmodSync(dir, 0o700);
+  const paths = sessiondPaths(dir);
+  try {
+    const lock = await acquireInstanceLock(paths, undefined, {
+      beforeReleaseRemoval: async () => {
+        await rmAsync(paths.lockFile, { force: true });
+        await writeFile(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: lock.instanceId, createdAt: 2 }), { mode: 0o600 });
+      },
+    });
+    await lock.release();
+    assert.equal(existsSync(paths.lockFile), true, "same-content replacement inode must survive release");
+    const replacement = await readInstanceLockStrict(paths);
+    assert.equal(replacement.kind, "ok");
+
+    await rmAsync(paths.lockFile, { force: true });
+    const target = join(dir, "replacement-target");
+    await writeFile(target, JSON.stringify({ pid: process.pid, instanceId: "target-owner", createdAt: 3 }), { mode: 0o600 });
+    const symlinkLock = await acquireInstanceLock(paths);
+    await rmAsync(paths.lockFile, { force: true });
+    await symlink(target, paths.lockFile);
+    await symlinkLock.release();
+    assert.equal(lstatSync(paths.lockFile).isSymbolicLink(), true, "non-regular replacement must survive release");
+  } finally {
+    await rmAsync(dir, { recursive: true, force: true });
+  }
+});
 
 test("startDaemon fails closed on an existing 0755 runtime dir (forbidden, fixed message, mode untouched, no partial files)", async () => {
   const dir = await tempDir();

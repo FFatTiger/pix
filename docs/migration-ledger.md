@@ -3509,3 +3509,23 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - `npm run check:architecture`: PASS (14 gates).
 - `git diff --check`: PASS.
 - POSIX filesystem behavior tests that assert chmod/0700 semantics were not reported as passing on Windows; one focused lifetime-lock run failed only on Windows mode-bit semantics, confirming why POSIX behavior evidence remains a Linux/macOS CI responsibility.
+
+---
+
+## 72. Cross-platform CP-06 — POSIX sessiond lock/secret hardening
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `2a014f7`.
+- Owner split: sessiond owns stale-reclaim/secret policy; low-level validation helper remains internal to sessiond and is not exported from the package root/control surface.
+- `readInstanceLockStrict` now pins bigint `dev/ino` before and after the read. Lock creation uses the open handle for chmod/write/fsync/fstat, then proves the path still names that inode and record.
+- Stale reclaim rechecks type, record pid/instanceId and inode before unlink; a changed/live replacement is never deleted. Release requires the created inode + instanceId, then performs a second immediate check before unlink. Existing `readInstanceLock()` compatibility wrapper still returns only the record; persisted lock JSON is unchanged.
+- Existing secret validation now occurs **before** reading: regular non-symlink, current POSIX uid, exact 0600, nlink=1 and <=1024 bytes. The old post-read `chmod(0600)` repair was removed. Read completion rechecks inode/type. Legacy zero-byte removal is inode-pinned; a replacement is left for the next validation pass.
+- Deterministic race hooks/tests cover stale-lock replacement, release replacement/type, read replacement, and zero-byte replacement on POSIX. Those tests compile on Windows but are explicitly skipped because Windows mode/file-identity evidence is not the POSIX support lane.
+- No capability, endpoint, RPC, persisted schema, secret payload, or lock JSON change. No Windows product support is claimed.
+
+### Validation (Windows native / Node 25.9.0)
+
+- sessiond and root typecheck: PASS.
+- sessiond boundary, architecture (14 gates), diff-check: PASS.
+- Windows-safe secret metadata tests: 2 PASS; POSIX owner/race cases skipped honestly.
+- Independent verifier first found a package-root leak of the internal secret reader. The reader/validator were moved to `src/internal/local-state-security.ts`; resumed verifier: PASS.
+- Linux/macOS CI remains the required execution evidence for the new deterministic POSIX inode-race tests.

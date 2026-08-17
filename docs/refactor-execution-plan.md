@@ -99,7 +99,9 @@ CP-00 docs/SSOT
 
 | `CP-05` | Secure-state public contract platformization：discriminated backend/file identity/principal；`createSecureStateBackend()` 在 path walk 前选择平台；Windows 以固定 `UNSUPPORTED_PLATFORM` fail-closed；Host 不再直接构造 POSIX backend；sessiond 声明 local-authority 依赖；无 persisted schema 变化 | `DONE` | `packages/local-authority`（owner）+ Host/sessiond consumers | `CP-04` | local-authority factory/surface 7/7；root/三个包 typecheck；local-authority/Host/sessiond boundaries；architecture/diff-check PASS。POSIX chmod/0700 行为测试在 Windows 不作为成功证据 |
 
-后续 lane：`CP-06` POSIX lock/secret hardening → `CP-07` Windows native-helper decision → Windows secure-state/IPC/process tree。
+| `CP-06` | POSIX sessiond lock/secret hardening：strict lock reads pin dev/ino across read；stale reclaim/release triple-check record+type+identity；lock created through fd chmod/fstat；secret validates owner/exact 0600/nlink/size/type before read，post-read identity recheck，zero-byte cleanup identity-pinned，移除 post-read chmod | `DONE` | `packages/sessiond` policy + internal primitives | `CP-05` | sessiond/root typecheck、sessiond boundary、architecture、diff-check PASS；Windows-safe secret validation 2 pass/1 owner skip；POSIX race tests compiled and required on Linux/macOS CI（Windows skips 不作为成功证据）；independent verifier PASS |
+
+后续 lane：`CP-07` Windows native-helper decision → Windows secure-state/IPC/process tree。
 
 ---
 
