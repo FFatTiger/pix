@@ -3,23 +3,51 @@
  *
  * Client boundaries intentionally forbid direct browser SSE constructors, so
  * this API-layer adapter consumes the same-origin event stream with fetch and
- * exposes only the tiny source interface used by FileViewer. Host errors and
- * payloads are never rendered; a failed stream simply stops live refresh.
+ * models it as a **WatchSession**: explicit connection state, bounded
+ * reconnect/backoff, and an authoritative `resync` signal after every
+ * (re)connect. Consumers listen to `change` for incremental events and to
+ * `resync` to refetch content/diff — closing the gap left by events that
+ * dropped while the stream was down. Failures surface as typed states on the
+ * session (`state` + `lastError`), never as scattered toasts.
  */
 
+/** Explicit connection lifecycle surfaced to consumers. */
+export type WatchConnectionState =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "closed";
+
 /** Minimal MessageEvent-like shape consumed by file viewers. */
-export interface FileWatchEvent {
+export interface WatchChangeEvent {
   readonly data?: string;
 }
 
+/**
+ * Bounded reconnect schedule (ms). Attempts advance through the list; once the
+ * final delay has been used and the reconnect also fails, the session closes
+ * with its last error surfaced. Delays are capped so a dead file never
+ * reconnects faster than the network allows or indefinitely.
+ */
+export const WATCH_RECONNECT_DELAYS_MS: readonly number[] = [500, 1000, 2000, 4000, 8000];
+
 /** Watch source surface consumed by file viewers. */
-export interface FileWatchSource {
-  addEventListener(type: "change", listener: (event: FileWatchEvent) => void): void;
+export interface WatchSession {
+  /** Current explicit connection state. */
+  readonly state: WatchConnectionState;
+  /** Last stream/connect failure; undefined while healthy. */
+  readonly lastError: string | undefined;
+  /** Register a listener. Returns an unsubscribe function. */
+  addEventListener(type: "change", listener: (event: WatchChangeEvent) => void): () => void;
+  addEventListener(type: "resync", listener: () => void): () => void;
+  addEventListener(type: "state", listener: (state: WatchConnectionState) => void): () => void;
+  /** Tear down the stream, pending reconnect, and all listeners. */
   close(): void;
 }
 
-/** URL → watch source factory, injectable for deterministic integration tests. */
-export type FileWatchFactory = (url: string) => FileWatchSource;
+/** URL → watch session factory, injectable for deterministic tests. */
+export type WatchSessionFactory = (url: string) => WatchSession;
 
 function parseEventBlock(block: string): { event: string; data: string } | null {
   let event = "message";
@@ -35,17 +63,73 @@ function parseEventBlock(block: string): { event: string; data: string } | null 
   return data.length > 0 ? { event, data: data.join("\n") } : null;
 }
 
-function createFetchFileWatchSource(url: string): FileWatchSource {
-  const controller = new AbortController();
-  const listeners = new Set<(event: FileWatchEvent) => void>();
+type ListenerMap = {
+  change: Set<(event: WatchChangeEvent) => void>;
+  resync: Set<() => void>;
+  state: Set<(state: WatchConnectionState) => void>;
+};
 
-  void (async () => {
+function createFetchWatchSession(url: string): WatchSession {
+  const listeners: ListenerMap = { change: new Set(), resync: new Set(), state: new Set() };
+  let state: WatchConnectionState = "idle";
+  let lastError: string | undefined;
+  let reconnectAttempt = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let controller: AbortController | null = null;
+  let closed = false;
+
+  const setState = (next: WatchConnectionState, error?: string) => {
+    state = next;
+    if (error !== undefined) lastError = error;
+    for (const listener of listeners.state) listener(next);
+  };
+
+  const clearRetry = () => {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+
+  const scheduleReconnect = (error: string) => {
+    if (closed) return;
+    // Bounded: once every delay has been spent and the reconnect also fails,
+    // the session gives up and closes with the error surfaced.
+    if (reconnectAttempt >= WATCH_RECONNECT_DELAYS_MS.length) {
+      setState("closed", error);
+      return;
+    }
+    const delay = WATCH_RECONNECT_DELAYS_MS[reconnectAttempt]!;
+    reconnectAttempt += 1;
+    setState("reconnecting", error);
+    clearRetry();
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void runStream();
+    }, delay);
+  };
+
+  async function runStream(): Promise<void> {
+    if (closed) return;
+    controller = new AbortController();
+    setState("connecting");
     try {
       const response = await fetch(url, {
         headers: { Accept: "text/event-stream" },
         signal: controller.signal,
       });
-      if (!response.ok || !response.body) return;
+      if (!response.ok || !response.body) {
+        throw new Error(`Watch stream failed (HTTP ${response.status})`);
+      }
+      if (closed) return;
+
+      // (Re)connected: reset backoff and emit an authoritative resync so the
+      // consumer refetches content/diff — events that fired while the stream
+      // was down cannot be replayed, only re-read.
+      reconnectAttempt = 0;
+      lastError = undefined;
+      setState("connected");
+      for (const listener of listeners.resync) listener();
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -60,38 +144,74 @@ function createFetchFileWatchSource(url: string): FileWatchSource {
           const parsed = parseEventBlock(buffer.slice(0, boundary));
           buffer = buffer.slice(boundary + 2);
           if (parsed?.event === "change") {
-            for (const listener of listeners) listener({ data: parsed.data });
+            for (const listener of listeners.change) listener({ data: parsed.data });
           }
           boundary = buffer.indexOf("\n\n");
         }
 
         if (done) break;
       }
-    } catch {
-      // Abort, network failure, gate expiry, and malformed streams all degrade
-      // to a static viewer. Fixed UI error handling remains outside this seam.
-    }
-  })();
 
-  return {
-    addEventListener(_type, listener) {
-      listeners.add(listener);
+      // Clean stream end (Host closed it) → reconnect unless we were closed.
+      if (!closed && !controller.signal.aborted) {
+        scheduleReconnect("Watch stream ended");
+      }
+    } catch (error) {
+      if (closed) return;
+      if (controller.signal.aborted) return; // explicit close()
+      scheduleReconnect(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  const session: WatchSession = {
+    get state() {
+      return state;
+    },
+    get lastError() {
+      return lastError;
+    },
+    addEventListener(type, listener) {
+      if (type === "change") {
+        const changeListener = listener as (event: WatchChangeEvent) => void;
+        listeners.change.add(changeListener);
+        return () => { listeners.change.delete(changeListener); };
+      }
+      if (type === "resync") {
+        const resyncListener = listener as () => void;
+        listeners.resync.add(resyncListener);
+        return () => { listeners.resync.delete(resyncListener); };
+      }
+      const stateListener = listener as (state: WatchConnectionState) => void;
+      listeners.state.add(stateListener);
+      return () => { listeners.state.delete(stateListener); };
     },
     close() {
-      listeners.clear();
-      controller.abort();
+      if (closed) return;
+      closed = true;
+      clearRetry();
+      controller?.abort();
+      controller = null;
+      listeners.change.clear();
+      listeners.resync.clear();
+      listeners.state.clear();
+      setState("closed");
     },
   };
+
+  // Kick off the first connection on the next tick so callers can register
+  // listeners before the stream resolves.
+  void runStream();
+  return session;
 }
 
-let fileWatchFactory: FileWatchFactory = createFetchFileWatchSource;
+let watchSessionFactory: WatchSessionFactory = createFetchWatchSession;
 
-/** Open a same-origin watch stream for one authorized file. */
-export function openFileWatch(url: string): FileWatchSource {
-  return fileWatchFactory(url);
+/** Open a same-origin watch session for one authorized file. */
+export function openWatchSession(url: string): WatchSession {
+  return watchSessionFactory(url);
 }
 
 /** Replace the transport for deterministic tests or an alternate host bridge. */
-export function setFileWatchFactory(factory: FileWatchFactory): void {
-  fileWatchFactory = factory;
+export function setWatchSessionFactory(factory: WatchSessionFactory): void {
+  watchSessionFactory = factory;
 }

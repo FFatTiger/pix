@@ -1,24 +1,15 @@
-import type { HttpClient } from "@/api/http-client";
 import { urls } from "@/api/urls";
-import { FileMetaResponseSchema, FileTextResponseSchema, GitDiffResponseSchema } from "@/api/schemas";
-import { openFileWatch, type FileWatchSource } from "@/api/files-watch";
-import type { GitFileDiffResponse } from "@/lib/git-types";
+import { openWatchSession, type WatchSession } from "@/api/files-watch";
 
 /**
- * pix API adapter for the file viewer (source DOM/state machine unchanged).
+ * pix API adapter for the file viewer.
  *
- * The source built legacy files-route URLs and fetched with bare fetch; pix
- * builds /v1/files?path=&op=… URLs through the shared URL builder and reads
- * through the shared HttpClient with schema validation. DOCX preview uses
- * the Host's dedicated op=docx-preview (sandboxed HTML).
+ * The viewer's reads/meta/diff are owned by React Query (see
+ * createQueryOptions in query-keys.ts) so FileExplorer/QuickChanges/Viewer
+ * share one remote-state authority. This seam only keeps the two transport
+ * pieces that do not belong to a query: URL building for element src/href and
+ * the per-file watch session (files-watch.ts).
  */
-
-/** Text file read result (GET /v1/files?op=read). */
-export interface ViewerFileData {
-  content: string;
-  language: string;
-  size: number;
-}
 
 /** Build a files URL exactly like the source `getFileApiUrl` helper. */
 export function getFileApiUrl(
@@ -30,38 +21,11 @@ export function getFileApiUrl(
   return urls.files.file(filePath, type, { sessionId: sourceSessionId, params });
 }
 
-/** Open the existing Host SSE stream for a file. */
-export function watchFile(filePath: string, _sourceSessionId?: string | null): FileWatchSource {
-  return openFileWatch(urls.files.watch(filePath));
-}
-
-/** Read a text file. Throws HttpError with the Host's sanitized message. */
-export async function fetchFileContent(
-  http: HttpClient,
-  filePath: string,
-  sourceSessionId?: string | null,
-): Promise<ViewerFileData> {
-  return http.get(getFileApiUrl(filePath, "read", sourceSessionId), { schema: FileTextResponseSchema });
-}
-
-/** Read file metadata (GET /v1/files?op=meta). */
-export async function fetchFileMeta(
-  http: HttpClient,
-  filePath: string,
-  sourceSessionId?: string | null,
-): Promise<{ path: string; size: number; modified: string; isDirectory: boolean; mime: string | null }> {
-  return http.get(getFileApiUrl(filePath, "meta", sourceSessionId), { schema: FileMetaResponseSchema });
-}
-
-/** Per-file git diff (GET /v1/git/diff?cwd=&path=). */
-export async function fetchGitFileDiff(
-  http: HttpClient,
-  cwd: string,
-  filePath: string,
-): Promise<GitFileDiffResponse> {
-  const result = await http.get(urls.git.diff(cwd, filePath), { schema: GitDiffResponseSchema });
-  if (result.supported) {
-    return { supported: true, status: result.status as GitFileDiffResponse["status"], patch: result.patch };
-  }
-  return { supported: false };
+/**
+ * Open the Host SSE watch session for a file. A session has explicit
+ * connection state, bounded reconnect/backoff, and emits `resync` after every
+ * (re)connect so the consumer can refetch content/diff authoritatively.
+ */
+export function watchFile(filePath: string, _sourceSessionId?: string | null): WatchSession {
+  return openWatchSession(urls.files.watch(filePath));
 }

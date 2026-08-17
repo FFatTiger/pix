@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowClockwise, Check, CaretRight, UploadSimple } from "@phosphor-icons/react";
-import { createQueryOptions } from "@/api/query-keys";
+import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { HttpError } from "@/api/http-client";
 import { useHttpClient } from "@/app/http-context";
 import { useI18n } from "@/hooks/useI18n";
@@ -74,11 +74,11 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
   const { t } = useI18n();
   const http = useHttpClient();
   const options = useMemo(() => createQueryOptions(http), [http]);
+  const queryClient = useQueryClient();
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
 
   // Explorer section state (source sidebar semantics, verbatim).
   const [explorerOpen, setExplorerOpen] = useState(true);
-  const [explorerKey, setExplorerKey] = useState(0);
   const [explorerUploadBusy, setExplorerUploadBusy] = useState(false);
   const [explorerRefreshDone, setExplorerRefreshDone] = useState(false);
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -97,12 +97,12 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
 
   // Reset search when the project root changes: raw is cleared and the pending
   // debounce timer is torn down by the effect cleanup, so a cwd B can never
-  // render results keyed to cwd A.
+  // render results keyed to cwd A. FileExplorer/QuickChanges re-key their own
+  // queries on cwd (queryKeys are cwd-scoped) and reset their ephemeral UI.
   useEffect(() => {
     setRaw("");
     setDebouncedQuery("");
     setInvalidSearchResult(false);
-    setExplorerKey((k) => k + 1);
   }, [cwd]);
 
   // Debounce the trimmed query. Below 2 characters we never request an empty-q
@@ -143,7 +143,11 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
   });
 
   const handleRefreshExplorer = () => {
-    setExplorerKey((k) => k + 1);
+    // Refresh the whole files + git domains from the one remote-state
+    // authority: tree listings, expanded subdirectories, the search index and
+    // every git status/diff consumer refetch in one pass.
+    void queryClient.invalidateQueries({ queryKey: queryKeys.files.all });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.git.all });
     setExplorerRefreshDone(true);
     if (explorerRefreshTimerRef.current) clearTimeout(explorerRefreshTimerRef.current);
     explorerRefreshTimerRef.current = setTimeout(() => setExplorerRefreshDone(false), 2000);
@@ -354,7 +358,6 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
                 ref={fileExplorerRef}
                 cwd={cwd}
                 onOpenFile={onOpenFile}
-                refreshKey={explorerKey}
                 {...(onAtMention === undefined ? {} : { onAtMention })}
                 {...(onAtMentions === undefined ? {} : { onAtMentions })}
                 onUploadBusyChange={setExplorerUploadBusy}
@@ -367,7 +370,6 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
       {canGit ? (
         <QuickChangesPanel
           cwd={cwd}
-          refreshKey={explorerKey}
           onOpenFile={onOpenFile}
         />
       ) : null}

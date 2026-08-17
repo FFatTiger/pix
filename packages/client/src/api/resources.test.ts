@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHttpClient } from "./http-client";
-import { createResourcesApi } from "./resources";
+import { createResourcesApi, UploadConflictError } from "./resources";
 import { createConfigurationApi } from "./configuration";
 import { createModelsApi } from "./models";
 
@@ -104,5 +104,86 @@ describe("catalog configuration APIs", () => {
     expect(config.auth).not.toHaveProperty("logout");
     expect(config.skills).not.toHaveProperty("install");
     expect(config.plugins).not.toHaveProperty("mutate");
+  });
+});
+
+/** Minimal controllable XHR used to exercise the progress-capable upload transport. */
+class FakeXHR {
+  static instances: FakeXHR[] = [];
+  upload = { onprogress: null as ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) | null };
+  status = 0;
+  responseText = "";
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  openUrl = "";
+  open(_method: string, url: string) { this.openUrl = url; }
+  send(_body: BodyInit) { FakeXHR.instances.push(this); }
+  abort() { this.onabort?.(); }
+}
+
+function settleUpload(status: number, body: unknown): void {
+  const xhr = FakeXHR.instances[FakeXHR.instances.length - 1]!;
+  xhr.status = status;
+  xhr.responseText = typeof body === "string" ? body : JSON.stringify(body);
+  xhr.onload?.();
+}
+
+function stubXhr() {
+  FakeXHR.instances = [];
+  vi.stubGlobal("XMLHttpRequest", FakeXHR);
+}
+
+describe("progress-capable upload transport", () => {
+  it("reports progress and validates the success envelope", async () => {
+    stubXhr();
+    const api = createResourcesApi(createHttpClient({ fetchImpl: vi.fn() as unknown as typeof fetch }));
+    const progress: number[] = [];
+    const promise = api.files.uploadWithProgress(
+      { directory: "/tmp", files: [new File(["x"], "a.txt")], conflict: "error" },
+      (p) => progress.push(p.percent),
+    );
+    const xhr = FakeXHR.instances[0]!;
+    expect(xhr.openUrl).toBe("/v1/files?path=%2Ftmp&conflict=error");
+    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 40, total: 100 });
+    settleUpload(201, { uploaded: ["a.txt"], skipped: [], errors: [] });
+    await expect(promise).resolves.toEqual({ uploaded: ["a.txt"], skipped: [], errors: [] });
+    expect(progress).toEqual([40]);
+  });
+
+  it("rejects a malformed success payload instead of accepting it", async () => {
+    stubXhr();
+    const api = createResourcesApi(createHttpClient({ fetchImpl: vi.fn() as unknown as typeof fetch }));
+    const promise = api.files.uploadWithProgress(
+      { directory: "/tmp", files: [new File(["x"], "a.txt")] },
+      () => undefined,
+    );
+    settleUpload(201, { uploaded: "not-an-array", skipped: [], errors: [] });
+    await expect(promise).rejects.toMatchObject({ kind: "decode" });
+  });
+
+  it("surfaces a 409 FILE_EXISTS as a typed conflict error", async () => {
+    stubXhr();
+    const api = createResourcesApi(createHttpClient({ fetchImpl: vi.fn() as unknown as typeof fetch }));
+    const promise = api.files.uploadWithProgress(
+      { directory: "/tmp", files: [new File(["x"], "a.txt")] },
+      () => undefined,
+    );
+    settleUpload(409, { error: "One or more files already exist", code: "FILE_EXISTS", conflicts: ["a.txt"], nonReplaceable: [] });
+    const error = await promise.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UploadConflictError);
+    expect((error as UploadConflictError).conflicts).toEqual(["a.txt"]);
+    expect((error as UploadConflictError).nonReplaceable).toEqual([]);
+  });
+
+  it("propagates other HTTP failures as HttpError", async () => {
+    stubXhr();
+    const api = createResourcesApi(createHttpClient({ fetchImpl: vi.fn() as unknown as typeof fetch }));
+    const promise = api.files.uploadWithProgress(
+      { directory: "/tmp", files: [new File(["x"], "a.txt")] },
+      () => undefined,
+    );
+    settleUpload(413, { error: "Upload total is too large", code: "UPLOAD_TOO_LARGE" });
+    await expect(promise).rejects.toMatchObject({ status: 413, message: "Upload total is too large" });
   });
 });

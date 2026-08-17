@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowClockwise, CaretRight, Spinner } from "@phosphor-icons/react";
 import { getFileIcon } from "@/components/files/FileIcons";
 import { getFileName, getRelativeFilePath } from "@/lib/file-paths";
-import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/git-types";
+import type { GitFileStatus, GitFileStatusKind } from "@/lib/git-types";
 import { useI18n } from "@/hooks/useI18n";
 import { useHttpClient } from "@/app/http-context";
-import { fetchExplorerGitStatus } from "./explorer-api";
+import { createQueryOptions, queryKeys } from "@/api/query-keys";
+import { mapExplorerGitStatus } from "./explorer-api";
 
 interface Props {
   cwd: string;
-  refreshKey?: number | undefined;
   onOpenFile: (filePath: string, fileName: string, options?: { initialDisplayMode?: "diff" }) => void;
 }
 
@@ -21,12 +22,6 @@ const GIT_STATUS_COLORS: Record<GitFileStatusKind, string> = {
   untracked: "var(--git-status-added)",
   conflict: "var(--git-status-deleted)",
 };
-
-// pix adapter seam: GET /v1/git/status via the shared HttpClient (see
-// ./explorer-api). Fixed error copy stays with the outer composition layer.
-async function fetchGitStatus(http: ReturnType<typeof useHttpClient>, cwd: string): Promise<GitStatusResponse> {
-  return fetchExplorerGitStatus(http, cwd);
-}
 
 function ChangeRow({ status, cwd, onOpenFile }: {
   status: GitFileStatus;
@@ -52,27 +47,63 @@ function ChangeRow({ status, cwd, onOpenFile }: {
   );
 }
 
-export function QuickChangesPanel({ cwd, refreshKey, onOpenFile }: Props) {
+/**
+ * Quick-changes footer. Git status is owned by React Query under the same
+ * queryKeys.git.status(cwd) key FileExplorer consumes, so the two surfaces
+ * share ONE request/authority instead of issuing competing fetches. Refresh
+ * refetches that shared query; failures surface as a typed error row (never a
+ * swallowed null).
+ */
+export function QuickChangesPanel({ cwd, onOpenFile }: Props) {
   const { t } = useI18n();
-  const http = useHttpClient();
+  const options = useQueryOptions();
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [gitStatus, setGitStatus] = useState<GitStatusResponse | null>(null);
-  const [gitLoading, setGitLoading] = useState(false);
 
-  const loadGitStatus = useCallback(async () => {
-    setGitLoading(true);
-    try {
-      setGitStatus(await fetchGitStatus(http, cwd));
-    } catch {
-      setGitStatus(null);
-    } finally {
-      setGitLoading(false);
-    }
-  }, [cwd, http]);
+  const gitQuery = useQuery({ ...options.git.status(cwd), enabled: Boolean(cwd) });
+  const gitStatus = useMemo(
+    () => (gitQuery.data ? mapExplorerGitStatus(gitQuery.data) : null),
+    [gitQuery.data],
+  );
+  const gitLoading = gitQuery.isFetching;
 
-  useEffect(() => {
-    void loadGitStatus();
-  }, [loadGitStatus, refreshKey]);
+  const handleRefresh = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.git.status(cwd) });
+  };
+
+  // Honest failure surface: a git status that errored is shown inline with a
+  // retry, instead of being collapsed into "no changes" (a non-git directory
+  // is distinct data — isGitRepository: false — and stays hidden).
+  if (gitQuery.isError) {
+    return (
+      <section
+        style={{
+          flex: "0 0 auto",
+          minHeight: 0,
+          borderTop: "1px solid var(--border)",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "6px 10px",
+          fontSize: 11,
+          color: "#f87171",
+        }}
+        aria-label="Git status unavailable"
+      >
+        <span style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>Could not load git status.</span>
+        <button
+          type="button"
+          onClick={() => void gitQuery.refetch()}
+          disabled={gitLoading}
+          title="Retry"
+          aria-label="Retry"
+          style={{ height: 20, padding: "0 7px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-panel)", color: "var(--text-muted)", cursor: gitLoading ? "wait" : "pointer", fontSize: 10 }}
+        >
+          Retry
+        </button>
+      </section>
+    );
+  }
 
   // 仅当存在实际更改时显示该栏目（非 Git 仓库或没有更改时不渲染）
   if (!gitStatus?.isGitRepository || gitStatus.files.length === 0) {
@@ -122,7 +153,7 @@ export function QuickChangesPanel({ cwd, refreshKey, onOpenFile }: Props) {
         <span style={{ marginLeft: 5, color: "var(--git-status-deleted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>-{gitStatus.deletions}</span>
         <button
           type="button"
-          onClick={() => void loadGitStatus()}
+          onClick={handleRefresh}
           disabled={gitLoading}
           title={t("desktop.refresh")}
           aria-label={t("desktop.refresh")}
@@ -140,4 +171,10 @@ export function QuickChangesPanel({ cwd, refreshKey, onOpenFile }: Props) {
       )}
     </section>
   );
+}
+
+/** Shared query-options builder — same remote-state authority as FileExplorer. */
+function useQueryOptions() {
+  const http = useHttpClient();
+  return useMemo(() => createQueryOptions(http), [http]);
 }

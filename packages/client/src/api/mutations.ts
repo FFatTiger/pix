@@ -10,6 +10,16 @@ async function invalidate(queryClient: QueryClient, ...keys: readonly (readonly 
   await Promise.all(keys.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
 }
 
+/**
+ * Post-upload invalidation: an upload can rewrite any directory, the search
+ * index, git status, git diffs and the read/meta state of open viewer tabs, so
+ * the whole files + git domains refresh from the one remote-state authority.
+ * Shared by the upload mutation and the explorer's progress-capable transport.
+ */
+export async function invalidateFileWorkspace(queryClient: QueryClient): Promise<void> {
+  await invalidate(queryClient, queryKeys.files.all, queryKeys.git.all);
+}
+
 function isQueryKeyPrefix(key: readonly unknown[], prefix: readonly unknown[]): boolean {
   return key.length >= prefix.length && prefix.every((part, index) => key[index] === part);
 }
@@ -91,7 +101,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
       logout: () => ({ mutationKey: ["pix", "gate", "logout"] as const, mutationFn: () => gate.logout(), onSuccess: () => invalidate(queryClient, queryKeys.gate.all, queryKeys.capabilities.all) }),
     },
     files: {
-      upload: () => ({ mutationKey: ["pix", "files", "upload"] as const, mutationFn: (input: UploadInput) => resources.files.upload(input), onSuccess: (_data: unknown, input: UploadInput) => invalidate(queryClient, queryKeys.files.list(input.directory), queryKeys.files.indexRoot(input.directory), queryKeys.git.status(input.directory)) }),
+      upload: () => ({ mutationKey: ["pix", "files", "upload"] as const, mutationFn: (input: UploadInput) => resources.files.upload(input), onSuccess: () => invalidateFileWorkspace(queryClient) }),
     },
     cwd: {
       validate: () => ({ mutationKey: ["pix", "cwd", "validate"] as const, mutationFn: (cwd: string) => resources.cwd.validate(cwd), onSuccess: () => invalidate(queryClient, queryKeys.cwd.all) }),

@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useContext, useMemo, useLayoutEffect, type MouseEvent } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { At, DownloadSimple } from "@phosphor-icons/react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import ReactMarkdown from "react-markdown";
@@ -17,9 +18,9 @@ import { headingId, markdownRehypePlugins, markdownRemarkPlugins, normalizeDispl
 import { prismTheme } from "@/lib/prism-theme";
 import { CodeBlock, MarkdownCodeContext, MermaidBlock } from "@/components/chat/MarkdownBody";
 import { parseUnifiedPatch } from "@/lib/patch";
-import type { GitFileDiffResponse } from "@/lib/git-types";
 import { useHttpClient } from "@/app/http-context";
-import { fetchFileContent, fetchFileMeta, fetchGitFileDiff, getFileApiUrl, watchFile } from "./viewer-api";
+import { createQueryOptions, queryKeys } from "@/api/query-keys";
+import { getFileApiUrl, watchFile } from "./viewer-api";
 import {
   resolveInitialFileDisplayMode,
   type FileViewerState,
@@ -39,10 +40,14 @@ interface Props {
   onStateChange?: ((state: FileViewerState) => void) | undefined;
 }
 
-interface FileData {
-  content: string;
-  language: string;
-  size: number;
+/**
+ * Shared query-options builder. Reads/meta/diff are owned by React Query
+ * (queryKeys/createQueryOptions) so the viewer shares the one remote-state
+ * authority with the explorer and quick-changes surfaces.
+ */
+function useWorkspaceViewerOptions() {
+  const http = useHttpClient();
+  return useMemo(() => createQueryOptions(http), [http]);
 }
 
 function DownloadLink({ filePath, sourceSessionId }: { filePath: string; sourceSessionId?: string | null | undefined }) {
@@ -488,15 +493,20 @@ function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
     const es = watchFile(filePath, sourceSessionId);
     esRef.current = es;
 
-    es.addEventListener("change", (e) => {
+    const offChange = es.addEventListener("change", (e) => {
       try {
         const d = JSON.parse(e.data ?? "") as { size?: number };
         if (typeof d.size === "number") setSize(d.size);
       } catch { /* ignore */ }
       setBust((b) => b + 1);
     });
+    // Authoritative refetch after a (re)connect: events dropped while the
+    // stream was down cannot be replayed, so re-read the file via cache-bust.
+    const offResync = es.addEventListener("resync", () => setBust((b) => b + 1));
 
     return () => {
+      offChange();
+      offResync();
       es.close();
       esRef.current = null;
     };
@@ -601,7 +611,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
     const es = watchFile(filePath, sourceSessionId);
     esRef.current = es;
 
-    es.addEventListener("change", (e) => {
+    const offChange = es.addEventListener("change", (e) => {
       try {
         const d = JSON.parse(e.data ?? "") as { size?: number };
         if (typeof d.size === "number") setSize(d.size);
@@ -610,8 +620,12 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
       setError(null);
       setBust((b) => b + 1);
     });
+    // Authoritative refetch after a (re)connect (see ImageViewer).
+    const offResync = es.addEventListener("resync", () => setBust((b) => b + 1));
 
     return () => {
+      offChange();
+      offResync();
       es.close();
       esRef.current = null;
     };
@@ -675,7 +689,8 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
 
 function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
   const { t } = useI18n();
-  const http = useHttpClient();
+  const options = useWorkspaceViewerOptions();
+  const queryClient = useQueryClient();
   const [bust, setBust] = useState(0);
   const [size, setSize] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -688,9 +703,20 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
     ? getFileApiUrl(filePath, "read", sourceSessionId, bust ? { v: bust } : undefined)
     : getFileApiUrl(filePath, "docx-preview", sourceSessionId, bust ? { v: bust } : undefined);
 
+  // File metadata is owned by React Query; the docx preview size gate reads it.
+  const metaQuery = useQuery({ ...options.files.meta(filePath) });
+
+  useEffect(() => {
+    if (metaQuery.data !== undefined) {
+      setSize(metaQuery.data.size);
+      if (!isPdf && metaQuery.data.size > DOCX_PREVIEW_MAX_BYTES) {
+        setError(t("desktop.docxTooLargeForPreview"));
+      }
+    }
+  }, [isPdf, metaQuery.data, t]);
+
   useEffect(() => {
     setBust(0);
-    setSize(null);
     setError(null);
 
     if (esRef.current) {
@@ -698,19 +724,10 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
       esRef.current = null;
     }
 
-    fetchFileMeta(http, filePath, sourceSessionId)
-      .then((d) => {
-        setSize(d.size);
-        if (!isPdf && d.size > DOCX_PREVIEW_MAX_BYTES) {
-          setError(t("desktop.docxTooLargeForPreview"));
-        }
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-
     const es = watchFile(filePath, sourceSessionId);
     esRef.current = es;
 
-    es.addEventListener("change", (e) => {
+    const offChange = es.addEventListener("change", (e) => {
       try {
         const d = JSON.parse(e.data ?? "") as { size?: number };
         if (typeof d.size === "number") {
@@ -724,12 +741,20 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
       setError(null);
       setBust((b) => b + 1);
     });
+    // Authoritative refetch after a (re)connect: re-read meta and reload the
+    // preview so changes that landed during the outage are not missed.
+    const offResync = es.addEventListener("resync", () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.files.meta(filePath) });
+      setBust((b) => b + 1);
+    });
 
     return () => {
+      offChange();
+      offResync();
       es.close();
       esRef.current = null;
     };
-  }, [filePath, http, isPdf, sourceSessionId, t]);
+  }, [filePath, isPdf, queryClient, sourceSessionId, t]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -794,19 +819,17 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
   const initialWrapLines = initialState?.wrapLines ?? false;
   const initialScrollTop = initialState?.scrollTop ?? 0;
   const initialScrollLeft = initialState?.scrollLeft ?? 0;
-  const [data, setData] = useState<FileData | null>(null);
+  const options = useWorkspaceViewerOptions();
+  const queryClient = useQueryClient();
   const [prevContent, setPrevContent] = useState<string | null>(null);
-  const [gitDiff, setGitDiff] = useState<GitFileDiffResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [changeCount, setChangeCount] = useState(0);
   const [previewMode, setPreviewMode] = useState(requestedInitialDisplayMode === "preview");
   const [viewMode, setViewMode] = useState<"source" | "diff">(requestedInitialDisplayMode === "diff" ? "diff" : "source");
   const [wrapLines, setWrapLines] = useState(initialWrapLines);
-  const [changeCount, setChangeCount] = useState(0);
-  const http = useHttpClient();
   const esRef = useRef<ReturnType<typeof watchFile> | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const scrollRestorePendingRef = useRef(true);
+  const watchGenerationRef = useRef(0);
   const viewerStateRef = useRef<FileViewerState>({
     displayMode: requestedInitialDisplayMode,
     wrapLines: initialWrapLines,
@@ -816,50 +839,26 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
 
-  const fetchGitDiff = useCallback(async (targetPath: string) => {
-    if (!cwd) {
-      setGitDiff(null);
-      return;
-    }
-    try {
-      const result = await fetchGitFileDiff(http, cwd, targetPath);
-      setGitDiff(result.supported && typeof result.patch === "string" ? result : null);
-    } catch {
-      setGitDiff(null);
-    }
-  }, [cwd, http]);
+  // Reads/meta/diff are owned by React Query (single remote-state authority).
+  // Each file has its own queryKey, and a refetch aborts the prior in-flight
+  // read/diff for that key, so a stale settle can never win.
+  const readQuery = useQuery({ ...options.files.read(filePath) });
+  const diffQuery = useQuery({ ...options.git.diff(cwd ?? "", filePath), enabled: Boolean(cwd && filePath) });
+  const data = readQuery.data ?? null;
+  const gitDiff = diffQuery.data ?? null;
 
-  const fetchContent = useCallback((filePath: string, isRefresh = false) => {
-    return fetchFileContent(http, filePath, sourceSessionId)
-      .then((d) => {
-        if (isRefresh) {
-          setData((prev) => {
-            if (prev) setPrevContent(prev.content);
-            return d;
-          });
-          setChangeCount((c) => c + 1);
-        } else {
-          setData(d);
-        }
-        return d;
-      })
-      .catch((e) => {
-        setError(e instanceof Error ? e.message : String(e));
-        return null;
-      });
-  }, [http, sourceSessionId]);
-
-  // Initial load + SSE watch setup
+  // Per-file boundary: a new filePath is a fresh viewer scope. Reset the
+  // ephemeral mode/wrap/scroll bookkeeping and the live-diff snapshot so a
+  // remount-free prop change can never carry old UI into the new file.
+  const prevFilePathRef = useRef<string | null>(null);
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-    setData(null);
+    if (prevFilePathRef.current === filePath) return;
+    prevFilePathRef.current = filePath;
     setPrevContent(null);
-    setGitDiff(null);
+    setChangeCount(0);
     setPreviewMode(requestedInitialDisplayMode === "preview");
     setViewMode(requestedInitialDisplayMode === "diff" ? "diff" : "source");
     setWrapLines(initialWrapLines);
-    setChangeCount(0);
     // Scroll is applied once the content container renders below.
     scrollRestorePendingRef.current = true;
     viewerStateRef.current = {
@@ -868,38 +867,65 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
       scrollTop: initialScrollTop,
       scrollLeft: initialScrollLeft,
     };
+  }, [filePath, initialWrapLines, initialScrollTop, initialScrollLeft, requestedInitialDisplayMode]);
+
+  // Live-diff bookkeeping (ephemeral UI): whenever the settled read content
+  // changes while this file is open, snapshot the previously shown content so
+  // the source/diff toggle can render a working-tree diff. React Query aborts
+  // the prior in-flight read for this key when a refetch starts, so only the
+  // newest settle ever reaches this effect (out-of-order cannot win).
+  const lastContentRef = useRef<string | null>(null);
+  useEffect(() => {
+    const content = readQuery.data?.content ?? null;
+    if (content !== null && lastContentRef.current !== null && content !== lastContentRef.current) {
+      setPrevContent(lastContentRef.current);
+      setChangeCount((c) => c + 1);
+    }
+    lastContentRef.current = content;
+  }, [readQuery.data?.content]);
+
+  // The markdown/html default-preview auto-switch only applies on a fresh
+  // open; a restored tab keeps its saved display mode.
+  useEffect(() => {
+    if (initialState === undefined && readQuery.data?.language === "markdown" && initialDisplayMode !== "diff") {
+      setPreviewMode(true);
+    }
+  }, [initialDisplayMode, initialState, readQuery.data]);
+
+  // File watch: a WatchSession with explicit connection state, bounded
+  // reconnect/backoff and an authoritative resync after every (re)connect.
+  // Every change/resync invalidates the read + diff queries for THIS file;
+  // the per-file generation guard drops events from a stale session (e.g. a
+  // file the viewer switched away from) so they cannot refetch the new file.
+  useEffect(() => {
+    watchGenerationRef.current += 1;
+    const generation = watchGenerationRef.current;
+
+    const refresh = () => {
+      if (watchGenerationRef.current !== generation) return;
+      void queryClient.invalidateQueries({ queryKey: queryKeys.files.read(filePath) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.git.diff(cwd ?? "", filePath) });
+    };
 
     if (esRef.current) {
       esRef.current.close();
       esRef.current = null;
     }
-
-    fetchContent(filePath).then((d) => {
-      // The markdown/html default-preview auto-switch only applies on a fresh
-      // open; a restored tab keeps its saved display mode.
-      if (initialState === undefined && d?.language === "markdown" && initialDisplayMode !== "diff") {
-        setPreviewMode(true);
-      }
-    }).finally(() => setLoading(false));
-    void fetchGitDiff(filePath);
-
-    // Set up the file watch stream (transport seam; see ./viewer-api)
     const es = watchFile(filePath, sourceSessionId);
     esRef.current = es;
-
-    es.addEventListener("change", () => {
-      fetchContent(filePath, true);
-      void fetchGitDiff(filePath);
-    });
+    const offChange = es.addEventListener("change", refresh);
+    const offResync = es.addEventListener("resync", refresh);
 
     return () => {
+      offChange();
+      offResync();
       es.close();
       esRef.current = null;
       // Snapshot the current viewer state into the tab before unmounting so a
       // later tab switch restores scroll/mode/wrap instead of losing them.
       onStateChangeRef.current?.({ ...viewerStateRef.current });
     };
-  }, [filePath, fetchContent, fetchGitDiff, initialDisplayMode, sourceSessionId, requestedInitialDisplayMode, initialWrapLines, initialScrollTop, initialScrollLeft, initialState]);
+  }, [cwd, filePath, queryClient, sourceSessionId]);
 
   const normalizedMarkdown = useMemo(
     () => normalizeDisplayMath(data?.content ?? ""),
@@ -943,7 +969,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
 
   const isDeletedGitDiff = hasGitDiff && gitDiff?.status === "deleted";
 
-  if (loading) {
+  if (readQuery.isLoading) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
         {t("desktop.loadingFile")}
@@ -957,15 +983,25 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
         <div style={{ padding: "5px 16px", borderBottom: "1px solid var(--border)", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }} title={filePath}>
           {getRelativeFilePath(filePath, cwd)}
         </div>
-        <div style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}><GitDiffView patch={gitDiff.patch!} /></div>
+        <div style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}><GitDiffView patch={gitDiff.patch} /></div>
       </div>
     );
   }
 
-  if (error) {
+  if (readQuery.isError) {
     return (
-      <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#f87171", fontSize: 13 }}>
-        {error}
+      <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#f87171", fontSize: 13 }}>
+        <span style={{ padding: "0 16px", textAlign: "center", overflowWrap: "anywhere" }}>
+          {readQuery.error instanceof Error ? readQuery.error.message : String(readQuery.error)}
+        </span>
+        <button
+          type="button"
+          onClick={() => void readQuery.refetch()}
+          title="Retry"
+          style={{ height: 22, padding: "0 10px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-panel)", color: "var(--text)", cursor: "pointer", fontSize: 11 }}
+        >
+          Retry
+        </button>
       </div>
     );
   }

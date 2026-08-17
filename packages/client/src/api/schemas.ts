@@ -178,8 +178,7 @@ export const UploadResponseSchema = z.strictObject({
 /**
  * POST /v1/files?op=upload-check — conflict preflight for the file workspace
  * upload state machine (source contract: names that already exist under the
- * target directory and names that cannot be replaced). Host endpoint pending;
- * the client schema/URL seam is frozen so the Host slice can land as-is.
+ * target directory and names that cannot be replaced). Live on the Host.
  */
 export const UploadCheckResponseSchema = z.strictObject({
   conflicts: z.array(z.string()),
@@ -187,8 +186,8 @@ export const UploadCheckResponseSchema = z.strictObject({
 });
 export type UploadCheckResponse = z.infer<typeof UploadCheckResponseSchema>;
 /**
- * SSE `change` event payload of GET /v1/files?op=watch (Host endpoint
- * pending). Loose: the viewer only reads `size` when present.
+ * SSE `change` event payload of GET /v1/files/watch?path= (live on the Host).
+ * Loose: the viewer only reads `size` when present.
  */
 export const FileWatchChangeSchema = z.looseObject({ size: z.number().optional() });
 export type FileWatchChange = z.infer<typeof FileWatchChangeSchema>;

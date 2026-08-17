@@ -1,4 +1,5 @@
 import { forwardRef, useState, useCallback, useEffect, useImperativeHandle, useRef, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { At, CaretRight, Check, Copy, DownloadSimple, Info, LinkSimple, MinusCircle, Spinner, UploadSimple, Warning, X } from "@phosphor-icons/react";
 import { getFileIcon, FolderIcon } from "@/components/files/FileIcons";
 import { getRelativeFilePath, joinFilePath } from "@/lib/file-paths";
@@ -8,12 +9,10 @@ import { useContextMenu } from "@/components/ContextMenu";
 import type { GitFileStatusKind, GitStatusResponse } from "@/lib/git-types";
 import { useHttpClient } from "@/app/http-context";
 import { urls } from "@/api/urls";
-import {
-  checkExplorerUploadConflicts,
-  fetchExplorerEntries,
-  fetchExplorerGitStatus,
-  type ExplorerUploadResponse,
-} from "./explorer-api";
+import { createResourcesApi, UploadConflictError, type UploadResponse } from "@/api/resources";
+import { createQueryOptions } from "@/api/query-keys";
+import { invalidateFileWorkspace } from "@/api/mutations";
+import { mapExplorerGitStatus } from "./explorer-api";
 
 
 
@@ -21,15 +20,11 @@ interface FileNode {
   name: string;
   fullPath: string;
   isDir: boolean;
-  size: number;
-  children?: FileNode[] | undefined;
-  loaded?: boolean | undefined;
 }
 
 interface Props {
   cwd: string;
   onOpenFile: (filePath: string, fileName: string, options?: { initialDisplayMode?: "diff" }) => void;
-  refreshKey?: number | undefined;
   onAtMention?: ((relativePath: string, isDir: boolean) => void) | undefined;
   onAtMentions?: ((relativePaths: string[]) => void) | undefined;
   onUploadBusyChange?: ((busy: boolean) => void) | undefined;
@@ -37,15 +32,13 @@ interface Props {
 
 export interface FileExplorerHandle {
   openUploadPicker: () => void;
-  /** pix composition addition: run the upload state machine on dropped files
-   *  (same preflight → conflict card → XHR path as the picker). */
+  /** Run the upload state machine on dropped files (same preflight → conflict
+   *  card → typed progress transport as the picker). */
   prepareUpload: (files: File[]) => void;
 }
 
 type UploadPhase = "idle" | "checking" | "uploading";
 type UploadConflictStrategy = "error" | "overwrite" | "skip";
-
-type UploadResponse = ExplorerUploadResponse;
 
 interface UploadError {
   name: string;
@@ -116,47 +109,14 @@ function isIgnoredPath(pathKey: string, ignoredPaths: Set<string>): boolean {
   return false;
 }
 
-// pix adapter seam: the source fetched the legacy /api routes directly; the
-// same operations now go through the shared HttpClient against /v1 URLs with
-// schema validation (see ./explorer-api). Signatures gain the client.
-async function fetchGitStatus(http: ReturnType<typeof useHttpClient>, cwd: string): Promise<GitStatusResponse> {
-  return fetchExplorerGitStatus(http, cwd);
-}
-
-async function fetchEntries(http: ReturnType<typeof useHttpClient>, dirPath: string): Promise<FileNode[]> {
-  return fetchExplorerEntries(http, dirPath);
-}
-
-function uploadFiles(
-  targetDirectory: string,
-  files: File[],
-  strategy: UploadConflictStrategy,
-  onProgress: (progress: number) => void,
-): Promise<{ status: number; data: UploadResponse }> {
-  return new Promise((resolve, reject) => {
-    const formData = new FormData();
-    files.forEach((file) => formData.append("files", file, file.name));
-
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", urls.files.upload(targetDirectory, strategy));
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.round((event.loaded / event.total) * 100));
-      }
-    };
-    xhr.onerror = () => reject(new Error("Network error while uploading files"));
-    xhr.onabort = () => reject(new Error("Upload cancelled"));
-    xhr.onload = () => {
-      let data: UploadResponse = {};
-      try {
-        data = JSON.parse(xhr.responseText) as UploadResponse;
-      } catch {
-        if (xhr.responseText) data.error = xhr.responseText;
-      }
-      resolve({ status: xhr.status, data });
-    };
-    xhr.send(formData);
-  });
+/**
+ * Shared query-options builder for the workspace tree. Every TreeNode and the
+ * panel build listings from the same queryKeys/createQueryOptions authority,
+ * so expanded directories are cached/refreshed like any other remote read.
+ */
+function useWorkspaceQueryOptions() {
+  const http = useHttpClient();
+  return useMemo(() => createQueryOptions(http), [http]);
 }
 
 function MentionIcon({ size = 11 }: { size?: number }) {
@@ -187,7 +147,6 @@ function TreeNode({
   onAtMention,
   expandedPaths,
   onToggleExpanded,
-  refreshToken,
   highlightedPaths,
   ignoredPaths,
   changedFiles,
@@ -199,55 +158,49 @@ function TreeNode({
   onAtMention?: ((relativePath: string, isDir: boolean) => void) | undefined;
   expandedPaths: Set<string>;
   onToggleExpanded: (fullPath: string, open: boolean) => void;
-  refreshToken: string;
   highlightedPaths: Set<string>;
   ignoredPaths: Set<string>;
   changedFiles: Map<string, ExplorerGitStatus>;
 }) {
-  const http = useHttpClient();
   const open = expandedPaths.has(node.fullPath);
   const highlighted = highlightedPaths.has(node.fullPath);
   const pathKey = gitPathKey(node.fullPath);
   const ignored = isIgnoredPath(pathKey, ignoredPaths);
   const gitStatus = getNodeGitStatus(pathKey, node.isDir, changedFiles);
-  const [children, setChildren] = useState<FileNode[]>(node.children ?? []);
-  const [loaded, setLoaded] = useState(node.loaded ?? false);
-  const [loading, setLoading] = useState(false);
   const [hovered, setHovered] = useState(false);
   const { t } = useI18n();
   const { openMenu } = useContextMenu();
+  const options = useWorkspaceQueryOptions();
 
-  const loadChildren = useCallback(async (force = false) => {
-    if (loaded && !force) return;
-    setLoading(true);
-    try {
-      const entries = await fetchEntries(http, node.fullPath);
-      setChildren(entries);
-      setLoaded(true);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, [loaded, node.fullPath]);
-
-  // Re-fetch children when the tree refreshes and the directory is open.
-  useEffect(() => {
-    if (open && loaded) {
-      loadChildren(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshToken]);
+  // Directory listings are owned by React Query: the query is enabled only
+  // while the directory is expanded, and every refresh/invalidation of the
+  // files domain refetches open directories from the one authority.
+  const childrenQuery = useQuery({
+    ...options.files.list(node.fullPath),
+    enabled: open && node.isDir,
+  });
+  const children = useMemo<FileNode[]>(
+    () => (childrenQuery.data ? childrenQuery.data.entries.map((entry) => ({
+      name: entry.name,
+      fullPath: joinFilePath(node.fullPath, entry.name),
+      isDir: entry.isDir,
+    })) : []),
+    [childrenQuery.data, node.fullPath],
+  );
+  const loaded = open && node.isDir && (childrenQuery.data !== undefined || childrenQuery.isError);
+  const loading = open && node.isDir && childrenQuery.isFetching;
 
   const handleClick = useCallback(() => {
     if (node.isDir) {
-      const next = !open;
-      onToggleExpanded(node.fullPath, next);
-      if (next && !loaded) loadChildren();
+      onToggleExpanded(node.fullPath, !open);
     } else {
       onOpenFile(node.fullPath, node.name);
     }
-  }, [node.isDir, node.fullPath, node.name, loaded, open, loadChildren, onOpenFile, onToggleExpanded]);
+  }, [node.isDir, node.fullPath, node.name, open, onOpenFile, onToggleExpanded]);
+
+  const handleRetry = useCallback(() => {
+    void childrenQuery.refetch();
+  }, [childrenQuery]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -414,13 +367,39 @@ function TreeNode({
               onAtMention={onAtMention}
               expandedPaths={expandedPaths}
               onToggleExpanded={onToggleExpanded}
-              refreshToken={refreshToken}
               highlightedPaths={highlightedPaths}
               ignoredPaths={ignoredPaths}
               changedFiles={changedFiles}
             />
           ))}
-          {children.length === 0 && loaded && (
+          {childrenQuery.isError && (
+            <div
+              role="alert"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                paddingLeft: 8 + (depth + 1) * 14,
+                paddingRight: 8,
+                height: 22,
+                fontSize: 11,
+                color: "#f87171",
+              }}
+            >
+              <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                Could not list directory.
+              </span>
+              <button
+                type="button"
+                onClick={handleRetry}
+                title={t("desktop.refresh")}
+                style={{ height: 18, padding: "0 6px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-panel)", color: "var(--text-muted)", cursor: "pointer", fontSize: 10 }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {children.length === 0 && !childrenQuery.isError && loaded && (
             <div style={{ paddingLeft: 8 + (depth + 1) * 14, fontSize: 11, color: "var(--text-dim)", height: 22, display: "flex", alignItems: "center" }}>
               empty
             </div>
@@ -434,17 +413,11 @@ function TreeNode({
 export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileExplorer({
   cwd,
   onOpenFile,
-  refreshKey,
   onAtMention,
   onAtMentions,
   onUploadBusyChange,
 }, ref) {
-  const [roots, setRoots] = useState<FileNode[]>([]);
-  const [gitStatus, setGitStatus] = useState<GitStatusResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
-  const [treeRefreshKey, setTreeRefreshKey] = useState(0);
   const [highlightedPaths, setHighlightedPaths] = useState<Set<string>>(new Set());
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -452,10 +425,32 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const [uploadSummary, setUploadSummary] = useState<UploadSummary | null>(null);
   const [pendingConflict, setPendingConflict] = useState<PendingConflict | null>(null);
   const http = useHttpClient();
+  const options = useWorkspaceQueryOptions();
+  const queryClient = useQueryClient();
+  const resources = useMemo(() => createResourcesApi(http), [http]);
   const prevCwdRef = useRef<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
-  const refreshToken = `${refreshKey ?? 0}:${treeRefreshKey}`;
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const uploadBusy = uploadPhase !== "idle";
+
+  // Root listing + git status are owned by React Query. Git status is shared
+  // with QuickChangesPanel via the same queryKeys.git.status(cwd) key, so the
+  // two surfaces never issue competing requests.
+  const rootQuery = useQuery({ ...options.files.list(cwd), enabled: Boolean(cwd) });
+  const gitQuery = useQuery({ ...options.git.status(cwd), enabled: Boolean(cwd) });
+  const gitStatus: GitStatusResponse | null = useMemo(
+    () => (gitQuery.data ? mapExplorerGitStatus(gitQuery.data) : null),
+    [gitQuery.data],
+  );
+
+  const roots = useMemo<FileNode[]>(
+    () => (rootQuery.data ? rootQuery.data.entries.map((entry) => ({
+      name: entry.name,
+      fullPath: joinFilePath(cwd, entry.name),
+      isDir: entry.isDir,
+    })) : []),
+    [rootQuery.data, cwd],
+  );
   const ignoredPaths = useMemo(
     () => new Set((gitStatus?.ignoredPaths ?? []).map(gitPathKey)),
     [gitStatus],
@@ -484,7 +479,6 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
     if (uploaded.length > 0) {
       setHighlightedPaths(new Set(uploaded.map((name) => joinFilePath(cwd, name))));
-      setTreeRefreshKey((key) => key + 1);
     }
   }, [cwd]);
 
@@ -497,27 +491,35 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setUploadProgress(0);
     setUploadPhase("uploading");
 
+    const abort = new AbortController();
+    uploadAbortRef.current?.abort();
+    uploadAbortRef.current = abort;
+
     try {
-      const { status, data } = await uploadFiles(cwd, files, strategy, setUploadProgress);
-      if (status === 409 && data.conflicts?.length) {
+      const data = await resources.files.uploadWithProgress(
+        { directory: cwd, files, conflict: strategy },
+        (progress) => setUploadProgress(progress.percent),
+        abort.signal,
+      );
+      setUploadProgress(100);
+      applyUploadResult(data);
+      // Single remote-state authority: upload success refreshes every affected
+      // files/git/index/viewer query (same invalidation as the upload mutation).
+      await invalidateFileWorkspace(queryClient);
+    } catch (uploadFailure) {
+      if (uploadFailure instanceof UploadConflictError) {
         setPendingConflict({
           files,
-          conflicts: data.conflicts,
-          nonReplaceable: data.nonReplaceable ?? [],
+          conflicts: uploadFailure.conflicts,
+          nonReplaceable: uploadFailure.nonReplaceable,
         });
         return;
       }
-      if (status < 200 || status >= 300) {
-        throw new Error(data.error ?? `Upload failed (HTTP ${status})`);
-      }
-      setUploadProgress(100);
-      applyUploadResult(data);
-    } catch (uploadFailure) {
       setUploadError(uploadFailure instanceof Error ? uploadFailure.message : String(uploadFailure));
     } finally {
       setUploadPhase("idle");
     }
-  }, [applyUploadResult, cwd]);
+  }, [applyUploadResult, cwd, resources]);
 
   const prepareUpload = useCallback(async (files: File[]) => {
     if (files.length === 0 || uploadBusy) return;
@@ -529,17 +531,16 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setUploadPhase("checking");
 
     try {
-      const data: UploadResponse = await checkExplorerUploadConflicts(
-        http,
+      const data = await resources.files.uploadCheck(
         cwd,
         files.map((file) => file.name),
       );
 
-      if (data.conflicts?.length) {
+      if (data.conflicts.length > 0) {
         setPendingConflict({
           files,
           conflicts: data.conflicts,
-          nonReplaceable: data.nonReplaceable ?? [],
+          nonReplaceable: data.nonReplaceable,
         });
         return;
       }
@@ -550,7 +551,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     } finally {
       setUploadPhase("idle");
     }
-  }, [cwd, performUpload, uploadBusy]);
+  }, [cwd, performUpload, resources, uploadBusy]);
 
   const handleUploadInput = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -574,37 +575,23 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
   useEffect(() => () => onUploadBusyChange?.(false), [onUploadBusyChange]);
 
-
-
+  // Workspace boundary: a cwd switch is a new remote-state scope. Reset the
+  // ephemeral tree/upload UI and abort any in-flight upload so a late settle
+  // from the previous workspace can never surface in the new one.
   useEffect(() => {
     const cwdChanged = prevCwdRef.current !== cwd;
     prevCwdRef.current = cwd;
-
-    // Reset expanded state only when cwd changes, not on refreshKey bumps
     if (cwdChanged) {
+      uploadAbortRef.current?.abort();
       setExpandedPaths(new Set());
       setHighlightedPaths(new Set());
       setUploadSummary(null);
       setPendingConflict(null);
       setUploadError(null);
     }
+  }, [cwd]);
 
-    setLoading(cwdChanged);
-    setError(null);
-    let cancelled = false;
-    Promise.all([
-      fetchEntries(http, cwd),
-      fetchGitStatus(http, cwd).catch(() => null),
-    ])
-      .then(([entries, status]) => {
-        if (cancelled) return;
-        setRoots(entries);
-        setGitStatus(status);
-      })
-      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [cwd, refreshKey, treeRefreshKey]);
+  useEffect(() => () => uploadAbortRef.current?.abort(), []);
 
   const showUploadFeedback = uploadBusy || pendingConflict !== null || uploadError !== null || uploadSummary !== null;
 
@@ -614,6 +601,8 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       uploadSummary.uploaded.map((name) => getRelativeFilePath(joinFilePath(cwd, name), cwd)),
     );
   }, [cwd, onAtMentions, uploadSummary]);
+
+  const rootError = rootQuery.isError ? "Could not list files." : null;
 
   return (
     <div style={{ minHeight: "100%" }}>
@@ -720,10 +709,23 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
 
       <div style={{ padding: "2px 4px" }}>
-        {loading ? (
+        {rootQuery.isLoading ? (
           <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-dim)" }}>Loading files...</div>
-        ) : error ? (
-          <div style={{ padding: "8px 12px", fontSize: 11, color: "#f87171" }}>{error}</div>
+        ) : rootError ? (
+          <div
+            role="alert"
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", fontSize: 11, color: "#f87171" }}
+          >
+            <span style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>{rootError}</span>
+            <button
+              type="button"
+              onClick={() => void rootQuery.refetch()}
+              title="Retry"
+              style={{ height: 20, padding: "0 7px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-panel)", color: "var(--text-muted)", cursor: "pointer", fontSize: 10 }}
+            >
+              Retry
+            </button>
+          </div>
         ) : (
           roots.map((node) => (
             <TreeNode
@@ -735,14 +737,13 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
               onAtMention={onAtMention}
               expandedPaths={expandedPaths}
               onToggleExpanded={handleToggleExpanded}
-              refreshToken={refreshToken}
               highlightedPaths={highlightedPaths}
               ignoredPaths={ignoredPaths}
               changedFiles={changedFiles}
             />
           ))
         )}
-        {!loading && !error && roots.length === 0 && (
+        {!rootQuery.isLoading && !rootError && roots.length === 0 && (
           <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-dim)" }}>
             No files found
           </div>

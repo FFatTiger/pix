@@ -12,9 +12,9 @@ function resource(path: string, query?: Record<string, string | number | boolean
   return `${url.pathname}${url.search}`;
 }
 
-/** Files resource operations. `watch`/`upload-check`/`docx-preview` extend the
- * source file-workspace contract; `docx-preview` is live on the Host,
- * `watch`+`upload-check` are frozen URL contracts awaiting their endpoints. */
+/** Files resource operations. `watch`/`docx-preview` extend the source
+ * file-workspace contract: `docx-preview` is live on the Host, `watch` is the
+ * live /v1/files/watch SSE stream. */
 export type FilesOperation =
   | "list"
   | "meta"
@@ -80,9 +80,9 @@ export const urls = {
       options?: { sessionId?: string | null | undefined; params?: Record<string, string | number | undefined> | undefined },
     ) => resource("files", { path, op, sessionId: options?.sessionId ?? undefined, ...(options?.params ?? {}) }),
     upload: (path: string, conflict?: "error" | "overwrite" | "skip") => resource("files", { path, conflict }),
-    /** POST /v1/files?op=upload-check — conflict preflight (Host endpoint pending). */
+    /** POST /v1/files?op=upload-check — conflict preflight (live on Host). */
     uploadCheck: (path: string) => resource("files", { path, op: "upload-check" }),
-    /** Existing GET /v1/files/watch?path= SSE change stream. */
+    /** Live GET /v1/files/watch?path= SSE change stream. */
     watch: (path: string) => resource("files/watch", { path }),
     index: (cwd: string, q?: string) => resource("file-index", { cwd, q }),
   },

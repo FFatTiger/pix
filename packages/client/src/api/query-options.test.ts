@@ -227,15 +227,17 @@ describe("table-driven mutation invalidation", () => {
     expect(list2?.sessions[0]).toMatchObject({ sessionId: "other", title: "Keep" });
   });
 
-  it("invalidates only upload directory, its index and git status", async () => {
+  it("upload success invalidates every files/git/index/viewer query", async () => {
     const { options, invalidate } = invalidationHarness({ uploaded: ["a"], skipped: [], errors: [] });
     const input = { directory: "/repo", files: [new File(["x"], "a")] };
     const mutation = options.files.upload();
-    await mutation.mutationFn(input); await mutation.onSuccess(undefined, input);
+    await mutation.mutationFn(input); await mutation.onSuccess();
+    // One remote-state authority: the whole files (list/meta/read/index) and
+    // git (status/diff) domains invalidate, so subdirectory listings, the
+    // search index and every open viewer path refetch on upload success.
     expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
-      { queryKey: queryKeys.files.list("/repo") },
-      { queryKey: queryKeys.files.indexRoot("/repo") },
-      { queryKey: queryKeys.git.status("/repo") },
+      { queryKey: queryKeys.files.all },
+      { queryKey: queryKeys.git.all },
     ]);
   });
 

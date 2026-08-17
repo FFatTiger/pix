@@ -1,4 +1,4 @@
-import { useCallback, forwardRef, useImperativeHandle, useRef, useState } from "react";
+import { useCallback, forwardRef, useImperativeHandle, useEffect, useRef, useState } from "react";
 import { FileViewer } from "./FileViewer";
 import { TabBar, type Tab } from "./TabBar";
 import { openFileTab, saveFileViewerState } from "./file-tab-state";
@@ -49,6 +49,19 @@ export const FileViewerPanel = forwardRef<FileViewerPanelHandle, FileViewerPanel
     const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
     const activeFileTabIdRef = useRef<string | null>(null);
     activeFileTabIdRef.current = activeFileTabId;
+
+    // Tabs are workspace-owned: a cwd switch is a new remote-state scope, and
+    // old tabs (absolute paths from the previous workspace) must never be
+    // reinterpreted under the new cwd's relative display / git-diff scoping.
+    // So the tab set is cleared whenever the workspace cwd changes.
+    const prevCwdRef = useRef<string | undefined>(undefined);
+    useEffect(() => {
+      const prev = prevCwdRef.current;
+      prevCwdRef.current = cwd;
+      if (prev === cwd) return;
+      setFileTabs([]);
+      setActiveFileTabId(null);
+    }, [cwd]);
 
     const handleFileViewerStateChange = useCallback((
       tabId: string,
