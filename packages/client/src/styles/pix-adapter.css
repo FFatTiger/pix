@@ -1203,6 +1203,198 @@ html.dark .catalog-meta-item--error {
   transform: none;
 }
 
+/* ── Chat turn navigation rail (fork ChatMinimap: Codex-style dash markers) ── */
+.minimap-rail {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  z-index: 20;
+  transform: translateY(-50%);
+  width: 30px;
+  max-height: min(70vh, 40rem);
+  display: flex;
+  flex-direction: column;
+  overflow-x: visible;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 2.5rem, #000 calc(100% - 2.5rem), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 2.5rem, #000 calc(100% - 2.5rem), transparent 100%);
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+}
+
+.minimap-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.minimap-rail[data-scrubbing] .minimap-marker {
+  transition-duration: 0s;
+}
+
+.minimap-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 30px;
+  min-height: 10px;
+  flex: 1 1 0;
+  max-height: 50px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.minimap-marker-track {
+  display: flex;
+  width: 30px;
+  height: 2px;
+  align-items: center;
+}
+
+.minimap-marker {
+  --marker-progress: 0;
+  width: 26px;
+  height: 2px;
+  border-radius: 999px;
+  transform: scaleX(calc(0.2308 + 0.7692 * var(--marker-progress)));
+  transform-origin: left center;
+  background: color-mix(in srgb, var(--text-muted) 70%, transparent);
+  opacity: 0.4;
+  transition:
+    transform 0.16s linear(0, 0.398 10%, 0.682 20%, 0.843 30%, 0.925 40%, 0.972 50%, 1.004 60%, 1.008 70%, 1.003 80%, 1),
+    background 0.12s ease,
+    opacity 0.12s ease;
+}
+
+.minimap-row[aria-current="true"] .minimap-marker {
+  background: var(--text);
+  opacity: 0.6;
+}
+
+.minimap-row[data-scrub-target] .minimap-marker,
+.minimap-row:focus-visible .minimap-marker {
+  --marker-progress: 1;
+  background: var(--text);
+  opacity: 1;
+}
+
+/* Neighbor falloff around scrub/hover target */
+.minimap-row:has(+ .minimap-row[data-scrub-target]) .minimap-marker,
+.minimap-row[data-scrub-target] + .minimap-row .minimap-marker {
+  --marker-progress: 0.7;
+}
+
+.minimap-row:has(+ .minimap-row + .minimap-row[data-scrub-target]) .minimap-marker,
+.minimap-row[data-scrub-target] + .minimap-row + .minimap-row .minimap-marker {
+  --marker-progress: 0.4;
+}
+
+.minimap-row:has(+ .minimap-row + .minimap-row + .minimap-row[data-scrub-target]) .minimap-marker,
+.minimap-row[data-scrub-target] + .minimap-row + .minimap-row + .minimap-row .minimap-marker {
+  --marker-progress: 0.2;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .minimap-rail:not([data-scrubbing]):hover .minimap-row[aria-current="true"]:not(:hover):not(:focus-visible) .minimap-marker {
+    background: color-mix(in srgb, var(--text-muted) 70%, transparent);
+    opacity: 0.4;
+  }
+
+  .minimap-rail:not([data-scrubbing]) .minimap-row:hover .minimap-marker {
+    --marker-progress: 1;
+    background: var(--text);
+    opacity: 1;
+  }
+
+  .minimap-rail:not([data-scrubbing]) .minimap-row:has(+ .minimap-row:hover) .minimap-marker,
+  .minimap-rail:not([data-scrubbing]) .minimap-row:hover + .minimap-row .minimap-marker {
+    --marker-progress: 0.7;
+  }
+
+  .minimap-rail:not([data-scrubbing]) .minimap-row:has(+ .minimap-row + .minimap-row:hover) .minimap-marker,
+  .minimap-rail:not([data-scrubbing]) .minimap-row:hover + .minimap-row + .minimap-row .minimap-marker {
+    --marker-progress: 0.4;
+  }
+
+  .minimap-rail:not([data-scrubbing]) .minimap-row:has(+ .minimap-row + .minimap-row + .minimap-row:hover) .minimap-marker,
+  .minimap-rail:not([data-scrubbing]) .minimap-row:hover + .minimap-row + .minimap-row + .minimap-row .minimap-marker {
+    --marker-progress: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .minimap-marker {
+    transition-duration: 0s;
+  }
+}
+
+/* Floating turn preview card */
+.minimap-tooltip {
+  position: fixed;
+  z-index: 120;
+  width: min(20rem, calc(100vw - 16px));
+  max-width: calc(100vw - 1rem);
+  overflow: hidden;
+  border-radius: 12px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--bg-panel) 95%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12), 0 0 0 0.5px color-mix(in srgb, var(--border) 90%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: auto;
+  cursor: default;
+  user-select: text;
+}
+
+.minimap-user-label {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.minimap-user-label:hover {
+  color: color-mix(in srgb, var(--text) 88%, var(--accent));
+}
+
+.minimap-assistant-preview {
+  margin-top: 4px;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  cursor: pointer;
+}
+
+.minimap-assistant-preview:hover {
+  color: var(--text);
+}
+
+.minimap-empty-label {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 .sidebar-row-meta {
   flex-shrink: 0;
   margin-left: auto;
