@@ -595,15 +595,21 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         model: stagedModel,
         thinkingLevel: stagedThinking,
       };
-      const sendTo = (sessionId: string): void => {
+      const sendTo = (sessionId: string, applyActivationSettings = true): void => {
         runtime
-          .sendPromptToSession(sessionId, message, wireImages, {
-            // Detached staging rides the SINGLE activation transaction: applied
-            // after attach, before the prompt, in deterministic order. Null
-            // values are no-ops (already-live sends just dispatch directly).
-            model: activationSettings.model,
-            thinkingLevel: activationSettings.thinkingLevel,
-          })
+          .sendPromptToSession(
+            sessionId,
+            message,
+            wireImages,
+            applyActivationSettings
+              ? {
+                  // Detached staging rides the SINGLE activation transaction:
+                  // applied after attach and before the prompt.
+                  model: activationSettings.model,
+                  thinkingLevel: activationSettings.thinkingLevel,
+                }
+              : undefined,
+          )
           .then(() => {
             if (isCurrent()) clearStaged();
           })
@@ -620,7 +626,10 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         ...(stagedModel === null ? {} : { model: stagedModel }),
         ...(stagedThinking === null ? {} : { thinkingLevel: stagedThinking }),
       })
-        .then((sessionId) => { sendTo(sessionId); })
+        // Create already applied model/thinking. Reapplying them before the
+        // first prompt can fail capability checks and restore the draft, making
+        // the user press Enter twice.
+        .then((sessionId) => { sendTo(sessionId, false); })
         .catch((cause: unknown) => {
           if (isCurrent() && (isActivationFailure(cause) || isDefiniteFailure(cause))) restoreDraft(message);
         });

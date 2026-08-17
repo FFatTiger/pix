@@ -12,7 +12,7 @@ import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "./testing/harn
 import type { RuntimeSocketDeps } from "./socket";
 import type { HostInfo } from "@fffattiger/pix-protocol";
 import type { SessionStore } from "./session-store";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 // RuntimeProvider mounts TranscriptList, which uses the hand-rolled virtualizer
 // (src/lib/virtual-list). jsdom has no ResizeObserver, so it renders every row
@@ -220,6 +220,60 @@ describe("RuntimeProvider — D2-P4 steer/followUp/clearQueue exposure", () => {
     expect(intr.payload.interrupt.type).toBe("clear_queue");
     await serverSend(ws, { type: "interrupt_result", id: intr.id, payload: { sessionId: "s1", commandId: intr.payload.commandId, interruptType: "clear_queue", result: { ok: true, type: "clear_queue" } } });
     expect(clearSettled).toBe(true);
+  });
+});
+
+describe("Composer — first prompt creates and sends in one transaction", () => {
+  beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("sends the first Enter exactly once even when create navigation remounts Composer", async () => {
+    function Harness() {
+      const runtime = useRuntime();
+      const [sessionId, setSessionId] = useState<string | null>(null);
+      if (sessionId) {
+        return <div key="session"><Composer sessionId={sessionId} live /></div>;
+      }
+      return (
+        <div key="home">
+          <Composer
+            cwd="/x"
+            onCreateSession={async (settings) => {
+              const result = await runtime.createSession({
+                cwd: "/x",
+                projectRoot: "/x",
+                ...(settings?.model === undefined ? {} : { model: settings.model }),
+                ...(settings?.thinkingLevel === undefined ? {} : { thinkingLevel: settings.thinkingLevel }),
+              });
+              setSessionId(result.sessionId);
+              return result.sessionId;
+            }}
+          />
+        </div>
+      );
+    }
+
+    mount(<Harness />);
+    const ws = await driveReady();
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "first message" } });
+    fireEvent.click(screen.getByLabelText("Send message"));
+    await flush();
+
+    const create = lastFrame<{ type: string; id: string }>(ws, "create")!;
+    expect(create).toBeTruthy();
+    await serverSend(ws, {
+      type: "response",
+      id: create.id,
+      payload: { ok: true, result: { sessionId: "new-1", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-1" }).snapshot } },
+    });
+    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    await serverSend(ws, { type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-1", capabilities: ["runtime.prompt", "runtime.abort"] }) });
+    await flush();
+
+    const prompts = ws.sent.filter((frame) => (frame as { type?: string; payload?: { command?: { type?: string } } }).type === "command" && (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt") as Array<{ payload: { command: { message: string } } }>;
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]!.payload.command.message).toBe("first message");
   });
 });
 

@@ -312,10 +312,12 @@ export function AppShell({ search }: AppShellProps) {
     }
     selectionGenerationRef.current += 1;
     setPendingSessionId(null);
-    // Clear a stale active selector before create, then wait for the router
-    // commit. Existing runtime subscriptions remain identity-gated background
-    // state and are superseded only by the create/attach transaction itself.
-    await navigate({ to: "/", search: { cwd: search.cwd } });
+    // Clear a stale active selector before create. On the empty home the URL
+    // already is cwd-only, so navigating to the same route would needlessly
+    // remount the composer during the first send.
+    if (search.session !== undefined || search.file !== undefined) {
+      await navigate({ to: "/", search: { cwd: search.cwd } });
+    }
     const result = await runtime.createSession({
       cwd: search.cwd,
       projectRoot: search.cwd,

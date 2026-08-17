@@ -782,16 +782,54 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(dialog.querySelector('[aria-current="page"]')?.textContent).toBe("Display");
   });
 
-  it("New Session uses the existing create path and invents no extra catalog chrome", async () => {
+  it("New Session starts create without a redundant home navigation or extra catalog chrome", async () => {
     mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
+    const ws = await connectReady();
     await settle();
     await act(async () => {
       fireEvent.click(screen.getByTestId("sidebar-new-session"));
       await flush();
     });
-    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/", search: { cwd: "/x" } }));
+    expect(lastFrame(ws, "create")).toBeTruthy();
+    expect(navigateMock).not.toHaveBeenCalled();
     expect(screen.getByTestId("sidebar-nav-plugins").textContent).toBe("Plugins");
     expect(screen.getByTestId("sidebar-nav-resources").textContent).toBe("Resources");
+  });
+
+  it("sends the first home prompt after create even when URL navigation remounts the composer", async () => {
+    const view = mountApp({ cwd: "/x" });
+    navigateMock.mockImplementation(async (options: { search: WorkspaceSearch }) => {
+      view.rerender(options.search);
+      await flush();
+    });
+    const ws = await connectReady();
+    await settle();
+
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "first from home" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    await act(async () => { await flush(8); });
+
+    // Empty-home send must not navigate to the same cwd before create; that
+    // redundant route commit was the visible first-Enter refresh.
+    expect(navigateMock).not.toHaveBeenCalled();
+    const create = lastFrame<{ type: string; id: string }>(ws, "create")!;
+    expect(create).toBeTruthy();
+    await act(async () => {
+      ws.serverSend({
+        type: "response",
+        id: create.id,
+        payload: { ok: true, result: { sessionId: "new-home", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", snapshot: snapshotPayload({ sessionId: "new-home" }).snapshot } },
+      });
+      await flush();
+      const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "new-home", capabilities: ["runtime.prompt", "runtime.abort"] }) });
+      await flush(12);
+    });
+
+    const prompts = ws.sent.filter((frame) => (frame as { type?: string; payload?: { command?: { type?: string } } }).type === "command" && (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt") as Array<{ payload: { command: { message: string } } }>;
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]!.payload.command.message).toBe("first from home");
   });
 
   it("expands a project in place without changing cwd or filtering Recent", async () => {
