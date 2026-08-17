@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const START_TIMEOUT_MS = 15_000;
@@ -130,7 +131,7 @@ async function runtimeAck(origin, { timeoutMs = STEP_TIMEOUT_MS } = {}) {
       ws.send(
         JSON.stringify({
           type: "handshake",
-          payload: { protocolVersion: 1, client: { shell: "web", platform: "mac" }, features: [] },
+          payload: { protocolVersion: PROTOCOL_VERSION, client: { shell: "web", platform: "mac" }, features: [] },
         }),
       );
     });
@@ -165,10 +166,15 @@ async function waitForCaps(origin, running, { sessiond, caps }) {
         JSON.stringify(capBody.capabilities) === JSON.stringify(caps) &&
         JSON.stringify(bootstrap.capabilities) === JSON.stringify(caps) &&
         bootstrap.sessiond === sessiond;
-      if (httpAgrees) {
+  if (httpAgrees) {
         const ack = await runtimeAck(origin);
-        if (JSON.stringify(ack.host.capabilities) === JSON.stringify(caps)) return ack;
-        last = { ws: ack.host.capabilities };
+        if (ack.protocolVersion !== PROTOCOL_VERSION) {
+          last = { wsVersion: ack.protocolVersion, expected: PROTOCOL_VERSION };
+        } else if (JSON.stringify(ack.host.capabilities) === JSON.stringify(caps)) {
+          return ack;
+        } else {
+          last = { ws: ack.host.capabilities };
+        }
       } else {
         last = { health, capBody, bootstrap };
       }

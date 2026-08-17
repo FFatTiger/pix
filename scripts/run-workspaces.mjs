@@ -11,10 +11,9 @@
 //   - reads the root manifest's `workspaces` patterns;
 //   - discovers the directories that actually contain a parseable package.json;
 //   - with no workspaces, prints a short note and exits 0;
-//   - otherwise spawns the npm paired with the running Node (npm_execpath,
-//     then an npm/npm.cmd sibling of the node binary, then PATH) and runs
-//     `npm run <script> --workspaces --if-present`, inheriting stdio, the
-//     child exit code, and (via signal re-raise) termination signals.
+//   - otherwise launches the validated npm JS CLI from tool-invocation.mjs
+//     (`process.execPath` + `npm-cli.js`, `shell: false`; no npm.cmd / PATH
+//     / `shell:true` fallback) as `npm run <script> --workspaces --if-present`.
 //
 // The root package's own script of the same name is never executed:
 // `--workspaces` restricts npm to the workspace directories.
@@ -23,6 +22,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveNpmInvocation } from "./tool-invocation.mjs";
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -116,28 +116,7 @@ export function readWorkspaceConfig(rootDir = ROOT_DIR) {
   return { patterns, dirs };
 }
 
-/**
- * The npm executable paired with the current Node, as `{ command, args, shell }`.
- */
-export function resolveNpmInvocation({
-  platform = process.platform,
-  execPath = process.execPath,
-  env = process.env,
-} = {}) {
-  const npmExecPath = env.npm_execpath;
-  if (npmExecPath && /npm-cli\.js$/i.test(npmExecPath) && existsSync(npmExecPath)) {
-    return { command: execPath, args: [npmExecPath], shell: false };
-  }
-  const sibling = join(dirname(execPath), platform === "win32" ? "npm.cmd" : "npm");
-  if (existsSync(sibling)) {
-    return { command: sibling, args: [], shell: platform === "win32" };
-  }
-  return {
-    command: platform === "win32" ? "npm.cmd" : "npm",
-    args: [],
-    shell: platform === "win32",
-  };
-}
+export { resolveNpmInvocation };
 
 /** `npm run <script> --workspaces --if-present` for the given npm invocation. */
 export function buildSpawnArgs(scriptName, invocation) {

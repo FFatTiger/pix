@@ -103,6 +103,8 @@ test("/v1/bootstrap is available over HTTP and aggregates the boot surface", asy
   const body = await res.json();
   assert.equal(body.ok, true);
   assert.equal(body.service, "pix-host");
+  const { HOST_BOOTSTRAP_SCHEMA_VERSION } = await import("@fffattiger/pix-protocol/host-bootstrap");
+  assert.equal(body.protocolVersion, HOST_BOOTSTRAP_SCHEMA_VERSION);
   assert.equal(body.protocolVersion, 1);
   assert.equal(body.sessiond, "unknown");
   assert.deepEqual(body.capabilities, []);

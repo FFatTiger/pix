@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHostApp, HOST_PROTOCOL_VERSION } from "../dist/index.js";
+import { HOST_BOOTSTRAP_SCHEMA_VERSION } from "@fffattiger/pix-protocol/host-bootstrap";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
+import { createHostApp } from "../dist/index.js";
 
 const DISABLED_GATE = { read: () => ({ status: "disabled", source: "test" }) };
 const ENABLED_GATE = {
@@ -23,8 +25,9 @@ test("bootstrap is served with no-store and aggregates the boot surface", async 
   const body = await res.json();
   assert.equal(body.ok, true);
   assert.equal(body.service, "pix-host");
-  assert.equal(body.protocolVersion, HOST_PROTOCOL_VERSION);
+  assert.equal(body.protocolVersion, HOST_BOOTSTRAP_SCHEMA_VERSION);
   assert.equal(body.protocolVersion, 1);
+  assert.notEqual(body.protocolVersion, PROTOCOL_VERSION);
   assert.equal(body.sessiond, "unknown");
   // Nothing wired → honest empty capability (no false agent/files claim).
   assert.deepEqual(body.capabilities, []);

@@ -44,6 +44,9 @@ test("isWithin is true for children and false for parents or siblings", () => {
   assert.equal(isWithin("/a/b", "/a"), false);
   assert.equal(isWithin("/a/b", "/a/bc"), false);
   assert.equal(isWithin("/a/b", "/a/bc/d"), false);
+  assert.equal(isWithin("C:\\", "C:\\Users"), true);
+  assert.equal(isWithin("/a/my dir", "/a/my dir/x"), true);
+  assert.equal(isWithin("/a/b", "/a/bc"), false);
 });
 
 test("resolveTarget rejects empty, NUL, whitespace-only and root paths", (t) => {
@@ -62,8 +65,8 @@ test("resolveTarget rejects the working directory itself", (t) => {
   const root = makeRoot();
   t.after(() => cleanup(root));
   assert.throws(() => resolveTarget(root, "."), /working directory itself/);
-  // The absolute form is rejected as an absolute path (relative-only contract).
-  assert.throws(() => resolveTarget(root, root), /absolute path/);
+  // The absolute form is rejected as an absolute / drive path (relative-only contract).
+  assert.throws(() => resolveTarget(root, root), /absolute (?:drive )?path/);
 });
 
 test("resolveTarget rejects parent escape and absolute paths outside cwd", (t) => {
@@ -75,14 +78,14 @@ test("resolveTarget rejects parent escape and absolute paths outside cwd", (t) =
   });
   assert.throws(() => resolveTarget(root, ".."), /outside the working directory/);
   assert.throws(() => resolveTarget(root, "../other"), /outside the working directory/);
-  assert.throws(() => resolveTarget(root, join(outside, "x")), /absolute path/);
+  assert.throws(() => resolveTarget(root, join(outside, "x")), /absolute (?:drive )?path/);
 });
 
 test("resolveTarget rejects an absolute path even when it is beneath cwd", (t) => {
   const root = makeRoot();
   t.after(() => cleanup(root));
   mkdirSync(join(root, "dist"), { recursive: true });
-  assert.throws(() => resolveTarget(root, join(root, "dist")), /absolute path/);
+  assert.throws(() => resolveTarget(root, join(root, "dist")), /absolute (?:drive )?path/);
 });
 
 test("resolveTarget rejects Windows drive paths and UNC roots as probes", (t) => {

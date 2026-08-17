@@ -1,9 +1,9 @@
 import type { Hono } from "hono";
+import { HOST_BOOTSTRAP_SCHEMA_VERSION } from "@fffattiger/pix-protocol/host-bootstrap";
 import type { HostEnv } from "../env.js";
 import {
   CATALOG_CAPABILITIES,
   EMPTY_HOST_CAPABILITIES,
-  HOST_PROTOCOL_VERSION,
   READONLY_HOST_CAPABILITIES,
   type CapabilityResolver,
   type CatalogDeps,
@@ -279,7 +279,7 @@ export function registerBootstrapRoutes(
     return c.json({
       ok: true,
       service: "pix-host",
-      protocolVersion: HOST_PROTOCOL_VERSION,
+      protocolVersion: HOST_BOOTSTRAP_SCHEMA_VERSION,
       sessiond,
       capabilities,
       mode: deps.exposureMode ?? "local",

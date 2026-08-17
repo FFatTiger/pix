@@ -112,7 +112,7 @@ test("host composition: health/bootstrap/index are real and capabilities are emp
     };
     assert.equal(bootstrap.ok, true);
     assert.equal(bootstrap.mode, "local");
-    assert.equal(typeof bootstrap.protocolVersion, "number");
+    assert.equal(bootstrap.protocolVersion, 1);
     assert.deepEqual(bootstrap.capabilities, []);
 
     const indexRes = await fetch(`${base}/`, { headers: { accept: "text/html" } });

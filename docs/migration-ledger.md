@@ -3449,3 +3449,41 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 - 同 UID 攻击者在 rename 前重验 lstat 与 `rename()` 之间替换 trust.json/agentDir 的极窄 TOCTOU 残余窗口（与 D3A-P0/local-authority 同类「同 UID 残余窗口」诚实枚举，不宣称 fail-closed）。窗口已最小化：rename 前重验目录+target identity/absence，rename 后 post-verify dev/ino===temp identity，任何可观测替换均 fail-closed 为固定 sanitized code；不宣称可对抗与持有 agentDir 写权限的恶意同 UID 进程的纳秒级竞态。
 - Client mutation 暂无 UI 门控消费（`project.trust` capability 检查留给 ProjectTrustDialog 切片）；API 层已就绪且与 worktrees dormant-helper 模式一致。
+
+---
+
+## 70. Cross-platform G0 baseline — plan provenance and pending compatibility-shim tally
+
+### 计划来源
+
+- 专题计划（问题/目标/分阶段路线）：`docs/cross-platform-hardening-plan.md`
+- 基线 commit：`main@bd3224860e7434df28ac2750490b2a77a98afb34`（2026-08-17）
+- 执行 SSOT：`docs/refactor-execution-plan.md` §1.3（活动任务 CP-00/01/02/03/04）
+- 非来源：不读取、不合并、不 cherry-pick `fix/cross-platform-dev`
+- 范围：G0 可执行基线（文档诚实化、Runtime Protocol v2 / HTTP bootstrap 词义、Windows 根脚本、CI 骨架）。不实现后续 Host/Client/release 平台 lane。
+
+### Pending compatibility-shim tally
+
+当前仓库只登记 **1** 条待删除兼容桥。本切片**不新增** shim，也不为已删除的 Host `HOST_PROTOCOL_VERSION` 保留 alias。
+
+| Shim ID | Bridge | First seen | Tests | Finite removal condition |
+|---|---|---|---|---|
+| `SHIM-CP-CLI-V1` | `packages/cli/src/probe.ts` authenticated Protocol-v1 control envelope (`legacyV1ControlCall`, `LEGACY_PROTOCOL_VERSION=1`, `pingLegacyV1Sessiond`, `shutdownLegacyV1Sessiond`). Used only to positively identify/replace an owned stale v1 sessiond during the v2 rollout. AUTH + exact lock instanceId remain authority. | Existing CLI stale-daemon safety on current `main@bd322486` | `packages/cli/test/probe.test.ts`; fixture `packages/cli/test/fixtures/fake-v1-daemon.mjs` | Delete in the same PR that removes `packages/cli/test/fixtures/fake-v1-daemon.mjs` **and** `LEGACY_PROTOCOL_VERSION` / `legacyV1ControlCall` after G3 POSIX + G3 Windows required CI jobs (ubuntu-latest, macos-latest, windows-latest) prove production `system.hello` only returns current `PROTOCOL_VERSION` (owner: `packages/protocol/src/version.ts`, currently `2`). Objective check: those symbols and the fake-v1 fixture no longer exist. Not “after users migrate”. |
+
+### 本切片有意修改（无 persisted 数据迁移）
+
+- Runtime WS/E2E 正向握手改从 `PROTOCOL_VERSION` 导入；负向 v1 handshake 测试与 CLI v1 bridge 保留。
+- HTTP bootstrap 版本改由 `@fffattiger/pix-protocol/host-bootstrap` 的 `HOST_BOOTSTRAP_SCHEMA_VERSION=1` 拥有；Host 投影该字面量；删除 Host-owned `HOST_PROTOCOL_VERSION`（无兼容 alias）。
+- Client `BootstrapResponseSchema` 消费 Protocol 严格 DTO（literal `1`），拒绝 Runtime v2。
+- 根脚本 path containment 集中到 `scripts/path-policy.mjs`；`run-workspaces` 复用 `tool-invocation` 的 npm JS CLI。
+- 新增 `.github/workflows/cross-platform-baseline.yml`（required tooling × 3 OS；Windows 产品启动为独立 non-blocking known-gap）。
+
+### 验证（2026-08-17，Windows native / Node 25.9.0）
+
+- Protocol：build/typecheck PASS，155/155 tests PASS。
+- Host bootstrap/static 定向：13/13 PASS；Host typecheck 与 boundary（43 files）PASS。
+- Client：build/typecheck PASS，Protocol/bootstrap 定向 9/9 PASS，boundary（189 files）PASS。
+- Root tooling：120 total，119 pass，1 intentional signal skip，0 fail。
+- Root `npm run typecheck`、`npm run check:architecture`（14 gates）、`git diff --check` PASS。
+- 完整 Host/sessiond/root product tests 在 Windows 仍按预期被 POSIX secure-state 阻断（`HOST_DIR_INVALID` / sessiond private-dir invalid）；已记录为 G2B/Windows known-gap，不伪报全量测试成功。
+- `.github/workflows/cross-platform-baseline.yml`：三端 required tooling 只跑跨端已绿门禁；Linux/macOS required product tests；Windows product startup 是独立 non-blocking fixed-error known-gap。

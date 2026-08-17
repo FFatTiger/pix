@@ -4,8 +4,10 @@
  * Owns gate, request security (Host/Origin/DNS-rebinding), static client
  * hosting, health/capabilities and the WebSocket upgrade seam. Runtime
  * protocol wiring (H0B) and resource services (H1x) are injected through
- * {@link createHostApp}'s deps; this package imports no Pi SDK, sessiond or
- * protocol code.
+ * {@link createHostApp}'s deps. Foundation may import only the exact
+ * `@fffattiger/pix-protocol/host-bootstrap` subpath to project the HTTP
+ * bootstrap schema version. Runtime Protocol remains composition-only.
+ * This package imports no Pi SDK or sessiond outside composition.
  */
 
 export { createHostApp } from "./app.js";
@@ -170,7 +172,6 @@ export {
   CATALOG_CAPABILITIES,
   READONLY_HOST_CAPABILITIES,
   EMPTY_HOST_CAPABILITIES,
-  HOST_PROTOCOL_VERSION,
 } from "./types.js";
 export type {
   GateConfig,

@@ -353,3 +353,26 @@ test("REAL regression: a glob-valued separate flag can no longer hide a failing 
   assert.equal(rejected, 2);
   assert.equal(spawned, false);
 });
+
+test("main forwards a Windows-quoted glob plus --flag=value as two intact argv entries", () => {
+  const root = makeRoot();
+  try {
+    mkdirSync(join(root, "dist-test"), { recursive: true });
+    const testFile = join(root, "dist-test", "a.test.js");
+    writeFileSync(testFile, "");
+    let invocation;
+    const code = main(["dist-test/**/*.test.js", "--test-concurrency=1"], {
+      cwd: root,
+      spawnSyncImpl: (command, args) => {
+        invocation = { command, args };
+        return { status: 0 };
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(invocation.command, process.execPath);
+    assert.deepEqual(invocation.args, ["--test", "--test-concurrency=1", testFile]);
+    assert.equal(parseArgs(["dist-test/**/*.test.js", "--test-concurrency=1"]).flags[0], "--test-concurrency=1");
+  } finally {
+    cleanup(root);
+  }
+});

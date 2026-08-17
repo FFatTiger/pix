@@ -14,15 +14,8 @@
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve, sep } from "node:path";
-
-/** True when `child` is `parent` itself or strictly beneath it. */
-function isWithin(parent, child) {
-  const prefix = parent.endsWith(sep) ? parent : parent + sep;
-  const p = process.platform === "win32" ? prefix.toLowerCase() : prefix;
-  const c = process.platform === "win32" ? child.toLowerCase() : child;
-  return c === p || c.startsWith(p);
-}
+import { dirname, join, resolve } from "node:path";
+import { isWithin } from "./path-policy.mjs";
 
 /** True when `path` exists and is a regular file (not a directory/device). */
 function isRegularFile(path) {

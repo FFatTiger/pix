@@ -6,6 +6,8 @@ import type {
 } from "./sessiond.js";
 import type { RuntimeCommandOutcome, RuntimeInterruptResult } from "./results.js";
 import type { WsClientMessage, WsHostMessage } from "./ws.js";
+import type { HostBootstrapSchemaVersion } from "./host-bootstrap.js";
+import { PROTOCOL_VERSION } from "./version.js";
 
 /** Compile-time assertions for method/payload/result discrimination. */
 type Equal<A, B> =
@@ -44,6 +46,8 @@ export type ProtocolTypeAssertions =
         { method: "confirm" }
       >["closed"],
       true | undefined
-    >>;
+    >>
+  | Assert<Equal<HostBootstrapSchemaVersion, 1>>
+  | Assert<Equal<typeof PROTOCOL_VERSION, 2>>;
 
 export const protocolTypeAssertions: ProtocolTypeAssertions = true;

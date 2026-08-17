@@ -1,7 +1,7 @@
 /**
  * @fffattiger/pix-protocol
  *
- * Pi Runtime Protocol v1 — frozen shared contract.
+ * Pi Runtime Protocol v2 — frozen shared contract.
  * Browser, Hono host, pi-sessiond, and agent-worker all import from here.
  * Never re-export pi SDK types.
  */

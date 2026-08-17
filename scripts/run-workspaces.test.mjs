@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { toPosixRelative } from "./path-policy.mjs";
 import { fileURLToPath } from "node:url";
 import {
   buildSpawnArgs,
@@ -53,6 +54,15 @@ function cleanup(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+function copyWorkspaceRunner(root) {
+  mkdirSync(join(root, "scripts"), { recursive: true });
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const name of ["run-workspaces.mjs", "tool-invocation.mjs", "path-policy.mjs"]) {
+    writeFileSync(join(root, "scripts", name), readFileSync(join(here, name), "utf8"));
+  }
+  return join(root, "scripts", "run-workspaces.mjs");
+}
+
 async function capture(target, fn) {
   const original = console[target];
   const logs = [];
@@ -80,8 +90,8 @@ test("discovers only directories that contain a package.json", (t) => {
   addWorkspace(root, "a");
   mkdirSync(join(root, "packages", "b"), { recursive: true }); // no manifest
   addWorkspace(root, "c");
-  const dirs = readWorkspaceConfig(root).dirs.map((d) => d.replace(root, ""));
-  assert.deepEqual(dirs.sort(), ["/packages/a", "/packages/c"]);
+  const dirs = readWorkspaceConfig(root).dirs.map((d) => toPosixRelative(root, d));
+  assert.deepEqual(dirs.sort(), ["packages/a", "packages/c"]);
 });
 
 test("supports recursive ** and literal workspace patterns", (t) => {
@@ -94,8 +104,8 @@ test("supports recursive ** and literal workspace patterns", (t) => {
   const meta = join(root, "tools", "meta");
   mkdirSync(meta, { recursive: true });
   writeFileSync(join(meta, "package.json"), JSON.stringify({ name: "meta" }));
-  const dirs = readWorkspaceConfig(root).dirs.map((d) => d.replace(root, ""));
-  assert.deepEqual(dirs.sort(), ["/packages/a", "/packages/nested/deep", "/tools/meta"]);
+  const dirs = readWorkspaceConfig(root).dirs.map((d) => toPosixRelative(root, d));
+  assert.deepEqual(dirs.sort(), ["packages/a", "packages/nested/deep", "tools/meta"]);
 });
 
 test("returns no workspaces when the root manifest has no workspaces field", (t) => {
@@ -143,47 +153,33 @@ test("expandPattern handles a literal dir without a manifest", (t) => {
 // npm invocation resolution and spawn args
 // ---------------------------------------------------------------------------
 
-test("resolveNpmInvocation prefers npm_execpath from the invoking npm", (t) => {
+function addNpmPackage(root) {
+  const pkgDir = join(root, "node_modules", "npm");
+  mkdirSync(join(pkgDir, "bin"), { recursive: true });
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" } }));
+  const cli = join(pkgDir, "bin", "npm-cli.js");
+  writeFileSync(cli, "");
+  return cli;
+}
+
+test("resolveNpmInvocation reuses the validated npm JS CLI (no npm.cmd / shell:true)", (t) => {
   const root = makeRoot();
   t.after(() => cleanup(root));
-  const fakeCli = join(root, "npm-cli.js");
-  writeFileSync(fakeCli, "");
+  const cli = addNpmPackage(root);
   const inv = resolveNpmInvocation({
     execPath: process.execPath,
-    env: { npm_execpath: fakeCli },
+    env: { npm_execpath: cli },
   });
   assert.equal(inv.command, process.execPath);
-  assert.deepEqual(inv.args, [fakeCli]);
+  assert.deepEqual(inv.args, [cli]);
   assert.equal(inv.shell, false);
 });
 
-test("resolveNpmInvocation uses the npm sibling of the node binary", (t) => {
-  const root = makeRoot();
-  t.after(() => cleanup(root));
-  const bin = join(root, "bin");
-  mkdirSync(bin, { recursive: true });
-  writeFileSync(join(bin, "npm"), "");
-  const inv = resolveNpmInvocation({
-    platform: "darwin",
-    execPath: join(bin, "node"),
-    env: {},
-  });
-  assert.equal(inv.command, join(bin, "npm"));
-  assert.deepEqual(inv.args, []);
-  assert.equal(inv.shell, false);
-});
-
-test("resolveNpmInvocation falls back to npm.cmd on Windows and npm elsewhere", () => {
-  const win = resolveNpmInvocation({
-    platform: "win32",
-    execPath: join("C:\\", "nodejs", "node.exe"),
-    env: {},
-  });
-  assert.equal(win.command, "npm.cmd");
-  assert.equal(win.shell, true);
-  const posix = resolveNpmInvocation({ platform: "linux", execPath: "/usr/bin/node", env: {} });
-  assert.equal(posix.command, "npm");
-  assert.equal(posix.shell, false);
+test("resolveNpmInvocation fails closed without a validated npm_execpath", () => {
+  assert.throws(
+    () => resolveNpmInvocation({ execPath: process.execPath, env: {} }),
+    /run this script through npm/,
+  );
 });
 
 test("buildSpawnArgs always produces npm run <script> --workspaces --if-present", () => {
@@ -384,9 +380,7 @@ test("main: turns a thrown error into exit 1 with a message", async () => {
 test("end-to-end: CLI exits 0 with a note when there are no workspaces", async (t) => {
   const root = makeRoot({ workspaces: ["packages/*"] });
   t.after(() => cleanup(root));
-  mkdirSync(join(root, "scripts"), { recursive: true });
-  const copy = join(root, "scripts", "run-workspaces.mjs");
-  writeFileSync(copy, readFileSync(new URL("./run-workspaces.mjs", import.meta.url), "utf8"));
+  const copy = copyWorkspaceRunner(root);
   const result = await new Promise((resolvePromise) => {
     const child = spawn(process.execPath, [copy, "typecheck"], { cwd: root });
     let stdout = "";
@@ -401,9 +395,7 @@ test("end-to-end: CLI exits 0 with a note when there are no workspaces", async (
 test("end-to-end: CLI usage error exits 2", async (t) => {
   const root = makeRoot({ workspaces: ["packages/*"] });
   t.after(() => cleanup(root));
-  mkdirSync(join(root, "scripts"), { recursive: true });
-  const copy = join(root, "scripts", "run-workspaces.mjs");
-  writeFileSync(copy, readFileSync(new URL("./run-workspaces.mjs", import.meta.url), "utf8"));
+  const copy = copyWorkspaceRunner(root);
   const result = await new Promise((resolvePromise) => {
     const child = spawn(process.execPath, [copy], { cwd: root });
     let stderr = "";

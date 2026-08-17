@@ -50,14 +50,17 @@ const COMPOSITION_ALLOWED_ADAPTER_SUBPATHS = new Set([
 // check:architecture gate, which scans host source for their literal form.
 const FORBIDDEN_IDENTIFIERS = ["Agent" + "Session", "Session" + "Manager", "rpc-manager", "PiRpc", "RpcManager"];
 
-// Protocol/sessiond are forbidden in the foundation; allowed (narrowly) only
-// in composition. The sessiond main entry and every non-client subpath stay
+// Protocol/sessiond are forbidden in the foundation except the exact HTTP
+// bootstrap schema subpath. Composition may import the protocol root plus that
+// same exact subpath. The sessiond main entry and every non-client subpath stay
 // forbidden even in composition — the host only consumes the narrow client.
 const FOUNDATION_FORBIDDEN_IMPORT_PREFIXES = [
   ...GLOBAL_FORBIDDEN_IMPORT_PREFIXES,
-  "@fffattiger/pix-protocol",
   "@fffattiger/pix-sessiond",
 ];
+
+const PROTOCOL_ROOT = "@fffattiger/pix-protocol";
+const PROTOCOL_HOST_BOOTSTRAP = "@fffattiger/pix-protocol/host-bootstrap";
 
 const ALLOWED_EXTERNAL_PREFIXES = [
   "hono",
@@ -66,12 +69,14 @@ const ALLOWED_EXTERNAL_PREFIXES = [
   // Slice 1 (local-authority): the foundation may import ONLY the narrow
   // `.../state` secure-state surface (enforced exactly below, not by prefix).
   "@fffattiger/pix-local-authority/state",
+  // CP-02: foundation may project ONLY the HTTP bootstrap schema version.
+  PROTOCOL_HOST_BOOTSTRAP,
 ];
 
 /** Externals that composition source may import in addition to hono. */
 const COMPOSITION_ALLOWED_EXTERNAL_PREFIXES = [
   ...ALLOWED_EXTERNAL_PREFIXES,
-  "@fffattiger/pix-protocol",
+  PROTOCOL_ROOT,
   "@fffattiger/pix-sessiond/client",
   // Exact catalog subpaths only — enforced below, not via prefix match alone.
   "@fffattiger/pix-pi-sdk-adapter/models",
@@ -138,6 +143,20 @@ for (const file of walk(srcRoot)) {
       fail(`${relativePath} imports pi-sdk-adapter outside composition ("${specifier}")`);
     } else if (!COMPOSITION_ALLOWED_ADAPTER_SUBPATHS.has(specifier)) {
       fail(`${relativePath} imports non-catalog adapter surface "${specifier}"`);
+    }
+  }
+
+  // Protocol: foundation may import ONLY `.../host-bootstrap`. Composition may
+  // import the protocol root or that exact bootstrap subpath — never any other
+  // protocol subpath.
+  for (const match of source.matchAll(/from\s+["'](@fffattiger\/pix-protocol(?:\/[^"']+)?)["']/g)) {
+    const specifier = match[1];
+    if (inComposition) {
+      if (specifier !== PROTOCOL_ROOT && specifier !== PROTOCOL_HOST_BOOTSTRAP) {
+        fail(`${relativePath} imports non-allowed protocol surface "${specifier}"`);
+      }
+    } else if (specifier !== PROTOCOL_HOST_BOOTSTRAP) {
+      fail(`${relativePath} imports protocol outside the host-bootstrap subpath ("${specifier}")`);
     }
   }
 

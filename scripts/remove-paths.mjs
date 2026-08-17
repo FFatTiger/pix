@@ -17,8 +17,9 @@
 //     sanitized message (no stack dump).
 
 import { lstatSync, realpathSync, rmSync } from "node:fs";
-import { dirname, isAbsolute, parse, resolve, sep } from "node:path";
+import { dirname, isAbsolute, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isWithin } from "./path-policy.mjs";
 
 /** Bounded retry for Windows transient lock errors (EBUSY/EPERM/ENOTEMPTY). */
 export const RETRY = { maxRetries: 5, retryDelay: 100 };
@@ -34,14 +35,7 @@ function eq(left, right) {
   return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
-/** True when `child` equals `parent` or is strictly beneath it. */
-export function isWithin(parent, child) {
-  if (eq(parent, child)) return true;
-  const prefix = parent.endsWith(sep) ? parent : parent + sep;
-  const p = process.platform === "win32" ? prefix.toLowerCase() : prefix;
-  const c = process.platform === "win32" ? child.toLowerCase() : child;
-  return c.startsWith(p);
-}
+export { isWithin };
 
 /** True for `/`, `C:\`, and `\\server\share` (the root of any filesystem). */
 export function isRootPath(path) {
@@ -84,14 +78,14 @@ export function resolveTarget(cwd, input) {
   }
   // Relative-only contract: an absolute path is rejected even when it happens
   // to point beneath cwd, so callers cannot bypass the cwd-relative intent.
-  if (isAbsolute(input)) {
-    throw new Error(`absolute path ${JSON.stringify(input)} is not allowed; pass a path relative to the working directory`);
-  }
   if (DRIVE_ABSOLUTE.test(input)) {
     throw new Error(`absolute drive path ${JSON.stringify(input)} is outside the working directory`);
   }
   if (UNC_ROOT.test(input)) {
     throw new Error(`UNC root ${JSON.stringify(input)} is outside the working directory`);
+  }
+  if (isAbsolute(input)) {
+    throw new Error(`absolute path ${JSON.stringify(input)} is not allowed; pass a path relative to the working directory`);
   }
   const resolved = resolve(cwd, input);
   if (isRootPath(resolved)) {

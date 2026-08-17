@@ -1,5 +1,5 @@
 /**
- * RuntimeSocket — single WebSocket transport for the pix Runtime Protocol v1.
+ * RuntimeSocket — single WebSocket transport for the pix Runtime Protocol v2.
  *
  * Responsibilities (transport ONLY — projection/cursor live in SessionStore):
  *  - open one WebSocket to the same-origin `/v1/runtime`, http→ws / https→wss.

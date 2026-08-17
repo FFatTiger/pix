@@ -15,6 +15,10 @@ import {
   SlashCommandInfoSchema,
   TrustLevelSchema,
 } from "@fffattiger/pix-protocol";
+import {
+  HostBootstrapGateStatusSchema,
+  HostBootstrapResponseSchema as ProtocolHostBootstrapResponseSchema,
+} from "@fffattiger/pix-protocol/host-bootstrap";
 
 export const SuccessSchema = z.strictObject({ success: z.boolean() });
 export const OkSchema = z.strictObject({ ok: z.boolean() });
@@ -65,19 +69,8 @@ export type CapabilitiesResponse = z.infer<typeof CapabilitiesResponseSchema>;
 
 export const HealthResponseSchema = CapabilitiesResponseSchema.extend({ service: z.string() });
 
-export const BootstrapGateStatusSchema = z.strictObject({
-  required: z.boolean(),
-  status: z.enum(["enabled", "disabled", "unconfigured", "error"]),
-});
-export const BootstrapResponseSchema = z.strictObject({
-  ok: z.literal(true),
-  service: z.string(),
-  protocolVersion: z.number(),
-  sessiond: z.enum(["up", "down", "unknown"]),
-  capabilities: HostCapabilitiesSchema,
-  mode: HostModeSchema,
-  gate: BootstrapGateStatusSchema,
-});
+export const BootstrapGateStatusSchema = HostBootstrapGateStatusSchema;
+export const BootstrapResponseSchema = ProtocolHostBootstrapResponseSchema;
 export type BootstrapResponse = z.infer<typeof BootstrapResponseSchema>;
 
 /* —— D3B Host catalog response wrappers (strict; no legacy Next unions) —— */

@@ -55,6 +55,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import {
   createHostApp,
   createNodeServer,
@@ -189,7 +190,7 @@ function attachViaWs(wsUrl, sessionId, timeoutMs = STEP_TIMEOUT_MS) {
       fn();
     };
     ws.on("open", () => {
-      ws.send(JSON.stringify({ type: "handshake", id: "hs1", payload: { protocolVersion: 1, client: { shell: "web", platform: "mac" }, features: [] } }));
+      ws.send(JSON.stringify({ type: "handshake", id: "hs1", payload: { protocolVersion: PROTOCOL_VERSION, client: { shell: "web", platform: "mac" }, features: [] } }));
     });
     ws.on("message", (data) => {
       let message;

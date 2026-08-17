@@ -301,7 +301,7 @@ type SnapshotPayload = {
 
 /**
  * Host runtime WS gateway backed by the narrow sessiond client. Implements the
- * H1 {@link RuntimeWsSeam}: it speaks the pix Runtime Protocol v1 on the browser
+ * H1 {@link RuntimeWsSeam}: it speaks the pix Runtime Protocol v2 on the browser
  * socket and proxies create/attach/command/interrupt/getSnapshot/stop/detach to
  * sessiond over local RPC.
  *

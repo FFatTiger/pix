@@ -27,7 +27,7 @@ import {
   SessiondRuntimeGateway,
 } from "@fffattiger/pix-host";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
-import { reduceRuntimeEventData } from "@fffattiger/pix-protocol";
+import { PROTOCOL_VERSION, reduceRuntimeEventData } from "@fffattiger/pix-protocol";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const FIXTURE = resolve(
@@ -279,7 +279,7 @@ class RuntimeWsClient {
       type: "handshake",
       id: "hs1",
       payload: {
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         client: { shell: "web", platform: "mac" },
         features: [],
       },
@@ -644,7 +644,7 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
   try {
     const ack = await client.handshake();
     assert.deepEqual(ack.payload.host.capabilities, ["agent"]);
-    assert.equal(ack.payload.protocolVersion, 1);
+    assert.equal(ack.payload.protocolVersion, PROTOCOL_VERSION);
 
     const created = await client.create({
       cwd: projectDir,

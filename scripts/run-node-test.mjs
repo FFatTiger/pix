@@ -14,8 +14,9 @@
 
 import { spawnSync } from "node:child_process";
 import { globSync, realpathSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isWithin } from "./path-policy.mjs";
 
 const GLOB_MAGIC = /[*?{}[\]]/;
 
@@ -108,14 +109,6 @@ export function parseArgs(argv) {
     }
   }
   return { patterns, flags };
-}
-
-/** True when `child` is `parent` itself or strictly beneath it. */
-function isWithin(parent, child) {
-  const prefix = parent.endsWith(sep) ? parent : parent + sep;
-  const p = process.platform === "win32" ? prefix.toLowerCase() : prefix;
-  const c = process.platform === "win32" ? child.toLowerCase() : child;
-  return c === p || c.startsWith(p);
 }
 
 /**

@@ -5,9 +5,10 @@
 > 当前目标不是继续维护旧 Next.js 单体，而是在独立的 `pix` 仓库中交付新架构产品。
 > 第一里程碑必须是一个可以实际构建和启动的独立应用。
 
-- 最后更新：2026-08-13
+- 最后更新：2026-08-17
 - 项目状态：`ACTIVE`
 - 当前里程碑：`M3 — Read and Operate`（M1、M2 已完成并通过 GPT 最终验证）
+- 活动跨端基线：`docs/cross-platform-hardening-plan.md`（`main@bd322486`）；本文件是执行 SSOT
 - 当前仓库：`/Users/proxy/Documents/program/pix`
 - 旧成果来源：旧 Next 单体 worktree（精确路径与来源 commit 见 `migration-ledger.md`），迁移完成前只读保留
 - 产品主线：Vite Client + Hono Host + 独立 `pix-sessiond` + 每会话 Worker + Runtime Protocol + Pi 防腐层
@@ -72,6 +73,31 @@ PiSdkAdapter（当前）/ PiRpcAdapter（未来）
 - Pi RPC Adapter 实现
 - sessiond 无停机升级
 - Worker 崩溃后自动重放 prompt
+
+### 1.3 活动跨端任务（G0 基线切片，计划 SSOT：`docs/cross-platform-hardening-plan.md`）
+
+本切片只落地可执行的跨端基线。不读取、不合并 `fix/cross-platform-dev`。后续 Host/Client/release 平台 lane（G1–G8、CP-A–J 的 Windows backend / PWA / signing）由独立 agent 审计，本切片不重叠那些后续面。
+
+```text
+CP-00 docs/SSOT
+  ├── CP-01 Runtime Protocol v2 E2E/docs honesty
+  ├── CP-02 HOST_BOOTSTRAP_SCHEMA_VERSION（独立 HTTP bootstrap schema）
+  ├── CP-03 Windows root tooling（scripts/**/*.test.mjs）
+  └── CP-04 CI honesty skeleton
+        └── later lanes (G1 path/identity, G2A POSIX, G2B Windows backend,
+            G3 IPC, G4 Host files/git, G5 Client/PWA, G6/G8 release)
+            remain BLOCKED on their documented owners
+```
+
+| ID | 工作包 | 状态 | Owner | 依赖 | 验收 |
+|---|---|---|---|---|---|
+| `CP-00` | 激活跨端计划为执行 SSOT：execution DAG、ledger provenance、README 支持矩阵、跟踪 `docs/cross-platform-hardening-plan.md` | `DONE` | docs / execution SSOT | 无 | 计划文件被跟踪；README 诚实写 Windows unsupported、Linux/macOS unverified-native；ledger 登记 shim 与有限删除条件 |
+| `CP-01` | Runtime Protocol v2 基线：E2E 正向握手使用 `PROTOCOL_VERSION`；产品文档/注释不再称当前协议为 v1；handshake ack 断言版本 | `DONE` | `packages/protocol`（`src/version.ts`） | `CP-00` | Protocol 155/155；Startup/Runtime/Sessions 正向握手不再发送 magic `1`；保留负向 v1 与 CLI v1 bridge |
+| `CP-02` | 分离 HTTP bootstrap schema：`HOST_BOOTSTRAP_SCHEMA_VERSION=1` 由 protocol `./host-bootstrap` 持有；Host 投影该字面量；删除误导性 `HOST_PROTOCOL_VERSION`；Client 严格消费 literal 而非 `z.number` | `DONE` | `packages/protocol` + Host 投影 + Client decode | `CP-00` | Host bootstrap/static 13/13；Client targeted 9/9；Protocol/Host/Client typecheck 与 boundaries PASS |
+| `CP-03` | Windows 根工具：`run-workspaces` 复用 `tool-invocation` npm JS CLI；集中 path containment；修 `scripts/**/*.test.mjs` Windows 失败；不削弱 fail-closed flag 合同 | `DONE` | root `scripts/*` | `CP-00` | Windows scripts 120 total / 119 pass / 1 intentional signal skip / 0 fail；root typecheck、architecture PASS |
+| `CP-04` | CI 诚实骨架：三端 required tooling jobs（Node `22.19.x` + pin LTS `24.12.x`）执行 install/architecture/portable script tests/typecheck/build；Linux/macOS 另有 required product tests；Windows 整 job 不得 `continue-on-error`，产品启动缺口单独 non-blocking known-gap | `DONE` | `.github/workflows` | `CP-01`, `CP-02`, `CP-03` | workflow 存在；三端 tooling 不运行已知 POSIX-only 产品测试；POSIX product tests required；known-gap 检查固定 `sessiond private directory path is invalid` |
+
+后续 lane 依赖（本切片不实现）：G1/`CP-A` path-identity → G2A POSIX lock/secret 与 G2B Windows backend 并行 → G3 IPC → G4 Host files/git/watch → G5 Client/PWA → G6/G8 release。G0 完成后才能把对应测试从 known-gap 移入 required。
 
 ---
 
@@ -602,3 +628,5 @@ Base：<hash>
 | `N-010` | secure-state 基础设施为依赖无关 workspace `@fffattiger/pix-local-authority`：平台中立 contracts（零 node: import）+ 高保真 POSIX backend；Host state lease 委托底层操作并映射固定 Host 错误码/消息；Host boundary 只放行 `@fffattiger/pix-local-authority/state` | 冻结（Slice 1） |
 | `N-011` | secure-state canonical 路径：绝对路径 + 最近已存在祖先 realpath + 校验缺失尾 + canonical 组件回走；接受 macOS 根级系统别名（`/var`→`/private/var` 等），拒绝非根级用户符号链接中间组件、lexical 父级逃逸、根、网络/Windows 声明 | 冻结（Slice 1） |
 | `N-012` | 原生 Windows secure-state 仍不支持（无 native backend / secure named pipe / Windows CI 门禁）；不因 contracts 平台中立而宣称支持 | 冻结（pending） |
+| `N-013` | Runtime Protocol 当前主版本由 `packages/protocol/src/version.ts` 的 `PROTOCOL_VERSION=2` 拥有；HTTP `/v1/bootstrap` 使用独立 `HOST_BOOTSTRAP_SCHEMA_VERSION=1`（`@fffattiger/pix-protocol/host-bootstrap`），二者不得互相镜像或再引入 Host-owned `HOST_PROTOCOL_VERSION` | 冻结（CP-01/CP-02） |
+| `N-014` | 跨端“支持”只由 required CI + packaged smoke 定义。当前对外矩阵：Windows native Unsupported；Linux/macOS Unverified-native。不以 WSL 作为 Windows 产品方案 | 冻结（CP-00/CP-04） |

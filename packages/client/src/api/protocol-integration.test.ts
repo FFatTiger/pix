@@ -5,8 +5,31 @@ import {
   RuntimeAttachParamsSchema,
   SessionHeaderSchema,
 } from "@fffattiger/pix-protocol";
+import {
+  HOST_BOOTSTRAP_SCHEMA_VERSION,
+  HostBootstrapResponseSchema,
+} from "@fffattiger/pix-protocol/host-bootstrap";
+import { BootstrapResponseSchema } from "./schemas";
 
 describe("Protocol integration", () => {
+  it("consumes the protocol-owned HTTP bootstrap schema literal, not Runtime Protocol v2", () => {
+    expect(HOST_BOOTSTRAP_SCHEMA_VERSION).toBe(1);
+    expect(PROTOCOL_VERSION).toBe(2);
+    expect(BootstrapResponseSchema).toBe(HostBootstrapResponseSchema);
+    const body = {
+      ok: true as const,
+      service: "pix-host",
+      protocolVersion: HOST_BOOTSTRAP_SCHEMA_VERSION,
+      sessiond: "unknown" as const,
+      capabilities: [],
+      mode: "local" as const,
+      gate: { required: false, status: "disabled" as const },
+    };
+    expect(BootstrapResponseSchema.parse(body).protocolVersion).toBe(1);
+    expect(BootstrapResponseSchema.safeParse({ ...body, protocolVersion: PROTOCOL_VERSION }).success).toBe(false);
+    expect(BootstrapResponseSchema.safeParse({ ...body, protocolVersion: 2 }).success).toBe(false);
+  });
+
   it("uses final Protocol schemas and strict resume cursor semantics", () => {
     expect(PROTOCOL_VERSION).toBe(2);
     expect(HostInfoSchema.parse({ mode: "local", capabilities: ["files"] })).toEqual({ mode: "local", capabilities: ["files"] });

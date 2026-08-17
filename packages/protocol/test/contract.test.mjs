@@ -40,6 +40,10 @@ import {
   WsClientMessageSchema,
   WsHostMessageSchema,
 } from "../dist/index.js";
+import {
+  HOST_BOOTSTRAP_SCHEMA_VERSION,
+  HostBootstrapResponseSchema,
+} from "../dist/host-bootstrap.js";
 
 function roundTrip(schema, value) {
   const parsed = schema.parse(value);
@@ -75,6 +79,23 @@ describe("protocol version", () => {
       features: [],
     });
     assert.equal(result.success, false);
+  });
+
+  it("owns a separate HTTP bootstrap schema version frozen at 1", () => {
+    assert.equal(HOST_BOOTSTRAP_SCHEMA_VERSION, 1);
+    assert.notEqual(HOST_BOOTSTRAP_SCHEMA_VERSION, PROTOCOL_VERSION);
+    const body = {
+      ok: true,
+      service: "pix-host",
+      protocolVersion: HOST_BOOTSTRAP_SCHEMA_VERSION,
+      sessiond: "unknown",
+      capabilities: [],
+      mode: "local",
+      gate: { required: false, status: "disabled" },
+    };
+    assert.equal(HostBootstrapResponseSchema.parse(body).protocolVersion, 1);
+    assert.equal(HostBootstrapResponseSchema.safeParse({ ...body, protocolVersion: PROTOCOL_VERSION }).success, false);
+    assert.equal(HostBootstrapResponseSchema.safeParse({ ...body, protocolVersion: 2 }).success, false);
   });
 });
 

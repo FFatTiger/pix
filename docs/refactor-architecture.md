@@ -176,7 +176,7 @@ interface AgentRuntimePort {
 | Agent 运行时 | **每会话 child_process Worker** | 崩溃隔离、可回收、并发上限可配 |
 | Runtime 应用边界 | **`AgentRuntimePort`** | pix 自有命令、状态、事件和错误语义 |
 | Pi 接入 | **防腐层 + Adapter** | 当前 `PiSdkAdapter`；未来可加 `PiRpcAdapter`，上层不变 |
-| Runtime 线协议 | **pix Runtime Protocol v1** | 产品级命令、事件、snapshot/resume；不表达 SDK/RPC 类型 |
+| Runtime 线协议 | **pix Runtime Protocol v2** | 产品级命令、事件、snapshot/resume；不表达 SDK/RPC 类型。HTTP `/v1/bootstrap` 使用独立的 `HOST_BOOTSTRAP_SCHEMA_VERSION=1`，不是 Runtime Protocol 版本 |
 | 实时通道 | **WebSocket 主通道** | 承载 pix Runtime Protocol 命令、事件和 resume |
 | 运行时 | **Node 22 LTS** | 对齐 pi SDK |
 | 桌面原生壳 | **仅架构预留** | 协议/Host 可被 Tauri 挂载；当前不交付 |
@@ -220,7 +220,7 @@ AgentSession 活在 Web/Next 进程内。重启 Web（或热更新拖垮进程�
   2. 否则拉起 sessiond 再接入  
 - Web 关闭：只断连接，**不** SIGTERM sessiond（可用显式 CLI/`pix down --all` 收全套）
 
-## 6. 协议：pix Runtime Protocol v1
+## 6. 协议：pix Runtime Protocol v2
 
 ### 传输
 
@@ -236,7 +236,7 @@ Client → Host：
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "client": { "shell": "web|pwa", "platform": "win|mac|linux|ios|android" },
   "features": ["virtual-scroll", "notifications"],
   "auth": "<gate-token-if-any>"
@@ -247,7 +247,7 @@ Host → Client：
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "host": {
     "mode": "local|lan",
     "capabilities": ["agent", "files", "files.write", "git", "worktree"]

@@ -31,7 +31,7 @@ function bootstrapResponse(overrides: Record<string, unknown> = {}) {
     JSON.stringify({
       ok: true,
       service: "pix-host",
-      protocolVersion: 2,
+      protocolVersion: 1,
       sessiond: "up",
       capabilities: ["agent", "files"],
       mode: "lan",

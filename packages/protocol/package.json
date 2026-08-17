@@ -2,12 +2,16 @@
   "name": "@fffattiger/pix-protocol",
   "version": "0.1.0",
   "private": true,
-  "description": "Pi Runtime Protocol v1 — frozen shared contract for host, sessiond, worker, and client",
+  "description": "Pi Runtime Protocol v2 — frozen shared contract for host, sessiond, worker, and client",
   "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./host-bootstrap": {
+      "types": "./dist/host-bootstrap.d.ts",
+      "import": "./dist/host-bootstrap.js"
     }
   },
   "main": "./dist/index.js",

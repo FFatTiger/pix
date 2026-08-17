@@ -4,8 +4,9 @@
  * This package is protocol-independent by design: it owns gate, request
  * security, static client hosting and the WebSocket upgrade seam. Runtime
  * protocol wiring (H0B) and resource services (H1x) inject their own ports
- * through {@link HostDeps}; nothing here imports Pi SDK, sessiond or protocol
- * packages.
+ * through {@link HostDeps}. HTTP bootstrap schema version is owned by
+ * `@fffattiger/pix-protocol/host-bootstrap` and projected by the bootstrap
+ * route; nothing here imports Pi SDK, sessiond, or the Runtime Protocol root.
  */
 
 export type HostMode = "local" | "lan";
@@ -108,9 +109,6 @@ export const READONLY_HOST_CAPABILITIES: readonly HostCapability[] = ["files"] a
  * M1 boot composition wires nothing, so its capability is empty.
  */
 export const EMPTY_HOST_CAPABILITIES: readonly HostCapability[] = [] as const;
-
-/** Wire protocol version the host speaks (mirrors the client's PROTOCOL_VERSION). */
-export const HOST_PROTOCOL_VERSION = 1;
 
 export interface HostLogger {
   info?(message: string, fields?: Record<string, unknown>): void;

@@ -53,7 +53,9 @@ async function main() {
 
   for (const file of files) {
     const content = await readFile(file, "utf8");
-    const rel = path.relative(CLIENT_ROOT, file);
+    // Boundary rules use repository-style `/` paths so their allowlists do not
+    // change meaning between POSIX and Windows runners.
+    const rel = path.relative(CLIENT_ROOT, file).split(path.sep).join("/");
     violations.push(...detectFileViolations(content, rel));
   }
 

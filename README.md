@@ -8,17 +8,31 @@
 
 **M3 — Read and Operate**：M2 Minimal Runtime Happy Path 已完成并通过独立验证。当前 `main` 已包含真实对话、只读历史、History/Live Thinking/Bash 语义展示、selected history visible-branch normalized JSON 导出、Files/Git/Worktrees 只读工作区，以及 Models/Auth Providers/Skills/Plugins/Commands/Trust 的端到端只读 Domain Catalog。Trust 已支持 set-trusted mutation（独立 `project.trust` token、`POST /v1/trust`、Pi SDK trust.json 持久化）。OAuth、配置写入、安装、资源重载和 Extension 执行仍明确后置。
 
+## 平台支持矩阵
+
+跨端专题见 [跨端完善计划](docs/cross-platform-hardening-plan.md)。“支持”只由 required CI 与 packaged smoke 定义，不以编译成功或 README 宣称定义。当前诚实状态：
+
+| 平台 | 支持等级 | 含义 |
+|---|---|---|
+| Windows 原生 | **Unsupported** | 产品启动路径未完成：sessiond/Host 在 named-pipe 分支前走 POSIX private-dir，默认 `C:\Users\...` 以固定错误 fail-closed。不以 WSL 作为 Windows 产品方案。 |
+| Linux | **Unverified-native** | 主要产品路径按 POSIX 设计，但还没有持续的 Linux required CI / 发行验证。 |
+| macOS | **Unverified-native** | 主要产品路径按 POSIX 设计，但还没有持续的 macOS required CI / 发行验证。 |
+| 浏览器 / PWA | **Partial** | localhost/HTTPS 可走普通 Web；HTTP LAN 是受密码保护的普通 Web，**不承诺**可安装 PWA。 |
+
+Node 基线：`engines.node >=22.19.0`。CI 骨架 pin `22.19.x` 与 LTS `24.12.x`。不得在 G2–G7 完成前宣称 Windows 原生支持；不得在 G7 完成前宣称 Linux/macOS 已被产品化验证。
+
 ## 从这里开始
 
 - [执行计划](docs/refactor-execution-plan.md) — 当前里程碑、任务看板、依赖、验收和执行规则
 - [目标架构](docs/refactor-architecture.md) — 进程边界、技术选型和长期不变量
 - [迁移台账](docs/migration-ledger.md) — 旧工作区成果来源、排除项和重验状态
+- [跨端完善计划](docs/cross-platform-hardening-plan.md) — Windows / Linux / macOS 问题、目标与分阶段路线
 
 `docs/refactor-execution-plan.md` 是当前执行单一事实源。
 
 ### 当前协作基线
 
-- `main@665e31a`：稳定 checkpoint；D1B Thinking/Bash 展示、visible-branch export 与 D3A Worktrees 只读列表已合入。
+- `main@bd322486`：本切片从该 commit 建立跨端 G0 基线；D1B Thinking/Bash 展示、visible-branch export 与 D3A Worktrees 只读列表已合入。
 - History 与 Live 共用结构化 Transcript projector；Thinking 安全折叠，Bash 显示 command/output/status 且不渲染 `fullOutputPath`；二者均不新增执行能力或 Worker 激活。
 - Visible-branch export 仅对 selected history SessionContext 可见，在 Client 本地生成 normalized JSON；不是 archive、raw JSONL 或全分支导出，不新增 Host API、Worker 或 Runtime 命令。
 - Workspace Dock 已提供 Files/Git/Worktrees Tabs；`worktree` 仅代表 GET/list，sessiond down 时仍可读取，Client 无创建、删除、切换或 promotion 控件。

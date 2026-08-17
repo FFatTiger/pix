@@ -32,6 +32,7 @@
 import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { toPosixRelative } from "./path-policy.mjs";
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -764,7 +765,7 @@ export function checkNoLegacyProductName({ files, rootDir = ROOT_DIR }) {
     const lowered = readFileSync(file, "utf8").toLowerCase();
     for (const token of LEGACY_PRODUCT_TOKENS) {
       if (lowered.includes(token)) {
-        const rel = file.startsWith(rootDir) ? file.slice(rootDir.length).replace(/^[\\/]+/, "") : file;
+        const rel = toPosixRelative(rootDir, file);
         offenders.push(`${rel}: legacy product name "${token.trim()}"`);
         break;
       }
