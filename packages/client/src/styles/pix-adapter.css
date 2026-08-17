@@ -1266,6 +1266,10 @@ html.dark .catalog-meta-item--error {
   margin-left: 2px;
 }
 
+.explorer-panel .sidebar-section-label-text {
+  flex: 1;
+}
+
 .explorer-panel .sidebar-section-actions {
   right: 38px;
   opacity: 1;
