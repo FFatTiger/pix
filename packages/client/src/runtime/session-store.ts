@@ -111,6 +111,14 @@ export interface RuntimeView {
   readonly streaming: boolean;
   readonly streamingPartial: StreamingAgentMessage | null;
   /**
+   * Attach lifecycle generation (explicit refresh signal for UI reads like
+   * runtime stats/tools). Increments on a FRESH attach (incl. session switch),
+   * a rebase (gap / epoch_changed reconnect) and on detach/stop — NOT on
+   * same-epoch replay — so command-driven refreshes key on it instead of on the
+   * whole reactive view (which changes on every stream event).
+   */
+  readonly attachGeneration: number;
+  /**
    * History-layer generation (Protocol v2). Increments on a fresh attach,
    * epoch/branch/count rebase, detach, session switch or stop. The transcript
    * hook keys its infinite query on this value so any anchor change
@@ -168,6 +176,7 @@ const INITIAL_VIEW: RuntimeView = {
   snapshot: null,
   streaming: false,
   streamingPartial: null,
+  attachGeneration: 0,
   historyGeneration: 0,
   historyAnchorLeafId: null,
   liveEntries: [],
@@ -419,6 +428,21 @@ export class SessionStore implements RuntimeSocketHandler {
   private historyAnchorLeafId: string | null = null;
   private liveEntries: SessionEntry[] = [];
   /**
+   * Attach lifecycle generation (see {@link RuntimeView.attachGeneration}).
+   * Incremented only on attach boundaries (fresh attach / detach / stop).
+   */
+  private attachGeneration = 0;
+  /**
+   * Speculative (optimistic) running overlay for a sent prompt — SEPARATE from
+   * the authoritative {@link snapshot}. set on sendPrompt, cleared when the
+   * authoritative state proves the real turn (a real applied event shows
+   * isPromptRunning/isStreaming), on command settle (accepted or definite
+   * rejection), on a fresh authoritative snapshot replace (fetchSnapshot) and
+   * on detach/rebase/stop. The view's `snapshot` is a projection that overlays
+   * this flag; the authoritative snapshot is NEVER mutated for optimism.
+   */
+  private optimisticPromptRunning = false;
+  /**
    * Optimistic UI layer (Apple-style instant feedback): a sent prompt is
    * appended here IMMEDIATELY (own `optimistic:<n>` id) and consumed FIFO by
    * the first real user `message_end`. Retryable failures keep the entry (the
@@ -502,7 +526,10 @@ export class SessionStore implements RuntimeSocketHandler {
     }
     this.ensureConnecting();
     return new Promise((resolve, reject) => {
-      this.whenReady().then(
+      // Lifecycle gate: proceed as soon as the socket is sendable (ready /
+      // attaching / attached). A mid-attach create (rapid A→B→C) must not
+      // block behind a strictly-`ready` wait — the fresh attach supersedes.
+      this.whenReadyForLifecycle().then(
         () => {
           if (this.pendingCreate) {
             reject({ code: "session_busy", message: "a session create is already in progress", retryable: false } satisfies ProtocolError);
@@ -540,8 +567,20 @@ export class SessionStore implements RuntimeSocketHandler {
   openSession(sessionId: string): Promise<void> {
     this.sessionStopped = false;
     this.ensureConnecting();
+    // Identity-scoped single-flight: an attach to the SAME session is already in
+    // flight (the AppShell selection controller and a Composer activation can
+    // both ask concurrently) — reuse its deferred WITHOUT sending a duplicate
+    // attach frame (the server would only answer the tracked attempt).
+    if (this.attachAttempt && this.attachAttempt.sessionId === sessionId && this.attach) {
+      return this.attach.promise;
+    }
     return new Promise<void>((resolve, reject) => {
-      this.whenReady().then(
+      // Lifecycle gate (identity-scoped, single-flight): when the socket is
+      // already sendable — incl. an in-flight attach to another session — go
+      // straight to startAttach, which SUPERSEDES the pending attach so rapid
+      // A→B→C switching never blocks behind a strictly-`ready` wait and the
+      // superseded open's promise settles exactly once (never hangs).
+      this.whenReadyForLifecycle().then(
         () => { void this.startAttach(sessionId, "fresh").then(resolve, reject); },
         (error) => reject(error),
       );
@@ -550,33 +589,46 @@ export class SessionStore implements RuntimeSocketHandler {
 
   /** Detach the current attach; the Worker is PRESERVED (no stop). */
   detach(): Promise<void> {
-    if (!this.sessionId) return Promise.resolve();
-    return this.sendEnvelope({ type: "detach", id: this.id(), payload: { sessionId: this.sessionId } }).then(() => {
-      this.attached = false;
-      this.awaitingSnapshot = false;
-      this.intendedSession = null;
-      // Protocol v2: detach clears the history layer (anchor/generation/live entries).
-      this.clearHistoryLayer();
-      // D2-P4: a queued turn is bound to the live streaming session; detaching
-      // invalidates it (fixed error, never overwrites a prompt promise).
-      this.settlePendingQueuedTurn({ code: "interrupted", message: "detached", retryable: false });
-      // D2-P5/D2-P7/F9: a pending control command bound to the detached
-      // session — bash / compact / read-only queries (get_state, get_tools,
-      // get_commands, get_session_stats, get_last_assistant_text) — is rejected
-      // exactly once so the single ordinary-command slot frees and a late
-      // result/event can never settle a newly attached session. Ordinary prompt
-      // semantics are preserved (the prompt promise is never overwritten here;
-      // it settles on its own correlated response or transport loss).
-      this.settlePendingControlCommand({ code: "interrupted", message: "detached", retryable: false });
-      // D2-P8: an in-flight extension reply is bound to the detached session —
-      // reject it exactly once so the dedicated slot frees and a late result can
-      // never settle a newly attached session.
-      this.settlePendingExtensionUi({ code: "interrupted", message: "detached", retryable: false });
-      // E15: queued/in-flight incremental input is bound to the detached
-      // session — settle every entry exactly once with the same fixed error.
-      this.settlePendingExtensionUiInputs({ code: "interrupted", message: "detached", retryable: false });
-      this.rejectAttach({ code: "interrupted", message: "detached", retryable: false });
-      this.setConnection(this.socket.connectionState === "stopped" ? "stopped" : "ready");
+    const sessionId = this.sessionId;
+    if (!sessionId) return Promise.resolve();
+    return this.sendEnvelope({ type: "detach", id: this.id(), payload: { sessionId } }).then(() => {
+      // Identity-scoped attach teardown: a NEWER attach (rapid B→C) may be in
+      // flight — or may have ALREADY COMPLETED — by the time this detach (for
+      // the OLD session) settles. A late detach settle must NEVER strand or
+      // un-attach the newer session: this detach owns the teardown ONLY while
+      // the store is still on the detached session (sessionId unchanged) AND no
+      // newer attach to a different session is in flight. The session-bound
+      // cleanup below always runs (the detached session's live layer + pendings
+      // are dead regardless of who owns the attach now).
+      const stillOwnsAttach = this.sessionId === sessionId
+        && (this.attach === null || this.attach.sessionId === sessionId);
+      if (stillOwnsAttach) {
+        this.attached = false;
+        this.awaitingSnapshot = false;
+        this.intendedSession = null;
+        this.rejectAttach({ code: "interrupted", message: "detached", retryable: false });
+        this.setConnection(this.socket.connectionState === "stopped" ? "stopped" : "ready");
+        // Protocol v2: detach clears the history layer (anchor/generation/live entries).
+        this.clearHistoryLayer();
+        // D2-P4: a queued turn is bound to the live streaming session; detaching
+        // invalidates it (fixed error, never overwrites a prompt promise).
+        this.settlePendingQueuedTurn({ code: "interrupted", message: "detached", retryable: false });
+        // D2-P5/D2-P7/F9: a pending control command bound to the detached
+        // session — bash / compact / read-only queries (get_state, get_tools,
+        // get_commands, get_session_stats, get_last_assistant_text) — is rejected
+        // exactly once so the single ordinary-command slot frees and a late
+        // result/event can never settle a newly attached session. Ordinary prompt
+        // semantics are preserved (the prompt promise is never overwritten here;
+        // it settles on its own correlated response or transport loss).
+        this.settlePendingControlCommand({ code: "interrupted", message: "detached", retryable: false });
+        // D2-P8: an in-flight extension reply is bound to the detached session —
+        // reject it exactly once so the dedicated slot frees and a late result can
+        // never settle a newly attached session.
+        this.settlePendingExtensionUi({ code: "interrupted", message: "detached", retryable: false });
+        // E15: queued/in-flight incremental input is bound to the detached
+        // session — settle every entry exactly once with the same fixed error.
+        this.settlePendingExtensionUiInputs({ code: "interrupted", message: "detached", retryable: false });
+      }
       this.notify();
     });
   }
@@ -662,6 +714,12 @@ export class SessionStore implements RuntimeSocketHandler {
       const snap = result as RuntimeSnapshot;
       // Replace projection state only; epoch/lastEventId/sessionId cursor unchanged.
       this.snapshot = structuredClone(snap);
+      // A fresh authoritative snapshot is truthful: drop the speculative
+      // running overlay (if the turn is genuinely in-flight the snapshot's own
+      // state already reports isPromptRunning/isStreaming).
+      if (this.optimisticPromptRunning) {
+        this.optimisticPromptRunning = false;
+      }
       this.notify();
       return this.snapshot;
     });
@@ -779,22 +837,27 @@ export class SessionStore implements RuntimeSocketHandler {
     return optimisticId;
   }
 
-  /** Optimistic running indicator (cleared by the first real event / failure). */
+  /**
+   * Optimistic running overlay (Apple-style instant feedback): the sent prompt
+   * flips the speculative running flag so the whole UI (transcript pulse,
+   * composer Stop) reacts the moment Enter is pressed. This is SEPARATE
+   * speculative state — the authoritative snapshot is never mutated; the view
+   * overlays the flag in computeView and clears it once a real event proves the
+   * turn's authoritative state, or on command settle / detach / rebase.
+   */
   private markOptimisticRunning(): void {
-    if (this.snapshot) {
-      this.snapshot = {
-        ...this.snapshot,
-        state: { ...this.snapshot.state, isPromptRunning: true },
-        streaming: { ...this.snapshot.streaming, active: true, phase: "waiting_model" },
-      };
-    }
+    if (this.optimisticPromptRunning) return;
+    this.optimisticPromptRunning = true;
+    this.notify();
   }
 
   /**
-   * Definite failure → drop the optimistic bubble (the turn never started).
-   * Retryable failure (timeout / transport) keeps it: the turn is usually
-   * already running server-side and the real message_end (or a rebase)
-   * settles it.
+   * Definite failure → drop the optimistic bubble (the turn never started) and
+   * the speculative running overlay. Retryable failure (timeout / transport)
+   * keeps it: the turn is usually already running server-side and the real
+   * message_end (or a rebase) settles it. NOTE: this guard ONLY owns the
+   * optimistic USER ENTRY; the running overlay is settled separately in
+   * {@link sendPrompt} (steer/follow_up never set the overlay by design).
    */
   private withOptimisticGuard(optimisticId: string, promise: Promise<unknown>): Promise<unknown> {
     return promise.then(
@@ -813,18 +876,112 @@ export class SessionStore implements RuntimeSocketHandler {
     );
   }
 
-  /** Send a prompt (ordinary command). commandId is stable across same-epoch retries. */
-  sendPrompt(message: string): Promise<unknown> {
+  /**
+   * Send a prompt (ordinary command) with optional images. commandId is stable
+   * across same-epoch retries. Text and image sends share ONE optimistic path
+   * (bubble + speculative running overlay) — full parity.
+   */
+  sendPrompt(message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
     // Optimistic UI: the user bubble + a running agent indicator appear the
-    // moment Enter is pressed. The wire round-trip continues in the background;
-    // the real committed entry replaces the optimistic one via message_end.
+    // moment Enter is pressed (text AND image sends alike). The wire
+    // round-trip continues in the background; the real committed entry replaces
+    // the optimistic one via message_end. The running overlay is speculative
+    // state, never a mutation of the authoritative snapshot.
     const optimisticId = this.appendOptimisticUserEntry(message);
     this.markOptimisticRunning();
-    this.notify();
-    return this.withOptimisticGuard(
-      optimisticId,
-      this.sendCommand({ commandId: this.id(), type: "prompt", message }),
+    const imagePayload = images === undefined || images.length === 0
+      ? {}
+      : { images: [...images] as ImageAttachment[] };
+    const sendP = this.sendCommand({ commandId: this.id(), type: "prompt", message, ...imagePayload });
+    // Settle the speculative running overlay exactly once, with the same
+    // definite/uncertain split as the bubble: accepted → drop (the authoritative
+    // projection now reflects the real turn); definite rejection → drop;
+    // uncertain (retryable) delivery → keep until a real event reconciles it.
+    sendP.then(
+      () => {
+        if (!this.optimisticPromptRunning) return;
+        this.optimisticPromptRunning = false;
+        this.notify();
+      },
+      (cause: unknown) => {
+        const retryable = cause !== null && typeof cause === "object"
+          && (cause as { retryable?: unknown }).retryable === true;
+        if (retryable || !this.optimisticPromptRunning) return;
+        this.optimisticPromptRunning = false;
+        this.notify();
+      },
     );
+    return this.withOptimisticGuard(optimisticId, sendP);
+  }
+
+  /**
+   * Activation-then-send — the SINGLE activation state machine shared by the
+   * Composer (send intent) and the shell selection controller (both delegate to
+   * {@link openSession} / {@link ensureAttached}). Sending is the activation
+   * intent: if the selected session has no active worker/attachment, or the
+   * attachment is stale/stopped, or a DIFFERENT session is attached, this
+   * ensures the exact selected session is attached (awaits the authoritative
+   * attach), then sends the prompt EXACTLY ONCE. If already attached to the
+   * selected session, it sends directly (no re-attach).
+   *
+   * Optimistic bubble + speculative running overlay are appended IMMEDIATELY
+   * and preserved through activation. A DEFINITE failure (activation or send —
+   * e.g. `not_found`, `invalid_input`, auth) removes the phantom bubble and
+   * clears the overlay so the Composer restores/retains the draft; UNCERTAIN
+   * (retryable) delivery keeps both until a real event reconciles them.
+   * NEVER creates a session: a genuinely unknown id rejects `not_found`.
+   */
+  sendPromptToSession(sessionId: string, message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
+    if (!sessionId) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "no session selected",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    const optimisticId = this.appendOptimisticUserEntry(message);
+    this.markOptimisticRunning();
+    const imagePayload = images === undefined || images.length === 0
+      ? {}
+      : { images: [...images] as ImageAttachment[] };
+    const activateThenSend = this.ensureAttached(sessionId).then(() =>
+      this.sendCommand({ commandId: this.id(), type: "prompt", message, ...imagePayload }),
+    );
+    // Settle the speculative running overlay exactly once (same definite /
+    // uncertain split as the bubble): accepted → drop; definite → drop;
+    // uncertain → keep until a real event reconciles it.
+    activateThenSend.then(
+      () => {
+        if (!this.optimisticPromptRunning) return;
+        this.optimisticPromptRunning = false;
+        this.notify();
+      },
+      (cause: unknown) => {
+        const retryable = cause !== null && typeof cause === "object"
+          && (cause as { retryable?: unknown }).retryable === true;
+        if (retryable || !this.optimisticPromptRunning) return;
+        this.optimisticPromptRunning = false;
+        this.notify();
+      },
+    );
+    return this.withOptimisticGuard(optimisticId, activateThenSend);
+  }
+
+  /**
+   * Ensure the exact `sessionId` is the attached/authoritative session:
+   *  - already attached → resolve immediately (send directly);
+   *  - attached to a DIFFERENT session → detach it (stops the stale stream;
+   *    idempotent, worker preserved), then open the selected session;
+   *  - absent / stale / stopped / in-flight attach → open the selected session
+   *    (openSession resets sessionStopped, supersedes any in-flight attach
+   *    identity-scoped, and NEVER creates — `not_found` rejects).
+   */
+  private ensureAttached(sessionId: string): Promise<void> {
+    if (this.attached && this.sessionId === sessionId) return Promise.resolve();
+    if (this.attached && this.sessionId && this.sessionId !== sessionId) {
+      return this.detach().then(() => this.openSession(sessionId));
+    }
+    return this.openSession(sessionId);
   }
 
   // --- D2-P8 extension-UI final response -------------------------------------
@@ -1519,6 +1676,14 @@ export class SessionStore implements RuntimeSocketHandler {
       try {
         this.snapshot = reduceRuntimeEventData(this.snapshot, event as RuntimeEventData);
         this.lastEventId = event.eventId;
+        // Speculative running overlay: once ANY real applied event proves the
+        // turn's authoritative running state (a prompt command ack usually
+        // arrives first and already clears it), the overlay is no longer
+        // needed — the authoritative projection is truthful from here on.
+        if (this.optimisticPromptRunning
+          && (this.snapshot.state.isPromptRunning === true || this.snapshot.state.isStreaming === true)) {
+          this.optimisticPromptRunning = false;
+        }
         // D2-P8: an event that drops `runtime.extension_ui` settles an in-flight reply.
         this.settleExtensionUiOnCapabilityLoss();
         // F6: an `extension_ui_request` close for the EXACT pending reply settles
@@ -1707,6 +1872,16 @@ export class SessionStore implements RuntimeSocketHandler {
       // Reuse the in-flight deferred (reconnect handoff) and send a new attempt.
       this.sendAttachAttempt(sessionId, mode);
       return this.attach.promise;
+    }
+    if (this.attach) {
+      // Identity-scoped supersession: a DIFFERENT session's attach is already
+      // in flight (rapid A→B→C switching). Settle the old deferred EXACTLY
+      // ONCE so its openSession caller never hangs, then start the new attach.
+      this.rejectAttach({
+        code: "interrupted",
+        message: "superseded by a newer session selection",
+        retryable: false,
+      });
     }
     let resolve!: () => void;
     let reject!: (error: unknown) => void;
@@ -1900,9 +2075,11 @@ export class SessionStore implements RuntimeSocketHandler {
     //    idempotent by entryId).
     if (mode !== "same-epoch") {
       this.historyGeneration += 1;
+      this.attachGeneration += 1;
       this.historyAnchorLeafId = this.snapshot.state.leafId ?? null;
       this.liveEntries = [];
       this.optimisticUserEntries = [];
+      this.optimisticPromptRunning = false;
     }
     // D2-P8: a snapshot that drops `runtime.extension_ui` settles an in-flight reply.
     this.settleExtensionUiOnCapabilityLoss();
@@ -1963,9 +2140,11 @@ export class SessionStore implements RuntimeSocketHandler {
   /** Clear the history layer (detach / stop / session switch). */
   private clearHistoryLayer(): void {
     this.historyGeneration += 1;
+    this.attachGeneration += 1;
     this.historyAnchorLeafId = null;
     this.liveEntries = [];
     this.optimisticUserEntries = [];
+    this.optimisticPromptRunning = false;
   }
 
   /**
@@ -2196,6 +2375,17 @@ export class SessionStore implements RuntimeSocketHandler {
     return new Promise<void>((resolve, reject) => { this.readyWaiters.push({ resolve, reject }); });
   }
 
+  /**
+   * Lifecycle gate for create/open: proceed once the socket is SENDABLE
+   * (ready / attaching / attached), not just strictly `ready`. An in-flight
+   * attach must not block a newer selection — startAttach supersedes it
+   * identity-scoped (rapid A→B→C switching).
+   */
+  private whenReadyForLifecycle(): Promise<void> {
+    if (canSend(this.connection)) return Promise.resolve();
+    return this.whenReady();
+  }
+
   /** Resolve when the socket is sendable (ready/attaching/attached), bounded. */
   private whenSendable(timeoutMs: number): Promise<void> {
     if (canSend(this.connection)) return Promise.resolve();
@@ -2248,10 +2438,15 @@ export class SessionStore implements RuntimeSocketHandler {
     this.pendingInterruptPromise = null;
     for (const [, entry] of this.pendingByEnvelope) entry.reject(error);
     this.pendingByEnvelope.clear();
+    // Teardown: drop the speculative live layer (bubbles + running overlay).
+    this.optimisticUserEntries = [];
+    this.optimisticPromptRunning = false;
   }
 
   private isPromptRunning(): boolean {
-    return this.snapshot?.state.isPromptRunning === true || this.snapshot?.state.isStreaming === true;
+    return this.optimisticPromptRunning
+      || this.snapshot?.state.isPromptRunning === true
+      || this.snapshot?.state.isStreaming === true;
   }
 
   private notAttachedError(): ProtocolError {
@@ -2278,7 +2473,24 @@ export class SessionStore implements RuntimeSocketHandler {
   private lastPublishedPartial: StreamingAgentMessage | null = null;
 
   private computeView(): RuntimeView {
-    const snapshot = this.snapshot;
+    // Speculative overlay: the view's snapshot is a PROJECTION that reflects
+    // the optimistic running flag WITHOUT ever mutating the authoritative
+    // snapshot (reduced from real events / replaced by fetchSnapshot). The
+    // whole UI (transcript pulse, composer Stop) sees the instant running
+    // state while the wire round-trip settles.
+    const authoritative = this.snapshot;
+    const projected = this.optimisticPromptRunning && authoritative
+      ? {
+          ...authoritative,
+          state: { ...authoritative.state, isPromptRunning: true },
+          streaming: {
+            ...authoritative.streaming,
+            active: true,
+            phase: authoritative.streaming?.phase ?? "waiting_model",
+          },
+        }
+      : authoritative;
+    const snapshot = projected;
     const streaming = snapshot?.streaming?.active === true || snapshot?.state.isStreaming === true;
     const livePartial = snapshot?.streaming?.partialMessage ?? null;
     const now = Date.now();
@@ -2304,6 +2516,7 @@ export class SessionStore implements RuntimeSocketHandler {
       snapshot,
       streaming,
       streamingPartial,
+      attachGeneration: this.attachGeneration,
       historyGeneration: this.historyGeneration,
       historyAnchorLeafId: this.historyAnchorLeafId,
       liveEntries: [...this.optimisticUserEntries, ...this.liveEntries],

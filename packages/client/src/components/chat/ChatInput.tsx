@@ -96,6 +96,14 @@ interface Props {
   slashCommandsLoading?: boolean;
   onLoadSlashCommands?: () => Promise<SlashCommandInfo[]> | SlashCommandInfo[];
   onBuiltinCommand?: (message: string) => Promise<BuiltinSlashCommandResult>;
+  /**
+   * The BUILTIN slash commands the host surface actually handles (parity with
+   * {@link onBuiltinCommand}). The palette is generated/filtered from THIS list
+   * only — an unlisted builtin is never offered, so an unsupported command can
+   * never be picked from the palette and silently fall through as a model
+   * prompt. Defaults to none when omitted.
+   */
+  builtinSlashCommands?: SlashCommandPaletteItem[];
   onAudioUnlock?: () => void;
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
@@ -407,6 +415,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
+  builtinSlashCommands: builtinSlashCommandsProp = [],
   onAudioUnlock,
   onPromptWithStreamingBehavior,
   draftKey,
@@ -483,13 +492,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     default: t("desktop.toolDefault"),
     full: t("desktop.toolFull"),
   };
-  const builtinSlashCommands: SlashCommandPaletteItem[] = [
-    { name: "compact", description: t("desktop.compactCommandDescription"), source: "builtin" },
-    { name: "reload", description: t("desktop.reloadCommandDescription"), source: "builtin" },
-    { name: "name", description: t("desktop.nameCommandDescription"), source: "builtin" },
-    { name: "session", description: t("desktop.sessionCommandDescription"), source: "builtin" },
-    { name: "copy", description: t("desktop.copyCommandDescription"), source: "builtin" },
-  ];
+  // The builtin slash palette is INJECTED by the host surface (Composer) from
+  // the builtins its onBuiltinCommand actually handles — never hardcoded here,
+  // so an unsupported builtin can never be offered and silently fall through
+  // as a model prompt. Falls back to none when omitted.
+  const builtinSlashCommands: SlashCommandPaletteItem[] = [...builtinSlashCommandsProp];
   const slashSourceGroupLabels: Record<SlashCommandSource, string> = {
     builtin: t("desktop.builtIn"),
     extension: t("desktop.extensions"),

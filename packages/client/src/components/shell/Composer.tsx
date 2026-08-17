@@ -55,11 +55,18 @@ import type { SessionTreeNode } from "@/lib/chat-view-model";
  */
 export interface ComposerProps {
   /**
+   * The SELECTED session (URL-driven). The composer stays editable for ANY
+   * selected existing session; sending activates that exact session (see
+   * {@link RuntimeApi.sendPromptToSession}) if it is not already attached.
+   * Omitted → falls back to the attached session (legacy standalone mounts).
+   */
+  sessionId?: string;
+  /**
    * Explicit selection gate (history-switching fix). When `false` the selected
    * session is NOT the attached runtime (viewing history or a stale live
-   * session), so the composer is honestly disabled even though a runtime may
-   * still be attached to some OTHER session. When omitted the legacy behavior
-   * applies: usable whenever the runtime is attached.
+   * session). The composer remains editable + sendable — sending is the
+   * activation intent. When omitted the legacy behavior applies: usable
+   * whenever the runtime is attached.
    */
   live?: boolean;
   /**
@@ -104,7 +111,7 @@ function getUserInputTexts(messages: readonly { role: string; content?: unknown 
   return history;
 }
 
-export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
+export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp }: ComposerProps) {
   const runtime = useRuntime();
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   const http = useHttpClient();
@@ -112,14 +119,18 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
   const inputRef = useRef<ChatInputHandle | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
+  // The SELECTED session the composer targets (send + draft). Falls back to the
+  // attached session when the prop is omitted (legacy standalone mounts).
+  const selectedSessionId = selectedSessionProp ?? runtime.sessionId ?? null;
   // `live` is true only when the selected session IS the attached runtime.
   const live = (liveProp ?? runtime.attached) === true;
+  // The ATTACHED session (only meaningful while live) for live-only reads.
+  const attachedSessionId = live ? runtime.sessionId : null;
   const state = live ? runtime.snapshot?.state : undefined;
   const cwd = live ? runtime.snapshot?.cwd ?? null : null;
-  const sessionId = live ? runtime.sessionId : null;
-  // Draft persistence key: the live session id, or a per-cwd placeholder while
-  // a brand-new (not-yet-created) session is selected.
-  const draftKey = sessionId ?? (cwd ? `new:${cwd}` : undefined);
+  // Draft persistence key: the selected session id, or a per-cwd placeholder
+  // while a brand-new (not-yet-created) session is selected.
+  const draftKey = selectedSessionId ?? (cwd ? `new:${cwd}` : undefined);
 
   // Publish the exact ChatInputHandle so the transcript's "edit" action can
   // restore a user message into the composer (source onEditContent wiring).
@@ -139,7 +150,7 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
     return () => {
       if (textareaRef.current !== null) textareaRef.current = null;
     };
-  }, [textareaRef, live, sessionId]);
+  }, [textareaRef, live, attachedSessionId]);
 
   // --- capability gates -----------------------------------------------------
   const capabilities = live ? runtime.capabilities?.capabilities ?? [] : [];
@@ -184,8 +195,8 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
   // Branch tree for the SessionInfoBar navigator: the SAME sessions.tree query
   // the history view uses; live leaf selection overrides from the snapshot.
   const treeQuery = useQuery({
-    ...createQueryOptions(http).sessions.tree(sessionId ?? ""),
-    enabled: live && Boolean(sessionId) && canBrowseSessions,
+    ...createQueryOptions(http).sessions.tree(attachedSessionId ?? ""),
+    enabled: live && Boolean(attachedSessionId) && canBrowseSessions,
   });
 
   const modelList = useMemo(
@@ -235,7 +246,7 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
   // Protocol v2: rows/input-history/labels/stats/minimap share the same merged
   // transcript (persisted pages + committed live entries by entryId).
   const transcript = useSessionTranscript({
-    sessionId: sessionId ?? null,
+    sessionId: selectedSessionId,
     enabled: true,
     live,
   });
@@ -278,16 +289,17 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
   );
 
   // --- real session stats (runtime get_session_stats; runtime.stats gate) ---
-  // Fetched only while live + capability present. Refreshes when the session
-  // or its message/pending counts settle; cleared on capability revoke or
-  // session switch. A generation + cancel guard drops late settles so a stale
-  // response can never pollute a newer session (no raw error is surfaced).
-  const statsMessageCount = state?.messageCount ?? 0;
-  const statsPendingCount = state?.pendingMessageCount ?? 0;
+  // Fetched only while live + capability present. Refreshed from EXPLICIT
+  // lifecycle signals (sessionId + attachGeneration) — NOT from the whole
+  // `runtime` object (which changes identity on every stream event) and NOT from
+  // message counts (which tick during a stream). So a streaming session never
+  // refires the fetch; a fresh attach / session switch / detach / stop does. A
+  // generation + cancel guard drops late settles so a stale response can never
+  // pollute a newer session (no raw error is surfaced).
   const [sessionStatsData, setSessionStatsData] = useState<import("@fffattiger/pix-protocol").SessionStats | null>(null);
   const sessionStatsGenRef = useRef(0);
   useEffect(() => {
-    if (!live || !hasStats || !sessionId) {
+    if (!live || !hasStats || !attachedSessionId) {
       setSessionStatsData(null);
       return;
     }
@@ -304,7 +316,10 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
       },
     );
     return () => { cancelled = true; };
-  }, [live, hasStats, sessionId, statsMessageCount, statsPendingCount, runtime]);
+    // `runtime.getSessionStats` is a STABLE command reference (see useRuntime),
+    // so omitting the whole `runtime` object here means streaming deltas never
+    // re-trigger the fetch — only the explicit lifecycle signal does.
+  }, [live, hasStats, attachedSessionId, runtime.attachGeneration, runtime.getSessionStats]);
 
   const sessionStats = useMemo(
     () => (live && state ? buildSessionStatsView(state, transcriptMessages, hasStats ? sessionStatsData : null) : null),
@@ -317,6 +332,11 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
   );
 
   // --- tools preset (runtime getTools/setTools; none/full are real) ----------
+  // Fetched while live + capability present. Refresh keyed on the stable
+  // getTools command + the authoritative tool list reference (`state.tools` is
+  // an immutable array whose identity only changes when tools actually change,
+  // never on streaming deltas) — the whole `runtime` object is NOT a dep, so a
+  // streaming session never refires getTools per event.
   const [tools, setToolsState] = useState<readonly ToolInfo[] | null>(null);
   useEffect(() => {
     if (!live || !hasToolsRead) {
@@ -333,7 +353,7 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
     return () => {
       cancelled = true;
     };
-  }, [live, hasToolsRead, runtime, sessionId, runtime.snapshot?.state.tools]);
+  }, [live, hasToolsRead, runtime.getTools, attachedSessionId, state?.tools]);
 
   const toolPreset = useMemo<"none" | "default" | "full" | undefined>(() => {
     if (!live || !hasToolsRead || !tools || tools.length === 0) return undefined;
@@ -350,18 +370,28 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
       setSlashCommands([...commands]);
       return [...commands];
     });
-  }, [runtime]);
+  }, [runtime.getCommands]);
+
+  // Builtin slash palette = the builtins {@link handleBuiltinCommand} ACTUALLY
+  // handles (single source of truth, injected into ChatInput). An unlisted
+  // builtin is never offered, so picking a palette entry can never fall through
+  // as a model prompt. `/compact` is ONLY offered while the runtime is live and
+  // advertises the compact capability — a stale/not-yet-activated session can
+  // not execute it, so it must not be offered (no silent fall-through).
+  const builtinSlashCommands = useMemo(
+    () => (live && hasCompact ? [{ name: "compact", description: t("desktop.compactCommandDescription"), source: "builtin" as const }] : []),
+    [live, hasCompact, t],
+  );
 
   // --- error surfaces (fixed copy only) ---------------------------------------
   const [compactError, setCompactError] = useState<string | null>(null);
   useEffect(() => {
     setCompactError(null);
-  }, [sessionId]);
+  }, [selectedSessionId]);
 
   // Identity guards for late async settles (SessionActions pattern).
   const mountedRef = useRef(true);
-  const sessionIdRef = useRef<string | null>(sessionId);
-  const liveRef = useRef(live);
+  const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -369,12 +399,15 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
     };
   }, []);
   useEffect(() => {
-    sessionIdRef.current = sessionId;
-    liveRef.current = live;
-  }, [sessionId, live]);
+    selectedSessionIdRef.current = selectedSessionId;
+  }, [selectedSessionId]);
+  // Current = still mounted AND still targeting the same SELECTED session. The
+  // composer is always active for a selected session (activation is the send
+  // intent), so `isCurrent` is NOT gated on live — a send-triggered activation
+  // settle for the current selection must restore/keep the draft on failure.
   const isCurrent = useCallback(
-    () => mountedRef.current && liveRef.current && (sessionIdRef.current === null || sessionIdRef.current === sessionId),
-    [sessionId],
+    () => mountedRef.current && (selectedSessionIdRef.current === null || selectedSessionIdRef.current === selectedSessionId),
+    [selectedSessionId],
   );
 
   /** True when a failure is DEFINITE (the turn never started) — only then restore the draft. */
@@ -391,21 +424,26 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
   }, []);
 
   // --- send paths -------------------------------------------------------------
+  // Sending is the ACTIVATION intent: `sendPromptToSession` ensures the exact
+  // selected session is attached (open if absent/stale/stopped, detach+open if
+  // a different session is attached), awaits the authoritative attach, then
+  // sends the prompt exactly once. If already attached it sends directly.
   const handleSend = useCallback(
     (message: string, images?: AttachedImage[]) => {
-      if (!live) return;
+      if (!selectedSessionId) return;
       const wireImages = toImageAttachments(images);
       runtime
-        .sendPrompt(message, wireImages)
+        .sendPromptToSession(selectedSessionId, message, wireImages)
         .catch((cause: unknown) => {
           // Optimistic UI: the bubble is already on screen. Only a DEFINITE
-          // failure (not accepted) rolls the text back into the composer; a
-          // retryable timeout/transport failure usually has the turn running
-          // server-side — the optimistic bubble stays until message_end/rebase.
+          // failure (not accepted — incl. a definite ACTIVATION failure such as
+          // not_found) rolls the text back into the composer; a retryable
+          // timeout/transport failure usually has the turn running server-side
+          // — the optimistic bubble stays until message_end/rebase.
           if (isCurrent() && isDefiniteFailure(cause)) restoreDraft(message);
         });
     },
-    [live, runtime, isCurrent, restoreDraft, isDefiniteFailure],
+    [selectedSessionId, runtime, isCurrent, restoreDraft, isDefiniteFailure],
   );
 
   const handleSteer = useCallback(
@@ -581,22 +619,19 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
     [resourcesApi],
   );
 
+  // Genuine global inability only: no selected session (yet) or the host has no
+  // agent capability. The composer NEVER exposes a detached/continue-live/stopped
+  // state — sending is the activation intent for any selected existing session.
   const disabledReason = !canAgent
     ? "host has no agent capability"
-    : !live
-      ? runtime.attached
-        ? "selected session is not live"
-        : runtime.connection === "idle"
-          ? "no project selected"
-          : "runtime not attached"
-      : runtime.sessionStopped
-        ? "session stopped"
-        : "";
+    : !selectedSessionId
+      ? "select a session"
+      : "";
 
-  // The exact ChatInput is mounted only when it can honestly send; otherwise
-  // the composer degrades to a disabled surface with the reason (no fake
-  // controls, no lost drafts).
-  if (!canAgent || !live || runtime.sessionStopped) {
+  // The exact ChatInput is mounted whenever a session is selected and the host
+  // can agent; otherwise the composer degrades to a disabled surface with the
+  // reason (no fake controls, no lost drafts).
+  if (!canAgent || !selectedSessionId) {
     return (
       <footer className="composer composer--disabled">
         <div className="composer-inner">
@@ -651,6 +686,7 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
         slashCommandsLoading={false}
         onLoadSlashCommands={loadSlashCommands}
         onBuiltinCommand={handleBuiltinCommand}
+        builtinSlashCommands={builtinSlashCommands}
         {...(draftKey === undefined ? {} : { draftKey })}
         cwd={cwd}
         messagesScrollRef={transcriptScrollRef}
@@ -666,7 +702,7 @@ export function Composer({ live: liveProp, textareaRef }: ComposerProps) {
             systemPrompt={state?.systemPrompt ?? null}
             sessionStats={sessionStats}
             contextUsage={contextUsage}
-            hasSession={Boolean(sessionId)}
+            hasSession={Boolean(selectedSessionId)}
             showChat
             {...(hasCompact ? { onCompact: handleCompact } : {})}
             isCompacting={isCompacting}

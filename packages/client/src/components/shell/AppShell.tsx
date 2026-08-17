@@ -89,15 +89,19 @@ export function AppShell({ search }: AppShellProps) {
   // Composer (no document queries).
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   // ── Session selection → live attach (desktop behavior) ─────────────────────
-  // Selecting a session (sidebar click or a ?session= deep link) opens it LIVE
-  // directly — no separate "Continue live" step. The flow below owns the
-  // open: one attempt per (selection nonce, target) pair, superseded
-  // automatically when the user clicks another row mid-open (generation
-  // guard). Weak-network failures (retryable transport errors) re-attempt
-  // once the socket is ready again — bounded to 3 retries per selection; the
-  // store's reconnect already resumes the intended attach, so this is a
-  // safety net, not a polling loop. Hard failures fail closed to the
-  // read-only history view with a transient notice.
+  // ONE owner coordinates the ENTIRE URL-session lifecycle: detaching a stale
+  // attached session, attaching the selected one, superseding in-flight opens
+  // when a newer selection wins, dropping late settles, and retrying
+  // weak-network failures once the socket is ready again. There is deliberately
+  // NO competing detach effect and no per-effect generation refs — a single
+  // generation counter owns supersession, and the store's identity-scoped
+  // attach settles any superseded open so no promise ever hangs. Selecting a
+  // session (sidebar click or a ?session= deep link) opens it LIVE directly —
+  // no separate "Continue live" step. Weak-network failures (retryable
+  // transport errors) re-attempt once the socket is ready again — bounded to 3
+  // retries per selection; the store's reconnect already resumes the intended
+  // attach, so this is a safety net, not a polling loop. Hard failures fail
+  // closed to the read-only history view with a transient notice.
   const [selectionNonce, setSelectionNonce] = useState(0);
   const [openAttempt, setOpenAttempt] = useState(0);
   const [liveError, setLiveError] = useState<string | null>(null);
@@ -105,26 +109,38 @@ export function AppShell({ search }: AppShellProps) {
   const openGenRef = useRef(0);
   const openRetriesRef = useRef(0);
   const retryTargetRef = useRef<string | null>(null);
-  const connection = runtime.connection;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
+  const { connection, attached, sessionId: attachedSessionId } = runtime;
   useEffect(() => {
     const target = search.session;
     if (!canAgent || !target) return;
-    if (runtime.attached && runtime.sessionId === target) return;
+    if (attached && attachedSessionId === target) {
+      // Already live on the selected session: clear any pending retry.
+      retryTargetRef.current = null;
+      return;
+    }
     const key = `${selectionNonce}:${target}`;
     if (openKeyRef.current === key) return; // this selection already has a flow
+    if (openRetriesRef.current >= 3) return; // retry budget exhausted
     openKeyRef.current = key;
     openRetriesRef.current = 0;
     retryTargetRef.current = null;
     const gen = ++openGenRef.current;
-    detachGenRef.current += 1; // error ownership moves to this open flow
     setLiveError(null);
     void (async () => {
       try {
         // A stale runtime attached to another session is detached first
-        // (idempotent; the worker is preserved server-side).
-        if (runtime.attached && runtime.sessionId && runtime.sessionId !== target) {
+        // (idempotent; the worker is preserved server-side). This is the ONLY
+        // detach in the shell — the fail-closed history view is just the
+        // transient attached=false state while this flow runs.
+        if (attached && attachedSessionId && attachedSessionId !== target) {
           await runtime.detach();
+          if (!mountedRef.current || gen !== openGenRef.current) return; // superseded mid-detach
         }
         await runtime.openSession(target);
       } catch (error) {
@@ -142,15 +158,22 @@ export function AppShell({ search }: AppShellProps) {
         setLiveError(describeError(error));
       }
     })();
-  }, [canAgent, search.session, runtime, selectionNonce, openAttempt]);
+    // Deps are stable reactive values (never the whole `runtime` object, which
+    // changes on every stream event) so a streaming session cannot re-trigger
+    // this flow; `openAttempt` drives the bounded retry re-run. `runtime.detach`
+    // / `runtime.openSession` are STABLE command references (see useRuntime), so
+    // the captured `runtime` closure stays correct across renders.
+  }, [canAgent, search.session, attached, attachedSessionId, connection, selectionNonce, openAttempt]);
 
-  // Weak-network recovery: retry a retryable auto-open failure when the
-  // socket becomes ready again (bounded; superseded selections never retry).
+  // Weak-network recovery: retry a retryable auto-open failure when the socket
+  // becomes ready again (bounded; superseded selections never retry). Owned by
+  // the same selection flow via openKeyRef/retryTargetRef — this is the bounded
+  // safety net, not a competing lifecycle owner.
   useEffect(() => {
     if (connection !== "ready") return;
     const target = retryTargetRef.current;
     if (!target || !canAgent) return;
-    if (runtime.attached && runtime.sessionId === target) {
+    if (attached && attachedSessionId === target) {
       retryTargetRef.current = null;
       return;
     }
@@ -160,7 +183,7 @@ export function AppShell({ search }: AppShellProps) {
     openKeyRef.current = null; // allow the open effect to run again
     setLiveError(null);
     setOpenAttempt((n) => n + 1);
-  }, [connection, canAgent, runtime.attached, runtime.sessionId]);
+  }, [connection, canAgent, attached, attachedSessionId]);
 
   // Transient failure notice: auto-clears so a recovered session is not left
   // with a stale error banner.
@@ -220,40 +243,13 @@ export function AppShell({ search }: AppShellProps) {
   // sidebar without going through Continue live).
   // D4: the currently attached/live session id is handed to the Sidebar so it
   // never offers a delete control for the live session (the server rejects live
-  // deletes with 409 anyway). The page must then fail-closed
-  // to the selected session's HISTORY view — never render A's live transcript,
-  // never enable the Composer, never show runtime actions — and detach A so the
-  // stale runtime stops streaming. The mismatch effect below owns that detach:
-  // it fires once per (attached, selected) pair (no loops), is fire-and-forget
-  // (errors are surfaced but the page stays fail-closed), and a generation
-  // counter drops stale detach rejections so a quick B→C switch or a Continue
-  // live takeover never lets an old promise clobber the new selection.
+  // deletes with 409 anyway). The page fails-closed to the selected session's
+  // HISTORY view — never render A's live transcript, never enable the Composer,
+  // never show runtime actions — while the single selection owner (above)
+  // detaches A and opens B. The stale A stream stops as part of that one flow;
+  // there is NO separate mismatch-detach effect.
   const selectionMatchesLive =
     runtime.attached && (!search.session || search.session === runtime.sessionId);
-
-  const mountedRef = useRef(true);
-  const detachGenRef = useRef(0);
-  const mismatchKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  useEffect(() => {
-    const mismatched = runtime.attached && Boolean(search.session) && search.session !== runtime.sessionId;
-    const key = mismatched ? `${runtime.sessionId ?? ""}:${search.session ?? ""}` : null;
-    if (key === mismatchKeyRef.current) return; // same pair already handled
-    mismatchKeyRef.current = key;
-    if (!mismatched) return;
-    setLiveError(null);
-    const gen = ++detachGenRef.current;
-    void runtime.detach().catch((error) => {
-      // A newer detach (or a Continue-live takeover) superseded this one, or the
-      // shell unmounted: never surface a stale error or touch a dead component.
-      if (!mountedRef.current || gen !== detachGenRef.current) return;
-      setLiveError(describeError(error));
-    });
-  }, [runtime.attached, runtime.sessionId, search.session]);
 
   const hasProject = Boolean(search.cwd);
   const canCreate = canAgent && hasProject && !runtime.attached && !runtime.sessionStopped;
@@ -514,7 +510,11 @@ export function AppShell({ search }: AppShellProps) {
               <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
             ) : null}
 
-            <Composer live={selectionMatchesLive} textareaRef={composerTextareaRef} />
+            <Composer
+              live={selectionMatchesLive}
+              textareaRef={composerTextareaRef}
+              {...(search.session === undefined ? {} : { sessionId: search.session })}
+            />
           </main>
           {/* Transient auto-attach failure notice (weak network / stopped
               runtime): the session stays readable while the retry safety net

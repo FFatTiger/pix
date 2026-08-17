@@ -12,6 +12,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -28,9 +29,8 @@ import {
   type RuntimeSocketDeps,
 } from "./socket.js";
 
-/** Fresh command ids for the read-only UI helpers (navigateTree / prompt+images). */
+/** Fresh command ids for the read-only UI helper (navigateTree). */
 const uiCommandId = createDefaultIdFactory();
-
 /** Detect the client shell (pwa when running standalone) and platform. */
 export function detectClientIdentity(navigatorLike: Navigator, matchMedia?: (q: string) => { matches: boolean }): ClientIdentity {
   const isStandalone = typeof matchMedia === "function" && matchMedia("(display-mode: standalone)").matches;
@@ -117,6 +117,15 @@ export interface RuntimeApi extends RuntimeView {
   readonly fetchSnapshot: SessionStore["fetchSnapshot"];
   readonly sendCommand: SessionStore["sendCommand"];
   readonly sendPrompt: (message: string, images?: readonly ImageAttachment[]) => Promise<unknown>;
+  /**
+   * Activation-then-send (single state machine in the store): ensure the exact
+   * `sessionId` is attached (open if absent/stale/stopped; detach+open if a
+   * different session is attached), await the authoritative attach, then send
+   * the prompt exactly once. Optimistic bubble/overlay are preserved through
+   * activation; definite activation failure removes the phantom bubble and
+   * rejects (Composer retains the draft); never creates a session.
+   */
+  readonly sendPromptToSession: (sessionId: string, message: string, images?: readonly ImageAttachment[]) => Promise<unknown>;
   readonly respondExtensionUi: SessionStore["respondExtensionUi"];
   readonly sendExtensionUiInput: SessionStore["sendExtensionUiInput"];
   readonly steer: SessionStore["steer"];
@@ -150,47 +159,57 @@ export interface RuntimeApi extends RuntimeView {
 export function useRuntime(): RuntimeApi {
   const store = useRuntimeStore();
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  // Stable command API shell — created ONCE per store so command identity is
+  // stable across stream events (the reactive `view` changes on every notify;
+  // the methods must NOT). Composer's stats/tools reads key on explicit
+  // lifecycle signals (attachGeneration / sessionId) + these stable methods, so
+  // they never refire on every streaming delta. Only the reactive view fields
+  // are refreshed per notify via the `{ ...api, ...view }` merge below.
+  const apiRef = useRef<RuntimeApi | null>(null);
+  if (apiRef.current === null) {
+    const api: RuntimeApi = {
+      ...view,
+      connect: () => store.connect(),
+      createSession: (params) => store.createSession(params),
+      openSession: (sessionId) => store.openSession(sessionId),
+      detach: () => store.detach(),
+      stop: (reason) => store.stop(reason),
+      fetchSnapshot: () => store.fetchSnapshot(),
+      sendCommand: (command) => store.sendCommand(command),
+      // Images ride the same optimistic prompt path as text (parity): the store
+      // mints the commandId and appends the speculative user bubble + running
+      // overlay for BOTH text-only and image sends.
+      sendPrompt: (message, images) => store.sendPrompt(message, images),
+      sendPromptToSession: (sessionId, message, images) => store.sendPromptToSession(sessionId, message, images),
+      respondExtensionUi: (request, reply) => store.respondExtensionUi(request, reply),
+      sendExtensionUiInput: (request, data) => store.sendExtensionUiInput(request, data),
+      steer: (message, images) => store.steer(message, images),
+      followUp: (message, images) => store.followUp(message, images),
+      clearQueue: () => store.clearQueue(),
+      runBash: (command, options) => store.runBash(command, options),
+      abortBash: () => store.abortBash(),
+      abort: () => store.abort(),
+      getState: () => store.getState(),
+      getCommands: () => store.getCommands(),
+      getLastAssistantText: () => store.getLastAssistantText(),
+      getSessionStats: () => store.getSessionStats(),
+      setSessionName: (name) => store.setSessionName(name),
+      setThinkingLevel: (level) => store.setThinkingLevel(level),
+      setModel: (provider, modelId) => store.setModel(provider, modelId),
+      getTools: () => store.getTools(),
+      setTools: (names) => store.setTools(names),
+      reload: () => store.reload(),
+      compact: (customInstructions) => store.compact(customInstructions),
+      abortCompaction: () => store.abortCompaction(),
+      navigateTree: (targetId) =>
+        store.sendCommand({ commandId: uiCommandId(), type: "navigate_tree", targetId }),
+    };
+    apiRef.current = api;
+  }
   return useMemo<RuntimeApi>(
-    () =>
-      ({
-        ...view,
-        connect: () => store.connect(),
-        createSession: (params) => store.createSession(params),
-        openSession: (sessionId) => store.openSession(sessionId),
-        detach: () => store.detach(),
-        stop: (reason) => store.stop(reason),
-        fetchSnapshot: () => store.fetchSnapshot(),
-        sendCommand: (command) => store.sendCommand(command),
-        // Images ride the same ordinary prompt command slot (the Protocol
-        // `prompt` command accepts optional images); text-only sends keep the
-        // store's sendPrompt helper unchanged.
-        sendPrompt: (message, images) =>
-          images === undefined || images.length === 0
-            ? store.sendPrompt(message)
-            : store.sendCommand({ commandId: uiCommandId(), type: "prompt", message, images: [...images] }),
-        respondExtensionUi: (request, reply) => store.respondExtensionUi(request, reply),
-        sendExtensionUiInput: (request, data) => store.sendExtensionUiInput(request, data),
-        steer: (message, images) => store.steer(message, images),
-        followUp: (message, images) => store.followUp(message, images),
-        clearQueue: () => store.clearQueue(),
-        runBash: (command, options) => store.runBash(command, options),
-        abortBash: () => store.abortBash(),
-        abort: () => store.abort(),
-        getState: () => store.getState(),
-        getCommands: () => store.getCommands(),
-        getLastAssistantText: () => store.getLastAssistantText(),
-        getSessionStats: () => store.getSessionStats(),
-        setSessionName: (name) => store.setSessionName(name),
-        setThinkingLevel: (level) => store.setThinkingLevel(level),
-        setModel: (provider, modelId) => store.setModel(provider, modelId),
-        getTools: () => store.getTools(),
-        setTools: (names) => store.setTools(names),
-        reload: () => store.reload(),
-        compact: (customInstructions) => store.compact(customInstructions),
-        abortCompaction: () => store.abortCompaction(),
-        navigateTree: (targetId) =>
-          store.sendCommand({ commandId: uiCommandId(), type: "navigate_tree", targetId }),
-      }) as RuntimeApi,
-    [store, view],
+    // Refresh the reactive view fields onto the stable API shell; the methods
+    // keep the same reference, so only the view part changes identity.
+    () => ({ ...apiRef.current!, ...view }),
+    [apiRef, view],
   );
 }

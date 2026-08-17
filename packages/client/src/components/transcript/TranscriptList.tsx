@@ -388,12 +388,16 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
           // UI-first: while the capability is being restored (weak link /
           // sessiond warming up) show a calm loading placeholder — never a
           // scary "unavailable" banner. Reconnect is silent in the background.
-          <div className="transcript-empty" aria-busy="true"><span className="transcript-loading-dot" aria-hidden="true" /> 加载中…</div>
+          <div className="transcript-empty" aria-busy="true"><span className="transcript-loading-dot" aria-hidden="true" />{t("desktop.loadingSession")}</div>
         ) : transcript.error && sessionId ? (
-          <div className="transcript-empty" aria-busy="true"><span className="transcript-loading-dot" aria-hidden="true" /> 内容加载中…</div>
+          // A REAL history-load error: distinct from loading (never
+          // error-as-spinner) and i18n'd.
+          <div className="transcript-empty" role="alert">{t("desktop.historyLoadError")}</div>
+        ) : transcript.isFetchingInitial && sessionId ? (
+          <div className="transcript-empty" aria-busy="true"><span className="transcript-loading-dot" aria-hidden="true" />{t("desktop.loadingSession")}</div>
         ) : rows.length === 0 ? (
           <div className="transcript-empty">
-            {sessionId ? "No messages" : "Select a session or open a deep link with ?session=…"}
+            {sessionId ? t("desktop.noMessages") : t("desktop.selectSessionHint")}
           </div>
         ) : null}
       </div>
