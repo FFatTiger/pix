@@ -317,10 +317,11 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
     }
   }, [rows.length]);
 
+  const isHomeEmpty = !sessionId && !isLive && rows.length === 0 && !transcript.error && !transcript.isFetchingInitial;
   return (
     <div
       className="transcript-region"
-      style={{ position: "relative", display: "flex", flex: "1 1 auto", minHeight: 0, minWidth: 0 }}
+      style={{ position: "relative", display: "flex", flex: isHomeEmpty ? "0 0 auto" : "1 1 auto", minHeight: 0, minWidth: 0 }}
     >
       <div
         ref={parentRef}
