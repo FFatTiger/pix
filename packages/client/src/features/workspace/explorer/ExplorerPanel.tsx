@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowClockwise, Check, CaretRight, UploadSimple } from "@phosphor-icons/react";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
@@ -37,6 +37,8 @@ export interface ExplorerPanelProps {
   onAtMention?: ((relativePath: string, isDir: boolean) => void) | undefined;
   /** Insert several paths into the chat input (uploaded files). */
   onAtMentions?: ((relativePaths: string[]) => void) | undefined;
+  /** Optional header action (the right-edge file-browser toggle when fused). */
+  headerAction?: ReactNode;
 }
 
 /** Fixed file-search error copy (code-first, then kind, fixed fallback). */
@@ -70,7 +72,7 @@ function describeIndexError(error: unknown): string {
   return "Unable to search files.";
 }
 
-export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtMention, onAtMentions }: ExplorerPanelProps) {
+export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtMention, onAtMentions, headerAction }: ExplorerPanelProps) {
   const { t } = useI18n();
   const http = useHttpClient();
   const options = useMemo(() => createQueryOptions(http), [http]);
@@ -286,7 +288,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
                 return next;
               })}
             >
-              <span className="sidebar-title-fade">{t("desktop.files")}</span>
+              <span className="sidebar-section-label-text">{t("desktop.files")}</span>
               <CaretRight
                 className="sidebar-section-chevron"
                 size={14}
@@ -321,6 +323,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
                   <ArrowClockwise size={14} weight="regular" aria-hidden="true" />
                 )}
               </button>
+              {headerAction}
             </div>
           </div>
           {explorerOpen && (

@@ -818,23 +818,38 @@ export function AppShell({ search }: AppShellProps) {
             canFiles={canFiles}
             canGit={canGit}
             onOpenFile={handleOpenFile}
+            headerAction={
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                data-testid="file-browser-toggle"
+                disabled={!canFiles}
+                title={t("desktop.hideFileBrowser")}
+                aria-label={t("desktop.hideFileBrowser")}
+                aria-pressed="true"
+                onClick={handleToggleFileBrowser}
+              >
+                <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
+              </button>
+            }
           />
         </div>
-      ) : null}
+      ) : (
       <div className="file-browser-rail" data-testid="file-browser-rail">
         <button
           type="button"
           className="sidebar-icon-btn"
           data-testid="file-browser-toggle"
           disabled={!canFiles}
-          title={fileBrowserOpen ? t("desktop.hideFileBrowser") : t("desktop.showFileBrowser")}
-          aria-label={fileBrowserOpen ? t("desktop.hideFileBrowser") : t("desktop.showFileBrowser")}
-          aria-pressed={fileBrowserOpen}
+          title={t("desktop.showFileBrowser")}
+          aria-label={t("desktop.showFileBrowser")}
+          aria-pressed={false}
           onClick={handleToggleFileBrowser}
         >
           <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
         </button>
       </div>
+      )}
     </div>
     {projectTrustDialogOpen && search.cwd ? (
       <ProjectTrustDialog

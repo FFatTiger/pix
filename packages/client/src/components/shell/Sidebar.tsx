@@ -923,10 +923,13 @@ function SessionTreeItem({
     return true;
   });
   const hasChildren = node.children.length > 0;
-  const expandChildren = () => {
-    if (!hasChildren || !collapsed) return;
-    setCollapsed(false);
-    saveForkCollapsed(node.session.sessionId, false);
+  const toggleChildren = () => {
+    if (!hasChildren) return;
+    setCollapsed((current) => {
+      const next = !current;
+      saveForkCollapsed(node.session.sessionId, next);
+      return next;
+    });
   };
 
   const isSelected = node.session.sessionId === selectedSessionId;
@@ -962,7 +965,7 @@ function SessionTreeItem({
           removeMutation={removeMutation}
           onSessionDeleted={onSessionDeleted}
           onSelectSession={(sessionId, cwd) => {
-            expandChildren();
+            toggleChildren();
             onSelectSession(sessionId, cwd);
           }}
           depth={depth}

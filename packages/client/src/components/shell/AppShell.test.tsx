@@ -1193,6 +1193,10 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.queryByTestId("session-select-child")).toBeNull();
     fireEvent.click(screen.getByTestId("session-select-parent"));
     expect(screen.getByTestId("session-select-child")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("session-select-parent"));
+    expect(screen.queryByTestId("session-select-child")).toBeNull();
+    fireEvent.click(screen.getByTestId("session-select-parent"));
+    expect(screen.getByTestId("session-select-child")).toBeTruthy();
     rerender({ cwd: "/x", session: "parent" });
     await settle();
     expect(screen.getByTestId("session-select-child")).toBeTruthy();
