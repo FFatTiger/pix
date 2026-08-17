@@ -271,9 +271,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
           style={{
             display: "flex",
             flexDirection: "column",
-            flex: explorerOpen ? "1 1 0" : "0 0 auto",
-            minHeight: 0,
-            overflow: "hidden",
+            flex: "0 0 auto",
           }}
         >
           <div className="sidebar-section-head" data-expanded={explorerOpen ? "true" : "false"}>
@@ -326,7 +324,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
             </div>
           </div>
           {explorerOpen && (
-            <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+            <div>
               <FileExplorer
                 ref={fileExplorerRef}
                 cwd={cwd}

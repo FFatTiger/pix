@@ -38,6 +38,7 @@ import {
   type CollapsedTimeGroups,
 } from "@/lib/time-group-state";
 import { downloadVisibleBranch } from "@/lib/visible-branch-export";
+import { isHiddenRailSession, isNonProjectWorkspacePath } from "@/lib/workspace-paths";
 import type { SettingsTab } from "@/components/shell/SettingsModal";
 
 export interface SidebarProps {
@@ -201,8 +202,9 @@ export function validateSessionName(
 function getRecentProjects(sessions: readonly SessionHeader[]): string[] {
   const latestByRoot = new Map<string, number>(); // projectRoot -> most recent activity
   for (const s of sessions) {
+    if (isHiddenRailSession(s)) continue;
     const root = s.projectRoot || s.cwd;
-    if (!root) continue;
+    if (!root || isNonProjectWorkspacePath(root)) continue;
     const activity = activityMs(s);
     if (activity === undefined) continue;
     const prev = latestByRoot.get(root);
@@ -418,7 +420,9 @@ export function Sidebar({
 
   // Honesty / fail-closed: when the sessions capability is retracted the visible
   // list is pinned empty regardless of cache state or any in-flight response.
-  const visibleSessions = canBrowseSessions ? (sessions.data?.sessions ?? []) : [];
+  const visibleSessions = canBrowseSessions
+    ? (sessions.data?.sessions ?? []).filter((session) => !isHiddenRailSession(session))
+    : [];
   const showLoading = canBrowseSessions && sessions.isLoading;
   const showError = canBrowseSessions && sessions.isError;
 
@@ -436,7 +440,10 @@ export function Sidebar({
 
   // Sessions of every worktree in the selected project are shown together.
   const projectSessions = selectedProject
-    ? visibleSessions.filter((s) => (s.projectRoot || s.cwd) === selectedProject)
+    ? visibleSessions.filter((s) => {
+      const root = s.projectRoot || s.cwd;
+      return root === selectedProject && !isHiddenRailSession(s);
+    })
     : visibleSessions;
 
   // Live quick-search: filters against the exact title shown in the list

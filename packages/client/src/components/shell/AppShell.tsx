@@ -203,21 +203,35 @@ export function AppShell({ search }: AppShellProps) {
     }
   };
 
-  const handleCreate = (): void => {
-    if (!search.cwd) return;
-    // New session is an explicit create. Clear any stale ?session= selection so
-    // the fresh live session becomes the page's session — otherwise the mismatch
-    // effect would immediately detach the just-created session. navigate()
-    // updates the router store synchronously, well before createSession's
-    // attach round-trip completes, so no mismatch window opens. The generation
-    // bump invalidates any in-flight prepare so it can never detach the
-    // just-created live session by committing its navigation afterwards.
+  const handleCreateSession = useCallback(async (settings?: {
+    model?: { provider: string; modelId: string };
+    thinkingLevel?: import("@fffattiger/pix-protocol").ThinkingLevel;
+  }): Promise<string> => {
+    if (!search.cwd) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "no project selected",
+        retryable: false,
+        phase: "activation",
+      });
+    }
     selectionGenerationRef.current += 1;
     setPendingSessionId(null);
+    // Clear a stale ?session= first so the mismatch effect cannot detach the
+    // session we are about to create+attach.
     void navigate({ to: "/", search: { cwd: search.cwd } });
-    // M2: the workspace cwd is treated as the project root. Worktree/project
-    // selection (D3A) will refine this later; we never hardcode a fallback.
-    void runtime.createSession({ cwd: search.cwd, projectRoot: search.cwd }).catch(() => undefined);
+    const result = await runtime.createSession({
+      cwd: search.cwd,
+      projectRoot: search.cwd,
+      ...(settings?.model === undefined ? {} : { model: settings.model }),
+      ...(settings?.thinkingLevel === undefined ? {} : { thinkingLevel: settings.thinkingLevel }),
+    });
+    void navigate({ to: "/", search: { cwd: search.cwd, session: result.sessionId } });
+    return result.sessionId;
+  }, [navigate, runtime, search.cwd]);
+
+  const handleCreate = (): void => {
+    void handleCreateSession().catch(() => undefined);
   };
 
   /**
@@ -507,7 +521,7 @@ export function AppShell({ search }: AppShellProps) {
       {/* Center: chat */}
       <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          <main className="workspace">
+          <main className={`workspace${search.session === undefined && !runtime.attached ? " workspace--home" : ""}`}>
             <TranscriptList
               live={selectionMatchesLive}
               {...(search.session === undefined ? {} : { sessionId: search.session })}
@@ -520,6 +534,7 @@ export function AppShell({ search }: AppShellProps) {
             <Composer
               live={selectionMatchesLive}
               textareaRef={composerTextareaRef}
+              onCreateSession={handleCreateSession}
               {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
               {...(search.session === undefined ? {} : { sessionId: search.session })}
             />

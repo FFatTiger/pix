@@ -134,7 +134,7 @@ function controllableStubFetch(opts: {
     if (p.includes("/v1/sessions")) return json({ sessions, revision: 0 });
     if (p.includes("/v1/worktrees")) return json({ projectRoot: "/x", isGit: true, isTopLevel: true, worktrees: [] });
     if (p.includes("/v1/themes")) return json({ themeSets: [] });
-    if (p.includes("/v1/models")) return json({ models: [], defaultModel: null });
+    if (p.includes("/v1/models")) return json(modelsCatalog);
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
     return json({});
@@ -349,7 +349,7 @@ describe("AppShell — no-flicker session navigation (prepare → atomic commit)
     // BEFORE the first page settles: no URL/navigation, no session swap, and
     // the current frame is untouched (still the select hint, not a loading B).
     expect(navigateMock).not.toHaveBeenCalled();
-    expect(screen.getByText(/Select a session/)).toBeTruthy();
+    expect(screen.getByTestId("transcript-home")).toBeTruthy();
     // Immediate lightweight pending cue ONLY on the target row.
     expect(screen.getByLabelText("Opening session…")).toBeTruthy();
     const bDeferred = contextDeferreds.get("B");
@@ -697,6 +697,7 @@ describe("AppShell — source-like sidebar rail", () => {
     capturedStore = null;
     navigateMock.mockReset();
     previousFetch = globalThis.fetch;
+    modelsCatalog = { models: [], defaultModel: null };
     globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
   });
   afterEach(() => { cleanup(); globalThis.fetch = previousFetch; vi.useRealTimers(); });
@@ -882,5 +883,45 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.queryByTestId("sidebar-nav-resources")).toBeNull();
     expect(screen.getByTestId("sidebar-new-session")).toBeTruthy();
     expect(screen.getByTestId("sidebar-nav-settings")).toBeTruthy();
+  });
+
+  it("hides subagent/agent-home folders from Projects and Sessions", async () => {
+    const mixed: readonly SessionHeader[] = [
+      ...PROJECT_SESSIONS,
+      {
+        sessionId: "sub",
+        cwd: "/Users/proxy/.pi/agent/pi-claude-subagents/019fef69",
+        projectRoot: "/Users/proxy/.pi/agent/pi-claude-subagents/019fef69",
+        title: "Subagent leak",
+        createdAt: 1000,
+        updatedAt: Date.now(),
+        messageCount: 1,
+      },
+    ];
+    globalThis.fetch = controllableStubFetch({ sessions: mixed });
+    mountApp({ cwd: "/x" });
+    await settle();
+    const rows = screen.getAllByTestId("sidebar-project-row").map((row) => row.textContent);
+    expect(rows).toContain("x");
+    expect(rows).toContain("y");
+    expect(rows.join(" ")).not.toContain("019fef69");
+    expect(screen.queryByText("Subagent leak")).toBeNull();
+  });
+
+  it("empty home shows a centered Pix start surface and a usable model selector", async () => {
+    modelsCatalog = {
+      models: [
+        { id: "gpt-5", provider: "openai", displayName: "GPT-5" },
+        { id: "claude-sonnet-4", provider: "anthropic", displayName: "Claude Sonnet 4" },
+      ],
+      defaultModel: { id: "claude-sonnet-4", provider: "anthropic" },
+    };
+    mountApp({ cwd: "/x" });
+    await settle();
+    expect(screen.getByTestId("transcript-home")).toBeTruthy();
+    expect(screen.getByText("Start a conversation")).toBeTruthy();
+    expect(document.querySelector(".workspace--home")).toBeTruthy();
+    expect(document.querySelector(".composer--disabled")).toBeNull();
+    expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
   });
 });

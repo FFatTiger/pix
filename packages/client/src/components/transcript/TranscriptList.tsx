@@ -396,9 +396,15 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
         ) : transcript.isFetchingInitial && sessionId ? (
           <div className="transcript-empty" aria-busy="true"><span className="transcript-loading-dot" aria-hidden="true" />{t("desktop.loadingSession")}</div>
         ) : rows.length === 0 ? (
-          <div className="transcript-empty">
-            {sessionId ? t("desktop.noMessages") : t("desktop.selectSessionHint")}
-          </div>
+          sessionId ? (
+            <div className="transcript-empty">{t("desktop.noMessages")}</div>
+          ) : (
+            <div className="transcript-home" data-testid="transcript-home">
+              <div className="transcript-home-logo" aria-hidden="true" />
+              <h1 className="transcript-home-title">{t("desktop.startConversation")}</h1>
+              <p className="transcript-home-copy">{t("desktop.startConversationHint")}</p>
+            </div>
+          )
         ) : null}
       </div>
       {isMobile ? null : (

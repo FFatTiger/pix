@@ -88,6 +88,15 @@ export interface ComposerProps {
    * (legacy standalone mounts; null while detached).
    */
   cwd?: string | null;
+  /**
+   * Empty-home create: AppShell owns create + URL navigation. When the user
+   * sends with no selected session, Composer asks the shell to create one and
+   * then activates it exactly once. Omitted → send without a session is a no-op.
+   */
+  onCreateSession?: (settings?: {
+    model?: { provider: string; modelId: string };
+    thinkingLevel?: ThinkingLevel;
+  }) => Promise<string>;
 }
 
 /** Fixed safe copy — never surface a raw ProtocolError in the info bar. */
@@ -124,7 +133,7 @@ function getUserInputTexts(messages: readonly { role: string; content?: unknown 
   return history;
 }
 
-export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp }: ComposerProps) {
+export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, onCreateSession }: ComposerProps) {
   const runtime = useRuntime();
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   const http = useHttpClient();
@@ -351,8 +360,13 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     if (defaultModel && isModelInCatalog({ provider: defaultModel.provider, modelId: defaultModel.id })) {
       return { provider: defaultModel.provider, modelId: defaultModel.id };
     }
+    // Catalog exists but no default / inferred model: show the first entry so
+    // ChatInput can render the selector (it requires a currentName). Never
+    // reuse the attached session's runtime model.
+    const first = modelList[0];
+    if (first) return { provider: first.provider, modelId: first.id };
     return null;
-  }, [stagedModel, detachedInferredModel, isModelInCatalog, modelsQuery.data]);
+  }, [stagedModel, detachedInferredModel, isModelInCatalog, modelsQuery.data, modelList]);
   const detachedThinking = stagedThinking ?? "auto";
   // The model/thinking surfaced to ChatInput: live → the authoritative runtime
   // snapshot state (existing behavior); detached → the honest B baseline above.
@@ -365,7 +379,12 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     : detachedThinking;
   // Whether the model/thinking change handlers run immediately (live, existing
   // setModel/setThinkingLevel) or only stage for the send transaction (detached).
-  const modelChangeInteractive = live ? hasModelSet && canModels : true;
+  // Live: honor runtime.model.set even before the catalog settles. Detached /
+  // empty-home: stage against the Host catalog so the selector stays visible
+  // without attaching a Worker — only when the catalog actually has models.
+  const modelChangeInteractive = live
+    ? hasModelSet && canModels
+    : canModels && modelList.length > 0;
   const thinkingChangeInteractive = live ? hasThinkingSet : true;
 
   const toolResults = useMemo(() => {
@@ -555,29 +574,42 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // definite dispatch failures; uncertain dispatch keeps the bubble.
   const handleSend = useCallback(
     (message: string, images?: AttachedImage[]) => {
-      if (!selectedSessionId) return;
       const wireImages = toImageAttachments(images);
-      runtime
-        .sendPromptToSession(selectedSessionId, message, wireImages, {
-          // Detached staging rides the SINGLE activation transaction: applied
-          // after attach, before the prompt, in deterministic order. Null
-          // values are no-ops (already-live sends just dispatch directly).
-          model: stagedModel,
-          thinkingLevel: stagedThinking,
-        })
-        .then(() => {
-          // The send transaction (incl. any staged settings) succeeded — the
-          // runtime now owns the model/thinking, so clear the staged values
-          // (a later re-selection must not re-apply them).
-          if (isCurrent()) clearStaged();
-        })
+      const activationSettings = {
+        model: stagedModel,
+        thinkingLevel: stagedThinking,
+      };
+      const sendTo = (sessionId: string): void => {
+        runtime
+          .sendPromptToSession(sessionId, message, wireImages, {
+            // Detached staging rides the SINGLE activation transaction: applied
+            // after attach, before the prompt, in deterministic order. Null
+            // values are no-ops (already-live sends just dispatch directly).
+            model: activationSettings.model,
+            thinkingLevel: activationSettings.thinkingLevel,
+          })
+          .then(() => {
+            if (isCurrent()) clearStaged();
+          })
+          .catch((cause: unknown) => {
+            if (isCurrent() && (isActivationFailure(cause) || isDefiniteFailure(cause))) restoreDraft(message);
+          });
+      };
+      if (selectedSessionId) {
+        sendTo(selectedSessionId);
+        return;
+      }
+      if (!onCreateSession) return;
+      void onCreateSession({
+        ...(stagedModel === null ? {} : { model: stagedModel }),
+        ...(stagedThinking === null ? {} : { thinkingLevel: stagedThinking }),
+      })
+        .then((sessionId) => { sendTo(sessionId); })
         .catch((cause: unknown) => {
-          // Staged settings are PRESERVED on activation/config failure: only a
-          // successfully applied setting may be cleared.
           if (isCurrent() && (isActivationFailure(cause) || isDefiniteFailure(cause))) restoreDraft(message);
         });
     },
-    [selectedSessionId, runtime, isCurrent, restoreDraft, isActivationFailure, isDefiniteFailure, stagedModel, stagedThinking, clearStaged],
+    [selectedSessionId, runtime, isCurrent, restoreDraft, isActivationFailure, isDefiniteFailure, stagedModel, stagedThinking, clearStaged, onCreateSession],
   );
 
   const handleSteer = useCallback(
@@ -771,19 +803,12 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     [resourcesApi],
   );
 
-  // Genuine global inability only: no selected session (yet) or the host has no
-  // agent capability. The composer NEVER exposes a detached/continue-live/stopped
-  // state — sending is the activation intent for any selected existing session.
-  const disabledReason = !canAgent
-    ? "host has no agent capability"
-    : !selectedSessionId
-      ? "select a session"
-      : "";
+  // Genuine global inability only: the host has no agent capability. An empty
+  // home (no selected session) still mounts the exact ChatInput so the user can
+  // pick a model and start a conversation; send creates then activates.
+  const disabledReason = !canAgent ? "host has no agent capability" : "";
 
-  // The exact ChatInput is mounted whenever a session is selected and the host
-  // can agent; otherwise the composer degrades to a disabled surface with the
-  // reason (no fake controls, no lost drafts).
-  if (!canAgent || !selectedSessionId) {
+  if (!canAgent) {
     return (
       <footer className="composer composer--disabled">
         <div className="composer-inner">
