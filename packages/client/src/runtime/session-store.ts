@@ -24,6 +24,16 @@
  *    dispose / session-switch / epoch_changed, resent with the SAME commandId
  *    on snapshot/gap. clear_queue uses typed interrupt admission (never
  *    coalesces with abort; different interrupt type → session_busy).
+ *  - Every pending ordinary command (prompt, bash, compact, read-only queries)
+ *    is SESSION-BOUND: on an intentional detach / session switch the pending
+ *    command bound to the source/old session is settled EXACTLY ONCE (incl. a
+ *    PROMPT — its single-flight transaction settles as proven non-delivery via
+ *    the dispatch rejection chain), so the new session's ordinary slot is free
+ *    and a late result/event can never settle the newly attached session.
+ *    resyncAfterAttach re-sends a pending lane ONLY when its own sessionId
+ *    matches the newly attached session AND the prior epoch identity survived
+ *    (captured BEFORE applySnapshot overwrites it) — fail closed on any
+ *    mismatch, never resend across sessions.
  *  - D2-P8 extension-UI slot: the reply to a pending extension request runs in
  *    {@link ExtensionUiPending}, a THIRD independent single-in-flight slot. The
  *    ordinary prompt that triggered the UI stays `pendingCommand`, so
@@ -264,6 +274,8 @@ export interface SessionStoreOptions {
   readonly stopSendTimeoutMs?: number;
   /** Bounded wait for the stop ack response. */
   readonly stopAckTimeoutMs?: number;
+  /** Bounded wait for the detach ack response (single-flight detach envelope). */
+  readonly detachAckTimeoutMs?: number;
 }
 
 interface Waiter {
@@ -424,6 +436,7 @@ interface InterruptPending {
 const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
 const DEFAULT_STOP_SEND_TIMEOUT_MS = 10_000;
 const DEFAULT_STOP_ACK_TIMEOUT_MS = 10_000;
+const DEFAULT_DETACH_ACK_TIMEOUT_MS = 10_000;
 
 export class SessionStore implements RuntimeSocketHandler {
   private readonly socket: RuntimeSocket;
@@ -433,6 +446,7 @@ export class SessionStore implements RuntimeSocketHandler {
   private readonly abortTimeoutMs: number;
   private readonly stopSendTimeoutMs: number;
   private readonly stopAckTimeoutMs: number;
+  private readonly detachAckTimeoutMs: number;
 
   // reactive state
   private connection: ConnectionState = "idle";
@@ -524,6 +538,7 @@ export class SessionStore implements RuntimeSocketHandler {
     this.abortTimeoutMs = options.abortTimeoutMs ?? DEFAULT_ABORT_TIMEOUT_MS;
     this.stopSendTimeoutMs = options.stopSendTimeoutMs ?? DEFAULT_STOP_SEND_TIMEOUT_MS;
     this.stopAckTimeoutMs = options.stopAckTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
+    this.detachAckTimeoutMs = options.detachAckTimeoutMs ?? DEFAULT_DETACH_ACK_TIMEOUT_MS;
   }
 
   // --- public transport --------------------------------------------------
@@ -629,7 +644,17 @@ export class SessionStore implements RuntimeSocketHandler {
     // duplicate detach frames, no duplicate teardown).
     if (this.detachPromise && this.detachSessionId === sessionId) return this.detachPromise;
     this.detachSessionId = sessionId;
-    this.detachPromise = this.sendEnvelope({ type: "detach", id: this.id(), payload: { sessionId } }).then(() => {
+    // F2: the detach ack is BOUNDED (configurable/default, consistent with the
+    // stop/abort ack option patterns). On timeout the detach rejects — the
+    // transitionTo activation rejects as proven non-delivery (phase:
+    // "activation", transaction/bubble cleared), the store stays attached to
+    // the source session (coherent attach state — nothing torn down without a
+    // confirmed ack), and the single-flight fields are freed so a later retry
+    // works.
+    this.detachPromise = this.sendEnvelope(
+      { type: "detach", id: this.id(), payload: { sessionId } },
+      this.detachAckTimeoutMs,
+    ).then(() => {
       // Identity-scoped attach teardown: a NEWER attach (rapid B→C) may be in
       // flight — or may have ALREADY COMPLETED — by the time this detach (for
       // the OLD session) settles. A late detach settle must NEVER strand or
@@ -651,14 +676,14 @@ export class SessionStore implements RuntimeSocketHandler {
         // D2-P4: a queued turn is bound to the live streaming session; detaching
         // invalidates it (fixed error, never overwrites a prompt promise).
         this.settlePendingQueuedTurn({ code: "interrupted", message: "detached", retryable: false });
-        // D2-P5/D2-P7/F9: a pending control command bound to the detached
-        // session — bash / compact / read-only queries (get_state, get_tools,
-        // get_commands, get_session_stats, get_last_assistant_text) — is rejected
-        // exactly once so the single ordinary-command slot frees and a late
-        // result/event can never settle a newly attached session. Ordinary prompt
-        // semantics are preserved (the prompt promise is never overwritten here;
-        // it settles on its own correlated response or transport loss).
-        this.settlePendingControlCommand({ code: "interrupted", message: "detached", retryable: false });
+        // Session-bound ordinary-command cleanup (F1): EVERY pending ordinary
+        // command — bash / compact / read-only queries AND a PROMPT — is
+        // rejected exactly once so the single ordinary-command slot frees and a
+        // late result/event can never settle a newly attached session. The
+        // pending prompt's single-flight transaction settles through its
+        // dispatch rejection chain (proven non-delivery, optimistic bubble +
+        // running overlay removed) so the new session's prompt can proceed.
+        this.settlePendingCommand({ code: "interrupted", message: "detached", retryable: false });
         // D2-P8: an in-flight extension reply is bound to the detached session —
         // reject it exactly once so the dedicated slot frees and a late result can
         // never settle a newly attached session.
@@ -1724,6 +1749,12 @@ export class SessionStore implements RuntimeSocketHandler {
       payload.sessionId === this.attachAttempt.sessionId
     ) {
       this.attachAttempt = null;
+      // F1 defense-in-depth: capture the PRIOR session/epoch BEFORE
+      // applySnapshot overwrites them — resyncAfterAttach must judge epoch /
+      // session identity survival against the session that was attached BEFORE
+      // this snapshot, not the freshly-applied one.
+      const priorSessionId = this.sessionId;
+      const priorEpoch = this.epoch;
       this.applySnapshot(payload, "fresh");
       this.attachGen = generation;
       this.awaitingSnapshot = false;
@@ -1732,7 +1763,7 @@ export class SessionStore implements RuntimeSocketHandler {
       this.setConnection("attached");
       const attach = this.attach;
       if (attach) { this.attach = null; attach.resolve(); }
-      this.resyncAfterAttach(payload.resumeStatus, payload.epoch);
+      this.resyncAfterAttach(payload.resumeStatus, payload.epoch, priorSessionId, priorEpoch);
       return;
     }
     // Replay / live snapshot (gap / epoch_changed mid-stream): full replace + cursor.
@@ -1939,13 +1970,14 @@ export class SessionStore implements RuntimeSocketHandler {
     if (this.pendingQueuedTurn && this.sessionId !== null && this.sessionId !== sessionId) {
       this.settlePendingQueuedTurn({ code: "interrupted", message: "session switched", retryable: false });
     }
-    // D2-P5/D2-P7/F9: a pending control command bound to the OLD session
-    // (bash / compact / read-only queries) is rejected exactly once on a switch
-    // so its late result/events cannot settle the new session (a frequent
-    // getSessionStats poll otherwise survives the switch and re-blocks the new
-    // session's prompt with session_busy).
+    // F1 session-switch cleanup: a pending ordinary command bound to the OLD
+    // session — bash / compact / read-only queries AND a PROMPT — is rejected
+    // exactly once on a switch so its late result/events cannot settle the new
+    // session AND the new session's ordinary slot is free (a surviving old
+    // prompt would otherwise be re-sent by resyncAfterAttach with the same
+    // commandId on a new envelope, blocking the new session).
     if (this.pendingCommand && this.sessionId !== null && this.sessionId !== sessionId) {
-      this.settlePendingControlCommand({ code: "interrupted", message: "session switched", retryable: false });
+      this.settlePendingCommand({ code: "interrupted", message: "session switched", retryable: false });
     }
     // D2-P8: an in-flight extension reply bound to the OLD session is rejected
     // exactly once on a switch so its late result cannot settle the new session.
@@ -2018,13 +2050,37 @@ export class SessionStore implements RuntimeSocketHandler {
 
   /**
    * After an initial snapshot, re-send pending command/interrupt ONLY when the
-   * epoch survived (snapshot/gap). On epoch_changed the prior command's effect is
-   * ambiguous → reject, never resend. No-op when nothing is pending (fresh attach).
+   * session/epoch identity survived. Defense-in-depth (F1): a lane is re-sent
+   * only when BOTH its own sessionId matches the newly attached session AND the
+   * prior epoch identity survived (the prior session/epoch are captured BEFORE
+   * applySnapshot overwrote them). On epoch_changed / a session mismatch the
+   * prior command's effect is ambiguous → reject, never resend. No-op when
+   * nothing is pending (fresh attach).
    */
-  private resyncAfterAttach(resumeStatus: "snapshot" | "gap" | "epoch_changed", snapshotEpoch: string): void {
-    const epochSurvived = resumeStatus !== "epoch_changed" && (this.epoch === null || this.epoch === snapshotEpoch);
+  private resyncAfterAttach(
+    resumeStatus: "snapshot" | "gap" | "epoch_changed",
+    snapshotEpoch: string,
+    priorSessionId: string | null,
+    priorEpoch: string | null,
+  ): void {
+    const attachedSessionId = this.sessionId;
+    // Epoch identity survived only when we were ALREADY on this same session
+    // before the snapshot (same sessionId) AND the resume cursor confirms the
+    // epoch did not change. A session switch or an epoch change invalidates
+    // every in-flight lane.
+    const epochSurvived =
+      resumeStatus !== "epoch_changed" &&
+      priorSessionId !== null &&
+      priorSessionId === attachedSessionId &&
+      (priorEpoch === null || priorEpoch === snapshotEpoch);
+    // Per-lane effective resume status: fail closed unless the lane's OWN
+    // sessionId matches the newly attached session AND the prior epoch identity
+    // survived. Any mismatch downgrades to epoch_changed → reject, never resend
+    // across sessions.
+    const laneStatus = (laneSessionId: string | null): "snapshot" | "gap" | "epoch_changed" =>
+      epochSurvived && laneSessionId === attachedSessionId ? resumeStatus : "epoch_changed";
     if (this.pendingCommand) {
-      const decision = decideCommandRetry(epochSurvived ? resumeStatus : "epoch_changed");
+      const decision = decideCommandRetry(laneStatus(this.pendingCommand.sessionId));
       if (decision.decision === "resend") {
         this.resendCommand();
       } else {
@@ -2034,9 +2090,10 @@ export class SessionStore implements RuntimeSocketHandler {
       }
     }
     // D2-P4 dual-slot queued turn: same-epoch snapshot/gap → resend with the
-    // SAME commandId on a fresh envelope; epoch_changed → reject, never resend.
+    // SAME commandId on a fresh envelope; epoch_changed / session mismatch →
+    // reject, never resend.
     if (this.pendingQueuedTurn) {
-      const decision = decideCommandRetry(epochSurvived ? resumeStatus : "epoch_changed");
+      const decision = decideCommandRetry(laneStatus(this.pendingQueuedTurn.sessionId));
       if (decision.decision === "resend") {
         this.resendQueuedTurn();
       } else {
@@ -2048,9 +2105,9 @@ export class SessionStore implements RuntimeSocketHandler {
     }
     // D2-P8 extension-UI reply: same-epoch snapshot/gap → resend with the SAME
     // commandId on a fresh envelope (runtime dedups by sessionId+commandId);
-    // epoch_changed → reject, never resend (the effect is ambiguous).
+    // epoch_changed / session mismatch → reject, never resend (ambiguous).
     if (this.pendingExtensionUiCommand) {
-      const decision = decideCommandRetry(epochSurvived ? resumeStatus : "epoch_changed");
+      const decision = decideCommandRetry(laneStatus(this.pendingExtensionUiCommand.sessionId));
       if (decision.decision === "resend") {
         this.resendExtensionUi();
       } else {
@@ -2062,12 +2119,14 @@ export class SessionStore implements RuntimeSocketHandler {
     }
     // E15 extension-UI incremental input: same-epoch snapshot/gap → resend the
     // in-flight head with the SAME commandId (at-most-once per epoch; the
-    // waiting tail has not touched the wire and stays queued). epoch_changed →
-    // the worker restarted and every pending extension request is gone, so the
-    // whole queue settles exactly once with the structured epoch error and
-    // nothing is resent (fail-closed, no pointless not_found frames).
+    // waiting tail has not touched the wire and stays queued). epoch_changed /
+    // session mismatch → the worker restarted / session changed and every
+    // pending extension request is gone, so the whole queue settles exactly once
+    // with the structured epoch error and nothing is resent (fail-closed, no
+    // pointless not_found frames).
     if (this.extensionUiInputInFlight || this.extensionUiInputQueue.length > 0) {
-      const decision = decideCommandRetry(epochSurvived ? resumeStatus : "epoch_changed");
+      const laneSessionId = this.extensionUiInputInFlight?.sessionId ?? this.extensionUiInputQueue[0]?.sessionId ?? null;
+      const decision = decideCommandRetry(laneStatus(laneSessionId));
       if (decision.decision === "resend") {
         this.resendExtensionUiInput();
       } else {
@@ -2076,7 +2135,7 @@ export class SessionStore implements RuntimeSocketHandler {
       }
     }
     if (this.pendingInterrupt) {
-      if (epochSurvived) {
+      if (laneStatus(this.pendingInterrupt.sessionId) !== "epoch_changed") {
         this.resendInterrupt();
       } else {
         const err: ProtocolError = { code: "epoch_changed", message: "epoch changed; interrupt not re-sent", retryable: false };
@@ -2418,41 +2477,6 @@ export class SessionStore implements RuntimeSocketHandler {
       message: "extension UI request closed",
       retryable: false,
     } satisfies ProtocolError);
-  }
-
-  /**
-   * Reject an in-flight CONTROL command exactly once (D2-P5/D2-P7 detach/
-   * session-switch, F9). This covers BASH / COMPACT (long-running control
-   * resources with their own abort path) AND the read-only QUERY commands
-   * (`get_state`, `get_tools`, `get_commands`, `get_session_stats`,
-   * `get_last_assistant_text`). All occupy the single ordinary-command slot
-   * ({@link pendingCommand}) like prompts, but are bound to the detached/old
-   * session: on detach/switch they must be settled so the slot frees and a late
-   * result/event can never settle a newly attached session. Without the query
-   * coverage, a frequent `get_session_stats` poll (Composer runtime.stats
-   * polling) survives the switch, resync re-sends the OLD payload.sessionId +
-   * commandId onto the new attach, keeps the slot busy, and the new session's
-   * prompt fails `session_busy`. A pending PROMPT is deliberately left
-   * untouched here (prompt promise semantics are preserved — it settles on its
-   * own correlated response or transport loss).
-   */
-  private settlePendingControlCommand(error: ProtocolError): void {
-    const pending = this.pendingCommand;
-    if (pending && pending.command.type === "command") {
-      const commandType = pending.command.payload.command.type;
-      if (
-        commandType === "bash" ||
-        commandType === "compact" ||
-        commandType === "get_state" ||
-        commandType === "get_tools" ||
-        commandType === "get_commands" ||
-        commandType === "get_session_stats" ||
-        commandType === "get_last_assistant_text"
-      ) {
-        this.pendingCommand = null;
-        pending.reject(error);
-      }
-    }
   }
 
   private ensureConnecting(): void {

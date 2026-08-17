@@ -2081,22 +2081,264 @@ describe("SessionStore — F9 read-only query cleanup on detach / session switch
     await expect(freshP).resolves.toEqual([]);
   });
 
-  it("a pending PROMPT is NOT settled by detach (prompt promise semantics untouched)", async () => {
+  it("detach settles a pending PROMPT exactly once (session-bound); a late A response cannot settle anything", async () => {
     const h = createHarness();
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"], "s1");
     const promptP = h.store.sendPrompt("hello");
+    promptP.catch(() => undefined);
     await flush();
     const promptCmd = promptFrame(ws);
+    const aEnvelope = promptCmd.id;
 
     await detachAck(ws, h);
-    // The prompt is still pending — detach/settlePendingControlCommand never
-    // touches a prompt promise. It settles only on its own correlated response.
+    // The prompt bound to the detached session is rejected exactly once — every
+    // pending ordinary command is session-bound (F1).
+    await expect(promptP).rejects.toMatchObject({ code: "interrupted", message: "detached", retryable: false });
+    // A late ack for the OLD prompt envelope is dropped — it settles nothing.
+    ws.serverSend({ type: "response", id: aEnvelope, payload: { ok: true, result: { commandId: promptCmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    await flush();
+    expect(h.store.getSnapshot().error).toBeNull();
+    // The ordinary slot is free: a fresh prompt on the new session sends immediately.
+    await openNewSession(ws, h, ["runtime.prompt", "runtime.abort"]);
+    const nextP = h.store.sendPrompt("after detach");
+    await flush();
+    const cmd = promptFrame(ws);
+    expect(cmd.payload.sessionId).toBe("s2");
+    respondOk(ws, cmd.id, cmd.payload.command.commandId, "prompt");
+    await expect(nextP).resolves.toBeTruthy();
+  });
+});
+
+describe("SessionStore — verifier Probe B/B2: session-bound prompt cleanup + resync identity fail-closed", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function attachWithCaps(h: RuntimeHarness, capabilities: string[], sessionId = "s1"): Promise<FakeWebSocket> {
+    h.store.connect();
+    const ws = openReady(h);
+    const p = h.store.openSession(sessionId);
+    return flush().then(() => {
+      const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, capabilities }) });
+      return flush().then(() => p.then(() => ws));
+    });
+  }
+
+  function promptFrame(ws: FakeWebSocket): { id: string; payload: { sessionId: string; command: { commandId: string; type: string; message: string } } } {
+    const frame = lastFrame<{ type: string; id: string; payload: { sessionId: string; command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
+    expect(frame).toBeTruthy();
+    expect(frame.payload.command.type).toBe("prompt");
+    return frame;
+  }
+
+  function respondOk(ws: FakeWebSocket, id: string, commandId: string, type: string): void {
+    ws.serverSend({ type: "response", id, payload: { ok: true, result: { commandId, result: { ok: true, type } } } });
+  }
+
+  async function detachAck(ws: FakeWebSocket, h: RuntimeHarness): Promise<void> {
+    const detachP = h.store.detach();
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    ws.serverSend({ type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await expect(detachP).resolves.toBeUndefined();
+  }
+
+  /** Open a session with the SAME epoch so a stale resync would (if not settled) re-send the old commandId. */
+  async function openSession(ws: FakeWebSocket, h: RuntimeHarness, capabilities: string[], sessionId: string, epoch = "e1"): Promise<void> {
+    const openP = h.store.openSession(sessionId);
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId, epoch, capabilities }) });
+    await flush();
+    await openP;
+  }
+
+  function countResentWithCommandId(ws: FakeWebSocket, commandId: string, excludeEnvelope?: string): number {
+    return (ws.sent as { type: string; id?: string; payload?: { command?: { commandId?: string } } }[]).filter(
+      (frame) => frame.type === "command" && frame.id !== excludeEnvelope && frame.payload?.command?.commandId === commandId,
+    ).length;
+  }
+
+  it("Probe B (AppShell detach-then-open): an in-flight A prompt is settled exactly once, never re-sent; B prompt succeeds; late A ack cannot settle B", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"], "s1");
+    const promptP = h.store.sendPrompt("hello on A");
+    promptP.catch(() => undefined);
+    await flush();
+    const aCmd = promptFrame(ws);
+    const aCommandId = aCmd.payload.command.commandId;
+    const aEnvelope = aCmd.id;
+    expect(aCmd.payload.sessionId).toBe("s1");
+    // Optimistic bubble + transaction are live while A's prompt is unconfirmed.
+    expect(h.store.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "hello on A")).toBe(true);
+
+    await detachAck(ws, h);
+    // The original A promise settles INTERRUPTED exactly once (session-bound).
+    await expect(promptP).rejects.toMatchObject({ code: "interrupted", message: "detached", retryable: false });
+    // No phantom bubble / no lingering transaction → B's slot is free.
+    expect(h.store.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "hello on A")).toBe(false);
+    expect(h.store.getSnapshot().promptPending).toBe(false);
+
+    await openSession(ws, h, ["runtime.prompt", "runtime.abort"], "s2");
+    // No second A command frame on the new attach (never re-sent across session).
+    expect(countResentWithCommandId(ws, aCommandId, aEnvelope)).toBe(0);
+
+    // B's prompt succeeds immediately (slot free, never session_busy).
+    const bPrompt = h.store.sendPrompt("first prompt on B");
+    await flush();
+    const bCmd = promptFrame(ws);
+    expect(bCmd.payload.sessionId).toBe("s2");
+    expect(bCmd.payload.command.commandId).not.toBe(aCommandId);
+
+    // Deliver the LATE original A response — it must NOT settle B's prompt.
+    ws.serverSend({ type: "response", id: aEnvelope, payload: { ok: true, result: { commandId: aCommandId, result: { ok: true, type: "prompt" } } } });
+    await flush();
     let settled = false;
-    promptP.then(() => { settled = true; }, () => { settled = true; });
+    bPrompt.then(() => { settled = true; }, () => { settled = true; });
     await flush();
     expect(settled).toBe(false);
-    respondOk(ws, promptCmd.id, promptCmd.payload.command.commandId, "prompt");
-    await expect(promptP).resolves.toBeTruthy();
+    expect(h.store.getSnapshot().error).toBeNull();
+
+    // Only B's OWN correlated ack settles it.
+    respondOk(ws, bCmd.id, bCmd.payload.command.commandId, "prompt");
+    await expect(bPrompt).resolves.toBeTruthy();
+  });
+
+  it("Probe B (direct openSession switch): startAttach session-switch cleanup settles an in-flight A prompt; B prompt succeeds", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"], "s1");
+    const promptP = h.store.sendPrompt("hello on A");
+    promptP.catch(() => undefined);
+    await flush();
+    const aCmd = promptFrame(ws);
+    const aCommandId = aCmd.payload.command.commandId;
+    const aEnvelope = aCmd.id;
+
+    // Direct switch: open s2 WITHOUT a prior detach (the startAttach
+    // session-switch cleanup must settle the A prompt bound to the old session).
+    await openSession(ws, h, ["runtime.prompt", "runtime.abort"], "s2");
+    await expect(promptP).rejects.toMatchObject({ code: "interrupted", message: "session switched", retryable: false });
+    // Never re-sent on the new attach.
+    expect(countResentWithCommandId(ws, aCommandId, aEnvelope)).toBe(0);
+
+    const bPrompt = h.store.sendPrompt("first prompt on B");
+    await flush();
+    const bCmd = promptFrame(ws);
+    expect(bCmd.payload.sessionId).toBe("s2");
+    // Late A ack cannot settle B.
+    ws.serverSend({ type: "response", id: aEnvelope, payload: { ok: true, result: { commandId: aCommandId, result: { ok: true, type: "prompt" } } } });
+    await flush();
+    let settled = false;
+    bPrompt.then(() => { settled = true; }, () => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    respondOk(ws, bCmd.id, bCmd.payload.command.commandId, "prompt");
+    await expect(bPrompt).resolves.toBeTruthy();
+  });
+
+  it("Probe B2: an interrupt bound to the OLD session is settled and NEVER re-sent across the new attach (resync identity fail-closed)", async () => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"], "s1");
+    const abortP = h.store.abort();
+    await flush();
+    const interrupt1 = lastFrame<{ type: string; id: string; payload: { sessionId: string; commandId: string } }>(ws, "interrupt")!;
+    expect(interrupt1).toBeTruthy();
+    expect(interrupt1.payload.sessionId).toBe("s1");
+
+    // Direct session switch while the s1 interrupt is still pending: interrupts
+    // have no detach/switch cleanup, so it reaches the new attach's resync —
+    // where the session-identity check must fail CLOSED (settle, never re-send
+    // on s2, epoch_changed semantics).
+    await openSession(ws, h, ["runtime.prompt", "runtime.abort"], "s2");
+    await expect(abortP).rejects.toMatchObject({ code: "epoch_changed", retryable: false });
+    // Only the ORIGINAL s1 interrupt frame was ever sent.
+    const interrupts = (ws.sent as { type: string; payload?: { sessionId?: string } }[]).filter((f) => f.type === "interrupt");
+    expect(interrupts).toHaveLength(1);
+    expect(interrupts[0]!.payload!.sessionId).toBe("s1");
+    // The interrupt slot is free for the new session.
+    const abort2 = h.store.abort();
+    await flush();
+    const interrupt2 = lastFrame<{ type: string; id: string; payload: { sessionId: string; commandId: string } }>(ws, "interrupt")!;
+    expect(interrupt2.payload.sessionId).toBe("s2");
+    ws.serverSend({ type: "interrupt_result", id: interrupt2.id, payload: { sessionId: "s2", commandId: interrupt2.payload.commandId, interruptType: "abort", result: { ok: true, type: "abort" } } });
+    await expect(abort2).resolves.toBeTruthy();
+  });
+
+  it("Probe B2: same-session reconnect with epoch_changed still NEVER re-sends the pending prompt (captured prior epoch, identity fail-closed)", async () => {
+    const h = createHarness();
+    let ws = await attachWithCaps(h, ["runtime.prompt", "runtime.abort"], "s1");
+    const promptP = h.store.sendPrompt("hello");
+    await flush();
+    const aCmd = promptFrame(ws);
+    const aCommandId = aCmd.payload.command.commandId;
+    const aEnvelope = aCmd.id;
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2", resumeStatus: "epoch_changed" }) });
+    await flush();
+    await expect(promptP).rejects.toMatchObject({ code: "epoch_changed" });
+    expect(countResentWithCommandId(ws, aCommandId, aEnvelope)).toBe(0);
+  });
+});
+
+describe("SessionStore — F2 bounded detach ack timeout", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("detach ack timeout: rejects within the bound (not pending at 10min), frees single-flight, later retry works, attach state coherent", async () => {
+    const h = createHarness(); // default detachAckTimeoutMs = 10_000
+    const ws = await openAndAttach(h);
+    const detachP = h.store.detach();
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    expect(detachFrame).toBeDefined();
+    // No ack: the promise must NOT stay pending forever — at 10min it rejects bounded.
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    await flush();
+    await expect(detachP).rejects.toMatchObject({ code: "timeout", retryable: true });
+    // Coherent attach state preserved (nothing torn down without a confirmed ack).
+    expect(h.store.getSnapshot().attached).toBe(true);
+    expect(h.store.getSnapshot().sessionId).toBe("s1");
+    // Single-flight fields are freed: a later retry sends a NEW detach frame and settles on ack.
+    const retry = h.store.detach();
+    await flush();
+    const retryFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    expect(retryFrame.id).not.toBe(detachFrame.id);
+    ws.serverSend({ type: "response", id: retryFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await expect(retry).resolves.toBeUndefined();
+    expect(h.store.getSnapshot().attached).toBe(false);
+  });
+
+  it("detach ack timeout during activation: prompt rejects as proven non-delivery (phase activation), no phantom bubble, later send works", async () => {
+    const h = createHarness({ storeOptions: { detachAckTimeoutMs: 1_000 } });
+    const ws = await openAndAttach(h); // attached to s1
+    const promptP = h.store.sendPromptToSession("s2", "switch me");
+    await flush();
+    const detachFrame = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "detach")!;
+    expect(detachFrame.payload.sessionId).toBe("s1");
+    // Optimistic bubble appears, then the bounded timeout rejects the activation.
+    expect(h.store.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "switch me")).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    await flush();
+    await expect(promptP).rejects.toMatchObject({ code: "timeout", phase: "activation" });
+    // Proven non-delivery: no phantom bubble, transaction released.
+    expect(h.store.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "switch me")).toBe(false);
+    expect(h.store.getSnapshot().promptPending).toBe(false);
+    // Coherent attach state: still attached to s1 (nothing torn down).
+    expect(h.store.getSnapshot().attached).toBe(true);
+    expect(h.store.getSnapshot().sessionId).toBe("s1");
+    // Single-flight detach fields freed → a later retry works.
+    const retry = h.store.detach();
+    await flush();
+    const retryFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    expect(retryFrame.id).not.toBe(detachFrame.id);
+    ws.serverSend({ type: "response", id: retryFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
+    await expect(retry).resolves.toBeUndefined();
   });
 });
 
@@ -2211,7 +2453,8 @@ describe("SessionStore — optimistic prompt as speculative state (parity + reco
   it("detach clears the speculative layer (bubbles + running overlay)", async () => {
     const h = createHarness();
     const ws = await openAndAttach(h);
-    void h.store.sendPrompt("hi");
+    const promptP = h.store.sendPrompt("hi");
+    promptP.catch(() => undefined);
     await flush();
     expect(h.store.getSnapshot().streaming).toBe(true);
     const detachP = h.store.detach();
