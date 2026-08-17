@@ -474,11 +474,9 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     if (live && state) return buildSessionStatsView(state, transcriptMessages, hasStats ? sessionStatsData : null);
     return buildTranscriptSessionStatsView(selectedSessionId, transcriptMessages);
   }, [selectedSessionId, live, state, transcriptMessages, hasStats, sessionStatsData]);
-  // Context usage prefers the real stats projection; falls back to the snapshot state.
-  const contextUsage = useMemo(
-    () => (sessionStatsData?.contextUsage ? toContextUsageView(sessionStatsData.contextUsage) : toContextUsageView(state?.contextUsage)),
-    [sessionStatsData, state?.contextUsage],
-  );
+  // buildSessionStatsView already merges context with live snapshot priority;
+  // never let the one-shot attach-time stats read overwrite a newer turn value.
+  const contextUsage = sessionStats?.contextUsage ?? toContextUsageView(state?.contextUsage);
 
   // --- tools preset (runtime getTools/setTools; none/full are real) ----------
   // Fetched while live + capability present. Refresh keyed on the stable

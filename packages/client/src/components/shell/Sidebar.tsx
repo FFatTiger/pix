@@ -49,8 +49,10 @@ export interface SidebarProps {
    * never shown for it (the server rejects live deletes with 409 anyway).
    */
   liveSessionId: string | null;
-  /** True while the attached runtime is streaming (drives the row spinner). */
-  liveStreaming: boolean;
+  /** Session ids currently running according to the shared runtime owner. */
+  runningSessionIds: ReadonlySet<string>;
+  /** Project roots with at least one running session (covers fresh tabs before list refresh). */
+  runningProjectRoots: ReadonlySet<string>;
   /**
    * Session currently being prepared by the AppShell no-flicker selection flow
    * (data settling in the shared history cache, URL not yet committed). The
@@ -273,7 +275,8 @@ export function Sidebar({
   cwd,
   selectedSessionId,
   liveSessionId,
-  liveStreaming,
+  runningSessionIds,
+  runningProjectRoots,
   pendingSessionId,
   onSessionDeleted,
   onSelectSession,
@@ -406,8 +409,6 @@ export function Sidebar({
       .map((bucket) => ({ bucket, nodes: byBucket.get(bucket)! }));
   })();
 
-  const runningSessionIds = liveStreaming && liveSessionId ? new Set([liveSessionId]) : new Set<string>();
-
   // Shared row renderer for every session row in a time group.
   const renderTreeItem = (node: SessionTreeNode) => (
     <SessionTreeItem
@@ -523,6 +524,8 @@ export function Sidebar({
                 return root === project && !isHiddenRailSession(session);
               });
               const nestedTree = buildSessionTree(nestedSessions);
+              const projectRunning = runningProjectRoots.has(project)
+                || nestedSessions.some((session) => runningSessionIds.has(session.sessionId));
               return (
                 <div key={project} data-testid="sidebar-project-card" data-expanded={expanded ? "true" : "false"}>
                   <button
@@ -530,6 +533,7 @@ export function Sidebar({
                     className="sidebar-list-row"
                     data-testid="sidebar-project-row"
                     data-active={selected ? "true" : "false"}
+                    data-running={projectRunning ? "true" : undefined}
                     title={project}
                     aria-pressed={selected}
                     aria-expanded={expanded}
@@ -541,6 +545,7 @@ export function Sidebar({
                       <Folder size={16} weight="regular" aria-hidden="true" />
                     )}
                     <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
+                    {projectRunning ? <RunningSessionIndicator /> : null}
                     <CaretRight
                       className="sidebar-section-chevron"
                       size={14}

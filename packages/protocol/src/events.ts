@@ -270,6 +270,8 @@ export const RunningSessionsChangedEventDataSchema = z.strictObject({
   ...eventDataBase,
   type: z.literal("running_sessions_changed"),
   sessionIds: z.array(NonEmptyStringSchema),
+  /** Sessions whose current turn is authoritatively busy (prompt/bash/compact). */
+  busySessionIds: z.array(NonEmptyStringSchema),
 });
 export const RuntimeUnavailableEventDataSchema = z.strictObject({
   ...eventDataBase,

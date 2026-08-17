@@ -322,6 +322,23 @@ test("getSnapshot routes to runtime.getSnapshot and returns the snapshot", async
   assert.equal(res.payload.result.sessionId, "s1");
 });
 
+test("listRunning routes to runtime.listRunning without attaching a worker", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.listRunning"] = {
+    sessions: [
+      { sessionId: "s1", cwd: "/p", projectRoot: "/p", workerStatus: "busy", epoch: "e1" },
+    ],
+  };
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "listRunning", id: "lr1", payload: {} }));
+  await wait();
+  assert.deepEqual(client.calls[0], { method: "runtime.listRunning", params: {} });
+  const res = session.lastJson();
+  assert.equal(res.id, "lr1");
+  assert.equal(res.payload.ok, true);
+  assert.equal(res.payload.result.sessions[0].sessionId, "s1");
+});
+
 test("stop routes to runtime.stop and closes the matching attach subscription", async () => {
   const client = new FakeClient();
   client.handlers["runtime.stop"] = { sessionId: "s1", stopped: true };

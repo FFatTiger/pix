@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const START_TIMEOUT_MS = 15_000;
@@ -130,7 +131,7 @@ async function runtimeAck(origin, { timeoutMs = STEP_TIMEOUT_MS } = {}) {
       ws.send(
         JSON.stringify({
           type: "handshake",
-          payload: { protocolVersion: 1, client: { shell: "web", platform: "mac" }, features: [] },
+          payload: { protocolVersion: PROTOCOL_VERSION, client: { shell: "web", platform: "mac" }, features: [] },
         }),
       );
     });

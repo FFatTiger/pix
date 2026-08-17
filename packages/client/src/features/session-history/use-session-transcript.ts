@@ -28,6 +28,7 @@ import type { SessionEntry } from "@fffattiger/pix-protocol";
 import { createSessionHistoryQueryOptions, TRANSCRIPT_PAGE_SIZE } from "@/api/session-history";
 import { useHttpClient } from "@/app/http-context";
 import { useRuntime } from "@/runtime";
+import type { OptimisticSessionEntry } from "@/runtime/session-store";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { isCompactionBoundary } from "@/components/transcript/chat-projection";
 
@@ -115,6 +116,38 @@ function mergeLiveEntries(persisted: readonly SessionEntry[], live: readonly Ses
   return out;
 }
 
+function userEntryText(entry: SessionEntry): string | null {
+  if (entry.message.role !== "user") return null;
+  const content = entry.message.content;
+  return (typeof content === "string"
+    ? content
+    : content.filter((block) => block.type === "text").map((block) => block.text).join("\n"))
+    .trim();
+}
+
+/** Pure transcript transaction merge used by the hook and deterministic tests. */
+export function mergeTranscriptEntries(
+  persistedEntries: readonly SessionEntry[],
+  liveEntries: readonly SessionEntry[],
+  optimisticCandidates: readonly OptimisticSessionEntry[],
+): SessionEntry[] {
+  const committed = mergeLiveEntries(persistedEntries, liveEntries);
+  const optimistic = optimisticCandidates
+    .filter((candidate) => {
+      if (candidate.baseEntryId === undefined) return true;
+      const text = userEntryText(candidate.entry);
+      return !committed.some((entry) =>
+        !entry.entryId.startsWith("optimistic:")
+        && userEntryText(entry) === text
+        && (candidate.baseEntryId === null
+          ? entry.parentEntryId === undefined
+          : entry.parentEntryId === candidate.baseEntryId),
+      );
+    })
+    .map((candidate) => candidate.entry);
+  return mergeLiveEntries(committed, optimistic);
+}
+
 export function useSessionTranscript(options: UseSessionTranscriptOptions): SessionTranscript {
   const { sessionId, enabled, live } = options;
   const http = useHttpClient();
@@ -124,6 +157,14 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
   const liveGeneration = live ? runtime.historyGeneration : 0;
   const liveAnchor = live ? runtime.historyAnchorLeafId : null;
   const liveEntries = live ? runtime.liveEntries : [];
+  // UI-first transaction layer: selected-session optimistic entries render at
+  // the chronological tail even while activation is still in flight and the
+  // selected tab is not attached yet. Authority/live entries remain separate;
+  // duplicate optimistic ids are removed by the same identity merge below.
+  const optimisticCandidates = useMemo(
+    () => runtime.optimisticEntries.filter((candidate) => candidate.sessionId === sessionId),
+    [runtime.optimisticEntries, sessionId],
+  );
 
   // Empty live snapshot (no leaf): skip history (a leaf-less request could race
   // a later append). Show live commits until a rebase provides an anchor.
@@ -152,8 +193,8 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
     [persistedPages],
   );
   const entries = useMemo(
-    () => mergeLiveEntries(persistedEntries, liveEntries),
-    [persistedEntries, liveEntries],
+    () => mergeTranscriptEntries(persistedEntries, liveEntries, optimisticCandidates),
+    [persistedEntries, liveEntries, optimisticCandidates],
   );
   const entryIds = useMemo(() => entries.map((entry) => entry.entryId), [entries]);
 

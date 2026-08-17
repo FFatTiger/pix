@@ -18,6 +18,7 @@ interface AppTitleBarProps {
   onCloseTab: (id: string) => void;
   /** Live session labels resolved from the shared sessions-list query cache. */
   sessionLabels: Record<string, string>;
+  runningSessionIds: ReadonlySet<string>;
 }
 
 /**
@@ -42,6 +43,7 @@ export function AppTitleBar({
   onSelectTab,
   onCloseTab,
   sessionLabels,
+  runningSessionIds,
 }: AppTitleBarProps) {
   const { t: translate } = useI18n();
 
@@ -85,6 +87,7 @@ export function AppTitleBar({
           onSelectTab={onSelectTab}
           onCloseTab={onCloseTab}
           sessionLabels={sessionLabels}
+          runningSessionIds={runningSessionIds}
         />
       </div>
 

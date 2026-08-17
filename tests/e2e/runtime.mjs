@@ -27,7 +27,7 @@ import {
   SessiondRuntimeGateway,
 } from "@fffattiger/pix-host";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
-import { reduceRuntimeEventData } from "@fffattiger/pix-protocol";
+import { PROTOCOL_VERSION, reduceRuntimeEventData } from "@fffattiger/pix-protocol";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const FIXTURE = resolve(
@@ -279,7 +279,7 @@ class RuntimeWsClient {
       type: "handshake",
       id: "hs1",
       payload: {
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         client: { shell: "web", platform: "mac" },
         features: [],
       },
@@ -445,14 +445,17 @@ class RuntimeWsClient {
   }
 
   finalAssistantText() {
-    if (!this.projection?.messages?.length) return "";
-    const last = [...this.projection.messages]
+    // Protocol v2 snapshots intentionally exclude completed transcript history;
+    // terminal message_end is the authoritative committed message surface.
+    const ended = [...this.messages]
       .reverse()
-      .find((m) => m.role === "assistant");
+      .find((m) => m.type === "event" && m.payload?.type === "message_end" && m.payload?.message?.role === "assistant");
+    const last = ended?.payload?.message
+      ?? [...(this.projection?.messages ?? [])].reverse().find((message) => message.role === "assistant");
     if (!last) return "";
     return (last.content ?? [])
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
       .join("");
   }
 }
@@ -644,7 +647,7 @@ async function scenarioCreateAttachPrompt(stack, projectDir) {
   try {
     const ack = await client.handshake();
     assert.deepEqual(ack.payload.host.capabilities, ["agent"]);
-    assert.equal(ack.payload.protocolVersion, 1);
+    assert.equal(ack.payload.protocolVersion, PROTOCOL_VERSION);
 
     const created = await client.create({
       cwd: projectDir,
@@ -890,18 +893,10 @@ async function scenarioHostRestartResume(stack, projectDir) {
         snap2.payload.resumeStatus === "snapshot" ||
         typeof snap2.payload.resumeStatus === "string",
     );
-    // Projection should retain the assistant message from before restart
-    // (via snapshot), not lose or double it.
-    const text = (() => {
-      const messages = snap2.payload.snapshot?.messages ?? [];
-      const last = [...messages].reverse().find((m) => m.role === "assistant");
-      if (!last) return "";
-      return (last.content ?? [])
-        .filter((b) => b.type === "text")
-        .map((b) => b.text)
-        .join("");
-    })();
-    assert.equal(text, "Hello world", `resume snapshot text=${JSON.stringify(text)}`);
+    // Protocol v2 snapshots retain only authoritative cursor/count state;
+    // completed transcript content is read through the history endpoint.
+    assert.ok(snap2.payload.snapshot.state.messageCount > 0);
+    assert.equal(typeof snap2.payload.snapshot.state.leafId, "string");
 
     // Same-epoch same-commandId retry is at-most-once (cached, not re-executed).
     const retry = await client2.command(sessionId, {
@@ -1825,8 +1820,7 @@ async function scenarioD2P7CompactControl(stack, projectDir) {
     assert.ok(liveBeforeUsage > 0, `expected non-zero context usage before compact (got ${liveBeforeUsage})`);
     const before = await client.getSnapshot(sessionId);
     const beforeCount = bstate(before.payload.result).messageCount;
-    const beforeHistory = (before.payload.result.messages ?? []).length;
-    assert.equal(beforeHistory, beforeCount, "pre-compact snapshot history must match messageCount");
+    assert.equal((before.payload.result.messages ?? []).length, 0, "Protocol v2 snapshot excludes completed history");
 
     // 1. Successful compact: compaction_start(manual) → compaction_end(success)
     //    event sequence; the ack is only released after sessiond's authoritative
@@ -1862,7 +1856,7 @@ async function scenarioD2P7CompactControl(stack, projectDir) {
     assert.ok(afterCount < beforeCount, `compact must trim messageCount (${beforeCount} -> ${afterCount})`);
     assert.ok(afterUsage < liveBeforeUsage, `compact must shrink context usage (${liveBeforeUsage} -> ${afterUsage})`);
     assert.equal(afterState.isCompacting, false);
-    assert.equal((after.payload.result.messages ?? []).length, afterCount, "post-compact snapshot history must match trimmed messageCount");
+    assert.equal((after.payload.result.messages ?? []).length, 0, "Protocol v2 post-compact snapshot excludes completed history");
     // The fixture live state agrees: get_state after compact shows the same trim.
     const liveAfter = await client.command(sessionId, { commandId: `d2p7-live-after-${Date.now()}`, type: "get_state" });
     const liveAfterState = liveAfter.payload.result.result.state;
@@ -1874,7 +1868,7 @@ async function scenarioD2P7CompactControl(stack, projectDir) {
     const reattach = await client.attach(sessionId);
     assert.equal(reattach.type, "snapshot");
     assert.equal(reattach.payload.snapshot.state.messageCount, afterCount);
-    assert.equal((reattach.payload.snapshot.messages ?? []).length, afterCount);
+    assert.equal((reattach.payload.snapshot.messages ?? []).length, 0);
     assert.deepEqual(reattach.payload.snapshot.capabilities, { capabilities: PRODUCTION_CAPS, version: 1 });
 
     // 3. Blocking compact + abort_compaction non-HOL + ack/interrupted result +
@@ -2328,7 +2322,7 @@ async function scenarioD2NavigateControl(stack, projectDir) {
     const before = await client.getSnapshot(sessionId);
     const beforeCount = bstate(before.payload.result).messageCount;
     assert.equal(beforeCount, 3, "projection must accumulate 3 messages from message_end events");
-    assert.equal((before.payload.result.messages ?? []).length, 3);
+    assert.equal((before.payload.result.messages ?? []).length, 0, "Protocol v2 snapshot excludes completed history");
 
     // 1. Navigate to an earlier leaf (entry-2). The terminal result is released
     //    only AFTER sessiond's authoritative snapshot refresh, so a post-ack
@@ -2344,7 +2338,7 @@ async function scenarioD2NavigateControl(stack, projectDir) {
     const afterState = bstate(after.payload.result);
     assert.equal(afterState.messageCount, 2, "navigate to entry-2 must converge messageCount to 2");
     assert.equal(afterState.leafId, "entry-2", "authoritative snapshot must carry the navigated leaf");
-    assert.equal((after.payload.result.messages ?? []).length, 2, "history must converge to the navigated leaf");
+    assert.equal((after.payload.result.messages ?? []).length, 0, "Protocol v2 snapshot remains history-free after navigate");
     const liveAfter = await client.command(sessionId, { commandId: `nav-live-after-${Date.now()}`, type: "get_state" });
     const liveAfterState = liveAfter.payload.result.result.state;
     assert.equal(liveAfterState.messageCount, 2);

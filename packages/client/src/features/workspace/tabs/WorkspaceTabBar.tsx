@@ -16,6 +16,7 @@ export interface WorkspaceTabBarProps {
    * falls back to a short id while the cache has not loaded the session.
    */
   sessionLabels?: Record<string, string> | undefined;
+  runningSessionIds?: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -33,6 +34,7 @@ export function WorkspaceTabBar({
   onSelectTab,
   onCloseTab,
   sessionLabels,
+  runningSessionIds,
 }: WorkspaceTabBarProps) {
   const { t } = useI18n();
   const listRef = useRef<HTMLDivElement>(null);
@@ -117,12 +119,14 @@ export function WorkspaceTabBar({
           ? (sessionLabels?.[tab.sessionId] ?? tab.sessionId.slice(0, 12))
           : tab.label;
         const tooltip = tab.kind === "file" ? tab.filePath : label;
+        const isRunning = tab.kind === "session" && runningSessionIds?.has(tab.sessionId) === true;
         return (
           <div
             key={tab.id}
             role="tab"
             data-tab-id={tab.id}
             aria-selected={isActive}
+            data-running={isRunning ? "true" : undefined}
             tabIndex={isFocused || (focusedTabId === null && isActive) ? 0 : -1}
             className={`workspace-tab${isActive ? " workspace-tab--active" : ""}`}
             title={tooltip}
@@ -138,6 +142,7 @@ export function WorkspaceTabBar({
               )}
             </span>
             <span className="workspace-tab-label">{label}</span>
+            {isRunning ? <span className="workspace-tab-running-dot" aria-label={t("desktop.sessionRunning")} /> : null}
             <button
               type="button"
               className="workspace-tab-close"

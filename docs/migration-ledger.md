@@ -3449,3 +3449,45 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 - 同 UID 攻击者在 rename 前重验 lstat 与 `rename()` 之间替换 trust.json/agentDir 的极窄 TOCTOU 残余窗口（与 D3A-P0/local-authority 同类「同 UID 残余窗口」诚实枚举，不宣称 fail-closed）。窗口已最小化：rename 前重验目录+target identity/absence，rename 后 post-verify dev/ino===temp identity，任何可观测替换均 fail-closed 为固定 sanitized code；不宣称可对抗与持有 agentDir 写权限的恶意同 UID 进程的纳秒级竞态。
 - Client mutation 暂无 UI 门控消费（`project.trust` capability 检查留给 ProjectTrustDialog 切片）；API 层已就绪且与 worktrees dormant-helper 模式一致。
+
+---
+
+## 70. UI-first Transcript Transaction + Global Running Projection
+
+### 问题与根因
+
+- Client `computeView` 曾把 optimistic entries 放在 committed live entries 前，导致新问题插入上一轮前；真实 `message_end` 再删 optimistic 并 append committed，于是消息跳到底部。
+- detach/fresh attach/rebase 清空 optimistic；历史模式又不消费 optimistic，导致激活发送时消息消失、闪烁或看似未发送。
+- prompt transport ack 即清 running overlay，造成 ack→agent_start 状态闪断；Sidebar 只看当前 attached+streaming，项目和 Tab 无运行状态。
+- attach-time `get_session_stats.contextUsage` 覆盖后续 snapshot，导致上下文百分比陈旧。
+
+### 修复语义
+
+- optimistic user entry 增 `sessionId` 归属并作为独立 transaction layer 暴露；权威 projection 不写 optimism。Transcript 合并固定 persisted → committed live → optimistic tail；`message_end` 优先同会话精确内容匹配、仅唯一候选时 fallback，禁止盲目跨会话 FIFO。
+- fresh attach/rebase/history teardown 不再删除 transaction-owned bubble；历史 Tab 在 attach 前也消费该 session optimistic。generation 0→live 仅同 session 保留 placeholder，跨 session/live rebase 不复用。
+- transport ack 保留 UI running，直到权威 start/end/message 事件接管；latest snapshot contextUsage 优先，stats 只补缺字段。
+- Protocol `running_sessions_changed` 墘 `busySessionIds`；sessiond 在 prompt/bash/compact busy flip 广播全局集合；Host WS 新增只读 `listRunning`；SessionStore 用 request-generation + push revision 防旧基线覆盖新 push，并成为 Sidebar session/project/top-tab 的唯一 running owner。
+- 选择历史/文件不激活目标 Worker，也不立即销毁已有后台订阅；所有可见 live surface 仍以 active session identity fail-closed。发送另一会话沿既有 detach→attach 单状态机 supersede。
+
+### 验证
+
+- Client 53 files / 634 tests PASS（新增 optimistic tail、fresh-attach preservation、detached pre-attach bubble、ack gap、running baseline/push/stale response、project/tab/session 状态、history placeholder、base-bound ghost reconciliation、latest context tests）。
+- Protocol 154/154 PASS；Host 487/487 PASS；sessiond `attach subscribes...` 与 `turn busy flips...` 定向 PASS。
+- Root typecheck、build、check:architecture、Client/sessiond boundaries、git diff-check PASS。
+- sessiond 全包仍受既有 early-signal/child-process 环境 flake 与长跑影响；本切片相关定向测试独立通过。
+
+### 残余
+
+- Wire `message_end` 尚无 browser commandId；当前 reconciliation 使用同会话精确内容，只有单一候选时才 fallback。若未来允许同会话多个完全相同文本并发排队，应在 Protocol 增加 command/turn correlation，而不是恢复 FIFO 猜测。
+
+### §70 独立验证修复追加
+
+首次 verifier 对抗探针发现并复现 4 项缺陷，均已修复并增加确定性覆盖：
+
+1. cross-session supersede：overlay 清理现按 `event.sessionId === optimisticPromptSessionId` 门控，A terminal 不再清 B activation；projected snapshot 也仅在 optimistic target 等于 attached session 时叠加，杜绝 A/B 同时假 running。
+2. terminal 完整性：`prompt_done` / `prompt_error` / `agent_settled` / `worker_crashed` / `runtime_unavailable` / `runtime_closed` 与 assistant terminal 均能交接/清理 overlay。
+3. ghost bubble：optimistic 记录精确 pre-prompt `baseEntryId`（root 为 null；detached target 在 attach snapshot 绑定）；history merge 仅在同文本且 committed `parentEntryId` 精确匹配 base 时消除，旧的同文本问题不会吞掉新事务。新增 pure merge 4 用例。
+4. production baseline：sessiond `listRunning.workerStatus` 由真实 `isTurnRunning` 投影 `busy`，不再依赖 worker record.status（生产长期 ready）；定向测试钉住 agent_start=busy / agent_end=ready。
+5. initial list 慢响应受 request generation + push revision 双栅栏约束，不能覆盖更新 busy push。
+
+额外修复长期陈旧 E2E 契约：Startup/Runtime/Sessions 的 Browser handshake 改用 `PROTOCOL_VERSION` 单一源；Runtime E2E 的 v1 snapshot-history 断言改为 Protocol v2 messageCount/leaf + message_end/history 语义；Sessions E2E WS capability resolver 改为当前 `{sessiond, capabilities}` 形状。最终 Startup、Runtime、Sessions 三条真实 E2E 均 PASS。

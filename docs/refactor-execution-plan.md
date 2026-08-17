@@ -602,3 +602,4 @@ Base：<hash>
 | `N-010` | secure-state 基础设施为依赖无关 workspace `@fffattiger/pix-local-authority`：平台中立 contracts（零 node: import）+ 高保真 POSIX backend；Host state lease 委托底层操作并映射固定 Host 错误码/消息；Host boundary 只放行 `@fffattiger/pix-local-authority/state` | 冻结（Slice 1） |
 | `N-011` | secure-state canonical 路径：绝对路径 + 最近已存在祖先 realpath + 校验缺失尾 + canonical 组件回走；接受 macOS 根级系统别名（`/var`→`/private/var` 等），拒绝非根级用户符号链接中间组件、lexical 父级逃逸、根、网络/Windows 声明 | 冻结（Slice 1） |
 | `N-012` | 原生 Windows secure-state 仍不支持（无 native backend / secure named pipe / Windows CI 门禁）；不因 contracts 平台中立而宣称支持 | 冻结（pending） |
+| `N-013` | UI-first 事务与运行状态：optimistic 按 session 独立于权威 projection、固定尾部合并并由真实 entry 接管；prompt ack 非终态；sessiond 全局 busy push + WS listRunning 初始基线由 SessionStore 单一拥有，Sidebar/项目/Tab 同源；历史/文件选择不激活目标 Worker，已有 attach 可保留为后台事件订阅但不得跨 active identity 泄漏 | 冻结 |

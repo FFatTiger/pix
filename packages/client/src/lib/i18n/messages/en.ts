@@ -110,6 +110,7 @@ export const enLocale = {
     "desktop.fullHistoryAvailableAfterSave": "Full history is available after the session is saved",
     "desktop.systemPrompt": "System prompt",
     "desktop.sessionInfo": "Session info",
+    "desktop.sessionRunning": "Session running",
     "desktop.hideFilePanel": "Hide file panel",
     "desktop.showFilePanel": "Show file panel",
     "desktop.hideFileBrowser": "Hide file browser",

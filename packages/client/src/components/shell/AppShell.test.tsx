@@ -19,9 +19,8 @@ import type { HostInfo } from "@fffattiger/pix-protocol";
 import type { SessionStore } from "@/runtime/session-store";
 
 // AppShell is the single owner of URL-session → runtime lifecycle; this suite
-// drives it through rapid A→B→C selection (supersession) and reordered detach
-// settles to prove the ONE coordinated flow (no competing detach effect, no
-// hung opens, no late clobber).
+// proves read-only selection never activates a target, background subscriptions
+// remain identity-gated, and send-time supersession has no hung/late clobber.
 
 const navigateMock = vi.fn();
 vi.mock("@tanstack/react-router", async () => {
@@ -245,7 +244,7 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
   });
   afterEach(() => { cleanup(); globalThis.fetch = previousFetch; vi.useRealTimers(); });
 
-  it("selecting a session is read-only: NEVER attaches it; a mismatched attached session is fail-closed detached once", async () => {
+  it("selecting a session is read-only and preserves the existing background subscription", async () => {
     const { rerender } = mountApp({ cwd: "/x" });
     const ws = await connectReady();
     // Attach fully to A (live).
@@ -259,21 +258,15 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     expect(capturedStore!.getSnapshot().sessionId).toBe("A");
     expect(capturedStore!.getSnapshot().attached).toBe(true);
     const attachCountBefore = countType(ws, "attach");
-    // Select B → read-only history: NO attach/open for B.
+    // Select B → read-only history: NO attach/open for B and no teardown of A.
+    // A stays subscribed in the background so its running/completion events can
+    // update the shared sidebar/project/tab state without leaking into B's UI.
     rerender({ cwd: "/x", session: "B" });
     await flush();
-    // Exactly ONE fail-closed detach for the mismatched A (single-flight)…
-    const detachFrames = ws.sent.filter((f) => (f as { type: string }).type === "detach") as { type: string; id: string; payload: { sessionId: string } }[];
-    expect(detachFrames).toHaveLength(1);
-    expect(detachFrames[0]!.payload.sessionId).toBe("A");
-    await act(async () => {
-      ws.serverSend({ type: "response", id: detachFrames[0]!.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
-      await flush();
-    });
-    // …and NO attach frame for the selected B (0-Worker history invariant).
+    expect(ws.sent.filter((frame) => (frame as { type: string }).type === "detach")).toHaveLength(0);
     expect(countType(ws, "attach")).toBe(attachCountBefore);
-    expect(capturedStore!.getSnapshot().attached).toBe(false);
-    expect(capturedStore!.getSnapshot().sessionId).not.toBe("B");
+    expect(capturedStore!.getSnapshot().attached).toBe(true);
+    expect(capturedStore!.getSnapshot().sessionId).toBe("A");
   });
 
   it("keeps New Session available while another session tab is attached", async () => {
@@ -290,7 +283,7 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     expect(screen.getByTestId("sidebar-new-session").hasAttribute("disabled")).toBe(false);
   });
 
-  it("rapid selection B→C while attached: only fail-closed detaches (single-flight, one frame), never any attach", async () => {
+  it("rapid read-only selection B→C keeps the background subscription and never attaches either target", async () => {
     const { rerender } = mountApp({ cwd: "/x" });
     const ws = await connectReady();
     await act(async () => {
@@ -301,22 +294,14 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
       await flush();
     });
     const attachCountBefore = countType(ws, "attach");
-    // Select B, then C before the detach resolves — both mismatch A.
     rerender({ cwd: "/x", session: "B" });
     await flush();
     rerender({ cwd: "/x", session: "C" });
     await flush();
-    // The two selection effects coalesce into ONE single-flight detach for A.
-    const detachFrames = ws.sent.filter((f) => (f as { type: string }).type === "detach") as { type: string; id: string; payload: { sessionId: string } }[];
-    expect(detachFrames).toHaveLength(1);
-    expect(detachFrames[0]!.payload.sessionId).toBe("A");
-    await act(async () => {
-      ws.serverSend({ type: "response", id: detachFrames[0]!.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
-      await flush();
-    });
-    // No session (B or C) was ever attached by selection.
+    expect(ws.sent.filter((frame) => (frame as { type: string }).type === "detach")).toHaveLength(0);
     expect(countType(ws, "attach")).toBe(attachCountBefore);
-    expect(capturedStore!.getSnapshot().attached).toBe(false);
+    expect(capturedStore!.getSnapshot().attached).toBe(true);
+    expect(capturedStore!.getSnapshot().sessionId).toBe("A");
     expect(capturedStore!.getSnapshot().error).toBeNull();
   });
 });
@@ -497,17 +482,20 @@ async function mountLiveA(ws: FakeWebSocket): Promise<void> {
   await act(async () => { await flush(); });
 }
 
-/** Select B from the sidebar (read-only history), acking the fail-closed detach of A. */
-async function selectDetachedB(ws: FakeWebSocket, rerender: (s: WorkspaceSearch) => void): Promise<void> {
+/** Select B as read-only history while A remains the background subscription. */
+async function selectDetachedB(_ws: FakeWebSocket, rerender: (s: WorkspaceSearch) => void): Promise<void> {
   rerender({ cwd: "/x", session: "B" });
-  await act(async () => {
-    await flush();
-    const detach = lastFrame<{ type: string; id: string }>(ws, "detach")!;
-    ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
-    await flush();
-  });
+  await act(async () => { await flush(); });
   // Let B's transcript + model catalog queries settle.
   await act(async () => { await flush(); });
+}
+
+async function ackBackgroundDetach(ws: FakeWebSocket, sessionId = "A"): Promise<void> {
+  const detach = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+  await act(async () => {
+    ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId, detached: true } } });
+    await flush();
+  });
 }
 
 /** Open the model dropdown, search a name, click the matching row (stages or issues, per state). */
@@ -595,8 +583,16 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     const textarea = document.querySelector<HTMLTextAreaElement>(".chat-input-textarea")!;
     await act(async () => { fireEvent.change(textarea, { target: { value: "hello staged" } }); await flush(); });
     await act(async () => { fireEvent.click(screen.getByLabelText("Send message")); await flush(); });
+    // UI-first: B's bubble and running indicators are visible before A detach /
+    // B attach settles. The overlay belongs only to B, never the still-attached A.
+    expect(screen.getByText("hello staged")).toBeTruthy();
+    expect(document.querySelector('[data-tab-id="session:B"]')?.getAttribute("data-running")).toBe("true");
+    expect(capturedStore!.getSnapshot().optimisticRunningSessionId).toBe("B");
+    expect(capturedStore!.getSnapshot().snapshot?.state.isPromptRunning).toBe(false);
 
-    // No command before attach.
+    // Sending B supersedes the retained background A subscription.
+    expect(countType(ws, "command")).toBe(0);
+    await ackBackgroundDetach(ws);
     const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
     expect(attach.payload.sessionId).toBe("B");
     expect(countType(ws, "command")).toBe(0);
@@ -604,6 +600,7 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
       ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "B" }) });
       await flush();
     });
+    expect(screen.getByText("hello staged")).toBeTruthy();
     // 1) set_model (staged, deterministic first).
     const modelCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; provider: string; modelId: string } } }>(ws, "command")!;
     expect(modelCmd.payload.command.type).toBe("set_model");
@@ -647,6 +644,7 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     await act(async () => { fireEvent.change(textarea, { target: { value: "do not deliver" } }); await flush(); });
     await act(async () => { fireEvent.click(screen.getByLabelText("Send message")); await flush(); });
 
+    await ackBackgroundDetach(ws);
     const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
     await act(async () => {
       ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "B" }) });
@@ -856,7 +854,7 @@ describe("AppShell — source-like sidebar rail", () => {
 
   it("shows a running cue on the live attached session without extra chrome", async () => {
     globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
-    mountApp({ cwd: "/x" });
+    const { rerender } = mountApp({ cwd: "/x", session: "A" });
     const ws = await connectReady();
     await act(async () => {
       void capturedStore!.openSession("A");
@@ -869,14 +867,30 @@ describe("AppShell — source-like sidebar rail", () => {
     });
     await settle();
     expect(capturedStore!.getSnapshot().streaming).toBe(true);
-    expect(screen.getByLabelText("Agent running")).toBeTruthy();
-    expect(document.querySelector('[data-running="true"]')?.textContent).toContain("Session A");
+    expect(screen.getAllByLabelText("Agent running").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("session-select-A").closest('[data-running="true"]')).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Session A" }).getAttribute("data-running")).toBe("true");
+    const projectRow = screen.getAllByTestId("sidebar-project-row").find((row) => row.getAttribute("title") === "/x");
+    expect(projectRow?.getAttribute("data-running")).toBe("true");
     expect(screen.queryByTestId("sidebar-update-btn")).toBeNull();
+
+    // Switching to B history keeps A's background subscription and all three
+    // running indicators; A's state never leaks into B's transcript/composer.
+    rerender({ cwd: "/x", session: "B" });
+    await settle();
+    expect(ws.sent.filter((frame) => (frame as { type: string }).type === "detach")).toHaveLength(0);
+    expect(screen.getByRole("tab", { name: "Session A" }).getAttribute("data-running")).toBe("true");
+    expect(screen.getByTestId("session-select-A").closest('[data-running="true"]')).toBeTruthy();
+    expect(projectRow?.getAttribute("data-running")).toBe("true");
+
     const prompt = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
     await act(async () => {
       ws.serverSend({ type: "response", id: prompt.id, payload: { ok: true, result: { commandId: prompt.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
       await flush();
     });
+    // Transport ack is not a terminal state: indicators stay running until an
+    // authoritative event takes ownership, so there is no ack→agent_start blink.
+    expect(screen.getByRole("tab", { name: "Session A" }).getAttribute("data-running")).toBe("true");
   });
 
   it("selects a session from a real button via keyboard and keeps sibling actions reachable", async () => {

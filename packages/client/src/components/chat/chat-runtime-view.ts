@@ -116,13 +116,23 @@ export function buildSessionStatsView(
 ): ChatSessionStatsView {
   const transcript = buildTranscriptSessionStatsView(state.sessionId, messages);
   const statsContext = stats?.contextUsage ?? null;
-  const contextUsage = statsContext
+  const stateContext = state.contextUsage;
+  // The live snapshot changes throughout the turn and is therefore newer than
+  // the one-shot attach-time stats read. Prefer its percentage/tokens; use
+  // stats only to fill fields the snapshot omits.
+  const contextUsage = stateContext
     ? {
-        percent: statsContext.percent ?? null,
-        contextWindow: statsContext.contextWindow ?? state.contextUsage?.contextWindow ?? 0,
-        tokens: statsContext.tokens ?? state.contextUsage?.tokens ?? null,
+        percent: stateContext.percent ?? statsContext?.percent ?? null,
+        contextWindow: stateContext.contextWindow ?? statsContext?.contextWindow ?? 0,
+        tokens: stateContext.tokens ?? statsContext?.tokens ?? null,
       }
-    : toContextUsageView(state.contextUsage);
+    : statsContext
+      ? {
+          percent: statsContext.percent ?? null,
+          contextWindow: statsContext.contextWindow ?? 0,
+          tokens: statsContext.tokens ?? null,
+        }
+      : null;
   return {
     ...transcript,
     ...(state.sessionFile === undefined ? {} : { sessionFile: state.sessionFile }),

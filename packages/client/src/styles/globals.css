@@ -304,6 +304,19 @@ html {
 .workspace-tab--active .workspace-tab-label {
   font-weight: 500;
 }
+.workspace-tab-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  animation: workspace-tab-running-pulse 1.4s ease-in-out infinite;
+}
+@keyframes workspace-tab-running-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 .workspace-tab-close {
   display: flex;
   align-items: center;

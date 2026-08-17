@@ -738,6 +738,7 @@ export class SessiondService {
 
   private acceptEvent(record: RecordState, data: RuntimeEventData): void {
     if (record.status === "crashed" || record.status === "stopped" || record.status === "stopping") return;
+    const wasTurnRunning = this.isTurnRunning(record);
     if (data.type === "runtime_closed") {
       if (record.closedEventEmitted) return;
       record.closedEventEmitted = true;
@@ -752,6 +753,9 @@ export class SessiondService {
         record.journalBaseEventId = appended.evicted.at(-1)!.eventId;
       }
       this.push(record, { type: "event", event: appended.event });
+      if (data.type !== "running_sessions_changed" && wasTurnRunning !== this.isTurnRunning(record)) {
+        this.broadcastRunningChanged(record.sessionId);
+      }
     } catch (error) {
       if (error instanceof RangeError && error.message === "event cursor exhausted") {
         record.epoch = this.makeEpoch();
@@ -1391,7 +1395,18 @@ export class SessiondService {
   }
 
   listRunning(): RuntimeListRunningResult {
-    return { sessions: [...this.records.values()].filter((record) => !["stopped", "crashed"].includes(record.status)).map((record) => ({ sessionId: record.sessionId, cwd: record.cwd, projectRoot: record.projectRoot, workerStatus: record.status, epoch: record.epoch, ...(record.projection.snapshot().state.sessionName === undefined ? {} : { name: record.projection.snapshot().state.sessionName }) })) };
+    return {
+      sessions: [...this.records.values()]
+        .filter((record) => !["stopped", "crashed"].includes(record.status))
+        .map((record) => ({
+          sessionId: record.sessionId,
+          cwd: record.cwd,
+          projectRoot: record.projectRoot,
+          workerStatus: this.isTurnRunning(record) ? "busy" : record.status,
+          epoch: record.epoch,
+          ...(record.projection.snapshot().state.sessionName === undefined ? {} : { name: record.projection.snapshot().state.sessionName }),
+        })),
+    };
   }
 
   hasBusyCwd(cwd: string): { cwd: string; busy: boolean; sessionIds?: string[] } {
@@ -1576,9 +1591,13 @@ export class SessiondService {
     record.idleTimer.unref?.();
   }
 
-  private isBusy(record: RecordState): boolean {
+  private isTurnRunning(record: RecordState): boolean {
     const state = record.projection.snapshot().state;
-    return state.isPromptRunning || state.isBashRunning || state.isCompacting || record.pendingCommands.size > 0 || record.authorityFinalizations.size > 0;
+    return state.isPromptRunning || state.isStreaming || state.isBashRunning || state.isCompacting;
+  }
+
+  private isBusy(record: RecordState): boolean {
+    return this.isTurnRunning(record) || record.pendingCommands.size > 0 || record.authorityFinalizations.size > 0;
   }
 
   private requireActive(sessionId: string): RecordState {
@@ -1588,8 +1607,19 @@ export class SessiondService {
   }
 
   private broadcastRunningChanged(changedSessionId: string): void {
-    const ids = this.listRunning().sessions.map((item) => item.sessionId);
-    for (const record of this.records.values()) this.acceptEvent(record, { type: "running_sessions_changed", sessionId: record.sessionId || changedSessionId, sessionIds: ids });
+    const items = this.listRunning().sessions;
+    const sessionIds = items.map((item) => item.sessionId);
+    const busySessionIds = [...this.records.values()]
+      .filter((record) => !["crashed", "stopped", "stopping"].includes(record.status) && this.isTurnRunning(record))
+      .map((record) => record.sessionId);
+    for (const record of this.records.values()) {
+      this.acceptEvent(record, {
+        type: "running_sessions_changed",
+        sessionId: record.sessionId || changedSessionId,
+        sessionIds,
+        busySessionIds,
+      });
+    }
   }
 
   sessionCatalog(): SessionCatalogPort | undefined { return this.deps.sessionCatalog; }

@@ -739,6 +739,12 @@ describe("WS envelopes", () => {
       payload: { sessionId: "s-1" },
     });
     assert.equal(get.type, "getSnapshot");
+    const listRunning = roundTrip(WsClientMessageSchema, {
+      type: "listRunning",
+      id: "req-running",
+      payload: {},
+    });
+    assert.equal(listRunning.type, "listRunning");
     const stop = roundTrip(WsClientMessageSchema, {
       type: "stop",
       id: "req-2",
@@ -773,6 +779,7 @@ describe("WS envelopes", () => {
       { ok: true, result: { sessionId: "s-1", epoch: "e1", created: true, cwd: "/tmp/p", projectRoot: "/tmp/p", workerStatus: "ready" } },
       { ok: true, result: { sessionId: "s-1", detached: true } },
       { ok: true, result: snapshot },
+      { ok: true, result: { sessions: [{ sessionId: "s-1", cwd: "/tmp/p", projectRoot: "/tmp/p", workerStatus: "busy", epoch: "e1" }] } },
       { ok: true, result: { sessionId: "s-1", stopped: true } },
     ];
     for (const result of cases) {

@@ -74,8 +74,8 @@ function sessionLabelFor(session: { title?: string | undefined; firstMessage?: s
  * (cwd+session or cwd+file); the in-memory tab list holds every open tab and
  * the active tab is derived from the URL (back/forward/deep links activate or
  * recreate a tab without ever attaching). Sending stays the only activation
- * trigger; the runtime mismatch effect only detaches (never stops) when the
- * active tab is a file, home, or a different session.
+ * trigger. A prior attachment may remain as a background event subscription;
+ * every visible runtime surface is active-session identity-gated.
  */
 export function AppShell({ search }: AppShellProps) {
   const { canAgent, canBrowseSessions, can } = useCapabilities();
@@ -162,27 +162,11 @@ export function AppShell({ search }: AppShellProps) {
   // Selecting/browsing a session (sidebar row OR a session tab) MUST NOT
   // activate/open a worker: the selected session stays a read-only history
   // view while the Composer remains editable; sending is the activation
-  // trigger through `sendPromptToSession`. The runtime mismatch effect below
-  // only DETACHES a mismatched attach (the Worker remains owned by sessiond);
-  // the selected session is NEVER attached here.
-  //
-  // The mismatch is keyed on the ACTIVE TAB (not merely `search.session`):
-  // when the active content is a file tab, home, or a different session than
-  // the attached runtime, the attached session is fail-closed detached so its
-  // live stream never renders under unrelated content. A create in flight is
-  // guarded so the freshly attached runtime is not detached during the
-  // create → open-active-tab transition. Detach is single-flight in the
-  // store, so a concurrent send-time transition cannot emit duplicate detach
-  // frames.
-  const creatingSessionRef = useRef(false);
-  useEffect(() => {
-    if (creatingSessionRef.current) return;
-    if (!runtime.attached) return;
-    if (activeSessionId === runtime.sessionId) return;
-    // Fail-closed: detach the currently attached (non-active) session. Never
-    // attach the active one; never stop.
-    void runtime.detach().catch(() => undefined);
-  }, [runtime.attached, runtime.sessionId, activeSessionId]);
+  // trigger through `sendPromptToSession`. An existing attachment may remain
+  // subscribed in the background so its authoritative running/completion
+  // events continue feeding the shared runtime owner. Every visible surface is
+  // identity-gated by activeSessionId, so background live state can never leak
+  // into the selected transcript/composer.
 
   // ── No-flicker session navigation (prepare → atomic commit) ──────────────
   // Sidebar selection no longer navigates the URL directly: it first prepares
@@ -260,9 +244,38 @@ export function AppShell({ search }: AppShellProps) {
   // runtime may still be attached to a DIFFERENT session (for example, the
   // user was live on A and selected B): the page fails closed to B's HISTORY
   // view — never A's live transcript — while the Composer stays editable;
-  // sending from B performs the only activation transition. The mismatch
-  // effect above detaches A.
+  // sending from B performs the only activation transition. A may remain a
+  // background subscription, but its live state never enters B's view.
   const selectionMatchesLive = runtime.attached && activeSessionId === runtime.sessionId;
+  const runningSessionIds = useMemo<ReadonlySet<string>>(() => {
+    const ids = new Set<string>(runtime.runningSessionIds);
+    if (runtime.optimisticRunningSessionId) ids.add(runtime.optimisticRunningSessionId);
+    const state = runtime.snapshot?.state;
+    const authoritativeBusy = runtime.attached && (
+      runtime.streaming
+      || state?.isPromptRunning === true
+      || state?.isStreaming === true
+      || state?.isBashRunning === true
+      || state?.isCompacting === true
+    );
+    if (authoritativeBusy && runtime.sessionId) ids.add(runtime.sessionId);
+    return ids;
+  }, [runtime.attached, runtime.optimisticRunningSessionId, runtime.runningSessionIds, runtime.sessionId, runtime.snapshot, runtime.streaming]);
+
+  const runningProjectRoots = useMemo<ReadonlySet<string>>(() => {
+    const roots = new Set<string>();
+    for (const session of sessionsQuery.data?.sessions ?? []) {
+      if (runningSessionIds.has(session.sessionId)) roots.add(session.projectRoot || session.cwd);
+    }
+    for (const tab of tabs) {
+      if (tab.kind === "session" && runningSessionIds.has(tab.sessionId) && tab.cwd) roots.add(tab.cwd);
+    }
+    if (runtime.sessionId && runningSessionIds.has(runtime.sessionId)) {
+      const root = runtime.snapshot?.projectRoot ?? runtime.snapshot?.cwd;
+      if (root) roots.add(root);
+    }
+    return roots;
+  }, [runningSessionIds, runtime.sessionId, runtime.snapshot, sessionsQuery.data, tabs]);
 
   const hasProject = Boolean(search.cwd);
   // Multi-tab session creation remains available while another session is
@@ -299,29 +312,18 @@ export function AppShell({ search }: AppShellProps) {
     }
     selectionGenerationRef.current += 1;
     setPendingSessionId(null);
-    // Guard: while a create is in flight the runtime is attaching to the NEW
-    // session with no session tab active yet — the mismatch effect must not
-    // detach it during that window. Cleared after the created session's URL
-    // (and thus active tab) has been committed.
-    creatingSessionRef.current = true;
-    try {
-      // Clear a stale active selector before create, then wait for the router
-      // commit so the mismatch effect cannot observe the old tab while the new
-      // session attaches.
-      await navigate({ to: "/", search: { cwd: search.cwd } });
-      const result = await runtime.createSession({
-        cwd: search.cwd,
-        projectRoot: search.cwd,
-        ...(settings?.model === undefined ? {} : { model: settings.model }),
-        ...(settings?.thinkingLevel === undefined ? {} : { thinkingLevel: settings.thinkingLevel }),
-      });
-      // Open/activate the new session tab, and keep the create guard until the
-      // router has committed the matching active session.
-      await navigate({ to: "/", search: { cwd: search.cwd, session: result.sessionId } });
-      return result.sessionId;
-    } finally {
-      creatingSessionRef.current = false;
-    }
+    // Clear a stale active selector before create, then wait for the router
+    // commit. Existing runtime subscriptions remain identity-gated background
+    // state and are superseded only by the create/attach transaction itself.
+    await navigate({ to: "/", search: { cwd: search.cwd } });
+    const result = await runtime.createSession({
+      cwd: search.cwd,
+      projectRoot: search.cwd,
+      ...(settings?.model === undefined ? {} : { model: settings.model }),
+      ...(settings?.thinkingLevel === undefined ? {} : { thinkingLevel: settings.thinkingLevel }),
+    });
+    await navigate({ to: "/", search: { cwd: search.cwd, session: result.sessionId } });
+    return result.sessionId;
   }, [navigate, runtime, search.cwd]);
 
   const handleCreate = (): void => {
@@ -429,9 +431,9 @@ export function AppShell({ search }: AppShellProps) {
     if (tab) navigateToTab(tab);
   }, [tabs, activeTab, navigateToTab]);
 
-  // Close a tab. Closing a session tab NEVER stops/deletes its session —
-  // the runtime mismatch effect may detach it only when it was the live one
-  // and is no longer the active content. Closing the active tab selects the
+  // Close a tab. Closing a session tab NEVER stops/deletes its session; an
+  // existing subscription may remain in the shared running-state owner.
+  // Closing the active tab selects the
   // right neighbor, then the left, then home.
   const handleCloseTab = useCallback((id: string): void => {
     const closedIsActive = id === activeTabId;
@@ -593,6 +595,7 @@ export function AppShell({ search }: AppShellProps) {
         onSelectTab={handleSelectTab}
         onCloseTab={handleCloseTab}
         sessionLabels={sessionLabels}
+        runningSessionIds={runningSessionIds}
       />
       {showTrustWarning && (
         <button
@@ -670,7 +673,8 @@ export function AppShell({ search }: AppShellProps) {
           cwd={search.cwd}
           selectedSessionId={search.session ?? null}
           liveSessionId={runtime.attached ? runtime.sessionId : null}
-          liveStreaming={runtime.attached && runtime.streaming}
+          runningSessionIds={runningSessionIds}
+          runningProjectRoots={runningProjectRoots}
           pendingSessionId={pendingSessionId}
           onSessionDeleted={handleSessionDeleted}
           onSelectSession={handleSelectSession}

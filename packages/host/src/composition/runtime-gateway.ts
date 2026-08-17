@@ -555,6 +555,9 @@ class GatewayConnection {
       case "getSnapshot":
         await this.handleGetSnapshot(message);
         return;
+      case "listRunning":
+        await this.handleListRunning(message);
+        return;
       case "stop":
         await this.handleStop(message);
         return;
@@ -673,6 +676,15 @@ class GatewayConnection {
   private async handleGetSnapshot(message: Extract<WsClientMessage, { type: "getSnapshot" }>): Promise<void> {
     try {
       const result = await this.config.client.call("runtime.getSnapshot", message.payload);
+      this.send({ type: "response", id: message.id, payload: { ok: true, result } });
+    } catch (error) {
+      this.send({ type: "response", id: message.id, payload: { ok: false, error: mapRpcError(error) } });
+    }
+  }
+
+  private async handleListRunning(message: Extract<WsClientMessage, { type: "listRunning" }>): Promise<void> {
+    try {
+      const result = await this.config.client.call("runtime.listRunning", {});
       this.send({ type: "response", id: message.id, payload: { ok: true, result } });
     } catch (error) {
       this.send({ type: "response", id: message.id, payload: { ok: false, error: mapRpcError(error) } });

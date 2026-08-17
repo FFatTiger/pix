@@ -110,6 +110,7 @@ export const zhCNLocale = {
     "desktop.fullHistoryAvailableAfterSave": "保存会话后可查看完整历史",
     "desktop.systemPrompt": "系统提示词",
     "desktop.sessionInfo": "会话信息",
+    "desktop.sessionRunning": "会话正在运行",
     "desktop.hideFilePanel": "隐藏文件面板",
     "desktop.showFilePanel": "显示文件面板",
     "desktop.hideFileBrowser": "隐藏文件浏览器",

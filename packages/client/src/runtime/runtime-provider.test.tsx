@@ -575,7 +575,21 @@ describe("Composer — F9 stats late-settle generation on session switch", () =>
     return serverSend(ws, {
       type: "response",
       id: frame.id,
-      payload: { ok: true, result: { commandId: frame.payload.command.commandId, result: { ok: true, type: "get_session_stats", stats: { messageCount: 1, tokenCount } } } },
+      payload: {
+        ok: true,
+        result: {
+          commandId: frame.payload.command.commandId,
+          result: {
+            ok: true,
+            type: "get_session_stats",
+            stats: {
+              messageCount: 1,
+              tokenCount,
+              contextUsage: { percent: tokenCount === 222 ? 22 : 99, contextWindow: 1_000, tokens: tokenCount },
+            },
+          },
+        },
+      },
     });
   }
 
@@ -675,9 +689,14 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     expect(screen.getByText("hello world")).toBeTruthy();
     // …and the Stop control appears immediately (speculative running overlay).
     expect(screen.getByLabelText("Stop agent")).toBeTruthy();
-    // Accept the prompt → the speculative running clears.
+    // Transport admission is not completion: Stop remains visible through the
+    // ack→agent_start gap and clears only on the authoritative terminal event.
     const cmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
     await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
+    expect(screen.getByLabelText("Stop agent")).toBeTruthy();
+    await serverSend(ws, { type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
+    expect(screen.getByLabelText("Stop agent")).toBeTruthy();
+    await serverSend(ws, { type: "event", payload: { type: "agent_end", sessionId: "s1", eventId: 2, epoch: "e1" } });
     expect(screen.queryByLabelText("Stop agent")).toBeNull();
   });
 
@@ -733,6 +752,9 @@ describe("Composer — optimistic prompt lifecycle (text + image parity, definit
     expect(cmd.payload.command.images).toEqual([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
     await serverSend(ws, { type: "response", id: cmd.id, payload: { ok: true, result: { commandId: cmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
     await p;
+    expect(capturedStore!.getSnapshot().streaming).toBe(true);
+    await serverSend(ws, { type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 1, epoch: "e1" } });
+    await serverSend(ws, { type: "event", payload: { type: "agent_end", sessionId: "s1", eventId: 2, epoch: "e1" } });
     expect(capturedStore!.getSnapshot().streaming).toBe(false);
   });
 
@@ -940,8 +962,8 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
     typeAndSend("will fail");
     await flush();
-    // The optimistic bubble appears immediately…
-    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "will fail")).toBe(true);
+    // The optimistic bubble appears immediately in the selected session layer…
+    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && (candidate.entry.message as { content: string }).content === "will fail")).toBe(true);
     // Detach s1 + attach ghost → not_found (never a create).
     const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
     await serverSend(ws, { type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
@@ -949,7 +971,7 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     expect(attach.payload.sessionId).toBe("ghost");
     await serverSend(ws, { type: "response", id: attach.id, payload: { ok: false, error: { code: "not_found", message: "no such session", retryable: false } } });
     // No phantom bubble remains…
-    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "will fail")).toBe(false);
+    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && (candidate.entry.message as { content: string }).content === "will fail")).toBe(false);
     // …and the draft is preserved in the composer.
     expect(textarea.value).toBe("will fail");
   });
@@ -961,7 +983,7 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
     typeAndSend("stuck");
     await flush();
-    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "stuck")).toBe(true);
+    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && (candidate.entry.message as { content: string }).content === "stuck")).toBe(true);
     const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;
     await serverSend(ws, { type: "response", id: detachFrame.id, payload: { ok: true, result: { sessionId: "s1", detached: true } } });
     const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
@@ -969,7 +991,7 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     // prompt command was dispatched), so it is PROVEN non-delivery.
     await serverSend(ws, { type: "response", id: attach.id, payload: { ok: false, error: { code: "unavailable", message: "busy", retryable: true } } });
     // No phantom bubble, no pending transaction…
-    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "stuck")).toBe(false);
+    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "ghost" && (candidate.entry.message as { content: string }).content === "stuck")).toBe(false);
     expect(capturedStore!.getSnapshot().promptPending).toBe(false);
     // …and the draft is RETAINED in the composer.
     expect(textarea.value).toBe("stuck");
@@ -984,7 +1006,7 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     await flush();
     // The first transaction is in flight (activation phase)…
     expect(capturedStore!.getSnapshot().promptPending).toBe(true);
-    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "first message")).toBe(true);
+    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && (candidate.entry.message as { content: string }).content === "first message")).toBe(true);
     // Second submit (Enter; the Send button is a busy Stop during activation).
     fireEvent.change(textarea, { target: { value: "second message" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -992,8 +1014,8 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     // The second is rejected (session_busy) and its draft restored…
     expect(textarea.value).toBe("second message");
     // …and the first is untouched (no phantom bubble for the second).
-    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "second message")).toBe(false);
-    expect(capturedStore!.getSnapshot().liveEntries.some((e) => (e.message as { content: string }).content === "first message")).toBe(true);
+    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && (candidate.entry.message as { content: string }).content === "second message")).toBe(false);
+    expect(capturedStore!.getSnapshot().optimisticEntries.some((candidate) => candidate.sessionId === "s2" && (candidate.entry.message as { content: string }).content === "first message")).toBe(true);
     expect(capturedStore!.getSnapshot().promptPending).toBe(true);
     // The first completes normally.
     const detachFrame = lastFrame<{ type: string; id: string }>(ws, "detach")!;

@@ -55,6 +55,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import {
   createHostApp,
   createNodeServer,
@@ -175,6 +176,7 @@ function messageText(entry) {
 function attachViaWs(wsUrl, sessionId, timeoutMs = STEP_TIMEOUT_MS) {
   return new Promise((resolvePromise, reject) => {
     const ws = new WebSocket(wsUrl);
+    let lastMessage = null;
     const timer = setTimeout(() => {
       ws.close();
       reject(new Error("attach timed out"));
@@ -189,7 +191,7 @@ function attachViaWs(wsUrl, sessionId, timeoutMs = STEP_TIMEOUT_MS) {
       fn();
     };
     ws.on("open", () => {
-      ws.send(JSON.stringify({ type: "handshake", id: "hs1", payload: { protocolVersion: 1, client: { shell: "web", platform: "mac" }, features: [] } }));
+      ws.send(JSON.stringify({ type: "handshake", id: "hs1", payload: { protocolVersion: PROTOCOL_VERSION, client: { shell: "web", platform: "mac" }, features: [] } }));
     });
     ws.on("message", (data) => {
       let message;
@@ -198,6 +200,7 @@ function attachViaWs(wsUrl, sessionId, timeoutMs = STEP_TIMEOUT_MS) {
       } catch {
         return;
       }
+      lastMessage = message;
       if (message.type === "handshake_ack") {
         ws.send(JSON.stringify({ type: "attach", id: "att1", payload: { sessionId } }));
         return;
@@ -207,6 +210,9 @@ function attachViaWs(wsUrl, sessionId, timeoutMs = STEP_TIMEOUT_MS) {
       }
     });
     ws.on("error", (error) => settle(() => reject(error)));
+    ws.on("close", (code, reason) => {
+      if (code !== 1000) settle(() => reject(new Error(`attach ws closed ${code}: ${String(reason ?? "")} last=${JSON.stringify(lastMessage)}`)));
+    });
   });
 }
 
@@ -243,7 +249,10 @@ async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir, exposureM
     endpoint: daemon.endpoint,
     secret: daemon.secret,
     mode: "local",
-    resolveCapabilities: () => resolver.resolve(),
+    resolveCapabilities: async () => ({
+      sessiond: (await resolver.isAvailable()) ? "up" : "down",
+      capabilities: await resolver.resolve(),
+    }),
     limits: { maxUpload: PRODUCTION_MAX_UPLOAD_BYTES },
     logger: {},
   });

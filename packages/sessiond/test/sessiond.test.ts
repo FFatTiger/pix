@@ -134,9 +134,31 @@ test("attach subscribes before replay boundary and receives later events without
   await attached.flushTo(async (push) => { pushes.push(push); });
   workers.workers[0]!.emitEvent({ type: "agent_settled", sessionId: "s" });
   await wait();
-  assert.equal(boundary, baseline + 1);
-  assert.equal(pushes.length, 3);
-  assert.deepEqual(pushes.map((push) => (push as { event: { eventId: number } }).event.eventId), [baseline + 1, baseline + 2, baseline + 3]);
+  assert.equal(boundary, baseline + 2);
+  assert.equal(pushes.length, 5);
+  assert.deepEqual(pushes.map((push) => (push as { event: { eventId: number } }).event.eventId), [baseline + 1, baseline + 2, baseline + 3, baseline + 4, baseline + 5]);
+  attached.close();
+  await service.shutdown();
+});
+
+test("turn busy flips broadcast authoritative global busy session ids", async () => {
+  const { service, workers } = harness();
+  const activated = await service.activate("s");
+  const pushes: Array<{ type: string; event?: { type: string; busySessionIds?: string[] } }> = [];
+  const attached = service.prepareAttach({ sessionId: "s", epoch: activated.epoch, lastEventId: 0 });
+
+  workers.workers[0]!.emitEvent({ type: "agent_start", sessionId: "s" });
+  await wait();
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "busy");
+  workers.workers[0]!.emitEvent({ type: "agent_end", sessionId: "s" });
+  await wait();
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "ready");
+  await attached.flushTo(async (push) => { pushes.push(push as typeof pushes[number]); });
+  const started = pushes.find((push) => push.type === "event" && push.event?.type === "running_sessions_changed" && push.event.busySessionIds?.includes("s"));
+  assert.ok(started, "agent_start broadcasts s as busy");
+  const ended = pushes.find((push) => push.type === "event" && push.event?.type === "running_sessions_changed" && push.event.busySessionIds?.length === 0);
+  assert.ok(ended, "agent_end broadcasts an empty busy set");
+
   attached.close();
   await service.shutdown();
 });

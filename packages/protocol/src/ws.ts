@@ -26,6 +26,7 @@ import {
   RuntimeCreateResultSchema,
   RuntimeDetachResultSchema,
   RuntimeGetSnapshotResultSchema,
+  RuntimeListRunningResultSchema,
   RuntimeStopResultSchema,
 } from "./sessiond.js";
 
@@ -65,6 +66,13 @@ export const WsGetSnapshotMessageSchema = z.strictObject({
   payload: z.strictObject({ sessionId: NonEmptyStringSchema }),
 });
 
+/** Read-only list of active runtime records; never activates a worker. */
+export const WsListRunningMessageSchema = z.strictObject({
+  type: z.literal("listRunning"),
+  id: NonEmptyStringSchema,
+  payload: z.strictObject({}),
+});
+
 /** Authoritative session stop; also closes the matching attach subscription. */
 export const WsStopMessageSchema = z.strictObject({
   type: z.literal("stop"),
@@ -83,6 +91,7 @@ export const WsResponseResultSchema = z.union([
   RuntimeCreateResultSchema,
   RuntimeDetachResultSchema,
   RuntimeGetSnapshotResultSchema,
+  RuntimeListRunningResultSchema,
   RuntimeStopResultSchema,
 ]);
 export type WsResponseResult = z.infer<typeof WsResponseResultSchema>;
@@ -138,7 +147,7 @@ export const WsInterruptExchangeSchema = z
   });
 export type WsInterruptExchange = z.infer<typeof WsInterruptExchangeSchema>;
 
-export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema, WsGetSnapshotMessageSchema, WsStopMessageSchema]);
+export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema, WsGetSnapshotMessageSchema, WsListRunningMessageSchema, WsStopMessageSchema]);
 export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
 export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckMessageSchema, WsHandshakeRejectMessageSchema, WsResponseMessageSchema, WsInterruptResultMessageSchema, WsSnapshotMessageSchema, WsEventMessageSchema, WsRuntimeUnavailableMessageSchema]);
 export type WsHostMessage = z.infer<typeof WsHostMessageSchema>;
@@ -155,6 +164,7 @@ export type WsDetachMessage = z.infer<typeof WsDetachMessageSchema>;
 export type WsCommandMessage = z.infer<typeof WsCommandMessageSchema>;
 export type WsInterruptMessage = z.infer<typeof WsInterruptMessageSchema>;
 export type WsGetSnapshotMessage = z.infer<typeof WsGetSnapshotMessageSchema>;
+export type WsListRunningMessage = z.infer<typeof WsListRunningMessageSchema>;
 export type WsStopMessage = z.infer<typeof WsStopMessageSchema>;
 export type WsResponseMessage = z.infer<typeof WsResponseMessageSchema>;
 export type WsInterruptResultMessage = z.infer<typeof WsInterruptResultMessageSchema>;

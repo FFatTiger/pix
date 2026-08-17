@@ -12,6 +12,7 @@ function mount(
     sessionLabels?: Record<string, string>;
     onSelectTab?: (id: string) => void;
     onCloseTab?: (id: string) => void;
+    runningSessionIds?: ReadonlySet<string>;
   },
 ) {
   const selectTab = props.onSelectTab ?? vi.fn();
@@ -24,6 +25,7 @@ function mount(
         sessionLabels={props.sessionLabels}
         onSelectTab={selectTab}
         onCloseTab={closeTab}
+        runningSessionIds={props.runningSessionIds}
       />
     </I18nProvider>,
   );
@@ -168,6 +170,20 @@ describe("WorkspaceTabBar — accessible tabs", () => {
     );
     expect(scrollIntoView).toHaveBeenCalledTimes(2);
     delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
+
+  it("marks a running session tab without marking file tabs", () => {
+    const tabs = [sessionTab("A"), fileTab("a")];
+    mount({
+      tabs,
+      activeTabId: tabs[0]!.id,
+      sessionLabels: { A: "Session A" },
+      runningSessionIds: new Set(["A"]),
+    });
+    const roles = screen.getAllByRole("tab");
+    expect(roles[0]!.getAttribute("data-running")).toBe("true");
+    expect(roles[0]!.querySelector(".workspace-tab-running-dot")).toBeTruthy();
+    expect(roles[1]!.getAttribute("data-running")).toBeNull();
   });
 
   it("renders a session icon and file icons via getFileIcon", () => {
