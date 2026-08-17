@@ -25,15 +25,15 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { SessionEntry } from "@fffattiger/pix-protocol";
-import { createSessionsApi } from "@/api/sessions";
-import { queryKeys } from "@/api/query-keys";
+import { createSessionHistoryQueryOptions, TRANSCRIPT_PAGE_SIZE } from "@/api/session-history";
 import { useHttpClient } from "@/app/http-context";
 import { useRuntime } from "@/runtime";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { isCompactionBoundary } from "@/components/transcript/chat-projection";
 
-/** Default first-page size (Protocol v2 default; bounded 1..200 server-side). */
-export const TRANSCRIPT_PAGE_SIZE = 50;
+// Back-compat re-export: page size now lives with the centralized history
+// query options (packages/client/src/api/session-history.ts).
+export { TRANSCRIPT_PAGE_SIZE };
 
 /**
  * Module-level single-flight lock for older-page fetches, keyed by the
@@ -120,7 +120,6 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
   const http = useHttpClient();
   const runtime = useRuntime();
   const { canBrowseSessions } = useCapabilities();
-  const sessionsApi = createSessionsApi(http);
   // Live history layer: anchor/generation/live entries come from the store.
   const liveGeneration = live ? runtime.historyGeneration : 0;
   const liveAnchor = live ? runtime.historyAnchorLeafId : null;
@@ -134,33 +133,18 @@ export function useSessionTranscript(options: UseSessionTranscriptOptions): Sess
     Boolean(sessionId) &&
     !(live && liveAnchor === null);
 
-  type HistoryPageParam = { readonly leafId?: string; readonly before?: string };
-  const initialPageParam: HistoryPageParam = liveAnchor === null ? {} : { leafId: liveAnchor };
-
-  const queryKey = queryKeys.sessions.history(sessionId ?? "", liveGeneration, liveAnchor);
-  const query = useInfiniteQuery({
-    queryKey,
-    queryFn: ({ pageParam, signal }) => sessionsApi.context(sessionId ?? "", {
-      ...(pageParam.leafId === undefined ? {} : { leafId: pageParam.leafId }),
-      ...(pageParam.before === undefined ? {} : { before: pageParam.before }),
-      limit: TRANSCRIPT_PAGE_SIZE,
-      signal,
-    }),
-    initialPageParam,
-    getNextPageParam: (lastPage): HistoryPageParam | undefined => {
-      const cursor = lastPage.context.pageInfo.nextCursor;
-      if (!lastPage.context.pageInfo.hasMore || cursor === undefined) return undefined;
-      // Carry the FIRST page's resolved branch leaf in the page parameter. This
-      // makes the cursor self-contained per query/session and prevents a mutable
-      // ref from leaking A's branch into B during a fast session switch.
-      return {
-        ...(lastPage.context.leafId === undefined ? {} : { leafId: lastPage.context.leafId }),
-        before: cursor,
-      };
-    },
+  // Centralized history query: the SAME key/queryFn/cursor semantics the
+  // sidebar prepare/ensure flow uses, so a prepared first page is the exact
+  // cache this hook mounts against (no second request, no drift).
+  const historyQueryOptions = createSessionHistoryQueryOptions({
+    http,
+    sessionId: sessionId ?? "",
+    generation: liveGeneration,
+    anchor: liveAnchor,
     enabled: historyEnabled,
-    staleTime: 30_000,
   });
+  const query = useInfiniteQuery(historyQueryOptions);
+  const queryKey = historyQueryOptions.queryKey;
 
   const persistedPages = query.data?.pages ?? [];
   const persistedEntries = useMemo(

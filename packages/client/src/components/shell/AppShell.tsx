@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { createQueryOptions } from "@/api/query-keys";
+import { createSessionHistoryQueryOptions } from "@/api/session-history";
 import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
@@ -98,6 +99,35 @@ export function AppShell({ search }: AppShellProps) {
     void runtime.detach().catch(() => undefined);
   }, [runtime.attached, runtime.sessionId, search.session]);
 
+  // ── No-flicker session navigation (prepare → atomic commit) ──────────────
+  // Sidebar selection no longer navigates the URL directly: it first prepares
+  // the target's exact first history page (the SAME centralized infinite-query
+  // key the detail frame consumes) and only commits the `?session=` navigation
+  // once that page has settled (data present, or an honest prefetch error). The
+  // current detail frame stays mounted and correct the whole time — never an
+  // intermediate empty/loading frame, never A's messages relabeled as B.
+  //
+  // `pendingSessionId` drives a lightweight pending cue ONLY on the target
+  // sidebar row. `selectionGenerationRef` implements latest-intent-wins: rapid
+  // B→C bumps the generation so a late B completion never navigates back. The
+  // fingerprint check (prepared-from URL vs the currently presented URL) makes
+  // external navigation (back / deep link / worktree switch) invalidate any
+  // in-flight prepare so it never clobbers the user's new destination.
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null);
+  const selectionGenerationRef = useRef(0);
+  // Latest presented URL search (synced every render; the async prepare reads
+  // it at commit time, never a stale closure).
+  const liveSearchRef = useRef(search);
+  liveSearchRef.current = search;
+  // Currently URL-selected session (fresh every render for the no-op guard).
+  const selectedSessionRef = useRef(search.session ?? null);
+  selectedSessionRef.current = search.session ?? null;
+  // Any external/navigation change to the selected session clears a stale
+  // pending cue (a pending prepare that gets superseded must not linger).
+  useEffect(() => {
+    setPendingSessionId(null);
+  }, [search.session]);
+
   // Title-bar workspace-controls portal host (Sidebar portals its project +
   // worktree controls in here; the sidebar fallback renders while null).
   const [titleWorkspaceControlsHost, setTitleWorkspaceControlsHost] = useState<HTMLDivElement | null>(null);
@@ -163,9 +193,12 @@ export function AppShell({ search }: AppShellProps) {
   // detaches/stops a Runtime — deletion cannot succeed while a session is live
   // (sessiond rejects with 409), so no runtime coordination is needed.
   // Non-selected deletions leave the URL untouched (Sidebar only calls this for
-  // the URL-selected row).
+  // the URL-selected row). An in-flight prepare is invalidated (it must never
+  // re-open a session the user just moved away from).
   const handleSessionDeleted = (deletedId: string): void => {
     if (search.session === deletedId) {
+      selectionGenerationRef.current += 1;
+      setPendingSessionId(null);
       void navigate({ to: "/", search: search.cwd === undefined ? {} : { cwd: search.cwd } });
     }
   };
@@ -176,29 +209,100 @@ export function AppShell({ search }: AppShellProps) {
     // the fresh live session becomes the page's session — otherwise the mismatch
     // effect would immediately detach the just-created session. navigate()
     // updates the router store synchronously, well before createSession's
-    // attach round-trip completes, so no mismatch window opens.
+    // attach round-trip completes, so no mismatch window opens. The generation
+    // bump invalidates any in-flight prepare so it can never detach the
+    // just-created live session by committing its navigation afterwards.
+    selectionGenerationRef.current += 1;
+    setPendingSessionId(null);
     void navigate({ to: "/", search: { cwd: search.cwd } });
     // M2: the workspace cwd is treated as the project root. Worktree/project
     // selection (D3A) will refine this later; we never hardcode a fallback.
     void runtime.createSession({ cwd: search.cwd, projectRoot: search.cwd }).catch(() => undefined);
   };
 
-  // Sidebar row selection: URL navigation (`?session=`) ONLY — read-only
-  // history browsing. It never attaches/activates, never stops, never creates;
-  // the Composer's send is the sole activation trigger.
-  const handleSelectSession = useCallback((sessionId: string): void => {
+  /**
+   * Atomic commit of a prepared session selection. Reads the CURRENT cwd from
+   * the live search ref (the prepare has already verified the URL did not move
+   * in the meantime). Never attaches/activates — URL navigation only.
+   */
+  const commitSessionNavigation = useCallback((sessionId: string): void => {
+    const cwd = liveSearchRef.current.cwd;
     void navigate({
       to: "/",
-      search: { session: sessionId, ...(search.cwd === undefined ? {} : { cwd: search.cwd }) },
+      search: { session: sessionId, ...(cwd === undefined ? {} : { cwd }) },
     });
-  }, [navigate, search.cwd]);
+  }, [navigate]);
+
+  // Sidebar row selection: prepare-then-commit (no-flicker). It never
+  // attaches/activates, never stops, never creates; the Composer's send is the
+  // sole activation trigger. The URL only changes once the target's exact first
+  // history page has settled in the shared cache (or an honest prefetch error
+  // committed) — so the detail frame never renders an empty/loading swap and
+  // never labels A's messages as B. Rapid B→C is latest-intent-wins; a late
+  // completion (external URL move, newer selection) never navigates.
+  const handleSelectSession = useCallback((sessionId: string): void => {
+    // Already showing this session — no-op (never re-prepare / re-navigate).
+    if (sessionId === selectedSessionRef.current) return;
+    const preparedFrom = liveSearchRef.current;
+    const generation = ++selectionGenerationRef.current;
+    setPendingSessionId(sessionId);
+    // The target IS the attached live session (e.g. live via create with no
+    // explicit ?session): the live frame is already mounted and correct, so
+    // commit the explicit selection immediately — there is no history frame to
+    // prepare and a history prepare would be wasted (the live detail key is
+    // different).
+    if (runtime.attached && runtime.sessionId === sessionId) {
+      setPendingSessionId(null);
+      commitSessionNavigation(sessionId);
+      return;
+    }
+    // No history capability: direct navigation keeps the existing degraded
+    // semantics (the detail frame shows the honest "history unavailable" state).
+    if (!canBrowseSessions) {
+      setPendingSessionId(null);
+      commitSessionNavigation(sessionId);
+      return;
+    }
+    // Prepare the EXACT first history page with the same centralized options
+    // useSessionTranscript will mount against (generation 0 / no anchor = a
+    // read-only history session). ensureInfiniteQueryData resolves immediately
+    // from a warm cache, fetches the first page on a cold cache, and rejects on
+    // a prefetch error — in every case we commit so the target's real state
+    // (data or honest error surface) renders.
+    const options = createSessionHistoryQueryOptions({
+      http,
+      sessionId,
+      generation: 0,
+      anchor: null,
+      enabled: true,
+    });
+    void (async () => {
+      try {
+        await queryClient.ensureInfiniteQueryData(options);
+      } catch {
+        // Prefetch error: commit anyway so the target's honest error surface
+        // renders instead of leaving the old frame indefinitely.
+      }
+      // Latest-intent-wins: superseded by a newer selection → never navigate.
+      if (selectionGenerationRef.current !== generation) return;
+      // External navigation (back / deep link / cwd switch) during prepare →
+      // never clobber the user's new destination.
+      const presented = liveSearchRef.current;
+      if (presented.session !== preparedFrom.session || presented.cwd !== preparedFrom.cwd) return;
+      setPendingSessionId(null);
+      commitSessionNavigation(sessionId);
+    })();
+  }, [queryClient, http, canBrowseSessions, runtime.attached, runtime.sessionId, commitSessionNavigation]);
 
   // D3A managed-worktree switch/Open: Client URL cwd navigation ONLY. Never Git
   // checkout, never create/attach/stop/move a Session, never a server endpoint.
   // Navigating with a fresh `{ cwd: path }` search intentionally clears any old
   // `session` selection so a stale session is never displayed under the new
-  // workspace; existing runtime sessions stay alive untouched.
+  // workspace; existing runtime sessions stay alive untouched. The generation
+  // bump invalidates any in-flight prepare (its prepared-from cwd is gone).
   const handleOpenWorktree = (path: string): void => {
+    selectionGenerationRef.current += 1;
+    setPendingSessionId(null);
     void navigate({ to: "/", search: { cwd: path } });
   };
 
@@ -382,6 +486,7 @@ export function AppShell({ search }: AppShellProps) {
           search={search}
           liveSessionId={runtime.attached ? runtime.sessionId : null}
           liveStreaming={runtime.attached && runtime.streaming}
+          pendingSessionId={pendingSessionId}
           onSessionDeleted={handleSessionDeleted}
           onSelectSession={handleSelectSession}
           onOpenWorktree={handleOpenWorktree}

@@ -218,6 +218,7 @@ export const enLocale = {
     "desktop.noMatchingFiles": "No matching files",
     "desktop.steerOrQueueFollowUp": "Steer now / queue follow-up...",
     "desktop.agentRunning": "Agent is running...",
+    "desktop.openingSession": "Opening session…",
     "desktop.messageWithCommands": "Message... Type / for commands, @ for files",
     "desktop.quickChanges": "Quick Changes",
     "desktop.changedFiles": "{count} changed files",

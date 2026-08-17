@@ -218,6 +218,7 @@ export const zhCNLocale = {
     "desktop.noMatchingFiles": "没有匹配的文件",
     "desktop.steerOrQueueFollowUp": "立即引导 / 排队后续消息...",
     "desktop.agentRunning": "Agent 正在运行...",
+    "desktop.openingSession": "正在打开会话…",
     "desktop.messageWithCommands": "输入消息... 输入 / 查看命令，@ 查看文件",
     "desktop.quickChanges": "快速变更",
     "desktop.changedFiles": "{count} 个变更文件",

@@ -47,6 +47,13 @@ export interface SidebarProps {
   /** True while the attached runtime is streaming (drives the row spinner). */
   liveStreaming: boolean;
   /**
+   * Session currently being prepared by the AppShell no-flicker selection flow
+   * (data settling in the shared history cache, URL not yet committed). The
+   * row gets a lightweight pending cue only — the detail frame stays mounted
+   * on the currently selected session until the atomic commit.
+   */
+  pendingSessionId?: string | null;
+  /**
    * D4 delete-navigation callback. AppShell is the single navigation owner: it
    * clears only the `session` search param (preserving `cwd`) when the deleted
    * session equals the URL-selected session.
@@ -331,6 +338,7 @@ export function Sidebar({
   search,
   liveSessionId,
   liveStreaming,
+  pendingSessionId,
   onSessionDeleted,
   onSelectSession,
   onOpenWorktree,
@@ -642,6 +650,7 @@ export function Sidebar({
       key={node.session.sessionId}
       node={node}
       selectedSessionId={search.session ?? null}
+      pendingSessionId={pendingSessionId ?? null}
       runningSessionIds={runningSessionIds}
       liveSessionId={liveSessionId}
       canRename={canWriteSessions}
@@ -1044,6 +1053,7 @@ function TimeGroupHeader({
 function SessionTreeItem({
   node,
   selectedSessionId,
+  pendingSessionId,
   runningSessionIds,
   liveSessionId,
   canRename,
@@ -1057,6 +1067,7 @@ function SessionTreeItem({
 }: {
   node: SessionTreeNode;
   selectedSessionId: string | null;
+  pendingSessionId: string | null;
   runningSessionIds: ReadonlySet<string>;
   liveSessionId: string | null;
   canRename: boolean;
@@ -1102,6 +1113,7 @@ function SessionTreeItem({
         <SessionItem
           session={node.session}
           isSelected={isSelected}
+          isPending={node.session.sessionId === pendingSessionId}
           isRunning={runningSessionIds.has(node.session.sessionId)}
           liveSessionId={liveSessionId}
           canRename={canRename}
@@ -1128,6 +1140,7 @@ function SessionTreeItem({
               key={child.session.sessionId}
               node={child}
               selectedSessionId={selectedSessionId}
+              pendingSessionId={pendingSessionId}
               runningSessionIds={runningSessionIds}
               liveSessionId={liveSessionId}
               canRename={canRename}
@@ -1185,9 +1198,56 @@ function RunningSessionIndicator() {
   );
 }
 
+/**
+ * Lightweight pending cue for the sidebar row the no-flicker selection flow is
+ * currently preparing (first history page settling, URL not yet committed).
+ * Reuses the exact running-spinner markup/animation and existing tokens — only
+ * the color is muted (`--text-dim`) so it can never be mistaken for a live
+ * running session (`--accent`). No new animation is introduced.
+ */
+function PendingSessionIndicator() {
+  const { t } = useI18n();
+
+  return (
+    <span
+      title={t("desktop.openingSession")}
+      aria-label={t("desktop.openingSession")}
+      style={{
+        width: 14,
+        height: 14,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        color: "var(--text-dim)",
+      }}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ display: "block" }}>
+        <g>
+          <path
+            d="M21 12a9 9 0 1 1-3.8-7.4"
+            stroke="currentColor"
+            strokeWidth="2.8"
+            strokeLinecap="round"
+          />
+          <animateTransform
+            attributeName="transform"
+            type="rotate"
+            from="0 12 12"
+            to="360 12 12"
+            dur="0.9s"
+            repeatCount="indefinite"
+          />
+        </g>
+      </svg>
+    </span>
+  );
+}
+
 function SessionItem({
   session,
   isSelected,
+  isPending,
   isRunning,
   liveSessionId,
   canRename,
@@ -1204,6 +1264,8 @@ function SessionItem({
 }: {
   session: SessionHeader;
   isSelected: boolean;
+  /** Row is being prepared by the no-flicker selection flow (lightweight cue only). */
+  isPending: boolean;
   isRunning?: boolean;
   liveSessionId: string | null;
   canRename: boolean;
@@ -1493,9 +1555,15 @@ function SessionItem({
                 lineHeight: "20px",
                 color: "var(--text)",
               }}
-              title={isRunning ? `${title} · ${t("desktop.agentRunning")}` : title}
+              title={
+                isRunning
+                  ? `${title} · ${t("desktop.agentRunning")}`
+                  : isPending
+                    ? `${title} · ${t("desktop.openingSession")}`
+                    : title
+              }
             >
-              {isRunning ? <RunningSessionIndicator /> : null}
+              {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}
               {renaming ? (
                 <div
                   style={{
