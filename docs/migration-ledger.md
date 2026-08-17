@@ -3618,3 +3618,12 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Client workspace helpers now keep a Windows drive root as `C:/` instead of collapsing it to `C:`.
 - Drive-absolute containment, parent, breadcrumbs, join, and relative display compare case-insensitively. POSIX `/` behavior is unchanged.
 - This is display/navigation only. It does not add Protocol path-flavor DTOs, PWA secure-context productization, or Windows product support.
+
+---
+
+## 80. Cross-platform CP-12 — Windows path redaction in public errors
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `b08ce30`.
+- Worker `redactText` now collapses Windows drive, UNC, `\\?\`, and `file://` paths in addition to POSIX absolute paths.
+- Host `runChecked` / spawn-unavailable messages use the same sanitizer so Git stderr and raw OS messages do not echo user paths.
+- Public error codes stay `COMMAND_FAILED` / `PROCESS_UNAVAILABLE`. This is not adapter exact-open or AllowedRoot identity work.

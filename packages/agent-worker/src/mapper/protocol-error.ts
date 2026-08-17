@@ -16,8 +16,11 @@ const MAX_KEYS = 64;
 const MAX_STRING = 2_048;
 const SECRET_KEY =
   /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|credential|code)/i;
-/** Plausible absolute paths are collapsed so backend filesystem layout never leaks. */
-const PATH_PATTERN = /(?:^|[\s(=\[{,])((?:\/[\w.@-]+){2,})/g;
+/** POSIX absolute paths with at least two segments. */
+const POSIX_PATH_PATTERN = /(?:^|[\s(=\[{,])((?:\/[\w.@-]+){2,})/g;
+/** Windows drive, UNC, extended, and file:// URL forms. */
+const WINDOWS_PATH_PATTERN =
+  /(?:^|[\s(=\[{,])((?:[A-Za-z]:[\\/][^\s,;}\])'"]+|\\\\[^\s,;}\])'"]+|\/\/\?\/[A-Za-z]:[^\s,;}\])'"]+|file:\/\/[A-Za-z]:[^\s,;}\])'"]+|file:\/\/\/[^\s,;}\])'"]+))/g;
 
 export function redactText(value: string): string {
   return value
@@ -29,7 +32,8 @@ export function redactText(value: string): string {
       "$1[REDACTED]",
     )
     .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(PATH_PATTERN, (match, _path) => match.replace(_path, "[path]"));
+    .replace(WINDOWS_PATH_PATTERN, (match, path) => match.replace(path, "[path]"))
+    .replace(POSIX_PATH_PATTERN, (match, path) => match.replace(path, "[path]"));
 }
 
 export function sanitizeUnknown(value: unknown, depth = 0, key?: string): unknown {

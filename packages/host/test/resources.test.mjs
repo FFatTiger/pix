@@ -15,6 +15,7 @@ import {
   createFileWatchManager,
   createHostApp,
   createProcessRunner,
+  runChecked,
   HttpError,
   parseSingleRange,
 } from "../dist/index.js";
@@ -539,6 +540,17 @@ test("bounded process runner does not spawn pre-aborted work and distinguishes t
   await assert.rejects(() => runner.run({ command: process.execPath, args: ["-e", "process.stdout.write('x'.repeat(10000))"], maxOutputBytes: 100 }), (e) => e.code === "PROCESS_OUTPUT_LIMIT");
   const exit = await runner.run({ command: process.execPath, args: ["-e", "process.exit(7)"] }); assert.equal(exit.exitCode, 7);
   const controller = new AbortController(); const pending = runner.run({ command: process.execPath, args: ["-e", "setTimeout(()=>{},1000)"], signal: controller.signal }); controller.abort(); await assert.rejects(() => pending, (e) => e.code === "PROCESS_ABORTED");
+});
+
+test("process runner public errors redact Windows and POSIX paths", async () => {
+  const runner = createProcessRunner({ allowedCommands: [process.execPath] });
+  await assert.rejects(
+    () => runChecked(runner, { command: process.execPath, args: ["-e", "console.error('failed C:\\\\Users\\\\name\\\\secret.txt /tmp/hidden/file'); process.exit(2)"] }),
+    (e) => e.code === "COMMAND_FAILED"
+      && !String(e.message).includes("Users")
+      && !String(e.message).includes("/tmp/hidden")
+      && String(e.message).includes("[path]"),
+  );
 });
 
 test("bounded process runner fails closed when the child survives SIGKILL", async () => {

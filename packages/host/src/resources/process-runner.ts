@@ -1,6 +1,18 @@
 import { spawn } from "node:child_process";
 import { HttpError } from "../errors.js";
 
+const MAX_PUBLIC_PROCESS_MESSAGE = 4_096;
+const POSIX_PATH_PATTERN = /(?:^|[\s(=\[{,])((?:\/[\w.@-]+){2,})/g;
+const WINDOWS_PATH_PATTERN =
+  /(?:^|[\s(=\[{,])((?:[A-Za-z]:[\\/][^\s,;}\])'"]+|\\\\[^\s,;}\])'"]+|file:\/\/[A-Za-z]:[^\s,;}\])'"]+|file:\/\/\/[^\s,;}\])'"]+))/g;
+
+function sanitizeProcessMessage(value: string): string {
+  return value
+    .replace(WINDOWS_PATH_PATTERN, (match, path) => match.replace(path, "[path]"))
+    .replace(POSIX_PATH_PATTERN, (match, path) => match.replace(path, "[path]"))
+    .slice(0, MAX_PUBLIC_PROCESS_MESSAGE);
+}
+
 export interface ProcessRequest {
   command: string;
   args: readonly string[];
@@ -113,7 +125,7 @@ export function createProcessRunner(defaults: {
           }
         });
         child.once("error", (error) => {
-          settle(() => reject(new HttpError(503, "PROCESS_UNAVAILABLE", error.message)));
+          settle(() => reject(new HttpError(503, "PROCESS_UNAVAILABLE", sanitizeProcessMessage(error.message))));
         });
         child.once("close", (code, signal) => {
           settle(() => {
@@ -146,7 +158,7 @@ export async function runChecked(runner: ProcessRunner, request: ProcessRequest)
   const result = await runner.run(request);
   if (result.exitCode !== 0) {
     const message = result.stderr.trim() || `Command exited with code ${result.exitCode}`;
-    throw new HttpError(400, "COMMAND_FAILED", message.slice(0, 4_096));
+    throw new HttpError(400, "COMMAND_FAILED", sanitizeProcessMessage(message));
   }
   return result.stdout;
 }

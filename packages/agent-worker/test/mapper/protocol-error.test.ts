@@ -21,6 +21,24 @@ describe("protocol-error sanitization", () => {
     assert.ok(text.includes("[REDACTED]"));
   });
 
+  it("redacts Windows drive, UNC, extended, and file URL paths", () => {
+    const text = redactText(
+      [
+        "failed C:\\Users\\name\\secret.txt",
+        "also C:/Users/name/secret.txt",
+        "unc \\\\server\\share\\hidden",
+        "ext \\\\?\\C:\\Windows\\secret",
+        "url file:///C:/Users/name/secret.txt",
+      ].join(" "),
+    );
+    assert.equal(text.includes("Users\\name"), false);
+    assert.equal(text.includes("Users/name"), false);
+    assert.equal(text.includes("server\\share"), false);
+    assert.equal(text.includes("Windows\\secret"), false);
+    assert.equal(text.includes("file:///C:"), false);
+    assert.ok(text.includes("[path]"));
+  });
+
   it("sanitizeUnknown recurses and truncates depth/arrays/keys", () => {
     // MAX_DEPTH = 6: root is depth 0; the value under key `f` is reached at
     // depth 6 and must collapse to the truncation marker (not the whole tree).
