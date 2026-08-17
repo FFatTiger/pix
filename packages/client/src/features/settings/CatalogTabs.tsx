@@ -5,6 +5,7 @@ import { useHttpClient } from "@/app/http-context";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import type { AuthProviderStatusResponse, ModelsResponse } from "@/api/schemas";
 import { describeCatalogError } from "@/features/catalog/catalog-errors";
+import { useI18n } from "@/hooks/useI18n";
 
 /**
  * Read-only catalog tabs for the Settings modal (absorbing the D3B Catalog
@@ -51,9 +52,14 @@ function formatExpiry(expiresAt: number | undefined): string | null {
   return expiry.toLocaleString();
 }
 
+function useCatalogI18n() {
+  return useI18n();
+}
+
 export function ModelsSettingsTab({ cwd }: { cwd: string | null }) {
   const http = useHttpClient();
   const { can } = useCapabilities();
+  const { t } = useCatalogI18n();
   const canModels = can("models");
   const canProviders = can("auth.providers");
   const canFetchModels = canModels && Boolean(cwd);
@@ -76,24 +82,24 @@ export function ModelsSettingsTab({ cwd }: { cwd: string | null }) {
     })),
   });
 
-  if (!cwd) return <EmptyState message="Open a project to browse models." />;
+  if (!cwd) return <EmptyState message={t("desktop.catalog.openProjectToBrowse", { what: t("desktop.catalog.models") })} />;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-      <SectionHeader title="Models" />
+      <SectionHeader title={t("desktop.catalog.models")} />
       {!canModels ? (
-        <EmptyState message="Models catalog is not available." />
+        <EmptyState message={t("desktop.catalog.notAvailable", { what: t("desktop.catalog.models") })} />
       ) : modelsQuery.isLoading ? (
-        <EmptyState message="Loading models…" />
+        <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.models") })} />
       ) : modelsQuery.isError ? (
         <ErrorState error={modelsQuery.error} />
       ) : (() => {
         const data = modelsQuery.data as ModelsResponse | undefined;
         const models = data?.models ?? [];
         const defaultModel = data?.defaultModel ?? null;
-        if (models.length === 0) return <EmptyState message="No models." />;
+        if (models.length === 0) return <EmptyState message={t("desktop.catalog.empty", { what: t("desktop.catalog.models") })} />;
         return (
-          <ul className="catalog-list" aria-label="Models">
+          <ul className="catalog-list" aria-label={t("desktop.catalog.models")}>
             {models.map((model: ModelInfo) => {
               const isDefault =
                 defaultModel !== null &&
@@ -104,11 +110,11 @@ export function ModelsSettingsTab({ cwd }: { cwd: string | null }) {
                 <li key={`${model.provider}:${model.id}`} className="catalog-row">
                   <div className="catalog-row-main">
                     <span className="catalog-row-title">{model.displayName || model.id}</span>
-                    {isDefault ? <span className="catalog-chip catalog-chip--accent">Default</span> : null}
+                    {isDefault ? <span className="catalog-chip catalog-chip--accent">{t("desktop.catalog.default")}</span> : null}
                   </div>
                   <div className="catalog-row-meta">
                     <span className="catalog-meta-item">{model.provider}</span>
-                    {model.thinking ? <span className="catalog-chip">thinking</span> : null}
+                    {model.thinking ? <span className="catalog-chip">{t("desktop.catalog.thinking")}</span> : null}
                     {ctx ? <span className="catalog-meta-item">{ctx}</span> : null}
                   </div>
                 </li>
@@ -120,15 +126,15 @@ export function ModelsSettingsTab({ cwd }: { cwd: string | null }) {
 
       {canProviders ? (
         <>
-          <SectionHeader title="Auth providers" />
+          <SectionHeader title={t("desktop.catalog.authProviders")} />
           {providersQuery.isLoading ? (
-            <EmptyState message="Loading providers…" />
+            <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.providers") })} />
           ) : providersQuery.isError ? (
             <ErrorState error={providersQuery.error} />
           ) : providers.length === 0 ? (
-            <EmptyState message="No providers." />
+            <EmptyState message={t("desktop.catalog.empty", { what: t("desktop.catalog.providers") })} />
           ) : (
-            <ul className="catalog-list" aria-label="Providers">
+            <ul className="catalog-list" aria-label={t("desktop.catalog.authProviders")}>
               {providers.map((provider, index) => {
                 const statusQuery = statusQueries[index];
                 const statusData = statusQuery?.data as AuthProviderStatusResponse | undefined;
@@ -147,25 +153,25 @@ export function ModelsSettingsTab({ cwd }: { cwd: string | null }) {
                     </div>
                     <div className="catalog-row-meta">
                       {statusQuery?.isError ? (
-                        <span className="catalog-meta-item catalog-meta-item--error">Status unavailable</span>
+                        <span className="catalog-meta-item catalog-meta-item--error">{t("desktop.catalog.statusUnavailable")}</span>
                       ) : statusQuery?.isLoading ? (
-                        <span className="catalog-meta-item">Status…</span>
+                        <span className="catalog-meta-item">{t("desktop.catalog.statusPending")}</span>
                       ) : (
                         <>
                           {configured !== undefined ? (
                             <span className={`catalog-chip${configured ? " catalog-chip--ok" : ""}`}>
-                              {configured ? "configured" : "not configured"}
+                              {configured ? t("desktop.catalog.configured") : t("desktop.catalog.notConfigured")}
                             </span>
                           ) : null}
                           {status ? (
                             <span className={`catalog-chip${status.authorized ? " catalog-chip--ok" : ""}`}>
-                              {status.authorized ? "authorized" : "not authorized"}
+                              {status.authorized ? t("desktop.catalog.authorized") : t("desktop.catalog.notAuthorized")}
                             </span>
                           ) : null}
                           {status?.accountName ? (
                             <span className="catalog-meta-item">{status.accountName}</span>
                           ) : null}
-                          {expiry ? <span className="catalog-meta-item">exp {expiry}</span> : null}
+                          {expiry ? <span className="catalog-meta-item">{t("desktop.catalog.expiry", { expiry })}</span> : null}
                         </>
                       )}
                     </div>
@@ -183,6 +189,7 @@ export function ModelsSettingsTab({ cwd }: { cwd: string | null }) {
 export function SkillsSettingsTab({ cwd }: { cwd: string | null }) {
   const http = useHttpClient();
   const { can } = useCapabilities();
+  const { t } = useCatalogI18n();
   const canSkills = can("skills");
   const canFetch = canSkills && Boolean(cwd);
 
@@ -191,28 +198,28 @@ export function SkillsSettingsTab({ cwd }: { cwd: string | null }) {
     enabled: canFetch,
   });
 
-  if (!cwd) return <EmptyState message="Open a project to browse skills." />;
-  if (!canSkills) return <EmptyState message="Skills catalog is not available." />;
-  if (query.isLoading) return <EmptyState message="Loading skills…" />;
+  if (!cwd) return <EmptyState message={t("desktop.catalog.openProjectToBrowse", { what: t("desktop.catalog.skills") })} />;
+  if (!canSkills) return <EmptyState message={t("desktop.catalog.notAvailable", { what: t("desktop.catalog.skills") })} />;
+  if (query.isLoading) return <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.skills") })} />;
   if (query.isError) return <ErrorState error={query.error} />;
 
   const skills = (query.data?.skills ?? []) as SkillInfo[];
-  if (skills.length === 0) return <EmptyState message="No skills." />;
+  if (skills.length === 0) return <EmptyState message={t("desktop.catalog.empty", { what: t("desktop.catalog.skills") })} />;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-      <ul className="catalog-list" aria-label="Skills">
+      <ul className="catalog-list" aria-label={t("desktop.catalog.skills")}>
         {skills.map((skill) => (
           <li key={skill.name} className="catalog-row">
             <div className="catalog-row-main">
               <span className="catalog-row-title">{skill.name}</span>
               <span className={`catalog-chip${skill.enabled ? " catalog-chip--ok" : ""}`}>
-                {skill.enabled ? "enabled" : "disabled"}
+                {skill.enabled ? t("desktop.catalog.enabled") : t("desktop.catalog.disabled")}
               </span>
-              {skill.updateAvailable ? <span className="catalog-chip catalog-chip--accent">update</span> : null}
+              {skill.updateAvailable ? <span className="catalog-chip catalog-chip--accent">{t("desktop.catalog.updateAvailable")}</span> : null}
             </div>
             <div className="catalog-row-meta">
-              {skill.version ? <span className="catalog-meta-item">v{skill.version}</span> : null}
+              {skill.version ? <span className="catalog-meta-item">{t("desktop.catalog.version", { version: skill.version })}</span> : null}
               {skill.description ? <span className="catalog-meta-item catalog-meta-item--wrap">{skill.description}</span> : null}
             </div>
           </li>
@@ -225,6 +232,7 @@ export function SkillsSettingsTab({ cwd }: { cwd: string | null }) {
 export function PluginsSettingsTab({ cwd }: { cwd: string | null }) {
   const http = useHttpClient();
   const { can } = useCapabilities();
+  const { t } = useCatalogI18n();
   const canPlugins = can("plugins");
   const canCommands = can("skills") || can("plugins");
   const canFetchPlugins = canPlugins && Boolean(cwd);
@@ -239,31 +247,31 @@ export function PluginsSettingsTab({ cwd }: { cwd: string | null }) {
     enabled: canFetchCommands,
   });
 
-  if (!cwd) return <EmptyState message="Open a project to browse plugins." />;
+  if (!cwd) return <EmptyState message={t("desktop.catalog.openProjectToBrowse", { what: t("desktop.catalog.plugins") })} />;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
       {!canPlugins ? (
-        <EmptyState message="Plugins catalog is not available." />
+        <EmptyState message={t("desktop.catalog.notAvailable", { what: t("desktop.catalog.plugins") })} />
       ) : pluginsQuery.isLoading ? (
-        <EmptyState message="Loading plugins…" />
+        <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.plugins") })} />
       ) : pluginsQuery.isError ? (
         <ErrorState error={pluginsQuery.error} />
       ) : (() => {
         const plugins = (pluginsQuery.data?.plugins ?? []) as PluginInfo[];
-        if (plugins.length === 0) return <EmptyState message="No plugins." />;
+        if (plugins.length === 0) return <EmptyState message={t("desktop.catalog.empty", { what: t("desktop.catalog.plugins") })} />;
         return (
-          <ul className="catalog-list" aria-label="Plugins">
+          <ul className="catalog-list" aria-label={t("desktop.catalog.plugins")}>
             {plugins.map((plugin) => (
               <li key={plugin.name} className="catalog-row">
                 <div className="catalog-row-main">
                   <span className="catalog-row-title">{plugin.name}</span>
                   <span className={`catalog-chip${plugin.enabled ? " catalog-chip--ok" : ""}`}>
-                    {plugin.enabled ? "enabled" : "disabled"}
+                    {plugin.enabled ? t("desktop.catalog.enabled") : t("desktop.catalog.disabled")}
                   </span>
                 </div>
                 <div className="catalog-row-meta">
-                  {plugin.version ? <span className="catalog-meta-item">v{plugin.version}</span> : null}
+                  {plugin.version ? <span className="catalog-meta-item">{t("desktop.catalog.version", { version: plugin.version })}</span> : null}
                 </div>
               </li>
             ))}
@@ -273,16 +281,16 @@ export function PluginsSettingsTab({ cwd }: { cwd: string | null }) {
 
       {canCommands ? (
         <>
-          <SectionHeader title="Commands" />
+          <SectionHeader title={t("desktop.catalog.commands")} />
           {commandsQuery.isLoading ? (
-            <EmptyState message="Loading commands…" />
+            <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.commands") })} />
           ) : commandsQuery.isError ? (
             <ErrorState error={commandsQuery.error} />
           ) : (() => {
             const commands = (commandsQuery.data?.commands ?? []) as SlashCommandInfo[];
-            if (commands.length === 0) return <EmptyState message="No commands." />;
+            if (commands.length === 0) return <EmptyState message={t("desktop.catalog.empty", { what: t("desktop.catalog.commands") })} />;
             return (
-              <ul className="catalog-list" aria-label="Commands">
+              <ul className="catalog-list" aria-label={t("desktop.catalog.commands")}>
                 {commands.map((command) => (
                   <li key={`${command.source}:${command.name}`} className="catalog-row">
                     <div className="catalog-row-main">

@@ -1,15 +1,11 @@
 import { useState, useCallback, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Moon, PaintBrush, Sun, Monitor, ArrowSquareOut, Link, Check, CircleHalf, Sparkle } from "@phosphor-icons/react";
-import { useHttpClient } from "@/app/http-context";
-import { createQueryOptions } from "@/api/query-keys";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme, type ThemeMode } from "@/hooks/useTheme";
 import { useWallpaper } from "@/hooks/useWallpaper";
 import { resolveWallpaperUrl } from "@/lib/wallpaper";
 import { SettingsSection, SettingsButton } from "@/features/settings/settings-ui";
 import { SettingToggle } from "@/components/SettingToggle";
-import { BUILTIN_THEME_SETS } from "@/lib/theme";
 
 // ── Tag / chip helpers ───────────────────────────────────────────────────────
 
@@ -109,22 +105,23 @@ function BorderIcon({ depth }: { depth: number }) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 export function DisplayConfig() {
-  const { mode, resolvedMode, themeName, setMode, setTheme, borderDepth, setBorderDepth, fontScale, setFontScale } = useTheme();
+  const { mode, resolvedMode, themeName, setMode, setTheme, borderDepth, setBorderDepth, fontScale, setFontScale, hasProject, catalog, resolveStatus } = useTheme();
   const { locale: language, setLocale: setLanguage, t } = useI18n();
-  const http = useHttpClient();
-  // pix adapter: theme sets come from GET /v1/themes via the api layer (the
-  // source called the old Next themes route inline). Fixed degradation: while
-  // the Host themes route is pending, fall back to the built-in sets so the
-  // Default + builtin themes stay selectable and no raw error is rendered.
-  const themesQuery = useQuery(createQueryOptions(http).themes.list());
-  const themeSets = themesQuery.data?.themeSets ?? BUILTIN_THEME_SETS;
-  const loading = themesQuery.isPending;
-  const [applying, setApplying] = useState<string | null>(null);
+
+  // The catalog is owned by the ThemeProvider (single cache authority);
+  // consumers only read it here. Boot state (no project) and remote errors
+  // are distinct: built-in sets are only ever presented as built-in defaults,
+  // never as successful remote data.
+  const remoteSets = catalog.status === "success" ? (catalog.themeSets ?? []) : [];
+  const catalogErrored = catalog.status === "error";
+  const catalogLoading = catalog.status === "pending";
+  const useBuiltinFallback = catalogErrored || !hasProject;
+  const fallbackSets = useBuiltinFallback ? catalog.builtinThemeSets : [];
+
   const [hoveredTag, setHoveredTag] = useState<string | null>(null);
 
   const handleThemeChange = useCallback((name: string) => {
-    setApplying(name);
-    setTheme(name).finally(() => setApplying(null));
+    setTheme(name);
   }, [setTheme]);
 
   const handleModeChange = useCallback((m: ThemeMode) => {
@@ -162,6 +159,9 @@ export function DisplayConfig() {
     window.open("https://pi.dev/docs/latest/themes", "_blank", "noopener,noreferrer");
   }, []);
 
+  const hintStyle: React.CSSProperties = { margin: "14px 0 0", fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 };
+  const errorStyle: React.CSSProperties = { margin: "14px 0 0", fontSize: 11, color: "var(--status-danger)", lineHeight: 1.5 };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
 
@@ -194,31 +194,62 @@ export function DisplayConfig() {
             </>
           }
         />
-        {loading ? (
+        {catalogLoading ? (
           <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t("desktop.loadingThemes")}</span>
         ) : (
           <div style={tagGroupStyle}>
             <button
-              type="button" onClick={() => handleThemeChange("")} disabled={applying !== null}
-              style={tagStyle(themeName === "", hoveredTag === "__default__", applying !== null)}
+              type="button" onClick={() => handleThemeChange("")}
+              style={tagStyle(themeName === "", hoveredTag === "__default__")}
               onMouseEnter={() => setHoveredTag("__default__")}
               onMouseLeave={() => setHoveredTag(null)}
             >
               {t("desktop.defaultTheme")}
             </button>
 
-            {themeSets.map((ts) => (
-              <button
-                key={ts.name} type="button"
-                onClick={() => handleThemeChange(ts.name)} disabled={applying !== null}
-                style={tagStyle(themeName === ts.name, hoveredTag === ts.name, applying === ts.name)}
-                onMouseEnter={() => setHoveredTag(ts.name)}
-                onMouseLeave={() => setHoveredTag(null)}
-              >
-                {ts.displayName}
-              </button>
-            ))}
+            {catalogErrored && (
+              <p role="alert" style={errorStyle}>
+                {t("desktop.themesLoadError")}
+              </p>
+            )}
+            {!hasProject && !catalogLoading && (
+              <p style={hintStyle}>{t("desktop.openProjectForThemes")}</p>
+            )}
+
+            {remoteSets.length > 0 ? (
+              remoteSets.map((ts) => (
+                <button
+                  key={ts.name} type="button"
+                  onClick={() => handleThemeChange(ts.name)}
+                  style={tagStyle(themeName === ts.name, hoveredTag === ts.name)}
+                  onMouseEnter={() => setHoveredTag(ts.name)}
+                  onMouseLeave={() => setHoveredTag(null)}
+                >
+                  {ts.displayName}
+                </button>
+              ))
+            ) : (
+              <>
+                {(useBuiltinFallback) && fallbackSets.map((ts) => (
+                  <button
+                    key={ts.name} type="button"
+                    onClick={() => handleThemeChange(ts.name)}
+                    style={tagStyle(themeName === ts.name, hoveredTag === ts.name)}
+                    onMouseEnter={() => setHoveredTag(ts.name)}
+                    onMouseLeave={() => setHoveredTag(null)}
+                  >
+                    {ts.displayName}
+                  </button>
+                ))}
+              </>
+            )}
           </div>
+        )}
+
+        {resolveStatus === "error" && (
+          <p role="alert" style={errorStyle}>
+            {t("desktop.themeResolveError")}
+          </p>
         )}
 
         {/* Border depth — preset swatches only, the range slider is hidden */}
@@ -283,8 +314,8 @@ export function DisplayConfig() {
 
         </div>
 
-        {!loading && themeSets.length === 0 && (
-          <p style={{ margin: "14px 0 0", fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
+        {catalog.status === "success" && remoteSets.length === 0 && (
+          <p style={hintStyle}>
             {t("desktop.noCustomThemes")}{" "}
             {t("desktop.noCustomThemesHint")}{" "}
             <code style={{ fontSize: 10, background: "var(--bg-secondary)", padding: "1px 5px", borderRadius: 3, fontFamily: "var(--font-mono)" }}>~/.pi/agent/themes/*.json</code>{" "}

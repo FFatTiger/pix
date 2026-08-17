@@ -29,6 +29,51 @@ describe("query keys and options", () => {
     expect(queryKeys.auth.providerStatus("a")).not.toEqual(queryKeys.auth.providerStatus("b"));
   });
 
+  it("keys theme list/resolve by the mandatory project cwd (one cache authority, scopes never collide)", () => {
+    expect(queryKeys.themes.list("/a")).toEqual(["pix", "themes", "list", "/a"]);
+    expect(queryKeys.themes.list("/a")).not.toEqual(queryKeys.themes.list("/b"));
+    expect(queryKeys.themes.resolve("gruvbox", "dark", "/a")).toEqual(["pix", "themes", "resolve", "gruvbox", "dark", "/a"]);
+    expect(queryKeys.themes.resolve("gruvbox", "dark", "/a")).not.toEqual(queryKeys.themes.resolve("gruvbox", "dark", "/b"));
+    expect(queryKeys.themes.resolve("gruvbox", "dark", "/a")).not.toEqual(queryKeys.themes.resolve("gruvbox", "light", "/a"));
+    expect(queryKeys.themes.resolve("gruvbox", "dark", "/a")).not.toEqual(queryKeys.themes.resolve("solarized", "dark", "/a"));
+  });
+
+  it("theme list/resolve options require cwd, pass signal, and fetch cwd-scoped URLs", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = typeof input === "string" ? input : String(input);
+      if (path.includes("/v1/themes/gruvbox")) {
+        return json({ name: "gruvbox", isDark: true, cssVars: { "--bg": "#282828" } });
+      }
+      return json({ themeSets: [{ name: "gruvbox", displayName: "Gruvbox", hasDark: true, hasLight: true, builtin: true }] });
+    });
+    const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const options = createQueryOptions(http);
+
+    const list = options.themes.list("/repo");
+    expect(list.queryKey).toEqual(["pix", "themes", "list", "/repo"]);
+    expect(list.enabled).toBe(true);
+    const listSignal = new AbortController().signal;
+    await list.queryFn!({ signal: listSignal } as never);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/themes?cwd=%2Frepo",
+      expect.objectContaining({ signal: listSignal }),
+    );
+
+    const resolve = options.themes.resolve("gruvbox", "dark", "/repo");
+    expect(resolve.queryKey).toEqual(["pix", "themes", "resolve", "gruvbox", "dark", "/repo"]);
+    expect(resolve.enabled).toBe(true);
+    const resolveSignal = new AbortController().signal;
+    await resolve.queryFn!({ signal: resolveSignal } as never);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/themes/gruvbox?mode=dark&cwd=%2Frepo",
+      expect.objectContaining({ signal: resolveSignal }),
+    );
+
+    // Without a project scope the theme queries are gated off.
+    expect(options.themes.list("").enabled).toBe(false);
+    expect(options.themes.resolve("gruvbox", "dark", "").enabled).toBe(false);
+  });
+
   it("file index options key by cwd + q with cwd/q isolation and pass signal", async () => {
     expect(queryKeys.files.index("/a", "foo")).toEqual(["pix", "files", "index", "/a", "foo"]);
     expect(queryKeys.files.index("/a", "foo")).not.toEqual(queryKeys.files.index("/b", "foo"));

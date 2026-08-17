@@ -40,8 +40,9 @@ export const queryKeys = {
   themes: {
     all: ["pix", "themes"] as const,
     lists: ["pix", "themes", "list"] as const,
-    list: () => ["pix", "themes", "list"] as const,
-    resolve: (name: string, mode: "dark" | "light") => ["pix", "themes", "resolve", name, mode] as const,
+    /** Project-scoped: cwd is a cache-key component so scopes never collide. */
+    list: (cwd: string) => ["pix", "themes", "list", cwd] as const,
+    resolve: (name: string, mode: "dark" | "light", cwd: string) => ["pix", "themes", "resolve", name, mode, cwd] as const,
   },
   files: { all: ["pix", "files"] as const, list: (path: string) => ["pix", "files", "list", path] as const, meta: (path: string) => ["pix", "files", "meta", path] as const, read: (path: string) => ["pix", "files", "read", path] as const, indexRoot: (cwd: string) => ["pix", "files", "index", cwd] as const, index: (cwd: string, q?: string) => ["pix", "files", "index", cwd, q ?? ""] as const },
   git: { all: ["pix", "git"] as const, status: (cwd: string) => ["pix", "git", "status", cwd] as const, diff: (cwd: string, path: string) => ["pix", "git", "diff", cwd, path] as const },
@@ -109,21 +110,21 @@ export function createQueryOptions(http: HttpClient) {
         }),
     },
     themes: {
-      // Pre-Host degradation is deliberate: the query surfaces the failure to
-      // the caller (undefined data) and the settings UI falls back to the
-      // built-in/default theme sets — no raw error reaches the DOM.
-      list: (cwd?: string) =>
+      // cwd is required and part of the key: the Host themes routes are
+      // project-scoped (absolute authorized cwd, no process.cwd fallback).
+      list: (cwd: string) =>
         queryOptions({
-          queryKey: queryKeys.themes.list(),
+          queryKey: queryKeys.themes.list(cwd),
           queryFn: ({ signal }) => themes.list(cwd, signal),
+          enabled: Boolean(cwd),
           staleTime: CATALOG_STALE_MS,
           retry: false,
         }),
-      resolve: (name: string, mode: "dark" | "light") =>
+      resolve: (name: string, mode: "dark" | "light", cwd: string) =>
         queryOptions({
-          queryKey: queryKeys.themes.resolve(name, mode),
-          queryFn: ({ signal }) => themes.resolve(name, mode, signal),
-          enabled: Boolean(name),
+          queryKey: queryKeys.themes.resolve(name, mode, cwd),
+          queryFn: ({ signal }) => themes.resolve(name, mode, cwd, signal),
+          enabled: Boolean(name) && Boolean(cwd),
           staleTime: CATALOG_STALE_MS,
           retry: false,
         }),

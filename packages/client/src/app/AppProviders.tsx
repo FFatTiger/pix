@@ -5,6 +5,7 @@ import { HttpClientProvider } from "@/app/http-context";
 import { RuntimeProvider, ResumeRefetch } from "@/runtime";
 import { ErrorBoundary } from "@/app/ErrorBoundary";
 import { I18nProvider } from "@/hooks/useI18n";
+import { ThemeProvider } from "@/hooks/useTheme";
 import { ContextMenuProvider } from "@/components/ContextMenu";
 import type { HostInfo } from "@fffattiger/pix-protocol";
 
@@ -12,6 +13,11 @@ export interface AppProvidersProps {
   children: ReactNode;
   /** Override host capabilities (tests / story). Default: readonly shell. */
   host?: Partial<HostInfo> | null;
+  /**
+   * Route-level project scope for the theme controller, supplied from
+   * validated router search (never parsed from window.location).
+   */
+  cwd?: string | null;
 }
 
 function createQueryClient() {
@@ -41,7 +47,7 @@ function StartupSplashDismiss() {
   return null;
 }
 
-export function AppProviders({ children, host }: AppProvidersProps) {
+export function AppProviders({ children, host, cwd }: AppProvidersProps) {
   const [queryClient] = useState(createQueryClient);
 
   return (
@@ -54,11 +60,13 @@ export function AppProviders({ children, host }: AppProvidersProps) {
               {/* PWA resume: revalidate the boot surface on visibility/online/runtime reconnect. */}
               <ResumeRefetch />
               {/* UI infrastructure providers (ported from the upstream desktop app
-                  app/page.tsx nesting): I18n outer, ContextMenu inner, both
-                  wrapping the routed UI. Theme stays hook-consumed (useTheme)
-                  like the source — no global theme provider. */}
+                  app/page.tsx nesting): I18n outer, Theme + ContextMenu inner, both
+                  wrapping the routed UI. The single ThemeProvider owns ALL theme
+                  state + DOM application; consumers only read shared state/actions. */}
               <I18nProvider>
-                <ContextMenuProvider>{children}</ContextMenuProvider>
+                <ThemeProvider cwd={cwd ?? null}>
+                  <ContextMenuProvider>{children}</ContextMenuProvider>
+                </ThemeProvider>
               </I18nProvider>
             </RuntimeProvider>
           </CapabilityProvider>

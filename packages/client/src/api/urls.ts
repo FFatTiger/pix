@@ -61,10 +61,11 @@ export const urls = {
     list: (cwd: string) => resource("models", { cwd }),
   },
   themes: {
-    /** Theme-set catalog (global + project sets + builtins). cwd optional. */
-    list: (cwd?: string) => resource("themes", { cwd }),
-    /** Resolved variant (dark/light) of a theme set. */
-    resolve: (name: string, mode: "dark" | "light") => resource(`themes/${encodedSegment(name)}`, { mode }),
+    /** Theme-set catalog (global + project sets + builtins). Host requires an
+     * absolute authorized cwd (same AllowedRoots policy as every catalog route). */
+    list: (cwd: string) => resource("themes", { cwd }),
+    /** Resolved variant (dark/light) of a theme set, scoped to the project cwd. */
+    resolve: (name: string, mode: "dark" | "light", cwd: string) => resource(`themes/${encodedSegment(name)}`, { mode, cwd }),
   },
   files: {
     resource: (path: string, op?: FilesOperation) => resource("files", { path, op }),
