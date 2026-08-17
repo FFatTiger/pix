@@ -354,3 +354,63 @@ test("ensureSessiond preserves the daemon on a secret-read failure (secret blip)
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * Spawn the unsupported-version fixture (a pingable daemon whose positively
+ * reported protocol version is neither current nor the allowlisted legacy v1)
+ * and assert `ensureSessiond` PRESERVES it (same pid, still alive/pingable,
+ * lock intact) and returns the fixed unverifiable operator error.
+ */
+async function expectUnsupportedVersionPreserved(reportedVersion: number): Promise<void> {
+  const dir = await tempDir();
+  const fixturePath = join(resolveCliPackageRoot(), "test", "fixtures", "unsupported-version-daemon.mjs");
+  let child: ChildProcess | undefined;
+  try {
+    child = spawn(process.execPath, [fixturePath], {
+      env: { ...process.env, PIX_SESSIOND_DIR: dir, PIX_FAKE_PROTOCOL_VERSION: String(reportedVersion) },
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    await new Promise<void>((resolve, reject) => {
+      let out = "";
+      const timer = setTimeout(() => reject(new Error("unsupported-version daemon did not become ready")), 5_000);
+      child!.stdout?.on("data", (chunk) => {
+        out += String(chunk);
+        if (out.includes("unsup-version-ready")) { clearTimeout(timer); resolve(); }
+      });
+      child!.on("exit", (code) => { clearTimeout(timer); reject(new Error(`unsupported-version daemon exited early (${code})`)); });
+    });
+
+    // Genuinely pingable via system.ping — inspect sees it as healthy.
+    const before = await inspectSessiond(dir);
+    assert.equal(before.pingable, true, `version ${reportedVersion} daemon must be pingable`);
+    assert.equal(before.pid, child.pid);
+
+    // ensureSessiond must NOT reuse it and must NOT shut it down; it returns
+    // the fixed unverifiable operator error (NOT the stale-replacement error).
+    await assert.rejects(
+      () => ensureSessiond(dir),
+      /could not verify the running sessiond's protocol version/,
+    );
+
+    // The daemon was preserved: same pid, lock intact, still pingable. Because
+    // the fixture honors authenticated shutdown, a buggy knownLegacy
+    // classification would have destroyed it — its survival proves the fix.
+    const after = await inspectSessiond(dir);
+    assert.equal(after.pid, child.pid, `version ${reportedVersion} daemon must NOT have been replaced`);
+    assert.equal(after.pingable, true, `version ${reportedVersion} daemon is still reachable`);
+    assert.equal(existsSync(sessiondPaths(dir).lockFile), true);
+  } finally {
+    if (child && child.exitCode === null) child.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("ensureSessiond preserves a positively-authenticated FUTURE-version daemon (3): never shut down or replaced", async (t) => {
+  if (process.platform === "win32") return t.skip("Unix sockets only");
+  await expectUnsupportedVersionPreserved(3);
+});
+
+test("ensureSessiond preserves a positively-authenticated unsupported-version daemon (0): never shut down or replaced", async (t) => {
+  if (process.platform === "win32") return t.skip("Unix sockets only");
+  await expectUnsupportedVersionPreserved(0);
+});

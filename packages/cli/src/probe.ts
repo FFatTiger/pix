@@ -29,10 +29,28 @@ export async function pingSessiond(
 /**
  * Why a daemon's protocol version could not be positively verified. `timeout`
  * and `unreachable` are transient (retryable); `auth` and `malformed` are fixed
- * problems an operator must resolve. In EVERY state the running daemon must be
- * preserved — an unverified daemon is never shut down or replaced.
+ * problems an operator must resolve; `unsupported_version` is a positively
+ * authenticated but unsupported protocol version (future major, version 0, or
+ * any other value) that MUST be preserved — it is never replaceable. In EVERY
+ * state the running daemon must be preserved — an unverified daemon is never
+ * shut down or replaced.
  */
-export type UnverifiableReason = "timeout" | "auth" | "malformed" | "unreachable" | "unknown";
+export type UnverifiableReason =
+  | "timeout"
+  | "auth"
+  | "malformed"
+  | "unreachable"
+  | "unsupported_version"
+  | "unknown";
+
+/**
+ * The ONLY protocol version that may be shut down/replaced via the narrow
+ * legacy (v1) control envelope. `knownLegacy` is EXACTLY this version and no
+ * other: a future protocol version (e.g. 3 when current is 2), version 0, or
+ * any other unsupported numeric is never replaceable via the v1-only control
+ * path and is classified unverifiable (preserved).
+ */
+export const LEGACY_PROTOCOL_VERSION = 1 as const;
 
 /**
  * Explicit sessiond compatibility state (Protocol v2 stale-daemon safety).
@@ -41,13 +59,15 @@ export type UnverifiableReason = "timeout" | "auth" | "malformed" | "unreachable
  *   protocol version ⇒ the daemon may be reused as-is.
  * - `knownLegacy`: a POSITIVELY authenticated `system.hello` (over the narrow
  *   legacy envelope, since the current client cannot parse a v1 response)
- *   returned a known older protocol version ⇒ the daemon is stale and MAY be
- *   shut down/replaced — but only through the authenticated, instance-fenced
- *   shutdown path, never via a PID signal.
- * - `unverifiable`: neither surface returned a positively authenticated version
- *   (transient hello timeout, auth failure, malformed/unparseable response, or
- *   unreachable). The daemon MUST be preserved; callers return a retryable or
- *   fixed operator error instead of touching authority.
+ *   returned EXACTLY {@link LEGACY_PROTOCOL_VERSION} (v1) ⇒ the daemon is stale
+ *   and MAY be shut down/replaced — but only through the authenticated,
+ *   instance-fenced shutdown path, never via a PID signal.
+ * - `unverifiable`: the daemon is NOT positively authenticated as current or
+ *   knownLegacy — transient hello timeout, auth failure, malformed/unparseable
+ *   response, unreachable, or a positively authenticated but UNSUPPORTED
+ *   version (future major / 0 / other numeric). The daemon MUST be preserved;
+ *   callers return a retryable or fixed operator error instead of touching
+ *   authority.
  */
 export type SessiondCompatibility =
   | { state: "current" }
@@ -93,12 +113,26 @@ export async function probeSessiondCompatibility(
     currentError = error;
   }
   // 2. The current client cannot schema-parse a legacy (v1) response envelope.
-  //    Retry the SAME authenticated hello over the narrow legacy envelope. A
-  //    correlated numeric version is a positively authenticated knownLegacy.
-  const legacyVersion = await legacyHelloProtocolVersion(endpoint, secret, timeoutMs);
-  if (legacyVersion !== undefined) {
-    if (legacyVersion === PROTOCOL_VERSION) return { state: "current" };
-    return { state: "knownLegacy", version: legacyVersion };
+  //    Retry the SAME authenticated hello over the narrow legacy envelope.
+  const legacy = await legacyV1ControlCall(endpoint, secret, "system.hello", {}, timeoutMs);
+  if (legacy.ok) {
+    const version = legacy.result.protocolVersion;
+    if (version === PROTOCOL_VERSION) return { state: "current" };
+    // knownLegacy is EXACTLY the allowlisted legacy version and nothing else.
+    if (version === LEGACY_PROTOCOL_VERSION) {
+      return { state: "knownLegacy", version: LEGACY_PROTOCOL_VERSION };
+    }
+    if (typeof version === "number") {
+      if (Number.isSafeInteger(version)) {
+        // A positively authenticated but unsupported numeric version (future
+        // major, 0, …): NOT replaceable via the v1-only control path — preserve.
+        return { state: "unverifiable", reason: "unsupported_version" };
+      }
+      // Non-integer / non-finite numeric version is a malformed answer.
+      return { state: "unverifiable", reason: "malformed" };
+    }
+    // A non-numeric protocolVersion in an otherwise-valid response is malformed.
+    return { state: "unverifiable", reason: "malformed" };
   }
   // 3. Neither surface could positively verify the daemon. Preserve it; the
   //    caller turns this into a retryable (timeout/unreachable) or fixed
@@ -221,18 +255,6 @@ export async function shutdownLegacyV1Sessiond(
 ): Promise<boolean> {
   const outcome = await legacyV1ControlCall(endpoint, secret, "system.shutdown", { instanceId }, timeoutMs);
   return outcome.ok && outcome.result.accepted === true;
-}
-
-/** Authenticated legacy `system.hello` → the reported protocolVersion (undefined on failure). */
-async function legacyHelloProtocolVersion(
-  endpoint: string,
-  secret: string,
-  timeoutMs: number,
-): Promise<number | undefined> {
-  const outcome = await legacyV1ControlCall(endpoint, secret, "system.hello", {}, timeoutMs);
-  return outcome.ok && typeof outcome.result.protocolVersion === "number"
-    ? outcome.result.protocolVersion
-    : undefined;
 }
 
 /**

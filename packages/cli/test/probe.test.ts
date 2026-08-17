@@ -41,6 +41,50 @@ function startHangingServer(): Promise<{ socketPath: string; secret: string; ser
   });
 }
 
+/**
+ * A raw net server that AUTHs and answers `system.hello` (over BOTH the current
+ * and the legacy envelope) with the given `protocolVersion` — simulating a
+ * positively authenticated daemon whose version is NOT current and NOT the
+ * supported legacy v1 (future major, 0, or a non-integer).
+ */
+function startVersionedServer(version: unknown): Promise<{ socketPath: string; secret: string; server: ReturnType<typeof createServer> }> {
+  return new Promise((resolve) => {
+    const socketPath = join(tmpdir(), `pix-ver-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
+    const secret = "s".repeat(43);
+    const server = createServer((socket) => {
+      socket.setNoDelay(true);
+      let authenticated = false;
+      let buffered = "";
+      socket.on("data", (chunk) => {
+        buffered += chunk.toString("utf8");
+        let nl;
+        while ((nl = buffered.indexOf("\n")) >= 0) {
+          const line = buffered.slice(0, nl);
+          buffered = buffered.slice(nl + 1);
+          if (!authenticated) {
+            authenticated = line.startsWith("AUTH ") && line.slice(5) === secret;
+            if (!authenticated) { socket.destroy(); return; }
+            socket.write("OK\n");
+            continue;
+          }
+          if (line.length === 0) continue;
+          let request;
+          try { request = JSON.parse(line); } catch { socket.destroy(); return; }
+          const method = request && request.method;
+          if (method === "system.hello") {
+            socket.write(JSON.stringify({ id: request.id, ok: true, method: "system.hello", result: { protocolVersion: version } }) + "\n");
+          } else if (method === "system.ping") {
+            socket.write(JSON.stringify({ id: request.id, ok: true, method: "system.ping", result: { pong: true, serverTime: Date.now() } }) + "\n");
+          } else {
+            socket.write(JSON.stringify({ id: request.id, ok: false, method, error: { code: "unsupported_capability", message: "unsupported", retryable: false } }) + "\n");
+          }
+        }
+      });
+    });
+    server.listen(socketPath, () => resolve({ socketPath, secret, server }));
+  });
+}
+
 test("pingSessiond returns true against a running daemon", async () => {
   const dir = await tempDir();
   try {
@@ -129,6 +173,58 @@ test("probeSessiondCompatibility: a transient hello timeout is unverifiable(time
   } finally {
     hanging.server.close();
     rm(hanging.socketPath, { force: true });
+  }
+});
+
+test("probeSessiondCompatibility: a positively-authenticated FUTURE version (3) is unverifiable(unsupported_version), never knownLegacy/replaceable", async () => {
+  const srv = await startVersionedServer(3);
+  try {
+    const compat = await probeSessiondCompatibility(srv.socketPath, srv.secret, 500);
+    assert.equal(compat.state, "unverifiable");
+    assert.equal(compat.reason, "unsupported_version");
+    assert.equal(await isProtocolCurrent(srv.socketPath, srv.secret, 500), false);
+  } finally {
+    srv.server.close();
+    rm(srv.socketPath, { force: true });
+  }
+});
+
+test("probeSessiondCompatibility: an unsupported numeric version (0) is unverifiable(unsupported_version), never knownLegacy/replaceable", async () => {
+  const srv = await startVersionedServer(0);
+  try {
+    const compat = await probeSessiondCompatibility(srv.socketPath, srv.secret, 500);
+    assert.equal(compat.state, "unverifiable");
+    assert.equal(compat.reason, "unsupported_version");
+    assert.equal(await isProtocolCurrent(srv.socketPath, srv.secret, 500), false);
+  } finally {
+    srv.server.close();
+    rm(srv.socketPath, { force: true });
+  }
+});
+
+test("probeSessiondCompatibility: a non-integer numeric version is unverifiable(malformed), never knownLegacy", async () => {
+  const srv = await startVersionedServer(1.5);
+  try {
+    const compat = await probeSessiondCompatibility(srv.socketPath, srv.secret, 500);
+    assert.equal(compat.state, "unverifiable");
+    assert.equal(compat.reason, "malformed");
+    assert.equal(await isProtocolCurrent(srv.socketPath, srv.secret, 500), false);
+  } finally {
+    srv.server.close();
+    rm(srv.socketPath, { force: true });
+  }
+});
+
+test("probeSessiondCompatibility: only the allowlisted v1 is knownLegacy (LEGACY_PROTOCOL_VERSION)", async () => {
+  const { LEGACY_PROTOCOL_VERSION } = await import("../src/probe.js");
+  assert.equal(LEGACY_PROTOCOL_VERSION, 1);
+  const srv = await startVersionedServer(1);
+  try {
+    const compat = await probeSessiondCompatibility(srv.socketPath, srv.secret, 500);
+    assert.deepEqual(compat, { state: "knownLegacy", version: 1 });
+  } finally {
+    srv.server.close();
+    rm(srv.socketPath, { force: true });
   }
 });
 
