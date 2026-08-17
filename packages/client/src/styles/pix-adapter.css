@@ -1229,6 +1229,13 @@ html.dark .catalog-meta-item--error {
   cursor: default;
 }
 
+.sidebar-section-label-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sidebar-section-toggle {
   display: flex;
   align-items: center;

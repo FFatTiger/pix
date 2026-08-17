@@ -824,7 +824,7 @@ export function Sidebar({
               aria-expanded={projectsOpen}
               onClick={toggleProjects}
             >
-              <span className="sidebar-title-fade">{t("desktop.projects")}</span>
+              <span className="sidebar-section-label-text">{t("desktop.projects")}</span>
               <CaretRight
                 className="sidebar-section-chevron"
                 size={14}
@@ -895,7 +895,7 @@ export function Sidebar({
               aria-expanded={sessionsOpen}
               onClick={() => setSessionsOpen((open) => !open)}
             >
-              <span className="sidebar-title-fade">{t("desktop.sessions")}</span>
+              <span className="sidebar-section-label-text">{t("desktop.sessions")}</span>
               <CaretRight
                 className="sidebar-section-chevron"
                 size={14}
