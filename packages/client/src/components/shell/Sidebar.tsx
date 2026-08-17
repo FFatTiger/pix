@@ -388,6 +388,7 @@ export function Sidebar({
   const renameMutation = useMutation(createMutationOptions(http, queryClient).sessions.rename());
 
   const [sessionsOpen, setSessionsOpen] = useState(true);
+  const [expandedProjects, setExpandedProjects] = useState<ReadonlySet<string>>(() => new Set());
   // Session-list quick-search: searchOpen swaps the header for a filter box,
   // and sessionSearch drives live filtering of the visible session rows.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -437,6 +438,23 @@ export function Sidebar({
 
   const recentProjects = getRecentProjects(visibleSessions);
   const selectedProject = projectRootFor(search.cwd);
+  useEffect(() => {
+    if (!selectedProject) return;
+    setExpandedProjects((prev) => {
+      if (prev.has(selectedProject)) return prev;
+      const next = new Set(prev);
+      next.add(selectedProject);
+      return next;
+    });
+  }, [selectedProject]);
+  const toggleProjectExpanded = useCallback((project: string) => {
+    setExpandedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(project)) next.delete(project);
+      else next.add(project);
+      return next;
+    });
+  }, []);
 
   // Sessions of every worktree in the selected project are shown together.
   const projectSessions = selectedProject
@@ -812,25 +830,55 @@ export function Sidebar({
               <div className="sidebar-empty">{t("desktop.noProjectsYet")}</div>
             ) : recentProjects.map((project) => {
               const selected = project === selectedProject;
+              const expanded = expandedProjects.has(project);
+              const nestedSessions = visibleSessions.filter((session) => {
+                const root = session.projectRoot || session.cwd;
+                return root === project && !isHiddenRailSession(session);
+              });
+              const nestedTree = buildSessionTree(nestedSessions);
               return (
-                <button
-                  key={project}
-                  type="button"
-                  className="sidebar-list-row"
-                  data-testid="sidebar-project-row"
-                  data-active={selected ? "true" : "false"}
-                  title={project}
-                  aria-pressed={selected}
-                  onClick={() => onOpenWorktree(project)}
-                >
-                  <Folder size={16} weight="regular" aria-hidden="true" />
-                  <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
-                </button>
+                <div key={project} data-testid="sidebar-project-card" data-expanded={expanded ? "true" : "false"}>
+                  <button
+                    type="button"
+                    className="sidebar-list-row"
+                    data-testid="sidebar-project-row"
+                    data-active={selected ? "true" : "false"}
+                    title={project}
+                    aria-pressed={selected}
+                    aria-expanded={expanded}
+                    onClick={() => {
+                      toggleProjectExpanded(project);
+                      if (!selected) onOpenWorktree(project);
+                    }}
+                  >
+                    {expanded ? (
+                      <FolderOpen size={16} weight="regular" aria-hidden="true" />
+                    ) : (
+                      <Folder size={16} weight="regular" aria-hidden="true" />
+                    )}
+                    <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
+                    <CaretRight
+                      className="sidebar-section-chevron"
+                      size={14}
+                      weight="bold"
+                      style={{ transform: expanded ? "rotate(90deg)" : "none", opacity: 0.7, pointerEvents: "none" }}
+                      aria-hidden="true"
+                    />
+                  </button>
+                  {expanded ? (
+                    <div className="sidebar-project-sessions" data-testid="sidebar-project-sessions">
+                      {nestedTree.length === 0 ? (
+                        <div className="sidebar-status">{t("desktop.noSessionsFound")}</div>
+                      ) : nestedTree.map((node) => renderTreeItem(node))}
+                    </div>
+                  ) : null}
+                </div>
               );
             })}
           </div>
         </section>
 
+        {searchOpen ? (
         <section className="sidebar-section sidebar-section-sessions" data-testid="sidebar-sessions">
           <div className="sidebar-section-head" data-expanded={sessionsOpen ? "true" : "false"}>
             <button
@@ -934,6 +982,7 @@ export function Sidebar({
             </div>
           )}
         </section>
+        ) : null}
 
         {search.cwd ? (
           <section className="sidebar-files" data-testid="sidebar-files">

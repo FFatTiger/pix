@@ -719,7 +719,6 @@ describe("AppShell — source-like sidebar rail", () => {
       "sidebar-nav-plugins",
       "sidebar-nav-resources",
       "sidebar-projects",
-      "sidebar-sessions",
       "sidebar-files",
       "sidebar-nav-settings",
     ].filter((id) => document.querySelector(`[data-testid="${id}"]`));
@@ -735,7 +734,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-nav-plugins").textContent).toBe("Plugins");
     expect(screen.getByTestId("sidebar-nav-resources").textContent).toBe("Resources");
     expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
-    expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
+    expect(screen.getByTestId("sidebar-project-sessions")).toBeTruthy();
     expect(screen.getByTestId("sidebar-files")).toBeTruthy();
     expect(screen.getByTestId("sidebar-nav-settings").textContent).toBe("Settings");
     expect(railOrder()).toEqual([
@@ -744,7 +743,6 @@ describe("AppShell — source-like sidebar rail", () => {
       "sidebar-nav-plugins",
       "sidebar-nav-resources",
       "sidebar-projects",
-      "sidebar-sessions",
       "sidebar-files",
       "sidebar-nav-settings",
     ]);
@@ -787,10 +785,14 @@ describe("AppShell — source-like sidebar rail", () => {
     await settle();
     const rows = screen.getAllByTestId("sidebar-project-row");
     expect(rows.some((row) => row.textContent === "x" && row.getAttribute("data-active") === "true")).toBe(true);
+    const selectedCard = screen.getAllByTestId("sidebar-project-card").find((card) => card.getAttribute("data-expanded") === "true");
+    expect(selectedCard).toBeTruthy();
+    expect(within(selectedCard as HTMLElement).getByText("Session A")).toBeTruthy();
     const other = rows.find((row) => row.textContent === "y");
     expect(other).toBeTruthy();
     fireEvent.click(other!);
     expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/", search: { cwd: "/y" } }));
+    expect(other!.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByTestId("sidebar-files")).toBeTruthy();
     expect(screen.getByLabelText("Files")).toBeTruthy();
   });
@@ -920,7 +922,10 @@ describe("AppShell — source-like sidebar rail", () => {
     await settle();
     expect(screen.getByTestId("transcript-home")).toBeTruthy();
     expect(screen.getByText("Start a conversation")).toBeTruthy();
-    expect(document.querySelector(".workspace--home")).toBeTruthy();
+    const home = document.querySelector(".workspace--home") as HTMLElement | null;
+    expect(home).toBeTruthy();
+    expect(home!.querySelector(".transcript-home")).toBeTruthy();
+    expect(home!.querySelector(".chat-composer-region, .composer")).toBeTruthy();
     expect(document.querySelector(".composer--disabled")).toBeNull();
     expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
   });

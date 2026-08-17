@@ -101,17 +101,27 @@ a:hover {
 
 .workspace--home {
   justify-content: center;
+  align-items: stretch;
+}
+
+.workspace--home .transcript-region {
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .workspace--home .transcript-scroll {
-  flex: 0 1 auto;
-  overflow: hidden;
-  padding-bottom: 12px;
+  flex: 0 0 auto;
+  overflow: visible;
+  padding: 0 16px;
+}
+
+.workspace--home .transcript-inner {
+  display: none;
 }
 
 .workspace--home .chat-composer-region,
 .workspace--home .composer {
-  flex-shrink: 0;
+  flex: 0 0 auto;
 }
 
 .workspace-header {
@@ -315,7 +325,7 @@ a:hover {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 48px 16px 24px;
+  padding: 0 16px 20px;
   text-align: center;
 }
 
@@ -1278,6 +1288,12 @@ html.dark .catalog-meta-item--error {
 
 .sidebar-session-list {
   min-height: 0;
+}
+
+.sidebar-project-sessions {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0 8px 18px;
 }
 
 .sidebar-files {
