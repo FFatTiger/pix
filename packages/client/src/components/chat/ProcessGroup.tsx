@@ -831,7 +831,7 @@ export function ProcessGroup({
     el.scrollTop = el.scrollHeight;
   }, [blocks, isStreaming, displayMode, latestStepId]);
 
-  if (steps.length === 0) return null;
+  if (steps.length === 0 && !isStreaming) return null;
 
   const toolCount = steps.reduce((acc, s) => {
     if (s.kind === "tool") return acc + 1;

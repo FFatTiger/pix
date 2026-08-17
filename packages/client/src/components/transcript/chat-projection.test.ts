@@ -87,6 +87,12 @@ describe("chat-projection — user → process → final", () => {
 });
 
 describe("chat-projection — live merge", () => {
+  it("shows a working process placeholder immediately after send, before any assistant tokens", () => {
+    const rows = build([user("hello")], { running: true, streamingMessage: null });
+    expect(kinds(rows)).toEqual(["message", "process"]);
+    expect(rows[1]).toMatchObject({ kind: "process", isStreaming: true, blocks: [] });
+  });
+
   it("merges committed process messages with the streaming partial into one live tail", () => {
     const rows = build(
       [

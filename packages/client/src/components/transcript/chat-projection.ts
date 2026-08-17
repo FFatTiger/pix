@@ -301,6 +301,13 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
           isStreaming: true,
           ...(processRefIdx === undefined ? {} : { visibleIndex: processRefIdx }),
         });
+      } else if (!liveAnswerMessage) {
+        rows.push({
+          kind: "process",
+          key: `live-working-${userIdx}`,
+          blocks: [],
+          isStreaming: true,
+        });
       }
       if (liveAnswerMessage) {
         rows.push({

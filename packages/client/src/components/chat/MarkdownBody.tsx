@@ -9,6 +9,7 @@ import { resolveLocalFileHref } from "@/lib/file-links";
 import { resolveMarkdownImageSrc } from "@/lib/markdown-images";
 import { splitStableParts } from "@/lib/markdown-incremental";
 import { headingId, markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
+import { extendStreamBirths, rehypeStreamFade } from "@/lib/rehype-stream-fade";
 import { mentionRemarkPlugin, type MentionValidators } from "@/lib/mention-tokens";
 import { prismTheme } from "@/lib/prism-theme";
 
@@ -148,12 +149,13 @@ function buildMarkdownComponents({ isStreaming, cwd, onOpenFile }: MarkdownCompo
  * Stable chunks are marked non-streaming: their closed code blocks get Prism
  * highlighting immediately instead of waiting for the whole message to end.
  */
-const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpenFile, remarkPlugins }: {
+const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpenFile, remarkPlugins, rehypePlugins }: {
   text: string;
   isStreaming?: boolean | undefined;
   cwd?: string | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
   remarkPlugins?: ReactMarkdownOptions["remarkPlugins"];
+  rehypePlugins?: ReactMarkdownOptions["rehypePlugins"];
 }) {
   const normalized = useMemo(() => normalizeDisplayMath(text), [text]);
   const components = useMemo(
@@ -163,7 +165,7 @@ const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpen
   return (
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
-      rehypePlugins={markdownRehypePlugins}
+      rehypePlugins={rehypePlugins ?? markdownRehypePlugins}
       components={components}
     >
       {normalized}
@@ -193,9 +195,31 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
     () => [...(markdownRemarkPlugins ?? []), ...mentionPlugins],
     [mentionPlugins],
   );
+  const previousTextRef = useRef("");
+  const birthsRef = useRef<number[]>([]);
+  const nowMs = Date.now();
+  if (isStreaming) {
+    birthsRef.current = extendStreamBirths(
+      previousTextRef.current,
+      normalizedMarkdown,
+      birthsRef.current,
+      nowMs,
+    );
+    previousTextRef.current = normalizedMarkdown;
+  } else {
+    previousTextRef.current = "";
+    birthsRef.current = [];
+  }
+  const streamRehypePlugins = useMemo(
+    () => [
+      ...(markdownRehypePlugins ?? []),
+      [rehypeStreamFade, { births: birthsRef.current, nowMs }],
+    ] as ReactMarkdownOptions["rehypePlugins"],
+    [isStreaming, normalizedMarkdown, nowMs],
+  );
 
   return (
-    <div className={["markdown-body", className].filter(Boolean).join(" ")}>
+    <div className={["markdown-body", isStreaming ? "is-streaming" : "", className].filter(Boolean).join(" ")}>
       {streamingSplit ? (
         parts.map((part, index) => (
           <MarkdownPart
@@ -205,12 +229,13 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
             cwd={cwd}
             onOpenFile={onOpenFile}
             remarkPlugins={remarkPlugins}
+            rehypePlugins={part.tail && isStreaming ? streamRehypePlugins : markdownRehypePlugins}
           />
         ))
       ) : (
         <ReactMarkdown
           remarkPlugins={remarkPlugins}
-          rehypePlugins={markdownRehypePlugins}
+          rehypePlugins={isStreaming ? streamRehypePlugins : markdownRehypePlugins}
           components={components}
         >
           {normalizedMarkdown}

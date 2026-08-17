@@ -22,7 +22,6 @@ import {
   transcriptScrollRef,
   useChatOpenFile,
 } from "@/components/chat/chat-experience-bridge";
-import { phaseLabel } from "@/components/chat/chat-runtime-view";
 import type { ChatFileIndexSnapshot, ChatSkillIndex, UserMessage } from "@/lib/chat-view-model";
 import type { MentionValidators } from "@/lib/mention-tokens";
 
@@ -193,15 +192,12 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
   const liveBash = isLive ? liveState?.bash : undefined;
   const bashRunning = isLive && liveState?.isBashRunning === true;
 
-  // Terminal status line (source phase-label pulse row).
-  const phase = isLive ? snapshot?.streaming?.phase : undefined;
+  // Terminal status line for compaction / in-flight bash without a live row.
   const statusLabel = liveState?.isCompacting === true
     ? t("desktop.compacting")
-    : running && !streamingMessage
-      ? phaseLabel(phase, t)
-      : bashRunning && !liveBash
-        ? t("desktop.runningShellCommand")
-        : null;
+    : bashRunning && !liveBash
+      ? t("desktop.runningShellCommand")
+      : null;
 
   const rows = useMemo<ChatTranscriptRow[]>(() => {
     const next: ChatTranscriptRow[] = [];

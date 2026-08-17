@@ -351,7 +351,8 @@ describe("TranscriptList — runtime messages", () => {
     // the buffered partial reaches the transcript.
     await act(async () => { vi.advanceTimersByTime(100); });
     await serverSend(ws, { type: "event", payload: { type: "queue_update", sessionId: "s1", steering: [], followUp: [], eventId: 2, epoch: "e1" } });
-    expect(screen.getByText("part")).toBeTruthy();
+    expect(document.querySelectorAll(".stream-char")).toHaveLength(4);
+    expect(Array.from(document.querySelectorAll(".stream-char")).map((node) => node.textContent).join("")).toBe("part");
   });
 });
 

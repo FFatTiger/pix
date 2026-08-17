@@ -1861,19 +1861,28 @@ html.pi-booted body::before {
   opacity: 0;
 }
 
-/* UI-first streaming: newly appeared assistant text blocks fade in instead of
-   the old strobing typewriter feel. The animation plays once per new block
-   (wrapper keyed by blockIndex); text growth inside an open block renders
-   smoothly under the store's partial throttle. Respects reduced motion. */
-@keyframes pix-stream-fade-in {
-  from { opacity: 0; transform: translateY(2px); }
-  to { opacity: 1; transform: none; }
+/* LobeUI Streamdown: new characters fade in independently. Already-visible
+   characters stay revealed so later tokens do not restart the animation. */
+@keyframes pix-stream-char-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
-.stream-block-enter {
-  animation: pix-stream-fade-in 0.28s ease-out;
+.markdown-body.is-streaming .stream-char {
+  opacity: 0;
+  animation-name: pix-stream-char-fade;
+  animation-duration: 280ms;
+  animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
+  animation-fill-mode: forwards;
+}
+.markdown-body.is-streaming .stream-char-revealed {
+  opacity: 1;
+  animation: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  .stream-block-enter { animation: none; }
+  .markdown-body.is-streaming .stream-char {
+    opacity: 1;
+    animation: none;
+  }
 }
 
 /* Calm loading dot for the transcript empty state (UI-first silent reconnect). */
