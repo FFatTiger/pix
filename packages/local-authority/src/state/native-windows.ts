@@ -27,11 +27,20 @@ export interface NativeWindowsPathInspection {
 
 export type NativeWindowsPrivateKind = "file" | "directory";
 
+export interface NativeWindowsNamedPipeInspection {
+  ownerSid: string;
+  daclPresent: boolean;
+  daclProtected: boolean;
+  aces: NativeWindowsAce[];
+}
+
 export interface NativeWindowsBinding {
-  readonly apiVersion: 2;
+  readonly apiVersion: 3;
   currentUserSid(): string;
   inspectPath(path: string): NativeWindowsPathInspection | null;
   createPrivateObject(path: string, kind: NativeWindowsPrivateKind): boolean;
+  inspectNamedPipe(path: string): NativeWindowsNamedPipeInspection | null;
+  protectNamedPipe(path: string): boolean;
 }
 
 function assertInspectablePath(path: string): void {
@@ -55,10 +64,12 @@ let cached: NativeWindowsBinding | undefined;
 function isBinding(value: unknown): value is NativeWindowsBinding {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<NativeWindowsBinding>;
-  return candidate.apiVersion === 2
+  return candidate.apiVersion === 3
     && typeof candidate.currentUserSid === "function"
     && typeof candidate.inspectPath === "function"
-    && typeof candidate.createPrivateObject === "function";
+    && typeof candidate.createPrivateObject === "function"
+    && typeof candidate.inspectNamedPipe === "function"
+    && typeof candidate.protectNamedPipe === "function";
 }
 
 /** Load the target-native addon without exposing it from the package surface. */
@@ -78,7 +89,7 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
   }
   if (!isBinding(loaded)) throw new Error("Windows native binding contract mismatch");
   cached = {
-    apiVersion: 2,
+    apiVersion: 3,
     currentUserSid: () => loaded.currentUserSid(),
     inspectPath: (path) => {
       assertInspectablePath(path);
@@ -88,6 +99,14 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
       assertInspectablePath(path);
       assertPrivateKind(kind);
       return loaded.createPrivateObject(path, kind);
+    },
+    inspectNamedPipe: (path) => {
+      assertInspectablePath(path);
+      return loaded.inspectNamedPipe(path);
+    },
+    protectNamedPipe: (path) => {
+      assertInspectablePath(path);
+      return loaded.protectNamedPipe(path);
     },
   };
   return cached;

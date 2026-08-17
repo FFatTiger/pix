@@ -29,7 +29,7 @@ import {
   SESSIOND_PRIVATE_DIR_MESSAGES,
   type SessiondPrivateDirectory,
 } from "../local-posix.js";
-import { LocalAuthorityError, type LocalAuthorityCode } from "@fffattiger/pix-local-authority/state";
+import { createSecureStateBackend, LocalAuthorityError, type LocalAuthorityCode } from "@fffattiger/pix-local-authority/state";
 import type { WorkerProcessFactory } from "../worker.js";
 import {
   createProductionWorkerProcessFactory,
@@ -336,6 +336,12 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     });
     await server.listen();
     teardown.push(() => server!.close());
+    if (!needsUnixSocketPublication()) {
+      const backend = createSecureStateBackend();
+      if (backend.kind === "windows") {
+        await backend.protectNamedPipe(paths.endpoint);
+      }
+    }
     if (needsUnixSocketPublication()) {
       // Re-verify the directory identity after listen (the bind is guarded by the
       // earlier reverify inside loadOrCreateLocalSecret) and before the atomic

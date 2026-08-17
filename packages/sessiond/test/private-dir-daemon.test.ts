@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm as rmAsync, stat, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test, { afterEach } from "node:test";
-import { LocalAuthorityError } from "@fffattiger/pix-local-authority/state";
+import { createSecureStateBackend, LocalAuthorityError } from "@fffattiger/pix-local-authority/state";
 import { SessiondError } from "../src/errors.js";
 import { acquireInstanceLock, loadOrCreateLocalSecret, readInstanceLockStrict, sessiondPaths } from "../src/local.js";
 import { ensureSessiondPrivateDirectory } from "../src/local-posix.js";
@@ -182,8 +183,14 @@ test("Windows sessiond can start against a dedicated private directory", { skip:
   const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
   try {
     assert.ok(handle.endpoint.startsWith("\\\\.\\pipe\\pix-sessiond-"));
+    const hashed = createHash("sha256").update(dir).digest("hex").slice(0, 24);
+    assert.ok(handle.endpoint.endsWith(hashed), "pipe name must use a bounded directory hash");
+    assert.equal(handle.endpoint.includes(Buffer.from(dir).toString("hex").slice(0, 24)), false);
     assert.equal(typeof handle.secret, "string");
     assert.ok(handle.secret.length >= 32);
+    const backend = createSecureStateBackend();
+    assert.equal(backend.kind, "windows");
+    await backend.protectNamedPipe(handle.endpoint);
     await assert.rejects(
       startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } }),
       (error: unknown) => error instanceof SessiondError && error.code === "conflict",

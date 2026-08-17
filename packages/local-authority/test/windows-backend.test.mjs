@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,7 +8,12 @@ import {
   LocalAuthorityError,
   createSecureStateBackend,
 } from "../dist/state/index.js";
-import { rejectUnsafeWindowsSecurityEvidence } from "../dist/state/windows-security.js";
+import {
+  WINDOWS_ADMINISTRATORS_SID,
+  WINDOWS_LOCAL_SYSTEM_SID,
+  rejectUnsafeWindowsNamedPipeEvidence,
+  rejectUnsafeWindowsSecurityEvidence,
+} from "../dist/state/windows-security.js";
 import { loadNativeWindowsBinding } from "../dist/state/native-windows.js";
 
 const isWindowsX64 = process.platform === "win32" && process.arch === "x64";
@@ -49,6 +55,30 @@ test("Windows backend creates a private directory, document, and exclusive lock"
     assert.deepEqual(await backend.readLifetimeLock(lockPath), { kind: "missing" });
   } finally {
     rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("Windows backend protects a live named pipe with current-user+SYSTEM DACL", { skip: !isWindowsX64 }, async () => {
+  const backend = createSecureStateBackend({ platform: "win32" });
+  assert.equal(backend.kind, "windows");
+  const pipe = "\\\\.\\pipe\\pix-test-" + process.pid + "-" + Date.now();
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(pipe, () => { server.off("error", reject); resolve(); });
+  });
+  try {
+    await backend.protectNamedPipe(pipe);
+    const inspection = loadNativeWindowsBinding().inspectNamedPipe(pipe);
+    assert.ok(inspection);
+    rejectUnsafeWindowsNamedPipeEvidence(inspection, backend.principal());
+    const sids = new Set(inspection.aces.map((ace) => ace.sid.toUpperCase()));
+    assert.equal(sids.has(backend.principal().sid.toUpperCase()), true);
+    assert.equal(sids.has(WINDOWS_LOCAL_SYSTEM_SID), true);
+    assert.equal(sids.has(WINDOWS_ADMINISTRATORS_SID), false);
+    assert.equal(inspection.daclProtected, true);
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve()));
   }
 });
 

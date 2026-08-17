@@ -3580,3 +3580,14 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Dedicated Windows sessiond can start a named pipe and reject a second live instance with `conflict`. Inherited `mkdtemp` dirs remain fail-closed.
 - CI replaces the stale `sessiond private directory path is invalid` known-gap with a required Windows start/shutdown smoke. Named-pipe DACL, Job Object, and Windows product support are still not claimed.
 - Sessiond user-facing `NOT_PRIVATE` copy is platform-neutral (`must be private`). Windows tests no longer treat POSIX mode bits as privacy proof.
+
+---
+
+## 76. Cross-platform CP-08 — Windows named-pipe DACL
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `e05f432`.
+- Native API v3 adds `inspectNamedPipe` / `protectNamedPipe` via `Get/SetNamedSecurityInfoW` on `SE_FILE_OBJECT`. Frozen allowlist remains current user + SYSTEM, no Administrators.
+- sessiond listens with `node:net`, then immediately protects and re-reads the pipe DACL. Failure fail-closes startup.
+- Pipe name uses a SHA-256 prefix of the runtime directory instead of hex-encoding the path, so the home path is not embedded in the endpoint.
+- Secret + instance fence remain required. This does not implement Job Objects or claim Windows product support.
+- Validation: local-authority named-pipe protect/inspect PASS; Windows sessiond start/shutdown + hashed pipe name PASS; architecture/boundaries PASS.

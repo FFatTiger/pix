@@ -242,6 +242,8 @@ export interface WindowsSecureStateBackend extends SecureStateBackendBase {
   fileIdentity(path: string): Promise<WindowsFileIdentity | null>;
   principal(): WindowsPrincipal;
   isOwnedByCurrentUser(identity: WindowsFileIdentity): boolean;
+  /** Apply and re-read the frozen current-user+SYSTEM named-pipe DACL. */
+  protectNamedPipe(path: string): Promise<void>;
 }
 
 export type SecureStateBackend = PosixSecureStateBackend | WindowsSecureStateBackend;

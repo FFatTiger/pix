@@ -105,8 +105,9 @@ CP-00 docs/SSOT
 | `CP-07A` | Native spike：编译/加载 N-API v8 addon，读取 current-user SID、handle-based volume serial/file ID/reparse attributes/owner/protected-DACL flags；target-aware private loader；Windows CI load smoke | `DONE` | `packages/local-authority/native/windows` | `CP-07` | Windows x64 build PASS；embedded-NUL inspectPath fail-closed on loader and raw `.node`；focused native/surface/builder tests PASS；architecture 14 gates PASS；independent verifier PASS；不启用 Windows backend/产品支持 |
 | `CP-07B` | Windows secure-state backend：ACE 枚举 + 当前用户/SYSTEM 受保护 DACL 创建；drive-absolute canonicalize；private dir/document/lock 走 file-ID pin；`createSecureStateBackend()` 在 win32-x64 选择该 backend；Host lease 可打开专用 host dir | `DONE` | `packages/local-authority` + Host lease consumer | `CP-07A` | 定向 backend/Host Windows tests PASS；factory 不走 POSIX；independent verifier PASS |
 | `CP-07C` | sessiond 在 path walk 前选择 `createSecureStateBackend()`；Windows private dir/lock/secret 使用 SID/file-ID/DACL；dedicated Windows sessiond 可启动 named pipe 并二次启动 conflict | `DONE` | `packages/sessiond` | `CP-07B` | Windows start/shutdown + fail-closed 0755/symlink/swap 定向 PASS；POSIX lock/secret race tests 仍在 Linux/macOS required；不宣称 named-pipe DACL / Job Object / 完整 Windows 产品支持 |
+| `CP-08` | Windows named-pipe DACL：listen 后 protect+回读当前用户/SYSTEM protected DACL；pipe 名使用目录 SHA-256 前缀，不嵌入 home path | `DONE` | `packages/local-authority` + `packages/sessiond` | `CP-07C` | 定向 pipe protect/inspect PASS；Windows sessiond start 后 DACL 回读 PASS；secret+instance fence 仍在；不宣称 Job Object / 完整产品支持 |
 
-后续 lane：完成 CP-07C 独立验证 → secure named-pipe DACL / process tree。
+后续 lane：完成 CP-08 独立验证 → process tree / Job Object。
 
 ---
 

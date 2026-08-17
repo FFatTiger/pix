@@ -28,7 +28,10 @@ import {
   windowsFileIdentity,
 } from "./windows-identity.js";
 import { canonicalizeWindowsAbsolutePath } from "./windows-path.js";
-import { rejectUnsafeWindowsSecurityEvidence } from "./windows-security.js";
+import {
+  rejectUnsafeWindowsNamedPipeEvidence,
+  rejectUnsafeWindowsSecurityEvidence,
+} from "./windows-security.js";
 
 const DRIVE_ROOT = /^[A-Z]:\\$/;
 
@@ -465,6 +468,34 @@ export async function releaseWindowsLifetimeLock(
   await rm(path, { force: true }).catch(() => {});
 }
 
+export async function protectWindowsNamedPipe(path: string): Promise<void> {
+  const binding = requireBinding();
+  const principal = currentWindowsPrincipal();
+  try {
+    binding.protectNamedPipe(path);
+  } catch (error) {
+    if (error instanceof LocalAuthorityError) throw error;
+    const code = (error as { code?: string }).code;
+    if (code === "NATIVE_INVALID_ARGUMENT") {
+      throw new LocalAuthorityError("INVALID_PATH", "Path must be a bounded absolute path without control characters");
+    }
+    if (code === "NATIVE_NOT_FOUND") {
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", "named pipe does not exist");
+    }
+    throw new LocalAuthorityError("NOT_PRIVATE", "Directory mode must be private");
+  }
+  let inspection;
+  try {
+    inspection = binding.inspectNamedPipe(path);
+  } catch {
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", "named pipe security could not be inspected");
+  }
+  if (!inspection) {
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", "named pipe security could not be inspected");
+  }
+  rejectUnsafeWindowsNamedPipeEvidence(inspection, principal);
+}
+
 export function createWindowsSecureStateBackend(): WindowsSecureStateBackend {
   return {
     kind: "windows",
@@ -480,6 +511,7 @@ export function createWindowsSecureStateBackend(): WindowsSecureStateBackend {
     releaseLifetimeLock: (path, opts) => releaseWindowsLifetimeLock(path, opts),
     isPidAlive: (pid) => isWindowsPidAlive(pid),
     createExclusivePrivateFile: (path, payload, opts) => createWindowsExclusivePrivateFile(path, payload, opts),
+    protectNamedPipe: (path) => protectWindowsNamedPipe(path),
   };
 }
 

@@ -13,7 +13,7 @@
 
 #ifdef _WIN32
 
-#define PIX_NATIVE_API_VERSION 2
+#define PIX_NATIVE_API_VERSION 3
 #define PIX_MAX_REPORTED_ACES 32
 
 static napi_value throw_fixed(napi_env env, const char* code, const char* message) {
@@ -405,6 +405,52 @@ static void free_explicit_acl(PACL acl) {
   if (acl) LocalFree(acl);
 }
 
+static int is_named_pipe_path(const wchar_t* path) {
+  if (path == NULL) return 0;
+  return (wcsncmp(path, L"\\\\.\\pipe\\", 9) == 0 || wcsncmp(path, L"\\\\?\\pipe\\", 9) == 0)
+    && path[9] != L'\0';
+}
+
+static PACL create_private_allowlist_acl(PSID user_sid, PSID system_sid) {
+  EXPLICIT_ACCESS_W access[2];
+  PACL acl = NULL;
+  ZeroMemory(access, sizeof(access));
+  access[0].grfAccessPermissions = GENERIC_ALL;
+  access[0].grfAccessMode = SET_ACCESS;
+  access[0].grfInheritance = NO_INHERITANCE;
+  access[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  access[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+  access[0].Trustee.ptstrName = (LPWSTR)user_sid;
+  access[1].grfAccessPermissions = GENERIC_ALL;
+  access[1].grfAccessMode = SET_ACCESS;
+  access[1].grfInheritance = NO_INHERITANCE;
+  access[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  access[1].Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+  access[1].Trustee.ptstrName = (LPWSTR)system_sid;
+  if (SetEntriesInAclW(2, access, NULL, &acl) != ERROR_SUCCESS) return NULL;
+  return acl;
+}
+
+static napi_status set_security_evidence(
+  napi_env env,
+  napi_value result,
+  PSID owner,
+  PACL dacl,
+  BOOL dacl_present,
+  SECURITY_DESCRIPTOR_CONTROL control
+) {
+  LPSTR owner_text = NULL;
+  if (owner == NULL || !IsValidSid(owner) || !ConvertSidToStringSidA(owner, &owner_text) || owner_text == NULL || owner_text[0] == '\0') {
+    return napi_generic_failure;
+  }
+  napi_status status = set_utf8(env, result, "ownerSid", owner_text);
+  LocalFree(owner_text);
+  if (status != napi_ok) return status;
+  if (set_bool(env, result, "daclPresent", dacl_present != FALSE) != napi_ok) return napi_generic_failure;
+  if (set_bool(env, result, "daclProtected", (control & SE_DACL_PROTECTED) != 0) != napi_ok) return napi_generic_failure;
+  return set_acl_aces(env, result, dacl, dacl_present);
+}
+
 static napi_value create_private_object(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value argv[2];
@@ -533,11 +579,143 @@ static napi_value create_private_object(napi_env env, napi_callback_info info) {
   return result;
 }
 
+static napi_value inspect_named_pipe(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  wchar_t* path = NULL;
+  PSECURITY_DESCRIPTOR descriptor = NULL;
+  napi_value result = NULL;
+
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 1) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is required");
+  }
+  path = wide_path_from_js(env, argv[0]);
+  if (!path || !is_named_pipe_path(path)) {
+    if (path) free(path);
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is invalid");
+  }
+
+  PSID owner = NULL;
+  PACL dacl = NULL;
+  DWORD security_result = GetNamedSecurityInfoW(
+    path,
+    SE_FILE_OBJECT,
+    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+    &owner,
+    NULL,
+    &dacl,
+    NULL,
+    &descriptor
+  );
+  free(path);
+  if (security_result != ERROR_SUCCESS) {
+    if (security_result == ERROR_FILE_NOT_FOUND || security_result == ERROR_PATH_NOT_FOUND) {
+      napi_value null_value;
+      if (napi_get_null(env, &null_value) != napi_ok) {
+        return throw_fixed(env, "NATIVE_INTERNAL", "native operation failed");
+      }
+      return null_value;
+    }
+    return throw_fixed(
+      env,
+      security_result == ERROR_ACCESS_DENIED ? "NATIVE_ACCESS_DENIED" : "NATIVE_INSPECT_FAILED",
+      "named pipe security could not be inspected"
+    );
+  }
+
+  SECURITY_DESCRIPTOR_CONTROL control = 0;
+  DWORD revision = 0;
+  BOOL dacl_present = FALSE;
+  BOOL dacl_defaulted = FALSE;
+  PACL descriptor_dacl = NULL;
+  if (!GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+      !GetSecurityDescriptorDacl(descriptor, &dacl_present, &descriptor_dacl, &dacl_defaulted)) {
+    LocalFree(descriptor);
+    return throw_fixed(env, "NATIVE_INSPECT_FAILED", "named pipe security could not be inspected");
+  }
+
+  if (napi_create_object(env, &result) != napi_ok ||
+      set_security_evidence(env, result, owner, descriptor_dacl, dacl_present, control) != napi_ok) {
+    LocalFree(descriptor);
+    return throw_fixed(env, "NATIVE_INTERNAL", "native operation failed");
+  }
+
+  LocalFree(descriptor);
+  return result;
+}
+
+static napi_value protect_named_pipe(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  wchar_t* path = NULL;
+  PSID user_sid = NULL;
+  PSID system_sid = NULL;
+  PACL acl = NULL;
+
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 1) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is required");
+  }
+  path = wide_path_from_js(env, argv[0]);
+  if (!path || !is_named_pipe_path(path)) {
+    if (path) free(path);
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is invalid");
+  }
+
+  user_sid = copy_current_user_sid();
+  system_sid = create_local_system_sid();
+  if (!user_sid || !system_sid) {
+    if (user_sid) free(user_sid);
+    if (system_sid) FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "current user identity could not be inspected");
+  }
+
+  acl = create_private_allowlist_acl(user_sid, system_sid);
+  if (acl == NULL) {
+    free(user_sid);
+    FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "private security descriptor could not be created");
+  }
+
+  DWORD set_result = SetNamedSecurityInfoW(
+    path,
+    SE_FILE_OBJECT,
+    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+    user_sid,
+    NULL,
+    acl,
+    NULL
+  );
+  free_explicit_acl(acl);
+  free(user_sid);
+  FreeSid(system_sid);
+  free(path);
+  if (set_result != ERROR_SUCCESS) {
+    if (set_result == ERROR_FILE_NOT_FOUND || set_result == ERROR_PATH_NOT_FOUND) {
+      return throw_fixed(env, "NATIVE_NOT_FOUND", "named pipe does not exist");
+    }
+    return throw_fixed(
+      env,
+      set_result == ERROR_ACCESS_DENIED ? "NATIVE_ACCESS_DENIED" : "NATIVE_CREATE_FAILED",
+      "named pipe could not be protected"
+    );
+  }
+
+  napi_value result;
+  if (napi_get_boolean(env, 1, &result) != napi_ok) {
+    return throw_fixed(env, "NATIVE_INTERNAL", "native operation failed");
+  }
+  return result;
+}
+
 static napi_value init(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
     {"currentUserSid", NULL, current_user_sid, NULL, NULL, NULL, napi_default, NULL},
     {"inspectPath", NULL, inspect_path, NULL, NULL, NULL, napi_default, NULL},
     {"createPrivateObject", NULL, create_private_object, NULL, NULL, NULL, napi_default, NULL},
+    {"inspectNamedPipe", NULL, inspect_named_pipe, NULL, NULL, NULL, napi_default, NULL},
+    {"protectNamedPipe", NULL, protect_named_pipe, NULL, NULL, NULL, napi_default, NULL},
   };
   if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
     napi_throw_error(env, "NATIVE_INTERNAL", "native operation failed");

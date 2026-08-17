@@ -1,5 +1,9 @@
 import { LocalAuthorityError, type WindowsPrincipal } from "./contracts.js";
-import type { NativeWindowsAce, NativeWindowsPathInspection } from "./native-windows.js";
+import type {
+  NativeWindowsAce,
+  NativeWindowsNamedPipeInspection,
+  NativeWindowsPathInspection,
+} from "./native-windows.js";
 import { currentWindowsPrincipal } from "./windows-identity.js";
 
 const SID_SHAPE = /^S-1-[0-9-]+$/u;
@@ -86,4 +90,25 @@ export function hasUsableWindowsSecurityEvidence(inspection: NativeWindowsPathIn
     && typeof inspection.daclPresent === "boolean"
     && typeof inspection.daclProtected === "boolean"
     && Array.isArray(inspection.aces);
+}
+
+/** Fail-closed named-pipe DACL: same allowlist as private files, no reparse fields. */
+export function rejectUnsafeWindowsNamedPipeEvidence(
+  inspection: NativeWindowsNamedPipeInspection,
+  principal: WindowsPrincipal = currentWindowsPrincipal(),
+): void {
+  rejectUnsafeWindowsSecurityEvidence({
+    volumeSerial: "0",
+    fileId: "0".repeat(32),
+    size: "0",
+    attributes: 0,
+    reparseTag: 0,
+    isReparsePoint: false,
+    isDirectory: false,
+    isFile: false,
+    ownerSid: inspection.ownerSid,
+    daclPresent: inspection.daclPresent,
+    daclProtected: inspection.daclProtected,
+    aces: inspection.aces,
+  }, principal);
 }

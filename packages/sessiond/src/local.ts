@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { link, lstat, open, readdir, rm } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { basename, dirname, join } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   createSecureStateBackend,
   LocalAuthorityError,
@@ -130,7 +130,7 @@ export async function instanceAlive(paths: SessiondPaths): Promise<boolean> {
 export function sessiondPaths(directory: string): SessiondPaths {
   return {
     directory,
-    endpoint: process.platform === "win32" ? `\\\\.\\pipe\\pix-sessiond-${Buffer.from(directory).toString("hex").slice(0, 24)}` : join(directory, "sessiond.sock"),
+    endpoint: process.platform === "win32" ? `\\\\.\\pipe\\pix-sessiond-${createHash("sha256").update(directory).digest("hex").slice(0, 24)}` : join(directory, "sessiond.sock"),
     lockFile: join(directory, "sessiond.lock"),
     secretFile: join(directory, "sessiond.secret"),
   };
