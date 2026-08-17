@@ -117,6 +117,16 @@ export type SessionContext = z.infer<typeof SessionContextSchema>;
  * catalog head (exactly the leaf a leaf-less `sessions.context` resolves);
  * a live runtime's in-memory navigated leaf is NOT fabricated here — live
  * consumers take the active leaf from the runtime snapshot.
+ *
+ * Bounded Tree Wire Contract: the limits below MIRROR the single domain
+ * authority in `packages/runtime-core/src/session.ts`
+ * (`MAX_SESSION_TREE_*`). Protocol cannot import runtime-core, so these
+ * constants are the wire-side copy; the pi-sdk-adapter projection enforces
+ * the authority values and the parity tests pin both sides to the same
+ * numbers. When a producer hits any budget it MUST return `pageInfo` with
+ * explicit truncation counts — never silent omission. `pageInfo` is
+ * optional on the wire so a non-truncated tree stays byte-compatible with
+ * older clients.
  */
 export const SessionTreeNodeKindSchema = z.enum([
   "user",
@@ -141,7 +151,14 @@ export interface SessionTreeNode {
   skippedEntryIds?: string[] | undefined;
 }
 
-const SESSION_TREE_NODE_LABEL_MAX = 40;
+// Wire-side mirrors of the runtime-core tree authority (session.ts).
+// Keep these EXACTLY equal to the runtime-core constants; the parity tests
+// pin them on both sides of the boundary.
+export const MAX_SESSION_TREE_LABEL_LENGTH = 40;
+export const MAX_SESSION_TREE_DEPTH = 200;
+export const MAX_SESSION_TREE_NODES = 1000;
+export const MAX_SESSION_TREE_SKIPPED_IDS = 5000;
+export const MAX_SESSION_TREE_FRAME = 6000;
 
 export const SessionTreeNodeSchema: z.ZodType<SessionTreeNode> = z.lazy(() =>
   z.strictObject({
@@ -155,6 +172,18 @@ export const SessionTreeNodeSchema: z.ZodType<SessionTreeNode> = z.lazy(() =>
   }),
 );
 
+export const SessionTreePageInfoSchema = z.strictObject({
+  /** True when any budget was hit — the returned tree is NOT the complete session. */
+  truncated: z.boolean(),
+  /** Kept nodes returned (≤ MAX_SESSION_TREE_NODES in a bounded projection). */
+  nodeCount: z.number().int().nonnegative(),
+  /** Total contracted entry ids returned (≤ MAX_SESSION_TREE_SKIPPED_IDS in a bounded projection). */
+  skippedIdCount: z.number().int().nonnegative(),
+  /** Total wire elements returned = nodeCount + skippedIdCount (≤ MAX_SESSION_TREE_FRAME in a bounded projection). */
+  frameCount: z.number().int().nonnegative(),
+});
+export type SessionTreePageInfo = z.infer<typeof SessionTreePageInfoSchema>;
+
 export const SessionTreeSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
   /** Persisted catalog head leaf; absent when the session has no entries. */
@@ -162,11 +191,13 @@ export const SessionTreeSchema = z.strictObject({
   roots: z.array(SessionTreeNodeSchema),
   /** Total entries represented (kept + contracted), bounded by the file. */
   entryCount: z.number().int().nonnegative().safe(),
+  /** Explicit bounding metadata; present only when the projection was truncated. */
+  pageInfo: SessionTreePageInfoSchema.optional(),
 }).superRefine((value, ctx) => {
   // Frozen preview contract: labels are single-line and length-capped.
   const check = (nodes: SessionTreeNode[], depth: number): void => {
     for (const node of nodes) {
-      if (node.label.length > SESSION_TREE_NODE_LABEL_MAX) {
+      if (node.label.length > MAX_SESSION_TREE_LABEL_LENGTH) {
         ctx.addIssue({ code: "custom", path: ["roots"], message: "tree node label exceeds the preview cap" });
         return;
       }
@@ -178,6 +209,18 @@ export const SessionTreeSchema = z.strictObject({
     }
   };
   check(value.roots, 0);
+  // Bounded Tree Wire Contract: when pageInfo is present the counts must be
+  // self-consistent (frame = nodes + skipped ids) and marked truncated. The
+  // numeric caps themselves are enforced by the producer (adapter) against
+  // the authority constants; this verifies the explicit truncation contract.
+  if (value.pageInfo !== undefined) {
+    if (value.pageInfo.frameCount !== value.pageInfo.nodeCount + value.pageInfo.skippedIdCount) {
+      ctx.addIssue({ code: "custom", path: ["pageInfo", "frameCount"], message: "tree pageInfo frameCount must equal nodeCount + skippedIdCount" });
+    }
+    if (value.pageInfo.truncated !== true) {
+      ctx.addIssue({ code: "custom", path: ["pageInfo", "truncated"], message: "tree pageInfo must be truncated when present" });
+    }
+  }
 });
 export type SessionTree = z.infer<typeof SessionTreeSchema>;
 

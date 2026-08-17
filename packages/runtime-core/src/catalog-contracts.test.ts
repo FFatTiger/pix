@@ -9,7 +9,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { THEME_CSS_VAR_KEYS, isSafeThemeCssValue } from "./index.js";
+import {
+  MAX_SESSION_TREE_DEPTH,
+  MAX_SESSION_TREE_FRAME,
+  MAX_SESSION_TREE_LABEL_LENGTH,
+  MAX_SESSION_TREE_NODES,
+  MAX_SESSION_TREE_SKIPPED_IDS,
+  SESSION_TREE_NODE_KINDS,
+  THEME_CSS_VAR_KEYS,
+  isSafeThemeCssValue,
+} from "./index.js";
 import type {
   CredentialCatalogPort,
   CredentialStorePort,
@@ -377,4 +386,23 @@ test("the session tree kinds are exactly the six normalized values", () => {
   for (const kind of kinds) {
     assert.match(kind, /^(user|assistant|toolResult|bashExecution|custom|system)$/);
   }
+  // The vocabulary array is the SINGLE source of truth for the kinds.
+  assert.deepEqual([...SESSION_TREE_NODE_KINDS], kinds);
+});
+
+test("the session tree limits are the single domain authority (Bounded Tree Wire Contract)", () => {
+  // These constants are the ONE authority for every tree limit. The adapter
+  // projection enforces them, and the protocol wire schema mirrors them — a
+  // change here MUST be mirrored in packages/protocol/src/domain.ts and in
+  // the projection (packages/pi-sdk-adapter/src/internal/session-tree.ts).
+  assert.equal(MAX_SESSION_TREE_LABEL_LENGTH, 40, "BranchNavigator preview cap");
+  assert.equal(MAX_SESSION_TREE_DEPTH, 200, "projected kept-node depth cap");
+  assert.equal(MAX_SESSION_TREE_NODES, 1000, "node budget");
+  assert.equal(MAX_SESSION_TREE_SKIPPED_IDS, 5000, "skipped-id budget");
+  assert.equal(MAX_SESSION_TREE_FRAME, 6000, "frame budget (nodes + skipped ids)");
+  // Coherence invariants: the frame budget must at least fit the node budget
+  // plus the skipped-id budget, and the leaf path depth is bounded by the
+  // depth cap so a reserved leaf always fits within the budgets.
+  assert.ok(MAX_SESSION_TREE_FRAME >= MAX_SESSION_TREE_NODES + MAX_SESSION_TREE_SKIPPED_IDS);
+  assert.ok(MAX_SESSION_TREE_NODES > MAX_SESSION_TREE_DEPTH, "node budget must comfortably fit the reserved leaf path");
 });

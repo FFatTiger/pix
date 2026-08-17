@@ -35,6 +35,11 @@
 //   resolve the sessionId → path/info index from the list result instead of
 //   re-running a global listAll. Stale/deleted paths are validated, rebuilt
 //   at most once, then reported not_found; a wrong session is never returned.
+// - `readSessionContext` validates a caller-supplied `leafId` against the
+//   session's OWN entries BEFORE any SDK projection: an unknown/nonmember leaf
+//   fails closed with canonical `invalid_input` (exactly like an invalid
+//   cursor) and NEVER falls through the SDK's permissive `leaf ??= last-entry`
+//   fallback, so no permissive helper can relabel another branch.
 // - A warm index miss forces at most ONE fresh scan per cache generation,
 //   coalesced across concurrent misses onto a single `listAll` (a session
 //   created after the cached snapshot is recovered on that scan). All physical
@@ -803,11 +808,18 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     const pageSize = limit === undefined ? 50 : Math.max(1, Math.min(200, Math.floor(limit)));
     const selected = leafId
       ? (() => {
-          // Use the SAME compaction-aware projection as the leaf-less first
-          // page. getBranch(leafId) would reintroduce summarized-away entries
-          // on page 2+, making one cursor traversal switch semantics midway.
           const entries = [...manager.getEntries()];
           const byId = new Map(entries.map((entry) => [entry.id, entry]));
+          // Fail closed BEFORE the SDK projection: a caller-supplied leafId
+          // that is not a member of THIS session must never reach the SDK's
+          // permissive `leaf ??= last-entry` fallback, which would silently
+          // relabel another branch as the requested one (and desync the
+          // returned leafId from the projected entries). Unknown/nonmember
+          // leaf fails with the SAME canonical invalid_input as an invalid
+          // cursor — never a fallback-as-success.
+          if (!byId.has(leafId)) {
+            throw makeRuntimeError("invalid_input", "history cursor is invalid");
+          }
           return buildSdkContextEntries(entries, leafId, byId);
         })()
       : manager.buildContextEntries();

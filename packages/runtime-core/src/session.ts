@@ -60,20 +60,63 @@ export interface SessionContext {
 /* ------------------------------------------------------------------ */
 
 /**
- * Normalized entry classification for a branch-tree node. Message-like
+ * Canonical session-tree node-kind vocabulary (BranchNavigator). Message-like
  * entries keep the canonical AgentMessage role vocabulary (user / assistant /
  * toolResult / bashExecution / custom); structural entries (model/thinking/
  * label/session-info changes, plain custom state, compaction and branch
  * summaries) are `system`. This is the pix canonical vocabulary — never a
  * backend SDK role or entry-type string.
+ *
+ * SINGLE DOMAIN AUTHORITY: this array is the one source of truth for the
+ * tree node kinds. `packages/protocol/src/domain.ts` mirrors it as a wire
+ * zod enum (protocol must stay runtime-core-free); the pi-sdk-adapter
+ * projection classifies against it.
  */
-export type SessionTreeNodeKind =
-  | "user"
-  | "assistant"
-  | "toolResult"
-  | "bashExecution"
-  | "custom"
-  | "system";
+export const SESSION_TREE_NODE_KINDS = [
+  "user",
+  "assistant",
+  "toolResult",
+  "bashExecution",
+  "custom",
+  "system",
+] as const;
+
+/** Canonical session-tree node kind (see {@link SESSION_TREE_NODE_KINDS}). */
+export type SessionTreeNodeKind = (typeof SESSION_TREE_NODE_KINDS)[number];
+
+/*
+ * Bounded tree wire contract — SINGLE DOMAIN AUTHORITY for every tree limit.
+ *
+ * `packages/protocol/src/domain.ts` mirrors these exact values in its wire
+ * schema (protocol cannot import runtime-core); the adapter projection
+ * (`packages/pi-sdk-adapter/src/internal/session-tree.ts`) enforces them and
+ * reports truncation explicitly. Keep every constant here, never inline a
+ * tree limit elsewhere. See `SessionTreePageInfo` for the truncation
+ * semantics (explicit pageInfo, never silent omission).
+ */
+
+/** Max preview label length in Unicode JS code units (BranchNavigator parity). */
+export const MAX_SESSION_TREE_LABEL_LENGTH = 40;
+
+/**
+ * Max kept-node depth in the projected tree. Deeper kept descendants are
+ * flattened into the nearest kept ancestor (with their contracted ids), so
+ * the response tree stays shallow for recursive renderers.
+ */
+export const MAX_SESSION_TREE_DEPTH = 200;
+
+/** Max kept nodes returned in one projected tree (node budget). */
+export const MAX_SESSION_TREE_NODES = 1000;
+
+/** Max total contracted entry ids returned across all kept nodes (skipped-id budget). */
+export const MAX_SESSION_TREE_SKIPPED_IDS = 5000;
+
+/**
+ * Max wire elements returned in one projected tree = kept nodes + contracted
+ * ids (frame budget). Bounds the serialized size of a bounded tree for very
+ * large sessions.
+ */
+export const MAX_SESSION_TREE_FRAME = 6000;
 
 /**
  * A single node of the normalized branch tree.
@@ -104,6 +147,26 @@ export interface SessionTreeNode {
 }
 
 /**
+ * Explicit bounding metadata for a {@link SessionTree} (Bounded Tree Wire
+ * Contract). Present ONLY when the projection hit a budget — a bounded tree
+ * is always flagged, never silently omitted. `currentLeafId` stays coherent
+ * under truncation: the leaf's path is reserved (prioritized) so the leaf
+ * always remains addressable in the returned tree; the leaf path's contracted
+ * chains are tail-truncated so every node's `parentEntryId` still resolves to
+ * a kept ancestor or the last element of its own `skippedEntryIds`.
+ */
+export interface SessionTreePageInfo {
+  /** True when any budget was hit — the returned tree is NOT the complete session. */
+  truncated: boolean;
+  /** Kept nodes returned (roots + branch points + leaves; ≤ MAX_SESSION_TREE_NODES). */
+  nodeCount: number;
+  /** Total contracted entry ids returned (≤ MAX_SESSION_TREE_SKIPPED_IDS). */
+  skippedIdCount: number;
+  /** Total wire elements returned = nodeCount + skippedIdCount (≤ MAX_SESSION_TREE_FRAME). */
+  frameCount: number;
+}
+
+/**
  * Normalized read-only branch tree of a whole session.
  *
  * `currentLeafId` is the PERSISTED catalog head (the JSONL file-order last
@@ -112,6 +175,12 @@ export interface SessionTreeNode {
  * has not been persisted, so live consumers must take the active leaf from
  * the runtime snapshot (`RuntimeState.leafId`) and treat this field as the
  * history-mode default. The tree never fabricates persistence.
+ *
+ * Bounded Tree Wire Contract: for very large sessions the projection honors
+ * the node / skipped-id / frame budgets in this module. When any budget is
+ * hit the tree carries `pageInfo` with explicit truncation counts (never a
+ * silent omission); `currentLeafId` and every `parentEntryId` stay coherent
+ * (see {@link SessionTreePageInfo}).
  */
 export interface SessionTree {
   sessionId: string;
@@ -119,8 +188,10 @@ export interface SessionTree {
   currentLeafId?: string;
   /** Root nodes (malformed/orphaned entries surface as roots, never dropped). */
   roots: readonly SessionTreeNode[];
-  /** Total number of entries represented by the tree (incl. contracted). */
+  /** Total number of entries represented by the FULL session (incl. contracted). */
   entryCount: number;
+  /** Explicit bounding metadata; present only when the projection was truncated. */
+  pageInfo?: SessionTreePageInfo;
 }
 
 /** Activation location for a session (used by the sessiond / worker shell). */

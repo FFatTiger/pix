@@ -15,8 +15,8 @@
 // - Roots, branch points and leaves are kept; single-child linear chains
 //   between them are contracted into `skippedEntryIds` on the next kept node,
 //   so a leaf selected inside a contracted chain stays addressable and the
-//   response stays shallow (depth cap 200 with a flatten fallback, mirroring
-//   the legacy web frontend's projection).
+//   response stays shallow (depth cap with a flatten fallback, mirroring the
+//   legacy web frontend's projection).
 // - Malformed input fails closed and deterministically, never hangs:
 //   non-object entries and entries without a usable id are skipped; duplicate
 //   ids keep the FIRST occurrence (append-order truth); unknown/self parents
@@ -27,8 +27,45 @@
 //   actually reachable from a root — the projection NEVER fabricates a live
 //   worker leaf (live consumers take the active leaf from the runtime
 //   snapshot; see the SessionTree contract in runtime-core).
+//
+// Bounded Tree Wire Contract (very large sessions): the projection honors the
+// node / skipped-id / frame budgets centralized in runtime-core
+// (`MAX_SESSION_TREE_NODES`, `MAX_SESSION_TREE_SKIPPED_IDS`,
+// `MAX_SESSION_TREE_FRAME`). Truncation is ALWAYS explicit — when any budget
+// is hit the tree carries `pageInfo` with real counts (`truncated: true`);
+// it is never a silent omission. Two coherence guarantees hold under
+// truncation:
+// - `currentLeafId` stays coherent: the root→currentLeaf kept-node path is
+//   RESERVED (projected first, never cut by the node budget), so the leaf
+//   always remains addressable in the returned tree.
+// - The parent graph stays coherent: every node's `parentEntryId` resolves to
+//   a kept ancestor or the LAST element of its own `skippedEntryIds`. A
+//   contracted chain that would exceed the remaining skipped-id/frame budget
+//   is tail-truncated (the ids nearest the kept node are preserved). Two
+//   truncation/structural edges are re-anchored instead of dangling: a kept
+//   node flattened under the depth-cap ancestor whose raw parent is a kept
+//   sibling, and a kept node whose entire contracted chain was lost to the
+//   budget — both get `parentEntryId` re-pointed at the actual kept ancestor.
+//   A non-leaf-path node that cannot fit is dropped together with its whole
+//   subtree (never a half-coherent node), flagged by `pageInfo`.
+// Roots are never dropped (malformed/orphaned entries surface as roots, the
+// leaf-path root is reserved) — the budgets bound non-root nodes.
 import type { SessionTree, SessionTreeNode, SessionTreeNodeKind } from "@fffattiger/pix-runtime-core";
+import {
+  MAX_SESSION_TREE_DEPTH,
+  MAX_SESSION_TREE_FRAME,
+  MAX_SESSION_TREE_LABEL_LENGTH,
+  MAX_SESSION_TREE_NODES,
+  MAX_SESSION_TREE_SKIPPED_IDS,
+} from "@fffattiger/pix-runtime-core";
 import { redactText } from "./sanitize.js";
+
+// Back-compat aliases so existing consumers/tests keep working; the canonical
+// values are the runtime-core authority constants above.
+export {
+  MAX_SESSION_TREE_LABEL_LENGTH as MAX_TREE_LABEL_LENGTH,
+  MAX_SESSION_TREE_DEPTH as MAX_PROJECTED_TREE_DEPTH,
+};
 
 /** Loose structural view of an SDK session entry (no SDK types cross here). */
 interface TreeEntryLike {
@@ -40,16 +77,6 @@ interface TreeEntryLike {
   customType?: unknown;
   content?: unknown;
 }
-
-/** Maximum preview label length in Unicode JS code units (BranchNavigator parity). */
-export const MAX_TREE_LABEL_LENGTH = 40;
-
-/**
- * Maximum kept-node depth in the projected tree. Deeper kept descendants are
- * flattened into the nearest kept ancestor (with their contracted ids), so the
- * response tree stays shallow for recursive renderers.
- */
-export const MAX_PROJECTED_TREE_DEPTH = 200;
 
 /** Normalized classification fields of a node (no ids/structure). */
 type NodeClassification = Pick<SessionTreeNode, "kind" | "label" | "truncated">;
@@ -88,8 +115,8 @@ function entryTimestamp(entry: TreeEntryLike, order: number): number {
 function previewText(text: string): { label: string; truncated: boolean } {
   const redacted = redactText(text).split("\n")[0] ?? "";
   const singleLine = redacted.replace(/\s+/g, " ").trim();
-  if (singleLine.length > MAX_TREE_LABEL_LENGTH) {
-    return { label: singleLine.slice(0, MAX_TREE_LABEL_LENGTH), truncated: true };
+  if (singleLine.length > MAX_SESSION_TREE_LABEL_LENGTH) {
+    return { label: singleLine.slice(0, MAX_SESSION_TREE_LABEL_LENGTH), truncated: true };
   }
   return { label: singleLine, truncated: false };
 }
@@ -192,11 +219,14 @@ function classify(entry: TreeEntryLike): NodeClassification {
 }
 
 /**
- * Project the full entry list of a session onto the canonical branch tree.
+ * Project the full entry list of a session onto the canonical branch tree,
+ * honoring the Bounded Tree Wire Contract (see the module docstring).
  *
  * `leafId` is the persisted catalog head (the offline reader's current leaf);
  * it is echoed as `currentLeafId` only when it resolves to an indexed entry
- * that is reachable from a root — the projection never invents a leaf.
+ * that is reachable from a root — the projection never invents a leaf. The
+ * root→currentLeaf kept-node path is reserved, so `currentLeafId` remains
+ * addressable even when the node budget bounds the rest of the tree.
  */
 export function projectSessionTree(sessionId: string, entries: readonly unknown[], leafId: string | null | undefined): SessionTree {
   // 1. Index (first occurrence wins, file order) and drop malformed entries.
@@ -284,17 +314,68 @@ export function projectSessionTree(sessionId: string, entries: readonly unknown[
     ...(skippedEntryIds === undefined || skippedEntryIds.length === 0 ? {} : { skippedEntryIds }),
   });
 
-  // 5. Project with linear-chain contraction and a depth cap. Beyond the cap,
-  //    kept descendants are flattened into the nearest kept ancestor (their
-  //    contracted ids preserved), keeping the response shallow.
-  const projectedRoots = roots.map((root) => toProjected(root));
-  const tasks: { source: RawNode; projected: MutableTreeNode; depth: number }[] = roots.map((source, index) => ({
-    source,
-    projected: projectedRoots[index]!,
-    depth: 1,
-  }));
-  const consumed = new Set<string>(roots.map((root) => root.id));
+  // 5. Bounded projection with linear-chain contraction and a depth cap.
+  //    Beyond the cap, kept descendants are flattened into the nearest kept
+  //    ancestor (their contracted ids preserved), keeping the response
+  //    shallow. The root→currentLeaf kept-node path is RESERVED: its nodes
+  //    are projected first (never cut by the node budget) and its contracted
+  //    chains get budget first (tail-preserved), so the leaf stays
+  //    addressable and its parent graph stays coherent even in a bounded tree.
+  const currentLeafResolves =
+    typeof leafId === "string" && byId.has(leafId) && reachable.has(leafId);
 
+  // All nodes on the root→currentLeaf path (root first), plus the kept subset
+  // (used to keep flattened leaf-path nodes reserved during depth-cap flatten).
+  const leafPathAll: RawNode[] = [];
+  const leafKept = new Set<string>();
+  if (currentLeafResolves) {
+    let cursor = byId.get(leafId as string);
+    while (cursor !== undefined) {
+      leafPathAll.push(cursor);
+      cursor = cursor.parentId === undefined ? undefined : byId.get(cursor.parentId);
+    }
+    leafPathAll.reverse();
+    for (const node of leafPathAll) if (keep.has(node.id)) leafKept.add(node.id);
+  }
+
+  let nodeCount = 0;
+  let skippedCount = 0;
+  let truncated = false;
+
+  // Roots are never dropped (malformed/orphaned entries surface as roots);
+  // they are still counted against the node/frame budgets so a pathological
+  // root flood is flagged as truncated rather than silent.
+  const projectedRoots: MutableTreeNode[] = [];
+  const projectedRootById = new Map<string, MutableTreeNode>();
+  const consumed = new Set<string>();
+  for (const root of roots) {
+    nodeCount += 1;
+    const projected = toProjected(root);
+    projectedRoots.push(projected);
+    projectedRootById.set(root.id, projected);
+    consumed.add(root.id);
+  }
+
+  /** Tail-truncate a contracted chain to the remaining skipped-id AND frame
+   *  budgets (keeps the tail nearest the kept node so its parentEntryId stays
+   *  inside its own skippedEntryIds). Returns the kept tail. */
+  const reserveChain = (chain: readonly string[]): string[] => {
+    const room = Math.max(0, Math.min(
+      MAX_SESSION_TREE_SKIPPED_IDS - skippedCount,
+      MAX_SESSION_TREE_FRAME - nodeCount - skippedCount,
+    ));
+    const kept = Math.min(chain.length, room);
+    if (kept < chain.length) truncated = true;
+    skippedCount += kept;
+    return chain.slice(chain.length - kept);
+  };
+
+  // Depth-cap flattening (shared by Phase A leaf-path flattening and the
+  // general DFS): kept descendants beyond the cap are appended to `parent` in
+  // the canonical oldest-first order, each with its own contracted chain.
+  // Budget-aware: leaf-path nodes are reserved; non-leaf-path nodes (with
+  // their whole subtree) are skipped when they cannot fit — explicit
+  // truncation, never a half-coherent node.
   const appendFlattened = (source: RawNode, parent: MutableTreeNode, inherited: readonly string[]): void => {
     const pending: { node: RawNode; skipped: readonly string[] }[] = [{ node: source, skipped: inherited }];
     const flattenedSeen = new Set<string>();
@@ -302,8 +383,40 @@ export function projectSessionTree(sessionId: string, entries: readonly unknown[
       const { node, skipped } = pending.pop()!;
       if (flattenedSeen.has(node.id)) continue;
       flattenedSeen.add(node.id);
+      consumed.add(node.id);
       if (keep.has(node.id) && node.id !== parent.entryId) {
-        parent.children.push(toProjected(node, [...skipped]));
+        const reserved = leafKept.has(node.id);
+        const room = Math.max(0, Math.min(
+          MAX_SESSION_TREE_SKIPPED_IDS - skippedCount,
+          MAX_SESSION_TREE_FRAME - nodeCount - skippedCount,
+        ));
+        const chainKept = Math.min(skipped.length, room);
+        const fits =
+          reserved ||
+          (nodeCount + 1 <= MAX_SESSION_TREE_NODES &&
+            nodeCount + skippedCount + chainKept + 1 <= MAX_SESSION_TREE_FRAME);
+        if (!fits) {
+          truncated = true;
+          continue;
+        }
+        if (chainKept < skipped.length) truncated = true;
+        skippedCount += chainKept;
+        nodeCount += 1;
+        const keptChain = skipped.slice(skipped.length - chainKept);
+        const projectedChild = toProjected(node, [...keptChain]);
+        // Parent-coherence under flattening: a kept node's raw parent is
+        // normally either a kept ancestor or the tail of its own contracted
+        // chain. Flattening sibling-izes kept descendants under the depth-cap
+        // ancestor, and the budget may drop a chain entirely — in both cases
+        // the raw parent would dangle. Re-anchor `parentEntryId` to this
+        // flattened (kept) ancestor so it ALWAYS resolves to a kept ancestor
+        // or the chain tail (explicit truncation, never a dangling reference).
+        const rawParent = node.parentId;
+        const rawParentFlattenedSibling =
+          rawParent !== undefined && keep.has(rawParent) && rawParent !== parent.entryId;
+        const rawParentChainLost = rawParent !== undefined && !keep.has(rawParent) && keptChain.length === 0;
+        if (rawParentFlattenedSibling || rawParentChainLost) projectedChild.parentEntryId = parent.entryId;
+        parent.children.push(projectedChild);
       }
       // `pending` is LIFO: push children newest-first so they are consumed in
       // the canonical oldest-first order used by the non-flattened tree.
@@ -318,15 +431,60 @@ export function projectSessionTree(sessionId: string, entries: readonly unknown[
     }
   };
 
+  // Phase A: project the reserved leaf path (root → currentLeaf). Kept nodes
+  // on the path are PRE-COMPUTED (with their reserved chains) but NOT attached
+  // yet, so the general DFS can attach every child in canonical oldest-first
+  // order. Beyond the depth cap the remaining path is flattened (attached).
+  const leafPathById = new Map<string, { node: MutableTreeNode; depth: number }>();
+  if (leafPathAll.length > 0) {
+    const rootNode = leafPathAll[0]!;
+    let anchor = { node: projectedRootById.get(rootNode.id)!, depth: 1 };
+    let pendingChain: string[] = [];
+    for (let index = 1; index < leafPathAll.length; index += 1) {
+      const node = leafPathAll[index]!;
+      if (!keep.has(node.id)) {
+        pendingChain.push(node.id);
+        continue;
+      }
+      if (anchor.depth >= MAX_SESSION_TREE_DEPTH) {
+        // Depth cap: flatten the remaining leaf-path subtree into the
+        // depth-cap ancestor. The leaf stays addressable as a flattened node.
+        appendFlattened(node, anchor.node, []);
+        pendingChain = [];
+        break;
+      }
+      const projectedChild = toProjected(node, reserveChain(pendingChain));
+      nodeCount += 1;
+      leafPathById.set(node.id, { node: projectedChild, depth: anchor.depth + 1 });
+      anchor = { node: projectedChild, depth: anchor.depth + 1 };
+      pendingChain = [];
+    }
+  }
+
+  // Phase B: general DFS over everything else, within the remaining budgets.
+  // Leaf-path chain nodes are attached from `leafPathById` (reserved, already
+  // counted); every other kept node is budget-checked.
+  const tasks: { source: RawNode; projected: MutableTreeNode; depth: number }[] = [];
+  for (const root of roots) {
+    tasks.push({ source: root, projected: projectedRootById.get(root.id)!, depth: 1 });
+  }
+  for (const node of leafPathAll) {
+    if (node === leafPathAll[0]) continue; // root already seeded
+    const entry = leafPathById.get(node.id);
+    if (entry !== undefined) tasks.push({ source: node, projected: entry.node, depth: entry.depth });
+  }
+
   while (tasks.length > 0) {
     const task = tasks.pop()!;
     for (const childId of task.source.childIds) {
-      let child = byId.get(childId);
-      if (child === undefined) continue;
-      if (task.depth >= MAX_PROJECTED_TREE_DEPTH) {
-        appendFlattened(child, task.projected, []);
+      const directChild = byId.get(childId);
+      if (directChild === undefined) continue;
+      if (consumed.has(directChild.id)) continue; // already projected / flattened
+      if (task.depth >= MAX_SESSION_TREE_DEPTH) {
+        appendFlattened(directChild, task.projected, []);
         continue;
       }
+      let child = directChild;
       const skipped: string[] = [];
       // Contract the linear chain: every intermediate single-child node folds
       // into the next kept descendant. (keep ⇒ kept node ends the walk.)
@@ -337,22 +495,70 @@ export function projectSessionTree(sessionId: string, entries: readonly unknown[
         child = next;
       }
       if (!keep.has(child.id)) continue;
+      const precomputed = leafPathById.get(child.id);
+      if (precomputed !== undefined) {
+        // Reserved leaf-path node: attach the pre-computed node in canonical
+        // child order (its chain was already reserved in Phase A).
+        if (consumed.has(child.id)) continue;
+        consumed.add(child.id);
+        task.projected.children.push(precomputed.node);
+        tasks.push({ source: child, projected: precomputed.node, depth: precomputed.depth });
+        continue;
+      }
       if (consumed.has(child.id)) continue; // already projected (duplicate/cycle defense)
+      // Non-leaf-path node: budget-check node + chain + frame.
+      const room = Math.max(0, Math.min(
+        MAX_SESSION_TREE_SKIPPED_IDS - skippedCount,
+        MAX_SESSION_TREE_FRAME - nodeCount - skippedCount,
+      ));
+      const chainKept = Math.min(skipped.length, room);
+      const fits =
+        nodeCount + 1 <= MAX_SESSION_TREE_NODES &&
+        nodeCount + skippedCount + chainKept + 1 <= MAX_SESSION_TREE_FRAME;
+      if (!fits) {
+        truncated = true;
+        continue;
+      }
+      if (chainKept < skipped.length) truncated = true;
       consumed.add(child.id);
-      const projectedChild = toProjected(child, skipped);
+      skippedCount += chainKept;
+      nodeCount += 1;
+      const keptChain = skipped.slice(skipped.length - chainKept);
+      const projectedChild = toProjected(child, keptChain);
+      // Parent-coherence under budget truncation: when the raw parent (a
+      // non-kept chain node, the tail of `skipped`) was entirely lost to the
+      // skipped-id/frame budget, re-anchor `parentEntryId` to the kept
+      // ancestor so it always resolves to a kept ancestor or the chain tail
+      // — never a dangling reference. (A kept raw parent is always the direct
+      // kept ancestor here, so it resolves on its own.)
+      if (child.parentId !== undefined && !keep.has(child.parentId) && keptChain.length === 0) {
+        projectedChild.parentEntryId = task.projected.entryId;
+      }
       task.projected.children.push(projectedChild);
       tasks.push({ source: child, projected: projectedChild, depth: task.depth + 1 });
     }
   }
 
   // 6. currentLeafId: the persisted head, echoed only when it is an indexed,
-  //    root-reachable entry (never fabricated).
-  const currentLeafId = typeof leafId === "string" && byId.has(leafId) && reachable.has(leafId) ? leafId : undefined;
+  //    root-reachable entry (never fabricated). Because the leaf path is
+  //    reserved, a reachable leaf is ALWAYS addressable in the returned tree —
+  //    even a bounded one. pageInfo is emitted only when a budget was hit
+  //    (explicit truncation; never silent omission).
+  const currentLeafId = currentLeafResolves ? (leafId as string) : undefined;
+  const pageInfo = truncated
+    ? {
+        truncated: true,
+        nodeCount,
+        skippedIdCount: skippedCount,
+        frameCount: nodeCount + skippedCount,
+      }
+    : undefined;
 
   return {
     sessionId,
     ...(currentLeafId === undefined ? {} : { currentLeafId }),
     roots: projectedRoots,
     entryCount: reachable.size,
+    ...(pageInfo === undefined ? {} : { pageInfo }),
   };
 }

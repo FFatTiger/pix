@@ -37,6 +37,7 @@
     "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
+    "@fffattiger/pix-protocol": "0.1.0",
     "@fffattiger/pix-runtime-contract-tests": "file:../runtime-contract-tests",
     "@types/node": "^22",
     "@types/proper-lockfile": "4.1.4",

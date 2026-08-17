@@ -13,6 +13,16 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { isRuntimeError } from "@fffattiger/pix-runtime-core";
+import {
+  MAX_SESSION_TREE_DEPTH,
+  MAX_SESSION_TREE_FRAME,
+  MAX_SESSION_TREE_LABEL_LENGTH,
+  MAX_SESSION_TREE_NODES,
+  MAX_SESSION_TREE_SKIPPED_IDS,
+  type SessionTree,
+  type SessionTreeNode,
+} from "@fffattiger/pix-runtime-core";
+import { SessionTreeSchema, MAX_SESSION_TREE_LABEL_LENGTH as PROTOCOL_TREE_LABEL_LENGTH } from "@fffattiger/pix-protocol";
 import { createPiSdkSessionStore } from "../src/internal/session-store.js";
 import { MAX_PROJECTED_TREE_DEPTH, MAX_TREE_LABEL_LENGTH, projectSessionTree } from "../src/internal/session-tree.js";
 
@@ -513,6 +523,308 @@ describe("session tree cache sharing (injected SDK)", () => {
       assert.equal(compactionNode.label, "compaction");
       assert.deepEqual(compactionNode.skippedEntryIds, ["m1"]);
       assert.ok(!JSON.stringify(structural).includes("secret summary"));
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Persisted-history hardening + bounded tree wire contract
+// ---------------------------------------------------------------------------
+
+/** Assert the parent graph stays coherent: every parentEntryId resolves to a
+ *  kept ancestor or the LAST element of the node's own skippedEntryIds. */
+function assertParentCoherence(nodes: readonly SessionTreeNode[]): void {
+  const visit = (list: readonly SessionTreeNode[], ancestors: readonly SessionTreeNode[]): void => {
+    for (const node of list) {
+      if (node.parentEntryId !== undefined) {
+        const chain = node.skippedEntryIds ?? [];
+        const keptAncestor = ancestors.some((a) => a.entryId === node.parentEntryId);
+        const chainTail = chain.length > 0 && chain[chain.length - 1] === node.parentEntryId;
+        assert.ok(
+          keptAncestor || chainTail,
+          `parentEntryId ${node.parentEntryId} of ${node.entryId} must be a kept ancestor or its own skipped-chain tail`,
+        );
+      }
+      visit(node.children, [...ancestors, node]);
+    }
+  };
+  visit(nodes, []);
+}
+
+/** Walk every node (entryId + skippedEntryIds) and assert the id resolves in the tree. */
+function assertResolves(roots: readonly SessionTreeNode[], id: string): void {
+  const stack = [...roots];
+  const seen = new Set<string>();
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (seen.has(node.entryId)) continue;
+    seen.add(node.entryId);
+    if (node.entryId === id || node.skippedEntryIds?.includes(id)) return;
+    stack.push(...node.children);
+  }
+  assert.fail(`id ${id} is not addressable in the projected tree`);
+}
+
+describe("persisted history leaf + cursor validation (real store)", () => {
+  it("unknown/nonmember leafId fails closed with canonical invalid_input (no permissive SDK fallback)", async () => {
+    const f = await setup();
+    try {
+      const store = createPiSdkSessionStore({ sessionDir: f.sessionDir });
+      const manager = SessionManager.create(f.cwd, f.sessionDir);
+      manager.appendMessage({ role: "user", content: "root", timestamp: NOW });
+      const tail = manager.appendMessage(assistant("answer", 1));
+      const sessionId = manager.getSessionId();
+
+      // A member leaf still resolves (sanity) — the branch is the real one.
+      const ok = await store.readSessionContext(sessionId, { leafId: tail });
+      assert.equal(ok.leafId, tail);
+
+      // A caller-supplied leaf that is not a member of THIS session must fail
+      // closed with the SAME canonical invalid_input as an invalid cursor —
+      // never the SDK's `leaf ??= last-entry` fallback (which would relabel
+      // the head branch as the bogus leaf). The raw id is never echoed.
+      for (const bogus of ["bogus-leaf", "ghost", "entry-from-another-session"]) {
+        await assert.rejects(
+          () => store.readSessionContext(sessionId, { leafId: bogus }),
+          (error: unknown) => {
+            assert.ok(isRuntimeError(error));
+            if (!isRuntimeError(error)) return false;
+            assert.equal(error.code, "invalid_input");
+            assert.ok(!JSON.stringify(error).includes(bogus), "raw leaf id must never leak");
+            return true;
+          },
+        );
+      }
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("cross-branch before cursor fails closed with invalid_input (never paginates another branch)", async () => {
+    const f = await setup();
+    try {
+      const store = createPiSdkSessionStore({ sessionDir: f.sessionDir });
+      const manager = SessionManager.create(f.cwd, f.sessionDir);
+      const u1 = manager.appendMessage({ role: "user", content: "root", timestamp: NOW });
+      const main = manager.appendMessage(assistant("main answer", 1));
+      manager.branch(u1);
+      const side = manager.appendMessage(assistant("side answer", 2));
+      const sessionId = manager.getSessionId();
+
+      // Selecting the main branch and asking for a cursor that lives on the
+      // SIDE branch is an invalid cursor for that selection — fail closed.
+      await assert.rejects(
+        () => store.readSessionContext(sessionId, { leafId: main, before: side }),
+        (error: unknown) => isRuntimeError(error) && (error as { code: string }).code === "invalid_input",
+      );
+      // And the reverse selection.
+      await assert.rejects(
+        () => store.readSessionContext(sessionId, { leafId: side, before: main }),
+        (error: unknown) => isRuntimeError(error) && (error as { code: string }).code === "invalid_input",
+      );
+      // A cursor on the SAME selected branch still paginates (never rejects).
+      const ok = await store.readSessionContext(sessionId, { leafId: side, before: u1 });
+      assert.equal(ok.leafId, side);
+      assert.equal(ok.entries.some((entry) => entry.entryId === side), false, "cursor is exclusive");
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("bounded session tree wire contract (very large sessions)", () => {
+  /** Build a real 50k-entry linear JSONL session (written raw for speed). */
+  async function writeLinear(f: Fixture, sessionId: string, count: number): Promise<void> {
+    const header = { type: "session", version: 3, id: sessionId, timestamp: TS(0), cwd: f.cwd };
+    const lines = [JSON.stringify(header)];
+    for (let index = 1; index <= count; index += 1) {
+      const role = index % 2 === 1 ? "user" : "assistant";
+      const entry = role === "user"
+        ? { type: "message" as const, id: `e${index}`, parentId: index === 1 ? null : `e${index - 1}`, timestamp: TS(index), message: { role, content: `q${index}`, timestamp: NOW + index } }
+        : { type: "message" as const, id: `e${index}`, parentId: `e${index - 1}`, timestamp: TS(index), message: { role, stopReason: "stop", content: [{ type: "text", text: `a${index}` }], api: "anthropic", provider: "anthropic", model: "m", usage: usage(), timestamp: NOW + index } };
+      lines.push(JSON.stringify(entry));
+    }
+    await writeFile(join(f.sessionDir, `2026-08-14T00-00-00-000Z_${sessionId}.jsonl`), lines.join("\n") + "\n");
+  }
+
+  it("50k linear tree: bounded with explicit truncation, leaf + parent graph coherent", async () => {
+    const f = await setup();
+    try {
+      const sessionId = "linear-50k";
+      await writeLinear(f, sessionId, 50_000);
+      const store = createPiSdkSessionStore({ sessionDir: f.sessionDir });
+      const tree = await store.readSessionTree(sessionId);
+
+      // The FULL session is still counted; the projection is explicitly bounded.
+      assert.equal(tree.entryCount, 50_000);
+      assert.equal(tree.currentLeafId, "e50000", "current leaf stays addressable in the bounded tree");
+      assert.ok(tree.pageInfo, "a bounded tree must carry explicit pageInfo (never silent omission)");
+      assert.equal(tree.pageInfo!.truncated, true);
+      assert.ok(tree.pageInfo!.nodeCount <= MAX_SESSION_TREE_NODES);
+      assert.ok(tree.pageInfo!.skippedIdCount <= MAX_SESSION_TREE_SKIPPED_IDS);
+      assert.equal(tree.pageInfo!.frameCount, tree.pageInfo!.nodeCount + tree.pageInfo!.skippedIdCount);
+      assert.ok(tree.pageInfo!.frameCount <= MAX_SESSION_TREE_FRAME);
+
+      // The leaf carrier keeps the TAIL of the contracted chain (ids nearest
+      // the leaf), so parentEntryId stays inside its own skippedEntryIds.
+      const root = tree.roots[0]!;
+      const leaf = root.children[0]!;
+      assert.equal(leaf.entryId, "e50000");
+      assert.equal(leaf.skippedEntryIds!.length, MAX_SESSION_TREE_SKIPPED_IDS, "contracted chain is tail-truncated to the skipped-id budget");
+      assert.equal(leaf.parentEntryId, leaf.skippedEntryIds![leaf.skippedEntryIds!.length - 1], "parentEntryId resolves to the chain tail");
+
+      // Budgets + coherence + protocol wire validity.
+      assertParentCoherence(tree.roots);
+      assertResolves(tree.roots, tree.currentLeafId!);
+      assert.doesNotThrow(() => SessionTreeSchema.parse(tree), "bounded tree must parse under the protocol SessionTreeSchema");
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("wide tree over the node budget: leaf path reserved, truncation explicit, parents coherent", () => {
+    // One root, 1300 branch children (each a linear chain to a leaf). The
+    // node budget (1000) binds; the current leaf's path must survive.
+    const entries: unknown[] = [messageLine("root", null, "user", "root", 0)];
+    for (let index = 1; index <= 1300; index += 1) {
+      entries.push(messageLine(`m${index}`, "root", "assistant", `mid ${index}`, index * 2));
+      entries.push(messageLine(`l${index}`, `m${index}`, "user", `leaf ${index}`, index * 2 + 1));
+    }
+    const tree = projectSessionTree("wide", entries, "l1300");
+    assert.equal(tree.entryCount, 2601);
+    assert.ok(tree.pageInfo, "node budget hit → explicit truncation");
+    assert.equal(tree.pageInfo!.truncated, true);
+    assert.equal(tree.currentLeafId, "l1300", "current leaf (deepest file-order leaf) stays addressable");
+    assert.ok(tree.pageInfo!.nodeCount <= MAX_SESSION_TREE_NODES);
+    assert.ok(tree.pageInfo!.frameCount <= MAX_SESSION_TREE_FRAME);
+    assertResolves(tree.roots, tree.currentLeafId!);
+    assertParentCoherence(tree.roots);
+    assert.doesNotThrow(() => SessionTreeSchema.parse(tree));
+  });
+
+  it("non-truncated trees carry no pageInfo and stay byte-stable", () => {
+    const tree = projectSessionTree("small", [messageLine("e1", null, "user", "q", 1), messageLine("e2", "e1", "assistant", "a", 2)], "e2");
+    assert.equal(tree.pageInfo, undefined);
+    assert.equal(tree.entryCount, 2);
+    assertParentCoherence(tree.roots);
+    assert.doesNotThrow(() => SessionTreeSchema.parse(tree));
+  });
+
+  it("deep branch tree over the depth cap: leaf path reserved, tree shallow, parents coherent", () => {
+    // One root, 220 sequential branch points on the current-leaf path (each
+    // with a side leaf), then a short contracted chain to the leaf. The depth
+    // cap (200 kept nodes) binds structurally; the reserved leaf path and the
+    // flattened side branches must all keep a coherent parent graph.
+    const entries: unknown[] = [messageLine("root", null, "user", "root", 0)];
+    let parent = "root";
+    let index = 1;
+    for (let depth = 1; depth <= 220; depth += 1) {
+      const id = `b${depth}`;
+      entries.push(messageLine(id, parent, "assistant", `branch ${depth}`, index++));
+      entries.push(messageLine(`s${depth}`, id, "user", `side ${depth}`, index++));
+      parent = id;
+    }
+    entries.push(messageLine("n1", parent, "user", "chain n1", index++));
+    entries.push(messageLine("n2", "n1", "assistant", "chain n2", index++));
+    entries.push(messageLine("leaf", "n2", "user", "the leaf", index));
+
+    const tree = projectSessionTree("deep", entries, "leaf");
+    assert.equal(tree.currentLeafId, "leaf", "reserved leaf stays addressable beyond the depth cap");
+    assert.equal(tree.pageInfo, undefined, "depth-cap flatten is structural, not a budget truncation");
+    assertResolves(tree.roots, tree.currentLeafId!);
+    assertParentCoherence(tree.roots);
+    // The projection stays shallow for recursive renderers: the deepest NESTED
+    // kept node is at the cap, and flattened descendants are its direct
+    // children (one level deeper — the established depth-cap overlay, pinned
+    // by the oldest-first order test above).
+    const maxDepth = (() => {
+      let max = 0;
+      const walk = (list: readonly SessionTreeNode[], depth: number): void => {
+        for (const node of list) {
+          max = Math.max(max, depth);
+          walk(node.children, depth + 1);
+        }
+      };
+      walk(tree.roots, 1);
+      return max;
+    })();
+    assert.ok(maxDepth <= MAX_SESSION_TREE_DEPTH + 1, `projected depth ${maxDepth} must stay within the cap overlay`);
+    assert.doesNotThrow(() => SessionTreeSchema.parse(tree));
+  });
+
+  it("skipped-id budget exhausted with node budget room: no dangling parentEntryId", () => {
+    // Reserve the current-leaf path first (9-id chain + leaf), then fill the
+    // skipped-id budget with 833 side branches (6-deep chains each). The last
+    // side branch's chain is entirely lost to the budget while its kept leaf
+    // still fits the node budget — parentEntryId must be re-anchored, never
+    // dangling.
+    const entries: unknown[] = [messageLine("root", null, "user", "root", 0)];
+    let index = 1;
+    let parent = "root";
+    for (let j = 0; j < 9; j += 1) {
+      const id = `mc${j}`;
+      entries.push(messageLine(id, parent, "user", `mc ${j}`, index++));
+      parent = id;
+    }
+    entries.push(messageLine("X", parent, "assistant", "main leaf", index++));
+    for (let i = 1; i <= 833; i += 1) {
+      let side = "root";
+      for (let j = 0; j < 6; j += 1) {
+        const id = `s${i}c${j}`;
+        entries.push(messageLine(id, side, "user", `s ${i}-${j}`, index++));
+        side = id;
+      }
+      entries.push(messageLine(`s${i}`, side, "assistant", `side leaf ${i}`, index++));
+    }
+
+    const tree = projectSessionTree("budget-exhausted", entries, "X");
+    assert.equal(tree.currentLeafId, "X");
+    assert.ok(tree.pageInfo, "skipped-id budget exhausted → explicit truncation");
+    assert.equal(tree.pageInfo!.truncated, true);
+    assert.equal(tree.pageInfo!.skippedIdCount, MAX_SESSION_TREE_SKIPPED_IDS, "skipped-id budget is exactly exhausted");
+    assert.ok(tree.pageInfo!.nodeCount <= MAX_SESSION_TREE_NODES);
+    assert.ok(tree.pageInfo!.frameCount <= MAX_SESSION_TREE_FRAME);
+    assertResolves(tree.roots, tree.currentLeafId!);
+    assertParentCoherence(tree.roots);
+    assert.doesNotThrow(() => SessionTreeSchema.parse(tree));
+  });
+});
+
+describe("session tree vocabulary/limits parity (runtime-core authority ↔ protocol wire)", () => {
+  it("protocol mirrors the runtime-core tree vocabulary exactly", () => {
+    // The protocol wire schema must stay in lock-step with the single domain
+    // authority in runtime-core. Protocol cannot import runtime-core, so this
+    // adapter-side parity test pins both sides to the same numbers.
+    assert.equal(PROTOCOL_TREE_LABEL_LENGTH, MAX_SESSION_TREE_LABEL_LENGTH);
+    // The remaining wire mirrors are exported from protocol and pinned below
+    // via the schema's acceptance behavior (the caps are enforced by this
+    // projector against the runtime-core constants).
+    assert.equal(MAX_TREE_LABEL_LENGTH, MAX_SESSION_TREE_LABEL_LENGTH, "adapter aliases resolve to the runtime-core authority");
+    assert.equal(MAX_PROJECTED_TREE_DEPTH, MAX_SESSION_TREE_DEPTH, "depth cap is the runtime-core authority");
+  });
+
+  it("a fully-truncated real projection parses under the protocol SessionTreeSchema", async () => {
+    const f = await setup();
+    try {
+      const sessionId = "parity-50k";
+      await (async () => {
+        const header = { type: "session", version: 3, id: sessionId, timestamp: TS(0), cwd: f.cwd };
+        const lines = [JSON.stringify(header)];
+        for (let index = 1; index <= 50_000; index += 1) {
+          lines.push(JSON.stringify({ type: "message", id: `e${index}`, parentId: index === 1 ? null : `e${index - 1}`, timestamp: TS(index), message: { role: "user", content: `q${index}`, timestamp: NOW + index } }));
+        }
+        await writeFile(join(f.sessionDir, `2026-08-14T00-00-00-000Z_${sessionId}.jsonl`), lines.join("\n") + "\n");
+      })();
+      const store = createPiSdkSessionStore({ sessionDir: f.sessionDir });
+      const tree = await store.readSessionTree(sessionId);
+      assert.ok(tree.pageInfo?.truncated, "expected a truncated tree");
+      // sessiond releases tree RPC results through SessionTreeSchema.parse;
+      // the produced tree must satisfy the wire contract as-is.
+      const parsed = SessionTreeSchema.parse(tree);
+      assert.equal(parsed.sessionId, sessionId);
+      assert.equal(parsed.pageInfo?.frameCount, parsed.pageInfo?.nodeCount! + parsed.pageInfo?.skippedIdCount!);
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }

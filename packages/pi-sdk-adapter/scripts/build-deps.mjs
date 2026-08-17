@@ -23,6 +23,10 @@ const workspaceRoot = join(packageRoot, "..", "..");
 
 const deps = [
   { name: "@fffattiger/pix-runtime-core", dir: join(workspaceRoot, "packages/runtime-core") },
+  // Wire-side mirror of the runtime-core models: the adapter's parity test
+  // parses its projected trees through the protocol SessionTreeSchema and
+  // pins the mirrored tree limits against the runtime-core authority.
+  { name: "@fffattiger/pix-protocol", dir: join(workspaceRoot, "packages/protocol") },
   { name: "@fffattiger/pix-runtime-contract-tests", dir: join(workspaceRoot, "packages/runtime-contract-tests") },
   // Secure-state primitives reused manifest-less by the SCALE1 projection index
   // (session-projection.ts, mirroring sessiond's local-posix.ts): the
