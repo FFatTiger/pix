@@ -384,10 +384,12 @@ test("checkDependencyBuildersSafe flags npm.cmd / .bin/tsc / shell:true in build
   const badTsc = write(dir, "packages/host/scripts/prebuild-deps.mjs", `spawnSync(join(root, "node_modules/.bin/tsc"), [...]);\n`);
   const badShell = write(dir, "packages/sessiond/scripts/build-deps.mjs", `spawnSync(cmd, args, { shell: true });\n`);
   const good = write(dir, "packages/agent-worker/scripts/build-deps.mjs", `spawnSync(tsc.command, tsc.args);\n`);
+  const badNative = write(dir, "packages/local-authority/scripts/build-native.mjs", `spawnSync("node-gyp.cmd", [], { shell: true });\n`);
   const unrelated = write(dir, "packages/host/scripts/check-boundaries.mjs", `spawnSync("npm.cmd", [], { shell: true });\n`);
-  const result = checkDependencyBuildersSafe([badNpm, badTsc, badShell, good, unrelated]);
+  const result = checkDependencyBuildersSafe([badNpm, badTsc, badShell, good, badNative, unrelated]);
   assert.equal(result.ok, false);
   assert.match(result.details, /npm\.cmd/);
+  assert.match(result.details.replace(/\\/g, "/"), /local-authority\/scripts\/build-native\.mjs/);
   assert.match(result.details, /\.bin\/tsc/);
   assert.match(result.details, /shell:true/);
   assert.doesNotMatch(result.details, /agent-worker\/scripts\/build-deps\.mjs/);

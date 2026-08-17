@@ -3,3 +3,5 @@ dist/
 package-lock.json
 npm-shrinkwrap.json
 *.tsbuildinfo
+native/windows/build/
+*.node

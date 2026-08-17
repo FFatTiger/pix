@@ -82,7 +82,8 @@ export interface WindowsFileIdentity {
   readonly kind: "windows";
   volumeSerial: string;
   fileId: string;
-  size: number;
+  /** Decimal byte size as a string; never a JS number. */
+  size: string;
   isFile: boolean;
   isDirectory: boolean;
   isReparsePoint: boolean;

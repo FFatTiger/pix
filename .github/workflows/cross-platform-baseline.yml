@@ -44,6 +44,9 @@ jobs:
         run: npm run typecheck
       - name: Build
         run: npm run build
+      - name: Windows native load smoke
+        if: runner.os == 'Windows'
+        run: node scripts/run-node-test.mjs "packages/local-authority/test/windows-native.test.mjs"
       - name: Diff whitespace
         run: git diff --check
 

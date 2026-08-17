@@ -68,6 +68,13 @@ test("contracts.ts is platform-neutral: zero node: / external imports", () => {
   for (const match of platformSource.matchAll(/from\s+["']([^"']+)["']/g)) {
     assert.equal(match[1].startsWith("./"), true, `platform.ts imports non-relative specifier "${match[1]}"`);
   }
+  // The native loader may additionally use node:module and node:url, both
+  // builtins; no external/runtime dependency is allowed.
+  const nativeLoaderSource = readFileSync(join(packageRoot, "src", "state", "native-windows.ts"), "utf8");
+  for (const match of nativeLoaderSource.matchAll(/from\s+["']([^"']+)["']/g)) {
+    const specifier = match[1];
+    assert.equal(specifier.startsWith("node:") || specifier.startsWith("./"), true, `native-windows.ts imports undeclared specifier "${specifier}"`);
+  }
 });
 
 test("manifest: zero runtime dependencies (dependency-free workspace)", () => {

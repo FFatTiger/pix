@@ -139,6 +139,8 @@ export function collectFiles(rootDir = ROOT_DIR) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (EXCLUDED_DIRS.has(entry.name)) continue;
+        // node-gyp intermediate trees are generated and must not be scanned.
+        if (entry.name === "build" && toPosixRelative(rootDir, full).endsWith("native/windows/build")) continue;
         walk(full);
       } else {
         files.push(full);
@@ -649,7 +651,7 @@ export function checkNoRmRfInScripts(manifests) {
 
 const RAW_NODE_TEST = /\bnode\s+--test\b/g;
 const GLOB_CHARS = /[*?{}[\]]/;
-const DEP_BUILDER_NAMES = new Set(["build-deps.mjs", "prebuild-deps.mjs"]);
+const DEP_BUILDER_NAMES = new Set(["build-deps.mjs", "prebuild-deps.mjs", "build-native.mjs"]);
 
 /** True when ANY `node --test` command segment in `script` uses a glob. */
 function hasShellDependentNodeTestGlob(script) {
@@ -697,9 +699,9 @@ const BIN_TSC_TOKEN = /\.bin[\\/]tsc\b|["'`]\.bin["'`]\s*,\s*["'`]tsc["'`]/;
 const SHELL_TRUE_TOKEN = /shell\s*:\s*true\b/;
 
 /**
- * Dependency builders (build-deps.mjs / prebuild-deps.mjs) must launch tsc
- * and npm as JS CLIs through the current Node. This is a precise guard on
- * the executable code of those files only (comments are ignored); other
+ * Dependency/native builders (build-deps.mjs / prebuild-deps.mjs /
+ * build-native.mjs) must launch tool JS CLIs through the current Node. This is
+ * a precise guard on the executable code of those files only (comments are ignored); other
  * scripts that legitimately need a shell are not touched.
  */
 export function checkDependencyBuildersSafe(sourceFiles) {

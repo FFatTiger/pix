@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { resolveNpmInvocation, resolveTscInvocation } from "./tool-invocation.mjs";
+import { resolveNodeGypInvocation, resolveNpmInvocation, resolveTscInvocation } from "./tool-invocation.mjs";
 
 function makeRoot() {
   return mkdtempSync(join(tmpdir(), "pix-tools-"));
@@ -18,12 +18,19 @@ function cleanup(dir) {
 }
 
 /** Build a realistic npm package at `root/node_modules/npm` with bin/npm-cli.js. */
-function addNpmPackage(root) {
+function addNpmPackage(root, { withNodeGyp = false } = {}) {
   const pkgDir = join(root, "node_modules", "npm");
   mkdirSync(join(pkgDir, "bin"), { recursive: true });
-  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" } }));
+  const dependencies = withNodeGyp ? { "node-gyp": "^12.3.0" } : undefined;
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, ...(dependencies ? { dependencies } : {}) }));
   const cli = join(pkgDir, "bin", "npm-cli.js");
   writeFileSync(cli, "");
+  if (withNodeGyp) {
+    const gypDir = join(pkgDir, "node_modules", "node-gyp");
+    mkdirSync(join(gypDir, "bin"), { recursive: true });
+    writeFileSync(join(gypDir, "package.json"), JSON.stringify({ name: "node-gyp", bin: { "node-gyp": "bin/node-gyp.js" } }));
+    writeFileSync(join(gypDir, "bin", "node-gyp.js"), "");
+  }
   return cli;
 }
 
@@ -92,6 +99,26 @@ test("resolveNpmInvocation uses npm_execpath validated against the npm package",
   assert.equal(inv.command, "/usr/bin/node");
   assert.deepEqual(inv.args, [cli]);
   assert.equal(inv.shell, false);
+});
+
+test("resolveNodeGypInvocation uses npm's declared bundled JS CLI", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  const npmCli = addNpmPackage(root, { withNodeGyp: true });
+  const inv = resolveNodeGypInvocation({ execPath: "/usr/bin/node", env: { npm_execpath: npmCli } });
+  assert.equal(inv.command, "/usr/bin/node");
+  assert.equal(inv.args[0], realpathSync(join(root, "node_modules", "npm", "node_modules", "node-gyp", "bin", "node-gyp.js")));
+  assert.equal(inv.shell, false);
+});
+
+test("resolveNodeGypInvocation fails closed when npm does not declare node-gyp", (t) => {
+  const root = makeRoot();
+  t.after(() => cleanup(root));
+  const npmCli = addNpmPackage(root);
+  assert.throws(
+    () => resolveNodeGypInvocation({ env: { npm_execpath: npmCli } }),
+    /does not declare its bundled node-gyp/,
+  );
 });
 
 test("resolveNpmInvocation rejects direct execution outside npm", () => {

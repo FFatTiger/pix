@@ -1,0 +1,68 @@
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export interface NativeWindowsPathInspection {
+  volumeSerial: string;
+  fileId: string;
+  size: string;
+  attributes: number;
+  reparseTag: number;
+  isReparsePoint: boolean;
+  isDirectory: boolean;
+  isFile: boolean;
+  ownerSid: string;
+  daclPresent: boolean;
+  daclProtected: boolean;
+}
+
+export interface NativeWindowsBinding {
+  readonly apiVersion: 1;
+  currentUserSid(): string;
+  inspectPath(path: string): NativeWindowsPathInspection | null;
+}
+
+function assertInspectablePath(path: string): void {
+  if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
+    const error = new Error("path is invalid") as Error & { code?: string };
+    error.code = "NATIVE_INVALID_ARGUMENT";
+    throw error;
+  }
+}
+
+let cached: NativeWindowsBinding | undefined;
+
+function isBinding(value: unknown): value is NativeWindowsBinding {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<NativeWindowsBinding>;
+  return candidate.apiVersion === 1
+    && typeof candidate.currentUserSid === "function"
+    && typeof candidate.inspectPath === "function";
+}
+
+/** Load the target-native addon without exposing it from the package surface. */
+export function loadNativeWindowsBinding(): NativeWindowsBinding {
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    throw new Error("Windows native binding is unavailable for this target");
+  }
+  if (cached) return cached;
+  const here = dirname(fileURLToPath(import.meta.url));
+  const bindingPath = join(here, "..", "native", "win32-x64-msvc", "pix_local_authority_windows.node");
+  const require = createRequire(import.meta.url);
+  let loaded: unknown;
+  try {
+    loaded = require(bindingPath);
+  } catch {
+    throw new Error("Windows native binding could not be loaded");
+  }
+  if (!isBinding(loaded)) throw new Error("Windows native binding contract mismatch");
+  cached = {
+    apiVersion: 1,
+    currentUserSid: () => loaded.currentUserSid(),
+    inspectPath: (path) => {
+      assertInspectablePath(path);
+      return loaded.inspectPath(path);
+    },
+  };
+  return cached;
+}

@@ -101,7 +101,10 @@ CP-00 docs/SSOT
 
 | `CP-06` | POSIX sessiond lock/secret hardening：strict lock reads pin dev/ino across read；stale reclaim/release triple-check record+type+identity；lock created through fd chmod/fstat；secret validates owner/exact 0600/nlink/size/type before read，post-read identity recheck，zero-byte cleanup identity-pinned，移除 post-read chmod | `DONE` | `packages/sessiond` policy + internal primitives | `CP-05` | sessiond/root typecheck、sessiond boundary、architecture、diff-check PASS；Windows-safe secret validation 2 pass/1 owner skip；POSIX race tests compiled and required on Linux/macOS CI（Windows skips 不作为成功证据）；independent verifier PASS |
 
-后续 lane：`CP-07` Windows native-helper decision → Windows secure-state/IPC/process tree。
+| `CP-07` | Windows native-helper decision：raw C Node-API addon 由 `packages/local-authority` 私有持有；首发 target `win32-x64-msvc`；无 V8/node-addon-api/Rust/broker；同步 SID/path evidence 原语，Job/pipe 后续 retained async resource；构建使用 npm-bundled node-gyp JS CLI `shell:false` | `DONE` | `packages/local-authority` + root tooling | `CP-06` | 本机 VS Build Tools 2022/MSVC 14.44/Python/node-gyp/N-API 可用；决策与 API/handle/test matrix 已冻结 |
+| `CP-07A` | Native spike：编译/加载 N-API v8 addon，读取 current-user SID、handle-based volume serial/file ID/reparse attributes/owner/protected-DACL flags；target-aware private loader；Windows CI load smoke | `DONE` | `packages/local-authority/native/windows` | `CP-07` | Windows x64 build PASS；embedded-NUL inspectPath fail-closed on loader and raw `.node`；focused native/surface/builder tests PASS；architecture 14 gates PASS；independent verifier PASS；不启用 Windows backend/产品支持 |
+
+后续 lane：完成 CP-07A 独立验证 → Windows secure-state backend → secure IPC/process tree。
 
 ---
 

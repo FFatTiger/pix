@@ -3529,3 +3529,25 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Windows-safe secret metadata tests: 2 PASS; POSIX owner/race cases skipped honestly.
 - Independent verifier first found a package-root leak of the internal secret reader. The reader/validator were moved to `src/internal/local-state-security.ts`; resumed verifier: PASS.
 - Linux/macOS CI remains the required execution evidence for the new deterministic POSIX inode-race tests.
+
+---
+
+## 73. Cross-platform CP-07 / CP-07A — Windows native helper decision and spike
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `17ab269`.
+- Owner remains `packages/local-authority`; no extra production workspace, broker, or public Win32 surface.
+- Frozen technology: raw C Node-API addon, N-API v8 ABI, first target `win32-x64-msvc`. Rejected for this phase: V8 APIs, `node-addon-api`, Rust/napi-rs, and one-shot/long-lived helper processes.
+- Frozen handle policy: SID/path inspection is handle-free and synchronous. Job Objects and secure Named Pipe listeners remain later retained asynchronous Node-API resources; a one-shot helper cannot hand those authorities to `node:net`.
+- Spike capabilities: current-process SID; `CreateFileW` + `FILE_FLAG_OPEN_REPARSE_POINT` inspection returning volume serial, 128-bit file ID hex, size, attributes, reparse tag, owner SID, DACL present/protected. 64/128-bit evidence is string, never a JS number. The reserved `WindowsFileIdentity.size` contract is also a decimal string. Missing path returns `null`; missing SID/security evidence fails closed instead of empty-string success. Embedded NUL in `inspectPath` is `NATIVE_INVALID_ARGUMENT` in both the private loader and the raw `.node`; it must never truncate to another file's identity.
+- Private TypeScript loader verifies `win32-x64`, `apiVersion`, and function shape. Generated `native/windows/build/` and copied `.node` stay gitignored. The product factory still throws `UNSUPPORTED_PLATFORM` on Windows.
+- Native build uses the validated npm-bundled node-gyp JS CLI via current Node and `shell:false`; cleanup uses `scripts/remove-paths.mjs`. Architecture now treats `build-native.mjs` as a protected builder and skips the generated node-gyp tree.
+- No persisted schema, capability, Host/sessiond backend enablement, DACL mutation, lock/secret Windows policy, Named Pipe, Job Object, or Windows support claim.
+
+### Validation (Windows native / Node 25.9.0)
+
+- Environment: VS Build Tools 2022, MSVC 14.44, Python, npm-bundled node-gyp 12.3.0, N-API 10 runtime.
+- `npm run build --workspace @fffattiger/pix-local-authority`: PASS.
+- Focused native/surface/factory/builder tests: PASS, including wrapped + raw `.node` NUL probes.
+- local-authority typecheck/boundaries, architecture 14 gates, `git diff --check`: PASS.
+- Independent verifier first FAIL: `inspectPath(keep+"\\0X")` returned `keep`'s file ID. Fix: C-layer `memchr` reject + explicit-length `MultiByteToWideChar`, plus JS loader reject. Resumed verifier: PASS on loader and raw `.node` (`NATIVE_INVALID_ARGUMENT`).
+- Product factory remains `UNSUPPORTED_PLATFORM`. No Windows private-directory, DACL mutation, lock/secret, Named Pipe, Job Object, or support claim.

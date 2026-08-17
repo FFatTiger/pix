@@ -1029,12 +1029,13 @@ POSIX golden tests 零语义退化；Windows path 不再被 contract 本身视�
 
 ### Native helper 决策 gate
 
-先做 spike：Node builtins 能否可靠获得 DACL、reparse tag、file ID、process creation time、Job Object。不能则提出最小 Rust/Node-API helper：
+**已冻结（CP-07 / CP-07A）**：Node builtins 不能完整提供 SID/DACL、reparse tag、128-bit file ID、Job Object 或安全 Named Pipe 证据。采用 `packages/local-authority` 私有 raw C Node-API addon（N-API v8，首发 `win32-x64-msvc`），不引入 `node-addon-api`、Rust/napi-rs、额外生产 workspace 或 one-shot broker。
 
-- 只导出窄 JSON/stdio API；
-- signed/hash-verified target artifacts；
-- helper failure → capability/startup fail closed；
-- 不让 Host/sessiond import Win32 detail。
+- 同步原语只返回 SID / handle-based path evidence；不把 HANDLE 交给 JS。
+- Job Object 与 secure Named Pipe 后续必须是 retained 异步 Node-API resource，不能用一次性 helper 把权威交给 `node:net`。
+- 构建只使用经验证的 npm-bundled node-gyp JS CLI，`process.execPath` + `shell:false`。
+- helper/binding 失败必须 fail-closed；Host/sessiond 不得直接 import Win32 细节。
+- 在 G2B backend 接通并验证前，不得宣称 Windows 产品支持；`createSecureStateBackend()` 在 Windows 仍返回 `UNSUPPORTED_PLATFORM`。
 
 ### 验收
 

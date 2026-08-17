@@ -1,10 +1,10 @@
 // scripts/tool-invocation.mjs
 //
-// Resolve TypeScript and npm as JavaScript CLIs launched through the current
-// Node binary, so dependency-build scripts never rely on PATH shims (`npm`,
-// `npm.cmd`, `.bin/tsc`) or `shell: true`. Windows cannot execute the
-// extensionless `.bin/tsc` shim or `.cmd` wrappers via spawn with
-// `shell: false`, and `shell: true` breaks paths that contain spaces.
+// Resolve TypeScript, npm, and npm-bundled node-gyp as JavaScript CLIs
+// launched through the current Node binary, so builders never rely on PATH
+// shims (`npm`, `npm.cmd`, `node-gyp.cmd`, `.bin/tsc`) or `shell: true`.
+// Windows cannot execute an extensionless `.bin/tsc` shim or `.cmd` wrappers
+// via spawn with `shell: false`, and `shell: true` breaks paths with spaces.
 //
 // Every returned invocation is `{ command: process.execPath, args: [jsCli],
 // shell: false }`: one command to reason about, no argv joining, no PATH
@@ -122,4 +122,46 @@ export function resolveNpmInvocation({
     );
   }
   return { command: execPath, args: [cli], shell: false };
+}
+
+/**
+ * Resolve the node-gyp JS CLI bundled with the validated npm installation that
+ * invoked the current lifecycle script. This avoids PATH/node-gyp.cmd and adds
+ * no runtime dependency: npm already owns this build-time tool.
+ */
+export function resolveNodeGypInvocation({
+  execPath = process.execPath,
+  env = process.env,
+} = {}) {
+  const npmInvocation = resolveNpmInvocation({ execPath, env });
+  const npmCli = npmInvocation.args[0];
+  const npmPackageDir = dirname(dirname(npmCli));
+  let npmManifest;
+  try {
+    npmManifest = JSON.parse(readFileSync(join(npmPackageDir, "package.json"), "utf8"));
+  } catch {
+    throw new Error("[pix] validated npm package metadata is unreadable");
+  }
+  const declared = npmManifest.dependencies?.["node-gyp"];
+  if (typeof declared !== "string") {
+    throw new Error("[pix] npm does not declare its bundled node-gyp dependency");
+  }
+  const pkgDir = join(npmPackageDir, "node_modules", "node-gyp");
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
+  } catch {
+    throw new Error("[pix] npm-bundled node-gyp is not installed");
+  }
+  const target = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.["node-gyp"];
+  if (manifest.name !== "node-gyp" || typeof target !== "string") {
+    throw new Error("[pix] npm-bundled node-gyp package declares no node-gyp bin");
+  }
+  const cli = resolve(pkgDir, target);
+  const pkgReal = safeRealpath(pkgDir);
+  const cliReal = safeRealpath(cli);
+  if (!isRegularFile(cli) || pkgReal === null || cliReal === null || !isWithin(pkgReal, cliReal)) {
+    throw new Error("[pix] npm-bundled node-gyp CLI is missing or escapes its package");
+  }
+  return { command: execPath, args: [cliReal], shell: false };
 }
