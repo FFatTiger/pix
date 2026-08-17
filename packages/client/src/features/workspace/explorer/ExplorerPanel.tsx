@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowClockwise, Check, CaretRight, UploadSimple } from "@phosphor-icons/react";
+import { ArrowClockwise, Check, CaretRight, MagnifyingGlass, UploadSimple, X } from "@phosphor-icons/react";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { HttpError } from "@/api/http-client";
 import { useHttpClient } from "@/app/http-context";
@@ -39,6 +39,9 @@ export interface ExplorerPanelProps {
   onAtMentions?: ((relativePaths: string[]) => void) | undefined;
   /** Optional header action (the right-edge file-browser toggle when fused). */
   headerAction?: ReactNode;
+  /** Whether the panel is on screen. Gates queries so a hidden panel never
+   *  fires file/git requests (the container stays mounted for animations). */
+  visible?: boolean;
 }
 
 /** Fixed file-search error copy (code-first, then kind, fixed fallback). */
@@ -72,7 +75,7 @@ function describeIndexError(error: unknown): string {
   return "Unable to search files.";
 }
 
-export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtMention, onAtMentions, headerAction }: ExplorerPanelProps) {
+export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtMention, onAtMentions, headerAction, visible = true }: ExplorerPanelProps) {
   const { t } = useI18n();
   const http = useHttpClient();
   const options = useMemo(() => createQueryOptions(http), [http]);
@@ -86,6 +89,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // File search state (pix fusion: debounced query against the file index).
+  const [searchOpen, setSearchOpen] = useState(false);
   const [raw, setRaw] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [invalidSearchResult, setInvalidSearchResult] = useState(false);
@@ -133,7 +137,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
   // canonical prefix the tree shows.
   const rootList = useQuery({
     ...options.files.list(cwd ?? ""),
-    enabled: canFiles && Boolean(cwd),
+    enabled: canFiles && Boolean(cwd) && visible,
   });
   const root = rootList.data?.path ?? null;
 
@@ -141,7 +145,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
   // (cwd, debouncedQuery) so a late q1 response can never render as q2.
   const search = useQuery({
     ...options.files.index(cwd ?? "", debouncedQuery),
-    enabled: canFiles && Boolean(root) && debouncedQuery.length >= 2,
+    enabled: canFiles && Boolean(root) && debouncedQuery.length >= 2 && visible,
   });
 
   const handleRefreshExplorer = () => {
@@ -238,16 +242,35 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <form className="files-search-form" role="search" onSubmit={(event) => event.preventDefault()}>
-        <input
-          type="search"
-          className="files-search-input"
-          aria-label="Search files"
-          placeholder="Search files…"
-          value={raw}
-          onChange={(event) => setRaw(event.target.value)}
-        />
-      </form>
+      {searchOpen ? (
+        <div className="sidebar-search-field">
+          <div className="sidebar-search-wrap">
+            <MagnifyingGlass size={13} className="sidebar-search-icon" aria-hidden="true" />
+            <input
+              value={raw}
+              onChange={(event) => setRaw(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  if (raw) setRaw("");
+                  else setSearchOpen(false);
+                }
+              }}
+              placeholder={t("desktop.searchFilesPlaceholder")}
+              aria-label={t("desktop.searchFiles")}
+              autoFocus
+            />
+          </div>
+          <button
+            type="button"
+            className="sidebar-icon-btn"
+            onClick={() => { setSearchOpen(false); setRaw(""); }}
+            title={t("desktop.exitSearch")}
+            aria-label={t("desktop.exitSearch")}
+          >
+            <X size={13} weight="regular" aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
 
       {searchMode ? (
         <section className="files-search" aria-label="Search results" style={{ minHeight: 0, overflowY: "auto" }}>
@@ -309,6 +332,20 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
               />
             </button>
             <div className="sidebar-section-actions">
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                onClick={() => {
+                  setSearchOpen((open) => {
+                    if (open) setRaw("");
+                    return !open;
+                  });
+                }}
+                title={t("desktop.searchFiles")}
+                aria-label={t("desktop.searchFiles")}
+              >
+                <MagnifyingGlass size={14} weight="regular" aria-hidden="true" />
+              </button>
               {explorerOpen && (
                 <button
                   type="button"
@@ -337,7 +374,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
             </div>
             {headerAction ? <div className="explorer-header-action">{headerAction}</div> : null}
           </div>
-          {explorerOpen && (
+          {explorerOpen && visible && (
             <div>
               <FileExplorer
                 ref={fileExplorerRef}
@@ -352,7 +389,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
         </div>
       )}
 
-      {canGit ? (
+      {canGit && visible ? (
         <QuickChangesPanel
           cwd={cwd}
           onOpenFile={onOpenFile}

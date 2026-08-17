@@ -1245,10 +1245,9 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(sidebar.compareDocumentPosition(titleBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(titleBar.closest(".chat-column")).toBeTruthy();
     expect(sidebar.closest(".chat-column")).toBeNull();
-    // The collapsed rail owns the expand button. Once expanded, the duplicate
-    // sidebar toggle disappears instead of becoming a second collapse button.
-    expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Hide sidebar" })).toBeNull();
+    // The title bar keeps its sidebar toggle while the rail is expanded.
+    const hideButtons = screen.getAllByRole("button", { name: "Hide sidebar" });
+    expect(hideButtons.some((button) => button.closest(".app-title-bar"))).toBeTruthy();
     expect(screen.getByTestId("sidebar-brand")).toBeTruthy();
   });
 });
@@ -1376,12 +1375,15 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     globalThis.fetch = fileFetch();
     mountApp({ cwd: "/x" });
     await settle();
-    expect(document.querySelector(".right-panel-container")).toBeNull();
+    const panel = document.querySelector(".right-panel-container");
+    expect(panel?.className).toContain("right-panel-closed");
     expect(screen.getByTestId("file-browser-rail")).toBeTruthy();
     fireEvent.click(screen.getByTestId("file-browser-toggle"));
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-open");
     expect(screen.getByRole("button", { name: "Hide file browser" })).toBeTruthy();
+    expect(screen.queryByTestId("file-browser-rail")).toBeNull();
     fireEvent.click(screen.getByTestId("file-browser-toggle"));
-    expect(document.querySelector(".right-panel-container")).toBeNull();
+    expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-closed");
+    expect(screen.getByTestId("file-browser-rail")).toBeTruthy();
   });
 });

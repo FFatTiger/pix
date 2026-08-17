@@ -316,6 +316,8 @@ export const enLocale = {
     "desktop.uploadFiles": "Upload files",
     "desktop.uploadFilesToProjectRoot": "Upload files to project root",
     "desktop.refreshExplorer": "Refresh explorer",
+    "desktop.searchFiles": "Search files",
+    "desktop.searchFilesPlaceholder": "Search files…",
     "desktop.revealInFolder": "Show in system explorer",
     "desktop.copyRelativePath": "Copy relative path",
     "desktop.copyAbsolutePath": "Copy absolute path",

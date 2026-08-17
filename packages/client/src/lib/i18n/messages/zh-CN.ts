@@ -316,6 +316,8 @@ export const zhCNLocale = {
     "desktop.uploadFiles": "上传文件",
     "desktop.uploadFilesToProjectRoot": "上传文件到项目根目录",
     "desktop.refreshExplorer": "刷新资源管理器",
+    "desktop.searchFiles": "搜索文件",
+    "desktop.searchFilesPlaceholder": "搜索文件…",
     "desktop.revealInFolder": "在系统资源管理器中查看",
     "desktop.copyRelativePath": "复制相对路径",
     "desktop.copyAbsolutePath": "复制绝对路径",

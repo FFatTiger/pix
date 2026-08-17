@@ -733,6 +733,8 @@ export function AppShell({ search }: AppShellProps) {
           full-height sidebar instead of spanning the whole window. */}
       <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <AppTitleBar
+          sidebarOpen={sidebarOpen}
+          onSidebarToggle={handleSidebarToggle}
           tabs={tabs}
           activeTabId={activeTabId}
           onSelectTab={handleSelectTab}
@@ -794,55 +796,55 @@ export function AppShell({ search }: AppShellProps) {
         </div>
       </div>
 
-      {/* Right file panel: fused with its toggle — no rail, no splitter.
-          The toggle lives on the Files header (always visible) and the panel
-          expands left from it, flush with the window edge. */}
-      {fileBrowserOpen ? (
-        <div
-          ref={rightPanel.panelRef}
-          className={`right-panel-container right-panel-open${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            background: "var(--bg-panel)",
-          }}
-        >
-          <ExplorerPanel
-            cwd={search.cwd}
-            canFiles={canFiles}
-            canGit={canGit}
-            onOpenFile={handleOpenFile}
-            headerAction={
-              <button
-                type="button"
-                className="sidebar-icon-btn"
-                data-testid="file-browser-toggle"
-                disabled={!canFiles}
-                title={t("desktop.hideFileBrowser")}
-                aria-label={t("desktop.hideFileBrowser")}
-                aria-pressed="true"
-                onClick={handleToggleFileBrowser}
-              >
-                <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
-              </button>
-            }
-          />
-        </div>
-      ) : (
-      <div className="file-browser-rail" data-testid="file-browser-rail">
-        <button
-          type="button"
-          className="sidebar-icon-btn"
-          data-testid="file-browser-toggle"
-          disabled={!canFiles}
-          title={t("desktop.showFileBrowser")}
-          aria-label={t("desktop.showFileBrowser")}
-          aria-pressed={false}
-          onClick={handleToggleFileBrowser}
-        >
-          <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
-        </button>
+      {/* Right file panel: always mounted so the width TRANSITIONS on both
+          open and close. The toggle lives on the Files header when open; a
+          slim rail carries it when closed. */}
+      <div
+        ref={rightPanel.panelRef}
+        className={`right-panel-container ${fileBrowserOpen ? "right-panel-open" : "right-panel-closed"}${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          background: "var(--bg-panel)",
+        }}
+      >
+        <ExplorerPanel
+          cwd={search.cwd}
+          canFiles={canFiles}
+          canGit={canGit}
+          visible={fileBrowserOpen}
+          onOpenFile={handleOpenFile}
+          headerAction={fileBrowserOpen ? (
+            <button
+              type="button"
+              className="sidebar-icon-btn"
+              data-testid="file-browser-toggle"
+              disabled={!canFiles}
+              title={t("desktop.hideFileBrowser")}
+              aria-label={t("desktop.hideFileBrowser")}
+              aria-pressed="true"
+              onClick={handleToggleFileBrowser}
+            >
+              <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
+            </button>
+          ) : undefined}
+        />
       </div>
+      {!fileBrowserOpen && (
+        <div className="file-browser-rail" data-testid="file-browser-rail">
+          <button
+            type="button"
+            className="sidebar-icon-btn"
+            data-testid="file-browser-toggle"
+            disabled={!canFiles}
+            title={t("desktop.showFileBrowser")}
+            aria-label={t("desktop.showFileBrowser")}
+            aria-pressed={false}
+            onClick={handleToggleFileBrowser}
+          >
+            <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
+          </button>
+        </div>
       )}
     </div>
     {projectTrustDialogOpen && search.cwd ? (
