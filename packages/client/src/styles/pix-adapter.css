@@ -1507,17 +1507,8 @@ html.dark .catalog-meta-item--error {
   color: var(--text-dim);
 }
 
-@media (hover: none) and (pointer: coarse) {
-  .sidebar-row-actions,
-  .sidebar-section-actions {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .sidebar-fork-caret {
-    opacity: 0;
-    pointer-events: none;
-  }
-}
+/* Touch devices get the same default as desktop: actions hidden until a
+   hover-capable pointer reveals them. (No forced always-visible chips.) */
 
 @media (max-width: 640px) {
   .sidebar-nav-item,
