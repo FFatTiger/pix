@@ -1347,6 +1347,11 @@ function SessionItem({
       data-pending={isPending ? "true" : undefined}
       data-running={isRunning ? "true" : undefined}
       onContextMenu={handleContextMenu}
+      onClick={(event) => {
+        if (confirmDelete || renaming || deleting) return;
+        if ((event.target as HTMLElement).closest("button")) return;
+        onSelectSession(session.sessionId, session.cwd);
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); }}
       style={{
