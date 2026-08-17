@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPiSdkThemeCatalog } from "../src/themes/index.js";
-import { isRuntimeError, type ThemeCatalogPort } from "@fffattiger/pix-runtime-core";
+import { THEME_CSS_VAR_KEYS, isRuntimeError, type ThemeCatalogPort } from "@fffattiger/pix-runtime-core";
 
 async function fixture(): Promise<{
   root: string;
@@ -86,14 +86,18 @@ describe("pi-sdk theme catalog — built-in registry", () => {
     assert.equal(sets[2]!.displayName, "Orbital Rose");
   });
 
-  it("resolves every built-in dark and light variant with all 29 whitelisted cssVars", async () => {
+  it("resolves every built-in dark and light variant with the canonical cssVars vocabulary", async () => {
     const { agentDir } = await freshFixture();
     const catalog = createPiSdkThemeCatalog({ agentDir });
     for (const name of ["gruvbox", "miku-aqua", "orbital-rose", "scarlet-tether", "solarized"]) {
       for (const mode of ["dark", "light"] as const) {
         const theme = await catalog.resolveTheme(name, mode);
         assert.equal(theme.name, name);
-        assert.equal(Object.keys(theme.cssVars).length, 29, `${name}/${mode} has 29 vars`);
+        assert.deepEqual(
+          Object.keys(theme.cssVars).sort(),
+          [...THEME_CSS_VAR_KEYS].sort(),
+          `${name}/${mode} matches the canonical theme vocabulary`,
+        );
         assert.match(theme.cssVars["--bg"]!, /^#[0-9a-f]{6}$/);
         assert.match(theme.cssVars["--bg-subtle"]!, /^rgba\(\d{1,3},\d{1,3},\d{1,3},0\.\d+\)$/);
         assert.match(theme.cssVars["--hatch-color"]!, /^rgba\(\d{1,3},\d{1,3},\d{1,3},0\.\d+\)$/);

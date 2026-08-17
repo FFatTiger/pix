@@ -7,7 +7,7 @@
 // project themes (`<cwd>/.pi/themes/*.json`), with dark/light filename
 // pairing, palette-luminance polarity inference, `vars` reference expansion,
 // xterm-256 color indices, and the 52 pi CLI color tokens projected onto the
-// frozen 29 CSS custom properties. Precedence matches the source exactly:
+// canonical runtime-core CSS custom-property vocabulary. Precedence matches the source exactly:
 // global → project → built-in.
 //
 // This module satisfies runtime-core ThemeCatalogPort WITHOUT importing the

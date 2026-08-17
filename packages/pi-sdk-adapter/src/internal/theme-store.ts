@@ -13,7 +13,7 @@
 //     set; a single `{base}.json` infers polarity from the bg0 luminance.
 //   - Color values: hex strings, xterm-256 indices, `vars` references, raw
 //     6-digit hex without "#", and "" (terminal default → source default chain).
-//   - 52 tokens → frozen 29 CSS custom properties (palette-derived mixes,
+//   - Pi theme tokens → the canonical runtime-core CSS property vocabulary (palette-derived mixes,
 //     lighten/darken accent, contrast-adjusted git status colors, rgba hatch).
 //   - Precedence: agent-dir global themes → trusted project themes → built-in
 //     registry (verified against the source: global candidates win over project
@@ -293,8 +293,8 @@ function ensureContrast(color: string, background: string, minimum = 3): string 
 // ─── pi CLI token → CSS variable mapping ────────────────────────────────────
 
 /**
- * Maps resolved pi CLI theme colors + vars to the frozen 29 CSS custom
- * properties (source behavior, verbatim; every emitted value is a safe color
+ * Maps resolved pi CLI theme colors + vars to the canonical runtime-core CSS
+ * property vocabulary (source behavior; every emitted value is a safe color
  * literal because inputs were sanitized in resolveColor).
  */
 function mapToCssVars(

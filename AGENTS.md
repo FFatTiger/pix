@@ -45,6 +45,7 @@ fork the logic.
 | Client UI + typed transports + runtime view | `packages/client` | reach into backend/daemon/Worker internals |
 | CLI lifecycle | `packages/cli` | drive sessiond via SIGTERM/PID |
 | Adapter behavior contract | `packages/runtime-contract-tests` | be duplicated in each adapter's own tests |
+| Cross-package semantic parity | `packages/cross-package-contract-tests` | leak into a production package or be parked in an unrelated test suite |
 | Repo gates / cross-platform tooling | root `scripts/*` | be bypassed by ad-hoc shell in package scripts |
 
 ## 2. State ownership (four tiers, never blurred)
