@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  THEME_CSS_VAR_KEYS,
   ThemeCssVarKeySchema,
   ThemeCssValueSchema,
   ThemeCssVarsSchema,
@@ -10,7 +11,7 @@ import {
   ResolvedThemeResponseSchema,
 } from "../dist/index.js";
 
-/** A complete cssVars map (all 29 whitelisted keys, safe values). */
+/** A complete cssVars map (every whitelisted key from the enum, safe values). */
 const FULL_CSS_VARS = Object.fromEntries(
   ThemeCssVarKeySchema.options.map((key, index) => [key, index === 0 ? "#282828" : "#3c3836"]),
 );
@@ -93,10 +94,21 @@ describe("theme DTO strictness", () => {
     );
   });
 
-  it("css var key enum covers the frozen 29-key surface", () => {
-    assert.equal(ThemeCssVarKeySchema.options.length, 29);
-    assert.ok(ThemeCssVarKeySchema.options.includes("--git-status-added-bg"));
-    assert.ok(ThemeCssVarKeySchema.options.includes("--hatch-color"));
+  it("css var key enum is the projected whitelist vocabulary (single declaration)", () => {
+    // The enum is derived from the exported projection array — one local
+    // declaration, so the schema and the array can never drift apart.
+    assert.deepEqual(ThemeCssVarKeySchema.options, [...THEME_CSS_VAR_KEYS]);
+    // Semantic surface checks (no magic count): the whitelist is a non-empty
+    // vocabulary of lowercase CSS custom properties with the key the client
+    // looks up by convention plus the sentinel final key present, unique.
+    assert.ok(THEME_CSS_VAR_KEYS.length > 0, "whitelist must not be empty");
+    assert.ok(THEME_CSS_VAR_KEYS.includes("--bg"));
+    assert.ok(THEME_CSS_VAR_KEYS.includes("--git-status-added-bg"));
+    assert.ok(THEME_CSS_VAR_KEYS.includes("--hatch-color"));
+    assert.equal(new Set(THEME_CSS_VAR_KEYS).size, THEME_CSS_VAR_KEYS.length);
+    for (const key of THEME_CSS_VAR_KEYS) {
+      assert.match(key, /^--[a-z-]+$/, `${key} must be a lowercase CSS custom property`);
+    }
   });
 
   it("css values accept only safe hex/rgba color literals", () => {

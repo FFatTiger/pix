@@ -4,11 +4,14 @@ import { NonEmptyStringSchema } from "./common.js";
 /**
  * Read-only theme catalog DTOs (pix Host → Client).
  *
- * Mirrors the runtime-core ThemeCatalogPort projection, but stays a frozen
- * wire contract: this module NEVER imports runtime-core (rule 7 — Protocol and
- * Runtime Port share no types as a shortcut). The CSS variable key whitelist
- * and safe-value format are therefore declared here independently and must
- * stay in sync with the canonical model.
+ * This is a frozen PROJECTION of the canonical theme vocabulary owned by
+ * `packages/runtime-core/src/themes.ts` (rule 7 — Protocol and Runtime Port
+ * share no types as a shortcut, so this module NEVER imports runtime-core).
+ * The CSS variable key whitelist below and the safe-value format are declared
+ * here as a wire projection of that canonical authority — same keys, same
+ * order, same accept/reject behavior — and cross-package contract tests
+ * (`packages/runtime-contract-tests/src/theme-authority-contract.test.ts`)
+ * enforce semantic parity, so no independent array or regex set may drift.
  */
 
 /** Theme polarity requested by the client (default: dark). */
@@ -17,11 +20,12 @@ export type ThemeVariant = z.infer<typeof ThemeVariantSchema>;
 
 /**
  * The complete whitelist of CSS custom property keys a resolved theme may
- * carry (the frozen 29-key web-client theme projection). Any other key — an
- * arbitrary CSS property, a `url()`/`expression()` carrier or an unknown
+ * carry — the frozen web-client theme projection of the canonical
+ * `runtime-core` THEME_CSS_VAR_KEYS (same keys, same order). Any other key —
+ * an arbitrary CSS property, a `url()`/`expression()` carrier or an unknown
  * token — is rejected by the DTO.
  */
-export const ThemeCssVarKeySchema = z.enum([
+export const THEME_CSS_VAR_KEYS = [
   "--bg",
   "--bg-panel",
   "--bg-secondary",
@@ -51,15 +55,20 @@ export const ThemeCssVarKeySchema = z.enum([
   "--assistant-bg",
   "--tool-bg",
   "--hatch-color",
-]);
+] as const;
+
+/** The enum derived from the projected whitelist (single local declaration). */
+export const ThemeCssVarKeySchema = z.enum(THEME_CSS_VAR_KEYS);
 export type ThemeCssVarKey = z.infer<typeof ThemeCssVarKeySchema>;
 
 /**
- * Safe theme color literal: a lowercase 3- or 6-digit hex color, or a decimal
- * `rgba(r,g,b,a)` with octets 0-255 and alpha 0-1. Nothing else is accepted —
- * named colors, `rgb()`/`hsl()` notation, `url(...)`, `expression(...)`,
- * `var(...)` references, comments, semicolons and any other CSS syntax fail
- * the schema (fail-closed).
+ * Safe theme color literal — projection of the canonical
+ * `runtime-core` `isSafeThemeCssValue`: a lowercase 3- or 6-digit hex color,
+ * or a decimal `rgba(r,g,b,a)` with octets 0-255 and alpha 0-1. Nothing else
+ * is accepted — named colors, `rgb()`/`hsl()` notation, `url(...)`,
+ * `expression(...)`, `var(...)` references, comments, semicolons and any
+ * other CSS syntax fail the schema (fail-closed). The cross-package contract
+ * test verifies this accepts exactly what the canonical predicate accepts.
  */
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/;
 const RGBA_COLOR_PATTERN =
@@ -81,10 +90,10 @@ export type ThemeCssValue = z.infer<typeof ThemeCssValueSchema>;
 
 /**
  * CSS variable map: sparse coverage over the whitelisted keys — any subset
- * may be present, but every present key MUST be in the 29-key enum and every
- * value a safe color literal. Unknown CSS keys (arbitrary properties,
- * `url()`/`expression()` carriers) and unsafe values fail the schema
- * (fail-closed) while sparse theme overrides stay valid.
+ * may be present, but every present key MUST be in the whitelisted-key enum
+ * and every value a safe color literal. Unknown CSS keys (arbitrary
+ * properties, `url()`/`expression()` carriers) and unsafe values fail the
+ * schema (fail-closed) while sparse theme overrides stay valid.
  */
 export const ThemeCssVarsSchema = z.partialRecord(
   ThemeCssVarKeySchema,

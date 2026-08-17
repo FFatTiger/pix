@@ -13,7 +13,16 @@ import {
   resolveCapabilities,
   CATALOG_CAPABILITIES,
   THEME_NAME_PATTERN,
+  THEME_CSS_VAR_KEYS,
+  isSafeThemeCssValue,
 } from "../dist/index.js";
+// Protocol is the host's real peer (a declared dependency) and is the wire
+// projection the host must match; the runtime-contract-tests seam pins the
+// protocol projection to the canonical runtime-core vocabulary.
+import {
+  THEME_CSS_VAR_KEYS as PROTOCOL_THEME_CSS_VAR_KEYS,
+  ThemeCssValueSchema,
+} from "@fffattiger/pix-protocol";
 
 const DISABLED_GATE = { read: () => ({ status: "disabled", source: "test" }) };
 const temporary = [];
@@ -42,42 +51,16 @@ async function rootsFor(...dirs) {
   });
 }
 
-/** Built-in-shaped resolved theme (all 29 keys, safe values). */
+/**
+ * Built-in-shaped resolved theme: every whitelisted key from the HOST's own
+ * projection (the exported THEME_CSS_VAR_KEYS) with safe values — no inline
+ * hardcoded key list, so this fixture cannot drift from the sanitizer.
+ */
 const SAMPLE_THEME = {
   name: "gruvbox",
   isDark: true,
   cssVars: Object.fromEntries(
-    [
-      "--bg",
-      "--bg-panel",
-      "--bg-secondary",
-      "--bg-card",
-      "--bg-hover",
-      "--bg-selected",
-      "--bg-card-hover",
-      "--bg-subtle",
-      "--border",
-      "--border-hover",
-      "--text",
-      "--text-muted",
-      "--text-dim",
-      "--accent",
-      "--accent-hover",
-      "--accent-blue",
-      "--accent-red",
-      "--accent-green",
-      "--accent-orange",
-      "--git-status-added",
-      "--git-status-modified",
-      "--git-status-deleted",
-      "--git-status-added-bg",
-      "--git-status-modified-bg",
-      "--git-status-deleted-bg",
-      "--user-bg",
-      "--assistant-bg",
-      "--tool-bg",
-      "--hatch-color",
-    ].map((key) => [key, key === "--bg" ? "#282828" : "#3c3836"]),
+    [...THEME_CSS_VAR_KEYS].map((key) => [key, key === "--bg" ? "#282828" : "#3c3836"]),
   ),
 };
 
@@ -211,9 +194,16 @@ test("resolve returns the projected theme; unknown names map to fixed 404", asyn
   const theme = await ok.json();
   assert.equal(theme.name, "gruvbox");
   assert.equal(theme.isDark, true);
-  assert.equal(Object.keys(theme.cssVars).length, 29);
+  // Semantic parity with the host's own whitelist projection (not a magic
+  // count): the emitted cssVars cover exactly the whitelisted keys, and every
+  // value passes the host's safe-value predicate.
+  assert.deepEqual(
+    Object.keys(theme.cssVars).sort(),
+    [...THEME_CSS_VAR_KEYS].sort(),
+  );
   for (const value of Object.values(theme.cssVars)) {
     assert.match(value, /^#[0-9a-f]{6}$/);
+    assert.equal(isSafeThemeCssValue(value), true);
   }
   // No extra top-level fields reach the wire.
   assert.deepEqual(Object.keys(theme).sort(), ["cssVars", "isDark", "name"]);
@@ -405,6 +395,60 @@ test("gate runs before theme routes: enabled gate ⇒ 401 for API calls until lo
 
   const allowed = await call(app, `/v1/themes?cwd=${encodeURIComponent(project)}`, { headers: { cookie } });
   assert.equal(allowed.status, 200);
+});
+
+test("host theme sanitization is a semantic projection of the protocol wire vocabulary", () => {
+  // Key whitelist parity: the host's exported projection is the same set as
+  // the protocol wire projection (the runtime-contract-tests seam pins the
+  // protocol projection to the canonical runtime-core vocabulary).
+  assert.deepEqual(
+    [...THEME_CSS_VAR_KEYS].sort(),
+    [...PROTOCOL_THEME_CSS_VAR_KEYS].sort(),
+    "host cssVars whitelist must match the protocol projection",
+  );
+  // Value grammar parity: the host's fail-closed safe-value predicate must
+  // accept exactly what the protocol DTO accepts, and reject exactly what it
+  // rejects — no independent regex set drifting from the wire contract.
+  const probes = [
+    "#282828",
+    "#fb4934",
+    "#abc",
+    "rgba(255,255,255,0.035)",
+    "rgba(0,0,0,0)",
+    "rgba(13,148,136,0.12)",
+    "rgba(100,193,182,1)",
+    "url(javascript:alert(1))",
+    "url(https://evil.example/x.png)",
+    "expression(alert(1))",
+    "var(--bg)",
+    "red",
+    "rgb(255, 255, 255)",
+    "hsl(0, 100%, 50%)",
+    "#282828; } body { display: none",
+    "#282828 url(x.png)",
+    "javascript:alert(1)",
+    "<script>alert(1)</script>",
+    "inherit",
+    "",
+    "#28282",
+    "#2828288",
+    "#GGGGGG",
+    "#282828 ",
+    "RGBA(255,255,255,0.1)",
+    "rgba(256,0,0,0.5)",
+    "rgba(1,2,3)",
+    "rgba(1,2,3,2)",
+    "rgba(1,2,3,-0.5)",
+  ];
+  for (const value of probes) {
+    const hostSafe = isSafeThemeCssValue(value);
+    const protocolSafe = ThemeCssValueSchema.safeParse(value).success;
+    assert.equal(
+      hostSafe,
+      protocolSafe,
+      `value ${JSON.stringify(value)}: host=${hostSafe} protocol=${protocolSafe}`,
+    );
+  }
 });
 
 test("LAN exposure keeps themes behind the gate even with auth unconfigured/disabled", async () => {

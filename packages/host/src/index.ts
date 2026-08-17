@@ -95,6 +95,10 @@ export {
   requireValidThemeMode,
   THEME_NAME_PATTERN,
   THEME_UNAVAILABLE_MESSAGE,
+  // Projection of the canonical runtime-core theme vocabulary; exported for
+  // the semantic-parity contract checks in the theme route tests.
+  THEME_CSS_VAR_KEYS,
+  isSafeThemeCssValue,
 } from "./routes/themes.js";
 export { createAllowedRootService, pathContainment } from "./resources/allowed-roots.js";
 export type { AllowedRootPolicy, AllowedRootService, AuthorizedPath, RootExpansionPlan, RootExpansionResult } from "./resources/allowed-roots.js";

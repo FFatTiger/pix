@@ -26,11 +26,12 @@
   ],
   "scripts": {
     "build:core": "npm run build --workspace @fffattiger/pix-runtime-core",
-    "prebuild": "npm run build:core",
+    "build:deps": "npm run build --workspace @fffattiger/pix-runtime-core && npm run build --workspace @fffattiger/pix-protocol",
+    "prebuild": "npm run build:deps",
     "build": "tsc -p tsconfig.json",
-    "pretypecheck": "npm run build:core",
+    "pretypecheck": "npm run build:deps",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prebuild:test": "npm run build:core",
+    "prebuild:test": "npm run build:deps",
     "build:test": "tsc -p tsconfig.test.json",
     "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\"",
     "clean": "node ../../scripts/remove-paths.mjs dist dist-test"
@@ -39,7 +40,8 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@fffattiger/pix-runtime-core": "file:../runtime-core"
+    "@fffattiger/pix-runtime-core": "file:../runtime-core",
+    "@fffattiger/pix-protocol": "file:../protocol"
   },
   "devDependencies": {
     "@types/node": "^22",

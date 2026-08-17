@@ -15,10 +15,15 @@
  *
  * This module is protocol-independent (no runtime-core / pi-sdk-adapter /
  * protocol imports): the seam returns `unknown` and Host-side projectors emit
- * only plain JSON primitives. cssVars keys are whitelist-only and values must
- * be safe color literals — no arbitrary CSS property, `url()`, `expression()`
- * or other style syntax ever reaches the wire. Errors are fixed sanitized
- * 400/404/503 bodies; paths, raw JSON content and stacks are never forwarded.
+ * only plain JSON primitives. The cssVars whitelist below and the safe-value
+ * predicate are a frozen PROJECTION of the canonical theme vocabulary owned by
+ * `packages/runtime-core/src/themes.ts` (this module cannot import
+ * runtime-core — the host boundary gate) — same keys, same accept/reject
+ * behavior — and the host theme route tests enforce semantic parity against
+ * the protocol projection (which the runtime-contract-tests seam pins to
+ * runtime-core). No arbitrary CSS property, `url()`, `expression()` or other
+ * style syntax ever reaches the wire. Errors are fixed sanitized 400/404/503
+ * bodies; paths, raw JSON content and stacks are never forwarded.
  */
 import type { Hono } from "hono";
 import type { HostEnv } from "../env.js";
@@ -37,11 +42,12 @@ export const THEME_UNAVAILABLE_MESSAGE = "Catalog is unavailable";
 export const THEME_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
- * The complete CSS custom property whitelist (frozen 29-key theme projection;
- * mirrors the protocol DTO and the runtime-core canonical model — this module
- * stays dependency-free so the list is declared independently here).
+ * The complete CSS custom property whitelist — frozen projection of the
+ * canonical `runtime-core` THEME_CSS_VAR_KEYS (this module stays
+ * dependency-free, so the list is declared here and the host theme route
+ * tests enforce semantic parity with the protocol projection).
  */
-const THEME_CSS_VAR_KEYS: ReadonlySet<string> = new Set([
+export const THEME_CSS_VAR_KEYS: ReadonlySet<string> = new Set([
   "--bg",
   "--bg-panel",
   "--bg-secondary",
@@ -73,12 +79,16 @@ const THEME_CSS_VAR_KEYS: ReadonlySet<string> = new Set([
   "--hatch-color",
 ]);
 
-/** Safe theme color literal: lowercase 3/6-digit hex or decimal rgba() (0-255, alpha 0-1). */
+/**
+ * Safe theme color literal — projection of the canonical `runtime-core`
+ * `isSafeThemeCssValue`: lowercase 3/6-digit hex or decimal rgba()
+ * (octets 0-255, alpha 0-1). Any other CSS syntax fails closed.
+ */
 const SAFE_HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/;
 const SAFE_RGBA_COLOR =
   /^rgba\((\d{1,3}),(\d{1,3}),(\d{1,3}),(?:0(?:\.\d{1,6})?|1(?:\.0{1,6})?)\)$/;
 
-function isSafeThemeCssValue(value: string): boolean {
+export function isSafeThemeCssValue(value: string): boolean {
   if (SAFE_HEX_COLOR.test(value)) return true;
   const match = SAFE_RGBA_COLOR.exec(value);
   if (!match) return false;

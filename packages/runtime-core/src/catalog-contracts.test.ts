@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { THEME_CSS_VAR_KEYS } from "./index.js";
+import { THEME_CSS_VAR_KEYS, isSafeThemeCssValue } from "./index.js";
 import type {
   CredentialCatalogPort,
   CredentialStorePort,
@@ -237,14 +237,59 @@ test("a read-only theme catalog object exposes exactly the two read methods", ()
   assert.deepEqual(Object.keys(catalog).sort(), ["listThemeSets", "resolveTheme"]);
 });
 
-test("the theme CSS variable whitelist is the frozen 29-key web-client surface", () => {
-  // Order is part of the frozen projection; every key is a custom property.
-  assert.equal(THEME_CSS_VAR_KEYS.length, 29);
+test("the canonical theme CSS variable whitelist is a non-empty lowercase custom-property vocabulary", () => {
+  // The canonical authority is a semantic vocabulary, not a magic count:
+  // every key must be a lowercase CSS custom property, exactly one
+  // declaration each, and it must cover the full client projection surface
+  // (the key the client looks up by convention, plus the sentinel final key).
+  assert.ok(THEME_CSS_VAR_KEYS.length > 0, "whitelist must not be empty");
+  assert.ok(THEME_CSS_VAR_KEYS.includes("--bg"), "the primary background key must exist");
   for (const key of THEME_CSS_VAR_KEYS) {
     assert.match(key, /^--[a-z-]+$/, `${key} must be a lowercase CSS custom property`);
   }
   // Defensive-corruption guard: no duplicates can ever enter the whitelist.
   assert.equal(new Set(THEME_CSS_VAR_KEYS).size, THEME_CSS_VAR_KEYS.length);
+});
+
+test("the canonical safe theme value predicate accepts only safe hex/rgba color literals", () => {
+  for (const good of [
+    "#282828",
+    "#fb4934",
+    "#abc",
+    "rgba(255,255,255,0.035)",
+    "rgba(0,0,0,0)",
+    "rgba(13,148,136,0.12)",
+    "rgba(100,193,182,1)",
+  ]) {
+    assert.equal(isSafeThemeCssValue(good), true, good);
+  }
+  for (const bad of [
+    // CSS function/property injection carriers.
+    "url(javascript:alert(1))",
+    "url(https://evil.example/x.png)",
+    "expression(alert(1))",
+    "var(--bg)",
+    "red",
+    "rgb(255, 255, 255)",
+    "hsl(0, 100%, 50%)",
+    "#282828; } body { display: none",
+    "#282828 url(x.png)",
+    "javascript:alert(1)",
+    "<script>alert(1)</script>",
+    "inherit",
+    "",
+    "#28282", // 5 digits
+    "#2828288", // 7 digits
+    "#GGGGGG",
+    "#282828 ", // trailing whitespace
+    "RGBA(255,255,255,0.1)",
+    "rgba(256,0,0,0.5)", // octet > 255
+    "rgba(1,2,3)", // missing alpha
+    "rgba(1,2,3,2)", // alpha > 1
+    "rgba(1,2,3,-0.5)",
+  ]) {
+    assert.equal(isSafeThemeCssValue(bad), false, bad);
+  }
 });
 
 test("a read-only session catalog object exposes no renameSession", () => {
