@@ -17,13 +17,9 @@ describe("sidebar rail motion", () => {
     expect(css).not.toMatch(/\.sidebar-list-row:active[^{]*\{[\s\S]*transform:\s*scale/);
     expect(css).not.toMatch(/\.sidebar-session-select:active[^{]*\{[\s\S]*transform:\s*scale/);
     expect(css).toContain(".sidebar-list-row:hover .sidebar-row-status");
-    expect(css).toContain(".sidebar-row-actions .sidebar-icon-btn {");
-    expect(css).toContain("background: var(--bg-hover);");
-    // The pin/archive container itself carries NO background/shape — only the
-    // per-button hover-style chip does.
-    const containerStart = css.indexOf(".sidebar-row-actions,");
-    const containerBlock = css.slice(containerStart, css.indexOf("}", containerStart));
-    expect(containerBlock).not.toContain("background");
-    expect(containerBlock).not.toContain("border-radius");
+    // Pin/archive buttons have NO resting background of their own: they are
+    // plain icons on row hover and only inherit the standard icon-button
+    // hover background on direct hover.
+    expect(css).not.toMatch(/\.sidebar-row-actions \.sidebar-icon-btn \{[^}]*background/);
   });
 });

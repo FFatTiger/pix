@@ -1237,16 +1237,10 @@ html.dark .catalog-meta-item--error {
   transition: opacity 120ms ease;
 }
 
-/* Row pin/archive chips: the icon-button HOVER look is the resting state —
-   opaque background per button, no container background and no shape. */
-.sidebar-row-actions .sidebar-icon-btn {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
-.sidebar-row-actions .sidebar-icon-btn:hover {
-  color: var(--accent);
-}
+/* Row pin/archive: plain icon buttons revealed on row hover. Each button
+   keeps the standard icon-button hover background ONLY on direct hover —
+   no resting background, no container shape (the time chip owns the slot
+   by default). */
 
 .sidebar-list-row:hover .sidebar-row-meta,
 .sidebar-list-row:focus-within .sidebar-row-meta,
