@@ -3,7 +3,14 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
+// A fresh service-worker script URL/cache namespace for every production build.
+// An explicit deployment version remains available for reproducible releases.
+const serviceWorkerVersion = process.env.VITE_SW_VERSION ?? Date.now().toString(36);
+
 export default defineConfig({
+  define: {
+    __PIX_SW_VERSION__: JSON.stringify(serviceWorkerVersion),
+  },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

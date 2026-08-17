@@ -184,6 +184,12 @@ function Capture(): null {
 }
 
 let previousFetch: typeof fetch;
+function authenticatedQueryClient(): QueryClient {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(queryKeys.gate.status(), { status: "enabled", required: false, authenticated: false, mode: "local" });
+  return client;
+}
+
 function mountApp(search: WorkspaceSearch, opts: { queryClient?: QueryClient; capabilities?: HostInfo["capabilities"] } = {}) {
   const qc = opts.queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const host: Partial<HostInfo> = {
@@ -227,6 +233,23 @@ async function connectReady(): Promise<FakeWebSocket> {
     await flush();
   });
   return ws!;
+}
+
+/** Accept the socket that AppShell opens automatically on mount. */
+async function acceptAutomaticConnection(): Promise<FakeWebSocket> {
+  await act(async () => {
+    // Gate status resolves through React Query before AppShell is allowed to
+    // open the control-plane socket.
+    for (let i = 0; i < 12 && SOCKETS.length === 0; i += 1) await flush();
+  });
+  expect(SOCKETS).toHaveLength(1);
+  const ws = SOCKETS[0]!;
+  await act(async () => {
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+  });
+  return ws;
 }
 
 function countType(ws: FakeWebSocket, type: string): number {
@@ -274,8 +297,8 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     // (listRunning reports busy). The read-only rule covers IDLE history only —
     // a running session must be taken over live: attach, restore the in-flight
     // partial from the snapshot, and keep receiving message_update events.
-    mountApp({ cwd: "/x", session: "A" });
-    const ws = await connectReady();
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection();
     const list = lastFrame<{ type: string; id: string }>(ws, "listRunning")!;
     await act(async () => {
       ws.serverSend({
@@ -359,8 +382,8 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
   });
 
   it("does NOT attach an idle selected session (read-only history invariant)", async () => {
-    mountApp({ cwd: "/x", session: "B" });
-    const ws = await connectReady();
+    mountApp({ cwd: "/x", session: "B" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection();
     const list = lastFrame<{ type: string; id: string }>(ws, "listRunning")!;
     await act(async () => {
       ws.serverSend({

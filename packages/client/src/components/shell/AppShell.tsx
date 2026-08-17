@@ -80,6 +80,7 @@ function sessionLabelFor(session: { title?: string | undefined; firstMessage?: s
 export function AppShell({ search }: AppShellProps) {
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   const runtime = useRuntime();
+  const connectRuntime = runtime.connect;
   const { t } = useI18n();
   const navigate = useNavigate();
   const http = useHttpClient();
@@ -91,6 +92,16 @@ export function AppShell({ search }: AppShellProps) {
   // desktop shell, no unauthorized API surface). The /login route stays
   // available for direct links.
   const gateRequired = gate.data?.required === true && gate.data.authenticated !== true;
+  const gateAllowsRuntime = gate.data !== undefined && !gateRequired;
+
+  // Connect the control plane at shell startup so a refreshed page can ask
+  // sessiond which workers are already running. Connecting the WebSocket does
+  // NOT attach or activate a session: idle history stays 0-Worker. Once the
+  // listRunning baseline arrives, the live-takeover effect below attaches only
+  // when the selected URL session is already busy server-side.
+  useEffect(() => {
+    if (canAgent && gateAllowsRuntime) connectRuntime();
+  }, [canAgent, connectRuntime, gateAllowsRuntime]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
   // On mobile the sidebar is an overlay drawer; hide it by default so the chat

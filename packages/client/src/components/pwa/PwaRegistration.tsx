@@ -22,7 +22,7 @@ export function PwaRegistration() {
     }
 
     let cancelled = false;
-    const version = import.meta.env.VITE_SW_VERSION ?? "1";
+    const version = import.meta.env.VITE_SW_VERSION ?? __PIX_SW_VERSION__;
     const swUrl = `/sw.js?v=${encodeURIComponent(String(version))}`;
 
     navigator.serviceWorker
