@@ -706,6 +706,7 @@ export function AppShell({ search }: AppShellProps) {
             onNewSession={handleCreate}
             canNewSession={canCreate}
             onOpenSettings={openSettings}
+            onCollapseSidebar={handleSidebarToggle}
           />
         ) : (
           <div className="sidebar-collapsed-rail" data-testid="sidebar-collapsed-rail">
@@ -733,8 +734,6 @@ export function AppShell({ search }: AppShellProps) {
           full-height sidebar instead of spanning the whole window. */}
       <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <AppTitleBar
-          sidebarOpen={sidebarOpen}
-          onSidebarToggle={handleSidebarToggle}
           tabs={tabs}
           activeTabId={activeTabId}
           onSelectTab={handleSelectTab}

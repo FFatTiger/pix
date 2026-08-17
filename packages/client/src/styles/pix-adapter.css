@@ -1268,6 +1268,8 @@ html.dark .catalog-meta-item--error {
 
 .explorer-panel .sidebar-section-actions {
   right: 38px;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .explorer-panel .sidebar-section-toggle {

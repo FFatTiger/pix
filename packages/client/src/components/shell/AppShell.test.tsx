@@ -1245,9 +1245,10 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(sidebar.compareDocumentPosition(titleBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(titleBar.closest(".chat-column")).toBeTruthy();
     expect(sidebar.closest(".chat-column")).toBeNull();
-    // The title bar keeps its sidebar toggle while the rail is expanded.
-    const hideButtons = screen.getAllByRole("button", { name: "Hide sidebar" });
-    expect(hideButtons.some((button) => button.closest(".app-title-bar"))).toBeTruthy();
+    // The sidebar toggle lives INSIDE the rail (header collapse button); the
+    // title bar carries only tabs. Collapsed, the rail keeps the expand button.
+    expect(screen.getByTestId("sidebar-collapse")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Hide sidebar" })?.closest(".app-title-bar")).toBeNull();
     expect(screen.getByTestId("sidebar-brand")).toBeTruthy();
   });
 });
