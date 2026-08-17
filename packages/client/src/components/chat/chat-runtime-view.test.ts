@@ -3,6 +3,7 @@ import type { AgentMessage, RuntimeState, SessionStats } from "@fffattiger/pix-p
 import type { SessionTreeNode as ProtocolSessionTreeNode } from "@/lib/session-tree";
 import {
   buildSessionStatsView,
+  buildTranscriptSessionStatsView,
   toBranchNavigatorTree,
   toContextUsageView,
   toImageAttachments,
@@ -31,6 +32,31 @@ function messages(overrides: Partial<AgentMessage>[] = []): AgentMessage[] {
     ...overrides,
   ] as AgentMessage[];
 }
+
+describe("buildTranscriptSessionStatsView — detached history stats", () => {
+  it("aggregates real persisted assistant usage without activating a worker", () => {
+    const view = buildTranscriptSessionStatsView("history-1", [
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        model: "m",
+        provider: "p",
+        usage: {
+          input: 100,
+          output: 20,
+          cacheRead: 50,
+          cacheWrite: 5,
+          cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.02, total: 0.33 },
+        },
+      },
+    ]);
+    expect(view.sessionId).toBe("history-1");
+    expect(view.tokens).toEqual({ input: 100, output: 20, cacheRead: 50, cacheWrite: 5, total: 175 });
+    expect(view.cost).toBe(0.33);
+    expect(view.contextUsage).toBeNull();
+  });
+});
 
 describe("buildSessionStatsView — real stats mapping", () => {
   it("derives message counts from the live projection when no stats are available and never fakes tokens", () => {

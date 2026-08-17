@@ -61,15 +61,19 @@ export interface ChatSessionStatsView {
  * state. Message totals prefer the worker's authoritative `messageCount` and
  * fall back to the live projection length.
  */
-export function buildSessionStatsView(
-  state: RuntimeState,
+export function buildTranscriptSessionStatsView(
+  sessionId: string,
   messages: readonly AgentMessage[],
-  stats?: SessionStats | null,
 ): ChatSessionStatsView {
   let userMessages = 0;
   let assistantMessages = 0;
   let toolCalls = 0;
   let toolResults = 0;
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let cost = 0;
   for (const message of messages) {
     if (message.role === "user") userMessages += 1;
     else if (message.role === "assistant") {
@@ -77,8 +81,40 @@ export function buildSessionStatsView(
       if (message.content && Array.isArray(message.content)) {
         toolCalls += message.content.filter((block) => block.type === "toolCall").length;
       }
+      if (message.usage) {
+        input += message.usage.input;
+        output += message.usage.output;
+        cacheRead += message.usage.cacheRead;
+        cacheWrite += message.usage.cacheWrite;
+        cost += message.usage.cost.total;
+      }
     } else if (message.role === "toolResult") toolResults += 1;
   }
+  return {
+    sessionId,
+    userMessages,
+    assistantMessages,
+    toolCalls,
+    toolResults,
+    totalMessages: messages.length,
+    tokens: {
+      input,
+      output,
+      cacheRead,
+      cacheWrite,
+      total: input + output + cacheRead + cacheWrite,
+    },
+    cost,
+    contextUsage: null,
+  };
+}
+
+export function buildSessionStatsView(
+  state: RuntimeState,
+  messages: readonly AgentMessage[],
+  stats?: SessionStats | null,
+): ChatSessionStatsView {
+  const transcript = buildTranscriptSessionStatsView(state.sessionId, messages);
   const statsContext = stats?.contextUsage ?? null;
   const contextUsage = statsContext
     ? {
@@ -88,22 +124,14 @@ export function buildSessionStatsView(
       }
     : toContextUsageView(state.contextUsage);
   return {
-    sessionId: state.sessionId,
+    ...transcript,
     ...(state.sessionFile === undefined ? {} : { sessionFile: state.sessionFile }),
     ...(state.sessionName === undefined ? {} : { sessionName: state.sessionName }),
-    userMessages,
-    assistantMessages,
-    toolCalls,
-    toolResults,
-    totalMessages: stats?.messageCount ?? messages.length,
+    totalMessages: stats?.messageCount ?? transcript.totalMessages,
     tokens: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      total: stats?.tokenCount ?? 0,
+      ...transcript.tokens,
+      total: stats?.tokenCount ?? transcript.tokens.total,
     },
-    cost: 0,
     contextUsage,
   };
 }

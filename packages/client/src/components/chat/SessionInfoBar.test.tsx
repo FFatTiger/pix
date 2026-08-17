@@ -32,6 +32,26 @@ function stats(overrides: Partial<ChatSessionStatsView> = {}): ChatSessionStatsV
 
 const historyLabel = "View full history";
 
+describe("SessionInfoBar — composer footer controls", () => {
+  it("renders and toggles the completion-sound button", () => {
+    const onSoundToggle = vi.fn();
+    renderBar({ soundEnabled: true, onSoundToggle });
+    const button = screen.getByLabelText("Disable completion sound");
+    fireEvent.click(button);
+    expect(onSoundToggle).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("renders the compact action for a selected session", () => {
+    const onCompact = vi.fn();
+    renderBar({ hasSession: true, onCompact });
+    const button = screen.getByLabelText("Compact context");
+    fireEvent.click(button);
+    expect(onCompact).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+});
+
 describe("SessionInfoBar — history button gating (F3)", () => {
   it("renders the history button only when hasSession AND onViewFullHistory are present", () => {
     const onViewFullHistory = vi.fn();

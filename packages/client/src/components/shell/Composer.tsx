@@ -9,11 +9,13 @@ import { createQueryOptions } from "@/api/query-keys";
 import { createConfigurationApi } from "@/api/configuration";
 import { createResourcesApi } from "@/api/resources";
 import { useI18n } from "@/hooks/useI18n";
+import { useAudio } from "@/hooks/useAudio";
 import { ChatInput, type AttachedImage, type ChatInputHandle } from "@/components/chat/ChatInput";
 import { SessionInfoBar } from "@/components/chat/SessionInfoBar";
 import { chatInputHandle, transcriptScrollRef } from "@/components/chat/chat-experience-bridge";
 import {
   buildSessionStatsView,
+  buildTranscriptSessionStatsView,
   buildStepLabel,
   toBranchNavigatorTree,
   toContextUsageView,
@@ -144,6 +146,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   const http = useHttpClient();
   const { t } = useI18n();
+  const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
   const inputRef = useRef<ChatInputHandle | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -215,6 +218,13 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const promptRunning = live && (state?.isStreaming === true || state?.isPromptRunning === true)
     || runtime.promptPending;
   const isCompacting = live && state?.isCompacting === true;
+  const agentRunning = live && (state?.isStreaming === true || state?.isPromptRunning === true);
+  const wasAgentRunningRef = useRef(false);
+  useEffect(() => {
+    const completed = wasAgentRunningRef.current && !agentRunning && live && runtime.sessionId === selectedSessionId;
+    wasAgentRunningRef.current = agentRunning;
+    if (completed) playDoneSound();
+  }, [agentRunning, live, playDoneSound, runtime.sessionId, selectedSessionId]);
 
   // --- Host catalog queries (read-only) --------------------------------------
   // The MODEL catalog is queried for the canonical project cwd EVEN WHEN
@@ -459,10 +469,11 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     // re-trigger the fetch — only the explicit lifecycle signal does.
   }, [live, hasStats, attachedSessionId, runtime.attachGeneration, runtime.getSessionStats]);
 
-  const sessionStats = useMemo(
-    () => (live && state ? buildSessionStatsView(state, transcriptMessages, hasStats ? sessionStatsData : null) : null),
-    [live, state, transcriptMessages, hasStats, sessionStatsData],
-  );
+  const sessionStats = useMemo(() => {
+    if (!selectedSessionId) return null;
+    if (live && state) return buildSessionStatsView(state, transcriptMessages, hasStats ? sessionStatsData : null);
+    return buildTranscriptSessionStatsView(selectedSessionId, transcriptMessages);
+  }, [selectedSessionId, live, state, transcriptMessages, hasStats, sessionStatsData]);
   // Context usage prefers the real stats projection; falls back to the snapshot state.
   const contextUsage = useMemo(
     () => (sessionStatsData?.contextUsage ? toContextUsageView(sessionStatsData.contextUsage) : toContextUsageView(state?.contextUsage)),
@@ -665,12 +676,21 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   }, [hasCompactAbort, runtime]);
 
   const handleCompact = useCallback(() => {
-    if (!hasCompact) return;
+    if (!selectedSessionId || (live && !hasCompact)) return;
     setCompactError(null);
-    runtime.compact().catch((cause: unknown) => {
-      if (isCurrent()) setCompactError(describeUnavailable(cause));
-    });
-  }, [hasCompact, runtime, isCurrent]);
+    void (async () => {
+      try {
+        // Selecting a tab stays read-only; clicking Compact is an explicit
+        // activation intent, matching the source desktop's per-session action.
+        if (!live || runtime.sessionId !== selectedSessionId) {
+          await runtime.openSession(selectedSessionId);
+        }
+        await runtime.compact();
+      } catch (cause) {
+        if (isCurrent()) setCompactError(describeUnavailable(cause));
+      }
+    })();
+  }, [selectedSessionId, live, hasCompact, runtime, isCurrent]);
 
   const handleModelChange = useCallback(
     (provider: string, modelId: string) => {
@@ -814,6 +834,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // home (no selected session) still mounts the exact ChatInput so the user can
   // pick a model and start a conversation; send creates then activates.
   const disabledReason = !canAgent ? "host has no agent capability" : "";
+  const canOfferCompact = Boolean(selectedSessionId) && (!live || hasCompact);
 
   if (!canAgent) {
     return (
@@ -871,6 +892,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         onLoadSlashCommands={loadSlashCommands}
         onBuiltinCommand={handleBuiltinCommand}
         builtinSlashCommands={builtinSlashCommands}
+        onAudioUnlock={unlockAudio}
         {...(draftKey === undefined ? {} : { draftKey })}
         cwd={cwd}
         messagesScrollRef={transcriptScrollRef}
@@ -888,7 +910,9 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
             contextUsage={contextUsage}
             hasSession={Boolean(selectedSessionId)}
             showChat
-            {...(hasCompact ? { onCompact: handleCompact } : {})}
+            soundEnabled={soundEnabled}
+            onSoundToggle={onSoundToggle}
+            {...(canOfferCompact ? { onCompact: handleCompact } : {})}
             isCompacting={isCompacting}
             compactError={compactError}
             branchTree={branchTree}
