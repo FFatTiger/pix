@@ -17,7 +17,6 @@ import {
   X,
 } from "@phosphor-icons/react";
 import type { SessionHeader } from "@fffattiger/pix-protocol";
-import type { WorkspaceSearch } from "@/lib/search-params";
 import { createQueryOptions } from "@/api/query-keys";
 import { createMutationOptions } from "@/api/mutations";
 import { urls } from "@/api/urls";
@@ -27,7 +26,6 @@ import { useHttpClient } from "@/app/http-context";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
 import { useContextMenu, type ContextMenuEntry } from "@/components/ContextMenu";
-import { ExplorerPanel } from "@/features/workspace/explorer/ExplorerPanel";
 import { bucketOf, timeBucketKey, TIME_BUCKET_ORDER, type TimeBucket } from "@/lib/time-groups";
 import { loadForkCollapsed, saveForkCollapsed } from "@/lib/fork-collapse-state";
 import {
@@ -41,8 +39,10 @@ import { isHiddenRailSession, isNonProjectWorkspacePath } from "@/lib/workspace-
 import type { SettingsTab } from "@/components/shell/SettingsModal";
 
 export interface SidebarProps {
-  /** Current URL workspace/session search state (AppShell is the owner). */
-  search: WorkspaceSearch;
+  /** Current workspace cwd (AppShell is the URL owner). */
+  cwd: string | undefined;
+  /** The currently selected session id (the URL-selected session, AppShell-owned). */
+  selectedSessionId: string | null;
   /**
    * The currently attached/live runtime session id. The running indicator
    * renders for this row while the runtime streams; the D4 delete control is
@@ -64,14 +64,12 @@ export interface SidebarProps {
    * session equals the URL-selected session.
    */
   onSessionDeleted?: (sessionId: string) => void;
-  /** Select a session row (AppShell-owned URL navigation to `?session=`). */
-  onSelectSession: (sessionId: string) => void;
+  /** Select a session row with its owning workspace cwd. */
+  onSelectSession: (sessionId: string, cwd?: string) => void;
   /** Start a new session in the current workspace (AppShell-owned). */
   onNewSession: () => void;
-  /** Honest gate for the new-session action (capability + cwd + not attached). */
+  /** Honest gate for the new-session action (capability + cwd). */
   canNewSession: boolean;
-  /** Open a file in the right panel (viewer tab ownership stays with the shell). */
-  onOpenFile: (filePath: string, fileName: string, options?: { initialDisplayMode?: "diff" }) => void;
   /** Open the existing SettingsModal on a specific tab (plugins / skills / settings). */
   onOpenSettings?: (tab: SettingsTab) => void;
 }
@@ -272,7 +270,8 @@ function buildSessionTree(sessions: readonly SessionHeader[]): SessionTreeNode[]
 }
 
 export function Sidebar({
-  search,
+  cwd,
+  selectedSessionId,
   liveSessionId,
   liveStreaming,
   pendingSessionId,
@@ -280,7 +279,6 @@ export function Sidebar({
   onSelectSession,
   onNewSession,
   canNewSession,
-  onOpenFile,
   onOpenSettings,
 }: SidebarProps) {
   const { t } = useI18n();
@@ -289,8 +287,6 @@ export function Sidebar({
   const options = createQueryOptions(http);
   const { can, canBrowseSessions, canDeleteSessions, canWriteSessions } = useCapabilities();
   const canWorktree = can("worktree");
-  const canFiles = can("files");
-  const canGit = can("git");
   const canPlugins = can("plugins");
   const canSkills = can("skills");
 
@@ -303,8 +299,8 @@ export function Sidebar({
   // selected cwd to its project root (shared with the WorktreeSelector via
   // the query key).
   const worktrees = useQuery({
-    ...options.worktrees.list(search.cwd ?? ""),
-    enabled: canWorktree && search.cwd !== undefined,
+    ...options.worktrees.list(cwd ?? ""),
+    enabled: canWorktree && cwd !== undefined,
   });
 
   // D4 delete + rename mutations: existing options own the standard list+byId
@@ -369,7 +365,7 @@ export function Sidebar({
   }, [worktrees.data, visibleSessions]);
 
   const recentProjects = getRecentProjects(visibleSessions);
-  const selectedProject = projectRootFor(search.cwd);
+  const selectedProject = projectRootFor(cwd);
   const toggleProjectExpanded = useCallback((project: string) => {
     setExpandedProjects((prev) => {
       const next = new Set(prev);
@@ -417,7 +413,7 @@ export function Sidebar({
     <SessionTreeItem
       key={node.session.sessionId}
       node={node}
-      selectedSessionId={search.session ?? null}
+      selectedSessionId={selectedSessionId}
       pendingSessionId={pendingSessionId ?? null}
       runningSessionIds={runningSessionIds}
       liveSessionId={liveSessionId}
@@ -459,7 +455,7 @@ export function Sidebar({
             className="sidebar-nav-item"
             data-testid="sidebar-new-session"
             disabled={!canNewSession}
-            title={search.cwd ? t("desktop.newSessionIn", { cwd: search.cwd }) : t("desktop.selectProjectFirst")}
+            title={cwd ? t("desktop.newSessionIn", { cwd }) : t("desktop.selectProjectFirst")}
             aria-label={t("desktop.newSession")}
             onClick={onNewSession}
           >
@@ -670,17 +666,6 @@ export function Sidebar({
             </div>
           )}
         </section>
-
-        {search.cwd ? (
-          <section className="sidebar-files" data-testid="sidebar-files">
-            <ExplorerPanel
-              cwd={search.cwd}
-              canFiles={canFiles}
-              canGit={canGit}
-              onOpenFile={onOpenFile}
-            />
-          </section>
-        ) : null}
       </div>
 
       <div className="sidebar-footer">
@@ -811,7 +796,7 @@ function SessionTreeItem({
   renameMutation: ReturnType<typeof useMutation<unknown, unknown, { id: string; name: string }>>;
   removeMutation: ReturnType<typeof useMutation<unknown, unknown, string>>;
   onSessionDeleted?: ((sessionId: string) => void) | undefined;
-  onSelectSession: (sessionId: string) => void;
+  onSelectSession: (sessionId: string, cwd?: string) => void;
   depth: number;
 }) {
   const subtreeContains = (current: SessionTreeNode, targetId: string): boolean => {
@@ -1009,7 +994,7 @@ function SessionItem({
   renameMutation: ReturnType<typeof useMutation<unknown, unknown, { id: string; name: string }>>;
   removeMutation: ReturnType<typeof useMutation<unknown, unknown, string>>;
   onSessionDeleted?: ((sessionId: string) => void) | undefined;
-  onSelectSession: (sessionId: string) => void;
+  onSelectSession: (sessionId: string, cwd?: string) => void;
   depth?: number;
   hasChildren?: boolean;
   collapsed?: boolean;
@@ -1278,7 +1263,7 @@ function SessionItem({
             data-testid={`session-select-${session.sessionId}`}
             aria-current={isSelected ? "true" : undefined}
             title={rowTitle}
-            onClick={() => onSelectSession(session.sessionId)}
+            onClick={() => onSelectSession(session.sessionId, session.cwd)}
           >
             {depth > 0 && <GitBranch size={14} weight="regular" aria-hidden="true" />}
             {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}

@@ -14,6 +14,7 @@ import { ThemeProvider } from "@/hooks/useTheme";
 import { HttpClientProvider } from "@/app/http-context";
 import { ContextMenuProvider } from "@/components/ContextMenu";
 import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "@/runtime/testing/harness";
+import { setWatchSessionFactory, type WatchConnectionState, type WatchSession } from "@/api/files-watch";
 import type { RuntimeSocketDeps } from "@/runtime/socket";
 import type { HostInfo } from "@fffattiger/pix-protocol";
 import type { SessionStore } from "@/runtime/session-store";
@@ -280,6 +281,20 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     expect(capturedStore!.getSnapshot().sessionId).not.toBe("B");
   });
 
+  it("keeps New Session available while another session tab is attached", async () => {
+    mountApp({ cwd: "/x", session: "A" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("A");
+      await flush();
+      const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "A" }) });
+      await flush();
+    });
+
+    expect(screen.getByTestId("sidebar-new-session").hasAttribute("disabled")).toBe(false);
+  });
+
   it("rapid selection B→C while attached: only fail-closed detaches (single-flight, one frame), never any attach", async () => {
     const { rerender } = mountApp({ cwd: "/x" });
     const ws = await connectReady();
@@ -542,7 +557,7 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
   afterEach(() => { cleanup(); globalThis.fetch = previousFetch; vi.useRealTimers(); });
 
   it("detached B renders model + reasoning selectors; picking options emits ZERO attach/command frames; A values never shown as B", async () => {
-    const { rerender } = mountApp({ cwd: "/x" });
+    const { rerender } = mountApp({ cwd: "/x", session: "A" });
     const ws = await connectReady();
     await mountLiveA(ws);
     // LIVE A: model + reasoning selectors present, showing A's runtime model.
@@ -656,7 +671,7 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
   });
 
   it("LIVE selected session: model/thinking controls still issue immediate commands (no staging)", async () => {
-    const { } = mountApp({ cwd: "/x" });
+    const { } = mountApp({ cwd: "/x", session: "A" });
     const ws = await connectReady();
     await mountLiveA(ws);
     const commandBefore = countType(ws, "command");
@@ -720,14 +735,13 @@ describe("AppShell — source-like sidebar rail", () => {
       "sidebar-nav-resources",
       "sidebar-projects",
       "sidebar-sessions",
-      "sidebar-files",
       "sidebar-nav-settings",
     ].filter((id) => document.querySelector(`[data-testid="${id}"]`));
   }
 
   const catalogCaps: HostInfo["capabilities"] = ["agent", "sessions", "files", "models", "plugins", "skills"];
 
-  it("renders the source hierarchy: Pix, New Session, Plugins, Resources, Projects, Sessions, Files, Settings", async () => {
+  it("renders the source hierarchy: Pix, New Session, Plugins, Resources, Projects, Sessions, Settings + title-bar file browser", async () => {
     mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
     await settle();
     expect(screen.getByTestId("sidebar-brand").textContent).toBe("Pix");
@@ -736,8 +750,11 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-nav-resources").textContent).toBe("Resources");
     expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
     expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
-    expect(screen.getByTestId("sidebar-files")).toBeTruthy();
+    expect(screen.queryByTestId("sidebar-files")).toBeNull();
     expect(screen.getByTestId("sidebar-nav-settings").textContent).toBe("Settings");
+    // The file browser moved out of the sidebar into the title bar's top-right
+    // button (toggles the right-side FILE BROWSER panel).
+    expect(screen.getByRole("button", { name: "Show file browser" })).toBeTruthy();
     expect(railOrder()).toEqual([
       "sidebar-home-header",
       "sidebar-new-session",
@@ -745,7 +762,6 @@ describe("AppShell — source-like sidebar rail", () => {
       "sidebar-nav-resources",
       "sidebar-projects",
       "sidebar-sessions",
-      "sidebar-files",
       "sidebar-nav-settings",
     ]);
   });
@@ -776,7 +792,10 @@ describe("AppShell — source-like sidebar rail", () => {
   it("New Session uses the existing create path and invents no extra catalog chrome", async () => {
     mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
     await settle();
-    fireEvent.click(screen.getByTestId("sidebar-new-session"));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("sidebar-new-session"));
+      await flush();
+    });
     expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/", search: { cwd: "/x" } }));
     expect(screen.getByTestId("sidebar-nav-plugins").textContent).toBe("Plugins");
     expect(screen.getByTestId("sidebar-nav-resources").textContent).toBe("Resources");
@@ -798,7 +817,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
     expect(screen.getAllByTestId("session-select-A").length).toBeGreaterThan(0);
     expect(screen.getAllByTestId("session-select-D").length).toBeGreaterThan(1);
-    expect(screen.getByTestId("sidebar-files")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show file browser" })).toBeTruthy();
   });
 
   it("collapses and expands the Projects section via its toggle", async () => {
@@ -945,5 +964,140 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByText("Start a conversation")).toBeTruthy();
     expect(document.querySelector(".composer--disabled")).toBeNull();
     expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
+  });
+});
+
+describe("AppShell — unified top-level workspace tabs + right file browser", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    SOCKETS.length = 0;
+    capturedStore = null;
+    navigateMock.mockReset();
+    previousFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = previousFetch;
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  async function settle(): Promise<void> {
+    await act(async () => {
+      for (let round = 0; round < 3; round += 1) {
+        await flush(20);
+        vi.advanceTimersByTime(0);
+      }
+      await flush(20);
+    });
+  }
+
+  /** Fake watch session so the central FileViewer can mount without SSE. */
+  function fakeWatchSession() {
+    const change = new Set<() => void>();
+    const resync = new Set<() => void>();
+    const stateListeners = new Set<(state: WatchConnectionState) => void>();
+    let state: WatchConnectionState = "connected";
+    const session: WatchSession = {
+      get state() { return state; },
+      get lastError() { return undefined; },
+      addEventListener(type, listener) {
+        if (type === "change") { const l = listener as () => void; change.add(l); return () => change.delete(l); }
+        if (type === "resync") { const l = listener as () => void; resync.add(l); return () => resync.delete(l); }
+        const l = listener as (state: WatchConnectionState) => void;
+        stateListeners.add(l);
+        return () => stateListeners.delete(l);
+      },
+      close() {
+        state = "closed";
+        change.clear();
+        resync.clear();
+        stateListeners.clear();
+      },
+    };
+    return session;
+  }
+
+  /** Host stub that also serves file reads + git diff for the central viewer. */
+  function fileFetch(): typeof fetch {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
+      const p = String(path);
+      if (p.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
+      if (p.includes("op=read")) return json({ content: "AAAA", language: "text", size: 4 });
+      if (p.includes("/v1/git/diff")) return json({ supported: false });
+      if (p.includes("/v1/sessions")) return json({ sessions: [], revision: 0 });
+      if (p.includes("/v1/worktrees")) return json({ projectRoot: "/x", isGit: true, isTopLevel: true, worktrees: [] });
+      if (p.includes("/v1/themes")) return json({ themeSets: [] });
+      if (p.includes("/v1/models")) return json({ models: [], defaultModel: null });
+      if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
+      if (p.includes("/v1/skills")) return json({ skills: [] });
+      return json({});
+    }) as unknown as typeof fetch;
+  }
+
+  it("selecting a session from the sidebar opens/activates ONE session tab after prepare commits", async () => {
+    const contextDeferreds = new Map<string, Deferred>();
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS, contextDeferreds });
+    const { rerender } = mountApp({ cwd: "/x" });
+    await settle();
+    fireEvent.click(screen.getByTestId("session-select-B"));
+    await act(async () => { await flush(6); });
+    // Before the first page settles the session tab must NOT materialize.
+    expect(screen.queryByRole("tab", { name: "Session B" })).toBeNull();
+    await act(async () => {
+      contextDeferreds.get("B")!.resolve(contextResponse("B"));
+      await flush(12);
+    });
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { session: "B", cwd: "/x" } }));
+    // Simulate the router applying the committed navigation: the session tab
+    // then materializes in the title bar, deduped to exactly one.
+    rerender({ cwd: "/x", session: "B" });
+    await settle();
+    expect(screen.getAllByRole("tab", { name: "Session B" })).toHaveLength(1);
+  });
+
+  it("selecting a session from another project activates its owning cwd", async () => {
+    const contextDeferreds = new Map<string, Deferred>();
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS, contextDeferreds });
+    mountApp({ cwd: "/x" });
+    await settle();
+
+    fireEvent.click(screen.getAllByTestId("session-select-D")[0]!);
+    await act(async () => { await flush(6); });
+    await act(async () => {
+      contextDeferreds.get("D")!.resolve(contextResponse("D"));
+      await flush(12);
+    });
+
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { session: "D", cwd: "/y" } }));
+  });
+
+  it("a deep-linked file renders centrally in a file tab and duplicate opens dedupe", async () => {
+    setWatchSessionFactory(() => fakeWatchSession());
+    globalThis.fetch = fileFetch();
+    const { rerender } = mountApp({ cwd: "/x", file: "/x/a.ts" });
+    await settle();
+    // The file tab appears in the title bar and the content renders centrally.
+    expect(screen.getAllByRole("tab").some((tab) => tab.textContent?.includes("a.ts"))).toBe(true);
+    expect(screen.getByText("AAAA")).toBeTruthy();
+    // Re-opening the same cwd+path dedupes: still exactly one a.ts tab.
+    rerender({ cwd: "/x", file: "/x/a.ts" });
+    await settle();
+    expect(screen.getAllByRole("tab").filter((tab) => tab.textContent?.includes("a.ts"))).toHaveLength(1);
+  });
+
+  it("the title-bar file browser button toggles the right FILE BROWSER panel", async () => {
+    globalThis.fetch = fileFetch();
+    mountApp({ cwd: "/x" });
+    await settle();
+    const panel = document.querySelector(".right-panel-container");
+    expect(panel?.className).toContain("right-panel-closed");
+    expect(screen.getByRole("button", { name: "Show file browser" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show file browser" }));
+    expect(panel?.className).toContain("right-panel-open");
+    expect(screen.getByRole("button", { name: "Hide file browser" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide file browser" }));
+    expect(panel?.className).toContain("right-panel-closed");
   });
 });

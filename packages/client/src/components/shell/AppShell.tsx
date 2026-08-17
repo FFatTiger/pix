@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
@@ -7,6 +7,7 @@ import { createSessionHistoryQueryOptions } from "@/api/session-history";
 import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { isHiddenRailSession, primaryRealProjectPath } from "@/lib/workspace-paths";
+import { getFileName } from "@/lib/file-paths";
 import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
@@ -17,12 +18,33 @@ import { WallpaperLayer } from "@/components/WallpaperLayer";
 import { LoginPage } from "@/components/shell/LoginPage";
 import { ProjectTrustDialog } from "@/features/settings/ProjectTrustDialog";
 import { ExtensionRequests } from "@/features/extension-request/ExtensionRequests";
+import { registerChatOpenFileTarget } from "@/components/chat/chat-experience-bridge";
+import { FileViewer } from "@/features/workspace/viewer/FileViewer";
+import { ExplorerPanel } from "@/features/workspace/explorer/ExplorerPanel";
+import {
+  closeWorkspaceTab,
+  fileTabId,
+  minimalFileTab,
+  minimalSessionTab,
+  openFileWorkspaceTab,
+  openSessionWorkspaceTab,
+  reconcileWorkspaceCwd,
+  saveFileWorkspaceViewerState,
+  sessionTabId,
+  type WorkspaceTab,
+} from "@/features/workspace/tabs/workspace-tab-state";
+import type { FileViewerState } from "@/features/workspace/viewer/file-viewer-state";
 import { useRuntime } from "@/runtime";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useGateStatus } from "@/features/gate/useGate";
 import { useHttpClient } from "@/app/http-context";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import {
+  getDefaultRightPanelWidth,
+  getRightPanelMaxWidth,
+  getSidebarMaxWidth,
+  RIGHT_PANEL_MAX_WIDTH,
+  RIGHT_PANEL_MIN_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
@@ -32,12 +54,29 @@ export interface AppShellProps {
   search: WorkspaceSearch;
 }
 
+/** Shared session-label fallback: explicit title → first message → short id. */
+function sessionLabelFor(session: { title?: string | undefined; firstMessage?: string | undefined; sessionId: string }): string {
+  if (session.title) return session.title;
+  const first = session.firstMessage;
+  if (typeof first === "string" && first.trim().length > 0) {
+    const oneLine = first.replace(/[\r\n\t]+/g, " ").trim();
+    return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+  }
+  return session.sessionId.slice(0, 12);
+}
+
 /**
  * Desktop shell v3 — the upstream desktop app's AppShell DOM (title bar,
  * wallpaper-backed sidebar / chat / right-panel row, resizable panels,
  * settings modal, project-trust dialog) with the pix runtime wired in:
- * URL-driven workspace/session selection, honest capability gates and the
- * read-only/live session center (TranscriptList + Composer stay in place).
+ *
+ * Top-level unified workspace tabs live in the title bar (session + file
+ * tabs). The URL is the source of truth for the ACTIVE content
+ * (cwd+session or cwd+file); the in-memory tab list holds every open tab and
+ * the active tab is derived from the URL (back/forward/deep links activate or
+ * recreate a tab without ever attaching). Sending stays the only activation
+ * trigger; the runtime mismatch effect only detaches (never stops) when the
+ * active tab is a file, home, or a different session.
  */
 export function AppShell({ search }: AppShellProps) {
   const { canAgent, canBrowseSessions, can } = useCapabilities();
@@ -70,27 +109,81 @@ export function AppShell({ search }: AppShellProps) {
     setSettingsOpen(true);
   }, []);
 
+  // ── Right file-browser panel (top-right button) ──────────────────────────
+  const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+  const canFiles = can("files");
+  const canGit = can("git");
+
+  // ── Top-level workspace tabs (in-memory only; the URL drives the ACTIVE tab) ──
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([]);
+  // The active tab id is derived from the URL: cwd+file or cwd+session. The
+  // active content is always derivable even before the tab is materialized
+  // (deep links / back-forward), so the central area never flashes home.
+  const activeTabId = search.file !== undefined && search.cwd !== undefined
+    ? fileTabId(search.cwd, search.file)
+    : search.session !== undefined
+      ? sessionTabId(search.session)
+      : null;
+  const activeTab = useMemo<WorkspaceTab | null>(() => {
+    if (activeTabId === null) return null;
+    const inList = tabs.find((tab) => tab.id === activeTabId);
+    if (inList) return inList;
+    if (search.file !== undefined && search.cwd !== undefined) return minimalFileTab(search.cwd, search.file);
+    if (search.session !== undefined) return minimalSessionTab(search.session, search.cwd);
+    return null;
+  }, [activeTabId, tabs, search.file, search.cwd, search.session]);
+  const activeSessionId = activeTab?.kind === "session" ? activeTab.sessionId : null;
+
+  // URL → tab reconciliation: keep the in-memory tab list in sync with the URL
+  // and the current cwd. File tabs are cwd-owned (a cwd switch clears them);
+  // session tabs remember their cwd. This NEVER attaches — it only materializes
+  // the active content as a tab so the strip stays populated.
+  useEffect(() => {
+    setTabs((prev) => {
+      let next = reconcileWorkspaceCwd(prev, search.cwd);
+      if (search.file !== undefined && search.cwd !== undefined) {
+        next = openFileWorkspaceTab(next, {
+          cwd: search.cwd,
+          filePath: search.file,
+          fileName: getFileName(search.file),
+        });
+      } else if (search.session !== undefined) {
+        next = openSessionWorkspaceTab(next, search.session, search.cwd);
+      }
+      return next;
+    });
+  }, [search.cwd, search.session, search.file]);
+
   // D2-P8: the composer textarea is the focus-return target when the final
   // extension request closes. Passed explicitly to both ExtensionRequests and
   // Composer (no document queries).
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
   // ── Session selection is READ-ONLY (0-Worker history invariant) ───────────
-  // Selecting/browsing a session in the sidebar or via a ?session= deep link
-  // MUST NOT activate/open a worker: the selected session stays a read-only
-  // history view while the Composer remains editable; sending is the activation
-  // trigger through `sendPromptToSession`. Explicit non-history runtime actions
-  // such as create keep their own lifecycle. If the runtime is attached to a
-  // DIFFERENT session, detach only its browser subscription/live stream (the
-  // Worker remains owned by sessiond); the selected history session is NEVER
-  // attached here. Detach is single-flight in the store, so a concurrent
-  // send-time transition cannot emit duplicate detach frames.
+  // Selecting/browsing a session (sidebar row OR a session tab) MUST NOT
+  // activate/open a worker: the selected session stays a read-only history
+  // view while the Composer remains editable; sending is the activation
+  // trigger through `sendPromptToSession`. The runtime mismatch effect below
+  // only DETACHES a mismatched attach (the Worker remains owned by sessiond);
+  // the selected session is NEVER attached here.
+  //
+  // The mismatch is keyed on the ACTIVE TAB (not merely `search.session`):
+  // when the active content is a file tab, home, or a different session than
+  // the attached runtime, the attached session is fail-closed detached so its
+  // live stream never renders under unrelated content. A create in flight is
+  // guarded so the freshly attached runtime is not detached during the
+  // create → open-active-tab transition. Detach is single-flight in the
+  // store, so a concurrent send-time transition cannot emit duplicate detach
+  // frames.
+  const creatingSessionRef = useRef(false);
   useEffect(() => {
-    if (!runtime.attached || !search.session) return;
-    if (search.session === runtime.sessionId) return;
-    // Mismatch: fail-closed — detach the currently attached (non-selected)
-    // session. Never attach the selected one.
+    if (creatingSessionRef.current) return;
+    if (!runtime.attached) return;
+    if (activeSessionId === runtime.sessionId) return;
+    // Fail-closed: detach the currently attached (non-active) session. Never
+    // attach the active one; never stop.
     void runtime.detach().catch(() => undefined);
-  }, [runtime.attached, runtime.sessionId, search.session]);
+  }, [runtime.attached, runtime.sessionId, activeSessionId]);
 
   // ── No-flicker session navigation (prepare → atomic commit) ──────────────
   // Sidebar selection no longer navigates the URL directly: it first prepares
@@ -119,26 +212,25 @@ export function AppShell({ search }: AppShellProps) {
   // pending cue (a pending prepare that gets superseded must not linger).
   useEffect(() => {
     setPendingSessionId(null);
-  }, [search.session]);
+  }, [search.cwd, search.session, search.file]);
 
-  // Session title for the top bar — resolved from the shared sessions-list
-  // cache (same key the Sidebar queries), never a separate request.
+  // Session labels for the tab strip — resolved from the shared sessions-list
+  // cache (same key the Sidebar queries) so renames update tab labels live;
+  // tabs never store a stale label as authority.
   const options = createQueryOptions(http);
   const sessionsQuery = useQuery({ ...options.sessions.list(), enabled: canBrowseSessions });
-  const titleSessionId = search.session ?? runtime.sessionId ?? null;
-  const titleSession = titleSessionId === null
-    ? null
-    : (sessionsQuery.data?.sessions ?? []).find((session) => session.sessionId === titleSessionId) ?? null;
-  const sessionTitle = titleSession
-    ? (titleSession.title || titleSession.sessionId.slice(0, 12))
-    : titleSessionId === null
-      ? null
-      : titleSessionId.slice(0, 12);
+  const sessionLabels = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const session of sessionsQuery.data?.sessions ?? []) {
+      map[session.sessionId] = sessionLabelFor(session);
+    }
+    return map;
+  }, [sessionsQuery.data]);
   const catalogCwd = search.cwd
     ?? primaryRealProjectPath(
       (sessionsQuery.data?.sessions ?? []).filter((session) => !isHiddenRailSession(session)),
     );
-  const isHome = search.session === undefined && !runtime.attached;
+  const isHome = activeTab === null;
 
   // ── Project trust ─────────────────────────────────────────────────────────
   // Read and write stay independently capability-gated. The dialog only shows
@@ -165,31 +257,28 @@ export function AppShell({ search }: AppShellProps) {
     );
   }, [canTrustProject, search.cwd, trustMutation]);
 
-  // History/live coordination (D1A-2 phase 2 + history-switching fix).
-  //
-  // The selected session is `search.session`. The runtime may still be attached
-  // to a DIFFERENT session (for example, the user was live on A and selected B).
-  // D4: the currently attached/live session id is handed to the Sidebar so it
-  // never offers a delete control for the live session (the server rejects live
-  // deletes with 409 anyway). The page fails closed to B's HISTORY view: never
-  // render A's live transcript or runtime actions, but keep the Composer
-  // editable. The single selection effect above detaches A and does NOT open B;
-  // sending from B performs the only activation transition.
-  const selectionMatchesLive =
-    runtime.attached && (!search.session || search.session === runtime.sessionId);
+  // History/live coordination. The active session is `activeSessionId`. The
+  // runtime may still be attached to a DIFFERENT session (for example, the
+  // user was live on A and selected B): the page fails closed to B's HISTORY
+  // view — never A's live transcript — while the Composer stays editable;
+  // sending from B performs the only activation transition. The mismatch
+  // effect above detaches A.
+  const selectionMatchesLive = runtime.attached && activeSessionId === runtime.sessionId;
 
   const hasProject = Boolean(search.cwd);
-  const canCreate = canAgent && hasProject && !runtime.attached && !runtime.sessionStopped;
+  // Multi-tab session creation remains available while another session is
+  // attached. SessionStore.createSession supersedes the browser attach but
+  // preserves the previous sessiond-owned worker; tab creation never stops it.
+  const canCreate = canAgent && hasProject;
 
   // D4 session-history delete navigation. AppShell is the single navigation
   // owner: when the deleted session equals the URL-selected session it clears
   // ONLY the `session` param while preserving the current `cwd`. It never
-  // detaches/stops a Runtime — deletion cannot succeed while a session is live
-  // (sessiond rejects with 409), so no runtime coordination is needed.
-  // Non-selected deletions leave the URL untouched (Sidebar only calls this for
-  // the URL-selected row). An in-flight prepare is invalidated (it must never
-  // re-open a session the user just moved away from).
+  // detaches/stops a Runtime. The deleted session's tab is removed; if it was
+  // active the URL navigation falls back to home. An in-flight prepare is
+  // invalidated (it must never re-open a session the user just moved away from).
   const handleSessionDeleted = (deletedId: string): void => {
+    setTabs((prev) => prev.filter((tab) => tab.kind !== "session" || tab.sessionId !== deletedId));
     if (search.session === deletedId) {
       selectionGenerationRef.current += 1;
       setPendingSessionId(null);
@@ -211,17 +300,29 @@ export function AppShell({ search }: AppShellProps) {
     }
     selectionGenerationRef.current += 1;
     setPendingSessionId(null);
-    // Clear a stale ?session= first so the mismatch effect cannot detach the
-    // session we are about to create+attach.
-    void navigate({ to: "/", search: { cwd: search.cwd } });
-    const result = await runtime.createSession({
-      cwd: search.cwd,
-      projectRoot: search.cwd,
-      ...(settings?.model === undefined ? {} : { model: settings.model }),
-      ...(settings?.thinkingLevel === undefined ? {} : { thinkingLevel: settings.thinkingLevel }),
-    });
-    void navigate({ to: "/", search: { cwd: search.cwd, session: result.sessionId } });
-    return result.sessionId;
+    // Guard: while a create is in flight the runtime is attaching to the NEW
+    // session with no session tab active yet — the mismatch effect must not
+    // detach it during that window. Cleared after the created session's URL
+    // (and thus active tab) has been committed.
+    creatingSessionRef.current = true;
+    try {
+      // Clear a stale active selector before create, then wait for the router
+      // commit so the mismatch effect cannot observe the old tab while the new
+      // session attaches.
+      await navigate({ to: "/", search: { cwd: search.cwd } });
+      const result = await runtime.createSession({
+        cwd: search.cwd,
+        projectRoot: search.cwd,
+        ...(settings?.model === undefined ? {} : { model: settings.model }),
+        ...(settings?.thinkingLevel === undefined ? {} : { thinkingLevel: settings.thinkingLevel }),
+      });
+      // Open/activate the new session tab, and keep the create guard until the
+      // router has committed the matching active session.
+      await navigate({ to: "/", search: { cwd: search.cwd, session: result.sessionId } });
+      return result.sessionId;
+    } finally {
+      creatingSessionRef.current = false;
+    }
   }, [navigate, runtime, search.cwd]);
 
   const handleCreate = (): void => {
@@ -231,10 +332,11 @@ export function AppShell({ search }: AppShellProps) {
   /**
    * Atomic commit of a prepared session selection. Reads the CURRENT cwd from
    * the live search ref (the prepare has already verified the URL did not move
-   * in the meantime). Never attaches/activates — URL navigation only.
+   * in the meantime). Never attaches/activates — URL navigation only. The
+   * URL → tab reconciliation then opens/activates the session tab.
    */
-  const commitSessionNavigation = useCallback((sessionId: string): void => {
-    const cwd = liveSearchRef.current.cwd;
+  const commitSessionNavigation = useCallback((sessionId: string, targetCwd?: string): void => {
+    const cwd = targetCwd ?? liveSearchRef.current.cwd;
     void navigate({
       to: "/",
       search: { session: sessionId, ...(cwd === undefined ? {} : { cwd }) },
@@ -248,7 +350,7 @@ export function AppShell({ search }: AppShellProps) {
   // committed) — so the detail frame never renders an empty/loading swap and
   // never labels A's messages as B. Rapid B→C is latest-intent-wins; a late
   // completion (external URL move, newer selection) never navigates.
-  const handleSelectSession = useCallback((sessionId: string): void => {
+  const handleSelectSession = useCallback((sessionId: string, targetCwd?: string): void => {
     // Already showing this session — no-op (never re-prepare / re-navigate).
     if (sessionId === selectedSessionRef.current) return;
     const preparedFrom = liveSearchRef.current;
@@ -261,14 +363,14 @@ export function AppShell({ search }: AppShellProps) {
     // different).
     if (runtime.attached && runtime.sessionId === sessionId) {
       setPendingSessionId(null);
-      commitSessionNavigation(sessionId);
+      commitSessionNavigation(sessionId, targetCwd);
       return;
     }
     // No history capability: direct navigation keeps the existing degraded
     // semantics (the detail frame shows the honest "history unavailable" state).
     if (!canBrowseSessions) {
       setPendingSessionId(null);
-      commitSessionNavigation(sessionId);
+      commitSessionNavigation(sessionId, targetCwd);
       return;
     }
     // Prepare the EXACT first history page with the same centralized options
@@ -296,42 +398,179 @@ export function AppShell({ search }: AppShellProps) {
       // External navigation (back / deep link / cwd switch) during prepare →
       // never clobber the user's new destination.
       const presented = liveSearchRef.current;
-      if (presented.session !== preparedFrom.session || presented.cwd !== preparedFrom.cwd) return;
+      if (
+        presented.session !== preparedFrom.session
+        || presented.file !== preparedFrom.file
+        || presented.cwd !== preparedFrom.cwd
+      ) return;
       setPendingSessionId(null);
-      commitSessionNavigation(sessionId);
+      commitSessionNavigation(sessionId, targetCwd);
     })();
   }, [queryClient, http, canBrowseSessions, runtime.attached, runtime.sessionId, commitSessionNavigation]);
 
-  // D3A managed-worktree switch/Open: Client URL cwd navigation ONLY. Never Git
-  // checkout, never create/attach/stop/move a Session, never a server endpoint.
-  // Navigating with a fresh `{ cwd: path }` search intentionally clears any old
-  // `session` selection so a stale session is never displayed under the new
-  // workspace; existing runtime sessions stay alive untouched. The generation
-  // bump invalidates any in-flight prepare (its prepared-from cwd is gone).
-  // ── File open (viewer panel removed) ────────────────────────────────────
-  // The right-side file viewer was removed; opening a file is a no-op while
-  // keeping the prop plumbing stable for the sidebar/explorer/transcript.
-  const handleOpenFile = useCallback((_filePath: string, _fileName: string, _options?: { initialDisplayMode?: "diff" }): void => {
-    // no-op — no file viewer
+  // ── Tab activation / navigation (URL is the active-content source of truth) ──
+  // Clicking a tab navigates the URL to that tab's content (cwd+file or
+  // cwd+session). This NEVER attaches: session tabs activate a read-only
+  // history view; sending remains the activation trigger. Back/forward and
+  // deep links are handled by the same derivation (the active tab is read from
+  // the URL), so a route change activates or recreates the matching tab.
+  const navigateToTab = useCallback((tab: WorkspaceTab): void => {
+    if (tab.kind === "file") {
+      void navigate({ to: "/", search: { cwd: tab.cwd, file: tab.filePath } });
+      return;
+    }
+    void navigate({
+      to: "/",
+      search: tab.cwd === undefined ? { session: tab.sessionId } : { cwd: tab.cwd, session: tab.sessionId },
+    });
+  }, [navigate]);
+
+  const handleSelectTab = useCallback((id: string): void => {
+    const tab = tabs.find((candidate) => candidate.id === id) ?? (activeTab !== null && activeTab.id === id ? activeTab : null);
+    if (tab) navigateToTab(tab);
+  }, [tabs, activeTab, navigateToTab]);
+
+  // Close a tab. Closing a session tab NEVER stops/deletes its session —
+  // the runtime mismatch effect may detach it only when it was the live one
+  // and is no longer the active content. Closing the active tab selects the
+  // right neighbor, then the left, then home.
+  const handleCloseTab = useCallback((id: string): void => {
+    const closedIsActive = id === activeTabId;
+    const result = closeWorkspaceTab(tabs, activeTabId, id);
+    setTabs(result.tabs);
+    if (!closedIsActive) return;
+    const nextActive = result.nextActiveTabId === null
+      ? null
+      : (result.tabs.find((tab) => tab.id === result.nextActiveTabId) ?? null);
+    if (nextActive) {
+      navigateToTab(nextActive);
+    } else {
+      void navigate({ to: "/", search: search.cwd === undefined ? {} : { cwd: search.cwd } });
+    }
+  }, [activeTabId, navigate, navigateToTab, search.cwd, tabs]);
+
+  // ── File open ────────────────────────────────────────────────────────────
+  // Opening a file (file browser, chat file links, written-file rows, quick
+  // changes, linked files) creates/activates ONE file tab owned by the current
+  // cwd and navigates the URL to cwd+file (the active-content source of truth).
+  // On mobile the file browser is closed so the central file viewer is visible.
+  const handleOpenFile = useCallback((
+    filePath: string,
+    fileName: string,
+    options?: { initialDisplayMode?: "diff"; sourceSessionId?: string | null | undefined },
+  ): void => {
+    const cwd = liveSearchRef.current.cwd;
+    if (cwd === undefined) return;
+    const openOptions = options ?? {};
+    setTabs((prev) => openFileWorkspaceTab(prev, {
+      cwd,
+      filePath,
+      fileName,
+      sourceSessionId: openOptions.sourceSessionId,
+      initialDisplayMode: openOptions.initialDisplayMode,
+    }));
+    void navigate({ to: "/", search: { cwd, file: filePath } });
+    if (isMobile) setFileBrowserOpen(false);
+  }, [navigate, isMobile]);
+
+  // Linked files inside the viewer open a new file tab carrying the active
+  // file tab's source session (the file that linked it).
+  const handleOpenLinkedFile = useCallback((filePath: string): void => {
+    const sourceSessionId = activeTab?.kind === "file" ? activeTab.sourceSessionId : undefined;
+    handleOpenFile(filePath, getFileName(filePath), { sourceSessionId });
+  }, [activeTab, handleOpenFile]);
+
+  // Chat → file-viewer bridge: register the chat file-open receiver (MessageView
+  // links, written-file rows, process groups) onto the file-tab open handler,
+  // carrying the ACTIVE session's source so reads are session-scoped. Unregister
+  // on unmount/change so a dead shell never holds a target.
+  useEffect(() => {
+    return registerChatOpenFileTarget((filePath, options) => {
+      handleOpenFile(filePath, getFileName(filePath), {
+        ...options,
+        sourceSessionId: activeSessionId,
+      });
+    });
+  }, [handleOpenFile, activeSessionId]);
+
+  // Revision-guarded viewer state save (shared file-tab semantics).
+  const handleFileViewerStateChange = useCallback((tabId: string, viewerRevision: number, viewerState: FileViewerState): void => {
+    setTabs((prev) => saveFileWorkspaceViewerState(prev, tabId, viewerRevision, viewerState));
   }, []);
 
-  // ── Resizable sidebar panel ─────────────────────────────────────────────
+  // ── Resizable panels (source layout semantics) ───────────────────────────
   const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH);
+  const rightPanelWidthRef = useRef(getDefaultRightPanelWidth(1366));
+  const getResponsiveRightPanelWidth = useCallback(
+    () => getDefaultRightPanelWidth(window.innerWidth),
+    [],
+  );
+  const getResponsiveSidebarMaxWidth = useCallback(
+    () => getSidebarMaxWidth({
+      viewportWidth: window.innerWidth,
+      rightPanelOpen: fileBrowserOpen,
+      rightPanelWidth: rightPanelWidthRef.current,
+    }),
+    [fileBrowserOpen],
+  );
+  const getResponsiveRightPanelMaxWidth = useCallback(
+    () => getRightPanelMaxWidth({
+      viewportWidth: window.innerWidth,
+      sidebarOpen,
+      sidebarWidth: sidebarWidthRef.current,
+    }),
+    [sidebarOpen],
+  );
   const sidebarPanel = useResizablePanel({
     ariaLabel: "Resize sidebar",
     cssVariable: "--sidebar-width",
     defaultWidth: SIDEBAR_DEFAULT_WIDTH,
-    getMaxWidth: () => SIDEBAR_MAX_WIDTH,
+    getMaxWidth: getResponsiveSidebarMaxWidth,
     growthDirection: "right",
     maxWidth: SIDEBAR_MAX_WIDTH,
     minWidth: SIDEBAR_MIN_WIDTH,
     storageKey: "pi-sidebar-width",
     widthRef: sidebarWidthRef,
   });
+  const rightPanel = useResizablePanel({
+    ariaLabel: "Resize file browser",
+    cssVariable: "--right-panel-width",
+    defaultWidth: getDefaultRightPanelWidth(1366),
+    getDefaultWidth: getResponsiveRightPanelWidth,
+    getMaxWidth: getResponsiveRightPanelMaxWidth,
+    growthDirection: "left",
+    maxWidth: RIGHT_PANEL_MAX_WIDTH,
+    minWidth: RIGHT_PANEL_MIN_WIDTH,
+    storageKey: "pi-file-browser-width",
+    widthRef: rightPanelWidthRef,
+  });
+  const reclampSidebarWidth = sidebarPanel.reclampWidth;
+  const reclampRightPanelWidth = rightPanel.reclampWidth;
+  useEffect(() => {
+    if (!fileBrowserOpen) return;
+    reclampSidebarWidth();
+    reclampRightPanelWidth();
+  }, [reclampRightPanelWidth, reclampSidebarWidth, fileBrowserOpen]);
+
+  // ── Right file-browser panel toggling ────────────────────────────────────
+  // The top-right button toggles a resizable right-side panel containing the
+  // single ExplorerPanel instance. On mobile the file browser and the sidebar
+  // drawer are mutually exclusive.
+  const handleToggleFileBrowser = useCallback(() => {
+    setFileBrowserOpen((prev) => {
+      const next = !prev;
+      if (isMobile && next) setSidebarOpen(false);
+      return next;
+    });
+  }, [isMobile]);
 
   const handleSidebarToggle = useCallback(() => {
-    setSidebarOpen((open) => !open);
-  }, []);
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      if (isMobile && next) setFileBrowserOpen(false);
+      return next;
+    });
+  }, [isMobile]);
 
   // ── Unauthenticated: full-screen wallpaper + gate ────────────────────────
   if (gateRequired) {
@@ -348,7 +587,14 @@ export function AppShell({ search }: AppShellProps) {
       <AppTitleBar
         sidebarOpen={sidebarOpen}
         onSidebarToggle={handleSidebarToggle}
-        sessionTitle={sessionTitle}
+        fileBrowserOpen={fileBrowserOpen}
+        onToggleFileBrowser={handleToggleFileBrowser}
+        canFiles={canFiles}
+        tabs={tabs}
+        activeTabId={activeTabId}
+        onSelectTab={handleSelectTab}
+        onCloseTab={handleCloseTab}
+        sessionLabels={sessionLabels}
       />
       {showTrustWarning && (
         <button
@@ -385,6 +631,7 @@ export function AppShell({ search }: AppShellProps) {
       <div
         style={{
           "--sidebar-width": `${sidebarPanel.width}px`,
+          "--right-panel-width": `${rightPanel.width}px`,
           flex: 1,
           display: "flex",
           overflow: "hidden",
@@ -425,7 +672,8 @@ export function AppShell({ search }: AppShellProps) {
         } as React.CSSProperties}
       >
         <Sidebar
-          search={search}
+          cwd={search.cwd}
+          selectedSessionId={search.session ?? null}
           liveSessionId={runtime.attached ? runtime.sessionId : null}
           liveStreaming={runtime.attached && runtime.streaming}
           pendingSessionId={pendingSessionId}
@@ -433,7 +681,6 @@ export function AppShell({ search }: AppShellProps) {
           onSelectSession={handleSelectSession}
           onNewSession={handleCreate}
           canNewSession={canCreate}
-          onOpenFile={handleOpenFile}
           onOpenSettings={openSettings}
         />
       </div>
@@ -444,7 +691,7 @@ export function AppShell({ search }: AppShellProps) {
         />
       )}
 
-      {/* Center: chat */}
+      {/* Center: active content (chat session, file viewer, or home) */}
       <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           <main className={`workspace${isHome ? " workspace--home" : ""}`}>
@@ -462,11 +709,26 @@ export function AppShell({ search }: AppShellProps) {
                   {...(catalogCwd === null ? {} : { catalogCwd })}
                 />
               </div>
+            ) : activeTab?.kind === "file" ? (
+              <FileViewer
+                key={`${activeTab.id}:${activeTab.viewerRevision ?? 0}`}
+                filePath={activeTab.filePath}
+                cwd={activeTab.cwd}
+                sourceSessionId={activeTab.sourceSessionId}
+                initialDisplayMode={activeTab.initialDisplayMode}
+                initialState={activeTab.viewerState}
+                onStateChange={(viewerState) => handleFileViewerStateChange(
+                  activeTab.id,
+                  activeTab.viewerRevision ?? 0,
+                  viewerState,
+                )}
+                onOpenFile={handleOpenLinkedFile}
+              />
             ) : (
               <>
                 <TranscriptList
                   live={selectionMatchesLive}
-                  {...(search.session === undefined ? {} : { sessionId: search.session })}
+                  {...(activeSessionId === null ? {} : { sessionId: activeSessionId })}
                 />
                 {selectionMatchesLive ? (
                   <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
@@ -476,13 +738,37 @@ export function AppShell({ search }: AppShellProps) {
                   textareaRef={composerTextareaRef}
                   onCreateSession={handleCreateSession}
                   {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
-                  {...(search.session === undefined ? {} : { sessionId: search.session })}
+                  {...(activeSessionId === null ? {} : { sessionId: activeSessionId })}
                   {...(catalogCwd === null ? {} : { catalogCwd })}
                 />
               </>
             )}
           </main>
         </div>
+      </div>
+
+      {/* Right panel: file browser (single ExplorerPanel instance) */}
+      {fileBrowserOpen && (
+        <div
+          {...rightPanel.separatorProps}
+          className="workspace-panel-splitter right-panel-splitter"
+        />
+      )}
+      <div
+        ref={rightPanel.panelRef}
+        className={`right-panel-container${fileBrowserOpen ? " right-panel-open" : " right-panel-closed"}${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          background: "var(--bg)",
+        }}
+      >
+        <ExplorerPanel
+          cwd={search.cwd}
+          canFiles={canFiles}
+          canGit={canGit}
+          onOpenFile={handleOpenFile}
+        />
       </div>
     </div>
     {projectTrustDialogOpen && search.cwd ? (
