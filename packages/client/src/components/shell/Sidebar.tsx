@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
   ArrowClockwise,
   CaretRight,
   Check,
@@ -12,6 +13,7 @@ import {
   NotePencil,
   PencilSimple,
   Plugs,
+  PushPin,
   Stack,
   Trash,
   X,
@@ -26,15 +28,11 @@ import { useHttpClient } from "@/app/http-context";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
 import { useContextMenu, type ContextMenuEntry } from "@/components/ContextMenu";
-import { bucketOf, timeBucketKey, TIME_BUCKET_ORDER, type TimeBucket } from "@/lib/time-groups";
 import { loadForkCollapsed, saveForkCollapsed } from "@/lib/fork-collapse-state";
-import {
-  loadCollapsedTimeGroups,
-  saveCollapsedTimeGroups,
-  type CollapsedTimeGroups,
-} from "@/lib/time-group-state";
 import { downloadVisibleBranch } from "@/lib/visible-branch-export";
 import { loadProjectsSectionOpen, saveProjectsSectionOpen } from "@/lib/sidebar-section-state";
+import { useSidebarItemState } from "@/lib/sidebar-item-state";
+import { SIDEBAR_VISIBLE_LIMIT, splitLimitedList } from "@/lib/sidebar-list-limit";
 import { isHiddenRailSession, isNonProjectWorkspacePath } from "@/lib/workspace-paths";
 import type { SettingsTab } from "@/components/shell/SettingsModal";
 
@@ -324,17 +322,16 @@ export function Sidebar({
   // and sessionSearch drives live filtering of the visible session rows.
   const [searchOpen, setSearchOpen] = useState(false);
   const [sessionSearch, setSessionSearch] = useState("");
-  // Collapsed state of the session-list time-group headers. "earlier" starts
-  // collapsed (its rows are not rendered until the user expands it) and the
-  // whole set persists across reloads.
-  const [collapsedGroups, setCollapsedGroups] = useState<CollapsedTimeGroups>(() => loadCollapsedTimeGroups());
-  const toggleGroup = useCallback((bucket: TimeBucket) => {
-    setCollapsedGroups((prev) => {
-      const next = { ...prev, [bucket]: !prev[bucket] };
-      saveCollapsedTimeGroups(next);
-      return next;
-    });
-  }, []);
+  const [sessionsExpanded, setSessionsExpanded] = useState(false);
+  const [projectsExpanded, setProjectsExpanded] = useState(false);
+  const [expandedNestedProjects, setExpandedNestedProjects] = useState<ReadonlySet<string>>(() => new Set());
+  const {
+    state: itemState,
+    pinSession,
+    archiveSession,
+    pinProject,
+    archiveProject,
+  } = useSidebarItemState();
   const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
   const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -391,25 +388,26 @@ export function Sidebar({
     ? projectSessions.filter((s) => sessionRowTitle(s).toLowerCase().includes(searchQuery))
     : projectSessions;
 
-  // Build parent-child tree within the filtered set, then time-group the
-  // roots. Fork children always stay inside their parent's group so a tree
-  // never splits across headers; search keeps the grouped view with the
-  // groups force-expanded so the narrowed results stay visible.
-  const sessionTree = buildSessionTree(searchScopedSessions);
-  const isFilteredView = Boolean(searchQuery);
-  const sessionGroups = (() => {
-    const byBucket = new Map<TimeBucket, SessionTreeNode[]>();
-    for (const bucket of TIME_BUCKET_ORDER) byBucket.set(bucket, []);
-    for (const node of sessionTree) {
-      const activity = activityMs(node.session);
-      byBucket.get(activity === undefined ? "earlier" : bucketOf(activity))!.push(node);
-    }
-    return TIME_BUCKET_ORDER
-      .filter((bucket) => byBucket.get(bucket)!.length > 0)
-      .map((bucket) => ({ bucket, nodes: byBucket.get(bucket)! }));
-  })();
+  const archivedSessionIds = new Set(itemState.archivedSessions);
+  const archivedProjectRoots = new Set(itemState.archivedProjects);
+  const pinnedSessionIds = new Set(itemState.pinnedSessions);
+  const pinnedProjectRoots = new Set(itemState.pinnedProjects);
 
-  // Shared row renderer for every session row in a time group.
+  const recentSessionPool = searchScopedSessions.filter((session) => !archivedSessionIds.has(session.sessionId));
+  const sessionTree = buildSessionTree(recentSessionPool);
+  const pinnedSessionNodes = itemState.pinnedSessions
+    .map((sessionId) => sessionTree.find((node) => node.session.sessionId === sessionId))
+    .filter((node): node is SessionTreeNode => node !== undefined);
+  const recentSessionNodes = sessionTree.filter((node) => !pinnedSessionIds.has(node.session.sessionId));
+  const isFilteredView = Boolean(searchQuery);
+  const recentSessionSplit = splitLimitedList(recentSessionNodes, isFilteredView || sessionsExpanded);
+
+  const visibleProjectRoots = recentProjects.filter((project) => !archivedProjectRoots.has(project));
+  const pinnedProjects = itemState.pinnedProjects.filter((project) => visibleProjectRoots.includes(project));
+  const recentProjectRoots = visibleProjectRoots.filter((project) => !pinnedProjectRoots.has(project));
+  const recentProjectSplit = splitLimitedList(recentProjectRoots, projectsExpanded);
+  const showPinnedSection = pinnedSessionNodes.length > 0 || pinnedProjects.length > 0;
+
   const renderTreeItem = (node: SessionTreeNode) => (
     <SessionTreeItem
       key={node.session.sessionId}
@@ -421,6 +419,10 @@ export function Sidebar({
       canRename={canWriteSessions}
       canDelete={canDeleteSessions}
       canExport={canBrowseSessions}
+      isPinned={(sessionId) => pinnedSessionIds.has(sessionId)}
+      isArchived={(sessionId) => archivedSessionIds.has(sessionId)}
+      onPin={pinSession}
+      onArchive={archiveSession}
       renameMutation={renameMutation}
       removeMutation={removeMutation}
       onSessionDeleted={onSessionDeleted}
@@ -428,6 +430,57 @@ export function Sidebar({
       depth={0}
     />
   );
+
+  const renderProjectCard = (project: string) => {
+    const selected = project === selectedProject;
+    const expanded = expandedProjects.has(project);
+    const nestedSessions = visibleSessions.filter((session) => {
+      const root = session.projectRoot || session.cwd;
+      return root === project && !isHiddenRailSession(session) && !archivedSessionIds.has(session.sessionId);
+    });
+    const nestedTree = buildSessionTree(nestedSessions);
+    const nestedSplit = splitLimitedList(nestedTree, expandedNestedProjects.has(project));
+    const projectRunning = runningProjectRoots.has(project)
+      || nestedSessions.some((session) => runningSessionIds.has(session.sessionId));
+    const pinned = pinnedProjectRoots.has(project);
+    return (
+      <div key={project} data-testid="sidebar-project-card" data-expanded={expanded ? "true" : "false"}>
+        <ProjectRow
+          project={project}
+          selected={selected}
+          expanded={expanded}
+          running={projectRunning}
+          pinned={pinned}
+          onToggle={() => toggleProjectExpanded(project)}
+          onPin={(nextPinned) => pinProject(project, nextPinned)}
+          onArchive={(archived) => archiveProject(project, archived)}
+        />
+        {expanded ? (
+          <div className="sidebar-project-sessions" data-testid="sidebar-project-sessions">
+            {nestedTree.length === 0 ? (
+              <div className="sidebar-status">{t("desktop.noSessionsFound")}</div>
+            ) : (
+              <>
+                {nestedSplit.visible.map((node) => renderTreeItem(node))}
+                {nestedSplit.hiddenCount > 0 || (expandedNestedProjects.has(project) && nestedTree.length > SIDEBAR_VISIBLE_LIMIT) ? (
+                  <ShowMoreButton
+                    hiddenCount={nestedSplit.hiddenCount}
+                    expanded={expandedNestedProjects.has(project)}
+                    onToggle={() => setExpandedNestedProjects((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(project)) next.delete(project);
+                      else next.add(project);
+                      return next;
+                    })}
+                  />
+                ) : null}
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div className="sidebar-rail" data-testid="sidebar">
@@ -493,6 +546,20 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-rail-scroll">
+        {showPinnedSection ? (
+          <section className="sidebar-section" data-testid="sidebar-pinned">
+            <div className="sidebar-section-head" data-expanded="true">
+              <div className="sidebar-section-toggle" data-testid="pinned-section-label">
+                <span className="sidebar-section-label-text">{t("desktop.pinned")}</span>
+              </div>
+            </div>
+            <div data-testid="sidebar-pinned-list">
+              {pinnedProjects.map((project) => renderProjectCard(project))}
+              {pinnedSessionNodes.map((node) => renderTreeItem(node))}
+            </div>
+          </section>
+        ) : null}
+
         <section className="sidebar-section" data-testid="sidebar-projects">
           <div className="sidebar-section-head" data-expanded={projectsOpen ? "true" : "false"}>
             <button
@@ -514,56 +581,20 @@ export function Sidebar({
           </div>
           {projectsOpen ? (
           <div data-testid="sidebar-project-list">
-            {recentProjects.length === 0 ? (
+            {recentProjectRoots.length === 0 && pinnedProjects.length === 0 ? (
               <div className="sidebar-empty">{t("desktop.noProjectsYet")}</div>
-            ) : recentProjects.map((project) => {
-              const selected = project === selectedProject;
-              const expanded = expandedProjects.has(project);
-              const nestedSessions = visibleSessions.filter((session) => {
-                const root = session.projectRoot || session.cwd;
-                return root === project && !isHiddenRailSession(session);
-              });
-              const nestedTree = buildSessionTree(nestedSessions);
-              const projectRunning = runningProjectRoots.has(project)
-                || nestedSessions.some((session) => runningSessionIds.has(session.sessionId));
-              return (
-                <div key={project} data-testid="sidebar-project-card" data-expanded={expanded ? "true" : "false"}>
-                  <button
-                    type="button"
-                    className="sidebar-list-row"
-                    data-testid="sidebar-project-row"
-                    data-active={selected ? "true" : "false"}
-                    data-running={projectRunning ? "true" : undefined}
-                    title={project}
-                    aria-pressed={selected}
-                    aria-expanded={expanded}
-                    onClick={() => toggleProjectExpanded(project)}
-                  >
-                    {expanded ? (
-                      <FolderOpen size={16} weight="regular" aria-hidden="true" />
-                    ) : (
-                      <Folder size={16} weight="regular" aria-hidden="true" />
-                    )}
-                    <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
-                    {projectRunning ? <RunningSessionIndicator /> : null}
-                    <CaretRight
-                      className="sidebar-section-chevron"
-                      size={14}
-                      weight="bold"
-                      style={{ transform: expanded ? "rotate(90deg)" : "none", opacity: 0.7, pointerEvents: "none" }}
-                      aria-hidden="true"
-                    />
-                  </button>
-                  {expanded ? (
-                    <div className="sidebar-project-sessions" data-testid="sidebar-project-sessions">
-                      {nestedTree.length === 0 ? (
-                        <div className="sidebar-status">{t("desktop.noSessionsFound")}</div>
-                      ) : nestedTree.map((node) => renderTreeItem(node))}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
+            ) : (
+              <>
+                {recentProjectSplit.visible.map((project) => renderProjectCard(project))}
+                {recentProjectSplit.hiddenCount > 0 || (projectsExpanded && recentProjectRoots.length > SIDEBAR_VISIBLE_LIMIT) ? (
+                  <ShowMoreButton
+                    hiddenCount={recentProjectSplit.hiddenCount}
+                    expanded={projectsExpanded}
+                    onToggle={() => setProjectsExpanded((open) => !open)}
+                  />
+                ) : null}
+              </>
+            )}
           </div>
           ) : null}
         </section>
@@ -652,22 +683,19 @@ export function Sidebar({
               {!canBrowseSessions && (
                 <div className="sidebar-status">Session history unavailable until the runtime connects.</div>
               )}
-              {canBrowseSessions && !showLoading && !showError && searchScopedSessions.length === 0 && (
+              {canBrowseSessions && !showLoading && !showError && recentSessionPool.length === 0 && (
                 <div className="sidebar-status">
                   {searchQuery ? t("desktop.noMatchingSessions") : t("desktop.noSessionsFound")}
                 </div>
               )}
-              {sessionGroups.map(({ bucket, nodes }) => (
-                <div key={bucket}>
-                  <TimeGroupHeader
-                    bucket={bucket}
-                    count={countSessionRows(nodes)}
-                    collapsed={isFilteredView ? false : collapsedGroups[bucket]}
-                    onToggle={() => toggleGroup(bucket)}
-                  />
-                  {(isFilteredView || !collapsedGroups[bucket]) && nodes.map((node) => renderTreeItem(node))}
-                </div>
-              ))}
+              {recentSessionSplit.visible.map((node) => renderTreeItem(node))}
+              {recentSessionSplit.hiddenCount > 0 || (sessionsExpanded && recentSessionNodes.length > SIDEBAR_VISIBLE_LIMIT) ? (
+                <ShowMoreButton
+                  hiddenCount={recentSessionSplit.hiddenCount}
+                  expanded={isFilteredView || sessionsExpanded}
+                  onToggle={() => setSessionsExpanded((open) => !open)}
+                />
+              ) : null}
             </div>
           )}
         </section>
@@ -704,74 +732,117 @@ function sessionRowTitle(session: SessionHeader): string {
   return session.sessionId.slice(0, 12);
 }
 
-/** Total number of session rows in a tree, including fork children. */
-function countSessionRows(nodes: SessionTreeNode[]): number {
-  let count = 0;
-  for (const node of nodes) {
-    count += 1 + countSessionRows(node.children);
-  }
-  return count;
-}
-
-/**
- * Sticky, collapsible header for a session-list time group (source DOM).
- */
-function TimeGroupHeader({
-  bucket,
-  count,
-  collapsed,
+function ShowMoreButton({
+  hiddenCount,
+  expanded,
   onToggle,
 }: {
-  bucket: TimeBucket;
-  count: number;
-  collapsed: boolean;
+  hiddenCount: number;
+  expanded: boolean;
   onToggle: () => void;
 }) {
   const { t } = useI18n();
-  const [stuck, setStuck] = useState(false);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-
-  // Detect the sticky state via a 1px sentinel right above the header in
-  // the same scroll container (source rule).
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-    const scroll = sentinel.closest('[style*="overflow-y"], .overflow-y-auto, [class*="overflow-y-auto"]');
-    if (!scroll) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        if (entry) setStuck(!entry.isIntersecting);
-      },
-      { root: scroll, threshold: 0 }
-    );
-    io.observe(sentinel);
-    return () => io.disconnect();
-  }, []);
-
   return (
-    <>
-      <div ref={sentinelRef} aria-hidden="true" style={{ height: 1 }} />
-      <div
-        className="sidebar-time-group-header"
-        role="button"
-        tabIndex={0}
+    <button
+      type="button"
+      className="sidebar-show-more"
+      data-testid="sidebar-show-more"
+      onClick={onToggle}
+    >
+      {expanded ? t("desktop.showLess") : t("desktop.viewMore", { count: hiddenCount })}
+    </button>
+  );
+}
+
+function ProjectRow({
+  project,
+  selected,
+  expanded,
+  running,
+  pinned,
+  onToggle,
+  onPin,
+  onArchive,
+}: {
+  project: string;
+  selected: boolean;
+  expanded: boolean;
+  running: boolean;
+  pinned: boolean;
+  onToggle: () => void;
+  onPin: (pinned: boolean) => void;
+  onArchive: (archived: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const { openMenu } = useContextMenu();
+  const handleContextMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openMenu(event.clientX, event.clientY, [
+      {
+        label: pinned ? t("desktop.unpin") : t("desktop.pin"),
+        icon: <PushPin size={13} weight={pinned ? "fill" : "regular"} aria-hidden="true" />,
+        onSelect: () => onPin(!pinned),
+      },
+      {
+        label: t("desktop.archive"),
+        icon: <Archive size={13} weight="regular" aria-hidden="true" />,
+        onSelect: () => onArchive(true),
+      },
+    ]);
+  };
+  return (
+    <div
+      className="sidebar-list-row"
+      data-active={selected ? "true" : "false"}
+      data-running={running ? "true" : undefined}
+      onContextMenu={handleContextMenu}
+    >
+      <button
+        type="button"
+        className="sidebar-session-select"
+        data-testid="sidebar-project-row"
+        title={project}
+        aria-pressed={selected}
+        aria-expanded={expanded}
         onClick={onToggle}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onToggle();
-          }
-        }}
-        aria-expanded={!collapsed}
-        title={collapsed ? t("desktop.expandGroup") : t("desktop.collapseGroup")}
-        style={{ background: stuck ? "var(--bg-panel)" : "transparent" }}
       >
-        <span className="sidebar-title-fade" style={{ flex: 1, minWidth: 0 }}>
-          {t(timeBucketKey(bucket), { count })}
-        </span>
+        {expanded ? (
+          <FolderOpen size={16} weight="regular" aria-hidden="true" />
+        ) : (
+          <Folder size={16} weight="regular" aria-hidden="true" />
+        )}
+        <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
+        {running ? <RunningSessionIndicator /> : null}
+        <CaretRight
+          className="sidebar-section-chevron"
+          size={14}
+          weight="bold"
+          style={{ transform: expanded ? "rotate(90deg)" : "none", opacity: 0.7, pointerEvents: "none" }}
+          aria-hidden="true"
+        />
+      </button>
+      <div className="sidebar-row-actions">
+        <button
+          type="button"
+          className="sidebar-icon-btn"
+          title={pinned ? t("desktop.unpin") : t("desktop.pin")}
+          aria-label={pinned ? t("desktop.unpin") : t("desktop.pin")}
+          onClick={(event) => { event.stopPropagation(); onPin(!pinned); }}
+        >
+          <PushPin size={14} weight={pinned ? "fill" : "regular"} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="sidebar-icon-btn"
+          title={t("desktop.archive")}
+          aria-label={t("desktop.archive")}
+          onClick={(event) => { event.stopPropagation(); onArchive(true); }}
+        >
+          <Archive size={14} weight="regular" aria-hidden="true" />
+        </button>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -784,6 +855,10 @@ function SessionTreeItem({
   canRename,
   canDelete,
   canExport,
+  isPinned,
+  isArchived,
+  onPin,
+  onArchive,
   renameMutation,
   removeMutation,
   onSessionDeleted,
@@ -798,6 +873,10 @@ function SessionTreeItem({
   canRename: boolean;
   canDelete: boolean;
   canExport: boolean;
+  isPinned: (sessionId: string) => boolean;
+  isArchived: (sessionId: string) => boolean;
+  onPin: (sessionId: string, pinned: boolean) => void;
+  onArchive: (sessionId: string, archived: boolean) => void;
   renameMutation: ReturnType<typeof useMutation<unknown, unknown, { id: string; name: string }>>;
   removeMutation: ReturnType<typeof useMutation<unknown, unknown, string>>;
   onSessionDeleted?: ((sessionId: string) => void) | undefined;
@@ -844,6 +923,10 @@ function SessionTreeItem({
           canRename={canRename}
           canDelete={canDelete}
           canExport={canExport}
+          pinned={isPinned(node.session.sessionId)}
+          archived={isArchived(node.session.sessionId)}
+          onPin={(nextPinned) => onPin(node.session.sessionId, nextPinned)}
+          onArchive={(nextArchived) => onArchive(node.session.sessionId, nextArchived)}
           renameMutation={renameMutation}
           removeMutation={removeMutation}
           onSessionDeleted={onSessionDeleted}
@@ -859,8 +942,7 @@ function SessionTreeItem({
         />
       </div>
       {hasChildren && !collapsed && (
-        <div>
-          {node.children.map((child) => (
+        <LimitedChildList nodes={node.children} renderChild={(child) => (
             <SessionTreeItem
               key={child.session.sessionId}
               node={child}
@@ -871,14 +953,17 @@ function SessionTreeItem({
               canRename={canRename}
               canDelete={canDelete}
               canExport={canExport}
+              isPinned={isPinned}
+              isArchived={isArchived}
+              onPin={onPin}
+              onArchive={onArchive}
               renameMutation={renameMutation}
               removeMutation={removeMutation}
               onSessionDeleted={onSessionDeleted}
               onSelectSession={onSelectSession}
               depth={depth + 1}
             />
-          ))}
-        </div>
+          )} />
       )}
     </div>
   );
@@ -969,6 +1054,29 @@ function PendingSessionIndicator() {
   );
 }
 
+function LimitedChildList({
+  nodes,
+  renderChild,
+}: {
+  nodes: SessionTreeNode[];
+  renderChild: (node: SessionTreeNode) => ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const split = splitLimitedList(nodes, expanded);
+  return (
+    <div>
+      {split.visible.map((node) => renderChild(node))}
+      {split.hiddenCount > 0 || (expanded && nodes.length > SIDEBAR_VISIBLE_LIMIT) ? (
+        <ShowMoreButton
+          hiddenCount={split.hiddenCount}
+          expanded={expanded}
+          onToggle={() => setExpanded((open) => !open)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function SessionItem({
   session,
   isSelected,
@@ -978,6 +1086,10 @@ function SessionItem({
   canRename,
   canDelete,
   canExport,
+  pinned,
+  archived,
+  onPin,
+  onArchive,
   renameMutation,
   removeMutation,
   onSessionDeleted,
@@ -996,6 +1108,10 @@ function SessionItem({
   canRename: boolean;
   canDelete: boolean;
   canExport: boolean;
+  pinned: boolean;
+  archived: boolean;
+  onPin: (pinned: boolean) => void;
+  onArchive: (archived: boolean) => void;
   renameMutation: ReturnType<typeof useMutation<unknown, unknown, { id: string; name: string }>>;
   removeMutation: ReturnType<typeof useMutation<unknown, unknown, string>>;
   onSessionDeleted?: ((sessionId: string) => void) | undefined;
@@ -1147,7 +1263,18 @@ function SessionItem({
     // Inline rename / delete-confirm / delete-in-flight take over the row:
     // don't let a stray right-click open a menu on top of them.
     if (confirmDelete || renaming || deleting) return;
-    const items: ContextMenuEntry[] = [];
+    const items: ContextMenuEntry[] = [
+      {
+        label: pinned ? t("desktop.unpin") : t("desktop.pin"),
+        icon: <PushPin size={13} weight={pinned ? "fill" : "regular"} aria-hidden="true" />,
+        onSelect: () => onPin(!pinned),
+      },
+      {
+        label: archived ? t("desktop.unarchive") : t("desktop.archive"),
+        icon: <Archive size={13} weight="regular" aria-hidden="true" />,
+        onSelect: () => onArchive(!archived),
+      },
+    ];
     if (canRename) {
       items.push({
         label: t("desktop.rename"),
@@ -1176,7 +1303,7 @@ function SessionItem({
     }
     if (items.length === 0) return;
     openMenu(e.clientX, e.clientY, items);
-  }, [confirmDelete, renaming, deleting, openMenu, session.sessionId, liveSessionId, canRename, canDelete, canExport, startRename, handleDeleteClick, exportVisibleBranch, t]);
+  }, [confirmDelete, renaming, deleting, openMenu, session.sessionId, liveSessionId, canRename, canDelete, canExport, startRename, handleDeleteClick, exportVisibleBranch, pinned, archived, onPin, onArchive, t]);
 
   const rowTitle = isRunning
     ? `${title} · ${t("desktop.agentRunning")}`
@@ -1288,16 +1415,12 @@ function SessionItem({
           )}
           {!busy && (
             <div className="sidebar-row-actions">
-              {canRename ? (
-                <button type="button" className="sidebar-icon-btn" onClick={startRename} title={t("desktop.rename")} aria-label={t("desktop.rename")}>
-                  <PencilSimple size={14} weight="regular" aria-hidden="true" />
-                </button>
-              ) : null}
-              {canDelete && session.sessionId !== liveSessionId ? (
-                <button type="button" className="sidebar-icon-btn" onClick={handleDeleteClick} title={t("desktop.delete")} aria-label={t("desktop.delete")}>
-                  <Trash size={14} weight="regular" aria-hidden="true" />
-                </button>
-              ) : null}
+              <button type="button" className="sidebar-icon-btn" onClick={(event) => { event.stopPropagation(); onPin(!pinned); }} title={pinned ? t("desktop.unpin") : t("desktop.pin")} aria-label={pinned ? t("desktop.unpin") : t("desktop.pin")}>
+                <PushPin size={14} weight={pinned ? "fill" : "regular"} aria-hidden="true" />
+              </button>
+              <button type="button" className="sidebar-icon-btn" onClick={(event) => { event.stopPropagation(); onArchive(!archived); }} title={archived ? t("desktop.unarchive") : t("desktop.archive")} aria-label={archived ? t("desktop.unarchive") : t("desktop.archive")}>
+                <Archive size={14} weight="regular" aria-hidden="true" />
+              </button>
             </div>
           )}
         </>

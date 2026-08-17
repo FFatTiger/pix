@@ -1038,8 +1038,8 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getAllByLabelText("Agent running").length).toBeGreaterThan(0);
     expect(screen.getByTestId("session-select-A").closest('[data-running="true"]')).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Session A" }).getAttribute("data-running")).toBe("true");
-    const projectRow = screen.getAllByTestId("sidebar-project-row").find((row) => row.getAttribute("title") === "/x");
-    expect(projectRow?.getAttribute("data-running")).toBe("true");
+    const projectRunning = () => screen.getAllByTestId("sidebar-project-row").find((row) => row.getAttribute("title") === "/x")?.closest(".sidebar-list-row")?.getAttribute("data-running");
+    expect(projectRunning()).toBe("true");
     expect(screen.queryByTestId("sidebar-update-btn")).toBeNull();
 
     // Switching to B history keeps A's background subscription and all three
@@ -1049,7 +1049,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(ws.sent.filter((frame) => (frame as { type: string }).type === "detach")).toHaveLength(0);
     expect(screen.getByRole("tab", { name: "Session A" }).getAttribute("data-running")).toBe("true");
     expect(screen.getByTestId("session-select-A").closest('[data-running="true"]')).toBeTruthy();
-    expect(projectRow?.getAttribute("data-running")).toBe("true");
+    expect(projectRunning()).toBe("true");
 
     const prompt = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
     await act(async () => {
@@ -1080,8 +1080,8 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(row).toBeTruthy();
     const actions = row!.querySelector(".sidebar-row-actions");
     expect(actions).toBeTruthy();
-    expect(within(actions as HTMLElement).getByLabelText("Rename").tagName).toBe("BUTTON");
-    expect(within(actions as HTMLElement).getByLabelText("Delete").tagName).toBe("BUTTON");
+    expect(within(actions as HTMLElement).getByLabelText("Pin to top").tagName).toBe("BUTTON");
+    expect(within(actions as HTMLElement).getByLabelText("Archive").tagName).toBe("BUTTON");
     (actions as HTMLElement).querySelectorAll("button").forEach((button) => {
       expect((button as HTMLButtonElement).disabled).toBe(false);
     });
@@ -1141,6 +1141,54 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByText("Start a conversation")).toBeTruthy();
     expect(document.querySelector(".composer--disabled")).toBeNull();
     expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
+  });
+
+  it("hides the pinned section until a session is pinned, then shows pin/archive actions", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
+    mountApp({ cwd: "/x" });
+    await settle();
+    expect(screen.queryByTestId("sidebar-pinned")).toBeNull();
+    expect(screen.queryByText("Today")).toBeNull();
+    const sessionRow = screen.getByTestId("session-select-A").closest(".sidebar-list-row") as HTMLElement;
+    fireEvent.click(within(sessionRow).getByLabelText("Pin to top"));
+    expect(screen.getByTestId("sidebar-pinned")).toBeTruthy();
+    expect(within(screen.getByTestId("sidebar-pinned")).getByTestId("session-select-A")).toBeTruthy();
+    fireEvent.click(within(screen.getByTestId("sidebar-pinned")).getByLabelText("Archive"));
+    expect(screen.queryByTestId("sidebar-pinned")).toBeNull();
+    expect(screen.queryByTestId("session-select-A")).toBeNull();
+  });
+
+  it("caps recent sessions at five and reveals the rest from View more", async () => {
+    const now = Date.now();
+    const many: SessionHeader[] = Array.from({ length: 7 }, (_, index) => ({
+      sessionId: `S${index + 1}`,
+      cwd: "/x",
+      projectRoot: "/x",
+      title: `Session ${index + 1}`,
+      createdAt: 1000,
+      updatedAt: now - index * 1000,
+      messageCount: 1,
+    }));
+    globalThis.fetch = controllableStubFetch({ sessions: many });
+    mountApp({ cwd: "/x" });
+    await settle();
+    const recent = screen.getByTestId("sidebar-sessions");
+    expect(within(recent).getByTestId("session-select-S1")).toBeTruthy();
+    expect(within(recent).getByTestId("session-select-S5")).toBeTruthy();
+    expect(within(recent).queryByTestId("session-select-S6")).toBeNull();
+    fireEvent.click(within(recent).getByTestId("sidebar-show-more"));
+    expect(within(recent).getByTestId("session-select-S6")).toBeTruthy();
+    expect(within(recent).getByTestId("session-select-S7")).toBeTruthy();
+  });
+
+  it("keeps the title bar to the right of the full-height sidebar", async () => {
+    mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
+    await settle();
+    const sidebar = document.querySelector(".sidebar-container") as HTMLElement;
+    const titleBar = document.querySelector(".app-title-bar") as HTMLElement;
+    expect(sidebar.compareDocumentPosition(titleBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(titleBar.closest(".chat-column")).toBeTruthy();
+    expect(sidebar.closest(".chat-column")).toBeNull();
   });
 });
 

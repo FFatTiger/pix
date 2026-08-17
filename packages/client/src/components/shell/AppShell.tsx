@@ -617,20 +617,9 @@ export function AppShell({ search }: AppShellProps) {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100dvh / var(--app-ui-scale, 1))", overflow: "hidden", background: "var(--bg)" }}>
-      <AppTitleBar
-        sidebarOpen={sidebarOpen}
-        onSidebarToggle={handleSidebarToggle}
-        fileBrowserOpen={fileBrowserOpen}
-        onToggleFileBrowser={handleToggleFileBrowser}
-        canFiles={canFiles}
-        tabs={tabs}
-        activeTabId={activeTabId}
-        onSelectTab={handleSelectTab}
-        onCloseTab={handleCloseTab}
-        sessionLabels={sessionLabels}
-        runningSessionIds={runningSessionIds}
-      />
+    <div className="app-shell" style={{ display: "flex", height: "calc(100dvh / var(--app-ui-scale, 1))", overflow: "hidden", background: "var(--bg)" }}>
+      {/* Left sidebar occupies the full viewport height. The title bar / tabs
+          sit to its right so the rail is never cropped by the 36px chrome. */}
       {showTrustWarning && (
         <button
           type="button"
@@ -664,6 +653,7 @@ export function AppShell({ search }: AppShellProps) {
         </button>
       )}
       <div
+        className="app-shell-body"
         style={{
           "--sidebar-width": `${sidebarPanel.width}px`,
           "--right-panel-width": `${rightPanel.width}px`,
@@ -674,7 +664,6 @@ export function AppShell({ search }: AppShellProps) {
           position: "relative",
         } as React.CSSProperties}
       >
-      {/* First child of the workspace row — later siblings paint above it. */}
       {/* Mobile overlay backdrop */}
       <div
         className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
@@ -724,8 +713,22 @@ export function AppShell({ search }: AppShellProps) {
         />
       )}
 
-      {/* Center: active content (chat session, file viewer, or home) */}
+      {/* Center: title bar + active content. Tabs sit to the right of the
+          full-height sidebar instead of spanning the whole window. */}
       <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+        <AppTitleBar
+          sidebarOpen={sidebarOpen}
+          onSidebarToggle={handleSidebarToggle}
+          fileBrowserOpen={fileBrowserOpen}
+          onToggleFileBrowser={handleToggleFileBrowser}
+          canFiles={canFiles}
+          tabs={tabs}
+          activeTabId={activeTabId}
+          onSelectTab={handleSelectTab}
+          onCloseTab={handleCloseTab}
+          sessionLabels={sessionLabels}
+          runningSessionIds={runningSessionIds}
+        />
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           <main className={`workspace${isHome ? " workspace--home" : ""}`}>
             {isHome ? (
