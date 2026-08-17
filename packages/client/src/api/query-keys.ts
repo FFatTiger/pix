@@ -44,7 +44,14 @@ export const queryKeys = {
     list: (cwd: string) => ["pix", "themes", "list", cwd] as const,
     resolve: (name: string, mode: "dark" | "light", cwd: string) => ["pix", "themes", "resolve", name, mode, cwd] as const,
   },
-  files: { all: ["pix", "files"] as const, list: (path: string) => ["pix", "files", "list", path] as const, meta: (path: string) => ["pix", "files", "meta", path] as const, read: (path: string) => ["pix", "files", "read", path] as const, indexRoot: (cwd: string) => ["pix", "files", "index", cwd] as const, index: (cwd: string, q?: string) => ["pix", "files", "index", cwd, q ?? ""] as const },
+  files: {
+    all: ["pix", "files"] as const,
+    list: (path: string) => ["pix", "files", "list", path] as const,
+    /** Read/meta keys carry the optional session scope (full request identity). */
+    meta: (path: string, sessionId?: string | null) => ["pix", "files", "meta", path, sessionId ?? null] as const,
+    read: (path: string, sessionId?: string | null) => ["pix", "files", "read", path, sessionId ?? null] as const,
+    indexRoot: (cwd: string) => ["pix", "files", "index", cwd] as const, index: (cwd: string, q?: string) => ["pix", "files", "index", cwd, q ?? ""] as const,
+  },
   git: { all: ["pix", "git"] as const, status: (cwd: string) => ["pix", "git", "status", cwd] as const, diff: (cwd: string, path: string) => ["pix", "git", "diff", cwd, path] as const },
   cwd: { all: ["pix", "cwd"] as const, browse: (path?: string) => ["pix", "cwd", "browse", path ?? null] as const, roots: () => ["pix", "cwd", "roots"] as const },
   worktrees: { all: ["pix", "worktrees"] as const, list: (cwd: string) => ["pix", "worktrees", "list", cwd] as const },
@@ -131,8 +138,8 @@ export function createQueryOptions(http: HttpClient) {
     },
     files: {
       list: (path: string) => queryOptions({ queryKey: queryKeys.files.list(path), queryFn: ({ signal }) => resources.files.list(path, signal), enabled: Boolean(path) }),
-      meta: (path: string) => queryOptions({ queryKey: queryKeys.files.meta(path), queryFn: ({ signal }) => resources.files.meta(path, signal), enabled: Boolean(path) }),
-      read: (path: string) => queryOptions({ queryKey: queryKeys.files.read(path), queryFn: ({ signal }) => resources.files.read(path, signal), enabled: Boolean(path) }),
+      meta: (path: string, sessionId?: string | null) => queryOptions({ queryKey: queryKeys.files.meta(path, sessionId), queryFn: ({ signal }) => resources.files.meta(path, sessionId, signal), enabled: Boolean(path) }),
+      read: (path: string, sessionId?: string | null) => queryOptions({ queryKey: queryKeys.files.read(path, sessionId), queryFn: ({ signal }) => resources.files.read(path, sessionId, signal), enabled: Boolean(path) }),
       index: (cwd: string, q?: string) => queryOptions({ queryKey: queryKeys.files.index(cwd, q), queryFn: ({ signal }) => resources.files.index(cwd, q, signal), enabled: Boolean(cwd) }),
     },
     git: {

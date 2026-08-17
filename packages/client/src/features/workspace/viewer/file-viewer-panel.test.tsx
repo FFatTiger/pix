@@ -17,14 +17,16 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-/** Controllable fake watch session; the test drives change/resync events. */
+/** Controllable fake watch session; the test drives change/resync/state events. */
 function fakeWatchSession() {
   const change = new Set<(event: { data?: string }) => void>();
   const resync = new Set<() => void>();
+  const stateListeners = new Set<(state: WatchConnectionState) => void>();
   let state: WatchConnectionState = "connected";
+  let lastError: string | undefined;
   const session: WatchSession = {
     get state() { return state; },
-    get lastError() { return undefined; },
+    get lastError() { return lastError; },
     addEventListener(type, listener) {
       if (type === "change") {
         const l = listener as (event: { data?: string }) => void;
@@ -36,18 +38,26 @@ function fakeWatchSession() {
         resync.add(l);
         return () => resync.delete(l);
       }
-      return () => undefined;
+      const l = listener as (state: WatchConnectionState) => void;
+      stateListeners.add(l);
+      return () => stateListeners.delete(l);
     },
     close() {
       state = "closed";
       change.clear();
       resync.clear();
+      stateListeners.clear();
     },
   };
   return {
     session,
     emitChange(data?: string) { for (const l of [...change]) l(data === undefined ? {} : { data }); },
     emitResync() { for (const l of [...resync]) l(); },
+    emitState(next: WatchConnectionState, error?: string) {
+      state = next;
+      if (error !== undefined) lastError = error;
+      for (const l of [...stateListeners]) l(next);
+    },
   };
 }
 
@@ -177,5 +187,34 @@ describe("FileViewer — out-of-order watch settles", () => {
       retry.click();
     });
     await screen.findByText("AAAA");
+  });
+
+  it("surfaces a non-blocking watch status when the stream degrades", async () => {
+    const harness = fakeWatchSession();
+    setWatchSessionFactory(() => harness.session);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("op=read")) return json({ content: "AAAA", language: "text", size: 4 });
+      if (url.includes("/v1/git/diff")) return json({ supported: false });
+      return json({ error: "not found" }, 404);
+    }) as unknown as typeof fetch);
+
+    const ref = createRef<FileViewerPanelHandle>();
+    mount(qc, <FileViewerPanel ref={ref} cwd="/repo" />);
+    act(() => { ref.current?.openFile("/repo/a.ts", "a.ts"); });
+    await screen.findByText("AAAA");
+    expect(screen.queryByText(/Reconnecting/)).toBeNull();
+
+    // Stream drops → the viewer surfaces a typed, non-blocking reconnecting
+    // status while the already-loaded content stays visible (no toast).
+    act(() => { harness.emitState("reconnecting", "Watch stream ended"); });
+    expect(screen.getByText(/Reconnecting/)).toBeTruthy();
+    expect(screen.getByText("AAAA")).toBeTruthy();
+
+    // Budget exhausted → a distinct closed surface, still non-blocking.
+    act(() => { harness.emitState("closed", "Watch stream ended"); });
+    expect(screen.getByText(/Watch disconnected/)).toBeTruthy();
+    expect(screen.getByText("AAAA")).toBeTruthy();
   });
 });

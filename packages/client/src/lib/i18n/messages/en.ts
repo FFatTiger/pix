@@ -564,6 +564,8 @@ export const enLocale = {
     "desktop.failedToLoadImage": "Failed to load image",
     "desktop.failedToLoadAudio": "Failed to load audio",
     "desktop.docxTooLargeForPreview": "DOCX too large for preview (>10MB)",
+    "desktop.watchReconnecting": "Reconnecting…",
+    "desktop.watchClosed": "Watch disconnected",
     "desktop.previewFile": "Preview {file}",
     "desktop.branches": "Branches",
     "desktop.noActiveSession": "No active session",

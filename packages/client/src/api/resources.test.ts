@@ -39,6 +39,20 @@ describe("resource APIs", () => {
     expect((fetchImpl.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({ Range: "bytes=0-2" });
   });
 
+  it("read/meta carry an optional session scope in the request identity", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(json({ content: "x", language: "text", size: 1 }))
+      .mockResolvedValueOnce(json({ path: "/a", size: 1, modified: "t", isDirectory: false, mime: null }));
+    const api = createResourcesApi(createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch }));
+    await api.files.read("/a", "s1");
+    await api.files.meta("/a", "s2");
+    // The session scope is part of the request identity; omitting it keeps the
+    // exact unscoped wire shape (see the first test above).
+    expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual([
+      "/v1/files?path=%2Fa&op=read&sessionId=s1",
+      "/v1/files?path=%2Fa&op=meta&sessionId=s2",
+    ]);
+  });
   it("encodes cwd + q for the file index, enforces the strict matches shape and passes signal", async () => {
     const signal = new AbortController().signal;
     const ok = json({ matches: [{ path: "src/a.ts", isDir: false }], truncated: false });

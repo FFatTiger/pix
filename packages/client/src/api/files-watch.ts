@@ -25,12 +25,22 @@ export interface WatchChangeEvent {
 }
 
 /**
- * Bounded reconnect schedule (ms). Attempts advance through the list; once the
- * final delay has been used and the reconnect also fails, the session closes
- * with its last error surfaced. Delays are capped so a dead file never
- * reconnects faster than the network allows or indefinitely.
+ * Bounded reconnect schedule (ms). The budget persists across connect/drop
+ * flaps and advances through this list; once the final delay has been used
+ * and the stream drops again, the session closes with its last error surfaced.
+ * The budget only resets on objective stability — a received change event or
+ * the stable-duration window elapsing — so a server that repeatedly connects
+ * then immediately ends cannot reconnect forever at delay[0].
  */
 export const WATCH_RECONNECT_DELAYS_MS: readonly number[] = [500, 1000, 2000, 4000, 8000];
+
+/**
+ * Stable-duration window. A connection that stays up for this long without
+ * dropping is considered healthy and its reconnect budget resets, so a
+ * genuinely stable connection that drops later starts a fresh outage instead
+ * of carrying old flap debt.
+ */
+export const WATCH_STABLE_MS = 30_000;
 
 /** Watch source surface consumed by file viewers. */
 export interface WatchSession {
@@ -73,8 +83,13 @@ function createFetchWatchSession(url: string): WatchSession {
   const listeners: ListenerMap = { change: new Set(), resync: new Set(), state: new Set() };
   let state: WatchConnectionState = "idle";
   let lastError: string | undefined;
-  let reconnectAttempt = 0;
+  // Persisted across connect/drop flaps. NOT reset on a successful connect:
+  // that would let a server that connects then immediately ends reconnect
+  // forever at delay[0]. Reset only on objective stability (a received change
+  // event or the stable-duration window elapsing).
+  let reconnectBudget = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let stabilityTimer: ReturnType<typeof setTimeout> | null = null;
   let controller: AbortController | null = null;
   let closed = false;
 
@@ -91,16 +106,33 @@ function createFetchWatchSession(url: string): WatchSession {
     }
   };
 
+  const clearStabilityTimer = () => {
+    if (stabilityTimer !== null) {
+      clearTimeout(stabilityTimer);
+      stabilityTimer = null;
+    }
+  };
+
+  // Once the stream has stayed up for the stable window without dropping, the
+  // connection is objectively healthy and the reconnect budget resets.
+  const armStabilityTimer = () => {
+    clearStabilityTimer();
+    stabilityTimer = setTimeout(() => {
+      stabilityTimer = null;
+      reconnectBudget = 0;
+    }, WATCH_STABLE_MS);
+  };
+
   const scheduleReconnect = (error: string) => {
     if (closed) return;
-    // Bounded: once every delay has been spent and the reconnect also fails,
-    // the session gives up and closes with the error surfaced.
-    if (reconnectAttempt >= WATCH_RECONNECT_DELAYS_MS.length) {
+    // Bounded: once every delay has been spent across flaps and the stream
+    // drops again, the session gives up and closes with the error surfaced.
+    if (reconnectBudget >= WATCH_RECONNECT_DELAYS_MS.length) {
       setState("closed", error);
       return;
     }
-    const delay = WATCH_RECONNECT_DELAYS_MS[reconnectAttempt]!;
-    reconnectAttempt += 1;
+    const delay = WATCH_RECONNECT_DELAYS_MS[reconnectBudget]!;
+    reconnectBudget += 1;
     setState("reconnecting", error);
     clearRetry();
     retryTimer = setTimeout(() => {
@@ -123,11 +155,12 @@ function createFetchWatchSession(url: string): WatchSession {
       }
       if (closed) return;
 
-      // (Re)connected: reset backoff and emit an authoritative resync so the
-      // consumer refetches content/diff — events that fired while the stream
-      // was down cannot be replayed, only re-read.
-      reconnectAttempt = 0;
+      // (Re)connected: emit an authoritative resync so the consumer refetches
+      // content/diff — events that fired while the stream was down cannot be
+      // replayed, only re-read. The reconnect budget is intentionally NOT
+      // reset here (see reconnectBudget); stability resets it.
       lastError = undefined;
+      armStabilityTimer();
       setState("connected");
       for (const listener of listeners.resync) listener();
 
@@ -144,6 +177,9 @@ function createFetchWatchSession(url: string): WatchSession {
           const parsed = parseEventBlock(buffer.slice(0, boundary));
           buffer = buffer.slice(boundary + 2);
           if (parsed?.event === "change") {
+            // Functional proof: the stream is delivering real changes, so the
+            // connection is stable — reset the flap budget.
+            reconnectBudget = 0;
             for (const listener of listeners.change) listener({ data: parsed.data });
           }
           boundary = buffer.indexOf("\n\n");
@@ -154,11 +190,13 @@ function createFetchWatchSession(url: string): WatchSession {
 
       // Clean stream end (Host closed it) → reconnect unless we were closed.
       if (!closed && !controller.signal.aborted) {
+        clearStabilityTimer();
         scheduleReconnect("Watch stream ended");
       }
     } catch (error) {
       if (closed) return;
       if (controller.signal.aborted) return; // explicit close()
+      clearStabilityTimer();
       scheduleReconnect(error instanceof Error ? error.message : String(error));
     }
   }
@@ -189,6 +227,7 @@ function createFetchWatchSession(url: string): WatchSession {
       if (closed) return;
       closed = true;
       clearRetry();
+      clearStabilityTimer();
       controller?.abort();
       controller = null;
       listeners.change.clear();

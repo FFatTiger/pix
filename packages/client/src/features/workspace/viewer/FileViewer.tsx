@@ -20,6 +20,7 @@ import { CodeBlock, MarkdownCodeContext, MermaidBlock } from "@/components/chat/
 import { parseUnifiedPatch } from "@/lib/patch";
 import { useHttpClient } from "@/app/http-context";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
+import type { WatchChangeEvent, WatchConnectionState } from "@/api/files-watch";
 import { getFileApiUrl, watchFile } from "./viewer-api";
 import {
   resolveInitialFileDisplayMode,
@@ -48,6 +49,92 @@ interface Props {
 function useWorkspaceViewerOptions() {
   const http = useHttpClient();
   return useMemo(() => createQueryOptions(http), [http]);
+}
+
+/** Non-blocking watch status surface (Gap 2): typed, no scattered toasts. */
+export interface WatchStatusInfo {
+  /** Explicit WatchSession connection state surfaced to the viewer UI. */
+  state: WatchConnectionState;
+  /** Last stream failure while reconnecting/closed (undefined while healthy). */
+  detail: string | undefined;
+}
+
+/**
+ * Owns the per-file WatchSession lifecycle (create on mount/file change, close
+ * on unmount) and surfaces its explicit connection state + last error. All
+ * four viewer variants use this single hook so a closed/reconnecting stream is
+ * never silent. `onEvent` is invoked for `change`/`resync`; a per-file
+ * generation guard drops events from a stale session (e.g. the viewer switched
+ * away from a file) so they cannot affect the newly shown file.
+ */
+function useFileWatch(
+  filePath: string,
+  sourceSessionId: string | null | undefined,
+  onEvent: (kind: "change" | "resync", event?: WatchChangeEvent) => void,
+): WatchStatusInfo {
+  const [info, setInfo] = useState<WatchStatusInfo>({ state: "idle", detail: undefined });
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
+  const generationRef = useRef(0);
+  useEffect(() => {
+    const generation = ++generationRef.current;
+    const es = watchFile(filePath, sourceSessionId);
+    setInfo({ state: es.state, detail: es.lastError });
+    const offChange = es.addEventListener("change", (event) => {
+      if (generationRef.current !== generation) return;
+      onEventRef.current("change", event);
+    });
+    const offResync = es.addEventListener("resync", () => {
+      if (generationRef.current !== generation) return;
+      onEventRef.current("resync");
+    });
+    const offState = es.addEventListener("state", (state) => {
+      setInfo({ state, detail: es.lastError });
+    });
+    return () => {
+      offChange();
+      offResync();
+      offState();
+      es.close();
+    };
+  }, [filePath, sourceSessionId]);
+  return info;
+}
+
+/**
+ * Small typed non-blocking status chip for the viewer status bar. Renders only
+ * while the watch is degraded (reconnecting / closed); connected/idle states
+ * render nothing so the surface never adds noise during normal operation.
+ */
+function WatchStatusBadge({ state, detail }: WatchStatusInfo) {
+  const { t } = useI18n();
+  if (state !== "reconnecting" && state !== "closed") return null;
+  const closed = state === "closed";
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      title={detail ?? (closed ? t("desktop.watchClosed") : t("desktop.watchReconnecting"))}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        height: 18,
+        padding: "0 7px",
+        borderRadius: 9,
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: "0.02em",
+        color: closed ? "#f87171" : "#f59e0b",
+        background: closed ? "color-mix(in srgb, #f87171 12%, var(--bg-panel))" : "color-mix(in srgb, #f59e0b 12%, var(--bg-panel))",
+        border: `1px solid ${closed ? "color-mix(in srgb, #f87171 45%, var(--border))" : "color-mix(in srgb, #f59e0b 45%, var(--border))"}`,
+        flexShrink: 0,
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor" }} aria-hidden="true" />
+      {closed ? t("desktop.watchClosed") : t("desktop.watchReconnecting")}
+    </span>
+  );
 }
 
 function DownloadLink({ filePath, sourceSessionId }: { filePath: string; sourceSessionId?: string | null | undefined }) {
@@ -475,7 +562,6 @@ function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
   const [size, setSize] = useState<number | null>(null);
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const esRef = useRef<ReturnType<typeof watchFile> | null>(null);
 
   const ext = getFileName(filePath).toLowerCase().split(".").pop() ?? "";
 
@@ -484,33 +570,21 @@ function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
     setSize(null);
     setNaturalSize(null);
     setError(null);
-
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-
-    const es = watchFile(filePath, sourceSessionId);
-    esRef.current = es;
-
-    const offChange = es.addEventListener("change", (e) => {
-      try {
-        const d = JSON.parse(e.data ?? "") as { size?: number };
-        if (typeof d.size === "number") setSize(d.size);
-      } catch { /* ignore */ }
-      setBust((b) => b + 1);
-    });
-    // Authoritative refetch after a (re)connect: events dropped while the
-    // stream was down cannot be replayed, so re-read the file via cache-bust.
-    const offResync = es.addEventListener("resync", () => setBust((b) => b + 1));
-
-    return () => {
-      offChange();
-      offResync();
-      es.close();
-      esRef.current = null;
-    };
   }, [filePath, sourceSessionId]);
+
+  const watchStatus = useFileWatch(filePath, sourceSessionId, (kind, event) => {
+    if (kind === "resync") {
+      // Authoritative refetch after a (re)connect: events dropped while the
+      // stream was down cannot be replayed, so re-read via cache-bust.
+      setBust((b) => b + 1);
+      return;
+    }
+    try {
+      const d = JSON.parse(event?.data ?? "") as { size?: number };
+      if (typeof d.size === "number") setSize(d.size);
+    } catch { /* ignore */ }
+    setBust((b) => b + 1);
+  });
 
   const src = getFileApiUrl(filePath, "read", sourceSessionId, bust ? { v: bust } : undefined);
 
@@ -534,6 +608,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
         <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
           {getRelativeFilePath(filePath, cwd)}
         </span>
+        <WatchStatusBadge {...watchStatus} />
         <span style={{ marginLeft: "auto" }}>{ext || t("desktop.image")}</span>
         {naturalSize && <span>{naturalSize.w} × {naturalSize.h}</span>}
         {formatSizeStr && <span>{formatSizeStr}</span>}
@@ -593,7 +668,6 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
   const [size, setSize] = useState<number | null>(null);
   const [duration, setDuration] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const esRef = useRef<ReturnType<typeof watchFile> | null>(null);
 
   const ext = getFileName(filePath).toLowerCase().split(".").pop() ?? "";
 
@@ -602,34 +676,22 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
     setSize(null);
     setDuration(null);
     setError(null);
-
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-
-    const es = watchFile(filePath, sourceSessionId);
-    esRef.current = es;
-
-    const offChange = es.addEventListener("change", (e) => {
-      try {
-        const d = JSON.parse(e.data ?? "") as { size?: number };
-        if (typeof d.size === "number") setSize(d.size);
-      } catch { /* ignore */ }
-      setDuration(null);
-      setError(null);
-      setBust((b) => b + 1);
-    });
-    // Authoritative refetch after a (re)connect (see ImageViewer).
-    const offResync = es.addEventListener("resync", () => setBust((b) => b + 1));
-
-    return () => {
-      offChange();
-      offResync();
-      es.close();
-      esRef.current = null;
-    };
   }, [filePath, sourceSessionId]);
+
+  const watchStatus = useFileWatch(filePath, sourceSessionId, (kind, event) => {
+    if (kind === "resync") {
+      // Authoritative refetch after a (re)connect (see ImageViewer).
+      setBust((b) => b + 1);
+      return;
+    }
+    try {
+      const d = JSON.parse(event?.data ?? "") as { size?: number };
+      if (typeof d.size === "number") setSize(d.size);
+    } catch { /* ignore */ }
+    setDuration(null);
+    setError(null);
+    setBust((b) => b + 1);
+  });
 
   const src = getFileApiUrl(filePath, "read", sourceSessionId, bust ? { v: bust } : undefined);
 
@@ -651,6 +713,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
         <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
           {getRelativeFilePath(filePath, cwd)}
         </span>
+        <WatchStatusBadge {...watchStatus} />
         <span style={{ marginLeft: "auto" }}>{ext || t("desktop.audio")}</span>
         {duration != null && <span>{formatDuration(duration)}</span>}
         {size != null && <span>{formatSize(size)}</span>}
@@ -694,7 +757,6 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
   const [bust, setBust] = useState(0);
   const [size, setSize] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const esRef = useRef<ReturnType<typeof watchFile> | null>(null);
 
   const ext = getFileExt(filePath);
   const isPdf = ext === "pdf";
@@ -703,8 +765,9 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
     ? getFileApiUrl(filePath, "read", sourceSessionId, bust ? { v: bust } : undefined)
     : getFileApiUrl(filePath, "docx-preview", sourceSessionId, bust ? { v: bust } : undefined);
 
-  // File metadata is owned by React Query; the docx preview size gate reads it.
-  const metaQuery = useQuery({ ...options.files.meta(filePath) });
+  // File metadata is owned by React Query (session-scoped request identity);
+  // the docx preview size gate reads it.
+  const metaQuery = useQuery({ ...options.files.meta(filePath, sourceSessionId) });
 
   useEffect(() => {
     if (metaQuery.data !== undefined) {
@@ -718,43 +781,29 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
   useEffect(() => {
     setBust(0);
     setError(null);
+  }, [filePath, sourceSessionId]);
 
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
+  const watchStatus = useFileWatch(filePath, sourceSessionId, (kind, event) => {
+    if (kind === "resync") {
+      // Authoritative refetch after a (re)connect: re-read meta and reload the
+      // preview so changes that landed during the outage are not missed.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.files.meta(filePath, sourceSessionId) });
+      setBust((b) => b + 1);
+      return;
     }
-
-    const es = watchFile(filePath, sourceSessionId);
-    esRef.current = es;
-
-    const offChange = es.addEventListener("change", (e) => {
-      try {
-        const d = JSON.parse(e.data ?? "") as { size?: number };
-        if (typeof d.size === "number") {
-          setSize(d.size);
-          if (!isPdf && d.size > DOCX_PREVIEW_MAX_BYTES) {
-            setError(t("desktop.docxTooLargeForPreview"));
-            return;
-          }
+    try {
+      const d = JSON.parse(event?.data ?? "") as { size?: number };
+      if (typeof d.size === "number") {
+        setSize(d.size);
+        if (!isPdf && d.size > DOCX_PREVIEW_MAX_BYTES) {
+          setError(t("desktop.docxTooLargeForPreview"));
+          return;
         }
-      } catch { /* ignore */ }
-      setError(null);
-      setBust((b) => b + 1);
-    });
-    // Authoritative refetch after a (re)connect: re-read meta and reload the
-    // preview so changes that landed during the outage are not missed.
-    const offResync = es.addEventListener("resync", () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.files.meta(filePath) });
-      setBust((b) => b + 1);
-    });
-
-    return () => {
-      offChange();
-      offResync();
-      es.close();
-      esRef.current = null;
-    };
-  }, [filePath, isPdf, queryClient, sourceSessionId, t]);
+      }
+    } catch { /* ignore */ }
+    setError(null);
+    setBust((b) => b + 1);
+  });
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -774,6 +823,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
         <span style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={filePath}>
           {getRelativeFilePath(filePath, cwd)}
         </span>
+        <WatchStatusBadge {...watchStatus} />
         <span style={{ marginLeft: "auto" }}>{ext === "docx" ? t("desktop.docxPreview") : "pdf"}</span>
         {size != null && <span>{formatSize(size)}</span>}
         <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
@@ -826,10 +876,8 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
   const [previewMode, setPreviewMode] = useState(requestedInitialDisplayMode === "preview");
   const [viewMode, setViewMode] = useState<"source" | "diff">(requestedInitialDisplayMode === "diff" ? "diff" : "source");
   const [wrapLines, setWrapLines] = useState(initialWrapLines);
-  const esRef = useRef<ReturnType<typeof watchFile> | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const scrollRestorePendingRef = useRef(true);
-  const watchGenerationRef = useRef(0);
   const viewerStateRef = useRef<FileViewerState>({
     displayMode: requestedInitialDisplayMode,
     wrapLines: initialWrapLines,
@@ -840,9 +888,10 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
   onStateChangeRef.current = onStateChange;
 
   // Reads/meta/diff are owned by React Query (single remote-state authority).
-  // Each file has its own queryKey, and a refetch aborts the prior in-flight
-  // read/diff for that key, so a stale settle can never win.
-  const readQuery = useQuery({ ...options.files.read(filePath) });
+  // Each file has its own queryKey (session-scoped request identity), and a
+  // refetch aborts the prior in-flight read/diff for that key, so a stale
+  // settle can never win.
+  const readQuery = useQuery({ ...options.files.read(filePath, sourceSessionId) });
   const diffQuery = useQuery({ ...options.git.diff(cwd ?? "", filePath), enabled: Boolean(cwd && filePath) });
   const data = readQuery.data ?? null;
   const gitDiff = diffQuery.data ?? null;
@@ -895,37 +944,17 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
   // File watch: a WatchSession with explicit connection state, bounded
   // reconnect/backoff and an authoritative resync after every (re)connect.
   // Every change/resync invalidates the read + diff queries for THIS file;
-  // the per-file generation guard drops events from a stale session (e.g. a
-  // file the viewer switched away from) so they cannot refetch the new file.
-  useEffect(() => {
-    watchGenerationRef.current += 1;
-    const generation = watchGenerationRef.current;
+  // the hook owns the session lifecycle and per-file generation guard. The
+  // typed status is surfaced via the non-blocking WatchStatusBadge below.
+  const watchStatus = useFileWatch(filePath, sourceSessionId, () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.files.read(filePath, sourceSessionId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.git.diff(cwd ?? "", filePath) });
+  });
 
-    const refresh = () => {
-      if (watchGenerationRef.current !== generation) return;
-      void queryClient.invalidateQueries({ queryKey: queryKeys.files.read(filePath) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.git.diff(cwd ?? "", filePath) });
-    };
+  // Snapshot the current viewer state into the tab before unmounting so a
+  // later tab switch restores scroll/mode/wrap instead of losing them.
+  useEffect(() => () => onStateChangeRef.current?.({ ...viewerStateRef.current }), []);
 
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-    const es = watchFile(filePath, sourceSessionId);
-    esRef.current = es;
-    const offChange = es.addEventListener("change", refresh);
-    const offResync = es.addEventListener("resync", refresh);
-
-    return () => {
-      offChange();
-      offResync();
-      es.close();
-      esRef.current = null;
-      // Snapshot the current viewer state into the tab before unmounting so a
-      // later tab switch restores scroll/mode/wrap instead of losing them.
-      onStateChangeRef.current?.({ ...viewerStateRef.current });
-    };
-  }, [cwd, filePath, queryClient, sourceSessionId]);
 
   const normalizedMarkdown = useMemo(
     () => normalizeDisplayMath(data?.content ?? ""),
@@ -1034,6 +1063,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
         <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
           {getRelativeFilePath(filePath, cwd)}
         </span>
+        <WatchStatusBadge {...watchStatus} />
         <span style={{ marginLeft: "auto" }}>{data.language}</span>
         {viewMode === "source" && <span>{t("desktop.lines", { count: lines.length })}</span>}
         <span>{formatSize(data.size)}</span>

@@ -564,6 +564,8 @@ export const zhCNLocale = {
     "desktop.failedToLoadImage": "加载图片失败",
     "desktop.failedToLoadAudio": "加载音频失败",
     "desktop.docxTooLargeForPreview": "DOCX 文件过大，无法预览（超过 10MB）",
+    "desktop.watchReconnecting": "重新连接中…",
+    "desktop.watchClosed": "监视已断开",
     "desktop.previewFile": "预览 {file}",
     "desktop.branches": "分支",
     "desktop.noActiveSession": "没有活动会话",

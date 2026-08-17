@@ -95,6 +95,23 @@ describe("query keys and options", () => {
     );
   });
 
+  it("read/meta keys and options preserve the optional session scope", async () => {
+    expect(queryKeys.files.read("/a")).toEqual(["pix", "files", "read", "/a", null]);
+    expect(queryKeys.files.read("/a", "s1")).toEqual(["pix", "files", "read", "/a", "s1"]);
+    expect(queryKeys.files.read("/a", "s1")).not.toEqual(queryKeys.files.read("/a"));
+    expect(queryKeys.files.meta("/a", "s2")).toEqual(["pix", "files", "meta", "/a", "s2"]);
+
+    const fetchImpl = vi.fn().mockResolvedValue(json({ content: "x", language: "text", size: 1 }));
+    const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const option = createQueryOptions(http).files.read("/a", "s1");
+    expect(option.queryKey).toEqual(["pix", "files", "read", "/a", "s1"]);
+    await option.queryFn!({ signal: new AbortController().signal } as never);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/files?path=%2Fa&op=read&sessionId=s1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("parses Protocol session DTOs and rejects a deep mismatch", async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(json({ sessions: [session], revision: 4 })).mockResolvedValueOnce(json({ sessions: [{ ...session, messageCount: -1 }] }));
     const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });

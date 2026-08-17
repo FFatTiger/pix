@@ -138,8 +138,14 @@ export function createResourcesApi(http: HttpClient) {
   return {
     files: {
       list: (path: string, signal?: AbortSignal) => http.get(urls.files.resource(path, "list"), { schema: FileListResponseSchema, ...(signal === undefined ? {} : { signal }) }),
-      meta: (path: string, signal?: AbortSignal) => http.get(urls.files.resource(path, "meta"), { schema: FileMetaResponseSchema, ...(signal === undefined ? {} : { signal }) }),
-      read: (path: string, signal?: AbortSignal) => http.get(urls.files.resource(path, "read"), { schema: FileTextResponseSchema, ...(signal === undefined ? {} : { signal }) }),
+      /**
+       * Read/meta carry an optional session scope so the request identity is
+       * fully preserved: a session-scoped read of the same path is a distinct
+       * query, never silently coalesced with an unscoped one. The Host ignores
+       * sessionId for files reads, so omitting it keeps the exact wire shape.
+       */
+      meta: (path: string, sessionId?: string | null, signal?: AbortSignal) => http.get(urls.files.file(path, "meta", { sessionId }), { schema: FileMetaResponseSchema, ...(signal === undefined ? {} : { signal }) }),
+      read: (path: string, sessionId?: string | null, signal?: AbortSignal) => http.get(urls.files.file(path, "read", { sessionId }), { schema: FileTextResponseSchema, ...(signal === undefined ? {} : { signal }) }),
       preview: (path: string, signal?: AbortSignal) => http.get<Blob>(urls.files.resource(path, "preview"), { responseMode: "blob", ...(signal === undefined ? {} : { signal }) }),
       download: (path: string, range?: string, signal?: AbortSignal) => http.get<Response>(urls.files.resource(path, "download"), { responseMode: "response", ...(range === undefined ? {} : { headers: { Range: range } }), ...(signal === undefined ? {} : { signal }) }),
       upload: (input: UploadInput, signal?: AbortSignal) => {
