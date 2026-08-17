@@ -438,15 +438,6 @@ export function Sidebar({
 
   const recentProjects = getRecentProjects(visibleSessions);
   const selectedProject = projectRootFor(search.cwd);
-  useEffect(() => {
-    if (!selectedProject) return;
-    setExpandedProjects((prev) => {
-      if (prev.has(selectedProject)) return prev;
-      const next = new Set(prev);
-      next.add(selectedProject);
-      return next;
-    });
-  }, [selectedProject]);
   const toggleProjectExpanded = useCallback((project: string) => {
     setExpandedProjects((prev) => {
       const next = new Set(prev);
@@ -456,13 +447,10 @@ export function Sidebar({
     });
   }, []);
 
-  // Sessions of every worktree in the selected project are shown together.
-  const projectSessions = selectedProject
-    ? visibleSessions.filter((s) => {
-      const root = s.projectRoot || s.cwd;
-      return root === selectedProject && !isHiddenRailSession(s);
-    })
-    : visibleSessions;
+  // Recent is the FULL session list (minus hidden agent-home/scratch rows).
+  // Expanding a project only reveals that project's sessions in place; it
+  // never filters this list and never changes cwd.
+  const projectSessions = visibleSessions;
 
   // Live quick-search: filters against the exact title shown in the list
   // (a user-set name, else a short id). Applied after the project scope so
@@ -846,10 +834,7 @@ export function Sidebar({
                     title={project}
                     aria-pressed={selected}
                     aria-expanded={expanded}
-                    onClick={() => {
-                      toggleProjectExpanded(project);
-                      if (!selected) onOpenWorktree(project);
-                    }}
+                    onClick={() => toggleProjectExpanded(project)}
                   >
                     {expanded ? (
                       <FolderOpen size={16} weight="regular" aria-hidden="true" />
@@ -878,7 +863,6 @@ export function Sidebar({
           </div>
         </section>
 
-        {searchOpen ? (
         <section className="sidebar-section sidebar-section-sessions" data-testid="sidebar-sessions">
           <div className="sidebar-section-head" data-expanded={sessionsOpen ? "true" : "false"}>
             <button
@@ -982,7 +966,6 @@ export function Sidebar({
             </div>
           )}
         </section>
-        ) : null}
 
         {search.cwd ? (
           <section className="sidebar-files" data-testid="sidebar-files">

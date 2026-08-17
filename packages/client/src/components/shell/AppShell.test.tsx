@@ -342,9 +342,9 @@ describe("AppShell — no-flicker session navigation (prepare → atomic commit)
     mountApp({ cwd: "/x" });
     // Wait for the sessions list so the sidebar rows render.
     await settle();
-    expect(screen.getByText("Session B")).toBeTruthy();
+    expect(screen.getByTestId("session-select-B")).toBeTruthy();
     // Click B → prepare starts; its first page is in flight (deferred).
-    fireEvent.click(screen.getByText("Session B"));
+    fireEvent.click(screen.getByTestId("session-select-B"));
     await act(async () => { await flush(8); });
     // BEFORE the first page settles: no URL/navigation, no session swap, and
     // the current frame is untouched (still the select hint, not a loading B).
@@ -378,7 +378,7 @@ describe("AppShell — no-flicker session navigation (prepare → atomic commit)
     globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS, contextCalls });
     mountApp({ cwd: "/x" }, { queryClient: qc });
     await settle();
-    fireEvent.click(screen.getByText("Session B"));
+    fireEvent.click(screen.getByTestId("session-select-B"));
     await act(async () => { await flush(8); });
     expect(navigateMock).toHaveBeenCalledTimes(1);
     expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { session: "B", cwd: "/x" } }));
@@ -392,9 +392,9 @@ describe("AppShell — no-flicker session navigation (prepare → atomic commit)
     mountApp({ cwd: "/x" });
     await settle();
     // Click B, then C before B's first page settles.
-    fireEvent.click(screen.getByText("Session B"));
+    fireEvent.click(screen.getByTestId("session-select-B"));
     await act(async () => { await flush(6); });
-    fireEvent.click(screen.getByText("Session C"));
+    fireEvent.click(screen.getByTestId("session-select-C"));
     await act(async () => { await flush(6); });
     const bDeferred = contextDeferreds.get("B");
     const cDeferred = contextDeferreds.get("C");
@@ -422,7 +422,7 @@ describe("AppShell — no-flicker session navigation (prepare → atomic commit)
     });
     const { queryClient } = mountApp({ cwd: "/x" });
     await settle();
-    fireEvent.click(screen.getByText("Session B"));
+    fireEvent.click(screen.getByTestId("session-select-B"));
     await act(async () => { await flush(12); });
     // Error commits navigation so the detail frame can render B's honest error.
     expect(navigateMock).toHaveBeenCalledTimes(1);
@@ -451,7 +451,7 @@ describe("AppShell — no-flicker session navigation (prepare → atomic commit)
     const attachCountBefore = countType(ws, "attach");
     await settle(); // sessions list renders rows
     // Click B (history) → prepare; the live A frame stays mounted + correct.
-    fireEvent.click(screen.getByText("Session B"));
+    fireEvent.click(screen.getByTestId("session-select-B"));
     await act(async () => { await flush(6); });
     expect(capturedStore!.getSnapshot().attached).toBe(true);
     expect(capturedStore!.getSnapshot().sessionId).toBe("A");
@@ -719,6 +719,7 @@ describe("AppShell — source-like sidebar rail", () => {
       "sidebar-nav-plugins",
       "sidebar-nav-resources",
       "sidebar-projects",
+      "sidebar-sessions",
       "sidebar-files",
       "sidebar-nav-settings",
     ].filter((id) => document.querySelector(`[data-testid="${id}"]`));
@@ -734,7 +735,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-nav-plugins").textContent).toBe("Plugins");
     expect(screen.getByTestId("sidebar-nav-resources").textContent).toBe("Resources");
     expect(screen.getByTestId("sidebar-projects")).toBeTruthy();
-    expect(screen.getByTestId("sidebar-project-sessions")).toBeTruthy();
+    expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
     expect(screen.getByTestId("sidebar-files")).toBeTruthy();
     expect(screen.getByTestId("sidebar-nav-settings").textContent).toBe("Settings");
     expect(railOrder()).toEqual([
@@ -743,6 +744,7 @@ describe("AppShell — source-like sidebar rail", () => {
       "sidebar-nav-plugins",
       "sidebar-nav-resources",
       "sidebar-projects",
+      "sidebar-sessions",
       "sidebar-files",
       "sidebar-nav-settings",
     ]);
@@ -780,21 +782,23 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-nav-resources").textContent).toBe("Resources");
   });
 
-  it("selects a project via existing worktree navigation and keeps the file section", async () => {
+  it("expands a project in place without changing cwd or filtering Recent", async () => {
     mountApp({ cwd: "/x" });
     await settle();
     const rows = screen.getAllByTestId("sidebar-project-row");
-    expect(rows.some((row) => row.textContent === "x" && row.getAttribute("data-active") === "true")).toBe(true);
-    const selectedCard = screen.getAllByTestId("sidebar-project-card").find((card) => card.getAttribute("data-expanded") === "true");
-    expect(selectedCard).toBeTruthy();
-    expect(within(selectedCard as HTMLElement).getByText("Session A")).toBeTruthy();
+    const current = rows.find((row) => row.textContent === "x");
     const other = rows.find((row) => row.textContent === "y");
+    expect(current).toBeTruthy();
     expect(other).toBeTruthy();
     fireEvent.click(other!);
-    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/", search: { cwd: "/y" } }));
+    expect(navigateMock).not.toHaveBeenCalled();
     expect(other!.getAttribute("aria-expanded")).toBe("true");
+    const otherCard = other!.closest("[data-testid=sidebar-project-card]") as HTMLElement;
+    expect(within(otherCard).getByText("Session D")).toBeTruthy();
+    expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
+    expect(screen.getAllByTestId("session-select-A").length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("session-select-D").length).toBeGreaterThan(1);
     expect(screen.getByTestId("sidebar-files")).toBeTruthy();
-    expect(screen.getByLabelText("Files")).toBeTruthy();
   });
 
   it("keeps no-flicker latest-intent session authority and a pending cue", async () => {
@@ -802,9 +806,9 @@ describe("AppShell — source-like sidebar rail", () => {
     globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS, contextDeferreds });
     mountApp({ cwd: "/x" });
     await settle();
-    fireEvent.click(screen.getByText("Session B"));
+    fireEvent.click(screen.getByTestId("session-select-B"));
     await act(async () => { await flush(6); });
-    fireEvent.click(screen.getByText("Session C"));
+    fireEvent.click(screen.getByTestId("session-select-C"));
     await act(async () => { await flush(6); });
     expect(screen.getByLabelText("Opening session…")).toBeTruthy();
     expect(document.querySelector('[data-pending="true"]')?.textContent).toContain("Session C");

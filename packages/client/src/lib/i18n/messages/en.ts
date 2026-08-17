@@ -323,7 +323,7 @@ export const enLocale = {
     "desktop.uncommittedChanges": "Uncommitted changes. Force remove checkout?",
     "desktop.force": "Force",
     "desktop.appName": "Pix",
-    "desktop.sessions": "Sessions",
+    "desktop.sessions": "Recent",
     "desktop.primaryNav": "Primary",
     "desktop.projects": "Projects",
     "desktop.files": "Files",

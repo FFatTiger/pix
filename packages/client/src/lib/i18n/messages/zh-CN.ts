@@ -323,7 +323,7 @@ export const zhCNLocale = {
     "desktop.uncommittedChanges": "存在未提交的更改。要强制移除检出吗？",
     "desktop.force": "强制移除",
     "desktop.appName": "Pix",
-    "desktop.sessions": "会话",
+    "desktop.sessions": "最近",
     "desktop.primaryNav": "主要操作",
     "desktop.projects": "项目",
     "desktop.files": "文件",
