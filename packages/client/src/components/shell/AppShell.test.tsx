@@ -8,6 +8,7 @@ import type { WorkspaceSearch } from "@/lib/search-params";
 import { RuntimeProvider, useRuntimeStore } from "@/runtime/runtime-provider";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
+import { ThemeProvider } from "@/hooks/useTheme";
 import { HttpClientProvider } from "@/app/http-context";
 import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "@/runtime/testing/harness";
 import type { RuntimeSocketDeps } from "@/runtime/socket";
@@ -91,6 +92,7 @@ function stubFetch(): typeof fetch {
     }
     if (p.includes("/v1/sessions")) return json({ sessions: [], revision: 0 });
     if (p.includes("/v1/worktrees")) return json({ projectRoot: "/x", isGit: true, isTopLevel: true, worktrees: [] });
+    if (p.includes("/v1/themes")) return json({ themeSets: [] });
     if (p.includes("/v1/models")) return json({ models: [], defaultModel: null });
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
@@ -115,8 +117,10 @@ function mountApp(search: WorkspaceSearch) {
         <CapabilityProvider host={host}>
           <RuntimeProvider deps={fakeDeps()}>
             <I18nProvider>
-              <Capture />
-              <AppShell search={s} />
+              <ThemeProvider cwd={s.cwd ?? null}>
+                <Capture />
+                <AppShell search={s} />
+              </ThemeProvider>
             </I18nProvider>
           </RuntimeProvider>
         </CapabilityProvider>

@@ -600,8 +600,8 @@ export class SessionStore implements RuntimeSocketHandler {
     this.sessionStopped = false;
     this.ensureConnecting();
     // Identity-scoped single-flight: an attach to the SAME session is already in
-    // flight (the AppShell selection controller and a Composer activation can
-    // both ask concurrently) — reuse its deferred WITHOUT sending a duplicate
+    // flight (for example, a send activation and another explicit runtime action
+    // can ask concurrently) — reuse its deferred WITHOUT sending a duplicate
     // attach frame (the server would only answer the tracked attempt).
     if (this.attachAttempt && this.attachAttempt.sessionId === sessionId && this.attach) {
       return this.attach.promise;
@@ -635,9 +635,9 @@ export class SessionStore implements RuntimeSocketHandler {
       // the OLD session) settles. A late detach settle must NEVER strand or
       // un-attach the newer session: this detach owns the teardown ONLY while
       // the store is still on the detached session (sessionId unchanged) AND no
-      // newer attach to a different session is in flight. The session-bound
-      // cleanup below always runs (the detached session's live layer + pendings
-      // are dead regardless of who owns the attach now).
+      // newer attach to a different session is in flight. Session-bound cleanup
+      // runs only while this detach still owns that source session; otherwise it
+      // would erase the newer session's history and pending state.
       const stillOwnsAttach = this.sessionId === sessionId
         && (this.attach === null || this.attach.sessionId === sessionId);
       if (stillOwnsAttach) {
@@ -979,6 +979,33 @@ export class SessionStore implements RuntimeSocketHandler {
   }
 
   /**
+   * Tag a proven pre-dispatch activation failure without losing canonical error
+   * fields. Raw Error properties are non-enumerable, so object spread would
+   * otherwise collapse them to `{ phase }`; malformed/raw causes are projected
+   * to fixed sanitized fallback fields.
+   */
+  private activationFailure(cause: unknown): ProtocolError & { readonly phase: "activation" } {
+    if (cause !== null && typeof cause === "object") {
+      const candidate = cause as { code?: unknown; message?: unknown; retryable?: unknown; details?: unknown };
+      if (typeof candidate.code === "string" && typeof candidate.message === "string" && typeof candidate.retryable === "boolean") {
+        return {
+          code: candidate.code as ProtocolError["code"],
+          message: candidate.message,
+          retryable: candidate.retryable,
+          ...(candidate.details === undefined ? {} : { details: candidate.details }),
+          phase: "activation",
+        };
+      }
+    }
+    return {
+      code: "unavailable",
+      message: "session activation failed",
+      retryable: false,
+      phase: "activation",
+    };
+  }
+
+  /**
    * Send a prompt (ordinary command) with optional images. commandId is stable
    * across same-epoch retries. Text and image sends share ONE optimistic path
    * (bubble + speculative running overlay) — full parity. Single-flight: a
@@ -1026,10 +1053,7 @@ export class SessionStore implements RuntimeSocketHandler {
         // non-delivery. Remove the phantom bubble + overlay and reject tagged
         // `phase: "activation"` so the Composer restores/retains the draft.
         this.settlePromptTransaction(tx, { removeBubble: true });
-        const activationError = cause !== null && typeof cause === "object"
-          ? { ...(cause as Record<string, unknown>), phase: "activation" }
-          : { message: String(cause), retryable: false, phase: "activation" };
-        throw activationError;
+        throw this.activationFailure(cause);
       },
     );
   }

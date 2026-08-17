@@ -83,13 +83,13 @@ export function AppShell({ search }: AppShellProps) {
   // ── Session selection is READ-ONLY (0-Worker history invariant) ───────────
   // Selecting/browsing a session in the sidebar or via a ?session= deep link
   // MUST NOT activate/open a worker: the selected session stays a read-only
-  // history view with the Composer editable but inactive. The ONLY activation
-  // trigger is `sendPromptToSession` (the Composer's send) or an explicit
-  // non-history runtime action (e.g. create). If the runtime is currently
-  // attached to a DIFFERENT session, it is detached (fail-closed: stop the
-  // stale live stream / free its worker) but the newly selected history session
-  // is NEVER attached here. The detach is single-flight in the store, so a
-  // concurrent send-time transition cannot emit duplicate detach frames.
+  // history view while the Composer remains editable; sending is the activation
+  // trigger through `sendPromptToSession`. Explicit non-history runtime actions
+  // such as create keep their own lifecycle. If the runtime is attached to a
+  // DIFFERENT session, detach only its browser subscription/live stream (the
+  // Worker remains owned by sessiond); the selected history session is NEVER
+  // attached here. Detach is single-flight in the store, so a concurrent
+  // send-time transition cannot emit duplicate detach frames.
   useEffect(() => {
     if (!runtime.attached || !search.session) return;
     if (search.session === runtime.sessionId) return;
@@ -143,16 +143,14 @@ export function AppShell({ search }: AppShellProps) {
 
   // History/live coordination (D1A-2 phase 2 + history-switching fix).
   //
-  // The selected session is `search.session`. The runtime may be attached to a
-  // DIFFERENT session (e.g. the user was live on A and then clicked B in the
-  // sidebar without going through Continue live).
+  // The selected session is `search.session`. The runtime may still be attached
+  // to a DIFFERENT session (for example, the user was live on A and selected B).
   // D4: the currently attached/live session id is handed to the Sidebar so it
   // never offers a delete control for the live session (the server rejects live
-  // deletes with 409 anyway). The page fails-closed to the selected session's
-  // HISTORY view — never render A's live transcript, never enable the Composer,
-  // never show runtime actions — while the single selection owner (above)
-  // detaches A and opens B. The stale A stream stops as part of that one flow;
-  // there is NO separate mismatch-detach effect.
+  // deletes with 409 anyway). The page fails closed to B's HISTORY view: never
+  // render A's live transcript or runtime actions, but keep the Composer
+  // editable. The single selection effect above detaches A and does NOT open B;
+  // sending from B performs the only activation transition.
   const selectionMatchesLive =
     runtime.attached && (!search.session || search.session === runtime.sessionId);
 
