@@ -958,6 +958,35 @@ describe("Composer — activation-then-send (send is the activation intent, sing
     expect(capturedStore!.getSnapshot().sessionId).toBe("s2");
   });
 
+  it("first detached send gives prompt priority over attach-time stats/tools reads", async () => {
+    function SelectedComposer() {
+      const runtime = useRuntime();
+      return <Composer sessionId="s2" live={runtime.attached && runtime.sessionId === "s2"} />;
+    }
+
+    mount(<SelectedComposer />);
+    const ws = await driveReady();
+    typeAndSend("one enter only");
+    await flush();
+    const attach = lastFrame<{ type: string; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    expect(attach.payload.sessionId).toBe("s2");
+    await serverSend(ws, {
+      type: "snapshot",
+      id: attach.id,
+      payload: snapshotPayload({
+        sessionId: "s2",
+        capabilities: ["runtime.prompt", "runtime.abort", "runtime.stats", "runtime.tools.read"],
+      }),
+    });
+
+    const commands = ws.sent.filter((frame) => (frame as { type?: string }).type === "command") as Array<{ payload: { command: { type: string; message?: string } } }>;
+    expect(commands).toHaveLength(1);
+    expect(commands[0]!.payload.command.type).toBe("prompt");
+    expect(commands[0]!.payload.command.message).toBe("one enter only");
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("");
+  });
+
   it("stale/stopped attachment: sending re-attaches the exact session then sends", async () => {
     mount(<Composer sessionId="s1" live={false} />);
     const ws = await driveReady();

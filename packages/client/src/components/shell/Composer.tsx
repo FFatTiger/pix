@@ -436,38 +436,59 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     [live, state?.queuedMessages],
   );
 
-  // --- real session stats (runtime get_session_stats; runtime.stats gate) ---
-  // Fetched only while live + capability present. Refreshed from EXPLICIT
-  // lifecycle signals (sessionId + attachGeneration) — NOT from the whole
-  // `runtime` object (which changes identity on every stream event) and NOT from
-  // message counts (which tick during a stream). So a streaming session never
-  // refires the fetch; a fresh attach / session switch / detach / stop does. A
-  // generation + cancel guard drops late settles so a stale response can never
-  // pollute a newer session (no raw error is surfaced).
+  // --- serialized runtime info reads (single ordinary-command slot) ---------
+  // Stats and tools are independent UI projections but share the runtime's ONE
+  // ordinary command slot. Read them sequentially, never during an
+  // activation-then-send transaction, so neither can race the first prompt or
+  // each other. Explicit lifecycle signals drive refresh; stream deltas do not.
   const [sessionStatsData, setSessionStatsData] = useState<import("@fffattiger/pix-protocol").SessionStats | null>(null);
-  const sessionStatsGenRef = useRef(0);
+  const [tools, setToolsState] = useState<readonly ToolInfo[] | null>(null);
+  const runtimeInfoGenRef = useRef(0);
   useEffect(() => {
-    if (!live || !hasStats || !attachedSessionId) {
+    if (!live || !attachedSessionId) {
       setSessionStatsData(null);
+      setToolsState(null);
       return;
     }
-    const gen = ++sessionStatsGenRef.current;
+    if (runtime.promptPending) return;
+    const generation = ++runtimeInfoGenRef.current;
     let cancelled = false;
-    void runtime.getSessionStats().then(
-      (stats) => {
-        if (cancelled || gen !== sessionStatsGenRef.current) return;
-        setSessionStatsData(stats);
-      },
-      () => {
-        // Best-effort: a failed stats read never surfaces a raw error; the
-        // bar simply keeps the message-derived view.
-      },
-    );
+    const current = (): boolean => !cancelled && generation === runtimeInfoGenRef.current;
+    void (async () => {
+      if (hasStats) {
+        try {
+          const stats = await runtime.getSessionStats();
+          if (current()) setSessionStatsData(stats);
+        } catch {
+          // Best-effort: retain transcript-derived stats.
+        }
+      } else if (current()) {
+        setSessionStatsData(null);
+      }
+      if (!current()) return;
+      if (hasToolsRead) {
+        try {
+          const list = await runtime.getTools();
+          if (current()) setToolsState(list);
+        } catch {
+          // Best-effort: hide the preset when the read is unavailable.
+        }
+      } else if (current()) {
+        setToolsState(null);
+      }
+    })();
     return () => { cancelled = true; };
-    // `runtime.getSessionStats` is a STABLE command reference (see useRuntime),
-    // so omitting the whole `runtime` object here means streaming deltas never
-    // re-trigger the fetch — only the explicit lifecycle signal does.
-  }, [live, hasStats, attachedSessionId, runtime.attachGeneration, runtime.getSessionStats]);
+  }, [
+    live,
+    attachedSessionId,
+    hasStats,
+    hasToolsRead,
+    runtime.attachGeneration,
+    runtime.promptPending,
+    runtime.getSessionStats,
+    runtime.getTools,
+    state?.tools,
+  ]);
 
   const sessionStats = useMemo(() => {
     if (!selectedSessionId) return null;
@@ -477,30 +498,6 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // buildSessionStatsView already merges context with live snapshot priority;
   // never let the one-shot attach-time stats read overwrite a newer turn value.
   const contextUsage = sessionStats?.contextUsage ?? toContextUsageView(state?.contextUsage);
-
-  // --- tools preset (runtime getTools/setTools; none/full are real) ----------
-  // Fetched while live + capability present. Refresh keyed on the stable
-  // getTools command + the authoritative tool list reference (`state.tools` is
-  // an immutable array whose identity only changes when tools actually change,
-  // never on streaming deltas) — the whole `runtime` object is NOT a dep, so a
-  // streaming session never refires getTools per event.
-  const [tools, setToolsState] = useState<readonly ToolInfo[] | null>(null);
-  useEffect(() => {
-    if (!live || !hasToolsRead) {
-      setToolsState(null);
-      return;
-    }
-    let cancelled = false;
-    runtime
-      .getTools()
-      .then((list) => {
-        if (!cancelled) setToolsState(list);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [live, hasToolsRead, runtime.getTools, attachedSessionId, state?.tools]);
 
   const toolPreset = useMemo<"none" | "default" | "full" | undefined>(() => {
     if (!live || !hasToolsRead || !tools || tools.length === 0) return undefined;
