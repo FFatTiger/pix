@@ -96,14 +96,31 @@ describe("SessionInfoBar — real-stats gating + popover (F4)", () => {
     cleanup();
   });
 
-  it("shows the stats button when only real message counts exist (no tokens/context)", () => {
-    const sessionStats = stats({ userMessages: 1, assistantMessages: 1, totalMessages: 2 });
+  it("keeps total-only/message-only stats out of the compact footer", () => {
+    const sessionStats = stats({
+      userMessages: 1,
+      assistantMessages: 1,
+      totalMessages: 2,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 999 },
+    });
     renderBar({ sessionStats, contextUsage: null });
-    const statsBtn = screen.getByLabelText("Session info");
-    expect(statsBtn).toBeTruthy();
-    fireEvent.click(statsBtn);
-    expect(screen.getAllByText("Total").length).toBeGreaterThan(0);
-    expect(screen.getByText("2")).toBeTruthy();
+    expect(screen.queryByLabelText("Session info")).toBeNull();
+    expect(screen.queryByText("999")).toBeNull();
+    cleanup();
+  });
+
+  it("shows only input, output, combined cache and context percent in the footer summary", () => {
+    const sessionStats = stats({
+      tokens: { input: 100, output: 20, cacheRead: 40, cacheWrite: 10, total: 999 },
+      contextUsage: { percent: 55, contextWindow: 200_000, tokens: 110_000 },
+    });
+    renderBar({ sessionStats, contextUsage: sessionStats.contextUsage });
+    expect(screen.getByText("100")).toBeTruthy();
+    expect(screen.getByText("20")).toBeTruthy();
+    expect(screen.getByText("50")).toBeTruthy();
+    expect(screen.getByText("55%")).toBeTruthy();
+    expect(screen.queryByText("999")).toBeNull();
+    expect(screen.queryByText("$0.00")).toBeNull();
     cleanup();
   });
 
