@@ -6,6 +6,8 @@ import { createQueryOptions } from "@/api/query-keys";
 import { createSessionHistoryQueryOptions } from "@/api/session-history";
 import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
+import { isHiddenRailSession, latestRealProjectPath } from "@/lib/workspace-paths";
+import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
 import { Sidebar } from "@/components/shell/Sidebar";
@@ -48,6 +50,7 @@ export interface AppShellProps {
 export function AppShell({ search }: AppShellProps) {
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   const runtime = useRuntime();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const http = useHttpClient();
   const queryClient = useQueryClient();
@@ -145,6 +148,11 @@ export function AppShell({ search }: AppShellProps) {
     : titleSessionId === null
       ? null
       : titleSessionId.slice(0, 12);
+  const catalogCwd = search.cwd
+    ?? latestRealProjectPath(
+      (sessionsQuery.data?.sessions ?? []).filter((session) => !isHiddenRailSession(session)),
+    );
+  const isHome = search.session === undefined && !runtime.attached;
 
   // ── Project trust ─────────────────────────────────────────────────────────
   // Read and write stay independently capability-gated. The dialog only shows
@@ -521,23 +529,41 @@ export function AppShell({ search }: AppShellProps) {
       {/* Center: chat */}
       <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          <main className={`workspace${search.session === undefined && !runtime.attached ? " workspace--home" : ""}`}>
-            <TranscriptList
-              live={selectionMatchesLive}
-              {...(search.session === undefined ? {} : { sessionId: search.session })}
-            />
-
-            {selectionMatchesLive ? (
-              <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
-            ) : null}
-
-            <Composer
-              live={selectionMatchesLive}
-              textareaRef={composerTextareaRef}
-              onCreateSession={handleCreateSession}
-              {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
-              {...(search.session === undefined ? {} : { sessionId: search.session })}
-            />
+          <main className={`workspace${isHome ? " workspace--home" : ""}`}>
+            {isHome ? (
+              <div className="home-stack" data-testid="home-stack">
+                <div className="transcript-home" data-testid="transcript-home">
+                  <div className="transcript-home-logo" aria-hidden="true" />
+                  <h1 className="transcript-home-title">{t("desktop.startConversation")}</h1>
+                  <p className="transcript-home-copy">{t("desktop.startConversationHint")}</p>
+                </div>
+                <Composer
+                  live={false}
+                  textareaRef={composerTextareaRef}
+                  onCreateSession={handleCreateSession}
+                  {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
+                  {...(catalogCwd === null ? {} : { catalogCwd })}
+                />
+              </div>
+            ) : (
+              <>
+                <TranscriptList
+                  live={selectionMatchesLive}
+                  {...(search.session === undefined ? {} : { sessionId: search.session })}
+                />
+                {selectionMatchesLive ? (
+                  <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
+                ) : null}
+                <Composer
+                  live={selectionMatchesLive}
+                  textareaRef={composerTextareaRef}
+                  onCreateSession={handleCreateSession}
+                  {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
+                  {...(search.session === undefined ? {} : { sessionId: search.session })}
+                  {...(catalogCwd === null ? {} : { catalogCwd })}
+                />
+              </>
+            )}
           </main>
         </div>
       </div>

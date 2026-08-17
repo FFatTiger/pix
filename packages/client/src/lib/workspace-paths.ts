@@ -30,8 +30,8 @@ export function isEphemeralWorkspacePath(path: string): boolean {
 export function isAgentHomeWorkspacePath(path: string): boolean {
   const normalized = normalizePath(path).toLowerCase();
   return (
-    normalized.includes("/pi-claude-subagents/") ||
-    normalized.includes("/pi-subagents/") ||
+    /\/pi-claude-subagents(?:\/|$)/.test(normalized) ||
+    /\/pi-subagents(?:\/|$)/.test(normalized) ||
     normalized.includes("/.pi/agent/sessions") ||
     normalized.includes("/.pi/agent/pi-claude-subagents") ||
     normalized.includes("/.pi/pix/sessiond") ||
@@ -45,8 +45,33 @@ export function isNonProjectWorkspacePath(path: string): boolean {
 }
 
 /** True when a session header belongs to a hidden agent-home / scratch tree. */
-export function isHiddenRailSession(session: { cwd?: string; projectRoot?: string }): boolean {
+export function isHiddenRailSession(session: { cwd?: string | undefined; projectRoot?: string | undefined }): boolean {
   if (session.cwd && isNonProjectWorkspacePath(session.cwd)) return true;
   if (session.projectRoot && isNonProjectWorkspacePath(session.projectRoot)) return true;
   return false;
+}
+
+/** Most recently active real project from a session list, if any. */
+export function latestRealProjectPath(
+  sessions: readonly {
+    cwd?: string | undefined;
+    projectRoot?: string | undefined;
+    updatedAt?: number | undefined;
+    lastMessageAt?: number | undefined;
+    createdAt?: number | undefined;
+  }[],
+): string | null {
+  let bestPath: string | null = null;
+  let bestAt = Number.NEGATIVE_INFINITY;
+  for (const session of sessions) {
+    if (isHiddenRailSession(session)) continue;
+    const path = session.projectRoot || session.cwd;
+    if (!path || isNonProjectWorkspacePath(path)) continue;
+    const at = [session.updatedAt, session.lastMessageAt, session.createdAt]
+      .find((value): value is number => typeof value === "number" && Number.isFinite(value));
+    if (at === undefined || at < bestAt) continue;
+    bestAt = at;
+    bestPath = path;
+  }
+  return bestPath;
 }

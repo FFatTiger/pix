@@ -101,29 +101,20 @@ a:hover {
 
 .workspace--home {
   justify-content: center;
+  align-items: center;
 }
 
-/* TranscriptList sets flex:1 1 auto inline. Override so logo + composer
-   stay content-sized and center as one stack. */
-.workspace--home .transcript-region {
-  flex: 0 0 auto !important;
-  min-height: 0;
-}
-
-.workspace--home .transcript-scroll {
-  flex: 0 0 auto;
-  overflow: visible;
-  padding: 0 16px;
-}
-
-.workspace--home .transcript-inner,
-.workspace--home .chat-minimap {
-  display: none;
+.home-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: min(820px, calc(100% - 32px));
 }
 
 .workspace--home .chat-composer-region,
 .workspace--home .composer {
   flex: 0 0 auto;
+  width: 100%;
 }
 
 @media (min-width: 641px) {

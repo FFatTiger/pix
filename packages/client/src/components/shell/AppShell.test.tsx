@@ -922,14 +922,13 @@ describe("AppShell — source-like sidebar rail", () => {
       ],
       defaultModel: { id: "claude-sonnet-4", provider: "anthropic" },
     };
-    mountApp({ cwd: "/x" });
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
+    mountApp({});
     await settle();
-    expect(screen.getByTestId("transcript-home")).toBeTruthy();
+    const stack = screen.getByTestId("home-stack");
+    expect(stack.contains(screen.getByTestId("transcript-home"))).toBe(true);
+    expect(stack.contains(screen.getByLabelText("Change model"))).toBe(true);
     expect(screen.getByText("Start a conversation")).toBeTruthy();
-    const home = document.querySelector(".workspace--home") as HTMLElement | null;
-    expect(home).toBeTruthy();
-    expect(home!.querySelector(".transcript-home")).toBeTruthy();
-    expect(home!.querySelector(".chat-composer-region, .composer")).toBeTruthy();
     expect(document.querySelector(".composer--disabled")).toBeNull();
     expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
   });

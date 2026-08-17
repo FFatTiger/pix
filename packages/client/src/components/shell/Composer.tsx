@@ -89,6 +89,12 @@ export interface ComposerProps {
    */
   cwd?: string | null;
   /**
+   * Optional Host-catalog cwd when the URL has no project selected. Used only
+   * to keep the model picker honest on the empty home; file/skill indexes stay
+   * gated on the explicit project cwd.
+   */
+  catalogCwd?: string | null;
+  /**
    * Empty-home create: AppShell owns create + URL navigation. When the user
    * sends with no selected session, Composer asks the shell to create one and
    * then activates it exactly once. Omitted → send without a session is a no-op.
@@ -133,7 +139,7 @@ function getUserInputTexts(messages: readonly { role: string; content?: unknown 
   return history;
 }
 
-export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, onCreateSession }: ComposerProps) {
+export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, catalogCwd: catalogCwdProp, onCreateSession }: ComposerProps) {
   const runtime = useRuntime();
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   const http = useHttpClient();
@@ -155,6 +161,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // catalogs against. Falls back to the live snapshot's cwd when the prop is
   // omitted (legacy standalone mounts).
   const cwd = projectCwdProp ?? (live ? runtime.snapshot?.cwd ?? null : null);
+  const catalogCwd = cwd ?? catalogCwdProp ?? null;
   // Draft persistence key: the selected session id, or a per-cwd placeholder
   // while a brand-new (not-yet-created) session is selected.
   const draftKey = selectedSessionId ?? (cwd ? `new:${cwd}` : undefined);
@@ -217,8 +224,8 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // @ mention highlighting in the live transcript); the loaders below still run
   // project-cwd-scoped when the @ menu is used.
   const modelsQuery = useQuery({
-    ...createQueryOptions(http).models.list(cwd ?? ""),
-    enabled: canModels && Boolean(cwd),
+    ...createQueryOptions(http).models.list(catalogCwd ?? ""),
+    enabled: canModels && Boolean(catalogCwd),
   });
   const filesIndexQuery = useQuery({
     ...createQueryOptions(http).files.index(cwd ?? ""),
