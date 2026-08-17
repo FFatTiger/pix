@@ -1,8 +1,14 @@
 import { constants } from "node:fs";
-import { link, lstat, open, readdir, readFile, rm } from "node:fs/promises";
+import { link, lstat, open, readdir, rm } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
+import {
+  createSecureStateBackend,
+  LocalAuthorityError,
+  type FileIdentity,
+  type SecureStateBackend,
+} from "@fffattiger/pix-local-authority/state";
 import { SessiondError } from "./errors.js";
 import { readExistingSecret, SESSIOND_SECRET_MIN_BYTES } from "./internal/local-state-security.js";
 import {
@@ -37,10 +43,9 @@ export interface InstanceLockRecord {
  * owners and supervisors can fail closed instead of treating an unsafe lock as
  * a missing one and auto-removing it.
  */
-export interface InstanceLockIdentity {
-  readonly dev: bigint;
-  readonly ino: bigint;
-}
+export type InstanceLockIdentity =
+  | { readonly kind: "posix"; readonly dev: bigint; readonly ino: bigint }
+  | { readonly kind: "windows"; readonly volumeSerial: string; readonly fileId: string };
 
 export type InstanceLockRead =
   | { kind: "missing" }
@@ -53,34 +58,38 @@ export type InstanceLockRead =
  * payloads are reported as `{ kind: "unsafe" }` rather than silently
  * treated as absent.
  */
+function fileIdentityToLockIdentity(identity: FileIdentity): InstanceLockIdentity | undefined {
+  if (identity.kind === "posix" && identity.isFile && !identity.isSymbolicLink) {
+    return { kind: "posix", dev: BigInt(identity.dev), ino: BigInt(identity.ino) };
+  }
+  if (identity.kind === "windows" && identity.isFile && !identity.isReparsePoint) {
+    return { kind: "windows", volumeSerial: identity.volumeSerial, fileId: identity.fileId };
+  }
+  return undefined;
+}
+
 export async function readInstanceLockStrict(paths: SessiondPaths): Promise<InstanceLockRead> {
-  let info;
-  try {
-    info = await lstat(paths.lockFile, { bigint: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+  const backend = createSecureStateBackend();
+  const before = await backend.fileIdentity(paths.lockFile).catch(() => undefined);
+  if (before === null || before === undefined) {
+    if (before === null) return { kind: "missing" };
     return { kind: "unsafe", reason: "sessiond lock file is not readable" };
   }
-  if (info.isSymbolicLink() || !info.isFile()) {
+  const identity = fileIdentityToLockIdentity(before);
+  if (identity === undefined) {
     return { kind: "unsafe", reason: "sessiond lock file is not a regular file" };
   }
   let text: string;
   try {
-    text = await readFile(paths.lockFile, "utf8");
+    const read = await backend.readStateDocument(paths.lockFile, { maxBytes: 4096 });
+    if ("missing" in read) return { kind: "missing" };
+    text = read.content;
   } catch {
     return { kind: "unsafe", reason: "sessiond lock file is unreadable" };
   }
-  const after = await lstat(paths.lockFile, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
-    return undefined;
-  });
-  if (
-    after === undefined
-    || after.isSymbolicLink()
-    || !after.isFile()
-    || after.dev !== info.dev
-    || after.ino !== info.ino
-  ) {
+  const after = await backend.fileIdentity(paths.lockFile).catch(() => undefined);
+  const afterIdentity = after ? fileIdentityToLockIdentity(after) : undefined;
+  if (!afterIdentity || !sameLockIdentity(afterIdentity, identity)) {
     return { kind: "unsafe", reason: "sessiond lock file identity changed during read" };
   }
   try {
@@ -95,7 +104,7 @@ export async function readInstanceLockStrict(paths: SessiondPaths): Promise<Inst
         instanceId: parsed.instanceId,
         createdAt: typeof parsed.createdAt === "number" ? parsed.createdAt : 0,
       },
-      identity: { dev: info.dev, ino: info.ino },
+      identity,
     };
   } catch {
     return { kind: "unsafe", reason: "sessiond lock file is corrupt" };
@@ -163,7 +172,20 @@ function sameLockIdentity(
   left: InstanceLockIdentity,
   right: InstanceLockIdentity,
 ): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "posix" && right.kind === "posix") {
+    return left.dev === right.dev && left.ino === right.ino;
+  }
+  return left.kind === "windows"
+    && right.kind === "windows"
+    && left.volumeSerial === right.volumeSerial
+    && left.fileId === right.fileId;
+}
+
+function lockIdentityFromExclusive(identity: FileIdentity): InstanceLockIdentity {
+  const mapped = fileIdentityToLockIdentity(identity);
+  if (!mapped) throw new SessiondError("forbidden", "sessiond lock ownership could not be verified");
+  return mapped;
 }
 
 export async function acquireInstanceLock(
@@ -174,25 +196,13 @@ export async function acquireInstanceLock(
   // The containing directory must be preflighted private FIRST, and its
   // dev/ino identity re-verified immediately before the O_EXCL create below.
   await resolveSessiondPrivateDirectory(paths, privateDir);
+  const backend = createSecureStateBackend();
   const instanceId = randomUUID();
-  const payload = JSON.stringify({ pid: process.pid, instanceId, createdAt: Date.now() });
-  const flags = constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0);
+  const payload = `${JSON.stringify({ pid: process.pid, instanceId, createdAt: Date.now() })}\n`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const handle = await open(paths.lockFile, flags, 0o600);
-      let createdIdentity: InstanceLockIdentity;
-      try {
-        await handle.chmod(0o600);
-        await handle.writeFile(payload);
-        await handle.sync();
-        const created = await handle.stat({ bigint: true });
-        if (!created.isFile()) {
-          throw new SessiondError("forbidden", "sessiond lock ownership could not be verified");
-        }
-        createdIdentity = { dev: created.dev, ino: created.ino };
-      } finally {
-        await handle.close();
-      }
+      const created = await backend.createExclusivePrivateFile(paths.lockFile, payload, { maxBytes: 4096 });
+      const createdIdentity = lockIdentityFromExclusive(created.identity);
       const owned = await readInstanceLockStrict(paths);
       if (
         owned.kind !== "ok"
@@ -232,8 +242,8 @@ export async function acquireInstanceLock(
       };
     } catch (error) {
       if (error instanceof SessiondError) throw error;
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST" || attempt > 0) throw new SessiondError("conflict", "another sessiond instance is running");
+      const alreadyExists = error instanceof LocalAuthorityError && error.code === "ALREADY_EXISTS";
+      if (!alreadyExists || attempt > 0) throw new SessiondError("conflict", "another sessiond instance is running");
       // EEXIST: inspect the existing lock and fail closed on anything unsafe.
       // Only a *valid* lock naming a *dead* pid is stale debris we may remove;
       // corrupt/symlink/non-regular/unreadable locks are never auto-removed and
@@ -304,20 +314,77 @@ export interface LocalSecretTestHooks {
  *     is sole owner, so a 0-byte regular non-symlink `final` is removed and
  *     rebuilt. Any other malformed `final` (non-zero, unreadable) is fail-closed.
  */
+async function readExistingSecretForBackend(
+  backend: SecureStateBackend,
+  paths: SessiondPaths,
+  hooks: LocalSecretTestHooks,
+): Promise<string | undefined> {
+  if (backend.kind === "posix") {
+    return readExistingSecret(paths, hooks);
+  }
+  const before = await backend.fileIdentity(paths.secretFile);
+  if (before === null) return undefined;
+  if (before.kind !== "windows" || before.isReparsePoint || !before.isFile) {
+    throw new SessiondError("forbidden", "unsafe sessiond secret file");
+  }
+  if (BigInt(before.size) === 0n) {
+    await hooks.beforeZeroByteRemoval?.();
+    const beforeRemove = await backend.fileIdentity(paths.secretFile);
+    if (
+      beforeRemove === null
+      || beforeRemove.kind !== "windows"
+      || beforeRemove.fileId !== before.fileId
+      || beforeRemove.volumeSerial !== before.volumeSerial
+    ) {
+      return undefined;
+    }
+    await rm(paths.secretFile, { force: true });
+    return undefined;
+  }
+  await hooks.beforeSecretRead?.();
+  const read = await backend.readStateDocument(paths.secretFile, { maxBytes: 1024 });
+  if ("missing" in read) return undefined;
+  const after = await backend.fileIdentity(paths.secretFile);
+  if (
+    after === null
+    || after.kind !== "windows"
+    || after.fileId !== before.fileId
+    || after.volumeSerial !== before.volumeSerial
+  ) {
+    throw new SessiondError("forbidden", "sessiond secret file identity changed during read");
+  }
+  const secret = read.content.trim();
+  if (secret.length < SESSIOND_SECRET_MIN_BYTES) {
+    throw new SessiondError("internal", "invalid sessiond secret");
+  }
+  return secret;
+}
+
 export async function loadOrCreateLocalSecret(
   paths: SessiondPaths,
   hooks: LocalSecretTestHooks = {},
   privateDir?: SessiondPrivateDirectory,
 ): Promise<string> {
   // The containing directory must be preflighted private FIRST, and its
-  // dev/ino identity re-verified immediately before any temp create/sweep.
+  // identity re-verified immediately before any exclusive create/sweep.
   await resolveSessiondPrivateDirectory(paths, privateDir);
-  await sweepStaleSecretTemps(paths);
+  const backend = createSecureStateBackend();
+  if (backend.kind === "posix") await sweepStaleSecretTemps(paths);
   for (let attempt = 0; ; attempt += 1) {
-    const existing = await readExistingSecret(paths, hooks);
+    const existing = await readExistingSecretForBackend(backend, paths, hooks);
     if (existing !== undefined) return existing;
     if (attempt > 8) throw new SessiondError("conflict", "sessiond secret publish did not converge");
     const secret = randomBytes(SECRET_MIN_BYTES).toString("base64url");
+    if (backend.kind === "windows") {
+      try {
+        await backend.createExclusivePrivateFile(paths.secretFile, `${secret}\n`, { maxBytes: 1024 });
+        await hooks.beforePublish?.();
+        return secret;
+      } catch (error) {
+        if (error instanceof LocalAuthorityError && error.code === "ALREADY_EXISTS") continue;
+        throw error;
+      }
+    }
     const temp = `${paths.secretFile}.${process.pid}.${randomUUID()}${SECRET_TEMP_SUFFIX}`;
     try {
       const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
@@ -330,15 +397,11 @@ export async function loadOrCreateLocalSecret(
       await hooks.beforePublish?.();
       try {
         await link(temp, paths.secretFile);
-        return secret; // published; temp removed in finally (hard link → final keeps the inode)
+        return secret;
       } catch (error) {
-        // Lost the race: another process published a complete secret first.
-        // Loop and adopt theirs rather than overwriting.
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
     } finally {
-      // Temp removal must never disrupt a successful publish (or mask its error);
-      // force:true already ignores ENOENT, so this only swallows exotic failures.
       await rm(temp, { force: true }).catch(() => {});
     }
   }

@@ -236,6 +236,7 @@ const LOCAL_TO_HOST_CODES: Record<LocalAuthorityCode, HostStateDirectoryCode> = 
   LOCK_STALE: "LOCK_STALE",
   LOCK_LOST: "DOC_LOCK_LOST",
   LOCK_AMBIGUOUS: "LOCK_UNSAFE",
+  ALREADY_EXISTS: "DOC_WRITE_FAILED",
 };
 
 /** Fixed Host messages for each local-authority code (never leak paths/payloads). */
@@ -264,6 +265,7 @@ const LOCAL_TO_HOST_MESSAGES: Record<LocalAuthorityCode, string> = {
   LOCK_STALE: "Host directory lock is stale; verify the old process is dead and remove the lock explicitly",
   LOCK_LOST: "Host directory lock ownership lost before publish",
   LOCK_AMBIGUOUS: "Host directory lock identity is ambiguous",
+  ALREADY_EXISTS: "Atomic state document write failed",
 };
 
 /** Convert a local-authority error into the fixed Host lease error; rethrow others. */

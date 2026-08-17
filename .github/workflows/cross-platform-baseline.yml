@@ -1,8 +1,9 @@
 # CP-04 CI honesty skeleton.
 # Required-green tooling proves install, architecture, portable root scripts,
 # typecheck, and build on all three OS runners. POSIX product tests run in their
-# own required job. Windows secure-state/product tests remain a separate
-# non-blocking known-gap until the native backend is implemented.
+# own required job. Windows sessiond now has a required start/shutdown smoke
+# after the native secure-state backend; remaining Windows product gaps stay
+# out of this job.
 # No signing, secrets, or release promotion.
 
 name: Cross-platform baseline
@@ -71,11 +72,10 @@ jobs:
       - name: Diff whitespace
         run: git diff --check
 
-  windows-product-known-gap:
-    name: windows product known-gap (non-blocking)
+  windows-sessiond-smoke:
+    name: windows sessiond start/shutdown smoke
     runs-on: windows-latest
-    timeout-minutes: 15
-    continue-on-error: true
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -84,25 +84,7 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
-      - name: Build CLI/sessiond needed for the product entry
-        run: npm run build --workspace @fffattiger/pix-sessiond --workspace @fffattiger/pix-cli
-      - name: Prove the current Windows sessiond startup failure contract
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          $output = & node packages/cli/bin/pix-sessiond.mjs 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -eq 0) {
-            Write-Error "Windows product smoke unexpectedly succeeded; move this seam into the required tooling job instead of inventing a known-gap pass."
-            exit 1
-          }
-          if ($output -notmatch "sessiond private directory path is invalid") {
-            Write-Error "Windows product smoke failed, but not with the frozen private-directory contract. Update CP-04 after diagnosing the new failure."
-            exit 1
-          }
-          if ($output -match "WSL") {
-            Write-Error "Windows product diagnostic must not recommend WSL."
-            exit 1
-          }
-          Write-Host "Known gap confirmed: native Windows sessiond still fails closed before named-pipe bind."
+      - name: Build sessiond test surface
+        run: npm run build:test --workspace @fffattiger/pix-sessiond
+      - name: Start and stop a dedicated Windows sessiond
+        run: node scripts/run-node-test.mjs --test-name-pattern="Windows sessiond can start" "packages/sessiond/dist-test/test/private-dir-daemon.test.js"

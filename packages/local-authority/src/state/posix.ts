@@ -48,6 +48,8 @@ import {
   isValidInstanceId,
   LocalAuthorityError,
   type AcquireLifetimeLockOptions,
+  type CreateExclusivePrivateFileOptions,
+  type ExclusivePrivateFile,
   type EnsurePrivateDirectoryOptions,
   type EnsurePrivateDirectoryResult,
   type LifetimeLockOwnership,
@@ -886,6 +888,51 @@ export async function acquireLifetimeLock(
  * Release the lock only when its exact record instanceId AND dev/ino identity
  * match this handle. A wrong instance or a replaced lock is never removed.
  */
+export async function createExclusivePrivateFile(
+  path: string,
+  payload: string,
+  options: CreateExclusivePrivateFileOptions,
+): Promise<ExclusivePrivateFile> {
+  if (Buffer.byteLength(payload, "utf8") > options.maxBytes) {
+    throw new LocalAuthorityError("DOC_OVERSIZE", "Serialized state document exceeds size bound");
+  }
+  try {
+    const handle = await open(path, openFlags(), 0o600);
+    try {
+      await handle.chmod(0o600);
+      await handle.writeFile(payload, "utf8");
+      await handle.sync();
+      const st = await handle.stat();
+      if (!st.isFile()) {
+        throw new LocalAuthorityError("LOCK_UNSAFE", "Lifetime lock ownership could not be pinned");
+      }
+      return {
+        identity: {
+          kind: "posix",
+          dev: st.dev,
+          ino: st.ino,
+          mode: st.mode,
+          nlink: st.nlink,
+          size: st.size,
+          uid: st.uid,
+          gid: st.gid,
+          isFile: true,
+          isDirectory: false,
+          isSymbolicLink: false,
+        },
+      };
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (error instanceof LocalAuthorityError) throw error;
+    if (errnoCode(error) === "EEXIST") {
+      throw new LocalAuthorityError("ALREADY_EXISTS", "Exclusive private file already exists");
+    }
+    throw new LocalAuthorityError("WRITE_FAILED", "Atomic state document write failed");
+  }
+}
+
 export async function releaseLifetimeLock(
   path: string,
   options: ReleaseLifetimeLockOptions,
@@ -940,5 +987,6 @@ export function createPosixSecureStateBackend(
     readLifetimeLock: (path) => readLifetimeLock(path),
     releaseLifetimeLock: (path, opts) => releaseLifetimeLock(path, opts),
     isPidAlive: (pid) => isPidAlive(pid),
+    createExclusivePrivateFile: (path, payload, opts) => createExclusivePrivateFile(path, payload, opts),
   };
 }

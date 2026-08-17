@@ -8,6 +8,8 @@ import {
   isValidInstanceId,
   LocalAuthorityError,
   type AcquireLifetimeLockOptions,
+  type CreateExclusivePrivateFileOptions,
+  type ExclusivePrivateFile,
   type EnsurePrivateDirectoryOptions,
   type EnsurePrivateDirectoryResult,
   type LifetimeLockReadResult,
@@ -412,6 +414,39 @@ export async function acquireWindowsLifetimeLock(
   }
 }
 
+export async function createWindowsExclusivePrivateFile(
+  path: string,
+  payload: string,
+  options: CreateExclusivePrivateFileOptions,
+): Promise<ExclusivePrivateFile> {
+  if (Buffer.byteLength(payload, "utf8") > options.maxBytes) {
+    throw new LocalAuthorityError("DOC_OVERSIZE", "Serialized state document exceeds size bound");
+  }
+  const binding = requireBinding();
+  const principal = currentWindowsPrincipal();
+  try {
+    createPrivate(binding, path, "file");
+    const handle = await open(path, constants.O_WRONLY);
+    try {
+      await handle.writeFile(payload, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const inspection = inspectOrThrow(binding, path);
+    if (!inspection) {
+      throw new LocalAuthorityError("WRITE_FAILED", "Atomic state document write failed");
+    }
+    return { identity: requirePrivateRegularFile(inspection, principal, "DOC_OVERSIZE") };
+  } catch (error) {
+    if (error instanceof LocalAuthorityError) throw error;
+    if (error instanceof NativeAlreadyExistsError) {
+      throw new LocalAuthorityError("ALREADY_EXISTS", "Exclusive private file already exists");
+    }
+    throw new LocalAuthorityError("WRITE_FAILED", "Atomic state document write failed");
+  }
+}
+
 export async function releaseWindowsLifetimeLock(
   path: string,
   options: ReleaseLifetimeLockOptions,
@@ -444,6 +479,7 @@ export function createWindowsSecureStateBackend(): WindowsSecureStateBackend {
     readLifetimeLock: (path) => readWindowsLifetimeLock(path),
     releaseLifetimeLock: (path, opts) => releaseWindowsLifetimeLock(path, opts),
     isPidAlive: (pid) => isWindowsPidAlive(pid),
+    createExclusivePrivateFile: (path, payload, opts) => createWindowsExclusivePrivateFile(path, payload, opts),
   };
 }
 

@@ -3569,3 +3569,14 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Focused local-authority backend/native/path/identity/security/factory tests PASS.
 - Host dedicated Windows lease open/write/read PASS; `C:\\` remains `HOST_DIR_INVALID` without path leak.
 - Independent verifier PASS: DACL allowlist, inherited/unprotected fail-closed, junction create-behind rejected, NUL no mix-up, `LOCK_BUSY` + identity-pinned release, factory selection, public surface isolation, sessiond still POSIX-preflight blocked.
+
+---
+
+## 75. Cross-platform CP-07C — sessiond selects the platform factory
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `9238a9c`.
+- sessiond private-directory preflight now calls `createSecureStateBackend()` before any path walk. Windows uses the native SID/DACL/file-ID backend; POSIX keeps the existing sessiond walk and fd-pin policy.
+- Instance-lock identity is a posix/windows discriminated union. Exclusive create goes through `createExclusivePrivateFile`. Windows secret create is exclusive no-replace; POSIX secret still uses temp + `link`.
+- Dedicated Windows sessiond can start a named pipe and reject a second live instance with `conflict`. Inherited `mkdtemp` dirs remain fail-closed.
+- CI replaces the stale `sessiond private directory path is invalid` known-gap with a required Windows start/shutdown smoke. Named-pipe DACL, Job Object, and Windows product support are still not claimed.
+- Sessiond user-facing `NOT_PRIVATE` copy is platform-neutral (`must be private`). Windows tests no longer treat POSIX mode bits as privacy proof.

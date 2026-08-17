@@ -51,7 +51,8 @@ export type LocalAuthorityCode =
   | "LOCK_BUSY"           // another live process holds the lock
   | "LOCK_STALE"          // lock belongs to a dead pid; never auto-reclaimed
   | "LOCK_LOST"           // held lock identity vanished before an atomic publish
-  | "LOCK_AMBIGUOUS";     // lock existed at O_EXCL but vanished before identity pin
+  | "LOCK_AMBIGUOUS"      // lock existed at O_EXCL but vanished before identity pin
+  | "ALREADY_EXISTS";     // exclusive create found an existing private file
 
 export class LocalAuthorityError extends Error {
   readonly code: LocalAuthorityCode;
@@ -180,10 +181,18 @@ export interface AcquireLifetimeLockOptions {
 }
 
 export interface ReleaseLifetimeLockOptions {
-  /** The exact dev/ino identity this handle created. */
+  /** The exact platform identity this handle created. */
   ownership: LifetimeLockOwnership;
   /** The lock record instanceId this handle owns. */
   instanceId: string;
+}
+
+export interface CreateExclusivePrivateFileOptions {
+  maxBytes: number;
+}
+
+export interface ExclusivePrivateFile {
+  identity: FileIdentity;
 }
 
 /**
@@ -217,6 +226,8 @@ interface SecureStateBackendBase {
   releaseLifetimeLock(path: string, options: ReleaseLifetimeLockOptions): Promise<void>;
   /** Platform-native pid-liveness probe. */
   isPidAlive(pid: number): boolean;
+  /** Exclusive no-replace private-file create (O_EXCL / CREATE_NEW). */
+  createExclusivePrivateFile(path: string, payload: string, options: CreateExclusivePrivateFileOptions): Promise<ExclusivePrivateFile>;
 }
 
 export interface PosixSecureStateBackend extends SecureStateBackendBase {

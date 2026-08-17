@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm as rmAsync, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test, { afterEach } from "node:test";
 import { LocalAuthorityError } from "@fffattiger/pix-local-authority/state";
 import { SessiondError } from "../src/errors.js";
@@ -88,13 +88,15 @@ test("startDaemon fails closed on an existing 0755 runtime dir (forbidden, fixed
       (error: unknown) => {
         assert.ok(isForbidden(error), "must be SessiondError forbidden");
         const message = (error as SessiondError).message;
-        assert.ok(/0700/.test(message), `remediation note present: ${message}`);
+        assert.ok(/private/.test(message), `remediation note present: ${message}`);
         assert.ok(!message.includes(dir), `no runtime dir path in message: ${message}`);
         return true;
       },
     );
-    // No partial mutation: mode untouched, no lock/secret/socket artifacts.
-    assert.equal(lstatSync(dir).mode & 0o777, 0o755, "existing dir never chmod'd");
+    // No partial mutation: POSIX mode stays 0755; Windows mode bits are not the privacy proof.
+    if (!isWindows) {
+      assert.equal(lstatSync(dir).mode & 0o777, 0o755, "existing dir never chmod'd");
+    }
     assert.deepEqual(readdirSync(dir), [], "no partial lock/secret/socket artifacts");
   } finally {
     await rmSync(dir, { recursive: true, force: true });
@@ -143,7 +145,9 @@ test("startDaemon fails closed on a symlink runtime-dir leaf (fixed SYMLINK→fo
         return true;
       },
     );
-    assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
+    if (!isWindows) {
+      assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
+    }
     assert.equal(await readFile(marker, "utf8"), "payload", "target content untouched");
   } finally {
     await rmSync(base, { recursive: true, force: true });
@@ -172,14 +176,32 @@ test("secret marker probe: no raw path/errno leakage in any daemon-level thrown 
   }
 });
 
+test("Windows sessiond can start against a dedicated private directory", { skip: !isWindows }, async () => {
+  const parent = tempDir("sessiond-win-");
+  const dir = join(parent, "runtime");
+  const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+  try {
+    assert.ok(handle.endpoint.startsWith("\\\\.\\pipe\\pix-sessiond-"));
+    assert.equal(typeof handle.secret, "string");
+    assert.ok(handle.secret.length >= 32);
+    await assert.rejects(
+      startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } }),
+      (error: unknown) => error instanceof SessiondError && error.code === "conflict",
+    );
+  } finally {
+    await handle.shutdown();
+  }
+});
+
 test("acquireInstanceLock with a swapped directory ctx fails closed (bounded re-verify wiring)", async () => {
-  const dir = await tempDir();
+  const parent = tempDir();
+  const dir = join(parent, "runtime");
   const paths = sessiondPaths(dir);
   try {
     const ctx = await ensureSessiondPrivateDirectory(dir);
     // Swap the directory after preflight; the lock acquire must re-verify and
     // fail closed (UNSAFE_COMPONENT) instead of mutating the replacement.
-    const moved = join(dirname(dir), `.${dir.split("/").pop()}.moved`);
+    const moved = join(dirname(dir), `.${basename(dir)}.moved`);
     renameSync(dir, moved);
     temporary.push(moved);
     mkdirSync(dir, { mode: 0o700 });
@@ -195,11 +217,12 @@ test("acquireInstanceLock with a swapped directory ctx fails closed (bounded re-
 });
 
 test("loadOrCreateLocalSecret with a swapped directory ctx fails closed", async () => {
-  const dir = await tempDir();
+  const parent = tempDir();
+  const dir = join(parent, "runtime");
   const paths = sessiondPaths(dir);
   try {
     const ctx = await ensureSessiondPrivateDirectory(dir);
-    const moved = join(dirname(dir), `.${dir.split("/").pop()}.moved`);
+    const moved = join(dirname(dir), `.${basename(dir)}.moved`);
     renameSync(dir, moved);
     temporary.push(moved);
     mkdirSync(dir, { mode: 0o700 });

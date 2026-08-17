@@ -39,11 +39,12 @@ import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import {
   canonicalizeAbsolutePath,
+  createSecureStateBackend,
   currentPrincipal,
   hasControlChar,
   isOwnedByCurrentUser,
   LocalAuthorityError,
-  posixFileIdentity,
+  type FileIdentity,
   type LocalAuthorityCode,
   type PosixFileIdentity,
 } from "@fffattiger/pix-local-authority/state";
@@ -75,7 +76,7 @@ export const SESSIOND_PRIVATE_DIR_MESSAGES: Record<LocalAuthorityCode, string> =
   SYMLINK: "sessiond private directory must not contain symbolic links",
   NOT_OWNED: "sessiond private directory must be owned by the current user",
   NOT_PRIVATE:
-    "sessiond private directory mode must be 0700 (sessiond never modifies existing directories; fix the mode and retry)",
+    "sessiond private directory must be private (sessiond never modifies existing directories; fix the directory and retry)",
   NOT_REGULAR: "sessiond private directory could not be verified",
   DOC_SYMLINK: "sessiond private directory could not be verified",
   DOC_UNREADABLE: "sessiond private directory could not be verified",
@@ -89,6 +90,7 @@ export const SESSIOND_PRIVATE_DIR_MESSAGES: Record<LocalAuthorityCode, string> =
   LOCK_STALE: "sessiond private directory could not be verified",
   LOCK_LOST: "sessiond private directory could not be verified",
   LOCK_AMBIGUOUS: "sessiond private directory could not be verified",
+  ALREADY_EXISTS: "sessiond private directory could not be verified",
 };
 
 function errnoCode(error: unknown): string | undefined {
@@ -131,8 +133,8 @@ export interface SessiondPrivateDirectory {
   readonly operationalPath: string;
   /** True when the final leaf was newly created by this call (0700 via fd). */
   readonly created: boolean;
-  /** Stable identity (dev/ino/uid/gid/mode) of the directory leaf. */
-  readonly identity: PosixFileIdentity;
+  /** Stable platform identity of the directory leaf. */
+  readonly identity: FileIdentity;
 }
 
 /**
@@ -436,7 +438,39 @@ function realFs(): EnsurePrivateDirectoryFs {
  * secret / socket paths — the returned {@link SessiondPrivateDirectory} carries
  * both and the stable identity for {@link reverifySessiondPrivateDirectory}.
  */
+function sameDirectoryIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  if (left.kind !== right.kind || !left.isDirectory || !right.isDirectory) return false;
+  if (left.kind === "posix" && right.kind === "posix") {
+    return !left.isSymbolicLink && !right.isSymbolicLink && left.dev === right.dev && left.ino === right.ino;
+  }
+  if (left.kind === "windows" && right.kind === "windows") {
+    return !left.isReparsePoint && !right.isReparsePoint
+      && left.volumeSerial === right.volumeSerial
+      && left.fileId === right.fileId;
+  }
+  return false;
+}
+
 export async function ensureSessiondPrivateDirectory(directory: string): Promise<SessiondPrivateDirectory> {
+  const backend = createSecureStateBackend();
+  if (backend.kind === "windows") {
+    const existing = await backend.fileIdentity(directory);
+    if (existing?.isReparsePoint) {
+      throw new LocalAuthorityError("SYMLINK", SESSIOND_PRIVATE_DIR_MESSAGES.SYMLINK);
+    }
+    const canonical = await backend.canonicalizePath(directory);
+    const result = await backend.ensurePrivateDirectory(canonical);
+    if (result.identity.kind !== "windows") {
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+    }
+    return {
+      canonicalPath: result.path,
+      operationalPath: directory,
+      created: result.created,
+      identity: result.identity,
+    };
+  }
+
   // Reject a symlink at the OPERATIONAL leaf before any creation/validation: the
   // canonical walk would otherwise resolve it away (canonicalization resolves
   // pre-existing symlinks — including the macOS `/var` system alias as an
@@ -472,14 +506,9 @@ export async function ensureSessiondPrivateDirectory(directory: string): Promise
  * fail-closed.
  */
 export async function reverifySessiondPrivateDirectory(ctx: SessiondPrivateDirectory): Promise<void> {
-  const identity = await posixFileIdentity(ctx.operationalPath);
-  if (
-    identity === null
-    || identity.isSymbolicLink
-    || !identity.isDirectory
-    || identity.dev !== ctx.identity.dev
-    || identity.ino !== ctx.identity.ino
-  ) {
+  const backend = createSecureStateBackend();
+  const identity = await backend.fileIdentity(ctx.operationalPath);
+  if (identity === null || !sameDirectoryIdentity(identity, ctx.identity)) {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
   }
 }

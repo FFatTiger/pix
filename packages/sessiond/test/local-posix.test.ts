@@ -190,7 +190,9 @@ test("production entry rejects a symlink LEAF (fixed SYMLINK, target untouched)"
   symlinkSync(real, link);
 
   await expectReject(() => ensureSessiondPrivateDirectory(link), "SYMLINK");
-  assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
+  if (process.platform !== "win32") {
+    assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
+  }
   assert.equal(readFileSync(payload, "utf8"), "payload", "target content untouched");
 });
 
@@ -245,10 +247,16 @@ test("production entry creates a missing runtime directory 0700 (created:true, c
   const ctx = await ensureSessiondPrivateDirectory(leaf);
   assert.equal(ctx.created, true);
   assert.equal(ctx.operationalPath, leaf);
-  assert.equal(lstatSync(leaf).mode & 0o777, 0o700);
-  // The canonical path resolves the macOS /var system alias (no symlink components).
-  assert.equal(lstatSync(ctx.canonicalPath).dev, lstatSync(leaf).dev);
-  assert.equal(lstatSync(ctx.canonicalPath).ino, lstatSync(leaf).ino);
+  if (process.platform === "win32") {
+    assert.equal(ctx.identity.kind, "windows");
+    assert.equal(ctx.identity.isDirectory, true);
+    assert.equal(ctx.identity.isReparsePoint, false);
+  } else {
+    assert.equal(lstatSync(leaf).mode & 0o777, 0o700);
+    // The canonical path resolves the macOS /var system alias (no symlink components).
+    assert.equal(lstatSync(ctx.canonicalPath).dev, lstatSync(leaf).dev);
+    assert.equal(lstatSync(ctx.canonicalPath).ino, lstatSync(leaf).ino);
+  }
 });
 
 // ---------------------------------------------------------------------------
