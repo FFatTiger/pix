@@ -16,5 +16,8 @@ describe("sidebar rail motion", () => {
     expect(sessionSelect).toContain("transform: none");
     expect(css).not.toMatch(/\.sidebar-list-row:active[^{]*\{[\s\S]*transform:\s*scale/);
     expect(css).not.toMatch(/\.sidebar-session-select:active[^{]*\{[\s\S]*transform:\s*scale/);
+    expect(css).toContain(".sidebar-list-row:hover .sidebar-row-status");
+    expect(css).toContain(".sidebar-row-actions .sidebar-icon-btn {");
+    expect(css).toContain("background: var(--bg-panel);");
   });
 });

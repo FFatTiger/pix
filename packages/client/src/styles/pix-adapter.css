@@ -1229,14 +1229,35 @@ html.dark .catalog-meta-item--error {
   align-items: center;
   justify-content: flex-end;
   gap: 1px;
+  padding: 1px;
+  border-radius: 8px;
+  background: var(--bg-panel);
   transform: translateY(-50%);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
 }
 
+.sidebar-list-row[data-active="true"] .sidebar-row-actions {
+  background: var(--bg-selected);
+}
+
+.sidebar-row-actions .sidebar-icon-btn {
+  background: var(--bg-panel);
+}
+
+.sidebar-list-row[data-active="true"] .sidebar-row-actions .sidebar-icon-btn {
+  background: var(--bg-selected);
+}
+
+.sidebar-row-actions .sidebar-icon-btn:hover {
+  background: var(--bg-hover);
+}
+
 .sidebar-list-row:hover .sidebar-row-meta,
 .sidebar-list-row:focus-within .sidebar-row-meta,
+.sidebar-list-row:hover .sidebar-row-status,
+.sidebar-list-row:focus-within .sidebar-row-status,
 .sidebar-list-row:hover .sidebar-fork-caret,
 .sidebar-list-row:focus-within .sidebar-fork-caret {
   opacity: 0;

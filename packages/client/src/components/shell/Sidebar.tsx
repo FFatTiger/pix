@@ -1001,6 +1001,7 @@ function RunningSessionIndicator() {
 
   return (
     <span
+      className="sidebar-row-status"
       title={t("desktop.agentRunning")}
       aria-label={t("desktop.agentRunningLabel")}
       style={{
@@ -1047,6 +1048,7 @@ function PendingSessionIndicator() {
 
   return (
     <span
+      className="sidebar-row-status"
       title={t("desktop.openingSession")}
       aria-label={t("desktop.openingSession")}
       style={{
