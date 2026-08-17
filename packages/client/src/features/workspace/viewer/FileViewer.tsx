@@ -110,6 +110,7 @@ function WatchStatusBadge({ state, detail }: WatchStatusInfo) {
   const { t } = useI18n();
   if (state !== "reconnecting" && state !== "closed") return null;
   const closed = state === "closed";
+  const statusColor = closed ? "var(--status-danger)" : "var(--status-warning)";
   return (
     <span
       role="status"
@@ -125,9 +126,9 @@ function WatchStatusBadge({ state, detail }: WatchStatusInfo) {
         fontSize: 10,
         fontWeight: 600,
         letterSpacing: "0.02em",
-        color: closed ? "#f87171" : "#f59e0b",
-        background: closed ? "color-mix(in srgb, #f87171 12%, var(--bg-panel))" : "color-mix(in srgb, #f59e0b 12%, var(--bg-panel))",
-        border: `1px solid ${closed ? "color-mix(in srgb, #f87171 45%, var(--border))" : "color-mix(in srgb, #f59e0b 45%, var(--border))"}`,
+        color: statusColor,
+        background: `color-mix(in srgb, ${statusColor} 12%, var(--bg-panel))`,
+        border: `1px solid color-mix(in srgb, ${statusColor} 45%, var(--border))`,
         flexShrink: 0,
       }}
     >
