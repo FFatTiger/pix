@@ -1,6 +1,10 @@
 /**
- * Cross-package theme vocabulary contract — the dedicated single-authority
- * seam for theme grammar.
+ * Cross-package theme vocabulary contract — the dedicated cross-package
+ * semantic/architecture contract seam for theme grammar.
+ *
+ * This package (`packages/cross-package-contract-tests`) is TEST-ONLY: its
+ * sole purpose is pinning parity between otherwise-independent package
+ * projections. It has no production exports and no runtime consumers.
  *
  * `packages/runtime-core/src/themes.ts` owns the ONE canonical theme domain
  * vocabulary: the CSS variable key whitelist (`THEME_CSS_VAR_KEYS`) and the
@@ -9,12 +13,12 @@
  * share no types as a shortcut) and Host cannot import runtime-core (host
  * boundary gate), so both keep frozen PROJECTIONS of that vocabulary.
  *
- * This test-only package is the seam that pins the protocol projection to the
- * canonical authority by SEMANTIC parity — key-for-key and accept-for-accept —
- * never by a magic count that could drift while the two lists diverge. The
- * host theme route tests then pin the host projection to the protocol
- * projection (host's real peer), so any drift in either projection fails a
- * test instead of silently diverging the sanitizers.
+ * These tests pin the protocol projection to the canonical authority by
+ * SEMANTIC parity — key-for-key and accept-for-accept — never by a magic
+ * count that could drift while the two lists diverge. The host theme route
+ * tests then pin the host projection to the protocol projection (host's real
+ * peer), so any drift in either projection fails a test instead of silently
+ * diverging the sanitizers.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

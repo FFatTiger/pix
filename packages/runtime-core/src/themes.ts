@@ -19,7 +19,7 @@
  * The wire contract (`@fffattiger/pix-protocol`) and Host sanitization
  * (`packages/host`) cannot import this package (architecture rules 4/7 and the
  * host boundary gate), so they keep frozen PROJECTIONS of this vocabulary and
- * cross-package contract tests (`packages/runtime-contract-tests` and the host
+ * cross-package contract tests (`packages/cross-package-contract-tests` and the host
  * theme route tests) enforce semantic parity. Do not extend the vocabulary
  * here without updating those projections and their parity tests.
  */

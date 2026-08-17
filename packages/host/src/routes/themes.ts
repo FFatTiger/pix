@@ -20,7 +20,7 @@
  * `packages/runtime-core/src/themes.ts` (this module cannot import
  * runtime-core — the host boundary gate) — same keys, same accept/reject
  * behavior — and the host theme route tests enforce semantic parity against
- * the protocol projection (which the runtime-contract-tests seam pins to
+ * the protocol projection (which the cross-package-contract-tests seam pins to
  * runtime-core). No arbitrary CSS property, `url()`, `expression()` or other
  * style syntax ever reaches the wire. Errors are fixed sanitized 400/404/503
  * bodies; paths, raw JSON content and stacks are never forwarded.

@@ -10,7 +10,7 @@ import { NonEmptyStringSchema } from "./common.js";
  * The CSS variable key whitelist below and the safe-value format are declared
  * here as a wire projection of that canonical authority — same keys, same
  * order, same accept/reject behavior — and cross-package contract tests
- * (`packages/runtime-contract-tests/src/theme-authority-contract.test.ts`)
+ * (`packages/cross-package-contract-tests/src/theme-authority-contract.test.ts`)
  * enforce semantic parity, so no independent array or regex set may drift.
  */
 

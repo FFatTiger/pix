@@ -17,7 +17,7 @@ import {
   isSafeThemeCssValue,
 } from "../dist/index.js";
 // Protocol is the host's real peer (a declared dependency) and is the wire
-// projection the host must match; the runtime-contract-tests seam pins the
+// projection the host must match; the cross-package-contract-tests seam pins the
 // protocol projection to the canonical runtime-core vocabulary.
 import {
   THEME_CSS_VAR_KEYS as PROTOCOL_THEME_CSS_VAR_KEYS,
@@ -399,7 +399,7 @@ test("gate runs before theme routes: enabled gate ⇒ 401 for API calls until lo
 
 test("host theme sanitization is a semantic projection of the protocol wire vocabulary", () => {
   // Key whitelist parity: the host's exported projection is the same set as
-  // the protocol wire projection (the runtime-contract-tests seam pins the
+  // the protocol wire projection (the cross-package-contract-tests seam pins the
   // protocol projection to the canonical runtime-core vocabulary).
   assert.deepEqual(
     [...THEME_CSS_VAR_KEYS].sort(),
