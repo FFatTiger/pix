@@ -183,7 +183,7 @@ export const enLocale = {
     "desktop.noMessages": "No messages",
     "desktop.selectSessionHint": "Select a session or open a deep link with ?session=…",
     "desktop.startConversation": "Start a conversation",
-    "desktop.startConversationHint": "Type below to begin. A project is optional.",
+    "desktop.startConversationHint": "",
     "desktop.scrollToLoadEarlierMessages": "Scroll up to load earlier messages ({count} hidden)",
     "desktop.runningTool": "Running tool...",
     "desktop.runningTools": "Running {tools}...",

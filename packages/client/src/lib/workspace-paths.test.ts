@@ -3,7 +3,7 @@ import {
   isAgentHomeWorkspacePath,
   isHiddenRailSession,
   isNonProjectWorkspacePath,
-  latestRealProjectPath,
+  primaryRealProjectPath,
 } from "./workspace-paths";
 
 describe("workspace-paths — sidebar project/session rail filter", () => {
@@ -29,9 +29,17 @@ describe("workspace-paths — sidebar project/session rail filter", () => {
     expect(isNonProjectWorkspacePath("/private/tmp/num-scope-pix-source")).toBe(true);
   });
 
-  it("picks the latest real project and skips agent homes", () => {
-    expect(latestRealProjectPath([
+  it("picks the primary real project (most sessions) and skips agent homes", () => {
+    expect(primaryRealProjectPath([
       { cwd: "/Users/proxy/.pi/pi-claude-subagents", updatedAt: 9 },
+      { cwd: "/Users/proxy/Documents/program/pix", updatedAt: 3 },
+      { cwd: "/Users/proxy/Documents/program/pix", updatedAt: 7 },
+      { cwd: "/Users/proxy/code/kegel-reminder", updatedAt: 8 },
+    ])).toBe("/Users/proxy/Documents/program/pix");
+  });
+
+  it("falls back to the most recent project when counts tie", () => {
+    expect(primaryRealProjectPath([
       { cwd: "/Users/proxy/Documents/program/pix", updatedAt: 3 },
       { cwd: "/Users/proxy/code/kegel-reminder", updatedAt: 8 },
     ])).toBe("/Users/proxy/code/kegel-reminder");

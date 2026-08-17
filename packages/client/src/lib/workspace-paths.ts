@@ -51,8 +51,15 @@ export function isHiddenRailSession(session: { cwd?: string | undefined; project
   return false;
 }
 
-/** Most recently active real project from a session list, if any. */
-export function latestRealProjectPath(
+/**
+ * Primary real project from a session list, if any.
+ *
+ * Picks the project root with the MOST sessions (the app's actual working
+ * directory / authorized root), tie-breaking by recency. The Host authorizes a
+ * small set of roots (usually the one it runs in), so the model catalog for an
+ * empty home must be queried against a root the server will actually accept.
+ */
+export function primaryRealProjectPath(
   sessions: readonly {
     cwd?: string | undefined;
     projectRoot?: string | undefined;
@@ -61,17 +68,30 @@ export function latestRealProjectPath(
     createdAt?: number | undefined;
   }[],
 ): string | null {
-  let bestPath: string | null = null;
-  let bestAt = Number.NEGATIVE_INFINITY;
+  const counts = new Map<string, number>();
+  const lastAt = new Map<string, number>();
   for (const session of sessions) {
     if (isHiddenRailSession(session)) continue;
     const path = session.projectRoot || session.cwd;
     if (!path || isNonProjectWorkspacePath(path)) continue;
+    counts.set(path, (counts.get(path) ?? 0) + 1);
     const at = [session.updatedAt, session.lastMessageAt, session.createdAt]
       .find((value): value is number => typeof value === "number" && Number.isFinite(value));
-    if (at === undefined || at < bestAt) continue;
-    bestAt = at;
-    bestPath = path;
+    if (at !== undefined) {
+      const prev = lastAt.get(path);
+      if (prev === undefined || at > prev) lastAt.set(path, at);
+    }
+  }
+  let bestPath: string | null = null;
+  let bestCount = 0;
+  let bestAt = Number.NEGATIVE_INFINITY;
+  for (const [path, count] of counts) {
+    const at = lastAt.get(path) ?? Number.NEGATIVE_INFINITY;
+    if (count > bestCount || (count === bestCount && at > bestAt)) {
+      bestCount = count;
+      bestAt = at;
+      bestPath = path;
+    }
   }
   return bestPath;
 }

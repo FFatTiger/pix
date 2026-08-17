@@ -6,7 +6,7 @@ import { createQueryOptions } from "@/api/query-keys";
 import { createSessionHistoryQueryOptions } from "@/api/session-history";
 import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
-import { isHiddenRailSession, latestRealProjectPath } from "@/lib/workspace-paths";
+import { isHiddenRailSession, primaryRealProjectPath } from "@/lib/workspace-paths";
 import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
@@ -149,7 +149,7 @@ export function AppShell({ search }: AppShellProps) {
       ? null
       : titleSessionId.slice(0, 12);
   const catalogCwd = search.cwd
-    ?? latestRealProjectPath(
+    ?? primaryRealProjectPath(
       (sessionsQuery.data?.sessions ?? []).filter((session) => !isHiddenRailSession(session)),
     );
   const isHome = search.session === undefined && !runtime.attached;
@@ -535,7 +535,6 @@ export function AppShell({ search }: AppShellProps) {
                 <div className="transcript-home" data-testid="transcript-home">
                   <div className="transcript-home-logo" aria-hidden="true" />
                   <h1 className="transcript-home-title">{t("desktop.startConversation")}</h1>
-                  <p className="transcript-home-copy">{t("desktop.startConversationHint")}</p>
                 </div>
                 <Composer
                   live={false}

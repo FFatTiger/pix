@@ -183,7 +183,7 @@ export const zhCNLocale = {
     "desktop.noMessages": "暂无消息",
     "desktop.selectSessionHint": "从侧边栏选择会话，或打开带 ?session=… 的深链接",
     "desktop.startConversation": "开始对话",
-    "desktop.startConversationHint": "直接输入即可，无需绑定项目",
+    "desktop.startConversationHint": "",
     "desktop.scrollToLoadEarlierMessages": "向上滚动以加载更早的消息（隐藏了 {count} 条）",
     "desktop.runningTool": "正在运行工具...",
     "desktop.runningTools": "正在运行 {tools}...",
