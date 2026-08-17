@@ -5,20 +5,17 @@ import {
   EMPTY_HOST_CAPABILITIES,
   HOST_PROTOCOL_VERSION,
   READONLY_HOST_CAPABILITIES,
+  type CapabilityResolver,
   type CatalogDeps,
   type GateDeps,
   type GateStatusKind,
   type HostCapability,
   type HostDeps,
   type HostMode,
+  type ResolvedCapabilities,
 } from "../types.js";
 
-export type SessiondState = "up" | "down" | "unknown";
-
-export interface ResolvedCapabilities {
-  sessiond: SessiondState;
-  capabilities: readonly HostCapability[];
-}
+export type { SessiondState, ResolvedCapabilities, CapabilityResolver } from "../types.js";
 
 /**
  * Catalog capability tokens for the seams that are actually mounted. Only the
@@ -198,16 +195,36 @@ export async function resolveCapabilities(
   };
 }
 
+/**
+ * Build the single seam-normalized capability authority for a composition.
+ * The returned resolver runs the exact {@link resolveCapabilities} projection
+ * (catalog + session-mutation seam normalization, sessiond probe) against the
+ * same `deps` object that mounts the routes, so HTTP health/capabilities/
+ * bootstrap and the WS runtime handshake consume identical output. Never
+ * throws: probe failures degrade honestly to read-only capabilities.
+ */
+export function createCapabilityResolver(deps: HostDeps): CapabilityResolver {
+  return {
+    async resolve(): Promise<ResolvedCapabilities> {
+      return resolveCapabilities(deps);
+    },
+  };
+}
+
 export function registerHealthRoutes(app: Hono<HostEnv>, deps: HostDeps): void {
   app.get("/v1/health", async (c) => {
     c.header("Cache-Control", "no-store");
-    const { sessiond, capabilities } = await resolveCapabilities(deps);
+    const { sessiond, capabilities } = deps.capabilityResolver
+      ? await deps.capabilityResolver.resolve()
+      : await resolveCapabilities(deps);
     return c.json({ ok: true, service: "pix-host", sessiond, capabilities });
   });
 
   app.get("/v1/capabilities", async (c) => {
     c.header("Cache-Control", "no-store");
-    const { sessiond, capabilities } = await resolveCapabilities(deps);
+    const { sessiond, capabilities } = deps.capabilityResolver
+      ? await deps.capabilityResolver.resolve()
+      : await resolveCapabilities(deps);
     return c.json({ ok: true, sessiond, capabilities });
   });
 }
@@ -256,7 +273,9 @@ export function registerBootstrapRoutes(
 ): void {
   app.get("/v1/bootstrap", async (c) => {
     c.header("Cache-Control", "no-store");
-    const { sessiond, capabilities } = await resolveCapabilities(deps);
+    const { sessiond, capabilities } = deps.capabilityResolver
+      ? await deps.capabilityResolver.resolve()
+      : await resolveCapabilities(deps);
     return c.json({
       ok: true,
       service: "pix-host",

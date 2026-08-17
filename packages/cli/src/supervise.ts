@@ -14,7 +14,7 @@ import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
 import { SessiondError } from "@fffattiger/pix-sessiond";
 import { readLocalSecret, UnsafeSecretError } from "./secret.js";
 import {
-  isProtocolCurrent,
+  probeSessiondCompatibility,
   pingLegacyV1Sessiond,
   pingSessiond,
   shutdownLegacyV1Sessiond,
@@ -250,6 +250,16 @@ async function waitForReadiness(paths: SessiondPaths, child: ChildProcess): Prom
 }
 
 /**
+ * Fixed operator instruction when a running sessiond's protocol version cannot
+ * be positively verified (transient hello timeout, auth failure, malformed or
+ * unparseable response, secret unreadable). The daemon is ALWAYS preserved — an
+ * unverified daemon is never shut down or replaced on a guess. Never echoes the
+ * endpoint, pid, instance id or raw error.
+ */
+const UNVERIFIABLE_INSTRUCTION =
+  "[pix] could not verify the running sessiond's protocol version; it was left untouched. Wait a moment and run `pix start` again, or stop it with `pix down --all` if it is genuinely stale";
+
+/**
  * Fixed operator instruction when a stale (protocol-v1) sessiond cannot be
  * safely replaced. Never echoes the endpoint, pid, instance id or raw error.
  */
@@ -258,13 +268,22 @@ const STALE_DAEMON_INSTRUCTION =
 
 /**
  * Ensure a pingable sessiond is running for `directory`. Reuses an existing,
- * reachable instance ONLY when it is authenticated AND speaks the current
- * protocol version (Protocol v2 stale-daemon safety: a pingable v1 daemon is
- * never silently reused). A pingable but incompatible instance is replaced by
- * shutting down exactly the owned/authenticated instance (lock/instance
- * identity verified) and spawning a fresh daemon; if it cannot be safely
- * owned/shut down, startup fails closed with a fixed operator instruction and
- * NEVER signals arbitrary PIDs.
+ * reachable instance ONLY when it is POSITIVELY authenticated AND speaks the
+ * current protocol version (Protocol v2 stale-daemon safety: a pingable v1
+ * daemon is never silently reused, and a transient/unverifiable hello never
+ * triggers a replacement).
+ *
+ * Compatibility is classified into explicit states ({@link probeSessiondCompatibility}):
+ *  - `current` ⇒ reuse as-is.
+ *  - `knownLegacy` ⇒ only a POSITIVELY authenticated legacy (v1) daemon may be
+ *    replaced, and only by shutting down exactly the owned/authenticated
+ *    instance (strict lock identity + authenticated RPC — never arbitrary PIDs)
+ *    and spawning a fresh daemon; if it cannot be safely owned/shut down,
+ *    startup fails closed with the fixed operator instruction.
+ *  - `unverifiable` (transient hello timeout, auth failure, malformed/unparseable
+ *    response, or secret unreadable) ⇒ the running daemon is PRESERVED and a
+ *    retryable/fixed operator error is returned — authority is never destroyed
+ *    on a guess.
  */
 export async function ensureSessiond(
   directory?: string,
@@ -273,22 +292,39 @@ export async function ensureSessiond(
   const { directory: dir, endpoint, paths } = locateSessiond(directory);
   const existing = await inspectSessiond(dir);
   if (existing.pingable) {
+    // Re-read the secret strictly. A missing or unsafe secret means we cannot
+    // authenticate the running daemon: it is unverifiable and MUST be preserved
+    // (a secret-read failure must never destroy authority).
     let secret: string | undefined;
     try {
       secret = await readLocalSecret(paths.secretFile);
-    } catch {
-      secret = undefined;
+    } catch (error) {
+      if (error instanceof UnsafeSecretError) {
+        throw new Error(UNVERIFIABLE_INSTRUCTION);
+      }
+      throw error;
     }
-    // Reuse only an authenticated, protocol-CURRENT daemon.
-    if (secret !== undefined && (await isProtocolCurrent(endpoint, secret))) {
+    if (secret === undefined) {
+      throw new Error(UNVERIFIABLE_INSTRUCTION);
+    }
+    // Classify the daemon explicitly. Reuse only a positively authenticated,
+    // protocol-CURRENT daemon.
+    const compat = await probeSessiondCompatibility(endpoint, secret);
+    if (compat.state === "current") {
       log(`reusing sessiond (pid ${existing.pid}) at ${dir}`);
       return { directory: dir, endpoint, pid: existing.pid, instanceId: existing.instanceId, reused: true };
     }
-    // Pingable but stale (v1) or unverifiable. Safely shut down ONLY the
-    // owned/authenticated instance (shutdownSessiond verifies the strict lock
-    // identity and uses authenticated RPC — never arbitrary PIDs), then spawn a
-    // fresh protocol-current daemon below. A failed/obstructed shutdown fails
-    // closed with the fixed operator instruction.
+    if (compat.state === "unverifiable") {
+      // Transient hello timeout / auth failure / malformed or unparseable
+      // response: preserve the running daemon and return a fixed operator
+      // error — never shut it down on a guess.
+      throw new Error(UNVERIFIABLE_INSTRUCTION);
+    }
+    // knownLegacy: a positively authenticated protocol-v1 daemon. Safely shut
+    // down ONLY the owned/authenticated instance (shutdownSessiond verifies the
+    // strict lock identity and uses authenticated RPC — never arbitrary PIDs),
+    // then spawn a fresh protocol-current daemon below. A failed/obstructed
+    // shutdown fails closed with the fixed operator instruction.
     const shutdown = await shutdownSessiond(dir);
     if (shutdown.action === "obstructed" || shutdown.action === "failed") {
       throw new Error(STALE_DAEMON_INSTRUCTION);

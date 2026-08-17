@@ -17,6 +17,16 @@ import { resolveCliPackageRoot } from "../src/paths.js";
 
 const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "pix-supervise-"));
 
+function pidAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 test("inspectSessiond reports not running when no lock exists", async () => {
   const dir = await tempDir();
   try {
@@ -273,6 +283,74 @@ test("ensureSessiond never reuses a pingable protocol-v1 daemon; replaces it and
     await shutdownSessiond(dir);
   } finally {
     if (stale && stale.exitCode === null) stale.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureSessiond preserves a healthy v2 daemon whose hello is a transient blip (never shuts it down)", async (t) => {
+  if (process.platform === "win32") return t.skip("Unix sockets only");
+  const dir = await tempDir();
+  const fixturePath = join(resolveCliPackageRoot(), "test", "fixtures", "blip-hello-daemon.mjs");
+  let blip: ChildProcess | undefined;
+  try {
+    // A HEALTHY v2 daemon that answers system.ping but whose system.hello is a
+    // transient blip (unparseable). It must NEVER be shut down or replaced.
+    blip = spawn(process.execPath, [fixturePath], {
+      env: { ...process.env, PIX_SESSIOND_DIR: dir },
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    await new Promise<void>((resolve, reject) => {
+      let out = "";
+      const timer = setTimeout(() => reject(new Error("blip v2 daemon did not become ready")), 5_000);
+      blip!.stdout?.on("data", (chunk) => {
+        out += String(chunk);
+        if (out.includes("blip-v2-ready")) { clearTimeout(timer); resolve(); }
+      });
+      blip!.on("exit", (code) => { clearTimeout(timer); reject(new Error(`blip v2 daemon exited early (${code})`)); });
+    });
+
+    // It is genuinely reachable via system.ping — inspect sees a healthy daemon.
+    const before = await inspectSessiond(dir);
+    assert.equal(before.pingable, true, "blip v2 daemon must be pingable via system.ping");
+    assert.equal(before.pid, blip.pid);
+
+    // ensureSessiond must NOT reuse it (hello is unverifiable) and must NOT
+    // shut it down — it returns the fixed unverifiable operator error.
+    await assert.rejects(
+      () => ensureSessiond(dir),
+      /could not verify the running sessiond's protocol version/,
+    );
+
+    // The daemon was preserved: same pid, lock intact, still pingable.
+    const after = await inspectSessiond(dir);
+    assert.equal(after.pid, blip.pid, "the healthy v2 daemon must NOT have been replaced");
+    assert.equal(after.pingable, true, "the daemon is still reachable after the blip");
+    assert.equal(existsSync(sessiondPaths(dir).lockFile), true);
+  } finally {
+    if (blip && blip.exitCode === null) blip.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureSessiond preserves the daemon on a secret-read failure (secret blip) and returns a fixed error", async (t) => {
+  if (process.platform === "win32") return t.skip("Unix sockets only");
+  const dir = await tempDir();
+  try {
+    const ensured = await ensureSessiond(dir);
+    const pid = ensured.pid!;
+    const paths = sessiondPaths(dir);
+    assert.equal(await inspectSessiond(dir).then((s) => s.pingable), true);
+
+    // A secret-read failure (secret file gone) must preserve the running
+    // daemon and return a fixed operator error — never a shutdown.
+    await rm(paths.secretFile, { force: true });
+    await assert.rejects(() => ensureSessiond(dir), /cannot start sessiond/);
+
+    // The daemon was NOT shut down: same pid still alive, lock intact.
+    assert.equal(pidAlive(pid), true, "secret-read failure must never stop the daemon");
+    assert.equal(existsSync(paths.lockFile), true, "lock must remain after a secret-read failure");
+  } finally {
+    await shutdownSessiond(dir).catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
 });

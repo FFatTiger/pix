@@ -10,6 +10,7 @@ import {
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
   createSessiondSessionRenameClient,
+  createCapabilityResolver,
   InvalidAllowedRootsError,
   InvalidHostDirError,
   InvalidCatalogAgentDirError,
@@ -205,26 +206,21 @@ export async function runHost(
     return 1;
   }
 
-  const runtimeWs = new SessiondRuntimeGateway({
-    endpoint: location.paths.endpoint,
-    secret,
-    mode: exposureMode,
-    // The SAME resolver drives the per-WS-handshake capability projection as
-    // the HTTP probe (deps.sessiond below): up ⇒ full caps, down ⇒ degraded.
-    resolveCapabilities: () => production.resolver.resolve(),
-    // WS advertised upload ceiling mirrors the resource upload limit so the two
-    // projections can never drift apart.
-    limits: { maxUpload: PRODUCTION_MAX_UPLOAD_BYTES },
-    logger: consoleLogger,
-  });
-
-  const host = createHostApp({
+  // Single seam-normalized capability authority: built from the SAME deps that
+  // mount the routes (sessiond probe + raw production lists + mounted catalog
+  // and session-mutation seams). BOTH the HTTP projection (via
+  // `capabilityResolver` below) and the per-connection WS handshake consume
+  // this ONE resolver, so health/capabilities/bootstrap and the runtime
+  // handshake can never disagree and no raw production list bypasses
+  // mounted-seam normalization.
+  const hostDeps = {
     exposureMode,
     clientDist,
     allowedHosts: resolveAllowedHosts(options.hostname),
     // HTTP/bootstrap projection: full when sessiond is up, degraded (resource
     // surface only) when down. `agent` + `sessions` + `worktree.write` are added
     // only while up; `worktree` (read-only list) is advertised in both states.
+    // These raw lists are ONLY consumed through the seam-normalizing resolver.
     sessiond: production.resolver,
     capabilities: {
       full: [...PRODUCTION_FULL_CAPABILITIES],
@@ -260,10 +256,31 @@ export async function runHost(
     },
     gate: { config: createBootGateConfigSource() },
     logger: consoleLogger,
-    runtimeWs,
     // WS transport ceiling matches the advertised maxUpload so a full upload is
     // actually receivable instead of being rejected at the frame layer.
     wsMaxPayloadBytes: PRODUCTION_MAX_UPLOAD_BYTES,
+  };
+  const capabilityResolver = createCapabilityResolver(hostDeps);
+
+  const runtimeWs = new SessiondRuntimeGateway({
+    endpoint: location.paths.endpoint,
+    secret,
+    mode: exposureMode,
+    // The SAME seam-normalized resolver drives the per-WS-handshake capability
+    // projection as the HTTP routes (deps.capabilityResolver): the gateway
+    // advertises only `capabilities` from this shared output, so the WS and
+    // HTTP surfaces can never disagree.
+    resolveCapabilities: () => capabilityResolver.resolve(),
+    // WS advertised upload ceiling mirrors the resource upload limit so the two
+    // projections can never drift apart.
+    limits: { maxUpload: PRODUCTION_MAX_UPLOAD_BYTES },
+    logger: consoleLogger,
+  });
+
+  const host = createHostApp({
+    ...hostDeps,
+    capabilityResolver,
+    runtimeWs,
   });
 
   const handle: NodeServerHandle = await createNodeServer(host, {

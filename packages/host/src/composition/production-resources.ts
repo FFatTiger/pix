@@ -309,18 +309,25 @@ async function listWorktreesForRehydrate(
 }
 
 /**
- * Production capability resolver. Holds the fixed sessiond secret captured at
+ * Production capability SOURCE. Holds the fixed sessiond secret captured at
  * Host startup, so a secret rotation (daemon restarted with a new secret) while
  * the Host keeps running is detected as an authentication failure ⇒ degraded.
  *
- * The HTTP projection (SessiondProbe → {@link isAvailable}) and the per-WS
- * handshake projection ({@link resolve}) both delegate to this single object,
- * so health/capabilities/bootstrap and the runtime handshake can never disagree.
+ * This is the RAW source (ping + the frozen full/degraded lists), NOT the
+ * client-facing authority. Production composition must consume it ONLY through
+ * the seam-normalized {@link CapabilityResolver} (built by
+ * `createCapabilityResolver` from the same deps), which is what BOTH the HTTP
+ * projection (health/capabilities/bootstrap) and the per-WS handshake consume
+ * — so no raw production capability list can bypass mounted-seam normalization.
  */
 export interface ProductionCapabilityResolver {
   /** Fixed-secret ping result. Never throws. Drives the HTTP SessiondProbe. */
   isAvailable(): Promise<boolean>;
-  /** Capabilities for this surface: full when up, degraded when down. Never throws. */
+  /**
+   * Raw capabilities for this surface: full when up, degraded when down. Never
+   * throws. This is the un-normalized source list; client-facing surfaces must
+   * consume it via the seam-normalized {@link CapabilityResolver} instead.
+   */
   resolve(): Promise<readonly HostCapability[]>;
 }
 

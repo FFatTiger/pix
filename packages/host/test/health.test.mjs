@@ -120,6 +120,42 @@ test("request id header is echoed on responses", async () => {
   assert.ok(requestId && requestId.length >= 16, "x-request-id must be present");
 });
 
+test("a wired capabilityResolver is authoritative: routes consume its seam-normalized output over raw deps", async () => {
+  // The routes must use the single resolver even when deps.capabilities names
+  // unmounted-seam tokens: the resolver output is authoritative.
+  let resolves = 0;
+  const resolver = {
+    async resolve() {
+      resolves += 1;
+      return { sessiond: "up", capabilities: ["agent", "files"] };
+    },
+  };
+  const app = appWith({
+    // Would advertise the mutation token if consulted directly:
+    capabilities: { full: ["agent", "session.delete", "files"], readonly: ["files"] },
+    sessiond: { isAvailable: async () => true },
+    capabilityResolver: resolver,
+  });
+  const res = await app.request("http://localhost/v1/health", { headers: { host: "localhost" } });
+  const body = await res.json();
+  assert.deepEqual(body, { ok: true, service: "pix-host", sessiond: "up", capabilities: ["agent", "files"] });
+  const boot = await (await app.request("http://localhost/v1/bootstrap", { headers: { host: "localhost" } })).json();
+  assert.deepEqual(boot.capabilities, ["agent", "files"], "bootstrap consumes the same resolver");
+  assert.equal(resolves, 2, "one resolve per HTTP surface");
+});
+
+test("createCapabilityResolver wraps resolveCapabilities: same output as the raw function", async () => {
+  const { createCapabilityResolver } = await import("../dist/index.js");
+  const deps = {
+    sessiond: { isAvailable: async () => true },
+    capabilities: { full: ["agent", "git"], readonly: ["files"] },
+  };
+  const resolver = createCapabilityResolver(deps);
+  const fromResolver = await resolver.resolve();
+  const direct = await resolveCapabilities(deps);
+  assert.deepEqual(fromResolver, direct);
+});
+
 // ---------------------------------------------------------------------------
 // D4 seam-honest capability filtering (verifier F1): a session mutation token
 // is advertised ONLY when the corresponding seam is actually mounted AND

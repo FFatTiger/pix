@@ -43,6 +43,7 @@ export { loggingMiddleware } from "./middleware/logging.js";
 
 export {
   resolveCapabilities,
+  createCapabilityResolver,
   defaultReadonlyCapabilities,
   defaultMountedCapabilities,
   catalogCapabilitiesFromDeps,
@@ -55,6 +56,7 @@ export {
 export type {
   SessiondState,
   ResolvedCapabilities,
+  CapabilityResolver,
   BootstrapGateStatus,
 } from "./routes/health.js";
 export { registerFileRoutes, parseSingleRange } from "./routes/files.js";

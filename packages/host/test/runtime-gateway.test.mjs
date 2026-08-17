@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import { SessiondRuntimeGateway, mapRpcError } from "../dist/index.js";
 
 // --- fixtures -------------------------------------------------------------
@@ -153,12 +154,14 @@ async function connect(gateway) {
 
 // --- tests ----------------------------------------------------------------
 
-test("handshake valid → handshake_ack with protocolVersion 2 and empty capabilities", async () => {
+test("handshake valid → handshake_ack with the singular PROTOCOL_VERSION and empty capabilities", async () => {
   const gw = makeGateway(new FakeClient());
   const session = await connect(gw);
   const ack = session.jsonAt(0);
   assert.equal(ack.type, "handshake_ack");
-  assert.equal(ack.payload.protocolVersion, 2);
+  // The runtime handshake advertises the SAME single protocol-version constant
+  // the CLI uses to classify a daemon as "current" — the authority is singular.
+  assert.equal(ack.payload.protocolVersion, PROTOCOL_VERSION);
   assert.equal(ack.payload.host.mode, "local");
   assert.deepEqual(ack.payload.host.capabilities, []);
   assert.equal(ack.payload.sessionSnapshotSupport, true);
@@ -184,7 +187,7 @@ const repeatHello = JSON.stringify({
 
 test("capability resolver: healthy sessiond → handshake advertises [\"agent\"]", async () => {
   const gw = makeGateway(new FakeClient(), {
-    resolveCapabilities: async () => ["agent"],
+    resolveCapabilities: async () => ({ sessiond: "up", capabilities: ["agent"] }),
   });
   const session = await connect(gw);
   const ack = session.jsonAt(0);
@@ -194,7 +197,7 @@ test("capability resolver: healthy sessiond → handshake advertises [\"agent\"]
 
 test("capability resolver: sessiond down → handshake advertises []", async () => {
   const gw = makeGateway(new FakeClient(), {
-    resolveCapabilities: async () => [],
+    resolveCapabilities: async () => ({ sessiond: "down", capabilities: [] }),
   });
   const session = await connect(gw);
   const ack = session.jsonAt(0);
@@ -227,7 +230,7 @@ test("capability resolver runs once per connection; repeated handshake reuses th
   const gw = makeGateway(new FakeClient(), {
     resolveCapabilities: async () => {
       calls += 1;
-      return ["agent"];
+      return { sessiond: "up", capabilities: ["agent"] };
     },
   });
   const session1 = await connect(gw);

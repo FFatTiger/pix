@@ -10,6 +10,25 @@
 
 export type HostMode = "local" | "lan";
 
+export type SessiondState = "up" | "down" | "unknown";
+
+export interface ResolvedCapabilities {
+  sessiond: SessiondState;
+  capabilities: readonly HostCapability[];
+}
+
+/**
+ * Single seam-normalized capability authority shared by the HTTP projection
+ * (health/capabilities/bootstrap) and the per-connection runtime WS handshake.
+ * Both surfaces consume the SAME resolver output, so a raw capability list
+ * (e.g. `PRODUCTION_FULL_CAPABILITIES`) can never bypass mounted-seam
+ * normalization (catalog + session-mutation seams) on one surface while the
+ * other normalizes. Never throws: transient probe failures degrade honestly.
+ */
+export interface CapabilityResolver {
+  resolve(): Promise<ResolvedCapabilities>;
+}
+
 export interface TrustedProxyOptions {
   /** Socket peer addresses allowed to supply forwarding headers. Empty by default. */
   addresses: readonly string[];
@@ -378,6 +397,15 @@ export interface HostCapabilityDeps {
 export interface HostDeps {
   gate?: GateDeps;
   sessiond?: SessiondProbe;
+  /**
+   * Single capability authority consumed by BOTH the HTTP projection
+   * (health/capabilities/bootstrap) and the WS runtime handshake. When wired,
+   * every route uses it instead of the inline {@link resolveCapabilities}
+   * probe, and the WS gateway consumes the same resolver — so the two
+   * surfaces can never disagree. The resolver must already apply mounted-seam
+   * normalization (catalog + session-mutation).
+   */
+  capabilityResolver?: CapabilityResolver;
   capabilities?: HostCapabilityDeps;
   /**
    * Trusted exposure mode. This is derived from bind configuration by

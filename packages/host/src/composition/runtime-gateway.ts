@@ -20,6 +20,7 @@ import type {
   HostCapability,
   HostLogger,
   HostMode,
+  ResolvedCapabilities,
   RuntimeWsSeam,
   WsSession,
 } from "../types.js";
@@ -76,13 +77,14 @@ export interface SessiondRuntimeGatewayOptions {
   readonly capabilities?: readonly HostCapability[];
   /**
    * Optional async capability resolver invoked once per connection after a
-   * valid hello. Lets the production composition project capabilities
-   * consistently with the HTTP projection (sessiond healthy ⇒ agent; otherwise
-   * none) instead of baking a static answer at construction time. When the
-   * resolver rejects/throws, the gateway logs a sanitized warning and fails
-   * closed to an empty capability set (never leaks the error to the client).
+   * valid hello. Returns the SAME seam-normalized {@link ResolvedCapabilities}
+   * output the HTTP projection (health/capabilities/bootstrap) consumes, so
+   * the WS handshake can never advertise a capability the mounted seams do
+   * not back (no raw production list bypasses normalization). Only the
+   * `capabilities` field is advertised; the resolver never leaks the error to
+   * the client.
    */
-  readonly resolveCapabilities?: () => Promise<readonly HostCapability[]>;
+  readonly resolveCapabilities?: () => Promise<ResolvedCapabilities>;
   /** Inject a narrow client (or factory) for tests. */
   readonly client?: SessiondRuntimeClient;
   readonly clientFactory?: () => SessiondRuntimeClient;
@@ -311,7 +313,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
   private readonly client: SessiondRuntimeClient;
   private readonly mode: HostMode;
   private readonly defaultCapabilities: readonly HostCapability[];
-  private readonly resolveCapabilitiesField: (() => Promise<readonly HostCapability[]>) | undefined;
+  private readonly resolveCapabilitiesField: (() => Promise<ResolvedCapabilities>) | undefined;
   private readonly limits: SessiondRuntimeGatewayLimits;
   private readonly now: () => number;
   private readonly outboundLimits: SessiondRuntimeGatewayOutboundLimits;
@@ -370,13 +372,15 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
    * fail-closed to an empty set with a sanitized warning; the error is never
    * forwarded to the client (it carries no capabilities, no message).
    */
-  private async resolveConnectionCapabilities(): Promise<readonly HostCapability[]> {
-    if (this.resolveCapabilitiesField === undefined) return this.defaultCapabilities;
+  private async resolveConnectionCapabilities(): Promise<ResolvedCapabilities> {
+    if (this.resolveCapabilitiesField === undefined) {
+      return { sessiond: "unknown", capabilities: this.defaultCapabilities };
+    }
     try {
-      return [...(await this.resolveCapabilitiesField())];
+      return await this.resolveCapabilitiesField();
     } catch {
       this.logger.warn?.("runtime gateway capability resolver failed; advertising no capabilities");
-      return [];
+      return { sessiond: "unknown", capabilities: [] };
     }
   }
 
@@ -394,7 +398,10 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     // Resolve capabilities once for this connection AFTER a valid hello, then
     // bake a connection-specific response that both this initial ack and any
     // subsequent repeated handshake reuse (no static-then-async correction).
-    const handshakeResponse = this.buildHandshakeResponse(await this.resolveConnectionCapabilities());
+    // The resolver returns the SAME seam-normalized output as the HTTP
+    // projection, so WS and HTTP capability surfaces can never disagree.
+    const resolved = await this.resolveConnectionCapabilities();
+    const handshakeResponse = this.buildHandshakeResponse(resolved.capabilities);
     this.write(session, {
       type: "handshake_ack",
       ...(handshake.id !== undefined ? { id: handshake.id } : {}),
