@@ -47,19 +47,23 @@ fork the logic.
 | Adapter behavior contract | `packages/runtime-contract-tests` | be duplicated in each adapter's own tests |
 | Repo gates / cross-platform tooling | root `scripts/*` | be bypassed by ad-hoc shell in package scripts |
 
-## 2. State ownership (three tiers, never blurred)
+## 2. State ownership (four tiers, never blurred)
 
-- **HTTP remote state → TanStack Query** (typed query options in
-  `packages/client/src/api/query-options.ts`, mutations in `mutations.ts`,
-  keys in `query-keys.ts`). Server resource data only.
+- **HTTP remote state → TanStack Query** (typed query options assembled in
+  `packages/client/src/api/configuration.ts`, mutations in `mutations.ts`, keys
+  in `query-keys.ts`). Server resource data only.
 - **Realtime runtime state → SessionStore** (projected through the **shared**
   Protocol `reduceRuntimeEventData` accumulator — identical semantics to the
   sessiond authority) exposed via `useSyncExternalStore`. Realtime state
   **never** flows through TanStack Query, and the projection is **never** forked
   or re-implemented client-side.
-- **Local state → ephemeral UI only** (draft text, panel open/close, debounce,
-  focus). If a value must survive a reload, derive from a session/branch, or
-  reflect remote truth, it does not belong in local state.
+- **Durable client preferences → one dedicated preference store/provider per
+  domain** (theme, locale, wallpaper, layout). Only that owner reads/writes
+  browser persistence and synchronizes DOM/bootstrap state; components do not
+  access `localStorage` or duplicate preference caches directly.
+- **Component-local state → ephemeral UI only** (draft text, panel open/close,
+  debounce, focus). If a value must survive reload, derive from a session or
+  branch, or reflect remote truth, it belongs to one of the owners above.
 
 ## 3. Transports
 
@@ -67,10 +71,12 @@ fork the logic.
   `packages/client/src/api/` (`HttpClient` + per-response zod schema + typed
   `HttpError` with `kind`/`status`/`code`). **No raw `fetch`/`XMLHttpRequest`/
   `EventSource` in components or hooks.** Transport implementations that
-  legitimately need raw primitives (SSE watch adapter, resolved-theme fetch)
-  live in `packages/client/src/api/` and expose narrow, injectable surfaces.
-  A component doing its own XHR (e.g., upload progress) is a known violation to
-  eliminate — route it through the typed transport.
+  legitimately need raw primitives (for example SSE/watch streams or upload
+  progress) live in `packages/client/src/api/`, preserve the same typed error /
+  schema / abort contract, and expose narrow injectable surfaces. Ordinary
+  request/response domains such as theme resolution still use `HttpClient`.
+  A component doing its own XHR is a violation — route it through the typed
+  transport and mutation lifecycle.
 - WebSocket goes only through `RuntimeSocket`/`SessionStore`. No component
   opens its own socket.
 
@@ -103,10 +109,13 @@ running tally of pending-removal shims in the migration ledger.
 ## 6. External IDs fail closed before permissive SDK helpers
 
 Never feed a caller-supplied or stale ID straight into a permissive SDK helper
-(e.g., `SessionManager.open`, `ProjectTrustStore.set`) that can auto-create or
-append. Use the owner's identity validation first (exact open/index path +
-`getSessionId` identity check, revision fence / negative cache). Missing, stale,
-or wrong id → `not_found`, never create-on-stale or path reuse.
+(e.g., `SessionManager.open`, branch/context builders, `ProjectTrustStore.set`)
+that can auto-create, append, or silently select another object. Use the owner's
+identity/membership validation first (exact open/index path + `getSessionId`
+identity check, branch membership, revision fence / negative cache). Fail with
+the canonical port error: missing resource → `not_found`; malformed or
+nonmember selector/cursor → `invalid_input`; stale revision/identity race →
+`conflict`. Never create-on-stale, path-reuse, or permissive fallback.
 
 ## 7. Single source for versions, capabilities, vocabularies
 
@@ -119,8 +128,11 @@ or wrong id → `not_found`, never create-on-stale or path reuse.
   never by ad-hoc strings. A new token must land in the shared schema + the
   runtime-core mirror + the semantic mapping **and** only be advertised when
   the seam is actually wired and verified.
-- Vocabularies (kinds, methods, modes, reply shapes) come from `protocol`
-  schemas; do not duplicate enum/vocab in Client/Host/sessiond.
+- Canonical domain vocabularies and limits live in their Runtime Core model;
+  wire-only vocabularies live in Protocol. Protocol schemas explicitly project
+  domain semantics and cross-package contract tests prove parity. Host, Client,
+  sessiond, and adapters never maintain independent arrays, regexes, numeric
+  counts, or "must stay in sync" mirrors.
 
 ## 8. Async lifecycle = explicit state machines
 
@@ -145,11 +157,14 @@ piles" where several `useEffect` writers race to own one lifecycle.
 
 ## 9. Optimistic state vs authoritative snapshots
 
-Optimistic UI lives in its **own** layer, keyed by local ids (`optimistic:<n>`),
-consumed FIFO by the first real committed entry, removed on definite failure and
-cleared on rebase/detach. It never writes into the authoritative snapshot/
-projection, never touches the stop/abort ordering, and never overrides
-authority-derived running state.
+Optimistic UI lives in its **own transaction layer**, keyed by local and
+correlated command/turn identity, removed on definite failure, retained only as
+an explicit uncertain-delivery state, and cleared/reconciled on commit, rebase,
+or detach. Reconciliation uses authoritative identity whenever the protocol
+provides it; FIFO matching is allowed only when the wire contract explicitly
+guarantees ordering and deterministic tests prove it. Optimistic state never
+writes into the authoritative snapshot/projection, never touches stop/abort
+ordering, and never overrides authority-derived running state.
 
 ## 10. Components must not own transport + persistence + render orchestration
 
@@ -163,8 +178,10 @@ layering defect.
 
 - Design tokens are defined **once**. `pix-adapter.css` owns only pix-specific
   fallback tokens and must **never redefine** a source `globals.css`/`wallpaper.css`
-  selector. Themes map 52 pi tokens → the fixed 29 CSS-vars whitelist; values are
-  only safe hex/rgba — `url()`/`expression()`/named colors never reach CSS vars.
+  selector. Theme tokens are projected through the canonical whitelist/value
+  grammar owned by the theme domain; Host/Protocol/Client never mirror fixed
+  token counts or validation regexes. Unsafe values such as `url()` and
+  `expression()` never reach CSS vars.
 - **No `!important` as a bug fix.** Only where the source contract already
   requires it (wallpaper layer), with a comment explaining why; never add
   `!important` to override a defect.
