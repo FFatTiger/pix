@@ -883,20 +883,19 @@ function SessionTreeItem({
   onSelectSession: (sessionId: string, cwd?: string) => void;
   depth: number;
 }) {
-  const subtreeContains = (current: SessionTreeNode, targetId: string): boolean => {
-    if (current.session.sessionId === targetId) return true;
-    return current.children.some((child) => subtreeContains(child, targetId));
-  };
-
-  // Persisted fork-tree collapse: default COLLAPSED (never "all expanded"),
-  // remembered per parent session id in localStorage. A subtree containing the
-  // selected session starts expanded so the selected row is never hidden.
+  // Persisted fork-tree collapse: default COLLAPSED. Clicking the parent
+  // session expands children; a stored value wins after the user toggles.
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     const stored = loadForkCollapsed(node.session.sessionId);
     if (stored !== undefined) return stored;
-    return !subtreeContains(node, selectedSessionId ?? "");
+    return true;
   });
   const hasChildren = node.children.length > 0;
+  const expandChildren = () => {
+    if (!hasChildren || !collapsed) return;
+    setCollapsed(false);
+    saveForkCollapsed(node.session.sessionId, false);
+  };
 
   const isSelected = node.session.sessionId === selectedSessionId;
 
@@ -930,7 +929,10 @@ function SessionTreeItem({
           renameMutation={renameMutation}
           removeMutation={removeMutation}
           onSessionDeleted={onSessionDeleted}
-          onSelectSession={onSelectSession}
+          onSelectSession={(sessionId, cwd) => {
+            expandChildren();
+            onSelectSession(sessionId, cwd);
+          }}
           depth={depth}
           hasChildren={hasChildren}
           collapsed={collapsed}
@@ -1404,7 +1406,7 @@ function SessionItem({
           {hasChildren && (
             <button
               type="button"
-              className="sidebar-icon-btn"
+              className="sidebar-icon-btn sidebar-fork-caret"
               onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
               title={collapsed ? t("desktop.expandForks") : t("desktop.collapseForks")}
               aria-label={collapsed ? t("desktop.expandForks") : t("desktop.collapseForks")}

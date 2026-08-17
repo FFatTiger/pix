@@ -838,7 +838,13 @@ describe("AppShell — source-like sidebar rail", () => {
     modelsCatalog = { models: [], defaultModel: null };
     globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
   });
-  afterEach(() => { cleanup(); globalThis.fetch = previousFetch; vi.useRealTimers(); });
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = previousFetch;
+    window.localStorage.removeItem("pi-fork-tree-collapsed");
+    window.localStorage.removeItem("pi-sidebar-item-state");
+    vi.useRealTimers();
+  });
 
   async function settle(): Promise<void> {
     await act(async () => {
@@ -1156,6 +1162,25 @@ describe("AppShell — source-like sidebar rail", () => {
     fireEvent.click(within(screen.getByTestId("sidebar-pinned")).getByLabelText("Archive"));
     expect(screen.queryByTestId("sidebar-pinned")).toBeNull();
     expect(screen.queryByTestId("session-select-A")).toBeNull();
+  });
+
+  it("keeps subagent sessions collapsed until the parent session is clicked", async () => {
+    const now = Date.now();
+    globalThis.fetch = controllableStubFetch({
+      sessions: [
+        { sessionId: "parent", cwd: "/x", projectRoot: "/x", title: "Parent session", createdAt: 1000, updatedAt: now, messageCount: 1 },
+        { sessionId: "child", cwd: "/x", projectRoot: "/x", title: "Child session", parentSessionId: "parent", createdAt: 1000, updatedAt: now, messageCount: 1 },
+      ],
+    });
+    const { rerender } = mountApp({ cwd: "/x", session: "parent" });
+    await settle();
+    expect(screen.getByTestId("session-select-parent")).toBeTruthy();
+    expect(screen.queryByTestId("session-select-child")).toBeNull();
+    fireEvent.click(screen.getByTestId("session-select-parent"));
+    expect(screen.getByTestId("session-select-child")).toBeTruthy();
+    rerender({ cwd: "/x", session: "parent" });
+    await settle();
+    expect(screen.getByTestId("session-select-child")).toBeTruthy();
   });
 
   it("caps recent sessions at five and reveals the rest from View more", async () => {

@@ -3,9 +3,9 @@
  * sessions). Mirrors time-group-state semantics: stored in localStorage so the
  * user's collapse habits survive reloads.
  *
- * Default (no stored value): COLLAPSED, except a subtree that contains the
- * currently selected session which starts expanded so a deep-linked/selected
- * child row is never hidden behind a collapsed parent.
+ * Default (no stored value): COLLAPSED. Clicking a parent session expands
+ * its children; the expand/collapse caret is hover-hidden so pin/archive
+ * stay the only row actions.
  */
 
 const STORAGE_KEY = "pi-fork-tree-collapsed";

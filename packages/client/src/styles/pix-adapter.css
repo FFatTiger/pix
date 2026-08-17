@@ -1215,6 +1215,12 @@ html.dark .catalog-meta-item--error {
   transition: opacity 120ms ease;
 }
 
+.sidebar-list-row:hover .sidebar-fork-caret,
+.sidebar-list-row:focus-within .sidebar-fork-caret {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .sidebar-list-row:hover .sidebar-row-actions,
 .sidebar-list-row:focus-within .sidebar-row-actions,
 .sidebar-section-head:hover .sidebar-section-actions,
@@ -1456,6 +1462,10 @@ html.dark .catalog-meta-item--error {
   .sidebar-section-actions {
     opacity: 1;
     pointer-events: auto;
+  }
+  .sidebar-fork-caret {
+    opacity: 0;
+    pointer-events: none;
   }
 }
 
