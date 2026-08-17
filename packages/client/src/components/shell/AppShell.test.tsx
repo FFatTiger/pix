@@ -916,6 +916,20 @@ describe("AppShell — source-like sidebar rail", () => {
 
     fireEvent.click(screen.getByTestId("sidebar-nav-settings"));
     expect(dialog.querySelector('[aria-current="page"]')?.textContent).toBe("Display");
+    expect(screen.getByTestId("settings-tab-archive")).toBeTruthy();
+  });
+
+  it("restores an archived session from the settings archive tab", async () => {
+    mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
+    await settle();
+    const sessionRow = screen.getByTestId("session-select-A").closest(".sidebar-list-row") as HTMLElement;
+    fireEvent.click(within(sessionRow).getByLabelText("Archive"));
+    expect(screen.queryByTestId("session-select-A")).toBeNull();
+    fireEvent.click(screen.getByTestId("sidebar-nav-settings"));
+    fireEvent.click(screen.getByTestId("settings-tab-archive"));
+    expect(screen.getByTestId("archive-row")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    expect(screen.getByTestId("session-select-A")).toBeTruthy();
   });
 
   it("New Session starts create without a redundant home navigation or extra catalog chrome", async () => {

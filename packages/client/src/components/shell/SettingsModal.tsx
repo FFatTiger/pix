@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { ChatCenteredText, Cpu, Monitor, Plug, Stack, X } from "@phosphor-icons/react";
+import { Archive, ChatCenteredText, Cpu, Monitor, Plug, Stack, X } from "@phosphor-icons/react";
+import { ArchiveConfig } from "@/features/settings/ArchiveConfig";
 import { ChatConfig } from "@/features/settings/ChatConfig";
 import { DisplayConfig } from "@/features/settings/DisplayConfig";
 import { ModelsSettingsTab, PluginsSettingsTab, SkillsSettingsTab } from "@/features/settings/CatalogTabs";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 
-export type SettingsTab = "display" | "chat" | "models" | "skills" | "plugins";
+export type SettingsTab = "display" | "chat" | "models" | "skills" | "plugins" | "archive";
 
 interface SettingsModalProps {
   initialTab?: SettingsTab;
@@ -24,6 +25,7 @@ const tabs: { id: SettingsTab; labelKey: string; Icon: typeof Cpu }[] = [
   { id: "models", labelKey: "desktop.models", Icon: Cpu },
   { id: "skills", labelKey: "desktop.skills", Icon: Stack },
   { id: "plugins", labelKey: "desktop.plugins", Icon: Plug },
+  { id: "archive", labelKey: "desktop.archiveSettings", Icon: Archive },
 ];
 
 /**
@@ -150,6 +152,7 @@ export function SettingsModal({
                   type="button"
                   disabled={disabled}
                   onClick={() => setActiveTab(id)}
+                  data-testid={`settings-tab-${id}`}
                   aria-current={active ? "page" : undefined}
                   style={{
                     display: "flex",
@@ -208,6 +211,9 @@ export function SettingsModal({
               <PluginsSettingsTab cwd={cwd} />
             </div>
           )}
+          <div style={{ display: activeTab === "archive" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
+            <ArchiveConfig />
+          </div>
         </div>
       </section>
     </div>
