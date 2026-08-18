@@ -76,7 +76,7 @@ PiSdkAdapter（当前）/ PiRpcAdapter（未来）
 
 ### 1.3 活动跨端任务（计划 SSOT：`docs/cross-platform-hardening-plan.md`）
 
-G0 基线以及后续已落地的 G1–G5 切片都记在下表。不读取、不合并 `fix/cross-platform-dev`。不宣称 Windows 产品支持 / Job Object / ledger v2 / Protocol path-flavor。
+G0 基线以及后续已落地的 G1–G5 切片都记在下表。不读取、不合并 `fix/cross-platform-dev`。不宣称 Windows 产品支持 / Job Object / ledger v2 / Protocol path-flavor。跨端问题/目标/路线仍以 `docs/cross-platform-hardening-plan.md` 为准；该文件 §16 是相对 2026-08-17 审计的当前进度。
 
 ```text
 CP-00..CP-04  G0 honesty / tooling / CI skeleton          DONE

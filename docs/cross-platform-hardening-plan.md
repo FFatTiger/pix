@@ -2,21 +2,24 @@
 
 > 基线：`main@bd3224860e7434df28ac2750490b2a77a98afb34`（2026-08-17）
 > 调研时间：2026-08-17
+> 进度同步：`feat/cross-platform-g0-baseline@a836dae`（已 merge `origin/main@73fa042`）
 > 范围：原生 Windows、原生 Linux、原生 macOS；同时覆盖浏览器/PWA、CLI、Host、sessiond、Worker、文件/Git、构建、安装与发布
 > 非范围：不读取、不合并、不 cherry-pick `fix/cross-platform-dev`；不以 WSL、Docker 或虚拟机替代 Windows 原生产品支持；不在本计划中实现 Tauri/Electron 壳
-> 状态：已激活为跨端专题计划；活动任务与验收只写在 `docs/refactor-execution-plan.md` §1.3（CP-00/01/02/03/04）。本文件负责跨端问题、目标和分阶段路线
+> 状态：专题计划仍有效。活动任务与验收只写在 `docs/refactor-execution-plan.md` §1.3（CP-00–CP-31）。§0–§15 的 2026-08-17 审计是历史快照；当前事实以 §16 为准。
 
 ---
 
 ## 0. 执行摘要
 
-当前 `main` 的跨端状态不是“Linux/macOS 已完成、只差 Windows”，而是：
+2026-08-17 审计时，`main` 的跨端状态不是“Linux/macOS 已完成、只差 Windows”，而是：
 
-| 平台 | 当前判断 | 主要阻塞 |
+| 平台 | 当时判断 | 当时主要阻塞 |
 |---|---|---|
 | Windows 原生 | **产品不可启动** | sessiond 和 Host 在 named-pipe 分支之前进入 POSIX 路径/权限实现；根脚本与 release verifier 也未通过 Windows 约束 |
 | Linux | **主要产品路径按 POSIX 设计可工作，但没有持续证明** | 无 Linux CI；锁/secret/进程树/文件监听仍有现存风险；无发行 artifact 原生验证 |
 | macOS | **主要产品路径按 POSIX 设计可工作，但没有持续证明** | 无 macOS CI；`sun_path`、APFS 大小写/Unicode、TCC、签名/公证和发行验证未关门 |
+
+**2026-08-18 起该表已过时。** 当前诚实状态见 §16：Windows 默认可启动但仍是 Unsupported；Linux/macOS 有 PR tooling + required `npm test`，仍是 Unverified-native。
 
 本次代码审计确认的最高优先级事实：
 
@@ -1494,6 +1497,74 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 4. 用 target-native CI 和 packaged artifact smoke 决定“支持”字样；
 5. 对 PWA 区分 localhost/HTTPS 与 HTTP LAN，保持产品承诺诚实。
 
-在这些门槛完成前，最准确的对外表述是：
+在这些门槛完成前，最准确的对外表述曾是：
 
 > Linux/macOS 是当前原生设计路径，但尚缺持续平台与发行验证；Windows 原生是明确目标，当前尚不可启动。Pix 不以 WSL 作为 Windows 产品方案。LAN HTTP 可作为受密码保护的普通 Web 访问，但安装式 PWA 目标需要 HTTPS 或浏览器认可的 loopback secure context。
+
+**该表述已过时。** 当前对外矩阵与剩余缺口以 §16 为准。
+
+---
+
+## 16. 当前进度（相对 2026-08-17 审计）
+
+活动任务 SSOT 仍是 `docs/refactor-execution-plan.md` §1.3。本节省略实现细节，只同步“审计时的阻塞现在怎样了”。
+
+参考实现继续固定到已调研 commit，不另造轮子：VS Code `03459a7e73daf894cc2cdd282d41b09d1517cb68`、OpenCode `1c965451b537e1af4bff12c163200f762a6a0364`、Continue `5522c6f44ca0ac3528b37244818fbfa39b5af470`、Goose `3810898a7447ec3299be72e223d3570a7aabf0ab`、Cline `8bbdde2a5c1f972864fe1b954f639c21fac61a40`。
+
+### 16.1 支持矩阵（诚实）
+
+| 平台 | 等级 | 现在的事实 |
+|---|---|---|
+| Windows 原生 | **Unsupported** | 默认 `~/.pi/pix` 可启动：native SID/DACL/file-ID backend、named pipe、required start/shutdown smoke。不是产品支持：无 Job Object、无 ledger v2、无 packaged install/upgrade、无完整 Windows `npm test`。不以 WSL 作为产品方案。 |
+| Linux | **Unverified-native** | PR tooling + required `npm test` 已存在。无发行 smoke / 签名。 |
+| macOS | **Unverified-native** | 同上。无公证 / 发行 smoke。 |
+| 浏览器 / PWA | **Partial** | localhost/HTTPS 普通 Web；HTTP LAN 明确 web-only / insecure-origin，可见降级。不承诺可安装 PWA。 |
+
+### 16.2 Gate 进度
+
+| Gate | 状态 | 已落地 | 仍缺 |
+|---|---|---|---|
+| G0 | 骨架完成 | README 矩阵、CI 三端 tooling、根脚本 Windows 绿、Protocol v2 / Host bootstrap 词义分离 | `pix doctor`、sessiond 启动诊断通道 |
+| G1 | 半完成 | discriminated `posix \| windows` 合同；Client display 路径 owner | Protocol path-flavor DTO；ledger v2 |
+| G2A | 基本完成 | lock/secret identity pin、禁事后 chmod、默认拒 root | macOS lock 仍无 start identity |
+| G2B | 接通 | `createSecureStateBackend()` 在 walk 前选 Windows native；DACL = 当前用户+SYSTEM，宽 ACL 不自动修 | 中间目录宽 ACL 只查 reparse |
+| G3 | 半完成 | pipe DACL（listen 后 protect+回读）、process-start identity、Worker/Git final-kill、共享 process-tree owner | Job Object；listen 前带 DACL 的 retained N-API pipe |
+| G4 | 半完成 | AllowedRoot 平台身份、parent-watch + overflow rescan、Windows 路径脱敏、exact-open | hardlink 事务、worktree disk identity、junction 对抗 CI |
+| G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级 | Host 下发 path-flavor；打开项目未接 `cwd.validate`；mention 索引仍无条件小写 |
+| G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
+
+执行切片 CP-00–CP-31 记为 DONE。后置：Job Object、ledger v2、Protocol path-flavor、packaged release。
+
+### 16.3 审计条目对照
+
+| 原条目 | 现在 |
+|---|---|
+| CP-001 named-pipe 不可达 | 已接通；factory 先于 walk |
+| CP-002 Host POSIX backend 硬编码 | Host/sessiond 走 `createSecureStateBackend()` |
+| CP-003 合同仍是 POSIX | 已分成 posix/windows identity/principal |
+| CP-004/005 lock identity | 已 pin；release 三重匹配 |
+| CP-006 Windows DACL | 已落地；已存在宽 ACL fail-closed |
+| CP-007 secret 事后 chmod | 已改为读前校验 |
+| CP-008 PID reuse | Windows creation time + Linux startticks；macOS 仍弱 |
+| CP-009/010 final-kill 假成功 | 已 fail-closed；子孙进程仍杀不掉 |
+| CP-012 Windows 路径脱敏 | 已覆盖 drive/UNC/extended/`file://` |
+| CP-013 exact-open | 已校验 `getSessionId()` |
+| CP-014/015 ledger identity | 内存用平台 identity；磁盘仍 v1，超精度 `ino` fail-closed |
+| CP-016 watch | parent-watch + overflow rescan |
+| CP-017 Client drive-root/case | `file-paths` owner；无 Protocol flavor |
+| CP-018/019 PWA | 可见降级；SW version 用 package+commit |
+| CP-020 iOS-before-Mac | 已修 |
+| CP-022 根脚本 Windows 红 | 已绿 |
+| CP-025 无 CI | `.github/workflows/cross-platform-baseline.yml` 存在，不是 G7 |
+| CP-026 协议 magic number | E2E 正向握手用 `PROTOCOL_VERSION` |
+
+### 16.4 当前产品缺口（不是跨端 backend 阻塞）
+
+AllowedRoot **没有设置页**。启动根来自启动 cwd / `PIX_ALLOWED_ROOTS`。本机当前只有 `D:\src_test_env\pix`。侧边栏打开项目只改 URL，不调用 `POST /v1/cwd/validate`，所以其他盘符/仓库会 403。`POST /v1/trust` 是项目信任，不是 Files/Git 授权。`trusted-roots.json` 空账本不会凭空加根。
+
+### 16.5 下一刀（对齐参考实现，不自造轮子）
+
+1. 打开项目接到已有 `POST /v1/cwd/validate`（本地模式扩根），失败留在当前 cwd。
+2. Protocol path-flavor：Host bootstrap 下发，Client 不再靠路径长得像 `C:/` 猜。
+3. named-pipe listen 前带 DACL（VS Code SID/ACL，而不是 `node:net` 默认 DACL 再补一层）。
+4. 仍后置：Job Object、ledger v2、packaged release。
