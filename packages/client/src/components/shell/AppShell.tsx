@@ -287,17 +287,39 @@ export function AppShell({ search }: AppShellProps) {
     return ids;
   }, [runtime.attached, runtime.liveSessionIds, runtime.sessionId]);
   const liveTakeoverRef = useRef<{ sessionId: string; attempts: number } | null>(null);
+  // A live takeover that exhausted its bounded retries: the session is treated
+  // as history from then on so the loading gate releases.
+  const [takeoverExhausted, setTakeoverExhausted] = useState<string | null>(null);
   useEffect(() => {
     if (activeSessionId === null || selectionMatchesLive) return;
+    if (takeoverExhausted !== activeSessionId && takeoverExhausted !== null) setTakeoverExhausted(null);
     if (!liveSessionIds.has(activeSessionId)) return;
     const prior = liveTakeoverRef.current;
-    if (prior?.sessionId === activeSessionId && prior.attempts >= 2) return;
+    if (prior?.sessionId === activeSessionId && prior.attempts >= 2) {
+      setTakeoverExhausted(activeSessionId);
+      return;
+    }
     liveTakeoverRef.current = {
       sessionId: activeSessionId,
       attempts: prior?.sessionId === activeSessionId ? prior.attempts + 1 : 1,
     };
     runtime.openSession(activeSessionId).catch(() => undefined);
-  }, [activeSessionId, runtime, liveSessionIds, selectionMatchesLive]);
+  }, [activeSessionId, runtime, liveSessionIds, selectionMatchesLive, takeoverExhausted]);
+
+  // Loading gate for a LIVE selected session: while sessiond reports a live
+  // worker for it and the attach snapshot has not landed yet, the central area
+  // shows a loading state instead of painting inferred/empty values that would
+  // later flip to the authoritative snapshot (model / thinking / context flash
+  // on reload). Once attached (or once the session is confirmed not live), the
+  // frame renders its final state exactly once.
+  const selectedSessionPending = canAgent
+    && activeSessionId !== null
+    && !selectionMatchesLive
+    && takeoverExhausted !== activeSessionId
+    && (runtime.connection === "idle"
+      || runtime.connection === "connecting"
+      || runtime.connection === "handshaking"
+      || (runtime.connection === "ready" && liveSessionIds.has(activeSessionId)));
 
   const runningProjectRoots = useMemo<ReadonlySet<string>>(() => {
     const roots = new Set<string>();
@@ -768,6 +790,11 @@ export function AppShell({ search }: AppShellProps) {
                 )}
                 onOpenFile={handleOpenLinkedFile}
               />
+            ) : selectedSessionPending ? (
+              <div className="transcript-empty" aria-busy="true">
+                <span className="transcript-loading-dot" aria-hidden="true" />
+                {t("desktop.openingSession")}
+              </div>
             ) : (
               <>
                 <TranscriptList
