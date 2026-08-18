@@ -8,12 +8,13 @@
 #include <sddl.h>
 #endif
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
 
-#define PIX_NATIVE_API_VERSION 3
+#define PIX_NATIVE_API_VERSION 4
 #define PIX_MAX_REPORTED_ACES 32
 
 static napi_value throw_fixed(napi_env env, const char* code, const char* message) {
@@ -274,6 +275,56 @@ fail:
   if (user) free(user);
   if (token) CloseHandle(token);
   return throw_fixed(env, "NATIVE_INTERNAL", "current user identity could not be inspected");
+}
+
+static napi_value inspect_process(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  int64_t pid_js = 0;
+  HANDLE process = NULL;
+  FILETIME creation;
+  FILETIME exit_time;
+  FILETIME kernel;
+  FILETIME user;
+  ULARGE_INTEGER ticks;
+  char text[32];
+  napi_value result = NULL;
+  napi_value creation_value = NULL;
+
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 1) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "pid is required");
+  }
+  if (napi_get_value_int64(env, argv[0], &pid_js) != napi_ok || pid_js <= 0 || pid_js > 0x7fffffff) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "pid is invalid");
+  }
+  process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid_js);
+  if (!process) {
+    DWORD error = GetLastError();
+    if (error == ERROR_INVALID_PARAMETER || error == ERROR_INVALID_HANDLE) {
+      napi_value missing;
+      if (napi_get_null(env, &missing) != napi_ok) {
+        return throw_fixed(env, "NATIVE_INTERNAL", "process identity could not be inspected");
+      }
+      return missing;
+    }
+    return throw_fixed(env, "NATIVE_ACCESS_DENIED", "process identity is unavailable");
+  }
+  if (!GetProcessTimes(process, &creation, &exit_time, &kernel, &user)) {
+    CloseHandle(process);
+    return throw_fixed(env, "NATIVE_INTERNAL", "process identity could not be inspected");
+  }
+  CloseHandle(process);
+  ticks.LowPart = creation.dwLowDateTime;
+  ticks.HighPart = creation.dwHighDateTime;
+  if (snprintf(text, sizeof(text), "%llu", (unsigned long long)ticks.QuadPart) <= 0) {
+    return throw_fixed(env, "NATIVE_INTERNAL", "process identity could not be inspected");
+  }
+  if (napi_create_object(env, &result) != napi_ok ||
+      napi_create_string_utf8(env, text, NAPI_AUTO_LENGTH, &creation_value) != napi_ok ||
+      napi_set_named_property(env, result, "creationTime", creation_value) != napi_ok) {
+    return throw_fixed(env, "NATIVE_INTERNAL", "process identity could not be inspected");
+  }
+  return result;
 }
 
 static napi_value inspect_path(napi_env env, napi_callback_info info) {
@@ -716,6 +767,7 @@ static napi_value init(napi_env env, napi_value exports) {
     {"createPrivateObject", NULL, create_private_object, NULL, NULL, NULL, napi_default, NULL},
     {"inspectNamedPipe", NULL, inspect_named_pipe, NULL, NULL, NULL, napi_default, NULL},
     {"protectNamedPipe", NULL, protect_named_pipe, NULL, NULL, NULL, napi_default, NULL},
+    {"inspectProcess", NULL, inspect_process, NULL, NULL, NULL, napi_default, NULL},
   };
   if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
     napi_throw_error(env, "NATIVE_INTERNAL", "native operation failed");

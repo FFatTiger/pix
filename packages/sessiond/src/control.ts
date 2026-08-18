@@ -10,6 +10,7 @@
 export {
   readInstanceLock,
   readInstanceLockStrict,
+  classifyInstanceLock,
   instanceAlive,
   sessiondPaths,
   probeSocket,

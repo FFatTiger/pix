@@ -9,6 +9,11 @@ import {
   type FileIdentity,
   type SecureStateBackend,
 } from "@fffattiger/pix-local-authority/state";
+import {
+  classifyLockProcess,
+  currentProcessStartIdentity,
+  type ProcessStartIdentity,
+} from "@fffattiger/pix-local-authority/process";
 import { SessiondError } from "./errors.js";
 import { readExistingSecret, SESSIOND_SECRET_MIN_BYTES } from "./internal/local-state-security.js";
 import {
@@ -34,6 +39,8 @@ export interface InstanceLockRecord {
   pid: number;
   instanceId: string;
   createdAt: number;
+  /** Process-start identity. Absent on legacy locks and macOS. */
+  start?: ProcessStartIdentity;
 }
 
 /**
@@ -58,6 +65,16 @@ export type InstanceLockRead =
  * payloads are reported as `{ kind: "unsafe" }` rather than silently
  * treated as absent.
  */
+function parseLockProcessStart(value: unknown): ProcessStartIdentity | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { kind?: unknown; value?: unknown };
+  if ((record.kind !== "linux-startticks" && record.kind !== "windows-creation-time") || typeof record.value !== "string") {
+    return undefined;
+  }
+  if (!/^[0-9]+$/u.test(record.value) || record.value.length > 32) return undefined;
+  return { kind: record.kind, value: record.value };
+}
+
 function fileIdentityToLockIdentity(identity: FileIdentity): InstanceLockIdentity | undefined {
   if (identity.kind === "posix" && identity.isFile && !identity.isSymbolicLink) {
     return { kind: "posix", dev: BigInt(identity.dev), ino: BigInt(identity.ino) };
@@ -97,12 +114,14 @@ export async function readInstanceLockStrict(paths: SessiondPaths): Promise<Inst
     if (typeof parsed.pid !== "number" || typeof parsed.instanceId !== "string") {
       return { kind: "unsafe", reason: "sessiond lock file is malformed" };
     }
+    const start = parseLockProcessStart(parsed.start);
     return {
       kind: "ok",
       record: {
         pid: parsed.pid,
         instanceId: parsed.instanceId,
         createdAt: typeof parsed.createdAt === "number" ? parsed.createdAt : 0,
+        ...(start ? { start } : {}),
       },
       identity,
     };
@@ -121,10 +140,17 @@ export async function readInstanceLock(paths: SessiondPaths): Promise<InstanceLo
   return result.kind === "ok" ? result.record : undefined;
 }
 
-/** True when the lock names a process that is still alive (pid 0 probe). */
+export function classifyInstanceLock(record: InstanceLockRecord): "live" | "stale" | "obstructed" {
+  return classifyLockProcess({
+    pid: record.pid,
+    ...(record.start ? { start: record.start } : {}),
+  });
+}
+
+/** True when the lock names a live process with a matching start identity. */
 export async function instanceAlive(paths: SessiondPaths): Promise<boolean> {
   const lock = await readInstanceLock(paths);
-  return lock !== undefined && pidAlive(lock.pid);
+  return lock !== undefined && classifyInstanceLock(lock) === "live";
 }
 
 export function sessiondPaths(directory: string): SessiondPaths {
@@ -198,7 +224,13 @@ export async function acquireInstanceLock(
   await resolveSessiondPrivateDirectory(paths, privateDir);
   const backend = createSecureStateBackend();
   const instanceId = randomUUID();
-  const payload = `${JSON.stringify({ pid: process.pid, instanceId, createdAt: Date.now() })}\n`;
+  const start = currentProcessStartIdentity();
+  const payload = `${JSON.stringify({
+    pid: process.pid,
+    instanceId,
+    createdAt: Date.now(),
+    ...(start ? { start } : {}),
+  })}\n`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const created = await backend.createExclusivePrivateFile(paths.lockFile, payload, { maxBytes: 4096 });
@@ -251,10 +283,12 @@ export async function acquireInstanceLock(
       const existing = await readInstanceLockStrict(paths);
       if (existing.kind === "missing") continue; // raced with another acquirer; retry
       if (existing.kind === "unsafe") throw new SessiondError("forbidden", existing.reason);
-      if (pidAlive(existing.record.pid)) throw new SessiondError("conflict", "another sessiond instance is running");
-      // Valid lock naming a dead pid → stale debris. Re-check record + inode
-      // immediately before removal so a concurrent/live replacement is never
-      // deleted based on stale evidence.
+      const existingClass = classifyInstanceLock(existing.record);
+      if (existingClass === "live") throw new SessiondError("conflict", "another sessiond instance is running");
+      if (existingClass === "obstructed") throw new SessiondError("forbidden", "sessiond lock process identity is unverifiable");
+      // Valid lock naming a dead or reused pid → stale debris. Re-check record
+      // + inode immediately before removal so a concurrent/live replacement is
+      // never deleted based on stale evidence.
       await hooks.beforeStaleLockRemoval?.();
       const beforeRemove = await readInstanceLockStrict(paths);
       if (beforeRemove.kind === "missing") continue;
@@ -266,8 +300,12 @@ export async function acquireInstanceLock(
       ) {
         throw new SessiondError("conflict", "sessiond lock identity changed during stale recovery");
       }
-      if (pidAlive(beforeRemove.record.pid)) {
+      const beforeClass = classifyInstanceLock(beforeRemove.record);
+      if (beforeClass === "live") {
         throw new SessiondError("conflict", "another sessiond instance is running");
+      }
+      if (beforeClass === "obstructed") {
+        throw new SessiondError("forbidden", "sessiond lock process identity is unverifiable");
       }
       await rm(paths.lockFile, { force: true });
     }

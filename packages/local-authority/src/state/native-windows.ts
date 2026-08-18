@@ -34,13 +34,18 @@ export interface NativeWindowsNamedPipeInspection {
   aces: NativeWindowsAce[];
 }
 
+export interface NativeWindowsProcessInspection {
+  creationTime: string;
+}
+
 export interface NativeWindowsBinding {
-  readonly apiVersion: 3;
+  readonly apiVersion: 4;
   currentUserSid(): string;
   inspectPath(path: string): NativeWindowsPathInspection | null;
   createPrivateObject(path: string, kind: NativeWindowsPrivateKind): boolean;
   inspectNamedPipe(path: string): NativeWindowsNamedPipeInspection | null;
   protectNamedPipe(path: string): boolean;
+  inspectProcess(pid: number): NativeWindowsProcessInspection | null;
 }
 
 function assertInspectablePath(path: string): void {
@@ -64,12 +69,13 @@ let cached: NativeWindowsBinding | undefined;
 function isBinding(value: unknown): value is NativeWindowsBinding {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<NativeWindowsBinding>;
-  return candidate.apiVersion === 3
+  return candidate.apiVersion === 4
     && typeof candidate.currentUserSid === "function"
     && typeof candidate.inspectPath === "function"
     && typeof candidate.createPrivateObject === "function"
     && typeof candidate.inspectNamedPipe === "function"
-    && typeof candidate.protectNamedPipe === "function";
+    && typeof candidate.protectNamedPipe === "function"
+    && typeof candidate.inspectProcess === "function";
 }
 
 /** Load the target-native addon without exposing it from the package surface. */
@@ -89,7 +95,7 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
   }
   if (!isBinding(loaded)) throw new Error("Windows native binding contract mismatch");
   cached = {
-    apiVersion: 3,
+    apiVersion: 4,
     currentUserSid: () => loaded.currentUserSid(),
     inspectPath: (path) => {
       assertInspectablePath(path);
@@ -107,6 +113,14 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
     protectNamedPipe: (path) => {
       assertInspectablePath(path);
       return loaded.protectNamedPipe(path);
+    },
+    inspectProcess: (pid) => {
+      if (!Number.isSafeInteger(pid) || pid <= 0) {
+        const error = new Error("pid is invalid") as Error & { code?: string };
+        error.code = "NATIVE_INVALID_ARGUMENT";
+        throw error;
+      }
+      return loaded.inspectProcess(pid);
     },
   };
   return cached;

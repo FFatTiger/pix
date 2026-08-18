@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
+  classifyInstanceLock,
   instanceAlive,
   listPrivateSocketAliases,
   probeSocket,
@@ -79,16 +80,6 @@ export function locateSessiond(directory?: string): SessiondLocation {
   return { directory: dir, endpoint: paths.endpoint, paths };
 }
 
-function pidAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -134,7 +125,11 @@ export async function inspectSessiond(directory?: string): Promise<SessiondStatu
     }
     return { alive: false, pingable: false, obstructed: false, obstruction: undefined, pid: undefined, instanceId: undefined, directory: dir, endpoint };
   }
-  const alive = pidAlive(lock.record.pid);
+  const classification = classifyInstanceLock(lock.record);
+  // Dead / reused pids are stale debris. A live pid whose start identity is
+  // missing (legacy lock) is still pingable so `pix down` can stop it; acquire
+  // refuses to auto-reclaim that case.
+  const alive = classification === "live" || classification === "obstructed";
   if (!alive) {
     return {
       alive: false,

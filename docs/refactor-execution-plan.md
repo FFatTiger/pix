@@ -87,9 +87,10 @@ CP-25         docs honesty + Windows create-race mapping  DONE
 CP-26         required Windows CI runs secure-state suites DONE
 CP-27         Client path compare/join owner              DONE
 CP-28         visible PWA/clipboard failure               DONE
+CP-29         sessiond uses backend private-dir walk      DONE
+CP-30         lock process-start identity                 DONE
 
 later (explicitly deferred):
-  sessiond POSIX second-walk removal, lock process-start identity,
   Job Object, ledger v2, Protocol path-flavor, packaged release
 ```
 
@@ -130,8 +131,10 @@ later (explicitly deferred):
 | `CP-26` | Windows required CI 跑 `windows-*.test.mjs` + native builder/factory，不再只做 addon load smoke | `DONE` | `.github/workflows` | `CP-25` | 本机相同 glob PASS；不宣称 G7 / 完整 Windows `npm test` / 产品支持 |
 | `CP-27` | Client 路径比较/拼接收口到 `file-paths`：`paths`/`file-links`/`file-mentions`/`Sidebar` 复用同一 drive-root/compare/join；`C:/` 不再塌成 `C:` | `DONE` | `packages/client` | `CP-26` | file-paths/links/mentions/paths/shared-git 40/40 PASS；不宣称 Protocol path-flavor / 产品支持 |
 | `CP-28` | PWA 降级/注册失败改为可见 status；clipboard 失败不再吞掉或变成未处理 rejection；SW version 使用 package+commit，不再回落 `"1"` | `DONE` | `packages/client` | `CP-27` | PWA 4/4 + copy-feedback 2/2 + clipboard 2/2 PASS；不宣称 LAN HTTPS 产品化 / 安装 prompt |
+| `CP-29` | sessiond 私有目录走 `backend.ensurePrivateDirectory`；删除第二套 POSIX walk / `WithFs` 注入 | `DONE` | `packages/sessiond` | `CP-28` | local-posix 定向 PASS；不放松 0700/owner/nlink；不宣称 Job Object |
+| `CP-30` | lock process-start identity：Windows creation time + Linux `/proc` startticks；无法验证则 obstructed 不自动 reclaim | `DONE` | `packages/local-authority/process` + sessiond/CLI | `CP-29` | process-start + native inspectProcess + sessiond local-posix PASS；不宣称 Job Object / 产品支持 |
 
-后续 lane：sessiond POSIX 第二套 walk、lock process-start identity。Job Object / ledger v2 / Protocol path-flavor / 远端发行仍后置。独立 verification agent 当前不可用。
+后续 lane：Job Object / ledger v2 / Protocol path-flavor / 远端发行仍后置。独立 verification agent 当前不可用。
 
 ---
 

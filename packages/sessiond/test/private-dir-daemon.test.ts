@@ -208,6 +208,12 @@ test("Windows sessiond can start against a dedicated private directory", { skip:
       startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } }),
       (error: unknown) => error instanceof SessiondError && error.code === "conflict",
     );
+    const lock = await readInstanceLockStrict(sessiondPaths(dir));
+    assert.equal(lock.kind, "ok");
+    if (lock.kind === "ok") {
+      assert.equal(lock.record.start?.kind, "windows-creation-time");
+      assert.match(lock.record.start?.value ?? "", /^[0-9]+$/u);
+    }
   } finally {
     await handle.shutdown();
   }

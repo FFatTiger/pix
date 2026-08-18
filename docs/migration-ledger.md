@@ -3733,3 +3733,15 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - `PwaRegistration` renders a visible `role="status"` banner for `insecure-origin`, production `web-only`, and `registration-error`. Installable stays silent. Dev `web-only` stays off-screen.
 - `useCopyFeedback` records `copied`/`failed`. Message/code/session/theme copy surfaces show the failure. Context-menu copy waits for `onSelect` before showing Copied, and uses `errorFeedbackLabel` on reject.
 - Vite defines `VITE_SW_VERSION` as `packageVersion+commit/dev`. Missing version is `registration-error`, never a permanent cache key `1`. This is not LAN HTTPS productization.
+
+## 97. Cross-platform CP-29 — sessiond uses backend private-directory walk
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `37f45fe`.
+- `ensureSessiondPrivateDirectory` now calls `createSecureStateBackend().ensurePrivateDirectory` after refusing an operational leaf symlink/reparse. Sessiond still owns operational-vs-canonical split and identity re-verify.
+- `ensureSessiondPrivateDirectoryWithFs` is deleted. Race coverage stays in `packages/local-authority`.
+
+## 98. Cross-platform CP-30 — lock process-start identity
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `37f45fe`.
+- Native Windows addon `apiVersion` 4 adds `inspectProcess` (FILETIME creation ticks). Linux reads `/proc/<pid>/stat` startticks. macOS still classifies a live pid without start identity as live, a dead pid as stale.
+- New locks persist `{ start }` when available. A live pid with missing/unreadable start identity is `obstructed` and is not auto-reclaimed. This is not Job Object.
