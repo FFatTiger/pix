@@ -39,7 +39,7 @@ export interface NativeWindowsProcessInspection {
 }
 
 export interface NativeWindowsBinding {
-  readonly apiVersion: 5;
+  readonly apiVersion: 6;
   currentUserSid(): string;
   inspectPath(path: string): NativeWindowsPathInspection | null;
   createPrivateObject(path: string, kind: NativeWindowsPrivateKind): boolean;
@@ -47,6 +47,11 @@ export interface NativeWindowsBinding {
   createProtectedNamedPipe(path: string): bigint;
   inspectNamedPipeHandle(handle: bigint): NativeWindowsNamedPipeInspection | null;
   closeNamedPipeHandle(handle: bigint): boolean;
+  readNamedPipeHandle(handle: bigint, maxBytes: number): Promise<Buffer>;
+  writeNamedPipeHandle(handle: bigint, bytes: Buffer): Promise<number>;
+  listenProtectedNamedPipe(path: string, onHandle: (handle: bigint) => void): bigint;
+  inspectProtectedNamedPipeListener(handle: bigint): NativeWindowsNamedPipeInspection | null;
+  closeProtectedNamedPipeListener(handle: bigint): boolean;
   protectNamedPipe(path: string): boolean;
   inspectProcess(pid: number): NativeWindowsProcessInspection | null;
 }
@@ -54,6 +59,14 @@ export interface NativeWindowsBinding {
 function assertInspectablePath(path: string): void {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
     const error = new Error("path is invalid") as Error & { code?: string };
+    error.code = "NATIVE_INVALID_ARGUMENT";
+    throw error;
+  }
+}
+
+function assertHandle(handle: bigint): void {
+  if (typeof handle !== "bigint" || handle <= 0n) {
+    const error = new Error("handle is invalid") as Error & { code?: string };
     error.code = "NATIVE_INVALID_ARGUMENT";
     throw error;
   }
@@ -72,7 +85,7 @@ let cached: NativeWindowsBinding | undefined;
 function isBinding(value: unknown): value is NativeWindowsBinding {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<NativeWindowsBinding>;
-  return candidate.apiVersion === 5
+  return candidate.apiVersion === 6
     && typeof candidate.currentUserSid === "function"
     && typeof candidate.inspectPath === "function"
     && typeof candidate.createPrivateObject === "function"
@@ -80,6 +93,11 @@ function isBinding(value: unknown): value is NativeWindowsBinding {
     && typeof candidate.createProtectedNamedPipe === "function"
     && typeof candidate.inspectNamedPipeHandle === "function"
     && typeof candidate.closeNamedPipeHandle === "function"
+    && typeof candidate.readNamedPipeHandle === "function"
+    && typeof candidate.writeNamedPipeHandle === "function"
+    && typeof candidate.listenProtectedNamedPipe === "function"
+    && typeof candidate.inspectProtectedNamedPipeListener === "function"
+    && typeof candidate.closeProtectedNamedPipeListener === "function"
     && typeof candidate.protectNamedPipe === "function"
     && typeof candidate.inspectProcess === "function";
 }
@@ -101,7 +119,7 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
   }
   if (!isBinding(loaded)) throw new Error("Windows native binding contract mismatch");
   cached = {
-    apiVersion: 5,
+    apiVersion: 6,
     currentUserSid: () => loaded.currentUserSid(),
     inspectPath: (path) => {
       assertInspectablePath(path);
@@ -135,6 +153,52 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
         throw error;
       }
       return loaded.closeNamedPipeHandle(handle);
+    },
+    readNamedPipeHandle: (handle, maxBytes) => {
+      assertHandle(handle);
+      if (!Number.isInteger(maxBytes) || maxBytes <= 0 || maxBytes > 65536) {
+        const error = new Error("maxBytes is invalid") as Error & { code?: string };
+        error.code = "NATIVE_INVALID_ARGUMENT";
+        throw error;
+      }
+      return loaded.readNamedPipeHandle(handle, maxBytes);
+    },
+    writeNamedPipeHandle: (handle, bytes) => {
+      assertHandle(handle);
+      if (!Buffer.isBuffer(bytes)) {
+        const error = new Error("bytes are invalid") as Error & { code?: string };
+        error.code = "NATIVE_INVALID_ARGUMENT";
+        throw error;
+      }
+      return loaded.writeNamedPipeHandle(handle, bytes);
+    },
+    listenProtectedNamedPipe: (path, onHandle) => {
+      assertInspectablePath(path);
+      if (typeof onHandle !== "function") {
+        const error = new Error("callback is required") as Error & { code?: string };
+        error.code = "NATIVE_INVALID_ARGUMENT";
+        throw error;
+      }
+      return loaded.listenProtectedNamedPipe(path, (raw) => {
+        if (typeof raw !== "bigint" || raw <= 0n) return;
+        onHandle(raw);
+      });
+    },
+    inspectProtectedNamedPipeListener: (handle) => {
+      if (typeof handle !== "bigint" || handle <= 0n) {
+        const error = new Error("handle is invalid") as Error & { code?: string };
+        error.code = "NATIVE_INVALID_ARGUMENT";
+        throw error;
+      }
+      return loaded.inspectProtectedNamedPipeListener(handle);
+    },
+    closeProtectedNamedPipeListener: (handle) => {
+      if (typeof handle !== "bigint" || handle <= 0n) {
+        const error = new Error("handle is invalid") as Error & { code?: string };
+        error.code = "NATIVE_INVALID_ARGUMENT";
+        throw error;
+      }
+      return loaded.closeProtectedNamedPipeListener(handle);
     },
     protectNamedPipe: (path) => {
       assertInspectablePath(path);

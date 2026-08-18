@@ -1,5 +1,10 @@
-import type { Socket } from "node:net";
+import type { EventEmitter } from "node:events";
 import { SessiondError } from "../errors.js";
+
+export interface RpcWriteStream extends EventEmitter {
+  write(data: string, cb?: (error?: Error | null) => void): boolean;
+  destroy(error?: Error): void;
+}
 
 export interface SerialSocketWriterOptions {
   maxQueuedFrames?: number;
@@ -80,7 +85,7 @@ export class SerialSocketWriter {
     return this.closed;
   }
 
-  constructor(private readonly socket: Socket, options: SerialSocketWriterOptions = {}) {
+  constructor(private readonly socket: RpcWriteStream, options: SerialSocketWriterOptions = {}) {
     this.maxQueuedFrames = options.maxQueuedFrames ?? 256;
     this.maxQueuedBytes = options.maxQueuedBytes ?? 4 * 1024 * 1024;
     // Listener lifetime == socket lifetime (the writer is per-connection and the

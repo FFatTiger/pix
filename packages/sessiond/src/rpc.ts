@@ -1,4 +1,5 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import { timingSafeEqual } from "node:crypto";
 import {
   PROTOCOL_VERSION,
@@ -34,10 +35,16 @@ export interface SessiondRpcHandler {
   attach?(params: SessiondMethodParams["runtime.attach"]): PreparedAttachment;
 }
 
+export interface SessiondRpcListenHandle {
+  close(): void | Promise<void>;
+}
+
 export interface SessiondRpcServerOptions {
   endpoint: string;
   secret: string;
   handler: SessiondRpcHandler;
+  /** Windows production listen: native first instance already has the frozen DACL. */
+  listen?: (onConnection: (connection: Duplex) => void) => Promise<SessiondRpcListenHandle>;
   maxFrameBytes?: number;
   writer?: SerialSocketWriterOptions;
   /**
@@ -83,12 +90,17 @@ const defaultRpcLogger = (line: string): void => {
 
 export class SessiondRpcServer {
   private server: Server | undefined;
-  private readonly sockets = new Set<Socket>();
+  private nativeListen: SessiondRpcListenHandle | undefined;
+  private readonly sockets = new Set<Duplex>();
 
   constructor(private readonly options: SessiondRpcServerOptions) {}
 
   async listen(): Promise<void> {
-    if (this.server) return;
+    if (this.server || this.nativeListen) return;
+    if (this.options.listen) {
+      this.nativeListen = await this.options.listen((connection) => this.accept(connection));
+      return;
+    }
     const server = createServer((socket) => this.accept(socket));
     this.server = server;
     await new Promise<void>((resolve, reject) => {
@@ -97,9 +109,15 @@ export class SessiondRpcServer {
     });
   }
 
-  private accept(socket: Socket): void {
+  private accept(socket: Duplex): void {
     this.sockets.add(socket);
-    socket.setNoDelay(true);
+    if ("setNoDelay" in socket && typeof (socket as Socket).setNoDelay === "function") {
+      try {
+        (socket as Socket).setNoDelay(true);
+      } catch {
+        // Named-pipe streams have no TCP_NODELAY; keep the connection.
+      }
+    }
     let authenticated = false;
     let buffered = "";
     let attachment: PreparedAttachment | undefined;
@@ -132,7 +150,7 @@ export class SessiondRpcServer {
     socket.on("error", () => { attachment?.close(); writer.close(); this.sockets.delete(socket); });
   }
 
-  private async process(socket: Socket, writer: SerialSocketWriter, line: string, setAttach: (attachment: PreparedAttachment) => void): Promise<void> {
+  private async process(socket: Duplex, writer: SerialSocketWriter, line: string, setAttach: (attachment: PreparedAttachment) => void): Promise<void> {
     let input: unknown;
     try { input = JSON.parse(line); }
     catch {
@@ -295,9 +313,12 @@ export class SessiondRpcServer {
 
   async close(): Promise<void> {
     const server = this.server;
+    const nativeListen = this.nativeListen;
     this.server = undefined;
+    this.nativeListen = undefined;
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
+    if (nativeListen) await nativeListen.close();
     if (!server) return;
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

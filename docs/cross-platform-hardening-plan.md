@@ -1528,12 +1528,12 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | G1 | 半完成 | discriminated `posix \| windows` 合同；Client display 路径 owner；Host bootstrap `pathFlavor` | ledger v2 |
 | G2A | 基本完成 | lock/secret identity pin、禁事后 chmod、默认拒 root | macOS lock 仍无 start identity |
 | G2B | 接通 | `createSecureStateBackend()` 在 walk 前选 Windows native；DACL = 当前用户+SYSTEM，宽 ACL 不自动修 | 中间目录宽 ACL 只查 reparse |
-| G3 | 半完成 | pipe DACL（listen 后 protect+回读；native 已能创建受保护首实例）、process-start identity、Worker/Git final-kill、共享 process-tree（Windows = VS Code taskkill /T /F） | Job Object；`node:net` FIRST_PIPE_INSTANCE 阻止生产 listen 前接线 |
+| G3 | 半完成 | pipe DACL（生产 listen 前带当前用户+SYSTEM DACL）、process-start identity、Worker/Git final-kill、共享 process-tree（Windows = VS Code taskkill /T /F） | Job Object |
 | G4 | 半完成 | AllowedRoot 平台身份、parent-watch + overflow rescan、Windows 路径脱敏、exact-open | hardlink 事务、worktree disk identity、junction 对抗 CI |
-| G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy 按 `pathFlavor` | 无 AllowedRoot 设置页 |
+| G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy 按 `pathFlavor`、Settings Projects 列出/扩根 | 扩根仍非持久账本 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
 
-执行切片 CP-00–CP-38 记为 DONE。后置：Job Object、ledger v2、packaged release。
+执行切片 CP-00–CP-40 记为 DONE。后置：Job Object、ledger v2、packaged release。
 
 ### 16.3 审计条目对照
 

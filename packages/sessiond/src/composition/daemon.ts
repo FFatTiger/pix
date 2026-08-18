@@ -355,23 +355,35 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     // one), so a close can never unlink another daemon's public endpoint.
     // Windows: named pipes leave no files; bind the public pipe directly.
     const listenEndpoint = privatePath ?? paths.endpoint;
+    const windowsBackend = !needsUnixSocketPublication() ? createSecureStateBackend() : undefined;
+    if (windowsBackend && windowsBackend.kind !== "windows") {
+      throw new SessiondError("unavailable", "sessiond secure state is unavailable on this platform");
+    }
     server = new SessiondRpcServer({
       endpoint: listenEndpoint,
       secret,
       handler: application,
+      ...(windowsBackend?.kind === "windows"
+        ? {
+            listen: (onConnection) => windowsBackend.listenProtectedNamedPipe(listenEndpoint, (connection) => {
+              onConnection(connection as import("node:stream").Duplex);
+            }),
+          }
+        : {}),
       // Internal, authenticated control-plane shutdown: ACK-before-close via
       // the RPC server, fenced on the exact lock instance id, and gated so the
       // daemon transition starts only after the response was flushed.
       shutdownAuthority: { instanceId: lock.instanceId, initiate: initiateShutdown },
     });
-    await server.listen();
-    teardown.push(() => server!.close());
-    if (!needsUnixSocketPublication()) {
-      const backend = createSecureStateBackend();
-      if (backend.kind === "windows") {
-        await backend.protectNamedPipe(listenEndpoint);
+    try {
+      await server.listen();
+    } catch (error) {
+      if (error instanceof LocalAuthorityError && error.code === "LOCK_BUSY") {
+        throw new SessiondError("conflict", "another sessiond instance is running");
       }
+      throw error;
     }
+    teardown.push(() => server!.close());
     if (needsUnixSocketPublication()) {
       // Re-verify the directory identity after listen (the bind is guarded by the
       // earlier reverify inside loadOrCreateLocalSecret) and before the atomic

@@ -10,6 +10,7 @@ import { SessiondError } from "../src/errors.js";
 import { acquireInstanceLock, loadOrCreateLocalSecret, readInstanceLockStrict, sessiondPaths } from "../src/local.js";
 import { ensureSessiondPrivateDirectory } from "../src/local-posix.js";
 import { startDaemon } from "../src/composition/index.js";
+import { SessiondRpcClient } from "../src/rpc.js";
 
 const isWindows = process.platform === "win32";
 const temporary: string[] = [];
@@ -204,6 +205,12 @@ test("Windows sessiond can start against a dedicated private directory", { skip:
     const backend = createSecureStateBackend();
     assert.equal(backend.kind, "windows");
     await backend.protectNamedPipe(handle.endpoint);
+    const ping = await new SessiondRpcClient({
+      endpoint: handle.endpoint,
+      secret: handle.secret,
+      timeoutMs: 2_000,
+    }).call("system.ping", {});
+    assert.equal(ping.pong, true);
     await assert.rejects(
       startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } }),
       (error: unknown) => error instanceof SessiondError && error.code === "conflict",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -69,6 +69,58 @@ test("Windows backend creates a protected named-pipe first instance", { skip: !i
       backend.createProtectedNamedPipe(pipe),
       (error) => error?.code === "LOCK_BUSY",
     );
+  } finally {
+    holder.close();
+  }
+});
+
+test("Windows backend listens on a protected named pipe before Node binds", { skip: !isWindowsX64 }, async () => {
+  const backend = createSecureStateBackend({ platform: "win32" });
+  assert.equal(backend.kind, "windows");
+  const pipe = "\\\\.\\pipe\\pix-listen-" + process.pid + "-" + Date.now();
+  let resolveAccepted;
+  const accepted = new Promise((resolve) => { resolveAccepted = resolve; });
+  const holder = await backend.listenProtectedNamedPipe(pipe, (connection) => {
+    resolveAccepted(connection);
+  });
+  try {
+    await assert.rejects(
+      backend.listenProtectedNamedPipe(pipe, () => {}),
+      (error) => error?.code === "LOCK_BUSY",
+    );
+    await assert.rejects(
+      backend.createProtectedNamedPipe(pipe),
+      (error) => error?.code === "LOCK_BUSY",
+    );
+    const client = createConnection(pipe);
+    const [connection] = await Promise.all([
+      accepted,
+      new Promise((resolve, reject) => {
+        client.once("connect", resolve);
+        client.once("error", reject);
+      }),
+    ]);
+    assert.equal(typeof connection.write, "function");
+    const reply = new Promise((resolve) => {
+      connection.on("data", (chunk) => resolve(chunk.toString()));
+    });
+    client.write("ping\n");
+    const seen = await Promise.race([
+      reply,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("no server read")), 1000)),
+    ]).catch((error) => error);
+    if (seen instanceof Error) throw seen;
+    assert.equal(seen, "ping\n");
+    connection.write("pong\n");
+    const clientSeen = await new Promise((resolve, reject) => {
+      client.once("data", (chunk) => resolve(chunk.toString()));
+      client.once("error", reject);
+      setTimeout(() => reject(new Error("no client read")), 1000);
+    });
+    assert.equal(clientSeen, "pong\n");
+    client.end();
+    connection.destroy();
+    await new Promise((resolve) => client.once("close", resolve));
   } finally {
     holder.close();
   }

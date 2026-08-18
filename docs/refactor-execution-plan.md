@@ -98,6 +98,7 @@ CP-36         Protocol path-flavor on Host bootstrap       DONE
 CP-37         close pathFlavor gaps + force taskkill       DONE
 CP-38         named-pipe DACL before listen                DONE
 CP-39         AllowedRoot settings page                    DONE
+CP-40         native named-pipe listen before Node bind    DONE
 
 later (explicitly deferred):
   Job Object, ledger v2, packaged release
@@ -151,6 +152,7 @@ later (explicitly deferred):
 | `CP-37` | 补齐 pathFlavor 漏改：TranscriptList/workspace paths 按 flavor 比较；未传 flavor 不再猜 `C:/`；Windows taskkill SIGTERM 也 `/F` | `DONE` | `packages/client` + process-tree | `CP-36` | file-paths/paths 定向 PASS；process-tree 4/4 PASS |
 | `CP-38` | Native apiVersion 5 可创建 listen 前受保护 named-pipe 首实例；sessiond 生产路径仍 listen 后 protect（`node:net` FIRST_PIPE_INSTANCE 会 EADDRINUSE） | `DONE` | `packages/local-authority` | `CP-37` | windows-backend/native 定向 PASS；不宣称生产 listen 前接线 / Job Object |
 | `CP-39` | Settings 增加 Projects 页：列出本次 Host AllowedRoots，绝对路径经 `cwd.validate` 扩根；诚实写明重启后失效 | `DONE` | `packages/client` | `CP-38` | AllowedRootsConfig 2/2 PASS；不宣称持久账本 / Job Object |
+| `CP-40` | Native apiVersion 6 listen 前创建受保护 named-pipe 首实例并 accept；sessiond 生产路径不再 `node:net` listen 后 protect | `DONE` | `packages/local-authority` + `packages/sessiond` | `CP-39` | windows-backend listen + sessiond Windows start/ping 定向 PASS；不宣称 Job Object |
 
 后续 lane：Job Object / ledger v2 / 远端发行仍后置。独立 verification agent 当前不可用。
 

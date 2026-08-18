@@ -243,8 +243,20 @@ export interface WindowsSecureStateBackend extends SecureStateBackendBase {
   isOwnedByCurrentUser(identity: WindowsFileIdentity): boolean;
   /** Create the first pipe instance with the frozen current-user+SYSTEM DACL. Keep the handle until Node listen finishes. */
   createProtectedNamedPipe(path: string): Promise<{ close(): void }>;
+  /** Listen before Node binds: first instance carries the frozen current-user+SYSTEM DACL. */
+  listenProtectedNamedPipe(
+    path: string,
+    onConnection: (connection: ProtectedNamedPipeConnection) => void,
+  ): Promise<{ close(): void }>;
   /** Apply and re-read the frozen current-user+SYSTEM named-pipe DACL. */
   protectNamedPipe(path: string): Promise<void>;
+}
+
+/** Byte stream for one accepted named-pipe client. Implemented as a Node Duplex; this contract stays node-free. */
+export interface ProtectedNamedPipeConnection {
+  write(data: string | Uint8Array, cb?: (error?: Error | null) => void): boolean;
+  destroy(error?: Error): void;
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
 export type SecureStateBackend = PosixSecureStateBackend | WindowsSecureStateBackend;

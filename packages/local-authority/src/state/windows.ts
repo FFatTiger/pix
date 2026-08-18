@@ -32,6 +32,8 @@ import {
   rejectUnsafeWindowsNamedPipeEvidence,
   rejectUnsafeWindowsSecurityEvidence,
 } from "./windows-security.js";
+import { createWindowsNamedPipeDuplex } from "./windows-named-pipe-stream.js";
+import type { ProtectedNamedPipeConnection } from "./contracts.js";
 
 const DRIVE_ROOT = /^[A-Z]:\\$/;
 
@@ -519,6 +521,48 @@ export async function createWindowsProtectedNamedPipe(path: string): Promise<{ c
   return { close };
 }
 
+export async function listenWindowsProtectedNamedPipe(
+  path: string,
+  onConnection: (connection: ProtectedNamedPipeConnection) => void,
+): Promise<{ close(): void }> {
+  const binding = requireBinding();
+  let handle: bigint;
+  try {
+    handle = binding.listenProtectedNamedPipe(path, (accepted) => {
+      onConnection(createWindowsNamedPipeDuplex(accepted));
+    });
+  } catch (error) {
+    if (error instanceof LocalAuthorityError) throw error;
+    const code = (error as { code?: string }).code;
+    if (code === "NATIVE_INVALID_ARGUMENT") {
+      throw new LocalAuthorityError("INVALID_PATH", "Path must be a bounded absolute path without control characters");
+    }
+    if (code === "NATIVE_ALREADY_EXISTS") {
+      throw new LocalAuthorityError("LOCK_BUSY", "named pipe already exists");
+    }
+    throw new LocalAuthorityError("NOT_PRIVATE", "named pipe could not be created privately");
+  }
+  const close = (): void => {
+    try {
+      binding.closeProtectedNamedPipeListener(handle);
+    } catch {
+      // Best-effort close of the accept loop.
+    }
+  };
+  try {
+    const principal = currentWindowsPrincipal();
+    const inspection = binding.inspectProtectedNamedPipeListener(handle);
+    if (!inspection) {
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", "named pipe security could not be inspected");
+    }
+    rejectUnsafeWindowsNamedPipeEvidence(inspection, principal);
+  } catch (error) {
+    close();
+    throw error;
+  }
+  return { close };
+}
+
 export async function protectWindowsNamedPipe(path: string): Promise<void> {
   const binding = requireBinding();
   const principal = currentWindowsPrincipal();
@@ -563,6 +607,7 @@ export function createWindowsSecureStateBackend(): WindowsSecureStateBackend {
     isPidAlive: (pid) => isWindowsPidAlive(pid),
     createExclusivePrivateFile: (path, payload, opts) => createWindowsExclusivePrivateFile(path, payload, opts),
     createProtectedNamedPipe: (path) => createWindowsProtectedNamedPipe(path),
+    listenProtectedNamedPipe: (path, onConnection) => listenWindowsProtectedNamedPipe(path, onConnection),
     protectNamedPipe: (path) => protectWindowsNamedPipe(path),
   };
 }

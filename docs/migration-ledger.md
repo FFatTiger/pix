@@ -3840,3 +3840,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Settings gains a Projects tab that lists `GET /v1/cwd/roots` and expands another absolute directory via `POST /v1/cwd/validate`.
 - Copy states the expansion lasts until Host restart. This is not a durable trusted-roots editor and does not write `trusted-roots.json`.
 
+## 109. Cross-platform CP-40 — native named-pipe listen
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `8970a31`.
+- Native apiVersion 6 adds `listenProtectedNamedPipe` / inspect / close / handle I/O. The first instance is created with the frozen current-user+SYSTEM DACL and `FILE_FLAG_FIRST_PIPE_INSTANCE`; later instances inherit the same DACL.
+- `node:net.Socket({ fd })` cannot wrap a Windows named-pipe HANDLE (`ERR_INVALID_FD_TYPE`). sessiond accepts a native Duplex instead. Unix RPC tests stay on `node:net`. Not Job Object.
+
