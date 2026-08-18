@@ -1877,11 +1877,53 @@ span.linenumber {
     box-shadow: 4px 0 20px rgba(0,0,0,0.15);
   }
   .sidebar-container.sidebar-closed {
-    width: 36px;
-    min-width: 36px;
-    max-width: 36px;
+    width: 0 !important;
+    min-width: 0 !important;
+    max-width: 0 !important;
     transform: none;
     box-shadow: none;
+    display: none !important;
+  }
+
+  .sidebar-collapsed-rail {
+    display: none !important;
+  }
+
+  /* Floating expand button shown only on mobile while the sidebar is closed. */
+  .sidebar-mobile-expand {
+    position: fixed !important;
+    top: calc(48px / var(--app-ui-scale, 1));
+    left: 10px;
+    z-index: 300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--bg-panel) 92%, var(--bg));
+    color: var(--text-muted);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.14);
+  }
+
+  .file-browser-rail {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    width: 36px;
+    min-width: 36px;
+    height: 100%;
+    padding-top: 0;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .file-browser-rail .sidebar-icon-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .right-panel-container {

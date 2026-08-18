@@ -681,6 +681,18 @@ export function AppShell({ search }: AppShellProps) {
       />
 
       {/* Left sidebar */}
+      {isMobile && !sidebarOpen && (
+        <button
+          type="button"
+          className="sidebar-icon-btn sidebar-mobile-expand"
+          data-testid="sidebar-mobile-expand"
+          title={t("desktop.showSidebar")}
+          aria-label={t("desktop.showSidebar")}
+          onClick={handleSidebarToggle}
+        >
+          <SidebarSimple size={16} aria-hidden="true" />
+        </button>
+      )}
       <div
         ref={sidebarPanel.panelRef}
         className={`sidebar-container${sidebarOpen ? " sidebar-open" : " sidebar-closed"}${mobileSidebarReady ? "" : " sidebar-mobile-pending"}${sidebarPanel.isResizing ? " panel-is-resizing" : ""}`}
