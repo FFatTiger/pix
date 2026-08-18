@@ -80,6 +80,19 @@ test("instance lock release requires exact inode and regular-file type", { skip:
   }
 });
 
+test("startDaemon default-denies uid 0 before creating any runtime state", async () => {
+  const parent = tempDir("sessiond-root-policy-");
+  const dir = join(parent, "runtime");
+  await assert.rejects(
+    startDaemon({ directory: dir, processUid: 0, serviceOptions: { idleTimeoutMs: 0 } }),
+    (error: unknown) => error instanceof SessiondError
+      && error.code === "forbidden"
+      && error.message === "Running as root is disabled unless PIX_ALLOW_ROOT=1 is set explicitly"
+      && !error.message.includes(dir),
+  );
+  assert.equal(existsSync(dir), false, "root denial must not create the runtime directory");
+});
+
 test("startDaemon fails closed on an existing 0755 runtime dir (forbidden, fixed message, mode untouched, no partial files)", async () => {
   const dir = await tempDir();
   chmodSync(dir, 0o755);

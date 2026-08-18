@@ -326,3 +326,32 @@ export function isAbsoluteCanonicalShape(value: unknown): value is string {
   }
   return isWindowsDriveAbsoluteStoredShape(value);
 }
+
+export const PRIVILEGED_PROCESS_CODE = "PRIVILEGED_PROCESS" as const;
+export const PRIVILEGED_PROCESS_MESSAGE =
+  "Running as root is disabled unless PIX_ALLOW_ROOT=1 is set explicitly";
+
+export class PrivilegedProcessError extends Error {
+  readonly code = PRIVILEGED_PROCESS_CODE;
+  constructor(message = PRIVILEGED_PROCESS_MESSAGE) {
+    super(message);
+    this.name = "PrivilegedProcessError";
+  }
+}
+
+export function isExplicitAllowRoot(value: unknown): boolean {
+  return value === true || value === "1";
+}
+
+/**
+ * Default-deny uid 0. Windows and other platforms without a numeric uid are
+ * not treated as root. An explicit allow-root flag lowers this guarantee.
+ */
+export function assertPrivilegedProcessAllowed(input: {
+  uid?: number;
+  allowRoot?: unknown;
+} = {}): void {
+  if (input.uid !== 0) return;
+  if (isExplicitAllowRoot(input.allowRoot)) return;
+  throw new PrivilegedProcessError();
+}

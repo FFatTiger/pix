@@ -13,6 +13,7 @@ import {
   createCapabilityResolver,
   InvalidAllowedRootsError,
   InvalidHostDirError,
+  RootPrivilegeDeniedError,
   InvalidCatalogAgentDirError,
   PRODUCTION_MAX_UPLOAD_BYTES,
   PRODUCTION_FULL_CAPABILITIES,
@@ -178,7 +179,9 @@ export async function runHost(
     // InvalidHostDirError / InvalidAllowedRootsError are already sanitized.
     // Unknown failures must not echo raw Error.message (may contain paths).
     pixErr(
-      error instanceof InvalidAllowedRootsError || error instanceof InvalidHostDirError
+      error instanceof InvalidAllowedRootsError
+        || error instanceof InvalidHostDirError
+        || error instanceof RootPrivilegeDeniedError
         ? error.message
         : "host resource configuration failed",
     );

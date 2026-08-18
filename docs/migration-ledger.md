@@ -3677,3 +3677,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `016a6f5`.
 - `scripts/release-verify.mjs` now exits on `win32` with a fixed Unix-layout-only message before assuming `tar`, `prefix/bin`, `HOME`, or `sessiond.sock`.
 - The script is importable without running `main()`. This is not a Windows installer, upgrade, or uninstall verifier.
+
+## 88. Cross-platform CP-20 — default-deny POSIX root policy
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `df72db6`.
+- `assertPrivilegedProcessAllowed` default-denies uid 0 unless `allowRoot` / `PIX_ALLOW_ROOT` is exactly `1`/`true`. Missing uid (Windows) is not treated as root.
+- sessiond `startDaemon` and Host `createProductionResources` apply the check before creating runtime/host state. CLI prints the fixed `RootPrivilegeDeniedError` message.

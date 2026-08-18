@@ -17,6 +17,11 @@ const STATE_EXPORTS = [
   "hasControlChar",
   "isValidInstanceId",
   "isAbsoluteCanonicalShape",
+  "PRIVILEGED_PROCESS_CODE",
+  "PRIVILEGED_PROCESS_MESSAGE",
+  "PrivilegedProcessError",
+  "isExplicitAllowRoot",
+  "assertPrivilegedProcessAllowed",
   // canonical paths
   "canonicalizeAbsolutePath",
   // identity / principal

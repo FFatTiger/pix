@@ -117,6 +117,7 @@ CP-00 docs/SSOT
 | `CP-17` | Host file-watch 改为 parent-watch + 串行 exact-child reconcile；原子 rename/replace 不再丢 watcher | `DONE` | `packages/host` file-watch | `CP-16` | watch 定向 3/3 PASS；不宣称 overflow rescan / PWA / 产品支持 |
 | `CP-18` | PWA 诚实态：非安全上下文 / 开发态不注册 SW；HTTP LAN 为 `insecure-origin`，不假装 installable | `DONE` | `packages/client` PWA | `CP-17` | PwaRegistration 4/4 PASS；不宣称 LAN HTTPS 产品化 / 安装 prompt / 产品支持 |
 | `CP-19` | Windows `release-verify` 入口诚实 fail-closed：不跑 Unix `tar`/`prefix/bin`/`sessiond.sock` 布局 | `DONE` | root `scripts/release-verify.mjs` | `CP-18` | Windows 定向 2/2 PASS；不宣称 Windows 安装/升级/卸载或产品支持 |
+| `CP-20` | POSIX root policy：默认拒绝 uid 0；仅 `PIX_ALLOW_ROOT=1` 或显式 `allowRoot` 放行；Windows 无 uid 不视为 root | `DONE` | `packages/local-authority` + sessiond/Host startup | `CP-19` | root-policy + startDaemon/createProductionResources 定向 PASS；不宣称产品支持 |
 
 后续 lane：Job Object / ledger v2 / 远端 CI receipt。独立 verification agent 当前不可用，CP-15/16 由主会话定向复核。
 

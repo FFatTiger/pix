@@ -26,6 +26,10 @@ import { delimiter, isAbsolute } from "node:path";
 import { lstat, realpath } from "node:fs/promises";
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
 import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
+import {
+  assertPrivilegedProcessAllowed,
+  PrivilegedProcessError,
+} from "@fffattiger/pix-local-authority/state";
 import { HttpError } from "../errors.js";
 import {
   attachTrustedRootsLedger,
@@ -459,6 +463,10 @@ export interface ProductionResourcesOptions {
    */
   hostDirEnv?: string | undefined;
   logger?: HostLogger;
+  /** Explicit root override. Production also accepts `PIX_ALLOW_ROOT=1`. */
+  allowRoot?: boolean | "1";
+  /** Injectable uid for deterministic root-policy tests. */
+  processUid?: number;
 }
 
 export interface ProductionResources {
@@ -497,9 +505,30 @@ export interface ProductionResources {
  * canonicalization failure; the CLI prints a single line and exits 1 before
  * listen, leaving any running sessiond untouched.
  */
+export class RootPrivilegeDeniedError extends Error {
+  readonly code = "PRIVILEGED_PROCESS";
+  constructor(message: string) {
+    super(message);
+    this.name = "RootPrivilegeDeniedError";
+  }
+}
+
 export async function createProductionResources(
   options: ProductionResourcesOptions,
 ): Promise<ProductionResources> {
+  try {
+    const uid = options.processUid ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
+    const allowRoot = options.allowRoot ?? process.env.PIX_ALLOW_ROOT;
+    assertPrivilegedProcessAllowed({
+      ...(uid !== undefined ? { uid } : {}),
+      ...(allowRoot !== undefined ? { allowRoot } : {}),
+    });
+  } catch (error) {
+    if (error instanceof PrivilegedProcessError) {
+      throw new RootPrivilegeDeniedError(error.message);
+    }
+    throw error;
+  }
   const segments = parseAllowedRootsEnv(options.allowedRootsEnv, options.cwd);
   let allowedRoots;
   try {

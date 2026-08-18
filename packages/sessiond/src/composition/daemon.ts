@@ -29,7 +29,13 @@ import {
   SESSIOND_PRIVATE_DIR_MESSAGES,
   type SessiondPrivateDirectory,
 } from "../local-posix.js";
-import { createSecureStateBackend, LocalAuthorityError, type LocalAuthorityCode } from "@fffattiger/pix-local-authority/state";
+import {
+  assertPrivilegedProcessAllowed,
+  createSecureStateBackend,
+  LocalAuthorityError,
+  PrivilegedProcessError,
+  type LocalAuthorityCode,
+} from "@fffattiger/pix-local-authority/state";
 import type { WorkerProcessFactory } from "../worker.js";
 import {
   createProductionWorkerProcessFactory,
@@ -44,6 +50,13 @@ import {
 export interface DaemonOptions {
   /** Runtime directory (defaults to `PIX_SESSIOND_DIR` then `~/.pi/pix/sessiond`). */
   directory?: string;
+  /**
+   * Explicit root override. Production also accepts `PIX_ALLOW_ROOT=1`.
+   * Any other value, including `"true"` / `"yes"`, stays denied.
+   */
+  allowRoot?: boolean | "1";
+  /** Injectable uid for deterministic root-policy tests. */
+  processUid?: number;
   /**
    * Worker factory. Defaults to the production child-process factory (R2).
    * Tests that need the M1 unavailable surface must inject
@@ -247,6 +260,19 @@ function toSessiondPrivateDirError(error: unknown): never {
 export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHandle> {
   if (options.__testStartupDelayMs && options.__testStartupDelayMs > 0) {
     await new Promise<void>((resolve) => setTimeout(resolve, options.__testStartupDelayMs));
+  }
+  try {
+    const uid = options.processUid ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
+    const allowRoot = options.allowRoot ?? process.env.PIX_ALLOW_ROOT;
+    assertPrivilegedProcessAllowed({
+      ...(uid !== undefined ? { uid } : {}),
+      ...(allowRoot !== undefined ? { allowRoot } : {}),
+    });
+  } catch (error) {
+    if (error instanceof PrivilegedProcessError) {
+      throw new SessiondError("forbidden", error.message, false);
+    }
+    throw error;
   }
   const directory = resolveRuntimeDir(options.directory);
   const paths = sessiondPaths(directory);

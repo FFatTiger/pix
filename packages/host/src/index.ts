@@ -141,6 +141,7 @@ export {
   SessiondWorktreeSafetyAdapter,
   InvalidAllowedRootsError,
   InvalidHostDirError,
+  RootPrivilegeDeniedError,
   PRODUCTION_MAX_UPLOAD_BYTES,
   PRODUCTION_PING_TIMEOUT_MS,
   PRODUCTION_RESOURCE_LIMITS,

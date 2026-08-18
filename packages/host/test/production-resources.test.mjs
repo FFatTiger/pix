@@ -14,6 +14,7 @@ import {
   SessiondWorktreeSafetyAdapter,
   InvalidAllowedRootsError,
   InvalidHostDirError,
+  RootPrivilegeDeniedError,
   HttpError,
   PRODUCTION_MAX_UPLOAD_BYTES,
   PRODUCTION_PING_TIMEOUT_MS,
@@ -84,6 +85,22 @@ test("parseAllowedRootsEnv: valid segments returned verbatim (no canonicalizatio
 // ---------------------------------------------------------------------------
 // createProductionResources — roots canonicalization / deps assembly
 // ---------------------------------------------------------------------------
+
+test("createProductionResources default-denies uid 0 before opening host state", async () => {
+  const cwd = temp("pi-root-policy-cwd-");
+  await assert.rejects(
+    () => createProductionResources({
+      allowedRootsEnv: undefined,
+      cwd,
+      endpoint: "/tmp/unused.sock",
+      secret: "x".repeat(32),
+      processUid: 0,
+    }),
+    (error) => error instanceof RootPrivilegeDeniedError
+      && error.code === "PRIVILEGED_PROCESS"
+      && error.message === "Running as root is disabled unless PIX_ALLOW_ROOT=1 is set explicitly",
+  );
+});
 
 test("createProductionResources: unset env ⇒ single root = canonical cwd, defaultCwd = cwd", async () => {
   const cwd = temp("pix-prod-cwd-");
