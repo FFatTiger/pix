@@ -224,6 +224,32 @@ export function AppShell({ search }: AppShellProps) {
     ?? primaryRealProjectPath(
       (sessionsQuery.data?.sessions ?? []).filter((session) => !isHiddenRailSession(session)),
     );
+  // Projects known to the shell (deduped by projectRoot, most recent first).
+  // The home page project picker and the sidebar share this derivation.
+  const knownProjectRoots = useMemo(() => {
+    const latest = new Map<string, number>();
+    for (const session of sessionsQuery.data?.sessions ?? []) {
+      if (isHiddenRailSession(session)) continue;
+      const root = session.projectRoot || session.cwd;
+      if (!root) continue;
+      const at = session.updatedAt ?? session.lastMessageAt ?? session.createdAt ?? 0;
+      const prev = latest.get(root);
+      if (prev === undefined || at > prev) latest.set(root, at);
+    }
+    return [...latest.entries()].sort((a, b) => b[1] - a[1]).map(([root]) => root);
+  }, [sessionsQuery.data]);
+
+  const handleOpenHomeForProject = useCallback((projectRoot: string) => {
+    void navigate({ to: "/", search: { cwd: projectRoot } });
+  }, [navigate]);
+
+  // Title-bar new-session button: same new-session page, keeping the current
+  // project (falls back to the catalog cwd when the URL has none).
+  const handleOpenNewSessionPage = useCallback(() => {
+    const target = search.cwd ?? (typeof catalogCwd === "string" ? catalogCwd : undefined);
+    void navigate({ to: "/", search: target === undefined ? {} : { cwd: target } });
+  }, [navigate, search.cwd, catalogCwd]);
+
   const isHome = activeTab === null;
 
   // ── Project trust ─────────────────────────────────────────────────────────
@@ -733,6 +759,7 @@ export function AppShell({ search }: AppShellProps) {
             onNewSession={handleCreate}
             canNewSession={canCreate}
             onOpenSettings={openSettings}
+            onNewSessionInProject={handleOpenHomeForProject}
           />
         ) : null}
       </div>
@@ -752,6 +779,7 @@ export function AppShell({ search }: AppShellProps) {
           fileBrowserOpen={fileBrowserOpen}
           onToggleFileBrowser={handleToggleFileBrowser}
           canFiles={canFiles}
+          onNewSession={handleOpenNewSessionPage}
           tabs={tabs}
           activeTabId={activeTabId}
           onSelectTab={handleSelectTab}
@@ -763,6 +791,11 @@ export function AppShell({ search }: AppShellProps) {
           <main className={`workspace${isHome ? " workspace--home" : ""}`}>
             {isHome ? (
               <div className="home-stack" data-testid="home-stack">
+                <HomeProjectBar
+                  cwd={search.cwd}
+                  projectRoots={knownProjectRoots}
+                  onSelect={handleOpenHomeForProject}
+                />
                 <div className="transcript-home" data-testid="transcript-home">
                   <div className="transcript-home-logo" aria-hidden="true" />
                   <h1 className="transcript-home-title">{t("desktop.startConversation")}</h1>
@@ -860,6 +893,142 @@ export function AppShell({ search }: AppShellProps) {
         onCloseAction={() => setSettingsOpen(false)}
       />
     ) : null}
+    </div>
+  );
+}
+
+/** Floating shadow bar on the new-session page: picks the project folder the
+ * next session is created in. Sticky to the transcript top with a soft shadow
+ * so it reads as an overlay row, not page content. */
+function HomeProjectBar({
+  cwd,
+  projectRoots,
+  onSelect,
+}: {
+  cwd: string | undefined;
+  projectRoots: readonly string[];
+  onSelect: (projectRoot: string) => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const current = cwd !== undefined && projectRoots.includes(cwd) ? cwd : null;
+  return (
+    <div
+      className="home-project-bar"
+      data-testid="home-project-bar"
+      style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 30,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "10px 16px 8px",
+        background: "linear-gradient(to bottom, var(--bg) 65%, transparent)",
+        borderBottom: "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
+        boxShadow: "0 6px 16px -12px rgba(0,0,0,0.45)",
+      }}
+    >
+      <button
+        type="button"
+        data-testid="home-project-picker"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title={current ?? t("desktop.selectProjectFirst")}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          maxWidth: "100%",
+          padding: "5px 12px",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          background: "var(--bg-panel)",
+          color: current ? "var(--text)" : "var(--text-muted)",
+          cursor: "pointer",
+          fontSize: 12,
+          fontWeight: 500,
+        }}
+      >
+        <span style={{ color: "var(--text-dim)" }} aria-hidden="true">⌂</span>
+        <span
+          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >
+          {current ? current.split("/").filter(Boolean).pop() ?? current : t("desktop.selectProjectFirst")}
+        </span>
+        <span style={{ color: "var(--text-dim)", fontSize: 10 }} aria-hidden="true">▾</span>
+      </button>
+      {open ? (
+        <div
+          data-testid="home-project-menu"
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: "50%",
+            transform: "translateX(-50%)",
+            minWidth: 260,
+            maxWidth: "min(420px, calc(100vw - 48px))",
+            maxHeight: 280,
+            overflowY: "auto",
+            padding: 4,
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            background: "var(--bg-panel)",
+            boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
+            zIndex: 40,
+          }}
+        >
+          {projectRoots.length === 0 ? (
+            <div style={{ padding: "8px 10px", fontSize: 12, color: "var(--text-muted)" }}>
+              {t("desktop.noProjectsYet")}
+            </div>
+          ) : projectRoots.map((root) => {
+            const active = root === current;
+            return (
+              <button
+                key={root}
+                type="button"
+                onClick={() => { setOpen(false); onSelect(root); }}
+                onMouseEnter={() => setHovered(root)}
+                onMouseLeave={() => setHovered(null)}
+                title={root}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  width: "100%",
+                  padding: "7px 10px",
+                  border: "none",
+                  borderRadius: 6,
+                  background: active
+                    ? "var(--bg-selected)"
+                    : hovered === root
+                      ? "var(--bg-hover)"
+                      : "transparent",
+                  color: active ? "var(--text)" : "var(--text-muted)",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  textAlign: "left",
+                }}
+              >
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    minWidth: 0,
+                    flex: 1,
+                  }}
+                >
+                  {root.split("/").filter(Boolean).pop() ?? root}
+                </span>
+                <span style={{ color: "var(--text-dim)", fontSize: 10, flexShrink: 0 }}>{root}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import {
   ArrowClockwise,
   CaretRight,
   Check,
+  DotsThree,
   Folder,
   FolderOpen,
   GearSix,
@@ -13,6 +14,7 @@ import {
   NotePencil,
   PencilSimple,
   Plugs,
+  Plus,
   PushPin,
   SidebarSimple,
   Stack,
@@ -75,6 +77,8 @@ export interface SidebarProps {
   onOpenSettings?: (tab: SettingsTab) => void;
   /** Collapse the sidebar from inside the rail (the toggle lives here, not in the title bar). */
   onCollapseSidebar?: () => void;
+  /** Open the new-session page scoped to a project root (no immediate create). */
+  onNewSessionInProject?: (projectRoot: string) => void;
 }
 
 /**
@@ -295,6 +299,7 @@ export function Sidebar({
   canNewSession,
   onOpenSettings,
   onCollapseSidebar,
+  onNewSessionInProject,
 }: SidebarProps) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -497,6 +502,7 @@ export function Sidebar({
           onToggle={() => toggleProjectExpanded(project)}
           onPin={(nextPinned) => pinProject(project, nextPinned)}
           onArchive={(archived) => archiveProject(project, archived)}
+          onNewSession={() => onNewSessionInProject?.(project)}
         />
         {expanded ? (
           <div className="sidebar-project-sessions" data-testid="sidebar-project-sessions">
@@ -835,6 +841,7 @@ function ProjectRow({
   onToggle,
   onPin,
   onArchive,
+  onNewSession,
 }: {
   project: string;
   selected: boolean;
@@ -844,13 +851,12 @@ function ProjectRow({
   onToggle: () => void;
   onPin: (pinned: boolean) => void;
   onArchive: (archived: boolean) => void;
+  onNewSession: () => void;
 }) {
   const { t } = useI18n();
   const { openMenu } = useContextMenu();
-  const handleContextMenu = (event: React.MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    openMenu(event.clientX, event.clientY, [
+  const moreMenu = (x: number, y: number) => {
+    openMenu(x, y, [
       {
         label: pinned ? t("desktop.unpin") : t("desktop.pin"),
         icon: <PushPin size={13} weight={pinned ? "fill" : "regular"} aria-hidden="true" />,
@@ -862,6 +868,11 @@ function ProjectRow({
         onSelect: () => onArchive(true),
       },
     ]);
+  };
+  const handleContextMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    moreMenu(event.clientX, event.clientY);
   };
   return (
     <div
@@ -891,20 +902,24 @@ function ProjectRow({
         <button
           type="button"
           className="sidebar-icon-btn"
-          title={pinned ? t("desktop.unpin") : t("desktop.pin")}
-          aria-label={pinned ? t("desktop.unpin") : t("desktop.pin")}
-          onClick={(event) => { event.stopPropagation(); onPin(!pinned); }}
+          title={t("desktop.newSession")}
+          aria-label={t("desktop.newSession")}
+          onClick={(event) => { event.stopPropagation(); onNewSession(); }}
         >
-          <PushPin size={14} weight={pinned ? "fill" : "regular"} aria-hidden="true" />
+          <Plus size={14} weight="bold" aria-hidden="true" />
         </button>
         <button
           type="button"
           className="sidebar-icon-btn"
-          title={t("desktop.archive")}
-          aria-label={t("desktop.archive")}
-          onClick={(event) => { event.stopPropagation(); onArchive(true); }}
+          title={t("desktop.moreOptions")}
+          aria-label={t("desktop.moreOptions")}
+          onClick={(event) => {
+            event.stopPropagation();
+            const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+            moreMenu(rect.left, rect.bottom + 4);
+          }}
         >
-          <Archive size={14} weight="regular" aria-hidden="true" />
+          <DotsThree size={14} weight="bold" aria-hidden="true" />
         </button>
       </div>
     </div>

@@ -1283,16 +1283,22 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(within(recent).getByTestId("session-select-S7")).toBeTruthy();
   });
 
-  it("keeps project pin/archive actions separate from the expand caret", async () => {
+  it("keeps project actions in the overflow menu, separate from the row", async () => {
     mountApp({ cwd: "/x" });
     await settle();
     const projectButton = screen.getAllByTestId("sidebar-project-row").find((row) => row.getAttribute("title") === "/x");
     expect(projectButton).toBeTruthy();
     const row = projectButton!.closest(".sidebar-list-row") as HTMLElement;
-    expect(within(row).getByLabelText("Pin to top")).toBeTruthy();
-    expect(within(row).getByLabelText("Archive")).toBeTruthy();
-    // Projects show no activity chip (unlike sessions).
-    expect(within(row).queryByText("NOW")).toBeNull();
+    // The row carries a New-session (Plus) button and a More-options (dots)
+    // button; pin/archive moved into the dots menu.
+    expect(within(row).getByLabelText("New Session")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(within(row).getByLabelText("More options"));
+      await flush();
+    });
+    const menuItem = screen.queryByRole("menuitem", { name: "Pin to top" });
+    expect(menuItem).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeTruthy();
     expect(row.querySelector(".sidebar-fork-caret")).toBeNull();
   });
 

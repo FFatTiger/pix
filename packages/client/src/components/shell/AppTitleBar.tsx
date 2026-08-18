@@ -1,4 +1,4 @@
-import { List, SidebarSimple } from "@phosphor-icons/react";
+import { List, Plus, SidebarSimple } from "@phosphor-icons/react";
 import { useI18n } from "@/hooks/useI18n";
 import { WorkspaceTabBar } from "@/features/workspace/tabs/WorkspaceTabBar";
 import type { WorkspaceTab } from "@/features/workspace/tabs/workspace-tab-state";
@@ -10,6 +10,8 @@ interface AppTitleBarProps {
   onToggleFileBrowser: () => void;
   /** Honest gate — the file browser button is disabled when files are unavailable. */
   canFiles: boolean;
+  /** Open the new-session page (same target as the project-row new button). */
+  onNewSession?: (() => void) | undefined;
   /** The unified top-level tab strip (session + file tabs). */
   tabs: WorkspaceTab[];
   activeTabId: string | null;
@@ -31,6 +33,7 @@ export function AppTitleBar({
   fileBrowserOpen,
   onToggleFileBrowser,
   canFiles,
+  onNewSession,
   tabs,
   activeTabId,
   onSelectTab,
@@ -84,6 +87,29 @@ export function AppTitleBar({
           runningSessionIds={runningSessionIds}
         />
       </div>
+
+      {/* New session — right of the tab strip, before the file toggle. Opens
+          the new-session page scoped to the current project (same page the
+          project-row new button jumps to). */}
+      {onNewSession ? (
+        <button
+          className="app-no-drag"
+          onClick={onNewSession}
+          data-testid="title-new-session"
+          title={translate("desktop.newSession")}
+          aria-label={translate("desktop.newSession")}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center",
+            width: 36, height: 36, padding: 0,
+            background: "none", border: "none",
+            color: "var(--text-muted)", cursor: "pointer", flexShrink: 0, transition: "background 0.12s, color 0.12s",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--text-muted)"; }}
+        >
+          <Plus size={16} weight="bold" aria-hidden="true" />
+        </button>
+      ) : null}
 
       {/* File-browser toggle — last control, top-right. */}
       <button

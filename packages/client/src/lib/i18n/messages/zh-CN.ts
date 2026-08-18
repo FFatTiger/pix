@@ -322,6 +322,7 @@ export const zhCNLocale = {
     "desktop.minimapJumpToMessage": "跳转到第 {index} 条消息",
     "desktop.minimapNoContent": "（无内容）",
     "desktop.loadOlderMessages": "加载更早的消息",
+    "desktop.moreOptions": "更多选项",
     "desktop.revealInFolder": "在系统资源管理器中查看",
     "desktop.copyRelativePath": "复制相对路径",
     "desktop.copyAbsolutePath": "复制绝对路径",
