@@ -304,19 +304,41 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
     return () => observer.disconnect();
   }, []);
 
-  // Scroll-up again while at the top also loads the older page (the hint is
-  // a one-time affordance; repeated upward scroll is the natural gesture).
+  // Scroll-up again while at the top also loads the older page. A continuous
+  // wheel gesture fires many scroll events while scrollTop is pinned at 0, so
+  // the load is DEBOUNCED: the first contact only surfaces the hint, and a
+  // load fires only after the scroll has been idle for a beat and then moved
+  // up again (or the user clicks the hint). Otherwise the first scroll-up would
+  // keep loading and the arrow would never be visible.
   useEffect(() => {
     const root = parentRef.current;
     if (!root || typeof IntersectionObserver === "undefined") return;
     let hintVisible = false;
+    let atTop = false;
+    let firstContactAt = 0;
+    const SCROLL_IDLE_MS = 350;
     const onScroll = () => {
-      if (root.scrollTop <= 2 && hintVisible && hasOlderRef.current && !fetchingOlderRef.current) {
-        hintVisible = false;
+      const nowAtTop = root.scrollTop <= 2;
+      if (!nowAtTop) {
+        atTop = false;
+        firstContactAt = 0;
+        return;
+      }
+      if (!atTop) {
+        // First contact with the top: only surface the hint, never load yet.
+        atTop = true;
+        firstContactAt = Date.now();
+        return;
+      }
+      if (!hintVisible) return;
+      // Same continuous gesture (still within the idle window): keep waiting,
+      // the arrow stays visible. A fresh upward move after an idle pause loads.
+      if (Date.now() - firstContactAt < SCROLL_IDLE_MS) return;
+      if (hasOlderRef.current && !fetchingOlderRef.current) {
+        firstContactAt = Date.now();
         loadOlderNow();
       }
     };
-    // Reflect the hint state into this effect via a subscription on the sentinel.
     const observer = new IntersectionObserver(
       (entries) => {
         hintVisible = entries[0]?.isIntersecting === true;
