@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { watch, type FSWatcher } from "node:fs";
+import { watch } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { HttpError } from "../errors.js";
@@ -9,6 +9,22 @@ export interface FileWatchManager {
   activeCount(): number;
   reservedCount(): number;
   closeAll(): void;
+}
+
+export interface FileWatchHint {
+  eventType?: string;
+  filename?: string | Buffer | null;
+  error?: Error;
+}
+
+export interface FileWatchHandle {
+  close(): void;
+  on(event: "error", listener: (error: Error) => void): void;
+}
+
+export interface FileWatchManagerOptions {
+  /** Injected watcher. Production uses node:fs.watch. */
+  watch?: (path: string, listener: (eventType: string, filename: string | Buffer | null) => void) => FileWatchHandle;
 }
 
 interface WatchEntry {
@@ -35,8 +51,16 @@ function sameSnapshot(left: FileSnapshot, right: FileSnapshot): boolean {
   return left.exists === right.exists && left.mtimeMs === right.mtimeMs && left.size === right.size;
 }
 
-export function createFileWatchManager(maxWatchers = 32): FileWatchManager {
+function isOverflowHint(hint: FileWatchHint): boolean {
+  const code = (hint.error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === "EMFILE" || code === "ENOSPC" || code === "EUNKNOWN") return true;
+  const eventType = hint.eventType?.toLowerCase() ?? "";
+  return eventType === "overflow" || eventType.includes("overflow");
+}
+
+export function createFileWatchManager(maxWatchers = 32, options: FileWatchManagerOptions = {}): FileWatchManager {
   if (!Number.isInteger(maxWatchers) || maxWatchers < 1) throw new Error("maxWatchers must be positive");
+  const startWatch = options.watch ?? ((path, listener) => watch(path, listener));
   const reservations = new Map<string, WatchEntry>();
   const active = new Set<WatchEntry>();
   const encoder = new TextEncoder();
@@ -47,7 +71,7 @@ export function createFileWatchManager(maxWatchers = 32): FileWatchManager {
       const reservationId = randomUUID();
       const parentPath = dirname(filePath);
       const childName = basename(filePath);
-      let watcher: FSWatcher | undefined;
+      let watcher: FileWatchHandle | undefined;
       let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
       let terminated = false;
       let reconcileChain = Promise.resolve();
@@ -87,12 +111,18 @@ export function createFileWatchManager(maxWatchers = 32): FileWatchManager {
             if (terminated) return;
             if (!initial.exists) throw new HttpError(404, "PATH_NOT_FOUND", "Path not found");
             let previous = initial;
-            const reconcile = () => {
+            const reconcile = (hint: FileWatchHint = {}) => {
               if (terminated) return;
+              const overflow = isOverflowHint(hint);
+              const hinted = typeof hint.filename === "string" ? hint.filename : undefined;
+              // Watch events are hints only. Overflow/missing names/renames
+              // force an exact-child re-stat; a different sibling is ignored.
+              if (!overflow && hinted !== undefined && hinted !== childName && hint.eventType !== "rename") return;
               reconcileChain = reconcileChain.then(async () => {
                 if (terminated) return;
                 const current = await snapshotFile(filePath);
-                if (terminated || sameSnapshot(previous, current)) return;
+                if (terminated) return;
+                if (!overflow && sameSnapshot(previous, current)) return;
                 previous = current;
                 if (!current.exists) send("change", { removed: true });
                 else send("change", { modified: new Date(current.mtimeMs).toISOString(), size: current.size });
@@ -100,18 +130,20 @@ export function createFileWatchManager(maxWatchers = 32): FileWatchManager {
                 if (!terminated) send("change", { removed: true });
               });
             };
-            watcher = watch(parentPath, (eventType, filename) => {
+            watcher = startWatch(parentPath, (eventType, filename) => {
               if (terminated) return;
-              const hinted = typeof filename === "string" ? filename : undefined;
-              // Watch events are hints only. Missing names and renames still
-              // require an exact-child re-stat; a different sibling is ignored.
-              if (hinted !== undefined && hinted !== childName && eventType !== "rename") return;
-              reconcile();
+              reconcile({ eventType, filename });
             });
             if (terminated) { watcher.close(); watcher = undefined; return; }
             reservations.delete(reservationId);
             active.add(entry);
-            watcher.once("error", (error) => entry.terminate("error", error));
+            watcher.on("error", (error) => {
+              if (isOverflowHint({ error })) {
+                reconcile({ error });
+                return;
+              }
+              entry.terminate("error", error);
+            });
             send("connected", { path: filePath, size: initial.size });
           } catch (error) {
             entry.terminate("error", error);

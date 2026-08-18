@@ -3745,3 +3745,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `37f45fe`.
 - Native Windows addon `apiVersion` 4 adds `inspectProcess` (FILETIME creation ticks). Linux reads `/proc/<pid>/stat` startticks. macOS still classifies a live pid without start identity as live, a dead pid as stale.
 - New locks persist `{ start }` when available. A live pid with missing/unreadable start identity is `obstructed` and is not auto-reclaimed. This is not Job Object.
+
+## 99. Cross-platform CP-31 — file-watch overflow rescan
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `0e6bd08`.
+- Watch events stay hints. `overflow` / `ENOSPC` / `EMFILE` / `EUNKNOWN` force a serialized exact-child `lstat` and emit the existing `change` payload. The stream stays open.
+- Aligns with VS Code invalidation-hint + OpenCode honest degrade. No polling interval and no new SSE event type. Not Job Object or product support.
