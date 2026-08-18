@@ -1524,7 +1524,7 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 
 | Gate | 状态 | 已落地 | 仍缺 |
 |---|---|---|---|
-| G0 | 骨架完成 | README 矩阵、CI 三端 tooling、根脚本 Windows 绿、Protocol v2 / Host bootstrap 词义分离 | `pix doctor`、sessiond 启动诊断通道 |
+| G0 | 骨架完成 | README 矩阵、CI 三端 tooling、根脚本 Windows 绿、Protocol v2 / Host bootstrap 词义分离、`pix doctor --json`、sessiond last-start 诊断记录 | 一次性 bootstrap pipe 仍未做 |
 | G1 | 半完成 | discriminated `posix \| windows` 合同；Client display 路径 owner；Host bootstrap `pathFlavor` | ledger v2 |
 | G2A | 基本完成 | lock/secret identity pin、禁事后 chmod、默认拒 root | macOS lock 仍无 start identity |
 | G2B | 接通 | `createSecureStateBackend()` 在 walk 前选 Windows native；DACL = 当前用户+SYSTEM，宽 ACL 不自动修 | 中间目录宽 ACL 只查 reparse |
@@ -1533,7 +1533,7 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy 按 `pathFlavor`、Settings Projects 列出/扩根 | 扩根仍非持久账本 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
 
-执行切片 CP-00–CP-40 记为 DONE。后置：Job Object、ledger v2、packaged release。
+执行切片 CP-00–CP-41 记为 DONE。后置：Job Object、ledger v2、packaged release。
 
 ### 16.3 审计条目对照
 

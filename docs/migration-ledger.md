@@ -3846,3 +3846,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Native apiVersion 6 adds `listenProtectedNamedPipe` / inspect / close / handle I/O. The first instance is created with the frozen current-user+SYSTEM DACL and `FILE_FLAG_FIRST_PIPE_INSTANCE`; later instances inherit the same DACL.
 - `node:net.Socket({ fd })` cannot wrap a Windows named-pipe HANDLE (`ERR_INVALID_FD_TYPE`). sessiond accepts a native Duplex instead. Unix RPC tests stay on `node:net`. Not Job Object.
 
+## 110. Cross-platform CP-41 — pix doctor
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `380c4c8`.
+- `pix doctor [--platform] [--json]` is a read-only report: OS/arch/Node/engines/backend kind/sessiond dir/host dir/endpoint kind/path budget/Git/sessiond state/last-start/secure-context guidance.
+- sessiond writes a bounded `sessiond.last-start.json` (fixed codes, no secret/path). `pix start` reads it after an early exit. Not a bootstrap pipe and not Job Object.
+

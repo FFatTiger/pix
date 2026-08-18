@@ -42,6 +42,7 @@ import {
   type ProductionWorkerProcessOptions,
 } from "./worker-process.js";
 import { resolveRuntimeDir } from "./locator.js";
+import { writeLastStartFromError, writeLastStartOk } from "../last-start.js";
 import {
   createPiSdkSessionPorts,
 } from "@fffattiger/pix-pi-sdk-adapter/sessions";
@@ -393,6 +394,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       publication = await publishPublicEndpoint(paths, privatePath!, lock.instanceId, privateDir);
     }
 
+    await writeLastStartOk(directory);
     return {
       directory,
       paths,
@@ -405,6 +407,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       diagnostics,
     };
   } catch (error) {
+    await writeLastStartFromError(directory, error);
     // Startup rollback must never leave our own published paths behind.
     if (publication) await releaseOwnedPublicEndpoint(paths, publication).catch(() => {});
     for (const step of teardown.splice(0).reverse()) await step().catch(() => {});

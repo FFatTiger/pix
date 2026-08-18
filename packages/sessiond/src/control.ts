@@ -18,6 +18,7 @@ export {
   makePrivateEndpointPath,
   isPrivateSocketName,
   assertSocketPathLength,
+  unixSocketPathBudgetBytes,
   needsUnixSocketPublication,
   type InstanceLock,
   type InstanceLockRead,
@@ -27,3 +28,16 @@ export {
   type OwnedSocketPublication,
 } from "./local.js";
 export { resolveRuntimeDir, DEFAULT_SESSIOND_DIRECTORY, SESSIOND_DIR_ENV } from "./composition/locator.js";
+export { inspectSecureStateBackend, type SecureStateBackendInspection } from "./inspect-backend.js";
+export {
+  lastStartPath,
+  readLastStartRecord,
+  classifyLastStartError,
+  lastStartRecordFromError,
+  lastStartOkRecord,
+  parseLastStartRecord,
+  LAST_START_FILE_NAME,
+  type LastStartCode,
+  type LastStartRead,
+  type LastStartRecord,
+} from "./last-start.js";

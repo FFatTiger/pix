@@ -478,12 +478,11 @@ async function sweepStaleSecretTemps(paths: SessiondPaths): Promise<void> {
   }
 }
 
-/**
- * Platform Unix socket path limit in bytes (`sun_path`): 104 on macOS, 108
- * elsewhere (Linux). Binding a path longer than this fails with EINVAL, so the
- * daemon checks its private path up front and fails closed.
- */
-const MAX_UNIX_SOCKET_PATH_BYTES = process.platform === "darwin" ? 104 : 108;
+/** Platform Unix `sun_path` budget in bytes, or null on Windows named pipes. */
+export function unixSocketPathBudgetBytes(platform: NodeJS.Platform = process.platform): number | null {
+  if (platform === "win32") return null;
+  return platform === "darwin" ? 104 : 108;
+}
 /** Naming pattern for per-instance private sockets, so orphan discovery can scan for them. */
 const PRIVATE_SOCKET_PREFIX = "pixsd-";
 const PRIVATE_SOCKET_SUFFIX = ".sock";
@@ -515,9 +514,11 @@ export function isPrivateSocketName(name: string): boolean {
 
 /** Fail closed when a socket path would exceed the platform `sun_path` limit. */
 export function assertSocketPathLength(path: string): void {
+  const budget = unixSocketPathBudgetBytes();
+  if (budget === null) return;
   const bytes = Buffer.byteLength(path, "utf8");
-  if (bytes > MAX_UNIX_SOCKET_PATH_BYTES) {
-    throw new SessiondError("forbidden", `sessiond socket path too long (${bytes} > ${MAX_UNIX_SOCKET_PATH_BYTES} bytes)`);
+  if (bytes > budget) {
+    throw new SessiondError("forbidden", `sessiond socket path too long (${bytes} > ${budget} bytes)`);
   }
 }
 

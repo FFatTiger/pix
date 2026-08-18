@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startCommand } from "./commands/start.js";
 import { hostCommand } from "./commands/host.js";
+import { doctorCommand } from "./commands/doctor.js";
 import { statusCommand } from "./commands/status.js";
 import { downCommand } from "./commands/down.js";
 import { sessiondCommand } from "./commands/sessiond-foreground.js";
@@ -46,6 +47,7 @@ function printHelp(): void {
   pixLog("  start [--hostname H] [--port P] [--open|--no-open]  ensure sessiond + boot host");
   pixLog("  host  [--hostname H] [--port P] [--open|--no-open]  boot host only (needs sessiond)");
   pixLog("  status                                              report sessiond state");
+  pixLog("  doctor [--platform] [--json]                        read-only platform diagnosis");
   pixLog("  down --all                                          stop sessiond (requires --all)");
   pixLog("  sessiond                                            run sessiond in the foreground");
 }
@@ -69,6 +71,8 @@ export async function runCli(argv: string[]): Promise<number> {
       return hostCommand(rest);
     case "status":
       return statusCommand();
+    case "doctor":
+      return doctorCommand(rest);
     case "down":
       return downCommand(rest);
     case "sessiond":

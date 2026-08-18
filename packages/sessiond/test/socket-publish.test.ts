@@ -22,6 +22,7 @@ import {
   listPrivateSocketAliases,
   makePrivateEndpointPath,
   needsUnixSocketPublication,
+  unixSocketPathBudgetBytes,
   probeSocket,
   publishPublicEndpoint,
   readInstanceLockStrict,
@@ -506,6 +507,12 @@ test("recoverStalePrivateAliases lists only live Pix sockets for orphan discover
 
 test("needsUnixSocketPublication matches the platform", async () => {
   assert.equal(needsUnixSocketPublication(), process.platform !== "win32");
+});
+
+test("unixSocketPathBudgetBytes is platform-native", () => {
+  assert.equal(unixSocketPathBudgetBytes("win32"), null);
+  assert.equal(unixSocketPathBudgetBytes("darwin"), 104);
+  assert.equal(unixSocketPathBudgetBytes("linux"), 108);
 });
 
 // Windows branch proof: the daemon binds the public named pipe directly (no

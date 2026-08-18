@@ -39,6 +39,7 @@ test("parseBindArgs rejects invalid port", () => {
 
 test("parseBindArgs rejects unknown flag", () => {
   assert.throws(() => parseBindArgs(["--bogus"]), /unknown flag/);
+  assert.throws(() => parseBindArgs(["--platform"]), /unknown flag/);
 });
 
 test("parseBindArgs rejects value flag without value", () => {

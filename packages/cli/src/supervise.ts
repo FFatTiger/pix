@@ -6,6 +6,7 @@ import {
   listPrivateSocketAliases,
   probeSocket,
   readInstanceLockStrict,
+  readLastStartRecord,
   resolveRuntimeDir,
   sessiondPaths,
   type InstanceLockRead,
@@ -337,6 +338,10 @@ export async function ensureSessiond(
   const child = spawnSessiond(dir);
   const readiness = await waitForReadiness(paths, child);
   if (!readiness.ok) {
+    const lastStart = await readLastStartRecord(dir).catch(() => ({ kind: "missing" as const }));
+    if (lastStart.kind === "valid" && !lastStart.record.ok) {
+      throw new Error(`[pix] sessiond failed to start (${lastStart.record.code}): ${lastStart.record.message}`);
+    }
     throw readiness.error ?? new Error("[pix] sessiond did not become ready");
   }
   const lock = await readInstanceLockStrict(paths);
