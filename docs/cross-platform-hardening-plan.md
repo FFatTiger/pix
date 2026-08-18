@@ -1560,9 +1560,8 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 
 ### 16.4 当前产品缺口（不是跨端 backend 阻塞）
 
-AllowedRoot **没有设置页**。启动根来自启动 cwd / `PIX_ALLOWED_ROOTS`。本机当前只有 `D:\src_test_env\pix`。Home 选择器、侧边栏“新会话”和点未覆盖会话都会先问是否允许，确认后再 `POST /v1/cwd/validate`。取消或失败留在当前 cwd。`~/.pi/agent` 只给 catalog 读模型/密钥，不加进 Files/Git 可浏览根。`POST /v1/trust` 是项目信任，不是 Files/Git 授权。
+AllowedRoot 有 Settings → Projects 页：列出本次 Host 根，并可 `cwd.validate` 扩根。扩根仍只在本次进程有效，不写 `trusted-roots.json`。启动根来自启动 cwd / `PIX_ALLOWED_ROOTS`。Home 选择器、侧边栏“新会话”和点未覆盖会话也都会先问是否允许。`~/.pi/agent` 只给 catalog 读模型/密钥，不加进 Files/Git 可浏览根。`POST /v1/trust` 是项目信任，不是 Files/Git 授权。
 
 ### 16.5 下一刀（对齐参考实现，不自造轮子）
 
-1. AllowedRoot 设置页（扩根目前只在本次 Host 进程有效）。
-3. 仍后置：Job Object（比 taskkill 更严的笼子）、ledger v2、packaged release。
+1. 仍后置：Job Object（比 taskkill 更严的笼子）、ledger v2、packaged release、持久 AllowedRoot 账本。

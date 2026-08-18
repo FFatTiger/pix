@@ -969,6 +969,7 @@ describe("AppShell — source-like sidebar rail", () => {
 
     fireEvent.click(screen.getByTestId("sidebar-nav-settings"));
     expect(dialog.querySelector('[aria-current="page"]')?.textContent).toBe("Display");
+    expect(screen.getByTestId("settings-tab-projects")).toBeTruthy();
     expect(screen.getByTestId("settings-tab-archive")).toBeTruthy();
   });
 

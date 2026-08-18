@@ -97,6 +97,7 @@ CP-35         claim Windows native Supported               DONE
 CP-36         Protocol path-flavor on Host bootstrap       DONE
 CP-37         close pathFlavor gaps + force taskkill       DONE
 CP-38         named-pipe DACL before listen                DONE
+CP-39         AllowedRoot settings page                    DONE
 
 later (explicitly deferred):
   Job Object, ledger v2, packaged release
@@ -149,6 +150,7 @@ later (explicitly deferred):
 | `CP-36` | Host bootstrap 下发 `pathFlavor`（`posix \| windows-drive \| windows-unc`）；bootstrap schema 升到 2；Client mention/fuzzy/compare 只按该值折叠大小写 | `DONE` | `packages/protocol` + Host + Client | `CP-35` | protocol/host bootstrap + path-flavor + client file-paths/mentions/fuzzy PASS；缺字段 fail-closed |
 | `CP-37` | 补齐 pathFlavor 漏改：TranscriptList/workspace paths 按 flavor 比较；未传 flavor 不再猜 `C:/`；Windows taskkill SIGTERM 也 `/F` | `DONE` | `packages/client` + process-tree | `CP-36` | file-paths/paths 定向 PASS；process-tree 4/4 PASS |
 | `CP-38` | Native apiVersion 5 可创建 listen 前受保护 named-pipe 首实例；sessiond 生产路径仍 listen 后 protect（`node:net` FIRST_PIPE_INSTANCE 会 EADDRINUSE） | `DONE` | `packages/local-authority` | `CP-37` | windows-backend/native 定向 PASS；不宣称生产 listen 前接线 / Job Object |
+| `CP-39` | Settings 增加 Projects 页：列出本次 Host AllowedRoots，绝对路径经 `cwd.validate` 扩根；诚实写明重启后失效 | `DONE` | `packages/client` | `CP-38` | AllowedRootsConfig 2/2 PASS；不宣称持久账本 / Job Object |
 
 后续 lane：Job Object / ledger v2 / 远端发行仍后置。独立 verification agent 当前不可用。
 
