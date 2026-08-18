@@ -1,4 +1,4 @@
-import { keepWindowsDriveRoot, normalizeFilePathSlashes } from "./file-paths";
+import { isFilePathInside, joinFilePath, normalizeFilePathSlashes } from "./file-paths";
 
 function safeDecode(value: string): string {
   try {
@@ -36,20 +36,6 @@ function normalizeLocalPath(filePath: string): string {
   if (isWindowsDrive) return joined;
   if (isUnc) return `//${joined}`;
   return leadingSlash ? `/${joined}` : joined;
-}
-
-function compareForm(normalized: string): string {
-  return /^[A-Za-z]:\//.test(normalized) || /^[A-Za-z]:\/?$/.test(normalized)
-    ? normalized.toLowerCase()
-    : normalized;
-}
-
-function isPathInside(candidate: string, root: string): boolean {
-  const filePath = compareForm(normalizeLocalPath(candidate));
-  const rootPath = compareForm(keepWindowsDriveRoot(normalizeLocalPath(root)));
-  if (filePath === rootPath || filePath === `${rootPath}/`) return true;
-  const prefix = rootPath.endsWith("/") ? rootPath : `${rootPath}/`;
-  return filePath.startsWith(prefix);
 }
 
 function looksLikeRelativeFileHref(href: string): boolean {
@@ -110,14 +96,14 @@ export function resolveLocalFileHref(
     candidate = normalizedHref;
     candidateKind = "absolute";
   } else if (baseDir && looksLikeRelativeFileHref(normalizedHref)) {
-    candidate = `${normalizeFilePathSlashes(baseDir).replace(/\/+$/, "")}/${normalizedHref}`;
+    candidate = joinFilePath(baseDir, normalizedHref);
     candidateKind = "relative";
   }
 
   if (!candidate) return null;
 
   const filePath = stripLineSuffix(normalizeLocalPath(candidate));
-  if (candidateKind === "relative" && relativeRoot && !isPathInside(filePath, relativeRoot)) return null;
+  if (candidateKind === "relative" && relativeRoot && !isFilePathInside(filePath, relativeRoot)) return null;
   return filePath;
 }
 

@@ -28,6 +28,7 @@ import { ExplorerPanel } from "@/features/workspace/explorer/ExplorerPanel";
 import { WorktreeSelector } from "@/features/workspace/worktree/WorktreeSelector";
 import { bucketOf, timeBucketKey, TIME_BUCKET_ORDER, type TimeBucket } from "@/lib/time-groups";
 import { loadForkCollapsed, saveForkCollapsed } from "@/lib/fork-collapse-state";
+import { isAbsoluteClientPath } from "@/lib/file-paths";
 import {
   loadCollapsedTimeGroups,
   saveCollapsedTimeGroups,
@@ -488,7 +489,7 @@ export function Sidebar({
   const commitCustomPath = () => {
     const path = customPathValue.trim();
     if (!path) return;
-    const absolute = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+    const absolute = isAbsoluteClientPath(path);
     if (!absolute) {
       setCustomPathError("Enter an absolute project path.");
       return;

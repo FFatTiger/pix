@@ -1,22 +1,11 @@
 // Helpers that turn dropped-file absolute paths into cwd-relative @ mention
 // tokens. Pure string logic so it runs in the browser (no node:path).
 
-import { keepWindowsDriveRoot, normalizeFilePathSlashes } from "./file-paths";
-
-const WINDOWS_DRIVE_RE = /^[a-zA-Z]:/;
+import { filePathCompareKey, keepWindowsDriveRoot, normalizeFilePathSlashes } from "./file-paths";
 
 /** Forward slashes; keep a Windows drive root as `C:/`. */
 export function normalizePathSlashes(p: string): string {
   return keepWindowsDriveRoot(normalizeFilePathSlashes(p));
-}
-
-function isWindowsDrivePath(p: string): boolean {
-  return WINDOWS_DRIVE_RE.test(p);
-}
-
-/** Lowercased comparison key — Windows paths are case-insensitive. */
-function pathCompareKey(p: string): string {
-  return isWindowsDrivePath(p) ? p.toLowerCase() : p;
 }
 
 export interface CwdRelativeResult {
@@ -36,17 +25,17 @@ export function toCwdRelativeMentions(absPaths: string[], cwd: string): CwdRelat
   const mentions: string[] = [];
   const rejected: string[] = [];
   const normalizedCwd = normalizePathSlashes(cwd);
-  if (!normalizedCwd) return { mentions, rejected: [...absPaths] };
-  const cwdKey = pathCompareKey(normalizedCwd);
+  if (!normalizedCwd) return { mentions: [], rejected: [...absPaths] };
+  const cwdKey = filePathCompareKey(normalizedCwd);
   const cwdPrefix = cwdKey.endsWith("/") ? cwdKey : `${cwdKey}/`;
 
   for (const raw of absPaths) {
     const normalized = normalizePathSlashes(raw);
-    if (!normalized || pathCompareKey(normalized) === cwdKey) {
+    if (!normalized || filePathCompareKey(normalized) === cwdKey) {
       rejected.push(raw);
       continue;
     }
-    const key = pathCompareKey(normalized);
+    const key = filePathCompareKey(normalized);
     if (!key.startsWith(cwdPrefix)) {
       rejected.push(raw);
       continue;

@@ -8,24 +8,48 @@ export function normalizeFilePathSlashes(filePath: string): string {
   return filePath;
 }
 
-/** Keep `C:/` as a drive root instead of collapsing it to `C:`. */
+/** Display/workspace slash fold. Preserves POSIX `/` and Windows `C:/`. */
+export function normalizeClientPath(filePath: string): string {
+  return keepWindowsDriveRoot(filePath.replace(/\\/g, "/"));
+}
+
+export function isWindowsDriveRootPath(normalized: string): boolean {
+  return WINDOWS_DRIVE_ROOT.test(normalized);
+}
+
+/** Keep `C:/` as a drive root instead of collapsing it to `C:`. POSIX `/` stays `/`. */
 export function keepWindowsDriveRoot(normalized: string): string {
+  if (normalized === "/") return "/";
   return WINDOWS_DRIVE_ROOT.test(normalized)
     ? `${normalized[0]!.toUpperCase()}:/`
     : normalized.replace(/\/+$/, "");
 }
 
-function isWindowsDriveAbsolute(normalized: string): boolean {
+export function isWindowsDriveAbsolutePath(normalized: string): boolean {
   return WINDOWS_DRIVE_ABSOLUTE.test(normalized) || WINDOWS_DRIVE_ROOT.test(normalized);
 }
 
+export function isAbsoluteClientPath(filePath: string): boolean {
+  const normalized = normalizeFilePathSlashes(filePath);
+  return normalized.startsWith("/") || isWindowsDriveAbsolutePath(normalized);
+}
+
 function compareForm(normalized: string): string {
-  return isWindowsDriveAbsolute(normalized) ? normalized.toLowerCase() : normalized;
+  return isWindowsDriveAbsolutePath(normalized) ? normalized.toLowerCase() : normalized;
 }
 
 /** Comparison key for Git/status maps. Drive-absolute paths fold case; `C:/` stays a root. */
 export function filePathCompareKey(filePath: string): string {
   return compareForm(keepWindowsDriveRoot(normalizeFilePathSlashes(filePath)));
+}
+
+export function isFilePathInside(candidate: string, root: string): boolean {
+  const filePath = filePathCompareKey(candidate);
+  const rootPath = filePathCompareKey(root);
+  if (rootPath === "" || rootPath === "/") return true;
+  if (filePath === rootPath || filePath === `${rootPath}/`) return true;
+  const prefix = rootPath.endsWith("/") ? rootPath : `${rootPath}/`;
+  return filePath.startsWith(prefix);
 }
 
 export function encodeFilePathForApi(filePath: string): string {
@@ -37,12 +61,14 @@ export function encodeFilePathForApi(filePath: string): string {
 }
 
 export function getFileName(filePath: string): string {
-  const normalized = normalizeFilePathSlashes(filePath).replace(/\/+$/, "");
+  const normalized = keepWindowsDriveRoot(normalizeFilePathSlashes(filePath));
+  if (normalized === "/" || isWindowsDriveRootPath(normalized)) return normalized;
   return normalized.split("/").pop() ?? normalized;
 }
 
 export function getFileDirectory(filePath: string): string {
-  const normalized = normalizeFilePathSlashes(filePath).replace(/\/+$/, "");
+  const normalized = keepWindowsDriveRoot(normalizeFilePathSlashes(filePath));
+  if (normalized === "/" || isWindowsDriveRootPath(normalized)) return normalized;
   const lastSlash = normalized.lastIndexOf("/");
   if (lastSlash < 0) return "";
   if (lastSlash === 0) return "/";
@@ -66,5 +92,8 @@ export function getRelativeFilePath(filePath: string, cwd?: string): string {
 }
 
 export function joinFilePath(parent: string, child: string): string {
-  return `${normalizeFilePathSlashes(parent).replace(/\/$/, "")}/${child}`;
+  const base = keepWindowsDriveRoot(normalizeFilePathSlashes(parent));
+  if (base === "/") return `/${child}`;
+  if (isWindowsDriveRootPath(base)) return `${base}${child}`;
+  return `${base}/${child}`;
 }

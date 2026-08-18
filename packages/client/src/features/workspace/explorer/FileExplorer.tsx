@@ -61,10 +61,6 @@ interface PendingConflict {
 
 type ExplorerGitStatus = "added" | "modified" | "deleted";
 
-function gitPathKey(filePath: string): string {
-  return filePathCompareKey(filePath);
-}
-
 function toExplorerGitStatus(status: GitFileStatusKind): ExplorerGitStatus {
   if (status === "added" || status === "untracked") return "added";
   if (status === "deleted" || status === "conflict") return "deleted";
@@ -163,7 +159,7 @@ function TreeNode({
 }) {
   const open = expandedPaths.has(node.fullPath);
   const highlighted = highlightedPaths.has(node.fullPath);
-  const pathKey = gitPathKey(node.fullPath);
+  const pathKey = filePathCompareKey(node.fullPath);
   const ignored = isIgnoredPath(pathKey, ignoredPaths);
   const gitStatus = getNodeGitStatus(pathKey, node.isDir, changedFiles);
   const [hovered, setHovered] = useState(false);
@@ -451,12 +447,12 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     [rootQuery.data, cwd],
   );
   const ignoredPaths = useMemo(
-    () => new Set((gitStatus?.ignoredPaths ?? []).map(gitPathKey)),
+    () => new Set((gitStatus?.ignoredPaths ?? []).map(filePathCompareKey)),
     [gitStatus],
   );
   const changedFiles = useMemo(
     () => new Map((gitStatus?.files ?? []).map((file) => [
-      gitPathKey(file.filePath),
+      filePathCompareKey(file.filePath),
       toExplorerGitStatus(file.status),
     ])),
     [gitStatus],

@@ -3720,3 +3720,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `217c03a`.
 - Windows tooling job now runs `packages/local-authority/test/windows-*.test.mjs` plus native builder/factory tests after `npm run build`.
 - sessiond start/shutdown smoke stays a separate required job. This is not G7, not full Windows `npm test`, and not product support.
+
+## 95. Cross-platform CP-27 — Client path compare/join owner
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `e8749ba`.
+- `file-paths.ts` owns drive-root, compare key, containment, and join. Workspace `paths.ts`, file-links, file-mentions, FileExplorer, and Sidebar consume it instead of a second `compareForm`.
+- `joinFilePath("C:/", "Users")` stays `C:/Users`; `getFileName("C:/")` stays `C:/`. Display/navigation only; not Protocol path-flavor or Host authorization.

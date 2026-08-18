@@ -84,10 +84,11 @@ CP-05..CP-08  G1 contract + G2 secure-state + pipe DACL   DONE
 CP-09..CP-20  G3/G4 lifecycle, watch, root policy         DONE
 CP-21..CP-24  G5 incremental Client path / PWA honesty    DONE
 CP-25         docs honesty + Windows create-race mapping  DONE
-CP-26         required Windows CI runs secure-state suites active
+CP-26         required Windows CI runs secure-state suites DONE
+CP-27         Client path compare/join owner              active
 
 later (explicitly deferred):
-  Client PlatformPath owner, visible PWA/clipboard,
+  visible PWA/clipboard,
   sessiond POSIX second-walk removal, lock process-start identity,
   Job Object, ledger v2, Protocol path-flavor, packaged release
 ```
@@ -127,8 +128,9 @@ later (explicitly deferred):
 | `CP-24` | FileExplorer Git status key 复用 `filePathCompareKey`；`C:/` 不再塌成 `C:` | `DONE` | `packages/client` FileExplorer | `CP-23` | file-paths 4/4 + shared-git 2/2 PASS；不宣称 Protocol path-flavor / 产品支持 |
 | `CP-25` | 文档诚实化：README/合同/Host 注释不再写“Windows 启不来 / backend 不存在”；Windows 目录创建竞态映射为 inspect-and-validate，不抛 raw already-exists | `DONE` | docs + `packages/local-authority` | `CP-24` | 定向 Windows backend 测试覆盖已存在私有目录；不宣称产品支持 / Job Object / ledger v2 |
 | `CP-26` | Windows required CI 跑 `windows-*.test.mjs` + native builder/factory，不再只做 addon load smoke | `DONE` | `.github/workflows` | `CP-25` | 本机相同 glob PASS；不宣称 G7 / 完整 Windows `npm test` / 产品支持 |
+| `CP-27` | Client 路径比较/拼接收口到 `file-paths`：`paths`/`file-links`/`file-mentions`/`Sidebar` 复用同一 drive-root/compare/join；`C:/` 不再塌成 `C:` | `DONE` | `packages/client` | `CP-26` | file-paths/links/mentions/paths/shared-git 40/40 PASS；不宣称 Protocol path-flavor / 产品支持 |
 
-后续 lane：Client PlatformPath owner、可见 PWA/clipboard、sessiond POSIX 第二套 walk、lock process-start identity。Job Object / ledger v2 / Protocol path-flavor / 远端发行仍后置。独立 verification agent 当前不可用。
+后续 lane：可见 PWA/clipboard、sessiond POSIX 第二套 walk、lock process-start identity。Job Object / ledger v2 / Protocol path-flavor / 远端发行仍后置。独立 verification agent 当前不可用。
 
 ---
 
