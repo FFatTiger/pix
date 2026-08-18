@@ -122,8 +122,8 @@ class FakeClient {
     this.handlers = {};
     this.attachFn = null;
   }
-  async call(method, params) {
-    this.calls.push({ method, params });
+  async call(method, params, timeoutMs) {
+    this.calls.push(timeoutMs === undefined ? { method, params } : { method, params, timeoutMs });
     if (!(method in this.handlers)) throw rpcError("internal", `no handler for ${method}`);
     const value = this.handlers[method];
     if (value instanceof Error) throw value;
@@ -309,6 +309,22 @@ test("command uses commandId as response id when WS id is absent", async () => {
   const res = session.lastJson();
   assert.equal(res.id, "cmd-9");
   assert.equal(res.payload.result.commandId, "cmd-9");
+});
+
+test("command RPC gets the long command timeout; control-plane calls keep the default", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = (p) => ({ commandId: p.command.commandId, result: { ok: true, type: "prompt" } });
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "command", id: "ws-1", payload: { sessionId: "s1", command: { commandId: "c1", type: "prompt", message: "hi" } } }));
+  await wait();
+  const cmdCall = client.calls.find((c) => c.method === "runtime.command");
+  assert.equal(cmdCall.timeoutMs, 30 * 60 * 1_000);
+  // create stays on the default (no per-call override).
+  client.handlers["runtime.create"] = { sessionId: "s1", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", workerStatus: "ready" };
+  session.receive(JSON.stringify({ type: "create", id: "c1", payload: { createRequestId: "r1", cwd: "/x", projectRoot: "/x" } }));
+  await wait();
+  const createCall = client.calls.find((c) => c.method === "runtime.create");
+  assert.equal(createCall.timeoutMs, undefined);
 });
 
 test("getSnapshot routes to runtime.getSnapshot and returns the snapshot", async () => {

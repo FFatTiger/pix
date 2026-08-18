@@ -338,7 +338,7 @@ export class SessiondService {
     this.makeEpoch = options.makeEpoch ?? randomUUID;
     this.journalOptions = options.journal ?? {};
     this.workerStartTimeoutMs = options.workerStartTimeoutMs ?? 10_000;
-    this.commandTimeoutMs = options.commandTimeoutMs ?? 120_000;
+    this.commandTimeoutMs = options.commandTimeoutMs ?? 30 * 60 * 1_000;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
     this.subscriberQueueLimit = options.subscriberQueueLimit ?? 256;
     this.commandResultLimit = options.commandResultLimit ?? 10_000;

@@ -387,14 +387,15 @@ export class SessiondRpcClient {
     });
   }
 
-  async call<M extends SessiondRpcMethod>(method: M, params: SessiondMethodParams[M]): Promise<SessiondMethodResult[M]> {
+  async call<M extends SessiondRpcMethod>(method: M, params: SessiondMethodParams[M], timeoutMs?: number): Promise<SessiondMethodResult[M]> {
     const id = crypto.randomUUID();
     const request = SessiondRpcRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, id, method, params });
     return new Promise<SessiondMethodResult[M]>((resolve, reject) => {
       const socket = createConnection(this.options.endpoint);
       let buffered = "";
       let authenticated = false;
-      const timer = setTimeout(() => { socket.destroy(); reject(new SessiondError("timeout", "sessiond RPC timed out", true)); }, this.options.timeoutMs ?? 10_000);
+      const effectiveTimeoutMs = timeoutMs ?? this.options.timeoutMs ?? 10_000;
+      const timer = setTimeout(() => { socket.destroy(); reject(new SessiondError("timeout", "sessiond RPC timed out", true)); }, effectiveTimeoutMs);
       const finish = (callback: () => void) => { clearTimeout(timer); socket.destroy(); callback(); };
       socket.on("connect", () => socket.write(`AUTH ${this.options.secret}\n`));
       socket.on("data", (chunk) => {
