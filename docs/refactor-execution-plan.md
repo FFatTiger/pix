@@ -119,6 +119,7 @@ CP-00 docs/SSOT
 | `CP-19` | Windows `release-verify` 入口诚实 fail-closed：不跑 Unix `tar`/`prefix/bin`/`sessiond.sock` 布局 | `DONE` | root `scripts/release-verify.mjs` | `CP-18` | Windows 定向 2/2 PASS；不宣称 Windows 安装/升级/卸载或产品支持 |
 | `CP-20` | POSIX root policy：默认拒绝 uid 0；仅 `PIX_ALLOW_ROOT=1` 或显式 `allowRoot` 放行；Windows 无 uid 不视为 root | `DONE` | `packages/local-authority` + sessiond/Host startup | `CP-19` | root-policy + startDaemon/createProductionResources 定向 PASS；不宣称产品支持 |
 | `CP-21` | Client iPadOS 先于 Macintosh 检测；`copyText` 失败必须 reject，不再把 execCommand 假成功 | `DONE` | `packages/client` | `CP-20` | detect-platform 5/5 + clipboard 2/2 PASS；不宣称 Protocol path-flavor / 产品支持 |
+| `CP-22` | Client `file-paths` Windows drive 相对路径大小写不敏感；`C:/` 根不塌成 `C:` | `DONE` | `packages/client` file-paths | `CP-21` | file-paths 3/3 PASS；不宣称 Protocol path-flavor / 产品支持 |
 
 后续 lane：Job Object / ledger v2 / 远端 CI receipt。独立 verification agent 当前不可用。
 

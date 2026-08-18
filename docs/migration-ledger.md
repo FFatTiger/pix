@@ -3689,3 +3689,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `be6aaa2`.
 - `detectPlatform` checks iPhone/iPad/iPod tokens and Macintosh+touch (`maxTouchPoints > 1`) before `/Mac/`, so iPadOS 13+ is `ios` not `mac`.
 - `copyText` rejects when `clipboard.writeText` throws or `execCommand("copy")` is missing/false. DisplayConfig uses the same helper. This is not Protocol path-flavor or product support.
+
+## 90. Cross-platform CP-22 — Client file-paths Windows case folding
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `9bed3f9`.
+- `getRelativeFilePath` compares Windows drive-absolute paths case-insensitively and keeps a drive root as `C:/` instead of collapsing it to `C:`.
+- POSIX relative paths stay case-sensitive. This is display/navigation only, not Protocol path-flavor or Host authorization.

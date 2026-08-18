@@ -1,8 +1,19 @@
+const WINDOWS_DRIVE_ABSOLUTE = /^[A-Za-z]:\//;
+const WINDOWS_DRIVE_ROOT = /^[A-Za-z]:\/?$/;
+
 export function normalizeFilePathSlashes(filePath: string): string {
   if (/^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith("\\\\")) {
     return filePath.replace(/\\/g, "/");
   }
   return filePath;
+}
+
+function isWindowsDriveAbsolute(normalized: string): boolean {
+  return WINDOWS_DRIVE_ABSOLUTE.test(normalized) || WINDOWS_DRIVE_ROOT.test(normalized);
+}
+
+function compareForm(normalized: string): string {
+  return isWindowsDriveAbsolute(normalized) ? normalized.toLowerCase() : normalized;
 }
 
 export function encodeFilePathForApi(filePath: string): string {
@@ -31,9 +42,16 @@ export function getRelativeFilePath(filePath: string, cwd?: string): string {
   if (!cwd) return filePath;
 
   const normalizedFile = normalizeFilePathSlashes(filePath);
-  const normalizedCwd = normalizeFilePathSlashes(cwd).replace(/\/$/, "");
-  if (normalizedFile.startsWith(normalizedCwd + "/")) {
-    return normalizedFile.slice(normalizedCwd.length + 1);
+  const normalizedCwdRaw = normalizeFilePathSlashes(cwd);
+  const normalizedCwd = WINDOWS_DRIVE_ROOT.test(normalizedCwdRaw)
+    ? `${normalizedCwdRaw[0]!.toUpperCase()}:/`
+    : normalizedCwdRaw.replace(/\/$/, "");
+  const fileCmp = compareForm(normalizedFile);
+  const cwdCmp = compareForm(normalizedCwd);
+  if (fileCmp === cwdCmp || fileCmp === `${cwdCmp}/`) return ".";
+  const prefix = cwdCmp.endsWith("/") ? cwdCmp : `${cwdCmp}/`;
+  if (fileCmp.startsWith(prefix)) {
+    return normalizedFile.slice(normalizedCwd.length + (normalizedCwd.endsWith("/") ? 0 : 1));
   }
   return filePath;
 }
