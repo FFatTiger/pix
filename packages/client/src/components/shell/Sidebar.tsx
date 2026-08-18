@@ -402,6 +402,22 @@ export function Sidebar({
     });
   }, []);
 
+  // Direct session URLs reveal their owning project (and the session row's
+  // ancestor chain) without any click.
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    const session = visibleSessions.find((item) => item.sessionId === selectedSessionId);
+    if (!session) return;
+    const root = session.projectRoot || session.cwd;
+    if (!root) return;
+    setExpandedProjects((prev) => {
+      if (prev.has(root)) return prev;
+      const next = new Set(prev);
+      next.add(root);
+      return next;
+    });
+  }, [selectedSessionId, visibleSessions]);
+
   // Recent is the FULL session list (minus hidden agent-home/scratch rows).
   // Expanding a project only reveals that project's sessions in place; it
   // never filters this list and never changes cwd.
@@ -470,11 +486,6 @@ export function Sidebar({
     const projectRunning = runningProjectRoots.has(project)
       || nestedSessions.some((session) => runningSessionIds.has(session.sessionId));
     const pinned = pinnedProjectRoots.has(project);
-    const projectActivity = nestedSessions.reduce<number | undefined>((latest, session) => {
-      const current = activityMs(session);
-      if (current === undefined) return latest;
-      return latest === undefined || current > latest ? current : latest;
-    }, undefined);
     return (
       <div key={project} data-testid="sidebar-project-card" data-expanded={expanded ? "true" : "false"}>
         <ProjectRow
@@ -483,7 +494,6 @@ export function Sidebar({
           expanded={expanded}
           running={projectRunning}
           pinned={pinned}
-          {...(projectActivity === undefined ? {} : { activity: projectActivity })}
           onToggle={() => toggleProjectExpanded(project)}
           onPin={(nextPinned) => pinProject(project, nextPinned)}
           onArchive={(archived) => archiveProject(project, archived)}
@@ -822,7 +832,6 @@ function ProjectRow({
   expanded,
   running,
   pinned,
-  activity,
   onToggle,
   onPin,
   onArchive,
@@ -832,7 +841,6 @@ function ProjectRow({
   expanded: boolean;
   running: boolean;
   pinned: boolean;
-  activity?: number;
   onToggle: () => void;
   onPin: (pinned: boolean) => void;
   onArchive: (archived: boolean) => void;
@@ -879,9 +887,6 @@ function ProjectRow({
         <span className="sidebar-row-title sidebar-title-fade">{pathBaseName(project)}</span>
         {running ? <RunningSessionIndicator /> : null}
       </button>
-      {activity !== undefined ? (
-        <span className="sidebar-row-meta" aria-hidden="true">{formatCompactActivity(activity)}</span>
-      ) : null}
       <div className="sidebar-row-actions">
         <button
           type="button"
@@ -943,12 +948,17 @@ function SessionTreeItem({
   onSelectSession: (sessionId: string, cwd?: string) => void;
   depth: number;
 }) {
-  // Persisted fork-tree collapse: default COLLAPSED. Clicking the parent
-  // session expands children; a stored value wins after the user toggles.
+  // A subtree that contains the SELECTED session starts expanded so a
+  // directly-opened session URL reveals its whole ancestor chain; everything
+  // else defaults collapsed (a stored value always wins).
+  const subtreeContains = (current: SessionTreeNode, targetId: string): boolean => {
+    if (current.session.sessionId === targetId) return true;
+    return current.children.some((child) => subtreeContains(child, targetId));
+  };
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     const stored = loadForkCollapsed(node.session.sessionId);
     if (stored !== undefined) return stored;
-    return true;
+    return !subtreeContains(node, selectedSessionId ?? "");
   });
   const hasChildren = node.children.length > 0;
   const toggleChildren = () => {
@@ -1459,15 +1469,15 @@ function SessionItem({
             onClick={() => onSelectSession(session.sessionId, session.cwd)}
           >
             {depth > 0 && <GitBranch size={14} weight="regular" aria-hidden="true" />}
-            {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}
             <span className="sidebar-row-title sidebar-title-fade">{title}</span>
           </button>
-          {(() => {
+          {isRunning ? <RunningSessionIndicator /> : isPending ? <PendingSessionIndicator /> : null}
+          {!isRunning && !isPending ? (() => {
             const activity = activityMs(session);
             return activity === undefined ? null : (
               <span className="sidebar-row-meta" aria-hidden="true">{formatCompactActivity(activity)}</span>
             );
-          })()}
+          })() : null}
           {!busy && (
             <div className="sidebar-row-actions">
               <button type="button" className="sidebar-icon-btn" onClick={(event) => { event.stopPropagation(); onPin(!pinned); }} title={pinned ? t("desktop.unpin") : t("desktop.pin")} aria-label={pinned ? t("desktop.unpin") : t("desktop.pin")}>

@@ -1065,7 +1065,7 @@ describe("AppShell — source-like sidebar rail", () => {
     await settle();
     expect(capturedStore!.getSnapshot().streaming).toBe(true);
     expect(screen.getAllByLabelText("Agent running").length).toBeGreaterThan(0);
-    expect(screen.getByTestId("session-select-A").closest('[data-running="true"]')).toBeTruthy();
+    expect(screen.getAllByTestId("session-select-A")[0]!.closest('[data-running="true"]')).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Session A" }).getAttribute("data-running")).toBe("true");
     const projectRunning = () => screen.getAllByTestId("sidebar-project-row").find((row) => row.getAttribute("title") === "/x")?.closest(".sidebar-list-row")?.getAttribute("data-running");
     expect(projectRunning()).toBe("true");
@@ -1077,7 +1077,7 @@ describe("AppShell — source-like sidebar rail", () => {
     await settle();
     expect(ws.sent.filter((frame) => (frame as { type: string }).type === "detach")).toHaveLength(0);
     expect(screen.getByRole("tab", { name: "Session A" }).getAttribute("data-running")).toBe("true");
-    expect(screen.getByTestId("session-select-A").closest('[data-running="true"]')).toBeTruthy();
+    expect(screen.getAllByTestId("session-select-A")[0]!.closest('[data-running="true"]')).toBeTruthy();
     expect(projectRunning()).toBe("true");
 
     const prompt = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
@@ -1197,17 +1197,18 @@ describe("AppShell — source-like sidebar rail", () => {
     });
     const { rerender } = mountApp({ cwd: "/x", session: "parent" });
     await settle();
-    expect(screen.getByTestId("session-select-parent")).toBeTruthy();
-    expect(screen.queryByTestId("session-select-child")).toBeNull();
-    fireEvent.click(screen.getByTestId("session-select-parent"));
-    expect(screen.getByTestId("session-select-child")).toBeTruthy();
-    fireEvent.click(screen.getByTestId("session-select-parent"));
-    expect(screen.queryByTestId("session-select-child")).toBeNull();
-    fireEvent.click(screen.getByTestId("session-select-parent"));
-    expect(screen.getByTestId("session-select-child")).toBeTruthy();
+    const recent = () => screen.getByTestId("sidebar-sessions");
+    // Directly opened URL: the selected session's subtree is revealed already.
+    expect(within(recent()).getByTestId("session-select-parent")).toBeTruthy();
+    expect(within(recent()).getByTestId("session-select-child")).toBeTruthy();
+    // Clicking the selected parent again collapses it.
+    fireEvent.click(within(recent()).getByTestId("session-select-parent"));
+    expect(within(recent()).queryByTestId("session-select-child")).toBeNull();
+    fireEvent.click(within(recent()).getByTestId("session-select-parent"));
+    expect(within(recent()).getByTestId("session-select-child")).toBeTruthy();
     rerender({ cwd: "/x", session: "parent" });
     await settle();
-    expect(screen.getByTestId("session-select-child")).toBeTruthy();
+    expect(within(recent()).getByTestId("session-select-child")).toBeTruthy();
   });
 
   it("first click on an unselected parent opens it without expanding subagents", async () => {
@@ -1220,14 +1221,15 @@ describe("AppShell — source-like sidebar rail", () => {
     });
     const { rerender } = mountApp({ cwd: "/x" });
     await settle();
+    const recent = () => screen.getByTestId("sidebar-sessions");
     // Parent is not selected yet: clicking only opens it, subagents stay hidden.
-    fireEvent.click(screen.getByTestId("session-select-parent"));
-    expect(screen.queryByTestId("session-select-child")).toBeNull();
+    fireEvent.click(within(recent()).getByTestId("session-select-parent"));
+    expect(within(recent()).queryByTestId("session-select-child")).toBeNull();
     // Now the parent is selected; clicking it again expands its subagents.
     rerender({ cwd: "/x", session: "parent" });
     await settle();
-    fireEvent.click(screen.getByTestId("session-select-parent"));
-    expect(screen.getByTestId("session-select-child")).toBeTruthy();
+    fireEvent.click(within(recent()).getByTestId("session-select-parent"));
+    expect(within(recent()).getByTestId("session-select-child")).toBeTruthy();
   });
 
   it("caps recent sessions at five and reveals the rest from View more", async () => {
@@ -1261,7 +1263,8 @@ describe("AppShell — source-like sidebar rail", () => {
     const row = projectButton!.closest(".sidebar-list-row") as HTMLElement;
     expect(within(row).getByLabelText("Pin to top")).toBeTruthy();
     expect(within(row).getByLabelText("Archive")).toBeTruthy();
-    expect(within(row).getByText("NOW")).toBeTruthy();
+    // Projects show no activity chip (unlike sessions).
+    expect(within(row).queryByText("NOW")).toBeNull();
     expect(row.querySelector(".sidebar-fork-caret")).toBeNull();
   });
 
