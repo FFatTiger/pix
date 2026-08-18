@@ -135,6 +135,7 @@ function controllableStubFetch(opts: {
     if (p.includes("/v1/models")) return json(modelsCatalog);
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
+    if (p.includes("/v1/cwd/validate")) return json({ success: true, cwd: "/x" });
     return json({});
   }) as unknown as typeof fetch;
 }
@@ -166,6 +167,7 @@ function stubFetch(): typeof fetch {
     if (p.includes("/v1/models")) return json(modelsCatalog);
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
+    if (p.includes("/v1/cwd/validate")) return json({ success: true, cwd: "/x" });
     return json({});
   }) as unknown as typeof fetch;
 }
@@ -1449,5 +1451,98 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(screen.getByRole("button", { name: "Hide file browser" })).toBeTruthy();
     fireEvent.click(screen.getByTestId("file-browser-toggle"));
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-closed");
+  });
+});
+
+describe("AppShell — open project authorizes before navigating", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    SOCKETS.length = 0;
+    capturedStore = null;
+    navigateMock.mockReset();
+    previousFetch = globalThis.fetch;
+  });
+  afterEach(() => { cleanup(); globalThis.fetch = previousFetch; vi.useRealTimers(); });
+
+  async function settle(): Promise<void> {
+    await act(async () => {
+      for (let round = 0; round < 3; round += 1) {
+        await flush(20);
+        vi.advanceTimersByTime(0);
+      }
+      await flush(20);
+    });
+  }
+
+  it("validates a custom absolute path and navigates to the authorized cwd", async () => {
+    let validated = false;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
+      const p = String(path);
+      if (p.includes("/v1/cwd/validate")) {
+        validated = true;
+        expect(init?.method ?? "POST").toBe("POST");
+        return json({ success: true, cwd: "D:/other/repo" });
+      }
+      return stubFetch()(input, init);
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    mountApp({});
+    await settle();
+    fireEvent.click(screen.getByTestId("home-project-picker"));
+    fireEvent.change(screen.getByTestId("home-project-custom-path"), { target: { value: "D:\\other\\repo" } });
+    fireEvent.keyDown(screen.getByTestId("home-project-custom-path"), { key: "Enter" });
+    await settle();
+    expect(validated).toBe(true);
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/", search: { cwd: "D:/other/repo" } });
+  });
+
+  it("keeps the current cwd when authorize fails", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
+      if (String(path).includes("/v1/cwd/validate")) {
+        return jsonStatus({ error: "Path is outside the allowed roots", code: "PATH_FORBIDDEN" }, 403);
+      }
+      return stubFetch()(input, init);
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    mountApp({ cwd: "/x" });
+    await settle();
+    fireEvent.click(screen.getByTestId("home-project-picker"));
+    fireEvent.change(screen.getByTestId("home-project-custom-path"), { target: { value: "D:\\secret" } });
+    fireEvent.keyDown(screen.getByTestId("home-project-custom-path"), { key: "Enter" });
+    await settle();
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId("home-project-custom-error").textContent).toBe("Project path is outside the allowed roots.");
+  });
+
+  it("keeps the current cwd when a sidebar project authorize fails", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
+      if (String(path).includes("/v1/cwd/validate")) {
+        return jsonStatus({ error: "Path is outside the allowed roots", code: "PATH_FORBIDDEN" }, 403);
+      }
+      return controllableStubFetch({
+        sessions: [{
+          sessionId: "A",
+          cwd: "/secret",
+          projectRoot: "/secret",
+          title: "Secret",
+          createdAt: 1,
+          updatedAt: 2,
+          messageCount: 1,
+        }],
+      })(input, init);
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    mountApp({ cwd: "/x" });
+    await settle();
+    const projectButton = screen.getAllByTestId("sidebar-project-row").find((row) => row.getAttribute("title") === "/secret");
+    expect(projectButton).toBeTruthy();
+    const row = projectButton!.closest(".sidebar-list-row") as HTMLElement;
+    fireEvent.click(within(row).getByLabelText("New Session"));
+    await settle();
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId("sidebar-open-project-error").textContent).toBe("Project path is outside the allowed roots.");
   });
 });

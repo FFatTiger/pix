@@ -90,6 +90,7 @@ CP-28         visible PWA/clipboard failure               DONE
 CP-29         sessiond uses backend private-dir walk      DONE
 CP-30         lock process-start identity                 DONE
 CP-31         watch overflow triggers authoritative rescan DONE
+CP-32         open project authorizes via cwd.validate     DONE
 
 later (explicitly deferred):
   Job Object, ledger v2, Protocol path-flavor, packaged release
@@ -135,6 +136,7 @@ later (explicitly deferred):
 | `CP-29` | sessiond 私有目录走 `backend.ensurePrivateDirectory`；删除第二套 POSIX walk / `WithFs` 注入 | `DONE` | `packages/sessiond` | `CP-28` | local-posix 定向 PASS；不放松 0700/owner/nlink；不宣称 Job Object |
 | `CP-30` | lock process-start identity：Windows creation time + Linux `/proc` startticks；无法验证则 obstructed 不自动 reclaim | `DONE` | `packages/local-authority/process` + sessiond/CLI | `CP-29` | process-start + native inspectProcess + sessiond local-posix PASS；不宣称 Job Object / 产品支持 |
 | `CP-31` | Host file-watch overflow/ENOSPC/EMFILE 只当 invalidation hint，串行 exact-child rescan 后发权威 `change`；不关流、不加轮询 | `DONE` | `packages/host` file-watch | `CP-30` | file-watch-overflow 1/1 + 原 watch 3/3 PASS；不宣称 Job Object / 产品支持 |
+| `CP-32` | 打开项目先 `POST /v1/cwd/validate` 再改 URL；失败留在当前 cwd 并可见；Home 选择器可输入绝对路径扩根 | `DONE` | `packages/client` AppShell | `CP-31` | open-project-error 1/1 + AppShell authorize 3/3 PASS；不宣称 AllowedRoot 设置页 / 产品支持 |
 
 后续 lane：Job Object / ledger v2 / Protocol path-flavor / 远端发行仍后置。独立 verification agent 当前不可用。
 

@@ -7,7 +7,8 @@ import { createSessionHistoryQueryOptions } from "@/api/session-history";
 import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { isHiddenRailSession, primaryRealProjectPath } from "@/lib/workspace-paths";
-import { getFileName } from "@/lib/file-paths";
+import { getFileName, isAbsoluteClientPath } from "@/lib/file-paths";
+import { describeOpenProjectError } from "@/lib/open-project-error";
 import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { Composer } from "@/components/shell/Composer";
@@ -239,9 +240,19 @@ export function AppShell({ search }: AppShellProps) {
     return [...latest.entries()].sort((a, b) => b[1] - a[1]).map(([root]) => root);
   }, [sessionsQuery.data]);
 
-  const handleOpenHomeForProject = useCallback((projectRoot: string) => {
-    void navigate({ to: "/", search: { cwd: projectRoot } });
-  }, [navigate]);
+  const cwdValidate = useMutation(createMutationOptions(http, queryClient).cwd.validate());
+  const [openProjectError, setOpenProjectError] = useState<string | null>(null);
+  const handleOpenHomeForProject = useCallback(async (projectRoot: string) => {
+    setOpenProjectError(null);
+    try {
+      const authorized = await cwdValidate.mutateAsync(projectRoot);
+      setOpenProjectError(null);
+      await navigate({ to: "/", search: { cwd: authorized.cwd } });
+    } catch (error) {
+      setOpenProjectError(t(describeOpenProjectError(error)));
+      throw error;
+    }
+  }, [cwdValidate, navigate, t]);
 
   // Title-bar new-session button: same new-session page, keeping the current
   // project (falls back to the catalog cwd when the URL has none).
@@ -762,6 +773,7 @@ export function AppShell({ search }: AppShellProps) {
             canNewSession={canCreate}
             onOpenSettings={openSettings}
             onNewSessionInProject={handleOpenHomeForProject}
+            openProjectError={openProjectError}
           />
         ) : null}
       </div>
@@ -797,6 +809,7 @@ export function AppShell({ search }: AppShellProps) {
                   cwd={search.cwd}
                   projectRoots={knownProjectRoots}
                   onSelect={handleOpenHomeForProject}
+                  openProjectError={openProjectError}
                 />
                 <div className="transcript-home" data-testid="transcript-home">
                   <div className="transcript-home-logo" aria-hidden="true" />
@@ -906,15 +919,34 @@ function HomeProjectBar({
   cwd,
   projectRoots,
   onSelect,
+  openProjectError,
 }: {
   cwd: string | undefined;
   projectRoots: readonly string[];
-  onSelect: (projectRoot: string) => void;
+  onSelect: (projectRoot: string) => void | Promise<void>;
+  openProjectError?: string | null;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
+  const [customPath, setCustomPath] = useState("");
+  const [customError, setCustomError] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
   const current = cwd !== undefined && projectRoots.includes(cwd) ? cwd : null;
+
+  const openAuthorized = async (path: string) => {
+    setOpening(true);
+    setCustomError(null);
+    try {
+      await onSelect(path);
+      setOpen(false);
+      setCustomPath("");
+    } catch {
+      // Shared authorize error stays visible in the open picker.
+    } finally {
+      setOpening(false);
+    }
+  };
   return (
     <div
       className="home-project-bar"
@@ -991,7 +1023,7 @@ function HomeProjectBar({
               <button
                 key={root}
                 type="button"
-                onClick={() => { setOpen(false); onSelect(root); }}
+                onClick={() => { void openAuthorized(root); }}
                 onMouseEnter={() => setHovered(root)}
                 onMouseLeave={() => setHovered(null)}
                 title={root}
@@ -1029,6 +1061,32 @@ function HomeProjectBar({
               </button>
             );
           })}
+          <div style={{ borderTop: "1px solid var(--border)", marginTop: 4, padding: "6px 6px 4px" }}>
+            <input
+              data-testid="home-project-custom-path"
+              value={customPath}
+              disabled={opening}
+              onChange={(e) => { setCustomPath(e.target.value); setCustomError(null); }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                const path = customPath.trim();
+                if (!path) return;
+                if (!isAbsoluteClientPath(path)) {
+                  setCustomError(t("desktop.enterAbsoluteProjectPath"));
+                  return;
+                }
+                void openAuthorized(path);
+              }}
+              placeholder={t("desktop.projectPathPlaceholder")}
+              style={{ width: "100%", fontSize: 11, fontFamily: "var(--font-mono)", padding: "5px 8px", border: "1px solid var(--border)", borderRadius: 5, outline: "none", background: "var(--bg)", color: "var(--text)", boxSizing: "border-box" }}
+            />
+            {customError || openProjectError ? (
+              <div role="alert" data-testid="home-project-custom-error" style={{ marginTop: 5, color: "var(--status-danger)", fontSize: 11, lineHeight: 1.35, overflowWrap: "anywhere" }}>
+                {customError ?? openProjectError}
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </div>

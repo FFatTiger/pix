@@ -89,7 +89,9 @@ export interface SidebarProps {
   /** Collapse the sidebar from inside the rail (the toggle lives here, not in the title bar). */
   onCollapseSidebar?: () => void;
   /** Open the new-session page scoped to a project root (no immediate create). */
-  onNewSessionInProject?: (projectRoot: string) => void;
+  onNewSessionInProject?: (projectRoot: string) => void | Promise<void>;
+  /** Visible authorize failure from opening a project (AppShell-owned). */
+  openProjectError?: string | null;
 }
 
 /**
@@ -313,6 +315,7 @@ export function Sidebar({
   onOpenSettings,
   onCollapseSidebar,
   onNewSessionInProject,
+  openProjectError,
 }: SidebarProps) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -517,7 +520,9 @@ export function Sidebar({
           onToggle={() => toggleProjectExpanded(project)}
           onPin={(nextPinned) => pinProject(project, nextPinned)}
           onArchive={(archived) => archiveProject(project, archived)}
-          onNewSession={() => onNewSessionInProject?.(project)}
+          onNewSession={() => {
+            void Promise.resolve(onNewSessionInProject?.(project)).catch(() => undefined);
+          }}
         />
         {expanded ? (
           <div className="sidebar-project-sessions" data-testid="sidebar-project-sessions">
@@ -688,6 +693,11 @@ export function Sidebar({
                 ) : null}
               </>
             )}
+            {openProjectError ? (
+              <div role="alert" data-testid="sidebar-open-project-error" className="sidebar-status" style={{ color: "var(--status-danger)", overflowWrap: "anywhere" }}>
+                {openProjectError}
+              </div>
+            ) : null}
           </div>
           ) : null}
         </section>

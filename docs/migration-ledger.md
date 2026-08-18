@@ -3792,3 +3792,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Watch events stay hints. `overflow` / `ENOSPC` / `EMFILE` / `EUNKNOWN` force a serialized exact-child `lstat` and emit the existing `change` payload. The stream stays open.
 - Aligns with VS Code invalidation-hint + OpenCode honest degrade. No polling interval and no new SSE event type. Not Job Object or product support.
 
+## 101. Cross-platform CP-32 — open project authorizes via cwd.validate
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `c10022f`.
+- `handleOpenHomeForProject` now calls `POST /v1/cwd/validate` and navigates to the authorized cwd. Failure stays on the current workspace and is visible in Home + Sidebar.
+- Home project picker accepts an absolute custom path so a repo outside the startup root can be expanded in local mode. No AllowedRoot settings page. Not Protocol path-flavor or product support.
+
