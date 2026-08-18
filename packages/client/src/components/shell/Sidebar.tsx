@@ -31,7 +31,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useContextMenu, type ContextMenuEntry } from "@/components/ContextMenu";
 import { loadForkCollapsed, saveForkCollapsed } from "@/lib/fork-collapse-state";
 import { downloadVisibleBranch } from "@/lib/visible-branch-export";
-import { loadProjectsSectionOpen, saveProjectsSectionOpen } from "@/lib/sidebar-section-state";
+import { loadPinnedSectionOpen, loadProjectsSectionOpen, loadSessionsSectionOpen, savePinnedSectionOpen, saveProjectsSectionOpen, saveSessionsSectionOpen } from "@/lib/sidebar-section-state";
 import { useSidebarItemState } from "@/lib/sidebar-item-state";
 import { SIDEBAR_VISIBLE_LIMIT, splitLimitedList } from "@/lib/sidebar-list-limit";
 import { isHiddenRailSession, isNonProjectWorkspacePath } from "@/lib/workspace-paths";
@@ -323,7 +323,20 @@ export function Sidebar({
   const removeMutation = useMutation(createMutationOptions(http, queryClient).sessions.remove());
   const renameMutation = useMutation(createMutationOptions(http, queryClient).sessions.rename());
 
-  const [sessionsOpen, setSessionsOpen] = useState(true);
+  const [sessionsOpen, setSessionsOpen] = useState<boolean>(() => loadSessionsSectionOpen());
+  const toggleSessions = useCallback(() => {
+    setSessionsOpen((open) => {
+      saveSessionsSectionOpen(!open);
+      return !open;
+    });
+  }, []);
+  const [pinnedOpen, setPinnedOpen] = useState<boolean>(() => loadPinnedSectionOpen());
+  const togglePinned = useCallback(() => {
+    setPinnedOpen((open) => {
+      savePinnedSectionOpen(!open);
+      return !open;
+    });
+  }, []);
   const [projectsOpen, setProjectsOpen] = useState<boolean>(() => loadProjectsSectionOpen());
   const toggleProjects = useCallback(() => {
     setProjectsOpen((open) => {
@@ -582,15 +595,30 @@ export function Sidebar({
       <div className="sidebar-rail-scroll">
         {showPinnedSection ? (
           <section className="sidebar-section" data-testid="sidebar-pinned">
-            <div className="sidebar-section-head" data-expanded="true">
-              <div className="sidebar-section-toggle" data-testid="pinned-section-label">
+            <div className="sidebar-section-head" data-expanded={pinnedOpen ? "true" : "false"}>
+              <button
+                type="button"
+                className="sidebar-section-toggle"
+                data-testid="pinned-section-toggle"
+                aria-expanded={pinnedOpen}
+                onClick={togglePinned}
+              >
                 <span className="sidebar-section-label-text">{t("desktop.pinned")}</span>
+                <CaretRight
+                  className="sidebar-section-chevron"
+                  size={14}
+                  weight="bold"
+                  style={{ transform: pinnedOpen ? "rotate(90deg)" : "none" }}
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
+            {pinnedOpen ? (
+              <div data-testid="sidebar-pinned-list">
+                {pinnedProjects.map((project) => renderProjectCard(project))}
+                {pinnedSessionNodes.map((node) => renderTreeItem(node))}
               </div>
-            </div>
-            <div data-testid="sidebar-pinned-list">
-              {pinnedProjects.map((project) => renderProjectCard(project))}
-              {pinnedSessionNodes.map((node) => renderTreeItem(node))}
-            </div>
+            ) : null}
           </section>
         ) : null}
 
@@ -640,7 +668,7 @@ export function Sidebar({
               className="sidebar-section-toggle"
               data-testid="sessions-section-toggle"
               aria-expanded={sessionsOpen}
-              onClick={() => setSessionsOpen((open) => !open)}
+              onClick={toggleSessions}
             >
               <span className="sidebar-section-label-text">{t("desktop.sessions")}</span>
               <CaretRight

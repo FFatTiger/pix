@@ -2973,6 +2973,12 @@ describe("SessionStore — sendPromptToSession staged activation settings", () =
     expect(thinkingCmd.payload.command.level).toBe("high");
     ackCommand(ws, thinkingCmd, true);
     await flush();
+    // The staged settings pull an authoritative snapshot so the selectors
+    // reflect the applied model/thinking (getSnapshot answered here).
+    const gsFrame = lastFrame<{ type: string; id: string }>(ws, "getSnapshot")!;
+    expect(gsFrame).toBeTruthy();
+    ws.serverSend({ type: "response", id: gsFrame.id, payload: { ok: true, result: snapshotPayload({ sessionId: "s2" }).snapshot } });
+    await flush();
     // 3) prompt exactly once, after the settings resolved.
     const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
     expect(promptCmd.payload.command.type).toBe("prompt");
@@ -2999,6 +3005,11 @@ describe("SessionStore — sendPromptToSession staged activation settings", () =
     expect(thinkingCmd.payload.command.type).toBe("set_thinking_level");
     expect(thinkingCmd.payload.command.level).toBe("low");
     ackCommand(ws, thinkingCmd, true);
+    await flush();
+    // Staged settings refresh the authoritative snapshot (getSnapshot ack).
+    const gsFrame = lastFrame<{ type: string; id: string }>(ws, "getSnapshot")!;
+    expect(gsFrame).toBeTruthy();
+    ws.serverSend({ type: "response", id: gsFrame.id, payload: { ok: true, result: snapshotPayload({ sessionId: "s1" }).snapshot } });
     await flush();
     const promptCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string; message: string } } }>(ws, "command")!;
     expect(promptCmd.payload.command.type).toBe("prompt");

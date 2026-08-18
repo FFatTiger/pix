@@ -748,6 +748,14 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
       ws.serverSend({ type: "response", id: thinkingCmd.id, payload: { ok: true, result: { commandId: thinkingCmd.payload.command.commandId, result: { ok: true, type: "set_thinking_level" } } } });
       await flush();
     });
+    // The staged settings refresh the authoritative snapshot so the selectors
+    // reflect what was just applied (getSnapshot envelope answered here).
+    const getSnap = lastFrame<{ type: string; id: string }>(ws, "getSnapshot")!;
+    expect(getSnap).toBeTruthy();
+    await act(async () => {
+      ws.serverSend({ type: "response", id: getSnap.id, payload: { ok: true, result: snapshotPayload({ sessionId: "B" }).snapshot } });
+      await flush();
+    });
     // 3) prompt exactly once.
     const promptFrames = ws.sent.filter((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt");
     expect(promptFrames).toHaveLength(1);

@@ -849,9 +849,37 @@ export function ProcessGroup({
   const singleThinking = steps.length === 1 && steps[0]!.kind === "thinking" && !isStreaming;
   const singleTool = steps.length === 1 && (steps[0]!.kind === "tool" || steps[0]!.kind === "toolGroup") && !isStreaming;
 
+  const summaryParts: string[] = [];
+  if (toolCount) {
+    const base = toolCount === 1
+      ? t("desktop.processToolCount", { count: toolCount })
+      : t("desktop.processToolsCount", { count: toolCount });
+    summaryParts.push(failedCount > 0
+      ? base + t("desktop.processFailedCount", { failed: failedCount })
+      : base);
+  }
+  if (thoughtCount) {
+    summaryParts.push(
+      thoughtCount === 1
+        ? t("desktop.processThoughtCount", { count: thoughtCount })
+        : t("desktop.processThoughtsCount", { count: thoughtCount }),
+    );
+  }
+  if (customCount) {
+    summaryParts.push(
+      customCount === 1
+        ? t("desktop.processCustomCount", { count: customCount })
+        : t("desktop.processCustomsCount", { count: customCount }),
+    );
+  }
+  const usedSummary = t("desktop.processUsed", { summary: summaryParts.join(" · ") });
+
   let summary: string;
   if (isStreaming) {
-    summary = t("desktop.processWorking");
+    // Live progress: once the first tool/thinking/custom block lands, show the
+    // same "used X tools · Y thoughts" copy as the settled state, updating as
+    // blocks accumulate. Only before any content is it just "working…".
+    summary = summaryParts.length > 0 ? usedSummary : t("desktop.processWorking");
   } else if (singleThinking) {
     const d = thinkingDuration(steps[0]!);
     summary = d !== undefined
@@ -894,7 +922,7 @@ export function ProcessGroup({
       );
     }
     summary = summaryParts.length > 0
-      ? t("desktop.processUsed", { summary: summaryParts.join(" · ") })
+      ? usedSummary
       : t("desktop.processCompleted");
   }
 

@@ -1206,6 +1206,15 @@ export class SessionStore implements RuntimeSocketHandler {
           throw this.activationFailure(cause);
         }
       }
+      // The set_model / set_thinking_level commands converge the worker but do
+      // NOT rewrite the client snapshot. Without a refresh the Composer keeps
+      // showing the pre-activation model/thinking until a page reload. Pull the
+      // authoritative snapshot so the selectors reflect what was just applied.
+      try {
+        await this.fetchSnapshot();
+      } catch {
+        // Snapshot refresh is best-effort here; the prompt still dispatches.
+      }
     })();
   }
 
