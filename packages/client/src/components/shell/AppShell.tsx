@@ -7,7 +7,7 @@ import { createSessionHistoryQueryOptions } from "@/api/session-history";
 import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { isHiddenRailSession, primaryRealProjectPath } from "@/lib/workspace-paths";
-import { getFileName, isAbsoluteClientPath } from "@/lib/file-paths";
+import { getFileName, isAbsoluteClientPath, isPathCoveredByAllowedRoots } from "@/lib/file-paths";
 import { describeOpenProjectError } from "@/lib/open-project-error";
 import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
@@ -17,6 +17,7 @@ import { AppTitleBar } from "@/components/shell/AppTitleBar";
 import { SettingsModal, type SettingsTab } from "@/components/shell/SettingsModal";
 import { LoginPage } from "@/components/shell/LoginPage";
 import { ProjectTrustDialog } from "@/features/settings/ProjectTrustDialog";
+import { AuthorizeProjectDialog } from "@/components/shell/AuthorizeProjectDialog";
 import { ExtensionRequests } from "@/features/extension-request/ExtensionRequests";
 import { registerChatOpenFileTarget } from "@/components/chat/chat-experience-bridge";
 import { FileViewer } from "@/features/workspace/viewer/FileViewer";
@@ -214,6 +215,8 @@ export function AppShell({ search }: AppShellProps) {
   // tabs never store a stale label as authority.
   const options = createQueryOptions(http);
   const sessionsQuery = useQuery({ ...options.sessions.list(), enabled: canBrowseSessions });
+  const cwdRootsQuery = useQuery(options.cwd.roots());
+  const allowedRoots = cwdRootsQuery.data?.roots ?? [];
   const sessionLabels = useMemo(() => {
     const map: Record<string, string> = {};
     for (const session of sessionsQuery.data?.sessions ?? []) {
@@ -242,17 +245,56 @@ export function AppShell({ search }: AppShellProps) {
 
   const cwdValidate = useMutation(createMutationOptions(http, queryClient).cwd.validate());
   const [openProjectError, setOpenProjectError] = useState<string | null>(null);
-  const handleOpenHomeForProject = useCallback(async (projectRoot: string) => {
+  const [authorizePrompt, setAuthorizePrompt] = useState<{
+    path: string;
+    sessionId?: string;
+  } | null>(null);
+  const [authorizeError, setAuthorizeError] = useState<string | null>(null);
+
+  const authorizeAndOpen = useCallback(async (projectRoot: string, sessionId?: string) => {
     setOpenProjectError(null);
+    setAuthorizeError(null);
     try {
       const authorized = await cwdValidate.mutateAsync(projectRoot);
-      setOpenProjectError(null);
-      await navigate({ to: "/", search: { cwd: authorized.cwd } });
+      setAuthorizePrompt(null);
+      await navigate({
+        to: "/",
+        search: sessionId === undefined
+          ? { cwd: authorized.cwd }
+          : { cwd: authorized.cwd, session: sessionId },
+      });
     } catch (error) {
-      setOpenProjectError(t(describeOpenProjectError(error)));
+      const message = t(describeOpenProjectError(error));
+      setOpenProjectError(message);
+      setAuthorizeError(message);
       throw error;
     }
   }, [cwdValidate, navigate, t]);
+
+  const requestOpenProject = useCallback(async (projectRoot: string, sessionId?: string) => {
+    if (isPathCoveredByAllowedRoots(projectRoot, allowedRoots)) {
+      await authorizeAndOpen(projectRoot, sessionId);
+      return;
+    }
+    setOpenProjectError(null);
+    setAuthorizeError(null);
+    setAuthorizePrompt(sessionId === undefined ? { path: projectRoot } : { path: projectRoot, sessionId });
+  }, [allowedRoots, authorizeAndOpen]);
+
+  const handleOpenHomeForProject = useCallback(async (projectRoot: string) => {
+    await requestOpenProject(projectRoot);
+  }, [requestOpenProject]);
+
+  const closeAuthorizePrompt = useCallback(() => {
+    if (cwdValidate.isPending) return;
+    setAuthorizePrompt(null);
+    setAuthorizeError(null);
+  }, [cwdValidate.isPending]);
+
+  const confirmAuthorizePrompt = useCallback(() => {
+    if (authorizePrompt === null || cwdValidate.isPending) return;
+    void authorizeAndOpen(authorizePrompt.path, authorizePrompt.sessionId).catch(() => undefined);
+  }, [authorizeAndOpen, authorizePrompt, cwdValidate.isPending]);
 
   // Title-bar new-session button: same new-session page, keeping the current
   // project (falls back to the catalog cwd when the URL has none).
@@ -436,11 +478,16 @@ export function AppShell({ search }: AppShellProps) {
    */
   const commitSessionNavigation = useCallback((sessionId: string, targetCwd?: string): void => {
     const cwd = targetCwd ?? liveSearchRef.current.cwd;
+    if (cwd !== undefined && !isPathCoveredByAllowedRoots(cwd, allowedRoots)) {
+      setAuthorizeError(null);
+      setAuthorizePrompt({ path: cwd, sessionId });
+      return;
+    }
     void navigate({
       to: "/",
       search: { session: sessionId, ...(cwd === undefined ? {} : { cwd }) },
     });
-  }, [navigate]);
+  }, [allowedRoots, navigate]);
 
   // Sidebar row selection: prepare-then-commit (no-flicker). It never
   // attaches/activates, never stops, never creates; the Composer's send is the
@@ -892,6 +939,15 @@ export function AppShell({ search }: AppShellProps) {
         />
       </div>
     </div>
+    {authorizePrompt ? (
+      <AuthorizeProjectDialog
+        path={authorizePrompt.path}
+        busy={cwdValidate.isPending}
+        error={authorizeError}
+        onCancelAction={closeAuthorizePrompt}
+        onConfirmAction={confirmAuthorizePrompt}
+      />
+    ) : null}
     {projectTrustDialogOpen && search.cwd ? (
       <ProjectTrustDialog
         cwd={search.cwd}

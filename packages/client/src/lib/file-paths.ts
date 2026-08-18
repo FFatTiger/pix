@@ -52,6 +52,15 @@ export function isFilePathInside(candidate: string, root: string): boolean {
   return filePath.startsWith(prefix);
 }
 
+/** True when the path is exactly one of the Host AllowedRoots, or inside one. */
+export function isPathCoveredByAllowedRoots(
+  target: string | undefined,
+  roots: readonly string[] | undefined,
+): boolean {
+  if (target === undefined || target === "" || roots === undefined || roots.length === 0) return false;
+  return roots.some((root) => isFilePathInside(target, root));
+}
+
 export function encodeFilePathForApi(filePath: string): string {
   return normalizeFilePathSlashes(filePath)
     .split("/")

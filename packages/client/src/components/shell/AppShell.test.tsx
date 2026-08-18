@@ -78,6 +78,18 @@ function jsonStatus(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+async function echoValidate(init?: RequestInit): Promise<Response> {
+  const raw = typeof init?.body === "string" ? init.body : "{}";
+  let cwd = "/x";
+  try {
+    const parsed = JSON.parse(raw) as { cwd?: unknown };
+    if (typeof parsed.cwd === "string" && parsed.cwd.length > 0) cwd = parsed.cwd;
+  } catch {
+    // Keep the default authorized cwd when the body is not JSON.
+  }
+  return json({ success: true, cwd });
+}
+
 /** Manual promise the test resolves/rejects to deterministically control /context fetches. */
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -110,7 +122,7 @@ function controllableStubFetch(opts: {
   contextError?: { body: unknown; status: number };
 }): typeof fetch {
   const sessions = opts.sessions ?? [];
-  return vi.fn(async (input: RequestInfo | URL) => {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof input === "string"
       ? input
       : input instanceof URL
@@ -135,7 +147,8 @@ function controllableStubFetch(opts: {
     if (p.includes("/v1/models")) return json(modelsCatalog);
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
-    if (p.includes("/v1/cwd/validate")) return json({ success: true, cwd: "/x" });
+    if (p.includes("/v1/cwd/validate")) return echoValidate(init);
+    if (p.includes("/v1/cwd/roots")) return json({ roots: ["/x"], defaultCwd: "/x" });
     return json({});
   }) as unknown as typeof fetch;
 }
@@ -146,7 +159,7 @@ function contextResponse(sessionId: string): Response {
 
 /** Host HTTP stub: valid empty payloads for the endpoints the shell tree queries. */
 function stubFetch(): typeof fetch {
-  return vi.fn(async (input: RequestInfo | URL) => {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof input === "string"
       ? input
       : input instanceof URL
@@ -167,7 +180,8 @@ function stubFetch(): typeof fetch {
     if (p.includes("/v1/models")) return json(modelsCatalog);
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
-    if (p.includes("/v1/cwd/validate")) return json({ success: true, cwd: "/x" });
+    if (p.includes("/v1/cwd/validate")) return echoValidate(init);
+    if (p.includes("/v1/cwd/roots")) return json({ roots: ["/x"], defaultCwd: "/x" });
     return json({});
   }) as unknown as typeof fetch;
 }
@@ -1373,7 +1387,7 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
 
   /** Host stub that also serves file reads + git diff for the central viewer. */
   function fileFetch(): typeof fetch {
-    return vi.fn(async (input: RequestInfo | URL) => {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
       const p = String(path);
       if (p.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
@@ -1384,6 +1398,8 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
       if (p.includes("/v1/models")) return json({ models: [], defaultModel: null });
       if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
       if (p.includes("/v1/skills")) return json({ skills: [] });
+      if (p.includes("/v1/cwd/roots")) return json({ roots: ["/x"], defaultCwd: "/x" });
+      if (p.includes("/v1/cwd/validate")) return echoValidate(init);
       return json({});
     }) as unknown as typeof fetch;
   }
@@ -1421,7 +1437,9 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
       contextDeferreds.get("D")!.resolve(contextResponse("D"));
       await flush(12);
     });
-
+    expect(screen.getByTestId("authorize-project-dialog")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("authorize-project-confirm"));
+    await settle();
     expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { session: "D", cwd: "/y" } }));
   });
 
@@ -1493,6 +1511,9 @@ describe("AppShell — open project authorizes before navigating", () => {
     fireEvent.change(screen.getByTestId("home-project-custom-path"), { target: { value: "D:\\other\\repo" } });
     fireEvent.keyDown(screen.getByTestId("home-project-custom-path"), { key: "Enter" });
     await settle();
+    expect(validated).toBe(false);
+    fireEvent.click(screen.getByTestId("authorize-project-confirm"));
+    await settle();
     expect(validated).toBe(true);
     expect(navigateMock).toHaveBeenCalledWith({ to: "/", search: { cwd: "D:/other/repo" } });
   });
@@ -1512,8 +1533,10 @@ describe("AppShell — open project authorizes before navigating", () => {
     fireEvent.change(screen.getByTestId("home-project-custom-path"), { target: { value: "D:\\secret" } });
     fireEvent.keyDown(screen.getByTestId("home-project-custom-path"), { key: "Enter" });
     await settle();
+    fireEvent.click(screen.getByTestId("authorize-project-confirm"));
+    await settle();
     expect(navigateMock).not.toHaveBeenCalled();
-    expect(screen.getByTestId("home-project-custom-error").textContent).toBe("Project path is outside the allowed roots.");
+    expect(screen.getByTestId("authorize-project-error").textContent).toBe("Project path is outside the allowed roots.");
   });
 
   it("keeps the current cwd when a sidebar project authorize fails", async () => {
@@ -1542,7 +1565,59 @@ describe("AppShell — open project authorizes before navigating", () => {
     const row = projectButton!.closest(".sidebar-list-row") as HTMLElement;
     fireEvent.click(within(row).getByLabelText("New Session"));
     await settle();
+    expect(screen.getByTestId("authorize-project-dialog")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("authorize-project-confirm"));
+    await settle();
     expect(navigateMock).not.toHaveBeenCalled();
-    expect(screen.getByTestId("sidebar-open-project-error").textContent).toBe("Project path is outside the allowed roots.");
+    expect(screen.getByTestId("authorize-project-error").textContent).toBe("Project path is outside the allowed roots.");
+  });
+
+  it("asks before expanding an unauthorized custom path and stays put on cancel", async () => {
+    let validated = false;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
+      if (String(path).includes("/v1/cwd/validate")) {
+        validated = true;
+        return json({ success: true, cwd: "D:/other/repo" });
+      }
+      return stubFetch()(input, init);
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    mountApp({ cwd: "/x" });
+    await settle();
+    fireEvent.click(screen.getByTestId("home-project-picker"));
+    fireEvent.change(screen.getByTestId("home-project-custom-path"), { target: { value: "D:\\other\\repo" } });
+    fireEvent.keyDown(screen.getByTestId("home-project-custom-path"), { key: "Enter" });
+    await settle();
+    expect(screen.getByTestId("authorize-project-dialog")).toBeTruthy();
+    expect(validated).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await settle();
+    expect(screen.queryByTestId("authorize-project-dialog")).toBeNull();
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(validated).toBe(false);
+  });
+
+  it("expands an unauthorized path only after the user confirms", async () => {
+    let validated = false;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
+      if (String(path).includes("/v1/cwd/validate")) {
+        validated = true;
+        return json({ success: true, cwd: "D:/other/repo" });
+      }
+      return stubFetch()(input, init);
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    mountApp({ cwd: "/x" });
+    await settle();
+    fireEvent.click(screen.getByTestId("home-project-picker"));
+    fireEvent.change(screen.getByTestId("home-project-custom-path"), { target: { value: "D:\\other\\repo" } });
+    fireEvent.keyDown(screen.getByTestId("home-project-custom-path"), { key: "Enter" });
+    await settle();
+    fireEvent.click(screen.getByTestId("authorize-project-confirm"));
+    await settle();
+    expect(validated).toBe(true);
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/", search: { cwd: "D:/other/repo" } });
   });
 });

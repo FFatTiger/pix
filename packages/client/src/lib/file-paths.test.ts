@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filePathCompareKey, getFileDirectory, getFileName, getRelativeFilePath, joinFilePath, normalizeFilePathSlashes } from "./file-paths";
+import { filePathCompareKey, getFileDirectory, getFileName, getRelativeFilePath, isPathCoveredByAllowedRoots, joinFilePath, normalizeFilePathSlashes } from "./file-paths";
 
 describe("file-paths Windows drive helpers", () => {
   it("keeps a drive root as C:/ and does not collapse it to C:", () => {
@@ -26,5 +26,13 @@ describe("file-paths Windows drive helpers", () => {
     expect(filePathCompareKey("C:/")).toBe("c:/");
     expect(filePathCompareKey("C:\\Users\\Name")).toBe("c:/users/name");
     expect(filePathCompareKey("/Var/log")).toBe("/Var/log");
+  });
+
+  it("covers a path only when it sits on an AllowedRoot", () => {
+    expect(isPathCoveredByAllowedRoots("D:/src_test_env/pix", ["D:\\src_test_env\\pix"])).toBe(true);
+    expect(isPathCoveredByAllowedRoots("D:/src_test_env/pix/packages", ["D:/src_test_env/pix"])).toBe(true);
+    expect(isPathCoveredByAllowedRoots("D:/other/repo", ["D:/src_test_env/pix"])).toBe(false);
+    expect(isPathCoveredByAllowedRoots("/secret", ["/x"])).toBe(false);
+    expect(isPathCoveredByAllowedRoots(undefined, ["/x"])).toBe(false);
   });
 });

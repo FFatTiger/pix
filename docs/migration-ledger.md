@@ -3798,3 +3798,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - `handleOpenHomeForProject` now calls `POST /v1/cwd/validate` and navigates to the authorized cwd. Failure stays on the current workspace and is visible in Home + Sidebar.
 - Home project picker accepts an absolute custom path so a repo outside the startup root can be expanded in local mode. No AllowedRoot settings page. Not Protocol path-flavor or product support.
 
+## 102. Cross-platform CP-33 — ask before expanding unauthorized project
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `86ce2e7`.
+- Opening a project or selecting a session whose cwd is outside current AllowedRoots prompts first. Confirm runs `POST /v1/cwd/validate`; cancel stays on the current workspace.
+- `~/.pi/agent` remains catalog-only and is not added as a browsable Files/Git root. Not Protocol path-flavor or product support.
+
