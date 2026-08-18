@@ -136,7 +136,14 @@ ${body}
   return probe;
 }
 
+export function windowsReleaseVerifyUnsupportedMessage() {
+  return "release-verify is Unix-layout only; Windows install/upgrade/uninstall is not claimed";
+}
+
 async function runAll(sandbox) {
+  if (process.platform === "win32") {
+    fail(windowsReleaseVerifyUnsupportedMessage());
+  }
   if (!SKIP_BUILD) {
     log("step 1/8: workspace build");
     run("npm", ["run", "build"], { cwd: ROOT });
@@ -339,7 +346,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`[release-verify] FAIL: ${error instanceof Error ? error.stack : String(error)}`);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isDirectRun) {
+  main().catch((error) => {
+    console.error(`[release-verify] FAIL: ${error instanceof Error ? error.stack : String(error)}`);
+    process.exit(1);
+  });
+}

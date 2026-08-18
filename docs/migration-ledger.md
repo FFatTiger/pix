@@ -3671,3 +3671,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `0163137`.
 - `PwaRegistration` no longer registers a service worker on insecure origins or in Vite dev. Visible states are `installable`, `web-only`, `insecure-origin`, and `registration-error`.
 - HTTP LAN therefore stays `insecure-origin` instead of a hidden console warning. This is not LAN HTTPS productization or an install-prompt implementation.
+
+## 87. Cross-platform CP-19 — honest Windows release-verify gate
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `016a6f5`.
+- `scripts/release-verify.mjs` now exits on `win32` with a fixed Unix-layout-only message before assuming `tar`, `prefix/bin`, `HOME`, or `sessiond.sock`.
+- The script is importable without running `main()`. This is not a Windows installer, upgrade, or uninstall verifier.
