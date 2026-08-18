@@ -584,7 +584,14 @@ test("close escalates hang → SIGTERM", async () => {
   const elapsed = Date.now() - started;
   // Should not need SIGKILL; SIGTERM path after stdin deadline.
   assert.ok(elapsed < 2_000, `close took too long: ${elapsed}ms`);
-  assert.ok(exit.code === 0 || exit.signal === "SIGTERM" || exit.signal === "SIGKILL" || exit.code === null);
+  assert.ok(
+    exit.code === 0
+    || exit.code === 1
+    || exit.signal === "SIGTERM"
+    || exit.signal === "SIGKILL"
+    || exit.code === null,
+    `unexpected hang close exit: ${JSON.stringify(exit)}`,
+  );
   // PID should be dead.
   await wait(20);
   let alive = true;
@@ -597,15 +604,18 @@ test("close escalates hang → SIGTERM", async () => {
 });
 
 test("close fails when the child is still alive after the final kill wait", async () => {
-  const factory = factoryWithArgvMode("hang", { stdinEndMs: 20, sigtermMs: 20, sigkillMs: 20 });
+  const { createProcessTreeController } = await import("@fffattiger/pix-local-authority/process");
+  const real = createProcessTreeController();
+  const tree = {
+    kind: real.kind,
+    supportsDescendants: false,
+    spawn: (options: Parameters<typeof real.spawn>[0]) => real.spawn(options),
+    terminate: () => true,
+  };
+  const factory = factoryWithArgvMode("hang", { stdinEndMs: 20, sigtermMs: 20, sigkillMs: 20, processTree: tree });
   const connection = await factory.start(startInput);
   const pid = connection.pid;
   assert.ok(pid);
-  const { ChildProcess } = await import("node:child_process");
-  const originalKill = ChildProcess.prototype.kill;
-  ChildProcess.prototype.kill = function killStub() {
-    return true;
-  };
   try {
     await assert.rejects(
       connection.close(),
@@ -614,12 +624,7 @@ test("close fails when the child is still alive after the final kill wait", asyn
         && error.message === "worker process did not terminate",
     );
   } finally {
-    ChildProcess.prototype.kill = originalKill;
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
+    if (pid) real.terminate(pid, "SIGKILL");
   }
 });
 

@@ -1,7 +1,7 @@
 /**
  * ProductionWorkerProcessFactory — R2 child-process Worker factory.
  *
- * Spawns one non-detached Node child per session via
+ * Spawns one supervised Node child per session via
  * `process.execPath` + the absolute dist path of
  * `@fffattiger/pix-agent-worker/worker-main`. Wire is NDJSON on stdio
  * (2 MiB/frame). Listeners are installed before spawn settles so early
@@ -9,10 +9,12 @@
  * exactly-once to later subscribers.
  *
  * Factory never forges business commands (no synthetic worker.shutdown).
- * Close is graceful: stdin.end() → SIGTERM → SIGKILL, with PID reuse guards.
- * Environment is a strict allowlist — never `...process.env`.
+ * Close is graceful: stdin.end() → SIGTERM → SIGKILL through the shared
+ * process-tree controller, with PID reuse guards. Environment is a strict
+ * allowlist — never `...process.env`. Windows still has no descendant tree.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createProcessTreeController, type ProcessTreeController } from "@fffattiger/pix-local-authority/process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -109,6 +111,8 @@ export interface ProductionWorkerProcessOptions {
   maxFrameBytes?: number;
   /** Spawn cwd (neutral; real cwd is carried by worker.init). Defaults to dirname(workerMain). */
   spawnCwd?: string;
+  /** Optional shared process-tree controller (defaults to the platform owner). */
+  processTree?: ProcessTreeController;
   /**
    * Extra env keys merged AFTER the allowlist (test injection only).
    * Never used to smuggle sessiond secrets in production — callers must not
@@ -224,6 +228,7 @@ class ProductionWorkerConnection implements WorkerConnection {
   private readonly stdout: NdjsonStdoutReader;
   private readonly stderr: StderrRing;
   private readonly child: ChildProcessWithoutNullStreams;
+  private readonly processTree: ProcessTreeController;
   private readonly stdinEndMs: number;
   private readonly sigtermMs: number;
   private readonly sigkillMs: number;
@@ -231,6 +236,7 @@ class ProductionWorkerConnection implements WorkerConnection {
   constructor(
     child: ChildProcessWithoutNullStreams,
     options: {
+      processTree: ProcessTreeController;
       stdinEndMs: number;
       sigtermMs: number;
       sigkillMs: number;
@@ -238,6 +244,7 @@ class ProductionWorkerConnection implements WorkerConnection {
     },
   ) {
     this.child = child;
+    this.processTree = options.processTree;
     this.spawnedPid = typeof child.pid === "number" ? child.pid : undefined;
     if (typeof child.pid === "number") {
       (this as { pid: number }).pid = child.pid;
@@ -387,12 +394,8 @@ class ProductionWorkerConnection implements WorkerConnection {
     }
 
     // 2) SIGTERM (only if this is still the same process).
-    if (this.isSameProcess()) {
-      try {
-        this.child.kill("SIGTERM");
-      } catch {
-        // ESRCH — already gone
-      }
+    if (this.isSameProcess() && this.spawnedPid !== undefined) {
+      this.processTree.terminate(this.spawnedPid, "SIGTERM");
     }
     if (await this.waitForExit(this.sigtermMs)) {
       this.cleanupStreams();
@@ -402,12 +405,8 @@ class ProductionWorkerConnection implements WorkerConnection {
     // 3) SIGKILL last resort. Windows maps this to TerminateProcess; the name
     // is not POSIX two-level semantics. If the OS process is still the same
     // child after the bounded wait, close must fail — never report success.
-    if (this.isSameProcess()) {
-      try {
-        this.child.kill("SIGKILL");
-      } catch {
-        // already gone
-      }
+    if (this.isSameProcess() && this.spawnedPid !== undefined) {
+      this.processTree.terminate(this.spawnedPid, "SIGKILL");
     }
     const terminated = await this.waitForExit(this.sigkillMs);
     this.cleanupStreams();
@@ -492,12 +491,8 @@ class ProductionWorkerConnection implements WorkerConnection {
     this.fatalFraming = true;
     this.emitExit({ error: toProtocolError(reason, "invalid_request") });
     // Best-effort terminate; do not await (exit handler will settle close).
-    if (this.isSameProcess()) {
-      try {
-        this.child.kill("SIGTERM");
-      } catch {
-        // ignore
-      }
+    if (this.isSameProcess() && this.spawnedPid !== undefined) {
+      this.processTree.terminate(this.spawnedPid, "SIGTERM");
     }
   }
 
@@ -575,12 +570,12 @@ export class ProductionWorkerProcessFactory implements WorkerProcessFactory {
 
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(execPath, [workerMain], {
+      const processTree = this.options.processTree ?? createProcessTreeController();
+      child = processTree.spawn({
+        argv: [execPath, workerMain],
         cwd,
         env,
         stdio: ["pipe", "pipe", "pipe"],
-        // Frozen process model: one non-detached Node child per session.
-        detached: false,
         windowsHide: true,
       }) as ChildProcessWithoutNullStreams;
     } catch (error) {
@@ -592,6 +587,7 @@ export class ProductionWorkerProcessFactory implements WorkerProcessFactory {
     // stdout/exit are buffered. Reject if the child fails to launch (error
     // before spawn is fully ready — e.g. missing binary).
     const connection = new ProductionWorkerConnection(child, {
+      processTree: this.options.processTree ?? createProcessTreeController(),
       stdinEndMs,
       sigtermMs,
       sigkillMs,

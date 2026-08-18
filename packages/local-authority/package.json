@@ -12,6 +12,10 @@
     "./state": {
       "types": "./dist/state/index.d.ts",
       "import": "./dist/state/index.js"
+    },
+    "./process": {
+      "types": "./dist/process/index.d.ts",
+      "import": "./dist/process/index.js"
     }
   },
   "main": "./dist/index.js",

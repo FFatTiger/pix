@@ -3651,3 +3651,10 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - `isAbsoluteCanonicalShape` now accepts Windows drive-absolute stored paths (`C:\\...` / `C:/...`) and still rejects UNC, `\\\\?\\`, parent escapes, and trailing slashes.
 - Managed-worktrees `writeSerialized` re-parses its own payload before touching disk. A v1 record that cannot round-trip (Node `ino` beyond `2^53-1`, non-canonical path) fails closed as `MANAGED_WRITE_REJECTED` with no sidecar write and no memory authorization.
 - POSIX success-path worktree persistence tests skip on Windows; those skips are not treated as product-support evidence. Ledger schema stays v1 POSIX `{dev,ino}`.
+
+## 84. Cross-platform CP-16 — shared process-tree owner
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `3c0eaea`.
+- New `@fffattiger/pix-local-authority/process` surface owns spawn/terminate. POSIX uses an isolated process group (`detached: true` + `process.kill(-pid)`). Windows stays direct-child only (`supportsDescendants: false`); no Job Object, `taskkill`, or PowerShell.
+- sessiond Worker close and Host Git `createProcessRunner` both terminate through this controller. Tests inject a no-op controller instead of stubbing `ChildProcess.kill`.
+- This is not descendant Job Object work or Windows product support.

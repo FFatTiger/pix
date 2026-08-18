@@ -66,9 +66,10 @@ const ALLOWED_EXTERNAL_PREFIXES = [
   "hono",
   "@hono/node-server",
   "@hono/node-ws",
-  // Slice 1 (local-authority): the foundation may import ONLY the narrow
-  // `.../state` secure-state surface (enforced exactly below, not by prefix).
+  // Slice 1 (local-authority): foundation may import ONLY the narrow
+  // `.../state` secure-state surface and the `.../process` tree controller.
   "@fffattiger/pix-local-authority/state",
+  "@fffattiger/pix-local-authority/process",
   // CP-02: foundation may project ONLY the HTTP bootstrap schema version.
   PROTOCOL_HOST_BOOTSTRAP,
 ];
@@ -160,12 +161,12 @@ for (const file of walk(srcRoot)) {
     }
   }
 
-  // local-authority: allowed ONLY as the exact `.../state` secure-state subpath,
-  // never the package root or any other subpath.
+  // local-authority: allowed ONLY as the exact `.../state` and `.../process`
+  // subpaths, never the package root or any other surface.
   for (const match of source.matchAll(/from\s+["'](@fffattiger\/pix-local-authority(?:\/[^"']+)?)["']/g)) {
     const specifier = match[1];
-    if (specifier !== "@fffattiger/pix-local-authority/state") {
-      fail(`${relativePath} imports non-state local-authority surface "${specifier}"`);
+    if (specifier !== "@fffattiger/pix-local-authority/state" && specifier !== "@fffattiger/pix-local-authority/process") {
+      fail(`${relativePath} imports non-allowed local-authority surface "${specifier}"`);
     }
   }
 

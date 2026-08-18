@@ -576,17 +576,28 @@ test("process runner public errors redact Windows and POSIX paths", async () => 
 });
 
 test("bounded process runner fails closed when the child survives SIGKILL", async () => {
-  const { ChildProcess } = await import("node:child_process");
-  const runner = createProcessRunner({ allowedCommands: [process.execPath], terminateWaitMs: 30 });
-  const originalKill = ChildProcess.prototype.kill;
-  ChildProcess.prototype.kill = function killStub() { return true; };
+  const { createProcessTreeController } = await import("@fffattiger/pix-local-authority/process");
+  const real = createProcessTreeController();
+  const childRef = { current: undefined };
+  const tree = {
+    kind: real.kind,
+    supportsDescendants: false,
+    spawn(options) {
+      const child = real.spawn(options);
+      childRef.current = child;
+      return child;
+    },
+    terminate() { return true; },
+  };
+  const runner = createProcessRunner({ allowedCommands: [process.execPath], terminateWaitMs: 30, processTree: tree });
   try {
     await assert.rejects(
       runner.run({ command: process.execPath, args: ["-e", "setTimeout(()=>{},200)"], timeoutMs: 20 }),
       (e) => e.code === "PROCESS_UNAVAILABLE" && e.message === "Process did not terminate",
     );
   } finally {
-    ChildProcess.prototype.kill = originalKill;
+    const leftover = childRef.current;
+    if (leftover?.pid) real.terminate(leftover.pid, "SIGKILL");
   }
 });
 

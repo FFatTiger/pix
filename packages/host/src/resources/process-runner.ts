@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { createProcessTreeController, type ProcessTreeController } from "@fffattiger/pix-local-authority/process";
 import { HttpError } from "../errors.js";
 
 const MAX_PUBLIC_PROCESS_MESSAGE = 4_096;
@@ -47,11 +47,13 @@ export function createProcessRunner(defaults: {
   allowedCommands?: readonly string[];
   /** Bounded wait after SIGKILL before reporting that the child did not die. */
   terminateWaitMs?: number;
+  processTree?: ProcessTreeController;
 } = {}): ProcessRunner {
   const defaultTimeout = defaults.timeoutMs ?? 10_000;
   const defaultMaxOutput = defaults.maxOutputBytes ?? 8 * 1024 * 1024;
   const terminateWaitMs = defaults.terminateWaitMs ?? 2_000;
   const allowed = new Set(defaults.allowedCommands ?? ["git"]);
+  const processTree = defaults.processTree ?? createProcessTreeController();
 
   return {
     run(request) {
@@ -68,12 +70,12 @@ export function createProcessRunner(defaults: {
           reject(new HttpError(499, "PROCESS_ABORTED", "Process aborted"));
           return;
         }
-        const child = spawn(request.command, [...request.args], {
+        const child = processTree.spawn({
+          argv: [request.command, ...request.args],
           ...(request.cwd ? { cwd: request.cwd } : {}),
-          shell: false,
-          windowsHide: true,
           env: { ...process.env, LC_ALL: "C", LANG: "C" },
           stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
         });
         const stdout: Buffer[] = [];
         const stderr: Buffer[] = [];
@@ -91,7 +93,9 @@ export function createProcessRunner(defaults: {
           fn();
         };
         const stop = () => {
-          if (!child.killed) child.kill("SIGKILL");
+          if (!child.killed && typeof child.pid === "number") {
+            processTree.terminate(child.pid, "SIGKILL");
+          }
           if (terminateTimer || settled) return;
           terminateTimer = setTimeout(() => {
             settle(() => {
@@ -110,6 +114,11 @@ export function createProcessRunner(defaults: {
           stop();
         };
         request.signal?.addEventListener("abort", onAbort, { once: true });
+        if (!child.stdout || !child.stderr) {
+          processTree.terminate(child.pid ?? 0, "SIGKILL");
+          reject(new HttpError(500, "PROCESS_UNAVAILABLE", "Process stdio is unavailable"));
+          return;
+        }
         child.stdout.on("data", (chunk: Buffer) => {
           truncated = appendBounded(stdout, chunk, state, maxOutputBytes) || truncated;
           if (truncated) {
