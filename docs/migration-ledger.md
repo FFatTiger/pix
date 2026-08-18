@@ -3695,3 +3695,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `9bed3f9`.
 - `getRelativeFilePath` compares Windows drive-absolute paths case-insensitively and keeps a drive root as `C:/` instead of collapsing it to `C:`.
 - POSIX relative paths stay case-sensitive. This is display/navigation only, not Protocol path-flavor or Host authorization.
+
+## 91. Cross-platform CP-23 — Client file-links/mentions reuse drive-root helper
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `bba2159`.
+- `file-links` and `file-mentions` reuse `normalizeFilePathSlashes` + `keepWindowsDriveRoot` instead of a second slash/case implementation.
+- Drive-root cwd/base stays `C:/`. POSIX containment stays case-sensitive. Display/navigation only; not Protocol path-flavor or Host authorization.

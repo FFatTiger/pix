@@ -1,11 +1,13 @@
 // Helpers that turn dropped-file absolute paths into cwd-relative @ mention
 // tokens. Pure string logic so it runs in the browser (no node:path).
 
+import { keepWindowsDriveRoot, normalizeFilePathSlashes } from "./file-paths";
+
 const WINDOWS_DRIVE_RE = /^[a-zA-Z]:/;
 
-/** Forward slashes + strip trailing slashes (also strips a lone drive root). */
+/** Forward slashes; keep a Windows drive root as `C:/`. */
 export function normalizePathSlashes(p: string): string {
-  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+  return keepWindowsDriveRoot(normalizeFilePathSlashes(p));
 }
 
 function isWindowsDrivePath(p: string): boolean {
@@ -36,11 +38,11 @@ export function toCwdRelativeMentions(absPaths: string[], cwd: string): CwdRelat
   const normalizedCwd = normalizePathSlashes(cwd);
   if (!normalizedCwd) return { mentions, rejected: [...absPaths] };
   const cwdKey = pathCompareKey(normalizedCwd);
-  const cwdPrefix = `${cwdKey}/`;
+  const cwdPrefix = cwdKey.endsWith("/") ? cwdKey : `${cwdKey}/`;
 
   for (const raw of absPaths) {
     const normalized = normalizePathSlashes(raw);
-    if (!normalized || normalized === normalizedCwd) {
+    if (!normalized || pathCompareKey(normalized) === cwdKey) {
       rejected.push(raw);
       continue;
     }
@@ -49,7 +51,7 @@ export function toCwdRelativeMentions(absPaths: string[], cwd: string): CwdRelat
       rejected.push(raw);
       continue;
     }
-    const relative = normalized.slice(normalizedCwd.length + 1);
+    const relative = normalized.slice(normalizedCwd.length + (normalizedCwd.endsWith("/") ? 0 : 1));
     if (!relative || relative.startsWith("../")) {
       rejected.push(raw);
       continue;

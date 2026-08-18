@@ -54,6 +54,15 @@ describe("toCwdRelativeMentions", () => {
     expect(rejected).toEqual(["/home/user/projects/foo-bar/a.ts"]);
   });
 
+  it("keeps a Windows drive-root cwd as C:/", () => {
+    const { mentions, rejected } = toCwdRelativeMentions(
+      ["C:\\Users\\name\\a.ts", "D:\\other\\b.ts"],
+      "C:/",
+    );
+    expect(mentions).toEqual(["Users/name/a.ts"]);
+    expect(rejected).toEqual(["D:\\other\\b.ts"]);
+  });
+
   it("handles empty inputs", () => {
     const { mentions, rejected } = toCwdRelativeMentions([], "/repo");
     expect(mentions).toEqual([]);

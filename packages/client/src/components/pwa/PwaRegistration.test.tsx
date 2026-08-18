@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { I18nProvider } from "@/hooks/useI18n";
 import { PwaRegistration, resolvePwaSurfaceState } from "./PwaRegistration";
 

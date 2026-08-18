@@ -1,16 +1,11 @@
+import { keepWindowsDriveRoot, normalizeFilePathSlashes } from "./file-paths";
+
 function safeDecode(value: string): string {
   try {
     return decodeURIComponent(value);
   } catch {
     return value;
   }
-}
-
-function normalizeFilePathSlashes(filePath: string): string {
-  if (/^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith("\\\\")) {
-    return filePath.replace(/\\/g, "/");
-  }
-  return filePath;
 }
 
 function stripLineSuffix(filePath: string): string {
@@ -43,13 +38,18 @@ function normalizeLocalPath(filePath: string): string {
   return leadingSlash ? `/${joined}` : joined;
 }
 
+function compareForm(normalized: string): string {
+  return /^[A-Za-z]:\//.test(normalized) || /^[A-Za-z]:\/?$/.test(normalized)
+    ? normalized.toLowerCase()
+    : normalized;
+}
+
 function isPathInside(candidate: string, root: string): boolean {
-  const normalizedCandidate = normalizeLocalPath(candidate).replace(/\/+$/, "");
-  const normalizedRoot = normalizeLocalPath(root).replace(/\/+$/, "");
-  const useCaseInsensitive = /^[a-zA-Z]:\//.test(normalizedCandidate) || /^[a-zA-Z]:\//.test(normalizedRoot);
-  const filePath = useCaseInsensitive ? normalizedCandidate.toLowerCase() : normalizedCandidate;
-  const rootPath = useCaseInsensitive ? normalizedRoot.toLowerCase() : normalizedRoot;
-  return filePath === rootPath || filePath.startsWith(`${rootPath}/`);
+  const filePath = compareForm(normalizeLocalPath(candidate));
+  const rootPath = compareForm(keepWindowsDriveRoot(normalizeLocalPath(root)));
+  if (filePath === rootPath || filePath === `${rootPath}/`) return true;
+  const prefix = rootPath.endsWith("/") ? rootPath : `${rootPath}/`;
+  return filePath.startsWith(prefix);
 }
 
 function looksLikeRelativeFileHref(href: string): boolean {

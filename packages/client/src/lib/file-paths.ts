@@ -8,6 +8,13 @@ export function normalizeFilePathSlashes(filePath: string): string {
   return filePath;
 }
 
+/** Keep `C:/` as a drive root instead of collapsing it to `C:`. */
+export function keepWindowsDriveRoot(normalized: string): string {
+  return WINDOWS_DRIVE_ROOT.test(normalized)
+    ? `${normalized[0]!.toUpperCase()}:/`
+    : normalized.replace(/\/+$/, "");
+}
+
 function isWindowsDriveAbsolute(normalized: string): boolean {
   return WINDOWS_DRIVE_ABSOLUTE.test(normalized) || WINDOWS_DRIVE_ROOT.test(normalized);
 }
@@ -42,10 +49,7 @@ export function getRelativeFilePath(filePath: string, cwd?: string): string {
   if (!cwd) return filePath;
 
   const normalizedFile = normalizeFilePathSlashes(filePath);
-  const normalizedCwdRaw = normalizeFilePathSlashes(cwd);
-  const normalizedCwd = WINDOWS_DRIVE_ROOT.test(normalizedCwdRaw)
-    ? `${normalizedCwdRaw[0]!.toUpperCase()}:/`
-    : normalizedCwdRaw.replace(/\/$/, "");
+  const normalizedCwd = keepWindowsDriveRoot(normalizeFilePathSlashes(cwd));
   const fileCmp = compareForm(normalizedFile);
   const cwdCmp = compareForm(normalizedCwd);
   if (fileCmp === cwdCmp || fileCmp === `${cwdCmp}/`) return ".";
