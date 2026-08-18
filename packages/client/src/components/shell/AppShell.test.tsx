@@ -889,10 +889,9 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
     expect(screen.queryByTestId("sidebar-files")).toBeNull();
     expect(screen.getByTestId("sidebar-nav-settings").textContent).toBe("Settings");
-    // The file browser toggle stays on the window's right edge so the panel
-    // expands left from that button.
+    // The file browser toggle lives in the title bar top-right; no rail strip.
     expect(screen.getByTestId("file-browser-toggle")).toBeTruthy();
-    expect(screen.getByTestId("file-browser-rail")).toBeTruthy();
+    expect(screen.queryByTestId("file-browser-rail")).toBeNull();
     expect(railOrder()).toEqual([
       "sidebar-home-header",
       "sidebar-new-session",
@@ -1276,10 +1275,10 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(sidebar.compareDocumentPosition(titleBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(titleBar.closest(".chat-column")).toBeTruthy();
     expect(sidebar.closest(".chat-column")).toBeNull();
-    // The sidebar toggle lives INSIDE the rail (header collapse button); the
-    // title bar carries only tabs. Collapsed, the rail keeps the expand button.
-    expect(screen.getByTestId("sidebar-collapse")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Hide sidebar" })?.closest(".app-title-bar")).toBeNull();
+    // The sidebar toggle lives in the title bar, left of the tabs; the
+    // sidebar header has no separate collapse button.
+    expect(screen.getByRole("button", { name: "Hide sidebar" }).closest(".app-title-bar")).toBeTruthy();
+    expect(screen.queryByTestId("sidebar-collapse")).toBeNull();
     expect(screen.getByTestId("sidebar-brand")).toBeTruthy();
   });
 });
@@ -1403,19 +1402,17 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(screen.getAllByRole("tab").filter((tab) => tab.textContent?.includes("a.ts"))).toHaveLength(1);
   });
 
-  it("the right-edge file browser button toggles the FILE BROWSER panel", async () => {
+  it("the title-bar file browser button toggles the FILE BROWSER panel", async () => {
     globalThis.fetch = fileFetch();
     mountApp({ cwd: "/x" });
     await settle();
     const panel = document.querySelector(".right-panel-container");
     expect(panel?.className).toContain("right-panel-closed");
-    expect(screen.getByTestId("file-browser-rail")).toBeTruthy();
+    expect(screen.getByTestId("file-browser-toggle")).toBeTruthy();
     fireEvent.click(screen.getByTestId("file-browser-toggle"));
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-open");
     expect(screen.getByRole("button", { name: "Hide file browser" })).toBeTruthy();
-    expect(screen.queryByTestId("file-browser-rail")).toBeNull();
     fireEvent.click(screen.getByTestId("file-browser-toggle"));
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-closed");
-    expect(screen.getByTestId("file-browser-rail")).toBeTruthy();
   });
 });

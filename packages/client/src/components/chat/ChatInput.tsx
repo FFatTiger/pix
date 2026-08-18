@@ -3094,8 +3094,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 title={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
                 aria-label={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
                 style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  padding: "3px 7px",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  padding: "3px 6px",
                   height: 24,
                   background: isCompacting
                     ? "color-mix(in srgb, var(--accent-orange) 14%, var(--bg-panel))"
@@ -3116,7 +3116,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   : "color-mix(in srgb, var(--accent-red) 12%, var(--bg-panel))"; }}
               >
                 <SquareIcon size={14} />
-                {isCompacting ? t("desktop.stopCompaction") : t("desktop.stop")}
               </button>
             )}
             </div>

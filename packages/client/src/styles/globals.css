@@ -840,6 +840,12 @@ pre, code {
   .chat-input-toolbar {
     padding: 6px 12px;
   }
+  /* Browsers auto-zoom when an input below 16px gains focus. Keep the
+     composer at 16px on mobile so tapping it never scales the page. */
+  .chat-input-textarea,
+  .chat-input-highlight {
+    font-size: 16px;
+  }
 }
 
 .group\/process {
@@ -1737,22 +1743,12 @@ span.linenumber {
     min-width: var(--sidebar-width, 260px);
   }
   .sidebar-container.sidebar-closed {
-    width: 36px;
-    min-width: 36px;
+    width: 0;
+    min-width: 0;
   }
   .sidebar-container.sidebar-open > * {
     width: var(--sidebar-width, 260px);
     min-width: var(--sidebar-width, 260px);
-  }
-  .sidebar-collapsed-rail {
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    width: 36px;
-    min-width: 36px;
-    height: 100%;
-    padding-top: 8px;
-    background: var(--bg-panel);
   }
 
   .right-panel-container {
@@ -1772,22 +1768,6 @@ span.linenumber {
   .right-panel-container.right-panel-open > * {
     width: var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px));
     min-width: var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px));
-  }
-  .file-browser-rail {
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    width: 36px;
-    min-width: 36px;
-    height: 100%;
-    padding-top: 0;
-    background: var(--bg-panel);
-    flex-shrink: 0;
-  }
-  .file-browser-rail .sidebar-icon-btn {
-    width: 28px;
-    height: 28px;
-    margin-top: 4px;
   }
 
   .workspace-panel-splitter {
@@ -1883,47 +1863,6 @@ span.linenumber {
     transform: none;
     box-shadow: none;
     display: none !important;
-  }
-
-  .sidebar-collapsed-rail {
-    display: none !important;
-  }
-
-  /* Floating expand button shown only on mobile while the sidebar is closed. */
-  .sidebar-mobile-expand {
-    position: fixed !important;
-    top: calc(48px / var(--app-ui-scale, 1));
-    left: 10px;
-    z-index: 300;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-    border: 1px solid var(--border);
-    border-radius: 9px;
-    background: color-mix(in srgb, var(--bg-panel) 92%, var(--bg));
-    color: var(--text-muted);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.14);
-  }
-
-  .file-browser-rail {
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    width: 36px;
-    min-width: 36px;
-    height: 100%;
-    padding-top: 0;
-    background: var(--bg-panel);
-    border-left: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-  .file-browser-rail .sidebar-icon-btn {
-    width: 36px;
-    height: 36px;
-    border-radius: 0;
-    border-bottom: 1px solid var(--border);
   }
 
   .right-panel-container {
