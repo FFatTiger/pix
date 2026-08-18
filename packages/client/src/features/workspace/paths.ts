@@ -23,14 +23,23 @@
 import {
   filePathCompareKey,
   isFilePathInside,
+  isWindowsDriveAbsolutePath,
   isWindowsDriveRootPath,
   joinFilePath,
   keepWindowsDriveRoot,
   normalizeClientPath,
+  type ClientPathFlavor,
 } from "@/lib/file-paths";
 
 function normalizeWorkspacePath(input: string): string {
   return keepWindowsDriveRoot(normalizeClientPath(input));
+}
+
+function flavorFor(left: string, right: string, flavor?: ClientPathFlavor): ClientPathFlavor {
+  if (flavor) return flavor;
+  const a = normalizeWorkspacePath(left);
+  const b = normalizeWorkspacePath(right);
+  return isWindowsDriveAbsolutePath(a) || isWindowsDriveAbsolutePath(b) ? "windows-drive" : "posix";
 }
 
 /** Parent of an absolute path. Drive roots stay `C:/`; POSIX root stays `/`. */
@@ -57,8 +66,8 @@ export function baseName(input: string): string {
  * POSIX normalization. A root of "/" matches everything. Windows drive paths
  * compare case-insensitively; a drive root (`C:/`) does not collapse to `C:`.
  */
-export function isWithinRoot(target: string, root: string): boolean {
-  return isFilePathInside(target, root);
+export function isWithinRoot(target: string, root: string, flavor?: ClientPathFlavor): boolean {
+  return isFilePathInside(target, root, flavorFor(target, root, flavor));
 }
 
 /**
@@ -111,14 +120,15 @@ export function joinRelative(root: string, rel: string): string | null {
  * the root or its parent would escape the root — so the breadcrumb "up" button
  * can never offer a path outside the project root.
  */
-export function parentWithinRoot(dir: string, root: string): string | null {
-  if (!isWithinRoot(dir, root)) return null;
+export function parentWithinRoot(dir: string, root: string, flavor?: ClientPathFlavor): string | null {
+  const resolved = flavorFor(dir, root, flavor);
+  if (!isWithinRoot(dir, root, resolved)) return null;
   const normalizedDir = normalizeWorkspacePath(dir);
   const normalizedRoot = normalizeWorkspacePath(root);
-  if (filePathCompareKey(normalizedDir) === filePathCompareKey(normalizedRoot)) return null;
+  if (filePathCompareKey(normalizedDir, resolved) === filePathCompareKey(normalizedRoot, resolved)) return null;
   const parent = posixParent(normalizedDir);
-  if (!isWithinRoot(parent, normalizedRoot)) return null;
-  if (isWindowsDriveRootPath(parent) && filePathCompareKey(parent) === filePathCompareKey(normalizedRoot)) {
+  if (!isWithinRoot(parent, normalizedRoot, resolved)) return null;
+  if (isWindowsDriveRootPath(parent) && filePathCompareKey(parent, resolved) === filePathCompareKey(normalizedRoot, resolved)) {
     return normalizedRoot;
   }
   return parent;
@@ -134,15 +144,16 @@ export interface Breadcrumb {
  * crumb (labeled with its base name). Returns an empty list when `dir` is not
  * within `root`, so the UI never renders a breadcrumb chain that leaves root.
  */
-export function breadcrumbs(dir: string, root: string): Breadcrumb[] {
-  if (!isWithinRoot(dir, root)) return [];
+export function breadcrumbs(dir: string, root: string, flavor?: ClientPathFlavor): Breadcrumb[] {
+  const resolved = flavorFor(dir, root, flavor);
+  if (!isWithinRoot(dir, root, resolved)) return [];
   const normalizedRoot = normalizeWorkspacePath(root);
   const normalizedDir = normalizeWorkspacePath(dir);
   const rootLabel = baseName(normalizedRoot);
   const crumbs: Breadcrumb[] = [
     { label: rootLabel || "/", path: normalizedRoot },
   ];
-  if (filePathCompareKey(normalizedDir) === filePathCompareKey(normalizedRoot)) return crumbs;
+  if (filePathCompareKey(normalizedDir, resolved) === filePathCompareKey(normalizedRoot, resolved)) return crumbs;
   const relative = normalizedDir.slice(normalizedRoot.length).replace(/^\/+/, "");
   let acc = normalizedRoot;
   for (const segment of relative.split("/").filter(Boolean)) {
@@ -158,12 +169,13 @@ export function breadcrumbs(dir: string, root: string): Breadcrumb[] {
  * two are not in a parent/child relationship, so display never leaks an
  * unrelated absolute path.
  */
-export function relativePath(from: string, to: string): string {
+export function relativePath(from: string, to: string, flavor?: ClientPathFlavor): string {
+  const resolved = flavorFor(from, to, flavor);
   const f = normalizeWorkspacePath(from);
   const t = normalizeWorkspacePath(to);
   if (f === "" || f === "/") return baseName(t);
-  if (filePathCompareKey(t) === filePathCompareKey(f)) return baseName(t);
-  const prefix = isWindowsDriveRootPath(f) ? filePathCompareKey(f) : `${filePathCompareKey(f)}/`;
-  if (!filePathCompareKey(t).startsWith(prefix)) return baseName(t);
+  if (filePathCompareKey(t, resolved) === filePathCompareKey(f, resolved)) return baseName(t);
+  const prefix = isWindowsDriveRootPath(f) ? filePathCompareKey(f, resolved) : `${filePathCompareKey(f, resolved)}/`;
+  if (!filePathCompareKey(t, resolved).startsWith(prefix)) return baseName(t);
   return t.slice(f.length + (isWindowsDriveRootPath(f) ? 0 : 1));
 }

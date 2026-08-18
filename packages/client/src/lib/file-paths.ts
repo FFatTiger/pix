@@ -43,10 +43,7 @@ export function isAbsoluteClientPath(filePath: string): boolean {
 }
 
 function compareForm(normalized: string, flavor?: ClientPathFlavor): string {
-  const folded = flavor === undefined
-    ? isWindowsDriveAbsolutePath(normalized)
-    : foldsPathCase(flavor);
-  return folded ? normalized.toLowerCase() : normalized;
+  return foldsPathCase(flavor) ? normalized.toLowerCase() : normalized;
 }
 
 /** Comparison key for Git/status maps. Case-fold only when Host pathFlavor says so. */

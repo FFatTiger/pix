@@ -3822,3 +3822,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - `HOST_BOOTSTRAP_SCHEMA_VERSION` is now 2. `pathFlavor` is required: `posix | windows-drive | windows-unc`. Missing field / v1 bodies fail closed.
 - Host classifies from default cwd / first AllowedRoot. Client compare, mentions, fuzzy, and file-index ranking fold case only for windows flavors. Not Job Object or packaged release.
 
+## 106. Cross-platform CP-37 — close pathFlavor gaps
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `df9e6c4`.
+- `filePathCompareKey` no longer guesses Windows from path shape when flavor is omitted. TranscriptList mention index and workspace breadcrumbs/containment take flavor (workspace helpers infer drive vs posix only when callers omit it).
+- Windows process-tree now always uses `taskkill /T /F`; unforced `/T` was a no-op on windowless Node children.
+

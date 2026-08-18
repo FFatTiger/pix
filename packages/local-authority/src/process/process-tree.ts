@@ -7,9 +7,10 @@
  * descendants?"
  *
  * - POSIX: isolated process group (`detached: true` + `process.kill(-pid)`).
- * - Windows: VS Code `killTree` — `%WINDIR%\System32\taskkill.exe /T /PID`.
- *   SIGKILL adds `/F`. No Job Object, no PATH lookup, no PowerShell, no npm
- *   tree-kill. This is still not Windows product support.
+ * - Windows: VS Code `killTree` — `%WINDIR%\System32\taskkill.exe /T /F /PID`.
+ *   SIGTERM and SIGKILL both force-kill the tree because unforced taskkill
+ *   ignores detached/windowless Node children. No Job Object, no PATH lookup,
+ *   no PowerShell, no npm tree-kill.
  */
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { join } from "node:path";
@@ -31,8 +32,8 @@ export interface ProcessTreeController {
   spawn(options: ProcessTreeSpawnOptions): ChildProcess;
   /**
    * Best-effort terminate. Missing / already-reaped pids are a no-op.
-   * Windows uses System32 taskkill /T; SIGKILL adds /F. The signal names are
-   * not POSIX two-level semantics on Windows.
+   * Windows uses System32 taskkill /T /F. Signal names are not POSIX
+   * two-level semantics on Windows.
    */
   terminate(pid: number, signal: ProcessTreeSignal): boolean;
 }
@@ -96,9 +97,8 @@ class WindowsProcessTreeController implements ProcessTreeController {
 
   terminate(pid: number, signal: ProcessTreeSignal): boolean {
     if (!Number.isInteger(pid) || pid <= 0) return false;
-    const args = signal === "SIGKILL"
-      ? ["/T", "/F", "/PID", String(pid)]
-      : ["/T", "/PID", String(pid)];
+    void signal;
+    const args = ["/T", "/F", "/PID", String(pid)];
     try {
       const result = spawnSync(windowsTaskkillPath(), args, {
         encoding: "utf8",

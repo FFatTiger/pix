@@ -1528,7 +1528,7 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | G1 | 半完成 | discriminated `posix \| windows` 合同；Client display 路径 owner；Host bootstrap `pathFlavor` | ledger v2 |
 | G2A | 基本完成 | lock/secret identity pin、禁事后 chmod、默认拒 root | macOS lock 仍无 start identity |
 | G2B | 接通 | `createSecureStateBackend()` 在 walk 前选 Windows native；DACL = 当前用户+SYSTEM，宽 ACL 不自动修 | 中间目录宽 ACL 只查 reparse |
-| G3 | 半完成 | pipe DACL（listen 后 protect+回读）、process-start identity、Worker/Git final-kill、共享 process-tree（Windows = VS Code taskkill /T） | Job Object；listen 前带 DACL 的 retained N-API pipe |
+| G3 | 半完成 | pipe DACL（listen 后 protect+回读）、process-start identity、Worker/Git final-kill、共享 process-tree（Windows = VS Code taskkill /T /F） | Job Object；listen 前带 DACL 的 retained N-API pipe |
 | G4 | 半完成 | AllowedRoot 平台身份、parent-watch + overflow rescan、Windows 路径脱敏、exact-open | hardlink 事务、worktree disk identity、junction 对抗 CI |
 | G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy 按 `pathFlavor` | 无 AllowedRoot 设置页 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
@@ -1546,7 +1546,7 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | CP-006 Windows DACL | 已落地；已存在宽 ACL fail-closed |
 | CP-007 secret 事后 chmod | 已改为读前校验 |
 | CP-008 PID reuse | Windows creation time + Linux startticks；macOS 仍弱 |
-| CP-009/010 final-kill 假成功 | 已 fail-closed；子孙进程仍杀不掉 |
+| CP-009/010 final-kill 假成功 | 已 fail-closed；Windows 子孙清理对齐 VS Code `taskkill /T /F`，不是 Job Object |
 | CP-012 Windows 路径脱敏 | 已覆盖 drive/UNC/extended/`file://` |
 | CP-013 exact-open | 已校验 `getSessionId()` |
 | CP-014/015 ledger identity | 内存用平台 identity；磁盘仍 v1，超精度 `ino` fail-closed |

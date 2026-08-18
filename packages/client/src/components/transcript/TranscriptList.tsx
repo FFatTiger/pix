@@ -9,6 +9,7 @@ import {
   type ChatTranscriptRow,
 } from "./chat-projection";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
+import { foldsPathCase } from "@/lib/file-paths";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 import { useRuntime } from "@/runtime";
@@ -55,7 +56,8 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
   // Row that currently owns DOM focus (kept mounted so focus follows content).
   const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
   const http = useHttpClient();
-  const { isReadonly, canBrowseSessions, can } = useCapabilities();
+  const { isReadonly, canBrowseSessions, can, pathFlavor } = useCapabilities();
+  const foldPathCase = foldsPathCase(pathFlavor);
   const runtime = useRuntime();
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -130,13 +132,13 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
     const paths = new Set<string>();
     const dirs = new Set<string>();
     for (const file of data.files) {
-      const lower = file.toLowerCase();
-      paths.add(lower);
-      const slash = lower.lastIndexOf("/");
-      if (slash > 0) dirs.add(lower.slice(0, slash));
+      const key = foldPathCase ? file.toLowerCase() : file;
+      paths.add(key);
+      const slash = key.lastIndexOf("/");
+      if (slash > 0) dirs.add(key.slice(0, slash));
     }
     return { cwd, paths, dirs, truncated: data.truncated };
-  }, [filesIndexQuery.data, cwd]);
+  }, [filesIndexQuery.data, cwd, foldPathCase]);
 
   const skillNames = useMemo<Set<string> | null>(() => {
     const data = skillsQuery.data;
@@ -149,14 +151,14 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
       ...(fileIndexSnapshot
         ? {
             fileExists: (path: string) => {
-              const key = path.toLowerCase();
+              const key = foldPathCase ? path.toLowerCase() : path;
               return fileIndexSnapshot.paths.has(key) || fileIndexSnapshot.dirs.has(key);
             },
           }
         : {}),
       ...(skillNames ? { isSkill: (name: string) => skillNames.has(name) } : {}),
     };
-  }, [fileIndexSnapshot, skillNames]);
+  }, [fileIndexSnapshot, skillNames, foldPathCase]);
 
   const skillInfo = useMemo<ChatSkillIndex | null>(() => {
     const data = skillsQuery.data;
