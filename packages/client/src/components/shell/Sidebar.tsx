@@ -902,15 +902,6 @@ function ProjectRow({
         <button
           type="button"
           className="sidebar-icon-btn"
-          title={t("desktop.newSession")}
-          aria-label={t("desktop.newSession")}
-          onClick={(event) => { event.stopPropagation(); onNewSession(); }}
-        >
-          <Plus size={14} weight="bold" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="sidebar-icon-btn"
           title={t("desktop.moreOptions")}
           aria-label={t("desktop.moreOptions")}
           onClick={(event) => {
@@ -920,6 +911,15 @@ function ProjectRow({
           }}
         >
           <DotsThree size={14} weight="bold" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="sidebar-icon-btn"
+          title={t("desktop.newSession")}
+          aria-label={t("desktop.newSession")}
+          onClick={(event) => { event.stopPropagation(); onNewSession(); }}
+        >
+          <Plus size={14} weight="bold" aria-hidden="true" />
         </button>
       </div>
     </div>
