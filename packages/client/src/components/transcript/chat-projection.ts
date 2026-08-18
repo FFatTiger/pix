@@ -17,7 +17,7 @@
  */
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolResultMessage } from "@fffattiger/pix-protocol";
 import type { ProcessContentBlock } from "@/lib/process-content";
-import { collectProcessContentBlocks, splitAssistantContentBlocks } from "@/lib/process-content";
+import { collectProcessContentBlocks, messageToProcessContentBlocks, splitAssistantContentBlocks } from "@/lib/process-content";
 import { getAssistantErrorMessage, getDisplayableAssistantBlocks, lastContiguousTextRun, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 
@@ -153,33 +153,59 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
   // Assistant content ALWAYS renders through ProcessGroup (timeline/tabs) —
   // never through the legacy bare message renderer, even when the content is
   // incomplete (leaderless committed assistant, mid-turn after compaction,
-  // a turn with no final answer). Collect a run of assistant messages into
-  // process rows (+ the final answer row when an answer exists).
+  // a turn with no final answer). Collect the whole leading fragment
+  // (assistant + toolResult + custom, up to the next user message) into ONE
+  // process row (+ the final answer row when an answer exists). The key is
+  // derived from the first entryId so prepending older pages updates this
+  // same group instead of remounting a new one.
   const pushLeaderlessAssistantRows = (
     rows: ChatTranscriptRow[],
     fromIdx: number,
     endIdx: number,
   ): number => {
     let j = fromIdx;
-    while (j < endIdx && messages[j]!.role === "assistant") j += 1;
-    const assistantIndices: number[] = [];
-    for (let k = fromIdx; k < j; k++) assistantIndices.push(k);
-    const processBlocks = collectProcessContentBlocks(messages as AgentMessage[], [...entryIds], assistantIndices, toolResults);
-    if (processBlocks.length > 0) {
-      rows.push({ kind: "process", key: `leaderless-process-${fromIdx}`, blocks: processBlocks, isStreaming: false });
-    }
-    // Final answer: the last assistant message carrying a real answer.
+    while (j < endIdx && messages[j]!.role !== "user") j += 1;
+    const fragmentIndices: number[] = [];
+    for (let k = fromIdx; k < j; k++) fragmentIndices.push(k);
+    const processBlocks: ProcessContentBlock[] = [];
     let answerMessage: AssistantMessage | null = null;
-    for (let k = j - 1; k >= fromIdx; k--) {
-      const candidate = messages[k] as AssistantMessage;
-      const split = splitFinalAssistantBlocks(candidate);
-      if (split.answerBlocks.length > 0) {
-        answerMessage = withAssistantBlocks(candidate, split.answerBlocks, { omitUsage: true });
-        break;
+    for (const k of fragmentIndices) {
+      const m = messages[k]!;
+      if (m.role === "assistant") {
+        const assistant = m as AssistantMessage;
+        const content = splitAssistantContentBlocks(assistant, {
+          messageIndex: k,
+          entryId: entryIdAt(entryIds, k),
+          toolResults,
+        });
+        processBlocks.push(...content.processBlocks);
+        const split = splitFinalAssistantBlocks(assistant);
+        if (answerMessage === null && split.answerBlocks.length > 0) {
+          answerMessage = withAssistantBlocks(assistant, split.answerBlocks, { omitUsage: true });
+        }
+      } else if (m.role === "custom") {
+        processBlocks.push(...messageToProcessContentBlocks(m, {
+          messageIndex: k,
+          entryId: entryIdAt(entryIds, k),
+          phase: "process",
+          toolResults,
+        }));
       }
     }
+    if (processBlocks.length > 0) {
+      rows.push({
+        kind: "process",
+        key: `leaderless-process-${entryIdAt(entryIds, fromIdx) ?? `idx${fromIdx}`}`,
+        blocks: processBlocks,
+        isStreaming: false,
+      });
+    }
     if (answerMessage) {
-      rows.push({ kind: "message", key: `leaderless-answer-${fromIdx}`, message: answerMessage });
+      rows.push({
+        kind: "message",
+        key: `leaderless-answer-${entryIdAt(entryIds, fromIdx) ?? `idx${fromIdx}`}`,
+        message: answerMessage,
+      });
     }
     return j;
   };
@@ -249,9 +275,10 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       }
     }
     const currentRefIdx = visibleRefIndexByMessage.get(idx);
+    const stableId = entryIdAt(entryIds, idx) ?? `idx${idx}`;
     return {
       kind: "message",
-      key: `${keyPrefix}-${idx}`,
+      key: `${keyPrefix}-${stableId}`,
       message: msg,
       ...(entryIdAt(entryIds, idx) === undefined ? {} : { entryId: entryIdAt(entryIds, idx) }),
       ...(running || prevAssistantEntryId === undefined ? {} : { prevAssistantEntryId }),
@@ -422,7 +449,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
         ?? (finalAnswerMessage ? undefined : visibleRefIndexByMessage.get(finalAssistantIdx));
       rows.push({
         kind: "process",
-        key: `process-group-${userIdx}-${finalAssistantIdx}`,
+        key: `process-group-${entryIdAt(entryIds, userIdx) ?? `idx${userIdx}`}`,
         blocks: processBlocks,
         isStreaming: false,
         ...(processRefIdx === undefined ? {} : { visibleIndex: processRefIdx }),

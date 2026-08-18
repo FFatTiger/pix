@@ -321,6 +321,7 @@ export const enLocale = {
     "desktop.minimapNav": "Conversation navigation",
     "desktop.minimapJumpToMessage": "Jump to message {index}",
     "desktop.minimapNoContent": "(No content)",
+    "desktop.loadOlderMessages": "Load earlier messages",
     "desktop.revealInFolder": "Show in system explorer",
     "desktop.copyRelativePath": "Copy relative path",
     "desktop.copyAbsolutePath": "Copy absolute path",

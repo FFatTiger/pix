@@ -148,6 +148,27 @@ describe("chat-projection — compaction boundary + written files", () => {
 });
 
 describe("chat-projection — leaderless live tail", () => {
+  it("groups a pagination-truncated fragment into ONE process group (not bare rows)", () => {
+    // The oldest loaded page starts mid-turn: no user message, just the tail of
+    // an assistant turn (thinking + tool + result + final text). It must render
+    // as a single ProcessGroup row (timeline/tabs), never legacy bare rows.
+    const rows = build([
+      assistant([{ type: "thinking", thinking: "plan" }]),
+      assistant([{ type: "toolCall", toolCallId: "tc1", toolName: "bash", input: {} }]),
+      toolResult("tc1", "ok"),
+      assistant([{ type: "text", text: "truncated tail" }]),
+    ]);
+    expect(kinds(rows)).toEqual(["process", "message"]);
+    const process = rows[0]!;
+    expect(process.kind).toBe("process");
+    if (process.kind === "process") {
+      expect(process.blocks.map((b) => b.type)).toEqual(["thinking", "toolCall"]);
+    }
+    const answer = rows[1]!;
+    expect(answer.kind).toBe("message");
+    if (answer.kind === "message") expect(answer.message.role).toBe("assistant");
+  });
+
   it("never drops a streaming assistant turn when no user message is in the projection", () => {
     const rows = build([], {
       running: true,
