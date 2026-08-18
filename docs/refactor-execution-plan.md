@@ -83,7 +83,8 @@ CP-00..CP-04  G0 honesty / tooling / CI skeleton          DONE
 CP-05..CP-08  G1 contract + G2 secure-state + pipe DACL   DONE
 CP-09..CP-20  G3/G4 lifecycle, watch, root policy         DONE
 CP-21..CP-24  G5 incremental Client path / PWA honesty    DONE
-CP-25         docs honesty + Windows create-race mapping  active
+CP-25         docs honesty + Windows create-race mapping  DONE
+CP-26         required Windows CI runs secure-state suites active
 
 later (explicitly deferred):
   Client PlatformPath owner, visible PWA/clipboard,
@@ -97,7 +98,7 @@ later (explicitly deferred):
 | `CP-01` | Runtime Protocol v2 基线：E2E 正向握手使用 `PROTOCOL_VERSION`；产品文档/注释不再称当前协议为 v1；handshake ack 断言版本 | `DONE` | `packages/protocol`（`src/version.ts`） | `CP-00` | Protocol 155/155；Startup/Runtime/Sessions 正向握手不再发送 magic `1`；保留负向 v1 与 CLI v1 bridge |
 | `CP-02` | 分离 HTTP bootstrap schema：`HOST_BOOTSTRAP_SCHEMA_VERSION=1` 由 protocol `./host-bootstrap` 持有；Host 投影该字面量；删除误导性 `HOST_PROTOCOL_VERSION`；Client 严格消费 literal 而非 `z.number` | `DONE` | `packages/protocol` + Host 投影 + Client decode | `CP-00` | Host bootstrap/static 13/13；Client targeted 9/9；Protocol/Host/Client typecheck 与 boundaries PASS |
 | `CP-03` | Windows 根工具：`run-workspaces` 复用 `tool-invocation` npm JS CLI；集中 path containment；修 `scripts/**/*.test.mjs` Windows 失败；不削弱 fail-closed flag 合同 | `DONE` | root `scripts/*` | `CP-00` | Windows scripts 120 total / 119 pass / 1 intentional signal skip / 0 fail；root typecheck、architecture PASS |
-| `CP-04` | CI 诚实骨架：三端 required tooling jobs（Node `22.19.x` + pin LTS `24.12.x`）执行 install/architecture/portable script tests/typecheck/build；Linux/macOS 另有 required product tests；Windows 整 job 不得 `continue-on-error`，产品启动缺口单独 non-blocking known-gap | `DONE` | `.github/workflows` | `CP-01`, `CP-02`, `CP-03` | workflow 存在；三端 tooling 不运行已知 POSIX-only 产品测试；POSIX product tests required；known-gap 检查固定 `sessiond private directory path is invalid` |
+| `CP-04` | CI 诚实骨架：三端 required tooling jobs（Node `22.19.x` + pin LTS `24.12.x`）执行 install/architecture/portable script tests/typecheck/build；Linux/macOS 另有 required product tests；Windows 整 job 不得 `continue-on-error` | `DONE` | `.github/workflows` | `CP-01`, `CP-02`, `CP-03` | workflow 存在；三端 tooling 不运行已知 POSIX-only 产品测试；POSIX product tests required；Windows 启动已改为 required smoke（见 CP-07C / CP-26） |
 
 | `CP-05` | Secure-state public contract platformization：discriminated backend/file identity/principal；`createSecureStateBackend()` 在 path walk 前选择平台；Windows 以固定 `UNSUPPORTED_PLATFORM` fail-closed；Host 不再直接构造 POSIX backend；sessiond 声明 local-authority 依赖；无 persisted schema 变化 | `DONE` | `packages/local-authority`（owner）+ Host/sessiond consumers | `CP-04` | local-authority factory/surface 7/7；root/三个包 typecheck；local-authority/Host/sessiond boundaries；architecture/diff-check PASS。POSIX chmod/0700 行为测试在 Windows 不作为成功证据 |
 
@@ -125,6 +126,7 @@ later (explicitly deferred):
 | `CP-23` | Client `file-links`/`file-mentions` 复用 `file-paths` drive-root helper；`C:/` 不再塌成 `C:` | `DONE` | `packages/client` file-links/mentions | `CP-22` | file-links 4/4 + file-mentions 8/8 + paths 22/22 PASS；不宣称 Protocol path-flavor / 产品支持 |
 | `CP-24` | FileExplorer Git status key 复用 `filePathCompareKey`；`C:/` 不再塌成 `C:` | `DONE` | `packages/client` FileExplorer | `CP-23` | file-paths 4/4 + shared-git 2/2 PASS；不宣称 Protocol path-flavor / 产品支持 |
 | `CP-25` | 文档诚实化：README/合同/Host 注释不再写“Windows 启不来 / backend 不存在”；Windows 目录创建竞态映射为 inspect-and-validate，不抛 raw already-exists | `DONE` | docs + `packages/local-authority` | `CP-24` | 定向 Windows backend 测试覆盖已存在私有目录；不宣称产品支持 / Job Object / ledger v2 |
+| `CP-26` | Windows required CI 跑 `windows-*.test.mjs` + native builder/factory，不再只做 addon load smoke | `DONE` | `.github/workflows` | `CP-25` | 本机相同 glob PASS；不宣称 G7 / 完整 Windows `npm test` / 产品支持 |
 
 后续 lane：Client PlatformPath owner、可见 PWA/clipboard、sessiond POSIX 第二套 walk、lock process-start identity。Job Object / ledger v2 / Protocol path-flavor / 远端发行仍后置。独立 verification agent 当前不可用。
 

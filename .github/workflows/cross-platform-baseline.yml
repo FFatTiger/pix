@@ -1,9 +1,9 @@
-# CP-04 CI honesty skeleton.
+# Cross-platform baseline.
 # Required-green tooling proves install, architecture, portable root scripts,
 # typecheck, and build on all three OS runners. POSIX product tests run in their
-# own required job. Windows sessiond now has a required start/shutdown smoke
-# after the native secure-state backend; remaining Windows product gaps stay
-# out of this job.
+# own required job. Windows required jobs cover native load + SID/DACL/path/
+# backend suites and a dedicated sessiond start/shutdown smoke.
+# Remaining product gaps (Job Object, ledger v2, packaged install) stay out.
 # No signing, secrets, or release promotion.
 
 name: Cross-platform baseline
@@ -45,9 +45,9 @@ jobs:
         run: npm run typecheck
       - name: Build
         run: npm run build
-      - name: Windows native load smoke
+      - name: Windows secure-state suites
         if: runner.os == 'Windows'
-        run: node scripts/run-node-test.mjs "packages/local-authority/test/windows-native.test.mjs"
+        run: node scripts/run-node-test.mjs "packages/local-authority/test/windows-*.test.mjs" "packages/local-authority/test/build-native.test.mjs" "packages/local-authority/test/platform-factory.test.mjs"
       - name: Diff whitespace
         run: git diff --check
 

@@ -3714,3 +3714,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - README now says Windows startup is wired (native SID/DACL/named-pipe + required smoke) but still **Unsupported**; Linux/macOS keep Unverified-native and acknowledge existing PR tooling/`npm test`.
 - `contracts.ts` / Host lease comments no longer claim the Windows backend is unshipped.
 - `ensureWindowsPrivateDirectory` treats `NATIVE_ALREADY_EXISTS` as inspect-and-validate, matching POSIX EEXIST. This is not Job Object, ledger v2, or product support.
+
+## 94. Cross-platform CP-26 — required Windows CI runs secure-state suites
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `217c03a`.
+- Windows tooling job now runs `packages/local-authority/test/windows-*.test.mjs` plus native builder/factory tests after `npm run build`.
+- sessiond start/shutdown smoke stays a separate required job. This is not G7, not full Windows `npm test`, and not product support.
