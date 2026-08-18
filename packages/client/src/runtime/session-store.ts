@@ -138,6 +138,8 @@ export interface RuntimeView {
   readonly optimisticRunningSessionId: string | null;
   /** Authoritative global busy-session ids from sessiond. */
   readonly runningSessionIds: readonly string[];
+  /** All sessions with a LIVE worker process (busy or idle) from sessiond. */
+  readonly liveSessionIds: readonly string[];
   /**
    * Attach lifecycle generation (explicit refresh signal for UI reads like
    * runtime stats/tools). Increments on a FRESH attach (incl. session switch),
@@ -209,6 +211,7 @@ const INITIAL_VIEW: RuntimeView = {
   promptPending: false,
   optimisticRunningSessionId: null,
   runningSessionIds: [],
+  liveSessionIds: [],
   attachGeneration: 0,
   historyGeneration: 0,
   historyAnchorLeafId: null,
@@ -497,6 +500,7 @@ export class SessionStore implements RuntimeSocketHandler {
   private historyAnchorLeafId: string | null = null;
   private liveEntries: SessionEntry[] = [];
   private runningSessionIds: string[] = [];
+  private liveSessionIds: string[] = [];
   private runningRevision = 0;
   private runningRefreshGeneration = 0;
   /**
@@ -753,6 +757,7 @@ export class SessionStore implements RuntimeSocketHandler {
           return this.runningSessionIds;
         }
         const running = result as RuntimeListRunningResult;
+        this.liveSessionIds = running.sessions.map((item) => item.sessionId);
         this.runningSessionIds = running.sessions
           .filter((item) => item.workerStatus === "busy")
           .map((item) => item.sessionId);
@@ -763,6 +768,7 @@ export class SessionStore implements RuntimeSocketHandler {
       (error) => {
         if (requestGeneration === this.runningRefreshGeneration && revisionAtRequest === this.runningRevision) {
           this.runningSessionIds = [];
+          this.liveSessionIds = [];
           this.runningRevision += 1;
           this.notify();
         }
@@ -1839,10 +1845,12 @@ export class SessionStore implements RuntimeSocketHandler {
     } else if (state === "unavailable" || state === "reconnecting") {
       // MEDIUM-3: one-shot envelope requests cannot survive a generation boundary.
       this.runningSessionIds = [];
+      this.liveSessionIds = [];
       this.runningRevision += 1;
       this.onTransportLoss();
     } else if (state === "stopped") {
       this.runningSessionIds = [];
+      this.liveSessionIds = [];
       this.runningRevision += 1;
       const error: ProtocolError = { code: "unavailable", message: "runtime connection stopped", retryable: false };
       this.rejectReadyWaiters(error);
@@ -1941,6 +1949,7 @@ export class SessionStore implements RuntimeSocketHandler {
         this.lastEventId = event.eventId;
         if (event.type === "running_sessions_changed") {
           this.runningSessionIds = [...event.busySessionIds];
+          this.liveSessionIds = [...event.sessionIds];
           this.runningRevision += 1;
         }
         // Speculative running overlay: once ANY real applied event proves the
@@ -2833,6 +2842,7 @@ export class SessionStore implements RuntimeSocketHandler {
       promptPending: this.promptTransaction !== null,
       optimisticRunningSessionId: this.optimisticPromptSessionId,
       runningSessionIds: [...this.runningSessionIds],
+      liveSessionIds: [...this.liveSessionIds],
       attachGeneration: this.attachGeneration,
       historyGeneration: this.historyGeneration,
       historyAnchorLeafId: this.historyAnchorLeafId,

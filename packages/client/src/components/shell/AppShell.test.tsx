@@ -399,6 +399,35 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     expect(lastFrame(ws, "attach")).toBeUndefined();
   });
 
+  it("auto-attaches an IDLE but LIVE selected session to fetch its authoritative state", async () => {
+    // sessiond runs independently: a session whose worker process is alive but
+    // idle (workerStatus "ready") is NOT history. On load the client should
+    // attach immediately so the Composer reads the real snapshot (model,
+    // thinkingLevel, leaf) instead of waiting for a send.
+    mountApp({ cwd: "/x", session: "B" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection();
+    const list = lastFrame<{ type: string; id: string }>(ws, "listRunning")!;
+    await act(async () => {
+      ws.serverSend({
+        type: "response",
+        id: list.id,
+        payload: {
+          ok: true,
+          result: { sessions: [{ sessionId: "B", cwd: "/x", projectRoot: "/x", workerStatus: "ready", epoch: "e1" }] },
+        },
+      });
+      await flush();
+    });
+    const attach = lastFrame<{ type: string; id: string; payload?: { sessionId?: string } }>(ws, "attach")!;
+    expect(attach.payload?.sessionId ?? undefined).toBe("B");
+    await act(async () => {
+      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "B" }) });
+      await flush();
+    });
+    expect(capturedStore!.getSnapshot().attached).toBe(true);
+    expect(capturedStore!.getSnapshot().sessionId).toBe("B");
+  });
+
   it("keeps New Session available while another session tab is attached", async () => {
     mountApp({ cwd: "/x", session: "A" });
     const ws = await connectReady();
