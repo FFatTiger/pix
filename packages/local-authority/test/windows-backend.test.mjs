@@ -82,6 +82,47 @@ test("Windows backend protects a live named pipe with current-user+SYSTEM DACL",
   }
 });
 
+test("Windows backend accepts an already-created private directory without a raw already-exists error", { skip: !isWindowsX64 }, async () => {
+  const parent = mkdtempSync(join(tmpdir(), "pix-win-existing-private-"));
+  const hostDir = join(parent, "host");
+  const backend = createSecureStateBackend({ platform: "win32" });
+  const binding = loadNativeWindowsBinding();
+  try {
+    binding.createPrivateObject(hostDir, "directory");
+    const ensured = await backend.ensurePrivateDirectory(hostDir);
+    assert.equal(ensured.created, false);
+    assert.equal(ensured.identity.kind, "windows");
+    const inspection = binding.inspectPath(ensured.path);
+    assert.ok(inspection);
+    rejectUnsafeWindowsSecurityEvidence(inspection, backend.principal());
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("Windows backend concurrent ensurePrivateDirectory never leaks a raw already-exists error", { skip: !isWindowsX64 }, async () => {
+  const parent = mkdtempSync(join(tmpdir(), "pix-win-race-"));
+  const hostDir = join(parent, "host");
+  const backend = createSecureStateBackend({ platform: "win32" });
+  try {
+    const results = await Promise.allSettled([
+      backend.ensurePrivateDirectory(hostDir),
+      backend.ensurePrivateDirectory(hostDir),
+    ]);
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        assert.equal(result.value.identity.kind, "windows");
+        continue;
+      }
+      assert.equal(result.reason instanceof LocalAuthorityError, true);
+      assert.notEqual(result.reason.message, "path already exists");
+    }
+    assert.equal(results.some((result) => result.status === "fulfilled"), true);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test("Windows backend fail-closes inherited existing directories and does not chmod them", { skip: !isWindowsX64 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "pix-win-existing-"));
   const backend = createSecureStateBackend({ platform: "win32" });

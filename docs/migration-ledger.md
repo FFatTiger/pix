@@ -3707,3 +3707,10 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `4b6dde9`.
 - `FileExplorer.gitPathKey` now calls `filePathCompareKey` so drive-root status/ignore maps keep `c:/` instead of collapsing to `c:`.
 - POSIX keys stay case-sensitive. Display/Git map matching only; not Protocol path-flavor or Host authorization.
+
+## 93. Cross-platform CP-25 — honest support matrix + Windows create-race mapping
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `81cdf05`.
+- README now says Windows startup is wired (native SID/DACL/named-pipe + required smoke) but still **Unsupported**; Linux/macOS keep Unverified-native and acknowledge existing PR tooling/`npm test`.
+- `contracts.ts` / Host lease comments no longer claim the Windows backend is unshipped.
+- `ensureWindowsPrivateDirectory` treats `NATIVE_ALREADY_EXISTS` as inspect-and-validate, matching POSIX EEXIST. This is not Job Object, ledger v2, or product support.

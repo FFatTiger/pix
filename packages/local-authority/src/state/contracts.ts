@@ -1,29 +1,29 @@
 /**
  * @fffattiger/pix-local-authority — platform-neutral secure-state contracts.
  *
- * Slice 1 (POSIX host). These contracts describe the LOW-LEVEL secure-state
- * primitives the pix host-state lease actually needs:
+ * These contracts describe the LOW-LEVEL secure-state primitives Host and
+ * sessiond actually need:
  *
  *   1. canonical absolute paths  — nearest-existing-ancestor realpath with
  *      validated missing-component tail and a canonical component re-walk;
- *   2. stable platform identity / principal — POSIX dev/ino + uid/gid today,
- *      with a reserved native Windows SID/file-id contract for the future;
- *   3. secure directory + state-document publication — dedicated 0700 private
- *      dir, bounded fail-closed reads, temp same-dir O_EXCL → fsync → identity
- *      re-verification → atomic rename → directory fsync;
+ *   2. stable platform identity / principal — POSIX `dev/ino` + `uid/gid`, or
+ *      Windows volume serial + 128-bit file ID + SID;
+ *   3. secure directory + state-document publication — dedicated private dir,
+ *      bounded fail-closed reads, exclusive create → flush → identity
+ *      re-verification → atomic publish;
  *   4. exclusive lifetime-lock primitives — O_EXCL acquire with busy/stale/
  *      unsafe classification, identity-pinned read, and exact-owner release.
  *
  * The contracts deliberately do NOT know any Host ledger name, schema, layout,
  * document name, or error code: Host maps `LocalAuthorityError` codes to its own
- * fixed codes/messages. They are platform-neutral so a future native Windows
- * backend can satisfy the same `SecureStateBackend` interface; this slice ships
- * ONLY the POSIX implementation (`posix.ts`). No Protocol / Runtime Core / Pi
- * SDK / Hono / React dependency.
+ * fixed codes/messages. Callers select a backend with `createSecureStateBackend()`
+ * before any path walk. This is not Protocol path-flavor, ledger v2, Job Object,
+ * or Windows product support. No Protocol / Runtime Core / Pi SDK / Hono / React
+ * dependency.
  */
 
 /**
- * Fixed low-level error codes thrown by the POSIX backend. Never embed raw
+ * Fixed low-level error codes thrown by a secure-state backend. Never embed raw
  * paths, payloads, or os error text in the message (Host maps codes to its own
  * sanitized messages).
  */
@@ -78,7 +78,7 @@ export interface PosixFileIdentity {
   isSymbolicLink: boolean;
 }
 
-/** Reserved native Windows identity shape; no Windows backend ships yet. */
+/** Native Windows identity: volume serial + 128-bit file ID. */
 export interface WindowsFileIdentity {
   readonly kind: "windows";
   volumeSerial: string;
@@ -100,7 +100,7 @@ export interface PosixPrincipal {
   gid: number | undefined;
 }
 
-/** Reserved Windows principal shape; no Windows backend ships yet. */
+/** Native Windows principal: current-user SID. */
 export interface WindowsPrincipal {
   readonly kind: "windows";
   sid: string;
@@ -196,9 +196,8 @@ export interface ExclusivePrivateFile {
 }
 
 /**
- * The platform-neutral secure-state backend contract. The POSIX implementation
- * (`createPosixSecureStateBackend`) satisfies it today; a future native Windows
- * backend would satisfy the same interface.
+ * The platform-neutral secure-state backend contract. POSIX and Windows
+ * implementations both satisfy it; factory selection happens before any path walk.
  */
 export type SecureStateBackendKind = "posix" | "windows";
 

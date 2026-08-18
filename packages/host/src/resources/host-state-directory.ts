@@ -494,8 +494,8 @@ export async function openHostStateDirectoryLease(
   const recognizedEntries = new Set<string>([...recognizedDocuments, HOST_STATE_LOCK_NAME]);
   const tempPatterns = buildTempPatterns(recognizedDocuments);
   // Private backend injection seam: the platform factory selects the backend
-  // before any path walk. POSIX write-fault hooks remain test-only; Windows
-  // fails closed until its native SID/DACL/file-id backend is implemented.
+  // before any path walk. POSIX write-fault hooks remain test-only. Windows
+  // uses the native SID/DACL/file-id backend; binding load failure is fail-closed.
   let backend: SecureStateBackend;
   try {
     backend = createSecureStateBackend({

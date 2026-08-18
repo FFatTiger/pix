@@ -178,12 +178,26 @@ export async function ensureWindowsPrivateDirectory(
     }
     if (!inspection) {
       creating = true;
-      createPrivate(binding, current, "directory");
-      const created = inspectOrThrow(binding, current);
-      if (!created) throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
-      requirePrivateDirectory(created, principal);
-      if (isLeaf) leafCreated = true;
-      continue;
+      try {
+        createPrivate(binding, current, "directory");
+        const created = inspectOrThrow(binding, current);
+        if (!created) throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
+        requirePrivateDirectory(created, principal);
+        if (isLeaf) leafCreated = true;
+        continue;
+      } catch (error) {
+        if (!(error instanceof NativeAlreadyExistsError)) throw error;
+        const raced = inspectOrThrow(binding, current);
+        if (!raced) throw new LocalAuthorityError("UNSAFE_COMPONENT", "Directory path is unsafe");
+        if (raced.isReparsePoint) {
+          throw new LocalAuthorityError("SYMLINK", "Directory path is unsafe");
+        }
+        if (!raced.isDirectory) {
+          throw new LocalAuthorityError("NOT_DIRECTORY", "Directory path is unsafe");
+        }
+        requirePrivateDirectory(raced, principal);
+        continue;
+      }
     }
     if (inspection.isReparsePoint) {
       throw new LocalAuthorityError("SYMLINK", "Directory path is unsafe");

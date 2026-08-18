@@ -1,5 +1,5 @@
 /**
- * @fffattiger/pix-local-authority — secure-state contracts + POSIX backend.
+ * @fffattiger/pix-local-authority — secure-state contracts + platform factory.
  *
  * Host imports this narrow `.../state` surface (not the package root) so the
  * architecture boundary can allow exactly `@fffattiger/pix-local-authority/state`

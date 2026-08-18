@@ -74,19 +74,21 @@ PiSdkAdapter（当前）/ PiRpcAdapter（未来）
 - sessiond 无停机升级
 - Worker 崩溃后自动重放 prompt
 
-### 1.3 活动跨端任务（G0 基线切片，计划 SSOT：`docs/cross-platform-hardening-plan.md`）
+### 1.3 活动跨端任务（计划 SSOT：`docs/cross-platform-hardening-plan.md`）
 
-本切片只落地可执行的跨端基线。不读取、不合并 `fix/cross-platform-dev`。后续 Host/Client/release 平台 lane（G1–G8、CP-A–J 的 Windows backend / PWA / signing）由独立 agent 审计，本切片不重叠那些后续面。
+G0 基线以及后续已落地的 G1–G5 切片都记在下表。不读取、不合并 `fix/cross-platform-dev`。不宣称 Windows 产品支持 / Job Object / ledger v2 / Protocol path-flavor。
 
 ```text
-CP-00 docs/SSOT
-  ├── CP-01 Runtime Protocol v2 E2E/docs honesty
-  ├── CP-02 HOST_BOOTSTRAP_SCHEMA_VERSION（独立 HTTP bootstrap schema）
-  ├── CP-03 Windows root tooling（scripts/**/*.test.mjs）
-  └── CP-04 CI honesty skeleton
-        └── later lanes (G1 path/identity, G2A POSIX, G2B Windows backend,
-            G3 IPC, G4 Host files/git, G5 Client/PWA, G6/G8 release)
-            remain BLOCKED on their documented owners
+CP-00..CP-04  G0 honesty / tooling / CI skeleton          DONE
+CP-05..CP-08  G1 contract + G2 secure-state + pipe DACL   DONE
+CP-09..CP-20  G3/G4 lifecycle, watch, root policy         DONE
+CP-21..CP-24  G5 incremental Client path / PWA honesty    DONE
+CP-25         docs honesty + Windows create-race mapping  active
+
+later (explicitly deferred):
+  Client PlatformPath owner, visible PWA/clipboard,
+  sessiond POSIX second-walk removal, lock process-start identity,
+  Job Object, ledger v2, Protocol path-flavor, packaged release
 ```
 
 | ID | 工作包 | 状态 | Owner | 依赖 | 验收 |
@@ -122,8 +124,9 @@ CP-00 docs/SSOT
 | `CP-22` | Client `file-paths` Windows drive 相对路径大小写不敏感；`C:/` 根不塌成 `C:` | `DONE` | `packages/client` file-paths | `CP-21` | file-paths 3/3 PASS；不宣称 Protocol path-flavor / 产品支持 |
 | `CP-23` | Client `file-links`/`file-mentions` 复用 `file-paths` drive-root helper；`C:/` 不再塌成 `C:` | `DONE` | `packages/client` file-links/mentions | `CP-22` | file-links 4/4 + file-mentions 8/8 + paths 22/22 PASS；不宣称 Protocol path-flavor / 产品支持 |
 | `CP-24` | FileExplorer Git status key 复用 `filePathCompareKey`；`C:/` 不再塌成 `C:` | `DONE` | `packages/client` FileExplorer | `CP-23` | file-paths 4/4 + shared-git 2/2 PASS；不宣称 Protocol path-flavor / 产品支持 |
+| `CP-25` | 文档诚实化：README/合同/Host 注释不再写“Windows 启不来 / backend 不存在”；Windows 目录创建竞态映射为 inspect-and-validate，不抛 raw already-exists | `DONE` | docs + `packages/local-authority` | `CP-24` | 定向 Windows backend 测试覆盖已存在私有目录；不宣称产品支持 / Job Object / ledger v2 |
 
-后续 lane：Job Object / ledger v2 / 远端 CI receipt。独立 verification agent 当前不可用。
+后续 lane：Client PlatformPath owner、可见 PWA/clipboard、sessiond POSIX 第二套 walk、lock process-start identity。Job Object / ledger v2 / Protocol path-flavor / 远端发行仍后置。独立 verification agent 当前不可用。
 
 ---
 
