@@ -1,7 +1,7 @@
 // Helpers that turn dropped-file absolute paths into cwd-relative @ mention
 // tokens. Pure string logic so it runs in the browser (no node:path).
 
-import { filePathCompareKey, keepWindowsDriveRoot, normalizeFilePathSlashes } from "./file-paths";
+import { filePathCompareKey, keepWindowsDriveRoot, normalizeFilePathSlashes, type ClientPathFlavor } from "./file-paths";
 
 /** Forward slashes; keep a Windows drive root as `C:/`. */
 export function normalizePathSlashes(p: string): string {
@@ -21,21 +21,21 @@ export interface CwdRelativeResult {
  * `..` escapes and case-variant drive roots) is rejected so the @ token keeps
  * its "project file" semantics.
  */
-export function toCwdRelativeMentions(absPaths: string[], cwd: string): CwdRelativeResult {
+export function toCwdRelativeMentions(absPaths: string[], cwd: string, flavor?: ClientPathFlavor): CwdRelativeResult {
   const mentions: string[] = [];
   const rejected: string[] = [];
   const normalizedCwd = normalizePathSlashes(cwd);
   if (!normalizedCwd) return { mentions: [], rejected: [...absPaths] };
-  const cwdKey = filePathCompareKey(normalizedCwd);
+  const cwdKey = filePathCompareKey(normalizedCwd, flavor);
   const cwdPrefix = cwdKey.endsWith("/") ? cwdKey : `${cwdKey}/`;
 
   for (const raw of absPaths) {
     const normalized = normalizePathSlashes(raw);
-    if (!normalized || filePathCompareKey(normalized) === cwdKey) {
+    if (!normalized || filePathCompareKey(normalized, flavor) === cwdKey) {
       rejected.push(raw);
       continue;
     }
-    const key = filePathCompareKey(normalized);
+    const key = filePathCompareKey(normalized, flavor);
     if (!key.startsWith(cwdPrefix)) {
       rejected.push(raw);
       continue;

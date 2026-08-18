@@ -31,11 +31,12 @@ function bootstrapResponse(overrides: Record<string, unknown> = {}) {
     JSON.stringify({
       ok: true,
       service: "pix-host",
-      protocolVersion: 1,
+      protocolVersion: 2,
       sessiond: "up",
       capabilities: ["agent", "files"],
       mode: "lan",
       gate: { required: true, status: "enabled" },
+      pathFlavor: "posix",
       ...overrides,
     }),
     { status: 200 },

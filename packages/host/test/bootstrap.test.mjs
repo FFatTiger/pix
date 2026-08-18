@@ -26,13 +26,14 @@ test("bootstrap is served with no-store and aggregates the boot surface", async 
   assert.equal(body.ok, true);
   assert.equal(body.service, "pix-host");
   assert.equal(body.protocolVersion, HOST_BOOTSTRAP_SCHEMA_VERSION);
-  assert.equal(body.protocolVersion, 1);
-  assert.notEqual(body.protocolVersion, PROTOCOL_VERSION);
+  assert.equal(body.protocolVersion, 2);
+  assert.equal(body.pathFlavor, "posix");
   assert.equal(body.sessiond, "unknown");
   // Nothing wired → honest empty capability (no false agent/files claim).
   assert.deepEqual(body.capabilities, []);
   assert.equal(body.mode, "local");
   assert.deepEqual(body.gate, { required: false, status: "disabled" });
+  assert.equal(body.pathFlavor, "posix");
 });
 
 test("bootstrap reflects sessiond up with honest empty capabilities when nothing is mounted", async () => {

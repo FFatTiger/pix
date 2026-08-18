@@ -47,7 +47,7 @@ export type ProtocolTypeAssertions =
       >["closed"],
       true | undefined
     >>
-  | Assert<Equal<HostBootstrapSchemaVersion, 1>>
+  | Assert<Equal<HostBootstrapSchemaVersion, 2>>
   | Assert<Equal<typeof PROTOCOL_VERSION, 2>>;
 
 export const protocolTypeAssertions: ProtocolTypeAssertions = true;

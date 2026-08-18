@@ -81,9 +81,9 @@ describe("protocol version", () => {
     assert.equal(result.success, false);
   });
 
-  it("owns a separate HTTP bootstrap schema version frozen at 1", () => {
-    assert.equal(HOST_BOOTSTRAP_SCHEMA_VERSION, 1);
-    assert.notEqual(HOST_BOOTSTRAP_SCHEMA_VERSION, PROTOCOL_VERSION);
+  it("owns a separate HTTP bootstrap schema version frozen at 2", () => {
+    assert.equal(HOST_BOOTSTRAP_SCHEMA_VERSION, 2);
+    assert.equal(PROTOCOL_VERSION, 2);
     const body = {
       ok: true,
       service: "pix-host",
@@ -92,10 +92,13 @@ describe("protocol version", () => {
       capabilities: [],
       mode: "local",
       gate: { required: false, status: "disabled" },
+      pathFlavor: "posix",
     };
-    assert.equal(HostBootstrapResponseSchema.parse(body).protocolVersion, 1);
-    assert.equal(HostBootstrapResponseSchema.safeParse({ ...body, protocolVersion: PROTOCOL_VERSION }).success, false);
-    assert.equal(HostBootstrapResponseSchema.safeParse({ ...body, protocolVersion: 2 }).success, false);
+    assert.equal(HostBootstrapResponseSchema.parse(body).protocolVersion, 2);
+    assert.equal(HostBootstrapResponseSchema.safeParse({ ...body, protocolVersion: 1 }).success, false);
+    const { pathFlavor, ...withoutFlavor } = body;
+    assert.equal(pathFlavor, "posix");
+    assert.equal(HostBootstrapResponseSchema.safeParse(withoutFlavor).success, false);
   });
 });
 

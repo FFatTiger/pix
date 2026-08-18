@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { At, CaretRight, Check, Copy, DownloadSimple, Info, LinkSimple, MinusCircle, Spinner, UploadSimple, Warning, X } from "@phosphor-icons/react";
 import { getFileIcon, FolderIcon } from "@/components/files/FileIcons";
 import { filePathCompareKey, getRelativeFilePath, joinFilePath } from "@/lib/file-paths";
+import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { useContextMenu } from "@/components/ContextMenu";
@@ -157,9 +158,10 @@ function TreeNode({
   ignoredPaths: Set<string>;
   changedFiles: Map<string, ExplorerGitStatus>;
 }) {
+  const { pathFlavor } = useCapabilities();
   const open = expandedPaths.has(node.fullPath);
   const highlighted = highlightedPaths.has(node.fullPath);
-  const pathKey = filePathCompareKey(node.fullPath);
+  const pathKey = filePathCompareKey(node.fullPath, pathFlavor);
   const ignored = isIgnoredPath(pathKey, ignoredPaths);
   const gitStatus = getNodeGitStatus(pathKey, node.isDir, changedFiles);
   const [hovered, setHovered] = useState(false);
@@ -414,6 +416,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   onAtMentions,
   onUploadBusyChange,
 }, ref) {
+  const { pathFlavor } = useCapabilities();
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [highlightedPaths, setHighlightedPaths] = useState<Set<string>>(new Set());
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
@@ -449,15 +452,15 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     [rootQuery.data, cwd],
   );
   const ignoredPaths = useMemo(
-    () => new Set((gitStatus?.ignoredPaths ?? []).map(filePathCompareKey)),
-    [gitStatus],
+    () => new Set((gitStatus?.ignoredPaths ?? []).map((path) => filePathCompareKey(path, pathFlavor))),
+    [gitStatus, pathFlavor],
   );
   const changedFiles = useMemo(
     () => new Map((gitStatus?.files ?? []).map((file) => [
-      filePathCompareKey(file.filePath),
+      filePathCompareKey(file.filePath, pathFlavor),
       toExplorerGitStatus(file.status),
     ])),
-    [gitStatus],
+    [gitStatus, pathFlavor],
   );
 
   const handleToggleExpanded = useCallback((fullPath: string, open: boolean) => {

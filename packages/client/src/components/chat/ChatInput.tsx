@@ -10,6 +10,8 @@ import {
   type AtQueryMatch, type FileIndexEntry,
 } from "@/lib/file-fuzzy";
 import { toCwdRelativeMentions } from "@/lib/file-mentions";
+import { foldsPathCase } from "@/lib/file-paths";
+import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { tokenizeMentions } from "@/lib/mention-tokens";
 // pix adapter: the source fetched the project index / skill catalog through
 // hooks/useProjectContext (Next fetch). Here the same snapshots arrive as
@@ -417,6 +419,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 }: Props, ref) {
   const isMobile = useIsMobile();
   const { t } = useI18n();
+  const { pathFlavor } = useCapabilities();
+  const foldPathCase = foldsPathCase(pathFlavor);
 
   // Step pill: measure its natural width so the independent status button can
   // animate its width when the label appears, changes, or disappears. The
@@ -605,12 +609,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     return tokenizeMentions(value, {
       fileExists: (path) => {
         if (!index) return undefined;
-        const key = path.toLowerCase();
+        const key = foldPathCase ? path.toLowerCase() : path;
         return index.paths.has(key) || index.dirs.has(key);
       },
       isSkill: (name) => (skills ? skills.has(name) : undefined),
     }, atQuery?.start ?? null);
-  }, [value, fileIndexSnapshot, skillNames, atQuery]);
+  }, [value, fileIndexSnapshot, skillNames, atQuery, foldPathCase]);
   // The draft key whose state has been restored into the editor. The save
   // effect only writes once this matches draftKey, so a mount-time save can
   // never delete a persisted draft before the editor has been populated
@@ -809,7 +813,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (getPathForFile) {
       const absPaths = files.map((f) => getPathForFile(f)).filter((p): p is string => Boolean(p));
       if (!absPaths.length) return;
-      const { mentions, rejected } = toCwdRelativeMentions(absPaths, cwd);
+      const { mentions, rejected } = toCwdRelativeMentions(absPaths, cwd, pathFlavor);
       if (mentions.length) insertFileMentionsAtEnd(mentions);
       if (!rejected.length) return;
       const outsideName = (p: string) => p.split(/[\\/]/).pop() ?? p;
@@ -1159,7 +1163,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const atQueryText = atQuery?.query ?? null;
   const atLocalMatches: FileIndexEntry[] = React.useMemo(() => (
     atQueryText !== null && fileIndex && fileIndex.cwd === cwd
-      ? filterFileEntries(fileIndex.entries, atQueryText)
+      ? filterFileEntries(fileIndex.entries, atQueryText, undefined, foldPathCase)
       : []
   ), [atQueryText, fileIndex, cwd]);
 

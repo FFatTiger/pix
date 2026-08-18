@@ -5,7 +5,7 @@
 > 进度同步：`feat/cross-platform-g0-baseline`（已 merge `origin/main@73fa042`）
 > 范围：原生 Windows、原生 Linux、原生 macOS；同时覆盖浏览器/PWA、CLI、Host、sessiond、Worker、文件/Git、构建、安装与发布
 > 非范围：不读取、不合并、不 cherry-pick `fix/cross-platform-dev`；不以 WSL、Docker 或虚拟机替代 Windows 原生产品支持；不在本计划中实现 Tauri/Electron 壳
-> 状态：专题计划仍有效。活动任务与验收只写在 `docs/refactor-execution-plan.md` §1.3（CP-00–CP-35）。§0–§15 的 2026-08-17 审计是历史快照；当前事实以 §16 为准。
+> 状态：专题计划仍有效。活动任务与验收只写在 `docs/refactor-execution-plan.md` §1.3（CP-00–CP-36）。§0–§15 的 2026-08-17 审计是历史快照；当前事实以 §16 为准。
 
 ---
 
@@ -1525,15 +1525,15 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | Gate | 状态 | 已落地 | 仍缺 |
 |---|---|---|---|
 | G0 | 骨架完成 | README 矩阵、CI 三端 tooling、根脚本 Windows 绿、Protocol v2 / Host bootstrap 词义分离 | `pix doctor`、sessiond 启动诊断通道 |
-| G1 | 半完成 | discriminated `posix \| windows` 合同；Client display 路径 owner | Protocol path-flavor DTO；ledger v2 |
+| G1 | 半完成 | discriminated `posix \| windows` 合同；Client display 路径 owner；Host bootstrap `pathFlavor` | ledger v2 |
 | G2A | 基本完成 | lock/secret identity pin、禁事后 chmod、默认拒 root | macOS lock 仍无 start identity |
 | G2B | 接通 | `createSecureStateBackend()` 在 walk 前选 Windows native；DACL = 当前用户+SYSTEM，宽 ACL 不自动修 | 中间目录宽 ACL 只查 reparse |
 | G3 | 半完成 | pipe DACL（listen 后 protect+回读）、process-start identity、Worker/Git final-kill、共享 process-tree（Windows = VS Code taskkill /T） | Job Object；listen 前带 DACL 的 retained N-API pipe |
 | G4 | 半完成 | AllowedRoot 平台身份、parent-watch + overflow rescan、Windows 路径脱敏、exact-open | hardlink 事务、worktree disk identity、junction 对抗 CI |
-| G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认 | Host 下发 path-flavor；mention 索引仍无条件小写；无 AllowedRoot 设置页 |
+| G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy 按 `pathFlavor` | 无 AllowedRoot 设置页 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
 
-执行切片 CP-00–CP-35 记为 DONE。后置：Job Object、ledger v2、Protocol path-flavor、packaged release。
+执行切片 CP-00–CP-36 记为 DONE。后置：Job Object、ledger v2、packaged release。
 
 ### 16.3 审计条目对照
 
@@ -1564,6 +1564,6 @@ AllowedRoot **没有设置页**。启动根来自启动 cwd / `PIX_ALLOWED_ROOTS
 
 ### 16.5 下一刀（对齐参考实现，不自造轮子）
 
-1. Protocol path-flavor：Host bootstrap 下发，Client 不再靠路径长得像 `C:/` 猜。
-2. named-pipe listen 前带 DACL（VS Code SID/ACL，而不是 `node:net` 默认 DACL 再补一层）。
-3. 仍后置：Job Object（比 taskkill 更严的笼子）、ledger v2、packaged release、AllowedRoot 设置页。
+1. named-pipe listen 前带 DACL（VS Code SID/ACL，而不是 `node:net` 默认 DACL 再补一层）。
+2. AllowedRoot 设置页（扩根目前只在本次 Host 进程有效）。
+3. 仍后置：Job Object（比 taskkill 更严的笼子）、ledger v2、packaged release。

@@ -7,6 +7,7 @@ import {
   type HostInfo,
   type HostMode,
 } from "@fffattiger/pix-protocol";
+import type { HostPathFlavor } from "@fffattiger/pix-protocol/host-bootstrap";
 import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 
@@ -19,6 +20,8 @@ export const DEFAULT_READONLY_CAPABILITIES: readonly HostCapability[] = [];
 
 export interface CapabilityContextValue {
   mode: HostMode;
+  /** Host-authoritative path grammar. Missing bootstrap stays posix. */
+  pathFlavor: HostPathFlavor;
   capabilities: readonly HostCapability[];
   canAgent: boolean;
   isReadonly: boolean;
@@ -65,15 +68,17 @@ export function CapabilityProvider({ children, host }: CapabilityProviderProps) 
   // demo. Bootstrap carries the honest capability/sessiond projection.
   const query = useQuery({ ...options.capabilities.bootstrap(), enabled: host === undefined });
   const resolved = host === undefined && query.data
-    ? { mode: query.data.mode, capabilities: query.data.capabilities, sessiond: query.data.sessiond }
+    ? { mode: query.data.mode, capabilities: query.data.capabilities, sessiond: query.data.sessiond, pathFlavor: query.data.pathFlavor }
     : host
-      ? { mode: host.mode, capabilities: host.capabilities, sessiond: undefined as "up" | "down" | "unknown" | undefined }
+      ? { mode: host.mode, capabilities: host.capabilities, sessiond: undefined as "up" | "down" | "unknown" | undefined, pathFlavor: "posix" as const }
       : undefined;
   const mode: HostMode = resolved?.mode ?? "local";
+  const pathFlavor: HostPathFlavor = resolved?.pathFlavor ?? "posix";
   const capabilities = resolved?.capabilities ?? DEFAULT_READONLY_CAPABILITIES;
   const canAgent = isAgentEnabled(capabilities);
   const value: CapabilityContextValue = {
     mode,
+    pathFlavor,
     capabilities,
     canAgent,
     isReadonly: !canAgent,

@@ -4,6 +4,7 @@ import type { Hono } from "hono";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import type { AllowedRootService } from "../resources/allowed-roots.js";
+import { resolveHostPathFlavor } from "../resources/path-flavor.js";
 import { createProcessRunner, type ProcessRunner } from "../resources/process-runner.js";
 import type { ResourceLimits } from "../resources/types.js";
 
@@ -19,9 +20,9 @@ function normalizeRelative(value: string): string {
   return value.split(sep).join("/");
 }
 
-function rank(file: string, query: string): number {
-  const haystack = file.toLowerCase();
-  const needle = query.toLowerCase();
+function rank(file: string, query: string, foldCase: boolean): number {
+  const haystack = foldCase ? file.toLowerCase() : file;
+  const needle = foldCase ? query.toLowerCase() : query;
   if (haystack === needle) return 10_000;
   if (haystack.startsWith(needle)) return 8_000 - file.length;
   const base = haystack.slice(haystack.lastIndexOf("/") + 1);
@@ -76,7 +77,8 @@ export function registerFileIndexRoutes(app: Hono<HostEnv>, deps: FileIndexDeps)
     const listing = await gitFiles(runner, authorized.canonicalPath, maxFiles, maxOutputBytes, c.req.raw.signal) ?? await walk(authorized.canonicalPath, maxFiles, maxDepth, c.req.raw.signal, Date.now() + (deps.limits?.processTimeoutMs ?? 10_000));
     const query = (c.req.query("q") ?? "").slice(0, 500);
     if (query) {
-      const matches = listing.files.map((path) => ({ path, score: rank(path, query) })).filter((item) => item.score >= 0).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, 200).map(({ path }) => ({ path, isDir: false }));
+      const foldCase = resolveHostPathFlavor(authorized.canonicalPath) !== "posix";
+      const matches = listing.files.map((path) => ({ path, score: rank(path, query, foldCase) })).filter((item) => item.score >= 0).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, 200).map(({ path }) => ({ path, isDir: false }));
       return c.json({ matches, truncated: listing.truncated });
     }
     return c.json({ files: listing.files.slice(0, 5_000), truncated: listing.truncated || listing.files.length > 5_000 });

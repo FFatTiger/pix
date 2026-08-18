@@ -94,22 +94,23 @@ function isSubsequence(needle: string, haystack: string): boolean {
  * the query "src/" prefix-matches every entry inside src/ (and excludes the
  * src directory itself, since "src" does not start with "src/").
  */
-function scoreEntry(entry: FileIndexEntry, lowerQuery: string): number {
-  const lowerPath = entry.path.toLowerCase();
+function scoreEntry(entry: FileIndexEntry, query: string, foldCase: boolean): number {
+  const haystack = foldCase ? entry.path.toLowerCase() : entry.path;
+  const needle = foldCase ? query.toLowerCase() : query;
   let score = 0;
-  if (lowerQuery.includes("/")) {
-    if (lowerPath === lowerQuery) score = 100;
-    else if (lowerPath.startsWith(lowerQuery)) score = 80;
-    else if (lowerPath.includes(lowerQuery)) score = 50;
-    else if (isSubsequence(lowerQuery, lowerPath)) score = 10;
+  if (needle.includes("/")) {
+    if (haystack === needle) score = 100;
+    else if (haystack.startsWith(needle)) score = 80;
+    else if (haystack.includes(needle)) score = 50;
+    else if (isSubsequence(needle, haystack)) score = 10;
   } else {
-    const slash = lowerPath.lastIndexOf("/");
-    const lowerName = slash === -1 ? lowerPath : lowerPath.slice(slash + 1);
-    if (lowerName === lowerQuery) score = 100;
-    else if (lowerName.startsWith(lowerQuery)) score = 80;
-    else if (lowerName.includes(lowerQuery)) score = 50;
-    else if (lowerPath.includes(lowerQuery)) score = 30;
-    else if (isSubsequence(lowerQuery, lowerPath)) score = 10;
+    const slash = haystack.lastIndexOf("/");
+    const name = slash === -1 ? haystack : haystack.slice(slash + 1);
+    if (name === needle) score = 100;
+    else if (name.startsWith(needle)) score = 80;
+    else if (name.includes(needle)) score = 50;
+    else if (haystack.includes(needle)) score = 30;
+    else if (isSubsequence(needle, haystack)) score = 10;
   }
   if (entry.isDir && score > 0) score += 10;
   return score;
@@ -121,13 +122,13 @@ export function filterFileEntries(
   entries: FileIndexEntry[],
   query: string,
   limit: number = AT_RESULT_LIMIT,
+  foldCase = false,
 ): FileIndexEntry[] {
-  const lowerQuery = query.toLowerCase();
-  if (!lowerQuery) return entries.slice(0, limit);
+  if (!query) return entries.slice(0, limit);
 
   const scored: Array<{ entry: FileIndexEntry; score: number }> = [];
   for (const entry of entries) {
-    const score = scoreEntry(entry, lowerQuery);
+    const score = scoreEntry(entry, query, foldCase);
     if (score > 0) scored.push({ entry, score });
   }
   scored.sort((a, b) =>

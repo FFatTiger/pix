@@ -8,9 +8,9 @@ describe("file-paths Windows drive helpers", () => {
   });
 
   it("computes relative paths case-insensitively on Windows drives", () => {
-    expect(getRelativeFilePath("C:/Users/Name/src/a.ts", "c:/users/name")).toBe("src/a.ts");
-    expect(getRelativeFilePath("C:/Users/Name", "C:/Users/Name")).toBe(".");
-    expect(getRelativeFilePath("C:/Users/Name/src/a.ts", "C:/")).toBe("Users/Name/src/a.ts");
+    expect(getRelativeFilePath("C:/Users/Name/src/a.ts", "c:/users/name", "windows-drive")).toBe("src/a.ts");
+    expect(getRelativeFilePath("C:/Users/Name", "C:/Users/Name", "windows-drive")).toBe(".");
+    expect(getRelativeFilePath("C:/Users/Name/src/a.ts", "C:/", "windows-drive")).toBe("Users/Name/src/a.ts");
     expect(getRelativeFilePath("/var/log/sys.log", "/var/log")).toBe("sys.log");
     expect(getRelativeFilePath("/Var/log/sys.log", "/var/log")).toBe("/Var/log/sys.log");
   });
@@ -23,8 +23,9 @@ describe("file-paths Windows drive helpers", () => {
   });
 
   it("keeps a drive-root compare key as c:/", () => {
-    expect(filePathCompareKey("C:/")).toBe("c:/");
-    expect(filePathCompareKey("C:\\Users\\Name")).toBe("c:/users/name");
+    expect(filePathCompareKey("C:/", "windows-drive")).toBe("c:/");
+    expect(filePathCompareKey("C:\\Users\\Name", "windows-drive")).toBe("c:/users/name");
+    expect(filePathCompareKey("/Var/log", "posix")).toBe("/Var/log");
     expect(filePathCompareKey("/Var/log")).toBe("/Var/log");
   });
 

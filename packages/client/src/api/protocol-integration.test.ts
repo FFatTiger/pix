@@ -13,7 +13,7 @@ import { BootstrapResponseSchema } from "./schemas";
 
 describe("Protocol integration", () => {
   it("consumes the protocol-owned HTTP bootstrap schema literal, not Runtime Protocol v2", () => {
-    expect(HOST_BOOTSTRAP_SCHEMA_VERSION).toBe(1);
+    expect(HOST_BOOTSTRAP_SCHEMA_VERSION).toBe(2);
     expect(PROTOCOL_VERSION).toBe(2);
     expect(BootstrapResponseSchema).toBe(HostBootstrapResponseSchema);
     const body = {
@@ -24,10 +24,12 @@ describe("Protocol integration", () => {
       capabilities: [],
       mode: "local" as const,
       gate: { required: false, status: "disabled" as const },
+      pathFlavor: "posix" as const,
     };
-    expect(BootstrapResponseSchema.parse(body).protocolVersion).toBe(1);
-    expect(BootstrapResponseSchema.safeParse({ ...body, protocolVersion: PROTOCOL_VERSION }).success).toBe(false);
-    expect(BootstrapResponseSchema.safeParse({ ...body, protocolVersion: 2 }).success).toBe(false);
+    expect(BootstrapResponseSchema.parse(body).protocolVersion).toBe(2);
+    expect(BootstrapResponseSchema.safeParse({ ...body, protocolVersion: 1 }).success).toBe(false);
+    const { pathFlavor: _ignored, ...withoutFlavor } = body;
+    expect(BootstrapResponseSchema.safeParse(withoutFlavor).success).toBe(false);
   });
 
   it("uses final Protocol schemas and strict resume cursor semantics", () => {

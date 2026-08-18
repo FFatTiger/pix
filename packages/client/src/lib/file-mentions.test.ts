@@ -16,6 +16,7 @@ describe("toCwdRelativeMentions", () => {
     const { mentions, rejected } = toCwdRelativeMentions(
       ["C:\\repo\\src\\app.ts", "C:/repo/README.md"],
       "C:\\repo",
+      "windows-drive",
     );
     expect(mentions).toEqual(["src/app.ts", "README.md"]);
     expect(rejected).toEqual([]);
@@ -25,6 +26,7 @@ describe("toCwdRelativeMentions", () => {
     const { mentions, rejected } = toCwdRelativeMentions(
       ["c:/REPO/src/app.ts"],
       "C:\\Repo",
+      "windows-drive",
     );
     expect(mentions).toEqual(["src/app.ts"]);
     expect(rejected).toEqual([]);

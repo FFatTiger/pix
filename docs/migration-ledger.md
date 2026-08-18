@@ -3816,3 +3816,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Public matrix now says Windows native **Supported** for source-build startup, named pipe, AllowedRoot, and VS Code taskkill descendant cleanup.
 - Still not claimed: Job Object, ledger v2, packaged install/upgrade, full Windows `npm test`, Linux/macOS product verification.
 
+## 105. Cross-platform CP-36 — Host bootstrap pathFlavor
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `a3a49ba`.
+- `HOST_BOOTSTRAP_SCHEMA_VERSION` is now 2. `pathFlavor` is required: `posix | windows-drive | windows-unc`. Missing field / v1 bodies fail closed.
+- Host classifies from default cwd / first AllowedRoot. Client compare, mentions, fuzzy, and file-index ranking fold case only for windows flavors. Not Job Object or packaged release.
+

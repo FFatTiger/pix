@@ -76,7 +76,7 @@ PiSdkAdapter（当前）/ PiRpcAdapter（未来）
 
 ### 1.3 活动跨端任务（计划 SSOT：`docs/cross-platform-hardening-plan.md`）
 
-G0 基线以及后续已落地的 G1–G5 切片都记在下表。不读取、不合并 `fix/cross-platform-dev`。Windows 原生 **Supported** 指 source-build 启动 + VS Code taskkill 子孙清理；仍不宣称 Job Object / ledger v2 / Protocol path-flavor / packaged 发行。跨端问题/目标/路线仍以 `docs/cross-platform-hardening-plan.md` 为准；该文件 §16 是相对 2026-08-17 审计的当前进度。
+G0 基线以及后续已落地的 G1–G5 切片都记在下表。不读取、不合并 `fix/cross-platform-dev`。Windows 原生 **Supported** 指 source-build 启动 + VS Code taskkill 子孙清理；仍不宣称 Job Object / ledger v2 / packaged 发行。跨端问题/目标/路线仍以 `docs/cross-platform-hardening-plan.md` 为准；该文件 §16 是相对 2026-08-17 审计的当前进度。
 
 ```text
 CP-00..CP-04  G0 honesty / tooling / CI skeleton          DONE
@@ -94,9 +94,10 @@ CP-32         open project authorizes via cwd.validate     DONE
 CP-33         ask before expanding unauthorized project    DONE
 CP-34         Windows process-tree uses VS Code taskkill   DONE
 CP-35         claim Windows native Supported               DONE
+CP-36         Protocol path-flavor on Host bootstrap       DONE
 
 later (explicitly deferred):
-  Job Object, ledger v2, Protocol path-flavor, packaged release
+  Job Object, ledger v2, packaged release
 ```
 
 | ID | 工作包 | 状态 | Owner | 依赖 | 验收 |
@@ -143,8 +144,9 @@ later (explicitly deferred):
 | `CP-33` | 未覆盖 AllowedRoot 的项目/会话先弹确认，确认后再 `cwd.validate`；取消留在当前 cwd。`~/.pi/agent` 不加进可浏览根 | `DONE` | `packages/client` AppShell | `CP-32` | file-paths 5/5 + AppShell authorize/confirm 6/6 PASS；不宣称 AllowedRoot 设置页 / 产品支持 |
 | `CP-34` | Windows process-tree 对齐 VS Code `killTree`：`%WINDIR%\System32\taskkill.exe /T`，SIGKILL 加 `/F`；不引 npm 包、不用 Job Object | `DONE` | `packages/local-authority/process` | `CP-33` | process-tree 定向 PASS |
 | `CP-35` | 对外矩阵改为 Windows 原生 **Supported**（source-build 启动 + named pipe + AllowedRoot + VS Code taskkill）；不宣称 Job Object / packaged 发行 / 完整 Windows `npm test` | `DONE` | docs | `CP-34` | README / §16 / N-014 同步；历史切片原文不改 |
+| `CP-36` | Host bootstrap 下发 `pathFlavor`（`posix \| windows-drive \| windows-unc`）；bootstrap schema 升到 2；Client mention/fuzzy/compare 只按该值折叠大小写 | `DONE` | `packages/protocol` + Host + Client | `CP-35` | protocol/host bootstrap + path-flavor + client file-paths/mentions/fuzzy PASS；缺字段 fail-closed |
 
-后续 lane：Job Object / ledger v2 / Protocol path-flavor / 远端发行仍后置。独立 verification agent 当前不可用。
+后续 lane：Job Object / ledger v2 / 远端发行仍后置。独立 verification agent 当前不可用。
 
 ---
 

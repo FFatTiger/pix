@@ -80,7 +80,7 @@ function sessionLabelFor(session: { title?: string | undefined; firstMessage?: s
  * every visible runtime surface is active-session identity-gated.
  */
 export function AppShell({ search }: AppShellProps) {
-  const { canAgent, canBrowseSessions, can } = useCapabilities();
+  const { canAgent, canBrowseSessions, can, pathFlavor } = useCapabilities();
   const runtime = useRuntime();
   const connectRuntime = runtime.connect;
   const { t } = useI18n();
@@ -272,14 +272,14 @@ export function AppShell({ search }: AppShellProps) {
   }, [cwdValidate, navigate, t]);
 
   const requestOpenProject = useCallback(async (projectRoot: string, sessionId?: string) => {
-    if (isPathCoveredByAllowedRoots(projectRoot, allowedRoots)) {
+    if (isPathCoveredByAllowedRoots(projectRoot, allowedRoots, pathFlavor)) {
       await authorizeAndOpen(projectRoot, sessionId);
       return;
     }
     setOpenProjectError(null);
     setAuthorizeError(null);
     setAuthorizePrompt(sessionId === undefined ? { path: projectRoot } : { path: projectRoot, sessionId });
-  }, [allowedRoots, authorizeAndOpen]);
+  }, [allowedRoots, authorizeAndOpen, pathFlavor]);
 
   const handleOpenHomeForProject = useCallback(async (projectRoot: string) => {
     await requestOpenProject(projectRoot);
@@ -478,7 +478,7 @@ export function AppShell({ search }: AppShellProps) {
    */
   const commitSessionNavigation = useCallback((sessionId: string, targetCwd?: string): void => {
     const cwd = targetCwd ?? liveSearchRef.current.cwd;
-    if (cwd !== undefined && !isPathCoveredByAllowedRoots(cwd, allowedRoots)) {
+    if (cwd !== undefined && !isPathCoveredByAllowedRoots(cwd, allowedRoots, pathFlavor)) {
       setAuthorizeError(null);
       setAuthorizePrompt({ path: cwd, sessionId });
       return;
@@ -487,7 +487,7 @@ export function AppShell({ search }: AppShellProps) {
       to: "/",
       search: { session: sessionId, ...(cwd === undefined ? {} : { cwd }) },
     });
-  }, [allowedRoots, navigate]);
+  }, [allowedRoots, navigate, pathFlavor]);
 
   // Sidebar row selection: prepare-then-commit (no-flicker). It never
   // attaches/activates, never stops, never creates; the Composer's send is the

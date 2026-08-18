@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { useQuery } from "@tanstack/react-query";
 import type { SlashCommandInfo, ThinkingLevel, ToolInfo } from "@fffattiger/pix-protocol";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
+import { foldsPathCase } from "@/lib/file-paths";
 import { useSessionTranscript } from "@/features/session-history/use-session-transcript";
 import { useRuntime } from "@/runtime";
 import { useHttpClient } from "@/app/http-context";
@@ -143,7 +144,7 @@ function getUserInputTexts(messages: readonly { role: string; content?: unknown 
 
 export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, catalogCwd: catalogCwdProp, onCreateSession }: ComposerProps) {
   const runtime = useRuntime();
-  const { canAgent, canBrowseSessions, can } = useCapabilities();
+  const { canAgent, canBrowseSessions, can, pathFlavor } = useCapabilities();
   const http = useHttpClient();
   const { t } = useI18n();
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
@@ -211,6 +212,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const canFilesIndex = can("files");
   const canUpload = can("files.upload");
   const canSkills = can("skills");
+  const foldPathCase = foldsPathCase(pathFlavor);
 
   // Authoritative running state (never inferred) OR a prompt transaction in
   // flight (activation + dispatch) — so an in-progress send is never treated as
@@ -273,13 +275,13 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     const paths = new Set<string>();
     const dirs = new Set<string>();
     for (const file of data.files) {
-      const lower = file.toLowerCase();
-      paths.add(lower);
-      const slash = lower.lastIndexOf("/");
-      if (slash > 0) dirs.add(lower.slice(0, slash));
+      const key = foldPathCase ? file.toLowerCase() : file;
+      paths.add(key);
+      const slash = key.lastIndexOf("/");
+      if (slash > 0) dirs.add(key.slice(0, slash));
     }
     return { cwd, paths, dirs, truncated: data.truncated };
-  }, [filesIndexQuery.data, cwd]);
+  }, [filesIndexQuery.data, cwd, foldPathCase]);
 
   const skillNames = useMemo(() => {
     const data = skillsQuery.data;

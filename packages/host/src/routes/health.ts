@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import { HOST_BOOTSTRAP_SCHEMA_VERSION } from "@fffattiger/pix-protocol/host-bootstrap";
+import { resolveHostPathFlavor } from "../resources/path-flavor.js";
 import type { HostEnv } from "../env.js";
 import {
   CATALOG_CAPABILITIES,
@@ -290,6 +291,7 @@ export function registerBootstrapRoutes(
       capabilities,
       mode: deps.exposureMode ?? "local",
       gate: resolveBootstrapGateStatus(deps, gate),
+      pathFlavor: resolveHostPathFlavor(deps.resources?.defaultCwd ?? deps.resources?.allowedRoots.roots()[0]),
     });
   });
 }

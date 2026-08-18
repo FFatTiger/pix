@@ -1,5 +1,13 @@
+import type { HostPathFlavor } from "@fffattiger/pix-protocol/host-bootstrap";
+
 const WINDOWS_DRIVE_ABSOLUTE = /^[A-Za-z]:\//;
 const WINDOWS_DRIVE_ROOT = /^[A-Za-z]:\/?$/;
+
+export type ClientPathFlavor = HostPathFlavor;
+
+export function foldsPathCase(flavor: ClientPathFlavor | undefined): boolean {
+  return flavor === "windows-drive" || flavor === "windows-unc";
+}
 
 export function normalizeFilePathSlashes(filePath: string): string {
   if (/^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith("\\\\")) {
@@ -34,18 +42,21 @@ export function isAbsoluteClientPath(filePath: string): boolean {
   return normalized.startsWith("/") || isWindowsDriveAbsolutePath(normalized);
 }
 
-function compareForm(normalized: string): string {
-  return isWindowsDriveAbsolutePath(normalized) ? normalized.toLowerCase() : normalized;
+function compareForm(normalized: string, flavor?: ClientPathFlavor): string {
+  const folded = flavor === undefined
+    ? isWindowsDriveAbsolutePath(normalized)
+    : foldsPathCase(flavor);
+  return folded ? normalized.toLowerCase() : normalized;
 }
 
-/** Comparison key for Git/status maps. Drive-absolute paths fold case; `C:/` stays a root. */
-export function filePathCompareKey(filePath: string): string {
-  return compareForm(keepWindowsDriveRoot(normalizeFilePathSlashes(filePath)));
+/** Comparison key for Git/status maps. Case-fold only when Host pathFlavor says so. */
+export function filePathCompareKey(filePath: string, flavor?: ClientPathFlavor): string {
+  return compareForm(keepWindowsDriveRoot(normalizeFilePathSlashes(filePath)), flavor);
 }
 
-export function isFilePathInside(candidate: string, root: string): boolean {
-  const filePath = filePathCompareKey(candidate);
-  const rootPath = filePathCompareKey(root);
+export function isFilePathInside(candidate: string, root: string, flavor?: ClientPathFlavor): boolean {
+  const filePath = filePathCompareKey(candidate, flavor);
+  const rootPath = filePathCompareKey(root, flavor);
   if (rootPath === "" || rootPath === "/") return true;
   if (filePath === rootPath || filePath === `${rootPath}/`) return true;
   const prefix = rootPath.endsWith("/") ? rootPath : `${rootPath}/`;
@@ -56,9 +67,10 @@ export function isFilePathInside(candidate: string, root: string): boolean {
 export function isPathCoveredByAllowedRoots(
   target: string | undefined,
   roots: readonly string[] | undefined,
+  flavor?: ClientPathFlavor,
 ): boolean {
   if (target === undefined || target === "" || roots === undefined || roots.length === 0) return false;
-  return roots.some((root) => isFilePathInside(target, root));
+  return roots.some((root) => isFilePathInside(target, root, flavor));
 }
 
 export function encodeFilePathForApi(filePath: string): string {
@@ -85,13 +97,13 @@ export function getFileDirectory(filePath: string): string {
   return normalized.slice(0, lastSlash);
 }
 
-export function getRelativeFilePath(filePath: string, cwd?: string): string {
+export function getRelativeFilePath(filePath: string, cwd?: string, flavor?: ClientPathFlavor): string {
   if (!cwd) return filePath;
 
   const normalizedFile = normalizeFilePathSlashes(filePath);
   const normalizedCwd = keepWindowsDriveRoot(normalizeFilePathSlashes(cwd));
-  const fileCmp = compareForm(normalizedFile);
-  const cwdCmp = compareForm(normalizedCwd);
+  const fileCmp = compareForm(normalizedFile, flavor);
+  const cwdCmp = compareForm(normalizedCwd, flavor);
   if (fileCmp === cwdCmp || fileCmp === `${cwdCmp}/`) return ".";
   const prefix = cwdCmp.endsWith("/") ? cwdCmp : `${cwdCmp}/`;
   if (fileCmp.startsWith(prefix)) {
