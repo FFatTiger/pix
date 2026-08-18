@@ -581,7 +581,7 @@ test("bounded process runner fails closed when the child survives SIGKILL", asyn
   const childRef = { current: undefined };
   const tree = {
     kind: real.kind,
-    supportsDescendants: false,
+    supportsDescendants: true,
     spawn(options) {
       const child = real.spawn(options);
       childRef.current = child;

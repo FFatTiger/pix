@@ -1,5 +1,6 @@
 export {
   createProcessTreeController,
+  windowsTaskkillPath,
   type ProcessTreeController,
   type ProcessTreeControllerFactoryOptions,
   type ProcessTreeSignal,

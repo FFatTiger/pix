@@ -5,7 +5,7 @@
 > 进度同步：`feat/cross-platform-g0-baseline`（已 merge `origin/main@73fa042`）
 > 范围：原生 Windows、原生 Linux、原生 macOS；同时覆盖浏览器/PWA、CLI、Host、sessiond、Worker、文件/Git、构建、安装与发布
 > 非范围：不读取、不合并、不 cherry-pick `fix/cross-platform-dev`；不以 WSL、Docker 或虚拟机替代 Windows 原生产品支持；不在本计划中实现 Tauri/Electron 壳
-> 状态：专题计划仍有效。活动任务与验收只写在 `docs/refactor-execution-plan.md` §1.3（CP-00–CP-33）。§0–§15 的 2026-08-17 审计是历史快照；当前事实以 §16 为准。
+> 状态：专题计划仍有效。活动任务与验收只写在 `docs/refactor-execution-plan.md` §1.3（CP-00–CP-35）。§0–§15 的 2026-08-17 审计是历史快照；当前事实以 §16 为准。
 
 ---
 
@@ -19,7 +19,7 @@
 | Linux | **主要产品路径按 POSIX 设计可工作，但没有持续证明** | 无 Linux CI；锁/secret/进程树/文件监听仍有现存风险；无发行 artifact 原生验证 |
 | macOS | **主要产品路径按 POSIX 设计可工作，但没有持续证明** | 无 macOS CI；`sun_path`、APFS 大小写/Unicode、TCC、签名/公证和发行验证未关门 |
 
-**2026-08-18 起该表已过时。** 当前诚实状态见 §16：Windows 默认可启动但仍是 Unsupported；Linux/macOS 有 PR tooling + required `npm test`，仍是 Unverified-native。
+**2026-08-18 起该表已过时。** 当前诚实状态见 §16：Windows 原生 **Supported**（source-build 启动 + VS Code taskkill 子孙清理，不是 packaged 发行）；Linux/macOS 仍是 Unverified-native。
 
 本次代码审计确认的最高优先级事实：
 
@@ -60,7 +60,7 @@ CI：          G0 起逐 seam 转为 required；G7 汇总完整矩阵
 发布：        各 lane 达标后进入 G8，不让 Windows 未完成阻断 Linux/macOS 发布闭环
 ```
 
-**不得在 G2–G7 完成前宣称 Windows 原生支持；不得在 G7 完成前宣称 Linux/macOS 已被产品化验证。**
+**Windows 原生 Supported 仅覆盖 source-build 启动与日常开发路径。** 不得在 G7 完成前宣称 packaged 安装/升级或 Linux/macOS 产品化验证。
 
 ---
 
@@ -1515,7 +1515,7 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 
 | 平台 | 等级 | 现在的事实 |
 |---|---|---|
-| Windows 原生 | **Unsupported** | 默认 `~/.pi/pix` 可启动：native SID/DACL/file-ID backend、named pipe、required start/shutdown smoke。不是产品支持：无 Job Object、无 ledger v2、无 packaged install/upgrade、无完整 Windows `npm test`。不以 WSL 作为产品方案。 |
+| Windows 原生 | **Supported** | 默认 `~/.pi/pix` 可原生启动：SID/DACL/file-ID backend、named pipe、AllowedRoot、required start/shutdown smoke。Worker/Git 子孙清理对齐 VS Code `taskkill /T`。不以 WSL 作为方案。仍未关门：Job Object、ledger v2、packaged install/upgrade、完整 Windows `npm test`。 |
 | Linux | **Unverified-native** | PR tooling + required `npm test` 已存在。无发行 smoke / 签名。 |
 | macOS | **Unverified-native** | 同上。无公证 / 发行 smoke。 |
 | 浏览器 / PWA | **Partial** | localhost/HTTPS 普通 Web；HTTP LAN 明确 web-only / insecure-origin，可见降级。不承诺可安装 PWA。 |
@@ -1528,12 +1528,12 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | G1 | 半完成 | discriminated `posix \| windows` 合同；Client display 路径 owner | Protocol path-flavor DTO；ledger v2 |
 | G2A | 基本完成 | lock/secret identity pin、禁事后 chmod、默认拒 root | macOS lock 仍无 start identity |
 | G2B | 接通 | `createSecureStateBackend()` 在 walk 前选 Windows native；DACL = 当前用户+SYSTEM，宽 ACL 不自动修 | 中间目录宽 ACL 只查 reparse |
-| G3 | 半完成 | pipe DACL（listen 后 protect+回读）、process-start identity、Worker/Git final-kill、共享 process-tree owner | Job Object；listen 前带 DACL 的 retained N-API pipe |
+| G3 | 半完成 | pipe DACL（listen 后 protect+回读）、process-start identity、Worker/Git final-kill、共享 process-tree（Windows = VS Code taskkill /T） | Job Object；listen 前带 DACL 的 retained N-API pipe |
 | G4 | 半完成 | AllowedRoot 平台身份、parent-watch + overflow rescan、Windows 路径脱敏、exact-open | hardlink 事务、worktree disk identity、junction 对抗 CI |
 | G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认 | Host 下发 path-flavor；mention 索引仍无条件小写；无 AllowedRoot 设置页 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
 
-执行切片 CP-00–CP-33 记为 DONE。后置：Job Object、ledger v2、Protocol path-flavor、packaged release。
+执行切片 CP-00–CP-35 记为 DONE。后置：Job Object、ledger v2、Protocol path-flavor、packaged release。
 
 ### 16.3 审计条目对照
 
@@ -1566,4 +1566,4 @@ AllowedRoot **没有设置页**。启动根来自启动 cwd / `PIX_ALLOWED_ROOTS
 
 1. Protocol path-flavor：Host bootstrap 下发，Client 不再靠路径长得像 `C:/` 猜。
 2. named-pipe listen 前带 DACL（VS Code SID/ACL，而不是 `node:net` 默认 DACL 再补一层）。
-3. 仍后置：Job Object、ledger v2、packaged release、AllowedRoot 设置页。
+3. 仍后置：Job Object（比 taskkill 更严的笼子）、ledger v2、packaged release、AllowedRoot 设置页。

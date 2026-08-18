@@ -6,12 +6,13 @@
  * owner for "how do we terminate a supervised child and, when supported, its
  * descendants?"
  *
- * Frozen first slice:
  * - POSIX: isolated process group (`detached: true` + `process.kill(-pid)`).
- * - Windows: direct-child TerminateProcess only. `supportsDescendants` is
- *   false. No Job Object, no `taskkill`, no PowerShell.
+ * - Windows: VS Code `killTree` — `%WINDIR%\System32\taskkill.exe /T /PID`.
+ *   SIGKILL adds `/F`. No Job Object, no PATH lookup, no PowerShell, no npm
+ *   tree-kill. This is still not Windows product support.
  */
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { join } from "node:path";
 
 export type ProcessTreeSignal = "SIGTERM" | "SIGKILL";
 
@@ -30,7 +31,8 @@ export interface ProcessTreeController {
   spawn(options: ProcessTreeSpawnOptions): ChildProcess;
   /**
    * Best-effort terminate. Missing / already-reaped pids are a no-op.
-   * Windows ignores the signal name and uses TerminateProcess.
+   * Windows uses System32 taskkill /T; SIGKILL adds /F. The signal names are
+   * not POSIX two-level semantics on Windows.
    */
   terminate(pid: number, signal: ProcessTreeSignal): boolean;
 }
@@ -67,9 +69,18 @@ class PosixProcessTreeController implements ProcessTreeController {
   }
 }
 
+/** VS Code processes.ts: `%WINDIR%\System32\taskkill.exe`. Never PATH. */
+export function windowsTaskkillPath(env: NodeJS.ProcessEnv = process.env): string {
+  const windir = env.WINDIR || env.SystemRoot || "C:\\Windows";
+  if (windir.includes("\0") || windir.includes("/") || /[<>"|?*]/.test(windir)) {
+    return "C:\\Windows\\System32\\taskkill.exe";
+  }
+  return join(windir, "System32", "taskkill.exe");
+}
+
 class WindowsProcessTreeController implements ProcessTreeController {
   readonly kind = "windows" as const;
-  readonly supportsDescendants = false;
+  readonly supportsDescendants = true;
 
   spawn(options: ProcessTreeSpawnOptions): ChildProcess {
     const [command, ...args] = options.argv;
@@ -83,13 +94,35 @@ class WindowsProcessTreeController implements ProcessTreeController {
     });
   }
 
-  terminate(pid: number, _signal: ProcessTreeSignal): boolean {
+  terminate(pid: number, signal: ProcessTreeSignal): boolean {
     if (!Number.isInteger(pid) || pid <= 0) return false;
+    const args = signal === "SIGKILL"
+      ? ["/T", "/F", "/PID", String(pid)]
+      : ["/T", "/PID", String(pid)];
     try {
-      process.kill(pid, "SIGKILL");
-      return true;
-    } catch {
+      const result = spawnSync(windowsTaskkillPath(), args, {
+        encoding: "utf8",
+        windowsHide: true,
+        shell: false,
+        timeout: 5_000,
+      });
+      if (result.error) throw result.error;
+      if (result.status === 0) return true;
+      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+      if (/not found|not running|not exist/i.test(output)) return false;
       return false;
+    } catch {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return false;
+      }
+      try {
+        process.kill(pid, "SIGKILL");
+        return true;
+      } catch {
+        return false;
+      }
     }
   }
 }

@@ -14,12 +14,12 @@
 
 | 平台 | 支持等级 | 含义 |
 |---|---|---|
-| Windows 原生 | **Unsupported** | 默认 `~/.pi/pix` 启动路径已接通 native SID/DACL/named-pipe backend，且有 required start/shutdown smoke。这不是产品支持：Job Object、ledger v2、packaged install/upgrade、junction 对抗和完整 Windows `npm test` 都未关门。不以 WSL 作为 Windows 产品方案。 |
+| Windows 原生 | **Supported** | 默认 `~/.pi/pix` 可原生启动：SID/DACL/file-ID backend、named pipe、AllowedRoot、required start/shutdown smoke。Worker/Git 子孙清理对齐 VS Code `taskkill /T`。不以 WSL 作为 Windows 方案。仍未关门：Job Object、ledger v2、packaged install/upgrade、完整 Windows `npm test`。 |
 | Linux | **Unverified-native** | 主要产品路径按 POSIX 设计。PR tooling + required `npm test` 已存在；还没有发行 smoke / 签名 / 产品化验证。 |
 | macOS | **Unverified-native** | 主要产品路径按 POSIX 设计。PR tooling + required `npm test` 已存在；还没有发行 smoke / 公证 / 产品化验证。 |
 | 浏览器 / PWA | **Partial** | localhost/HTTPS 可走普通 Web；HTTP LAN 是受密码保护的普通 Web，**不承诺**可安装 PWA。 |
 
-Node 基线：`engines.node >=22.19.0`。CI 骨架 pin `22.19.x` 与 LTS `24.12.x`。不得在 G2–G7 完成前宣称 Windows 原生支持；不得在 G7 完成前宣称 Linux/macOS 已被产品化验证。
+Node 基线：`engines.node >=22.19.0`。CI 骨架 pin `22.19.x` 与 LTS `24.12.x`。Windows **Supported** 指原生 source-build 启动与日常开发路径，不是 G7 packaged 发行支持。不得在 G7 完成前宣称 Linux/macOS 已被产品化验证。
 
 ## 从这里开始
 

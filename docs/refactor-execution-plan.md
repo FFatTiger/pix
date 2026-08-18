@@ -76,7 +76,7 @@ PiSdkAdapter（当前）/ PiRpcAdapter（未来）
 
 ### 1.3 活动跨端任务（计划 SSOT：`docs/cross-platform-hardening-plan.md`）
 
-G0 基线以及后续已落地的 G1–G5 切片都记在下表。不读取、不合并 `fix/cross-platform-dev`。不宣称 Windows 产品支持 / Job Object / ledger v2 / Protocol path-flavor。跨端问题/目标/路线仍以 `docs/cross-platform-hardening-plan.md` 为准；该文件 §16 是相对 2026-08-17 审计的当前进度。
+G0 基线以及后续已落地的 G1–G5 切片都记在下表。不读取、不合并 `fix/cross-platform-dev`。Windows 原生 **Supported** 指 source-build 启动 + VS Code taskkill 子孙清理；仍不宣称 Job Object / ledger v2 / Protocol path-flavor / packaged 发行。跨端问题/目标/路线仍以 `docs/cross-platform-hardening-plan.md` 为准；该文件 §16 是相对 2026-08-17 审计的当前进度。
 
 ```text
 CP-00..CP-04  G0 honesty / tooling / CI skeleton          DONE
@@ -92,6 +92,8 @@ CP-30         lock process-start identity                 DONE
 CP-31         watch overflow triggers authoritative rescan DONE
 CP-32         open project authorizes via cwd.validate     DONE
 CP-33         ask before expanding unauthorized project    DONE
+CP-34         Windows process-tree uses VS Code taskkill   DONE
+CP-35         claim Windows native Supported               DONE
 
 later (explicitly deferred):
   Job Object, ledger v2, Protocol path-flavor, packaged release
@@ -139,6 +141,8 @@ later (explicitly deferred):
 | `CP-31` | Host file-watch overflow/ENOSPC/EMFILE 只当 invalidation hint，串行 exact-child rescan 后发权威 `change`；不关流、不加轮询 | `DONE` | `packages/host` file-watch | `CP-30` | file-watch-overflow 1/1 + 原 watch 3/3 PASS；不宣称 Job Object / 产品支持 |
 | `CP-32` | 打开项目先 `POST /v1/cwd/validate` 再改 URL；失败留在当前 cwd 并可见；Home 选择器可输入绝对路径扩根 | `DONE` | `packages/client` AppShell | `CP-31` | open-project-error 1/1 + AppShell authorize 3/3 PASS；不宣称 AllowedRoot 设置页 / 产品支持 |
 | `CP-33` | 未覆盖 AllowedRoot 的项目/会话先弹确认，确认后再 `cwd.validate`；取消留在当前 cwd。`~/.pi/agent` 不加进可浏览根 | `DONE` | `packages/client` AppShell | `CP-32` | file-paths 5/5 + AppShell authorize/confirm 6/6 PASS；不宣称 AllowedRoot 设置页 / 产品支持 |
+| `CP-34` | Windows process-tree 对齐 VS Code `killTree`：`%WINDIR%\System32\taskkill.exe /T`，SIGKILL 加 `/F`；不引 npm 包、不用 Job Object | `DONE` | `packages/local-authority/process` | `CP-33` | process-tree 定向 PASS |
+| `CP-35` | 对外矩阵改为 Windows 原生 **Supported**（source-build 启动 + named pipe + AllowedRoot + VS Code taskkill）；不宣称 Job Object / packaged 发行 / 完整 Windows `npm test` | `DONE` | docs | `CP-34` | README / §16 / N-014 同步；历史切片原文不改 |
 
 后续 lane：Job Object / ledger v2 / Protocol path-flavor / 远端发行仍后置。独立 verification agent 当前不可用。
 
@@ -672,5 +676,5 @@ Base：<hash>
 | `N-011` | secure-state canonical 路径：绝对路径 + 最近已存在祖先 realpath + 校验缺失尾 + canonical 组件回走；接受 macOS 根级系统别名（`/var`→`/private/var` 等），拒绝非根级用户符号链接中间组件、lexical 父级逃逸、根、网络/Windows 声明 | 冻结（Slice 1） |
 | `N-012` | 原生 Windows secure-state 仍不支持（无 native backend / secure named pipe / Windows CI 门禁）；不因 contracts 平台中立而宣称支持 | 冻结（pending） |
 | `N-013` | Runtime Protocol 当前主版本由 `packages/protocol/src/version.ts` 的 `PROTOCOL_VERSION=2` 拥有；HTTP `/v1/bootstrap` 使用独立 `HOST_BOOTSTRAP_SCHEMA_VERSION=1`（`@fffattiger/pix-protocol/host-bootstrap`），二者不得互相镜像或再引入 Host-owned `HOST_PROTOCOL_VERSION` | 冻结（CP-01/CP-02） |
-| `N-014` | 跨端“支持”只由 required CI + packaged smoke 定义。当前对外矩阵：Windows native Unsupported；Linux/macOS Unverified-native。不以 WSL 作为 Windows 产品方案 | 冻结（CP-00/CP-04） |
+| `N-014` | Windows 原生 **Supported** = source-build 启动 + named pipe + AllowedRoot + VS Code `taskkill /T` 子孙清理。G7 packaged 发行支持仍未宣称。Linux/macOS 仍是 Unverified-native。不以 WSL 作为 Windows 产品方案 | 更新（CP-35） |
 | `N-015` | UI-first 事务与运行状态：optimistic 按 session 独立于权威 projection、固定尾部合并并由真实 entry 接管；prompt ack 非终态；sessiond 全局 busy push + WS listRunning 初始基线由 SessionStore 单一拥有，Sidebar/项目/Tab 同源；历史/文件选择不激活目标 Worker，已有 attach 可保留为后台事件订阅但不得跨 active identity 泄漏 | 冻结 |

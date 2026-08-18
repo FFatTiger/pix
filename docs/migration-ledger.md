@@ -3804,3 +3804,15 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Opening a project or selecting a session whose cwd is outside current AllowedRoots prompts first. Confirm runs `POST /v1/cwd/validate`; cancel stays on the current workspace.
 - `~/.pi/agent` remains catalog-only and is not added as a browsable Files/Git root. Not Protocol path-flavor or product support.
 
+## 103. Cross-platform CP-34 — Windows process-tree uses VS Code taskkill
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `dd726fa`.
+- Windows descendant cleanup now matches VS Code `killTree`: `%WINDIR%\\System32\\taskkill.exe /T /PID`, plus `/F` for SIGKILL. Path is never resolved from PATH. No Job Object and no npm `tree-kill`.
+- `supportsDescendants` is true on Windows.
+
+## 104. Cross-platform CP-35 — claim Windows native Supported
+
+- Branch/base: `feat/cross-platform-g0-baseline` / CP-34.
+- Public matrix now says Windows native **Supported** for source-build startup, named pipe, AllowedRoot, and VS Code taskkill descendant cleanup.
+- Still not claimed: Job Object, ledger v2, packaged install/upgrade, full Windows `npm test`, Linux/macOS product verification.
+

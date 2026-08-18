@@ -608,7 +608,7 @@ test("close fails when the child is still alive after the final kill wait", asyn
   const real = createProcessTreeController();
   const tree = {
     kind: real.kind,
-    supportsDescendants: false,
+    supportsDescendants: true,
     spawn: (options: Parameters<typeof real.spawn>[0]) => real.spawn(options),
     terminate: () => true,
   };

@@ -11,7 +11,8 @@
  * Factory never forges business commands (no synthetic worker.shutdown).
  * Close is graceful: stdin.end() → SIGTERM → SIGKILL through the shared
  * process-tree controller, with PID reuse guards. Environment is a strict
- * allowlist — never `...process.env`. Windows still has no descendant tree.
+ * allowlist — never `...process.env`. Windows descendant cleanup uses the
+ * shared process-tree owner (VS Code System32 taskkill /T).
  */
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createProcessTreeController, type ProcessTreeController } from "@fffattiger/pix-local-authority/process";
