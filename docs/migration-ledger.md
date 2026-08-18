@@ -3701,3 +3701,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `bba2159`.
 - `file-links` and `file-mentions` reuse `normalizeFilePathSlashes` + `keepWindowsDriveRoot` instead of a second slash/case implementation.
 - Drive-root cwd/base stays `C:/`. POSIX containment stays case-sensitive. Display/navigation only; not Protocol path-flavor or Host authorization.
+
+## 92. Cross-platform CP-24 — FileExplorer Git key reuses filePathCompareKey
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `4b6dde9`.
+- `FileExplorer.gitPathKey` now calls `filePathCompareKey` so drive-root status/ignore maps keep `c:/` instead of collapsing to `c:`.
+- POSIX keys stay case-sensitive. Display/Git map matching only; not Protocol path-flavor or Host authorization.

@@ -23,6 +23,11 @@ function compareForm(normalized: string): string {
   return isWindowsDriveAbsolute(normalized) ? normalized.toLowerCase() : normalized;
 }
 
+/** Comparison key for Git/status maps. Drive-absolute paths fold case; `C:/` stays a root. */
+export function filePathCompareKey(filePath: string): string {
+  return compareForm(keepWindowsDriveRoot(normalizeFilePathSlashes(filePath)));
+}
+
 export function encodeFilePathForApi(filePath: string): string {
   return normalizeFilePathSlashes(filePath)
     .split("/")

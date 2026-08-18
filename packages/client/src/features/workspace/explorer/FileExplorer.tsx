@@ -2,7 +2,7 @@ import { forwardRef, useState, useCallback, useEffect, useImperativeHandle, useR
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { At, CaretRight, Check, Copy, DownloadSimple, Info, LinkSimple, MinusCircle, Spinner, UploadSimple, Warning, X } from "@phosphor-icons/react";
 import { getFileIcon, FolderIcon } from "@/components/files/FileIcons";
-import { getRelativeFilePath, joinFilePath } from "@/lib/file-paths";
+import { filePathCompareKey, getRelativeFilePath, joinFilePath } from "@/lib/file-paths";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { useContextMenu } from "@/components/ContextMenu";
@@ -62,8 +62,7 @@ interface PendingConflict {
 type ExplorerGitStatus = "added" | "modified" | "deleted";
 
 function gitPathKey(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, "/").replace(/\/+$/, "");
-  return /^[a-zA-Z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+  return filePathCompareKey(filePath);
 }
 
 function toExplorerGitStatus(status: GitFileStatusKind): ExplorerGitStatus {

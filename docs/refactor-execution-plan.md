@@ -121,6 +121,7 @@ CP-00 docs/SSOT
 | `CP-21` | Client iPadOS 先于 Macintosh 检测；`copyText` 失败必须 reject，不再把 execCommand 假成功 | `DONE` | `packages/client` | `CP-20` | detect-platform 5/5 + clipboard 2/2 PASS；不宣称 Protocol path-flavor / 产品支持 |
 | `CP-22` | Client `file-paths` Windows drive 相对路径大小写不敏感；`C:/` 根不塌成 `C:` | `DONE` | `packages/client` file-paths | `CP-21` | file-paths 3/3 PASS；不宣称 Protocol path-flavor / 产品支持 |
 | `CP-23` | Client `file-links`/`file-mentions` 复用 `file-paths` drive-root helper；`C:/` 不再塌成 `C:` | `DONE` | `packages/client` file-links/mentions | `CP-22` | file-links 4/4 + file-mentions 8/8 + paths 22/22 PASS；不宣称 Protocol path-flavor / 产品支持 |
+| `CP-24` | FileExplorer Git status key 复用 `filePathCompareKey`；`C:/` 不再塌成 `C:` | `DONE` | `packages/client` FileExplorer | `CP-23` | file-paths 4/4 + shared-git 2/2 PASS；不宣称 Protocol path-flavor / 产品支持 |
 
 后续 lane：Job Object / ledger v2 / 远端 CI receipt。独立 verification agent 当前不可用。
 

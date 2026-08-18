@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getFileDirectory, getRelativeFilePath, joinFilePath, normalizeFilePathSlashes } from "./file-paths";
+import { filePathCompareKey, getFileDirectory, getRelativeFilePath, joinFilePath, normalizeFilePathSlashes } from "./file-paths";
 
 describe("file-paths Windows drive helpers", () => {
   it("keeps a drive root as C:/ and does not collapse it to C:", () => {
@@ -18,5 +18,11 @@ describe("file-paths Windows drive helpers", () => {
   it("normalizes slashes without inventing a POSIX path", () => {
     expect(normalizeFilePathSlashes("C:\\Users\\Name")).toBe("C:/Users/Name");
     expect(joinFilePath("C:/Users/Name", "src")).toBe("C:/Users/Name/src");
+  });
+
+  it("keeps a drive-root compare key as c:/", () => {
+    expect(filePathCompareKey("C:/")).toBe("c:/");
+    expect(filePathCompareKey("C:\\Users\\Name")).toBe("c:/users/name");
+    expect(filePathCompareKey("/Var/log")).toBe("/Var/log");
   });
 });
