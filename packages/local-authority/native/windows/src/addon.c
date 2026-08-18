@@ -14,7 +14,7 @@
 
 #ifdef _WIN32
 
-#define PIX_NATIVE_API_VERSION 4
+#define PIX_NATIVE_API_VERSION 5
 #define PIX_MAX_REPORTED_ACES 32
 
 static napi_value throw_fixed(napi_env env, const char* code, const char* message) {
@@ -695,6 +695,162 @@ static napi_value inspect_named_pipe(napi_env env, napi_callback_info info) {
   return result;
 }
 
+static napi_value create_protected_named_pipe(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  wchar_t* path = NULL;
+  PSID user_sid = NULL;
+  PSID system_sid = NULL;
+  PACL acl = NULL;
+  SECURITY_DESCRIPTOR descriptor;
+  SECURITY_ATTRIBUTES attributes;
+  HANDLE pipe = INVALID_HANDLE_VALUE;
+
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 1) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is required");
+  }
+  path = wide_path_from_js(env, argv[0]);
+  if (!path || !is_named_pipe_path(path)) {
+    if (path) free(path);
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is invalid");
+  }
+
+  user_sid = copy_current_user_sid();
+  system_sid = create_local_system_sid();
+  if (!user_sid || !system_sid) {
+    if (user_sid) free(user_sid);
+    if (system_sid) FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "current user identity could not be inspected");
+  }
+  acl = create_private_allowlist_acl(user_sid, system_sid);
+  if (acl == NULL ||
+      !InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION) ||
+      !SetSecurityDescriptorOwner(&descriptor, user_sid, FALSE) ||
+      !SetSecurityDescriptorDacl(&descriptor, TRUE, acl, FALSE) ||
+      !SetSecurityDescriptorControl(&descriptor, SE_DACL_PROTECTED, SE_DACL_PROTECTED)) {
+    if (acl) free_explicit_acl(acl);
+    free(user_sid);
+    FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "private security descriptor could not be created");
+  }
+
+  ZeroMemory(&attributes, sizeof(attributes));
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = &descriptor;
+  attributes.bInheritHandle = FALSE;
+  pipe = CreateNamedPipeW(
+    path,
+    PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+    PIPE_UNLIMITED_INSTANCES,
+    65536,
+    65536,
+    0,
+    &attributes
+  );
+  {
+    DWORD error = (pipe == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
+    free_explicit_acl(acl);
+    free(user_sid);
+    FreeSid(system_sid);
+    free(path);
+    if (pipe == INVALID_HANDLE_VALUE) {
+      if (error == ERROR_ACCESS_DENIED || error == ERROR_PIPE_BUSY) {
+        return throw_fixed(env, "NATIVE_ALREADY_EXISTS", "named pipe already exists");
+      }
+      return throw_fixed(
+        env,
+        error == ERROR_INVALID_NAME ? "NATIVE_INVALID_ARGUMENT" : "NATIVE_CREATE_FAILED",
+        "named pipe could not be created"
+      );
+    }
+  }
+
+  napi_value result;
+  if (napi_create_bigint_uint64(env, (uint64_t)(uintptr_t)pipe, &result) != napi_ok) {
+    CloseHandle(pipe);
+    return throw_fixed(env, "NATIVE_INTERNAL", "native operation failed");
+  }
+  return result;
+}
+
+static napi_value inspect_named_pipe_handle(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  uint64_t raw = 0;
+  bool lossless = false;
+  PSECURITY_DESCRIPTOR descriptor = NULL;
+  napi_value result = NULL;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 1) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "handle is required");
+  }
+  if (napi_get_value_bigint_uint64(env, argv[0], &raw, &lossless) != napi_ok || !lossless || raw == 0) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "handle is invalid");
+  }
+  HANDLE pipe = (HANDLE)(uintptr_t)raw;
+  PSID owner = NULL;
+  PACL dacl = NULL;
+  DWORD security_result = GetSecurityInfo(
+    pipe,
+    SE_KERNEL_OBJECT,
+    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+    &owner,
+    NULL,
+    &dacl,
+    NULL,
+    &descriptor
+  );
+  if (security_result != ERROR_SUCCESS) {
+    return throw_fixed(
+      env,
+      security_result == ERROR_ACCESS_DENIED ? "NATIVE_ACCESS_DENIED" : "NATIVE_INSPECT_FAILED",
+      "named pipe security could not be inspected"
+    );
+  }
+  SECURITY_DESCRIPTOR_CONTROL control = 0;
+  DWORD revision = 0;
+  BOOL dacl_present = FALSE;
+  BOOL dacl_defaulted = FALSE;
+  PACL descriptor_dacl = NULL;
+  if (!GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+      !GetSecurityDescriptorDacl(descriptor, &dacl_present, &descriptor_dacl, &dacl_defaulted)) {
+    LocalFree(descriptor);
+    return throw_fixed(env, "NATIVE_INSPECT_FAILED", "named pipe security could not be inspected");
+  }
+  if (napi_create_object(env, &result) != napi_ok ||
+      set_security_evidence(env, result, owner, descriptor_dacl, dacl_present, control) != napi_ok) {
+    LocalFree(descriptor);
+    return throw_fixed(env, "NATIVE_INTERNAL", "native operation failed");
+  }
+  LocalFree(descriptor);
+  return result;
+}
+
+static napi_value close_named_pipe_handle(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  uint64_t raw = 0;
+  bool lossless = false;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 1) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "handle is required");
+  }
+  if (napi_get_value_bigint_uint64(env, argv[0], &raw, &lossless) != napi_ok || !lossless || raw == 0) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "handle is invalid");
+  }
+  HANDLE pipe = (HANDLE)(uintptr_t)raw;
+  DisconnectNamedPipe(pipe);
+  if (!CloseHandle(pipe)) {
+    return throw_fixed(env, "NATIVE_INTERNAL", "named pipe handle could not be closed");
+  }
+  napi_value result;
+  if (napi_get_boolean(env, 1, &result) != napi_ok) {
+    return throw_fixed(env, "NATIVE_INTERNAL", "native operation failed");
+  }
+  return result;
+}
+
 static napi_value protect_named_pipe(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value argv[1];
@@ -766,6 +922,9 @@ static napi_value init(napi_env env, napi_value exports) {
     {"inspectPath", NULL, inspect_path, NULL, NULL, NULL, napi_default, NULL},
     {"createPrivateObject", NULL, create_private_object, NULL, NULL, NULL, napi_default, NULL},
     {"inspectNamedPipe", NULL, inspect_named_pipe, NULL, NULL, NULL, napi_default, NULL},
+    {"createProtectedNamedPipe", NULL, create_protected_named_pipe, NULL, NULL, NULL, napi_default, NULL},
+    {"inspectNamedPipeHandle", NULL, inspect_named_pipe_handle, NULL, NULL, NULL, napi_default, NULL},
+    {"closeNamedPipeHandle", NULL, close_named_pipe_handle, NULL, NULL, NULL, napi_default, NULL},
     {"protectNamedPipe", NULL, protect_named_pipe, NULL, NULL, NULL, napi_default, NULL},
     {"inspectProcess", NULL, inspect_process, NULL, NULL, NULL, napi_default, NULL},
   };

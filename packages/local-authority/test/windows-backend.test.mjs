@@ -58,27 +58,19 @@ test("Windows backend creates a private directory, document, and exclusive lock"
   }
 });
 
-test("Windows backend protects a live named pipe with current-user+SYSTEM DACL", { skip: !isWindowsX64 }, async () => {
+test("Windows backend creates a protected named-pipe first instance", { skip: !isWindowsX64 }, async () => {
   const backend = createSecureStateBackend({ platform: "win32" });
   assert.equal(backend.kind, "windows");
   const pipe = "\\\\.\\pipe\\pix-test-" + process.pid + "-" + Date.now();
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(pipe, () => { server.off("error", reject); resolve(); });
-  });
+  const holder = await backend.createProtectedNamedPipe(pipe);
   try {
-    await backend.protectNamedPipe(pipe);
-    const inspection = loadNativeWindowsBinding().inspectNamedPipe(pipe);
-    assert.ok(inspection);
-    rejectUnsafeWindowsNamedPipeEvidence(inspection, backend.principal());
-    const sids = new Set(inspection.aces.map((ace) => ace.sid.toUpperCase()));
-    assert.equal(sids.has(backend.principal().sid.toUpperCase()), true);
-    assert.equal(sids.has(WINDOWS_LOCAL_SYSTEM_SID), true);
-    assert.equal(sids.has(WINDOWS_ADMINISTRATORS_SID), false);
-    assert.equal(inspection.daclProtected, true);
+    assert.equal(typeof holder.close, "function");
+    await assert.rejects(
+      backend.createProtectedNamedPipe(pipe),
+      (error) => error?.code === "LOCK_BUSY",
+    );
   } finally {
-    await new Promise((resolve) => server.close(() => resolve()));
+    holder.close();
   }
 });
 

@@ -39,11 +39,14 @@ export interface NativeWindowsProcessInspection {
 }
 
 export interface NativeWindowsBinding {
-  readonly apiVersion: 4;
+  readonly apiVersion: 5;
   currentUserSid(): string;
   inspectPath(path: string): NativeWindowsPathInspection | null;
   createPrivateObject(path: string, kind: NativeWindowsPrivateKind): boolean;
   inspectNamedPipe(path: string): NativeWindowsNamedPipeInspection | null;
+  createProtectedNamedPipe(path: string): bigint;
+  inspectNamedPipeHandle(handle: bigint): NativeWindowsNamedPipeInspection | null;
+  closeNamedPipeHandle(handle: bigint): boolean;
   protectNamedPipe(path: string): boolean;
   inspectProcess(pid: number): NativeWindowsProcessInspection | null;
 }
@@ -69,11 +72,14 @@ let cached: NativeWindowsBinding | undefined;
 function isBinding(value: unknown): value is NativeWindowsBinding {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<NativeWindowsBinding>;
-  return candidate.apiVersion === 4
+  return candidate.apiVersion === 5
     && typeof candidate.currentUserSid === "function"
     && typeof candidate.inspectPath === "function"
     && typeof candidate.createPrivateObject === "function"
     && typeof candidate.inspectNamedPipe === "function"
+    && typeof candidate.createProtectedNamedPipe === "function"
+    && typeof candidate.inspectNamedPipeHandle === "function"
+    && typeof candidate.closeNamedPipeHandle === "function"
     && typeof candidate.protectNamedPipe === "function"
     && typeof candidate.inspectProcess === "function";
 }
@@ -95,7 +101,7 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
   }
   if (!isBinding(loaded)) throw new Error("Windows native binding contract mismatch");
   cached = {
-    apiVersion: 4,
+    apiVersion: 5,
     currentUserSid: () => loaded.currentUserSid(),
     inspectPath: (path) => {
       assertInspectablePath(path);
@@ -109,6 +115,26 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
     inspectNamedPipe: (path) => {
       assertInspectablePath(path);
       return loaded.inspectNamedPipe(path);
+    },
+    createProtectedNamedPipe: (path) => {
+      assertInspectablePath(path);
+      return loaded.createProtectedNamedPipe(path);
+    },
+    inspectNamedPipeHandle: (handle) => {
+      if (typeof handle !== "bigint" || handle <= 0n) {
+        const error = new Error("handle is invalid") as Error & { code?: string };
+        error.code = "NATIVE_INVALID_ARGUMENT";
+        throw error;
+      }
+      return loaded.inspectNamedPipeHandle(handle);
+    },
+    closeNamedPipeHandle: (handle) => {
+      if (typeof handle !== "bigint" || handle <= 0n) {
+        const error = new Error("handle is invalid") as Error & { code?: string };
+        error.code = "NATIVE_INVALID_ARGUMENT";
+        throw error;
+      }
+      return loaded.closeNamedPipeHandle(handle);
     },
     protectNamedPipe: (path) => {
       assertInspectablePath(path);

@@ -354,8 +354,9 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     // Unix: libuv binds the private per-instance path (never the stable public
     // one), so a close can never unlink another daemon's public endpoint.
     // Windows: named pipes leave no files; bind the public pipe directly.
+    const listenEndpoint = privatePath ?? paths.endpoint;
     server = new SessiondRpcServer({
-      endpoint: privatePath ?? paths.endpoint,
+      endpoint: listenEndpoint,
       secret,
       handler: application,
       // Internal, authenticated control-plane shutdown: ACK-before-close via
@@ -368,7 +369,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     if (!needsUnixSocketPublication()) {
       const backend = createSecureStateBackend();
       if (backend.kind === "windows") {
-        await backend.protectNamedPipe(paths.endpoint);
+        await backend.protectNamedPipe(listenEndpoint);
       }
     }
     if (needsUnixSocketPublication()) {

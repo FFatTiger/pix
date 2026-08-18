@@ -24,7 +24,7 @@ test("public state surface does not export the private native loader", async () 
 
 test("native Windows binding exposes SID and handle-based path evidence", { skip: !isWindowsX64 }, () => {
   const binding = loadNativeWindowsBinding();
-  assert.equal(binding.apiVersion, 4);
+  assert.equal(binding.apiVersion, 5);
   const processInfo = binding.inspectProcess(process.pid);
   assert.ok(processInfo);
   assert.match(processInfo.creationTime, /^[0-9]+$/u);

@@ -482,6 +482,43 @@ export async function releaseWindowsLifetimeLock(
   await rm(path, { force: true }).catch(() => {});
 }
 
+export async function createWindowsProtectedNamedPipe(path: string): Promise<{ close(): void }> {
+  const binding = requireBinding();
+  let handle: bigint;
+  try {
+    handle = binding.createProtectedNamedPipe(path);
+  } catch (error) {
+    if (error instanceof LocalAuthorityError) throw error;
+    const code = (error as { code?: string }).code;
+    if (code === "NATIVE_INVALID_ARGUMENT") {
+      throw new LocalAuthorityError("INVALID_PATH", "Path must be a bounded absolute path without control characters");
+    }
+    if (code === "NATIVE_ALREADY_EXISTS") {
+      throw new LocalAuthorityError("LOCK_BUSY", "named pipe already exists");
+    }
+    throw new LocalAuthorityError("NOT_PRIVATE", "named pipe could not be created privately");
+  }
+  const close = (): void => {
+    try {
+      binding.closeNamedPipeHandle(handle);
+    } catch {
+      // Best-effort. Node listen may already own later instances.
+    }
+  };
+  try {
+    const principal = currentWindowsPrincipal();
+    const inspection = binding.inspectNamedPipeHandle(handle);
+    if (!inspection) {
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", "named pipe security could not be inspected");
+    }
+    rejectUnsafeWindowsNamedPipeEvidence(inspection, principal);
+  } catch (error) {
+    close();
+    throw error;
+  }
+  return { close };
+}
+
 export async function protectWindowsNamedPipe(path: string): Promise<void> {
   const binding = requireBinding();
   const principal = currentWindowsPrincipal();
@@ -525,6 +562,7 @@ export function createWindowsSecureStateBackend(): WindowsSecureStateBackend {
     releaseLifetimeLock: (path, opts) => releaseWindowsLifetimeLock(path, opts),
     isPidAlive: (pid) => isWindowsPidAlive(pid),
     createExclusivePrivateFile: (path, payload, opts) => createWindowsExclusivePrivateFile(path, payload, opts),
+    createProtectedNamedPipe: (path) => createWindowsProtectedNamedPipe(path),
     protectNamedPipe: (path) => protectWindowsNamedPipe(path),
   };
 }

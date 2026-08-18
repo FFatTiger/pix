@@ -3828,3 +3828,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - `filePathCompareKey` no longer guesses Windows from path shape when flavor is omitted. TranscriptList mention index and workspace breadcrumbs/containment take flavor (workspace helpers infer drive vs posix only when callers omit it).
 - Windows process-tree now always uses `taskkill /T /F`; unforced `/T` was a no-op on windowless Node children.
 
+## 107. Cross-platform CP-38 — named-pipe DACL before listen
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `66127cd`.
+- Native apiVersion 5 adds `createProtectedNamedPipe` / `closeNamedPipeHandle`. A first instance can be created with current-user+SYSTEM DACL.
+- sessiond production still listen-then-protect: `node:net` uses FILE_FLAG_FIRST_PIPE_INSTANCE, so a pre-created name returns EADDRINUSE. Closing the native first instance before listen would recreate the default-DACL window. Not Job Object.
+
