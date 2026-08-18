@@ -69,6 +69,10 @@ export const queryKeys = {
     providers: () => ["pix", "auth", "providers"] as const,
     providerStatus: (providerId: string) => ["pix", "auth", "provider-status", providerId] as const,
   },
+  settings: {
+    all: ["pix", "settings"] as const,
+    sessionIdleTimeout: () => ["pix", "settings", "session-idle-timeout"] as const,
+  },
 } as const;
 
 export function createQueryOptions(http: HttpClient) {
@@ -177,6 +181,15 @@ export function createQueryOptions(http: HttpClient) {
           queryFn: ({ signal }) => configuration.auth.providerStatus(providerId, signal),
           enabled: Boolean(providerId),
           staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
+    },
+    settings: {
+      sessionIdleTimeout: () =>
+        queryOptions({
+          queryKey: queryKeys.settings.sessionIdleTimeout(),
+          queryFn: ({ signal }) => configuration.sessionSettings.get(signal),
+          staleTime: 15_000,
           retry: false,
         }),
     },

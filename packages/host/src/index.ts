@@ -72,6 +72,10 @@ export {
   SESSIONS_MAX_OFFSET,
 } from "./routes/sessions.js";
 export {
+  registerSessionSettingsRoutes,
+  mapSessionSettingsError,
+} from "./routes/settings.js";
+export {
   registerCatalogRoutes,
   mapCatalogError,
   requireAuthorizedCwd,
@@ -156,6 +160,7 @@ export {
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
   createSessiondSessionRenameClient,
+  createSessiondSessionSettingsClient,
 } from "./composition/sessions-client.js";
 export type { SessiondSessionsClientOptions } from "./composition/sessions-client.js";
 export type {

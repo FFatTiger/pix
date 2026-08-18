@@ -44,6 +44,7 @@ export type HostCapability =
   | "sessions"
   | "session.delete"
   | "session.write"
+  | "session.settings"
   | "files"
   | "files.write"
   | "files.watch"
@@ -63,6 +64,7 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "sessions",
   "session.delete",
   "session.write",
+  "session.settings",
   "files",
   "files.write",
   "files.watch",
@@ -278,6 +280,30 @@ export interface SessionRenameSeam {
   mutationGuard: MutationGuard;
 }
 
+/**
+ * Session lifecycle settings port (idle-reclamation timeout). A narrow,
+ * protocol-independent seam: composition wires the real sessiond RPC client
+ * and tests inject a fake. Returns `unknown` so this foundation module stays
+ * free of protocol DTO imports.
+ */
+export interface SessionSettingsClient {
+  getIdleTimeoutMs(): Promise<unknown>;
+  setIdleTimeoutMs(idleTimeoutMs: number): Promise<unknown>;
+}
+
+/**
+ * Session-settings mutation seam. The production route is mounted ONLY when
+ * both the settings client AND a mutation guard (sessiond `system.ping`) are
+ * present; the `session.settings` capability is advertised only then (and only
+ * while sessiond is up). A generic composition that wires no settings seam gets
+ * no GET/PUT route and no capability token.
+ */
+export interface SessionSettingsSeam {
+  client: SessionSettingsClient;
+  /** sessiond availability guard (production: `system.ping`). Fails closed 503. */
+  mutationGuard: MutationGuard;
+}
+
 // ---------------------------------------------------------------------------
 // Catalog seams (D3B-R1B) — protocol-independent, return unknown
 // ---------------------------------------------------------------------------
@@ -446,6 +472,12 @@ export interface HostDeps {
     client: SessionHistoryReadClient;
     delete?: SessionDeleteSeam;
     rename?: SessionRenameSeam;
+    /**
+     * Session lifecycle settings (idle-reclamation timeout). When present,
+     * GET/PUT /v1/settings/session-idle-timeout are mounted and the
+     * `session.settings` capability is advertised only while sessiond is up.
+     */
+    settings?: SessionSettingsSeam;
   };
   /**
    * D3B-R1B: read-only catalog routes (models/auth/skills/plugins/commands/trust).

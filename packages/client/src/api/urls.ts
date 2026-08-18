@@ -117,6 +117,10 @@ export const urls = {
     /** Per-provider status + configured flag (no cwd). */
     providerStatus: (providerId: string) => resource(`auth/providers/${encodedSegment(providerId)}/status`),
   },
+  settings: {
+    /** Session idle-reclamation timeout (GET) / set+persist (PUT). */
+    sessionIdleTimeout: () => resource("settings/session-idle-timeout"),
+  },
   runtime: { ws: () => resource("runtime") },
 } as const;
 

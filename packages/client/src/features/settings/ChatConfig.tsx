@@ -1,7 +1,9 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useHttpClient } from "@/app/http-context";
 import { createQueryOptions } from "@/api/query-keys";
+import { createMutationOptions } from "@/api/mutations";
+import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { SettingToggle } from "@/components/SettingToggle";
 import { SettingsSection, SettingsSelect } from "@/features/settings/settings-ui";
 import { useI18n } from "@/hooks/useI18n";
@@ -14,6 +16,18 @@ import {
 } from "@/lib/title-settings";
 
 export type InputShortcut = "enter" | "ctrl-enter";
+
+/** Session idle-reclamation timeout options (value = ms, 0 = disabled). */
+export const SESSION_IDLE_TIMEOUT_OPTIONS: { value: string; labelKey: string }[] = [
+  { value: "0", labelKey: "desktop.sessionIdleTimeoutNever" },
+  { value: "1800000", labelKey: "desktop.sessionIdleTimeout30m" },
+  { value: "3600000", labelKey: "desktop.sessionIdleTimeout1h" },
+  { value: "21600000", labelKey: "desktop.sessionIdleTimeout6h" },
+  { value: "43200000", labelKey: "desktop.sessionIdleTimeout12h" },
+  { value: "86400000", labelKey: "desktop.sessionIdleTimeout1d" },
+  { value: "259200000", labelKey: "desktop.sessionIdleTimeout3d" },
+  { value: "604800000", labelKey: "desktop.sessionIdleTimeout7d" },
+];
 
 export type NotificationDuration = "60" | "180" | "300" | "forever";
 
@@ -89,7 +103,16 @@ export function ChatConfig({ cwd }: { cwd?: string | null }) {
   // without one — or on query failure — the picker simply has no options;
   // no model mutation surface exists and none is faked.
   const http = useHttpClient();
+  const queryClient = useQueryClient();
+  const { canConfigureSessionSettings } = useCapabilities();
   const modelsQuery = useQuery(createQueryOptions(http).models.list(cwd ?? ""));
+  const idleTimeoutQuery = useQuery({
+    ...createQueryOptions(http).settings.sessionIdleTimeout(),
+    enabled: canConfigureSessionSettings,
+  });
+  const setIdleTimeout = useMutation(
+    createMutationOptions(http, queryClient).settings.sessionIdleTimeout(),
+  );
   const modelOptions: ModelOption[] = useMemo(() => {
     const list = modelsQuery.data?.models ?? [];
     return list
@@ -196,6 +219,23 @@ export function ChatConfig({ cwd }: { cwd?: string | null }) {
             style={{ width: "auto" }}
           />
         </div>
+      </SettingsSection>
+      <SettingsSection title={t("desktop.sessionIdleTimeout")} description={t("desktop.sessionIdleTimeoutDescription")}>
+        {!canConfigureSessionSettings || idleTimeoutQuery.isError ? (
+          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{t("desktop.sessionIdleTimeoutUnavailable")}</div>
+        ) : idleTimeoutQuery.data?.idleTimeoutMs === undefined ? (
+          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{t("desktop.sessionIdleTimeoutLoading")}</div>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", margin: "0 -14px" }}>
+            <span style={{ flex: 1, fontSize: 13, color: "var(--text)" }}>{t("desktop.sessionIdleTimeoutLabel")}</span>
+            <SettingsSelect
+              value={String(idleTimeoutQuery.data.idleTimeoutMs)}
+              onChange={(v) => setIdleTimeout.mutate(Number(v))}
+              options={SESSION_IDLE_TIMEOUT_OPTIONS.map((opt) => ({ value: opt.value, label: t(opt.labelKey) }))}
+              style={{ width: "auto" }}
+            />
+          </div>
+        )}
       </SettingsSection>
     </div>
   );

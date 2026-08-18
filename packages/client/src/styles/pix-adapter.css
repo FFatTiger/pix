@@ -1184,6 +1184,25 @@ html.dark .catalog-meta-item--error {
   transform: none;
 }
 
+/* Dead sessions (no live worker) render muted; hover still reveals actions. */
+.sidebar-list-row[data-dead="true"] {
+  color: var(--text-dim);
+}
+
+.sidebar-list-row[data-dead="true"] .sidebar-session-select {
+  color: var(--text-dim);
+}
+
+.sidebar-list-row[data-dead="true"] .sidebar-row-title {
+  color: var(--text-dim);
+  opacity: 0.72;
+}
+
+.sidebar-list-row[data-dead="true"] .sidebar-row-meta {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
 .sidebar-session-select {
   display: flex;
   align-items: center;

@@ -27,6 +27,7 @@ describe("query keys and options", () => {
     expect(queryKeys.trust.get("/repo")).toEqual(["pix", "trust", "get", "/repo"]);
     expect(queryKeys.auth.providerStatus("openai")).toEqual(["pix", "auth", "provider-status", "openai"]);
     expect(queryKeys.auth.providerStatus("a")).not.toEqual(queryKeys.auth.providerStatus("b"));
+    expect(queryKeys.settings.sessionIdleTimeout()).toEqual(["pix", "settings", "session-idle-timeout"]);
   });
 
   it("file index options key by cwd + q with cwd/q isolation and pass signal", async () => {
@@ -266,5 +267,16 @@ describe("table-driven mutation invalidation", () => {
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");
     expect(Object.keys(options.trust)).toEqual(["setTrusted"]);
+    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout"]);
+  });
+
+  it("invalidates the session idle-timeout settings key after a successful write", async () => {
+    const { options, invalidate } = invalidationHarness({ idleTimeoutMs: 3_600_000 });
+    const mutation = options.settings.sessionIdleTimeout();
+    await mutation.mutationFn(3_600_000);
+    await mutation.onSuccess();
+    expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
+      { queryKey: queryKeys.settings.all },
+    ]);
   });
 });

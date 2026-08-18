@@ -119,6 +119,14 @@ export class SessiondApplication implements SessiondRpcHandler {
         await this.service.deleteSession(input.sessionId);
         return { sessionId: input.sessionId, deleted: true };
       }
+      case "config.getSessionIdleTimeoutMs": {
+        return { idleTimeoutMs: this.service.getIdleTimeoutMs() };
+      }
+      case "config.setSessionIdleTimeoutMs": {
+        const input = params as SessiondMethodParams["config.setSessionIdleTimeoutMs"];
+        this.service.setIdleTimeoutMs(input.idleTimeoutMs);
+        return { idleTimeoutMs: input.idleTimeoutMs };
+      }
     }
   }
 }

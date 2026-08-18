@@ -15,7 +15,7 @@ function WriteProbe() {
   const value = useCapabilities();
   return (
     <div>
-      {String(value.canWriteSessions)}:{String(value.canDeleteSessions)}:{String(value.canBrowseSessions)}
+      {String(value.canWriteSessions)}:{String(value.canDeleteSessions)}:{String(value.canBrowseSessions)}:{String(value.canConfigureSessionSettings)}
     </div>
   );
 }
@@ -101,14 +101,17 @@ describe("CapabilityProvider", () => {
       { wrapper: Wrapper },
     );
     renderWrite(["sessions", "session.write"]);
-    expect(screen.getByText("true:false:true")).toBeTruthy();
+    expect(screen.getByText("true:false:true:false")).toBeTruthy();
     cleanup();
     // session.delete alone does NOT imply session.write (and vice versa).
     renderWrite(["sessions", "session.delete"]);
-    expect(screen.getByText("false:true:true")).toBeTruthy();
+    expect(screen.getByText("false:true:true:false")).toBeTruthy();
     cleanup();
-    // No session token at all → rename gate closed.
+    renderWrite(["sessions", "session.settings"]);
+    expect(screen.getByText("false:false:true:true")).toBeTruthy();
+    cleanup();
+    // No session token at all → rename/settings gates closed.
     renderWrite(["agent"]);
-    expect(screen.getByText("false:false:false")).toBeTruthy();
+    expect(screen.getByText("false:false:false:false")).toBeTruthy();
   });
 });

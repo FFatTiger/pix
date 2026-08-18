@@ -751,6 +751,8 @@ export function AppShell({ search }: AppShellProps) {
             cwd={search.cwd}
             selectedSessionId={search.session ?? null}
             liveSessionId={runtime.attached ? runtime.sessionId : null}
+            liveSessionIds={liveSessionIds}
+            liveKnown={runtime.connection === "ready" || runtime.connection === "attached"}
             runningSessionIds={runningSessionIds}
             runningProjectRoots={runningProjectRoots}
             pendingSessionId={pendingSessionId}

@@ -10,6 +10,7 @@ import {
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
   createSessiondSessionRenameClient,
+  createSessiondSessionSettingsClient,
   createCapabilityResolver,
   InvalidAllowedRootsError,
   InvalidHostDirError,
@@ -251,6 +252,10 @@ export async function runHost(
       },
       rename: {
         client: createSessiondSessionRenameClient({ endpoint: location.paths.endpoint, secret }),
+        mutationGuard: production.adapter,
+      },
+      settings: {
+        client: createSessiondSessionSettingsClient({ endpoint: location.paths.endpoint, secret }),
         mutationGuard: production.adapter,
       },
     },

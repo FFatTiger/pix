@@ -19,6 +19,12 @@ import {
 export const SuccessSchema = z.strictObject({ success: z.boolean() });
 export const OkSchema = z.strictObject({ ok: z.boolean() });
 
+/** GET/PUT /v1/settings/session-idle-timeout — session idle-reclamation timeout. */
+export const SessionIdleTimeoutResponseSchema = z.strictObject({
+  idleTimeoutMs: z.number().int().nonnegative().safe(),
+});
+export type SessionIdleTimeoutResponse = z.infer<typeof SessionIdleTimeoutResponseSchema>;
+
 export const GateStatusSchema = z.strictObject({
   required: z.boolean(),
   authenticated: z.boolean(),

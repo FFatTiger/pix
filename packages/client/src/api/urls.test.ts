@@ -26,6 +26,7 @@ describe("v1 URL builders", () => {
     expect(urls.trust.mutate()).toBe("/v1/trust");
     expect(urls.auth.providers()).toBe("/v1/auth/providers");
     expect(urls.auth.providerStatus("a/b ?#")).toBe("/v1/auth/providers/a%2Fb%20%3F%23/status");
+    expect(urls.settings.sessionIdleTimeout()).toBe("/v1/settings/session-idle-timeout");
   });
 
   it("does not export removed catalog mutation paths", () => {

@@ -153,6 +153,10 @@ export const RESOURCE_DEGRADED_CAPABILITIES: readonly HostCapability[] = [
  * + the sessiond `sessions.rename` authority) and is mounted only with the
  * rename seam. Live rename is supported by sessiond (never a busy failure). The
  * token is discovery, never authorization.
+ * `session.settings` is the session idle-reclamation timeout capability:
+ * full/sessiond-up only, excluded from degraded — GET/PUT
+ * /v1/settings/session-idle-timeout are sessiond-guarded and mounted only with
+ * the settings seam. The token is discovery, never authorization.
  * `worktree` is the read-only list token (D3A Worktrees UI); GET does not
  * depend on sessiond so the token is also present in degraded. `worktree.write`
  * is the honest product write capability for create/remove: full/sessiond-up
@@ -169,6 +173,7 @@ export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "sessions",
   "session.delete",
   "session.write",
+  "session.settings",
   "files",
   "files.write",
   "files.watch",

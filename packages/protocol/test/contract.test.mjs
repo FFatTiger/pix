@@ -92,6 +92,7 @@ describe("capabilities", () => {
       "worktree.write",
       "session.write",
       "session.delete",
+      "session.settings",
       "models",
       "auth.providers",
       "skills",
@@ -1053,6 +1054,8 @@ describe("sessiond RPC", () => {
       },
       "sessions.rename": { sessionId: "s-1", name: "New" },
       "sessions.delete": { sessionId: "s-1", deleted: true },
+      "config.getSessionIdleTimeoutMs": { idleTimeoutMs: 86_400_000 },
+      "config.setSessionIdleTimeoutMs": { idleTimeoutMs: 3_600_000 },
       "system.shutdown": { accepted: true },
     };
 

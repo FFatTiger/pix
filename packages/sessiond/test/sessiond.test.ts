@@ -2935,3 +2935,84 @@ test("D4 fence: a rejected activation cleans its map entry and a retry re-admits
   assert.equal(service.diagnostics().activations, 0);
   await service.shutdown();
 });
+
+test("config idle timeout: default is 24h, get/set round-trips, invalid input fails closed", async () => {
+  const deps = {
+    sessionLocator: {
+      async locate(sessionId: string) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: true }; },
+      async resolveLeafId() { return "leaf"; },
+    },
+    activationContext: { async resolve(sessionId: string, _l: unknown, cwd?: string) { return { cwd: cwd ?? `/cwd/${sessionId}`, projectRoot: cwd ?? `/cwd/${sessionId}` }; } },
+    workerFactory: new FakeWorkerFactory(),
+  };
+  const service = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500 });
+  // No explicit option, no settings file → the 1-day default.
+  assert.equal(service.getIdleTimeoutMs(), 24 * 60 * 60_000);
+  service.setIdleTimeoutMs(3_600_000);
+  assert.equal(service.getIdleTimeoutMs(), 3_600_000);
+  service.setIdleTimeoutMs(0);
+  assert.equal(service.getIdleTimeoutMs(), 0, "0 disables idle reclamation");
+  // Invalid input fails closed with the canonical port error.
+  assert.throws(() => service.setIdleTimeoutMs(-1), (error: unknown) => {
+    assert.ok(error instanceof SessiondError);
+    assert.equal(error.code, "invalid_input");
+    return true;
+  });
+  assert.throws(() => service.setIdleTimeoutMs(1.5), (error: unknown) => {
+    assert.ok(error instanceof SessiondError);
+    assert.equal(error.code, "invalid_input");
+    return true;
+  });
+  await service.shutdown();
+});
+
+test("config idle timeout: settings file persists the value across service construction", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pix-sessiond-idle-"));
+  try {
+    const settingsFile = join(dir, "settings.json");
+    const deps = {
+      sessionLocator: {
+        async locate(sessionId: string) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: true }; },
+        async resolveLeafId() { return "leaf"; },
+      },
+      activationContext: { async resolve(sessionId: string, _l: unknown, cwd?: string) { return { cwd: cwd ?? `/cwd/${sessionId}`, projectRoot: cwd ?? `/cwd/${sessionId}` }; } },
+      workerFactory: new FakeWorkerFactory(),
+      settingsFile,
+    };
+    const first = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500 });
+    assert.equal(first.getIdleTimeoutMs(), 24 * 60 * 60_000, "no file yet → default 24h");
+    first.setIdleTimeoutMs(43_200_000);
+    const persisted = JSON.parse(await readFile(settingsFile, "utf8"));
+    assert.equal(persisted.idleTimeoutMs, 43_200_000);
+    await first.shutdown();
+    // A NEW service over the same file picks up the persisted value.
+    const second = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500 });
+    assert.equal(second.getIdleTimeoutMs(), 43_200_000, "persisted value wins over the 24h default");
+    await second.shutdown();
+    // Explicit options still win over the file (test override).
+    const third = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+    assert.equal(third.getIdleTimeoutMs(), 0, "explicit option beats persisted value");
+    await third.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("config idle timeout: RPC dispatch round-trips through SessiondApplication", async () => {
+  const deps = {
+    sessionLocator: {
+      async locate(sessionId: string) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: true }; },
+      async resolveLeafId() { return "leaf"; },
+    },
+    activationContext: { async resolve(sessionId: string, _l: unknown, cwd?: string) { return { cwd: cwd ?? `/cwd/${sessionId}`, projectRoot: cwd ?? `/cwd/${sessionId}` }; } },
+    workerFactory: new FakeWorkerFactory(),
+  };
+  const service = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500 });
+  const app = new SessiondApplication(service);
+  const got = await app.handle("config.getSessionIdleTimeoutMs", {});
+  assert.equal(got.idleTimeoutMs, 24 * 60 * 60_000);
+  const set = await app.handle("config.setSessionIdleTimeoutMs", { idleTimeoutMs: 7 * 24 * 60 * 60_000 });
+  assert.equal(set.idleTimeoutMs, 7 * 24 * 60 * 60_000);
+  assert.equal(service.getIdleTimeoutMs(), 7 * 24 * 60 * 60_000);
+  await service.shutdown();
+});

@@ -50,6 +50,17 @@ export interface SidebarProps {
    * never shown for it (the server rejects live deletes with 409 anyway).
    */
   liveSessionId: string | null;
+  /**
+   * All session ids with a live worker process (busy OR idle-ready) per the
+   * shared runtime owner. Dead sessions (JSONL only, no worker) are grayed out.
+   */
+  liveSessionIds: ReadonlySet<string>;
+  /**
+   * True only when the runtime connection is authoritative (ready/attached).
+   * When the connection is idle/connecting (sessiond down), the live set is
+   * empty and NOT trustworthy — rows are never grayed from an unknown state.
+   */
+  liveKnown: boolean;
   /** Session ids currently running according to the shared runtime owner. */
   runningSessionIds: ReadonlySet<string>;
   /** Project roots with at least one running session (covers fresh tabs before list refresh). */
@@ -290,6 +301,8 @@ export function Sidebar({
   cwd,
   selectedSessionId,
   liveSessionId,
+  liveSessionIds,
+  liveKnown,
   runningSessionIds,
   runningProjectRoots,
   pendingSessionId,
@@ -464,6 +477,8 @@ export function Sidebar({
       pendingSessionId={pendingSessionId ?? null}
       runningSessionIds={runningSessionIds}
       liveSessionId={liveSessionId}
+      liveSessionIds={liveSessionIds}
+      liveKnown={liveKnown}
       canRename={canWriteSessions}
       canDelete={canDeleteSessions}
       canExport={canBrowseSessions}
@@ -932,6 +947,8 @@ function SessionTreeItem({
   pendingSessionId,
   runningSessionIds,
   liveSessionId,
+  liveSessionIds,
+  liveKnown,
   canRename,
   canDelete,
   canExport,
@@ -950,6 +967,8 @@ function SessionTreeItem({
   pendingSessionId: string | null;
   runningSessionIds: ReadonlySet<string>;
   liveSessionId: string | null;
+  liveSessionIds: ReadonlySet<string>;
+  liveKnown: boolean;
   canRename: boolean;
   canDelete: boolean;
   canExport: boolean;
@@ -1007,6 +1026,7 @@ function SessionTreeItem({
           isPending={node.session.sessionId === pendingSessionId}
           isRunning={runningSessionIds.has(node.session.sessionId)}
           liveSessionId={liveSessionId}
+          isDead={liveKnown && !liveSessionIds.has(node.session.sessionId)}
           canRename={canRename}
           canDelete={canDelete}
           canExport={canExport}
@@ -1035,6 +1055,8 @@ function SessionTreeItem({
               pendingSessionId={pendingSessionId}
               runningSessionIds={runningSessionIds}
               liveSessionId={liveSessionId}
+              liveSessionIds={liveSessionIds}
+              liveKnown={liveKnown}
               canRename={canRename}
               canDelete={canDelete}
               canExport={canExport}
@@ -1170,6 +1192,7 @@ function SessionItem({
   isPending,
   isRunning,
   liveSessionId,
+  isDead = false,
   canRename,
   canDelete,
   canExport,
@@ -1189,6 +1212,8 @@ function SessionItem({
   isPending: boolean;
   isRunning?: boolean;
   liveSessionId: string | null;
+  /** No live worker process (dead session, JSONL only). Grayed out in the sidebar. */
+  isDead?: boolean;
   canRename: boolean;
   canDelete: boolean;
   canExport: boolean;
@@ -1401,6 +1426,7 @@ function SessionItem({
       data-active={isSelected ? "true" : "false"}
       data-pending={isPending ? "true" : undefined}
       data-running={isRunning ? "true" : undefined}
+      data-dead={isDead && !isPending && !isRunning ? "true" : undefined}
       onContextMenu={handleContextMenu}
       onClick={(event) => {
         if (confirmDelete || renaming || deleting) return;

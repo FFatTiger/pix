@@ -201,10 +201,25 @@ function fakeRenameSeam(down) {
   };
 }
 
-function appWithSeams({ sessiondUp, deleteSeam, renameSeam, full, readonly }) {
+function fakeSettingsSeam(down) {
+  const calls = [];
+  return {
+    calls,
+    seam: {
+      client: {
+        async getIdleTimeoutMs() { calls.push("get"); return { idleTimeoutMs: 86_400_000 }; },
+        async setIdleTimeoutMs(ms) { calls.push(ms); return { idleTimeoutMs: ms }; },
+      },
+      mutationGuard: fakeGuard(down),
+    },
+  };
+}
+
+function appWithSeams({ sessiondUp, deleteSeam, renameSeam, settingsSeam, full, readonly }) {
   const sessions = { client: fakeSessionClient() };
   if (deleteSeam) sessions.delete = deleteSeam.seam;
   if (renameSeam) sessions.rename = renameSeam.seam;
+  if (settingsSeam) sessions.settings = settingsSeam.seam;
   return createHostApp({
     logger: {},
     gate: { config: DISABLED_GATE },
@@ -292,7 +307,7 @@ test("capabilities: down + both seams with a custom readonly list still strips b
     deleteSeam: fakeDeleteSeam(true),
     renameSeam: fakeRenameSeam(true),
     full: FULL,
-    readonly: [...READONLY, "session.delete", "session.write"],
+    readonly: [...READONLY, "session.delete", "session.write", "session.settings"],
   });
   const body = await caps(app);
   assert.equal(body.sessiond, "down");
@@ -302,29 +317,33 @@ test("capabilities: down + both seams with a custom readonly list still strips b
 test("capabilities: production FULL default with both seams still advertises both (unchanged production default)", async () => {
   const delSeam = fakeDeleteSeam(false);
   const rename = fakeRenameSeam(false);
+  const settings = fakeSettingsSeam(false);
   const app = appWithSeams({
     sessiondUp: true,
     deleteSeam: delSeam,
     renameSeam: rename,
+    settingsSeam: settings,
     full: [...PRODUCTION_FULL_CAPABILITIES],
     readonly: [...RESOURCE_DEGRADED_CAPABILITIES],
   });
   const body = await caps(app);
   assert.ok(body.capabilities.includes("session.write"), "production full keeps session.write with the rename seam");
   assert.ok(body.capabilities.includes("session.delete"), "production full keeps session.delete with the delete seam");
+  assert.ok(body.capabilities.includes("session.settings"), "production full keeps session.settings with the settings seam");
 });
 
 test("normalizeSessionMutationCapabilities: only removes impossible tokens, never adds", async () => {
-  const withBothSeams = { sessions: { client: fakeSessionClient(), delete: fakeDeleteSeam(false).seam, rename: fakeRenameSeam(false).seam } };
+  const withBothSeams = { sessions: { client: fakeSessionClient(), delete: fakeDeleteSeam(false).seam, rename: fakeRenameSeam(false).seam, settings: fakeSettingsSeam(false).seam } };
   const noSeams = { sessions: { client: fakeSessionClient() } };
   // A token absent from the input is never invented even when the seam exists.
   assert.deepEqual(normalizeSessionMutationCapabilities(["agent", "sessions"], withBothSeams), ["agent", "sessions"]);
   // Present tokens are kept when the matching seam is mounted.
   assert.deepEqual(normalizeSessionMutationCapabilities(["agent", "session.write", "files"], withBothSeams), ["agent", "session.write", "files"]);
   assert.deepEqual(normalizeSessionMutationCapabilities(["agent", "session.delete", "files"], withBothSeams), ["agent", "session.delete", "files"]);
+  assert.deepEqual(normalizeSessionMutationCapabilities(["agent", "session.settings", "files"], withBothSeams), ["agent", "session.settings", "files"]);
   // Impossible tokens (seam absent) are removed; other caps untouched.
   assert.deepEqual(normalizeSessionMutationCapabilities(FULL, noSeams), ["agent", "sessions", "files"]);
-  assert.deepEqual(normalizeSessionMutationCapabilities(["session.write", "session.delete", "git"], noSeams), ["git"]);
+  assert.deepEqual(normalizeSessionMutationCapabilities(["session.write", "session.delete", "session.settings", "git"], noSeams), ["git"]);
   // Read `sessions` and unrelated tokens always pass through.
   assert.deepEqual(normalizeSessionMutationCapabilities(["sessions", "files", "git", "agent"], noSeams), ["sessions", "files", "git", "agent"]);
 });
