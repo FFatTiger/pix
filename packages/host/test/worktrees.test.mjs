@@ -43,6 +43,9 @@ function temp(prefix) {
   temporary.push(value);
   return value;
 }
+function dedicatedHostDir(prefix) {
+  return join(temp(prefix), "host");
+}
 const leases = [];
 afterEach(async () => {
   for (const close of leases.splice(0)) await close().catch(() => {});
@@ -94,7 +97,7 @@ function makeWorktree(root, branch, { insideBase = true, externalRoot } = {}) {
 async function makeWorktreeApp(options = {}) {
   const { busy = async () => ({ busy: false }), guard, managed, exposureMode = "local", gateOverride, root: providedRoot, hostDir: providedHostDir } = options;
   const root = providedRoot ?? (() => { const r = temp("wt-repo-"); initRepo(r); return r; })();
-  const hostDir = providedHostDir ?? temp("wt-host-");
+  const hostDir = providedHostDir ?? dedicatedHostDir("wt-host-");
   const lease = await openHostStateDirectoryLease({ hostDir, instanceId: `wt-${process.pid}-${Math.random().toString(36).slice(2, 12)}` });
   leases.push(() => lease.close());
   const trusted = createTrustedRootsLedgerFromLease(lease, { maxClaims: 32 });
@@ -143,7 +146,7 @@ async function deleteWorktree(app, cwd, path, extra = {}) {
 // Create: managed durable record (no trusted claim) + 201 contract
 // ---------------------------------------------------------------------------
 
-test("POST creates a managed worktree: 201 managedByPix, managed record, no trusted claim", async () => {
+test("POST creates a managed worktree: 201 managedByPix, managed record, no trusted claim", { skip: process.platform === "win32" }, async () => {
   const { app, root, managedLedger, trusted, allowedRoots } = await makeWorktreeApp();
   const response = await postWorktree(app, root, "feature-a");
   assert.equal(response.status, 201);
@@ -169,13 +172,13 @@ test("POST creates a managed worktree: 201 managedByPix, managed record, no trus
   assert.ok(!("safeToDelete" in (entry ?? {})), "no cached safeToDelete promise");
 });
 
-test("POST creates a managed worktree under an already-durable root with no trusted claim", async () => {
+test("POST creates a managed worktree under an already-durable root with no trusted claim", { skip: process.platform === "win32" }, async () => {
   // Make the base itself a durable allowed root: the worktree path is still
   // managed (record + memory auth) and NO trusted claim is written.
   const root = temp("wt-durable-repo-"); initRepo(root);
   const base = `${resolve(realpathSync(root))}-worktrees`;
   mkdirSync(base);
-  const { app, root: r, managedLedger, trusted, allowedRoots } = await makeWorktreeApp({ root, hostDir: temp("wt-durable-host-") });
+  const { app, root: r, managedLedger, trusted, allowedRoots } = await makeWorktreeApp({ root, hostDir: dedicatedHostDir("wt-durable-host-") });
   await allowedRoots.expandRoots([realpathSync(base)], "local");
   const response = await postWorktree(app, r, "feature-durable");
   assert.equal(response.status, 201);
@@ -187,9 +190,9 @@ test("POST creates a managed worktree under an already-durable root with no trus
 // Restart managed+authorized (rehydrate)
 // ---------------------------------------------------------------------------
 
-test("restart on the same host dir rehydrates the managed record and authorization", async () => {
+test("restart on the same host dir rehydrates the managed record and authorization", { skip: process.platform === "win32" }, async () => {
   const root = temp("wt-restart-repo-"); initRepo(root);
-  const hostDir = temp("wt-restart-host-");
+  const hostDir = dedicatedHostDir("wt-restart-host-");
   const first = await makeWorktreeApp({ root, hostDir });
   const created = await postWorktree(first.app, root, "restart-a");
   assert.equal(created.status, 201);
@@ -231,7 +234,7 @@ test("DELETE denies external, planted (inside base), and manual worktrees; marke
   assert.equal(existsSync(base), true, "base preserved");
 });
 
-test("DELETE denies a legacy trusted-claim-only worktree (authorized ≠ delete authority)", async () => {
+test("DELETE denies a legacy trusted-claim-only worktree (authorized ≠ delete authority)", { skip: process.platform === "win32" }, async () => {
   const { app, root, allowedRoots, trusted } = await makeWorktreeApp();
   const target = makeWorktree(root, "legacy-b", { insideBase: true });
   const base = `${resolve(realpathSync(root))}-worktrees`;
@@ -249,7 +252,7 @@ test("DELETE denies a legacy trusted-claim-only worktree (authorized ≠ delete 
   assert.equal(existsSync(target), true, "legacy worktree retained");
 });
 
-test("DELETE denies an externally removed+readd same-path worktree (identity replaced)", async () => {
+test("DELETE denies an externally removed+readd same-path worktree (identity replaced)", { skip: process.platform === "win32" }, async () => {
   const { app, root } = await makeWorktreeApp();
   const first = await postWorktree(app, root, "readd-2");
   assert.equal(first.status, 201);
@@ -264,7 +267,7 @@ test("DELETE denies an externally removed+readd same-path worktree (identity rep
   assert.equal(existsSync(path), true, "readd retained");
 });
 
-test("DELETE requires an absolute canonical target path", async () => {
+test("DELETE requires an absolute canonical target path", { skip: process.platform === "win32" }, async () => {
   const { app, root } = await makeWorktreeApp();
   const created = await postWorktree(app, root, "abs-b");
   assert.equal(created.status, 201);
@@ -281,7 +284,7 @@ test("DELETE requires an absolute canonical target path", async () => {
 // Clean managed delete success + branch/base retained + fallback cwd
 // ---------------------------------------------------------------------------
 
-test("clean managed DELETE succeeds: 200 fallbackCwd + branchRetained, record removed, branch/base preserved", async () => {
+test("clean managed DELETE succeeds: 200 fallbackCwd + branchRetained, record removed, branch/base preserved", { skip: process.platform === "win32" }, async () => {
   const { app, root, managedLedger, trusted } = await makeWorktreeApp();
   const created = await postWorktree(app, root, "clean-b");
   assert.equal(created.status, 201);
@@ -303,7 +306,7 @@ test("clean managed DELETE succeeds: 200 fallbackCwd + branchRetained, record re
   assert.ok(!after.includes(path), "topology no longer contains target");
 });
 
-test("managed DELETE also drops a stale legacy trusted claim for the path", async () => {
+test("managed DELETE also drops a stale legacy trusted claim for the path", { skip: process.platform === "win32" }, async () => {
   const { app, root, allowedRoots, trusted } = await makeWorktreeApp();
   const created = await postWorktree(app, root, "stale-claim-b");
   assert.equal(created.status, 201);
@@ -323,7 +326,7 @@ test("managed DELETE also drops a stale legacy trusted claim for the path", asyn
 // Dirty / force semantics
 // ---------------------------------------------------------------------------
 
-test("dirty requires force; force retains branch and base and passes exactly one --force", async () => {
+test("dirty requires force; force retains branch and base and passes exactly one --force", { skip: process.platform === "win32" }, async () => {
   const { app, root, base } = await makeWorktreeApp();
   const created = await postWorktree(app, root, "dirty-b");
   assert.equal(created.status, 201);
@@ -345,7 +348,7 @@ test("dirty requires force; force retains branch and base and passes exactly one
 // Busy exact + descendant rejects; force cannot bypass; guard before effects
 // ---------------------------------------------------------------------------
 
-test("busy exact and descendant both reject DELETE and force cannot bypass", async () => {
+test("busy exact and descendant both reject DELETE and force cannot bypass", { skip: process.platform === "win32" }, async () => {
   const { app, root } = await makeWorktreeApp({ busy: async () => ({ busy: true, reason: "active session" }) });
   const created = await postWorktree(app, root, "busy-b");
   assert.equal(created.status, 201);
@@ -404,7 +407,7 @@ test("DELETE rejects the main worktree and non-project paths; external remove/re
   assert.ok([403, 404].includes(notInRepo.status), `not a project worktree (got ${notInRepo.status})`);
 });
 
-test("DELETE denies after admin-dir identity replacement (git repair/re-add)", async () => {
+test("DELETE denies after admin-dir identity replacement (git repair/re-add)", { skip: process.platform === "win32" }, async () => {
   const { app, root, managedLedger } = await makeWorktreeApp();
   const created = await postWorktree(app, root, "admin-swap");
   assert.equal(created.status, 201);
@@ -425,7 +428,7 @@ test("DELETE denies after admin-dir identity replacement (git repair/re-add)", a
 // Concurrent create/delete/recreate
 // ---------------------------------------------------------------------------
 
-test("concurrent create/delete/recreate stays consistent and ownership is never ambiguous", async () => {
+test("concurrent create/delete/recreate stays consistent and ownership is never ambiguous", { skip: process.platform === "win32" }, async () => {
   const { app, root, managedLedger } = await makeWorktreeApp();
   const create = (branch) => postWorktree(app, root, branch);
   const first = await create("conc-a");
@@ -476,7 +479,7 @@ test("aborted request fails closed (MUTATION_ABORTED) before any git effect", as
     },
   };
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root2)], maxRoots: 16 });
-  const hostDir = temp("wt-abort2-host-");
+  const hostDir = dedicatedHostDir("wt-abort2-host-");
   const lease = await openHostStateDirectoryLease({ hostDir, instanceId: `wt-abort2-${Math.random().toString(36).slice(2, 12)}` });
   leases.push(() => lease.close());
   const managedLedger2 = createManagedWorktreesLedgerFromLease(lease);
@@ -503,9 +506,9 @@ test("aborted request fails closed (MUTATION_ABORTED) before any git effect", as
 // Git success + ledger cleanup failure → fixed 500 (no false success)
 // ---------------------------------------------------------------------------
 
-test("Git succeeds but durable ownership cleanup fails ⇒ fixed 500 WORKTREE_DELETE_COMMIT_INCOMPLETE", async () => {
+test("Git succeeds but durable ownership cleanup fails ⇒ fixed 500 WORKTREE_DELETE_COMMIT_INCOMPLETE", { skip: process.platform === "win32" }, async () => {
   const root = temp("wt-cleanup-fail-repo-"); initRepo(root);
-  const hostDir = temp("wt-cleanup-fail-host-");
+  const hostDir = dedicatedHostDir("wt-cleanup-fail-host-");
   const clean = await makeWorktreeApp({ root, hostDir });
   const created = await postWorktree(clean.app, root, "cleanup-fail-b");
   assert.equal(created.status, 201);
@@ -535,7 +538,7 @@ test("Git succeeds but durable ownership cleanup fails ⇒ fixed 500 WORKTREE_DE
 test("git/process errors are sanitized: no raw stderr/path/branch/JSON leak", async () => {
   const root = temp("wt-sanitize-repo-"); initRepo(root);
   const realRunner = createProcessRunner();
-  const hostDir = temp("wt-sanitize-host-");
+  const hostDir = dedicatedHostDir("wt-sanitize-host-");
   const lease = await openHostStateDirectoryLease({ hostDir, instanceId: `wt-san-${Math.random().toString(36).slice(2, 12)}` });
   leases.push(() => lease.close());
   const managedLedger = createManagedWorktreesLedgerFromLease(lease);
@@ -566,7 +569,7 @@ test("git/process errors are sanitized: no raw stderr/path/branch/JSON leak", as
 // Authenticated LAN
 // ---------------------------------------------------------------------------
 
-test("authenticated LAN managed delete succeeds; external denied; unauth blocked before effects", async () => {
+test("authenticated LAN managed delete succeeds; external denied; unauth blocked before effects", { skip: process.platform === "win32" }, async () => {
   const root = temp("wt-lan-repo-"); initRepo(root);
   const { app } = await makeWorktreeApp({
     root,

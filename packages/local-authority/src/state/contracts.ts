@@ -277,12 +277,32 @@ export function isValidInstanceId(value: unknown): value is string {
     && !hasControlChar(value);
 }
 
+const WINDOWS_DRIVE_ABSOLUTE = /^[A-Za-z]:[\\/]/;
+const WINDOWS_DRIVE_ROOT = /^[A-Za-z]:[\\/]$/;
+const WINDOWS_UNC_OR_DEVICE = /^(\\\\|\/\/)/;
+const WINDOWS_EXTENDED = /^(\\\\\?\\|\/\/\?\/|\\\\\.\\|\/\/\.\/)/i;
+const WINDOWS_RESERVED_DOS_NAME = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
+
+function isWindowsDriveAbsoluteStoredShape(value: string): boolean {
+  if (!WINDOWS_DRIVE_ABSOLUTE.test(value) || WINDOWS_UNC_OR_DEVICE.test(value) || WINDOWS_EXTENDED.test(value)) {
+    return false;
+  }
+  if (WINDOWS_DRIVE_ROOT.test(value)) return true;
+  if (/[\\/]$/.test(value)) return false;
+  const segments = value.slice(3).split(/[\\/]/u);
+  for (const segment of segments) {
+    if (segment === "" || segment === "." || segment === ".." || WINDOWS_RESERVED_DOS_NAME.test(segment)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Pure shape predicate for a stored absolute canonical path: already
  * normalized (no "." / ".." / empty / trailing-slash / leading-double-slash
- * segments), bounded, no NUL. Equivalent to the old Host
- * `isAbsolute && resolve(value) === value` check without a path import, so it
- * stays platform-neutral.
+ * segments), bounded, no NUL. Accepts POSIX `/...` and Windows drive-absolute
+ * `C:\...` / `C:/...`. UNC, extended, and relative forms stay rejected.
  */
 export function isAbsoluteCanonicalShape(value: unknown): value is string {
   if (
@@ -293,15 +313,16 @@ export function isAbsoluteCanonicalShape(value: unknown): value is string {
   ) {
     return false;
   }
-  if (!value.startsWith("/")) return false;
-  // Filesystem root is a valid *shape* (matches the original
-  // `isAbsolute && resolve(value) === value` semantics); the canonicalize and
-  // secure-directory primitives reject roots operationally.
-  if (value === "/") return true;
-  if (value.startsWith("//") || value.endsWith("/")) return false;
-  const segments = value.slice(1).split("/");
-  for (const segment of segments) {
-    if (segment === "" || segment === "." || segment === "..") return false;
+  if (value.startsWith("/")) {
+    // Filesystem root is a valid *shape*; canonicalize / secure-directory
+    // primitives still reject roots operationally.
+    if (value === "/") return true;
+    if (value.startsWith("//") || value.endsWith("/")) return false;
+    const segments = value.slice(1).split("/");
+    for (const segment of segments) {
+      if (segment === "" || segment === "." || segment === "..") return false;
+    }
+    return true;
   }
-  return true;
+  return isWindowsDriveAbsoluteStoredShape(value);
 }

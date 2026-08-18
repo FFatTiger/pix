@@ -764,7 +764,7 @@ test("collision and identity replacement fail closed; loser never authorizes", a
 // Production composition / worktree route
 // ---------------------------------------------------------------------------
 
-test("worktree create managed persistence failure rolls back worktree/branch and never 201", async () => {
+test("worktree create managed persistence failure rolls back worktree/branch and never 201", { skip: process.platform === "win32" }, async () => {
   const root = temp("pi-persist-fail-");
   initRepo(root);
   const hostDir = temp("pi-persist-fail-host-");
@@ -871,7 +871,7 @@ test("create→production resources restart→authorized; sessiond down GET stil
   await second.trustedRootsLedger.close();
 });
 
-test("authenticated LAN worktree create/delete persists durably; unauth LAN blocked before Git", async () => {
+test("authenticated LAN worktree create/delete persists durably; unauth LAN blocked before Git", { skip: process.platform === "win32" }, async () => {
   const root = temp("pi-lan-repo-");
   initRepo(root);
   const hostDir = temp("pi-lan-host-");

@@ -35,6 +35,21 @@ async function expectReject(path, code) {
 // Requirement / shape validation
 // ---------------------------------------------------------------------------
 
+test("isAbsoluteCanonicalShape accepts POSIX and Windows drive-absolute stored paths", () => {
+  assert.equal(isAbsoluteCanonicalShape("/var/pix/host"), true);
+  assert.equal(isAbsoluteCanonicalShape("/"), true);
+  assert.equal(isAbsoluteCanonicalShape("//server/share"), false);
+  assert.equal(isAbsoluteCanonicalShape("/a/../b"), false);
+  assert.equal(isAbsoluteCanonicalShape("relative"), false);
+  assert.equal(isAbsoluteCanonicalShape("C:\\Users\\pix"), true);
+  assert.equal(isAbsoluteCanonicalShape("C:/Users/pix"), true);
+  assert.equal(isAbsoluteCanonicalShape("C:\\"), true);
+  assert.equal(isAbsoluteCanonicalShape("C:\\foo\\"), false);
+  assert.equal(isAbsoluteCanonicalShape("C:\\foo\\..\\bar"), false);
+  assert.equal(isAbsoluteCanonicalShape("\\\\server\\share\\x"), false);
+  assert.equal(isAbsoluteCanonicalShape("\\\\?\\C:\\Windows"), false);
+});
+
 test("canonicalize: requires absolute bounded path without NUL/control chars", async () => {
   await expectReject("", "INVALID_PATH");
   await expectReject("relative", "INVALID_PATH");

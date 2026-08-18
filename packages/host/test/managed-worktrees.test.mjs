@@ -43,6 +43,11 @@ function temp(prefix) {
   temporary.push(value);
   return value;
 }
+/** Dedicated host leaf created by the platform backend (Windows DACL / POSIX 0700). */
+function dedicatedHostDir(prefix) {
+  const parent = temp(prefix);
+  return join(parent, "host");
+}
 afterEach(() => {
   while (temporary.length) {
     const value = temporary.pop();
@@ -89,10 +94,50 @@ async function freshDeps({ root, hostDir, maxRecords, failTempFsync, allowedRoot
 // capture / recordCreated
 // ---------------------------------------------------------------------------
 
-test("recordCreated captures full evidence, persists disk before memory authorization", async () => {
+test("recordCreated: a record the v1 schema cannot re-read is rejected before any disk write", async () => {
+  const root = temp("mwt-reject-repo-");
+  initRepo(root);
+  const hostDir = dedicatedHostDir("mwt-reject-host-");
+  const target = makeWorktree(root, "feature-reject");
+  const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
+  const { deps, ledger } = await freshDeps({ root, hostDir, allowedRoots });
+
+  // Simulate the Windows inode overflow: Node stat.ino can exceed 2^53-1.
+  const oversized = {
+    worktreeId: "mwt-reject-0001",
+    path: realpathSync(target),
+    dev: 1,
+    ino: Number.MAX_SAFE_INTEGER + 1,
+    repoRoot: realpathSync(root),
+    repoDev: 1,
+    repoIno: 1,
+    commonDir: realpathSync(root) + "/.git",
+    commonDev: 1,
+    commonIno: 1,
+    adminDir: realpathSync(root) + "/.git/worktrees/reject",
+    adminDev: 1,
+    adminIno: 1,
+    base: `${resolve(realpathSync(root))}-worktrees`,
+    baseDev: 1,
+    baseIno: 1,
+    createdAt: new Date().toISOString(),
+    source: "worktree.create",
+    branchAtCreate: "feature-reject",
+    branchCreatedByPix: true,
+  };
+  await assert.rejects(
+    () => ledger.update(() => [oversized]),
+    (e) => e.code === "MANAGED_WRITE_REJECTED",
+  );
+  assert.equal(existsSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME)), false, "no ledger written on write-side rejection");
+  assert.equal(await allowedRoots.isAuthorized(target, "directory"), false, "no memory auth on write-side rejection");
+  await ledger.close();
+});
+
+test("recordCreated captures full evidence, persists disk before memory authorization", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-rec-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-rec-host-");
+  const hostDir = dedicatedHostDir("mwt-rec-host-");
   const target = makeWorktree(root, "feature-a");
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
   const { deps, ledger } = await freshDeps({ root, hostDir, allowedRoots });
@@ -118,10 +163,10 @@ test("recordCreated captures full evidence, persists disk before memory authoriz
   await ledger.close();
 });
 
-test("recordCreated: disk failure means NO memory authorization and NO record (disk before memory)", async () => {
+test("recordCreated: disk failure means NO memory authorization and NO record (disk before memory)", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-fail-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-fail-host-");
+  const hostDir = dedicatedHostDir("mwt-fail-host-");
   const target = makeWorktree(root, "feature-fail");
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
   const { deps, ledger } = await freshDeps({
@@ -139,10 +184,10 @@ test("recordCreated: disk failure means NO memory authorization and NO record (d
   await ledger.close();
 });
 
-test("recordCreated: duplicate worktreeId/path fails closed with no memory auth", async () => {
+test("recordCreated: duplicate worktreeId/path fails closed with no memory auth", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-dup-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-dup-host-");
+  const hostDir = dedicatedHostDir("mwt-dup-host-");
   const targetA = makeWorktree(root, "feature-dup");
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
   const { deps, ledger } = await freshDeps({ root, hostDir, allowedRoots });
@@ -162,10 +207,10 @@ test("recordCreated: duplicate worktreeId/path fails closed with no memory auth"
   await ledger.close();
 });
 
-test("recordCreated: created under an already-durable AllowedRoot still gets a managed record + memory auth, no trusted claim", async () => {
+test("recordCreated: created under an already-durable AllowedRoot still gets a managed record + memory auth, no trusted claim", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-durable-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-durable-host-");
+  const hostDir = dedicatedHostDir("mwt-durable-host-");
   const target = makeWorktree(root, "feature-durable");
   const base = `${resolve(realpathSync(root))}-worktrees`;
   // Durable root ALREADY covers the worktree path.
@@ -182,7 +227,7 @@ test("recordCreated: created under an already-durable AllowedRoot still gets a m
 test("capture: repo replacement / unsafe containment fails; injected runner is honored", async () => {
   const root = temp("mwt-capture-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-capture-host-");
+  const hostDir = dedicatedHostDir("mwt-capture-host-");
   const target = makeWorktree(root, "feature-cap");
   const { deps, ledger } = await freshDeps({ root, hostDir });
   // A runner that throws → capture fails closed (injectable runner honored).
@@ -198,10 +243,10 @@ test("capture: repo replacement / unsafe containment fails; injected runner is h
 // classify / findLiveAuthority
 // ---------------------------------------------------------------------------
 
-test("classify: managed vs unmanaged; planted/external worktrees are unmanaged", async () => {
+test("classify: managed vs unmanaged; planted/external worktrees are unmanaged", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-cls-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-cls-host-");
+  const hostDir = dedicatedHostDir("mwt-cls-host-");
   const target = makeWorktree(root, "feature-cls");
   const { deps, ledger } = await freshDeps({ root, hostDir });
   await recordCreated(deps, { path: target, branchAtCreate: "feature-cls", branchCreatedByPix: true, worktreeId: "mwt-cls-000001" });
@@ -222,10 +267,10 @@ test("classify: managed vs unmanaged; planted/external worktrees are unmanaged",
   await ledger.close();
 });
 
-test("branch switch and detach keep the worktree managed (branchAtCreate audit-only)", async () => {
+test("branch switch and detach keep the worktree managed (branchAtCreate audit-only)", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-branch-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-branch-host-");
+  const hostDir = dedicatedHostDir("mwt-branch-host-");
   const target = makeWorktree(root, "feature-branch");
   const { deps, ledger } = await freshDeps({ root, hostDir });
   await recordCreated(deps, { path: target, branchAtCreate: "feature-branch", branchCreatedByPix: true, worktreeId: "mwt-branch-001" });
@@ -245,10 +290,10 @@ test("branch switch and detach keep the worktree managed (branchAtCreate audit-o
 // durable-root promotion non-erasure
 // ---------------------------------------------------------------------------
 
-test("durable root promotion never erases managed ownership; no trusted double-write", async () => {
+test("durable root promotion never erases managed ownership; no trusted double-write", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-promo-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-promo-host-");
+  const hostDir = dedicatedHostDir("mwt-promo-host-");
   const target = makeWorktree(root, "feature-promo");
   const base = `${resolve(realpathSync(root))}-worktrees`;
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16, allowLocalExpansion: true });
@@ -285,10 +330,10 @@ test("durable root promotion never erases managed ownership; no trusted double-w
 // remove / re-add
 // ---------------------------------------------------------------------------
 
-test("remove then re-add the same path loses authority via inode/admin identity", async () => {
+test("remove then re-add the same path loses authority via inode/admin identity", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-readd-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-readd-host-");
+  const hostDir = dedicatedHostDir("mwt-readd-host-");
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
   const { deps, ledger } = await freshDeps({ root, hostDir, allowedRoots });
   const target = makeWorktree(root, "feature-readd");
@@ -318,10 +363,10 @@ test("remove then re-add the same path loses authority via inode/admin identity"
   await ledger.close();
 });
 
-test("commitRemoved removes ONLY the exact record/path; never branch/base deletion authority", async () => {
+test("commitRemoved removes ONLY the exact record/path; never branch/base deletion authority", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-remove-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-remove-host-");
+  const hostDir = dedicatedHostDir("mwt-remove-host-");
   const target = makeWorktree(root, "feature-rm");
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
   const { deps, ledger } = await freshDeps({ root, hostDir, allowedRoots });
@@ -347,10 +392,10 @@ test("commitRemoved removes ONLY the exact record/path; never branch/base deleti
 // rehydrate / reconcile
 // ---------------------------------------------------------------------------
 
-test("external deletion yields stale record; reconciliation drops it; corrupt evidence untouched", async () => {
+test("external deletion yields stale record; reconciliation drops it; corrupt evidence untouched", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-rec2-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-rec2-host-");
+  const hostDir = dedicatedHostDir("mwt-rec2-host-");
   const target = makeWorktree(root, "feature-rec2");
   const { deps, ledger } = await freshDeps({ root, hostDir });
   await recordCreated(deps, { path: target, branchAtCreate: "feature-rec2", branchCreatedByPix: true, worktreeId: "mwt-rec2-0001" });
@@ -371,10 +416,10 @@ test("external deletion yields stale record; reconciliation drops it; corrupt ev
   assert.deepEqual(await readFile(join(hostDir2, MANAGED_WORKTREES_FILE_NAME)), beforeBytes, "corrupt evidence untouched");
 });
 
-test("foreign installation/repository records are preserved on disk but never authorized", async () => {
+test("foreign installation/repository records are preserved on disk but never authorized", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-foreign-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-foreign-host-");
+  const hostDir = dedicatedHostDir("mwt-foreign-host-");
   const target = makeWorktree(root, "feature-fw");
   const { deps, ledger } = await freshDeps({ root, hostDir });
   const record = await recordCreated(deps, { path: target, branchAtCreate: "feature-fw", branchCreatedByPix: true, worktreeId: "mwt-fw-0000001" });
@@ -400,7 +445,7 @@ test("foreign installation/repository records are preserved on disk but never au
 test("rehydrate on a MISSING sidecar keeps it absent (no empty sidecar write)", async () => {
   const root = temp("mwt-missing-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-missing-host-");
+  const hostDir = dedicatedHostDir("mwt-missing-host-");
   const ledger = await openManagedWorktreesLedger({ hostDir });
   assert.equal(existsSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME)), false, "sidecar absent before rehydrate");
   const result = await rehydrateManagedWorktrees({ ledger }, { isRepoManaged: () => true });
@@ -410,10 +455,10 @@ test("rehydrate on a MISSING sidecar keeps it absent (no empty sidecar write)", 
   await ledger.close();
 });
 
-test("concurrent recordCreated for distinct paths both commit durably (shared lease serializes)", async () => {
+test("concurrent recordCreated for distinct paths both commit durably (shared lease serializes)", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-conc-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-conc-host-");
+  const hostDir = dedicatedHostDir("mwt-conc-host-");
   const targetA = makeWorktree(root, "feature-a");
   const targetB = makeWorktree(root, "feature-b");
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
@@ -429,10 +474,10 @@ test("concurrent recordCreated for distinct paths both commit durably (shared le
   await ledger.close();
 });
 
-test("managed service factory exposes a narrow composition surface", async () => {
+test("managed service factory exposes a narrow composition surface", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-factory-repo-");
   initRepo(root);
-  const hostDir = temp("mwt-factory-host-");
+  const hostDir = dedicatedHostDir("mwt-factory-host-");
   const target = makeWorktree(root, "feature-factory");
   const ledger = await openManagedWorktreesLedger({ hostDir });
   const deps = createManagedWorktreesService({ ledger, allowedRoots: undefined });

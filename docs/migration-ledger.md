@@ -3644,3 +3644,10 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Windows junction/reparse intermediates are rejected as `PATH_FORBIDDEN` before `realpath` can follow them. Existing symlink-escape codes stay `PATH_FORBIDDEN`.
 - Trusted-roots / managed-worktrees on-disk schemas stay v1 POSIX `{dev,ino}`. Windows claims are not packed into those fields; `claimToRecord()` returns null for non-POSIX identity.
 - This is not ledger v2, Protocol path-flavor, Job Object, or Windows product support.
+
+## 83. Cross-platform CP-15 — ledger stored-path shape + write-side round-trip
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `728597c`.
+- `isAbsoluteCanonicalShape` now accepts Windows drive-absolute stored paths (`C:\\...` / `C:/...`) and still rejects UNC, `\\\\?\\`, parent escapes, and trailing slashes.
+- Managed-worktrees `writeSerialized` re-parses its own payload before touching disk. A v1 record that cannot round-trip (Node `ino` beyond `2^53-1`, non-canonical path) fails closed as `MANAGED_WRITE_REJECTED` with no sidecar write and no memory authorization.
+- POSIX success-path worktree persistence tests skip on Windows; those skips are not treated as product-support evidence. Ledger schema stays v1 POSIX `{dev,ino}`.

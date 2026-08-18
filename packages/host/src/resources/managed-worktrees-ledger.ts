@@ -71,6 +71,7 @@ export type ManagedWorktreesLedgerCode =
   | "MANAGED_PERMISSIONS"
   | "MANAGED_HARD_LINK"
   | "MANAGED_WRITE_FAILED"
+  | "MANAGED_WRITE_REJECTED"
   | "MANAGED_LOCK_BUSY"
   | "MANAGED_LOCK_STALE"
   | "MANAGED_LOCK_UNSAFE"
@@ -454,8 +455,16 @@ export function createManagedWorktreesLedgerFromLease(
     if (records.length > maxRecords) {
       throw new ManagedWorktreesLedgerError("MANAGED_OVERSIZE", "Record set exceeds maxRecords");
     }
+    const serialized = serializeManagedWorktreesDocument(records);
+    // Write-side round-trip gate: a record set that the schema cannot re-read
+    // (Windows dev/ino beyond 2^53-1, non-canonical stored path shape, …) must
+    // never be persisted as a ledger that later fail-closes as MANAGED_SPARSE.
+    const reread = parseManagedWorktreesDocument(serialized, maxRecords);
+    if (reread.warning) {
+      throw new ManagedWorktreesLedgerError("MANAGED_WRITE_REJECTED", "Managed-worktrees record set cannot be re-read from its own schema");
+    }
     try {
-      await io.writeDocument(MANAGED_WORKTREES_FILE_NAME, serializeManagedWorktreesDocument(records));
+      await io.writeDocument(MANAGED_WORKTREES_FILE_NAME, serialized);
     } catch (error) {
       toManagedError(error);
     }
