@@ -597,6 +597,7 @@ export const enLocale = {
     "desktop.noMessage": "(no message)",
     "desktop.showExtensionMessage": "Show extension message",
     "desktop.copied": "Copied",
+    "desktop.copyFailed": "Copy failed",
     "desktop.copy": "Copy",
     "desktop.collapse": "Collapse",
     "desktop.expand": "Expand",

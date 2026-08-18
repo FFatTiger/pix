@@ -32,6 +32,8 @@ export interface ContextMenuItem {
    * menu closes itself.
    */
   feedbackLabel?: string;
+  /** Shown instead of `feedbackLabel` when `onSelect` rejects. */
+  errorFeedbackLabel?: string;
   /** Show a check mark in the icon slot (e.g. the currently active option). */
   checked?: boolean;
   /** Right-aligned secondary text (e.g. a count). Rendered dim and small. */
@@ -88,6 +90,7 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [feedbackIndex, setFeedbackIndex] = useState(-1);
+  const [feedbackFailed, setFeedbackFailed] = useState(false);
   const [submenuIndex, setSubmenuIndex] = useState<number | null>(null);
   const [submenuActiveIndex, setSubmenuActiveIndex] = useState(-1);
   const [submenuFlipped, setSubmenuFlipped] = useState(false);
@@ -99,6 +102,7 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
     if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
     feedbackTimerRef.current = null;
     setFeedbackIndex(-1);
+    setFeedbackFailed(false);
     setActiveIndex(-1);
     setSubmenuIndex(null);
     setSubmenuActiveIndex(-1);
@@ -112,6 +116,7 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
     if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
     feedbackTimerRef.current = null;
     setFeedbackIndex(-1);
+    setFeedbackFailed(false);
     setActiveIndex(-1);
     setSubmenuIndex(null);
     setSubmenuActiveIndex(-1);
@@ -135,10 +140,16 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (item.feedbackLabel) {
-      setFeedbackIndex(index);
       if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
-      feedbackTimerRef.current = setTimeout(() => closeMenu(), FEEDBACK_MS);
-      void Promise.resolve(item.onSelect?.());
+      void Promise.resolve(item.onSelect?.()).then(() => {
+        setFeedbackIndex(index);
+        setFeedbackFailed(false);
+        feedbackTimerRef.current = setTimeout(() => closeMenu(), FEEDBACK_MS);
+      }).catch(() => {
+        setFeedbackIndex(index);
+        setFeedbackFailed(true);
+        feedbackTimerRef.current = setTimeout(() => closeMenu(), FEEDBACK_MS);
+      });
     } else {
       closeMenu();
       void Promise.resolve(item.onSelect?.());
@@ -428,8 +439,8 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
                 item.icon
               )}
             </span>
-            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-              {showingFeedback ? item.feedbackLabel : item.label}
+            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", color: showingFeedback && feedbackFailed ? "var(--status-danger)" : undefined }}>
+              {showingFeedback ? (feedbackFailed ? item.errorFeedbackLabel ?? item.feedbackLabel : item.feedbackLabel) : item.label}
             </span>
             {item.hint !== undefined && (
               <span

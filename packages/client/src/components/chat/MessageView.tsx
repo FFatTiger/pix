@@ -2,7 +2,7 @@
 import { memo, useState, useRef, useEffect, useMemo, useCallback, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownBody } from "./MarkdownBody";
-import { copyText } from "@/lib/clipboard";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 import { cssPx, cssViewportSize } from "@/lib/ui-scale";
 import { urls } from "@/api/urls";
 
@@ -345,7 +345,9 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
 }) {
   const { t } = useI18n();
   const [hovered, setHovered] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const { status: copyStatus, copy } = useCopyFeedback();
+  const copied = copyStatus === "copied";
+  const copyFailed = copyStatus === "failed";
   // The skill tooltip is portaled to document.body and positioned fixed, so
   // no chat container (the bubble's overflow, or .chat-user-message's
   // content-visibility containment) can clip it. Scrolling re-anchors it to
@@ -495,10 +497,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   const canNavigate = !!prevAssistantEntryId && !!onNavigate;
 
   const copyContent = () => {
-    copyText(content).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    void copy(content);
   };
 
   return (
@@ -588,13 +587,13 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
           }}>
             <button
               onClick={copyContent}
-              title={t("desktop.copyMessage")}
+              title={copyFailed ? t("desktop.copyFailed") : t("desktop.copyMessage")}
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
                 width: 22, height: 22,
                 background: "none", border: "none",
                 borderRadius: 5,
-                color: copied ? "var(--accent)" : "var(--text-dim)",
+                color: copyFailed ? "var(--status-danger)" : copied ? "var(--accent)" : "var(--text-dim)",
                 cursor: "pointer",
                 transition: "color 0.12s",
               }}
@@ -697,7 +696,9 @@ function AssistantMessageView({
     .filter(({ block }) => !isEmptyThinkingBlock(block, { isStreaming }));
   const blocks = blockItems.map(({ block }) => block);
   const [hovered, setHovered] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const { status: copyStatus, copy } = useCopyFeedback();
+  const copied = copyStatus === "copied";
+  const copyFailed = copyStatus === "failed";
   const streamStartRef = useRef<number | null>(null);
   const [tps, setTps] = useState<number | null>(null);
   const blockItemsRef = useRef(blockItems);
@@ -759,10 +760,7 @@ function AssistantMessageView({
     .join("\n");
 
   const copyContent = () => {
-    copyText(textContent).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    void copy(textContent);
   };
 
   useEffect(() => {
@@ -912,13 +910,13 @@ function AssistantMessageView({
         {textContent && !isStreaming && (
           <button
             onClick={copyContent}
-            title={t("desktop.copyMessage")}
+            title={copyFailed ? t("desktop.copyFailed") : t("desktop.copyMessage")}
             style={{
               display: "flex", alignItems: "center", justifyContent: "center",
               width: 22, height: 22,
               background: "none", border: "none",
               borderRadius: 5,
-              color: copied ? "var(--accent)" : "var(--text-dim)",
+              color: copyFailed ? "var(--status-danger)" : copied ? "var(--accent)" : "var(--text-dim)",
               cursor: "pointer",
               opacity: hovered ? 1 : 0,
               pointerEvents: hovered ? "auto" : "none",
@@ -1464,7 +1462,9 @@ function CustomMessageView({ message, isStreaming, cwd, onOpenFile }: { message:
   const isHiddenDisplay = message.display === false;
   const [contentExpanded, setContentExpanded] = useState(!isHiddenDisplay);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const { status: copyStatus, copy } = useCopyFeedback();
+  const copied = copyStatus === "copied";
+  const copyFailed = copyStatus === "failed";
   const text = getMessageText(message.content);
   const images = getMessageImages(message.content);
   const hasDetails = message.details !== undefined;
@@ -1473,10 +1473,7 @@ function CustomMessageView({ message, isStreaming, cwd, onOpenFile }: { message:
   const time = formatTime(message.timestamp);
 
   const copyContent = () => {
-    copyText(text || detailsText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    void copy(text || detailsText);
   };
 
   return (
@@ -1566,12 +1563,12 @@ function CustomMessageView({ message, isStreaming, cwd, onOpenFile }: { message:
                 padding: "3px 7px",
                 border: "none",
                 background: "none",
-                color: copied ? "var(--accent)" : "var(--text-dim)",
+                color: copyFailed ? "var(--status-danger)" : copied ? "var(--accent)" : "var(--text-dim)",
                 cursor: "pointer",
                 fontSize: 11,
               }}
             >
-              {copied ? t("desktop.copied") : t("desktop.copy")}
+              {copyFailed ? t("desktop.copyFailed") : copied ? t("desktop.copied") : t("desktop.copy")}
             </button>
           ) : null}
           {(hasDetails || isHiddenDisplay) && (

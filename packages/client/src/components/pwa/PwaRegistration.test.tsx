@@ -24,7 +24,7 @@ describe("PwaRegistration", () => {
     Object.defineProperty(window, "isSecureContext", { configurable: true, value: false });
     Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { register } });
     render(<I18nProvider><PwaRegistration /></I18nProvider>);
-    expect(screen.getByText("This origin is not a secure context, so app install stays unavailable.")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("This origin is not a secure context, so app install stays unavailable.");
     expect(document.querySelector("[data-pwa-state]")?.getAttribute("data-pwa-state")).toBe("insecure-origin");
     expect(register).not.toHaveBeenCalled();
     cleanup();

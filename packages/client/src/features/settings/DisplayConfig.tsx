@@ -6,7 +6,7 @@ import { useWallpaper } from "@/hooks/useWallpaper";
 import { resolveWallpaperUrl } from "@/lib/wallpaper";
 import { SettingsSection, SettingsButton } from "@/features/settings/settings-ui";
 import { SettingToggle } from "@/components/SettingToggle";
-import { copyText } from "@/lib/clipboard";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 
 // ── Tag / chip helpers ───────────────────────────────────────────────────────
 
@@ -152,9 +152,10 @@ export function DisplayConfig() {
   // "Open theme folder" copies the theme directory path to the clipboard
   // (the hint below shows the same path) and "Learn pi themes" opens the
   // public docs. DOM stays identical to the source.
+  const { status: themeCopyStatus, copy: copyThemePath } = useCopyFeedback();
   const openThemeFolder = useCallback(() => {
-    void copyText("~/.pi/agent/themes").catch(() => undefined);
-  }, []);
+    void copyThemePath("~/.pi/agent/themes");
+  }, [copyThemePath]);
 
   const openThemeDocs = useCallback(() => {
     window.open("https://pi.dev/docs/latest/themes", "_blank", "noopener,noreferrer");
@@ -177,11 +178,12 @@ export function DisplayConfig() {
               <button
                 type="button"
                 onClick={openThemeFolder}
-                style={textActionButtonStyle}
+                style={themeCopyStatus === "failed" ? { ...textActionButtonStyle, color: "var(--status-danger)" } : textActionButtonStyle}
+                title={themeCopyStatus === "failed" ? t("desktop.copyFailed") : themeCopyStatus === "copied" ? t("desktop.copied") : undefined}
                 {...underlineOnHover}
               >
                 <ArrowSquareOut size={12} weight="regular" aria-hidden="true" />
-                {t("desktop.openThemeFolder")}
+                {themeCopyStatus === "failed" ? t("desktop.copyFailed") : themeCopyStatus === "copied" ? t("desktop.copied") : t("desktop.openThemeFolder")}
               </button>
               <button
                 type="button"

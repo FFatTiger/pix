@@ -3726,3 +3726,10 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `e8749ba`.
 - `file-paths.ts` owns drive-root, compare key, containment, and join. Workspace `paths.ts`, file-links, file-mentions, FileExplorer, and Sidebar consume it instead of a second `compareForm`.
 - `joinFilePath("C:/", "Users")` stays `C:/Users`; `getFileName("C:/")` stays `C:/`. Display/navigation only; not Protocol path-flavor or Host authorization.
+
+## 96. Cross-platform CP-28 — visible PWA and clipboard failures
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `1f5ad0f`.
+- `PwaRegistration` renders a visible `role="status"` banner for `insecure-origin`, production `web-only`, and `registration-error`. Installable stays silent. Dev `web-only` stays off-screen.
+- `useCopyFeedback` records `copied`/`failed`. Message/code/session/theme copy surfaces show the failure. Context-menu copy waits for `onSelect` before showing Copied, and uses `errorFeedbackLabel` on reject.
+- Vite defines `VITE_SW_VERSION` as `packageVersion+commit/dev`. Missing version is `registration-error`, never a permanent cache key `1`. This is not LAN HTTPS productization.

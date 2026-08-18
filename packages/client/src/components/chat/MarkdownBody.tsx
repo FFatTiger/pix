@@ -5,7 +5,7 @@ import ReactMarkdown, { type Components, type ExtraProps, type Options as ReactM
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
-import { copyText } from "@/lib/clipboard";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 import { resolveLocalFileHref } from "@/lib/file-links";
 import { resolveMarkdownImageSrc } from "@/lib/markdown-images";
 import { splitStableParts } from "@/lib/markdown-incremental";
@@ -306,15 +306,10 @@ export function MermaidBlock({ code, isStreaming }: { code: string; isStreaming?
 
 export function CodeBlock({ code, lang, headerAction, isStreaming }: { code: string; lang: string; headerAction?: ReactNode | undefined; isStreaming?: boolean | undefined }) {
   const { t } = useI18n();
-  const [copied, setCopied] = useState(false);
+  const { status, copy } = useCopyFeedback();
   const [hovered, setHovered] = useState(false);
-
-  const copy = () => {
-    copyText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
+  const copied = status === "copied";
+  const copyFailed = status === "failed";
 
   return (
     <div
@@ -345,8 +340,8 @@ export function CodeBlock({ code, lang, headerAction, isStreaming }: { code: str
         }}>{lang || t("desktop.markdownPlainText")}</span>
         {headerAction}
         <button
-          onClick={copy}
-          title={copied ? t("desktop.copied") : t("desktop.copy")}
+          onClick={() => { void copy(code); }}
+          title={copyFailed ? t("desktop.copyFailed") : copied ? t("desktop.copied") : t("desktop.copy")}
           style={{
             display: "flex",
             alignItems: "center",
@@ -356,7 +351,7 @@ export function CodeBlock({ code, lang, headerAction, isStreaming }: { code: str
             border: "none",
             borderRadius: 5,
             background: "transparent",
-            color: copied ? "var(--accent)" : "var(--text-dim)",
+            color: copyFailed ? "var(--status-danger)" : copied ? "var(--accent)" : "var(--text-dim)",
             cursor: "pointer",
             fontSize: 10,
             transition: "color 0.12s",

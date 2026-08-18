@@ -15,8 +15,8 @@ import {
 } from "@phosphor-icons/react";
 import { useI18n } from "@/hooks/useI18n";
 import type { SessionTreeNode } from "@/lib/chat-view-model";
-import { copyText } from "@/lib/clipboard";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback";
+import { useCallback, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { BranchNavigator } from "./BranchNavigator";
@@ -89,14 +89,11 @@ export function SessionInfoBar({
 
   // Copy state for session file / id
   const [copiedField, setCopiedField] = useState<SessionCopyField | null>(null);
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { status: copyStatus, copy } = useCopyFeedback(1400);
   const handleCopyField = useCallback((field: SessionCopyField, value: string) => {
-    void copyText(value).then(() => {
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-      setCopiedField(field);
-      copyTimerRef.current = setTimeout(() => setCopiedField(null), 1400);
-    }).catch(() => undefined);
-  }, []);
+    setCopiedField(field);
+    void copy(value);
+  }, [copy]);
 
   const systemPromptTokenEstimate = useMemo(() => {
     if (!systemPrompt) return 0;
@@ -417,13 +414,16 @@ export function SessionInfoBar({
                     const ctx = contextUsage ?? sessionStats.contextUsage;
 
                     const copyBtn = (field: SessionCopyField, val: string) => {
-                      const copied = copiedField === field;
+                      const active = copiedField === field;
+                      const copied = active && copyStatus === "copied";
+                      const failed = active && copyStatus === "failed";
                       return (
                         <button
                           type="button"
                           className={`session-stats-copy${copied ? " is-copied" : ""}`}
-                          title={copied ? translate("desktop.copied") : field === "file" ? translate("desktop.copyFilePath") : translate("desktop.copySessionId")}
+                          title={failed ? translate("desktop.copyFailed") : copied ? translate("desktop.copied") : field === "file" ? translate("desktop.copyFilePath") : translate("desktop.copySessionId")}
                           onClick={() => handleCopyField(field, val)}
+                          style={failed ? { color: "var(--status-danger)" } : undefined}
                         >
                           {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
                         </button>

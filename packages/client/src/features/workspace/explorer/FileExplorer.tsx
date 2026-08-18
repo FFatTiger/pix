@@ -206,12 +206,14 @@ function TreeNode({
         label: t("desktop.copyRelativePath"),
         icon: <Copy size={13} weight="regular" aria-hidden="true" />,
         feedbackLabel: t("desktop.copied"),
+        errorFeedbackLabel: t("desktop.copyFailed"),
         onSelect: () => copyText(getRelativeFilePath(node.fullPath, cwd)),
       },
       {
         label: t("desktop.copyAbsolutePath"),
         icon: <LinkSimple size={13} weight="regular" aria-hidden="true" />,
         feedbackLabel: t("desktop.copied"),
+        errorFeedbackLabel: t("desktop.copyFailed"),
         onSelect: () => copyText(node.fullPath),
       },
     ]);

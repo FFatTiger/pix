@@ -597,6 +597,7 @@ export const zhCNLocale = {
     "desktop.noMessage": "（无消息）",
     "desktop.showExtensionMessage": "显示扩展消息",
     "desktop.copied": "已复制",
+    "desktop.copyFailed": "复制失败",
     "desktop.copy": "复制",
     "desktop.collapse": "收起",
     "desktop.expand": "展开",
