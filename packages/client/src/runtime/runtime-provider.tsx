@@ -40,13 +40,15 @@ export function detectClientIdentity(navigatorLike: Navigator, matchMedia?: (q: 
   return { shell, platform };
 }
 
-function detectPlatform(navigatorLike: Navigator): ClientPlatform {
+export function detectPlatform(navigatorLike: Pick<Navigator, "userAgent"> & { maxTouchPoints?: number }): ClientPlatform {
   const ua = navigatorLike.userAgent ?? "";
+  // iPadOS 13+ reports as Macintosh; check iOS tokens and touch Macs first.
+  if (/iPhone|iPad|iPod/i.test(ua)) return "ios";
+  if (/Mac/i.test(ua) && (navigatorLike.maxTouchPoints ?? 0) > 1) return "ios";
   if (/Win/i.test(ua)) return "win";
   if (/Mac/i.test(ua)) return "mac";
-  if (/Linux/i.test(ua)) return "linux";
-  if (/iPhone|iPad|iPod/i.test(ua)) return "ios";
   if (/Android/i.test(ua)) return "android";
+  if (/Linux/i.test(ua)) return "linux";
   return "unknown";
 }
 

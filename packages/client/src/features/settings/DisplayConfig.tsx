@@ -6,6 +6,7 @@ import { useWallpaper } from "@/hooks/useWallpaper";
 import { resolveWallpaperUrl } from "@/lib/wallpaper";
 import { SettingsSection, SettingsButton } from "@/features/settings/settings-ui";
 import { SettingToggle } from "@/components/SettingToggle";
+import { copyText } from "@/lib/clipboard";
 
 // ── Tag / chip helpers ───────────────────────────────────────────────────────
 
@@ -152,7 +153,7 @@ export function DisplayConfig() {
   // (the hint below shows the same path) and "Learn pi themes" opens the
   // public docs. DOM stays identical to the source.
   const openThemeFolder = useCallback(() => {
-    void navigator.clipboard?.writeText("~/.pi/agent/themes");
+    void copyText("~/.pi/agent/themes").catch(() => undefined);
   }, []);
 
   const openThemeDocs = useCallback(() => {

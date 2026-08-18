@@ -3683,3 +3683,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `df72db6`.
 - `assertPrivilegedProcessAllowed` default-denies uid 0 unless `allowRoot` / `PIX_ALLOW_ROOT` is exactly `1`/`true`. Missing uid (Windows) is not treated as root.
 - sessiond `startDaemon` and Host `createProductionResources` apply the check before creating runtime/host state. CLI prints the fixed `RootPrivilegeDeniedError` message.
+
+## 89. Cross-platform CP-21 — iPadOS-before-Mac detect + honest clipboard
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `be6aaa2`.
+- `detectPlatform` checks iPhone/iPad/iPod tokens and Macintosh+touch (`maxTouchPoints > 1`) before `/Mac/`, so iPadOS 13+ is `ios` not `mac`.
+- `copyText` rejects when `clipboard.writeText` throws or `execCommand("copy")` is missing/false. DisplayConfig uses the same helper. This is not Protocol path-flavor or product support.
