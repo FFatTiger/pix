@@ -68,6 +68,20 @@ export function createSessionHistoryQueryOptions(input: SessionHistoryQueryInput
       };
     },
     enabled,
+    // Activation changes the same session's key from read-only generation 0 to
+    // a live generation. Keep that exact same-session history visible while
+    // the authoritative anchored page loads, so the transcript never blanks
+    // and then reappears around the optimistic tail. Never carry data across
+    // session ids or live branch/rebase generations.
+    placeholderData: (previousData, previousQuery) => {
+      const previousKey = previousQuery?.queryKey;
+      return Array.isArray(previousKey)
+        && previousKey[3] === sessionId
+        && previousKey[5] === 0
+        && generation > 0
+        ? previousData
+        : undefined;
+    },
     staleTime: 30_000,
     retry: false,
     retryOnMount: false,

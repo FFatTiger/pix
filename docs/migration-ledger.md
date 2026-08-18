@@ -3452,7 +3452,47 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 70. Cross-platform G0 baseline — plan provenance and pending compatibility-shim tally
+## 70. UI-first Transcript Transaction + Global Running Projection
+
+### 问题与根因
+
+- Client `computeView` 曾把 optimistic entries 放在 committed live entries 前，导致新问题插入上一轮前；真实 `message_end` 再删 optimistic 并 append committed，于是消息跳到底部。
+- detach/fresh attach/rebase 清空 optimistic；历史模式又不消费 optimistic，导致激活发送时消息消失、闪烁或看似未发送。
+- prompt transport ack 即清 running overlay，造成 ack→agent_start 状态闪断；Sidebar 只看当前 attached+streaming，项目和 Tab 无运行状态。
+- attach-time `get_session_stats.contextUsage` 覆盖后续 snapshot，导致上下文百分比陈旧。
+
+### 修复语义
+
+- optimistic user entry 增 `sessionId` 归属并作为独立 transaction layer 暴露；权威 projection 不写 optimism。Transcript 合并固定 persisted → committed live → optimistic tail；`message_end` 优先同会话精确内容匹配、仅唯一候选时 fallback，禁止盲目跨会话 FIFO。
+- fresh attach/rebase/history teardown 不再删除 transaction-owned bubble；历史 Tab 在 attach 前也消费该 session optimistic。generation 0→live 仅同 session 保留 placeholder，跨 session/live rebase 不复用。
+- transport ack 保留 UI running，直到权威 start/end/message 事件接管；latest snapshot contextUsage 优先，stats 只补缺字段。
+- Protocol `running_sessions_changed` 墘 `busySessionIds`；sessiond 在 prompt/bash/compact busy flip 广播全局集合；Host WS 新增只读 `listRunning`；SessionStore 用 request-generation + push revision 防旧基线覆盖新 push，并成为 Sidebar session/project/top-tab 的唯一 running owner。
+- 选择历史/文件不激活目标 Worker，也不立即销毁已有后台订阅；所有可见 live surface 仍以 active session identity fail-closed。发送另一会话沿既有 detach→attach 单状态机 supersede。
+
+### 验证
+
+- Client 53 files / 634 tests PASS（新增 optimistic tail、fresh-attach preservation、detached pre-attach bubble、ack gap、running baseline/push/stale response、project/tab/session 状态、history placeholder、base-bound ghost reconciliation、latest context tests）。
+- Protocol 154/154 PASS；Host 487/487 PASS；sessiond `attach subscribes...` 与 `turn busy flips...` 定向 PASS。
+- Root typecheck、build、check:architecture、Client/sessiond boundaries、git diff-check PASS。
+- sessiond 全包仍受既有 early-signal/child-process 环境 flake 与长跑影响；本切片相关定向测试独立通过。
+
+### 残余
+
+- Wire `message_end` 尚无 browser commandId；当前 reconciliation 使用同会话精确内容，只有单一候选时才 fallback。若未来允许同会话多个完全相同文本并发排队，应在 Protocol 增加 command/turn correlation，而不是恢复 FIFO 猜测。
+
+### §70 独立验证修复追加
+
+首次 verifier 对抗探针发现并复现 4 项缺陷，均已修复并增加确定性覆盖：
+
+1. cross-session supersede：overlay 清理现按 `event.sessionId === optimisticPromptSessionId` 门控，A terminal 不再清 B activation；projected snapshot 也仅在 optimistic target 等于 attached session 时叠加，杜绝 A/B 同时假 running。
+2. terminal 完整性：`prompt_done` / `prompt_error` / `agent_settled` / `worker_crashed` / `runtime_unavailable` / `runtime_closed` 与 assistant terminal 均能交接/清理 overlay。
+3. ghost bubble：optimistic 记录精确 pre-prompt `baseEntryId`（root 为 null；detached target 在 attach snapshot 绑定）；history merge 仅在同文本且 committed `parentEntryId` 精确匹配 base 时消除，旧的同文本问题不会吞掉新事务。新增 pure merge 4 用例。
+4. production baseline：sessiond `listRunning.workerStatus` 由真实 `isTurnRunning` 投影 `busy`，不再依赖 worker record.status（生产长期 ready）；定向测试钉住 agent_start=busy / agent_end=ready。
+5. initial list 慢响应受 request generation + push revision 双栅栏约束，不能覆盖更新 busy push。
+
+额外修复长期陈旧 E2E 契约：Startup/Runtime/Sessions 的 Browser handshake 改用 `PROTOCOL_VERSION` 单一源；Runtime E2E 的 v1 snapshot-history 断言改为 Protocol v2 messageCount/leaf + message_end/history 语义；Sessions E2E WS capability resolver 改为当前 `{sessiond, capabilities}` 形状。最终 Startup、Runtime、Sessions 三条真实 E2E 均 PASS。
+
+## 71. Cross-platform G0 baseline — plan provenance and pending compatibility-shim tally
 
 ### 计划来源
 
@@ -3490,7 +3530,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 71. Cross-platform CP-05 — secure-state contract platformization
+## 72. Cross-platform CP-05 — secure-state contract platformization
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `c0cccd1`.
 - Owner: `packages/local-authority`; Host/sessiond remain policy consumers.
@@ -3512,7 +3552,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 72. Cross-platform CP-06 — POSIX sessiond lock/secret hardening
+## 73. Cross-platform CP-06 — POSIX sessiond lock/secret hardening
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `2a014f7`.
 - Owner split: sessiond owns stale-reclaim/secret policy; low-level validation helper remains internal to sessiond and is not exported from the package root/control surface.
@@ -3532,7 +3572,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 73. Cross-platform CP-07 / CP-07A — Windows native helper decision and spike
+## 74. Cross-platform CP-07 / CP-07A — Windows native helper decision and spike
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `17ab269`.
 - Owner remains `packages/local-authority`; no extra production workspace, broker, or public Win32 surface.
@@ -3554,7 +3594,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 74. Cross-platform CP-07B — Windows secure-state backend
+## 75. Cross-platform CP-07B — Windows secure-state backend
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `6566288`.
 - Owner remains `packages/local-authority`. Host consumes the factory; sessiond still uses its own POSIX preflight.
@@ -3572,7 +3612,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 75. Cross-platform CP-07C — sessiond selects the platform factory
+## 76. Cross-platform CP-07C — sessiond selects the platform factory
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `9238a9c`.
 - sessiond private-directory preflight now calls `createSecureStateBackend()` before any path walk. Windows uses the native SID/DACL/file-ID backend; POSIX keeps the existing sessiond walk and fd-pin policy.
@@ -3583,7 +3623,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 76. Cross-platform CP-08 — Windows named-pipe DACL
+## 77. Cross-platform CP-08 — Windows named-pipe DACL
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `e05f432`.
 - Native API v3 adds `inspectNamedPipe` / `protectNamedPipe` via `Get/SetNamedSecurityInfoW` on `SE_FILE_OBJECT`. Frozen allowlist remains current user + SYSTEM, no Administrators.
@@ -3595,7 +3635,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 77. Cross-platform CP-09 — Worker final-kill honesty
+## 78. Cross-platform CP-09 — Worker final-kill honesty
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `2acac60`.
 - `ProductionWorkerConnection.close()` now fails closed if the same OS child is still alive after the bounded final-kill wait. The failed close is not cached forever, so a later retry can observe a subsequent exit.
@@ -3604,7 +3644,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 78. Cross-platform CP-10 — Host process-runner final-kill honesty
+## 79. Cross-platform CP-10 — Host process-runner final-kill honesty
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `20ba4e9`.
 - `createProcessRunner` now waits a bounded interval after SIGKILL. If the direct child is still alive, it rejects with `PROCESS_UNAVAILABLE` / `Process did not terminate` instead of hanging until `close`.
@@ -3612,7 +3652,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 79. Cross-platform CP-11 — Client Windows drive-root path helpers
+## 80. Cross-platform CP-11 — Client Windows drive-root path helpers
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `8e71f2a`.
 - Client workspace helpers now keep a Windows drive root as `C:/` instead of collapsing it to `C:`.
@@ -3621,7 +3661,7 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 80. Cross-platform CP-12 — Windows path redaction in public errors
+## 81. Cross-platform CP-12 — Windows path redaction in public errors
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `b08ce30`.
 - Worker `redactText` now collapses Windows drive, UNC, `\\?\`, and `file://` paths in addition to POSIX absolute paths.
@@ -3630,14 +3670,14 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ---
 
-## 81. Cross-platform CP-13 — adapter exact-open identity check
+## 82. Cross-platform CP-13 — adapter exact-open identity check
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `2a952cb`.
 - Runtime `openSession` now uses `openListedSessionExact`: list match → open → `getSessionId()` equality. Missing, unreadable, or reused paths are sanitized `not_found` and never start a Worker against another session.
 - Catalog `session-store.tryOpen` already had this check; this slice closes the runtime open path that previously called `SessionManager.open` without an identity fence.
 - Adapter `check-boundaries.mjs` now resolves the package root with `fileURLToPath` and POSIX-normalizes relatives so Windows `\` paths are not treated as public leaks.
 
-## 82. Cross-platform CP-14 — AllowedRoot live platform identity
+## 83. Cross-platform CP-14 — AllowedRoot live platform identity
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `e2e109b`.
 - In-memory AllowedRoot membership now pins directories with `createSecureStateBackend().fileIdentity()`: POSIX `{dev,ino}` or Windows `{volumeSerial,fileId}`.
@@ -3645,109 +3685,110 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Trusted-roots / managed-worktrees on-disk schemas stay v1 POSIX `{dev,ino}`. Windows claims are not packed into those fields; `claimToRecord()` returns null for non-POSIX identity.
 - This is not ledger v2, Protocol path-flavor, Job Object, or Windows product support.
 
-## 83. Cross-platform CP-15 — ledger stored-path shape + write-side round-trip
+## 84. Cross-platform CP-15 — ledger stored-path shape + write-side round-trip
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `728597c`.
 - `isAbsoluteCanonicalShape` now accepts Windows drive-absolute stored paths (`C:\\...` / `C:/...`) and still rejects UNC, `\\\\?\\`, parent escapes, and trailing slashes.
 - Managed-worktrees `writeSerialized` re-parses its own payload before touching disk. A v1 record that cannot round-trip (Node `ino` beyond `2^53-1`, non-canonical path) fails closed as `MANAGED_WRITE_REJECTED` with no sidecar write and no memory authorization.
 - POSIX success-path worktree persistence tests skip on Windows; those skips are not treated as product-support evidence. Ledger schema stays v1 POSIX `{dev,ino}`.
 
-## 84. Cross-platform CP-16 — shared process-tree owner
+## 85. Cross-platform CP-16 — shared process-tree owner
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `3c0eaea`.
 - New `@fffattiger/pix-local-authority/process` surface owns spawn/terminate. POSIX uses an isolated process group (`detached: true` + `process.kill(-pid)`). Windows stays direct-child only (`supportsDescendants: false`); no Job Object, `taskkill`, or PowerShell.
 - sessiond Worker close and Host Git `createProcessRunner` both terminate through this controller. Tests inject a no-op controller instead of stubbing `ChildProcess.kill`.
 - This is not descendant Job Object work or Windows product support.
 
-## 85. Cross-platform CP-17 — Host parent-directory file watch
+## 86. Cross-platform CP-17 — Host parent-directory file watch
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `655e0ed`.
 - `createFileWatchManager` now watches the parent directory and serializes exact-child `lstat` reconciliation. Atomic replace/rename of the target emits `change`; a missing exact child emits `{removed:true}` without following the inode away.
 - Watch events remain hints. Sibling changes are ignored unless the platform omits the filename (then the exact child is re-stated). Existing reservation/limit/closeAll semantics are unchanged.
 - This is not overflow/rescan productization or Windows product support.
 
-## 86. Cross-platform CP-18 — honest PWA secure-context state
+## 87. Cross-platform CP-18 — honest PWA secure-context state
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `0163137`.
 - `PwaRegistration` no longer registers a service worker on insecure origins or in Vite dev. Visible states are `installable`, `web-only`, `insecure-origin`, and `registration-error`.
 - HTTP LAN therefore stays `insecure-origin` instead of a hidden console warning. This is not LAN HTTPS productization or an install-prompt implementation.
 
-## 87. Cross-platform CP-19 — honest Windows release-verify gate
+## 88. Cross-platform CP-19 — honest Windows release-verify gate
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `016a6f5`.
 - `scripts/release-verify.mjs` now exits on `win32` with a fixed Unix-layout-only message before assuming `tar`, `prefix/bin`, `HOME`, or `sessiond.sock`.
 - The script is importable without running `main()`. This is not a Windows installer, upgrade, or uninstall verifier.
 
-## 88. Cross-platform CP-20 — default-deny POSIX root policy
+## 89. Cross-platform CP-20 — default-deny POSIX root policy
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `df72db6`.
 - `assertPrivilegedProcessAllowed` default-denies uid 0 unless `allowRoot` / `PIX_ALLOW_ROOT` is exactly `1`/`true`. Missing uid (Windows) is not treated as root.
 - sessiond `startDaemon` and Host `createProductionResources` apply the check before creating runtime/host state. CLI prints the fixed `RootPrivilegeDeniedError` message.
 
-## 89. Cross-platform CP-21 — iPadOS-before-Mac detect + honest clipboard
+## 90. Cross-platform CP-21 — iPadOS-before-Mac detect + honest clipboard
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `be6aaa2`.
 - `detectPlatform` checks iPhone/iPad/iPod tokens and Macintosh+touch (`maxTouchPoints > 1`) before `/Mac/`, so iPadOS 13+ is `ios` not `mac`.
 - `copyText` rejects when `clipboard.writeText` throws or `execCommand("copy")` is missing/false. DisplayConfig uses the same helper. This is not Protocol path-flavor or product support.
 
-## 90. Cross-platform CP-22 — Client file-paths Windows case folding
+## 91. Cross-platform CP-22 — Client file-paths Windows case folding
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `9bed3f9`.
 - `getRelativeFilePath` compares Windows drive-absolute paths case-insensitively and keeps a drive root as `C:/` instead of collapsing it to `C:`.
 - POSIX relative paths stay case-sensitive. This is display/navigation only, not Protocol path-flavor or Host authorization.
 
-## 91. Cross-platform CP-23 — Client file-links/mentions reuse drive-root helper
+## 92. Cross-platform CP-23 — Client file-links/mentions reuse drive-root helper
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `bba2159`.
 - `file-links` and `file-mentions` reuse `normalizeFilePathSlashes` + `keepWindowsDriveRoot` instead of a second slash/case implementation.
 - Drive-root cwd/base stays `C:/`. POSIX containment stays case-sensitive. Display/navigation only; not Protocol path-flavor or Host authorization.
 
-## 92. Cross-platform CP-24 — FileExplorer Git key reuses filePathCompareKey
+## 93. Cross-platform CP-24 — FileExplorer Git key reuses filePathCompareKey
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `4b6dde9`.
 - `FileExplorer.gitPathKey` now calls `filePathCompareKey` so drive-root status/ignore maps keep `c:/` instead of collapsing to `c:`.
 - POSIX keys stay case-sensitive. Display/Git map matching only; not Protocol path-flavor or Host authorization.
 
-## 93. Cross-platform CP-25 — honest support matrix + Windows create-race mapping
+## 94. Cross-platform CP-25 — honest support matrix + Windows create-race mapping
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `81cdf05`.
 - README now says Windows startup is wired (native SID/DACL/named-pipe + required smoke) but still **Unsupported**; Linux/macOS keep Unverified-native and acknowledge existing PR tooling/`npm test`.
 - `contracts.ts` / Host lease comments no longer claim the Windows backend is unshipped.
 - `ensureWindowsPrivateDirectory` treats `NATIVE_ALREADY_EXISTS` as inspect-and-validate, matching POSIX EEXIST. This is not Job Object, ledger v2, or product support.
 
-## 94. Cross-platform CP-26 — required Windows CI runs secure-state suites
+## 95. Cross-platform CP-26 — required Windows CI runs secure-state suites
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `217c03a`.
 - Windows tooling job now runs `packages/local-authority/test/windows-*.test.mjs` plus native builder/factory tests after `npm run build`.
 - sessiond start/shutdown smoke stays a separate required job. This is not G7, not full Windows `npm test`, and not product support.
 
-## 95. Cross-platform CP-27 — Client path compare/join owner
+## 96. Cross-platform CP-27 — Client path compare/join owner
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `e8749ba`.
 - `file-paths.ts` owns drive-root, compare key, containment, and join. Workspace `paths.ts`, file-links, file-mentions, FileExplorer, and Sidebar consume it instead of a second `compareForm`.
 - `joinFilePath("C:/", "Users")` stays `C:/Users`; `getFileName("C:/")` stays `C:/`. Display/navigation only; not Protocol path-flavor or Host authorization.
 
-## 96. Cross-platform CP-28 — visible PWA and clipboard failures
+## 97. Cross-platform CP-28 — visible PWA and clipboard failures
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `1f5ad0f`.
 - `PwaRegistration` renders a visible `role="status"` banner for `insecure-origin`, production `web-only`, and `registration-error`. Installable stays silent. Dev `web-only` stays off-screen.
 - `useCopyFeedback` records `copied`/`failed`. Message/code/session/theme copy surfaces show the failure. Context-menu copy waits for `onSelect` before showing Copied, and uses `errorFeedbackLabel` on reject.
 - Vite defines `VITE_SW_VERSION` as `packageVersion+commit/dev`. Missing version is `registration-error`, never a permanent cache key `1`. This is not LAN HTTPS productization.
 
-## 97. Cross-platform CP-29 — sessiond uses backend private-directory walk
+## 98. Cross-platform CP-29 — sessiond uses backend private-directory walk
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `37f45fe`.
 - `ensureSessiondPrivateDirectory` now calls `createSecureStateBackend().ensurePrivateDirectory` after refusing an operational leaf symlink/reparse. Sessiond still owns operational-vs-canonical split and identity re-verify.
 - `ensureSessiondPrivateDirectoryWithFs` is deleted. Race coverage stays in `packages/local-authority`.
 
-## 98. Cross-platform CP-30 — lock process-start identity
+## 99. Cross-platform CP-30 — lock process-start identity
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `37f45fe`.
 - Native Windows addon `apiVersion` 4 adds `inspectProcess` (FILETIME creation ticks). Linux reads `/proc/<pid>/stat` startticks. macOS still classifies a live pid without start identity as live, a dead pid as stale.
 - New locks persist `{ start }` when available. A live pid with missing/unreadable start identity is `obstructed` and is not auto-reclaimed. This is not Job Object.
 
-## 99. Cross-platform CP-31 — file-watch overflow rescan
+## 100. Cross-platform CP-31 — file-watch overflow rescan
 
 - Branch/base: `feat/cross-platform-g0-baseline` / `0e6bd08`.
 - Watch events stay hints. `overflow` / `ENOSPC` / `EMFILE` / `EUNKNOWN` force a serialized exact-child `lstat` and emit the existing `change` payload. The stream stays open.
 - Aligns with VS Code invalidation-hint + OpenCode honest degrade. No polling interval and no new SSE event type. Not Job Object or product support.
+

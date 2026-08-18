@@ -27,51 +27,7 @@ describe("query keys and options", () => {
     expect(queryKeys.trust.get("/repo")).toEqual(["pix", "trust", "get", "/repo"]);
     expect(queryKeys.auth.providerStatus("openai")).toEqual(["pix", "auth", "provider-status", "openai"]);
     expect(queryKeys.auth.providerStatus("a")).not.toEqual(queryKeys.auth.providerStatus("b"));
-  });
-
-  it("keys theme list/resolve by the mandatory project cwd (one cache authority, scopes never collide)", () => {
-    expect(queryKeys.themes.list("/a")).toEqual(["pix", "themes", "list", "/a"]);
-    expect(queryKeys.themes.list("/a")).not.toEqual(queryKeys.themes.list("/b"));
-    expect(queryKeys.themes.resolve("gruvbox", "dark", "/a")).toEqual(["pix", "themes", "resolve", "gruvbox", "dark", "/a"]);
-    expect(queryKeys.themes.resolve("gruvbox", "dark", "/a")).not.toEqual(queryKeys.themes.resolve("gruvbox", "dark", "/b"));
-    expect(queryKeys.themes.resolve("gruvbox", "dark", "/a")).not.toEqual(queryKeys.themes.resolve("gruvbox", "light", "/a"));
-    expect(queryKeys.themes.resolve("gruvbox", "dark", "/a")).not.toEqual(queryKeys.themes.resolve("solarized", "dark", "/a"));
-  });
-
-  it("theme list/resolve options require cwd, pass signal, and fetch cwd-scoped URLs", async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-      const path = typeof input === "string" ? input : String(input);
-      if (path.includes("/v1/themes/gruvbox")) {
-        return json({ name: "gruvbox", isDark: true, cssVars: { "--bg": "#282828" } });
-      }
-      return json({ themeSets: [{ name: "gruvbox", displayName: "Gruvbox", hasDark: true, hasLight: true, builtin: true }] });
-    });
-    const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
-    const options = createQueryOptions(http);
-
-    const list = options.themes.list("/repo");
-    expect(list.queryKey).toEqual(["pix", "themes", "list", "/repo"]);
-    expect(list.enabled).toBe(true);
-    const listSignal = new AbortController().signal;
-    await list.queryFn!({ signal: listSignal } as never);
-    expect(fetchImpl).toHaveBeenCalledWith(
-      "/v1/themes?cwd=%2Frepo",
-      expect.objectContaining({ signal: listSignal }),
-    );
-
-    const resolve = options.themes.resolve("gruvbox", "dark", "/repo");
-    expect(resolve.queryKey).toEqual(["pix", "themes", "resolve", "gruvbox", "dark", "/repo"]);
-    expect(resolve.enabled).toBe(true);
-    const resolveSignal = new AbortController().signal;
-    await resolve.queryFn!({ signal: resolveSignal } as never);
-    expect(fetchImpl).toHaveBeenCalledWith(
-      "/v1/themes/gruvbox?mode=dark&cwd=%2Frepo",
-      expect.objectContaining({ signal: resolveSignal }),
-    );
-
-    // Without a project scope the theme queries are gated off.
-    expect(options.themes.list("").enabled).toBe(false);
-    expect(options.themes.resolve("gruvbox", "dark", "").enabled).toBe(false);
+    expect(queryKeys.settings.sessionIdleTimeout()).toEqual(["pix", "settings", "session-idle-timeout"]);
   });
 
   it("file index options key by cwd + q with cwd/q isolation and pass signal", async () => {
@@ -281,7 +237,6 @@ describe("table-driven mutation invalidation", () => {
       { queryKey: queryKeys.skills.list("/repo") },
       { queryKey: queryKeys.plugins.list("/repo") },
       { queryKey: queryKeys.commands.list("/repo") },
-      { queryKey: queryKeys.themes.all },
     ]);
     // Other cwd scopes and unrelated domains are untouched.
     for (const call of invalidate.mock.calls) {
@@ -312,5 +267,16 @@ describe("table-driven mutation invalidation", () => {
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");
     expect(Object.keys(options.trust)).toEqual(["setTrusted"]);
+    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout"]);
+  });
+
+  it("invalidates the session idle-timeout settings key after a successful write", async () => {
+    const { options, invalidate } = invalidationHarness({ idleTimeoutMs: 3_600_000 });
+    const mutation = options.settings.sessionIdleTimeout();
+    await mutation.mutationFn(3_600_000);
+    await mutation.onSuccess();
+    expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
+      { queryKey: queryKeys.settings.all },
+    ]);
   });
 });

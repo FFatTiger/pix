@@ -953,14 +953,8 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
 }
 
 function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent; isStreaming?: boolean | undefined; cwd?: string | undefined; onOpenFile?: ((filePath: string) => void) | undefined }) {
-  // UI-first streaming: a newly appeared block fades in instead of snapping.
-  // The wrapper stays mounted as the block's text grows (keyed by blockIndex),
-  // so the animation plays once on first appearance and growth renders
-  // smoothly under the store's partial throttle.
   return (
-    <div className={isStreaming ? "stream-block-enter" : undefined}>
-      <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>
-    </div>
+    <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>
   );
 }
 

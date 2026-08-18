@@ -26,12 +26,7 @@ describe("v1 URL builders", () => {
     expect(urls.trust.mutate()).toBe("/v1/trust");
     expect(urls.auth.providers()).toBe("/v1/auth/providers");
     expect(urls.auth.providerStatus("a/b ?#")).toBe("/v1/auth/providers/a%2Fb%20%3F%23/status");
-  });
-
-  it("scopes theme list and resolve to the mandatory project cwd", () => {
-    expect(urls.themes.list("/repo a")).toBe("/v1/themes?cwd=%2Frepo+a");
-    expect(urls.themes.resolve("gruvbox", "dark", "/repo a")).toBe("/v1/themes/gruvbox?mode=dark&cwd=%2Frepo+a");
-    expect(urls.themes.resolve("miku-aqua", "light", "/proj?x=1")).toBe("/v1/themes/miku-aqua?mode=light&cwd=%2Fproj%3Fx%3D1");
+    expect(urls.settings.sessionIdleTimeout()).toBe("/v1/settings/session-idle-timeout");
   });
 
   it("does not export removed catalog mutation paths", () => {

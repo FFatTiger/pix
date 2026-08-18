@@ -33,7 +33,10 @@ const NO_CACHE = "no-cache";
 const NO_CACHE_ASSETS = new Set(["/sw.js", "/manifest.webmanifest", "/offline.html"]);
 
 function cacheControlFor(pathname: string): string {
-  if (pathname.startsWith("/assets/")) return IMMUTABLE_CACHE;
+  // Hashed Vite assets and the immutable icon packs are never expected to
+  // change for a given build — cache them for a year so the file tree does
+  // not re-request every SVG on each expand/collapse.
+  if (pathname.startsWith("/assets/") || pathname.startsWith("/catppuccin-icons/") || pathname.startsWith("/icons/")) return IMMUTABLE_CACHE;
   return NO_CACHE;
 }
 

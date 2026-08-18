@@ -1,221 +1,200 @@
+import { useEffect, useMemo, useRef, useState, useCallback, type RefObject } from "react";
+import { createPortal } from "react-dom";
+import type { AgentMessage, AssistantMessage, TextContent, UserMessage } from "@/lib/chat-view-model";
+import { splitFinalAssistantBlocks } from "@/lib/message-display";
+import { useI18n } from "@/hooks/useI18n";
 
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import type { RefObject } from "react";
-import type { AgentMessage, AssistantMessage, TextContent } from "@/lib/chat-view-model";
+/**
+ * Turn navigation rail (ported from the FFatTiger/pi-web fork's
+ * ChatMinimap — "Codex ThreadUserMessageNavigationRail" style).
+ *
+ * One horizontal dash marker per USER turn, vertically centered on the
+ * transcript's left edge. Markers grow on hover/scrub with neighbor
+ * falloff; clicking (or drag-scrubbing) jumps to that turn; hovering shows
+ * a floating preview card (user label + first assistant answer, both
+ * clickable).
+ *
+ * pix adaptation: the transcript is virtualized, so a turn whose element is
+ * currently unmounted falls back to a proportional scroll position instead
+ * of the fork's reveal-history callback.
+ */
+
+const PREVIEW_HIDE_DELAY = 180;
+const NAVIGATION_ACTIVE_LOCK_MS = 1600;
+const MAX_ROW_HEIGHT = 50;
+const MIN_ROW_HEIGHT = 10;
+
+interface AssistantPreview {
+  text: string;
+  element: HTMLDivElement | null;
+}
+
+interface TurnInfo {
+  userMessage: UserMessage;
+  userPreview: string;
+  assistantPreviews: AssistantPreview[];
+  scrollTop: number | null;
+  element: HTMLDivElement | null;
+}
+
+interface NodeInfo {
+  targetTurn: TurnInfo;
+  index: number;
+}
+
+function getUserPreview(message: UserMessage): string {
+  if (typeof message.content === "string") return message.content.trim();
+  return message.content
+    .filter((block): block is TextContent => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+}
+
+function getAssistantAnswerText(message: AgentMessage | Partial<AgentMessage>): string {
+  if (message.role !== "assistant") return "";
+  const { answerBlocks } = splitFinalAssistantBlocks(message as AssistantMessage);
+  return answerBlocks
+    .filter((block): block is TextContent => block.type === "text")
+    .map((block) => block.text)
+    .join("\n\n")
+    .trim();
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
 
 interface Props {
   messages: AgentMessage[];
   streamingMessage: Partial<AgentMessage> | null;
   scrollContainer: RefObject<HTMLDivElement | null>;
   messageRefs: RefObject<(HTMLDivElement | null)[]>;
-  onWidthChange?: (width: number) => void;
+  /** Hide while an overlay panel is open. */
+  hidden?: boolean;
 }
 
-const MINIMAP_WIDTH = 18;
-const LANE_WIDTH = 5;
-const LANE_GAP = 1;
-const LANE_PADDING = 2;
-const MIN_MARKER_HEIGHT = 3;
-const MARKER_GAP = 1;
-const PREVIEW_LINE_HEIGHT = 15;
-const PREVIEW_PADDING_Y = 4;
-const MAX_PREVIEW_LINES = 5;
-
-function stripXmlTags(text: string): string {
-  return text
-    // Thinking is sometimes stored as a text block, and some providers escape
-    // tags before storing them. Handle both forms before creating the preview.
-    .replace(/<\/?[\w:-]+\b[^>]*>/g, " ")
-    .replace(/&lt;\/?[\w:-]+\b[^&]*?&gt;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-interface DisplayNode extends NodeInfo {
-  displayTopPx: number;
-  lane: number;
-}
-
-function getMinimapWidth(laneCount: number): number {
-  return Math.max(MINIMAP_WIDTH, LANE_PADDING * 2 + laneCount * LANE_WIDTH + (laneCount - 1) * LANE_GAP);
-}
-
-function getMessagePreview(msg: AgentMessage | Partial<AgentMessage>): string {
-  if (msg.role === "user") {
-    const content = msg.content;
-    if (typeof content === "string") return content.slice(0, 200);
-    if (Array.isArray(content)) {
-      return (content as { type: string; text?: string }[])
-        .filter((b) => b.type === "text" && b.text)
-        .map((b) => b.text!)
-        .join("\n")
-        .slice(0, 200);
-    }
-    return "";
-  }
-  if (msg.role === "assistant") {
-    const blocks = (msg as Partial<AssistantMessage>).content ?? [];
-    const text = blocks
-      .filter((b): b is TextContent => b.type === "text")
-      .map((b) => b.text)
-      .join(" ");
-    if (text) return stripXmlTags(text).slice(0, 200);
-    const thinking = blocks
-      .filter((b) => b.type === "thinking")
-      .map((b) => stripXmlTags((b as { type: string; thinking?: string }).thinking ?? ""))
-      .filter(Boolean)
-      .join(" ");
-    if (thinking) return thinking.slice(0, 200);
-    const toolNames = blocks
-      .filter((b) => b.type === "toolCall")
-      .map((b) => (b as { type: string; toolName: string }).toolName);
-    if (toolNames.length) return toolNames.join(", ");
-    return "";
-  }
-  return "";
-}
-
-function getNodeColor(msg: AgentMessage | Partial<AgentMessage>): string {
-  if (msg.role === "user") return "var(--accent)";
-
-  const blocks = (msg as Partial<AssistantMessage>).content ?? [];
-  const hasFailedTool = blocks.some((block) => block.type === "toolCall" && (block as { error?: string }).error);
-  if (hasFailedTool) return "var(--accent-red)";
-  if (blocks.some((block) => block.type === "toolCall")) return "var(--accent-green)";
-  return "var(--text-dim)";
-}
-
-function getPreviewBackground(msg: AgentMessage | Partial<AgentMessage>): string {
-  if (msg.role === "user") return "var(--minimap-preview-user-bg)";
-
-  const blocks = (msg as Partial<AssistantMessage>).content ?? [];
-  if (blocks.some((block) => block.type === "toolCall" && (block as { error?: string }).error)) {
-    return "var(--minimap-preview-error-bg)";
-  }
-  if (blocks.some((block) => block.type === "toolCall")) return "var(--minimap-preview-tool-bg)";
-  return "var(--minimap-preview-default-bg)";
-}
-
-// Higher-priority navigation landmarks stay visible when message extents touch.
-function getNodeLayer(msg: AgentMessage | Partial<AgentMessage>): number {
-  if (msg.role === "user") return 6;
-
-  const blocks = (msg as Partial<AssistantMessage>).content ?? [];
-  if (blocks.some((block) => block.type === "toolCall" && (block as { error?: string }).error)) return 5;
-  if (blocks.some((block) => block.type === "text" && Boolean((block as TextContent).text?.trim()))) return 4;
-  if (blocks.some((block) => block.type === "toolCall")) return 3;
-  return 2;
-}
-
-function hasTextContent(msg: AgentMessage | Partial<AgentMessage>): boolean {
-  if (msg.role === "user") return true;
-  if (msg.role === "assistant") {
-    const blocks = (msg as Partial<AssistantMessage>).content ?? [];
-    return blocks.some((b) => b.type === "text");
-  }
-  return false;
-}
-
-interface NodeInfo {
-  topRatio: number;   // 0–1 within total scroll height
-  heightRatio: number;
-  msg: AgentMessage | Partial<AgentMessage>;
-  index: number;
-}
-
-export function ChatMinimap({ messages, streamingMessage, scrollContainer, messageRefs, onWidthChange }: Props) {
-  const [scrollRatio, setScrollRatio] = useState(0);
-  const [viewportRatio, setViewportRatio] = useState(1);
+export function ChatMinimap({
+  messages,
+  streamingMessage,
+  scrollContainer,
+  messageRefs,
+  hidden = false,
+}: Props) {
+  const { t } = useI18n();
   const [visible, setVisible] = useState(false);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
-  const [minimapHovered, setMinimapHovered] = useState(false);
-  const [mouseYRatio, setMouseYRatio] = useState<number | null>(null);
-  const [minimapHeightPx, setMinimapHeightPx] = useState(0);
-  const draggingRef = useRef(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [scrubIndex, setScrubIndex] = useState<number | null>(null);
+  const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
+  const [portalReady, setPortalReady] = useState(false);
+
+  const railRef = useRef<HTMLDivElement>(null);
+  const nodesRef = useRef<NodeInfo[]>([]);
+  const previewHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeNodeLockRef = useRef<{ index: number; until: number } | null>(null);
+  const scrubbingRef = useRef(false);
 
   const allMessages = useMemo(
     () => (streamingMessage ? [...messages, streamingMessage] : messages) as (AgentMessage | Partial<AgentMessage>)[],
-    [messages, streamingMessage]
+    [messages, streamingMessage],
   );
   const allMessagesRef = useRef(allMessages);
   allMessagesRef.current = allMessages;
 
-  // --- 仅更新视口比例，不读取 DOM ---
+  useEffect(() => {
+    setPortalReady(true);
+  }, []);
+
+  const lockActiveNode = useCallback((index: number) => {
+    activeNodeLockRef.current = {
+      index,
+      until: Date.now() + NAVIGATION_ACTIVE_LOCK_MS,
+    };
+    setActiveIndex(index);
+  }, []);
+
+  const syncActiveNode = useCallback((scrollEl: HTMLDivElement, nextNodes: NodeInfo[]) => {
+    const activeLock = activeNodeLockRef.current;
+    if (activeLock && Date.now() < activeLock.until) {
+      setActiveIndex(activeLock.index);
+      return;
+    }
+    activeNodeLockRef.current = null;
+
+    const measured = nextNodes.filter((node) => node.targetTurn.scrollTop !== null);
+    if (measured.length === 0) {
+      setActiveIndex(null);
+      return;
+    }
+    const focusTop = scrollEl.scrollTop + scrollEl.clientHeight * 0.3;
+    const nextActive = measured.reduce((best, node) => (
+      Math.abs((node.targetTurn.scrollTop ?? 0) - focusTop)
+      < Math.abs((best.targetTurn.scrollTop ?? 0) - focusTop)
+        ? node
+        : best
+    ), measured[0]!);
+    setActiveIndex(nextActive.index);
+  }, []);
+
   const updateScroll = useCallback(() => {
     const scrollEl = scrollContainer.current;
     if (!scrollEl) return;
-    const totalH = scrollEl.scrollHeight;
-    const clientH = scrollEl.clientHeight;
-    const scrollable = totalH - clientH;
+    const scrollable = scrollEl.scrollHeight - scrollEl.clientHeight;
     setVisible(scrollable > 20);
-    if (scrollable <= 0) {
-      setScrollRatio(0);
-      setViewportRatio(1);
-    } else {
-      setScrollRatio(scrollEl.scrollTop / scrollable);
-      setViewportRatio(clientH / totalH);
-    }
-  }, [scrollContainer]);
+    syncActiveNode(scrollEl, nodesRef.current);
+  }, [scrollContainer, syncActiveNode]);
 
-  // --- 节流 DOM 测量（仅消息变化/尺寸变化时触发，最多 150ms 一次）---
   const measureThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const nodesRef = useRef<NodeInfo[]>([]);
   const measureNodes = useCallback(() => {
-    // 节流：150ms 内忽略重复调用
     if (measureThrottleRef.current) return;
     measureThrottleRef.current = setTimeout(() => {
       measureThrottleRef.current = null;
       const scrollEl = scrollContainer.current;
       if (!scrollEl) return;
-      const totalH = scrollEl.scrollHeight;
-      if (totalH <= 0) return;
 
       const refs = messageRefs.current;
-      const newNodes: NodeInfo[] = [];
+      const containerRect = scrollEl.getBoundingClientRect();
+      const turns: TurnInfo[] = [];
       let refIndex = 0;
-      const allMessages = allMessagesRef.current;
+      let currentTurn: TurnInfo | null = null;
 
-      for (let i = 0; i < allMessages.length; i++) {
-        const msg = allMessages[i]!;
-        if (msg.role !== "user" && msg.role !== "assistant") continue;
-        const el = refs?.[refIndex];
-        refIndex++;
-        if (!hasTextContent(msg)) continue;
-        if (el) {
-          const elRect = el.getBoundingClientRect();
-          const containerRect = scrollEl.getBoundingClientRect();
-          const top = elRect.top - containerRect.top + scrollEl.scrollTop;
-          const h = elRect.height;
-          newNodes.push({
-            topRatio: top / totalH,
-            heightRatio: h / totalH,
-            msg,
-            index: newNodes.length,
-          });
+      for (const message of allMessagesRef.current) {
+        if (message.role !== "user" && message.role !== "assistant") continue;
+        const element = refs?.[refIndex] ?? null;
+        refIndex += 1;
+
+        if (message.role === "user") {
+          const elementRect = element?.getBoundingClientRect();
+          currentTurn = {
+            userMessage: message as UserMessage,
+            userPreview: getUserPreview(message as UserMessage),
+            assistantPreviews: [],
+            scrollTop: elementRect
+              ? elementRect.top - containerRect.top + scrollEl.scrollTop
+              : null,
+            element,
+          };
+          turns.push(currentTurn);
+          continue;
+        }
+
+        if (!currentTurn) continue;
+        const answerText = getAssistantAnswerText(message);
+        if (answerText) {
+          currentTurn.assistantPreviews.push({ text: answerText, element });
         }
       }
-      // Commit only when measurements actually changed. Without this guard a
-      // dense session feeds a setState → re-render → minimap width change →
-      // container reflow → ResizeObserver → re-measure loop that ends in a
-      // "Maximum update depth exceeded" renderer crash.
-      const prev = nodesRef.current;
-      if (
-        prev.length === newNodes.length &&
-        newNodes.every(
-          (n, i) =>
-            Math.abs(n.topRatio - prev[i]!.topRatio) < 1e-6 &&
-            Math.abs(n.heightRatio - prev[i]!.heightRatio) < 1e-6,
-        )
-      ) {
-        return;
-      }
-      nodesRef.current = newNodes;
-      setNodes(newNodes);
-    }, 150);
-  }, [scrollContainer, messageRefs]);
 
-  // scroll 事件 → 只更新视口，不碰 DOM
+      const nextNodes: NodeInfo[] = turns.map((turn, index) => ({ targetTurn: turn, index }));
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
+      setVisible(scrollEl.scrollHeight - scrollEl.clientHeight > 20);
+      syncActiveNode(scrollEl, nextNodes);
+    }, 120);
+  }, [messageRefs, scrollContainer, syncActiveNode]);
+
   useEffect(() => {
     const el = scrollContainer.current;
     if (!el) return;
@@ -223,17 +202,15 @@ export function ChatMinimap({ messages, streamingMessage, scrollContainer, messa
     return () => el.removeEventListener("scroll", updateScroll);
   }, [scrollContainer, updateScroll]);
 
-  // Keep both node positions and viewport ratios in sync with layout changes.
   useEffect(() => {
     const el = scrollContainer.current;
     if (!el) return;
     const syncLayout = () => {
-      updateScroll();
       measureNodes();
+      updateScroll();
     };
     const ro = new ResizeObserver(syncLayout);
     ro.observe(el);
-    // Also observe the scroll content for height changes
     if (el.firstElementChild) ro.observe(el.firstElementChild);
     syncLayout();
     return () => {
@@ -243,250 +220,244 @@ export function ChatMinimap({ messages, streamingMessage, scrollContainer, messa
         measureThrottleRef.current = null;
       }
     };
-  }, [scrollContainer, measureNodes, updateScroll]);
+  }, [measureNodes, scrollContainer, updateScroll]);
 
-  // Wait briefly for new message DOM before syncing layout.
   useEffect(() => {
-    const t = setTimeout(() => {
-      updateScroll();
+    const timeout = setTimeout(() => {
       measureNodes();
+      updateScroll();
     }, 50);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timeout);
   }, [messages.length, measureNodes, updateScroll]);
 
-  const scrollToMinimapRatio = useCallback((viewportTopRatio: number) => {
-    const el = scrollContainer.current;
-    if (!el) return;
-    const scrollable = el.scrollHeight - el.clientHeight;
-    if (scrollable <= 0) return;
-    const clamped = Math.max(0, Math.min(1 - viewportRatio, viewportTopRatio));
-    el.scrollTop = (clamped / (1 - viewportRatio)) * scrollable;
-  }, [scrollContainer, viewportRatio]);
+  /** Virtualized turns have no mounted element: jump proportionally. */
+  const scrollToNode = useCallback((node: NodeInfo, behavior: ScrollBehavior) => {
+    const scrollEl = scrollContainer.current;
+    if (!scrollEl) return;
+    lockActiveNode(node.index);
+    const total = nodesRef.current.length;
+    let targetTop = node.targetTurn.scrollTop;
+    if (targetTop == null) {
+      const scrollable = scrollEl.scrollHeight - scrollEl.clientHeight;
+      targetTop = ((node.index + 0.5) / Math.max(1, total)) * scrollable;
+    }
+    scrollEl.scrollTo({
+      top: Math.max(0, targetTop - scrollEl.clientHeight * 0.3),
+      behavior,
+    });
+  }, [lockActiveNode, scrollContainer]);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!visible) return;
-
-    draggingRef.current = true;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickRatio = (e.clientY - rect.top) / rect.height;
-    const grabOffset = clickRatio - scrollRatio * (1 - viewportRatio);
-    const insideBox = grabOffset >= 0 && grabOffset <= viewportRatio;
-    const offset = insideBox ? grabOffset : viewportRatio / 2;
-
-    scrollToMinimapRatio(clickRatio - offset);
-
-    const onMove = (ev: MouseEvent) => {
-      if (!draggingRef.current) return;
-      const r = (ev.clientY - rect.top) / rect.height;
-      scrollToMinimapRatio(r - offset);
-    };
-    const onUp = () => {
-      draggingRef.current = false;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [visible, viewportRatio, scrollRatio, scrollToMinimapRatio]);
-
-
-
-  // Keep collision calculations in screen pixels. Each message remains an
-  // independent marker; dense markers move to another lane rather than merge.
-  useEffect(() => {
-    // The minimap is not mounted until scrolling is needed. Re-run when it
-    // becomes visible so the ref exists before measuring its height.
-    if (!visible) {
-      setMinimapHeightPx(0);
+  const scrollToAssistant = useCallback((node: NodeInfo, assistantIndex = 0) => {
+    const scrollEl = scrollContainer.current;
+    if (!scrollEl) return;
+    const assistantElement = node.targetTurn.assistantPreviews[assistantIndex]?.element;
+    lockActiveNode(node.index);
+    if (!assistantElement) {
+      scrollToNode(node, "smooth");
       return;
     }
-    const el = containerRef.current;
-    if (!el) return;
-    const updateHeight = () => setMinimapHeightPx(el.clientHeight);
-    const observer = new ResizeObserver(updateHeight);
-    observer.observe(el);
-    updateHeight();
-    return () => observer.disconnect();
-  }, [visible]);
+    const containerRect = scrollEl.getBoundingClientRect();
+    const assistantRect = assistantElement.getBoundingClientRect();
+    const targetTop = (
+      assistantRect.top
+      - containerRect.top
+      + scrollEl.scrollTop
+      - scrollEl.clientHeight * 0.3
+    );
+    scrollEl.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+  }, [lockActiveNode, scrollContainer, scrollToNode]);
 
-  const displayNodes = useMemo(() => {
-    if (minimapHeightPx <= 0) return [];
+  const cancelPreviewHide = useCallback(() => {
+    if (!previewHideTimerRef.current) return;
+    clearTimeout(previewHideTimerRef.current);
+    previewHideTimerRef.current = null;
+  }, []);
 
-    const laneEnds: number[] = [];
-    return nodes.map((node) => {
-      const topPx = node.topRatio * minimapHeightPx;
-      const heightPx = Math.max(MIN_MARKER_HEIGHT, Math.min(46, node.heightRatio * minimapHeightPx));
-      const startPx = Math.max(0, topPx - heightPx / 2);
-      const endPx = Math.min(minimapHeightPx, topPx + heightPx / 2);
-      let lane = laneEnds.findIndex((lastEnd) => startPx >= lastEnd + MARKER_GAP);
-      if (lane === -1) {
-        lane = laneEnds.length;
-        laneEnds.push(endPx);
-      } else {
-        laneEnds[lane] = endPx;
+  const schedulePreviewHide = useCallback(() => {
+    cancelPreviewHide();
+    previewHideTimerRef.current = setTimeout(() => {
+      previewHideTimerRef.current = null;
+      if (scrubbingRef.current) return;
+      setHoveredIndex(null);
+      setTooltipPos(null);
+    }, PREVIEW_HIDE_DELAY);
+  }, [cancelPreviewHide]);
+
+  useEffect(() => () => cancelPreviewHide(), [cancelPreviewHide]);
+
+  const positionTooltipForRow = useCallback((row: HTMLElement) => {
+    const rect = row.getBoundingClientRect();
+    const tooltipWidth = Math.min(320, window.innerWidth - 16);
+    const left = clamp(rect.right + 8, 8, window.innerWidth - tooltipWidth - 8);
+    const top = clamp(rect.top + rect.height / 2, 24, window.innerHeight - 24);
+    setTooltipPos({ top, left });
+  }, []);
+
+  const showNodePreview = useCallback((index: number, row: HTMLElement) => {
+    cancelPreviewHide();
+    setHoveredIndex(index);
+    positionTooltipForRow(row);
+  }, [cancelPreviewHide, positionTooltipForRow]);
+
+  const findNearestRowIndex = useCallback((clientY: number): number | null => {
+    const rail = railRef.current;
+    if (!rail || nodesRef.current.length === 0) return null;
+    const buttons = rail.querySelectorAll<HTMLButtonElement>("[data-minimap-node-index]");
+    if (buttons.length === 0) return null;
+    let bestIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    buttons.forEach((button) => {
+      const rect = button.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      const distance = Math.abs(mid - clientY);
+      const index = Number(button.dataset.minimapNodeIndex);
+      if (!Number.isFinite(index)) return;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
       }
-      return { ...node, displayTopPx: topPx, lane } satisfies DisplayNode;
     });
-  }, [nodes, minimapHeightPx]);
+    return bestIndex;
+  }, []);
 
-  const laneCount = useMemo(
-    () => displayNodes.reduce((count, node) => Math.max(count, node.lane + 1), 1),
-    [displayNodes],
-  );
-  const minimapWidth = getMinimapWidth(laneCount);
+  const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const rail = railRef.current;
+    if (!rail) return;
+    scrubbingRef.current = true;
+    setScrubIndex(hoveredIndex);
+    rail.setPointerCapture(event.pointerId);
 
-  useEffect(() => {
-    onWidthChange?.(visible ? minimapWidth : MINIMAP_WIDTH);
-  }, [minimapWidth, onWidthChange, visible]);
+    const jump = (clientY: number, behavior: ScrollBehavior) => {
+      const index = findNearestRowIndex(clientY);
+      if (index == null) return;
+      const node = nodesRef.current[index];
+      if (!node) return;
+      setScrubIndex(index);
+      setHoveredIndex(index);
+      const row = rail.querySelector<HTMLElement>(`[data-minimap-node-index="${index}"]`);
+      if (row) positionTooltipForRow(row);
+      scrollToNode(node, behavior);
+    };
 
-  useEffect(() => () => onWidthChange?.(MINIMAP_WIDTH), [onWidthChange]);
+    jump(event.clientY, "smooth");
 
-  if (!visible) return null;
+    const onMove = (moveEvent: PointerEvent) => {
+      if (!scrubbingRef.current) return;
+      jump(moveEvent.clientY, "auto");
+    };
+    const onUp = (upEvent: PointerEvent) => {
+      scrubbingRef.current = false;
+      setScrubIndex(null);
+      try {
+        rail.releasePointerCapture(upEvent.pointerId);
+      } catch {
+        // ignore — the rail may have unmounted mid-scrub
+      }
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }, [findNearestRowIndex, hoveredIndex, positionTooltipForRow, scrollToNode]);
 
-  const viewportBoxTop = scrollRatio * (1 - viewportRatio) * 100;
-  const viewportBoxHeight = viewportRatio * 100;
+  if (hidden || !visible || nodes.length === 0) return null;
 
-  // Only one preview is shown: rendering every preview cannot be made
-  // collision-free when a long session has more messages than vertical pixels.
-  const nearestNode = mouseYRatio !== null && displayNodes.length > 0
-    ? displayNodes.reduce((best, node) => (
-        Math.abs(node.displayTopPx / minimapHeightPx - mouseYRatio)
-          < Math.abs(displayNodes[best]!.displayTopPx / minimapHeightPx - mouseYRatio)
-          ? node.index
-          : best
-      ), 0)
-    : null;
-  const hoveredNode = nearestNode === null
-    ? null
-    : displayNodes.find((node) => node.index === nearestNode) ?? null;
+  const previewNode = hoveredIndex == null ? null : nodes[hoveredIndex] ?? null;
+  const assistantPreview = previewNode?.targetTurn.assistantPreviews[0]?.text ?? "";
+  const userLabel = previewNode?.targetTurn.userPreview ?? "";
 
-  return (
-    <div
-      ref={containerRef}
-      onMouseDown={handleMouseDown}
-      onMouseEnter={() => setMinimapHovered(true)}
-      onMouseLeave={() => { setMinimapHovered(false); setMouseYRatio(null); }}
-      onMouseMove={(e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        setMouseYRatio((e.clientY - rect.top) / rect.height);
-      }}
-      style={{
-        width: minimapWidth,
-        flexShrink: 0,
-        position: "relative",
-        cursor: "pointer",
-        userSelect: "none",
-        background: "transparent",
-        overflow: "visible",
+  const rail = (
+    <nav
+      ref={railRef}
+      data-chat-minimap=""
+      data-scrubbing={scrubIndex != null ? "" : undefined}
+      className="minimap-rail"
+      aria-label={t("desktop.minimapNav")}
+      onPointerDown={handlePointerDown}
+      onPointerLeave={() => {
+        if (!scrubbingRef.current) schedulePreviewHide();
       }}
     >
-      {/* Viewport indicator */}
-      <div
-        style={{
-          position: "absolute",
-          left: 1,
-          right: 1,
-          top: `${viewportBoxTop}%`,
-          height: `${viewportBoxHeight}%`,
-          background: "color-mix(in srgb, var(--text-muted) 14%, transparent)",
-          pointerEvents: "none",
-          zIndex: 1,
-        }}
-      />
-
-      {/* Message nodes: each message keeps its own lane and display layer. */}
-      {displayNodes.map((node) => {
-        const color = getNodeColor(node.msg);
-        const isNearest = minimapHovered && hoveredNode?.index === node.index;
-        const isUser = node.msg.role === "user";
-        const markerHeight = Math.max(MIN_MARKER_HEIGHT, Math.min(46, node.heightRatio * minimapHeightPx));
-        const left = LANE_PADDING + node.lane * (LANE_WIDTH + LANE_GAP);
-
+      {nodes.map((node) => {
+        const isCurrent = activeIndex === node.index;
+        const isScrubTarget = scrubIndex === node.index;
         return (
-          <div
+          <button
             key={node.index}
-            style={{
-              position: "absolute",
-              top: node.displayTopPx,
-              transform: "translateY(-50%)",
-              left,
-              width: LANE_WIDTH,
-              height: markerHeight,
-              display: "flex",
-              alignItems: "stretch",
-              cursor: "pointer",
-              zIndex: getNodeLayer(node.msg),
+            type="button"
+            className="minimap-row"
+            data-minimap-node-index={node.index}
+            data-scrub-target={isScrubTarget ? "" : undefined}
+            aria-current={isCurrent ? "true" : undefined}
+            aria-label={t("desktop.minimapJumpToMessage", { index: node.index + 1 })}
+            style={{ minHeight: MIN_ROW_HEIGHT, maxHeight: MAX_ROW_HEIGHT }}
+            onMouseEnter={(event) => showNodePreview(node.index, event.currentTarget)}
+            onFocus={(event) => showNodePreview(node.index, event.currentTarget)}
+            onMouseLeave={() => {
+              if (!scrubbingRef.current) schedulePreviewHide();
             }}
+            onClick={() => scrollToNode(node, "smooth")}
           >
-            <div
-              style={{
-                width: "100%",
-                height: "100%",
-                borderRadius: 1,
-                background: color,
-                opacity: isNearest ? 1 : isUser ? 0.92 : 0.72,
-                transition: "opacity 0.1s, filter 0.1s",
-                filter: isNearest ? "brightness(1.2)" : "none",
-              }}
-            />
-          </div>
+            <span className="minimap-marker-track">
+              <span className="minimap-marker" />
+            </span>
+          </button>
         );
       })}
+    </nav>
+  );
 
-      {/* A single nearby preview avoids tooltip collisions in dense sessions. */}
-      {minimapHovered && hoveredNode && (() => {
-        const preview = getMessagePreview(hoveredNode.msg);
-        if (!preview) return null;
-        const previewBackground = getPreviewBackground(hoveredNode.msg);
-        // Taller minimaps can show more context without obscuring nearby nodes.
-        const previewLines = Math.max(1, Math.min(MAX_PREVIEW_LINES, Math.floor(minimapHeightPx / 120)));
-        const tooltipHeight = previewLines * PREVIEW_LINE_HEIGHT + PREVIEW_PADDING_Y;
-        // Anchor the preview's visual center to its marker. The previous
-        // calculation used a maximum height as a top offset, which made short
-        // previews appear above the marker on tall minimaps.
-        const tooltipCenter = Math.max(
-          tooltipHeight / 2,
-          Math.min(minimapHeightPx - tooltipHeight / 2, hoveredNode.displayTopPx),
-        );
-        return (
+  const tooltip = previewNode && tooltipPos && portalReady
+    ? createPortal(
+      <div
+        className="minimap-tooltip"
+        data-minimap-preview-box=""
+        style={{ top: tooltipPos.top, left: tooltipPos.left, transform: "translateY(-50%)" }}
+        onMouseEnter={cancelPreviewHide}
+        onMouseLeave={schedulePreviewHide}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="minimap-user-label"
+          onClick={() => scrollToNode(previewNode, "smooth")}
+          title={userLabel || t("desktop.minimapNoContent")}
+        >
+          {userLabel || <span className="minimap-empty-label">{t("desktop.minimapNoContent")}</span>}
+        </button>
+        {assistantPreview ? (
           <div
-            style={{
-              position: "absolute",
-              top: tooltipCenter,
-              transform: "translateY(-50%)",
-              right: "100%",
-              marginRight: 6,
-              background: previewBackground,
-              border: "none",
-              borderRadius: 4,
-              padding: "2px 7px",
-              width: 220,
-              zIndex: 100,
-              pointerEvents: "none",
+            className="minimap-assistant-preview"
+            role="button"
+            tabIndex={0}
+            onClick={() => scrollToAssistant(previewNode, 0)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                scrollToAssistant(previewNode, 0);
+              }
             }}
           >
-            <div
-              style={{
-                fontSize: 11,
-                color: "var(--text)",
-                lineHeight: `${PREVIEW_LINE_HEIGHT}px`,
-                display: "-webkit-box",
-                WebkitBoxOrient: "vertical",
-                WebkitLineClamp: previewLines,
-                overflow: "hidden",
-                overflowWrap: "anywhere",
-              }}
-            >
-              {preview}
-            </div>
+            {assistantPreview}
           </div>
-        );
-      })()}
-    </div>
+        ) : null}
+      </div>,
+      document.body,
+    )
+    : null;
+
+  return (
+    <>
+      {rail}
+      {tooltip}
+    </>
   );
 }
 
-// Hook to create a stable array of refs for messages
+/** Stable per-message ref array (one slot per user/assistant message). */
 export function useMessageRefs(count: number): RefObject<(HTMLDivElement | null)[]> {
   const refs = useRef<(HTMLDivElement | null)[]>([]);
   refs.current = Array(count).fill(null).map((_, i) => refs.current[i] ?? null);

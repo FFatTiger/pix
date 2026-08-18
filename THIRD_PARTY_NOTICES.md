@@ -5,9 +5,8 @@ the pix client visual foundation, ported from the `pi-web-desktop` project.
 
 ## pi-web-desktop (MIT License)
 
-The design tokens, `globals.css`, `wallpaper.css`, the pre-paint theme
-bootstrap script in `index.html`, the Catppuccin icon set, and the Monet
-artwork wallpapers are ported from
+The design tokens, `globals.css`, the pre-paint bootstrap script in
+`index.html`, and the Catppuccin icon set are ported from
 [pi-web-desktop](https://github.com/isWittHere/pi-web-desktop) (upstream:
 pi-web by agegr), licensed under the MIT License:
 
@@ -50,15 +49,38 @@ Copyright (c) 2023 thang-nm, licensed under the MIT License (see
   Project Authors (https://github.com/mishamyrt/Lilex). Licensed under the SIL
   Open Font License, Version 1.1.
 
-## Monet artwork wallpapers
+## num-scope/pix sidebar visual language (MIT License)
 
-`packages/client/public/monet-artworks/` is copied verbatim from
-pi-web-desktop. These JPEG wallpapers are derived works based on paintings by
-Claude Monet (1840–1926). The underlying paintings date from the 19th and early
-20th centuries and the source project ships them as wallpaper assets without a
-per-file provenance record; beyond the above attribution no further
-representation is made about the photographic/scans' rights status or
-provenance of these specific files.
+The left-rail visual hierarchy (product header, compact 32px rows, muted
+section labels, primary New Session row, catalog shortcuts, pinned Settings
+footer) is adapted from the MIT-licensed desktop app
+[num-scope/pix](https://github.com/num-scope/pix) at exact commit
+`1e3291141c07a81cdc3f9bcb5d07c9025af4b7b2` (v0.7.6). Source files studied:
+`apps/desktop/src/renderer/components/AppSidebar.tsx`, `ProjectList.tsx`,
+sidebar rules in `apps/desktop/src/renderer/styles.css`, and
+`assets/screenshots/pix-desktop.png`. This is a visual/IA adaptation into the
+existing web client; Electron-only features were not ported. This project does
+not claim original authorship of that rail design.
+
+> Copyright (c) 2026 Num Scope
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
 
 ## Other newly added dependencies
 

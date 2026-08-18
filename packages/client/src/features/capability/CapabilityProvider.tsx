@@ -37,6 +37,12 @@ export interface CapabilityContextValue {
    * Discovery only — the server still enforces authorization.
    */
   canWriteSessions: boolean;
+  /**
+   * True only when the host actually serves the session lifecycle settings
+   * route (`session.settings` token; sessiond up AND the settings seam
+   * mounted). Discovery only — the server still enforces authorization.
+   */
+  canConfigureSessionSettings: boolean;
   can: (capability: HostCapability) => boolean;
   host: HostInfo;
 }
@@ -79,6 +85,7 @@ export function CapabilityProvider({ children, host }: CapabilityProviderProps) 
     canBrowseSessions: hasCapability(capabilities, "sessions"),
     canDeleteSessions: hasCapability(capabilities, "session.delete"),
     canWriteSessions: hasCapability(capabilities, "session.write"),
+    canConfigureSessionSettings: hasCapability(capabilities, "session.settings"),
     can: (capability) => hasCapability(capabilities, capability),
     host: { mode, capabilities: [...capabilities] },
   };

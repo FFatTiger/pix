@@ -21,6 +21,7 @@ import { registerFileIndexRoutes } from "./routes/file-index.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerWorktreeRoutes } from "./routes/worktrees.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerSessionSettingsRoutes } from "./routes/settings.js";
 import { registerCatalogRoutes } from "./routes/catalogs.js";
 import { registerThemeRoutes } from "./routes/themes.js";
 import { createFileWatchManager } from "./resources/file-watch.js";
@@ -105,6 +106,12 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
       ...(deps.sessions.delete ? { delete: deps.sessions.delete } : {}),
       ...(deps.sessions.rename ? { rename: deps.sessions.rename } : {}),
     });
+    if (deps.sessions.settings) {
+      registerSessionSettingsRoutes(app, {
+        client: deps.sessions.settings.client,
+        mutationGuard: deps.sessions.settings.mutationGuard,
+      });
+    }
   }
   if (deps.catalogs) {
     registerCatalogRoutes(app, deps.catalogs);

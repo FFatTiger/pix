@@ -32,6 +32,26 @@ function stats(overrides: Partial<ChatSessionStatsView> = {}): ChatSessionStatsV
 
 const historyLabel = "View full history";
 
+describe("SessionInfoBar — composer footer controls", () => {
+  it("renders and toggles the completion-sound button", () => {
+    const onSoundToggle = vi.fn();
+    renderBar({ soundEnabled: true, onSoundToggle });
+    const button = screen.getByLabelText("Disable completion sound");
+    fireEvent.click(button);
+    expect(onSoundToggle).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("renders the compact action for a selected session", () => {
+    const onCompact = vi.fn();
+    renderBar({ hasSession: true, onCompact });
+    const button = screen.getByLabelText("Compact context");
+    fireEvent.click(button);
+    expect(onCompact).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+});
+
 describe("SessionInfoBar — history button gating (F3)", () => {
   it("renders the history button only when hasSession AND onViewFullHistory are present", () => {
     const onViewFullHistory = vi.fn();
@@ -68,6 +88,7 @@ describe("SessionInfoBar — real-stats gating + popover (F4)", () => {
     renderBar({ sessionStats, contextUsage: sessionStats.contextUsage });
     const statsBtn = screen.getByLabelText("Session info");
     expect(statsBtn).toBeTruthy();
+    expect(screen.getByText("50%")).toBeTruthy();
     fireEvent.click(statsBtn);
     // The popover opens and shows the honest total (and context) rows.
     expect(screen.getAllByText("Total").length).toBeGreaterThan(0);
@@ -75,14 +96,31 @@ describe("SessionInfoBar — real-stats gating + popover (F4)", () => {
     cleanup();
   });
 
-  it("shows the stats button when only real message counts exist (no tokens/context)", () => {
-    const sessionStats = stats({ userMessages: 1, assistantMessages: 1, totalMessages: 2 });
+  it("keeps total-only/message-only stats out of the compact footer", () => {
+    const sessionStats = stats({
+      userMessages: 1,
+      assistantMessages: 1,
+      totalMessages: 2,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 999 },
+    });
     renderBar({ sessionStats, contextUsage: null });
-    const statsBtn = screen.getByLabelText("Session info");
-    expect(statsBtn).toBeTruthy();
-    fireEvent.click(statsBtn);
-    expect(screen.getAllByText("Total").length).toBeGreaterThan(0);
-    expect(screen.getByText("2")).toBeTruthy();
+    expect(screen.queryByLabelText("Session info")).toBeNull();
+    expect(screen.queryByText("999")).toBeNull();
+    cleanup();
+  });
+
+  it("shows only input, output, combined cache and context percent in the footer summary", () => {
+    const sessionStats = stats({
+      tokens: { input: 100, output: 20, cacheRead: 40, cacheWrite: 10, total: 999 },
+      contextUsage: { percent: 55, contextWindow: 200_000, tokens: 110_000 },
+    });
+    renderBar({ sessionStats, contextUsage: sessionStats.contextUsage });
+    expect(screen.getByText("100")).toBeTruthy();
+    expect(screen.getByText("20")).toBeTruthy();
+    expect(screen.getByText("50")).toBeTruthy();
+    expect(screen.getByText("55%")).toBeTruthy();
+    expect(screen.queryByText("999")).toBeNull();
+    expect(screen.queryByText("$0.00")).toBeNull();
     cleanup();
   });
 

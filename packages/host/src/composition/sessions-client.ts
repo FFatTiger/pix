@@ -1,5 +1,5 @@
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
-import type { SessionDeleteClient, SessionHistoryReadClient, SessionRenameClient } from "../types.js";
+import type { SessionDeleteClient, SessionHistoryReadClient, SessionRenameClient, SessionSettingsClient } from "../types.js";
 
 /**
  * Narrow read-only session history client backed by the fixed sessiond RPC
@@ -91,6 +91,32 @@ export function createSessiondSessionDeleteClient(
  * Host only ever calls it once per request and returns `{success:true}` after
  * sessiond confirmed the rename.
  */
+/**
+ * Narrow session-settings client backed by the fixed sessiond RPC
+ * endpoint+secret. It wraps exactly the `config.getSessionIdleTimeoutMs` /
+ * `config.setSessionIdleTimeoutMs` RPCs and never the runtime lifecycle (no
+ * activate/command/stop). The sessiond secret is captured once at Host startup
+ * and bound here; a rotation while the Host keeps running surfaces as an
+ * authentication failure ⇒ 503 on the settings route.
+ */
+export function createSessiondSessionSettingsClient(
+  options: SessiondSessionsClientOptions,
+): SessionSettingsClient {
+  const client = new SessiondRpcClient({
+    endpoint: options.endpoint,
+    secret: options.secret,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  });
+  return {
+    async getIdleTimeoutMs() {
+      return client.call("config.getSessionIdleTimeoutMs", {});
+    },
+    async setIdleTimeoutMs(idleTimeoutMs) {
+      return client.call("config.setSessionIdleTimeoutMs", { idleTimeoutMs });
+    },
+  };
+}
+
 export function createSessiondSessionRenameClient(
   options: SessiondSessionsClientOptions,
 ): SessionRenameClient {

@@ -188,7 +188,7 @@ describe("event vocabulary and cursor ownership", () => {
     extension_statuses: { statuses: [] }, extension_widgets: { widgets: [] }, session_title: { name: "Title" },
     runtime_state_changed: {}, runtime_capabilities_changed: { capabilities: { capabilities: [], version: 2 } },
     runtime_closed: { reason: "shutdown" }, session_changed: { cwd: "/p", leafId: "entry" },
-    worker_crashed: { error: error("internal") }, running_sessions_changed: { sessionIds: ["s-1"] },
+    worker_crashed: { error: error("internal") }, running_sessions_changed: { sessionIds: ["s-1"], busySessionIds: ["s-1"] },
     runtime_unavailable: { error: error() }, runtime_error: { error: error("internal") },
   };
 

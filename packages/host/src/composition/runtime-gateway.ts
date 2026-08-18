@@ -30,7 +30,7 @@ import type {
  * {@link SessiondRpcClient} satisfies it; tests inject a fake.
  */
 export interface SessiondRuntimeClient {
-  call<M extends SessiondRpcMethod>(method: M, params: SessiondMethodParams[M]): Promise<SessiondMethodResult[M]>;
+  call<M extends SessiondRpcMethod>(method: M, params: SessiondMethodParams[M], timeoutMs?: number): Promise<SessiondMethodResult[M]>;
   attach(
     params: SessiondMethodParams["runtime.attach"],
     onPush: (push: SessiondPush) => void | Promise<void>,
@@ -93,6 +93,14 @@ export interface SessiondRuntimeGatewayOptions {
   readonly inbound?: SessiondRuntimeGatewayInboundLimits;
   /** Per-RPC timeout passed to a created client (default 10_000 ms). */
   readonly timeoutMs?: number;
+  /**
+   * Longer RPC timeout for ordinary commands only (default 30 min). Commands
+   * like prompt / bash legitimately block until their turn completes, which
+   * far exceeds the control-plane RPC default; without this the browser sees a
+   * spurious "sessiond RPC timed out" for every long turn even though the turn
+   * keeps running to completion.
+   */
+  readonly commandTimeoutMs?: number;
   /** Testable clock for serverTime (default Date.now). */
   readonly now?: () => number;
   readonly logger?: HostLogger;
@@ -279,6 +287,7 @@ interface GatewayConfig {
   readonly outboundLimits: SessiondRuntimeGatewayOutboundLimits;
   readonly inboundLimits: Required<SessiondRuntimeGatewayInboundLimits>;
   readonly logger: HostLogger;
+  readonly commandTimeoutMs: number;
 }
 
 interface ActiveAttach {
@@ -319,6 +328,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
   private readonly outboundLimits: SessiondRuntimeGatewayOutboundLimits;
   private readonly inboundLimits: Required<SessiondRuntimeGatewayInboundLimits>;
   private readonly logger: HostLogger;
+  private readonly commandTimeoutMs: number;
 
   constructor(options: SessiondRuntimeGatewayOptions) {
     if (options.client) {
@@ -350,6 +360,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       maxInflightInterrupts: positiveSafeInteger(options.inbound?.maxInflightInterrupts, DEFAULT_MAX_INFLIGHT_INTERRUPTS),
     };
     this.logger = options.logger ?? {};
+    this.commandTimeoutMs = options.commandTimeoutMs ?? 30 * 60 * 1_000;
   }
 
   /** Build a per-connection handshake response (serverTime is fresh per connection). */
@@ -413,6 +424,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       outboundLimits: this.outboundLimits,
       inboundLimits: this.inboundLimits,
       logger: this.logger,
+      commandTimeoutMs: this.commandTimeoutMs,
     };
     void new GatewayConnection(config, session).start();
   }
@@ -555,6 +567,9 @@ class GatewayConnection {
       case "getSnapshot":
         await this.handleGetSnapshot(message);
         return;
+      case "listRunning":
+        await this.handleListRunning(message);
+        return;
       case "stop":
         await this.handleStop(message);
         return;
@@ -632,7 +647,7 @@ class GatewayConnection {
   private async handleCommand(message: Extract<WsClientMessage, { type: "command" }>): Promise<void> {
     const id = message.id ?? message.payload.command.commandId;
     try {
-      const result = await this.config.client.call("runtime.command", message.payload);
+      const result = await this.config.client.call("runtime.command", message.payload, this.config.commandTimeoutMs);
       this.send({ type: "response", id, payload: { ok: true, result } });
     } catch (error) {
       this.send({ type: "response", id, payload: { ok: false, error: mapRpcError(error) } });
@@ -673,6 +688,15 @@ class GatewayConnection {
   private async handleGetSnapshot(message: Extract<WsClientMessage, { type: "getSnapshot" }>): Promise<void> {
     try {
       const result = await this.config.client.call("runtime.getSnapshot", message.payload);
+      this.send({ type: "response", id: message.id, payload: { ok: true, result } });
+    } catch (error) {
+      this.send({ type: "response", id: message.id, payload: { ok: false, error: mapRpcError(error) } });
+    }
+  }
+
+  private async handleListRunning(message: Extract<WsClientMessage, { type: "listRunning" }>): Promise<void> {
+    try {
+      const result = await this.config.client.call("runtime.listRunning", {});
       this.send({ type: "response", id: message.id, payload: { ok: true, result } });
     } catch (error) {
       this.send({ type: "response", id: message.id, payload: { ok: false, error: mapRpcError(error) } });

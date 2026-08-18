@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowUp } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import type { AgentMessage, ToolResultMessage } from "@fffattiger/pix-protocol";
 import { useVirtualList } from "@/lib/virtual-list";
@@ -22,7 +23,6 @@ import {
   transcriptScrollRef,
   useChatOpenFile,
 } from "@/components/chat/chat-experience-bridge";
-import { phaseLabel } from "@/components/chat/chat-runtime-view";
 import type { ChatFileIndexSnapshot, ChatSkillIndex, UserMessage } from "@/lib/chat-view-model";
 import type { MentionValidators } from "@/lib/mention-tokens";
 
@@ -193,15 +193,12 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
   const liveBash = isLive ? liveState?.bash : undefined;
   const bashRunning = isLive && liveState?.isBashRunning === true;
 
-  // Terminal status line (source phase-label pulse row).
-  const phase = isLive ? snapshot?.streaming?.phase : undefined;
+  // Terminal status line for compaction / in-flight bash without a live row.
   const statusLabel = liveState?.isCompacting === true
     ? t("desktop.compacting")
-    : running && !streamingMessage
-      ? phaseLabel(phase, t)
-      : bashRunning && !liveBash
-        ? t("desktop.runningShellCommand")
-        : null;
+    : bashRunning && !liveBash
+      ? t("desktop.runningShellCommand")
+      : null;
 
   const rows = useMemo<ChatTranscriptRow[]>(() => {
     const next: ChatTranscriptRow[] = [];
@@ -266,11 +263,11 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
     stickToBottomKey: `${effectiveSessionId ?? ""}:${isLive ? "live" : "history"}`,
   });
 
-  // Protocol v2 upward loading: a top sentinel observed with root = the scroll
-  // container and a ~200px top rootMargin triggers older-page fetches. Loads
-  // ONLY while older entries exist, nothing is already fetching, and the
-  // history generation is still current (the hook guards hasOlder/isFetching).
+  // Protocol v2 upward loading: a top sentinel observes the scroll container.
+  // Reaching the top shows a hint (up arrow) instead of auto-refreshing;
+  // clicking it — or scrolling up again past the top — loads the older page.
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
+  const [loadOlderHint, setLoadOlderHint] = useState(false);
   // ScrollHeight of the scroll container captured BEFORE an older page prepends;
   // used to preserve the visual anchor (scroll-height delta fallback).
   const prependHeightRef = useRef<number | null>(null);
@@ -280,6 +277,12 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
   hasOlderRef.current = transcript.hasOlder;
   const fetchingOlderRef = useRef(transcript.isFetchingOlder);
   fetchingOlderRef.current = transcript.isFetchingOlder;
+  const loadOlderNow = useCallback(() => {
+    if (!hasOlderRef.current || fetchingOlderRef.current) return;
+    prependHeightRef.current = parentRef.current?.scrollHeight ?? null;
+    setLoadOlderHint(false);
+    loadOlderRef.current();
+  }, []);
 
   useEffect(() => {
     const root = parentRef.current;
@@ -287,20 +290,69 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
     if (!root || !sentinel || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(
       (entries) => {
+        // At the top: surface the load-older hint (no auto-fetch). The user
+        // clicks it or scrolls up again to fetch the previous page.
         if (entries[0]?.isIntersecting === true) {
-          // Load only when older exists, not already fetching, and the
-          // generation is still current (the hook's hasOlder is generation-now).
-          if (hasOlderRef.current && !fetchingOlderRef.current) {
-            prependHeightRef.current = root.scrollHeight;
-            loadOlderRef.current();
-          }
+          if (hasOlderRef.current && !fetchingOlderRef.current) setLoadOlderHint(true);
+        } else {
+          setLoadOlderHint(false);
         }
       },
-      { root, rootMargin: "200px 0px 0px 0px", threshold: 0 },
+      { root, rootMargin: "0px 0px 0px 0px", threshold: 0 },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, []);
+
+  // Scroll-up again while at the top also loads the older page. A continuous
+  // wheel gesture fires many scroll events while scrollTop is pinned at 0, so
+  // the load is DEBOUNCED: the first contact only surfaces the hint, and a
+  // load fires only after the scroll has been idle for a beat and then moved
+  // up again (or the user clicks the hint). Otherwise the first scroll-up would
+  // keep loading and the arrow would never be visible.
+  useEffect(() => {
+    const root = parentRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    let hintVisible = false;
+    let atTop = false;
+    let firstContactAt = 0;
+    const SCROLL_IDLE_MS = 350;
+    const onScroll = () => {
+      const nowAtTop = root.scrollTop <= 2;
+      if (!nowAtTop) {
+        atTop = false;
+        firstContactAt = 0;
+        return;
+      }
+      if (!atTop) {
+        // First contact with the top: only surface the hint, never load yet.
+        atTop = true;
+        firstContactAt = Date.now();
+        return;
+      }
+      if (!hintVisible) return;
+      // Same continuous gesture (still within the idle window): keep waiting,
+      // the arrow stays visible. A fresh upward move after an idle pause loads.
+      if (Date.now() - firstContactAt < SCROLL_IDLE_MS) return;
+      if (hasOlderRef.current && !fetchingOlderRef.current) {
+        firstContactAt = Date.now();
+        loadOlderNow();
+      }
+    };
+    const observer = new IntersectionObserver(
+      (entries) => {
+        hintVisible = entries[0]?.isIntersecting === true;
+      },
+      { root, rootMargin: "0px 0px 0px 0px", threshold: 0 },
+    );
+    const sentinel = topSentinelRef.current;
+    if (sentinel) observer.observe(sentinel);
+    root.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      observer.disconnect();
+      root.removeEventListener("scroll", onScroll);
+    };
+  }, [loadOlderNow]);
 
   // Preserve the visual anchor across an older-page prepend: the scroll-height
   // delta (the content above the viewport grew by exactly the prepended height).
@@ -317,11 +369,20 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
     }
   }, [rows.length]);
 
+  const isHomeEmpty = !sessionId && !isLive && rows.length === 0 && !transcript.error && !transcript.isFetchingInitial;
   return (
     <div
       className="transcript-region"
-      style={{ position: "relative", display: "flex", flex: "1 1 auto", minHeight: 0, minWidth: 0 }}
+      style={{ position: "relative", display: "flex", flex: isHomeEmpty ? "0 0 auto" : "1 1 auto", minHeight: 0, minWidth: 0 }}
     >
+      {isMobile ? null : (
+        <ChatMinimap
+          messages={messages as AgentMessage[]}
+          streamingMessage={streamingPartial as Partial<AgentMessage> | null}
+          scrollContainer={parentRef}
+          messageRefs={messageRefs}
+        />
+      )}
       <div
         ref={parentRef}
         className="transcript-scroll chat-scroll-container"
@@ -339,6 +400,37 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
         }}
       >
         <div ref={topSentinelRef} data-upward-load-sentinel style={{ height: 1 }} />
+        {loadOlderHint && transcript.hasOlder ? (
+          <div
+            className="transcript-load-older-hint"
+            data-testid="load-older-hint"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              padding: "8px 0 2px",
+              color: "var(--text-muted)",
+              fontSize: 12,
+            }}
+          >
+            <button
+              type="button"
+              onClick={loadOlderNow}
+              title={t("desktop.loadOlderMessages")}
+              aria-label={t("desktop.loadOlderMessages")}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "4px 10px", border: "1px solid var(--border)",
+                borderRadius: 999, background: "var(--bg-panel)",
+                color: "var(--text-muted)", cursor: "pointer", fontSize: 12,
+              }}
+            >
+              <ArrowUp size={14} weight="bold" aria-hidden="true" />
+              {t("desktop.loadOlderMessages")}
+            </button>
+          </div>
+        ) : null}
         <div
           className="transcript-inner"
           style={virtualizer.windowed ? { height: virtualizer.totalSize } : undefined}
@@ -396,19 +488,17 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
         ) : transcript.isFetchingInitial && sessionId ? (
           <div className="transcript-empty" aria-busy="true"><span className="transcript-loading-dot" aria-hidden="true" />{t("desktop.loadingSession")}</div>
         ) : rows.length === 0 ? (
-          <div className="transcript-empty">
-            {sessionId ? t("desktop.noMessages") : t("desktop.selectSessionHint")}
-          </div>
+          sessionId ? (
+            <div className="transcript-empty">{t("desktop.noMessages")}</div>
+          ) : (
+            <div className="transcript-home" data-testid="transcript-home">
+              <div className="transcript-home-logo" aria-hidden="true" />
+              <h1 className="transcript-home-title">{t("desktop.startConversation")}</h1>
+              <p className="transcript-home-copy">{t("desktop.startConversationHint")}</p>
+            </div>
+          )
         ) : null}
       </div>
-      {isMobile ? null : (
-        <ChatMinimap
-          messages={messages as AgentMessage[]}
-          streamingMessage={streamingPartial as Partial<AgentMessage> | null}
-          scrollContainer={parentRef}
-          messageRefs={messageRefs}
-        />
-      )}
     </div>
   );
 }

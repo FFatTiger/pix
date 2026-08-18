@@ -32,7 +32,6 @@ import { ImageIcon } from "@phosphor-icons/react/Image";
 import { SortDescendingIcon } from "@phosphor-icons/react/SortDescending";
 
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
-import { ClockIcon } from "@phosphor-icons/react/Clock";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CheckIcon } from "@phosphor-icons/react/Check";
 import { LightbulbIcon } from "@phosphor-icons/react/Lightbulb";
@@ -395,18 +394,6 @@ function QueuedMessageRow({ kind, text, label }: { kind: "steer" | "follow-up"; 
   );
 }
 
-// Pinned at the top of the model / thinking / tools dropdowns while the
-// agent is running: config changes apply from the next turn, not to the
-// response currently streaming.
-function NextTurnBanner() {
-  const { t } = useI18n();
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", fontSize: 11, color: "var(--accent)", borderBottom: "1px solid var(--border)", background: "var(--bg-subtle)" }}>
-      <ClockIcon size={12} weight="bold" aria-hidden="true" />
-      {t("desktop.configAppliesNextTurn")}
-    </div>
-  );
-}
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, onAbortCompaction, stepLabel, model, isAutoModelSelection, modelNames, modelList, imageInputByModel, modelScopeWarnings, onModelChange,
@@ -529,7 +516,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [toolDropdownRect, setToolDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const [thinkingDropdownOpen, setThinkingDropdownOpen] = useState(false);
   const [thinkingDropdownRect, setThinkingDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
-  const [controlsMenuOpen, setControlsMenuOpen] = useState(false);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [attachMenuRect, setAttachMenuRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>(() => {
@@ -586,7 +572,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const modelSearchRef = useRef<HTMLInputElement>(null);
   const toolDropdownRef = useRef<HTMLDivElement>(null);
   const thinkingDropdownRef = useRef<HTMLDivElement>(null);
-  const controlsMenuRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
@@ -1683,9 +1668,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (thinkingDropdownRef.current && !thinkingDropdownRef.current.contains(e.target as Node)) {
         setThinkingDropdownOpen(false);
       }
-      if (controlsMenuRef.current && !controlsMenuRef.current.contains(e.target as Node)) {
-        setControlsMenuOpen(false);
-      }
       if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
         setAttachMenuOpen(false);
       }
@@ -1704,10 +1686,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     return () => document.removeEventListener("keydown", escHandler);
   }, []);
 
-  useEffect(() => {
-    if (!isMobile) setControlsMenuOpen(false);
-  }, [isMobile]);
-
   // Every time the model dropdown expands, focus the search input so the
   // user can start typing a filter immediately.
   useEffect(() => {
@@ -1722,7 +1700,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         flexShrink: 0,
         background: "transparent",
         padding: "0 16px 15px",
-        paddingRight: isMobile ? 16 : 34, // desktop: 16px base + 18px for ChatMinimap alignment
       }}
     >
       {/* Hidden file input */}
@@ -2475,14 +2452,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
         {/* Bottom bar: left | center (context) | right */}
         <div className="chat-input-toolbar" style={{
-          display: isMobile ? "grid" : "flex",
-          gridTemplateColumns: isMobile ? "minmax(0, 1fr) auto" : undefined,
+          display: "flex",
           alignItems: "center",
           gap: 4,
+          flexWrap: isMobile ? "wrap" : undefined,
         }}>
 
           {/* LEFT: attach + model selector (idle) or steer/followup toggle (streaming) */}
-          <div className="chat-input-toolbar-left" style={{ flex: isMobile ? "1 1 auto" : "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
+          <div className="chat-input-toolbar-left" style={{ flex: "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
             <button
               className="chat-input-toolbar-attach"
               onClick={(e) => {
@@ -2621,8 +2598,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   }}
                 >
                   <ThinkingLevelIcon level={thinkingLevel ?? "auto"} />
-                  {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>}
-                  {isStreaming && <ClockIcon size={11} weight="bold" color="var(--accent)" aria-hidden="true" />}
+                  <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>
                   <CaretDownIcon
                     size={11}
                     weight="bold"
@@ -2645,7 +2621,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
                     overflow: "hidden", minWidth: 200, maxWidth: panelMaxW, maxHeight: maxH, overflowY: "auto",
                   }}>
-                    {isStreaming && <NextTurnBanner />}
                     <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
                     {filterThinkingLevelOptions(availableThinkingLevels).map((lvl) => {
                       const isActive = (thinkingLevel ?? "auto") === lvl;
@@ -2692,78 +2667,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           {!isMobile && <div className="chat-input-toolbar-spacer" style={{ flex: 1 }} />} 
 
           {/* RIGHT: thinking + tools preset + compact + sound (idle) | Stop + sound (streaming) */}
-          <div ref={controlsMenuRef} className="chat-input-toolbar-controls" style={{
+          <div className="chat-input-toolbar-controls" style={{
             flex: "0 0 auto",
             display: "flex",
             alignItems: "center",
             justifyContent: "flex-end",
             position: "relative",
-            marginLeft: isMobile ? 0 : "auto",
+            marginLeft: "auto",
           }}>
-            {isMobile && (
-              <button
-                type="button"
-                title={controlsMenuOpen ? undefined : t("desktop.moreControls")}
-                aria-label={t("desktop.moreControls")}
-                aria-expanded={controlsMenuOpen}
-                aria-hidden={controlsMenuOpen || undefined}
-                tabIndex={controlsMenuOpen ? -1 : undefined}
-                onClick={() => {
-                  setModelDropdownOpen(false);
-                  setControlsMenuOpen(true);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: "100%",
-                  height: 24,
-                  padding: "3px 5px",
-                  background: "none",
-                  border: "none",
-                  borderRadius: 6,
-                  color: "var(--text-muted)",
-                  cursor: controlsMenuOpen ? "default" : "pointer",
-                  fontSize: 12,
-                  fontWeight: 500,
-                  visibility: controlsMenuOpen ? "hidden" : "visible",
-                  pointerEvents: controlsMenuOpen ? "none" : "auto",
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  if (controlsMenuOpen) return;
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = "var(--text)";
-                }}
-                onMouseLeave={(e) => {
-                  if (controlsMenuOpen) return;
-                  e.currentTarget.style.background = "none";
-                  e.currentTarget.style.color = "var(--text-muted)";
-                }}
-              >
-                {t("desktop.more")}
-              </button>
-            )}
             <div className="chat-input-toolbar-actions" style={{
-              display: isMobile ? (controlsMenuOpen ? "flex" : "none") : "flex",
+              display: "flex",
               alignItems: "center",
-              gap: isMobile ? 1 : 2,
-              ...(isMobile ? {
-                position: "absolute",
-                right: 0,
-                bottom: 0,
-                zIndex: 60,
-                padding: 1,
-                width: "max-content",
-                maxWidth: "calc(100vw / var(--app-ui-scale, 1) - 32px)",
-                flexWrap: "nowrap",
-                justifyContent: "flex-end",
-                border: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                borderRadius: 10,
-                background: "color-mix(in srgb, var(--bg-panel) 92%, var(--bg))",
-                boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
-                backdropFilter: "blur(10px)",
-              } : null),
+              gap: 2,
             }}>
             {onToolPresetChange && (
               <div ref={toolDropdownRef} className="chat-input-toolbar-tools" style={{ position: "relative" }}>
@@ -2793,8 +2708,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     e.currentTarget.style.color = "var(--text-muted)";
                   }}
                 >
-                  {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{toolPresetLabel}</span>}
-                  {isStreaming && <ClockIcon size={11} weight="bold" color="var(--accent)" aria-hidden="true" />}
+                  {toolPresetLabel && <span style={{ whiteSpace: "nowrap" }}>{toolPresetLabel}</span>}
                   <CaretDownIcon
                     size={11}
                     weight="bold"
@@ -2819,7 +2733,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
                     overflow: "hidden", minWidth: 120, maxWidth: panelMaxW, maxHeight: maxH, overflowY: "auto",
                   }}>
-                    {isStreaming && <NextTurnBanner />}
                     <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
                     {TOOL_PRESETS.map((lvl) => {
                       const preset = TOOL_PRESET_MAP[lvl];
@@ -2896,7 +2809,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   >
                     <ProviderIcon id={model?.provider ?? "unknown"} api={currentModelOption?.api ?? null} size={14} />
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{currentName}</span>
-                    {isStreaming && <ClockIcon size={11} weight="bold" color="var(--accent)" aria-hidden="true" />}
                     <CaretDownIcon
                       size={11}
                       weight="bold"
@@ -2960,7 +2872,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       overflow: "hidden", maxHeight: maxH,
                       display: "flex", flexDirection: "column",
                       }}>
-                      {isStreaming && <NextTurnBanner />}
                       {/* Search area — pinned above the list, separated by a divider */}
                       <div style={{ borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
                         <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
@@ -3183,8 +3094,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 title={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
                 aria-label={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
                 style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  padding: "3px 7px",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  padding: "3px 6px",
                   height: 24,
                   background: isCompacting
                     ? "color-mix(in srgb, var(--accent-orange) 14%, var(--bg-panel))"
@@ -3205,45 +3116,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   : "color-mix(in srgb, var(--accent-red) 12%, var(--bg-panel))"; }}
               >
                 <SquareIcon size={14} />
-                {isCompacting ? t("desktop.stopCompaction") : t("desktop.stop")}
-              </button>
-            )}
-
-            {isMobile && controlsMenuOpen && (
-              <button
-                type="button"
-                title={t("desktop.collapseControls")}
-                aria-label={t("desktop.collapseControls")}
-                aria-expanded={true}
-                onClick={() => {
-                  setToolDropdownOpen(false);
-                  setThinkingDropdownOpen(false);
-                  setControlsMenuOpen(false);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 26,
-                  height: 24,
-                  padding: 0,
-                  marginLeft: 0,
-                  background: "var(--bg-hover)",
-                  border: "none",
-                  borderLeft: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                  borderRadius: "0 6px 6px 0",
-                  color: "var(--text)",
-                  cursor: "pointer",
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-selected)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                }}
-              >
-                <XIcon size={13} />
               </button>
             )}
             </div>

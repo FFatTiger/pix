@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowClockwise, Check, CaretRight, UploadSimple } from "@phosphor-icons/react";
+import { ArrowClockwise, Check, MagnifyingGlass, UploadSimple, X } from "@phosphor-icons/react";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { HttpError } from "@/api/http-client";
 import { useHttpClient } from "@/app/http-context";
@@ -11,7 +11,6 @@ import { getFileName } from "@/lib/file-paths";
 import { baseName, joinRelative } from "../paths";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
 import { QuickChangesPanel } from "./QuickChangesPanel";
-import { loadExplorerOpen, saveExplorerOpen } from "./file-explorer-state";
 
 /**
  * Files explorer panel — the source sidebar's file-workspace composition
@@ -37,6 +36,11 @@ export interface ExplorerPanelProps {
   onAtMention?: ((relativePath: string, isDir: boolean) => void) | undefined;
   /** Insert several paths into the chat input (uploaded files). */
   onAtMentions?: ((relativePaths: string[]) => void) | undefined;
+  /** Optional header action (the right-edge file-browser toggle when fused). */
+  headerAction?: ReactNode;
+  /** Whether the panel is on screen. Gates queries so a hidden panel never
+   *  fires file/git requests (the container stays mounted for animations). */
+  visible?: boolean;
 }
 
 /** Fixed file-search error copy (code-first, then kind, fixed fallback). */
@@ -70,26 +74,25 @@ function describeIndexError(error: unknown): string {
   return "Unable to search files.";
 }
 
-export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtMention, onAtMentions }: ExplorerPanelProps) {
+export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtMention, onAtMentions, headerAction, visible = true }: ExplorerPanelProps) {
   const { t } = useI18n();
   const http = useHttpClient();
   const options = useMemo(() => createQueryOptions(http), [http]);
   const queryClient = useQueryClient();
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
 
-  // Explorer section state (source sidebar semantics, verbatim).
-  const [explorerOpen, setExplorerOpen] = useState(true);
+  // Explorer refresh affordance state.
   const [explorerUploadBusy, setExplorerUploadBusy] = useState(false);
   const [explorerRefreshDone, setExplorerRefreshDone] = useState(false);
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // File search state (pix fusion: debounced query against the file index).
+  const [searchOpen, setSearchOpen] = useState(false);
   const [raw, setRaw] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [invalidSearchResult, setInvalidSearchResult] = useState(false);
 
   useEffect(() => {
-    setExplorerOpen(loadExplorerOpen());
     return () => {
       if (explorerRefreshTimerRef.current) clearTimeout(explorerRefreshTimerRef.current);
     };
@@ -131,7 +134,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
   // canonical prefix the tree shows.
   const rootList = useQuery({
     ...options.files.list(cwd ?? ""),
-    enabled: canFiles && Boolean(cwd),
+    enabled: canFiles && Boolean(cwd) && visible,
   });
   const root = rootList.data?.path ?? null;
 
@@ -139,7 +142,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
   // (cwd, debouncedQuery) so a late q1 response can never render as q2.
   const search = useQuery({
     ...options.files.index(cwd ?? "", debouncedQuery),
-    enabled: canFiles && Boolean(root) && debouncedQuery.length >= 2,
+    enabled: canFiles && Boolean(root) && debouncedQuery.length >= 2 && visible,
   });
 
   const handleRefreshExplorer = () => {
@@ -159,11 +162,22 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
     fileExplorerRef.current?.prepareUpload(files);
   });
 
-  if (!canFiles) {
-    return <p className="workspace-hint">File browsing is not available on this host.</p>;
-  }
-  if (!cwd) {
-    return <p className="workspace-hint">Open a project to browse its files.</p>;
+  if (!canFiles || !cwd) {
+    // The header (with the fused always-visible browser toggle) must render
+    // even in the inactive states, or an open panel could never be closed.
+    return (
+      <div className="explorer-panel" aria-label="Files">
+        <div className="sidebar-section-head">
+          <span className="sidebar-section-label-text">{t("desktop.files")}</span>
+          {headerAction ? <div className="explorer-header-action">{headerAction}</div> : null}
+        </div>
+        <p className="workspace-hint">
+          {!canFiles
+            ? "File browsing is not available on this host."
+            : "Open a project to browse its files."}
+        </p>
+      </div>
+    );
   }
 
   const searchData = search.data;
@@ -225,16 +239,35 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <form className="files-search-form" role="search" onSubmit={(event) => event.preventDefault()}>
-        <input
-          type="search"
-          className="files-search-input"
-          aria-label="Search files"
-          placeholder="Search files…"
-          value={raw}
-          onChange={(event) => setRaw(event.target.value)}
-        />
-      </form>
+      {searchOpen ? (
+        <div className="sidebar-search-field">
+          <div className="sidebar-search-wrap">
+            <MagnifyingGlass size={13} className="sidebar-search-icon" aria-hidden="true" />
+            <input
+              value={raw}
+              onChange={(event) => setRaw(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  if (raw) setRaw("");
+                  else setSearchOpen(false);
+                }
+              }}
+              placeholder={t("desktop.searchFilesPlaceholder")}
+              aria-label={t("desktop.searchFiles")}
+              autoFocus
+            />
+          </div>
+          <button
+            type="button"
+            className="sidebar-icon-btn"
+            onClick={() => { setSearchOpen(false); setRaw(""); }}
+            title={t("desktop.exitSearch")}
+            aria-label={t("desktop.exitSearch")}
+          >
+            <X size={13} weight="regular" aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
 
       {searchMode ? (
         <section className="files-search" aria-label="Search results" style={{ minHeight: 0, overflowY: "auto" }}>
@@ -269,91 +302,56 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
       ) : (
         <div
           style={{
-            borderTop: "1px solid var(--border)",
             display: "flex",
             flexDirection: "column",
-            flex: explorerOpen ? "1 1 0" : "0 0 auto",
-            minHeight: 0,
-            overflow: "hidden",
+            flex: "0 0 auto",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
-            <button
-              onClick={() => setExplorerOpen((open) => {
-                const next = !open;
-                saveExplorerOpen(next);
-                return next;
-              })}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                flex: 1,
-                padding: "6px 10px",
-                background: "none",
-                border: "none",
-                color: "var(--text-muted)",
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.05em",
-                textTransform: "uppercase",
-                textAlign: "left",
-              }}
-            >
-              <CaretRight size={9} weight="regular" style={{ transform: explorerOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }} aria-hidden="true" />
-              {t("desktop.explorer")}
-            </button>
-            {explorerOpen && (
+          <div className="sidebar-section-head">
+            <span className="sidebar-section-label-text">{t("desktop.files")}</span>
+            <div className="sidebar-section-actions">
               <button
+                type="button"
+                className="sidebar-icon-btn"
+                onClick={() => {
+                  setSearchOpen((open) => {
+                    if (open) setRaw("");
+                    return !open;
+                  });
+                }}
+                title={t("desktop.searchFiles")}
+                aria-label={t("desktop.searchFiles")}
+              >
+                <MagnifyingGlass size={14} weight="regular" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="sidebar-icon-btn"
                 onClick={() => fileExplorerRef.current?.openUploadPicker()}
                 disabled={explorerUploadBusy}
                 title={t("desktop.uploadFilesToProjectRoot")}
                 aria-label={t("desktop.uploadFiles")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 26, height: 26, padding: 0,
-                  background: "none",
-                  border: "none",
-                  color: "var(--text-dim)",
-                  cursor: explorerUploadBusy ? "default" : "pointer",
-                  borderRadius: 5,
-                  flexShrink: 0,
-                  opacity: explorerUploadBusy ? 0.6 : 1,
-                  transition: "color 0.3s, background 0.3s",
-                }}
-                onMouseEnter={(e) => { if (explorerUploadBusy) return; e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-                onMouseLeave={(e) => { if (explorerUploadBusy) return; e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
               >
-                <UploadSimple size={13} weight="regular" aria-hidden="true" />
+                <UploadSimple size={14} weight="regular" aria-hidden="true" />
               </button>
-            )}
-            <button
-              onClick={handleRefreshExplorer}
-              title={t("desktop.refreshExplorer")}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 26, height: 26, padding: 0, marginRight: 6,
-                background: explorerRefreshDone ? "rgba(74,222,128,0.18)" : "none",
-                border: "none",
-                color: explorerRefreshDone ? "#4ade80" : "var(--text-dim)",
-                cursor: "pointer",
-                borderRadius: 5,
-                flexShrink: 0,
-                transition: "color 0.3s, background 0.3s",
-              }}
-              onMouseEnter={(e) => { if (explorerRefreshDone) return; e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-              onMouseLeave={(e) => { if (explorerRefreshDone) return; e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
-            >
-              {explorerRefreshDone ? (
-                <Check size={13} color="#4ade80" weight="regular" aria-hidden="true" />
-              ) : (
-                <ArrowClockwise size={13} weight="regular" aria-hidden="true" />
-              )}
-            </button>
+              <button
+                type="button"
+                className="sidebar-icon-btn"
+                onClick={handleRefreshExplorer}
+                title={t("desktop.refreshExplorer")}
+                aria-label={t("desktop.refreshExplorer")}
+              >
+                {explorerRefreshDone ? (
+                  <Check size={14} color="#4ade80" weight="regular" aria-hidden="true" />
+                ) : (
+                  <ArrowClockwise size={14} weight="regular" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+            {headerAction ? <div className="explorer-header-action">{headerAction}</div> : null}
           </div>
-          {explorerOpen && (
-            <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+          {visible && (
+            <div>
               <FileExplorer
                 ref={fileExplorerRef}
                 cwd={cwd}
@@ -367,7 +365,7 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
         </div>
       )}
 
-      {canGit ? (
+      {canGit && visible ? (
         <QuickChangesPanel
           cwd={cwd}
           onOpenFile={onOpenFile}

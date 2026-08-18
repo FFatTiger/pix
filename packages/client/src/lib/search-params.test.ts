@@ -17,9 +17,15 @@ describe("parseWorkspaceSearch", () => {
     ).toEqual({ session: "abc", cwd: "/Users/me/proj" });
   });
 
+  it("extracts an optional file selector with its cwd", () => {
+    expect(
+      parseWorkspaceSearch({ cwd: "/repo", file: "/repo/src/a.ts" }),
+    ).toEqual({ cwd: "/repo", file: "/repo/src/a.ts" });
+  });
+
   it("drops empty and non-string values", () => {
     expect(
-      parseWorkspaceSearch({ session: "", cwd: 12, next: null }),
+      parseWorkspaceSearch({ session: "", cwd: 12, next: null, file: 4 }),
     ).toEqual({});
   });
 
@@ -28,11 +34,25 @@ describe("parseWorkspaceSearch", () => {
       next: "/?session=1",
     });
   });
+
+  it("file wins over session when both are present (mutually exclusive active selectors)", () => {
+    expect(
+      parseWorkspaceSearch({ cwd: "/repo", session: "s1", file: "/repo/a.ts" }),
+    ).toEqual({ cwd: "/repo", file: "/repo/a.ts" });
+  });
+
+  it("drops a file selector when no cwd is present (file requires cwd)", () => {
+    expect(parseWorkspaceSearch({ file: "/repo/a.ts" })).toEqual({});
+    // An invalid file never shadows a valid session selector.
+    expect(parseWorkspaceSearch({ session: "s1", file: "/repo/a.ts" })).toEqual({
+      session: "s1",
+    });
+  });
 });
 
 describe("validateWorkspaceSearch", () => {
   it("is an alias of parse for router validateSearch", () => {
-    const input = { session: "s1", cwd: "/tmp" };
+    const input = { session: "s1", cwd: "/tmp", file: "/tmp/f.ts" };
     expect(validateWorkspaceSearch(input)).toEqual(parseWorkspaceSearch(input));
   });
 });
@@ -45,7 +65,32 @@ describe("workspaceSearchToParams", () => {
     });
     expect(params.get("session")).toBe("s1");
     expect(params.get("cwd")).toBe("/repo");
+    expect(params.get("file")).toBeNull();
     expect(params.get("next")).toBeNull();
+  });
+
+  it("serializes a file selector and never a session (one active selector)", () => {
+    const params = workspaceSearchToParams({
+      session: "s1",
+      cwd: "/repo",
+      file: "/repo/a.ts",
+    });
+    expect(params.get("file")).toBe("/repo/a.ts");
+    expect(params.get("session")).toBeNull();
+    expect(params.get("cwd")).toBe("/repo");
+  });
+
+  it("serializes a file selector alone with its cwd", () => {
+    const params = workspaceSearchToParams({ cwd: "/repo", file: "/repo/b.ts" });
+    expect(params.get("file")).toBe("/repo/b.ts");
+    expect(params.get("session")).toBeNull();
+    expect(params.get("cwd")).toBe("/repo");
+  });
+
+  it("does not serialize a file without its required cwd", () => {
+    const params = workspaceSearchToParams({ session: "s1", file: "/repo/b.ts" });
+    expect(params.get("file")).toBeNull();
+    expect(params.get("session")).toBe("s1");
   });
 });
 

@@ -2,7 +2,6 @@ import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { HttpClient } from "./http-client";
 import { createGateApi } from "./gate";
 import { createModelsApi } from "./models";
-import { createThemesApi } from "./themes";
 import { createResourcesApi } from "./resources";
 import { createSessionsApi } from "./sessions";
 import { createConfigurationApi } from "./configuration";
@@ -37,13 +36,7 @@ export const queryKeys = {
     lists: ["pix", "models", "list"] as const,
     list: (cwd: string) => ["pix", "models", "list", cwd] as const,
   },
-  themes: {
-    all: ["pix", "themes"] as const,
-    lists: ["pix", "themes", "list"] as const,
-    /** Project-scoped: cwd is a cache-key component so scopes never collide. */
-    list: (cwd: string) => ["pix", "themes", "list", cwd] as const,
-    resolve: (name: string, mode: "dark" | "light", cwd: string) => ["pix", "themes", "resolve", name, mode, cwd] as const,
-  },
+
   files: {
     all: ["pix", "files"] as const,
     list: (path: string) => ["pix", "files", "list", path] as const,
@@ -76,6 +69,10 @@ export const queryKeys = {
     providers: () => ["pix", "auth", "providers"] as const,
     providerStatus: (providerId: string) => ["pix", "auth", "provider-status", providerId] as const,
   },
+  settings: {
+    all: ["pix", "settings"] as const,
+    sessionIdleTimeout: () => ["pix", "settings", "session-idle-timeout"] as const,
+  },
 } as const;
 
 export function createQueryOptions(http: HttpClient) {
@@ -84,7 +81,6 @@ export function createQueryOptions(http: HttpClient) {
   const models = createModelsApi(http);
   const resources = createResourcesApi(http);
   const configuration = createConfigurationApi(http);
-  const themes = createThemesApi(http);
   return {
     gate: { status: () => queryOptions({ queryKey: queryKeys.gate.status(), queryFn: ({ signal }) => gate.status(signal), staleTime: 30_000, retry: false }) },
     capabilities: {
@@ -112,26 +108,6 @@ export function createQueryOptions(http: HttpClient) {
           queryKey: queryKeys.models.list(cwd),
           queryFn: ({ signal }) => models.list(cwd, signal),
           enabled: Boolean(cwd),
-          staleTime: CATALOG_STALE_MS,
-          retry: false,
-        }),
-    },
-    themes: {
-      // cwd is required and part of the key: the Host themes routes are
-      // project-scoped (absolute authorized cwd, no process.cwd fallback).
-      list: (cwd: string) =>
-        queryOptions({
-          queryKey: queryKeys.themes.list(cwd),
-          queryFn: ({ signal }) => themes.list(cwd, signal),
-          enabled: Boolean(cwd),
-          staleTime: CATALOG_STALE_MS,
-          retry: false,
-        }),
-      resolve: (name: string, mode: "dark" | "light", cwd: string) =>
-        queryOptions({
-          queryKey: queryKeys.themes.resolve(name, mode, cwd),
-          queryFn: ({ signal }) => themes.resolve(name, mode, cwd, signal),
-          enabled: Boolean(name) && Boolean(cwd),
           staleTime: CATALOG_STALE_MS,
           retry: false,
         }),
@@ -205,6 +181,15 @@ export function createQueryOptions(http: HttpClient) {
           queryFn: ({ signal }) => configuration.auth.providerStatus(providerId, signal),
           enabled: Boolean(providerId),
           staleTime: CATALOG_STALE_MS,
+          retry: false,
+        }),
+    },
+    settings: {
+      sessionIdleTimeout: () =>
+        queryOptions({
+          queryKey: queryKeys.settings.sessionIdleTimeout(),
+          queryFn: ({ signal }) => configuration.sessionSettings.get(signal),
+          staleTime: 15_000,
           retry: false,
         }),
     },

@@ -134,9 +134,31 @@ test("attach subscribes before replay boundary and receives later events without
   await attached.flushTo(async (push) => { pushes.push(push); });
   workers.workers[0]!.emitEvent({ type: "agent_settled", sessionId: "s" });
   await wait();
-  assert.equal(boundary, baseline + 1);
-  assert.equal(pushes.length, 3);
-  assert.deepEqual(pushes.map((push) => (push as { event: { eventId: number } }).event.eventId), [baseline + 1, baseline + 2, baseline + 3]);
+  assert.equal(boundary, baseline + 2);
+  assert.equal(pushes.length, 5);
+  assert.deepEqual(pushes.map((push) => (push as { event: { eventId: number } }).event.eventId), [baseline + 1, baseline + 2, baseline + 3, baseline + 4, baseline + 5]);
+  attached.close();
+  await service.shutdown();
+});
+
+test("turn busy flips broadcast authoritative global busy session ids", async () => {
+  const { service, workers } = harness();
+  const activated = await service.activate("s");
+  const pushes: Array<{ type: string; event?: { type: string; busySessionIds?: string[] } }> = [];
+  const attached = service.prepareAttach({ sessionId: "s", epoch: activated.epoch, lastEventId: 0 });
+
+  workers.workers[0]!.emitEvent({ type: "agent_start", sessionId: "s" });
+  await wait();
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "busy");
+  workers.workers[0]!.emitEvent({ type: "agent_end", sessionId: "s" });
+  await wait();
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "ready");
+  await attached.flushTo(async (push) => { pushes.push(push as typeof pushes[number]); });
+  const started = pushes.find((push) => push.type === "event" && push.event?.type === "running_sessions_changed" && push.event.busySessionIds?.includes("s"));
+  assert.ok(started, "agent_start broadcasts s as busy");
+  const ended = pushes.find((push) => push.type === "event" && push.event?.type === "running_sessions_changed" && push.event.busySessionIds?.length === 0);
+  assert.ok(ended, "agent_end broadcasts an empty busy set");
+
   attached.close();
   await service.shutdown();
 });
@@ -2911,5 +2933,86 @@ test("D4 fence: a rejected activation cleans its map entry and a retry re-admits
   // Retry re-admits cleanly (never stuck on a stale entry).
   await checkReject();
   assert.equal(service.diagnostics().activations, 0);
+  await service.shutdown();
+});
+
+test("config idle timeout: default is 24h, get/set round-trips, invalid input fails closed", async () => {
+  const deps = {
+    sessionLocator: {
+      async locate(sessionId: string) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: true }; },
+      async resolveLeafId() { return "leaf"; },
+    },
+    activationContext: { async resolve(sessionId: string, _l: unknown, cwd?: string) { return { cwd: cwd ?? `/cwd/${sessionId}`, projectRoot: cwd ?? `/cwd/${sessionId}` }; } },
+    workerFactory: new FakeWorkerFactory(),
+  };
+  const service = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500 });
+  // No explicit option, no settings file → the 1-day default.
+  assert.equal(service.getIdleTimeoutMs(), 24 * 60 * 60_000);
+  service.setIdleTimeoutMs(3_600_000);
+  assert.equal(service.getIdleTimeoutMs(), 3_600_000);
+  service.setIdleTimeoutMs(0);
+  assert.equal(service.getIdleTimeoutMs(), 0, "0 disables idle reclamation");
+  // Invalid input fails closed with the canonical port error.
+  assert.throws(() => service.setIdleTimeoutMs(-1), (error: unknown) => {
+    assert.ok(error instanceof SessiondError);
+    assert.equal(error.code, "invalid_input");
+    return true;
+  });
+  assert.throws(() => service.setIdleTimeoutMs(1.5), (error: unknown) => {
+    assert.ok(error instanceof SessiondError);
+    assert.equal(error.code, "invalid_input");
+    return true;
+  });
+  await service.shutdown();
+});
+
+test("config idle timeout: settings file persists the value across service construction", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pix-sessiond-idle-"));
+  try {
+    const settingsFile = join(dir, "settings.json");
+    const deps = {
+      sessionLocator: {
+        async locate(sessionId: string) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: true }; },
+        async resolveLeafId() { return "leaf"; },
+      },
+      activationContext: { async resolve(sessionId: string, _l: unknown, cwd?: string) { return { cwd: cwd ?? `/cwd/${sessionId}`, projectRoot: cwd ?? `/cwd/${sessionId}` }; } },
+      workerFactory: new FakeWorkerFactory(),
+      settingsFile,
+    };
+    const first = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500 });
+    assert.equal(first.getIdleTimeoutMs(), 24 * 60 * 60_000, "no file yet → default 24h");
+    first.setIdleTimeoutMs(43_200_000);
+    const persisted = JSON.parse(await readFile(settingsFile, "utf8"));
+    assert.equal(persisted.idleTimeoutMs, 43_200_000);
+    await first.shutdown();
+    // A NEW service over the same file picks up the persisted value.
+    const second = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500 });
+    assert.equal(second.getIdleTimeoutMs(), 43_200_000, "persisted value wins over the 24h default");
+    await second.shutdown();
+    // Explicit options still win over the file (test override).
+    const third = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+    assert.equal(third.getIdleTimeoutMs(), 0, "explicit option beats persisted value");
+    await third.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("config idle timeout: RPC dispatch round-trips through SessiondApplication", async () => {
+  const deps = {
+    sessionLocator: {
+      async locate(sessionId: string) { return { sessionId, sessionFile: `/sessions/${sessionId}.jsonl`, exists: true }; },
+      async resolveLeafId() { return "leaf"; },
+    },
+    activationContext: { async resolve(sessionId: string, _l: unknown, cwd?: string) { return { cwd: cwd ?? `/cwd/${sessionId}`, projectRoot: cwd ?? `/cwd/${sessionId}` }; } },
+    workerFactory: new FakeWorkerFactory(),
+  };
+  const service = new SessiondService(deps, { workerStartTimeoutMs: 500, commandTimeoutMs: 500 });
+  const app = new SessiondApplication(service);
+  const got = await app.handle("config.getSessionIdleTimeoutMs", {});
+  assert.equal(got.idleTimeoutMs, 24 * 60 * 60_000);
+  const set = await app.handle("config.setSessionIdleTimeoutMs", { idleTimeoutMs: 7 * 24 * 60 * 60_000 });
+  assert.equal(set.idleTimeoutMs, 7 * 24 * 60 * 60_000);
+  assert.equal(service.getIdleTimeoutMs(), 7 * 24 * 60 * 60_000);
   await service.shutdown();
 });

@@ -111,13 +111,20 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
       create: () => ({ mutationKey: ["pix", "worktrees", "create"] as const, mutationFn: (input: { cwd: string; branch: string }) => resources.worktrees.create(input), onSuccess: (_data: unknown, input: { cwd: string }) => invalidate(queryClient, queryKeys.worktrees.list(input.cwd), queryKeys.cwd.roots()) }),
       remove: () => ({ mutationKey: ["pix", "worktrees", "remove"] as const, mutationFn: (input: { cwd: string; path: string; force?: boolean }) => resources.worktrees.remove(input), onSuccess: (_data: unknown, input: { cwd: string }) => invalidate(queryClient, queryKeys.worktrees.list(input.cwd), queryKeys.cwd.roots()) }),
     },
+    settings: {
+      /** Session idle-reclamation timeout (ms; 0 = disabled). */
+      sessionIdleTimeout: () => ({
+        mutationKey: ["pix", "settings", "session-idle-timeout"] as const,
+        mutationFn: (idleTimeoutMs: number) => configuration.sessionSettings.set(idleTimeoutMs),
+        onSuccess: () => invalidate(queryClient, queryKeys.settings.all),
+      }),
+    },
     trust: {
       /**
        * Set-project-trusted (D3B trust-mutation slice). A trust flip changes
        * every project-scoped trust-gated catalog, so success invalidates the
        * trust summary PLUS skills/plugins/commands (resource seam, gated by
-       * trust) and ALL theme queries (project themes become readable — the
-       * theme list key carries no cwd, so the whole domain is invalidated).
+       * trust).
        */
       setTrusted: () => ({
         mutationKey: ["pix", "trust", "set-trusted"] as const,
@@ -129,7 +136,6 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
             queryKeys.skills.list(input.cwd),
             queryKeys.plugins.list(input.cwd),
             queryKeys.commands.list(input.cwd),
-            queryKeys.themes.all,
           ),
       }),
     },

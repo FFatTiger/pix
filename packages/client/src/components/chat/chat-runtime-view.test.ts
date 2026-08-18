@@ -3,6 +3,7 @@ import type { AgentMessage, RuntimeState, SessionStats } from "@fffattiger/pix-p
 import type { SessionTreeNode as ProtocolSessionTreeNode } from "@/lib/session-tree";
 import {
   buildSessionStatsView,
+  buildTranscriptSessionStatsView,
   toBranchNavigatorTree,
   toContextUsageView,
   toImageAttachments,
@@ -32,6 +33,31 @@ function messages(overrides: Partial<AgentMessage>[] = []): AgentMessage[] {
   ] as AgentMessage[];
 }
 
+describe("buildTranscriptSessionStatsView — detached history stats", () => {
+  it("aggregates real persisted assistant usage without activating a worker", () => {
+    const view = buildTranscriptSessionStatsView("history-1", [
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        model: "m",
+        provider: "p",
+        usage: {
+          input: 100,
+          output: 20,
+          cacheRead: 50,
+          cacheWrite: 5,
+          cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.02, total: 0.33 },
+        },
+      },
+    ]);
+    expect(view.sessionId).toBe("history-1");
+    expect(view.tokens).toEqual({ input: 100, output: 20, cacheRead: 50, cacheWrite: 5, total: 175 });
+    expect(view.cost).toBe(0.33);
+    expect(view.contextUsage).toBeNull();
+  });
+});
+
 describe("buildSessionStatsView — real stats mapping", () => {
   it("derives message counts from the live projection when no stats are available and never fakes tokens", () => {
     const view = buildSessionStatsView(state(), messages());
@@ -60,14 +86,14 @@ describe("buildSessionStatsView — real stats mapping", () => {
     expect(view.totalMessages).toBe(42);
   });
 
-  it("prefers stats contextUsage over the snapshot state fallback", () => {
+  it("prefers the latest snapshot contextUsage over attach-time stats", () => {
     const stats: SessionStats = {
       messageCount: 1,
       contextUsage: { percent: 55, contextWindow: 200_000, tokens: 110_000 },
     };
     const st = state({ contextUsage: { percent: 10, contextWindow: 1_000, tokens: 100 } });
     const view = buildSessionStatsView(st, [], stats);
-    expect(view.contextUsage).toEqual({ percent: 55, contextWindow: 200_000, tokens: 110_000 });
+    expect(view.contextUsage).toEqual({ percent: 10, contextWindow: 1_000, tokens: 100 });
   });
 
   it("falls back to snapshot state contextUsage when stats carry none", () => {
@@ -77,11 +103,11 @@ describe("buildSessionStatsView — real stats mapping", () => {
     expect(view.contextUsage).toEqual({ percent: 33, contextWindow: 9_000, tokens: 3_000 });
   });
 
-  it("fills stats contextUsage gaps from the snapshot state", () => {
-    const stats: SessionStats = { messageCount: 1, contextUsage: { percent: 70 } };
-    const st = state({ contextUsage: { percent: 1, contextWindow: 50_000, tokens: 20_000 } });
+  it("uses attach-time stats only to fill fields omitted by the latest snapshot", () => {
+    const stats: SessionStats = { messageCount: 1, contextUsage: { percent: 70, contextWindow: 50_000, tokens: 20_000 } };
+    const st = state({ contextUsage: { percent: 1 } });
     const view = buildSessionStatsView(st, [], stats);
-    expect(view.contextUsage).toEqual({ percent: 70, contextWindow: 50_000, tokens: 20_000 });
+    expect(view.contextUsage).toEqual({ percent: 1, contextWindow: 50_000, tokens: 20_000 });
   });
 
   it("counts toolCall blocks from assistant message content", () => {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
   CorrelatedRuntimeCommandResult,
@@ -82,6 +83,14 @@ export interface SessiondDependencies {
    * treats a missing/`null` mutation as fixed `unavailable` for offline rename.
    */
   sessionMutation?: SessionMutationPort | null;
+  /**
+   * Optional persisted settings file (daemon-owned). When present the service
+   * reads the idle-reclamation timeout at construction and writes it back on
+   * every {@link SessiondService.setIdleTimeoutMs} so the setting survives
+   * sessiond restarts. Missing/unreadable/invalid files fail closed to the
+   * default (never crash, never a fabricated value).
+   */
+  settingsFile?: string;
 }
 
 export interface PreparedAttachment {
@@ -325,7 +334,7 @@ export class SessiondService {
   private readonly journalOptions: EventJournalOptions;
   private readonly workerStartTimeoutMs: number;
   private readonly commandTimeoutMs: number;
-  private readonly idleTimeoutMs: number;
+  private idleTimeoutMs: number;
   private readonly subscriberQueueLimit: number;
   private readonly commandResultLimit: number;
   private readonly commandResultCacheLimit: number;
@@ -338,8 +347,10 @@ export class SessiondService {
     this.makeEpoch = options.makeEpoch ?? randomUUID;
     this.journalOptions = options.journal ?? {};
     this.workerStartTimeoutMs = options.workerStartTimeoutMs ?? 10_000;
-    this.commandTimeoutMs = options.commandTimeoutMs ?? 120_000;
-    this.idleTimeoutMs = options.idleTimeoutMs ?? 30 * 60_000;
+    this.commandTimeoutMs = options.commandTimeoutMs ?? 30 * 60 * 1_000;
+    // Explicit option wins (tests use `idleTimeoutMs: 0` to disable); otherwise
+    // the persisted daemon setting is honored; otherwise the 1-day default.
+    this.idleTimeoutMs = options.idleTimeoutMs ?? this.loadPersistedIdleTimeoutMs() ?? 24 * 60 * 60_000;
     this.subscriberQueueLimit = options.subscriberQueueLimit ?? 256;
     this.commandResultLimit = options.commandResultLimit ?? 10_000;
     this.commandResultCacheLimit = options.commandResultCacheLimit ?? 1_000;
@@ -741,6 +752,7 @@ export class SessiondService {
       (record.status === "crashed" || record.status === "stopped" || record.status === "stopping")
       && data.type !== "runtime_closed"
     ) return;
+    const wasTurnRunning = this.isTurnRunning(record);
     if (data.type === "runtime_closed") {
       if (record.closedEventEmitted) return;
       record.closedEventEmitted = true;
@@ -755,6 +767,9 @@ export class SessiondService {
         record.journalBaseEventId = appended.evicted.at(-1)!.eventId;
       }
       this.push(record, { type: "event", event: appended.event });
+      if (data.type !== "running_sessions_changed" && wasTurnRunning !== this.isTurnRunning(record)) {
+        this.broadcastRunningChanged(record.sessionId);
+      }
     } catch (error) {
       if (error instanceof RangeError && error.message === "event cursor exhausted") {
         record.epoch = this.makeEpoch();
@@ -1394,7 +1409,18 @@ export class SessiondService {
   }
 
   listRunning(): RuntimeListRunningResult {
-    return { sessions: [...this.records.values()].filter((record) => !["stopped", "crashed"].includes(record.status)).map((record) => ({ sessionId: record.sessionId, cwd: record.cwd, projectRoot: record.projectRoot, workerStatus: record.status, epoch: record.epoch, ...(record.projection.snapshot().state.sessionName === undefined ? {} : { name: record.projection.snapshot().state.sessionName }) })) };
+    return {
+      sessions: [...this.records.values()]
+        .filter((record) => !["stopped", "crashed"].includes(record.status))
+        .map((record) => ({
+          sessionId: record.sessionId,
+          cwd: record.cwd,
+          projectRoot: record.projectRoot,
+          workerStatus: this.isTurnRunning(record) ? "busy" : record.status,
+          epoch: record.epoch,
+          ...(record.projection.snapshot().state.sessionName === undefined ? {} : { name: record.projection.snapshot().state.sessionName }),
+        })),
+    };
   }
 
   hasBusyCwd(cwd: string): { cwd: string; busy: boolean; sessionIds?: string[] } {
@@ -1573,7 +1599,16 @@ export class SessiondService {
   private touch(record: RecordState): void {
     record.lastActivity = this.now();
     record.idleGeneration += 1;
-    const generation = record.idleGeneration;
+    this.scheduleIdleCheck(record, record.idleGeneration);
+  }
+
+  /**
+   * (Re)schedule the idle-reclamation check for one record with the CURRENT
+   * `idleTimeoutMs`. Does not touch `lastActivity`, so changing the timeout
+   * re-arms existing timers without resetting the idle clock. `0` disables
+   * reclamation entirely (no timer armed).
+   */
+  private scheduleIdleCheck(record: RecordState, generation: number): void {
     if (record.idleTimer) clearTimeout(record.idleTimer);
     if (this.idleTimeoutMs <= 0) return;
     record.idleTimer = setTimeout(() => {
@@ -1586,9 +1621,63 @@ export class SessiondService {
     record.idleTimer.unref?.();
   }
 
-  private isBusy(record: RecordState): boolean {
+  /** Read the persisted idle timeout from the settings file; fail-closed. */
+  private loadPersistedIdleTimeoutMs(): number | undefined {
+    if (!this.deps.settingsFile) return undefined;
+    try {
+      if (!existsSync(this.deps.settingsFile)) return undefined;
+      const parsed: unknown = JSON.parse(readFileSync(this.deps.settingsFile, "utf8"));
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+      const value = (parsed as { idleTimeoutMs?: unknown }).idleTimeoutMs;
+      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Persist the idle timeout to the settings file; throws on write failure. */
+  private persistIdleTimeoutMs(ms: number): void {
+    if (!this.deps.settingsFile) return;
+    const target = this.deps.settingsFile;
+    const tmp = `${target}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify({ idleTimeoutMs: ms }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+      renameSync(tmp, target);
+    } catch {
+      try { unlinkSync(tmp); } catch { /* leftover tmp is best-effort */ }
+      throw new SessiondError("unavailable", "could not persist idle timeout", true);
+    }
+  }
+
+  /** Current idle-reclamation timeout in ms (0 = disabled). */
+  getIdleTimeoutMs(): number {
+    return this.idleTimeoutMs;
+  }
+
+  /**
+   * Set the idle-reclamation timeout, persist it (when a settings file is
+   * wired) and re-arm every live record's timer with the new value. `0`
+   * disables reclamation. Fails closed on invalid input.
+   */
+  setIdleTimeoutMs(ms: number): void {
+    if (!Number.isSafeInteger(ms) || ms < 0) {
+      throw new SessiondError("invalid_input", "idleTimeoutMs must be a non-negative safe integer");
+    }
+    this.persistIdleTimeoutMs(ms);
+    this.idleTimeoutMs = ms;
+    for (const record of this.records.values()) {
+      record.idleGeneration += 1;
+      this.scheduleIdleCheck(record, record.idleGeneration);
+    }
+  }
+
+  private isTurnRunning(record: RecordState): boolean {
     const state = record.projection.snapshot().state;
-    return state.isPromptRunning || state.isBashRunning || state.isCompacting || record.pendingCommands.size > 0 || record.authorityFinalizations.size > 0;
+    return state.isPromptRunning || state.isStreaming || state.isBashRunning || state.isCompacting;
+  }
+
+  private isBusy(record: RecordState): boolean {
+    return this.isTurnRunning(record) || record.pendingCommands.size > 0 || record.authorityFinalizations.size > 0;
   }
 
   private requireActive(sessionId: string): RecordState {
@@ -1598,8 +1687,19 @@ export class SessiondService {
   }
 
   private broadcastRunningChanged(changedSessionId: string): void {
-    const ids = this.listRunning().sessions.map((item) => item.sessionId);
-    for (const record of this.records.values()) this.acceptEvent(record, { type: "running_sessions_changed", sessionId: record.sessionId || changedSessionId, sessionIds: ids });
+    const items = this.listRunning().sessions;
+    const sessionIds = items.map((item) => item.sessionId);
+    const busySessionIds = [...this.records.values()]
+      .filter((record) => !["crashed", "stopped", "stopping"].includes(record.status) && this.isTurnRunning(record))
+      .map((record) => record.sessionId);
+    for (const record of this.records.values()) {
+      this.acceptEvent(record, {
+        type: "running_sessions_changed",
+        sessionId: record.sessionId || changedSessionId,
+        sessionIds,
+        busySessionIds,
+      });
+    }
   }
 
   sessionCatalog(): SessionCatalogPort | undefined { return this.deps.sessionCatalog; }

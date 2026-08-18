@@ -180,6 +180,21 @@ export const SessionsDeleteParamsSchema = z.strictObject({
 });
 export type SessionsDeleteParams = z.infer<typeof SessionsDeleteParamsSchema>;
 
+/**
+ * Idle reclamation configuration. `0` disables idle reclamation entirely.
+ */
+export const ConfigGetSessionIdleTimeoutMsParamsSchema = EmptyObjectSchema;
+export type ConfigGetSessionIdleTimeoutMsParams = z.infer<
+  typeof ConfigGetSessionIdleTimeoutMsParamsSchema
+>;
+
+export const ConfigSetSessionIdleTimeoutMsParamsSchema = z.strictObject({
+  idleTimeoutMs: z.number().int().nonnegative().safe(),
+});
+export type ConfigSetSessionIdleTimeoutMsParams = z.infer<
+  typeof ConfigSetSessionIdleTimeoutMsParamsSchema
+>;
+
 // --- Results ---
 
 export const SystemPingResultSchema = z.strictObject({
@@ -342,6 +357,20 @@ export const SessionsDeleteResultSchema = z.strictObject({
 });
 export type SessionsDeleteResult = z.infer<typeof SessionsDeleteResultSchema>;
 
+export const ConfigGetSessionIdleTimeoutMsResultSchema = z.strictObject({
+  idleTimeoutMs: z.number().int().nonnegative().safe(),
+});
+export type ConfigGetSessionIdleTimeoutMsResult = z.infer<
+  typeof ConfigGetSessionIdleTimeoutMsResultSchema
+>;
+
+export const ConfigSetSessionIdleTimeoutMsResultSchema = z.strictObject({
+  idleTimeoutMs: z.number().int().nonnegative().safe(),
+});
+export type ConfigSetSessionIdleTimeoutMsResult = z.infer<
+  typeof ConfigSetSessionIdleTimeoutMsResultSchema
+>;
+
 // --- Request union (method-discriminated) ---
 
 const rpcEnvelope = {
@@ -455,6 +484,16 @@ export const SessiondRpcRequestSchema = z.discriminatedUnion("method", [
     method: z.literal("sessions.delete"),
     params: SessionsDeleteParamsSchema,
   }),
+  z.strictObject({
+    ...rpcEnvelope,
+    method: z.literal("config.getSessionIdleTimeoutMs"),
+    params: ConfigGetSessionIdleTimeoutMsParamsSchema.default({}),
+  }),
+  z.strictObject({
+    ...rpcEnvelope,
+    method: z.literal("config.setSessionIdleTimeoutMs"),
+    params: ConfigSetSessionIdleTimeoutMsParamsSchema,
+  }),
 ]);
 
 export type SessiondRpcRequest = z.infer<typeof SessiondRpcRequestSchema>;
@@ -481,6 +520,8 @@ export const SESSIOND_RPC_METHODS = [
   "sessions.tree",
   "sessions.rename",
   "sessions.delete",
+  "config.getSessionIdleTimeoutMs",
+  "config.setSessionIdleTimeoutMs",
 ] as const;
 
 export type SessiondRpcMethod = (typeof SESSIOND_RPC_METHODS)[number];
@@ -508,6 +549,8 @@ export type SessiondMethodParams = {
   "sessions.tree": SessionsTreeParams;
   "sessions.rename": SessionsRenameParams;
   "sessions.delete": SessionsDeleteParams;
+  "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsParams;
+  "config.setSessionIdleTimeoutMs": ConfigSetSessionIdleTimeoutMsParams;
 };
 
 export type SessiondMethodResult = {
@@ -532,6 +575,8 @@ export type SessiondMethodResult = {
   "sessions.tree": SessionsTreeResult;
   "sessions.rename": SessionsRenameResult;
   "sessions.delete": SessionsDeleteResult;
+  "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsResult;
+  "config.setSessionIdleTimeoutMs": ConfigSetSessionIdleTimeoutMsResult;
 };
 
 export const SessiondMethodResultSchemas = {
@@ -556,6 +601,8 @@ export const SessiondMethodResultSchemas = {
   "sessions.tree": SessionsTreeResultSchema,
   "sessions.rename": SessionsRenameResultSchema,
   "sessions.delete": SessionsDeleteResultSchema,
+  "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsResultSchema,
+  "config.setSessionIdleTimeoutMs": ConfigSetSessionIdleTimeoutMsResultSchema,
 } as const;
 
 export const SessiondRpcSuccessSchema = z.discriminatedUnion("method", [
@@ -580,6 +627,8 @@ export const SessiondRpcSuccessSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.tree"), result: SessionsTreeResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.rename"), result: SessionsRenameResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.delete"), result: SessionsDeleteResultSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("config.getSessionIdleTimeoutMs"), result: ConfigGetSessionIdleTimeoutMsResultSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("config.setSessionIdleTimeoutMs"), result: ConfigSetSessionIdleTimeoutMsResultSchema }),
 ]);
 
 export const SessiondRpcFailureSchema = z.discriminatedUnion("method", [
@@ -604,6 +653,8 @@ export const SessiondRpcFailureSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.tree"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.rename"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.delete"), error: ProtocolErrorSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("config.getSessionIdleTimeoutMs"), error: ProtocolErrorSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("config.setSessionIdleTimeoutMs"), error: ProtocolErrorSchema }),
 ]);
 
 export const SessiondRpcResponseSchema = z.union([

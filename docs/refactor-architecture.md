@@ -181,6 +181,14 @@ interface AgentRuntimePort {
 | 运行时 | **Node 22 LTS** | 对齐 pi SDK |
 | 桌面原生壳 | **仅架构预留** | 协议/Host 可被 Tauri 挂载；当前不交付 |
 
+### UI-first runtime transaction and running-state projection
+
+- 发送消息先写入按 `sessionId` 归属的独立 optimistic transaction layer；权威历史/live projection 永不被乐观写入。合并顺序固定为 persisted → committed live → optimistic tail，真实 `message_end` 按同会话内容/唯一候选接管，禁止盲目跨会话 FIFO。
+- read-only history → live attach 只允许同一 session 的 generation 0 历史作为临时 placeholder；跨 session、live rebase/branch generation 绝不复用旧页面。
+- prompt transport ack 只是 admission，不是运行终态；UI running marker 持续到权威事件接管，避免 ack→agent_start 闪断。
+- sessiond 以 `running_sessions_changed.busySessionIds` 发布全局 turn-busy 真相；Client `SessionStore` 是唯一 running owner，Sidebar 会话、项目目录和顶部 Tab 只消费同一集合。连接初始基线通过只读 `listRunning` WS 请求获得，不轮询、不激活 Worker；旧基线响应受 revision/generation 栅栏约束，不能覆盖更新 push。
+- 选择历史/文件 Tab 不启动目标 Worker；已有 attach 可作为后台事件订阅保留，所有 transcript/composer/capability/context 均按 active session identity fail-closed，后台 A 状态绝不投影到 B。
+
 ### 明确不选
 
 | 项 | 原因 |
@@ -273,6 +281,8 @@ Client 按 `capabilities` 显隐功能：
 | `files.write` | 禁用写入 |
 | `worktree` | 隐藏 worktree 切换 |
 | `themes` | 隐藏主题切换（内置/自定义主题不可用） |
+
+> **当前状态（客户端）**：pix client 已移除主题功能（运行时切换、主题目录请求、设置、持久化/bootstrap、View Transitions）与壁纸（WallpaperLayer/设置/资源）。Client 固定深色外观（`html.dark` 常驻），不再消费 `/v1/themes`。下方 Host/runtime-core/pi-sdk-adapter 的只读主题契约保持不变（向后兼容、当前客户端未使用）。
 
 ### 只读主题目录（D3B-R6）
 

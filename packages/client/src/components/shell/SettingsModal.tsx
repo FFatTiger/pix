@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import { ChatCenteredText, Cpu, Monitor, Plug, Stack, X } from "@phosphor-icons/react";
+import { Archive, ChatCenteredText, Cpu, Monitor, Plug, Stack, X } from "@phosphor-icons/react";
+import { ArchiveConfig } from "@/features/settings/ArchiveConfig";
 import { ChatConfig } from "@/features/settings/ChatConfig";
 import { DisplayConfig } from "@/features/settings/DisplayConfig";
 import { ModelsSettingsTab, PluginsSettingsTab, SkillsSettingsTab } from "@/features/settings/CatalogTabs";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 
-export type SettingsTab = "display" | "chat" | "models" | "skills" | "plugins";
+export type SettingsTab = "display" | "chat" | "models" | "skills" | "plugins" | "archive";
 
 interface SettingsModalProps {
   initialTab?: SettingsTab;
   cwd: string | null;
   onCloseAction: () => void;
+}
+
+function resolveSettingsTab(tab: SettingsTab, cwd: string | null): SettingsTab {
+  return tab === "skills" || tab === "plugins" ? (cwd ? tab : "display") : tab;
 }
 
 const tabs: { id: SettingsTab; labelKey: string; Icon: typeof Cpu }[] = [
@@ -20,6 +25,7 @@ const tabs: { id: SettingsTab; labelKey: string; Icon: typeof Cpu }[] = [
   { id: "models", labelKey: "desktop.models", Icon: Cpu },
   { id: "skills", labelKey: "desktop.skills", Icon: Stack },
   { id: "plugins", labelKey: "desktop.plugins", Icon: Plug },
+  { id: "archive", labelKey: "desktop.archiveSettings", Icon: Archive },
 ];
 
 /**
@@ -36,15 +42,17 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const isMobile = useIsMobile();
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<SettingsTab>(
-    initialTab === "skills" || initialTab === "plugins" ? (cwd ? initialTab : "display") : initialTab,
-  );
+  const [activeTab, setActiveTab] = useState<SettingsTab>(resolveSettingsTab(initialTab, cwd));
   const dialogRef = useRef<HTMLElement>(null);
 
   // Focus the dialog on open so keyboard users land inside immediately.
   useEffect(() => {
     dialogRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    setActiveTab(resolveSettingsTab(initialTab, cwd));
+  }, [cwd, initialTab]);
 
   return (
     <div
@@ -144,6 +152,7 @@ export function SettingsModal({
                   type="button"
                   disabled={disabled}
                   onClick={() => setActiveTab(id)}
+                  data-testid={`settings-tab-${id}`}
                   aria-current={active ? "page" : undefined}
                   style={{
                     display: "flex",
@@ -202,6 +211,9 @@ export function SettingsModal({
               <PluginsSettingsTab cwd={cwd} />
             </div>
           )}
+          <div style={{ display: activeTab === "archive" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
+            <ArchiveConfig />
+          </div>
         </div>
       </section>
     </div>

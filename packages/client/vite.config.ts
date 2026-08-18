@@ -7,11 +7,15 @@ import { fileURLToPath } from "node:url";
 
 const packageDir = path.dirname(fileURLToPath(import.meta.url));
 const packageVersion = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8")).version as string;
+// Prefer an explicit release version. Otherwise pin to package+commit so a
+// missing version never silently stays "1" across deploys.
 const swVersion = process.env.VITE_SW_VERSION ?? `${packageVersion}+${process.env.GITHUB_SHA?.slice(0, 12) ?? "dev"}`;
+
 
 export default defineConfig({
   define: {
     "import.meta.env.VITE_SW_VERSION": JSON.stringify(swVersion),
+    __PIX_SW_VERSION__: JSON.stringify(swVersion),
   },
   plugins: [react(), tailwindcss()],
   resolve: {

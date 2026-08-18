@@ -60,13 +60,6 @@ export const urls = {
     /** Project-scoped model catalog. Host requires absolute authorized cwd. */
     list: (cwd: string) => resource("models", { cwd }),
   },
-  themes: {
-    /** Theme-set catalog (global + project sets + builtins). Host requires an
-     * absolute authorized cwd (same AllowedRoots policy as every catalog route). */
-    list: (cwd: string) => resource("themes", { cwd }),
-    /** Resolved variant (dark/light) of a theme set, scoped to the project cwd. */
-    resolve: (name: string, mode: "dark" | "light", cwd: string) => resource(`themes/${encodedSegment(name)}`, { mode, cwd }),
-  },
   files: {
     resource: (path: string, op?: FilesOperation) => resource("files", { path, op }),
     /**
@@ -123,6 +116,10 @@ export const urls = {
     providers: () => resource("auth/providers"),
     /** Per-provider status + configured flag (no cwd). */
     providerStatus: (providerId: string) => resource(`auth/providers/${encodedSegment(providerId)}/status`),
+  },
+  settings: {
+    /** Session idle-reclamation timeout (GET) / set+persist (PUT). */
+    sessionIdleTimeout: () => resource("settings/session-idle-timeout"),
   },
   runtime: { ws: () => resource("runtime") },
 } as const;

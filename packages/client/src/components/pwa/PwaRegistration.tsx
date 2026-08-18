@@ -32,12 +32,12 @@ export function PwaRegistration() {
     }
 
     let cancelled = false;
-    const version = import.meta.env.VITE_SW_VERSION;
+    const version = import.meta.env.VITE_SW_VERSION ?? __PIX_SW_VERSION__;
     if (!version) {
       setState("registration-error");
       return;
     }
-    const swUrl = `/sw.js?v=${encodeURIComponent(version)}`;
+    const swUrl = `/sw.js?v=${encodeURIComponent(String(version))}`;
 
     navigator.serviceWorker
       .register(swUrl, { scope: "/" })

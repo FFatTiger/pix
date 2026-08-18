@@ -105,26 +105,29 @@ describe("read-only model catalog (D3B-R1A)", () => {
   it("listModels returns backend-neutral ModelInfo entries offline", async () => {
     const root = await seedAgentDir();
     try {
-      const release = installNetworkGuard();
-      const catalog = createPiSdkModelCatalog({
-        cwd: join(root, "cwd"),
-        agentDir: join(root, "agent"),
-      });
-      const models = await catalog.listModels();
-      release();
-      assert.ok(models.length > 0, "built-in catalog must surface models offline");
-      for (const model of models) {
-        assert.ok(typeof model.id === "string" && model.id.length > 0);
-        assert.ok(typeof model.provider === "string" && model.provider.length > 0);
-        // No SDK Model object leakage: only canonical fields.
-        const keys = Object.keys(model) as (keyof ModelInfo)[];
-        for (const key of keys) {
-          assert.ok(
-            ["id", "provider", "displayName", "thinking", "contextWindow"].includes(key),
-            `unexpected ModelInfo field: ${key}`,
-          );
+      await withEnv({}, async () => {
+        const release = installNetworkGuard();
+        const catalog = createPiSdkModelCatalog({
+          cwd: join(root, "cwd"),
+          agentDir: join(root, "agent"),
+        });
+        const models = await catalog.listModels();
+        release();
+        assert.ok(models.length > 0, "configured providers must surface models offline");
+        assert.ok(models.every((model) => model.provider === "anthropic"), "unconfigured builtin providers must stay hidden");
+        for (const model of models) {
+          assert.ok(typeof model.id === "string" && model.id.length > 0);
+          assert.ok(typeof model.provider === "string" && model.provider.length > 0);
+          // No SDK Model object leakage: only canonical fields.
+          const keys = Object.keys(model) as (keyof ModelInfo)[];
+          for (const key of keys) {
+            assert.ok(
+              ["id", "provider", "displayName", "thinking", "contextWindow"].includes(key),
+              `unexpected ModelInfo field: ${key}`,
+            );
+          }
         }
-      }
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -281,7 +284,8 @@ describe("model default validation + enabled scope (D3B-R1A hardening, env-indep
     try {
       await withEnv({}, async () => {
         const runtime = await seededRuntime(agentDir, ["anthropic"]);
-        const first = runtime.getModels()[0]!;
+        const first = runtime.getAvailableSnapshot()[0]!;
+        assert.ok(first, "seeded anthropic auth must make models available");
         const settings = SettingsManager.inMemory();
         settings.setDefaultModelAndProvider("anthropic", "zzz-does-not-exist");
         const store = createPiSdkModelStore({
@@ -290,7 +294,7 @@ describe("model default validation + enabled scope (D3B-R1A hardening, env-indep
           modelRuntime: runtime,
         });
         const def = await store.getDefaultModel();
-        // No enabledModels => all catalog models enabled => first catalog model.
+        // No enabledModels => all locally configured models enabled.
         assert.deepEqual(def, { provider: first.provider, id: first.id });
       });
     } finally {
@@ -350,12 +354,37 @@ describe("model default validation + enabled scope (D3B-R1A hardening, env-indep
     }
   });
 
+  it("listModels hides unconfigured builtin providers and honors enabledModels", async () => {
+    const { root, agentDir, cwd } = await tmpRoot();
+    try {
+      await withEnv({}, async () => {
+        const runtime = await seededRuntime(agentDir, ["anthropic", "openai"]);
+        const settings = SettingsManager.inMemory();
+        settings.setEnabledModels(["openai/*"]);
+        const store = createPiSdkModelStore({
+          cwd,
+          settingsManager: settings,
+          modelRuntime: runtime,
+        });
+        const listed = await store.listModels();
+        assert.ok(listed.length > 0, "enabled configured models must remain visible");
+        assert.ok(listed.every((model) => model.provider === "openai"));
+        assert.ok(!listed.some((model) => model.provider === "anthropic"));
+        const builtinProviders = new Set(runtime.getModels().map((model) => model.provider));
+        assert.ok(builtinProviders.size > 2, "builtin catalog still contains unused providers");
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("no enabledModels => deterministic first valid model", async () => {
     const { root, agentDir, cwd } = await tmpRoot();
     try {
       await withEnv({}, async () => {
         const runtime = await seededRuntime(agentDir, ["anthropic"]);
-        const first = runtime.getModels()[0]!;
+        const first = runtime.getAvailableSnapshot()[0]!;
+        assert.ok(first, "seeded anthropic auth must make models available");
         const settings = SettingsManager.inMemory();
         const store = createPiSdkModelStore({
           cwd,

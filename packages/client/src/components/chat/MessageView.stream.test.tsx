@@ -4,7 +4,7 @@ import { MessageView } from "./MessageView";
 import { I18nProvider } from "@/hooks/useI18n";
 
 describe("MessageView streaming fade (UI-first)", () => {
-  it("wraps streaming text blocks with the fade-in class", () => {
+  it("wraps newly streamed characters for fade-in", () => {
     render(
       <I18nProvider>
         <MessageView
@@ -16,9 +16,8 @@ describe("MessageView streaming fade (UI-first)", () => {
         />
       </I18nProvider>,
     );
-    expect(screen.getByText("hello streaming")).toBeTruthy();
-    const wrapper = document.querySelector(".stream-block-enter");
-    expect(wrapper).toBeTruthy();
+    expect(document.querySelectorAll(".stream-char").length).toBeGreaterThan(0);
+    expect(document.querySelector(".markdown-body.is-streaming")).toBeTruthy();
   });
 
   it("does NOT fade non-streaming text blocks", () => {
@@ -33,6 +32,7 @@ describe("MessageView streaming fade (UI-first)", () => {
       </I18nProvider>,
     );
     expect(screen.getByText("settled answer")).toBeTruthy();
-    expect(document.querySelector(".stream-block-enter")).toBeNull();
+    expect(document.querySelector(".stream-char")).toBeNull();
+    expect(document.querySelector(".markdown-body.is-streaming")).toBeNull();
   });
 });

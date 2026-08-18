@@ -35,6 +35,7 @@ export const HostCapabilitySchema = z.enum([
   "worktree.write",
   "session.write",
   "session.delete",
+  "session.settings",
   "models",
   "auth.providers",
   "skills",

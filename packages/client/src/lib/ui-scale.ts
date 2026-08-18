@@ -1,6 +1,12 @@
 /**
  * UI/text scale helpers (Text Size setting).
  *
+ * This module is the SINGLE RUNTIME OWNER of the Text Size preference
+ * (`pi-font-scale`): readFontScale/writeFontScale clamp and persist it, and
+ * the pre-React bootstrap in index.html applies it before first paint (it
+ * cannot import a module — keep the key spelling here in sync with that
+ * script). The dedicated `useUiScale` hook owns the React-side apply.
+ *
  * The app applies the user's scale via `zoom: var(--app-ui-scale, 1)` on the
  * root element. Under CSS `zoom`, Chromium keeps JS viewport APIs
  * (`clientX`/`clientY`, `getBoundingClientRect()`, `innerWidth`/`innerHeight`,
@@ -17,6 +23,25 @@
  * positioned ancestor) need no conversion: ancestor and overlay share the CSS
  * coordinate system and zoom scales them together.
  */
+export const FONT_SCALE_MIN = 0.8;
+export const FONT_SCALE_MAX = 1.5;
+
+/** Stored Text Size scale, clamped to [FONT_SCALE_MIN, FONT_SCALE_MAX]. */
+export function readFontScale(): number {
+  try {
+    const v = localStorage.getItem("pi-font-scale");
+    if (v !== null) {
+      const n = parseFloat(v);
+      if (!isNaN(n) && n >= FONT_SCALE_MIN && n <= FONT_SCALE_MAX) return n;
+    }
+  } catch {}
+  return 1;
+}
+
+export function writeFontScale(scale: number): void {
+  try { localStorage.setItem("pi-font-scale", String(scale)); } catch {}
+}
+
 export function getUiScale(): number {
   if (typeof document === "undefined") return 1;
   return parseFloat(getComputedStyle(document.documentElement).zoom) || 1;

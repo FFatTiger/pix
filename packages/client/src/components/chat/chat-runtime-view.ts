@@ -61,15 +61,19 @@ export interface ChatSessionStatsView {
  * state. Message totals prefer the worker's authoritative `messageCount` and
  * fall back to the live projection length.
  */
-export function buildSessionStatsView(
-  state: RuntimeState,
+export function buildTranscriptSessionStatsView(
+  sessionId: string,
   messages: readonly AgentMessage[],
-  stats?: SessionStats | null,
 ): ChatSessionStatsView {
   let userMessages = 0;
   let assistantMessages = 0;
   let toolCalls = 0;
   let toolResults = 0;
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let cost = 0;
   for (const message of messages) {
     if (message.role === "user") userMessages += 1;
     else if (message.role === "assistant") {
@@ -77,33 +81,67 @@ export function buildSessionStatsView(
       if (message.content && Array.isArray(message.content)) {
         toolCalls += message.content.filter((block) => block.type === "toolCall").length;
       }
+      if (message.usage) {
+        input += message.usage.input;
+        output += message.usage.output;
+        cacheRead += message.usage.cacheRead;
+        cacheWrite += message.usage.cacheWrite;
+        cost += message.usage.cost.total;
+      }
     } else if (message.role === "toolResult") toolResults += 1;
   }
-  const statsContext = stats?.contextUsage ?? null;
-  const contextUsage = statsContext
-    ? {
-        percent: statsContext.percent ?? null,
-        contextWindow: statsContext.contextWindow ?? state.contextUsage?.contextWindow ?? 0,
-        tokens: statsContext.tokens ?? state.contextUsage?.tokens ?? null,
-      }
-    : toContextUsageView(state.contextUsage);
   return {
-    sessionId: state.sessionId,
-    ...(state.sessionFile === undefined ? {} : { sessionFile: state.sessionFile }),
-    ...(state.sessionName === undefined ? {} : { sessionName: state.sessionName }),
+    sessionId,
     userMessages,
     assistantMessages,
     toolCalls,
     toolResults,
-    totalMessages: stats?.messageCount ?? messages.length,
+    totalMessages: messages.length,
     tokens: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      total: stats?.tokenCount ?? 0,
+      input,
+      output,
+      cacheRead,
+      cacheWrite,
+      total: input + output + cacheRead + cacheWrite,
     },
-    cost: 0,
+    cost,
+    contextUsage: null,
+  };
+}
+
+export function buildSessionStatsView(
+  state: RuntimeState,
+  messages: readonly AgentMessage[],
+  stats?: SessionStats | null,
+): ChatSessionStatsView {
+  const transcript = buildTranscriptSessionStatsView(state.sessionId, messages);
+  const statsContext = stats?.contextUsage ?? null;
+  const stateContext = state.contextUsage;
+  // The live snapshot changes throughout the turn and is therefore newer than
+  // the one-shot attach-time stats read. Prefer its percentage/tokens; use
+  // stats only to fill fields the snapshot omits.
+  const contextUsage = stateContext
+    ? {
+        percent: stateContext.percent ?? statsContext?.percent ?? null,
+        contextWindow: stateContext.contextWindow ?? statsContext?.contextWindow ?? 0,
+        tokens: stateContext.tokens ?? statsContext?.tokens ?? null,
+      }
+    : statsContext
+      ? {
+          percent: statsContext.percent ?? null,
+          contextWindow: statsContext.contextWindow ?? 0,
+          tokens: statsContext.tokens ?? null,
+        }
+      : null;
+  return {
+    ...transcript,
+    ...(state.sessionFile === undefined ? {} : { sessionFile: state.sessionFile }),
+    ...(state.sessionName === undefined ? {} : { sessionName: state.sessionName }),
+    totalMessages: stats?.messageCount ?? transcript.totalMessages,
+    tokens: {
+      ...transcript.tokens,
+      total: stats?.tokenCount ?? transcript.tokens.total,
+    },
     contextUsage,
   };
 }

@@ -118,7 +118,6 @@ export function SessionInfoBar({
 
   const t = sessionStats?.tokens;
   const c = sessionStats?.cost ?? 0;
-  const costStr = c > 0 ? (c >= 0.01 ? `$${c.toFixed(2)}` : "<$0.01") : null;
 
   let ctxColor = "var(--text-muted)";
   if (contextUsage?.contextWindow) {
@@ -128,14 +127,13 @@ export function SessionInfoBar({
   }
 
   const hasSystemPrompt = systemPrompt !== null && systemPrompt !== "";
-  // Real-data gate: the stats button + popover render whenever the runtime
-  // actually reports something — a real total token count, real message
-  // counts, or context usage — even when input/output are unknown (0). The
-  // bar never shows for an empty live session with no stats.
-  const hasRealTokens = (t?.total ?? 0) > 0;
-  const hasRealMessages = (sessionStats?.totalMessages ?? 0) > 0;
-  const hasRealContext = Boolean(contextUsage && (contextUsage.contextWindow > 0 || contextUsage.percent !== null));
-  const hasStats = Boolean(sessionStats) && (hasRealTokens || hasRealMessages || hasRealContext);
+  // The compact footer summary intentionally exposes only input, output,
+  // cache and current context percentage. Totals/cost/message counts remain
+  // available in the details popover but never occupy the composer footer.
+  const cacheTokens = (t?.cacheRead ?? 0) + (t?.cacheWrite ?? 0);
+  const hasTokenBreakdown = (t?.input ?? 0) > 0 || (t?.output ?? 0) > 0 || cacheTokens > 0;
+  const hasContextPercent = contextUsage?.percent !== null && contextUsage?.percent !== undefined;
+  const hasStats = Boolean(sessionStats) && (hasTokenBreakdown || hasContextPercent);
 
   // Usage donut — arc length = context usage %. Only rendered once percent is
   // known, so it always receives a concrete value (no null dead-branch).
@@ -349,6 +347,7 @@ export function SessionInfoBar({
             aria-label={isCompacting ? translate("desktop.compacting") : translate("desktop.compactContext")}
           >
             <ArrowsInLineVertical size={13} />
+            <span>{translate("desktop.compact")}</span>
           </button>
         </div>
       )}
@@ -364,44 +363,29 @@ export function SessionInfoBar({
             aria-label={translate("desktop.sessionInfo")}
             aria-pressed={activePanel === "session"}
           >
-            {contextUsage && contextUsage.contextWindow && contextUsage.percent !== null ? (
-              // Context usage known → context text + ring, plus cost if reported.
-              <>
-                {costStr && <span>{costStr}</span>}
-                <span className="session-info-bar-token-chip" style={{ color: ctxColor, marginLeft: costStr ? 5 : 0 }}>
-                  {contextUsage.tokens !== null ? formatTokenCount(contextUsage.tokens) : "?"}
-                  /{formatTokenCount(contextUsage.contextWindow)}
-                  {usageRing(contextUsage.percent)}
-                </span>
-              </>
-            ) : (
-              // Context usage unknown → keep the other (full) info, incl. cost.
-              <>
-                {t && t.total > 0 && (
-                  <span className="session-info-bar-token-chip">
-                    {formatTokenCount(t.total)}
-                  </span>
-                )}
-                {t && t.input > 0 && (
-                  <span className="session-info-bar-token-chip">
-                    <ArrowUp size={10} aria-hidden="true" />
-                    {formatTokenCount(t.input)}
-                  </span>
-                )}
-                {t && t.output > 0 && (
-                  <span className="session-info-bar-token-chip">
-                    <ArrowDown size={10} aria-hidden="true" />
-                    {formatTokenCount(t.output)}
-                  </span>
-                )}
-                {t && t.cacheRead > 0 && (
-                  <span className="session-info-bar-token-chip">
-                    <Database size={10} aria-hidden="true" />
-                    {formatTokenCount(t.cacheRead)}
-                  </span>
-                )}
-                {costStr && <span>{costStr}</span>}
-              </>
+            {t && t.input > 0 && (
+              <span className="session-info-bar-token-chip">
+                <ArrowUp size={10} aria-hidden="true" />
+                {formatTokenCount(t.input)}
+              </span>
+            )}
+            {t && t.output > 0 && (
+              <span className="session-info-bar-token-chip">
+                <ArrowDown size={10} aria-hidden="true" />
+                {formatTokenCount(t.output)}
+              </span>
+            )}
+            {cacheTokens > 0 && (
+              <span className="session-info-bar-token-chip">
+                <Database size={10} aria-hidden="true" />
+                {formatTokenCount(cacheTokens)}
+              </span>
+            )}
+            {contextUsage && contextUsage.percent !== null && (
+              <span className="session-info-bar-token-chip" style={{ color: ctxColor }}>
+                <span>{Math.round(contextUsage.percent)}%</span>
+                {usageRing(contextUsage.percent)}
+              </span>
             )}
           </button>
           {activePanel === "session" && sessionStats && (

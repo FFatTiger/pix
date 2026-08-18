@@ -122,8 +122,8 @@ class FakeClient {
     this.handlers = {};
     this.attachFn = null;
   }
-  async call(method, params) {
-    this.calls.push({ method, params });
+  async call(method, params, timeoutMs) {
+    this.calls.push(timeoutMs === undefined ? { method, params } : { method, params, timeoutMs });
     if (!(method in this.handlers)) throw rpcError("internal", `no handler for ${method}`);
     const value = this.handlers[method];
     if (value instanceof Error) throw value;
@@ -311,6 +311,22 @@ test("command uses commandId as response id when WS id is absent", async () => {
   assert.equal(res.payload.result.commandId, "cmd-9");
 });
 
+test("command RPC gets the long command timeout; control-plane calls keep the default", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = (p) => ({ commandId: p.command.commandId, result: { ok: true, type: "prompt" } });
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "command", id: "ws-1", payload: { sessionId: "s1", command: { commandId: "c1", type: "prompt", message: "hi" } } }));
+  await wait();
+  const cmdCall = client.calls.find((c) => c.method === "runtime.command");
+  assert.equal(cmdCall.timeoutMs, 30 * 60 * 1_000);
+  // create stays on the default (no per-call override).
+  client.handlers["runtime.create"] = { sessionId: "s1", epoch: "e1", created: true, cwd: "/x", projectRoot: "/x", workerStatus: "ready" };
+  session.receive(JSON.stringify({ type: "create", id: "c1", payload: { createRequestId: "r1", cwd: "/x", projectRoot: "/x" } }));
+  await wait();
+  const createCall = client.calls.find((c) => c.method === "runtime.create");
+  assert.equal(createCall.timeoutMs, undefined);
+});
+
 test("getSnapshot routes to runtime.getSnapshot and returns the snapshot", async () => {
   const client = new FakeClient();
   client.handlers["runtime.getSnapshot"] = snapshot("s1");
@@ -320,6 +336,23 @@ test("getSnapshot routes to runtime.getSnapshot and returns the snapshot", async
   const res = session.lastJson();
   assert.equal(res.id, "g1");
   assert.equal(res.payload.result.sessionId, "s1");
+});
+
+test("listRunning routes to runtime.listRunning without attaching a worker", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.listRunning"] = {
+    sessions: [
+      { sessionId: "s1", cwd: "/p", projectRoot: "/p", workerStatus: "busy", epoch: "e1" },
+    ],
+  };
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "listRunning", id: "lr1", payload: {} }));
+  await wait();
+  assert.deepEqual(client.calls[0], { method: "runtime.listRunning", params: {} });
+  const res = session.lastJson();
+  assert.equal(res.id, "lr1");
+  assert.equal(res.payload.ok, true);
+  assert.equal(res.payload.result.sessions[0].sessionId, "s1");
 });
 
 test("stop routes to runtime.stop and closes the matching attach subscription", async () => {

@@ -669,3 +669,4 @@ Base：<hash>
 | `N-012` | 原生 Windows secure-state 仍不支持（无 native backend / secure named pipe / Windows CI 门禁）；不因 contracts 平台中立而宣称支持 | 冻结（pending） |
 | `N-013` | Runtime Protocol 当前主版本由 `packages/protocol/src/version.ts` 的 `PROTOCOL_VERSION=2` 拥有；HTTP `/v1/bootstrap` 使用独立 `HOST_BOOTSTRAP_SCHEMA_VERSION=1`（`@fffattiger/pix-protocol/host-bootstrap`），二者不得互相镜像或再引入 Host-owned `HOST_PROTOCOL_VERSION` | 冻结（CP-01/CP-02） |
 | `N-014` | 跨端“支持”只由 required CI + packaged smoke 定义。当前对外矩阵：Windows native Unsupported；Linux/macOS Unverified-native。不以 WSL 作为 Windows 产品方案 | 冻结（CP-00/CP-04） |
+| `N-015` | UI-first 事务与运行状态：optimistic 按 session 独立于权威 projection、固定尾部合并并由真实 entry 接管；prompt ack 非终态；sessiond 全局 busy push + WS listRunning 初始基线由 SessionStore 单一拥有，Sidebar/项目/Tab 同源；历史/文件选择不激活目标 Worker，已有 attach 可保留为后台事件订阅但不得跨 active identity 泄漏 | 冻结 |

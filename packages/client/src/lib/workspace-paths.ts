@@ -1,0 +1,97 @@
+/**
+ * Paths that must never appear as Projects in the sidebar rail, and whose
+ * sessions must not surface as top-level conversations.
+ *
+ * Agent-home / subagent / scratch / ephemeral directories are real on disk
+ * (sessiond and workers use them as cwd), but they are not user projects.
+ */
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/** Temp, CI, and local scratch trees that are not durable user projects. */
+export function isEphemeralWorkspacePath(path: string): boolean {
+  const normalized = normalizePath(path).toLowerCase();
+  return (
+    normalized.includes("/tmp/") ||
+    normalized.includes("/var/folders/") ||
+    normalized.includes("/pix-e2e-") ||
+    normalized.includes("/pix-fake-") ||
+    normalized.includes("/pix-test-") ||
+    /\/t\/pix-/.test(normalized)
+  );
+}
+
+/**
+ * Worker / subagent / session-store homes. These show up as session cwd or
+ * projectRoot because the worker process lives there — they are not projects.
+ */
+export function isAgentHomeWorkspacePath(path: string): boolean {
+  const normalized = normalizePath(path).toLowerCase();
+  return (
+    /\/pi-claude-subagents(?:\/|$)/.test(normalized) ||
+    /\/pi-subagents(?:\/|$)/.test(normalized) ||
+    normalized.includes("/.pi/agent/sessions") ||
+    normalized.includes("/.pi/agent/pi-claude-subagents") ||
+    normalized.includes("/.pi/pix/sessiond") ||
+    /\/pix\/conversations(?:\/|$)/.test(normalized)
+  );
+}
+
+/** Paths that must never appear as Projects, and whose sessions stay off the rail. */
+export function isNonProjectWorkspacePath(path: string): boolean {
+  return isEphemeralWorkspacePath(path) || isAgentHomeWorkspacePath(path);
+}
+
+/** True when a session header belongs to a hidden agent-home / scratch tree. */
+export function isHiddenRailSession(session: { cwd?: string | undefined; projectRoot?: string | undefined }): boolean {
+  if (session.cwd && isNonProjectWorkspacePath(session.cwd)) return true;
+  if (session.projectRoot && isNonProjectWorkspacePath(session.projectRoot)) return true;
+  return false;
+}
+
+/**
+ * Primary real project from a session list, if any.
+ *
+ * Picks the project root with the MOST sessions (the app's actual working
+ * directory / authorized root), tie-breaking by recency. The Host authorizes a
+ * small set of roots (usually the one it runs in), so the model catalog for an
+ * empty home must be queried against a root the server will actually accept.
+ */
+export function primaryRealProjectPath(
+  sessions: readonly {
+    cwd?: string | undefined;
+    projectRoot?: string | undefined;
+    updatedAt?: number | undefined;
+    lastMessageAt?: number | undefined;
+    createdAt?: number | undefined;
+  }[],
+): string | null {
+  const counts = new Map<string, number>();
+  const lastAt = new Map<string, number>();
+  for (const session of sessions) {
+    if (isHiddenRailSession(session)) continue;
+    const path = session.projectRoot || session.cwd;
+    if (!path || isNonProjectWorkspacePath(path)) continue;
+    counts.set(path, (counts.get(path) ?? 0) + 1);
+    const at = [session.updatedAt, session.lastMessageAt, session.createdAt]
+      .find((value): value is number => typeof value === "number" && Number.isFinite(value));
+    if (at !== undefined) {
+      const prev = lastAt.get(path);
+      if (prev === undefined || at > prev) lastAt.set(path, at);
+    }
+  }
+  let bestPath: string | null = null;
+  let bestCount = 0;
+  let bestAt = Number.NEGATIVE_INFINITY;
+  for (const [path, count] of counts) {
+    const at = lastAt.get(path) ?? Number.NEGATIVE_INFINITY;
+    if (count > bestCount || (count === bestCount && at > bestAt)) {
+      bestCount = count;
+      bestAt = at;
+      bestPath = path;
+    }
+  }
+  return bestPath;
+}

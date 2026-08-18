@@ -4,14 +4,15 @@ import { Check, Copy } from "@phosphor-icons/react";
 import ReactMarkdown, { type Components, type ExtraProps, type Options as ReactMarkdownOptions } from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { useI18n } from "@/hooks/useI18n";
-import { useTheme } from "@/hooks/useTheme";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 import { resolveLocalFileHref } from "@/lib/file-links";
 import { resolveMarkdownImageSrc } from "@/lib/markdown-images";
 import { splitStableParts } from "@/lib/markdown-incremental";
 import { headingId, markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
+import { extendStreamBirths, rehypeStreamFade, sliceStreamBirths, STREAM_FADE_DURATION_MS } from "@/lib/rehype-stream-fade";
 import { mentionRemarkPlugin, type MentionValidators } from "@/lib/mention-tokens";
 import { prismTheme } from "@/lib/prism-theme";
+import { useSmoothStream } from "@/hooks/useSmoothStream";
 
 
 
@@ -149,12 +150,13 @@ function buildMarkdownComponents({ isStreaming, cwd, onOpenFile }: MarkdownCompo
  * Stable chunks are marked non-streaming: their closed code blocks get Prism
  * highlighting immediately instead of waiting for the whole message to end.
  */
-const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpenFile, remarkPlugins }: {
+const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpenFile, remarkPlugins, rehypePlugins }: {
   text: string;
   isStreaming?: boolean | undefined;
   cwd?: string | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
   remarkPlugins?: ReactMarkdownOptions["remarkPlugins"];
+  rehypePlugins?: ReactMarkdownOptions["rehypePlugins"];
 }) {
   const normalized = useMemo(() => normalizeDisplayMath(text), [text]);
   const components = useMemo(
@@ -164,7 +166,7 @@ const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpen
   return (
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
-      rehypePlugins={markdownRehypePlugins}
+      rehypePlugins={rehypePlugins ?? markdownRehypePlugins}
       components={components}
     >
       {normalized}
@@ -174,12 +176,16 @@ const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpen
 
 export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, highlightMentions, mentionValidators }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
+  // Smooth the streamed reveal at frame cadence (LobeUI Streamdown): the
+  // displayed text grows 1-3 chars per rAF frame instead of per publish
+  // burst, which is what keeps the per-char fade timeline continuous.
+  const smoothedMarkdown = useSmoothStream(normalizedMarkdown, !!isStreaming);
   // Interning map: stable chunk text stays reference-stable so MarkdownPart
   // memo comparisons hit with === and skip the parse/render work entirely.
   const partCacheRef = useRef<Map<string, string>>(new Map());
   const parts = useMemo(
-    () => splitStableParts(normalizedMarkdown, partCacheRef.current),
-    [normalizedMarkdown],
+    () => splitStableParts(smoothedMarkdown, partCacheRef.current),
+    [smoothedMarkdown],
   );
   const streamingSplit = isStreaming && parts.length > 1;
   const components = useMemo(
@@ -194,27 +200,76 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
     () => [...(markdownRemarkPlugins ?? []), ...mentionPlugins],
     [mentionPlugins],
   );
+  const previousTextRef = useRef("");
+  const birthsRef = useRef<number[]>([]);
+  const [holdStreaming, setHoldStreaming] = useState(false);
+  const nowMs = Date.now();
+  if (isStreaming) {
+    birthsRef.current = extendStreamBirths(
+      previousTextRef.current,
+      smoothedMarkdown,
+      birthsRef.current,
+      nowMs,
+    );
+    previousTextRef.current = smoothedMarkdown;
+  }
+  const fadeActive = isStreaming || holdStreaming;
+  useEffect(() => {
+    if (isStreaming) {
+      setHoldStreaming(true);
+      return;
+    }
+    if (!holdStreaming) return;
+    const latestBirth = birthsRef.current.reduce((latest, birth) => Math.max(latest, birth), 0);
+    const remaining = latestBirth === 0 ? 0 : Math.max(0, STREAM_FADE_DURATION_MS - (Date.now() - latestBirth));
+    const timer = window.setTimeout(() => {
+      setHoldStreaming(false);
+      previousTextRef.current = "";
+      birthsRef.current = [];
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [isStreaming, holdStreaming, smoothedMarkdown]);
+  const streamRehypePlugins = useMemo(
+    () => {
+      const births = sliceStreamBirths(smoothedMarkdown, smoothedMarkdown, birthsRef.current);
+      return [
+        ...(markdownRehypePlugins ?? []),
+        [rehypeStreamFade, { births, nowMs }],
+      ] as ReactMarkdownOptions["rehypePlugins"];
+    },
+    [fadeActive, smoothedMarkdown, nowMs],
+  );
 
   return (
-    <div className={["markdown-body", className].filter(Boolean).join(" ")}>
+    <div className={["markdown-body", fadeActive ? "is-streaming" : "", className].filter(Boolean).join(" ")}>
       {streamingSplit ? (
-        parts.map((part, index) => (
-          <MarkdownPart
-            key={`${index}-${part.id}`}
-            text={part.text}
-            isStreaming={part.tail ? isStreaming : false}
-            cwd={cwd}
-            onOpenFile={onOpenFile}
-            remarkPlugins={remarkPlugins}
-          />
-        ))
+        parts.map((part, index) => {
+          const partBirths = sliceStreamBirths(smoothedMarkdown, part.text, birthsRef.current);
+          const partPlugins = part.tail && fadeActive
+            ? [
+                ...(markdownRehypePlugins ?? []),
+                [rehypeStreamFade, { births: partBirths, nowMs }],
+              ] as ReactMarkdownOptions["rehypePlugins"]
+            : markdownRehypePlugins;
+          return (
+            <MarkdownPart
+              key={`${index}-${part.id}`}
+              text={part.text}
+              isStreaming={part.tail ? fadeActive : false}
+              cwd={cwd}
+              onOpenFile={onOpenFile}
+              remarkPlugins={remarkPlugins}
+              rehypePlugins={partPlugins}
+            />
+          );
+        })
       ) : (
         <ReactMarkdown
           remarkPlugins={remarkPlugins}
-          rehypePlugins={markdownRehypePlugins}
+          rehypePlugins={fadeActive ? streamRehypePlugins : markdownRehypePlugins}
           components={components}
         >
-          {normalizedMarkdown}
+          {smoothedMarkdown}
         </ReactMarkdown>
       )}
     </div>
@@ -223,7 +278,9 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
 
 export function MermaidBlock({ code, isStreaming }: { code: string; isStreaming?: boolean | undefined }) {
   const { t } = useI18n();
-  const { isDark } = useTheme();
+  // pix ships a fixed dark appearance (html.dark is applied permanently), so
+  // Mermaid always renders its dark theme — there is no runtime theme to read.
+  const isDark = true;
   const [showPreview, setShowPreview] = useState(false);
   const [svg, setSvg] = useState<string | null>(null);
   const [renderedKey, setRenderedKey] = useState("");

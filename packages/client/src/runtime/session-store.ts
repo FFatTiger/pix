@@ -78,6 +78,7 @@ import {
   type RuntimeCreateParams,
   type RuntimeEventData,
   type RuntimeInterrupt,
+  type RuntimeListRunningResult,
   type SessionEntry,
   type RuntimeSnapshot,
   type RuntimeState,
@@ -109,6 +110,13 @@ import {
   type IdFactory,
 } from "./correlation.js";
 
+export interface OptimisticSessionEntry {
+  readonly sessionId: string;
+  readonly entry: SessionEntry;
+  /** Authority leaf that preceded this prompt, when known. */
+  readonly baseEntryId?: string | null | undefined;
+}
+
 /** Reactive view consumed by React via useSyncExternalStore (immutable per change). */
 export interface RuntimeView {
   readonly connection: ConnectionState;
@@ -126,6 +134,12 @@ export interface RuntimeView {
    * selected session — as BUSY (never idle), and never as a fresh idle input.
    */
   readonly promptPending: boolean;
+  /** Session currently owned by the UI-first running transaction layer. */
+  readonly optimisticRunningSessionId: string | null;
+  /** Authoritative global busy-session ids from sessiond. */
+  readonly runningSessionIds: readonly string[];
+  /** All sessions with a LIVE worker process (busy or idle) from sessiond. */
+  readonly liveSessionIds: readonly string[];
   /**
    * Attach lifecycle generation (explicit refresh signal for UI reads like
    * runtime stats/tools). Increments on a FRESH attach (incl. session switch),
@@ -155,6 +169,8 @@ export interface RuntimeView {
    * (never by content/timestamp/array overlap).
    */
   readonly liveEntries: readonly SessionEntry[];
+  /** Session-scoped speculative user entries, separate from authority state. */
+  readonly optimisticEntries: readonly OptimisticSessionEntry[];
   readonly error: ProtocolError | null;
   readonly fatal: boolean;
   readonly canAgent: boolean;
@@ -193,10 +209,14 @@ const INITIAL_VIEW: RuntimeView = {
   streaming: false,
   streamingPartial: null,
   promptPending: false,
+  optimisticRunningSessionId: null,
+  runningSessionIds: [],
+  liveSessionIds: [],
   attachGeneration: 0,
   historyGeneration: 0,
   historyAnchorLeafId: null,
   liveEntries: [],
+  optimisticEntries: [],
   error: null,
   fatal: false,
   canAgent: false,
@@ -338,6 +358,7 @@ interface CommandPending {
  */
 interface PromptTransaction {
   readonly optimisticId: string;
+  readonly sessionId: string;
   phase: "activating" | "dispatching";
 }
 
@@ -478,6 +499,10 @@ export class SessionStore implements RuntimeSocketHandler {
   private historyGeneration = 0;
   private historyAnchorLeafId: string | null = null;
   private liveEntries: SessionEntry[] = [];
+  private runningSessionIds: string[] = [];
+  private liveSessionIds: string[] = [];
+  private runningRevision = 0;
+  private runningRefreshGeneration = 0;
   /**
    * Attach lifecycle generation (see {@link RuntimeView.attachGeneration}).
    * Incremented only on attach boundaries (fresh attach / detach / stop).
@@ -486,14 +511,14 @@ export class SessionStore implements RuntimeSocketHandler {
   /**
    * Speculative (optimistic) running overlay for a sent prompt — SEPARATE from
    * the authoritative {@link snapshot}. Set while a prompt transaction is in
-   * flight, cleared when the authoritative state proves the real turn (a real
-   * applied event shows isPromptRunning/isStreaming), on transaction settle
-   * (accepted / any failure), on a fresh authoritative snapshot replace
-   * (fetchSnapshot) and on detach/rebase/stop. The view's `snapshot` is a
-   * projection that overlays this flag; the authoritative snapshot is NEVER
-   * mutated for optimism.
+   * flight, retained across transport acceptance and target-session attach,
+   * then cleared when authoritative events/snapshots take ownership or a
+   * definite/uncertain failure settles the UI transaction. The view's
+   * `snapshot` is a projection that overlays this flag; the authoritative
+   * snapshot is NEVER mutated for optimism.
    */
   private optimisticPromptRunning = false;
+  private optimisticPromptSessionId: string | null = null;
   /**
    * Single-flight prompt transaction (activation + dispatch). At most ONE in
    * flight; a concurrent sendPrompt/sendPromptToSession is rejected with
@@ -509,7 +534,7 @@ export class SessionStore implements RuntimeSocketHandler {
    * turn usually IS running behind a transport timeout); a definite failure
    * removes it. Rebase/detach clears it with the rest of the live layer.
    */
-  private optimisticUserEntries: SessionEntry[] = [];
+  private optimisticUserEntries: OptimisticSessionEntry[] = [];
   private optimisticSeq = 0;
   private error: ProtocolError | null = null;
   private fatal = false;
@@ -717,6 +742,41 @@ export class SessionStore implements RuntimeSocketHandler {
     return this.detachPromise;
   }
 
+  /** Refresh the global running-session baseline without activating workers. */
+  refreshRunningSessions(): Promise<readonly string[]> {
+    this.ensureConnecting();
+    const requestGeneration = ++this.runningRefreshGeneration;
+    const revisionAtRequest = this.runningRevision;
+    return this.whenReadyForLifecycle().then(() =>
+      this.sendEnvelope({ type: "listRunning", id: this.id(), payload: {} }),
+    ).then(
+      (result) => {
+        // A newer push/refresh owns the state. A slow baseline response can
+        // never overwrite fresher global running truth.
+        if (requestGeneration !== this.runningRefreshGeneration || revisionAtRequest !== this.runningRevision) {
+          return this.runningSessionIds;
+        }
+        const running = result as RuntimeListRunningResult;
+        this.liveSessionIds = running.sessions.map((item) => item.sessionId);
+        this.runningSessionIds = running.sessions
+          .filter((item) => item.workerStatus === "busy")
+          .map((item) => item.sessionId);
+        this.runningRevision += 1;
+        this.notify();
+        return this.runningSessionIds;
+      },
+      (error) => {
+        if (requestGeneration === this.runningRefreshGeneration && revisionAtRequest === this.runningRevision) {
+          this.runningSessionIds = [];
+          this.liveSessionIds = [];
+          this.runningRevision += 1;
+          this.notify();
+        }
+        throw error;
+      },
+    );
+  }
+
   /**
    * Authoritative stop. Honest semantics (MEDIUM-4/5, LOW):
    *  1. HOL: if a prompt is running, FIRST abort and await the interrupt result
@@ -803,6 +863,7 @@ export class SessionStore implements RuntimeSocketHandler {
       // state already reports isPromptRunning/isStreaming).
       if (this.optimisticPromptRunning) {
         this.optimisticPromptRunning = false;
+        this.optimisticPromptSessionId = null;
       }
       this.notify();
       return this.snapshot;
@@ -891,7 +952,7 @@ export class SessionStore implements RuntimeSocketHandler {
     // optimistically setting isPromptRunning here would flip stop's honest
     // abort-first ordering. Pushed only after the definite-failure checks so
     // an early reject never leaks an optimistic bubble.
-    const optimisticId = this.appendOptimisticUserEntry(trimmed);
+    const optimisticId = this.appendOptimisticUserEntry(this.sessionId, trimmed);
     const commandId = this.id();
     const imagePayload = images === undefined || images.length === 0 ? {} : { images: [...images] as ImageAttachment[] };
     const command: RuntimeCommand = type === "steer"
@@ -912,11 +973,17 @@ export class SessionStore implements RuntimeSocketHandler {
   }
 
   /** Append the optimistic user bubble (bounded) and return its local id. */
-  private appendOptimisticUserEntry(message: string): string {
+  private appendOptimisticUserEntry(sessionId: string, message: string): string {
     const optimisticId = `optimistic:${(this.optimisticSeq += 1)}`;
     this.optimisticUserEntries = [
       ...this.optimisticUserEntries.slice(-4),
-      { entryId: optimisticId, message: { role: "user", content: message } },
+      {
+        sessionId,
+        entry: { entryId: optimisticId, message: { role: "user", content: message } },
+        ...(sessionId === this.sessionId
+          ? { baseEntryId: this.liveEntries.at(-1)?.entryId ?? this.historyAnchorLeafId ?? null }
+          : {}),
+      },
     ];
     return optimisticId;
   }
@@ -938,7 +1005,7 @@ export class SessionStore implements RuntimeSocketHandler {
           && (cause as { retryable?: unknown }).retryable === true;
         if (!retryable) {
           this.optimisticUserEntries = this.optimisticUserEntries.filter(
-            (entry) => entry.entryId !== optimisticId,
+            (candidate) => candidate.entry.entryId !== optimisticId,
           );
           this.notify();
         }
@@ -955,15 +1022,12 @@ export class SessionStore implements RuntimeSocketHandler {
    * speculative running overlay and return the transaction (phase
    * "activating").
    */
-  private beginPromptTransaction(message: string): PromptTransaction | null {
+  private beginPromptTransaction(sessionId: string, message: string): PromptTransaction | null {
     if (this.promptTransaction) return null;
-    const optimisticId = `optimistic:${(this.optimisticSeq += 1)}`;
-    this.promptTransaction = { optimisticId, phase: "activating" };
-    this.optimisticUserEntries = [
-      ...this.optimisticUserEntries.slice(-4),
-      { entryId: optimisticId, message: { role: "user", content: message } },
-    ];
+    const optimisticId = this.appendOptimisticUserEntry(sessionId, message);
+    this.promptTransaction = { optimisticId, sessionId, phase: "activating" };
     if (!this.optimisticPromptRunning) this.optimisticPromptRunning = true;
+    this.optimisticPromptSessionId = sessionId;
     this.notify();
     return this.promptTransaction;
   }
@@ -974,16 +1038,17 @@ export class SessionStore implements RuntimeSocketHandler {
    * speculative running overlay — the authoritative projection/events take over
    * from here. Never touches another transaction.
    */
-  private settlePromptTransaction(tx: PromptTransaction, options: { removeBubble: boolean }): void {
+  private settlePromptTransaction(tx: PromptTransaction, options: { removeBubble: boolean; clearRunning?: boolean }): void {
     if (this.promptTransaction !== tx) return;
     this.promptTransaction = null;
     if (options.removeBubble) {
       this.optimisticUserEntries = this.optimisticUserEntries.filter(
-        (entry) => entry.entryId !== tx.optimisticId,
+        (candidate) => candidate.entry.entryId !== tx.optimisticId,
       );
     }
-    if (this.optimisticPromptRunning) {
+    if (options.clearRunning !== false && this.optimisticPromptRunning) {
       this.optimisticPromptRunning = false;
+      this.optimisticPromptSessionId = null;
     }
     this.notify();
   }
@@ -1005,7 +1070,10 @@ export class SessionStore implements RuntimeSocketHandler {
       : { images: [...images] as ImageAttachment[] };
     const sendP = this.sendCommand({ commandId: this.id(), type: "prompt", message, ...imagePayload });
     return sendP.then(
-      (value) => { this.settlePromptTransaction(tx, { removeBubble: false }); return value; },
+      // Accepted is transport admission, not authoritative running state.
+      // Keep the UI-first running marker until a real event takes ownership so
+      // the sidebar/tab/project indicators never blink off between ack/start.
+      (value) => { this.settlePromptTransaction(tx, { removeBubble: false, clearRunning: false }); return value; },
       (cause: unknown) => {
         const retryable = cause !== null && typeof cause === "object"
           && (cause as { retryable?: unknown }).retryable === true;
@@ -1056,7 +1124,8 @@ export class SessionStore implements RuntimeSocketHandler {
    * {@link sendPromptToSession}'s job).
    */
   sendPrompt(message: string, images?: readonly ImageAttachment[]): Promise<unknown> {
-    const tx = this.beginPromptTransaction(message);
+    if (!this.sessionId) return Promise.reject(this.notAttachedError());
+    const tx = this.beginPromptTransaction(this.sessionId, message);
     if (!tx) return Promise.reject(this.promptBusyError());
     return this.dispatchPrompt(tx, message, images);
   }
@@ -1091,7 +1160,7 @@ export class SessionStore implements RuntimeSocketHandler {
         retryable: false,
       } satisfies ProtocolError);
     }
-    const tx = this.beginPromptTransaction(message);
+    const tx = this.beginPromptTransaction(sessionId, message);
     if (!tx) return Promise.reject(this.promptBusyError());
     return this.transitionTo(sessionId).then(
       () => this.applyStagedActivationSettings(tx, activationSettings).then(
@@ -1142,6 +1211,15 @@ export class SessionStore implements RuntimeSocketHandler {
           this.settlePromptTransaction(tx, { removeBubble: true });
           throw this.activationFailure(cause);
         }
+      }
+      // The set_model / set_thinking_level commands converge the worker but do
+      // NOT rewrite the client snapshot. Without a refresh the Composer keeps
+      // showing the pre-activation model/thinking until a page reload. Pull the
+      // authoritative snapshot so the selectors reflect what was just applied.
+      try {
+        await this.fetchSnapshot();
+      } catch {
+        // Snapshot refresh is best-effort here; the prompt still dispatches.
       }
     })();
   }
@@ -1756,6 +1834,7 @@ export class SessionStore implements RuntimeSocketHandler {
     if (state === "ready") {
       this.resolveReadyWaiters();
       this.resolveSendableWaiters();
+      void this.refreshRunningSessions().catch(() => undefined);
       // Reconnect resync: a lost create response is resent idempotently.
       if (this.pendingCreate) {
         this.resendCreate();
@@ -1765,8 +1844,14 @@ export class SessionStore implements RuntimeSocketHandler {
       }
     } else if (state === "unavailable" || state === "reconnecting") {
       // MEDIUM-3: one-shot envelope requests cannot survive a generation boundary.
+      this.runningSessionIds = [];
+      this.liveSessionIds = [];
+      this.runningRevision += 1;
       this.onTransportLoss();
     } else if (state === "stopped") {
+      this.runningSessionIds = [];
+      this.liveSessionIds = [];
+      this.runningRevision += 1;
       const error: ProtocolError = { code: "unavailable", message: "runtime connection stopped", retryable: false };
       this.rejectReadyWaiters(error);
       this.rejectSendableWaiters(error);
@@ -1862,13 +1947,31 @@ export class SessionStore implements RuntimeSocketHandler {
       try {
         this.snapshot = reduceRuntimeEventData(this.snapshot, event as RuntimeEventData);
         this.lastEventId = event.eventId;
+        if (event.type === "running_sessions_changed") {
+          this.runningSessionIds = [...event.busySessionIds];
+          this.liveSessionIds = [...event.sessionIds];
+          this.runningRevision += 1;
+        }
         // Speculative running overlay: once ANY real applied event proves the
         // turn's authoritative running state (a prompt command ack usually
         // arrives first and already clears it), the overlay is no longer
         // needed — the authoritative projection is truthful from here on.
         if (this.optimisticPromptRunning
-          && (this.snapshot.state.isPromptRunning === true || this.snapshot.state.isStreaming === true)) {
+          && this.optimisticPromptSessionId === event.sessionId
+          && (
+            this.snapshot.state.isPromptRunning === true
+            || this.snapshot.state.isStreaming === true
+            || event.type === "agent_end"
+            || event.type === "agent_settled"
+            || event.type === "prompt_done"
+            || event.type === "prompt_error"
+            || event.type === "worker_crashed"
+            || event.type === "runtime_unavailable"
+            || event.type === "runtime_closed"
+            || (event.type === "message_end" && event.message.role === "assistant")
+          )) {
           this.optimisticPromptRunning = false;
+          this.optimisticPromptSessionId = null;
         }
         // D2-P8: an event that drops `runtime.extension_ui` settles an in-flight reply.
         this.settleExtensionUiOnCapabilityLoss();
@@ -2279,6 +2382,16 @@ export class SessionStore implements RuntimeSocketHandler {
     this.epoch = payload.epoch;
     this.lastEventId = payload.lastEventId;
     this.snapshot = structuredClone(payload.snapshot);
+    // Activation reveals the target session's authoritative pre-prompt leaf.
+    // Bind any detached UI-first transaction that did not know its base yet;
+    // this identity later prevents a committed historical prompt from becoming
+    // a duplicate ghost bubble after cross-session supersession.
+    const activationBase = this.snapshot.state.leafId ?? null;
+    this.optimisticUserEntries = this.optimisticUserEntries.map((candidate) =>
+      candidate.sessionId === payload.sessionId && candidate.baseEntryId === undefined
+        ? { ...candidate, baseEntryId: activationBase }
+        : candidate,
+    );
     // Protocol v2 history layer:
     //  - fresh attach: anchor to snapshot.state.leafId, increment generation,
     //    clear live entries (later committed events re-accumulate);
@@ -2292,8 +2405,13 @@ export class SessionStore implements RuntimeSocketHandler {
       this.attachGeneration += 1;
       this.historyAnchorLeafId = this.snapshot.state.leafId ?? null;
       this.liveEntries = [];
-      this.optimisticUserEntries = [];
-      this.optimisticPromptRunning = false;
+      // Optimistic entries are a separate session-scoped transaction layer.
+      // A fresh attach/rebase for the target session must not erase a prompt
+      // that is still activating or awaiting its committed message_end.
+      if (this.optimisticPromptSessionId !== payload.sessionId) {
+        this.optimisticPromptRunning = false;
+        this.optimisticPromptSessionId = null;
+      }
     }
     // D2-P8: a snapshot that drops `runtime.extension_ui` settles an in-flight reply.
     this.settleExtensionUiOnCapabilityLoss();
@@ -2317,12 +2435,28 @@ export class SessionStore implements RuntimeSocketHandler {
    */
   private recordCommittedLiveEntries(event: RuntimeEventData & { readonly eventId: number; readonly epoch: string }): void {
     if (event.type === "message_end") {
-      // Consume the OLDEST optimistic user bubble FIFO — the real committed
-      // entry replaces it regardless of content (the sent prompt and its
-      // committed twin are adjacent by construction).
-      if (event.message.role === "user" && this.optimisticUserEntries.length > 0) {
-        const [, ...rest] = this.optimisticUserEntries;
-        this.optimisticUserEntries = rest;
+      if (event.message.role === "user") {
+        const content = event.message.content;
+        const committedText = (typeof content === "string"
+          ? content
+          : content.filter((block) => block.type === "text").map((block) => block.text).join("\n"))
+          .trim();
+        const candidates = this.optimisticUserEntries.filter((candidate) => candidate.sessionId === event.sessionId);
+        const contentMatch = candidates.find((candidate) => {
+          const optimisticContent = candidate.entry.message;
+          return optimisticContent.role === "user"
+            && typeof optimisticContent.content === "string"
+            && optimisticContent.content.trim() === committedText;
+        });
+        // Prefer exact content correlation. If the session has exactly one
+        // speculative user entry, it is the only possible owner; otherwise do
+        // not guess by FIFO and risk consuming another queued turn.
+        const matched = contentMatch ?? (candidates.length === 1 ? candidates[0] : undefined);
+        if (matched) {
+          this.optimisticUserEntries = this.optimisticUserEntries.filter(
+            (candidate) => candidate.entry.entryId !== matched.entry.entryId,
+          );
+        }
       }
       this.appendLiveEntry({
         entryId: event.entryId,
@@ -2357,8 +2491,13 @@ export class SessionStore implements RuntimeSocketHandler {
     this.attachGeneration += 1;
     this.historyAnchorLeafId = null;
     this.liveEntries = [];
-    this.optimisticUserEntries = [];
-    this.optimisticPromptRunning = false;
+    // Speculative entries are transaction-owned and may target the session
+    // being activated next. Their owning promise/event removes them; history
+    // teardown must not create a visible disappear/reappear cycle.
+    if (this.optimisticPromptSessionId === this.sessionId) {
+      this.optimisticPromptRunning = false;
+      this.optimisticPromptSessionId = null;
+    }
   }
 
   /**
@@ -2621,6 +2760,7 @@ export class SessionStore implements RuntimeSocketHandler {
     // release the single-flight prompt transaction slot.
     this.optimisticUserEntries = [];
     this.optimisticPromptRunning = false;
+    this.optimisticPromptSessionId = null;
     this.promptTransaction = null;
   }
 
@@ -2660,7 +2800,9 @@ export class SessionStore implements RuntimeSocketHandler {
     // whole UI (transcript pulse, composer Stop) sees the instant running
     // state while the wire round-trip settles.
     const authoritative = this.snapshot;
-    const projected = this.optimisticPromptRunning && authoritative
+    const projected = this.optimisticPromptRunning
+      && this.optimisticPromptSessionId === this.sessionId
+      && authoritative
       ? {
           ...authoritative,
           state: { ...authoritative.state, isPromptRunning: true },
@@ -2698,10 +2840,26 @@ export class SessionStore implements RuntimeSocketHandler {
       streaming,
       streamingPartial,
       promptPending: this.promptTransaction !== null,
+      optimisticRunningSessionId: this.optimisticPromptSessionId,
+      runningSessionIds: [...this.runningSessionIds],
+      liveSessionIds: [...this.liveSessionIds],
       attachGeneration: this.attachGeneration,
       historyGeneration: this.historyGeneration,
       historyAnchorLeafId: this.historyAnchorLeafId,
-      liveEntries: [...this.optimisticUserEntries, ...this.liveEntries],
+      // Authority first, speculative tail last. This preserves chronological
+      // UI order and prevents a newly-sent prompt from jumping before the
+      // previous committed live turn.
+      liveEntries: [
+        ...this.liveEntries,
+        ...this.optimisticUserEntries
+          .filter((candidate) => candidate.sessionId === this.sessionId)
+          .map((candidate) => candidate.entry),
+      ],
+      optimisticEntries: this.optimisticUserEntries.map((candidate) => ({
+        sessionId: candidate.sessionId,
+        entry: candidate.entry,
+        ...(candidate.baseEntryId === undefined ? {} : { baseEntryId: candidate.baseEntryId }),
+      })),
       error: this.error,
       fatal: this.fatal,
       canAgent: this.host?.capabilities.includes("agent") === true,

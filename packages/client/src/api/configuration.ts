@@ -5,6 +5,7 @@ import {
   AuthProviderStatusResponseSchema,
   CommandsResponseSchema,
   PluginsResponseSchema,
+  SessionIdleTimeoutResponseSchema,
   SkillsResponseSchema,
   TrustResponseSchema,
 } from "./schemas";
@@ -74,6 +75,24 @@ export function createConfigurationApi(http: HttpClient) {
           schema: AuthProviderStatusResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
+    },
+    sessionSettings: {
+      /** Current session idle-reclamation timeout (ms; 0 = disabled). */
+      get: (signal?: AbortSignal) =>
+        http.get(urls.settings.sessionIdleTimeout(), {
+          schema: SessionIdleTimeoutResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      /** Set + persist the session idle-reclamation timeout. */
+      set: (idleTimeoutMs: number, signal?: AbortSignal) =>
+        http.put(
+          urls.settings.sessionIdleTimeout(),
+          { idleTimeoutMs },
+          {
+            schema: SessionIdleTimeoutResponseSchema,
+            ...(signal === undefined ? {} : { signal }),
+          },
+        ),
     },
   };
 }

@@ -9,11 +9,13 @@ import { createQueryOptions } from "@/api/query-keys";
 import { createConfigurationApi } from "@/api/configuration";
 import { createResourcesApi } from "@/api/resources";
 import { useI18n } from "@/hooks/useI18n";
+import { useAudio } from "@/hooks/useAudio";
 import { ChatInput, type AttachedImage, type ChatInputHandle } from "@/components/chat/ChatInput";
 import { SessionInfoBar } from "@/components/chat/SessionInfoBar";
 import { chatInputHandle, transcriptScrollRef } from "@/components/chat/chat-experience-bridge";
 import {
   buildSessionStatsView,
+  buildTranscriptSessionStatsView,
   buildStepLabel,
   toBranchNavigatorTree,
   toContextUsageView,
@@ -88,6 +90,21 @@ export interface ComposerProps {
    * (legacy standalone mounts; null while detached).
    */
   cwd?: string | null;
+  /**
+   * Optional Host-catalog cwd when the URL has no project selected. Used only
+   * to keep the model picker honest on the empty home; file/skill indexes stay
+   * gated on the explicit project cwd.
+   */
+  catalogCwd?: string | null;
+  /**
+   * Empty-home create: AppShell owns create + URL navigation. When the user
+   * sends with no selected session, Composer asks the shell to create one and
+   * then activates it exactly once. Omitted → send without a session is a no-op.
+   */
+  onCreateSession?: (settings?: {
+    model?: { provider: string; modelId: string };
+    thinkingLevel?: ThinkingLevel;
+  }) => Promise<string>;
 }
 
 /** Fixed safe copy — never surface a raw ProtocolError in the info bar. */
@@ -124,11 +141,12 @@ function getUserInputTexts(messages: readonly { role: string; content?: unknown 
   return history;
 }
 
-export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp }: ComposerProps) {
+export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, catalogCwd: catalogCwdProp, onCreateSession }: ComposerProps) {
   const runtime = useRuntime();
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   const http = useHttpClient();
   const { t } = useI18n();
+  const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
   const inputRef = useRef<ChatInputHandle | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -146,6 +164,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // catalogs against. Falls back to the live snapshot's cwd when the prop is
   // omitted (legacy standalone mounts).
   const cwd = projectCwdProp ?? (live ? runtime.snapshot?.cwd ?? null : null);
+  const catalogCwd = cwd ?? catalogCwdProp ?? null;
   // Draft persistence key: the selected session id, or a per-cwd placeholder
   // while a brand-new (not-yet-created) session is selected.
   const draftKey = selectedSessionId ?? (cwd ? `new:${cwd}` : undefined);
@@ -199,6 +218,13 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const promptRunning = live && (state?.isStreaming === true || state?.isPromptRunning === true)
     || runtime.promptPending;
   const isCompacting = live && state?.isCompacting === true;
+  const agentRunning = live && (state?.isStreaming === true || state?.isPromptRunning === true);
+  const wasAgentRunningRef = useRef(false);
+  useEffect(() => {
+    const completed = wasAgentRunningRef.current && !agentRunning && live && runtime.sessionId === selectedSessionId;
+    wasAgentRunningRef.current = agentRunning;
+    if (completed) playDoneSound();
+  }, [agentRunning, live, playDoneSound, runtime.sessionId, selectedSessionId]);
 
   // --- Host catalog queries (read-only) --------------------------------------
   // The MODEL catalog is queried for the canonical project cwd EVEN WHEN
@@ -208,8 +234,8 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // @ mention highlighting in the live transcript); the loaders below still run
   // project-cwd-scoped when the @ menu is used.
   const modelsQuery = useQuery({
-    ...createQueryOptions(http).models.list(cwd ?? ""),
-    enabled: canModels && Boolean(cwd),
+    ...createQueryOptions(http).models.list(catalogCwd ?? ""),
+    enabled: canModels && Boolean(catalogCwd),
   });
   const filesIndexQuery = useQuery({
     ...createQueryOptions(http).files.index(cwd ?? ""),
@@ -351,8 +377,13 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     if (defaultModel && isModelInCatalog({ provider: defaultModel.provider, modelId: defaultModel.id })) {
       return { provider: defaultModel.provider, modelId: defaultModel.id };
     }
+    // Catalog exists but no default / inferred model: show the first entry so
+    // ChatInput can render the selector (it requires a currentName). Never
+    // reuse the attached session's runtime model.
+    const first = modelList[0];
+    if (first) return { provider: first.provider, modelId: first.id };
     return null;
-  }, [stagedModel, detachedInferredModel, isModelInCatalog, modelsQuery.data]);
+  }, [stagedModel, detachedInferredModel, isModelInCatalog, modelsQuery.data, modelList]);
   const detachedThinking = stagedThinking ?? "auto";
   // The model/thinking surfaced to ChatInput: live → the authoritative runtime
   // snapshot state (existing behavior); detached → the honest B baseline above.
@@ -365,7 +396,12 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     : detachedThinking;
   // Whether the model/thinking change handlers run immediately (live, existing
   // setModel/setThinkingLevel) or only stage for the send transaction (detached).
-  const modelChangeInteractive = live ? hasModelSet && canModels : true;
+  // Live: honor runtime.model.set even before the catalog settles. Detached /
+  // empty-home: stage against the Host catalog so the selector stays visible
+  // without attaching a Worker — only when the catalog actually has models.
+  const modelChangeInteractive = live
+    ? hasModelSet && canModels
+    : canModels && modelList.length > 0;
   const thinkingChangeInteractive = live ? hasThinkingSet : true;
 
   const toolResults = useMemo(() => {
@@ -400,72 +436,68 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     [live, state?.queuedMessages],
   );
 
-  // --- real session stats (runtime get_session_stats; runtime.stats gate) ---
-  // Fetched only while live + capability present. Refreshed from EXPLICIT
-  // lifecycle signals (sessionId + attachGeneration) — NOT from the whole
-  // `runtime` object (which changes identity on every stream event) and NOT from
-  // message counts (which tick during a stream). So a streaming session never
-  // refires the fetch; a fresh attach / session switch / detach / stop does. A
-  // generation + cancel guard drops late settles so a stale response can never
-  // pollute a newer session (no raw error is surfaced).
+  // --- serialized runtime info reads (single ordinary-command slot) ---------
+  // Stats and tools are independent UI projections but share the runtime's ONE
+  // ordinary command slot. Read them sequentially, never during an
+  // activation-then-send transaction, so neither can race the first prompt or
+  // each other. Explicit lifecycle signals drive refresh; stream deltas do not.
   const [sessionStatsData, setSessionStatsData] = useState<import("@fffattiger/pix-protocol").SessionStats | null>(null);
-  const sessionStatsGenRef = useRef(0);
-  useEffect(() => {
-    if (!live || !hasStats || !attachedSessionId) {
-      setSessionStatsData(null);
-      return;
-    }
-    const gen = ++sessionStatsGenRef.current;
-    let cancelled = false;
-    void runtime.getSessionStats().then(
-      (stats) => {
-        if (cancelled || gen !== sessionStatsGenRef.current) return;
-        setSessionStatsData(stats);
-      },
-      () => {
-        // Best-effort: a failed stats read never surfaces a raw error; the
-        // bar simply keeps the message-derived view.
-      },
-    );
-    return () => { cancelled = true; };
-    // `runtime.getSessionStats` is a STABLE command reference (see useRuntime),
-    // so omitting the whole `runtime` object here means streaming deltas never
-    // re-trigger the fetch — only the explicit lifecycle signal does.
-  }, [live, hasStats, attachedSessionId, runtime.attachGeneration, runtime.getSessionStats]);
-
-  const sessionStats = useMemo(
-    () => (live && state ? buildSessionStatsView(state, transcriptMessages, hasStats ? sessionStatsData : null) : null),
-    [live, state, transcriptMessages, hasStats, sessionStatsData],
-  );
-  // Context usage prefers the real stats projection; falls back to the snapshot state.
-  const contextUsage = useMemo(
-    () => (sessionStatsData?.contextUsage ? toContextUsageView(sessionStatsData.contextUsage) : toContextUsageView(state?.contextUsage)),
-    [sessionStatsData, state?.contextUsage],
-  );
-
-  // --- tools preset (runtime getTools/setTools; none/full are real) ----------
-  // Fetched while live + capability present. Refresh keyed on the stable
-  // getTools command + the authoritative tool list reference (`state.tools` is
-  // an immutable array whose identity only changes when tools actually change,
-  // never on streaming deltas) — the whole `runtime` object is NOT a dep, so a
-  // streaming session never refires getTools per event.
   const [tools, setToolsState] = useState<readonly ToolInfo[] | null>(null);
+  const runtimeInfoGenRef = useRef(0);
   useEffect(() => {
-    if (!live || !hasToolsRead) {
+    if (!live || !attachedSessionId) {
+      setSessionStatsData(null);
       setToolsState(null);
       return;
     }
+    if (runtime.promptPending) return;
+    const generation = ++runtimeInfoGenRef.current;
     let cancelled = false;
-    runtime
-      .getTools()
-      .then((list) => {
-        if (!cancelled) setToolsState(list);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [live, hasToolsRead, runtime.getTools, attachedSessionId, state?.tools]);
+    const current = (): boolean => !cancelled && generation === runtimeInfoGenRef.current;
+    void (async () => {
+      if (hasStats) {
+        try {
+          const stats = await runtime.getSessionStats();
+          if (current()) setSessionStatsData(stats);
+        } catch {
+          // Best-effort: retain transcript-derived stats.
+        }
+      } else if (current()) {
+        setSessionStatsData(null);
+      }
+      if (!current()) return;
+      if (hasToolsRead) {
+        try {
+          const list = await runtime.getTools();
+          if (current()) setToolsState(list);
+        } catch {
+          // Best-effort: hide the preset when the read is unavailable.
+        }
+      } else if (current()) {
+        setToolsState(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [
+    live,
+    attachedSessionId,
+    hasStats,
+    hasToolsRead,
+    runtime.attachGeneration,
+    runtime.promptPending,
+    runtime.getSessionStats,
+    runtime.getTools,
+    state?.tools,
+  ]);
+
+  const sessionStats = useMemo(() => {
+    if (!selectedSessionId) return null;
+    if (live && state) return buildSessionStatsView(state, transcriptMessages, hasStats ? sessionStatsData : null);
+    return buildTranscriptSessionStatsView(selectedSessionId, transcriptMessages);
+  }, [selectedSessionId, live, state, transcriptMessages, hasStats, sessionStatsData]);
+  // buildSessionStatsView already merges context with live snapshot priority;
+  // never let the one-shot attach-time stats read overwrite a newer turn value.
+  const contextUsage = sessionStats?.contextUsage ?? toContextUsageView(state?.contextUsage);
 
   const toolPreset = useMemo<"none" | "default" | "full" | undefined>(() => {
     if (!live || !hasToolsRead || !tools || tools.length === 0) return undefined;
@@ -555,29 +587,51 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // definite dispatch failures; uncertain dispatch keeps the bubble.
   const handleSend = useCallback(
     (message: string, images?: AttachedImage[]) => {
-      if (!selectedSessionId) return;
       const wireImages = toImageAttachments(images);
-      runtime
-        .sendPromptToSession(selectedSessionId, message, wireImages, {
-          // Detached staging rides the SINGLE activation transaction: applied
-          // after attach, before the prompt, in deterministic order. Null
-          // values are no-ops (already-live sends just dispatch directly).
-          model: stagedModel,
-          thinkingLevel: stagedThinking,
-        })
-        .then(() => {
-          // The send transaction (incl. any staged settings) succeeded — the
-          // runtime now owns the model/thinking, so clear the staged values
-          // (a later re-selection must not re-apply them).
-          if (isCurrent()) clearStaged();
-        })
+      const activationSettings = {
+        model: stagedModel,
+        thinkingLevel: stagedThinking,
+      };
+      const sendTo = (sessionId: string, applyActivationSettings = true): void => {
+        runtime
+          .sendPromptToSession(
+            sessionId,
+            message,
+            wireImages,
+            applyActivationSettings
+              ? {
+                  // Detached staging rides the SINGLE activation transaction:
+                  // applied after attach and before the prompt.
+                  model: activationSettings.model,
+                  thinkingLevel: activationSettings.thinkingLevel,
+                }
+              : undefined,
+          )
+          .then(() => {
+            if (isCurrent()) clearStaged();
+          })
+          .catch((cause: unknown) => {
+            if (isCurrent() && (isActivationFailure(cause) || isDefiniteFailure(cause))) restoreDraft(message);
+          });
+      };
+      if (selectedSessionId) {
+        sendTo(selectedSessionId);
+        return;
+      }
+      if (!onCreateSession) return;
+      void onCreateSession({
+        ...(stagedModel === null ? {} : { model: stagedModel }),
+        ...(stagedThinking === null ? {} : { thinkingLevel: stagedThinking }),
+      })
+        // Create already applied model/thinking. Reapplying them before the
+        // first prompt can fail capability checks and restore the draft, making
+        // the user press Enter twice.
+        .then((sessionId) => { sendTo(sessionId, false); })
         .catch((cause: unknown) => {
-          // Staged settings are PRESERVED on activation/config failure: only a
-          // successfully applied setting may be cleared.
           if (isCurrent() && (isActivationFailure(cause) || isDefiniteFailure(cause))) restoreDraft(message);
         });
     },
-    [selectedSessionId, runtime, isCurrent, restoreDraft, isActivationFailure, isDefiniteFailure, stagedModel, stagedThinking, clearStaged],
+    [selectedSessionId, runtime, isCurrent, restoreDraft, isActivationFailure, isDefiniteFailure, stagedModel, stagedThinking, clearStaged, onCreateSession],
   );
 
   const handleSteer = useCallback(
@@ -626,12 +680,21 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   }, [hasCompactAbort, runtime]);
 
   const handleCompact = useCallback(() => {
-    if (!hasCompact) return;
+    if (!selectedSessionId || (live && !hasCompact)) return;
     setCompactError(null);
-    runtime.compact().catch((cause: unknown) => {
-      if (isCurrent()) setCompactError(describeUnavailable(cause));
-    });
-  }, [hasCompact, runtime, isCurrent]);
+    void (async () => {
+      try {
+        // Selecting a tab stays read-only; clicking Compact is an explicit
+        // activation intent, matching the source desktop's per-session action.
+        if (!live || runtime.sessionId !== selectedSessionId) {
+          await runtime.openSession(selectedSessionId);
+        }
+        await runtime.compact();
+      } catch (cause) {
+        if (isCurrent()) setCompactError(describeUnavailable(cause));
+      }
+    })();
+  }, [selectedSessionId, live, hasCompact, runtime, isCurrent]);
 
   const handleModelChange = useCallback(
     (provider: string, modelId: string) => {
@@ -771,19 +834,13 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     [resourcesApi],
   );
 
-  // Genuine global inability only: no selected session (yet) or the host has no
-  // agent capability. The composer NEVER exposes a detached/continue-live/stopped
-  // state — sending is the activation intent for any selected existing session.
-  const disabledReason = !canAgent
-    ? "host has no agent capability"
-    : !selectedSessionId
-      ? "select a session"
-      : "";
+  // Genuine global inability only: the host has no agent capability. An empty
+  // home (no selected session) still mounts the exact ChatInput so the user can
+  // pick a model and start a conversation; send creates then activates.
+  const disabledReason = !canAgent ? "host has no agent capability" : "";
+  const canOfferCompact = Boolean(selectedSessionId) && (!live || hasCompact);
 
-  // The exact ChatInput is mounted whenever a session is selected and the host
-  // can agent; otherwise the composer degrades to a disabled surface with the
-  // reason (no fake controls, no lost drafts).
-  if (!canAgent || !selectedSessionId) {
+  if (!canAgent) {
     return (
       <footer className="composer composer--disabled">
         <div className="composer-inner">
@@ -839,6 +896,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         onLoadSlashCommands={loadSlashCommands}
         onBuiltinCommand={handleBuiltinCommand}
         builtinSlashCommands={builtinSlashCommands}
+        onAudioUnlock={unlockAudio}
         {...(draftKey === undefined ? {} : { draftKey })}
         cwd={cwd}
         messagesScrollRef={transcriptScrollRef}
@@ -856,7 +914,9 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
             contextUsage={contextUsage}
             hasSession={Boolean(selectedSessionId)}
             showChat
-            {...(hasCompact ? { onCompact: handleCompact } : {})}
+            soundEnabled={soundEnabled}
+            onSoundToggle={onSoundToggle}
+            {...(canOfferCompact ? { onCompact: handleCompact } : {})}
             isCompacting={isCompacting}
             compactError={compactError}
             branchTree={branchTree}

@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessiondApplication } from "../application.js";
 import type { ActivationContextProvider, SessiondDiagnostics, SessiondDependencies, SessiondOptions } from "../service.js";
@@ -218,6 +218,9 @@ function buildDependencies(directory: string, options: DaemonOptions): SessiondD
     sessionLocator: options.sessionLocator ?? defaultPorts.locator,
     activationContext: options.activationContext ?? createCatalogActivationContext(catalog),
     workerFactory,
+    // Daemon-owned persisted settings (idle-reclamation timeout) live next to
+    // the lock/secret in the private runtime directory.
+    settingsFile: join(directory, "settings.json"),
   };
   if (catalog) deps.sessionCatalog = catalog;
   // undefined → the production shared adapter mutation; null → explicitly
