@@ -114,8 +114,9 @@ CP-00 docs/SSOT
 | `CP-14` | AllowedRoot 内存授权改用平台 `FileIdentity`；Windows junction/reparse 拒绝为 `PATH_FORBIDDEN`；不把 file ID 写入 v1 `{dev,ino}` ledger | `DONE` | `packages/host` AllowedRoot | `CP-13` | AllowedRoot 定向 11/11 PASS；Windows junction 拒绝；ledger schema 仍 v1 POSIX-only；不宣称 ledger v2 / worktree disk identity / Job Object / 产品支持 |
 | `CP-15` | 账本存储路径形状接受 Windows drive-absolute；managed-worktrees 写前 round-trip，超精度 `ino` / 非法 shape fail-closed 不落盘 | `DONE` | `packages/local-authority` + Host managed ledger | `CP-14` | shape 测试 PASS；`MANAGED_WRITE_REJECTED` 定向 PASS；v1 POSIX 落盘成功语义在 Windows skip（不作为成功证据）；不宣称 ledger v2 / Job Object / 产品支持 |
 | `CP-16` | 共享 process-tree owner：POSIX 进程组 terminate；Windows `supportsDescendants=false` 只杀直接子进程；Worker/Host Git 走同一 controller | `DONE` | `packages/local-authority/process` + sessiond/Host consumers | `CP-15` | process-tree 定向 PASS；Host process-runner 定向 PASS；worker close 定向 PASS；不实现 Job Object / 不宣称 Windows descendant cleanup |
+| `CP-17` | Host file-watch 改为 parent-watch + 串行 exact-child reconcile；原子 rename/replace 不再丢 watcher | `DONE` | `packages/host` file-watch | `CP-16` | watch 定向 3/3 PASS；不宣称 overflow rescan / PWA / 产品支持 |
 
-后续 lane：完成 CP-16 验证后进入 Job Object / ledger v2。
+后续 lane：完成 CP-16 独立验证后进入 Job Object / ledger v2 / PWA。
 
 ---
 

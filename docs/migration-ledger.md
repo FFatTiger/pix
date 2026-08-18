@@ -3658,3 +3658,10 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - New `@fffattiger/pix-local-authority/process` surface owns spawn/terminate. POSIX uses an isolated process group (`detached: true` + `process.kill(-pid)`). Windows stays direct-child only (`supportsDescendants: false`); no Job Object, `taskkill`, or PowerShell.
 - sessiond Worker close and Host Git `createProcessRunner` both terminate through this controller. Tests inject a no-op controller instead of stubbing `ChildProcess.kill`.
 - This is not descendant Job Object work or Windows product support.
+
+## 85. Cross-platform CP-17 — Host parent-directory file watch
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `655e0ed`.
+- `createFileWatchManager` now watches the parent directory and serializes exact-child `lstat` reconciliation. Atomic replace/rename of the target emits `change`; a missing exact child emits `{removed:true}` without following the inode away.
+- Watch events remain hints. Sibling changes are ignored unless the platform omits the filename (then the exact child is re-stated). Existing reservation/limit/closeAll semantics are unchanged.
+- This is not overflow/rescan productization or Windows product support.

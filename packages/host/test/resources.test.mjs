@@ -613,6 +613,38 @@ test("file watch manager reserves atomically and releases on creation failure, a
   const closing = manager.open(file); await closing.body.getReader().read(); manager.closeAll(); assert.equal(manager.activeCount(), 0); assert.equal(manager.reservedCount(), 0);
 });
 
+test("file watch follows an atomic replace of the exact child", async () => {
+  const root = temp("pi-watch-atomic-");
+  const file = join(root, "target.txt");
+  writeFileSync(file, "one");
+  const manager = createFileWatchManager(1);
+  const response = manager.open(file);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const first = await reader.read();
+  assert.equal(first.done, false);
+  assert.match(decoder.decode(first.value), /event: connected/);
+  const tmp = join(root, "target.txt.tmp");
+  writeFileSync(tmp, "two-two");
+  renameSync(tmp, file);
+  const deadline = Date.now() + 3_000;
+  let sawChange = false;
+  while (Date.now() < deadline) {
+    const next = await Promise.race([
+      reader.read(),
+      new Promise((resolve) => setTimeout(() => resolve({ done: false, value: undefined }), 200)),
+    ]);
+    if (!next.value) continue;
+    const text = decoder.decode(next.value);
+    if (text.includes("event: change") && text.includes("size")) {
+      sawChange = true;
+      break;
+    }
+  }
+  await reader.cancel();
+  assert.equal(sawChange, true, "atomic replace must emit a change for the exact child");
+});
+
 test("watch closeAll terminates active and reserved SSE exactly once under races", async () => {
   const root = temp("pi-watch-shutdown-"); const file = join(root, "a.txt"); writeFileSync(file, "a"); const manager = createFileWatchManager(2);
   const activeResponse = manager.open(file); const activeReader = activeResponse.body.getReader(); await activeReader.read();
