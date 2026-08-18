@@ -3665,3 +3665,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - `createFileWatchManager` now watches the parent directory and serializes exact-child `lstat` reconciliation. Atomic replace/rename of the target emits `change`; a missing exact child emits `{removed:true}` without following the inode away.
 - Watch events remain hints. Sibling changes are ignored unless the platform omits the filename (then the exact child is re-stated). Existing reservation/limit/closeAll semantics are unchanged.
 - This is not overflow/rescan productization or Windows product support.
+
+## 86. Cross-platform CP-18 — honest PWA secure-context state
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `0163137`.
+- `PwaRegistration` no longer registers a service worker on insecure origins or in Vite dev. Visible states are `installable`, `web-only`, `insecure-origin`, and `registration-error`.
+- HTTP LAN therefore stays `insecure-origin` instead of a hidden console warning. This is not LAN HTTPS productization or an install-prompt implementation.

@@ -652,5 +652,9 @@ export const enLocale = {
     "desktop.markdownRenderingMermaidDiagram": "Rendering Mermaid diagram",
     "desktop.markdownPlainText": "text",
     "desktop.largeMessageReveal": "Message content is very large ({size}). Click to view as plain text — markdown rendering is disabled to keep the page responsive.",
+    "pwa.installable": "App install is available in this secure context.",
+    "pwa.webOnly": "Running as a normal web page. App install is not available here.",
+    "pwa.insecureOrigin": "This origin is not a secure context, so app install stays unavailable.",
+    "pwa.registrationError": "App install registration failed.",
   },
 } satisfies LocalePlugin;

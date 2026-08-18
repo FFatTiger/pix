@@ -652,5 +652,9 @@ export const zhCNLocale = {
     "desktop.markdownRenderingMermaidDiagram": "正在渲染 Mermaid 图表",
     "desktop.markdownPlainText": "文本",
     "desktop.largeMessageReveal": "消息内容过大（{size}）。点击以纯文本查看 — 已禁用 markdown 渲染以避免页面卡顿。",
+    "pwa.installable": "当前安全上下文可以安装应用。",
+    "pwa.webOnly": "当前以普通网页运行，无法安装应用。",
+    "pwa.insecureOrigin": "当前源不是安全上下文，因此无法安装应用。",
+    "pwa.registrationError": "应用安装注册失败。",
   },
 } satisfies LocalePlugin;

@@ -1,23 +1,33 @@
 import { useEffect, useState } from "react";
+import { useI18n } from "@/hooks/useI18n";
+
+export type PwaSurfaceState = "installable" | "web-only" | "insecure-origin" | "registration-error";
+
+export function resolvePwaSurfaceState(input: {
+  secureContext: boolean;
+  serviceWorker: boolean;
+  production: boolean;
+}): "web-only" | "insecure-origin" | "ready-to-register" {
+  if (!input.secureContext) return "insecure-origin";
+  if (!input.serviceWorker || !input.production) return "web-only";
+  return "ready-to-register";
+}
 
 /**
- * Registers the Vite-hosted service worker.
- * No next/script — plain browser registration.
+ * Registers the Vite-hosted service worker only in a secure production
+ * context. HTTP LAN and other insecure origins stay web-only.
  */
 export function PwaRegistration() {
-  const [state, setState] = useState<"idle" | "registered" | "error" | "unsupported">(
-    "idle",
-  );
+  const { t } = useI18n();
+  const [state, setState] = useState<PwaSurfaceState>("web-only");
 
   useEffect(() => {
-    if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
-      setState("unsupported");
-      return;
-    }
-
-    // Skip SW on Vite dev server to avoid stale module cache during HMR.
-    if (import.meta.env.DEV) {
-      setState("idle");
+    const secureContext = typeof window !== "undefined" && window.isSecureContext === true;
+    const serviceWorker = typeof navigator !== "undefined" && "serviceWorker" in navigator;
+    const production = !import.meta.env.DEV;
+    const baseline = resolvePwaSurfaceState({ secureContext, serviceWorker, production });
+    if (baseline !== "ready-to-register") {
+      setState(baseline);
       return;
     }
 
@@ -28,11 +38,10 @@ export function PwaRegistration() {
     navigator.serviceWorker
       .register(swUrl, { scope: "/" })
       .then(() => {
-        if (!cancelled) setState("registered");
+        if (!cancelled) setState("installable");
       })
-      .catch((err: unknown) => {
-        console.warn("SW registration failed", err);
-        if (!cancelled) setState("error");
+      .catch(() => {
+        if (!cancelled) setState("registration-error");
       });
 
     return () => {
@@ -40,6 +49,13 @@ export function PwaRegistration() {
     };
   }, []);
 
-  // Invisible helper — state is for tests / future toast hooks.
-  return <span data-pwa-state={state} hidden />;
+  const label = state === "installable"
+    ? t("pwa.installable")
+    : state === "insecure-origin"
+      ? t("pwa.insecureOrigin")
+      : state === "registration-error"
+        ? t("pwa.registrationError")
+        : t("pwa.webOnly");
+
+  return <span data-pwa-state={state} hidden>{label}</span>;
 }
