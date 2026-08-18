@@ -965,7 +965,9 @@ function SessionTreeItem({
           removeMutation={removeMutation}
           onSessionDeleted={onSessionDeleted}
           onSelectSession={(sessionId, cwd) => {
-            toggleChildren();
+            // First click only opens/selects the session. Subagents expand or
+            // collapse only when the ALREADY-selected session is clicked again.
+            if (isSelected) toggleChildren();
             onSelectSession(sessionId, cwd);
           }}
           depth={depth}

@@ -1202,6 +1202,26 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("session-select-child")).toBeTruthy();
   });
 
+  it("first click on an unselected parent opens it without expanding subagents", async () => {
+    const now = Date.now();
+    globalThis.fetch = controllableStubFetch({
+      sessions: [
+        { sessionId: "parent", cwd: "/x", projectRoot: "/x", title: "Parent session", createdAt: 1000, updatedAt: now, messageCount: 1 },
+        { sessionId: "child", cwd: "/x", projectRoot: "/x", title: "Child session", parentSessionId: "parent", createdAt: 1000, updatedAt: now, messageCount: 1 },
+      ],
+    });
+    const { rerender } = mountApp({ cwd: "/x" });
+    await settle();
+    // Parent is not selected yet: clicking only opens it, subagents stay hidden.
+    fireEvent.click(screen.getByTestId("session-select-parent"));
+    expect(screen.queryByTestId("session-select-child")).toBeNull();
+    // Now the parent is selected; clicking it again expands its subagents.
+    rerender({ cwd: "/x", session: "parent" });
+    await settle();
+    fireEvent.click(screen.getByTestId("session-select-parent"));
+    expect(screen.getByTestId("session-select-child")).toBeTruthy();
+  });
+
   it("caps recent sessions at five and reveals the rest from View more", async () => {
     const now = Date.now();
     const many: SessionHeader[] = Array.from({ length: 7 }, (_, index) => ({
