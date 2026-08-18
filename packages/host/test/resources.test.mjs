@@ -66,6 +66,28 @@ function initRepo(root) {
   writeFileSync(join(root, "tracked.txt"), "one\n"); git(root, ["add", "tracked.txt"]); git(root, ["commit", "-qm", "initial"]);
 }
 
+test("AllowedRootService rejects a Windows junction intermediate as an unsafe directory", { skip: process.platform !== "win32" }, async () => {
+  const root = temp("pi-root-win-");
+  const real = join(root, "real");
+  const link = join(root, "link");
+  mkdirSync(real);
+  writeFileSync(join(real, "secret.txt"), "SECRET");
+  try {
+    symlinkSync(real, link, "junction");
+  } catch {
+    return;
+  }
+  const allowedRoots = await createAllowedRootService({ roots: [root] });
+  await assert.rejects(
+    () => allowedRoots.authorizeExisting(join(link, "secret.txt"), "file"),
+    (e) => e.code === "PATH_FORBIDDEN",
+  );
+  await assert.rejects(
+    () => allowedRoots.authorizeExisting(link, "directory"),
+    (e) => e.code === "PATH_FORBIDDEN",
+  );
+});
+
 test("AllowedRootService canonicalizes roots and rejects final/parent symlink escapes", async () => {
   const { root, allowedRoots } = await fixture();
   const outside = temp("pi-host-outside-"); writeFileSync(join(outside, "secret.txt"), "SECRET");
@@ -129,7 +151,7 @@ test("AllowedRoot promotion migrates deterministic durable/trusted ownership", a
   const configured = temp("pi-owner-configured-"); const parent = temp("pi-owner-parent-"); const childA = join(parent, "a"); const childB = join(parent, "b"); mkdirSync(childA); mkdirSync(childB); const parentCanonical = await import("node:fs/promises").then(({ realpath }) => realpath(parent));
   const trustedChildren = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); const receipts = await Promise.all([registerTrustedCreatedRoot(trustedChildren, childA), registerTrustedCreatedRoot(trustedChildren, childB)]); await trustedChildren.expandRoots([parent], "local"); await Promise.all(receipts.map((receipt) => receipt.rollback())); assert.equal(await trustedChildren.isAuthorized(parent, "directory"), true); assert.equal(trustedChildren.roots().includes(parentCanonical), true); assert.equal(trustedChildren.roots().length, 2);
 
-  const durableChild = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); await durableChild.expandRoots([childA], "local"); const parentReceipt = await registerTrustedCreatedRoot(durableChild, parent); assert.equal(durableChild.roots().includes(parentCanonical), true, "trusted parent may temporarily cover durable child"); await parentReceipt.rollback(); assert.equal(await durableChild.isAuthorized(childA, "directory"), true); assert.equal(await durableChild.isAuthorized(parent, "directory"), false); assert.equal(durableChild.roots().some((root) => root.endsWith("/a")), true);
+  const durableChild = await createAllowedRootService({ roots: [configured], maxRoots: 3, allowLocalExpansion: true }); await durableChild.expandRoots([childA], "local"); const parentReceipt = await registerTrustedCreatedRoot(durableChild, parent); assert.equal(durableChild.roots().includes(parentCanonical), true, "trusted parent may temporarily cover durable child"); await parentReceipt.rollback(); assert.equal(await durableChild.isAuthorized(childA, "directory"), true); assert.equal(await durableChild.isAuthorized(parent, "directory"), false); assert.equal(durableChild.roots().some((root) => root.endsWith("/a") || root.endsWith("\\a")), true);
 });
 
 test("AllowedRoot promotion uses replacement capacity and passes last-slot child-first probe", async () => {

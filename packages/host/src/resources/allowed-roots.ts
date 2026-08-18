@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { lstat, realpath, stat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { createSecureStateBackend, type FileIdentity } from "@fffattiger/pix-local-authority/state";
 import { HttpError } from "../errors.js";
 import type { HostLogger, HostMode } from "../types.js";
 import { AsyncMutex } from "./mutex.js";
@@ -28,7 +29,7 @@ export interface AllowedRootService {
   prepareExpansion(targets: readonly string[], mode: HostMode): Promise<RootExpansionPlan>;
   expandRoots(targets: readonly string[], mode: HostMode): Promise<RootExpansionResult>;
 }
-interface RootIdentity { dev: number; ino: number }
+type RootIdentity = FileIdentity;
 interface TrustedClaim {
   path: string;
   identity: RootIdentity;
@@ -79,6 +80,7 @@ interface RootState {
 export interface ManagedAuthorizedRootInput {
   worktreeId: string;
   path: string;
+  /** Legacy POSIX caller fields; live authorization uses platform file identity. */
   dev: number;
   ino: number;
 }
@@ -141,20 +143,72 @@ function validateAbsolutePath(value: string): string {
   if (!isAbsolute(value)) throw new HttpError(400, "INVALID_PATH", "Path must be absolute");
   return resolve(value);
 }
+function posixLedgerIdentity(dev: number, ino: number): RootIdentity {
+  return {
+    kind: "posix",
+    dev,
+    ino,
+    mode: 0,
+    nlink: 1,
+    size: 0,
+    uid: 0,
+    gid: 0,
+    isFile: false,
+    isDirectory: true,
+    isSymbolicLink: false,
+  };
+}
+
+function sameRootIdentity(left: RootIdentity, right: RootIdentity): boolean {
+  if (left.kind !== right.kind || !left.isDirectory || !right.isDirectory) return false;
+  if (left.kind === "posix" && right.kind === "posix") {
+    return !left.isSymbolicLink && !right.isSymbolicLink && left.dev === right.dev && left.ino === right.ino;
+  }
+  return left.kind === "windows"
+    && right.kind === "windows"
+    && !left.isReparsePoint
+    && !right.isReparsePoint
+    && left.volumeSerial === right.volumeSerial
+    && left.fileId === right.fileId;
+}
+
+async function captureDirectoryIdentity(path: string): Promise<RootIdentity> {
+  const backend = createSecureStateBackend();
+  const identity = await backend.fileIdentity(path);
+  if (!identity || !identity.isDirectory) throw new HttpError(400, "NOT_DIRECTORY", "Path is not a real directory");
+  if (identity.kind === "posix" && identity.isSymbolicLink) throw new HttpError(400, "NOT_DIRECTORY", "Path is not a real directory");
+  if (identity.kind === "windows" && identity.isReparsePoint) throw new HttpError(400, "NOT_DIRECTORY", "Path is not a real directory");
+  return identity;
+}
+
+async function rejectReparsePath(path: string): Promise<void> {
+  if (process.platform !== "win32") return;
+  const backend = createSecureStateBackend();
+  let current = path;
+  for (;;) {
+    const identity = await backend.fileIdentity(current).catch(() => null);
+    if (identity?.kind === "windows" && identity.isReparsePoint) {
+      throw new HttpError(403, "PATH_FORBIDDEN", "Path is outside the allowed roots");
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+}
+
 async function canonicalDirectoryWithIdentity(value: string): Promise<{ canonical: string; identity: RootIdentity }> {
   const normalized = validateAbsolutePath(value);
   let canonical: string;
   try { canonical = await realpath(normalized); }
   catch { throw new HttpError(404, "PATH_NOT_FOUND", "Directory not found"); }
-  const info = await lstat(canonical);
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new HttpError(400, "NOT_DIRECTORY", "Path is not a real directory");
-  return { canonical, identity: { dev: info.dev, ino: info.ino } };
+  const identity = await captureDirectoryIdentity(canonical);
+  return { canonical, identity };
 }
 async function identityStillMatches(path: string, expected: RootIdentity): Promise<boolean> {
   try {
     if (await realpath(path) !== path) return false;
-    const current = await lstat(path);
-    return current.isDirectory() && !current.isSymbolicLink() && current.dev === expected.dev && current.ino === expected.ino;
+    const current = await captureDirectoryIdentity(path);
+    return sameRootIdentity(current, expected);
   } catch { return false; }
 }
 function validateChildName(name: string): void {
@@ -210,6 +264,7 @@ function hasDurableAncestor(durable: Map<string, RootIdentity>, path: string): b
 
 function claimToRecord(claim: TrustedClaim): TrustedRootClaimRecord | null {
   if (!claim.repoRoot || !claim.repoIdentity || !claim.base || !claim.createdAt || !claim.source) return null;
+  if (claim.identity.kind !== "posix" || claim.repoIdentity.kind !== "posix") return null;
   const record: TrustedRootClaimRecord = {
     claimId: claim.claimId,
     path: claim.path,
@@ -393,11 +448,12 @@ export async function registerManagedAuthorizedRoot(
   input: ManagedAuthorizedRootInput,
 ): Promise<void> {
   const state = stateFor(service);
+  const liveIdentity = await captureDirectoryIdentity(input.path);
   await state.mutation.runExclusive(() => {
     state.managedClaims.set(input.worktreeId, {
       worktreeId: input.worktreeId,
       path: input.path,
-      identity: { dev: input.dev, ino: input.ino },
+      identity: liveIdentity,
     });
     state.records = deriveRecords(state.durableClaims, state.trustedClaims, state.managedClaims);
   });
@@ -441,9 +497,7 @@ export async function registerTrustedCreatedRoot(
   if (durableMeta) {
     const repo = await canonicalDirectoryWithIdentity(input.repoRoot);
     repoCanonical = repo.canonical;
-    // Cross-check repo identity via stat of repo root (dev/ino).
-    const repoStat = await stat(repoCanonical);
-    repoIdentity = { dev: repoStat.dev, ino: repoStat.ino };
+    repoIdentity = repo.identity;
     const base = await canonicalDirectoryWithIdentity(input.base);
     baseCanonical = base.canonical;
     const expectedBase = resolve(`${repoCanonical}-worktrees`);
@@ -615,10 +669,10 @@ export async function rehydrateTrustedCreatedRoots(
     if (resolve(record.path) !== record.path || resolve(record.repoRoot) !== record.repoRoot || resolve(record.base) !== record.base) {
       return false;
     }
-    // path real non-symlink dir with matching dev/ino
-    if (!(await identityStillMatches(record.path, { dev: record.dev, ino: record.ino }))) return false;
+    // path real non-symlink dir with matching platform identity
+    if (!(await identityStillMatches(record.path, posixLedgerIdentity(record.dev, record.ino)))) return false;
     // repo identity match
-    if (!(await identityStillMatches(record.repoRoot, { dev: record.repoDev, ino: record.repoIno }))) return false;
+    if (!(await identityStillMatches(record.repoRoot, posixLedgerIdentity(record.repoDev, record.repoIno)))) return false;
     // repoRoot still in current durable policy
     if (!(await durableAuthorizes(record.repoRoot))) return false;
     // base exact `${repoRoot}-worktrees` canonical real dir non-symlink
@@ -651,10 +705,10 @@ export async function rehydrateTrustedCreatedRoots(
     }
     acceptedById.set(record.claimId, {
       path: record.path,
-      identity: { dev: record.dev, ino: record.ino },
+      identity: posixLedgerIdentity(record.dev, record.ino),
       claimId: record.claimId,
       repoRoot: record.repoRoot,
-      repoIdentity: { dev: record.repoDev, ino: record.repoIno },
+      repoIdentity: posixLedgerIdentity(record.repoDev, record.repoIno),
       base: record.base,
       createdAt: record.createdAt,
       source: TRUSTED_ROOTS_SOURCE,
@@ -749,6 +803,7 @@ export async function createAllowedRootService(policy: AllowedRootPolicy): Promi
 
   async function authorizeExisting(target: string, kind: "any" | "file" | "directory" = "any"): Promise<AuthorizedPath> {
     const requestedPath = validateAbsolutePath(target);
+    await rejectReparsePath(requestedPath);
     let canonicalPath: string;
     try { canonicalPath = await realpath(requestedPath); } catch { throw new HttpError(404, "PATH_NOT_FOUND", "Path not found"); }
     const root = matchingRoot(state.records, canonicalPath);

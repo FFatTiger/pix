@@ -3636,3 +3636,11 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Runtime `openSession` now uses `openListedSessionExact`: list match → open → `getSessionId()` equality. Missing, unreadable, or reused paths are sanitized `not_found` and never start a Worker against another session.
 - Catalog `session-store.tryOpen` already had this check; this slice closes the runtime open path that previously called `SessionManager.open` without an identity fence.
 - Adapter `check-boundaries.mjs` now resolves the package root with `fileURLToPath` and POSIX-normalizes relatives so Windows `\` paths are not treated as public leaks.
+
+## 82. Cross-platform CP-14 — AllowedRoot live platform identity
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `e2e109b`.
+- In-memory AllowedRoot membership now pins directories with `createSecureStateBackend().fileIdentity()`: POSIX `{dev,ino}` or Windows `{volumeSerial,fileId}`.
+- Windows junction/reparse intermediates are rejected as `PATH_FORBIDDEN` before `realpath` can follow them. Existing symlink-escape codes stay `PATH_FORBIDDEN`.
+- Trusted-roots / managed-worktrees on-disk schemas stay v1 POSIX `{dev,ino}`. Windows claims are not packed into those fields; `claimToRecord()` returns null for non-POSIX identity.
+- This is not ledger v2, Protocol path-flavor, Job Object, or Windows product support.

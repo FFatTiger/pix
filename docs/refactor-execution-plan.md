@@ -111,8 +111,9 @@ CP-00 docs/SSOT
 | `CP-11` | Client workspace path helpers：Windows drive root 保持 `C:/`，drive 路径大小写不敏感 containment/breadcrumb/parent | `DONE` | `packages/client` | `CP-10` | `paths.test.ts` 22/22 PASS；不宣称 G5/PWA/Protocol path-flavor 完成 |
 | `CP-12` | Worker/Host 公共错误净化覆盖 Windows drive/UNC/extended/`file://` 路径；Git stderr 不再原样回传 | `DONE` | `packages/agent-worker` + `packages/host` | `CP-11` | protocol-error + Host process-runner 定向 tests PASS |
 | `CP-13` | Adapter exact-open：runtime `openSession` 打开后校验 `getSessionId()`；路径复用/open 失败一律 `not_found`；adapter boundary 脚本 Windows 路径规范化 | `DONE` | `packages/pi-sdk-adapter` | `CP-12` | exact-open 3/3 PASS；adapter boundaries PASS |
+| `CP-14` | AllowedRoot 内存授权改用平台 `FileIdentity`；Windows junction/reparse 拒绝为 `PATH_FORBIDDEN`；不把 file ID 写入 v1 `{dev,ino}` ledger | `DONE` | `packages/host` AllowedRoot | `CP-13` | AllowedRoot 定向 11/11 PASS；Windows junction 拒绝；ledger schema 仍 v1 POSIX-only；不宣称 ledger v2 / worktree disk identity / Job Object / 产品支持 |
 
-后续 lane：完成 CP-08 独立验证 + CP-09 → process tree / Job Object。
+后续 lane：process tree / Job Object 单一 owner；ledger v2 与 managed-worktree disk identity 仍后置。
 
 ---
 
