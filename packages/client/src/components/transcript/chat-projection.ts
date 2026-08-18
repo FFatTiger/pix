@@ -150,6 +150,40 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
   // slot — otherwise it becomes a stray empty 10px row at turn boundaries.
   const isStandaloneRenderable = (message: AgentMessage): boolean => message.role !== "toolResult";
 
+  // Assistant content ALWAYS renders through ProcessGroup (timeline/tabs) —
+  // never through the legacy bare message renderer, even when the content is
+  // incomplete (leaderless committed assistant, mid-turn after compaction,
+  // a turn with no final answer). Collect a run of assistant messages into
+  // process rows (+ the final answer row when an answer exists).
+  const pushLeaderlessAssistantRows = (
+    rows: ChatTranscriptRow[],
+    fromIdx: number,
+    endIdx: number,
+  ): number => {
+    let j = fromIdx;
+    while (j < endIdx && messages[j]!.role === "assistant") j += 1;
+    const assistantIndices: number[] = [];
+    for (let k = fromIdx; k < j; k++) assistantIndices.push(k);
+    const processBlocks = collectProcessContentBlocks(messages as AgentMessage[], [...entryIds], assistantIndices, toolResults);
+    if (processBlocks.length > 0) {
+      rows.push({ kind: "process", key: `leaderless-process-${fromIdx}`, blocks: processBlocks, isStreaming: false });
+    }
+    // Final answer: the last assistant message carrying a real answer.
+    let answerMessage: AssistantMessage | null = null;
+    for (let k = j - 1; k >= fromIdx; k--) {
+      const candidate = messages[k] as AssistantMessage;
+      const split = splitFinalAssistantBlocks(candidate);
+      if (split.answerBlocks.length > 0) {
+        answerMessage = withAssistantBlocks(candidate, split.answerBlocks, { omitUsage: true });
+        break;
+      }
+    }
+    if (answerMessage) {
+      rows.push({ kind: "message", key: `leaderless-answer-${fromIdx}`, message: answerMessage });
+    }
+    return j;
+  };
+
   // Defensive leaderless live tail: a runtime can stream an assistant turn
   // whose triggering user message is not in `messages` (e.g. a trimmed
   // compaction prompt or a synthetic projection). The source never hit this
@@ -237,6 +271,12 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     // boundary so its first following agent response still uses the
     // ProcessGroup rendering path rather than the legacy message renderer.
     if (msg.role !== "user" && !startsCompactionTurn) {
+      // Assistant content always goes through ProcessGroup (timeline/tabs),
+      // even standalone — never the legacy bare message renderer.
+      if (msg.role === "assistant") {
+        idx = pushLeaderlessAssistantRows(rows, idx, messages.length);
+        continue;
+      }
       if (isStandaloneRenderable(msg)) rows.push(renderMessage(idx));
       idx += 1;
       continue;
@@ -322,8 +362,19 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     }
 
     if (finalAssistantIdx === -1) {
-      for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
-        if (isStandaloneRenderable(messages[renderIdx]!)) rows.push(renderMessage(renderIdx));
+      // No committed final answer in the turn: the assistant process content
+      // still renders through ProcessGroup (timeline/tabs), not the legacy
+      // bare message renderer. Non-assistant entries keep their own rows.
+      rows.push(renderMessage(userIdx));
+      let cursor = userIdx + 1;
+      while (cursor < endIdx) {
+        const m = messages[cursor]!;
+        if (m.role === "assistant") {
+          cursor = pushLeaderlessAssistantRows(rows, cursor, endIdx);
+        } else {
+          if (isStandaloneRenderable(m)) rows.push(renderMessage(cursor));
+          cursor += 1;
+        }
       }
       idx = endIdx;
       continue;
@@ -394,7 +445,12 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       rows.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles }));
     }
     for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
-      if (isStandaloneRenderable(messages[renderIdx]!)) rows.push(renderMessage(renderIdx));
+      const trailing = messages[renderIdx]!;
+      if (trailing.role === "assistant") {
+        renderIdx = pushLeaderlessAssistantRows(rows, renderIdx, endIdx) - 1;
+      } else if (isStandaloneRenderable(trailing)) {
+        rows.push(renderMessage(renderIdx));
+      }
     }
     idx = endIdx;
   }
