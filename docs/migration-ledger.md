@@ -3852,3 +3852,9 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - `pix doctor [--platform] [--json]` is a read-only report: OS/arch/Node/engines/backend kind/sessiond dir/host dir/endpoint kind/path budget/Git/sessiond state/last-start/secure-context guidance.
 - sessiond writes a bounded `sessiond.last-start.json` (fixed codes, no secret/path). `pix start` reads it after an early exit. Not a bootstrap pipe and not Job Object.
 
+
+## 111. Legacy brand name in ChatMinimap source comment
+
+- Branch/base: `feat/cross-platform-g0-baseline` / `128981a`.
+- `packages/client/src/components/chat/ChatMinimap.tsx` was merged from upstream `04ad759` (fork-style turn navigation rail, "Codex ThreadUserMessageNavigationRail" style). Its doc comment cited the legacy product name, which tripped the `check:architecture` no-legacy-brand gate on every OS.
+- The comment no longer uses the legacy brand; the source history is recorded here instead (the ledger is the one place allowed to keep the old brand as migration evidence). No gate logic or skip-list change.

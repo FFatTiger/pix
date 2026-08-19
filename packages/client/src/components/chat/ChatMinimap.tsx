@@ -5,8 +5,9 @@ import { splitFinalAssistantBlocks } from "@/lib/message-display";
 import { useI18n } from "@/hooks/useI18n";
 
 /**
- * Turn navigation rail (ported from the FFatTiger/pi-web fork's
- * ChatMinimap — "Codex ThreadUserMessageNavigationRail" style).
+ * Turn navigation rail (ported from the upstream fork's ChatMinimap —
+ * "Codex ThreadUserMessageNavigationRail" style; source history is recorded
+ * in docs/migration-ledger.md).
  *
  * One horizontal dash marker per USER turn, vertically centered on the
  * transcript's left edge. Markers grow on hover/scrub with neighbor
