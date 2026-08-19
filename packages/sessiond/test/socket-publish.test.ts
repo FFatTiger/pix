@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { SessiondError } from "../src/errors.js";
+import { currentProcessStartIdentity } from "@fffattiger/pix-local-authority/process";
 import {
   isPrivateSocketName,
   listPrivateSocketAliases,
@@ -373,8 +374,14 @@ test("live pid lock with an unavailable endpoint is a conflict, never taken over
   const paths = sessiondPaths(dir);
   try {
     // A live pid (this test process) holds the lock, but there is no socket and
-    // no listener: the lock holder is authoritative until it dies.
-    await writeLockFixture(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "live-unreachable", createdAt: 0 }));
+    // no listener: the lock holder is authoritative until it dies. On Linux a
+    // live pid without a start identity is obstructed, so carry our own start
+    // identity like the production lock does.
+    const start = currentProcessStartIdentity();
+    await writeLockFixture(
+      paths.lockFile,
+      JSON.stringify({ pid: process.pid, instanceId: "live-unreachable", createdAt: 0, ...(start ? { start } : {}) }),
+    );
     await assert.rejects(
       startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } }),
       (error) => error instanceof SessiondError && error.code === "conflict",
@@ -584,8 +591,10 @@ try {
 
       // Wait for the losers to exit and the single winner to become pingable
       // through the public endpoint (the lock may appear before the socket).
+      // WSL pays ~40s per fresh child to load the Pi SDK module graph, so the
+      // deadline must cover slow platforms; macOS/Windows finish in seconds.
       let pinged = false;
-      const deadline = Date.now() + 8_000;
+      const deadline = Date.now() + 120_000;
       while (Date.now() < deadline && !pinged) {
         const exits = spawned.filter((c) => c.exitCode !== null || c.signalCode !== null).length;
         const lock = await readInstanceLockStrict(paths);
