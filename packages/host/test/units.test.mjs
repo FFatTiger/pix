@@ -114,8 +114,8 @@ test("resolveHostMode distinguishes local vs lan", () => {
 });
 
 test("isOriginAllowed enforces same-origin for API requests", () => {
-  const sameSite = new Request("http://localhost:30141/v1/health", {
-    headers: { host: "localhost:30141", origin: "http://localhost:30141" },
+  const sameSite = new Request("http://localhost:31415/v1/health", {
+    headers: { host: "localhost:31415", origin: "http://localhost:31415" },
   });
   assert.ok(isOriginAllowed(sameSite));
 

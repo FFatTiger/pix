@@ -39,7 +39,7 @@ test("malformed Host headers (userinfo / whitespace) are rejected", async () => 
 
 test("loopback localhost and IP literals are trusted", async () => {
   const { app } = appWithGateDisabled();
-  for (const host of ["localhost", "localhost:30141", "127.0.0.1", "[::1]", "127.0.0.1:8080"]) {
+  for (const host of ["localhost", "localhost:31415", "127.0.0.1", "[::1]", "127.0.0.1:8080"]) {
     const res = await app.request("http://localhost/v1/health", { headers: { host } });
     assert.equal(res.status, 200, `host ${host} should be trusted`);
   }
@@ -209,10 +209,10 @@ test("cross-site Origin on API is rejected with 403", async () => {
 
 test("same-site Origin on API is allowed (host+port match, scheme-insensitive)", async () => {
   const { app } = appWithGateDisabled();
-  const res = await app.request("http://localhost:30141/v1/health", {
+  const res = await app.request("http://localhost:31415/v1/health", {
     headers: {
-      host: "localhost:30141",
-      origin: "http://localhost:30141",
+      host: "localhost:31415",
+      origin: "http://localhost:31415",
     },
   });
   assert.equal(res.status, 200);
@@ -229,9 +229,9 @@ test("same-site Origin on API is allowed (host+port match, scheme-insensitive)",
 
 test("origin with wrong port is rejected", async () => {
   const { app } = appWithGateDisabled();
-  const res = await app.request("http://localhost:30141/v1/health", {
+  const res = await app.request("http://localhost:31415/v1/health", {
     headers: {
-      host: "localhost:30141",
+      host: "localhost:31415",
       origin: "http://localhost:9999",
     },
   });

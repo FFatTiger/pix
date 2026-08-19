@@ -7,7 +7,7 @@
  */
 
 export const DEFAULT_HOSTNAME = "127.0.0.1";
-export const DEFAULT_PORT = 30141;
+export const DEFAULT_PORT = 31415;
 
 export interface BindOptions {
   hostname: string;

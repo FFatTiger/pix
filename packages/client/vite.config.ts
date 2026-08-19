@@ -29,7 +29,7 @@ export default defineConfig({
     proxy: {
       // Host will own /v1; local Vite dev can forward when a host is running.
       "/v1": {
-        target: "http://127.0.0.1:30141",
+        target: "http://127.0.0.1:31415",
         changeOrigin: true,
       },
     },
