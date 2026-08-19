@@ -509,10 +509,22 @@ async function sweepStaleSecretTemps(paths: SessiondPaths): Promise<void> {
   }
 }
 
-/** Platform Unix `sun_path` budget in bytes, or null on Windows named pipes. */
+/**
+ * Platform Unix socket `sun_path` budget in **string bytes** (the reachable
+ * pathname length), or null on Windows named pipes.
+ *
+ * `struct sockaddr_un.sun_path` reserves a fixed array that also holds the
+ * terminating NUL, so the usable pathname excludes it:
+ *   - Linux:   sun_path is 108 bytes total  → max pathname 107 bytes
+ *   - macOS/BSD: sun_path is 104 bytes total → max pathname 103 bytes
+ *
+ * `Buffer.byteLength(path, "utf8")` counts the pathname (no NUL), so these
+ * values are the correct caps to compare against — the previous 104/108 were
+ * off by one and let a bound fail purely on the terminator.
+ */
 export function unixSocketPathBudgetBytes(platform: NodeJS.Platform = process.platform): number | null {
   if (platform === "win32") return null;
-  return platform === "darwin" ? 104 : 108;
+  return platform === "darwin" ? 103 : 107;
 }
 /** Naming pattern for per-instance private sockets, so orphan discovery can scan for them. */
 const PRIVATE_SOCKET_PREFIX = "pixsd-";

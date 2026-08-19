@@ -12,7 +12,7 @@ import { createSecureStateBackend } from "@fffattiger/pix-local-authority/state"
  *
  * POSIX: `os.tmpdir()` is often a system alias (`/tmp` → `/private/tmp`,
  * `/var/folders` → `/private/var/folders`). VS Code binds Unix sockets under
- * that short path (Darwin never realpaths it — macOS `sun_path` is 104 bytes).
+ * that short path (Darwin never realpaths it — macOS `sun_path` pathname is 103 bytes).
  * pix still fail-closes a leftover symlink *component*, so the walk runs on
  * `canonicalizePath` while `directory` stays the short operational path that
  * `startDaemon` publishes the socket at.

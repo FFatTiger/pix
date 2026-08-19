@@ -19,7 +19,7 @@ test("classifyLastStartError maps sanitized startup failures", () => {
 
 test("last-start records never echo raw paths or secrets", () => {
   const record = lastStartRecordFromError(
-    new SessiondError("forbidden", "sessiond socket path too long (C:\\\\Users\\\\secret\\\\sessiond > 108 bytes)"),
+    new SessiondError("forbidden", "sessiond socket path too long (C:\\\\Users\\\\secret\\\\sessiond > 107 bytes)"),
     "2026-01-01T00:00:00.000Z",
   );
   assert.equal(record.message, "sessiond socket path is too long");

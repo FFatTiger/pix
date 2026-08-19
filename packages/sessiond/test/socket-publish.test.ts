@@ -457,7 +457,7 @@ test("link EEXIST never overwrites; dev/ino mismatch never deletes", { skip: isW
 });
 
 test("private socket path length respects the platform sun_path limit", { skip: isWindows }, async () => {
-  const maxBytes = process.platform === "darwin" ? 104 : 108;
+  const maxBytes = process.platform === "darwin" ? 103 : 107;
   const tdir = tmpdir();
   // Private basename is fixed ("pixsd-" + 6 hex + ".sock") — derive its byte
   // length from the builder so this stays correct if the scheme ever changes.
@@ -538,8 +538,8 @@ test("needsUnixSocketPublication matches the platform", async () => {
 
 test("unixSocketPathBudgetBytes is platform-native", () => {
   assert.equal(unixSocketPathBudgetBytes("win32"), null);
-  assert.equal(unixSocketPathBudgetBytes("darwin"), 104);
-  assert.equal(unixSocketPathBudgetBytes("linux"), 108);
+  assert.equal(unixSocketPathBudgetBytes("darwin"), 103);
+  assert.equal(unixSocketPathBudgetBytes("linux"), 107);
 });
 
 // Windows branch proof: the daemon binds the public named pipe directly (no

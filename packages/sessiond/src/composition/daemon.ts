@@ -354,23 +354,26 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     const application = new SessiondApplication(service);
     // Unix: libuv binds the private per-instance path (never the stable public
     // one), so a close can never unlink another daemon's public endpoint.
-    // Windows: named pipes leave no files; bind the public pipe directly.
+    // Windows: named pipes leave no files; `net.Server.listen(path)` binds the
+    // `\\.\pipe\...` name natively via libuv (D-02: secret AUTH is the primary
+    // boundary; the instance lock file is the double-instance authority). The
+    // previous custom native protected-pipe duplex is no longer on the
+    // production data plane, removing the 64 KiB single-write crash/short-write
+    // surface in favour of Node's well-tested byte stream + backpressure.
     const listenEndpoint = privatePath ?? paths.endpoint;
-    const windowsBackend = !needsUnixSocketPublication() ? createSecureStateBackend() : undefined;
-    if (windowsBackend && windowsBackend.kind !== "windows") {
-      throw new SessiondError("unavailable", "sessiond secure state is unavailable on this platform");
+    // Keep the platform guard: the Windows secure-state backend must exist so
+    // the private dir / secret / lock paths are usable. The RPC transport,
+    // however, uses Node's native named pipe.
+    if (!needsUnixSocketPublication()) {
+      const backend = createSecureStateBackend();
+      if (backend.kind !== "windows") {
+        throw new SessiondError("unavailable", "sessiond secure state is unavailable on this platform");
+      }
     }
     server = new SessiondRpcServer({
       endpoint: listenEndpoint,
       secret,
       handler: application,
-      ...(windowsBackend?.kind === "windows"
-        ? {
-            listen: (onConnection) => windowsBackend.listenProtectedNamedPipe(listenEndpoint, (connection) => {
-              onConnection(connection as import("node:stream").Duplex);
-            }),
-          }
-        : {}),
       // Internal, authenticated control-plane shutdown: ACK-before-close via
       // the RPC server, fenced on the exact lock instance id, and gated so the
       // daemon transition starts only after the response was flushed.
@@ -379,7 +382,14 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     try {
       await server.listen();
     } catch (error) {
+      // Native protected-pipe path (legacy / library): LOCK_BUSY names another
+      // listener. Node native named-pipe path: a second bind on the same pipe
+      // surfaces EADDRINUSE. Both fail closed to the same fixed conflict error;
+      // the authoritative double-instance guard remains the instance lock.
       if (error instanceof LocalAuthorityError && error.code === "LOCK_BUSY") {
+        throw new SessiondError("conflict", "another sessiond instance is running");
+      }
+      if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
         throw new SessiondError("conflict", "another sessiond instance is running");
       }
       throw error;
