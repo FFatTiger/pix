@@ -345,7 +345,6 @@ test("seam failures map to fixed sanitized errors and never leak raw text", asyn
   const roots = await rootsFor(root);
   const rawLeak = new Error(`ENOENT: /secret/agent-dir/trust.json raw ${root}`);
   const cases = [
-    [{ code: "TRUST_STORE_UNSAFE", message: "Trust store is unsafe" }, 503, "TRUST_MUTATION_UNAVAILABLE"],
     [{ code: "TRUST_WRITE_FAILED", message: "Trust write failed" }, 500, "TRUST_MUTATION_FAILED"],
     [{ code: "TRUST_WRITE_UNVERIFIED", message: "Trust write could not be verified" }, 500, "TRUST_MUTATION_FAILED"],
     [{ code: "TRUST_INPUT_INVALID", message: "Trust mutation input is invalid" }, 400, "INVALID_TRUST_BODY"],

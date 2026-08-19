@@ -24,8 +24,7 @@ export const CATALOG_UNAVAILABLE_MESSAGE = "Catalog is unavailable";
 /** Fixed trust reason when reload is denied. Never forwards free-form backend text. */
 export const TRUST_NOT_TRUSTED_REASON = "Project resources are not trusted";
 
-/** Fixed sanitized trust-mutation failure messages (never raw seam text). */
-export const TRUST_MUTATION_UNAVAILABLE_MESSAGE = "Trust mutation is unavailable";
+/** Fixed sanitized trust-mutation failure message (never raw seam text). */
 export const TRUST_MUTATION_FAILED_MESSAGE = "Trust mutation failed";
 
 /** Frozen POST /v1/trust body ceiling (the strict body is a handful of bytes). */
@@ -383,9 +382,8 @@ export function mapTrustMutationError(error: unknown): HttpError {
   if (code === "TRUST_INPUT_INVALID") {
     return new HttpError(400, "INVALID_TRUST_BODY", "Body must be exactly {cwd, level}");
   }
-  if (code === "TRUST_STORE_UNSAFE") {
-    return new HttpError(503, "TRUST_MUTATION_UNAVAILABLE", TRUST_MUTATION_UNAVAILABLE_MESSAGE);
-  }
+  // D-01: the adapter no longer throws TRUST_STORE_UNSAFE (Pi owns persistence
+  // path-safety). Unknown / write / unverified codes collapse to a fixed 500.
   return new HttpError(500, "TRUST_MUTATION_FAILED", TRUST_MUTATION_FAILED_MESSAGE);
 }
 
