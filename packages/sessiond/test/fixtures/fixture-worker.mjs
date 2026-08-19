@@ -77,6 +77,10 @@ switch (mode) {
   }
   case "hang": {
     // Ignore stdin EOF; exit only on SIGTERM/SIGKILL.
+    // Darwin: resume() alone is not enough — a piped stdin that ends will
+    // still exit the process unless `end` is observed (VS Code child wrappers
+    // keep an explicit stdio lifetime; they do not rely on resume()).
+    process.stdin.on("end", () => {});
     process.stdin.resume();
     onSignal((signal) => {
       process.stderr.write(`fixture got ${signal}\n`);
@@ -85,6 +89,7 @@ switch (mode) {
     break;
   }
   case "hang-term": {
+    process.stdin.on("end", () => {});
     process.stdin.resume();
     // Swallow SIGTERM; only SIGKILL works.
     try {

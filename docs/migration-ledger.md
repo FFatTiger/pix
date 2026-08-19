@@ -3885,3 +3885,4 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 - VS Code binds Unix sockets under short `tmpdir()` on Darwin (never realpath — macOS `sun_path` is 104 bytes) and prefers `XDG_RUNTIME_DIR` on Linux. OpenCode `realpath`s paths for cache keys and writes secrets at `0o600`. pix keeps the stricter walk (any leftover symlink component still fails closed) but tests keep the short operational path, walk `canonicalizePath`, and seed locks at `0600`.
 - Worker connection now drains an already-reaped child after attaching `exit` (VS Code child-wrapper pattern). Darwin + POSIX `detached:true` can miss the `exit` event; a missed exit emptied the event loop and `--test-force-exit` cancelled the rest of `worker-process`.
+- Hang fixtures must observe stdin `end` on Darwin. `resume()` alone still exits when the parent closes the pipe, so close-escalation tests never reached SIGKILL.
