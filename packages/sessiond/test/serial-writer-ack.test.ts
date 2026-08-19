@@ -18,10 +18,10 @@ class FakeSocket extends EventEmitter {
   destroyed = false;
   /** When true, write() returns false (backpressure) and drain is required. */
   block = false;
-  readonly writes: Array<{ data: string; callback: ((error?: Error | null) => void) | undefined }> = [];
-  write(data: string, callback?: (error?: Error | null) => void): boolean {
+  readonly writes: Array<{ data: Uint8Array; callback: ((error?: Error | null) => void) | undefined }> = [];
+  write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean {
     if (this.destroyed) throw new Error("closed");
-    this.writes.push({ data, callback });
+    this.writes.push({ data: typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data), callback });
     return !this.block;
   }
   fireWriteCallback(index = this.writes.length - 1, error?: Error | null): void {
@@ -189,14 +189,14 @@ test("acked flush preserves ordering ahead of and behind ordinary frames", async
   const third = writer.enqueue("tail\n");
   await Promise.resolve();
   assert.deepEqual(
-    socket.writes.map((w) => w.data),
+    socket.writes.map((w) => Buffer.from(w.data).toString("utf8")),
     ["ping\n", "shutdown\n"],
     "the trailing ordinary frame must wait behind the unacknowledged frame",
   );
   assert.equal(socket.writes.length, 2);
   socket.fireWriteCallback(1);
   await Promise.all([first, acked, third]);
-  assert.deepEqual(socket.writes.map((w) => w.data), ["ping\n", "shutdown\n", "tail\n"]);
+  assert.deepEqual(socket.writes.map((w) => Buffer.from(w.data).toString("utf8")), ["ping\n", "shutdown\n", "tail\n"]);
 });
 
 test("acked flush enqueue after close rejects with a catchable error", async () => {

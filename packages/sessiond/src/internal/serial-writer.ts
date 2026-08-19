@@ -2,7 +2,7 @@ import type { EventEmitter } from "node:events";
 import { SessiondError } from "../errors.js";
 
 export interface RpcWriteStream extends EventEmitter {
-  write(data: string, cb?: (error?: Error | null) => void): boolean;
+  write(data: string | Uint8Array, cb?: (error?: Error | null) => void): boolean;
   destroy(error?: Error): void;
 }
 
@@ -12,16 +12,22 @@ export interface SerialSocketWriterOptions {
 }
 
 /**
- * Chunk size for ordinary frames. A single `write()` larger than the
- * platform pipe buffer (Windows named pipe default 64 KiB) can hang the
- * native overlapped WriteFile; every chunk stays well under that bound.
+ * Chunk size for ordinary frames, in UTF-8 **bytes**. A single `write()`
+ * larger than the platform pipe buffer (Windows named pipe default 64 KiB)
+ * can hang or fail the underlying I/O, so every chunk stays well under that
+ * bound. Chunking is performed on an already-encoded byte buffer (never on
+ * UTF-16 character counts), so multibyte CJK/emoji never inflate a chunk past
+ * the platform limit.
  */
 const CHUNK_BYTES = 32 * 1024;
 /** Bounded wait for a `drain` after backpressure (fail-closed, never wedge). */
 const DRAIN_WAIT_MS = 15_000;
 
 interface Frame {
+  /** The original frame text (used for the acknowledged, single-write path). */
   data: string;
+  /** UTF-8 byte encoding of {@link Frame.data}; encoded exactly once per frame. */
+  encoded: Buffer;
   bytes: number;
   resolve: () => void;
   reject: (error: Error) => void;
@@ -157,7 +163,7 @@ export class SerialSocketWriter {
       return Promise.reject(error);
     }
     return new Promise<void>((resolve, reject) => {
-      const frame: Frame = { data, bytes, resolve, reject, barrier };
+      const frame: Frame = { data, encoded: Buffer.from(data, "utf8"), bytes, resolve, reject, barrier };
       this.queue.push(frame);
       this.queuedBytes += bytes;
       if (barrier) {
@@ -198,12 +204,17 @@ export class SerialSocketWriter {
   private async flushFrame(frame: Frame): Promise<void> {
     const barrier = frame.barrier;
     if (barrier === undefined) {
-      // Chunked write: a single write() larger than the platform pipe buffer
-      // (Windows named pipe default 64 KiB) can hang the native overlapped
-      // WriteFile forever. VS Code / Pi both write in bounded chunks; the
-      // protocol only cares about the final newline, so splitting is safe.
-      for (let offset = 0; offset < frame.data.length; offset += CHUNK_BYTES) {
-        const chunk = frame.data.slice(offset, offset + CHUNK_BYTES);
+      // Byte-accurate chunking of the already-encoded frame: split the UTF-8
+      // byte buffer into subarray views each well under the platform pipe
+      // buffer. Because chunks are byte views of a single Buffer, a multibyte
+      // character is never split/re-encoded and a chunk can never exceed
+      // CHUNK_BYTES bytes regardless of the character width (unlike the old
+      // UTF-16 character slicing, which could balloon a 32K-char frame past
+      // 64 KiB on Windows). The protocol only cares about the final newline,
+      // so splitting is safe.
+      const buf = frame.encoded;
+      for (let offset = 0; offset < buf.length; offset += CHUNK_BYTES) {
+        const chunk = buf.subarray(offset, Math.min(offset + CHUNK_BYTES, buf.length));
         if (!this.socket.write(chunk)) {
           // Backpressure: wait for a real drain or for the writer to close.
           // A concurrent close rejects `frame` via `fail` and resolves this
@@ -216,13 +227,14 @@ export class SerialSocketWriter {
       return;
     }
     // Acknowledged flush: hand off with a per-write callback and (when
-    // backpressure) wait for a drain too, bounded by the frame timeout.
+    // backpressure) wait for a drain too, bounded by the frame timeout. The
+    // frame is written as one UTF-8 byte buffer.
     return new Promise<void>((resolveFlush, rejectFlush) => {
       barrier.resolveFlush = resolveFlush;
       barrier.rejectFlush = rejectFlush;
       let wrote = false;
       try {
-        wrote = this.socket.write(frame.data, (error?: Error | null) => {
+        wrote = this.socket.write(frame.encoded, (error?: Error | null) => {
           if (error) {
             // The write callback reported a failure (e.g. EPIPE delivered via
             // the callback rather than the socket 'error' event). Fail closed
