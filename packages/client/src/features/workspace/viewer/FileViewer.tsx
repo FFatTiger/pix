@@ -170,11 +170,12 @@ function DownloadLink({ filePath, sourceSessionId }: { filePath: string; sourceS
 /** @ button — insert this file's relative path into the chat input. */
 function MentionButton({ filePath, cwd, onAtMention }: { filePath: string; cwd?: string | undefined; onAtMention?: ((relativePath: string, isDir: boolean) => void) | undefined }) {
   const { t } = useI18n();
+  const { pathFlavor } = useCapabilities();
 
   return (
     <button
       type="button"
-      onClick={() => onAtMention?.(getRelativeFilePath(filePath, cwd), false)}
+      onClick={() => onAtMention?.(getRelativeFilePath(filePath, cwd, pathFlavor), false)}
       title={t("desktop.insertFileMention")}
       aria-label={t("desktop.insertFileMention")}
       disabled={!onAtMention}
@@ -560,6 +561,7 @@ function GitDiffView({ patch }: { patch: string }) {
 
 function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
   const { t } = useI18n();
+  const { pathFlavor } = useCapabilities();
   const [bust, setBust] = useState(0);
   const [size, setSize] = useState<number | null>(null);
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
@@ -608,7 +610,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
         }}
       >
         <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
+          {getRelativeFilePath(filePath, cwd, pathFlavor)}
         </span>
         <WatchStatusBadge {...watchStatus} />
         <span style={{ marginLeft: "auto" }}>{ext || t("desktop.image")}</span>
@@ -666,6 +668,7 @@ function formatDuration(seconds: number): string {
 
 function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
   const { t } = useI18n();
+  const { pathFlavor } = useCapabilities();
   const [bust, setBust] = useState(0);
   const [size, setSize] = useState<number | null>(null);
   const [duration, setDuration] = useState<number | null>(null);
@@ -713,7 +716,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
         }}
       >
         <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
+          {getRelativeFilePath(filePath, cwd, pathFlavor)}
         </span>
         <WatchStatusBadge {...watchStatus} />
         <span style={{ marginLeft: "auto" }}>{ext || t("desktop.audio")}</span>
@@ -754,6 +757,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
 
 function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
   const { t } = useI18n();
+  const { pathFlavor } = useCapabilities();
   const options = useWorkspaceViewerOptions();
   const queryClient = useQueryClient();
   const [bust, setBust] = useState(0);
@@ -823,7 +827,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
         }}
       >
         <span style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
+          {getRelativeFilePath(filePath, cwd, pathFlavor)}
         </span>
         <WatchStatusBadge {...watchStatus} />
         <span style={{ marginLeft: "auto" }}>{ext === "docx" ? t("desktop.docxPreview") : "pdf"}</span>
@@ -1013,7 +1017,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
         <div style={{ padding: "5px 16px", borderBottom: "1px solid var(--border)", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
+          {getRelativeFilePath(filePath, cwd, pathFlavor)}
         </div>
         <div style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}><GitDiffView patch={gitDiff.patch} /></div>
       </div>
@@ -1064,7 +1068,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
         }}
       >
         <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
+          {getRelativeFilePath(filePath, cwd, pathFlavor)}
         </span>
         <WatchStatusBadge {...watchStatus} />
         <span style={{ marginLeft: "auto" }}>{data.language}</span>
