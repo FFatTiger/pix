@@ -1533,7 +1533,7 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy/`file-links` 按 `pathFlavor`、Settings Projects 列出/扩根 | 扩根仍非持久账本 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
 
-执行切片 CP-00–CP-46 记为 DONE。CP-47（macOS `/tmp`/`/var` 系统别名 fixture + 0600 lock seed）进行中。后置：Job Object、ledger v2、packaged release。
+执行切片 CP-00–CP-47 记为 DONE。后置：Job Object、ledger v2、packaged release。
 
 ### 16.3 审计条目对照
 
