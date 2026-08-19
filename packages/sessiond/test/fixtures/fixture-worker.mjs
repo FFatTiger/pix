@@ -46,6 +46,14 @@ function onSignal(handler) {
   }
 }
 
+/** Keep a referenced handle so Darwin does not exit when a piped stdin ends. */
+function ignoreStdinEnd() {
+  process.stdin.on("data", () => {});
+  process.stdin.on("end", () => {});
+  process.stdin.resume();
+  setInterval(() => {}, 1 << 30);
+}
+
 function drainStdin(onLine, onEnd) {
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on("line", (line) => {
@@ -77,11 +85,9 @@ switch (mode) {
   }
   case "hang": {
     // Ignore stdin EOF; exit only on SIGTERM/SIGKILL.
-    // Darwin: resume() alone is not enough — a piped stdin that ends will
-    // still exit the process unless `end` is observed (VS Code child wrappers
-    // keep an explicit stdio lifetime; they do not rely on resume()).
-    process.stdin.on("end", () => {});
-    process.stdin.resume();
+    // Darwin: an empty `end` listener does not keep the event loop alive after
+    // a piped stdin closes. VS Code child wrappers keep an explicit handle.
+    ignoreStdinEnd();
     onSignal((signal) => {
       process.stderr.write(`fixture got ${signal}\n`);
       process.exit(0);
@@ -89,8 +95,7 @@ switch (mode) {
     break;
   }
   case "hang-term": {
-    process.stdin.on("end", () => {});
-    process.stdin.resume();
+    ignoreStdinEnd();
     // Swallow SIGTERM; only SIGKILL works.
     try {
       process.on("SIGTERM", () => {
