@@ -5,7 +5,7 @@
 > 当前目标不是继续维护旧 Next.js 单体，而是在独立的 `pix` 仓库中交付新架构产品。
 > 第一里程碑必须是一个可以实际构建和启动的独立应用。
 
-- 最后更新：2026-08-17
+- 最后更新：2026-08-19
 - 项目状态：`ACTIVE`
 - 当前里程碑：`M3 — Read and Operate`（M1、M2 已完成并通过 GPT 最终验证）
 - 活动跨端基线：`docs/cross-platform-hardening-plan.md`（`main@bd322486`）；本文件是执行 SSOT
@@ -161,8 +161,14 @@ later (explicitly deferred):
 | `CP-45` | `file-links` / markdown / transcript / FileViewer 按 Host `pathFlavor` 折叠，不再猜 `C:/` | `DONE` | `packages/client` | `CP-44` | file-links 4/4 + chat-projection 13/13 PASS |
 | `CP-46` | thinking 选择器只在 live + `runtime.thinking.set` 时可改；无 capability 不假装可改 | `DONE` | `packages/client` Composer | `CP-45` | 既有 SessionStore honesty 测试仍覆盖；不宣称 Job Object |
 | `CP-47` | sessiond POSIX fixture 对齐 VS Code：短 `tmpdir()` + canonicalize walk + lock 0600；worker 对已 reap 的 child drain `exit`（Darwin detached 不丢事件）；stdout drain 后再停 | `DONE` | `packages/sessiond` | `CP-46` | macOS 333/0/2、Windows 269/0/66、WSL socket-publish 20/0/0；不放松 generic symlink fail-closed |
+| `CP-48` | 冻结资产分级；批准 D-01（trust 归口 Pi）/ D-02（Windows Node named pipe + secret）；修正 mode 合同：Windows 永不把 `stat.mode` 当 authority，Pix-owned POSIX 私有状态仍读前验证 | `DONE` | docs | `CP-47` | hardening §5.6/§5.7 与 `docs/security-ipc-current-task.md` 同步 |
+| `CP-49` | sessiond RPC 按 UTF-8 bytes 编码/分块；server/client 共用有界 byte-line decoder | `DONE` | `packages/sessiond` | `CP-48` | serial-writer/ack/decoder 定向 PASS；sessiond 全量 277/0/66 |
+| `CP-50` | Windows sessiond 生产路径改 Node 原生 named pipe；secret AUTH 为主边界；锁文件仍是双实例权威 | `DONE` | `packages/sessiond` | `CP-49` | daemon ping/double-instance PASS；不再走 `listenProtectedNamedPipe` |
+| `CP-51` | trust mutation 委托 Pi 公共 `ProjectTrustStore.set()`；删除 forked writer 与 `TRUST_STORE_UNSAFE` | `DONE` | `packages/pi-sdk-adapter` + Host mapping | `CP-48` | trust-mutation 10/10 PASS；Host 映射不再假装 unsafe→503 |
+| `CP-52` | Unix `sun_path` 预算改为 macOS 103 / Linux 107（扣除 NUL） | `DONE` | `packages/sessiond` | `CP-49` | socket-publish/last-start 定向 PASS；IPC dir 分离后置为 CP-52-B |
+| `CP-53` | AllowedRoot 允许合法 in-root junction/symlink alias；canonical containment + root identity 仍 fail-closed | `DONE` | `packages/host` | `CP-48` | in-root alias PASS；逃逸 junction PATH_FORBIDDEN；无权限时 skip 而非假绿 |
 
-后续 lane：Job Object / ledger v2 / 远端发行仍后置。独立 verification agent 当前不可用。
+后续 lane：POSIX IPC dir 分离（CP-52-B）/ Job Object / ledger v2 / 远端发行仍后置。独立 verification agent 当前不可用。
 
 ---
 

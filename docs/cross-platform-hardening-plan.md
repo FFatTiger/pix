@@ -118,6 +118,7 @@ CI：          G0 起逐 seam 转为 required；G7 汇总完整矩阵
 | Continue | `5522c6f44ca0ac3528b37244818fbfa39b5af470` | TypeScript/React/本地 core；多 OS/arch packaging 和 platform binary 选择 |
 | Goose | `3810898a7447ec3299be72e223d3570a7aabf0ab` | 原生三端产品；OS 分包、Windows Authenticode、macOS 签名/公证、平台 signal |
 | Cline | `8bbdde2a5c1f972864fe1b954f639c21fac61a40` | TypeScript daemon/storage/shutdown；Windows SDK CI、macOS Unicode 路径处理 |
+| Codex (Electron 壳) | 本机解包 `extracted-26.814.5167.0/` / `readable-26.803.10989/` | Electron 壳 + Rust 引擎；帧化 named pipe/Unix socket、WS 远程、路径 security 对端认证，见 `ui-analysis/security-ipc.md` |
 
 Rust/Electron/Tauri 部分只借鉴 OS 原语和发布流程，不把产品壳或运行时直接复制进 Pix。
 
@@ -874,7 +875,33 @@ OpenCode 在调研 commit 的主 test matrix 未包含 macOS，说明“有三�
 
 ---
 
-## 5.6 共同规律
+## 5.6 Codex：帧化 IPC 有上限、受管文件路径安全、单实例交给 OS
+
+来源是解包的主进程 `readable-26.803.10989/.vite/build/main-DwaBWJ3A.unpacked/*.js`（非 GitHub 源码；详看 `codex-app/ui-analysis/security-ipc.md`）。
+
+### 证据
+
+- IPC：JSON-RPC 2.0 跑在 **4 字节长度前缀帧**上，**上限 8 MiB**（`entry.js:1860 Ff = 8*1024*1024`）；每帧独立 `Buffer + socket.write`，由 libuv 分片，不自研 overlapped addon → 没有 64KB 缓冲写死问题（`chunk_df.js` hf/gf/_f、`chunk_Nee.js`）。
+- 传输形态：**Node 原生 `net.createServer`/`connect`** 建 named pipe（Windows `\\.\pipe\codex-browser-use-<uuid>` / `codex-computer-use-<uuid>`，随机段防枚举）与 Unix socket（macOS `/tmp/codex-browser-use/*.sock`，连接前 `lstat().isSocket() && uid===getuid()` 做 owner 校验）；远程 SSH host 走 `ws://codex-app-server/rpc` WebSocket（`chunk_CC.js` / `chunk_MC_2.js`）。
+- 路径安全：**只对受管文件（Library/输出目录）做严格检查** —— `lstat`+`realpath` 拒 symlink → 必须在允许的 realpath 集合内 → 按 realpath 用 `O_NOFOLLOW` 重开 → 重开后 dev/ino 双校验防 TOCTOU（`chunk_ufe.js` Dfe.openAllowedFile）。普通工作区路径不做全局 symlink-ancestor walk。
+- 权限：写 0o600/0o700（dictation store / 配置原子写 `b8`），`mkdir` 遇 `EEXIST` 继续、**不 re-chmod / 不读回校验已有目录 mode**（免误杀）；但**写失败 fail-closed**（`m8`：失败返回 `{reason:'persistence',status:'failed'}`，不假装成功）。持久化用 CRDT + recordHash/stateVersion 一致性校验。
+- 单实例：`bootstrap.js` 用 **Electron `app.requestSingleInstanceLock()`**（OS 级），不自造 proper-lockfile/PID/dev-ino。
+- 对端认证（macOS browser-use）：原生 addon 按 socket fd 做 SO_PEERCRED 认证，**addon 缺失 fail-closed（authorized:false）**（`chunk_Zf.js` rp）。
+
+### Pix 采用
+
+- **IPC 帧必须有上限**（Codex 用 8 MiB）—— pix 的有界帧要求可落地为显式 `maxFrameBytes` + 超限拒帧，不必自研 64KB overlapped 缓冲。
+- **路径安全罩在受管文件点上**：O_NOFOLLOW + 重开后 dev/ino 双校验，与 pix 的 dev/ino 身份匹配一致；普通路径不做全局 walk。
+- **对端认证 fail-closed**：SO_PEERCRED（macOS）若不可用即拒绝，而非降级放行。
+- **持久化一致性校验**（hash/revision）值得借鉴，pix 的 JSONL truth 可加校验/对账。
+
+### Pix 不采用
+
+- Electron 壳的单实例锁依赖 OS/Electron 层；pix 无该壳，仍保留显式 lock + identity/liveness 语义（可参考其“交给 OS”的方向，但 pix 没有可委托的壳）。
+- Codex 对“已有目录/文件”不读回校验 mode —— pix **不照搬**。Windows **永远不把** Node `stat().mode` 当权限证据；Pix-owned POSIX 私有状态（sessiond secret/lock、Host ledger）仍在读前验证 owner/mode/identity；普通工作区与 Pi-owned `trust.json` 遵循各自 owner 合同。
+- 远程走 WebSocket/HTTP 是以 Rust app-server 为对端的方案；pix 的 sessiond↔Worker/Host 仍走自己的传输，只借鉴“跨端安全边界移到高层协议”的思路。
+
+## 5.7 共同规律
 
 成熟产品的共同做法：
 
@@ -884,6 +911,9 @@ OpenCode 在调研 commit 的主 test matrix 未包含 macOS，说明“有三�
 4. watch 不是可靠日志；需要 reconcile。
 5. artifact 在目标 OS 构建/签名/启动。
 6. “支持”由 required CI 和 packaged smoke 定义，不由 README 或编译成功定义。
+7. **IPC 帧/缓冲必须有显式上限**（VS Code 108B 预算、Codex 8 MiB 拒帧），有界化是跨端稳定性的前提。
+8. **路径安全“罩在受管文件点”**（Codex O_NOFOLLOW + 重开后 dev/ino 双校验），普通工作区路径不全局 walk；对端认证缺失时 fail-closed。
+9. **mode 合同按资产分级，不能全局放下读前校验**：Windows 永远不把 `stat().mode` 当 authority；Pix-owned POSIX 私有状态仍读前验证 owner/mode；普通工作区与 Pi-owned 配置遵循各自 owner。
 
 ---
 
