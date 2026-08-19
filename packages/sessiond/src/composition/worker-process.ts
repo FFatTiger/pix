@@ -222,6 +222,7 @@ class ProductionWorkerConnection implements WorkerConnection {
   private earlyExit: WorkerExit | undefined;
   private exitEmitted = false;
   private closed = false;
+  private stdoutStopped = false;
   private closePromise: Promise<void> | undefined;
   private fatalFraming = false;
   private readonly spawnedPid: number | undefined;
@@ -472,17 +473,42 @@ class ProductionWorkerConnection implements WorkerConnection {
 
   private cleanupStreams(): void {
     this.stdin.close();
-    this.stdout.stop();
     this.stderr.stop();
-    // Destroy pipes so the parent event loop is not held open by open stdio
-    // handles after the child has exited (or after we gave up waiting).
-    for (const stream of [this.child.stdin, this.child.stdout, this.child.stderr]) {
+    this.stopStdoutAfterDrain();
+    // stdin/stderr handles are destroyed immediately; stdout is destroyed by
+    // stopStdoutAfterDrain once its pipe has drained or the grace bound lapses.
+    for (const stream of [this.child.stdin, this.child.stderr]) {
       try {
         stream?.destroy?.();
       } catch {
         // ignore
       }
     }
+  }
+
+  /**
+   * Do not destroy stdout on child exit: the OS closes the write end, so the
+   * read stream emits `data`…`end`/`close` as the pipe drains. A final frame
+   * written right before exit (e.g. `worker.ready`) would be lost if we
+   * stopped the reader synchronously on `exit` — VS Code's NodeSocket also
+   * lets the stream end naturally instead of destroying on close. Bound the
+   * wait so a still-alive child (SIGKILL timeout) cannot hold the event loop.
+   */
+  private stopStdoutAfterDrain(graceMs = 200): void {
+    if (this.stdoutStopped) return;
+    this.stdoutStopped = true;
+    const finish = () => {
+      clearTimeout(timer);
+      this.stdout.stop();
+      try {
+        this.child.stdout?.destroy?.();
+      } catch {
+        // ignore
+      }
+    };
+    const timer = setTimeout(finish, graceMs);
+    this.child.stdout?.once("close", finish);
+    this.child.stdout?.once("end", finish);
   }
 
   private handleFrame(line: string): void {

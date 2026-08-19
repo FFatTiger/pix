@@ -38,21 +38,20 @@ const startInput: WorkerStartInput = {
   projectRoot: "/tmp/project",
 };
 
-/** Spawn fixture with mode via trampoline + extraEnv (test-only injection). */
+/** Spawn the fixture directly. VS Code does not insert a pipe trampoline in front of IPC children; Darwin stdin EOF would otherwise tear that extra process down before SIGKILL. */
 function factoryWithArgvMode(
   mode: string,
   extra: ConstructorParameters<typeof ProductionWorkerProcessFactory>[0] = {},
 ) {
-  const trampoline = resolve(here, "fixtures/fixture-trampoline.mjs");
   const { extraEnv: callerExtra, ...rest } = extra;
   return new ProductionWorkerProcessFactory({
-    workerMainPath: trampoline,
+    workerMainPath: fixtureWorker,
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
     stdinEndMs: 300,
     sigtermMs: 300,
     sigkillMs: 300,
     ...rest,
-    extraEnv: { FIXTURE_MODE: mode, ...(callerExtra ?? {}) },
+    extraEnv: { PIX_FIXTURE_MODE: mode, FIXTURE_MODE: mode, ...(callerExtra ?? {}) },
   });
 }
 
@@ -64,11 +63,17 @@ function onceMessage(
   timeoutMs = 3_000,
 ): Promise<WorkerToSessiondMessage> {
   return new Promise((resolvePromise, reject) => {
+    // `let` with a no-op seed: subscribe()/onExit() replay buffered events
+    // SYNCHRONOUSLY, so `unsub` is still unassigned (TDZ) when the listener
+    // runs. A `const` would throw here, the throw is swallowed by the
+    // connection's replay try/catch, clearTimeout already ran, and the
+    // promise never settles (the runner then force-exits the file).
+    let unsub = () => {};
     const timer = setTimeout(() => {
       unsub();
       reject(new Error("timeout waiting for worker message"));
     }, timeoutMs);
-    const unsub = connection.subscribe((message) => {
+    unsub = connection.subscribe((message) => {
       if (!predicate(message)) return;
       clearTimeout(timer);
       unsub();
@@ -82,11 +87,12 @@ function onceExit(
   timeoutMs = 5_000,
 ): Promise<WorkerExit> {
   return new Promise((resolvePromise, reject) => {
+    let unsub = () => {};
     const timer = setTimeout(() => {
       unsub();
       reject(new Error("timeout waiting for worker exit"));
     }, timeoutMs);
-    const unsub = connection.onExit((exit) => {
+    unsub = connection.onExit((exit) => {
       clearTimeout(timer);
       unsub();
       resolvePromise(exit);
@@ -688,7 +694,7 @@ test("send rejects invalid schema and closed connection", async () => {
 
 test("env secret leakage probe: child does not see sessiond secrets", async () => {
   const factory = new ProductionWorkerProcessFactory({
-    workerMainPath: resolve(here, "fixtures/fixture-trampoline.mjs"),
+    workerMainPath: fixtureWorker,
     env: {
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? "",
@@ -697,7 +703,7 @@ test("env secret leakage probe: child does not see sessiond secrets", async () =
       OPENAI_API_KEY: "sk-allowed",
       SESSIOND_SECRET: "local-secret",
     },
-    extraEnv: { FIXTURE_MODE: "print-env" },
+    extraEnv: { PIX_FIXTURE_MODE: "print-env", FIXTURE_MODE: "print-env" },
     stdinEndMs: 200,
     sigtermMs: 200,
     sigkillMs: 200,
@@ -730,9 +736,9 @@ test("daemon defaults to production factory; explicit Unavailable still works", 
     const handle = await startDaemon({
       directory: dir,
       workerOptions: {
-        workerMainPath: resolve(here, "fixtures/fixture-trampoline.mjs"),
+        workerMainPath: fixtureWorker,
         env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
-        extraEnv: { FIXTURE_MODE: "echo" },
+        extraEnv: { PIX_FIXTURE_MODE: "echo", FIXTURE_MODE: "echo" },
       },
       serviceOptions: { idleTimeoutMs: 0 },
     });
