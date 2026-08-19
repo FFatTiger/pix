@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverTestFiles, main, parseArgs } from "./run-node-test.mjs";
+import { discoverTestFiles, main, normalizeIsolationFlags, parseArgs } from "./run-node-test.mjs";
 
 function makeRoot() {
   return mkdtempSync(join(tmpdir(), "pix-node-test-"));
@@ -83,6 +83,18 @@ test("parseArgs rejects watch modes and unknown flags", () => {
 
 test("parseArgs returns no patterns for empty argv", () => {
   assert.deepEqual(parseArgs([]), { patterns: [], flags: [] });
+});
+
+test("normalizeIsolationFlags rewrites none-isolation for Node 22 vs 24", () => {
+  assert.deepEqual(
+    normalizeIsolationFlags(["--test-concurrency=1", "--test-isolation=none"], 22),
+    ["--experimental-test-isolation=none", "--test-concurrency=1"],
+  );
+  assert.deepEqual(
+    normalizeIsolationFlags(["--experimental-test-isolation=none", "--test-timeout=30000"], 24),
+    ["--test-isolation=none", "--test-timeout=30000"],
+  );
+  assert.deepEqual(normalizeIsolationFlags(["--test-force-exit"], 22), ["--test-force-exit"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -201,6 +213,30 @@ test("main forwards node test flags before the explicit file list", () => {
       testFile,
     ]);
     assert.equal(invocation.options.cwd, root);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test("main rewrites --test-isolation=none to the Node-supported flag", () => {
+  const root = makeRoot();
+  try {
+    mkdirSync(join(root, "tests"), { recursive: true });
+    const testFile = join(root, "tests", "a.test.mjs");
+    writeFileSync(testFile, "");
+    let args;
+    const code = main(["tests/**/*.test.mjs", "--test-isolation=none", "--test-timeout=30000"], {
+      cwd: root,
+      spawnSyncImpl: (_command, argv) => {
+        args = argv;
+        return { status: 0 };
+      },
+    });
+    assert.equal(code, 0);
+    const expectedIsolation = Number.parseInt(process.versions.node, 10) >= 24
+      ? "--test-isolation=none"
+      : "--experimental-test-isolation=none";
+    assert.deepEqual(args, ["--test", expectedIsolation, "--test-timeout=30000", testFile]);
   } finally {
     cleanup(root);
   }

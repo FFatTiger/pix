@@ -42,11 +42,20 @@ export function trackServerClose(close: () => Promise<void>): void {
   trackedServers.add(close);
 }
 
-const boundedShutdown = (handle: DaemonHandle): Promise<void> =>
-  Promise.race<void>([
+const boundedShutdown = (handle: DaemonHandle): Promise<void> => {
+  // Do not leave a 5s timer on the event loop: that keeps `--test-force-exit`
+  // from being the only way a file can finish, and it inflates every file's
+  // after() hook even when shutdown already resolved.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race<void>([
     handle.shutdown().catch(() => {}),
-    new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
-  ]);
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, 5_000);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+};
 
 /** Shut down every tracked daemon and bare server (bounded). Safe once per file. */
 export function closeTrackedDaemons(): Promise<void> {

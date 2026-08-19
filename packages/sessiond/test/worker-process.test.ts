@@ -402,12 +402,18 @@ test("StderrRing 40-round flood stays bounded and redacted", () => {
 test("early message is buffered until subscribe", async () => {
   const factory = factoryWithArgvMode("early-message");
   const connection = await factory.start(startInput);
-  // Wait long enough that the child has printed BEFORE any listener attaches.
-  // (Manual probe shows ready arrives within ~50ms; 150ms is generous.)
-  await wait(150);
-  const seen: WorkerToSessiondMessage[] = [];
-  // First subscribe must synchronously replay the buffered early frame.
-  connection.subscribe((m) => seen.push(m));
+  // The first subscribe drains the early-message buffer. Poll that first
+  // attach until the child has printed ready — do not use a fixed sleep, and
+  // do not attach a second subscriber (later ones see an empty buffer).
+  const deadline = Date.now() + 5_000;
+  let seen: WorkerToSessiondMessage[] = [];
+  while (Date.now() < deadline) {
+    seen = [];
+    const unsub = connection.subscribe((m) => seen.push(m));
+    unsub();
+    if (seen.some((m) => m.type === "worker.ready")) break;
+    await wait(10);
+  }
   assert.ok(
     seen.some((m) => m.type === "worker.ready"),
     `expected buffered ready on first subscribe, got ${JSON.stringify(seen)}`,

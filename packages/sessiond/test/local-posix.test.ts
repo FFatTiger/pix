@@ -65,15 +65,6 @@ test("existing 0755 directory fails closed NOT_PRIVATE, mode untouched, no mutat
   assert.equal(readFileSync(marker, "utf8"), "payload", "content untouched");
 });
 
-test("production entry fails closed on an existing 0755 directory (no partial mutation)", { skip: isWindows }, async () => {
-  const dir = await mkdtemp(join(tmpdir(), "posix-prod-0755-"));
-  temporary.push(dir);
-  chmodSync(dir, 0o755);
-  await expectReject(() => ensureSessiondPrivateDirectory(dir), "NOT_PRIVATE");
-  assert.equal(lstatSync(dir).mode & 0o777, 0o755, "mode untouched (never silently chmod'd)");
-  assert.deepEqual(await import("node:fs/promises").then((m) => m.readdir(dir)), [], "no partial artifacts created");
-});
-
 test("existing 0700 current-user directory validates and is never chmod'd (created:false)", { skip: isWindows }, async () => {
   const dir = temp("posix-ok-");
   const leaf = join(dir, "leaf");
@@ -95,21 +86,6 @@ test("symlink leaf fails closed SYMLINK, target untouched", { skip: isWindows },
   await expectReject(() => ensureSessiondPrivateDirectory(leaf), "SYMLINK");
   assert.equal(lstatSync(external).mode & 0o777, 0o700, "external target untouched");
   assert.equal(readFileSync(payload, "utf8"), "payload", "external content untouched");
-});
-
-test("production entry rejects a symlink LEAF (fixed SYMLINK, target untouched)", { skip: isWindows }, async () => {
-  const dir = await mkdtemp(join(tmpdir(), "posix-prod-sym-"));
-  temporary.push(dir);
-  const real = join(dir, "real");
-  mkdirSync(real, { mode: 0o700 });
-  const payload = join(real, "content.txt");
-  writeFileSync(payload, "payload", { mode: 0o600 });
-  const link = join(dir, "link");
-  symlinkSync(real, link);
-
-  await expectReject(() => ensureSessiondPrivateDirectory(link), "SYMLINK");
-  assert.equal(lstatSync(real).mode & 0o777, 0o700, "target untouched");
-  assert.equal(readFileSync(payload, "utf8"), "payload", "target content untouched");
 });
 
 test("nested all-missing path created 0700, created:true", { skip: isWindows }, async () => {

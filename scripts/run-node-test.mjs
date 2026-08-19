@@ -145,6 +145,28 @@ export function discoverTestFiles(cwd, pattern) {
 }
 
 /**
+ * Node 22.19 only accepts `--experimental-test-isolation=none`.
+ * Node 24+ accepts `--test-isolation=none`. Callers may pass either; the
+ * runner rewrites to the flag the current Node understands so `--test-timeout`
+ * is per-test (shared process) instead of per-file (process isolation).
+ */
+export function normalizeIsolationFlags(flags, nodeMajor = Number.parseInt(process.versions.node, 10)) {
+  const rewritten = [];
+  let isolation;
+  for (const flag of flags) {
+    if (flag === "--test-isolation=none" || flag === "--experimental-test-isolation=none") {
+      isolation = "none";
+      continue;
+    }
+    rewritten.push(flag);
+  }
+  if (isolation === "none") {
+    rewritten.unshift(nodeMajor >= 24 ? "--test-isolation=none" : "--experimental-test-isolation=none");
+  }
+  return rewritten;
+}
+
+/**
  * CLI entry point. Expands every pattern, fails closed (exit 1) when any
  * pattern matches nothing, then spawns `node --test` with the explicit file
  * list. Returns the child exit code (or re-raises the child's signal).
@@ -196,7 +218,7 @@ export function main(argv = process.argv.slice(2), options = {}) {
   // silently skipping the file list and exiting 0 — a false green.
   const env = { ...(options.env ?? process.env) };
   delete env.NODE_TEST_CONTEXT;
-  const result = spawnSyncImpl(process.execPath, ["--test", ...flags, ...files], {
+  const result = spawnSyncImpl(process.execPath, ["--test", ...normalizeIsolationFlags(flags), ...files], {
     cwd,
     stdio: options.stdio ?? "inherit",
     env,

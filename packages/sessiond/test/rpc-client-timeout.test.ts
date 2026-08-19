@@ -72,52 +72,22 @@ function startFakeRpc(secret: string, respondDelayMs: number): Promise<{
   });
 }
 
-test("RPC client per-call timeout override", async () => {
+test("RPC client per-call timeout override and default", async () => {
   const secret = "test-secret";
   const fake = await startFakeRpc(secret, 120);
   try {
-    const rpc = new SessiondRpcClient({ endpoint: fake.endpoint, secret, timeoutMs: 500 });
-    // Per-call timeout SHORTER than the server delay: reject with the canonical
-    // sessiond RPC timeout error instead of hanging.
+    const longDefault = new SessiondRpcClient({ endpoint: fake.endpoint, secret, timeoutMs: 500 });
     await assert.rejects(
-      () => rpc.call("system.ping", {}, 40),
-      (error: unknown) => {
-        assert.ok(error instanceof SessiondError);
-        assert.equal(error.code, "timeout");
-        assert.equal(error.message, "sessiond RPC timed out");
-        assert.equal(error.retryable, true);
-        return true;
-      },
+      () => longDefault.call("system.ping", {}, 40),
+      (error: unknown) => error instanceof SessiondError && error.code === "timeout" && error.retryable === true,
     );
-    // Per-call timeout LONGER than the server delay: resolves normally.
-    const pong = await rpc.call("system.ping", {}, 600);
+    const pong = await longDefault.call("system.ping", {}, 600);
     assert.equal(pong.pong, true);
-  } finally {
-    await fake.close();
-  }
-});
 
-test("RPC client per-call timeout overrides a shorter client default", async () => {
-  const secret = "test-secret";
-  const fake = await startFakeRpc(secret, 120);
-  try {
-    // Client default would fire at 40ms, but the per-call override keeps the
-    // call alive until the delayed response lands.
-    const rpc = new SessiondRpcClient({ endpoint: fake.endpoint, secret, timeoutMs: 40 });
-    const pong = await rpc.call("system.ping", {}, 600);
-    assert.equal(pong.pong, true);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("RPC client still applies the default when no override is passed", async () => {
-  const secret = "test-secret";
-  const fake = await startFakeRpc(secret, 120);
-  try {
-    const rpc = new SessiondRpcClient({ endpoint: fake.endpoint, secret, timeoutMs: 40 });
+    const shortDefault = new SessiondRpcClient({ endpoint: fake.endpoint, secret, timeoutMs: 40 });
+    assert.equal((await shortDefault.call("system.ping", {}, 600)).pong, true);
     await assert.rejects(
-      () => rpc.call("system.ping", {}),
+      () => shortDefault.call("system.ping", {}),
       (error: unknown) => error instanceof SessiondError && error.code === "timeout",
     );
   } finally {

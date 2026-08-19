@@ -15,6 +15,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import { SessiondError } from "../src/errors.js";
 import { SessiondRpcClient, SessiondRpcServer } from "../src/rpc.js";
 import { closeTrackedDaemons, startTrackedDaemon } from "./helpers/tracked-daemon.js";
@@ -138,7 +139,7 @@ test("system.shutdown requires the AUTH secret: wrong/missing auth is destroyed 
   const h = await bareServer({ instanceId: "inst-1" });
   try {
     // Wrong secret: the server destroys the connection, never processes the request.
-    const wrong = rawRequest(h.endpoint, "w".repeat(43), { protocolVersion: 1, id: "x", method: "system.shutdown", params: { instanceId: "inst-1" } });
+    const wrong = rawRequest(h.endpoint, "w".repeat(43), { protocolVersion: PROTOCOL_VERSION, id: "x", method: "system.shutdown", params: { instanceId: "inst-1" } });
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 300);
       wrong.socket.on("close", () => { clearTimeout(timer); resolve(); });
@@ -148,7 +149,7 @@ test("system.shutdown requires the AUTH secret: wrong/missing auth is destroyed 
     const missing = createConnection(h.endpoint);
     openSockets.add(missing);
     let closed = false;
-    missing.on("connect", () => missing.write(`${JSON.stringify({ protocolVersion: 1, id: "x", method: "system.shutdown", params: { instanceId: "inst-1" } })}\n`));
+    missing.on("connect", () => missing.write(`${JSON.stringify({ protocolVersion: PROTOCOL_VERSION, id: "x", method: "system.shutdown", params: { instanceId: "inst-1" } })}\n`));
     missing.on("close", () => { closed = true; });
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
     assert.equal(closed, true, "a frame before AUTH OK must destroy the connection");
@@ -187,7 +188,7 @@ test("system.shutdown blank instanceId is schema-rejected (invalid_request), no 
   try {
     // Blank instance id never reaches the handler: the wire schema rejects it
     // as invalid_request and the authority is never invoked.
-    const req = rawRequest(h.endpoint, h.secret, { protocolVersion: 1, id: "x", method: "system.shutdown", params: { instanceId: "" } });
+    const req = rawRequest(h.endpoint, h.secret, { protocolVersion: PROTOCOL_VERSION, id: "x", method: "system.shutdown", params: { instanceId: "" } });
     await sleep(250);
     assert.equal(h.initiateCount(), 0, "blank instance id must never initiate");
     assert.ok(req.lines.some((line) => line.includes("invalid_request")), "must answer invalid_request");
@@ -203,7 +204,7 @@ test("system.shutdown malformed params (extra/unknown keys) is schema-rejected, 
   const h = await bareServer({ instanceId: "inst-1" });
   try {
     // strictObject rejects a request carrying an unknown param key.
-    const req = rawRequest(h.endpoint, h.secret, { protocolVersion: 1, id: "x", method: "system.shutdown", params: { instanceId: "inst-1", force: true } });
+    const req = rawRequest(h.endpoint, h.secret, { protocolVersion: PROTOCOL_VERSION, id: "x", method: "system.shutdown", params: { instanceId: "inst-1", force: true } });
     await sleep(250);
     assert.equal(h.initiateCount(), 0, "malformed params must never initiate");
     assert.ok(req.lines.some((line) => line.includes("invalid_request")), "must answer invalid_request");
@@ -218,7 +219,7 @@ test("system.shutdown unknown method is schema-rejected (invalid_request), no sh
   if (isWindows) return t.skip("Unix sockets only");
   const h = await bareServer({ instanceId: "inst-1" });
   try {
-    const req = rawRequest(h.endpoint, h.secret, { protocolVersion: 1, id: "x", method: "system.nope", params: {} });
+    const req = rawRequest(h.endpoint, h.secret, { protocolVersion: PROTOCOL_VERSION, id: "x", method: "system.nope", params: {} });
     await sleep(250);
     assert.equal(h.initiateCount(), 0, "unknown method must never initiate");
     assert.ok(req.lines.some((line) => line.includes("invalid_request")), "must answer invalid_request");
@@ -282,11 +283,11 @@ test("system.shutdown delivery failure (backpressure never drains) fails closed 
         // Flood requests whose responses the paused client never reads — this
         // fills the receive buffer so the shutdown response write returns false.
         for (let i = 0; i < 4000; i += 1) {
-          socket.write(`${JSON.stringify({ protocolVersion: 1, id: `p-${i}`, method: "system.ping", params: {} })}\n`);
+          socket.write(`${JSON.stringify({ protocolVersion: PROTOCOL_VERSION, id: `p-${i}`, method: "system.ping", params: {} })}\n`);
         }
         // Only now send shutdown, behind the blocked pings; its short ack
         // timeout fails the writer closed — no delivery, no initiate.
-        socket.write(`${JSON.stringify({ protocolVersion: 1, id: "shut", method: "system.shutdown", params: { instanceId: "inst-1" } })}\n`);
+        socket.write(`${JSON.stringify({ protocolVersion: PROTOCOL_VERSION, id: "shut", method: "system.shutdown", params: { instanceId: "inst-1" } })}\n`);
       }
     }
   });
@@ -312,20 +313,24 @@ test("daemon: valid shutdown ACKs response bytes to the client BEFORE the socket
     const handle = await startTrackedDaemon(dir, { serviceOptions: { idleTimeoutMs: 0 } });
     // Raw client so we can observe the exact byte ordering: response line first,
     // then the connection close (the daemon tears down only after the ACK).
-    const req = rawRequest(handle.endpoint, handle.secret, { protocolVersion: 1, id: "shut", method: "system.shutdown", params: { instanceId: handle.instanceId } });
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 3_000);
+    const req = rawRequest(handle.endpoint, handle.secret, { protocolVersion: PROTOCOL_VERSION, id: "shut", method: "system.shutdown", params: { instanceId: handle.instanceId } });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("shutdown ACK not observed")), 2_000);
       const check = () => {
-        if (req.lines.length >= 1) {
+        if (req.lines.length < 1) return;
+        try {
           const parsed = JSON.parse(req.lines[0]!);
-          if (parsed.id === "shut" && parsed.method === "system.shutdown" && parsed.ok === true && parsed.result.accepted === true) {
+          if (parsed.id === "shut" && parsed.method === "system.shutdown" && parsed.ok === true && parsed.result?.accepted === true) {
             clearTimeout(timer);
             resolve();
           }
+        } catch {
+          // Incomplete line; wait for the next data event.
         }
       };
       req.socket.on("data", check);
       req.socket.on("close", check);
+      check();
     });
     assert.equal(req.lines.length, 1, "exactly one response line, the shutdown ACK");
     const ack = JSON.parse(req.lines[0]!);
