@@ -147,15 +147,13 @@ export interface PiSdkSessionPorts {
  * listSessions/readSession observes the new title immediately. The default
  * store is private (created by the internal store factory); an optional store
  * may be injected for tests/composition, exactly like the injectable
- * catalog/locator factories above. This is the SCALE1 PRODUCTION composition
- * point: the default store opts into the disposable SQLite projection index
- * (`projection.enabled: true`), so the production cold-start list path reads
- * the persisted index (with per-file mtime/size validation + fail-closed
- * fallback) instead of re-parsing every JSONL. Backward-compatible: existing
+ * catalog/locator factories above. Session listing follows the Pi SDK native
+ * path (`SessionManager.listAll` + a 30s in-memory TTL cache, coalesced
+ * cold scans) — no SQLite projection index. Backward-compatible: existing
  * destructuring of `{ catalog, locator }` keeps working. All methods run with
  * zero Workers.
  */
-export function createPiSdkSessionPorts(store: PiSdkSessionStore = createPiSdkSessionStore({ projection: { enabled: true } })): PiSdkSessionPorts {
+export function createPiSdkSessionPorts(store: PiSdkSessionStore = createPiSdkSessionStore()): PiSdkSessionPorts {
   return {
     catalog: createPiSdkSessionCatalog(store),
     locator: createPiSdkSessionLocator(store),

@@ -11,6 +11,15 @@ export interface SerialSocketWriterOptions {
   maxQueuedBytes?: number;
 }
 
+/**
+ * Chunk size for ordinary frames. A single `write()` larger than the
+ * platform pipe buffer (Windows named pipe default 64 KiB) can hang the
+ * native overlapped WriteFile; every chunk stays well under that bound.
+ */
+const CHUNK_BYTES = 32 * 1024;
+/** Bounded wait for a `drain` after backpressure (fail-closed, never wedge). */
+const DRAIN_WAIT_MS = 15_000;
+
 interface Frame {
   data: string;
   bytes: number;
@@ -189,11 +198,20 @@ export class SerialSocketWriter {
   private async flushFrame(frame: Frame): Promise<void> {
     const barrier = frame.barrier;
     if (barrier === undefined) {
-      if (!this.socket.write(frame.data)) {
-        // Backpressure: wait for a real drain or for the writer to close.
-        // A concurrent close rejects `frame` via `fail` and resolves this
-        // wait, so the frame settles exactly once and never hangs.
-        await this.waitForDrainOrClose();
+      // Chunked write: a single write() larger than the platform pipe buffer
+      // (Windows named pipe default 64 KiB) can hang the native overlapped
+      // WriteFile forever. VS Code / Pi both write in bounded chunks; the
+      // protocol only cares about the final newline, so splitting is safe.
+      for (let offset = 0; offset < frame.data.length; offset += CHUNK_BYTES) {
+        const chunk = frame.data.slice(offset, offset + CHUNK_BYTES);
+        if (!this.socket.write(chunk)) {
+          // Backpressure: wait for a real drain or for the writer to close.
+          // A concurrent close rejects `frame` via `fail` and resolves this
+          // wait, so the frame settles exactly once and never hangs. The wait
+          // is also bounded so a peer that stops reading cannot wedge the
+          // writer forever.
+          await this.waitForDrainOrClose(DRAIN_WAIT_MS);
+        }
       }
       return;
     }
@@ -243,10 +261,23 @@ export class SerialSocketWriter {
     frame.resolve();
   }
 
-  private waitForDrainOrClose(): Promise<void> {
+  private waitForDrainOrClose(timeoutMs = DRAIN_WAIT_MS): Promise<void> {
     if (this.closed || this.resolveDrainWait) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      this.resolveDrainWait = resolve;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        if (this.resolveDrainWait !== finish) return;
+        this.resolveDrainWait = undefined;
+        this.fail(new SessiondError("timeout", "RPC write drain timed out", true));
+        finish();
+      }, timeoutMs);
+      this.resolveDrainWait = finish;
     });
   }
 
