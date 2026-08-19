@@ -19,7 +19,9 @@ function startFakeRpc(secret: string, respondDelayMs: number): Promise<{
   close(): Promise<void>;
 }> {
   return new Promise((resolve, reject) => {
-    const endpoint = join(tmpdir(), `pix-rpc-client-timeout-${process.pid}-${Date.now()}.sock`);
+    const endpoint = process.platform === "win32"
+      ? `\\\\.\\pipe\\pix-rpc-client-timeout-${process.pid}-${Date.now()}`
+      : join(tmpdir(), `pix-rpc-client-timeout-${process.pid}-${Date.now()}.sock`);
     const server: Server = createServer((socket) => {
       let buffer = "";
       let authed = false;
@@ -57,7 +59,13 @@ function startFakeRpc(secret: string, respondDelayMs: number): Promise<{
       server.off("error", reject);
       resolve({
         endpoint,
-        close: () => new Promise<void>((resolveClose) => server.close(() => { rm(endpoint, { force: true }).finally(() => resolveClose()); })),
+        close: () => new Promise<void>((resolveClose) => server.close(() => {
+          if (process.platform === "win32") {
+            resolveClose();
+            return;
+          }
+          rm(endpoint, { force: true }).finally(() => resolveClose());
+        })),
       });
     });
     server.on("error", reject);

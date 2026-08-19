@@ -14,10 +14,20 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { SessiondError } from "../src/errors.js";
 import { SessiondRpcClient, SessiondRpcServer } from "../src/rpc.js";
-import { startDaemon } from "../src/composition/index.js";
+import { closeTrackedDaemons, startTrackedDaemon } from "./helpers/tracked-daemon.js";
+
+// Bounded teardown for the whole file: raw client sockets are destroyed and
+// every daemon started through startTrackedDaemon is shut down, so a failing
+// test can never keep a socket/daemon alive past the file (which previously
+// made the worker hang and leaked locks into the next run).
+const openSockets = new Set<ReturnType<typeof createConnection>>();
+after(async () => {
+  for (const socket of openSockets) socket.destroy();
+  await closeTrackedDaemons();
+});
 
 const isWindows = process.platform === "win32";
 const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "shutdown-rpc-"));
@@ -83,6 +93,8 @@ function rawRequest(
   options: { pauseAfterSend?: boolean; timeoutMs?: number } = {},
 ): { socket: ReturnType<typeof createConnection>; lines: string[]; closed: Promise<boolean> } {
   const socket = createConnection(endpoint);
+  openSockets.add(socket);
+  socket.on("close", () => openSockets.delete(socket));
   const lines: string[] = [];
   let buffered = "";
   let authed = false;
@@ -134,6 +146,7 @@ test("system.shutdown requires the AUTH secret: wrong/missing auth is destroyed 
     assert.deepEqual(wrong.lines, [], "wrong secret must never reach the method");
     // Missing secret entirely: destroy on first frame.
     const missing = createConnection(h.endpoint);
+    openSockets.add(missing);
     let closed = false;
     missing.on("connect", () => missing.write(`${JSON.stringify({ protocolVersion: 1, id: "x", method: "system.shutdown", params: { instanceId: "inst-1" } })}\n`));
     missing.on("close", () => { closed = true; });
@@ -250,6 +263,7 @@ test("system.shutdown delivery failure (backpressure never drains) fails closed 
   // failing the writer closed — so the authority must never be invoked.
   const h = await bareServer({ instanceId: "inst-1", ackTimeoutMs: 30 });
   const socket = createConnection(h.endpoint);
+  openSockets.add(socket);
   let authed = false;
   let buffered = "";
   socket.on("connect", () => socket.write(`AUTH ${h.secret}\n`));
@@ -295,7 +309,7 @@ test("daemon: valid shutdown ACKs response bytes to the client BEFORE the socket
   if (isWindows) return t.skip("Unix sockets only");
   const dir = await tempDir();
   try {
-    const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+    const handle = await startTrackedDaemon(dir, { serviceOptions: { idleTimeoutMs: 0 } });
     // Raw client so we can observe the exact byte ordering: response line first,
     // then the connection close (the daemon tears down only after the ACK).
     const req = rawRequest(handle.endpoint, handle.secret, { protocolVersion: 1, id: "shut", method: "system.shutdown", params: { instanceId: handle.instanceId } });
@@ -332,7 +346,7 @@ test("daemon: two concurrent valid shutdown requests → at most one transition,
   if (isWindows) return t.skip("Unix sockets only");
   const dir = await tempDir();
   try {
-    const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+    const handle = await startTrackedDaemon(dir, { serviceOptions: { idleTimeoutMs: 0 } });
     const rpc = new SessiondRpcClient({ endpoint: handle.endpoint, secret: handle.secret, timeoutMs: 2_000 });
     const outcomes = await Promise.allSettled([
       rpc.call("system.shutdown", { instanceId: handle.instanceId }),
@@ -356,7 +370,7 @@ test("daemon: retry after ACK and shutdown-in-progress never double-trigger the 
   if (isWindows) return t.skip("Unix sockets only");
   const dir = await tempDir();
   try {
-    const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+    const handle = await startTrackedDaemon(dir, { serviceOptions: { idleTimeoutMs: 0 } });
     const rpc = new SessiondRpcClient({ endpoint: handle.endpoint, secret: handle.secret, timeoutMs: 1_000 });
     const first = await rpc.call("system.shutdown", { instanceId: handle.instanceId });
     assert.deepEqual(first, { accepted: true });
@@ -383,7 +397,7 @@ test("daemon: a wrong instance id never shuts the daemon down (it stays pingable
   if (isWindows) return t.skip("Unix sockets only");
   const dir = await tempDir();
   try {
-    const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
+    const handle = await startTrackedDaemon(dir, { serviceOptions: { idleTimeoutMs: 0 } });
     const rpc = new SessiondRpcClient({ endpoint: handle.endpoint, secret: handle.secret, timeoutMs: 1_000 });
     await assert.rejects(
       rpc.call("system.shutdown", { instanceId: "wrong-instance" }),

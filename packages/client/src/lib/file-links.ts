@@ -1,3 +1,4 @@
+import type { ClientPathFlavor } from "./file-paths";
 import { isFilePathInside, joinFilePath, normalizeFilePathSlashes } from "./file-paths";
 
 function safeDecode(value: string): string {
@@ -60,10 +61,18 @@ function fileUrlToPath(href: string): string | null {
   }
 }
 
+/**
+ * Resolve a markdown/file href against an optional base directory.
+ *
+ * Containment is folded only when Host `pathFlavor` says so. Callers must
+ * pass the bootstrap flavor; guessing `C:/` vs POSIX from the string is
+ * forbidden (CP-37 / CP-45).
+ */
 export function resolveLocalFileHref(
   href: string | undefined,
   baseDir?: string,
   relativeRoot = baseDir,
+  pathFlavor?: ClientPathFlavor,
 ): string | null {
   if (!href) return null;
 
@@ -103,7 +112,7 @@ export function resolveLocalFileHref(
   if (!candidate) return null;
 
   const filePath = stripLineSuffix(normalizeLocalPath(candidate));
-  if (candidateKind === "relative" && relativeRoot && !isFilePathInside(filePath, relativeRoot)) return null;
+  if (candidateKind === "relative" && relativeRoot && !isFilePathInside(filePath, relativeRoot, pathFlavor)) return null;
   return filePath;
 }
 
@@ -114,13 +123,20 @@ export function resolveLocalFileHref(
  * Unlike {@link resolveLocalFileHref}, this treats the value strictly as a
  * path, never as a link: characters such as `#`, `?`, and `:digits` that have
  * special meaning in hrefs and source references are preserved unchanged.
+ * Slash folding still uses Host `pathFlavor` for drive vs POSIX, never a
+ * string-shape guess when the flavor is known.
  */
-export function resolveLocalFilePath(filePath: string | undefined, baseDir?: string): string | null {
+export function resolveLocalFilePath(
+  filePath: string | undefined,
+  baseDir?: string,
+  pathFlavor?: ClientPathFlavor,
+): string | null {
   if (!filePath) return null;
 
-  const windowsStyle = /^[a-zA-Z]:[\\/]/.test(filePath) ||
-    filePath.startsWith("\\\\") ||
-    (baseDir !== undefined && (/^[a-zA-Z]:[\\/]/.test(baseDir) || baseDir.startsWith("\\\\")));
+  const windowsStyle = pathFlavor === "windows-drive" || pathFlavor === "windows-unc"
+    || /^[a-zA-Z]:[\\/]/.test(filePath)
+    || filePath.startsWith("\\\\")
+    || (baseDir !== undefined && (/^[a-zA-Z]:[\\/]/.test(baseDir) || baseDir.startsWith("\\\\")));
   const normalizeSlashes = (value: string) => windowsStyle ? value.replace(/\\/g, "/") : value;
   const normalizedPath = normalizeSlashes(filePath);
   const normalizedBase = baseDir ? normalizeSlashes(baseDir).replace(/\/+$/, "") : undefined;

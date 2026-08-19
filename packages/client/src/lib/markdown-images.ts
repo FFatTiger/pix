@@ -1,4 +1,5 @@
 import { urls } from "@/api/urls";
+import type { ClientPathFlavor } from "./file-paths";
 import { resolveLocalFileHref } from "./file-links";
 
 /**
@@ -24,10 +25,11 @@ export function resolveMarkdownImageSrc(
   baseDir?: string,
   relativeRoot = baseDir,
   sessionId?: string | null,
+  pathFlavor?: ClientPathFlavor,
 ): string | null {
   if (typeof src !== "string" || !src) return null;
 
-  const localPath = resolveLocalFileHref(src, baseDir, relativeRoot);
+  const localPath = resolveLocalFileHref(src, baseDir, relativeRoot, pathFlavor);
   if (localPath) {
     return urls.files.file(localPath, "read", { sessionId });
   }

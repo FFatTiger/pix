@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { seedSessionForTests } from "@fffattiger/pix-pi-sdk-adapter/testing";
 import { PROTOCOL_VERSION, SESSIOND_RPC_METHODS } from "@fffattiger/pix-protocol";
 import { makeRuntimeError, type SessionCatalogPort, type SessionDetail, type SessionLocatorPort } from "@fffattiger/pix-runtime-core";
@@ -12,13 +12,42 @@ import { instanceAlive, readInstanceLock, sessiondPaths } from "../src/control.j
 import { SessiondRpcClient } from "../src/rpc.js";
 import type { ActivationContextProvider } from "../src/service.js";
 import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
-import { UnavailableWorkerFactory, startDaemon } from "../src/composition/index.js";
+import { UnavailableWorkerFactory } from "../src/composition/index.js";
+import {
+  closeTrackedDaemons,
+  startTrackedDaemonCompat as startDaemon,
+} from "./helpers/tracked-daemon.js";
+import { createPrivateRuntimeDirectory } from "./helpers/private-runtime-dir.js";
 
-const isWindows = process.platform === "win32";
-const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "sessiond-daemon-"));
+// `mkdtemp` creates an existing directory. On Windows it carries inherited
+// ACLs and production intentionally rejects it as sensitive state, so each
+// integration test instead receives a new backend-owned `runtime` leaf.
+const fixtureCleanup = new Map<string, () => Promise<void>>();
+const tempDir = async (): Promise<string> => {
+  const fixture = await createPrivateRuntimeDirectory("sessiond-daemon-");
+  fixtureCleanup.set(fixture.directory, fixture.cleanup);
+  return fixture.directory;
+};
 const cleanup = async (dir: string): Promise<void> => {
+  const cleanupFixture = fixtureCleanup.get(dir);
+  if (cleanupFixture) {
+    fixtureCleanup.delete(dir);
+    await cleanupFixture();
+    return;
+  }
   await rm(dir, { recursive: true, force: true });
 };
+
+// A failing test must never leave a daemon or temporary fixture alive past
+// this file. All daemons go through the tracked alias; `shutdown()` is
+// idempotent so explicit early shutdowns still work.
+after(async () => {
+  await closeTrackedDaemons();
+  await Promise.allSettled([...fixtureCleanup.values()].map((cleanupFixture) => cleanupFixture()));
+  fixtureCleanup.clear();
+});
+
+const isWindows = process.platform === "win32";
 const client = (handle: { endpoint: string; secret: string }): SessiondRpcClient =>
   new SessiondRpcClient({ endpoint: handle.endpoint, secret: handle.secret, timeoutMs: 2_000 });
 

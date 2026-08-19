@@ -4,6 +4,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { MessageView, ThinkingBlock, ToolCallBlock } from "./MessageView";
 import { useI18n } from "@/hooks/useI18n";
 import { useProcessDisplayMode } from "./useProcessDisplayMode";
+import type { ClientPathFlavor } from "@/lib/file-paths";
 import type { ProcessContentBlock } from "@/lib/process-content";
 import type { ThinkingContent, ToolCallContent } from "@/lib/chat-view-model";
 import type { DeferredThinkingLoader } from "@/lib/chat-view-model";
@@ -39,6 +40,7 @@ interface ProcessGroupProps {
   blocks: ProcessContentBlock[];
   isStreaming: boolean;
   cwd?: string;
+  pathFlavor?: ClientPathFlavor;
   onOpenFile?: (filePath: string) => void;
   sessionId?: string;
   /** pix adapter: injected deferred-thinking loader (host session-entry API). */
@@ -572,9 +574,10 @@ function imageSource(block: Extract<ProcessContentBlock, { type: "image" }>): st
   return `data:${source.media_type ?? "image/png"};base64,${source.data}`;
 }
 
-function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadThinking }: {
+function StepContent({ step, cwd, pathFlavor, onOpenFile, sessionId, ts, isStreaming, loadThinking }: {
   step: Step;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
   sessionId?: string | undefined;
   ts: BuildLabelFn;
@@ -582,13 +585,13 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
   loadThinking?: DeferredThinkingLoader | undefined;
 }) {
   if (step.kind === "thinking") {
-    return <ProcessNarrative blocks={step.blocks} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} isStreaming={isStreaming} loadThinking={loadThinking} />;
+    return <ProcessNarrative blocks={step.blocks} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} sessionId={sessionId} isStreaming={isStreaming} loadThinking={loadThinking} />;
   }
   if (step.kind === "tool") {
     return (
       <div className="space-y-2">
         {step.leadBlocks.length > 0 && (
-          <ProcessNarrative blocks={step.leadBlocks} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} isStreaming={isStreaming} loadThinking={loadThinking} />
+          <ProcessNarrative blocks={step.leadBlocks} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} sessionId={sessionId} isStreaming={isStreaming} loadThinking={loadThinking} />
         )}
         <ToolCallBlock
           block={{
@@ -611,7 +614,7 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
           <div key={block.id}>
             {step.leadBlocks[idx] && step.leadBlocks[idx].length > 0 && (
               <div className="mb-2">
-                <ProcessNarrative blocks={step.leadBlocks[idx]} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} isStreaming={isStreaming} loadThinking={loadThinking} />
+                <ProcessNarrative blocks={step.leadBlocks[idx]} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} sessionId={sessionId} isStreaming={isStreaming} loadThinking={loadThinking} />
               </div>
             )}
             <ToolCallBlock
@@ -631,7 +634,7 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
     );
   }
   if (step.kind === "custom") {
-    return <MessageView message={step.block.message} cwd={cwd} onOpenFile={onOpenFile} isStreaming={isStreaming} />;
+    return <MessageView message={step.block.message} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} isStreaming={isStreaming} />;
   }
 
   const src = imageSource(step.block);
@@ -641,9 +644,10 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
   ) : null;
 }
 
-function ProcessNarrative({ blocks, cwd, onOpenFile, sessionId, isStreaming, loadThinking }: {
+function ProcessNarrative({ blocks, cwd, pathFlavor, onOpenFile, sessionId, isStreaming, loadThinking }: {
   blocks: Array<Extract<ProcessContentBlock, { type: "thinking" | "text" }>>;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
   sessionId?: string | undefined;
   isStreaming: boolean;
@@ -653,7 +657,7 @@ function ProcessNarrative({ blocks, cwd, onOpenFile, sessionId, isStreaming, loa
     <div className="space-y-2 pr-2">
       {blocks.map((block) =>
         block.type === "text" ? (
-          <MarkdownBody key={block.id} cwd={cwd} onOpenFile={onOpenFile} className="!text-text-muted" isStreaming={isStreaming}>
+          <MarkdownBody key={block.id} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} className="!text-text-muted" isStreaming={isStreaming}>
             {block.text}
           </MarkdownBody>
         ) : (
@@ -665,6 +669,7 @@ function ProcessNarrative({ blocks, cwd, onOpenFile, sessionId, isStreaming, loa
             blockIndex={block.origin.sourceBlockIndex ?? 0}
             contentOnly
             cwd={cwd}
+            pathFlavor={pathFlavor}
             onOpenFile={onOpenFile}
             className="!text-text-muted"
             isStreaming={isStreaming}
@@ -694,6 +699,7 @@ export function ProcessGroup({
   blocks,
   isStreaming,
   cwd,
+  pathFlavor,
   onOpenFile,
   sessionId,
   loadDeferredThinking,
@@ -961,7 +967,7 @@ export function ProcessGroup({
           {singleThinking ? (
             <div className="relative mt-2">
               <div ref={scrollRef} className="max-h-[280px] overflow-y-auto pr-2">
-                <StepContent step={steps[0]!} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} ts={ts} isStreaming={isStreaming} loadThinking={loadDeferredThinking} />
+                <StepContent step={steps[0]!} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} sessionId={sessionId} ts={ts} isStreaming={isStreaming} loadThinking={loadDeferredThinking} />
               </div>
               {showTopShadow && <div aria-hidden="true" className="chat-fade chat-fade-top pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-bg to-transparent" />}
               {showBottomShadow && <div aria-hidden="true" className="chat-fade chat-fade-bottom pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-bg to-transparent" />}
@@ -1027,7 +1033,7 @@ export function ProcessGroup({
                             ref={isLatest ? latestStepScrollRef : undefined}
                             className="ml-5 mt-1.5 max-h-[320px] overflow-y-auto overflow-x-hidden"
                           >
-                            <StepContent step={step} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} ts={ts} isStreaming={isStreaming} loadThinking={loadDeferredThinking} />
+                            <StepContent step={step} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} sessionId={sessionId} ts={ts} isStreaming={isStreaming} loadThinking={loadDeferredThinking} />
                           </div>
                         )}
                       </div>
@@ -1096,7 +1102,7 @@ export function ProcessGroup({
               </div>
               <div className="relative mt-2">
                 <div ref={scrollRef} className="max-h-[280px] overflow-y-auto pr-2">
-                  {steps[activeTab] && <StepContent step={steps[activeTab]} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} ts={ts} isStreaming={isStreaming} loadThinking={loadDeferredThinking} />}
+                  {steps[activeTab] && <StepContent step={steps[activeTab]} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} sessionId={sessionId} ts={ts} isStreaming={isStreaming} loadThinking={loadDeferredThinking} />}
                 </div>
                 {showTopShadow && <div aria-hidden="true" className="chat-fade chat-fade-top pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-bg to-transparent" />}
                 {showBottomShadow && <div aria-hidden="true" className="chat-fade chat-fade-bottom pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-bg to-transparent" />}

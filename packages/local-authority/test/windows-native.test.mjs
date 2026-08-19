@@ -24,7 +24,7 @@ test("public state surface does not export the private native loader", async () 
 
 test("native Windows binding exposes SID and handle-based path evidence", { skip: !isWindowsX64 }, () => {
   const binding = loadNativeWindowsBinding();
-  assert.equal(binding.apiVersion, 6);
+  assert.equal(binding.apiVersion, 7);
   const processInfo = binding.inspectProcess(process.pid);
   assert.ok(processInfo);
   assert.match(processInfo.creationTime, /^[0-9]+$/u);
@@ -109,6 +109,28 @@ test("createPrivateObject writes a current-user+SYSTEM protected DACL", { skip: 
       () => binding.createPrivateObject(directory, "directory"),
       (error) => error?.code === "NATIVE_ALREADY_EXISTS",
     );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("createExclusivePrivateFile publishes payload on the CREATE_NEW handle", { skip: !isWindowsX64 }, () => {
+  const binding = loadNativeWindowsBinding();
+  const parent = mkdtempSync(join(tmpdir(), "pix-excl-"));
+  const directory = join(parent, "leaf");
+  const file = join(directory, "secret.txt");
+  try {
+    assert.equal(binding.createPrivateObject(directory, "directory"), true);
+    assert.equal(binding.createExclusivePrivateFile(file, Buffer.from("payload\n")), true);
+    const inspection = binding.inspectPath(file);
+    assert.ok(inspection);
+    rejectUnsafeWindowsSecurityEvidence(inspection, currentWindowsPrincipal());
+    assert.equal(inspection.size, String(Buffer.byteLength("payload\n")));
+    assert.throws(
+      () => binding.createExclusivePrivateFile(file, Buffer.from("other\n")),
+      (error) => error?.code === "NATIVE_ALREADY_EXISTS",
+    );
+    assert.equal(binding.inspectPath(file)?.size, String(Buffer.byteLength("payload\n")));
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }

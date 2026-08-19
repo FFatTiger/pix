@@ -17,6 +17,8 @@ import { SessiondRpcClient, SessiondRpcServer, type SessiondRpcHandler } from ".
 import { SessiondError } from "../src/errors.js";
 import { SessiondService } from "../src/service.js";
 import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
+import { createSecureStateBackend } from "@fffattiger/pix-local-authority/state";
+import { createPrivateRuntimeDirectory } from "./helpers/private-runtime-dir.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -2087,24 +2089,47 @@ test("slow subscribers are bounded and removed without blocking authority", asyn
 });
 
 test("instance lock rejects a second live instance and recovers stale locks with private permissions", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "sessiond-lock-"));
-  const paths = sessiondPaths(directory);
-  const first = await acquireInstanceLock(paths);
-  await assert.rejects(acquireInstanceLock(paths));
-  const mode = (await stat(paths.lockFile)).mode & 0o777;
-  assert.equal(mode, 0o600);
-  await first.release();
-  await writeFile(paths.lockFile, JSON.stringify({ pid: 999_999_999, instanceId: "stale" }), { mode: 0o600 });
-  const recovered = await acquireInstanceLock(paths);
-  await recovered.release(); await rm(directory, { recursive: true, force: true });
+  const fixture = await createPrivateRuntimeDirectory("sessiond-lock-");
+  const paths = sessiondPaths(fixture.directory);
+  try {
+    const first = await acquireInstanceLock(paths);
+    await assert.rejects(acquireInstanceLock(paths));
+    if (process.platform === "win32") {
+      assert.equal((await createSecureStateBackend().readLifetimeLock(paths.lockFile)).kind, "valid");
+    } else {
+      assert.equal((await stat(paths.lockFile)).mode & 0o777, 0o600);
+    }
+    await first.release();
+    const stalePayload = JSON.stringify({ pid: 999_999_999, instanceId: "stale" });
+    if (process.platform === "win32") {
+      await createSecureStateBackend().createExclusivePrivateFile(paths.lockFile, stalePayload, { maxBytes: 4096 });
+    } else {
+      await writeFile(paths.lockFile, stalePayload, { mode: 0o600 });
+    }
+    const recovered = await acquireInstanceLock(paths);
+    await recovered.release();
+  } finally {
+    await fixture.cleanup();
+  }
 });
 
 test("local secret is stable and private", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "sessiond-secret-"));
-  const paths = sessiondPaths(directory);
-  const one = await loadOrCreateLocalSecret(paths); const two = await loadOrCreateLocalSecret(paths);
-  assert.equal(one, two); assert.ok(one.length >= 32); assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
-  await rm(directory, { recursive: true, force: true });
+  const fixture = await createPrivateRuntimeDirectory("sessiond-secret-");
+  const paths = sessiondPaths(fixture.directory);
+  try {
+    const one = await loadOrCreateLocalSecret(paths);
+    const two = await loadOrCreateLocalSecret(paths);
+    assert.equal(one, two);
+    assert.ok(one.length >= 32);
+    if (process.platform === "win32") {
+      const read = await createSecureStateBackend().readStateDocument(paths.secretFile, { maxBytes: 1024 });
+      assert.equal("content" in read, true);
+    } else {
+      assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+    }
+  } finally {
+    await fixture.cleanup();
+  }
 });
 
 test("RPC authenticates locally and rejects the wrong secret", async (t) => {

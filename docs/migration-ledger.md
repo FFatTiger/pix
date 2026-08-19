@@ -3858,3 +3858,25 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 - Branch/base: `feat/cross-platform-g0-baseline` / `128981a`.
 - `packages/client/src/components/chat/ChatMinimap.tsx` was merged from upstream `04ad759` (fork-style turn navigation rail, "Codex ThreadUserMessageNavigationRail" style). Its doc comment cited the legacy product name, which tripped the `check:architecture` no-legacy-brand gate on every OS.
 - The comment no longer uses the legacy brand; the source history is recorded here instead (the ledger is the one place allowed to keep the old brand as migration evidence). No gate logic or skip-list change.
+
+## 112. Cross-platform CP-42 — sessiond tests can exit
+
+- Branch/base: `feat/cross-platform-g0-baseline` / uncommitted CP-42–CP-46 slice.
+- sessiond `npm test` now uses `--test-timeout=30000 --test-force-exit` and tracked daemon/socket teardown so a failing body cannot leak a live daemon into the next file.
+- Windows local run: 272 pass / 0 fail / 68 skip, ~35s, process exits. Not a claim that every handle is proven closed without force-exit.
+
+## 113. Cross-platform CP-43 — exclusive Windows publish + pipe ready
+
+- Native apiVersion 7 adds `createExclusivePrivateFile`: `CREATE_NEW` + write + `FlushFileBuffers` on the same handle, then close. Failure deletes the name. This matches POSIX `O_EXCL` + write and avoids VS Code-style empty-file-then-reopen.
+- Named-pipe listen waits on a bounded ready event after the first `ConnectNamedPipe` is armed. Live-listener `protectNamedPipe()` is not used by sessiond tests.
+- Windows local-authority selection: 37 pass / 0 fail / 2 skip.
+
+## 114. Cross-platform CP-44 — private runtime fixtures
+
+- sessiond Windows integration tests create a backend-owned `runtime` leaf under `mkdtemp`, never treat the inherited-ACL temp root as existing sensitive state.
+- Production still fail-closes an existing non-private directory. POSIX-only mode/hardlink/temp-sweep assertions stay skipped on Windows.
+
+## 115. Cross-platform CP-45/46 — pathFlavor file-links + thinking honesty
+
+- `resolveLocalFileHref` / `resolveLocalFilePath` take Host `pathFlavor`. Transcript, markdown, and FileViewer pass it through. Case folding no longer happens from a `C:/` string guess when flavor is `posix`.
+- Live thinking control remains gated on `runtime.thinking.set`. Detached sessions may still stage a level for the next send.

@@ -17,7 +17,7 @@
 #define PIPE_REJECT_REMOTE_CLIENTS 0x00000008
 #endif
 
-#define PIX_NATIVE_API_VERSION 6
+#define PIX_NATIVE_API_VERSION 7
 #define PIX_MAX_REPORTED_ACES 32
 #define PIX_LISTENER_MAGIC 0x50584C31u
 
@@ -543,6 +543,7 @@ typedef struct {
   wchar_t* path;
   HANDLE pending;
   HANDLE stop_event;
+  HANDLE ready_event;
   HANDLE thread;
   napi_threadsafe_function tsfn;
   volatile LONG stopping;
@@ -565,6 +566,7 @@ static void destroy_pipe_listener(pix_pipe_listener* listener) {
   }
   close_pipe_handle(&listener->pending);
   close_pipe_handle(&listener->stop_event);
+  close_pipe_handle(&listener->ready_event);
   close_pipe_handle(&listener->thread);
   if (listener->path) {
     free(listener->path);
@@ -713,6 +715,140 @@ static napi_value create_private_object(napi_env env, napi_callback_info info) {
       "private object could not be created"
     );
   }
+
+  napi_value result;
+  if (napi_get_boolean(env, 1, &result) != napi_ok) {
+    return throw_fixed(env, "NATIVE_INTERNAL", "native operation failed");
+  }
+  return result;
+}
+
+static napi_value create_exclusive_private_file(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  wchar_t* path = NULL;
+  void* source = NULL;
+  size_t length = 0;
+  bool is_buffer = FALSE;
+  PSID user_sid = NULL;
+  PSID system_sid = NULL;
+  PACL acl = NULL;
+  SECURITY_DESCRIPTOR descriptor;
+  HANDLE handle = INVALID_HANDLE_VALUE;
+
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 2) {
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path and bytes are required");
+  }
+  path = wide_path_from_js(env, argv[0]);
+  if (!path) return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "path is invalid");
+  if (napi_is_buffer(env, argv[1], &is_buffer) != napi_ok || !is_buffer ||
+      napi_get_buffer_info(env, argv[1], &source, &length) != napi_ok) {
+    free(path);
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "bytes are invalid");
+  }
+  if (length > 65536) {
+    free(path);
+    return throw_fixed(env, "NATIVE_INVALID_ARGUMENT", "bytes are invalid");
+  }
+
+  user_sid = copy_current_user_sid();
+  system_sid = create_local_system_sid();
+  if (!user_sid || !system_sid) {
+    if (user_sid) free(user_sid);
+    if (system_sid) FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "current user identity could not be inspected");
+  }
+
+  EXPLICIT_ACCESS_W access[2];
+  ZeroMemory(access, sizeof(access));
+  access[0].grfAccessPermissions = GENERIC_ALL;
+  access[0].grfAccessMode = SET_ACCESS;
+  access[0].grfInheritance = NO_INHERITANCE;
+  access[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  access[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+  access[0].Trustee.ptstrName = (LPWSTR)user_sid;
+  access[1].grfAccessPermissions = GENERIC_ALL;
+  access[1].grfAccessMode = SET_ACCESS;
+  access[1].grfInheritance = NO_INHERITANCE;
+  access[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  access[1].Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+  access[1].Trustee.ptstrName = (LPWSTR)system_sid;
+
+  if (SetEntriesInAclW(2, access, NULL, &acl) != ERROR_SUCCESS || acl == NULL) {
+    free(user_sid);
+    FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "private security descriptor could not be created");
+  }
+  if (!InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION) ||
+      !SetSecurityDescriptorOwner(&descriptor, user_sid, FALSE) ||
+      !SetSecurityDescriptorDacl(&descriptor, TRUE, acl, FALSE) ||
+      !SetSecurityDescriptorControl(&descriptor, SE_DACL_PROTECTED, SE_DACL_PROTECTED)) {
+    free_explicit_acl(acl);
+    free(user_sid);
+    FreeSid(system_sid);
+    free(path);
+    return throw_fixed(env, "NATIVE_INTERNAL", "private security descriptor could not be created");
+  }
+
+  SECURITY_ATTRIBUTES attributes;
+  ZeroMemory(&attributes, sizeof(attributes));
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = &descriptor;
+  attributes.bInheritHandle = FALSE;
+
+  /* Same-handle exclusive publish: CREATE_NEW + write + flush before close.
+     The final name is never visible as a zero-byte file (POSIX O_EXCL + write). */
+  handle = CreateFileW(
+    path,
+    GENERIC_READ | GENERIC_WRITE,
+    0,
+    &attributes,
+    CREATE_NEW,
+    FILE_ATTRIBUTE_NORMAL,
+    NULL
+  );
+  DWORD error = (handle == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
+  if (handle == INVALID_HANDLE_VALUE) {
+    free_explicit_acl(acl);
+    free(user_sid);
+    FreeSid(system_sid);
+    free(path);
+    if (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS) {
+      return throw_fixed(env, "NATIVE_ALREADY_EXISTS", "path already exists");
+    }
+    if (error == ERROR_PATH_NOT_FOUND || error == ERROR_FILE_NOT_FOUND) {
+      return throw_fixed(env, "NATIVE_NOT_FOUND", "parent path does not exist");
+    }
+    return throw_fixed(
+      env,
+      error == ERROR_ACCESS_DENIED ? "NATIVE_ACCESS_DENIED" : "NATIVE_CREATE_FAILED",
+      "private object could not be created"
+    );
+  }
+
+  DWORD transferred = 0;
+  BOOL wrote = (length == 0) ? TRUE : WriteFile(handle, source, (DWORD)length, &transferred, NULL);
+  if (!wrote || transferred != (DWORD)length || !FlushFileBuffers(handle)) {
+    error = GetLastError();
+    CloseHandle(handle);
+    DeleteFileW(path);
+    free_explicit_acl(acl);
+    free(user_sid);
+    FreeSid(system_sid);
+    free(path);
+    return throw_fixed(
+      env,
+      error == ERROR_ACCESS_DENIED ? "NATIVE_ACCESS_DENIED" : "NATIVE_CREATE_FAILED",
+      "private object could not be created"
+    );
+  }
+  CloseHandle(handle);
+  free_explicit_acl(acl);
+  free(user_sid);
+  FreeSid(system_sid);
+  free(path);
 
   napi_value result;
   if (napi_get_boolean(env, 1, &result) != napi_ok) {
@@ -1133,6 +1269,7 @@ static void listener_js_cb(napi_env env, napi_value js_cb, void* context, void* 
 static DWORD WINAPI pipe_listener_thread(LPVOID raw) {
   pix_pipe_listener* listener = (pix_pipe_listener*)raw;
   HANDLE wait_handles[2];
+  int signaled_ready = 0;
   wait_handles[1] = listener->stop_event;
   while (InterlockedCompareExchange(&listener->stopping, 0, 0) == 0) {
     OVERLAPPED overlapped;
@@ -1144,6 +1281,15 @@ static DWORD WINAPI pipe_listener_thread(LPVOID raw) {
     }
     BOOL connected = ConnectNamedPipe(listener->pending, &overlapped);
     DWORD error = connected ? ERROR_SUCCESS : GetLastError();
+    // `CreateNamedPipeW` alone makes a client endpoint visible, but the
+    // listener is not actually ready until its first ConnectNamedPipe is
+    // armed. Signal exactly once so the JS bind operation cannot report
+    // success during that startup window. A synchronous startup failure is
+    // reported below before signalling, so the waiting JS caller sees it.
+    if (!signaled_ready && (connected || error == ERROR_IO_PENDING || error == ERROR_PIPE_CONNECTED) && listener->ready_event) {
+      SetEvent(listener->ready_event);
+      signaled_ready = 1;
+    }
     if (!connected && error == ERROR_IO_PENDING) {
       wait_handles[0] = overlapped.hEvent;
       DWORD wait = WaitForMultipleObjects(2, wait_handles, FALSE, INFINITE);
@@ -1165,6 +1311,10 @@ static DWORD WINAPI pipe_listener_thread(LPVOID raw) {
       CloseHandle(overlapped.hEvent);
       if (InterlockedCompareExchange(&listener->stopping, 0, 0) != 0) break;
       listener->first_error = error;
+      if (!signaled_ready && listener->ready_event) {
+        SetEvent(listener->ready_event);
+        signaled_ready = 1;
+      }
       break;
     }
     CloseHandle(overlapped.hEvent);
@@ -1266,7 +1416,8 @@ static napi_value listen_protected_named_pipe(napi_env env, napi_callback_info i
   }
 
   listener->stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-  if (listener->stop_event == NULL) {
+  listener->ready_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+  if (listener->stop_event == NULL || listener->ready_event == NULL) {
     destroy_pipe_listener(listener);
     return throw_fixed(env, "NATIVE_INTERNAL", "named pipe listener could not be started");
   }
@@ -1291,6 +1442,16 @@ static napi_value listen_protected_named_pipe(napi_env env, napi_callback_info i
   if (listener->thread == NULL) {
     destroy_pipe_listener(listener);
     return throw_fixed(env, "NATIVE_INTERNAL", "named pipe listener could not be started");
+  }
+  // Bounded readiness handshake: returning from this N-API call means the
+  // first accept has been armed, not merely that a pipe instance was created.
+  if (WaitForSingleObject(listener->ready_event, 2000) != WAIT_OBJECT_0 || listener->first_error != ERROR_SUCCESS) {
+    InterlockedExchange(&listener->stopping, 1);
+    SetEvent(listener->stop_event);
+    CancelIoEx(listener->pending, NULL);
+    WaitForSingleObject(listener->thread, 2000);
+    destroy_pipe_listener(listener);
+    return throw_fixed(env, "NATIVE_CREATE_FAILED", "named pipe listener could not be started");
   }
 
   napi_value result;
@@ -1452,6 +1613,7 @@ static napi_value init(napi_env env, napi_value exports) {
     {"currentUserSid", NULL, current_user_sid, NULL, NULL, NULL, napi_default, NULL},
     {"inspectPath", NULL, inspect_path, NULL, NULL, NULL, napi_default, NULL},
     {"createPrivateObject", NULL, create_private_object, NULL, NULL, NULL, napi_default, NULL},
+    {"createExclusivePrivateFile", NULL, create_exclusive_private_file, NULL, NULL, NULL, napi_default, NULL},
     {"inspectNamedPipe", NULL, inspect_named_pipe, NULL, NULL, NULL, napi_default, NULL},
     {"createProtectedNamedPipe", NULL, create_protected_named_pipe, NULL, NULL, NULL, napi_default, NULL},
     {"inspectNamedPipeHandle", NULL, inspect_named_pipe_handle, NULL, NULL, NULL, napi_default, NULL},

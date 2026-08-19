@@ -398,15 +398,11 @@ async function readExistingSecretForBackend(
   return secret;
 }
 
-export async function loadOrCreateLocalSecret(
+async function loadOrCreateSecretForBackend(
+  backend: SecureStateBackend,
   paths: SessiondPaths,
-  hooks: LocalSecretTestHooks = {},
-  privateDir?: SessiondPrivateDirectory,
+  hooks: LocalSecretTestHooks,
 ): Promise<string> {
-  // The containing directory must be preflighted private FIRST, and its
-  // identity re-verified immediately before any exclusive create/sweep.
-  await resolveSessiondPrivateDirectory(paths, privateDir);
-  const backend = createSecureStateBackend();
   if (backend.kind === "posix") await sweepStaleSecretTemps(paths);
   for (let attempt = 0; ; attempt += 1) {
     const existing = await readExistingSecretForBackend(backend, paths, hooks);
@@ -415,8 +411,11 @@ export async function loadOrCreateLocalSecret(
     const secret = randomBytes(SECRET_MIN_BYTES).toString("base64url");
     if (backend.kind === "windows") {
       try {
-        await backend.createExclusivePrivateFile(paths.secretFile, `${secret}\n`, { maxBytes: 1024 });
+        // CREATE_NEW is the Windows no-replace publish operation. The test seam
+        // is therefore immediately before it, never after the final secret is
+        // visible (unlike POSIX's temp-file → link publish sequence).
         await hooks.beforePublish?.();
+        await backend.createExclusivePrivateFile(paths.secretFile, `${secret}\n`, { maxBytes: 1024 });
         return secret;
       } catch (error) {
         if (error instanceof LocalAuthorityError && error.code === "ALREADY_EXISTS") continue;
@@ -441,6 +440,38 @@ export async function loadOrCreateLocalSecret(
       }
     } finally {
       await rm(temp, { force: true }).catch(() => {});
+    }
+  }
+}
+
+// Windows CREATE_NEW makes the final name visible before its async JS-side
+// write completes. Sessiond itself serializes processes with its instance lock;
+// this single-flight also preserves the public helper's same-process concurrent
+// creator guarantee, so another caller never mistakes that transient empty
+// file for legacy zero-byte debris and removes the winner's name.
+const windowsSecretFlights = new Map<string, Promise<string>>();
+
+export async function loadOrCreateLocalSecret(
+  paths: SessiondPaths,
+  hooks: LocalSecretTestHooks = {},
+  privateDir?: SessiondPrivateDirectory,
+): Promise<string> {
+  // The containing directory must be preflighted private FIRST, and its
+  // identity re-verified immediately before any exclusive create/sweep.
+  await resolveSessiondPrivateDirectory(paths, privateDir);
+  const backend = createSecureStateBackend();
+  if (backend.kind !== "windows") {
+    return loadOrCreateSecretForBackend(backend, paths, hooks);
+  }
+  const inFlight = windowsSecretFlights.get(paths.secretFile);
+  if (inFlight) return inFlight;
+  const operation = loadOrCreateSecretForBackend(backend, paths, hooks);
+  windowsSecretFlights.set(paths.secretFile, operation);
+  try {
+    return await operation;
+  } finally {
+    if (windowsSecretFlights.get(paths.secretFile) === operation) {
+      windowsSecretFlights.delete(paths.secretFile);
     }
   }
 }

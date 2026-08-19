@@ -2,6 +2,7 @@
 import { memo, useState, useRef, useEffect, useMemo, useCallback, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownBody } from "./MarkdownBody";
+import type { ClientPathFlavor } from "@/lib/file-paths";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 import { cssPx, cssViewportSize } from "@/lib/ui-scale";
 import { urls } from "@/api/urls";
@@ -227,6 +228,7 @@ interface Props {
   toolResults?: Map<string, ToolResultMessage> | undefined;
   modelNames?: Record<string, string> | undefined;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string, options?: { initialDisplayMode?: "diff" }) => void) | undefined;
   entryId?: string;
   onFork?: (entryId: string) => void;
@@ -275,12 +277,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, mentionValidators, skillInfo, loadDeferredThinking, loadBashFullOutput }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, pathFlavor, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, mentionValidators, skillInfo, loadDeferredThinking, loadBashFullOutput }: Props) {
   if (message.role === "user") {
-    return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} mentionValidators={mentionValidators} skillInfo={skillInfo} />;
+    return <UserMessageView message={message as UserMessage} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} mentionValidators={mentionValidators} skillInfo={skillInfo} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} loadDeferredThinking={loadDeferredThinking} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} loadDeferredThinking={loadDeferredThinking} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -290,7 +292,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     if ((message as CustomMessage).customType === "compaction") {
       return <CompactionSummary content={(message as CustomMessage).content} />;
     }
-    return <CustomMessageView message={message as CustomMessage} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
+    return <CustomMessageView message={message as CustomMessage} isStreaming={isStreaming} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} />;
   }
   if (message.role === "bashExecution") {
     return <BashExecutionView message={message as BashExecutionMessage} sessionId={sessionId} loadFullOutput={loadBashFullOutput} />;
@@ -330,9 +332,10 @@ function haveSameWrittenFiles(previous: WrittenFile[] | undefined, next: Written
   });
 }
 
-function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, mentionValidators, skillInfo }: {
+function UserMessageView({ message, cwd, pathFlavor, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, mentionValidators, skillInfo }: {
   message: UserMessage;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
   entryId?: string | undefined;
   onFork?: ((entryId: string) => void) | undefined;
@@ -478,7 +481,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   // pix adapter: validity lookups for @file mentions and /skill: tokens are
   // injected view-model props (the source read a project-context data hook).
   // When absent, mentions stay plain — the same state as an unloaded index.
-  const markdownMentionProps = { cwd, onOpenFile, highlightMentions: true, mentionValidators } as const;
+  const markdownMentionProps = { cwd, pathFlavor, onOpenFile, highlightMentions: true, mentionValidators } as const;
   const skillMeta = skillBlock ? skillInfo?.get(skillBlock.name) : null;
 
   // Editing a skill-expanded message restores the compact `/skill:name args`
@@ -668,6 +671,7 @@ function AssistantMessageView({
   toolResults,
   modelNames,
   cwd,
+  pathFlavor,
   onOpenFile,
   showTimestamp,
   prevTimestamp,
@@ -681,6 +685,7 @@ function AssistantMessageView({
   toolResults?: Map<string, ToolResultMessage> | undefined;
   modelNames?: Record<string, string> | undefined;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string, options?: { initialDisplayMode?: "diff" }) => void) | undefined;
   showTimestamp?: boolean | undefined;
   prevTimestamp?: number | undefined;
@@ -868,7 +873,7 @@ function AssistantMessageView({
           </div>
         )}
         {blockItems.map(({ block, originalIndex }) => (
-          <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} loadDeferredThinking={loadDeferredThinking} />
+          <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} loadDeferredThinking={loadDeferredThinking} />
         ))}
       </div>
 
@@ -936,12 +941,12 @@ function AssistantMessageView({
   );
 }
 
-function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, sessionId, entryId, blockIndex, loadDeferredThinking }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage> | undefined; isStreaming?: boolean | undefined; streamingDuration?: number | undefined; toolCallDurations?: Map<string, number> | undefined; cwd?: string | undefined; onOpenFile?: ((filePath: string) => void) | undefined; sessionId?: string | undefined; entryId?: string | undefined; blockIndex: number; loadDeferredThinking?: DeferredThinkingLoader | undefined }) {
+function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, pathFlavor, onOpenFile, sessionId, entryId, blockIndex, loadDeferredThinking }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage> | undefined; isStreaming?: boolean | undefined; streamingDuration?: number | undefined; toolCallDurations?: Map<string, number> | undefined; cwd?: string | undefined; pathFlavor?: ClientPathFlavor | undefined; onOpenFile?: ((filePath: string) => void) | undefined; sessionId?: string | undefined; entryId?: string | undefined; blockIndex: number; loadDeferredThinking?: DeferredThinkingLoader | undefined }) {
   if (block.type === "text") {
-    return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
+    return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} />;
   }
   if (block.type === "thinking") {
-    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} loadThinking={loadDeferredThinking} />;
+    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} loadThinking={loadDeferredThinking} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} />;
   }
   if (block.type === "toolCall") {
     const tc = block as ToolCallContent;
@@ -952,13 +957,13 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
   return null;
 }
 
-function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent; isStreaming?: boolean | undefined; cwd?: string | undefined; onOpenFile?: ((filePath: string) => void) | undefined }) {
+function TextBlock({ block, isStreaming, cwd, pathFlavor, onOpenFile }: { block: TextContent; isStreaming?: boolean | undefined; cwd?: string | undefined; pathFlavor?: ClientPathFlavor | undefined; onOpenFile?: ((filePath: string) => void) | undefined }) {
   return (
-    <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>
+    <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>
   );
 }
 
-export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex, contentOnly = false, isStreaming, cwd, onOpenFile, className, loadThinking }: {
+export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex, contentOnly = false, isStreaming, cwd, pathFlavor, onOpenFile, className, loadThinking }: {
   block: ThinkingContent;
   duration?: number | undefined;
   sessionId?: string | undefined;
@@ -967,6 +972,7 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex,
   contentOnly?: boolean;
   isStreaming?: boolean | undefined;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
   className?: string | undefined;
   /** pix adapter: injected deferred-thinking loader (host session-entry API). */
@@ -1007,6 +1013,7 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex,
         blockIndex={blockIndex}
         isStreaming={isStreaming}
         cwd={cwd}
+        pathFlavor={pathFlavor}
         onOpenFile={onOpenFile}
         className={className}
         loadThinking={loadThinking}
@@ -1037,13 +1044,14 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex,
   );
 }
 
-function ThinkingContentBody({ block, sessionId, entryId, blockIndex, isStreaming, cwd, onOpenFile, className, loadThinking }: {
+function ThinkingContentBody({ block, sessionId, entryId, blockIndex, isStreaming, cwd, pathFlavor, onOpenFile, className, loadThinking }: {
   block: ThinkingContent;
   sessionId?: string | undefined;
   entryId?: string | undefined;
   blockIndex: number;
   isStreaming?: boolean | undefined;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
   className?: string | undefined;
   loadThinking?: DeferredThinkingLoader | undefined;
@@ -1077,7 +1085,7 @@ function ThinkingContentBody({ block, sessionId, entryId, blockIndex, isStreamin
   if (error) return <div className="text-xs text-red-400">{error}</div>;
 
   return (
-    <MarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} className={className}>
+    <MarkdownBody isStreaming={isStreaming} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile} className={className}>
       {block.deferred ? (content ?? "") : block.thinking}
     </MarkdownBody>
   );
@@ -1451,7 +1459,7 @@ function PairedResult({ text, isEmpty, isError, processStyle = false }: {
 
 
 
-function CustomMessageView({ message, isStreaming, cwd, onOpenFile }: { message: CustomMessage; isStreaming?: boolean | undefined; cwd?: string | undefined; onOpenFile?: ((filePath: string) => void) | undefined }) {
+function CustomMessageView({ message, isStreaming, cwd, pathFlavor, onOpenFile }: { message: CustomMessage; isStreaming?: boolean | undefined; cwd?: string | undefined; pathFlavor?: ClientPathFlavor | undefined; onOpenFile?: ((filePath: string) => void) | undefined }) {
   const { t } = useI18n();
   const isHiddenDisplay = message.display === false;
   const [contentExpanded, setContentExpanded] = useState(!isHiddenDisplay);
@@ -1519,7 +1527,7 @@ function CustomMessageView({ message, isStreaming, cwd, onOpenFile }: { message:
                 })}
               </div>
             )}
-            {text ? <MarkdownBody className="markdown-custom-message" isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{text}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("desktop.noMessage")}</span>}
+            {text ? <MarkdownBody className="markdown-custom-message" isStreaming={isStreaming} cwd={cwd} pathFlavor={pathFlavor} onOpenFile={onOpenFile}>{text}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("desktop.noMessage")}</span>}
           </div>
         ) : (
           <button

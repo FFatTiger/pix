@@ -6,6 +6,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { useI18n } from "@/hooks/useI18n";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 import { resolveLocalFileHref } from "@/lib/file-links";
+import type { ClientPathFlavor } from "@/lib/file-paths";
 import { resolveMarkdownImageSrc } from "@/lib/markdown-images";
 import { splitStableParts } from "@/lib/markdown-incremental";
 import { headingId, markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
@@ -21,6 +22,7 @@ interface MarkdownBodyProps {
   className?: string | undefined;
   isStreaming?: boolean | undefined;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
   /**
    * Highlight valid @file / /skill: mentions inside text (accent + dotted
@@ -33,6 +35,7 @@ interface MarkdownBodyProps {
 interface MarkdownComponentsOptions {
   isStreaming?: boolean | undefined;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
 }
 
@@ -45,7 +48,7 @@ interface MarkdownComponentsOptions {
  */
 export const MarkdownCodeContext = createContext(false);
 
-function buildMarkdownComponents({ isStreaming, cwd, onOpenFile }: MarkdownComponentsOptions): Components {
+function buildMarkdownComponents({ isStreaming, cwd, pathFlavor, onOpenFile }: MarkdownComponentsOptions): Components {
   return {
     h1({ children }: React.ComponentProps<'h1'>) {
       return <h1 id={headingId(children)} className="scroll-mt-24 text-xl font-semibold mt-4 mb-2 text-(--text)">{children}</h1>
@@ -87,7 +90,7 @@ function buildMarkdownComponents({ isStreaming, cwd, onOpenFile }: MarkdownCompo
       // `node` is react-markdown metadata, not a DOM attribute.
       delete props.node;
       const linkClass = "text-(--accent-blue) underline underline-offset-2 hover:text-(--accent-blue)/80";
-      const filePath = onOpenFile ? resolveLocalFileHref(href, cwd) : null;
+      const filePath = onOpenFile ? resolveLocalFileHref(href, cwd, cwd, pathFlavor) : null;
       const openFile = onOpenFile;
       if (!filePath || !openFile) {
         return (
@@ -115,7 +118,7 @@ function buildMarkdownComponents({ isStreaming, cwd, onOpenFile }: MarkdownCompo
     img({ src, alt, ...props }: React.ComponentProps<'img'> & ExtraProps) {
       // `node` is react-markdown metadata, not a DOM attribute.
       delete props.node;
-      const resolved = resolveMarkdownImageSrc(src, cwd);
+      const resolved = resolveMarkdownImageSrc(src, cwd, cwd, undefined, pathFlavor);
       // Local paths are rewritten to /api/files; unsafe URL shapes return null
       // and the image is dropped entirely.
       if (!resolved) return null;
@@ -150,18 +153,19 @@ function buildMarkdownComponents({ isStreaming, cwd, onOpenFile }: MarkdownCompo
  * Stable chunks are marked non-streaming: their closed code blocks get Prism
  * highlighting immediately instead of waiting for the whole message to end.
  */
-const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpenFile, remarkPlugins, rehypePlugins }: {
+const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, pathFlavor, onOpenFile, remarkPlugins, rehypePlugins }: {
   text: string;
   isStreaming?: boolean | undefined;
   cwd?: string | undefined;
+  pathFlavor?: ClientPathFlavor | undefined;
   onOpenFile?: ((filePath: string) => void) | undefined;
   remarkPlugins?: ReactMarkdownOptions["remarkPlugins"];
   rehypePlugins?: ReactMarkdownOptions["rehypePlugins"];
 }) {
   const normalized = useMemo(() => normalizeDisplayMath(text), [text]);
   const components = useMemo(
-    () => buildMarkdownComponents({ isStreaming, cwd, onOpenFile }),
-    [isStreaming, cwd, onOpenFile],
+    () => buildMarkdownComponents({ isStreaming, cwd, pathFlavor, onOpenFile }),
+    [isStreaming, cwd, pathFlavor, onOpenFile],
   );
   return (
     <ReactMarkdown
@@ -174,7 +178,7 @@ const MarkdownPart = memo(function MarkdownPart({ text, isStreaming, cwd, onOpen
   );
 });
 
-export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, highlightMentions, mentionValidators }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, isStreaming, cwd, pathFlavor, onOpenFile, highlightMentions, mentionValidators }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   // Smooth the streamed reveal at frame cadence (LobeUI Streamdown): the
   // displayed text grows 1-3 chars per rAF frame instead of per publish
@@ -189,8 +193,8 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
   );
   const streamingSplit = isStreaming && parts.length > 1;
   const components = useMemo(
-    () => buildMarkdownComponents({ isStreaming, cwd, onOpenFile }),
-    [isStreaming, cwd, onOpenFile],
+    () => buildMarkdownComponents({ isStreaming, cwd, pathFlavor, onOpenFile }),
+    [isStreaming, cwd, pathFlavor, onOpenFile],
   );
   const mentionPlugins = useMemo(
     () => (highlightMentions && mentionValidators ? [mentionRemarkPlugin(mentionValidators)] : []),
@@ -257,6 +261,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
               text={part.text}
               isStreaming={part.tail ? fadeActive : false}
               cwd={cwd}
+              pathFlavor={pathFlavor}
               onOpenFile={onOpenFile}
               remarkPlugins={remarkPlugins}
               rehypePlugins={partPlugins}

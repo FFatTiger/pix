@@ -410,13 +410,14 @@ export async function acquireWindowsLifetimeLock(
   const binding = requireBinding();
   const principal = currentWindowsPrincipal();
   try {
-    createPrivate(binding, path, "file");
-    const handle = await open(path, constants.O_WRONLY);
+    // Same-handle exclusive publish: CREATE_NEW + write + flush. The final
+    // name is never visible as a zero-byte file (POSIX O_EXCL + write).
     try {
-      await handle.writeFile(options.payload, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+      binding.createExclusivePrivateFile(path, Buffer.from(options.payload, "utf8"));
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === "NATIVE_ALREADY_EXISTS") throw new NativeAlreadyExistsError("path already exists");
+      throw error;
     }
     const inspection = inspectOrThrow(binding, path);
     if (!inspection) {
@@ -444,13 +445,15 @@ export async function createWindowsExclusivePrivateFile(
   const binding = requireBinding();
   const principal = currentWindowsPrincipal();
   try {
-    createPrivate(binding, path, "file");
-    const handle = await open(path, constants.O_WRONLY);
+    // Same-handle exclusive publish (VS Code / POSIX O_EXCL): write the full
+    // payload before the name is visible. Never CREATE_NEW an empty file and
+    // reopen it for a second write.
     try {
-      await handle.writeFile(payload, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+      binding.createExclusivePrivateFile(path, Buffer.from(payload, "utf8"));
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === "NATIVE_ALREADY_EXISTS") throw new NativeAlreadyExistsError("path already exists");
+      throw error;
     }
     const inspection = inspectOrThrow(binding, path);
     if (!inspection) {

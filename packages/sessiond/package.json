@@ -23,7 +23,7 @@
     "pretypecheck": "npm run build:deps",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "prebuild:test": "npm run build:deps",
-    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\"",
+    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\" --test-concurrency=1 --test-timeout=30000 --test-force-exit",
     "build:test": "node ../../scripts/remove-paths.mjs dist-test && tsc -p tsconfig.test.json && node ./scripts/copy-test-fixtures.mjs",
     "precheck:boundaries": "npm run build",
     "check:boundaries": "node ./scripts/check-boundaries.mjs"

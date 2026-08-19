@@ -202,9 +202,11 @@ test("Windows sessiond can start against a dedicated private directory", { skip:
     assert.equal(handle.endpoint.includes(Buffer.from(dir).toString("hex").slice(0, 24)), false);
     assert.equal(typeof handle.secret, "string");
     assert.ok(handle.secret.length >= 32);
-    const backend = createSecureStateBackend();
-    assert.equal(backend.kind, "windows");
-    await backend.protectNamedPipe(handle.endpoint);
+    // startDaemon uses listenProtectedNamedPipe, which creates and verifies
+    // the listener DACL before it reports ready. Do not call the legacy
+    // post-bind protect helper against a live multi-instance pipe here: that
+    // mutates one live instance while the accept loop owns another. Its direct
+    // behavior is covered by the local-authority backend suite.
     const ping = await new SessiondRpcClient({
       endpoint: handle.endpoint,
       secret: handle.secret,

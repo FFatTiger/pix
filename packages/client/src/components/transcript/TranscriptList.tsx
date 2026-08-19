@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowUp } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import type { AgentMessage, ToolResultMessage } from "@fffattiger/pix-protocol";
+import type { HostPathFlavor } from "@fffattiger/pix-protocol/host-bootstrap";
 import { useVirtualList } from "@/lib/virtual-list";
 import {
   buildChatTranscriptRows,
@@ -185,8 +186,9 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
         streamingMessage,
         running,
         ...(cwd === undefined ? {} : { cwd }),
+        pathFlavor,
       }),
-    [messages, entryIds, streamingMessage, running, cwd],
+    [messages, entryIds, streamingMessage, running, cwd, pathFlavor],
   );
 
   // Live in-flight bash projection (source pendingBash row) — only while the
@@ -467,6 +469,7 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
                 <ChatTranscriptRowView
                   row={row}
                   cwd={cwd}
+                  pathFlavor={pathFlavor}
                   sessionId={effectiveSessionId ?? undefined}
                   toolResults={toolResults}
                   onOpenFile={onOpenFile}
@@ -508,6 +511,7 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
 function ChatTranscriptRowView({
   row,
   cwd,
+  pathFlavor,
   sessionId,
   toolResults,
   onOpenFile,
@@ -517,6 +521,7 @@ function ChatTranscriptRowView({
 }: {
   row: ChatTranscriptRow;
   cwd: string | undefined;
+  pathFlavor: HostPathFlavor;
   sessionId: string | undefined;
   toolResults: Map<string, ToolResultMessage>;
   onOpenFile: ((filePath: string, options?: { initialDisplayMode?: "diff" }) => void) | undefined;
@@ -530,6 +535,7 @@ function ChatTranscriptRowView({
         blocks={row.blocks}
         isStreaming={row.isStreaming}
         {...(cwd === undefined ? {} : { cwd })}
+        pathFlavor={pathFlavor}
         {...(onOpenFile === undefined ? {} : { onOpenFile })}
         {...(sessionId === undefined ? {} : { sessionId })}
       />
@@ -551,6 +557,7 @@ function ChatTranscriptRowView({
       {...(row.isStreaming === undefined ? {} : { isStreaming: row.isStreaming })}
       toolResults={toolResults}
       {...(cwd === undefined ? {} : { cwd })}
+      pathFlavor={pathFlavor}
       {...(onOpenFile === undefined ? {} : { onOpenFile })}
       {...(row.entryId === undefined ? {} : { entryId: row.entryId })}
       {...(row.prevAssistantEntryId === undefined ? {} : { prevAssistantEntryId: row.prevAssistantEntryId })}

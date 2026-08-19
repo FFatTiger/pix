@@ -1,24 +1,63 @@
 import assert from "node:assert/strict";
-import { chmod, link, lstat, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import test from "node:test";
+import test, { after } from "node:test";
 import { SessiondError } from "../src/errors.js";
 import { readExistingSecret, validateExistingSecretInfo } from "../src/internal/local-state-security.js";
 import { loadOrCreateLocalSecret, sessiondPaths } from "../src/local.js";
+import { createSecureStateBackend } from "@fffattiger/pix-local-authority/state";
+import { createPrivateRuntimeDirectory } from "./helpers/private-runtime-dir.js";
 
-const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "sessiond-secret-"));
+// Use a backend-created leaf, not the inherited-ACL `mkdtemp` parent itself:
+// production must reject the latter on Windows rather than silently repairing
+// it. The map keeps the existing concise test bodies and still cleans fixtures
+// if an assertion throws before its `finally` block.
+const isWindows = process.platform === "win32";
+const fixtureCleanup = new Map<string, () => Promise<void>>();
+const tempDir = async (): Promise<string> => {
+  const fixture = await createPrivateRuntimeDirectory("sessiond-secret-");
+  fixtureCleanup.set(fixture.directory, fixture.cleanup);
+  return fixture.directory;
+};
 const cleanup = async (dir: string): Promise<void> => {
+  const cleanupFixture = fixtureCleanup.get(dir);
+  if (cleanupFixture) {
+    fixtureCleanup.delete(dir);
+    await cleanupFixture();
+    return;
+  }
   await rm(dir, { recursive: true, force: true });
 };
+after(async () => {
+  await Promise.allSettled([...fixtureCleanup.values()].map((cleanupFixture) => cleanupFixture()));
+  fixtureCleanup.clear();
+});
 const isSessiondError = (codeOrMessage: RegExp) => (error: unknown): boolean =>
   error instanceof SessiondError && (codeOrMessage.test(error.code) || codeOrMessage.test(error.message));
 const validatedExistingSecret = (
   paths: ReturnType<typeof sessiondPaths>,
   hooks: Parameters<typeof loadOrCreateLocalSecret>[1] = {},
 ): Promise<string | undefined> => readExistingSecret(paths, hooks);
+
+/** Write a seed final with the platform's production privacy primitive. */
+async function writePrivateSecret(paths: ReturnType<typeof sessiondPaths>, content: string): Promise<void> {
+  if (isWindows) {
+    await createSecureStateBackend().createExclusivePrivateFile(paths.secretFile, content, { maxBytes: 1024 });
+    return;
+  }
+  await writeFile(paths.secretFile, content, { flag: "wx", mode: 0o600 });
+}
+
+async function assertPrivateSecret(paths: ReturnType<typeof sessiondPaths>): Promise<void> {
+  if (isWindows) {
+    const read = await createSecureStateBackend().readStateDocument(paths.secretFile, { maxBytes: 1024 });
+    assert.equal("content" in read, true);
+    return;
+  }
+  assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+}
 const forgedSecretInfo = (overrides: Partial<BigIntStats>): BigIntStats => ({
   dev: 1n,
   ino: 2n,
@@ -60,7 +99,7 @@ test("creates a fresh secret at 0600 when none exists", async () => {
     assert.ok(secret.length >= 32);
     const info = await stat(paths.secretFile);
     assert.equal(info.isFile(), true);
-    assert.equal(info.mode & 0o777, 0o600);
+    await assertPrivateSecret(paths);
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), secret);
   } finally {
     await cleanup(dir);
@@ -72,14 +111,14 @@ test("a zero-byte final from a legacy interrupted publish is rebuilt (self-heal)
   const paths = sessiondPaths(dir);
   try {
     // Simulate the legacy bug: a 0-byte `final` left by an interrupted publish.
-    await writeFile(paths.secretFile, "", { flag: "wx", mode: 0o600 });
+    await writePrivateSecret(paths, "");
     assert.equal((await stat(paths.secretFile)).size, 0);
 
     const secret = await loadOrCreateLocalSecret(paths);
     assert.ok(secret.length >= 32);
     const info = await stat(paths.secretFile);
     assert.ok(info.size > 0); // rebuilt, complete
-    assert.equal(info.mode & 0o777, 0o600);
+    await assertPrivateSecret(paths);
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), secret);
   } finally {
     await cleanup(dir);
@@ -104,7 +143,7 @@ test("publish interruption leaves no partial final and cleans the temp", async (
   }
 });
 
-test("stale temp from a dead process is swept; a live owner's temp is left", async () => {
+test("stale temp from a dead process is swept; a live owner's temp is left", { skip: isWindows }, async () => {
   const dir = await tempDir();
   const paths = sessiondPaths(dir);
   await mkdir(dir, { recursive: true });
@@ -133,7 +172,7 @@ test("concurrent creation converges on the same published secret (no overwrite)"
     const [a, b] = await Promise.all([slow, fast]);
     assert.equal(a, b);
     assert.ok(a.length >= 32);
-    assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+    await assertPrivateSecret(paths);
   } finally {
     await cleanup(dir);
   }
@@ -144,13 +183,13 @@ test("an existing valid secret is returned unchanged", async () => {
   const paths = sessiondPaths(dir);
   try {
     const preset = randomBytes(32).toString("base64url");
-    await writeFile(paths.secretFile, `${preset}\n`, { mode: 0o600 });
+    await writePrivateSecret(paths, `${preset}\n`);
 
     const got = await loadOrCreateLocalSecret(paths);
     assert.equal(got, preset);
     // Content untouched (not regenerated/overwritten).
     assert.equal((await readFile(paths.secretFile, "utf8")).trim(), preset);
-    assert.equal((await stat(paths.secretFile)).mode & 0o777, 0o600);
+    await assertPrivateSecret(paths);
   } finally {
     await cleanup(dir);
   }
@@ -164,7 +203,7 @@ test("secret validator rejects wrong owner deterministically", { skip: typeof pr
   );
 });
 
-test("existing secret validation fails closed before read and never repairs permissions", async () => {
+test("existing secret validation fails closed before read and never repairs permissions", { skip: isWindows }, async () => {
   const dir = await tempDir();
   const paths = sessiondPaths(dir);
   const preset = randomBytes(32).toString("base64url");
@@ -184,7 +223,7 @@ test("existing secret validation fails closed before read and never repairs perm
   }
 });
 
-test("hard-linked and oversized existing secrets are rejected untouched", async () => {
+test("hard-linked and oversized existing secrets are rejected untouched", { skip: isWindows }, async () => {
   const dir = await tempDir();
   const paths = sessiondPaths(dir);
   try {
@@ -264,7 +303,7 @@ test("a non-zero malformed final is fail-closed, not silently rebuilt", async ()
   const dir = await tempDir();
   const paths = sessiondPaths(dir);
   try {
-    await writeFile(paths.secretFile, "tooshort", { mode: 0o600 });
+    await writePrivateSecret(paths, "tooshort");
     await assert.rejects(loadOrCreateLocalSecret(paths), isSessiondError(/invalid sessiond secret/));
     // Untouched.
     assert.equal((await readFile(paths.secretFile, "utf8")), "tooshort");

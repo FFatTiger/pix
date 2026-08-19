@@ -1,4 +1,5 @@
 import type { AssistantContentBlock, ToolResultMessage } from "./chat-view-model";
+import type { ClientPathFlavor } from "./file-paths";
 import { resolveLocalFilePath } from "./file-links";
 import { isEditToolName, isWriteToolName } from "./tool-names";
 
@@ -84,6 +85,7 @@ export function extractTurnWrittenFiles(
   content: AssistantContentBlock[],
   toolResults: Map<string, ToolResultMessage> | undefined,
   cwd?: string,
+  pathFlavor?: ClientPathFlavor,
 ): WrittenFile[] {
   const byPath = new Map<string, { filePath: string; additions: number; deletions: number }>();
 
@@ -100,7 +102,7 @@ export function extractTurnWrittenFiles(
 
     // Tool arguments are filesystem paths, not hrefs: preserve characters such
     // as #, ?, and :digits that have special meaning in links and source refs.
-    const filePath = resolveLocalFilePath(rawPath, cwd);
+    const filePath = resolveLocalFilePath(rawPath, cwd, pathFlavor);
     if (!filePath) continue;
 
     const stats = isEditToolName(block.toolName)

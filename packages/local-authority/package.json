@@ -26,7 +26,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node ./scripts/build-native.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
-    "test": "npm run build && node ../../scripts/run-node-test.mjs \"test/*.test.mjs\"",
+    "test": "npm run build && node ./scripts/run-tests.mjs",
     "check:boundaries": "node ./scripts/check-boundaries.mjs",
     "clean": "node ../../scripts/remove-paths.mjs dist native/windows/build",
     "build:native": "node ./scripts/build-native.mjs"

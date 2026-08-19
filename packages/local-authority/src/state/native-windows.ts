@@ -39,10 +39,12 @@ export interface NativeWindowsProcessInspection {
 }
 
 export interface NativeWindowsBinding {
-  readonly apiVersion: 6;
+  readonly apiVersion: 7;
   currentUserSid(): string;
   inspectPath(path: string): NativeWindowsPathInspection | null;
   createPrivateObject(path: string, kind: NativeWindowsPrivateKind): boolean;
+  /** CREATE_NEW + write + flush on the same handle; never publishes a zero-byte final. */
+  createExclusivePrivateFile(path: string, bytes: Buffer): boolean;
   inspectNamedPipe(path: string): NativeWindowsNamedPipeInspection | null;
   createProtectedNamedPipe(path: string): bigint;
   inspectNamedPipeHandle(handle: bigint): NativeWindowsNamedPipeInspection | null;
@@ -85,10 +87,11 @@ let cached: NativeWindowsBinding | undefined;
 function isBinding(value: unknown): value is NativeWindowsBinding {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<NativeWindowsBinding>;
-  return candidate.apiVersion === 6
+  return candidate.apiVersion === 7
     && typeof candidate.currentUserSid === "function"
     && typeof candidate.inspectPath === "function"
     && typeof candidate.createPrivateObject === "function"
+    && typeof candidate.createExclusivePrivateFile === "function"
     && typeof candidate.inspectNamedPipe === "function"
     && typeof candidate.createProtectedNamedPipe === "function"
     && typeof candidate.inspectNamedPipeHandle === "function"
@@ -119,7 +122,7 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
   }
   if (!isBinding(loaded)) throw new Error("Windows native binding contract mismatch");
   cached = {
-    apiVersion: 6,
+    apiVersion: 7,
     currentUserSid: () => loaded.currentUserSid(),
     inspectPath: (path) => {
       assertInspectablePath(path);
@@ -129,6 +132,15 @@ export function loadNativeWindowsBinding(): NativeWindowsBinding {
       assertInspectablePath(path);
       assertPrivateKind(kind);
       return loaded.createPrivateObject(path, kind);
+    },
+    createExclusivePrivateFile: (path, bytes) => {
+      assertInspectablePath(path);
+      if (!Buffer.isBuffer(bytes) || bytes.length > 65536) {
+        const error = new Error("bytes are invalid") as Error & { code?: string };
+        error.code = "NATIVE_INVALID_ARGUMENT";
+        throw error;
+      }
+      return loaded.createExclusivePrivateFile(path, bytes);
     },
     inspectNamedPipe: (path) => {
       assertInspectablePath(path);

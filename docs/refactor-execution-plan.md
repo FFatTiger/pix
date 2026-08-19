@@ -155,6 +155,11 @@ later (explicitly deferred):
 | `CP-39` | Settings 增加 Projects 页：列出本次 Host AllowedRoots，绝对路径经 `cwd.validate` 扩根；诚实写明重启后失效 | `DONE` | `packages/client` | `CP-38` | AllowedRootsConfig 2/2 PASS；不宣称持久账本 / Job Object |
 | `CP-40` | Native apiVersion 6 listen 前创建受保护 named-pipe 首实例并 accept；sessiond 生产路径不再 `node:net` listen 后 protect | `DONE` | `packages/local-authority` + `packages/sessiond` | `CP-39` | windows-backend listen + sessiond Windows start/ping 定向 PASS；不宣称 Job Object |
 | `CP-41` | `pix doctor [--platform] [--json]` 只读诊断；sessiond 写有界 last-start 记录，CLI 失败时读固定 code | `DONE` | `packages/cli` + `packages/sessiond` | `CP-40` | doctor + last-start 定向 PASS；不宣称 Job Object / 发行 |
+| `CP-42` | sessiond 测试可退出：`--test-timeout`/`--test-force-exit` + tracked daemon/socket teardown | `DONE` | `packages/sessiond` | `CP-41` | Windows sessiond 272/0/68 正常退出；不宣称完整 Windows `npm test` |
+| `CP-43` | Windows 独占发布对齐 POSIX/`CreateFileW`：同一把 `CREATE_NEW` 句柄写完再关；named-pipe listen 有界 ready handshake | `DONE` | `packages/local-authority` | `CP-42` | native apiVersion 7 + windows-native/backend PASS；不宣称 Job Object |
+| `CP-44` | sessiond Windows fixture 用 backend 创建私有叶目录；不再把继承 ACL 的 `mkdtemp` 根当敏感状态 | `DONE` | `packages/sessiond` | `CP-43` | lock/secret/daemon Windows 路径 PASS；不放松已有目录 fail-closed |
+| `CP-45` | `file-links` / markdown / transcript / FileViewer 按 Host `pathFlavor` 折叠，不再猜 `C:/` | `DONE` | `packages/client` | `CP-44` | file-links 4/4 + chat-projection 13/13 PASS |
+| `CP-46` | thinking 选择器只在 live + `runtime.thinking.set` 时可改；无 capability 不假装可改 | `DONE` | `packages/client` Composer | `CP-45` | 既有 SessionStore honesty 测试仍覆盖；不宣称 Job Object |
 
 后续 lane：Job Object / ledger v2 / 远端发行仍后置。独立 verification agent 当前不可用。
 

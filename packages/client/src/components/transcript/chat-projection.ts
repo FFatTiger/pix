@@ -19,6 +19,7 @@ import type { AgentMessage, AssistantContentBlock, AssistantMessage, ToolResultM
 import type { ProcessContentBlock } from "@/lib/process-content";
 import { collectProcessContentBlocks, messageToProcessContentBlocks, splitAssistantContentBlocks } from "@/lib/process-content";
 import { getAssistantErrorMessage, getDisplayableAssistantBlocks, lastContiguousTextRun, splitFinalAssistantBlocks } from "@/lib/message-display";
+import type { ClientPathFlavor } from "@/lib/file-paths";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 
 export interface ChatTranscriptMessageRow {
@@ -57,6 +58,8 @@ export interface BuildChatTranscriptRowsInput {
   running: boolean;
   /** Session cwd — resolves relative file paths in rows. */
   cwd?: string | undefined;
+  /** Host bootstrap pathFlavor — never guess C:/ vs POSIX from the string. */
+  pathFlavor?: ClientPathFlavor | undefined;
 }
 
 function hasFinalAssistantAnswer(message: AgentMessage): boolean {
@@ -123,7 +126,7 @@ export function estimateChatRowHeight(row: ChatTranscriptRow): number {
 }
 
 export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): ChatTranscriptRow[] {
-  const { messages, entryIds, streamingMessage, running, cwd } = input;
+  const { messages, entryIds, streamingMessage, running, cwd, pathFlavor } = input;
   const toolResults = new Map<string, ToolResultMessage>();
   for (const msg of messages) {
     if (msg.role === "toolResult") {
@@ -468,7 +471,7 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
           for (const b of (m as AssistantMessage).content ?? []) turnContent.push(b);
         }
       }
-      const writtenFiles = extractTurnWrittenFiles(turnContent, toolResults, cwd);
+      const writtenFiles = extractTurnWrittenFiles(turnContent, toolResults, cwd, pathFlavor);
       rows.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles }));
     }
     for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {

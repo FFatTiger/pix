@@ -1530,10 +1530,10 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | G2B | 接通 | `createSecureStateBackend()` 在 walk 前选 Windows native；DACL = 当前用户+SYSTEM，宽 ACL 不自动修 | 中间目录宽 ACL 只查 reparse |
 | G3 | 半完成 | pipe DACL（生产 listen 前带当前用户+SYSTEM DACL）、process-start identity、Worker/Git final-kill、共享 process-tree（Windows = VS Code taskkill /T /F） | Job Object |
 | G4 | 半完成 | AllowedRoot 平台身份、parent-watch + overflow rescan、Windows 路径脱敏、exact-open | hardlink 事务、worktree disk identity、junction 对抗 CI |
-| G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy 按 `pathFlavor`、Settings Projects 列出/扩根 | 扩根仍非持久账本 |
+| G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy/`file-links` 按 `pathFlavor`、Settings Projects 列出/扩根 | 扩根仍非持久账本 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
 
-执行切片 CP-00–CP-41 记为 DONE。后置：Job Object、ledger v2、packaged release。
+执行切片 CP-00–CP-46 记为 DONE。后置：Job Object、ledger v2、packaged release。
 
 ### 16.3 审计条目对照
 
@@ -1551,7 +1551,7 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | CP-013 exact-open | 已校验 `getSessionId()` |
 | CP-014/015 ledger identity | 内存用平台 identity；磁盘仍 v1，超精度 `ino` fail-closed |
 | CP-016 watch | parent-watch + overflow rescan |
-| CP-017 Client drive-root/case | `file-paths` owner；无 Protocol flavor |
+| CP-017 Client drive-root/case | `file-paths` owner；`file-links` 也按 Host `pathFlavor` 折叠 |
 | CP-018/019 PWA | 可见降级；SW version 用 package+commit |
 | CP-020 iOS-before-Mac | 已修 |
 | CP-022 根脚本 Windows 红 | 已绿 |

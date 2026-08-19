@@ -12,6 +12,7 @@ import {
   isImagePath,
 } from "@/lib/file-types";
 import { getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
+import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { resolveLocalFileHref } from "@/lib/file-links";
 import { resolveMarkdownImageSrc } from "@/lib/markdown-images";
 import { headingId, markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
@@ -863,6 +864,7 @@ export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMen
 
 function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMention, initialDisplayMode, initialState, onStateChange }: Props) {
   const { t } = useI18n();
+  const { pathFlavor } = useCapabilities();
   // Restore per-tab viewer state: display mode first, then wrap + scroll.
   // The markdown/html default-preview auto-switch only applies on a fresh open
   // (no initialState) — re-opening a tab must restore what the user left.
@@ -1238,7 +1240,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
                   delete props.node;
                   const linkClass = "text-(--accent-blue) underline underline-offset-2 hover:text-(--accent-blue)/80";
                   const linkedFile = onOpenFile
-                    ? resolveLocalFileHref(href, markdownDirectory, cwd ?? markdownDirectory)
+                    ? resolveLocalFileHref(href, markdownDirectory, cwd ?? markdownDirectory, pathFlavor)
                     : null;
                   if (!linkedFile || !onOpenFile) {
                     return (
@@ -1274,6 +1276,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onAtMentio
                     markdownDirectory,
                     cwd ?? markdownDirectory,
                     sourceSessionId,
+                    pathFlavor,
                   );
                   if (!resolved) return null;
                   return (

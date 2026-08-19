@@ -15,7 +15,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { SessiondError } from "../src/errors.js";
 import {
   isPrivateSocketName,
@@ -30,7 +30,18 @@ import {
   sessiondPaths,
 } from "../src/local.js";
 import { SessiondRpcClient } from "../src/rpc.js";
-import { startDaemon } from "../src/composition/index.js";
+import {
+  closeTrackedDaemons,
+  startTrackedDaemonCompat as startDaemon,
+  trackServerClose,
+} from "./helpers/tracked-daemon.js";
+import { createPrivateRuntimeDirectory } from "./helpers/private-runtime-dir.js";
+
+// A failing test must never leave a daemon or bare socket server alive past
+// this file (previously the sessiond worker hung and locks leaked into the
+// next run). All daemons go through the tracked alias; bare servers register
+// their close function.
+after(closeTrackedDaemons);
 
 const isWindows = process.platform === "win32";
 const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "sessiond-socket-"));
@@ -45,7 +56,9 @@ function bindSocketAt(path: string): Promise<{ close(): Promise<void> }> {
     server.once("error", reject);
     server.listen(path, () => {
       server.off("error", reject);
-      resolve({ close: () => new Promise<void>((r) => server.close(() => r())) });
+      const close = (): Promise<void> => new Promise<void>((r) => server.close(() => r()));
+      trackServerClose(close);
+      resolve({ close });
     });
   });
 }
@@ -519,7 +532,8 @@ test("unixSocketPathBudgetBytes is platform-native", () => {
 // private path, no filesystem link/inode). Runs only on Windows; kept as the
 // fixture proving the platform branch preserves named-pipe semantics.
 test("windows: daemon binds the public pipe directly and leaves no socket files", { skip: !isWindows }, async () => {
-  const dir = await tempDir();
+  const fixture = await createPrivateRuntimeDirectory("sessiond-socket-");
+  const dir = fixture.directory;
   try {
     const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
     assert.equal(handle.privateEndpoint, undefined, "windows has no private socket path");
@@ -528,7 +542,7 @@ test("windows: daemon binds the public pipe directly and leaves no socket files"
     assert.deepEqual(await socketNames(dir), [], "no socket files on windows");
     await handle.shutdown();
   } finally {
-    await cleanup(dir);
+    await fixture.cleanup();
   }
 });
 

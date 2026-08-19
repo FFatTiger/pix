@@ -404,6 +404,9 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const modelChangeInteractive = live
     ? hasModelSet && canModels
     : canModels && modelList.length > 0;
+  // Live: only when the runtime advertises thinking control. Detached: stage
+  // for the next send, same as model staging — never pretend a live session
+  // without the capability can change thinking.
   const thinkingChangeInteractive = live ? hasThinkingSet : true;
 
   const toolResults = useMemo(() => {
