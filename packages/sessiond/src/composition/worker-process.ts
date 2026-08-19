@@ -265,6 +265,10 @@ class ProductionWorkerConnection implements WorkerConnection {
     // Install ALL lifecycle listeners BEFORE the caller can race with early
     // stdout / immediate exit. start() only resolves after spawn succeeds, but
     // a child can exit or print before the awaiter attaches subscribe/onExit.
+    // VS Code's child wrapper does the same: attach `exit`, then drain an
+    // already-reaped child (Darwin + detached:true can reap before this
+    // constructor returns; a missed `exit` leaves no stdio handle and the
+    // event loop looks empty).
     this.stderr.start();
     this.stdout.start();
     child.once("error", (error) => {
@@ -274,7 +278,7 @@ class ProductionWorkerConnection implements WorkerConnection {
         ),
       });
     });
-    child.once("exit", (code, signal) => {
+    const handleChildExit = (code: number | null, signal: NodeJS.Signals | null): void => {
       const exit: WorkerExit = {};
       if (code !== null && code !== undefined) exit.code = code;
       if (signal !== null && signal !== undefined) exit.signal = signal;
@@ -292,7 +296,17 @@ class ProductionWorkerConnection implements WorkerConnection {
         );
       }
       this.emitExit(exit);
-    });
+    };
+    child.once("exit", handleChildExit);
+    if (this.hasExited()) {
+      handleChildExit(child.exitCode, child.signalCode);
+    } else {
+      queueMicrotask(() => {
+        if (!this.exitEmitted && this.hasExited()) {
+          handleChildExit(child.exitCode, child.signalCode);
+        }
+      });
+    }
   }
 
   async send(message: SessiondToWorkerMessage): Promise<void> {

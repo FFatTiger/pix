@@ -428,7 +428,8 @@ test("early message is buffered until subscribe", async () => {
 test("early exit is buffered until onExit", async () => {
   const factory = factoryWithArgvMode("early-exit");
   const connection = await factory.start(startInput);
-  await wait(50);
+  // Attach onExit immediately (VS Code: listen, then drain already-reaped).
+  // A sleep-before-listen gap lets a missed Darwin exit empty the event loop.
   const exit = await onceExit(connection);
   assert.equal(exit.code, 0);
   await connection.close();
