@@ -3883,4 +3883,4 @@ protocol 139/139、runtime-core 17/17、runtime-contract-tests 76/76、pi-sdk-ad
 
 ## 116. Cross-platform CP-47 — macOS tmp alias + 0600 lock fixtures
 
-- VS Code binds Unix sockets under `tmpdir()` / `XDG_RUNTIME_DIR` and does not treat `/tmp` → `/private/tmp` as hostile. OpenCode `realpath`s paths for cache keys and writes secrets at `0o600`. pix keeps the stricter walk (any leftover symlink component still fails closed) but tests must `mkdtemp` under `realpath(tmpdir())` and seed locks at `0600`, matching production `createExclusivePrivateFile`.
+- VS Code binds Unix sockets under short `tmpdir()` on Darwin (never realpath — macOS `sun_path` is 104 bytes) and prefers `XDG_RUNTIME_DIR` on Linux. OpenCode `realpath`s paths for cache keys and writes secrets at `0o600`. pix keeps the stricter walk (any leftover symlink component still fails closed) but tests keep the short operational path, walk `canonicalizePath`, and seed locks at `0600`.

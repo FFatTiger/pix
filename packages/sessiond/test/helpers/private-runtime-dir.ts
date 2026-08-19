@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSecureStateBackend } from "@fffattiger/pix-local-authority/state";
@@ -11,10 +11,11 @@ import { createSecureStateBackend } from "@fffattiger/pix-local-authority/state"
  * leaf DACL without weakening that production policy.
  *
  * POSIX: `os.tmpdir()` is often a system alias (`/tmp` → `/private/tmp`,
- * `/var/folders` → `/private/var/folders`). VS Code just binds under that
- * short path; pix's walk fail-closes any symlink component, so tests must
- * mkdtemp under `realpath(tmpdir())` and walk the canonical leaf — the same
- * operational/canonical split `startDaemon` already uses.
+ * `/var/folders` → `/private/var/folders`). VS Code binds Unix sockets under
+ * that short path (Darwin never realpaths it — macOS `sun_path` is 104 bytes).
+ * pix still fail-closes a leftover symlink *component*, so the walk runs on
+ * `canonicalizePath` while `directory` stays the short operational path that
+ * `startDaemon` publishes the socket at.
  */
 export interface PrivateRuntimeDirectory {
   readonly directory: string;
@@ -22,7 +23,7 @@ export interface PrivateRuntimeDirectory {
 }
 
 export async function createPrivateRuntimeDirectory(prefix: string): Promise<PrivateRuntimeDirectory> {
-  const parent = await mkdtemp(join(await realpath(tmpdir()), prefix));
+  const parent = await mkdtemp(join(tmpdir(), prefix));
   try {
     const directory = join(parent, "runtime");
     const backend = createSecureStateBackend();

@@ -160,7 +160,7 @@ later (explicitly deferred):
 | `CP-44` | sessiond Windows fixture 用 backend 创建私有叶目录；不再把继承 ACL 的 `mkdtemp` 根当敏感状态 | `DONE` | `packages/sessiond` | `CP-43` | lock/secret/daemon Windows 路径 PASS；不放松已有目录 fail-closed |
 | `CP-45` | `file-links` / markdown / transcript / FileViewer 按 Host `pathFlavor` 折叠，不再猜 `C:/` | `DONE` | `packages/client` | `CP-44` | file-links 4/4 + chat-projection 13/13 PASS |
 | `CP-46` | thinking 选择器只在 live + `runtime.thinking.set` 时可改；无 capability 不假装可改 | `DONE` | `packages/client` Composer | `CP-45` | 既有 SessionStore honesty 测试仍覆盖；不宣称 Job Object |
-| `CP-47` | sessiond POSIX fixture 对齐 VS Code/OpenCode：`realpath(tmpdir())` + lock 0600；不把 `/tmp`/`/var` 系统别名当敌意 symlink | `IN_PROGRESS` | `packages/sessiond` | `CP-46` | macOS sessiond 全绿；不放松 generic symlink fail-closed |
+| `CP-47` | sessiond POSIX fixture 对齐 VS Code：短 `tmpdir()` operational 路径 + canonicalize walk + lock 0600；不把 `/tmp`/`/var` 系统别名当敌意 symlink，也不 realpath 到超 `sun_path` | `IN_PROGRESS` | `packages/sessiond` | `CP-46` | macOS sessiond 全绿；不放松 generic symlink fail-closed |
 
 后续 lane：Job Object / ledger v2 / 远端发行仍后置。独立 verification agent 当前不可用。
 
