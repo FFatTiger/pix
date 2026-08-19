@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
+  chmod,
   lstat,
   link,
   mkdir,
@@ -48,6 +49,12 @@ const tempDir = (): Promise<string> => mkdtemp(join(tmpdir(), "sessiond-socket-"
 const cleanup = (dir: string): Promise<void> => rm(dir, { recursive: true, force: true });
 const client = (handle: { endpoint: string; secret: string }): SessiondRpcClient =>
   new SessiondRpcClient({ endpoint: handle.endpoint, secret: handle.secret, timeoutMs: 2_000 });
+
+/** Production locks are 0600; a 0644 seed is classified unreadable, not stale/live. */
+async function writeLockFixture(path: string, payload: string): Promise<void> {
+  await writeFile(path, payload, { mode: 0o600 });
+  await chmod(path, 0o600);
+}
 
 /** Bind a live Unix socket listener at `path`; `close()` unlinks it. */
 function bindSocketAt(path: string): Promise<{ close(): Promise<void> }> {
@@ -160,7 +167,7 @@ test("graceful shutdown does not remove public when the lock was replaced", { sk
     const aIno = (await lstat(paths.endpoint, { bigint: true })).ino;
 
     // Another owner takes over the lock while A is still running.
-    await writeFile(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "other-owner", createdAt: 0 }));
+    await writeLockFixture(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "other-owner", createdAt: 0 }));
 
     await a.shutdown();
     // A's lock check fails (instanceId mismatch) → A must not unlink public.
@@ -321,7 +328,7 @@ test("corrupt / symlink / non-regular lock fail closed and are never removed", {
   const dir = await tempDir();
   const paths = sessiondPaths(dir);
   try {
-    await writeFile(paths.lockFile, "this is not json");
+    await writeLockFixture(paths.lockFile, "this is not json");
     await assert.rejects(
       startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } }),
       (error) => error instanceof SessiondError && error.code === "forbidden",
@@ -367,7 +374,7 @@ test("live pid lock with an unavailable endpoint is a conflict, never taken over
   try {
     // A live pid (this test process) holds the lock, but there is no socket and
     // no listener: the lock holder is authoritative until it dies.
-    await writeFile(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "live-unreachable", createdAt: 0 }));
+    await writeLockFixture(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "live-unreachable", createdAt: 0 }));
     await assert.rejects(
       startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } }),
       (error) => error instanceof SessiondError && error.code === "conflict",
@@ -385,7 +392,7 @@ test("stale lock naming a dead pid is recovered together with dead socket debris
   const dir = await tempDir();
   const paths = sessiondPaths(dir);
   try {
-    await writeFile(paths.lockFile, JSON.stringify({ pid: 999999, instanceId: "stale", createdAt: 0 }));
+    await writeLockFixture(paths.lockFile, JSON.stringify({ pid: 999999, instanceId: "stale", createdAt: 0 }));
     await leaveDeadSocketAt(paths.endpoint);
     const handle = await startDaemon({ directory: dir, serviceOptions: { idleTimeoutMs: 0 } });
     const rpc = client(handle);
@@ -420,7 +427,7 @@ test("link EEXIST never overwrites; dev/ino mismatch never deletes", { skip: isW
     assert.equal((await lstat(paths.endpoint, { bigint: true })).ino, bIno, "EEXIST did not overwrite B's public");
 
     // Owner release with matching lock but mismatched dev/ino must NOT delete.
-    await writeFile(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "instA", createdAt: 0 }));
+    await writeLockFixture(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "instA", createdAt: 0 }));
     await releaseOwnedPublicEndpoint(paths, pubA);
     assert.equal((await lstat(paths.endpoint, { bigint: true })).ino, bIno, "dev/ino mismatch left B's public alone");
 
@@ -430,7 +437,7 @@ test("link EEXIST never overwrites; dev/ino mismatch never deletes", { skip: isW
     const pubB = await publishPublicEndpoint(paths, privB, "instB");
     await releaseOwnedPublicEndpoint(paths, pubB); // lock says instA → skip
     assert.equal((await lstat(paths.endpoint, { bigint: true })).ino, pubB.ino);
-    await writeFile(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "instB", createdAt: 0 }));
+    await writeLockFixture(paths.lockFile, JSON.stringify({ pid: process.pid, instanceId: "instB", createdAt: 0 }));
     await releaseOwnedPublicEndpoint(paths, pubB);
     await assert.rejects(lstat(paths.endpoint), (e) => (e as NodeJS.ErrnoException).code === "ENOENT");
     await releaseOwnedPublicEndpoint(paths, pubB); // idempotent no-op

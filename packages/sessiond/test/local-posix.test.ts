@@ -97,6 +97,20 @@ test("nested all-missing path created 0700, created:true", { skip: isWindows }, 
   assert.equal(lstatSync(join(dir, "a", "b")).mode & 0o777, 0o700, "intermediate leaves 0700");
 });
 
+test("production entry under os.tmpdir() resolves macOS /tmp and /var aliases", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "posix-tmp-alias-"));
+  temporary.push(dir);
+  const leaf = join(dir, "sessiond");
+  const ctx = await ensureSessiondPrivateDirectory(leaf);
+  assert.equal(ctx.created, true);
+  assert.equal(ctx.operationalPath, leaf);
+  if (!isWindows) {
+    assert.equal(lstatSync(leaf).mode & 0o777, 0o700);
+    assert.equal(lstatSync(ctx.canonicalPath).dev, lstatSync(leaf).dev);
+    assert.equal(lstatSync(ctx.canonicalPath).ino, lstatSync(leaf).ino);
+  }
+});
+
 test("production entry creates a missing runtime directory (created:true, canonical/operational split)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "posix-prod-create-"));
   temporary.push(dir);
