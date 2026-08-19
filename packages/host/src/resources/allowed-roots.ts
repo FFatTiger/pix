@@ -181,21 +181,6 @@ async function captureDirectoryIdentity(path: string): Promise<RootIdentity> {
   return identity;
 }
 
-async function rejectReparsePath(path: string): Promise<void> {
-  if (process.platform !== "win32") return;
-  const backend = createSecureStateBackend();
-  let current = path;
-  for (;;) {
-    const identity = await backend.fileIdentity(current).catch(() => null);
-    if (identity?.kind === "windows" && identity.isReparsePoint) {
-      throw new HttpError(403, "PATH_FORBIDDEN", "Path is outside the allowed roots");
-    }
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-}
-
 async function canonicalDirectoryWithIdentity(value: string): Promise<{ canonical: string; identity: RootIdentity }> {
   const normalized = validateAbsolutePath(value);
   let canonical: string;
@@ -803,7 +788,20 @@ export async function createAllowedRootService(policy: AllowedRootPolicy): Promi
 
   async function authorizeExisting(target: string, kind: "any" | "file" | "directory" = "any"): Promise<AuthorizedPath> {
     const requestedPath = validateAbsolutePath(target);
-    await rejectReparsePath(requestedPath);
+    // Workspace aliases (symlinks on POSIX, junctions/reparse points on
+    // Windows) are allowed as long as their CANONICAL target is inside an
+    // authorized root. Security is enforced here on the canonical path:
+    //  - `realpath` resolves every alias to its true target;
+    //  - `matchingRoot` rejects a canonical target outside all authorized roots
+    //    (an alias that escapes is PATH_FORBIDDEN);
+    //  - `identityStillMatches` rejects a root whose directory identity changed
+    //    (including a reparse created at the root path);
+    //  - callers operate on the returned canonicalPath with O_NOFOLLOW, so a
+    //    later swap cannot redirect the actual file operation.
+    // This makes Windows consistent with POSIX (which never rejected symlink
+    // ancestors) and removes the platform overlay that误杀ed legal in-root
+    // junctions/OneDrive aliases. Private Pix-owned secure-state still rejects
+    // reparse/symlink ancestors in its own seam.
     let canonicalPath: string;
     try { canonicalPath = await realpath(requestedPath); } catch { throw new HttpError(404, "PATH_NOT_FOUND", "Path not found"); }
     const root = matchingRoot(state.records, canonicalPath);

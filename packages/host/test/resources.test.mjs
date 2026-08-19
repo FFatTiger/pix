@@ -66,7 +66,7 @@ function initRepo(root) {
   writeFileSync(join(root, "tracked.txt"), "one\n"); git(root, ["add", "tracked.txt"]); git(root, ["commit", "-qm", "initial"]);
 }
 
-test("AllowedRootService rejects a Windows junction intermediate as an unsafe directory", { skip: process.platform !== "win32" }, async () => {
+test("AllowedRootService allows an in-root Windows junction alias and rejects an escaping one", { skip: process.platform !== "win32" }, async (t) => {
   const root = temp("pi-root-win-");
   const real = join(root, "real");
   const link = join(root, "link");
@@ -75,15 +75,33 @@ test("AllowedRootService rejects a Windows junction intermediate as an unsafe di
   try {
     symlinkSync(real, link, "junction");
   } catch {
+    t.skip("Windows junction creation requires SeCreateSymbolicLink or Developer Mode");
     return;
   }
   const allowedRoots = await createAllowedRootService({ roots: [root] });
+
+  // An in-root junction (`link` → `root/real`) is a LEGAL alias: its canonical
+  // target is inside the allowed root, so the request is authorized and the
+  // real file is reachable through the authorized canonical path.
+  const fileAuth = await allowedRoots.authorizeExisting(join(link, "secret.txt"), "file");
+  assert.equal(fileAuth.canonicalPath, realpathSync(join(real, "secret.txt")));
+  assert.equal(fileAuth.root, realpathSync(root));
+  const dirAuth = await allowedRoots.authorizeExisting(link, "directory");
+  assert.equal(dirAuth.canonicalPath, realpathSync(real));
+
+  // An OUT-of-root junction is still rejected fail-closed: its canonical target
+  // resolves outside every authorized root → PATH_FORBIDDEN.
+  const outsideJunctionDir = temp("pi-root-outside-");
+  const link2 = join(root, "escape-link");
+  try {
+    symlinkSync(outsideJunctionDir, link2, "junction");
+  } catch {
+    t.skip("Windows junction creation requires SeCreateSymbolicLink or Developer Mode");
+    return;
+  }
+  writeFileSync(join(outsideJunctionDir, "secret.txt"), "OUTSIDE");
   await assert.rejects(
-    () => allowedRoots.authorizeExisting(join(link, "secret.txt"), "file"),
-    (e) => e.code === "PATH_FORBIDDEN",
-  );
-  await assert.rejects(
-    () => allowedRoots.authorizeExisting(link, "directory"),
+    () => allowedRoots.authorizeExisting(join(link2, "secret.txt"), "file"),
     (e) => e.code === "PATH_FORBIDDEN",
   );
 });
