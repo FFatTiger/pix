@@ -52,7 +52,16 @@ const child = spawn(process.execPath, [fixture, mode], {
   windowsHide: true,
 });
 
-process.stdin.pipe(child.stdin);
+// Do not use pipe() for stdin: on Darwin, pipe() auto-ends the grandchild
+// stdin and can tear down this trampoline before SIGKILL escalation.
+// VS Code keeps stdio lifetime explicit on child wrappers.
+process.stdin.on("data", (chunk) => {
+  if (!child.stdin.destroyed) child.stdin.write(chunk);
+});
+process.stdin.on("end", () => {
+  if (!child.stdin.destroyed) child.stdin.end();
+});
+process.stdin.resume();
 child.stdout.pipe(process.stdout);
 child.stderr.pipe(process.stderr);
 
