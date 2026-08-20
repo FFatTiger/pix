@@ -108,6 +108,7 @@
 - **ledger schema**：trusted 的 `dev/ino/repoDev/repoIno` 与 managed 的全部 `*Dev/*Ino` 改为**成对可选审计字段**；Windows writer 省略 pseudo-POSIX identity；parse 对整对缺失宽容、半对/非法数值 fail-closed，serialize 缺失时省略、半对拒写；`kind/version` 保持 v1。
 - **测试**：trusted inode 变化 + Git 仍列出恢复 access；managed restart/re-add 保留 access/history 但 `live=false`，不继承删除权；escape/symlink/bad-base 仍 drop；unavailable 保留 bytes 且不授权；新增 L-04 无 identity / orphan-pair round-trip。
 - 验证：`check:architecture`、root `typecheck`、root `build`、Host boundaries、`git diff --check` PASS；Host 全量相对 Windows 基线无新增失败，本轮安全定向用例全部 PASS。独立 reviewer 两轮 + oracle 裁决后完成 prunable/malformed/unavailable、delete-token、publication/DELETE recheck 修复。
+- 原生证据（`baf35e2`）：WSL2/ext4/Node 22.19 Host `512/508/0/4`、macOS arm64/Node 24.19 Host `512/509/0/3`；两端 ledger/worktree 安全集合均 `82/82`。根全量仍有本切片外的 CLI/Client/local-authority/adapter 与 E2E 期望漂移，未伪报三端根全绿。
 
 > ⛳ 安全敏感（AllowedRoot + managed/trusted rehydrate），按 §16 需独立（非实现者）审查后再合。
 
