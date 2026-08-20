@@ -445,9 +445,14 @@ test("concurrent create/delete/recreate stays consistent and ownership is never 
   assert.equal(deletion.status, 200);
   assert.ok([201, 409].includes(duplicate.status), `duplicate create while delete raced (got ${duplicate.status})`);
 
-  // Recreate after delete succeeds.
+  // Exactly one recreate succeeds: either the racing duplicate already won
+  // after deletion, or the explicit recreate wins afterward.
   const recreate = await create("conc-a");
-  assert.equal(recreate.status, 201);
+  if (duplicate.status === 201) {
+    assert.equal(recreate.status, 409, "racing duplicate already recreated the branch/worktree");
+  } else {
+    assert.equal(recreate.status, 201, "explicit recreate succeeds when racing duplicate lost");
+  }
   assert.equal(await app.request(`http://localhost/v1/worktrees?cwd=${encodeURIComponent(root)}`, { headers: headers() }).then((r) => r.status), 200);
   assert.ok((await managedLedger.read()).records.length >= 1, "recreate persists a managed record");
 });
