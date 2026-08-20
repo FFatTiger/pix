@@ -1100,8 +1100,9 @@ test("lease source: fd-based fchmod only; ownership re-verified before publish; 
   // the backend).
   assert.equal(/await chmod\(/.test(leaseSrc), false, "lease must never path-chmod");
   assert.equal(leaseSrc.includes(".chmod("), false, "lease has no chmod call sites (delegates to backend)");
-  // The POSIX backend has exactly three fd-based chmod call sites (dir, temp, lock).
-  assert.equal((posixSrc.match(/\.chmod\(/g) ?? []).length, 3, "backend has exactly three fd-based chmod call sites (dir, temp, lock)");
+  // The POSIX backend has exactly four fd-based chmod call sites: private
+  // directory, atomic-document temp, lifetime lock, and exclusive private file.
+  assert.equal((posixSrc.match(/\.chmod\(/g) ?? []).length, 4, "backend has exactly four fd-based chmod call sites");
   assert.match(posixSrc, /dirHandle\.chmod\(requireMode\)/);
   assert.match(posixSrc, /handle\.chmod\(0o600\)/);
   // Ownership re-verification runs before the atomic publish (rename), in the

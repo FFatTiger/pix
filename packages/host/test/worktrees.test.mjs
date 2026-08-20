@@ -516,16 +516,20 @@ test("Git succeeds but durable ownership cleanup fails ⇒ fixed 500 WORKTREE_DE
   const created = await postWorktree(clean.app, root, "cleanup-fail-b");
   assert.equal(created.status, 201);
   const path = (await created.json()).path;
-  await clean.lease.close();
-  leases.pop();
-  const faulted = await makeWorktreeApp({ root, hostDir, managed: { commitRemoved: async () => { throw new Error("injected cleanup failure"); } } });
-  const removed = await deleteWorktree(faulted.app, root, path);
+  // Fault-inject the disk cleanup on the SAME service instance so the
+  // current-process destructive ownership token remains valid up to the
+  // post-Git commit step. A restart intentionally loses that token and would
+  // correctly reject earlier with WORKTREE_NOT_MANAGED.
+  const originalCommitRemoved = clean.managedService.commitRemoved.bind(clean.managedService);
+  clean.managedService.commitRemoved = async () => { throw new Error("injected cleanup failure"); };
+  const removed = await deleteWorktree(clean.app, root, path);
   assert.equal(removed.status, 500, "no false success when ownership cleanup fails");
   const body = await removed.json();
   assert.equal(body.code, "WORKTREE_DELETE_COMMIT_INCOMPLETE");
   assert.ok(!JSON.stringify(body).includes(path), "no path leak in the 500 body");
   assert.equal(existsSync(path), false, "git removal already happened (cannot be rolled back)");
-  await faulted.lease.close();
+  clean.managedService.commitRemoved = originalCommitRemoved;
+  await clean.lease.close();
   leases.pop();
   // The stale record remains on disk; a restart reconcile drops it.
   const restarted = await makeWorktreeApp({ root, hostDir });
