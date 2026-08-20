@@ -123,7 +123,7 @@ Pix adapter 只负责：
 | `CP-52` | P1 | `sun_path` byte-budget 103/107 | `packages/sessiond` | CP-49 | ✅ 完成（byte-budget） |
 | `CP-52-B` | P1（待后续） | POSIX state dir / IPC dir 分离 | `packages/sessiond` + CLI | CP-52 | ⏭ 已范围化为独立切片：跨 `sessiondPaths`/`daemon`/`local-posix`/`supervise`/约 9 个测试文件，需 POSIX 真机验证，不在本增量内强行迁移 |
 | `CP-53` | P1 | AllowedRoot 允许合法 alias，保留 canonical containment + root identity fail-closed | `packages/host` | CP-48 | ✅ 完成 |
-| `CP-54` | P0/P1 汇总 | 三平台验证、根门禁、文档收口 | root + touched owners | CP-49–53 | 🔄 进行中（本机已跑包内测试；根门禁见下） |
+| `CP-54` | P0/P1 汇总 | 三平台验证、根门禁、文档收口 | root + touched owners | CP-49–53 | 🔄 文档已与 §16 同步；POSIX/macOS CI 与发行验证仍后置 |
 
 ---
 

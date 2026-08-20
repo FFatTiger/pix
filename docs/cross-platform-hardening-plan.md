@@ -5,7 +5,7 @@
 > 进度同步：`feat/cross-platform-g0-baseline`（已 merge `origin/main@73fa042`）
 > 范围：原生 Windows、原生 Linux、原生 macOS；同时覆盖浏览器/PWA、CLI、Host、sessiond、Worker、文件/Git、构建、安装与发布
 > 非范围：不读取、不合并、不 cherry-pick `fix/cross-platform-dev`；不以 WSL、Docker 或虚拟机替代 Windows 原生产品支持；不在本计划中实现 Tauri/Electron 壳
-> 状态：专题计划仍有效。活动任务与验收只写在 `docs/refactor-execution-plan.md` §1.3（CP-00–CP-36）。§0–§15 的 2026-08-17 审计是历史快照；当前事实以 §16 为准。
+> 状态：专题计划仍有效。活动任务与验收只写在 `docs/refactor-execution-plan.md` §1.3（CP-00–CP-53）。§0–§15 的 2026-08-17 审计是历史快照（含当时“不要 taskkill / 要用 Job Object”的草案）；当前事实以 §16 为准。
 
 ---
 
@@ -338,7 +338,7 @@ Pix 的 `local-authority` 允许依赖 Node builtins + 自有模块；Node built
 **要求**
 
 - final wait=false 必须成为 typed lifecycle failure/diagnostic，不能报告已关闭。
-- Windows 不把 `SIGTERM`/`SIGKILL` 名字解释成 POSIX 两级语义；至少冻结为：stdin EOF grace → direct termination → process-tree termination/Job Object。
+- Windows 不把 `SIGTERM`/`SIGKILL` 名字解释成 POSIX 两级语义。**现行实现（CP-34）**：stdin EOF grace → 共享 `ProcessTreeController` → `%WINDIR%\System32\taskkill.exe /T /F`。Job Object **不在产品路径**。
 - worker 和 Host Git runner 都需要 descendant cleanup 测试。
 
 ---
@@ -356,10 +356,9 @@ Git hook、credential helper、filter 或其他 descendant 可能在 timeout/abo
 建立 owner：`ProcessTreeController`。
 
 - POSIX：仅对 Pix 创建的隔离 process group 做 TERM/KILL；
-- Windows：Job Object 或窄 native helper；
+- Windows：**现行**对齐 VS Code `killTree`（`taskkill /T /F`，不走 PATH、不用 PowerShell、不用 Job Object）；
 - 每次启动保存 generation/start identity；
-- direct child 和 grandchild 都必须在验收后死亡；
-- 不使用 `taskkill`/PowerShell 作为生产 authority fallback。
+- 验收以共享 `ProcessTreeController` 为准，不在 sessiond/Host 各写一套 kill。
 
 ---
 
@@ -745,7 +744,7 @@ POSIX backend 设计最贴近 Linux：mode/uid、O_EXCL、O_NOFOLLOW、hard-link
 ### 当前已处理
 
 - `/var` → `/private/var` root alias；
-- `sun_path` 当前代码按 104-byte 总容量检查；目标实现应冻结为最多 103 bytes payload + NUL，并以 native bind test 证明；
+- `sun_path` **pathname 预算已冻结为 macOS 103 / Linux 107**（数组容量含 NUL；`unixSocketPathBudgetBytes()` 比较的是不含 NUL 的 UTF-8 字节数）。长 home 的 IPC 目录拆分仍后置为 CP-52-B；
 - narrow dir-fsync unsupported errors。
 
 ### 未闭环问题
@@ -1062,13 +1061,13 @@ POSIX golden tests 零语义退化；Windows path 不再被 contract 本身视�
 
 ### Native helper 决策 gate
 
-**已冻结（CP-07 / CP-07A）**：Node builtins 不能完整提供 SID/DACL、reparse tag、128-bit file ID、Job Object 或安全 Named Pipe 证据。采用 `packages/local-authority` 私有 raw C Node-API addon（N-API v8，首发 `win32-x64-msvc`），不引入 `node-addon-api`、Rust/napi-rs、额外生产 workspace 或 one-shot broker。
+**已冻结（CP-07 / CP-07A）**：Node builtins 不能完整提供 SID/DACL、reparse tag、128-bit file ID 证据。采用 `packages/local-authority` 私有 raw C Node-API addon（N-API v8，首发 `win32-x64-msvc`），不引入 `node-addon-api`、Rust/napi-rs、额外生产 workspace 或 one-shot broker。进程树不走 Job Object。
 
 - 同步原语只返回 SID / handle-based path evidence；不把 HANDLE 交给 JS。
-- Job Object 与 secure Named Pipe 后续必须是 retained 异步 Node-API resource，不能用一次性 helper 把权威交给 `node:net`。
+- Native helper 继续服务 **私有状态 DACL / file ID / reparse**。sessiond **生产 IPC（D-02）** 使用 Node 原生 named pipe + secret AUTH + 实例锁；protected-pipe duplex 不再进入生产 data plane。Job Object **不在产品路径**（进程树用 `taskkill /T /F`）。
 - 构建只使用经验证的 npm-bundled node-gyp JS CLI，`process.execPath` + `shell:false`。
 - helper/binding 失败必须 fail-closed；Host/sessiond 不得直接 import Win32 细节。
-- 在 G2B backend 接通并验证前，不得宣称 Windows 产品支持；`createSecureStateBackend()` 在 Windows 仍返回 `UNSUPPORTED_PLATFORM`。
+- **现行**：`createSecureStateBackend()` 在 win32-x64 选择 Windows backend；Windows 原生 source-build 为 Supported（见 §16），不是 packaged 发行。
 
 ### 验收
 
@@ -1083,8 +1082,8 @@ POSIX golden tests 零语义退化；Windows path 不再被 contract 本身视�
 ### IPC
 
 - Windows pipe name 使用 stable per-user scope + bounded hash，避免直接泄露完整 home path。
-- named pipe 必须具有可验证的当前用户隔离（DACL/等价 OS 证据）并继续使用 secret + instance fence；文档说明不能代替 pipe security acceptance。
-- Unix socket path 使用 UTF-8 byte 预算，Linux 107、macOS 103（保留终止 NUL 余量）；测试长 ASCII/Unicode home。
+- **现行 IPC（D-02）**：Windows sessiond 生产路径用 Node 原生 named pipe；主边界是 secret AUTH + 实例锁。Native protected-pipe DACL 仍可作为库能力，但不是生产 data plane。
+- Unix socket path 使用 UTF-8 byte 预算，Linux 107、macOS 103（pathname 不含 NUL）；长 home 的 IPC 目录拆分后置 CP-52-B。
 - public/private publication 仅 Unix；Windows 不走 inode cleanup。
 
 ### 单实例
@@ -1097,8 +1096,8 @@ POSIX golden tests 零语义退化；Windows path 不再被 contract 本身视�
 
 - monotonic supervisor：`starting → ready → stopping → terminating → exited|failed_to_terminate`。
 - stdin EOF 是首选 grace。
-- **低层 process identity/tree termination 由一个共享平台 primitives owner 持有**（需在实现前作架构决策：扩展 local-authority 或新增窄包）；sessiond 只拥有 Worker lifecycle policy，Host 只拥有 Git command policy，二者不得各写一套 Job Object/process-group 逻辑。
-- POSIX process group / Windows Job Object descendant cleanup。
+- **低层 process identity/tree termination 由 `packages/local-authority/process` 持有**；sessiond 只拥有 Worker lifecycle policy，Host 只拥有 Git command policy。
+- POSIX：隔离 process group。Windows：**VS Code `taskkill /T /F`**（CP-34）。Job Object 不在产品路径。
 - final kill 未退出必须向 service 暴露失败，不 fake success。
 
 ### CLI lifecycle
@@ -1414,7 +1413,7 @@ Pi truth source 不迁移。Pix 自有 runtime/data/log 如果改位置：
 
 | 风险 | 等级 | 缓解 |
 |---|---|---|
-| Node builtins 不足以实现 Windows ACL/file ID/Job Object | 高 | 最小 native helper spike + 独立安全审查；不足则 Windows 保持 unsupported |
+| Node builtins 不足以实现 Windows ACL/file ID | 高 | 已用 `local-authority` native helper 覆盖 SID/DACL/file ID/reparse。进程树不走 Job Object，走 `taskkill /T /F` |
 | 修 contract 触发 ledger/schema 广泛变更 | 高 | 先 type-only/discriminated contract，随后 serial migration slices |
 | POSIX 共用重构造成 Linux/macOS security regression | 高 | golden/adversarial tests 先行，A/B diff，独立 reviewer |
 | Windows AV/OneDrive 锁导致 flaky | 高 | private runtime 与 durable data 分离；bounded errno retry；诊断，不无限重试 |
@@ -1433,7 +1432,7 @@ Pi truth source 不迁移。Pix 自有 runtime/data/log 如果改位置：
 2. 不用 WSL/Docker 替代 Windows 原生支持。
 3. 不让 Windows 走 POSIX backend 并跳过 owner/mode 检查。
 4. 不用 `chmod` 证明 Windows private state。
-5. 不用 `taskkill`/PowerShell/`kill` 文本命令作为生产 authority。
+5. 不用 PowerShell/`kill` 文本、不用 PATH 上的 `taskkill`、不用 Job Object。Windows 子孙清理的**唯一**生产 authority 是 `%WINDIR%\System32\taskkill.exe /T /F`（CP-34）。
 6. 不把 named pipe 仅加一个 `process.platform` 分支后就宣布完成。
 7. 不删除/skip POSIX tests 来刷 Windows CI。
 8. 不返回 raw Git/OS path 错误。
@@ -1545,7 +1544,7 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 
 | 平台 | 等级 | 现在的事实 |
 |---|---|---|
-| Windows 原生 | **Supported** | 默认 `~/.pi/pix` 可原生启动：SID/DACL/file-ID backend、named pipe、AllowedRoot、required start/shutdown smoke。Worker/Git 子孙清理对齐 VS Code `taskkill /T`。不以 WSL 作为方案。仍未关门：Job Object、ledger v2、packaged install/upgrade、完整 Windows `npm test`。 |
+| Windows 原生 | **Supported** | 默认 `~/.pi/pix` 可原生启动：SID/DACL/file-ID backend、Node 原生 named pipe（secret AUTH + 实例锁）、AllowedRoot（合法 in-root alias）、required start/shutdown smoke。Worker/Git 子孙清理对齐 VS Code `taskkill /T /F`。不以 WSL 作为方案。Job Object 与 ledger v2 file-ID schema **不在产品路径**。仍未关门：packaged install/upgrade、完整 Windows `npm test`、持久 AllowedRoot。 |
 | Linux | **Unverified-native** | PR tooling + required `npm test` 已存在。无发行 smoke / 签名。 |
 | macOS | **Unverified-native** | 同上。无公证 / 发行 smoke。 |
 | 浏览器 / PWA | **Partial** | localhost/HTTPS 普通 Web；HTTP LAN 明确 web-only / insecure-origin，可见降级。不承诺可安装 PWA。 |
@@ -1555,31 +1554,31 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | Gate | 状态 | 已落地 | 仍缺 |
 |---|---|---|---|
 | G0 | 骨架完成 | README 矩阵、CI 三端 tooling、根脚本 Windows 绿、Protocol v2 / Host bootstrap 词义分离、`pix doctor --json`、sessiond last-start 诊断记录 | 一次性 bootstrap pipe 仍未做 |
-| G1 | 半完成 | discriminated `posix \| windows` 合同；Client display 路径 owner；Host bootstrap `pathFlavor` | ledger v2 |
+| G1 | 完成 | discriminated `posix \| windows` 合同；Client display 路径 owner；Host bootstrap `pathFlavor`；ledger v1 的 identity 字段降为可选审计，不造 v2 | — |
 | G2A | 基本完成 | lock/secret identity pin、禁事后 chmod、默认拒 root | macOS lock 仍无 start identity |
-| G2B | 接通 | `createSecureStateBackend()` 在 walk 前选 Windows native；DACL = 当前用户+SYSTEM，宽 ACL 不自动修 | 中间目录宽 ACL 只查 reparse |
-| G3 | 半完成 | pipe DACL（生产 listen 前带当前用户+SYSTEM DACL）、process-start identity、Worker/Git final-kill、共享 process-tree（Windows = VS Code taskkill /T /F） | Job Object |
-| G4 | 半完成 | AllowedRoot 平台身份、parent-watch + overflow rescan、Windows 路径脱敏、exact-open | hardlink 事务、worktree disk identity、junction 对抗 CI |
+| G2B | 接通 | `createSecureStateBackend()` 在 walk 前选 Windows native；私有状态 DACL = 当前用户+SYSTEM，宽 ACL 不自动修 | 中间目录宽 ACL 只查 reparse |
+| G3 | **产品路径完成** | Node 原生 named pipe（D-02：secret + 实例锁）、byte-safe RPC、`sun_path` 103/107、process-start identity、Worker/Git final-kill、共享 process-tree（Windows = `taskkill /T /F`） | POSIX IPC dir 分离（CP-52-B）；Job Object **won't do** |
+| G4 | 半完成 | AllowedRoot 平台身份 + 合法 in-root alias、parent-watch + overflow rescan、Windows 路径脱敏、exact-open、trust 归口 Pi SDK；trusted/managed history 用 canonical path + Git topology 恢复 workspace access，managed delete token 不跨 restart/re-add | hardlink 事务、持久 AllowedRoot 账本、可选显式 managed reclaim |
 | G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy/`file-links` 按 `pathFlavor`、Settings Projects 列出/扩根 | 扩根仍非持久账本 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
 
-执行切片 CP-00–CP-47 记为 DONE。后置：Job Object、ledger v2、packaged release。
+执行切片 CP-00–CP-58 记为 DONE（其中 CP-54 为文档收口、CP-55–CP-58 为 ledger identity L-01–L-05 对齐）。产品路径 **won't do**：Job Object、ledger v2 file-ID schema。后置：packaged release、持久 AllowedRoot、POSIX IPC dir 分离（CP-52-B）。
 
 ### 16.3 审计条目对照
 
 | 原条目 | 现在 |
 |---|---|
-| CP-001 named-pipe 不可达 | 已接通；factory 先于 walk |
+| CP-001 named-pipe 不可达 | 已接通；factory 先于 walk。**生产 data plane（D-02）** 是 Node 原生 named pipe + secret AUTH + 实例锁，不再走 protected-pipe duplex |
 | CP-002 Host POSIX backend 硬编码 | Host/sessiond 走 `createSecureStateBackend()` |
 | CP-003 合同仍是 POSIX | 已分成 posix/windows identity/principal |
 | CP-004/005 lock identity | 已 pin；release 三重匹配 |
 | CP-006 Windows DACL | 已落地；已存在宽 ACL fail-closed |
 | CP-007 secret 事后 chmod | 已改为读前校验 |
 | CP-008 PID reuse | Windows creation time + Linux startticks；macOS 仍弱 |
-| CP-009/010 final-kill 假成功 | 已 fail-closed；Windows 子孙清理对齐 VS Code `taskkill /T /F`，不是 Job Object |
+| CP-009/010 final-kill 假成功 | 已 fail-closed；Windows 子孙清理对齐 VS Code `taskkill /T /F`。Job Object 不在产品路径 |
 | CP-012 Windows 路径脱敏 | 已覆盖 drive/UNC/extended/`file://` |
 | CP-013 exact-open | 已校验 `getSessionId()` |
-| CP-014/015 ledger identity | 内存用平台 identity；磁盘仍 v1，超精度 `ino` fail-closed |
+| CP-014/015 ledger identity | 内存用平台 identity；磁盘仍 v1，`dev/ino` 仅可选审计字段，跨重启权威 = canonical path + `git worktree list`；超精度或半对 identity fail-closed。AllowedRoot 允许合法 in-root junction/symlink alias，逃逸仍 PATH_FORBIDDEN |
 | CP-016 watch | parent-watch + overflow rescan |
 | CP-017 Client drive-root/case | `file-paths` owner；`file-links` 也按 Host `pathFlavor` 折叠 |
 | CP-018/019 PWA | 可见降级；SW version 用 package+commit |
@@ -1594,4 +1593,16 @@ AllowedRoot 有 Settings → Projects 页：列出本次 Host 根，并可 `cwd.
 
 ### 16.5 下一刀（对齐参考实现，不自造轮子）
 
-1. 仍后置：Job Object（比 taskkill 更严的笼子）、ledger v2、packaged release、持久 AllowedRoot 账本。
+产品路径 **won't do**：
+
+- Windows Job Object（进程树完成态 = VS Code `taskkill /T /F`）
+- Host **ledger v2**（不把 file ID / `{dev,ino}` 落盘当跨重启权威）。持久身份 = canonical path + `git worktree list`；inode/file ID 只用于运行时防伪。合同：`docs/ledger-identity-align.md`
+
+仍后置：
+
+1. packaged release / 签名 / 公证
+2. 持久 AllowedRoot 账本（Settings 扩根仍只活在本次 Host 进程）
+3. POSIX IPC dir 分离（CP-52-B：长 home 的 `sun_path`）
+4. macOS lock start identity（目前 Linux/Windows 有，Darwin 仍弱）
+
+已完成：trusted-roots / managed-worktrees 的持久 workspace access 按 `docs/ledger-identity-align.md` 使用 canonical path + Git topology；managed destructive ownership 仅为 current-process runtime token，不跨 restart/re-add（L-01–L-05；不 bump schema）。

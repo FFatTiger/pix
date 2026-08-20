@@ -3,10 +3,10 @@
  *
  * Separate sidecar document `managed-worktrees.json` (kind
  * `pix.host.managed-worktrees`, version 1) that records exact management
- * evidence for Pix-created worktrees. This is OWNERSHIP evidence only — it
- * never grants delete authority by itself and never scans Git to invent
- * authorization; the future route wiring must consult this ledger before
- * removing any worktree.
+ * evidence for Pix-created worktrees. This is durable history/access evidence;
+ * it never grants delete authority by itself and never scans Git to invent
+ * ownership. Production routes additionally require a current-process runtime
+ * identity token before destructive removal.
  *
  * The ledger is a thin ADAPTER over the shared {@link HostStateDirectoryLease}
  * (`host-state-directory.ts`): the same safe host dir, the same exclusive
@@ -16,7 +16,8 @@
  *
  * Frozen schema / safety decisions:
  *   - Missing sidecar ⇒ empty. It stays absent until the first managed record
- *     is written (production boot does NOT instantiate/write this ledger yet).
+ *     is written; production boot opens and rehydrates it without creating an
+ *     empty document.
  *   - Corrupt / unknown-version / wrong-kind / duplicate / sparse /
  *     wrong-permission / hard-linked / unsafe sidecar fails startup and every
  *     mutation with a fixed sanitized error; it is never rewritten, truncated,
@@ -25,13 +26,14 @@
  *   - Deterministic strict schema: absolute canonical paths, containment
  *     (path strictly inside `${repoRoot}-worktrees`; `dirname(commonDir)`
  *     equals `repoRoot`; adminDir inside commonDir), distinct worktreeIds and
- *     paths, safe-integer dev/ino identities, bounded metadata strings with
- *     ALL C0 control chars and DEL rejected.
+ *     paths, optional complete safe-integer dev/ino audit pairs, bounded
+ *     metadata strings with ALL C0 control chars and DEL rejected.
  *   - `branchAtCreate` / `branchCreatedByPix` are audit metadata only: branch
  *     switching or detaching later must never invalidate ownership.
  *
- * This ledger is Host-internal and NOT exported from the package index; it is
- * not route-mounted and not wired into production boot yet.
+ * This ledger is Host-internal and NOT exported from the package index. It is
+ * production-composed through the Host resources owner, which keeps the shared
+ * lease and separates persisted access evidence from runtime DELETE authority.
  */
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep, join, dirname } from "node:path";
@@ -87,23 +89,40 @@ export class ManagedWorktreesLedgerError extends Error {
   }
 }
 
+function isOptionalAuditPair(left: unknown, right: unknown): boolean {
+  return (left === undefined && right === undefined)
+    || (isSafeInteger(left) && left > 0 && isSafeInteger(right) && right > 0);
+}
+
+function requireManagedAuditPair(left: unknown, right: unknown): readonly [number, number] | null {
+  if (left === undefined && right === undefined) return null;
+  if (!isSafeInteger(left) || left === 0 || !isSafeInteger(right) || right === 0) {
+    throw new ManagedWorktreesLedgerError(
+      "MANAGED_WRITE_REJECTED",
+      "Managed-worktrees audit identity fields must be present as a safe-integer pair",
+    );
+  }
+  return [left, right];
+}
+
 export interface ManagedWorktreeRecord {
   worktreeId: string;
   path: string;
-  dev: number;
-  ino: number;
+  /** Audit-only filesystem identity captured at write time. NOT restored as authority. */
+  dev?: number;
+  ino?: number;
   repoRoot: string;
-  repoDev: number;
-  repoIno: number;
+  repoDev?: number;
+  repoIno?: number;
   commonDir: string;
-  commonDev: number;
-  commonIno: number;
+  commonDev?: number;
+  commonIno?: number;
   adminDir: string;
-  adminDev: number;
-  adminIno: number;
+  adminDev?: number;
+  adminIno?: number;
   base: string;
-  baseDev: number;
-  baseIno: number;
+  baseDev?: number;
+  baseIno?: number;
   createdAt: string;
   source: typeof MANAGED_WORKTREES_SOURCE;
   /** Audit only — branch switch/detach later never invalidates ownership. */
@@ -241,28 +260,33 @@ export function serializeManagedWorktreesDocument(records: readonly ManagedWorkt
   const body: ManagedWorktreesLedgerDocument = {
     kind: MANAGED_WORKTREES_KIND,
     version: MANAGED_WORKTREES_VERSION,
-    records: sorted.map((record) => ({
-      worktreeId: record.worktreeId,
-      path: record.path,
-      dev: record.dev,
-      ino: record.ino,
-      repoRoot: record.repoRoot,
-      repoDev: record.repoDev,
-      repoIno: record.repoIno,
-      commonDir: record.commonDir,
-      commonDev: record.commonDev,
-      commonIno: record.commonIno,
-      adminDir: record.adminDir,
-      adminDev: record.adminDev,
-      adminIno: record.adminIno,
-      base: record.base,
-      baseDev: record.baseDev,
-      baseIno: record.baseIno,
-      createdAt: record.createdAt,
-      source: MANAGED_WORKTREES_SOURCE,
-      branchAtCreate: record.branchAtCreate,
-      branchCreatedByPix: record.branchCreatedByPix,
-    })),
+    records: sorted.map((record) => {
+      const entry: ManagedWorktreeRecord = {
+        worktreeId: record.worktreeId,
+        path: record.path,
+        repoRoot: record.repoRoot,
+        commonDir: record.commonDir,
+        adminDir: record.adminDir,
+        base: record.base,
+        createdAt: record.createdAt,
+        source: MANAGED_WORKTREES_SOURCE,
+        branchAtCreate: record.branchAtCreate,
+        branchCreatedByPix: record.branchCreatedByPix,
+      };
+      // Audit-only identity fields are optional, but each dev/ino pair is
+      // atomic: a half-pair is invalid evidence and must fail closed.
+      const pathIdentity = requireManagedAuditPair(record.dev, record.ino);
+      if (pathIdentity) { entry.dev = pathIdentity[0]; entry.ino = pathIdentity[1]; }
+      const repoIdentity = requireManagedAuditPair(record.repoDev, record.repoIno);
+      if (repoIdentity) { entry.repoDev = repoIdentity[0]; entry.repoIno = repoIdentity[1]; }
+      const commonIdentity = requireManagedAuditPair(record.commonDev, record.commonIno);
+      if (commonIdentity) { entry.commonDev = commonIdentity[0]; entry.commonIno = commonIdentity[1]; }
+      const adminIdentity = requireManagedAuditPair(record.adminDev, record.adminIno);
+      if (adminIdentity) { entry.adminDev = adminIdentity[0]; entry.adminIno = adminIdentity[1]; }
+      const baseIdentity = requireManagedAuditPair(record.baseDev, record.baseIno);
+      if (baseIdentity) { entry.baseDev = baseIdentity[0]; entry.baseIno = baseIdentity[1]; }
+      return entry;
+    }),
   };
   return `${JSON.stringify(body)}\n`;
 }
@@ -296,13 +320,17 @@ function parseManagedRecord(
   if (!isAbsoluteCanonicalShape(commonDir)) return "sparse";
   if (!isAbsoluteCanonicalShape(adminDir)) return "sparse";
   if (!isAbsoluteCanonicalShape(base)) return "sparse";
-  if (
-    !isSafeInteger(raw.dev) || !isSafeInteger(raw.ino)
-    || !isSafeInteger(raw.repoDev) || !isSafeInteger(raw.repoIno)
-    || !isSafeInteger(raw.commonDev) || !isSafeInteger(raw.commonIno)
-    || !isSafeInteger(raw.adminDev) || !isSafeInteger(raw.adminIno)
-    || !isSafeInteger(raw.baseDev) || !isSafeInteger(raw.baseIno)
-  ) {
+  // dev/ino/... are audit-only since L-03 (docs/ledger-identity-align.md):
+  // rehydrate restores on path + git topology, not file identity. Each pair is
+  // optional as a whole; orphan halves remain malformed and fail closed.
+  const idPairs: Array<[unknown, unknown]> = [
+    [raw.dev, raw.ino],
+    [raw.repoDev, raw.repoIno],
+    [raw.commonDev, raw.commonIno],
+    [raw.adminDev, raw.adminIno],
+    [raw.baseDev, raw.baseIno],
+  ];
+  if (idPairs.some(([left, right]) => !isOptionalAuditPair(left, right))) {
     return "sparse";
   }
   if (!isIsoTimestamp(createdAt)) return "sparse";
@@ -343,28 +371,25 @@ function parseManagedRecord(
   }
   seen.add(worktreeId);
   seen.add(`path:${path}`);
-  return {
+  const record: ManagedWorktreeRecord = {
     worktreeId,
     path,
-    dev: raw.dev,
-    ino: raw.ino,
     repoRoot,
-    repoDev: raw.repoDev,
-    repoIno: raw.repoIno,
     commonDir,
-    commonDev: raw.commonDev,
-    commonIno: raw.commonIno,
     adminDir,
-    adminDev: raw.adminDev,
-    adminIno: raw.adminIno,
     base,
-    baseDev: raw.baseDev,
-    baseIno: raw.baseIno,
     createdAt,
     source: MANAGED_WORKTREES_SOURCE,
     branchAtCreate,
     branchCreatedByPix: raw.branchCreatedByPix,
   };
+  // Audit-only identity fields; set only when present.
+  if (raw.dev !== undefined) { record.dev = raw.dev as number; record.ino = raw.ino as number; }
+  if (raw.repoDev !== undefined) { record.repoDev = raw.repoDev as number; record.repoIno = raw.repoIno as number; }
+  if (raw.commonDev !== undefined) { record.commonDev = raw.commonDev as number; record.commonIno = raw.commonIno as number; }
+  if (raw.adminDev !== undefined) { record.adminDev = raw.adminDev as number; record.adminIno = raw.adminIno as number; }
+  if (raw.baseDev !== undefined) { record.baseDev = raw.baseDev as number; record.baseIno = raw.baseIno as number; }
+  return record;
 }
 
 /**

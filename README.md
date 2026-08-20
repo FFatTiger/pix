@@ -14,7 +14,7 @@
 
 | 平台 | 支持等级 | 含义 |
 |---|---|---|
-| Windows 原生 | **Supported** | 默认 `~/.pi/pix` 可原生启动：SID/DACL/file-ID backend、named pipe、AllowedRoot、required start/shutdown smoke。Worker/Git 子孙清理对齐 VS Code `taskkill /T`。不以 WSL 作为 Windows 方案。仍未关门：Job Object、ledger v2、packaged install/upgrade、完整 Windows `npm test`。 |
+| Windows 原生 | **Supported** | 默认 `~/.pi/pix` 可原生启动：SID/DACL/file-ID backend、Node 原生 named pipe（secret AUTH + 实例锁）、AllowedRoot（合法 in-root alias）、required start/shutdown smoke。Worker/Git 子孙清理对齐 VS Code `taskkill /T /F`。不以 WSL 作为 Windows 方案。Job Object 与 ledger v2 file-ID schema **不在产品路径**。仍未关门：packaged install/upgrade、完整 Windows `npm test`、持久 AllowedRoot。 |
 | Linux | **Unverified-native** | 主要产品路径按 POSIX 设计。PR tooling + required `npm test` 已存在；还没有发行 smoke / 签名 / 产品化验证。 |
 | macOS | **Unverified-native** | 主要产品路径按 POSIX 设计。PR tooling + required `npm test` 已存在；还没有发行 smoke / 公证 / 产品化验证。 |
 | 浏览器 / PWA | **Partial** | localhost/HTTPS 可走普通 Web；HTTP LAN 是受密码保护的普通 Web，**不承诺**可安装 PWA。 |

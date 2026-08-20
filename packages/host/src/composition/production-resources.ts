@@ -282,27 +282,60 @@ async function listWorktreesForRehydrate(
       maxOutputBytes,
     });
   } catch {
-    return [];
+    throw new HttpError(503, "WORKTREE_CORROBORATION_UNAVAILABLE", "Git worktree corroboration is unavailable");
   }
   const result: { path: string; isMain: boolean }[] = [];
-  let current: { path?: string; prunable?: boolean } = {};
+  let current: {
+    path?: string;
+    isMain?: boolean;
+    prunable?: boolean;
+    headCount: number;
+    stateCount: number;
+    lockedCount: number;
+    prunableCount: number;
+  } | null = null;
+  let index = 0;
+  let malformed = false;
   const flush = () => {
-    if (current.path && !current.prunable) {
-      result.push({ path: current.path, isMain: result.length === 0 });
+    if (!current) return;
+    if (!current.path || current.headCount !== 1 || current.stateCount !== 1 || current.lockedCount > 1 || current.prunableCount > 1) {
+      malformed = true;
+    } else if (!current.prunable) {
+      result.push({ path: current.path, isMain: current.isMain === true });
     }
-    current = {};
+    current = null;
   };
-  for (const record of out.split("\0").filter(Boolean)) {
-    for (const line of record.split("\n")) {
-      if (line.startsWith("worktree ")) {
-        flush();
-        current.path = line.slice(9);
-      } else if (line.startsWith("prunable")) {
-        current.prunable = true;
-      }
-    }
+  const fields = out.split("\0");
+  if (fields.at(-1) !== "" || fields.at(-2) !== "") {
+    throw new HttpError(503, "WORKTREE_CORROBORATION_UNAVAILABLE", "Git worktree corroboration is unavailable");
   }
-  flush();
+  for (const field of fields) {
+    if (field === "") { flush(); continue; }
+    if (field.startsWith("worktree ")) {
+      if (current) { malformed = true; flush(); }
+      current = {
+        path: field.slice(9),
+        isMain: index === 0,
+        headCount: 0,
+        stateCount: 0,
+        lockedCount: 0,
+        prunableCount: 0,
+      };
+      index += 1;
+      if (!current.path) malformed = true;
+      continue;
+    }
+    if (!current) { malformed = true; continue; }
+    if (field.startsWith("HEAD ")) current.headCount += 1;
+    else if (field.startsWith("branch ") || field === "detached" || field === "bare") current.stateCount += 1;
+    else if (field === "locked" || field.startsWith("locked ")) current.lockedCount += 1;
+    else if (field === "prunable" || field.startsWith("prunable ")) { current.prunable = true; current.prunableCount += 1; }
+    else malformed = true;
+  }
+  if (current) malformed = true;
+  if (malformed || result.length === 0) {
+    throw new HttpError(503, "WORKTREE_CORROBORATION_UNAVAILABLE", "Git worktree corroboration is unavailable");
+  }
   const existing: { path: string; isMain: boolean }[] = [];
   for (const item of result) {
     try {
@@ -310,8 +343,12 @@ async function listWorktreesForRehydrate(
       if (info.isDirectory() && !info.isSymbolicLink()) {
         existing.push({ path: await realpath(item.path), isMain: item.isMain });
       }
-    } catch {
-      /* stale */
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        throw new HttpError(503, "WORKTREE_CORROBORATION_UNAVAILABLE", "Git worktree corroboration is unavailable");
+      }
+      /* confirmed stale */
     }
   }
   return existing;

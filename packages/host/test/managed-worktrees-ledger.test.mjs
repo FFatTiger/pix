@@ -92,6 +92,52 @@ test("managed ledger: parse/serialize round-trip; deterministic sort; wrong kind
   assert.equal(parseManagedWorktreesDocument(JSON.stringify({ kind: MANAGED_WORKTREES_KIND, version: 1, claims: [] }), 8).warning, "MANAGED_CORRUPT");
 });
 
+test("managed ledger: dev/ino/... are optional audit fields (L-04, no identity schema)", () => {
+  const repoRoot = join(CANON_TMP, "managed-schema-repo");
+  const commonDir = join(repoRoot, ".git");
+  const base = `${repoRoot}-worktrees`;
+  const noId = {
+    worktreeId: "mwt-no-id-00001",
+    path: join(base, "x"),
+    repoRoot,
+    commonDir,
+    adminDir: join(commonDir, "worktrees", "x"),
+    base,
+    createdAt: "2020-01-01T00:00:00.000Z",
+    source: MANAGED_WORKTREES_SOURCE,
+    branchAtCreate: "feature",
+    branchCreatedByPix: true,
+  };
+  const parsed = parseManagedWorktreesDocument(JSON.stringify({ kind: MANAGED_WORKTREES_KIND, version: 1, records: [noId] }), 8);
+  assert.equal(parsed.warning, undefined, "a record without dev/ino must still parse");
+  assert.equal(parsed.records.length, 1);
+  assert.equal(parsed.records[0].baseDev, undefined);
+  assert.equal(parsed.records[0].commonIno, undefined);
+  const text = serializeManagedWorktreesDocument(parsed.records);
+  assert.ok(!text.includes('"baseDev"'), "absent baseDev must not be serialized");
+  assert.ok(!text.includes('"commonIno"'), "absent commonIno must not be serialized");
+  const reparsed = parseManagedWorktreesDocument(text, 8);
+  assert.equal(reparsed.warning, undefined);
+  assert.equal(reparsed.records[0].worktreeId, "mwt-no-id-00001");
+
+  // Optional means absent as a PAIR, never orphan audit evidence.
+  for (const orphan of [
+    { ...noId, dev: 1 },
+    { ...noId, ino: 2 },
+    { ...noId, commonDev: 3 },
+    { ...noId, commonIno: 4 },
+    { ...noId, baseDev: 5 },
+    { ...noId, baseIno: 6 },
+  ]) {
+    const rejected = parseManagedWorktreesDocument(JSON.stringify({ kind: MANAGED_WORKTREES_KIND, version: 1, records: [orphan] }), 8);
+    assert.equal(rejected.warning, "MANAGED_SPARSE");
+  }
+  assert.throws(
+    () => serializeManagedWorktreesDocument([{ ...noId, adminDev: 7 }]),
+    (error) => error instanceof ManagedWorktreesLedgerError && error.code === "MANAGED_WRITE_REJECTED",
+  );
+});
+
 test("managed ledger: sparse / duplicate / oversize fail closed", () => {
   assert.equal(parseManagedWorktreesDocument(JSON.stringify({ kind: MANAGED_WORKTREES_KIND, version: 1, records: [{ worktreeId: "x" }] }), 8).warning, "MANAGED_SPARSE");
   const dup = parseManagedWorktreesDocument(JSON.stringify({

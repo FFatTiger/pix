@@ -104,14 +104,31 @@ export class TrustedRootsLedgerError extends Error {
   }
 }
 
+function isOptionalAuditPair(left: unknown, right: unknown): boolean {
+  return (left === undefined && right === undefined)
+    || (isSafeInteger(left) && left > 0 && isSafeInteger(right) && right > 0);
+}
+
+function requireTrustedAuditPair(left: unknown, right: unknown): readonly [number, number] | null {
+  if (left === undefined && right === undefined) return null;
+  if (!isSafeInteger(left) || left === 0 || !isSafeInteger(right) || right === 0) {
+    throw new TrustedRootsLedgerError(
+      "LEDGER_WRITE_FAILED",
+      "Trusted-roots audit identity fields must be present as a safe-integer pair",
+    );
+  }
+  return [left, right];
+}
+
 export interface TrustedRootClaimRecord {
   claimId: string;
   path: string;
-  dev: number;
-  ino: number;
+  /** Audit-only filesystem identity captured at write time. NOT restored as authority. */
+  dev?: number;
+  ino?: number;
   repoRoot: string;
-  repoDev: number;
-  repoIno: number;
+  repoDev?: number;
+  repoIno?: number;
   base: string;
   createdAt: string;
   source: typeof TRUSTED_ROOTS_SOURCE;
@@ -255,15 +272,23 @@ export function serializeTrustedRootsDocument(claims: readonly TrustedRootClaimR
       const entry: TrustedRootClaimRecord = {
         claimId: claim.claimId,
         path: claim.path,
-        dev: claim.dev,
-        ino: claim.ino,
         repoRoot: claim.repoRoot,
-        repoDev: claim.repoDev,
-        repoIno: claim.repoIno,
         base: claim.base,
         createdAt: claim.createdAt,
         source: TRUSTED_ROOTS_SOURCE,
       };
+      // Audit-only identity fields are optional, but each dev/ino pair is
+      // atomic: a half-pair is invalid evidence and must fail closed.
+      const pathIdentity = requireTrustedAuditPair(claim.dev, claim.ino);
+      if (pathIdentity) {
+        entry.dev = pathIdentity[0];
+        entry.ino = pathIdentity[1];
+      }
+      const repoIdentity = requireTrustedAuditPair(claim.repoDev, claim.repoIno);
+      if (repoIdentity) {
+        entry.repoDev = repoIdentity[0];
+        entry.repoIno = repoIdentity[1];
+      }
       if (claim.branch !== undefined) entry.branch = claim.branch;
       return entry;
     }),
@@ -287,8 +312,11 @@ function parseClaim(
   if (!isAbsoluteCanonicalShape(path)) return "sparse";
   if (!isAbsoluteCanonicalShape(repoRoot)) return "sparse";
   if (!isAbsoluteCanonicalShape(base)) return "sparse";
-  if (!isSafeInteger(raw.dev) || !isSafeInteger(raw.ino)) return "sparse";
-  if (!isSafeInteger(raw.repoDev) || !isSafeInteger(raw.repoIno)) return "sparse";
+  // dev/ino/repoDev/repoIno are audit-only since L-02 (docs/ledger-identity-align.md):
+  // rehydrate restores on path + git topology, not file identity. Each pair is
+  // optional as a whole; orphan halves remain malformed and fail closed.
+  if (!isOptionalAuditPair(raw.dev, raw.ino)) return "sparse";
+  if (!isOptionalAuditPair(raw.repoDev, raw.repoIno)) return "sparse";
   if (!isIsoTimestamp(createdAt)) return "sparse";
   if (source !== TRUSTED_ROOTS_SOURCE) return "sparse";
   if (seen.has(claimId) || seen.has(`path:${path}`)) return "duplicate";
@@ -311,15 +339,19 @@ function parseClaim(
   const record: TrustedRootClaimRecord = {
     claimId,
     path,
-    dev: raw.dev,
-    ino: raw.ino,
     repoRoot,
-    repoDev: raw.repoDev,
-    repoIno: raw.repoIno,
     base,
     createdAt,
     source: TRUSTED_ROOTS_SOURCE,
   };
+  if (raw.dev !== undefined) {
+    record.dev = raw.dev as number;
+    record.ino = raw.ino as number;
+  }
+  if (raw.repoDev !== undefined) {
+    record.repoDev = raw.repoDev as number;
+    record.repoIno = raw.repoIno as number;
+  }
   if (branch !== undefined) record.branch = branch;
   return record;
 }

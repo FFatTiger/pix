@@ -76,7 +76,7 @@ PiSdkAdapter（当前）/ PiRpcAdapter（未来）
 
 ### 1.3 活动跨端任务（计划 SSOT：`docs/cross-platform-hardening-plan.md`）
 
-G0 基线以及后续已落地的 G1–G5 切片都记在下表。不读取、不合并 `fix/cross-platform-dev`。Windows 原生 **Supported** 指 source-build 启动 + VS Code taskkill 子孙清理；仍不宣称 Job Object / ledger v2 / packaged 发行。跨端问题/目标/路线仍以 `docs/cross-platform-hardening-plan.md` 为准；该文件 §16 是相对 2026-08-17 审计的当前进度。
+G0 基线以及后续已落地的 G1–G5 切片都记在下表。不读取、不合并 `fix/cross-platform-dev`。Windows 原生 **Supported** 指 source-build 启动 + VS Code `taskkill /T /F` 子孙清理；**不实现 Job Object**，也不宣称 ledger v2 / packaged 发行。跨端问题/目标/路线仍以 `docs/cross-platform-hardening-plan.md` 为准；该文件 §16 是相对 2026-08-17 审计的当前进度。
 
 ```text
 CP-00..CP-04  G0 honesty / tooling / CI skeleton          DONE
@@ -102,7 +102,12 @@ CP-40         native named-pipe listen before Node bind    DONE
 CP-41         pix doctor + last-start diagnostic record    DONE
 
 later (explicitly deferred):
-  Job Object, ledger v2, packaged release
+  packaged release, persistent AllowedRoot, POSIX IPC dir (CP-52-B)
+won't do:
+  Windows Job Object (taskkill /T /F is the product path)
+  Host ledger v2 file-ID schema
+completed alignment:
+  CP-55..CP-58 ledger rehydrate path+git (docs/ledger-identity-align.md)
 ```
 
 | ID | 工作包 | 状态 | Owner | 依赖 | 验收 |
@@ -129,7 +134,7 @@ later (explicitly deferred):
 | `CP-13` | Adapter exact-open：runtime `openSession` 打开后校验 `getSessionId()`；路径复用/open 失败一律 `not_found`；adapter boundary 脚本 Windows 路径规范化 | `DONE` | `packages/pi-sdk-adapter` | `CP-12` | exact-open 3/3 PASS；adapter boundaries PASS |
 | `CP-14` | AllowedRoot 内存授权改用平台 `FileIdentity`；Windows junction/reparse 拒绝为 `PATH_FORBIDDEN`；不把 file ID 写入 v1 `{dev,ino}` ledger | `DONE` | `packages/host` AllowedRoot | `CP-13` | AllowedRoot 定向 11/11 PASS；Windows junction 拒绝；ledger schema 仍 v1 POSIX-only；不宣称 ledger v2 / worktree disk identity / Job Object / 产品支持 |
 | `CP-15` | 账本存储路径形状接受 Windows drive-absolute；managed-worktrees 写前 round-trip，超精度 `ino` / 非法 shape fail-closed 不落盘 | `DONE` | `packages/local-authority` + Host managed ledger | `CP-14` | shape 测试 PASS；`MANAGED_WRITE_REJECTED` 定向 PASS；v1 POSIX 落盘成功语义在 Windows skip（不作为成功证据）；不宣称 ledger v2 / Job Object / 产品支持 |
-| `CP-16` | 共享 process-tree owner：POSIX 进程组 terminate；Windows `supportsDescendants=false` 只杀直接子进程；Worker/Host Git 走同一 controller | `DONE` | `packages/local-authority/process` + sessiond/Host consumers | `CP-15` | process-tree 定向 PASS；Host process-runner 定向 PASS；worker close 定向 PASS；不实现 Job Object / 不宣称 Windows descendant cleanup |
+| `CP-16` | 共享 process-tree owner：POSIX 进程组 terminate；当时 Windows `supportsDescendants=false` 只杀直接子进程（**已被 CP-34 的 `taskkill /T /F` 取代**）；Worker/Host Git 走同一 controller | `DONE` | `packages/local-authority/process` + sessiond/Host consumers | `CP-15` | 当时定向 PASS；现行 Windows descendant cleanup 见 CP-34，不实现 Job Object |
 | `CP-17` | Host file-watch 改为 parent-watch + 串行 exact-child reconcile；原子 rename/replace 不再丢 watcher | `DONE` | `packages/host` file-watch | `CP-16` | watch 定向 3/3 PASS；不宣称 overflow rescan / PWA / 产品支持 |
 | `CP-18` | PWA 诚实态：非安全上下文 / 开发态不注册 SW；HTTP LAN 为 `insecure-origin`，不假装 installable | `DONE` | `packages/client` PWA | `CP-17` | PwaRegistration 4/4 PASS；不宣称 LAN HTTPS 产品化 / 安装 prompt / 产品支持 |
 | `CP-19` | Windows `release-verify` 入口诚实 fail-closed：不跑 Unix `tar`/`prefix/bin`/`sessiond.sock` 布局 | `DONE` | root `scripts/release-verify.mjs` | `CP-18` | Windows 定向 2/2 PASS；不宣称 Windows 安装/升级/卸载或产品支持 |
@@ -167,8 +172,13 @@ later (explicitly deferred):
 | `CP-51` | trust mutation 委托 Pi 公共 `ProjectTrustStore.set()`；删除 forked writer 与 `TRUST_STORE_UNSAFE` | `DONE` | `packages/pi-sdk-adapter` + Host mapping | `CP-48` | trust-mutation 10/10 PASS；Host 映射不再假装 unsafe→503 |
 | `CP-52` | Unix `sun_path` 预算改为 macOS 103 / Linux 107（扣除 NUL） | `DONE` | `packages/sessiond` | `CP-49` | socket-publish/last-start 定向 PASS；IPC dir 分离后置为 CP-52-B |
 | `CP-53` | AllowedRoot 允许合法 in-root junction/symlink alias；canonical containment + root identity 仍 fail-closed | `DONE` | `packages/host` | `CP-48` | in-root alias PASS；逃逸 junction PATH_FORBIDDEN；无权限时 skip 而非假绿 |
+| `CP-54` | CP-49–53 文档与根门禁收口；明确 POSIX/macOS 真机与发行证据仍后置 | `DONE` | root + touched owners | `CP-49`–`CP-53` | §16 / security task 同步；本机门禁与基线差异有记录，不把 POSIX/macOS 未验证写成完成 |
+| `CP-55` | 冻结 ledger identity 合同：v2 file-ID schema won't-do；持久权威 = canonical path + Git topology；inode/file ID 仅运行时防替换 | `DONE` | docs | `CP-54` | `docs/ledger-identity-align.md` + §16 / N-014 同步；不新增 schema/依赖 |
+| `CP-56` | trusted-roots rehydrate 去掉落盘 `{dev,ino}` 权威；改为真实目录 + containment + durable AllowedRoot + `git worktree list`，恢复后捕获实时 identity | `DONE` | `packages/host` AllowedRoot | `CP-55` | inode 变化但 Git 仍列出会恢复；escape/symlink/bad-base 仍 drop |
+| `CP-57` | managed-worktrees 持久 inode 退出权威；真实目录 + non-prunable repo list + checkout-side common/admin + pre/post runtime identity。path+Git 只恢复 workspace access；delete token 仅来自 current-process `recordCreated()` | `DONE` | `packages/host` managed worktrees | `CP-56` | restart/re-add 保留 access/history 但 `live=false`；Git 明确不列 drop；unavailable preserve/no auth |
+| `CP-58` | 两个 v1 ledger 的 `*Dev/*Ino` 降为成对可选审计字段；Windows writer 省略 pseudo-POSIX identity；缺失可读、半对/超精度 fail-closed，不 bump version | `DONE` | `packages/host` ledger parsers/tests | `CP-56`, `CP-57` | optional round-trip + orphan pair rejection；Host typecheck/architecture/diff-check；独立 reviewer + oracle |
 
-后续 lane：POSIX IPC dir 分离（CP-52-B）/ Job Object / ledger v2 / 远端发行仍后置。独立 verification agent 当前不可用。
+后续 lane：POSIX IPC dir 分离（CP-52-B）/ 远端发行 / 持久 AllowedRoot。**won't do**：Windows Job Object、Host ledger v2 file-ID schema。账本 path+git 对齐已在 CP-55–CP-58 完成。
 
 ---
 
@@ -700,5 +710,5 @@ Base：<hash>
 | `N-011` | secure-state canonical 路径：绝对路径 + 最近已存在祖先 realpath + 校验缺失尾 + canonical 组件回走；接受 macOS 根级系统别名（`/var`→`/private/var` 等），拒绝非根级用户符号链接中间组件、lexical 父级逃逸、根、网络/Windows 声明 | 冻结（Slice 1） |
 | `N-012` | 原生 Windows secure-state 仍不支持（无 native backend / secure named pipe / Windows CI 门禁）；不因 contracts 平台中立而宣称支持 | 冻结（pending） |
 | `N-013` | Runtime Protocol 当前主版本由 `packages/protocol/src/version.ts` 的 `PROTOCOL_VERSION=2` 拥有；HTTP `/v1/bootstrap` 使用独立 `HOST_BOOTSTRAP_SCHEMA_VERSION=1`（`@fffattiger/pix-protocol/host-bootstrap`），二者不得互相镜像或再引入 Host-owned `HOST_PROTOCOL_VERSION` | 冻结（CP-01/CP-02） |
-| `N-014` | Windows 原生 **Supported** = source-build 启动 + named pipe + AllowedRoot + VS Code `taskkill /T` 子孙清理。G7 packaged 发行支持仍未宣称。Linux/macOS 仍是 Unverified-native。不以 WSL 作为 Windows 产品方案 | 更新（CP-35） |
+| `N-014` | Windows 原生 **Supported** = source-build 启动 + Node 原生 named pipe（secret + 实例锁）+ AllowedRoot + VS Code `taskkill /T /F` 子孙清理。**不实现 Job Object**。G7 packaged 发行支持仍未宣称。Linux/macOS 仍是 Unverified-native。不以 WSL 作为 Windows 产品方案 | 更新（CP-35 / CP-50 / D-02） |
 | `N-015` | UI-first 事务与运行状态：optimistic 按 session 独立于权威 projection、固定尾部合并并由真实 entry 接管；prompt ack 非终态；sessiond 全局 busy push + WS listRunning 初始基线由 SessionStore 单一拥有，Sidebar/项目/Tab 同源；历史/文件选择不激活目标 Worker，已有 attach 可保留为后台事件订阅但不得跨 active identity 泄漏 | 冻结 |

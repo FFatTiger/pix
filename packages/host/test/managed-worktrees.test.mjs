@@ -94,7 +94,7 @@ async function freshDeps({ root, hostDir, maxRecords, failTempFsync, allowedRoot
 // capture / recordCreated
 // ---------------------------------------------------------------------------
 
-test("recordCreated: a record the v1 schema cannot re-read is rejected before any disk write", async () => {
+test("recordCreated omits unsafe audit identity instead of rejecting the production record", async () => {
   const root = temp("mwt-reject-repo-");
   initRepo(root);
   const hostDir = dedicatedHostDir("mwt-reject-host-");
@@ -102,35 +102,31 @@ test("recordCreated: a record the v1 schema cannot re-read is rejected before an
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
   const { deps, ledger } = await freshDeps({ root, hostDir, allowedRoots });
 
-  // Simulate the Windows inode overflow: Node stat.ino can exceed 2^53-1.
-  const oversized = {
-    worktreeId: "mwt-reject-0001",
-    path: realpathSync(target),
-    dev: 1,
-    ino: Number.MAX_SAFE_INTEGER + 1,
-    repoRoot: realpathSync(root),
-    repoDev: 1,
-    repoIno: 1,
-    commonDir: realpathSync(root) + "/.git",
-    commonDev: 1,
-    commonIno: 1,
-    adminDir: realpathSync(root) + "/.git/worktrees/reject",
-    adminDev: 1,
-    adminIno: 1,
-    base: `${resolve(realpathSync(root))}-worktrees`,
-    baseDev: 1,
-    baseIno: 1,
-    createdAt: new Date().toISOString(),
-    source: "worktree.create",
+  // Simulate a production capture where one Node stat identity cannot be
+  // represented safely in the v1 audit fields. The record itself must still
+  // persist; unsafe audit metadata is omitted rather than becoming authority.
+  const record = await recordCreated(deps, {
+    path: target,
     branchAtCreate: "feature-reject",
     branchCreatedByPix: true,
-  };
+    worktreeId: "mwt-reject-0001",
+  });
+  assert.equal(record.worktreeId, "mwt-reject-0001");
+  const persisted = (await ledger.read()).records;
+  assert.equal(persisted.length, 1);
+  if (process.platform === "win32") {
+    assert.equal(record.dev, undefined, "Windows production writer omits pseudo-POSIX identity");
+    assert.equal(persisted[0].baseIno, undefined);
+  }
+  assert.equal(await allowedRoots.isAuthorized(target, "directory"), true);
+
+  // Explicit malformed audit data still fails closed at the ledger boundary.
+  const malformed = { ...record, ino: Number.MAX_SAFE_INTEGER + 1 };
   await assert.rejects(
-    () => ledger.update(() => [oversized]),
+    () => ledger.update(() => [malformed]),
     (e) => e.code === "MANAGED_WRITE_REJECTED",
   );
-  assert.equal(existsSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME)), false, "no ledger written on write-side rejection");
-  assert.equal(await allowedRoots.isAuthorized(target, "directory"), false, "no memory auth on write-side rejection");
+  assert.equal((await ledger.read()).records[0].worktreeId, "mwt-reject-0001");
   await ledger.close();
 });
 
@@ -315,14 +311,17 @@ test("durable root promotion never erases managed ownership; no trusted double-w
   assert.equal((await managedLedger.read()).records.length, 1, "managed record NOT erased by promotion");
   assert.equal((await trustedLedger.read()).claims.length, 0, "promotion wrote no trusted claim for the managed record");
 
-  // A fresh service + managed rehydrate still restores the record (ownership intact).
+  // A fresh service + rehydrate restores workspace access, but not the
+  // current-process destructive ownership token.
   const freshRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
+  const freshDeps = { ledger: managedLedger, allowedRoots: freshRoots };
   const result = await rehydrateManagedWorktrees(
-    { ledger: managedLedger, allowedRoots: freshRoots },
+    freshDeps,
     { isRepoManaged: () => true },
   );
   assert.equal(result.restored, 1);
   assert.equal(await freshRoots.isAuthorized(target, "directory"), true);
+  assert.equal((await findLiveAuthority(freshDeps, target))?.live, false, "restart access is not delete authority");
   await lease.close();
 });
 
@@ -330,7 +329,10 @@ test("durable root promotion never erases managed ownership; no trusted double-w
 // remove / re-add
 // ---------------------------------------------------------------------------
 
-test("remove then re-add the same path loses authority via inode/admin identity", { skip: process.platform === "win32" }, async () => {
+// Persistence uses path + git topology for workspace access, not inode. That
+// evidence is intentionally insufficient for destructive managed ownership:
+// a different worktree re-added at the same path must never inherit Delete.
+test("remove then re-add the same path preserves access evidence but not delete authority", { skip: process.platform === "win32" }, async () => {
   const root = temp("mwt-readd-repo-");
   initRepo(root);
   const hostDir = dedicatedHostDir("mwt-readd-host-");
@@ -351,15 +353,19 @@ test("remove then re-add the same path loses authority via inode/admin identity"
   const newInfo = lstatSync(target);
   const oldRecord = (await ledger.read()).records[0];
   assert.notEqual(oldRecord.ino, newInfo.ino, "new dir has a fresh inode");
-  // findLiveAuthority (no identity match) → live false; classify still managed-by-record but not live.
-  const authority = await findLiveAuthority(deps, target);
-  assert.equal(authority?.live, false, "same path after re-add is NOT the original managed worktree");
 
-  // rehydrate drops the stale exact record (identity evidence safely allows).
+  // Workspace access is restored, but destructive ownership is a
+  // current-process token and is NOT recreated for the different resource.
+  const authority = await findLiveAuthority(deps, target);
+  assert.equal(authority?.live, false, "same-path re-add never inherits destructive ownership");
+
   const result = await rehydrateManagedWorktrees(deps, { isRepoManaged: () => true });
-  assert.equal(result.dropped, 1);
-  assert.equal((await ledger.read()).records.length, 0);
-  assert.equal((await classify(deps, target)).kind, "unmanaged", "re-add loses authority");
+  assert.equal(result.restored, 1);
+  assert.equal(result.dropped, 0);
+  assert.equal((await ledger.read()).records.length, 1, "history/access evidence remains");
+  const classified = await classify(deps, target);
+  assert.equal(classified.kind, "managed");
+  assert.equal(classified.live, false, "re-add remains non-deletable without explicit reclaim");
   await ledger.close();
 });
 
@@ -414,6 +420,93 @@ test("external deletion yields stale record; reconciliation drops it; corrupt ev
   // Opening a corrupt sidecar already fails closed (validateBeforeLock).
   assert.equal(corruptLedger, null);
   assert.deepEqual(await readFile(join(hostDir2, MANAGED_WORKTREES_FILE_NAME)), beforeBytes, "corrupt evidence untouched");
+});
+
+test("prunable repository entry is explicit negative and never restores access/delete authority", async () => {
+  const root = temp("mwt-prunable-repo-");
+  initRepo(root);
+  const hostDir = dedicatedHostDir("mwt-prunable-host-");
+  const target = makeWorktree(root, "feature-prunable");
+  const { deps, ledger } = await freshDeps({ root, hostDir });
+  await recordCreated(deps, {
+    path: target,
+    branchAtCreate: "feature-prunable",
+    branchCreatedByPix: true,
+    worktreeId: "mwt-prunable-01",
+  });
+  const rootPath = realpathSync(root);
+  const targetPath = realpathSync(target);
+  const prunablePorcelain = [
+    `worktree ${rootPath}`, "HEAD a", "branch refs/heads/main", "",
+    `worktree ${targetPath}`, "HEAD b", "branch refs/heads/feature-prunable", "prunable stale-admin", "",
+    "",
+  ].join("\0");
+  const freshRoots = await createAllowedRootService({ roots: [rootPath], maxRoots: 16 });
+  const result = await rehydrateManagedWorktrees({
+    ledger,
+    allowedRoots: freshRoots,
+    runner: { run: async () => ({ stdout: prunablePorcelain, stderr: "", exitCode: 0, truncated: false }) },
+  }, { isRepoManaged: () => true });
+  assert.equal(result.restored, 0);
+  assert.equal(result.dropped, 1);
+  assert.equal((await ledger.read()).records.length, 0);
+  assert.equal(await freshRoots.isAuthorized(target, "directory"), false);
+  await ledger.close();
+});
+
+test("malformed/truncated porcelain is unavailable: preserves evidence and authorizes nothing", async () => {
+  const root = temp("mwt-malformed-repo-");
+  initRepo(root);
+  const hostDir = dedicatedHostDir("mwt-malformed-host-");
+  const target = makeWorktree(root, "feature-malformed");
+  const { deps, ledger } = await freshDeps({ root, hostDir });
+  await recordCreated(deps, {
+    path: target,
+    branchAtCreate: "feature-malformed",
+    branchCreatedByPix: true,
+    worktreeId: "mwt-malformed-01",
+  });
+  const before = readFileSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME));
+  const freshRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
+  const malformed = `worktree ${realpathSync(target)}\nHEAD deadbeef`; // no state line / final NUL
+  const result = await rehydrateManagedWorktrees({
+    ledger,
+    allowedRoots: freshRoots,
+    runner: { run: async () => ({ stdout: malformed, stderr: "", exitCode: 0, truncated: false }) },
+  }, { isRepoManaged: () => true });
+  assert.equal(result.restored, 0);
+  assert.equal(result.dropped, 0);
+  assert.deepEqual(readFileSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME)), before);
+  assert.equal(await freshRoots.isAuthorized(target, "directory"), false);
+  await ledger.close();
+});
+
+test("transient Git corroboration failure preserves managed evidence without authorization", async () => {
+  const root = temp("mwt-unavailable-repo-");
+  initRepo(root);
+  const hostDir = dedicatedHostDir("mwt-unavailable-host-");
+  const target = makeWorktree(root, "feature-unavailable");
+  const { deps, ledger } = await freshDeps({ root, hostDir });
+  await recordCreated(deps, {
+    path: target,
+    branchAtCreate: "feature-unavailable",
+    branchCreatedByPix: true,
+    worktreeId: "mwt-unavailable-1",
+  });
+  const before = readFileSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME));
+  const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
+  const unavailable = {
+    ledger,
+    allowedRoots,
+    runner: { run: async () => { throw new Error("git unavailable"); } },
+  };
+  const result = await rehydrateManagedWorktrees(unavailable, { isRepoManaged: () => true });
+  assert.equal(result.restored, 0);
+  assert.equal(result.dropped, 0);
+  assert.equal(result.rewritten, false);
+  assert.deepEqual(readFileSync(join(hostDir, MANAGED_WORKTREES_FILE_NAME)), before, "unavailable corroboration preserves bytes");
+  assert.equal(await allowedRoots.isAuthorized(target, "directory"), false, "unavailable evidence never authorizes");
+  await ledger.close();
 });
 
 test("foreign installation/repository records are preserved on disk but never authorized", { skip: process.platform === "win32" }, async () => {
@@ -497,8 +590,7 @@ test("registerManagedAuthorizedRoot: exact worktreeId+path unregister; mismatch 
   initRepo(root);
   const target = makeWorktree(root, "feature-seam");
   const allowedRoots = await createAllowedRootService({ roots: [realpathSync(root)], maxRoots: 16 });
-  const seamInfo = lstatSync(realpathSync(target));
-  await registerManagedAuthorizedRoot(allowedRoots, { worktreeId: "mwt-seam-0001", path: realpathSync(target), dev: seamInfo.dev, ino: seamInfo.ino });
+  await registerManagedAuthorizedRoot(allowedRoots, { worktreeId: "mwt-seam-0001", path: realpathSync(target) });
   assert.equal(await allowedRoots.isAuthorized(target, "directory"), true);
   // Mismatched path → not removed.
   await (await import("../dist/resources/allowed-roots.js")).unregisterManagedAuthorizedRoot(allowedRoots, "mwt-seam-0001", "/tmp/wrong");

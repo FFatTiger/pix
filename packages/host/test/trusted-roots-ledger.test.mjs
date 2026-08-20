@@ -212,6 +212,44 @@ test("parseTrustedRootsDocument: wrong kind/version/corrupt/partial/sparse/dupli
     serializeTrustedRootsDocument([claim({ claimId: "claim-bbbbbbbb", path: "/z" }), valid]));
 });
 
+test("parse: dev/ino/repoDev/repoIno are optional audit fields (L-04, no identity schema)", () => {
+  const noId = {
+    claimId: "claim-no-id-0001",
+    path: "/tmp/wt/feature",
+    repoRoot: "/tmp/repo",
+    base: "/tmp/repo-worktrees",
+    createdAt: "2020-01-01T00:00:00.000Z",
+    source: TRUSTED_ROOTS_SOURCE,
+  };
+  const parsed = parseTrustedRootsDocument(JSON.stringify({ kind: TRUSTED_ROOTS_KIND, version: 1, claims: [noId] }), 8);
+  assert.equal(parsed.warning, undefined, "a claim without dev/ino must still parse");
+  assert.equal(parsed.claims.length, 1);
+  assert.equal(parsed.claims[0].dev, undefined);
+  assert.equal(parsed.claims[0].repoIno, undefined);
+  // Round-trips: serialization omits the absent identity fields and re-parses.
+  const text = serializeTrustedRootsDocument(parsed.claims);
+  assert.ok(!text.includes('"dev"'), "absent dev must not be serialized");
+  assert.ok(!text.includes('"repoIno"'), "absent repoIno must not be serialized");
+  const reparsed = parseTrustedRootsDocument(text, 8);
+  assert.equal(reparsed.warning, undefined);
+  assert.equal(reparsed.claims[0].claimId, "claim-no-id-0001");
+
+  // Optional means absent as a PAIR, never orphan audit evidence.
+  for (const orphan of [
+    { ...noId, dev: 1 },
+    { ...noId, ino: 2 },
+    { ...noId, repoDev: 3 },
+    { ...noId, repoIno: 4 },
+  ]) {
+    const rejected = parseTrustedRootsDocument(JSON.stringify({ kind: TRUSTED_ROOTS_KIND, version: 1, claims: [orphan] }), 8);
+    assert.equal(rejected.warning, "LEDGER_SPARSE");
+  }
+  assert.throws(
+    () => serializeTrustedRootsDocument([{ ...noId, dev: 1 }]),
+    (error) => error instanceof TrustedRootsLedgerError && error.code === "LEDGER_WRITE_FAILED",
+  );
+});
+
 test("ledger open rejects invalid instanceId before any filesystem mutation", async () => {
   const cases = ["short", "x".repeat(129), "valid-id\0suffix", "valid-id\nsuffix", "valid-id\u007fsuffix"];
   for (const instanceId of cases) {
@@ -636,7 +674,36 @@ test("delete after ledger write failure: stale entry dropped by git missing on r
   await ledger.close();
 });
 
-test("rehydrate drops: path/repo identity replace, symlink path/base, path escape, repo replaced", async () => {
+test("transient Git corroboration failure preserves trusted ledger and authorizes nothing", async () => {
+  const root = temp("pi-unavailable-repo-");
+  initRepo(root);
+  const hostDir = join(temp("pi-unavailable-host-"), "host");
+  const ledger = await openTrustedRootsLedger({ hostDir });
+  const target = makeWorktree(root, "unavailable");
+  const service = await createAllowedRootService({ roots: [root], maxRoots: 16, allowLocalExpansion: true });
+  attachTrustedRootsLedger(service, ledger);
+  await registerTrustedCreatedRoot(service, {
+    path: target,
+    repoRoot: root,
+    base: realpathSync(`${resolve(realpathSync(root))}-worktrees`),
+    branch: "unavailable",
+    claimId: "claim-unavailable-1",
+  });
+  const before = readFileSync(join(hostDir, LEDGER_FILE_NAME));
+  const claims = (await ledger.read()).claims;
+  const fresh = await createAllowedRootService({ roots: [root], maxRoots: 16 });
+  attachTrustedRootsLedger(fresh, ledger);
+  await assert.rejects(
+    () => rehydrateTrustedCreatedRoots(fresh, claims, {
+      listWorktrees: async () => { throw new Error("git unavailable"); },
+    }),
+  );
+  assert.deepEqual(readFileSync(join(hostDir, LEDGER_FILE_NAME)), before, "unavailable corroboration preserves bytes");
+  assert.equal(await fresh.isAuthorized(target, "directory"), false, "unavailable evidence never authorizes");
+  await ledger.close();
+});
+
+test("rehydrate: ino perturbation restores (path+git); escape/symlink/base still drop", async () => {
   const root = temp("pi-drop-repo-");
   initRepo(root);
   const hostDir = temp("pi-drop-host-");
@@ -645,19 +712,29 @@ test("rehydrate drops: path/repo identity replace, symlink path/base, path escap
   const good = await liveClaimForWorktree(root, target, "drop-me");
   await ledger.writeAll([good]);
 
+  // Path + git topology still hold, so a perturbed ledger inode / repo inode
+  // (clone/copy/restore changes inode) RESTORES under the path+git contract
+  // (docs/ledger-identity-align.md). Inode is no longer a claim authority.
   const wrongIno = { ...good, ino: good.ino + 99999, claimId: "claim-wrong-ino-x" };
   const wrongRepo = { ...good, repoIno: good.repoIno + 99999, claimId: "claim-wrong-repo-x" };
+  for (const restore of [wrongIno, wrongRepo]) {
+    const service = await createAllowedRootService({ roots: [root], maxRoots: 16 });
+    const r = await rehydrateTrustedCreatedRoots(service, [restore], { listWorktrees });
+    assert.equal(r.restored, 1, `path+git restores ${restore.claimId} despite ino mismatch`);
+    assert.equal(await service.isAuthorized(good.path, "directory"), true, restore.claimId);
+  }
+
+  // These still DROP: path must be strictly inside the expected base.
   const escape = { ...good, path: realpathSync(root), claimId: "claim-escape-xxx" };
   const badBase = { ...good, base: realpathSync(root), claimId: "claim-bad-base-xx" };
-
-  for (const bad of [wrongIno, wrongRepo, escape, badBase]) {
+  for (const bad of [escape, badBase]) {
     const service = await createAllowedRootService({ roots: [root], maxRoots: 16 });
     const r = await rehydrateTrustedCreatedRoots(service, [bad], { listWorktrees });
     assert.equal(r.restored, 0, bad.claimId);
     assert.equal(await service.isAuthorized(good.path, "directory"), false);
   }
 
-  // symlink path claim: not a real directory identity.
+  // symlink path claim: not a real directory (still drops).
   const outside = temp("pi-sym-out-");
   const symPath = join(realpathSync(`${resolve(realpathSync(root))}-worktrees`), "sym-claim");
   const symClaim = { ...good, path: symPath, claimId: "claim-sym-path-x", dev: 0, ino: 0 };
@@ -793,10 +870,10 @@ test("worktree create managed persistence failure rolls back worktree/branch and
   await lease.close();
 });
 
-test("create→production resources restart→authorized; sessiond down GET still works; POST 503 before git", async () => {
+test("create→production restart restores access but not delete authority; sessiond down GET still works", async () => {
   const root = temp("pi-prod-restart-");
   initRepo(root);
-  const hostDir = temp("pi-prod-host-");
+  const hostDir = join(temp("pi-prod-host-"), "host");
   const sessionDir = temp("pi-prod-sessiond-");
   const fakeEndpoint = join(sessionDir, "sessiond.sock");
   const fakeSecret = "x".repeat(48);
@@ -852,7 +929,24 @@ test("create→production resources restart→authorized; sessiond down GET stil
   assert.equal(listed.status, 200);
   const item = (await listed.json()).worktrees.find((w) => w.path === path);
   assert.equal(item?.authorized, true);
-  assert.equal(item?.managedByPix, true, "rehydrated managed worktree reports managedByPix");
+  assert.equal(item?.managedByPix, false, "restart restores access but not destructive managed ownership");
+  const deleteOnlyApp = createHostApp({
+    logger: {},
+    gate,
+    resources: {
+      allowedRoots: second.deps.allowedRoots,
+      processRunner: second.deps.processRunner,
+      busyPreflight: { check: async () => ({ busy: false }) },
+      managedWorktrees: second.managedWorktrees,
+    },
+  }).app;
+  const deniedDelete = await deleteOnlyApp.request("http://localhost/v1/worktrees", {
+    method: "DELETE",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cwd: root, path, force: true }),
+  });
+  assert.equal(deniedDelete.status, 403);
+  assert.equal((await deniedDelete.json()).code, "WORKTREE_NOT_MANAGED");
   const file = join(path, "tracked.txt");
   const fileRes = await app2.request(`http://localhost/v1/files?op=read&path=${encodeURIComponent(file)}`, { headers: { host: "localhost" } });
   assert.equal(fileRes.status, 200);

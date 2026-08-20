@@ -357,6 +357,12 @@ export function registerWorktreeRoutes(app: Hono<HostEnv>, deps: WorktreeDeps): 
       const recheck = await list(runner, identity.root, max, c.req.raw.signal);
       const stillThere = recheck.find((item) => item.path === target);
       if (!stillThere || stillThere.isMain) throw new HttpError(409, "WORKTREE_CHANGED", "Worktree changed before removal");
+      // The final managed authority check is intentionally LAST, immediately
+      // before spawning `git worktree remove`, after the independent repo list.
+      const finalAuthority = await managed.findLiveAuthority(target);
+      if (!finalAuthority || !finalAuthority.live || finalAuthority.record.repoRoot !== identity.root) {
+        throw new HttpError(403, "WORKTREE_NOT_MANAGED", "Only Pix-managed worktrees can be removed");
+      }
 
       const removeResult = await runGit(runner, ["-C", identity.root, "worktree", "remove", ...(force ? ["--force"] : []), "--", target], max, c.req.raw.signal);
       if (removeResult.exitCode !== 0) throw new HttpError(400, "WORKTREE_DELETE_FAILED", "Failed to remove worktree");

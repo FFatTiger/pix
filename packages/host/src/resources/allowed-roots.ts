@@ -80,9 +80,8 @@ interface RootState {
 export interface ManagedAuthorizedRootInput {
   worktreeId: string;
   path: string;
-  /** Legacy POSIX caller fields; live authorization uses platform file identity. */
-  dev: number;
-  ino: number;
+  /** Optional already-checked runtime identity; publication rechecks it. */
+  identity?: RootIdentity;
 }
 
 export interface TrustedCreatedRootReceipt {
@@ -143,22 +142,6 @@ function validateAbsolutePath(value: string): string {
   if (!isAbsolute(value)) throw new HttpError(400, "INVALID_PATH", "Path must be absolute");
   return resolve(value);
 }
-function posixLedgerIdentity(dev: number, ino: number): RootIdentity {
-  return {
-    kind: "posix",
-    dev,
-    ino,
-    mode: 0,
-    nlink: 1,
-    size: 0,
-    uid: 0,
-    gid: 0,
-    isFile: false,
-    isDirectory: true,
-    isSymbolicLink: false,
-  };
-}
-
 function sameRootIdentity(left: RootIdentity, right: RootIdentity): boolean {
   if (left.kind !== right.kind || !left.isDirectory || !right.isDirectory) return false;
   if (left.kind === "posix" && right.kind === "posix") {
@@ -179,6 +162,18 @@ async function captureDirectoryIdentity(path: string): Promise<RootIdentity> {
   if (identity.kind === "posix" && identity.isSymbolicLink) throw new HttpError(400, "NOT_DIRECTORY", "Path is not a real directory");
   if (identity.kind === "windows" && identity.isReparsePoint) throw new HttpError(400, "NOT_DIRECTORY", "Path is not a real directory");
   return identity;
+}
+
+/** True when `path` is a real, non-symlink directory on the live filesystem. */
+async function isRealDirectory(path: string): Promise<boolean> {
+  try {
+    if (await realpath(path) !== path) return false;
+    // captureDirectoryIdentity additionally rejects a symlink/reparse leaf.
+    await captureDirectoryIdentity(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function canonicalDirectoryWithIdentity(value: string): Promise<{ canonical: string; identity: RootIdentity }> {
@@ -249,19 +244,29 @@ function hasDurableAncestor(durable: Map<string, RootIdentity>, path: string): b
 
 function claimToRecord(claim: TrustedClaim): TrustedRootClaimRecord | null {
   if (!claim.repoRoot || !claim.repoIdentity || !claim.base || !claim.createdAt || !claim.source) return null;
-  if (claim.identity.kind !== "posix" || claim.repoIdentity.kind !== "posix") return null;
   const record: TrustedRootClaimRecord = {
     claimId: claim.claimId,
     path: claim.path,
-    dev: claim.identity.dev,
-    ino: claim.identity.ino,
     repoRoot: claim.repoRoot,
-    repoDev: claim.repoIdentity.dev,
-    repoIno: claim.repoIdentity.ino,
     base: claim.base,
     createdAt: claim.createdAt,
     source: TRUSTED_ROOTS_SOURCE,
   };
+  // POSIX dev/ino remain bounded audit metadata. Windows volume/file identity
+  // stays runtime-only and is intentionally not projected into the v1 ledger.
+  if (process.platform !== "win32" && claim.identity.kind === "posix" && claim.repoIdentity.kind === "posix") {
+    if (
+      Number.isSafeInteger(claim.identity.dev) && claim.identity.dev > 0
+      && Number.isSafeInteger(claim.identity.ino) && claim.identity.ino > 0
+      && Number.isSafeInteger(claim.repoIdentity.dev) && claim.repoIdentity.dev > 0
+      && Number.isSafeInteger(claim.repoIdentity.ino) && claim.repoIdentity.ino > 0
+    ) {
+      record.dev = claim.identity.dev;
+      record.ino = claim.identity.ino;
+      record.repoDev = claim.repoIdentity.dev;
+      record.repoIno = claim.repoIdentity.ino;
+    }
+  }
   if (claim.branch !== undefined) record.branch = claim.branch;
   return record;
 }
@@ -434,6 +439,9 @@ export async function registerManagedAuthorizedRoot(
 ): Promise<void> {
   const state = stateFor(service);
   const liveIdentity = await captureDirectoryIdentity(input.path);
+  if (input.identity && !sameRootIdentity(input.identity, liveIdentity)) {
+    throw new HttpError(409, "ROOT_IDENTITY_CHANGED", "Managed worktree changed identity before authorization");
+  }
   await state.mutation.runExclusive(() => {
     state.managedClaims.set(input.worktreeId, {
       worktreeId: input.worktreeId,
@@ -621,23 +629,23 @@ export async function rehydrateTrustedCreatedRoots(
   let dropped = 0;
 
   // Corroboration cache per repoRoot.
-  const listedByRepo = new Map<string, ReadonlySet<string>>();
+  const listedByRepo = new Map<string, Promise<ReadonlySet<string>>>();
 
   async function listedPathsFor(repoRoot: string): Promise<ReadonlySet<string>> {
     const cached = listedByRepo.get(repoRoot);
     if (cached) return cached;
-    let entries: readonly RehydrateWorktreeEntry[] = [];
-    try {
-      entries = await options.listWorktrees(repoRoot);
-    } catch {
-      entries = [];
-    }
-    const set = new Set<string>();
-    for (const entry of entries) {
-      if (!entry.isMain) set.add(entry.path);
-    }
-    listedByRepo.set(repoRoot, set);
-    return set;
+    // A failed Git corroboration is unavailable, not authoritative absence:
+    // reject rehydrate so the startup path preserves the ledger unchanged and
+    // publishes no new memory authorization.
+    const pending = options.listWorktrees(repoRoot).then((entries) => {
+      const set = new Set<string>();
+      for (const entry of entries) {
+        if (!entry.isMain) set.add(entry.path);
+      }
+      return set as ReadonlySet<string>;
+    });
+    listedByRepo.set(repoRoot, pending);
+    return pending;
   }
 
   async function durableAuthorizes(path: string): Promise<boolean> {
@@ -654,22 +662,19 @@ export async function rehydrateTrustedCreatedRoots(
     if (resolve(record.path) !== record.path || resolve(record.repoRoot) !== record.repoRoot || resolve(record.base) !== record.base) {
       return false;
     }
-    // path real non-symlink dir with matching platform identity
-    if (!(await identityStillMatches(record.path, posixLedgerIdentity(record.dev, record.ino)))) return false;
-    // repo identity match
-    if (!(await identityStillMatches(record.repoRoot, posixLedgerIdentity(record.repoDev, record.repoIno)))) return false;
+    // Path/repo/base must still be REAL non-symlink directories on the live fs.
+    // We deliberately do NOT require their ledger inode/file ID to match: after
+    // a clone/copy/restore the inode changes while the canonical path is the
+    // same Git worktree, and mature tools restore on path + git topology, not
+    // inode. See docs/ledger-identity-align.md.
+    if (!(await isRealDirectory(record.path))) return false;
+    if (!(await isRealDirectory(record.repoRoot))) return false;
     // repoRoot still in current durable policy
     if (!(await durableAuthorizes(record.repoRoot))) return false;
     // base exact `${repoRoot}-worktrees` canonical real dir non-symlink
     const expectedBase = resolve(`${record.repoRoot}-worktrees`);
     if (record.base !== expectedBase) return false;
-    try {
-      if (await realpath(record.base) !== record.base) return false;
-      const baseInfo = await lstat(record.base);
-      if (!baseInfo.isDirectory() || baseInfo.isSymbolicLink()) return false;
-    } catch {
-      return false;
-    }
+    if (!(await isRealDirectory(record.base))) return false;
     // path strictly inside base
     if (!isWithin(record.base, record.path) || record.path === record.base) return false;
     // git worktree list contains path, non-main (prunable already filtered by list)
@@ -690,10 +695,10 @@ export async function rehydrateTrustedCreatedRoots(
     }
     acceptedById.set(record.claimId, {
       path: record.path,
-      identity: posixLedgerIdentity(record.dev, record.ino),
+      identity: await captureDirectoryIdentity(record.path),
       claimId: record.claimId,
       repoRoot: record.repoRoot,
-      repoIdentity: posixLedgerIdentity(record.repoDev, record.repoIno),
+      repoIdentity: await captureDirectoryIdentity(record.repoRoot),
       base: record.base,
       createdAt: record.createdAt,
       source: TRUSTED_ROOTS_SOURCE,

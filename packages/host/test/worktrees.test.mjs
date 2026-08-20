@@ -190,7 +190,7 @@ test("POST creates a managed worktree under an already-durable root with no trus
 // Restart managed+authorized (rehydrate)
 // ---------------------------------------------------------------------------
 
-test("restart on the same host dir rehydrates the managed record and authorization", { skip: process.platform === "win32" }, async () => {
+test("restart restores workspace authorization but not destructive managed ownership", { skip: process.platform === "win32" }, async () => {
   const root = temp("wt-restart-repo-"); initRepo(root);
   const hostDir = dedicatedHostDir("wt-restart-host-");
   const first = await makeWorktreeApp({ root, hostDir });
@@ -205,8 +205,11 @@ test("restart on the same host dir rehydrates the managed record and authorizati
   assert.equal(await second.allowedRoots.isAuthorized(path, "directory"), true, "managed authorization rehydrated after restart");
   const listed = await (await second.app.request(`http://localhost/v1/worktrees?cwd=${encodeURIComponent(root)}`, { headers: headers() })).json();
   const entry = listed.worktrees.find((w) => w.path === path);
-  assert.equal(entry?.managedByPix, true, "managedByPix survives restart");
+  assert.equal(entry?.managedByPix, false, "managedByPix/delete token does not survive restart");
   assert.equal(entry?.authorized, true);
+  const denied = await deleteWorktree(second.app, root, path);
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).code, "WORKTREE_NOT_MANAGED");
 });
 
 // ---------------------------------------------------------------------------
