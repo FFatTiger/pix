@@ -13,7 +13,7 @@
  *   no PowerShell, no npm tree-kill.
  */
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { join } from "node:path";
+import { win32 } from "node:path";
 
 export type ProcessTreeSignal = "SIGTERM" | "SIGKILL";
 
@@ -76,7 +76,7 @@ export function windowsTaskkillPath(env: NodeJS.ProcessEnv = process.env): strin
   if (windir.includes("\0") || windir.includes("/") || /[<>"|?*]/.test(windir)) {
     return "C:\\Windows\\System32\\taskkill.exe";
   }
-  return join(windir, "System32", "taskkill.exe");
+  return win32.join(windir, "System32", "taskkill.exe");
 }
 
 class WindowsProcessTreeController implements ProcessTreeController {
