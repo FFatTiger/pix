@@ -49,9 +49,10 @@
  * Run: npm run test:e2e:sessions
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { request as httpRequest } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
@@ -72,6 +73,7 @@ import {
 } from "@fffattiger/pix-host";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
+import { createSecureStateBackend } from "@fffattiger/pix-local-authority/state";
 import { seedSessionForTests, listSeededSessionIdsForTests } from "@fffattiger/pix-pi-sdk-adapter/testing";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -100,6 +102,42 @@ async function freePort() {
   });
 }
 
+/**
+ * Send an exact HTTP request-target. Node 22.22 fetch normalizes a trailing
+ * bare `?` away before it reaches the server, while Node 24/25 preserve it.
+ * The Host contract rejects every query delimiter it actually receives, so
+ * the cross-version E2E uses node:http for the query-adversarial probes rather
+ * than testing Undici's version-specific URL serialization.
+ */
+async function exactJsonPatch(origin, path, body) {
+  const base = new URL(origin);
+  const payload = typeof body === "string" ? body : JSON.stringify(body);
+  return await new Promise((resolvePromise, reject) => {
+    const req = httpRequest({
+      hostname: base.hostname,
+      port: base.port,
+      method: "PATCH",
+      path,
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(payload)),
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      res.on("error", reject);
+      res.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let parsed = null;
+        try { parsed = text.length === 0 ? null : JSON.parse(text); } catch { /* fixed HTTP status remains evidence */ }
+        resolvePromise({ status: res.statusCode ?? 0, body: parsed });
+      });
+    });
+    req.on("error", reject);
+    req.end(payload);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Seed real JSONL into a temp agent dir (via the adapter testing helper, so the
 // Pi SDK import stays confined to packages/pi-sdk-adapter).
@@ -121,6 +159,7 @@ async function seedSession(projectCwd) {
 // ---------------------------------------------------------------------------
 
 const FIXTURE_ENTRY_TS = "2026-08-14T02:07:15.450Z";
+const FIXTURE_FILE_TS = FIXTURE_ENTRY_TS.replace(/[:.]/g, "-");
 
 /** Mirror the SDK session-dir encoding (getDefaultSessionDirPath). */
 function encodedSessionDir(agentDir, cwd) {
@@ -155,7 +194,7 @@ function fixtureMessage(id, parentId, role, text, timestamp) {
 async function writeSessionJsonl(agentDir, cwd, sessionId, messages) {
   const dir = encodedSessionDir(agentDir, cwd);
   await mkdir(dir, { recursive: true });
-  const file = join(dir, `${FIXTURE_ENTRY_TS}_${sessionId}.jsonl`);
+  const file = join(dir, `${FIXTURE_FILE_TS}_${sessionId}.jsonl`);
   const header = JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: FIXTURE_ENTRY_TS, cwd: resolve(cwd) });
   await writeFile(file, [header, ...messages.map((m) => fixtureMessage(m.id, m.parentId, m.role, m.text, m.timestamp))].join("\n") + "\n");
   return file;
@@ -328,13 +367,18 @@ async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir, exposureM
 async function main() {
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const agentDir = await mkdtemp(join(tmpdir(), "pix-e2e-agentdir-"));
-  const sessiondDir = await mkdtemp(join(tmpdir(), "pix-e2e-sessiond-"));
+  const sessiondParent = await mkdtemp(join(tmpdir(), "pix-e2e-sessiond-"));
+  const sessiondDir = join(sessiondParent, "runtime");
+  const secureState = createSecureStateBackend();
+  const canonicalSessiondDir = await secureState.canonicalizePath(sessiondDir);
+  await secureState.ensurePrivateDirectory(canonicalSessiondDir, { requireMode: 0o700 });
   const projectCwd = await mkdtemp(join(tmpdir(), "pix-e2e-project-"));
   // D3A-P0: isolate the Host durable trusted-roots ledger under a canonical
   // temp (never the operator home); a canonical leaf avoids the macOS /var
   // symlink walk that ensurePixHostDir correctly refuses.
   const hostDir = join(realpathSync(tmpdir()), "pix-e2e-host-" + process.pid);
-  mkdirSync(hostDir, { recursive: false, mode: 0o700 });
+  const canonicalHostDir = await secureState.canonicalizePath(hostDir);
+  await secureState.ensurePrivateDirectory(canonicalHostDir, { requireMode: 0o700 });
   process.env.PI_CODING_AGENT_DIR = agentDir;
   let stack;
   let exitCode = 0;
@@ -381,7 +425,7 @@ async function main() {
       { id: FIXTURE_BRANCH_E6, parentId: FIXTURE_BRANCH_E5, role: "assistant", text: "branch a1", timestamp: branchTs + 5 },
     ]);
 
-    stack = await bootStack({ agentDir, sessiondDir, projectCwd, hostDir });
+    stack = await bootStack({ agentDir, sessiondDir, projectCwd, hostDir: canonicalHostDir });
     const rpc = new SessiondRpcClient({ endpoint: stack.daemon.endpoint, secret: stack.daemon.secret, timeoutMs: 5_000 });
     const get = (path) => fetch(`${stack.origin}${path}`).then(async (r) => ({ status: r.status, body: r.status === 204 ? null : await r.json().catch(() => null) }));
 
@@ -698,7 +742,7 @@ async function main() {
       assert.equal(existsSync(p4File), true, "an invalid rename must never touch the file");
     }
     for (const q of ["?", "?x", "?force=false"]) {
-      const res = await jsonPatch(`/v1/sessions/${FIXTURE_P4}${q}`, { name: "x" });
+      const res = await exactJsonPatch(stack.origin, `/v1/sessions/${FIXTURE_P4}${q}`, { name: "x" });
       assert.equal(res.status, 400, `rename query ${q} must be 400`);
       assert.equal(res.body.code, "INVALID_QUERY");
       assert.equal(existsSync(p4File), true, "a query-rejected rename must never touch the file");
@@ -716,11 +760,12 @@ async function main() {
     //       RPC, and the session file is retained. (Separate Host-state dir:
     //       the lifetime Host-dir lease is exclusive per host.)
     const lanHostDir = join(realpathSync(tmpdir()), "pix-e2e-host-lan-" + process.pid);
-    mkdirSync(lanHostDir, { recursive: false, mode: 0o700 });
+    const canonicalLanHostDir = await secureState.canonicalizePath(lanHostDir);
+    await secureState.ensurePrivateDirectory(canonicalLanHostDir, { requireMode: 0o700 });
     let lanStack;
     try {
       lanStack = await bootStack({
-        agentDir, sessiondDir, projectCwd, hostDir: lanHostDir,
+        agentDir, sessiondDir, projectCwd, hostDir: canonicalLanHostDir,
         exposureMode: "lan",
         gate: { config: { read: () => ({ status: "enabled", password: "lan-secret", source: "e2e" }) } },
         daemon: stack.daemon, // share the already-running sessiond
@@ -735,13 +780,13 @@ async function main() {
       assert.ok(lanPatch.status === 401 || lanPatch.status === 403, `LAN unauth rename must be rejected, got ${lanPatch.status}`);
       // The LAN gate also blocks reads, so verify the file retention on disk
       // directly (the LAN-blocked delete/rename must never touch the JSONL).
-      const p3File = join(encodedSessionDir(agentDir, projectCwd), `${FIXTURE_ENTRY_TS}_${FIXTURE_P3}.jsonl`);
+      const p3File = join(encodedSessionDir(agentDir, projectCwd), `${FIXTURE_FILE_TS}_${FIXTURE_P3}.jsonl`);
       assert.equal(existsSync(p3File), true, "LAN-blocked delete must retain the file");
     } finally {
       if (lanStack?.handle) {
         try { await lanStack.handle.close(); } catch { /* ignore */ }
       }
-      await rm(lanHostDir, { recursive: true, force: true });
+      await rm(canonicalLanHostDir, { recursive: true, force: true });
     }
 
     // 6. sessiond down → `sessions` + `session.delete` + `session.write` retracted
@@ -800,7 +845,7 @@ async function main() {
         /* ignore */
       }
     }
-    await rm(hostDir, { recursive: true, force: true });
+    await rm(canonicalHostDir, { recursive: true, force: true });
     for (const pid of workerPidsForCleanup) {
       try {
         process.kill(pid, "SIGKILL");
@@ -809,7 +854,7 @@ async function main() {
       }
     }
     await rm(agentDir, { recursive: true, force: true });
-    await rm(sessiondDir, { recursive: true, force: true });
+    await rm(sessiondParent, { recursive: true, force: true });
     await rm(projectCwd, { recursive: true, force: true });
   }
   return exitCode;

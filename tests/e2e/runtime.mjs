@@ -27,6 +27,7 @@ import {
   SessiondRuntimeGateway,
 } from "@fffattiger/pix-host";
 import { startDaemon } from "@fffattiger/pix-sessiond/daemon";
+import { createSecureStateBackend } from "@fffattiger/pix-local-authority/state";
 import { PROTOCOL_VERSION, reduceRuntimeEventData } from "@fffattiger/pix-protocol";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -635,6 +636,69 @@ async function waitForPidDead(pid, timeoutMs = CLEANUP_TIMEOUT_MS) {
     await delay(50);
   }
   return !pidAlive(pid);
+}
+
+function cleanupError(label, error) {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new Error(`${label}: ${detail}`);
+}
+
+/**
+ * Failure-path cleanup uses the daemon's authoritative live Worker PID list;
+ * it never scans the machine or trusts a temp-directory heuristic. A failed
+ * daemon shutdown is not hidden: after a bounded wait, any survivor receives
+ * a test-only forced termination and is reported if it still lives.
+ */
+async function cleanupRuntimeStack(stack) {
+  const failures = [];
+  const workerPids = new Set();
+
+  if (stack?.daemon) {
+    try {
+      for (const pid of stack.daemon.diagnostics.workerPids()) workerPids.add(pid);
+    } catch (error) {
+      failures.push(cleanupError("could not snapshot authoritative Worker PIDs", error));
+    }
+  }
+
+  if (stack?.host?.handle) {
+    try {
+      await stack.host.handle.close();
+    } catch (error) {
+      failures.push(cleanupError("Host close failed", error));
+    }
+  }
+
+  if (stack?.daemon) {
+    try {
+      await stack.daemon.shutdown();
+    } catch (error) {
+      failures.push(cleanupError("sessiond shutdown failed", error));
+    }
+  }
+
+  const survivors = (await Promise.all(
+    [...workerPids].map(async (pid) => ({ pid, dead: await waitForPidDead(pid) })),
+  )).filter(({ dead }) => !dead).map(({ pid }) => pid);
+
+  for (const pid of survivors) {
+    try {
+      // Node maps this to forced termination on Windows. This is an E2E
+      // cleanup backstop, not a product shutdown path.
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (pidAlive(pid)) failures.push(cleanupError(`could not force-stop Worker ${pid}`, error));
+    }
+  }
+
+  const remaining = (await Promise.all(
+    survivors.map(async (pid) => ({ pid, dead: await waitForPidDead(pid, 2_000) })),
+  )).filter(({ dead }) => !dead).map(({ pid }) => pid);
+  if (remaining.length > 0) {
+    failures.push(new Error(`Worker cleanup left live child PIDs: ${remaining.join(", ")}`));
+  }
+
+  return failures;
 }
 
 // ---------------------------------------------------------------------------
@@ -2688,7 +2752,14 @@ async function scenarioShutdownCleanup(stack, projectDir) {
 // ---------------------------------------------------------------------------
 
 async function runRound(round) {
-  const temp = await mkdtemp(join(tmpdir(), `pix-x1-e2e-r${round}-`));
+  // Create the sessiond leaf through the production secure-state backend. A
+  // Windows mkdtemp directory inherits a broad ACL and is intentionally not a
+  // valid sensitive-state directory; POSIX keeps the same private 0700 leaf.
+  const parent = await mkdtemp(join(tmpdir(), `pix-x1-e2e-r${round}-`));
+  const temp = join(parent, "runtime");
+  const secureState = createSecureStateBackend();
+  const canonicalTemp = await secureState.canonicalizePath(temp);
+  await secureState.ensurePrivateDirectory(canonicalTemp, { requireMode: 0o700 });
   const projectA = join(temp, "project-a");
   const projectB = join(temp, "project-b");
   const { mkdir } = await import("node:fs/promises");
@@ -2697,6 +2768,7 @@ async function runRound(round) {
 
   let stack;
   const results = {};
+  let primaryFailure;
   try {
     stack = await startRuntimeStack(temp);
     log(`round ${round}: stack up (port=${stack.host.port})`);
@@ -2750,23 +2822,23 @@ async function runRound(round) {
 
     results.shutdown = await scenarioShutdownCleanup(stack, projectA);
     log(`round ${round}: shutdown/cleanup OK`);
-
-    return results;
-  } finally {
-    try {
-      if (stack?.host?.handle) await stack.host.handle.close().catch(() => {});
-    } catch {
-      // ignore
-    }
-    try {
-      if (stack?.daemon) await stack.daemon.shutdown().catch(() => {});
-    } catch {
-      // ignore
-    }
-    // Best-effort kill any leftover children of this temp sessiond.
-    await delay(100);
-    await rm(temp, { recursive: true, force: true }).catch(() => {});
+  } catch (error) {
+    primaryFailure = error;
   }
+
+  const cleanupFailures = await cleanupRuntimeStack(stack);
+  await rm(parent, { recursive: true, force: true }).catch(() => {});
+  if (primaryFailure && cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [primaryFailure, ...cleanupFailures],
+      `runtime E2E round ${round} failed and cleanup also failed`,
+    );
+  }
+  if (primaryFailure) throw primaryFailure;
+  if (cleanupFailures.length > 0) {
+    throw new AggregateError(cleanupFailures, `runtime E2E round ${round} cleanup failed`);
+  }
+  return results;
 }
 
 async function main() {

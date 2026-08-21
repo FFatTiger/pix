@@ -8,21 +8,58 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
-import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
+import { HostCapabilitiesSchema, PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
+import { createSecureStateBackend } from "@fffattiger/pix-local-authority/state";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const START_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 10_000;
 const STEP_TIMEOUT_MS = 12_000;
 const PROD_MAX_UPLOAD = 25 * 1024 * 1024;
+const WINDOWS_HOST_CONTROL = new URL("./fixtures/graceful-host-control.mjs", import.meta.url).href;
+const WINDOWS_GRACEFUL_SHUTDOWN_MESSAGE = "pix-e2e-graceful-host-shutdown";
 
 // D3A-1 + D3B-R1B + D3A Worktrees frozen capability surfaces. The resource
 // layer (files/git/watch/upload + read-only worktree list) and the four catalog
 // tokens are mounted on the Host and stay advertised in BOTH states; `agent`
-// (the runtime) and `sessions` (read-only session history) are added only
-// while sessiond is up. `worktree` is the read-only list token (no write token).
-const FULL_CAPS = ["agent", "sessions", "session.delete", "session.write", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "auth.providers", "skills", "plugins", "themes", "project.trust"];
-const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "auth.providers", "skills", "plugins", "themes", "project.trust"];
+// (the runtime), `sessions` (read-only history), and the three session mutation
+// tokens are added only while sessiond is up. `worktree` is the read-only list
+// token (no write token). Parse the expected lists through the Protocol owner so
+// the E2E cannot invent an out-of-vocabulary capability string.
+const FULL_CAPS = HostCapabilitiesSchema.parse([
+  "agent",
+  "sessions",
+  "session.delete",
+  "session.write",
+  "session.settings",
+  "files",
+  "files.write",
+  "files.watch",
+  "files.upload",
+  "git",
+  "worktree",
+  "worktree.write",
+  "models",
+  "auth.providers",
+  "skills",
+  "plugins",
+  "themes",
+  "project.trust",
+]);
+const DEGRADED_CAPS = HostCapabilitiesSchema.parse([
+  "files",
+  "files.write",
+  "files.watch",
+  "files.upload",
+  "git",
+  "worktree",
+  "models",
+  "auth.providers",
+  "skills",
+  "plugins",
+  "themes",
+  "project.trust",
+]);
 
 function delay(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -41,8 +78,11 @@ async function freePort() {
   });
 }
 
-function startProcess(args, env, stdio = ["ignore", "pipe", "pipe"]) {
-  const child = spawn(process.execPath, args, { cwd: ROOT, env, stdio });
+function startProcess(args, env, stdio = ["ignore", "pipe", "pipe"], { gracefulHost = false } = {}) {
+  const useWindowsControl = gracefulHost && process.platform === "win32";
+  const execArgs = useWindowsControl ? ["--import", WINDOWS_HOST_CONTROL, ...args] : args;
+  const childStdio = useWindowsControl ? [stdio[0], stdio[1], stdio[2], "ipc"] : stdio;
+  const child = spawn(process.execPath, execArgs, { cwd: ROOT, env, stdio: childStdio });
   let stdout = "";
   let stderr = "";
   child.stdout?.on("data", (chunk) => { stdout += chunk; });
@@ -211,18 +251,29 @@ async function readWatchConnected(origin, filePath, { timeoutMs = 3_000 } = {}) 
 
 async function stopHost(running) {
   if (running.child.exitCode === null && running.child.signalCode === null) {
-    running.child.kill("SIGTERM");
+    if (process.platform === "win32") {
+      assert.equal(running.child.connected, true, "Windows graceful Host fixture requires IPC control");
+      running.child.send(WINDOWS_GRACEFUL_SHUTDOWN_MESSAGE);
+    } else {
+      running.child.kill("SIGTERM");
+    }
   }
   const result = await waitForExit(running.child);
-  assert.equal(result.code, 0, `Host should exit 0 after SIGTERM (signal=${result.signal})`);
+  assert.equal(result.code, 0, `Host should exit 0 after graceful shutdown (signal=${result.signal})`);
 }
 
 // SIGKILL a host (crash simulation): the lifetime lock must remain on disk.
 async function sigkillHost(running) {
   assert.equal(running.child.exitCode, null, "host must be running before SIGKILL");
-  running.child.kill("SIGKILL");
+  assert.equal(running.child.kill("SIGKILL"), true, "host crash signal must be delivered");
   const result = await waitForExit(running.child);
-  assert.equal(result.signal, "SIGKILL", `SIGKILL expected (got signal=${result.signal}, code=${result.code})`);
+  if (process.platform !== "win32") {
+    assert.equal(result.signal, "SIGKILL", `SIGKILL expected (got signal=${result.signal}, code=${result.code})`);
+  } else {
+    // Node implements Windows signals with forced termination; its exit event
+    // may report a platform exit code instead of the requested POSIX signal.
+    assert.ok(result.signal !== null || result.code !== 0, `forced termination must not report clean exit (${JSON.stringify(result)})`);
+  }
 }
 
 // Run a pix-host to completion (it should exit on its own — failure path) and
@@ -329,7 +380,7 @@ async function main() {
       "--port",
       String(port),
       "--no-open",
-    ], env);
+    ], env, ["ignore", "pipe", "pipe"], { gracefulHost: true });
 
     const health = await waitForHealthy(origin, firstHost);
     assert.equal(health.sessiond, "up");
@@ -422,10 +473,11 @@ async function main() {
     const trustAfter = await fetchJson(`${origin}/v1/trust?cwd=${encodeURIComponent(project)}`);
     assert.equal(trustAfter.level, "trusted");
     assert.equal(trustAfter.trusted, true);
+    // The persisted decision is owned by the Pi profile store. Pix verifies
+    // the public ProjectTrustStore result but does not invent or enforce a
+    // file-mode contract for Pi-owned trust.json on any platform.
     const persisted = JSON.parse(readFileSync(join(agentDir, "trust.json"), "utf8"));
     assert.equal(persisted[project], true, "real Pi SDK trust.json must carry the decision");
-    const persistedStat = lstatSync(join(agentDir, "trust.json"));
-    assert.equal(persistedStat.mode & 0o077, 0, "persisted trust.json must be owner-only");
 
     // ---- D3B-R6 read-only theme catalog surface ---------------------------
     // Real catalog reads: builtin sets are listed/resolved with zero Workers,
@@ -483,7 +535,7 @@ async function main() {
       "--port",
       String(port),
       "--no-open",
-    ], env);
+    ], env, ["ignore", "pipe", "pipe"], { gracefulHost: true });
     await waitForHealthy(origin, secondHost);
     await waitForCaps(origin, secondHost, { sessiond: "up", caps: FULL_CAPS });
     assert.equal((await readLock(lockFile)).pid, sessiondPid, "Host restart must reuse sessiond PID");
@@ -514,15 +566,19 @@ async function main() {
     assert.equal(managedEntry?.managedByPix, true, "created managed worktree reports managedByPix:true");
     assert.equal(existsSync(managedLedgerPath), true, "create must persist the managed-worktrees sidecar");
     assert.equal(existsSync(ledgerPath), true, "trusted-roots.json exists (empty claims)");
-    assert.equal(lstatSync(hostDir).mode & 0o777, 0o700, "PIX_HOST_DIR must be mode 0700");
-    assert.equal(lstatSync(managedLedgerPath).mode & 0o777, 0o600, "managed-worktrees.json must be mode 0600");
+    if (process.platform !== "win32") {
+      assert.equal(lstatSync(hostDir).mode & 0o777, 0o700, "PIX_HOST_DIR must be mode 0700 on POSIX");
+      assert.equal(lstatSync(managedLedgerPath).mode & 0o777, 0o600, "managed-worktrees.json must be mode 0600 on POSIX");
+    }
     assert.equal(lstatSync(managedLedgerPath).isSymbolicLink(), false);
     assert.equal(lstatSync(managedLedgerPath).isFile(), true);
     const managedAfterCreate = JSON.parse(readFileSync(managedLedgerPath, "utf8"));
     assert.equal(managedAfterCreate.records.length, 1, "managed sidecar holds the created record");
     assert.equal(JSON.parse(readFileSync(ledgerPath, "utf8")).claims.length, 0, "NO trusted-root claim for a managed worktree");
 
-    // Graceful Host-only restart rehydrates the managed record + authorization.
+    // Graceful Host-only restart rehydrates workspace access, never the
+    // destructive ownership token. CP-57 requires a current-process
+    // recordCreated() identity before DELETE can advertise managedByPix:true.
     await stopHost(currentHost);
     currentHost = undefined;
     assert.equal(pidAlive(sessiondPid), true, "sessiond must survive Host exit before rehydrate restart");
@@ -534,7 +590,7 @@ async function main() {
       "--port",
       String(port),
       "--no-open",
-    ], env);
+    ], env, ["ignore", "pipe", "pipe"], { gracefulHost: true });
     await waitForHealthy(origin, thirdHost);
     await waitForCaps(origin, thirdHost, { sessiond: "up", caps: FULL_CAPS });
     assert.equal((await readLock(lockFile)).pid, sessiondPid, "rehydrate Host restart must reuse sessiond PID");
@@ -542,7 +598,7 @@ async function main() {
     const afterRestart = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
     const afterRestartEntry = afterRestart.worktrees.find((entry) => entry.path === managedPath);
     assert.equal(afterRestartEntry?.authorized, true, "managed record must rehydrate + authorize after Host restart");
-    assert.equal(afterRestartEntry?.managedByPix, true, "managedByPix survives Host restart");
+    assert.equal(afterRestartEntry?.managedByPix, false, "Host restart must not restore destructive managed ownership");
     const managedFile = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(join(managedPath, "README.md"))}&op=read`);
     assert.match(managedFile.content, /pix e2e project/);
 
@@ -620,7 +676,7 @@ async function main() {
       "--port",
       String(port),
       "--no-open",
-    ], env);
+    ], env, ["ignore", "pipe", "pipe"], { gracefulHost: true });
     await waitForHealthy(origin, currentHost);
     await waitForCaps(origin, currentHost, { sessiond: "up", caps: FULL_CAPS });
     const afterDeleteRestart = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
@@ -629,8 +685,8 @@ async function main() {
       "deleted managed worktree must NOT be resurrected after Host restart",
     );
     assert.ok(
-      afterDeleteRestart.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === true),
-      "the surviving managed record must still rehydrate after the delete-phase restart",
+      afterDeleteRestart.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === false),
+      "the surviving record must rehydrate access without destructive ownership",
     );
     assert.equal(JSON.parse(readFileSync(managedLedgerPath, "utf8")).records.length, 1, "managed sidecar stays at one record after restart");
 
@@ -658,28 +714,36 @@ async function main() {
       "--port",
       String(port),
       "--no-open",
-    ], env);
+    ], env, ["ignore", "pipe", "pipe"], { gracefulHost: true });
     await waitForHealthy(origin, currentHost);
     await waitForCaps(origin, currentHost, { sessiond: "up", caps: FULL_CAPS });
     const afterRecovery = await fetchJson(`${origin}/v1/worktrees?cwd=${encodeURIComponent(project)}`);
     assert.ok(
-      afterRecovery.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === true),
-      "after explicit stale-lock removal, restart restores managed authorization",
+      afterRecovery.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === false),
+      "after explicit stale-lock removal, restart restores access but not destructive ownership",
     );
 
     // ---- phase 3g: a corrupt managed sidecar fails the Host BEFORE listen ----
     await stopHost(currentHost);
     currentHost = undefined;
+    // Build the fixture through the same platform secure-state backend used by
+    // production. On Windows, mkdir/mode cannot create the required DACL.
     const corruptHostDir = join(realpathSync(temp), "host-corrupt");
-    mkdirSync(corruptHostDir, { recursive: true, mode: 0o700 });
-    writeFileSync(join(corruptHostDir, "managed-worktrees.json"), "{not-json", { mode: 0o600 });
-    const corruptEnv = { ...env, PIX_HOST_DIR: corruptHostDir };
+    const secureState = createSecureStateBackend();
+    const canonicalCorruptHostDir = await secureState.canonicalizePath(corruptHostDir);
+    await secureState.ensurePrivateDirectory(canonicalCorruptHostDir, { requireMode: 0o700 });
+    await secureState.writeStateDocument(
+      join(canonicalCorruptHostDir, "managed-worktrees.json"),
+      "{not-json",
+      { maxBytes: 1024 * 1024 },
+    );
+    const corruptEnv = { ...env, PIX_HOST_DIR: canonicalCorruptHostDir };
     const corruptBoot = await runHostToCompletion(corruptEnv);
     assert.equal(corruptBoot.code, 1, "corrupt managed sidecar must fail the Host before listen");
     assert.match(corruptBoot.stderr + corruptBoot.stdout, /PIX_HOST_DIR rejected \(MANAGED_CORRUPT\)/, "fixed sanitized corrupt-managed error");
     assert.ok(!(corruptBoot.stdout + corruptBoot.stderr).includes("host listening"), "corrupt-managed Host must never listen");
-    assert.equal(readFileSync(join(corruptHostDir, "managed-worktrees.json"), "utf8"), "{not-json", "corrupt sidecar stays immutable");
-    assert.equal(existsSync(join(corruptHostDir, "trusted-roots.lock")), false, "no lock created for a corrupt managed sidecar");
+    assert.equal(readFileSync(join(canonicalCorruptHostDir, "managed-worktrees.json"), "utf8"), "{not-json", "corrupt sidecar stays immutable");
+    assert.equal(existsSync(join(canonicalCorruptHostDir, "trusted-roots.lock")), false, "no lock created for a corrupt managed sidecar");
 
     // ---- phase 4: sessiond down while Host runs --------------------------
     currentHost = startProcess([
@@ -689,7 +753,7 @@ async function main() {
       "--port",
       String(port),
       "--no-open",
-    ], env);
+    ], env, ["ignore", "pipe", "pipe"], { gracefulHost: true });
     await waitForHealthy(origin, currentHost);
     await waitForCaps(origin, currentHost, { sessiond: "up", caps: FULL_CAPS });
     const down = await runProcess(["scripts/product-entry.mjs", "cli", "down", "--all"], env);
@@ -709,6 +773,9 @@ async function main() {
     assert.ok(FULL_CAPS.includes("session.write"), "full must include session.write");
     assert.ok(!DEGRADED_CAPS.includes("session.write"), "degraded must exclude session.write");
 
+    assert.ok(FULL_CAPS.includes("session.settings"), "full must include session.settings");
+    assert.ok(!DEGRADED_CAPS.includes("session.settings"), "degraded must exclude session.settings");
+
     // Resources stay usable while the authority is down: file read + upload
     // are pure Host-mounted filesystem ops and are NOT runtime-guarded.
     const downRead = await fetchJson(`${origin}/v1/files?path=${encodeURIComponent(readme)}&op=read`);
@@ -724,8 +791,8 @@ async function main() {
     assert.equal(downThemes.themeSets.length, 5, "degraded host still lists built-in themes");
     assert.equal(downWorktrees.isGit, true, "worktree GET must remain available while sessiond is down");
     assert.ok(
-      downWorktrees.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === true),
-      "rehydrated managed worktree must stay authorized + managedByPix while sessiond is down",
+      downWorktrees.worktrees.some((entry) => entry.path === managedPath && entry.authorized === true && entry.managedByPix === false),
+      "rehydrated worktree must stay accessible without destructive ownership while sessiond is down",
     );
     assert.ok(
       downWorktrees.worktrees.some((entry) => entry.path === externalPath && entry.managedByPix === false),
