@@ -39,7 +39,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, rm, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   hasControlChar,
@@ -72,7 +72,20 @@ import {
 const DIR_FSYNC_UNSUPPORTED_CODES = new Set(["EINVAL", "ENOTSUP", "EISDIR"]);
 
 const MAX_CANONICAL_PATH_LENGTH = 4096;
+const MAX_LIFETIME_LOCK_BYTES = 4096;
 const DEFAULT_PRIVATE_DIR_MODE = 0o700;
+
+function readOnlyNoFollowNonBlockingFlags(): number {
+  // A FIFO can replace a prechecked regular pathname. O_NOFOLLOW rejects only
+  // symlinks; O_NONBLOCK prevents open(O_RDONLY) from waiting forever for a
+  // FIFO writer before fstat gets the chance to reject the non-regular fd.
+  // POSIX platforms supported by this backend must expose both flags; silently
+  // omitting either would turn a security check into a follow/block hazard.
+  if (typeof constants.O_NOFOLLOW !== "number" || typeof constants.O_NONBLOCK !== "number") {
+    throw new LocalAuthorityError("UNSUPPORTED_PLATFORM", "Secure POSIX no-follow nonblocking open is unavailable");
+  }
+  return constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+}
 
 function openFlags(): number {
   return constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0);
@@ -618,26 +631,39 @@ export async function ensurePrivateDirectory(
 // Secure state documents (bounded read + atomic durable write)
 // ---------------------------------------------------------------------------
 
-export async function readStateDocument(
-  path: string,
-  options: ReadStateDocumentOptions,
-): Promise<StateDocumentReadResult> {
-  let info;
-  try {
-    info = await lstat(path);
-  } catch (error) {
-    if (errnoCode(error) === "ENOENT") {
-      return { missing: true };
-    }
-    throw new LocalAuthorityError("DOC_UNREADABLE", "State document is unreadable");
-  }
+/**
+ * Narrow test-only fs seam for descriptor-pinned state-document reads. Like
+ * {@link ensurePrivateDirectoryWithFs}, this is only exported from the direct
+ * POSIX module for deterministic replacement-race tests; it is not part of
+ * the public state package surface.
+ */
+interface ReadStateDocumentFs {
+  lstat(path: string): Promise<Stats>;
+  open(path: string, flags: number): Promise<Pick<FileHandle, "stat" | "read" | "close">>;
+}
+
+interface PinnedStateDocumentRead {
+  content: string;
+  dev: number;
+  ino: number;
+}
+
+function requireSafeStateDocumentInfo(info: Stats, maxBytes: number): number {
   if (info.isSymbolicLink()) {
     throw new LocalAuthorityError("DOC_SYMLINK", "State document must not be a symbolic link");
   }
   if (!info.isFile()) {
     throw new LocalAuthorityError("NOT_REGULAR", "State document must be a regular file");
   }
-  if (info.size > options.maxBytes) {
+  // `maxBytes` is a caller-owned limit but this low-level primitive must not
+  // turn an invalid/unbounded number into an unbounded allocation/read.
+  if (
+    !Number.isSafeInteger(maxBytes)
+    || maxBytes < 0
+    || !Number.isSafeInteger(info.size)
+    || info.size < 0
+    || info.size > maxBytes
+  ) {
     throw new LocalAuthorityError("DOC_OVERSIZE", "State document exceeds the size bound");
   }
   // Wrong permission: no group/other read/write access on the document.
@@ -648,13 +674,90 @@ export async function readStateDocument(
   if (info.nlink > 1) {
     throw new LocalAuthorityError("DOC_HARD_LINK", "State document must not be hard-linked");
   }
-  let text: string;
+  return info.size;
+}
+
+function samePosixNode(left: Pick<Stats, "dev" | "ino">, right: Pick<Stats, "dev" | "ino">): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function readPinnedStateDocumentWithFs(
+  path: string,
+  options: ReadStateDocumentOptions,
+  fs: ReadStateDocumentFs,
+): Promise<{ missing: true } | PinnedStateDocumentRead> {
+  let before: Stats;
   try {
-    text = await readFile(path, "utf8");
+    before = await fs.lstat(path);
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return { missing: true };
+    throw new LocalAuthorityError("DOC_UNREADABLE", "State document is unreadable");
+  }
+  requireSafeStateDocumentInfo(before, options.maxBytes);
+
+  let handle: Pick<FileHandle, "stat" | "read" | "close">;
+  try {
+    // Never let a replacement symlink be followed after the pathname precheck.
+    // The opened descriptor is then pinned to the pre-open lstat identity.
+    handle = await fs.open(path, readOnlyNoFollowNonBlockingFlags());
   } catch {
     throw new LocalAuthorityError("DOC_UNREADABLE", "State document is unreadable");
   }
-  return { content: text };
+
+  try {
+    const opened = await handle.stat();
+    if (!samePosixNode(before, opened)) {
+      throw new LocalAuthorityError("DOC_UNREADABLE", "State document is unreadable");
+    }
+    const byteLength = requireSafeStateDocumentInfo(opened, options.maxBytes);
+
+    // Do not use FileHandle.readFile(): the descriptor would be pinned, but a
+    // concurrent growth could still make that convenience API allocate/read
+    // beyond the checked size. Read exactly the fstat-approved byte count.
+    const bytes = Buffer.alloc(byteLength);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0 || bytesRead > bytes.length - offset) {
+        throw new LocalAuthorityError("DOC_UNREADABLE", "State document is unreadable");
+      }
+      offset += bytesRead;
+    }
+
+    const after = await handle.stat();
+    if (!samePosixNode(before, after) || after.size !== byteLength) {
+      throw new LocalAuthorityError("DOC_UNREADABLE", "State document is unreadable");
+    }
+    requireSafeStateDocumentInfo(after, options.maxBytes);
+    return { content: bytes.toString("utf8"), dev: opened.dev, ino: opened.ino };
+  } catch (error) {
+    if (error instanceof LocalAuthorityError) throw error;
+    throw new LocalAuthorityError("DOC_UNREADABLE", "State document is unreadable");
+  } finally {
+    // The returned bytes have already been copied from a pinned descriptor.
+    // A close failure cannot make a different pathname's bytes appear valid.
+    await handle.close().catch(() => {});
+  }
+}
+
+/**
+ * Test-only direct-module seam for deterministic document replacement races.
+ * Not re-exported by `state/index` or the package surface.
+ */
+export async function readStateDocumentWithFs(
+  path: string,
+  options: ReadStateDocumentOptions,
+  fs: ReadStateDocumentFs,
+): Promise<StateDocumentReadResult> {
+  const read = await readPinnedStateDocumentWithFs(path, options, fs);
+  return "missing" in read ? { missing: true } : { content: read.content };
+}
+
+export async function readStateDocument(
+  path: string,
+  options: ReadStateDocumentOptions,
+): Promise<StateDocumentReadResult> {
+  return readStateDocumentWithFs(path, options, { lstat, open });
 }
 
 async function fsyncDirectory(dirPath: string, failDirFsync?: () => void): Promise<void> {
@@ -793,26 +896,35 @@ function readLockRecord(text: string): { pid: number; instanceId: string; create
   };
 }
 
-export async function readLifetimeLock(path: string): Promise<LifetimeLockReadResult> {
-  // Non-throwing inspection: a filesystem authority failure (EACCES etc.) is
-  // classified `unreadable` → `{kind:"unsafe", reason:"LOCK_UNSAFE"}` — the
-  // return union is preserved and no raw os error/path can escape.
-  const inspection = await inspectRegularFile(path);
-  if (inspection.kind === "missing") return { kind: "missing" };
-  if (inspection.kind !== "regular") return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-  let text: string;
+/**
+ * Test-only direct-module seam for deterministic lifetime-lock read races.
+ * Not re-exported by `state/index` or the package surface.
+ */
+export async function readLifetimeLockWithFs(
+  path: string,
+  fs: ReadStateDocumentFs,
+): Promise<LifetimeLockReadResult> {
+  // A lock is security authority, not a best-effort JSON file: never parse
+  // bytes from a pathname that could have changed after inspection. The public
+  // return union remains non-throwing; all malformed/unreadable/raced evidence
+  // is an unsafe lock rather than a raw error.
   try {
-    text = await readFile(path, "utf8");
+    const read = await readPinnedStateDocumentWithFs(path, { maxBytes: MAX_LIFETIME_LOCK_BYTES }, fs);
+    if ("missing" in read) return { kind: "missing" };
+    const record = readLockRecord(read.content);
+    if (record === null) return { kind: "unsafe", reason: "LOCK_UNSAFE" };
+    return {
+      kind: "valid",
+      record,
+      identity: { kind: "posix", dev: read.dev, ino: read.ino },
+    };
   } catch {
     return { kind: "unsafe", reason: "LOCK_UNSAFE" };
   }
-  const record = readLockRecord(text);
-  if (record === null) return { kind: "unsafe", reason: "LOCK_UNSAFE" };
-  return {
-    kind: "valid",
-    record,
-    identity: { kind: "posix", dev: inspection.dev, ino: inspection.ino },
-  };
+}
+
+export async function readLifetimeLock(path: string): Promise<LifetimeLockReadResult> {
+  return readLifetimeLockWithFs(path, { lstat, open });
 }
 
 /**

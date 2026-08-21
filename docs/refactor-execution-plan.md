@@ -177,12 +177,13 @@ completed alignment:
 | `CP-56` | trusted-roots rehydrate 去掉落盘 `{dev,ino}` 权威；改为真实目录 + containment + durable AllowedRoot + `git worktree list`，恢复后捕获实时 identity | `DONE` | `packages/host` AllowedRoot | `CP-55` | inode 变化但 Git 仍列出会恢复；escape/symlink/bad-base 仍 drop |
 | `CP-57` | managed-worktrees 持久 inode 退出权威；真实目录 + non-prunable repo list + checkout-side common/admin + pre/post runtime identity。path+Git 只恢复 workspace access；delete token 仅来自 current-process `recordCreated()` | `DONE` | `packages/host` managed worktrees | `CP-56` | restart/re-add 保留 access/history 但 `live=false`；Git 明确不列 drop；unavailable preserve/no auth |
 | `CP-58` | 两个 v1 ledger 的 `*Dev/*Ino` 降为成对可选审计字段；Windows writer 省略 pseudo-POSIX identity；缺失可读、半对/超精度 fail-closed，不 bump version | `DONE` | `packages/host` ledger parsers/tests | `CP-56`, `CP-57` | optional round-trip + orphan pair rejection；Host typecheck/architecture/diff-check；独立 reviewer + oracle；WSL/macOS Host 全量与聚焦安全套件 PASS |
+| `CP-59` | POSIX state-document / lifetime-lock read 改为 descriptor-pinned：`lstat` → `O_NOFOLLOW\|O_NONBLOCK` open → fd `dev/ino`/type/mode/nlink/size 重验 → exact bounded fd read → post-read fd stat；不改 Windows/public API | `DONE` | `packages/local-authority` | `CP-58` | WSL ext4 focused document/lock 14/14；Windows owner suite 39/0/2（POSIX tests skipped）；regular/symlink/FIFO/nonregular replacement、growth、lock replacement 对抗覆盖；独立 review 修复 FIFO blocking 问题 |
 
 #### CP-55–CP-58 原生验证（2026-08-20，`baf35e2`）
 
 - **WSL2 Ubuntu（ext4 路径 `/home/ubuntu/src/pix-g0-baseline`，Node 22.19.0）**：architecture/typecheck/build/Host boundaries/diff-check PASS；Host 全量 `512 tests / 508 pass / 0 fail / 4 skip`；ledger/worktree 安全集合 `82/82`；runtime E2E PASS。
 - **macOS arm64 Mac mini（`/Users/qin/src/pix-g0-baseline`，Node 24.19.0）**：architecture/typecheck/build/Host boundaries/diff-check PASS；Host 全量 `512 tests / 509 pass / 0 fail / 3 skip`；ledger/worktree 安全集合 `82/82`；runtime + sessions E2E PASS。
-- 根 `npm test` 仍存在**非本 ledger 切片**的既有/合同漂移：CLI lock fixture（两端 15）、Client suite、local-authority `windowsTaskkillPath` 跨端断言、Pi SDK production/trust 测试；startup E2E 的 capability 期望缺 `session.settings`；WSL sessions E2E 的 rename `?` 期望漂移。不得据此宣称根全量三端全绿；已验证的 CP-55–58 Host owner 范围为全绿。
+- 根 `npm test` 仍存在**非本 ledger / POSIX read 切片**的既有/合同漂移：CLI lock fixture（两端 15）、Client suite、Pi SDK production/trust 测试；startup E2E 的 capability 期望缺 `session.settings`；WSL sessions E2E 的 rename `?` 期望漂移。不得据此宣称根全量三端全绿；已验证的 CP-55–59 owner 范围为全绿。
 
 后续 lane：POSIX IPC dir 分离（CP-52-B）/ 远端发行 / 持久 AllowedRoot。**won't do**：Windows Job Object、Host ledger v2 file-ID schema。账本 path+git 对齐已在 CP-55–CP-58 完成。
 

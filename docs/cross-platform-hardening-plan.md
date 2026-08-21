@@ -1562,7 +1562,7 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy/`file-links` 按 `pathFlavor`、Settings Projects 列出/扩根 | 扩根仍非持久账本 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
 
-执行切片 CP-00–CP-58 记为 DONE（其中 CP-54 为文档收口、CP-55–CP-58 为 ledger identity L-01–L-05 对齐）。产品路径 **won't do**：Job Object、ledger v2 file-ID schema。后置：packaged release、持久 AllowedRoot、POSIX IPC dir 分离（CP-52-B）。
+执行切片 CP-00–CP-59 记为 DONE（其中 CP-54 为文档收口、CP-55–CP-58 为 ledger identity L-01–L-05 对齐、CP-59 为 POSIX descriptor-pinned document/lock read）。产品路径 **won't do**：Job Object、ledger v2 file-ID schema。后置：packaged release、持久 AllowedRoot、POSIX IPC dir 分离（CP-52-B）。
 
 ### 16.3 审计条目对照
 
@@ -1605,4 +1605,4 @@ AllowedRoot 有 Settings → Projects 页：列出本次 Host 根，并可 `cwd.
 3. POSIX IPC dir 分离（CP-52-B：长 home 的 `sun_path`）
 4. macOS lock start identity（目前 Linux/Windows 有，Darwin 仍弱）
 
-已完成：trusted-roots / managed-worktrees 的持久 workspace access 按 `docs/ledger-identity-align.md` 使用 canonical path + Git topology；managed destructive ownership 仅为 current-process runtime token，不跨 restart/re-add（L-01–L-05；不 bump schema）。
+已完成：trusted-roots / managed-worktrees 的持久 workspace access 按 `docs/ledger-identity-align.md` 使用 canonical path + Git topology；managed destructive ownership 仅为 current-process runtime token，不跨 restart/re-add（L-01–L-05；不 bump schema）。POSIX Pix-owned document/lock read 已使用 `O_NOFOLLOW|O_NONBLOCK` descriptor pin，避免 pathname replacement 与 FIFO open hang；Windows 仍走 SID/DACL/file-ID backend。

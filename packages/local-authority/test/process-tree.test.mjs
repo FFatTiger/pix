@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { win32 } from "node:path";
 import test from "node:test";
 import { createProcessTreeController, windowsTaskkillPath } from "../dist/process/index.js";
 
@@ -14,9 +14,9 @@ test("createProcessTreeController selects POSIX vs Windows by platform", () => {
 });
 
 test("windowsTaskkillPath uses WINDIR System32 and never PATH", () => {
-  assert.equal(windowsTaskkillPath({ WINDIR: "D:\\Windows" }), join("D:\\Windows", "System32", "taskkill.exe"));
-  assert.equal(windowsTaskkillPath({}), join("C:\\Windows", "System32", "taskkill.exe"));
-  assert.equal(windowsTaskkillPath({ WINDIR: "C:\\Windows\0evil" }), join("C:\\Windows", "System32", "taskkill.exe"));
+  assert.equal(windowsTaskkillPath({ WINDIR: "D:\\Windows" }), win32.join("D:\\Windows", "System32", "taskkill.exe"));
+  assert.equal(windowsTaskkillPath({}), win32.join("C:\\Windows", "System32", "taskkill.exe"));
+  assert.equal(windowsTaskkillPath({ WINDIR: "C:\\Windows\0evil" }), win32.join("C:\\Windows", "System32", "taskkill.exe"));
 });
 
 test("Windows controller keeps spawn and terminate semantics", async () => {
