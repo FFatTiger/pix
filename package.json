@@ -5,7 +5,7 @@
   "description": "Standalone next-generation pix product workspace: Vite Client + Hono Host + independent pi-sessiond + per-session Worker + Runtime Protocol + Pi ACL. Zero Next.js.",
   "type": "module",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.22.0"
   },
   "workspaces": [
     "packages/*"

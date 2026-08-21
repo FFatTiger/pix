@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.19.0" },
+  "engines": { "node": ">=22.22.0" },
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js" },

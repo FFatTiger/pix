@@ -116,7 +116,7 @@ completed alignment:
 | `CP-01` | Runtime Protocol v2 基线：E2E 正向握手使用 `PROTOCOL_VERSION`；产品文档/注释不再称当前协议为 v1；handshake ack 断言版本 | `DONE` | `packages/protocol`（`src/version.ts`） | `CP-00` | Protocol 155/155；Startup/Runtime/Sessions 正向握手不再发送 magic `1`；保留负向 v1 与 CLI v1 bridge |
 | `CP-02` | 分离 HTTP bootstrap schema：`HOST_BOOTSTRAP_SCHEMA_VERSION=1` 由 protocol `./host-bootstrap` 持有；Host 投影该字面量；删除误导性 `HOST_PROTOCOL_VERSION`；Client 严格消费 literal 而非 `z.number` | `DONE` | `packages/protocol` + Host 投影 + Client decode | `CP-00` | Host bootstrap/static 13/13；Client targeted 9/9；Protocol/Host/Client typecheck 与 boundaries PASS |
 | `CP-03` | Windows 根工具：`run-workspaces` 复用 `tool-invocation` npm JS CLI；集中 path containment；修 `scripts/**/*.test.mjs` Windows 失败；不削弱 fail-closed flag 合同 | `DONE` | root `scripts/*` | `CP-00` | Windows scripts 120 total / 119 pass / 1 intentional signal skip / 0 fail；root typecheck、architecture PASS |
-| `CP-04` | CI 诚实骨架：三端 required tooling jobs（Node `22.19.x` + pin LTS `24.12.x`）执行 install/architecture/portable script tests/typecheck/build；Linux/macOS 另有 required product tests；Windows 整 job 不得 `continue-on-error` | `DONE` | `.github/workflows` | `CP-01`, `CP-02`, `CP-03` | workflow 存在；三端 tooling 不运行已知 POSIX-only 产品测试；POSIX product tests required；Windows 启动已改为 required smoke（见 CP-07C / CP-26） |
+| `CP-04` | CI 诚实骨架：三端 required tooling jobs（最低 Node `22.22.x` + pin LTS `24.12.x`）执行 strict install/architecture/portable script tests/typecheck/build；Linux/macOS 另有 required product tests；Windows 整 job 不得 `continue-on-error` | `DONE` | `.github/workflows` | `CP-01`, `CP-02`, `CP-03` | workflow 存在；三端 tooling 不运行已知 POSIX-only 产品测试；POSIX product tests required；Windows 启动已改为 required smoke（见 CP-07C / CP-26）；CP-60 将已被依赖抬高的旧 `22.19.x` lane 对齐到真实 clean-install floor `22.22.x` |
 
 | `CP-05` | Secure-state public contract platformization：discriminated backend/file identity/principal；`createSecureStateBackend()` 在 path walk 前选择平台；Windows 以固定 `UNSUPPORTED_PLATFORM` fail-closed；Host 不再直接构造 POSIX backend；sessiond 声明 local-authority 依赖；无 persisted schema 变化 | `DONE` | `packages/local-authority`（owner）+ Host/sessiond consumers | `CP-04` | local-authority factory/surface 7/7；root/三个包 typecheck；local-authority/Host/sessiond boundaries；architecture/diff-check PASS。POSIX chmod/0700 行为测试在 Windows 不作为成功证据 |
 
@@ -178,6 +178,7 @@ completed alignment:
 | `CP-57` | managed-worktrees 持久 inode 退出权威；真实目录 + non-prunable repo list + checkout-side common/admin + pre/post runtime identity。path+Git 只恢复 workspace access；delete token 仅来自 current-process `recordCreated()` | `DONE` | `packages/host` managed worktrees | `CP-56` | restart/re-add 保留 access/history 但 `live=false`；Git 明确不列 drop；unavailable preserve/no auth |
 | `CP-58` | 两个 v1 ledger 的 `*Dev/*Ino` 降为成对可选审计字段；Windows writer 省略 pseudo-POSIX identity；缺失可读、半对/超精度 fail-closed，不 bump version | `DONE` | `packages/host` ledger parsers/tests | `CP-56`, `CP-57` | optional round-trip + orphan pair rejection；Host typecheck/architecture/diff-check；独立 reviewer + oracle；WSL/macOS Host 全量与聚焦安全套件 PASS |
 | `CP-59` | POSIX state-document / lifetime-lock read 改为 descriptor-pinned：`lstat` → `O_NOFOLLOW\|O_NONBLOCK` open → fd `dev/ino`/type/mode/nlink/size 重验 → exact bounded fd read → post-read fd stat；不改 Windows/public API | `DONE` | `packages/local-authority` | `CP-58` | WSL ext4 focused document/lock 14/14；Windows owner suite 39/0/2（POSIX tests skipped）；regular/symlink/FIFO/nonregular replacement、growth、lock replacement 对抗覆盖；独立 review 修复 FIFO blocking 问题 |
+| `CP-60` | Node 支持下限对齐当前锁文件：所有 workspace `engines.node` 与 required minimum CI 从 `22.19` 升到 `22.22`；CI strict install；架构门禁保证 root/workspace/CI floor 不漂移 | `DONE` | root manifests + CI + scripts/docs | `CP-59` | Node 22.19 `npm ci --engine-strict --dry-run` 确定性 `EBADENGINE`（`@lobehub/ui >=22.22.0`）；WSL Node 22.22 strict clean install + architecture/typecheck/build/boundaries PASS；保留 24.12 LTS lane |
 
 #### CP-55–CP-58 原生验证（2026-08-20，`baf35e2`）
 
@@ -185,7 +186,7 @@ completed alignment:
 - **macOS arm64 Mac mini（`/Users/qin/src/pix-g0-baseline`，Node 24.19.0）**：architecture/typecheck/build/Host boundaries/diff-check PASS；Host 全量 `512 tests / 509 pass / 0 fail / 3 skip`；ledger/worktree 安全集合 `82/82`；runtime + sessions E2E PASS。
 - 根 `npm test` 仍存在**非本 ledger / POSIX read 切片**的既有/合同漂移：CLI lock fixture（两端 15）、Client suite、Pi SDK production/trust 测试；startup E2E 的 capability 期望缺 `session.settings`；WSL sessions E2E 的 rename `?` 期望漂移。不得据此宣称根全量三端全绿；已验证的 CP-55–59 owner 范围为全绿。
 
-后续 lane：POSIX IPC dir 分离（CP-52-B）/ 远端发行 / 持久 AllowedRoot。**won't do**：Windows Job Object、Host ledger v2 file-ID schema。账本 path+git 对齐已在 CP-55–CP-58 完成。
+后续 lane：POSIX IPC dir 分离（CP-52-B）/ 远端发行 / 持久 AllowedRoot。**won't do**：Windows Job Object、Host ledger v2 file-ID schema。账本 path+git 对齐已在 CP-55–CP-58 完成。当前 Node 支持 floor 为 `>=22.22.0`，required CI 验证 `22.22.x` 与 `24.12.x`；历史段落中的 22.19 仅记录当时环境，不再代表当前支持下限。
 
 ---
 

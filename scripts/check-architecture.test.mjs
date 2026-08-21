@@ -13,6 +13,7 @@ import {
   checkBinTargets,
   checkDependencyBuildersSafe,
   checkLocalAuthorityBoundary,
+  checkNodeEngineFloor,
   checkNoAgentSession,
   checkNoNextDependency,
   checkNoNextImport,
@@ -34,7 +35,13 @@ function makeRoot() {
   const dir = mkdtempSync(join(tmpdir(), "pix-arch-"));
   writeFileSync(
     join(dir, "package.json"),
-    JSON.stringify({ name: "fixture", version: "0.0.0", private: true, workspaces: ["packages/*"] }),
+    JSON.stringify({
+      name: "fixture",
+      version: "0.0.0",
+      private: true,
+      workspaces: ["packages/*"],
+      engines: { node: ">=22.22.0" },
+    }),
   );
   return dir;
 }
@@ -86,6 +93,110 @@ test("checkWorkspaceLayout requires private root and packages/*", () => {
   assert.equal(
     checkWorkspaceLayout({ private: true, workspaces: ["packages/**"] }).ok,
     false,
+  );
+});
+
+test("checkNodeEngineFloor aligns manifests, lockfile records, and strict minimum CI jobs", () => {
+  const root = {
+    path: "/repo/package.json",
+    manifest: { engines: { node: ">=22.22.0" } },
+    isRoot: true,
+  };
+  const workspace = {
+    path: "/repo/packages/host/package.json",
+    manifest: { engines: { node: ">=22.22.0" } },
+    isRoot: false,
+  };
+  const lockfile = {
+    lockfileVersion: 3,
+    packages: {
+      "": { engines: { node: ">=22.22.0" } },
+      "packages/host": { engines: { node: ">=22.22.0" } },
+    },
+  };
+  const ci = [
+    "jobs:",
+    "  tooling:",
+    "    strategy:",
+    "      matrix:",
+    '        node: ["22.22.x", "24.12.x"]',
+    "    steps:",
+    "      - uses: actions/setup-node@v4",
+    "        with:",
+    "          node-version: ${{ matrix.node }}",
+    "      - run: npm ci --engine-strict",
+  ].join("\n");
+  const input = { manifests: [root, workspace], ciWorkflow: ci, lockfile };
+  assert.equal(checkNodeEngineFloor(input).ok, true);
+
+  const staleWorkspace = {
+    ...workspace,
+    manifest: { engines: { node: ">=22.19.0" } },
+  };
+  assert.match(
+    checkNodeEngineFloor({ ...input, manifests: [root, staleWorkspace] }).details,
+    /must equal root/,
+  );
+  assert.match(
+    checkNodeEngineFloor({ ...input, ciWorkflow: ci.replace("22.22.x", "22.19.x") }).details,
+    /minimum Node lane/,
+  );
+  assert.match(
+    checkNodeEngineFloor({ ...input, ciWorkflow: ci.replace("npm ci --engine-strict", "npm ci") }).details,
+    /lacks npm ci --engine-strict/,
+  );
+  assert.match(
+    checkNodeEngineFloor({
+      ...input,
+      lockfile: {
+        ...lockfile,
+        packages: {
+          ...lockfile.packages,
+          "": { engines: { node: ">=22.19.0" } },
+        },
+      },
+    }).details,
+    /package-lock\.json: "" engines\.node must equal root/,
+  );
+  assert.match(
+    checkNodeEngineFloor({
+      ...input,
+      lockfile: {
+        ...lockfile,
+        packages: {
+          ...lockfile.packages,
+          "packages/host": { engines: { node: ">=22.19.0" } },
+        },
+      },
+    }).details,
+    /package-lock\.json: "packages\/host" engines\.node must equal root/,
+  );
+
+  const strictElsewhere = [
+    "jobs:",
+    "  minimum:",
+    "    steps:",
+    "      - uses: actions/setup-node@v4",
+    "        with:",
+    '          node-version: "22.22.x"',
+    "      - run: npm ci",
+    "  newer:",
+    "    steps:",
+    "      - uses: actions/setup-node@v4",
+    "        with:",
+    '          node-version: "24.12.x"',
+    "      - run: npm ci --engine-strict",
+  ].join("\n");
+  assert.match(
+    checkNodeEngineFloor({ ...input, ciWorkflow: strictElsewhere }).details,
+    /job "minimum" runs "22\.22\.x" but lacks npm ci --engine-strict/,
+  );
+  assert.match(
+    checkNodeEngineFloor({
+      ...input,
+      manifests: [{ ...root, manifest: { engines: { node: "^22.22.0" } } }],
+    }).details,
+    /exact minimum range/,
   );
 });
 
@@ -545,6 +656,7 @@ test("runChecks includes the legacy product name gate", (t) => {
   write(dir, "scripts/placeholder.mjs", `console.log("x");\n`);
   const result = runChecks(dir);
   const names = result.checks.map((c) => c.name);
+  assert.ok(names.includes("Node engine floor"), JSON.stringify(names));
   assert.ok(names.includes("no legacy product name"), JSON.stringify(names));
 });
 

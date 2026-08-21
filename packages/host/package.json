@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Hono host foundation + runtime WS gateway for pix: gate, request security, static client hosting, WS upgrade seam and sessiond-backed runtime gateway",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.22.0"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

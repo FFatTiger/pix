@@ -19,7 +19,7 @@
 | macOS | **Unverified-native** | 主要产品路径按 POSIX 设计。PR tooling + required `npm test` 已存在；还没有发行 smoke / 公证 / 产品化验证。 |
 | 浏览器 / PWA | **Partial** | localhost/HTTPS 可走普通 Web；HTTP LAN 是受密码保护的普通 Web，**不承诺**可安装 PWA。 |
 
-Node 基线：`engines.node >=22.19.0`。CI 骨架 pin `22.19.x` 与 LTS `24.12.x`。Windows **Supported** 指原生 source-build 启动与日常开发路径，不是 G7 packaged 发行支持。不得在 G7 完成前宣称 Linux/macOS 已被产品化验证。
+Node 基线：`engines.node >=22.22.0`。当前锁文件在 Node `22.19.0` 下以 `npm ci --engine-strict` 确定性拒绝（`@lobehub/ui@5.30.2` 要求 `>=22.22.0`），因此 required CI 最低 lane pin `22.22.x`，另以 LTS `24.12.x` 验证。高于最低值的 Node 可用，但必须落在声明范围并通过对应 CI/smoke；Windows **Supported** 指原生 source-build 启动与日常开发路径，不是 G7 packaged 发行支持。不得在 G7 完成前宣称 Linux/macOS 已被产品化验证。
 
 ## 从这里开始
 

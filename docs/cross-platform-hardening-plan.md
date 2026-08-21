@@ -1562,7 +1562,11 @@ Pix 的协议中心、Host/sessiond/Worker 分层是适合跨端的；问题不�
 | G5 | 增量完成 | drive-root/case owner、iPadOS 先于 Mac、clipboard fail-closed 且可见、PWA 可见降级、打开项目/`cwd.validate`、未授权项目先确认、compare/mention/fuzzy/`file-links` 按 `pathFlavor`、Settings Projects 列出/扩根 | 扩根仍非持久账本 |
 | G6–G8 | 未开始 | Windows `release-verify` 入口 fail-closed | packaged artifact、签名、G7 完整矩阵 |
 
-执行切片 CP-00–CP-59 记为 DONE（其中 CP-54 为文档收口、CP-55–CP-58 为 ledger identity L-01–L-05 对齐、CP-59 为 POSIX descriptor-pinned document/lock read）。产品路径 **won't do**：Job Object、ledger v2 file-ID schema。后置：packaged release、持久 AllowedRoot、POSIX IPC dir 分离（CP-52-B）。
+执行切片 CP-00–CP-60 记为 DONE（其中 CP-54 为文档收口、CP-55–CP-58 为 ledger identity L-01–L-05 对齐、CP-59 为 POSIX descriptor-pinned document/lock read、CP-60 将 Node 支持 floor/CI 对齐当前锁文件的 `22.22`）。产品路径 **won't do**：Job Object、ledger v2 file-ID schema。后置：packaged release、持久 AllowedRoot、POSIX IPC dir 分离（CP-52-B）。
+
+### 16.2.1 Node 支持合同（CP-60）
+
+当前最低支持版本为 `Node >=22.22.0`。三端可以使用不同 Node 版本，但必须落在声明范围，并由 required matrix 至少覆盖最低 lane `22.22.x` 与 LTS lane `24.12.x`。当前锁文件的 `@lobehub/ui@5.30.2` 明确要求 `>=22.22.0`；Node `22.19.0` 执行 `npm ci --engine-strict --dry-run` 会确定性 `EBADENGINE`，因此历史审计中的 `>=22.19.0` / `22.19.x` 只保留为当时证据，不再代表现行支持下限。CI install 使用 `npm ci --engine-strict`，architecture gate 同时要求 root/workspace engines 与 minimum CI lane 一致，避免依赖或 manifest 单边漂移。
 
 ### 16.3 审计条目对照
 

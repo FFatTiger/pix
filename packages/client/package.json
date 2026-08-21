@@ -18,7 +18,7 @@
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.22.0"
   },
   "dependencies": {
     "@fffattiger/pix-protocol": "0.1.0",

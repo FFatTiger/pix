@@ -7,18 +7,21 @@
 //
 // Checks (each is a no-op / passes when the relevant package does not exist yet):
 //   1. workspace layout — root is private and workspaces include "packages/*"
-//   2. no `next` / `eslint-config-next` dependency in any manifest
-//   3. no `next` / `next/*` import in any source file
-//   4. no Next product path: root app/, next.config.*, .next/
-//   5. Pi SDK imports (@earendil-works/pi-*) only inside packages/pi-sdk-adapter
-//   6. runtime-core has no Protocol / Pi SDK / Hono / React import or dependency
-//   7. protocol has no runtime-core / Pi SDK / Hono / React import or dependency
-//   8. host / sessiond / agent-worker have no AgentSession / SessionManager usage
-//   9. production bin targets exist for every manifest that declares a bin
-//  10. no legacy product name in production source, manifests, README or docs
-//  11. no recursive `rm` in any production/test script (use scripts/remove-paths.mjs)
-//  12. no shell-dependent `node --test` glob in scripts (use scripts/run-node-test.mjs)
-//  13. dependency builders launch tsc/npm as JS CLIs through the current Node
+//   2. Node support floor — every workspace manifest and lockfile workspace
+//      record uses the exact root engine; the required CI minimum lane performs
+//      its strict install in the same job
+//   3. no `next` / `eslint-config-next` dependency in any manifest
+//   4. no `next` / `next/*` import in any source file
+//   5. no Next product path: root app/, next.config.*, .next/
+//   6. Pi SDK imports (@earendil-works/pi-*) only inside packages/pi-sdk-adapter
+//   7. runtime-core has no Protocol / Pi SDK / Hono / React import or dependency
+//   8. protocol has no runtime-core / Pi SDK / Hono / React import or dependency
+//   9. host / sessiond / agent-worker have no AgentSession / SessionManager usage
+//  10. production bin targets exist for every manifest that declares a bin
+//  11. no legacy product name in production source, manifests, README or docs
+//  12. no recursive `rm` in any production/test script (use scripts/remove-paths.mjs)
+//  13. no shell-dependent `node --test` glob in scripts (use scripts/run-node-test.mjs)
+//  14. dependency builders launch tsc/npm as JS CLIs through the current Node
 //      (no npm.cmd / .bin/tsc / shell:true)
 //
 // Checks 11-13 are precise normal-form regression enforcement for the repo's
@@ -366,6 +369,115 @@ export function checkWorkspaceLayout(rootManifest) {
     };
   }
   return { ok: true, details: `workspaces: ${workspaces.join(", ")}` };
+}
+
+/**
+ * Keep the declared Node floor honest. Every workspace manifest and its
+ * package-lock workspace record publish the exact root engine range. Required
+ * CI jobs that exercise the minimum lane must run a strict install in that
+ * same job, so npm—not this zero-dependency architecture gate—checks the full
+ * dependency graph's semver constraints at the declared floor.
+ *
+ * This is deliberately a narrow parser for this repository's checked-in
+ * workflow normal form, not a general YAML parser.
+ */
+function workflowJobs(ciWorkflow) {
+  const jobs = /^jobs:\s*$/m.exec(ciWorkflow);
+  if (!jobs) return [];
+  const section = ciWorkflow.slice(jobs.index + jobs[0].length);
+  const headers = [...section.matchAll(/^ {2}([A-Za-z0-9_-]+):\s*(?:#.*)?$/gm)];
+  return headers.map((header, index) => ({
+    name: header[1],
+    body: section.slice(header.index, headers[index + 1]?.index),
+  }));
+}
+
+function escapesRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function jobUsesMinimumNode(jobBody, minimumLane) {
+  const lane = escapesRegExp(minimumLane);
+  const directNode = new RegExp(`\\bnode-version\\s*:\\s*["']${lane}["']`).test(jobBody);
+  const matrixContainsLane = new RegExp(
+    `\\bnode\\s*:\\s*(?:\\[[^\\]]*["']${lane}["'][^\\]]*\\]|["']${lane}["'])`,
+  ).test(jobBody);
+  const setupUsesMatrixNode = /\bnode-version\s*:\s*\$\{\{\s*matrix\.node\s*\}\}/.test(jobBody);
+  return directNode || (matrixContainsLane && setupUsesMatrixNode);
+}
+
+function jobHasStrictInstall(jobBody) {
+  return /^[ \t]*(?:-\s*)?run:\s*npm ci --engine-strict(?:\s+#.*)?\s*$/m.test(jobBody);
+}
+
+function lockWorkspaceKey(rootManifestPath, manifestPath) {
+  return toPosixRelative(dirname(rootManifestPath), dirname(manifestPath));
+}
+
+export function checkNodeEngineFloor({
+  manifests,
+  ciWorkflow = null,
+  lockfile = null,
+  lockfileError = null,
+}) {
+  const offenders = [];
+  const root = manifests.find((entry) => entry.isRoot);
+  const rootRange = root?.manifest?.engines?.node;
+  const floorMatch = typeof rootRange === "string" ? /^>=(\d+)\.(\d+)\.(\d+)$/.exec(rootRange) : null;
+  if (!floorMatch) {
+    offenders.push(`root engines.node must be an exact minimum range such as ">=22.22.0", got ${JSON.stringify(rootRange)}`);
+  }
+
+  if (typeof rootRange === "string") {
+    for (const { path, manifest, isRoot } of manifests) {
+      if (isRoot) continue;
+      if (manifest.engines?.node !== rootRange) {
+        offenders.push(`${path}: engines.node must equal root ${JSON.stringify(rootRange)}, got ${JSON.stringify(manifest.engines?.node)}`);
+      }
+    }
+  }
+
+  if (lockfileError) {
+    offenders.push(`package-lock.json could not be parsed: ${lockfileError}`);
+  } else if (floorMatch && lockfile !== null) {
+    const lockPackages = lockfile?.packages;
+    if (!lockPackages || typeof lockPackages !== "object" || Array.isArray(lockPackages)) {
+      offenders.push("package-lock.json must contain a packages object for Node engine validation");
+    } else {
+      const manifestKeys = new Set();
+      for (const entry of manifests) {
+        const key = entry.isRoot ? "" : lockWorkspaceKey(root.path, entry.path);
+        manifestKeys.add(key);
+        const lockRecord = lockPackages[key];
+        if (!lockRecord || typeof lockRecord !== "object") {
+          offenders.push(`package-lock.json: missing workspace record ${JSON.stringify(key)}`);
+        } else if (lockRecord.engines?.node !== rootRange) {
+          offenders.push(`package-lock.json: ${JSON.stringify(key)} engines.node must equal root ${JSON.stringify(rootRange)}, got ${JSON.stringify(lockRecord.engines?.node)}`);
+        }
+      }
+      for (const key of Object.keys(lockPackages)) {
+        if (!/^packages\/[^/]+$/.test(key) || manifestKeys.has(key)) continue;
+        offenders.push(`package-lock.json: workspace record ${JSON.stringify(key)} has no matching manifest`);
+      }
+    }
+  }
+
+  if (floorMatch && typeof ciWorkflow === "string") {
+    const minimumLane = `${floorMatch[1]}.${floorMatch[2]}.x`;
+    const minimumJobs = workflowJobs(ciWorkflow).filter((job) => jobUsesMinimumNode(job.body, minimumLane));
+    if (minimumJobs.length === 0) {
+      offenders.push(`cross-platform CI must include the minimum Node lane ${JSON.stringify(minimumLane)}`);
+    }
+    for (const job of minimumJobs) {
+      if (!jobHasStrictInstall(job.body)) {
+        offenders.push(`cross-platform CI job ${JSON.stringify(job.name)} runs ${JSON.stringify(minimumLane)} but lacks npm ci --engine-strict`);
+      }
+    }
+  }
+
+  return offenders.length === 0
+    ? { ok: true, details: `workspace, lockfile, and CI minimum align on ${rootRange}` }
+    : { ok: false, details: offenders.join("; ") };
 }
 
 export function checkNoNextDependency(manifests) {
@@ -792,9 +904,26 @@ export function runChecks(rootDir = ROOT_DIR) {
   );
   const manifests = collectManifests(files, rootDir);
   const rootManifest = manifests.find((m) => m.isRoot)?.manifest ?? {};
+  let ciWorkflow = null;
+  try {
+    ciWorkflow = readFileSync(join(rootDir, ".github", "workflows", "cross-platform-baseline.yml"), "utf8");
+  } catch {
+    // Tiny fixture repositories and early bootstrap worktrees may omit CI.
+  }
+  let lockfile = null;
+  let lockfileError = null;
+  const lockfilePath = join(rootDir, "package-lock.json");
+  try {
+    lockfile = JSON.parse(readFileSync(lockfilePath, "utf8"));
+  } catch (error) {
+    if (exists(lockfilePath)) {
+      lockfileError = error instanceof Error ? error.message : String(error);
+    }
+  }
   const ctx = { manifests, sourceFiles };
   const checks = [
     { name: "workspace layout", result: checkWorkspaceLayout(rootManifest) },
+    { name: "Node engine floor", result: checkNodeEngineFloor({ manifests, ciWorkflow, lockfile, lockfileError }) },
     { name: "no next / eslint-config-next dependency", result: checkNoNextDependency(manifests) },
     { name: "no next import", result: checkNoNextImport(sourceFiles) },
     { name: "no Next product path", result: checkNoNextProductPath(rootDir) },

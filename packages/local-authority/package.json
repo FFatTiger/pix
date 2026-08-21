@@ -32,7 +32,7 @@
     "build:native": "node ./scripts/build-native.mjs"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.22.0"
   },
   "devDependencies": {
     "@types/node": "^22",

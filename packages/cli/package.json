@@ -4,7 +4,7 @@
   "private": true,
   "description": "Production composition + lifecycle CLI for pix: ensure/reuse sessiond, host boot, status, down --all",
   "type": "module",
-  "engines": { "node": ">=22.19.0" },
+  "engines": { "node": ">=22.22.0" },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

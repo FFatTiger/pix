@@ -36,7 +36,7 @@
     "clean": "node ../../scripts/remove-paths.mjs dist dist-test"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.22.0"
   },
   "dependencies": {
     "@fffattiger/pix-runtime-core": "file:../runtime-core"
