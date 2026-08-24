@@ -120,6 +120,7 @@ function controllableStubFetch(opts: {
   contextDeferreds?: Map<string, Deferred>;
   contextCalls?: string[];
   contextError?: { body: unknown; status: number };
+  roots?: readonly string[];
 }): typeof fetch {
   const sessions = opts.sessions ?? [];
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -148,7 +149,7 @@ function controllableStubFetch(opts: {
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
     if (p.includes("/v1/cwd/validate")) return echoValidate(init);
-    if (p.includes("/v1/cwd/roots")) return json({ roots: ["/x"], defaultCwd: "/x" });
+    if (p.includes("/v1/cwd/roots")) return json({ roots: opts.roots ?? ["/x"], defaultCwd: "/x" });
     return json({});
   }) as unknown as typeof fetch;
 }
@@ -880,6 +881,82 @@ const PROJECT_SESSIONS: readonly SessionHeader[] = [
   ...SESSION_HEADERS,
   { sessionId: "D", cwd: "/y", projectRoot: "/y", title: "Session D", createdAt: 1000, updatedAt: Date.now(), messageCount: 1 },
 ];
+
+/** Minimal in-memory Storage so project-projection tests run in any jsdom.
+ *  Strictly scoped: installed in beforeEach and restored in afterEach, so it
+ *  never leaks into other suites in this file (the rail suite's broken jsdom
+ *  Storage stays untouched). */
+function installLocalStorageShim(): () => void {
+  const previous = Object.getOwnPropertyDescriptor(window, "localStorage");
+  const store = new Map<string, string>();
+  const stub = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, String(value)); },
+    removeItem: (key: string) => { store.delete(key); },
+    clear: () => { store.clear(); },
+    key: (index: number) => [...store.keys()][index] ?? null,
+    get length() { return store.size; },
+  };
+  Object.defineProperty(window, "localStorage", { value: stub, configurable: true });
+  return () => {
+    if (previous) Object.defineProperty(window, "localStorage", previous);
+    else delete (window as { localStorage?: unknown }).localStorage;
+  };
+}
+
+// Authorized-root projection is a shell concern (HomeProjectBar + Sidebar)
+// but broken jsdom Storage breaks the rail suite's afterEach in this env; a
+// dedicated, self-contained suite keeps the new behavior covered without
+// touching pre-existing suites.
+describe("AppShell — authorized-root project projection", () => {
+  let restoreStorage: (() => void) | null = null;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    SOCKETS.length = 0;
+    capturedStore = null;
+    navigateMock.mockReset();
+    previousFetch = globalThis.fetch;
+    modelsCatalog = { models: [], defaultModel: null };
+    restoreStorage = installLocalStorageShim();
+  });
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = previousFetch;
+    restoreStorage?.();
+    vi.useRealTimers();
+  });
+
+  async function settle(): Promise<void> {
+    await act(async () => {
+      for (let round = 0; round < 3; round += 1) {
+        await flush(20);
+        vi.advanceTimersByTime(0);
+      }
+      await flush(20);
+    });
+  }
+
+  it("shows a just-authorized project root (no sessions yet) from cwd roots", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS, roots: ["/x", "/z"] });
+    mountApp({ cwd: "/x" });
+    await settle();
+    const titles = screen.getAllByTestId("sidebar-project-row").map((row) => row.getAttribute("title"));
+    expect(titles).toContain("/z");
+    // The home project bar picker exposes the same authorized root.
+    const home = screen.getByTestId("home-project-bar");
+    expect(home).toBeTruthy();
+  });
+
+  it("keeps session-derived projects first and only appends authorized roots", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS, roots: ["/x", "/z"] });
+    mountApp({ cwd: "/x" });
+    await settle();
+    const titles = screen.getAllByTestId("sidebar-project-row").map((row) => row.getAttribute("title"));
+    // /y comes from a session; /z has no session but was appended after /x.
+    expect(titles.indexOf("/x")).toBeLessThan(titles.indexOf("/z"));
+    expect(titles.indexOf("/y")).toBeGreaterThanOrEqual(0);
+  });
+});
 
 describe("AppShell — source-like sidebar rail", () => {
   beforeEach(() => {

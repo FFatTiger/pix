@@ -240,8 +240,17 @@ export function AppShell({ search }: AppShellProps) {
       const prev = latest.get(root);
       if (prev === undefined || at > prev) latest.set(root, at);
     }
-    return [...latest.entries()].sort((a, b) => b[1] - a[1]).map(([root]) => root);
-  }, [sessionsQuery.data]);
+    const roots = [...latest.entries()].sort((a, b) => b[1] - a[1]).map(([root]) => root);
+    // Authorized roots (Host truth for `cwd.validate` / allowed roots) also
+    // participate in the project projection even before any session exists,
+    // so a just-authorized project shows up immediately instead of waiting for
+    // the first session. The current cwd always participates as well.
+    for (const root of cwdRootsQuery.data?.roots ?? []) {
+      if (!roots.includes(root)) roots.push(root);
+    }
+    if (search.cwd !== undefined && !roots.includes(search.cwd)) roots.push(search.cwd);
+    return roots;
+  }, [sessionsQuery.data, cwdRootsQuery.data, search.cwd]);
 
   const cwdValidate = useMutation(createMutationOptions(http, queryClient).cwd.validate());
   const [openProjectError, setOpenProjectError] = useState<string | null>(null);
@@ -821,6 +830,7 @@ export function AppShell({ search }: AppShellProps) {
             onOpenSettings={openSettings}
             onNewSessionInProject={handleOpenHomeForProject}
             openProjectError={openProjectError}
+            authorizedProjectRoots={knownProjectRoots}
           />
         ) : null}
       </div>

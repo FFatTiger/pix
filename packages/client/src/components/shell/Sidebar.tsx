@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -92,6 +92,12 @@ export interface SidebarProps {
   onNewSessionInProject?: (projectRoot: string) => void | Promise<void>;
   /** Visible authorize failure from opening a project (AppShell-owned). */
   openProjectError?: string | null;
+  /**
+   * Host-authorized project roots (from `/v1/cwd/roots`) that should show in
+   * the project list even before any session exists. The sidebar keeps using
+   * session-derived projects as its primary source; this augments it.
+   */
+  authorizedProjectRoots?: readonly string[];
 }
 
 /**
@@ -316,6 +322,7 @@ export function Sidebar({
   onCollapseSidebar,
   onNewSessionInProject,
   openProjectError,
+  authorizedProjectRoots = [],
 }: SidebarProps) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -413,6 +420,17 @@ export function Sidebar({
   }, [worktrees.data, visibleSessions]);
 
   const recentProjects = getRecentProjects(visibleSessions);
+  // Authorized roots augment the session-derived project list: a just-
+  // authorized project (no session yet) must still be selectable. Session-
+  // derived projects stay first (most recently used order); authorized roots
+  // are appended once, deduplicated.
+  const knownProjectRoots = useMemo(() => {
+    const roots = [...recentProjects];
+    for (const root of authorizedProjectRoots) {
+      if (!roots.includes(root)) roots.push(root);
+    }
+    return roots;
+  }, [recentProjects, authorizedProjectRoots]);
   const selectedProject = projectRootFor(cwd);
   const toggleProjectExpanded = useCallback((project: string) => {
     setExpandedProjects((prev) => {
@@ -466,7 +484,7 @@ export function Sidebar({
   const isFilteredView = Boolean(searchQuery);
   const recentSessionSplit = splitLimitedList(recentSessionNodes, isFilteredView || sessionsExpanded);
 
-  const visibleProjectRoots = recentProjects.filter((project) => !archivedProjectRoots.has(project));
+  const visibleProjectRoots = knownProjectRoots.filter((project) => !archivedProjectRoots.has(project));
   const pinnedProjects = itemState.pinnedProjects.filter((project) => visibleProjectRoots.includes(project));
   const recentProjectRoots = visibleProjectRoots.filter((project) => !pinnedProjectRoots.has(project));
   const recentProjectSplit = splitLimitedList(recentProjectRoots, projectsExpanded);
