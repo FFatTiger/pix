@@ -519,19 +519,25 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     }
 
     if (finalAssistantIdx === -1) {
-      // No committed final answer in the turn: the assistant process content
-      // still renders through ProcessGroup (timeline/tabs), not the legacy
-      // bare message renderer. Non-assistant entries keep their own rows.
+      // No committed final answer in the turn (interrupted turns): render the
+      // whole turn's displayable process content — custom notifications
+      // included — as ONE settled process group, mirroring the live tail's
+      // collection so group membership never differs across live↔settled.
       rows.push(renderMessage(userIdx));
-      let cursor = userIdx + 1;
-      while (cursor < endIdx) {
-        const m = messages[cursor]!;
-        if (m.role === "assistant") {
-          cursor = pushLeaderlessAssistantRows(rows, cursor, endIdx);
-        } else {
-          if (isStandaloneRenderable(m)) rows.push(renderMessage(cursor));
-          cursor += 1;
-        }
+      const interruptedIndices: number[] = [];
+      for (let i = userIdx + 1; i < endIdx; i++) {
+        if (hasDisplayableProcessMessage(messages[i]!)) interruptedIndices.push(i);
+      }
+      const interruptedBlocks = collectProcessContentBlocks(messages as AgentMessage[], [...entryIds], interruptedIndices, toolResults);
+      if (interruptedBlocks.length > 0) {
+        const timing = processTiming(messages, userIdx, endIdx);
+        rows.push({
+          kind: "process",
+          key: `process-group-turn-${userIdx}`,
+          blocks: interruptedBlocks,
+          isStreaming: false,
+          ...timing,
+        });
       }
       idx = endIdx;
       continue;
@@ -540,8 +546,15 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     rows.push(renderMessage(userIdx));
 
     const processIndices: number[] = [];
-    for (let processIdx = userIdx + 1; processIdx < finalAssistantIdx; processIdx++) {
-      processIndices.push(processIdx);
+    // Collect the whole turn (to endIdx), NOT just up to the final assistant:
+    // custom entries (subagent notifications) and further assistant segments
+    // can land after the final answer. Matching the live tail's collection
+    // range keeps group membership identical across live↔settled transitions,
+    // so those entries never bounce between the codex group and the legacy
+    // standalone card. The final assistant itself is excluded here — its
+    // process blocks are appended via `finalProcessMessage` below.
+    for (let processIdx = userIdx + 1; processIdx < endIdx; processIdx++) {
+      if (processIdx !== finalAssistantIdx) processIndices.push(processIdx);
     }
     const visibleProcessIndices = processIndices.filter((processIdx) => hasDisplayableProcessMessage(messages[processIdx]!));
     const finalAssistant = messages[finalAssistantIdx] as AssistantMessage;
@@ -603,14 +616,11 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
       const writtenFiles = extractTurnWrittenFiles(turnContent, toolResults, cwd);
       rows.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage, writtenFiles }));
     }
-    for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
-      const trailing = messages[renderIdx]!;
-      if (trailing.role === "assistant") {
-        renderIdx = pushLeaderlessAssistantRows(rows, renderIdx, endIdx) - 1;
-      } else if (isStandaloneRenderable(trailing)) {
-        rows.push(renderMessage(renderIdx));
-      }
-    }
+    // Trailing entries after the final assistant (custom notifications,
+    // further assistant segments, toolResults) are all collected into the
+    // turn's process group above — the live tail renders them the same way,
+    // so nothing re-renders as a legacy standalone row here.
+
     idx = endIdx;
   }
 

@@ -250,6 +250,31 @@ describe("chat-projection — live merge", () => {
     }
   });
 
+  it("renders a post-answer custom notification inside the process group, not as a legacy standalone row", () => {
+    // Subagent notifications can land after the turn's final answer. Both the
+    // live tail and the settled projection must collect them into the SAME
+    // process group — a settled-only standalone card made the row bounce
+    // between styles on every live↔settled transition.
+    const messages = [
+      user("go", { timestamp: 1_000 }),
+      assistant([{ type: "thinking", thinking: "work" }, { type: "text", text: "done" }], { stopReason: "stop", timestamp: 2_000 }),
+      custom("subagent_notification", "child finished"),
+    ];
+    const settled = build(messages, { running: false });
+    const live = build(messages, { running: true, streamingMessage: null, turnPhase: "running_tools" });
+    const settledProcess = settled.find((row) => row.kind === "process");
+    const liveProcess = live.find((row) => row.kind === "process");
+    expect(settledProcess).toBeTruthy();
+    expect(liveProcess).toBeTruthy();
+    if (settledProcess?.kind === "process" && liveProcess?.kind === "process") {
+      expect(settledProcess.blocks.some((block) => block.type === "custom")).toBe(true);
+      expect(liveProcess.blocks.some((block) => block.type === "custom")).toBe(true);
+      // No standalone custom message row in either projection.
+      expect(settled.some((row) => row.kind === "message" && row.message.role === "custom")).toBe(false);
+      expect(live.some((row) => row.kind === "message" && row.message.role === "custom")).toBe(false);
+    }
+  });
+
   it("shows a working process placeholder immediately after send, before any assistant tokens", () => {
     const rows = build([user("hello")], { running: true, streamingMessage: null });
     expect(kinds(rows)).toEqual(["message", "process"]);
