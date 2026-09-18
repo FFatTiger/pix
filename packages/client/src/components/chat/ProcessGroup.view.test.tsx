@@ -69,6 +69,7 @@ describe("ProcessGroup — expanded lifecycle", () => {
   });
 
   it("fills while expanded and auto-collapses after the same live group settles", () => {
+    window.localStorage.setItem("pi-process-display-mode", "timeline");
     const view = render(
       <I18nProvider>
         <div className="transcript-scroll">
@@ -106,8 +107,7 @@ describe("ProcessGroup — expanded lifecycle", () => {
     expect(shell.style.getPropertyValue("--process-group-max-height")).toBe("");
   });
 
-  it("renders Codex mode as one flat raw block flow with only the outer collapse", () => {
-    window.localStorage.setItem("pi-process-display-mode", "codex");
+  it("defaults to Codex mode as one flat raw block flow with only the outer collapse", () => {
     const blocks: ProcessContentBlock[] = [
       {
         id: "text-1",

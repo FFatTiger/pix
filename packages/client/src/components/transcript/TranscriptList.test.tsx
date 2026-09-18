@@ -417,6 +417,7 @@ describe("TranscriptList — local reveal window (one complete history response)
 describe("TranscriptList — deferred thinking wiring", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    window.localStorage.setItem("pi-process-display-mode", "timeline");
     IntersectionObserverStub.instances = [];
     (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= ResizeObserverStub;
     previousFetch = globalThis.fetch;
@@ -435,6 +436,7 @@ describe("TranscriptList — deferred thinking wiring", () => {
   });
   afterEach(() => {
     cleanup();
+    window.localStorage.removeItem("pi-process-display-mode");
     globalThis.fetch = previousFetch;
     (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = previousIntersectionObserver;
     vi.useRealTimers();

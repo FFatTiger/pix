@@ -3,7 +3,7 @@ import { useCallback, useSyncExternalStore } from "react";
 export type ProcessDisplayMode = "timeline" | "tabs" | "codex";
 
 const STORAGE_KEY = "pi-process-display-mode";
-const DEFAULT_MODE: ProcessDisplayMode = "timeline";
+const DEFAULT_MODE: ProcessDisplayMode = "codex";
 const CHANGE_EVENT = "pi-process-display-mode-change";
 import { reportPreferenceWrite } from "@/lib/preferences/preference-sync";
 
