@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalPromptImageMimeType,
   getBase64DecodedByteLength,
+  isBrowserImageFile,
   MAX_ATTACHED_IMAGE_BYTES,
   MAX_ATTACHED_IMAGES,
   validateAgentImages,
@@ -18,6 +20,17 @@ describe("image attachment limits", () => {
     expect(getBase64DecodedByteLength("YR==")).toBeNull();
     expect(getBase64DecodedByteLength("YQ==\n")).toBeNull();
     expect(getBase64DecodedByteLength("not base64!")).toBeNull();
+  });
+
+  it("recognizes mobile photo files and identifies when browser conversion is required", () => {
+    expect(isBrowserImageFile({ name: "IMG_0001.HEIC", type: "image/heic" })).toBe(true);
+    expect(isBrowserImageFile({ name: "IMG_0001.HEIC", type: "" })).toBe(true);
+    expect(isBrowserImageFile({ name: "scan.jpg", type: "" })).toBe(true);
+    expect(isBrowserImageFile({ name: "notes.txt", type: "" })).toBe(false);
+
+    expect(canonicalPromptImageMimeType({ name: "photo.jpg", type: "image/jpg" })).toBe("image/jpeg");
+    expect(canonicalPromptImageMimeType({ name: "photo.jpg", type: "" })).toBe("image/jpeg");
+    expect(canonicalPromptImageMimeType({ name: "photo.heic", type: "image/heic" })).toBeNull();
   });
 
   it("rejects invalid MIME, oversized, and too many image attachments", () => {

@@ -253,6 +253,7 @@ export const enLocale = {
     "desktop.queueMessageAfterFinish": "Queue this message after the agent finishes",
     "desktop.attachImage": "Attach image",
     "desktop.attachImageModelUnsupported": "The selected model ({model}) does not support image input",
+    "desktop.attachImageFailed": "Could not read this photo. Try exporting it as JPEG or PNG.",
     "desktop.dropToAdd": "Drop to add",
     "desktop.dropOutsideProjectConfirm": "Copy \"{name}\" into the project so it can be referenced?",
     "desktop.dropOutsideProjectConfirmMany": "Copy {count} files outside the project into it so they can be referenced?",

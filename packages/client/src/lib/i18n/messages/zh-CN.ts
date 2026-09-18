@@ -253,6 +253,7 @@ export const zhCNLocale = {
     "desktop.queueMessageAfterFinish": "在 Agent 完成后将此消息加入队列",
     "desktop.attachImage": "添加图片",
     "desktop.attachImageModelUnsupported": "当前模型（{model}）不支持图片输入",
+    "desktop.attachImageFailed": "无法读取这张图片，请尝试将它导出为 JPEG 或 PNG 后再发送。",
     "desktop.dropToAdd": "拖入以添加",
     "desktop.dropOutsideProjectConfirm": "将\u201c{name}\u201d复制到项目内以便引用？",
     "desktop.dropOutsideProjectConfirmMany": "将项目外的 {count} 个文件复制到项目内以便引用？",

@@ -4,7 +4,7 @@ import React, { useMemo, useRef, useState, useCallback, useEffect, useImperative
 import type { BuiltinSlashCommandResult, ChatFileIndexSnapshot, CompactResultInfo, QueuedMessages, SkillDormancyResponse, SlashCommandInfo } from "@/lib/chat-view-model";
 import { clearDraft, getDraft, setDraft, type ChatDraftImage } from "@/lib/draft-store";
 import { continueMarkdownList } from "@/lib/markdown-list";
-import { isBase64ImageWithinLimits } from "@/lib/image-attachments";
+import { isBase64ImageWithinLimits, isBrowserImageFile, prepareBrowserImage } from "@/lib/image-attachments";
 import type { TextContent, UserMessage } from "@/lib/chat-view-model";
 import {
   buildEntriesFromFiles, buildAtInsertText, buildFileAtMentionsText, extractAtQuery, filterFileEntries,
@@ -467,6 +467,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (typeof window === "undefined") return [];
     return draftKey ? getDraft(draftKey)?.images.map(draftImageToAttachedImage) ?? [] : [];
   });
+  const [imageAttachmentError, setImageAttachmentError] = useState<string | null>(null);
   const trimmedValue = value.trimStart();
   const bashMode = attachedImages.length === 0 && trimmedValue.startsWith("!");
   const bashExcluded = bashMode && trimmedValue.startsWith("!!");
@@ -706,31 +707,24 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }));
 
   const processImageFiles = useCallback(async (files: File[]) => {
-    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+    // iOS Photos can return HEIC/HEIF with an unsupported MIME type — or no
+    // MIME type at all. Accept image-looking files here; prepareBrowserImage
+    // passes protocol-safe formats through and transcodes the rest to JPEG.
+    const imageFiles = files.filter(isBrowserImageFile);
     if (!imageFiles.length) return;
+    setImageAttachmentError(null);
     pendingImageCountRef.current += imageFiles.length;
     try {
-      const newImages = await Promise.all(
-        imageFiles.map(
-          (file) =>
-            new Promise<AttachedImage>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                const result = reader.result as string;
-                // result is "data:<mime>;base64,<data>"
-                const base64 = result.split(",")[1] ?? "";
-                resolve({ data: base64, mimeType: file.type, previewUrl: URL.createObjectURL(file) });
-              };
-              reader.onerror = reject;
-              reader.readAsDataURL(file);
-            })
-        )
-      );
-      setAttachedImages((prev) => [...prev, ...newImages]);
+      const results = await Promise.allSettled(imageFiles.map(prepareBrowserImage));
+      const prepared = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      if (prepared.length > 0) setAttachedImages((prev) => [...prev, ...prepared]);
+      if (prepared.length !== imageFiles.length) {
+        setImageAttachmentError(t("desktop.attachImageFailed"));
+      }
     } finally {
       pendingImageCountRef.current = Math.max(0, pendingImageCountRef.current - imageFiles.length);
     }
-  }, []);
+  }, [t]);
 
   /** Append `@relative/path ` mention tokens for dropped files. Cursor lands
    *  at the end of the input so the user can keep typing right away. */
@@ -892,6 +886,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const clearInput = useCallback(() => {
     setValue("");
     setAtQuery(null);
+    setImageAttachmentError(null);
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
     clearImages();
@@ -1802,6 +1797,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           }}>
             <CheckIcon size={11} style={{ flexShrink: 0 }} />
             {compactResultText}
+          </div>
+        )}
+        {imageAttachmentError && (
+          <div
+            role="alert"
+            style={{ marginBottom: 6, fontSize: 12, lineHeight: 1.4, color: "var(--accent-red)" }}
+          >
+            {imageAttachmentError}
           </div>
         )}
         {/* Image previews */}
