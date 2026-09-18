@@ -405,35 +405,28 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     while (endIdx < messages.length && messages[endIdx]!.role !== "user") endIdx += 1;
 
     const finalAssistantIdx = findFinalAssistantIndex(messages, userIdx, endIdx);
+    // A turn is live only while it can still produce content: a streaming
+    // partial exists, or the turn has no committed final assistant yet (the
+    // just-submitted-prompt window before the first partial arrives). When
+    // `running` flips true but the new user entry has not landed in
+    // `messages` yet, `lastUserIdx` still points at the PREVIOUS turn —
+    // without the guard below that settled turn gets re-split through the
+    // live streaming path and renders as a mangled duplicate until the new
+    // user entry arrives. A settled turn stays settled.
     const isLiveTail = running
       && endIdx === messages.length
-      && (userIdx === lastUserIdx || startsCompactionTurn);
+      && (userIdx === lastUserIdx || startsCompactionTurn)
+      && (streamingMessage !== null || finalAssistantIdx === -1);
 
     if (isLiveTail) {
       rows.push(renderMessage(userIdx));
       const hasStreamingAssistant = streamingMessage?.role === "assistant";
       const liveProcessIndices: number[] = [];
-      const existingProcessEnd = !hasStreamingAssistant && finalAssistantIdx >= 0 ? finalAssistantIdx : endIdx;
-      for (let processIdx = userIdx + 1; processIdx < existingProcessEnd; processIdx++) {
+      for (let processIdx = userIdx + 1; processIdx < endIdx; processIdx++) {
         if (hasDisplayableProcessMessage(messages[processIdx]!)) liveProcessIndices.push(processIdx);
       }
       let liveProcessBlocks = collectProcessContentBlocks(messages as AgentMessage[], [...entryIds], liveProcessIndices, toolResults);
       let liveAnswerMessage: AssistantMessage | null = null;
-
-      if (!hasStreamingAssistant && finalAssistantIdx >= 0) {
-        const existingAssistant = messages[finalAssistantIdx] as AssistantMessage;
-        const existingSplit = splitFinalAssistantBlocks(existingAssistant, { isStreaming: true });
-        const existingContent = splitAssistantContentBlocks(existingAssistant, {
-          messageIndex: finalAssistantIdx,
-          entryId: entryIdAt(entryIds, finalAssistantIdx),
-          toolResults,
-          isStreaming: true,
-        });
-        liveProcessBlocks = liveProcessBlocks.concat(existingContent.processBlocks);
-        if (existingSplit.answerBlocks.length > 0) {
-          liveAnswerMessage = withAssistantBlocks(existingAssistant, existingSplit.answerBlocks, { omitUsage: true });
-        }
-      }
 
       if (hasStreamingAssistant) {
         const streamingAssistant = streamingMessage as AssistantMessage;

@@ -106,18 +106,26 @@ describe("message hover chrome ownership and accessibility", () => {
     expect(globals).toContain(".group\\/process .disclosure-collapse,");
   });
 
-  it("keeps every process title on one line and fades only its trailing edge", () => {
+  it("keeps every process title on one line; the flex-filling summary fades its edge, fit-content labels ellipsize", () => {
     const globals = readFileSync(join(stylesDir, "globals.css"), "utf8");
     const outer = rule(globals, String.raw`.group\/process .process-group-summary-label`);
     const labels = rule(globals, String.raw`.group\/process .codex-tool-group-label,
 .group\/process .codex-tool-row-label`);
     const thinking = rule(globals, String.raw`.group\/process .codex-thinking-status-label`);
 
+    // The outer summary label flex-fills its row, so a trailing mask fades
+    // whatever overflows; the codex labels size to their text (the running
+    // sheen must sweep text, not whitespace), so truncation shows an
+    // ellipsis instead — a mask there would fade the last visible character.
     for (const title of [outer, labels, thinking]) {
       expect(title).toContain("white-space: nowrap;");
       expect(title).toContain("overflow: hidden;");
-      expect(title).toContain("mask-image: linear-gradient(to right");
-      expect(title).not.toContain("text-overflow: ellipsis;");
+    }
+    expect(outer).toContain("mask-image: linear-gradient(to right");
+    for (const title of [labels, thinking]) {
+      expect(title).toContain("width: fit-content;");
+      expect(title).toContain("text-overflow: ellipsis;");
+      expect(title).not.toContain("mask-image");
     }
     expect(globals).not.toContain(".codex-tool-group.is-command-group .codex-tool-group-label");
   });

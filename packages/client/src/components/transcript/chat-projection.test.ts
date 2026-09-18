@@ -117,6 +117,28 @@ describe("chat-projection — user → process → final", () => {
     });
   });
 
+  it("keeps the previous settled turn settled when running flips before the new user entry lands", () => {
+    // Regression: right after submit, `running` is true but the new user
+    // message has not landed in `messages` yet, so `lastUserIdx` still points
+    // at the PREVIOUS turn. That completed turn must keep its settled
+    // projection instead of being re-split through the live streaming path
+    // (which rendered the old answer as a mangled live tail until refresh).
+    const messages = [
+      user("question"),
+      assistant([{ type: "thinking", thinking: "work" }, { type: "text", text: "final answer" }]),
+    ];
+    const rows = build(messages, { running: true, streamingMessage: null });
+    expect(kinds(rows)).toEqual(["message", "process", "message"]);
+    const process = rows[1]!;
+    expect(process).toMatchObject({ kind: "process", isStreaming: false });
+    const answer = rows[2]!;
+    expect(answer.kind).toBe("message");
+    if (answer.kind === "message") {
+      expect(answer.isStreaming).toBeUndefined();
+      expect(answer.key).not.toContain("live-answer");
+    }
+  });
+
   it("groups a user turn into user row, process group and final answer row", () => {
     const rows = build([
       user("hello"),
