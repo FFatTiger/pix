@@ -126,6 +126,10 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
   const entryIds = useMemo<readonly string[]>(() => transcript.entryIds, [transcript.entryIds]);
 
   const streamingPartial = isLive ? (exact?.partial ?? null) : null;
+  // Authoritative live-tail phase: proves the turn is mid-flight during
+  // segment-flush gaps where the partial is briefly absent (chat-projection
+  // keys live/settled on it).
+  const turnPhase = isLive ? (snapshot?.streaming?.phase ?? null) : null;
   const streamingMessage = (streamingPartial ?? null) as AgentMessage | null;
   const cwd = isLive ? snapshot?.cwd : undefined;
   const effectiveSessionId = isLive ? (exact?.sessionId ?? null) : sessionId;
@@ -218,9 +222,10 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
         entryIds,
         streamingMessage,
         running,
+        turnPhase,
         ...(cwd === undefined ? {} : { cwd }),
       }),
-    [messages, entryIds, streamingMessage, running, cwd],
+    [messages, entryIds, streamingMessage, running, turnPhase, cwd],
   );
 
   // ── Scroll-owner policy ────────────────────────────────────────────────

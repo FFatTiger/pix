@@ -210,6 +210,46 @@ describe("chat-projection — live merge", () => {
     }
   });
 
+  it("keeps a turn with a stop segment live while the runtime phase is mid-flight", () => {
+    // A `stop`-reason segment is NOT a turn terminal: subagent notifications
+    // and further toolUse work can follow. Only the authoritative phase can
+    // keep the group live across that gap — message shape alone cannot.
+    const messages = [
+      user("go", { timestamp: 1_000 }),
+      assistant(
+        [{ type: "thinking", thinking: "wrap" }, { type: "text", text: "interim answer" }],
+        { stopReason: "stop", timestamp: 2_000 },
+      ),
+    ];
+    const rows = build(messages, { running: true, streamingMessage: null, turnPhase: "running_tools" });
+    expect(rows[1]).toMatchObject({ kind: "process", isStreaming: true });
+
+    // Same messages, but the runtime is idle → the turn really ended.
+    const settledRows = build(messages, { running: true, streamingMessage: null, turnPhase: "idle" });
+    expect(settledRows[1]).toMatchObject({ kind: "process", isStreaming: false });
+  });
+
+  it("keeps the previous turn settled while the next turn's user partial is streaming", () => {
+    // Submit immediately streams the new user message; its entry has not
+    // landed in `messages` yet, so `lastUserIdx` still points at the previous
+    // (terminal) turn — which must not flash back into the live path.
+    const messages = [
+      user("question"),
+      assistant([{ type: "text", text: "final answer" }], { stopReason: "stop" }),
+    ];
+    const rows = build(messages, {
+      running: true,
+      streamingMessage: { role: "user", content: "next prompt" } as AgentMessage,
+      turnPhase: "streaming",
+    });
+    // Text-only settled turn: user row + settled answer row, no live process
+    // tail and nothing flagged streaming.
+    expect(kinds(rows)).toEqual(["message", "message"]);
+    for (const row of rows) {
+      if (row.kind === "message") expect(row.isStreaming).toBeUndefined();
+    }
+  });
+
   it("shows a working process placeholder immediately after send, before any assistant tokens", () => {
     const rows = build([user("hello")], { running: true, streamingMessage: null });
     expect(kinds(rows)).toEqual(["message", "process"]);

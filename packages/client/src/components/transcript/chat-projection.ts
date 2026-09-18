@@ -62,6 +62,13 @@ export interface BuildChatTranscriptRowsInput {
   running: boolean;
   /** Session cwd — resolves relative file paths in rows. */
   cwd?: string | undefined;
+  /**
+   * Authoritative runtime streaming phase for the live tail (null in history
+   * mode or when unknown). A non-idle phase proves the turn is still mid-flight
+   * even when no streaming partial is currently held (segment-flush gaps,
+   * stop-reason segments followed by further toolUse work).
+   */
+  turnPhase?: string | null | undefined;
 }
 
 function hasFinalAssistantAnswer(message: AgentMessage): boolean {
@@ -427,21 +434,30 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     while (endIdx < messages.length && messages[endIdx]!.role !== "user") endIdx += 1;
 
     const finalAssistantIdx = findFinalAssistantIndex(messages, userIdx, endIdx);
-    // A turn is live only while it can still produce content: a streaming
-    // partial exists, or nothing terminal has committed yet. Two windows put
-    // `running` ahead of the transcript with `streamingMessage === null`:
-    // (a) right after submit, before the new user entry lands — `lastUserIdx`
-    //     still points at the PREVIOUS turn, which is terminal and must stay
-    //     settled (re-splitting it through the live path rendered the old
-    //     answer as a mangled duplicate);
-    // (b) mid-turn segment flushes (stopReason "toolUse") — the turn is still
-    //     running and must STAY live, or the group visibly collapses and
-    //     re-expands on every tool/text flush.
-    // `hasTurnTerminalAnswer` separates the two.
+    // A turn is live only while it can still produce content. Signals, in
+    // order of authority:
+    //   1. an in-flight ASSISTANT partial → live;
+    //   2. a USER partial → the NEXT turn is already streaming its user
+    //      message while its user entry has not landed in `messages` — the
+    //      turn at `lastUserIdx` is finished and must stay settled;
+    //   3. a non-idle authoritative runtime phase → the turn is mid-flight
+    //      even with no partial held (segment-flush gaps; `stop`-reason
+    //      segments that are followed by more toolUse work / subagent
+    //      notifications). Keyed on phase, NOT on message shape: a stop
+    //      segment is not a turn terminal.
+    //   4. otherwise fall back to message shape: no terminal answer commit
+    //      (non-toolUse stop reason) → still live.
+    const streamingIsUser = streamingMessage?.role === "user";
+    const turnStillActive = streamingMessage !== null && !streamingIsUser
+      ? true
+      : input.turnPhase != null && input.turnPhase !== "idle"
+        ? true
+        : !hasTurnTerminalAnswer(messages, userIdx, endIdx);
     const isLiveTail = running
       && endIdx === messages.length
       && (userIdx === lastUserIdx || startsCompactionTurn)
-      && (streamingMessage !== null || !hasTurnTerminalAnswer(messages, userIdx, endIdx));
+      && !streamingIsUser
+      && turnStillActive;
 
     if (isLiveTail) {
       rows.push(renderMessage(userIdx));
