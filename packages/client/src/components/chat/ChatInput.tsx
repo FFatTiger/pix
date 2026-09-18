@@ -1459,8 +1459,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (isStreaming && (onSteer || onFollowUp)) {
-          // Default Enter sends as steer if available, else followup
-          sendQueued(onSteer ? "steer" : "followup");
+          // While the agent runs, Enter QUEUES the message (follow-up) so it
+          // only shows in the queued-preview strip above the composer and is
+          // delivered after the current turn finishes. Immediate steering
+          // stays an explicit action (the inject-now button).
+          sendQueued(onFollowUp ? "followup" : "steer");
         } else {
           handleSend();
         }
