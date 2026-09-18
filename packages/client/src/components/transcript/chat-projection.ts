@@ -62,13 +62,6 @@ export interface BuildChatTranscriptRowsInput {
   running: boolean;
   /** Session cwd — resolves relative file paths in rows. */
   cwd?: string | undefined;
-  /**
-   * Authoritative runtime streaming phase for the live tail (null in history
-   * mode or when unknown). A non-idle phase proves the turn is still mid-flight
-   * even when no streaming partial is currently held (segment-flush gaps,
-   * stop-reason segments followed by further toolUse work).
-   */
-  turnPhase?: string | null | undefined;
 }
 
 function hasFinalAssistantAnswer(message: AgentMessage): boolean {
@@ -76,28 +69,6 @@ function hasFinalAssistantAnswer(message: AgentMessage): boolean {
   return splitFinalAssistantBlocks(message).answerBlocks.some((block) => (
     block.type === "image" || (block.type === "text" && block.text.trim().length > 0)
   ));
-}
-
-/**
- * True when the turn already contains a TERMINAL assistant commit: an answer
- * block with a non-`toolUse` stop reason ("stop", error, length…). While a
- * turn runs, the SDK flushes each completed segment as its own assistant
- * entry with stopReason "toolUse" — those are interim commits, the turn keeps
- * going, and the projection must stay live across streaming-partial gaps
- * (tool/text flush windows where `streamingMessage` is briefly null).
- */
-function hasTurnTerminalAnswer(messages: readonly AgentMessage[], userIdx: number, endIdx: number): boolean {
-  for (let idx = endIdx - 1; idx > userIdx; idx--) {
-    const message = messages[idx]!;
-    if (
-      message.role === "assistant"
-      && hasFinalAssistantAnswer(message)
-      && message.stopReason !== "toolUse"
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function findFinalAssistantIndex(messages: readonly AgentMessage[], userIdx: number, endIdx: number): number {
@@ -434,30 +405,22 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
     while (endIdx < messages.length && messages[endIdx]!.role !== "user") endIdx += 1;
 
     const finalAssistantIdx = findFinalAssistantIndex(messages, userIdx, endIdx);
-    // A turn is live only while it can still produce content. Signals, in
-    // order of authority:
-    //   1. an in-flight ASSISTANT partial → live;
-    //   2. a USER partial → the NEXT turn is already streaming its user
-    //      message while its user entry has not landed in `messages` — the
-    //      turn at `lastUserIdx` is finished and must stay settled;
-    //   3. a non-idle authoritative runtime phase → the turn is mid-flight
-    //      even with no partial held (segment-flush gaps; `stop`-reason
-    //      segments that are followed by more toolUse work / subagent
-    //      notifications). Keyed on phase, NOT on message shape: a stop
-    //      segment is not a turn terminal.
-    //   4. otherwise fall back to message shape: no terminal answer commit
-    //      (non-toolUse stop reason) → still live.
+    // `running` is the turn authority. Runtime `streaming.phase` and assistant
+    // stopReason describe individual segments, not the whole prompt: both can
+    // become idle/stop while a subagent, tool, or next model segment is still
+    // pending. Demoting on either signal made the same group oscillate between
+    // live/expanded and settled/collapsed (and invalidated virtual row height).
+    //
+    // The only explicit ownership hand-off available here is a USER partial:
+    // it belongs to the NEXT turn while its persisted user entry has not landed
+    // in `messages` yet, so the turn currently at `lastUserIdx` must stay
+    // settled. Otherwise the last turn remains live for the entire duration of
+    // the global prompt-running state.
     const streamingIsUser = streamingMessage?.role === "user";
-    const turnStillActive = streamingMessage !== null && !streamingIsUser
-      ? true
-      : input.turnPhase != null && input.turnPhase !== "idle"
-        ? true
-        : !hasTurnTerminalAnswer(messages, userIdx, endIdx);
     const isLiveTail = running
       && endIdx === messages.length
       && (userIdx === lastUserIdx || startsCompactionTurn)
-      && !streamingIsUser
-      && turnStillActive;
+      && !streamingIsUser;
 
     if (isLiveTail) {
       rows.push(renderMessage(userIdx));

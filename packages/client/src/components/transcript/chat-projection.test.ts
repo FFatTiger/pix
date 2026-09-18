@@ -117,28 +117,6 @@ describe("chat-projection — user → process → final", () => {
     });
   });
 
-  it("keeps the previous settled turn settled when running flips before the new user entry lands", () => {
-    // Regression: right after submit, `running` is true but the new user
-    // message has not landed in `messages` yet, so `lastUserIdx` still points
-    // at the PREVIOUS turn. That completed turn must keep its settled
-    // projection instead of being re-split through the live streaming path
-    // (which rendered the old answer as a mangled live tail until refresh).
-    const messages = [
-      user("question"),
-      assistant([{ type: "thinking", thinking: "work" }, { type: "text", text: "final answer" }]),
-    ];
-    const rows = build(messages, { running: true, streamingMessage: null });
-    expect(kinds(rows)).toEqual(["message", "process", "message"]);
-    const process = rows[1]!;
-    expect(process).toMatchObject({ kind: "process", isStreaming: false });
-    const answer = rows[2]!;
-    expect(answer.kind).toBe("message");
-    if (answer.kind === "message") {
-      expect(answer.isStreaming).toBeUndefined();
-      expect(answer.key).not.toContain("live-answer");
-    }
-  });
-
   it("groups a user turn into user row, process group and final answer row", () => {
     const rows = build([
       user("hello"),
@@ -210,10 +188,10 @@ describe("chat-projection — live merge", () => {
     }
   });
 
-  it("keeps a turn with a stop segment live while the runtime phase is mid-flight", () => {
-    // A `stop`-reason segment is NOT a turn terminal: subagent notifications
-    // and further toolUse work can follow. Only the authoritative phase can
-    // keep the group live across that gap — message shape alone cannot.
+  it("keeps a running turn live across stop segments and idle phase gaps", () => {
+    // `stop` and runtime phase describe individual model/tool segments, not
+    // the whole prompt. While the red Stop control is active (`running` true),
+    // neither signal may collapse the response group.
     const messages = [
       user("go", { timestamp: 1_000 }),
       assistant(
@@ -221,11 +199,10 @@ describe("chat-projection — live merge", () => {
         { stopReason: "stop", timestamp: 2_000 },
       ),
     ];
-    const rows = build(messages, { running: true, streamingMessage: null, turnPhase: "running_tools" });
+    const rows = build(messages, { running: true, streamingMessage: null });
     expect(rows[1]).toMatchObject({ kind: "process", isStreaming: true });
 
-    // Same messages, but the runtime is idle → the turn really ended.
-    const settledRows = build(messages, { running: true, streamingMessage: null, turnPhase: "idle" });
+    const settledRows = build(messages, { running: false, streamingMessage: null });
     expect(settledRows[1]).toMatchObject({ kind: "process", isStreaming: false });
   });
 
@@ -240,7 +217,6 @@ describe("chat-projection — live merge", () => {
     const rows = build(messages, {
       running: true,
       streamingMessage: { role: "user", content: "next prompt" } as AgentMessage,
-      turnPhase: "streaming",
     });
     // Text-only settled turn: user row + settled answer row, no live process
     // tail and nothing flagged streaming.
@@ -261,7 +237,7 @@ describe("chat-projection — live merge", () => {
       custom("subagent_notification", "child finished"),
     ];
     const settled = build(messages, { running: false });
-    const live = build(messages, { running: true, streamingMessage: null, turnPhase: "running_tools" });
+    const live = build(messages, { running: true, streamingMessage: null });
     const settledProcess = settled.find((row) => row.kind === "process");
     const liveProcess = live.find((row) => row.kind === "process");
     expect(settledProcess).toBeTruthy();
