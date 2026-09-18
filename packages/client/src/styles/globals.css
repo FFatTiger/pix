@@ -1,0 +1,2550 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: var(--bg);
+  --color-bg-panel: var(--bg-panel);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-selected: var(--bg-selected);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-dim: var(--text-dim);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-user-bg: var(--user-bg);
+  --color-assistant-bg: var(--assistant-bg);
+  --color-tool-bg: var(--tool-bg);
+  --color-bg-subtle: var(--bg-subtle);
+  --font-mono-font: var(--font-mono);
+  --font-weight-normal: var(--text-weight-regular);
+  --font-weight-medium: var(--text-weight-medium);
+  --font-weight-semibold: var(--text-weight-strong);
+  --font-weight-bold: var(--text-weight-strong);
+}
+
+
+
+.git-changes-indicator {
+  display: inline-flex;
+  overflow: hidden;
+  margin-left: 4px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-changes-indicator-part {
+  padding: 1px 6px;
+}
+
+.git-changes-indicator-part + .git-changes-indicator-part {
+  border-left: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.git-changes-indicator-modified {
+  color: var(--git-status-modified);
+  background: var(--git-status-modified-bg);
+}
+
+.git-changes-indicator-added {
+  color: var(--git-status-added);
+  background: var(--git-status-added-bg);
+}
+
+.git-changes-indicator-deleted {
+  color: var(--git-status-deleted);
+  background: var(--git-status-deleted-bg);
+}
+
+/* Font fallback — reduce CLS by matching Arial metrics to the custom mono font. */
+@font-face {
+  font-family: "zedMono Fallback";
+  src: local(Arial);
+  ascent-override: 75.97%;
+  descent-override: 22.89%;
+  line-gap-override: 0%;
+  size-adjust: 131.49%;
+}
+
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --text-weight-regular: 500;
+  --text-weight-medium: 600;
+  --text-weight-strong: 700;
+  --bg: #ffffff;
+  --bg-panel: #f5f5f5;
+  --bg-hover: #eeeeee;
+  --bg-selected: #e8e8e8;
+  --border: #b8b8b8;
+  --text: #1a1a1a;
+  --text-muted: #555555;
+  --text-dim: #888888;
+  --accent: #0d9488;
+  --accent-hover: #0f766e;
+  --user-bg: #eff6ff;
+  --assistant-bg: #ffffff;
+  --tool-bg: #f9fafb;
+  --bg-subtle: rgba(15, 23, 42, 0.035);
+  --bg-secondary: #fafafa;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f7f7f7;
+  --border-hover: #a0a4ab;
+  --accent-blue: #0d9488;
+  --accent-red: #dc2626;
+  --accent-green: #16a34a;
+  --accent-orange: #d97706;
+  --git-status-added: #15803d;
+  --git-status-modified: #a16207;
+  --git-status-deleted: #b91c1c;
+  --git-status-added-bg: #d6eedf;
+  --git-status-modified-bg: #f5e6bd;
+  --git-status-deleted-bg: #f7d8d8;
+
+  /* Shared control tokens for settings dialogs and panels.
+     These are static values that reference the themed palette above,
+     so they adapt to pi CLI themes automatically and are never
+     overwritten by applyCssVars() (only THEME_CSS_VARS is). */
+  --control-height: 30px;
+  --control-radius: 6px;
+  --control-pad-x: 10px;
+  --settings-pad-x: 22px;
+  --settings-section-gap: 20px;
+  /* Semantic status colors — alias the theme accents so danger /
+     success / warning states follow the active theme. */
+  --status-success: var(--accent-green);
+  --status-danger: var(--accent-red);
+  --status-warning: var(--accent-orange);
+  /* Fixed mix ratios are supported reliably, unlike a percentage custom property. */
+  --minimap-preview-user-bg: color-mix(in srgb, var(--accent) 6%, var(--bg-hover));
+  --minimap-preview-tool-bg: color-mix(in srgb, var(--accent-green) 6%, var(--bg-hover));
+  --minimap-preview-error-bg: color-mix(in srgb, var(--accent-red) 6%, var(--bg-hover));
+  --minimap-preview-default-bg: color-mix(in srgb, var(--text-dim) 6%, var(--bg-hover));
+  --hatch-color: rgba(13, 148, 136, 0.12);
+  --hatch-spacing: 6px;
+  --hatch-width: 1px;
+}
+
+html.dark {
+  --bg: #1a1a1a;
+  --bg-panel: #242424;
+  --bg-hover: #2e2e2e;
+  --bg-selected: #383838;
+  --border: #5a5a5a;
+  --text: #e8e8e8;
+  --text-muted: #888888;
+  /* Slightly brighter than the old #555555 so dim labels (step titles,
+     secondary meta) stay readable on dark surfaces; still a clear step
+     below --text-muted. */
+  --text-dim: #6e6e6e;
+  --accent: #64c1b6;
+  --accent-hover: #96e1d8;
+  --user-bg: #1e2a2b;
+  --assistant-bg: #1a1a1a;
+  --tool-bg: #171c1c;
+  --bg-subtle: rgba(255,255,255,0.035);
+  --bg-secondary: #151515;
+  --bg-card: #1e1e1e;
+  --bg-card-hover: #292929;
+  --border-hover: #707070;
+  --accent-blue: #64c1b6;
+  --accent-red: #f87171;
+  --accent-green: #3fb950;
+  --accent-orange: #d29922;
+  --git-status-added: #3fb950;
+  --git-status-modified: #d29922;
+  --git-status-deleted: #f87171;
+  --git-status-added-bg: #203a2b;
+  --git-status-modified-bg: #3d341e;
+  --git-status-deleted-bg: #43272a;
+  --minimap-preview-user-bg: color-mix(in srgb, var(--accent) 18%, var(--bg-hover));
+  --minimap-preview-tool-bg: color-mix(in srgb, var(--accent-green) 18%, var(--bg-hover));
+  --minimap-preview-error-bg: color-mix(in srgb, var(--accent-red) 18%, var(--bg-hover));
+  --minimap-preview-default-bg: color-mix(in srgb, var(--text-dim) 18%, var(--bg-hover));
+  --hatch-color: rgba(100, 193, 182, 0.16);
+}
+
+/* Theme toggle: circular wipe via View Transitions API — removed with the
+   client theme switcher. pix ships a fixed dark appearance (html.dark is
+   applied permanently by the index.html bootstrap), so there is no runtime
+   theme transition anymore. */
+* {
+  box-sizing: border-box;
+}
+
+/* Settings dialogs & panels: keyboard focus ring. Inline `outline: none`
+   was removed from the shared settings controls so this rule can apply. */
+.settings-dialog :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Catppuccin file icons use Latte in light mode and Mocha in dark mode.
+   The URLs are supplied per icon by components/FileIcons.tsx. */
+.catppuccin-file-icon {
+  display: block;
+  flex: 0 0 auto;
+  background: var(--catppuccin-icon-light) center / contain no-repeat;
+}
+
+html.dark .catppuccin-file-icon {
+  background-image: var(--catppuccin-icon-dark);
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: geometricPrecision;
+  /* User-adjustable UI/text scale (Text Size setting): zoom scales fonts,
+     icons, spacing and panel widths proportionally. Set pre-hydration by
+     index.html and owned at runtime by hooks/useUiScale.ts; defaults to 1. */
+  zoom: var(--app-ui-scale, 1);
+}
+
+html, body {
+  height: calc(100dvh / var(--app-ui-scale, 1));
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: var(--text-weight-regular);
+  overscroll-behavior: none;
+}
+
+/* Safety net for the Text Size zoom (var --app-ui-scale, see hooks/useUiScale.ts):
+   CSS zoom on <html> shrinks the layout viewport's width but not its height,
+   and vh/vw/dvh units never shrink, so every viewport-unit sizing in the app
+   divides by var(--app-ui-scale) (see AppShell, layout.tsx, modals). This
+   overflow: clip guarantees a missed compensation degrades to edge clipping
+   instead of an outer scrollbar at scale > 1. */
+html {
+  overflow: clip;
+}
+
+/* Frameless app title bar (Electron) — empty space is a drag handle,
+   interactive elements opt out individually. In a regular browser tab
+   the class is a no-op (only -webkit-app-region is honored by Chromium
+   in the Electron shell; browsers ignore it). */
+.app-shell {
+  display: flex;
+  min-width: 0;
+}
+
+.app-shell-body {
+  min-width: 0;
+}
+
+.app-title-bar {
+  -webkit-app-region: drag;
+  position: relative;
+  z-index: 600;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+.app-title-drag {
+  -webkit-app-region: drag;
+  min-width: 0;
+}
+
+/* Unified top-level workspace tab strip (title bar). The strip is a
+   horizontally scrollable 36px row; tabs are sized to the row and the active
+   tab scrolls into view on activation. Scrollbar is the shared thin 4px one. */
+.workspace-tab-bar {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: flex-end;
+  height: 36px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  background: transparent;
+  flex: 1;
+  min-width: 0;
+}
+.workspace-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding-left: 12px;
+  padding-right: 6px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  max-width: 180px;
+  min-width: 80px;
+  flex-shrink: 0;
+  user-select: none;
+  outline: none;
+  transition: background 0.1s, color 0.1s;
+}
+.workspace-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.workspace-tab:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.workspace-tab--active {
+  background: var(--bg);
+  color: var(--text);
+}
+.workspace-tab-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.7;
+  color: inherit;
+}
+.workspace-tab--active .workspace-tab-icon {
+  opacity: 1;
+}
+.workspace-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  font-weight: var(--text-weight-regular);
+}
+.workspace-tab--active .workspace-tab-label {
+  font-weight: var(--text-weight-medium);
+}
+.workspace-tab-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  animation: workspace-tab-running-pulse 1.4s ease-in-out infinite;
+}
+@keyframes workspace-tab-running-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.workspace-tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.workspace-tab-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* Sidebar rail scroll: the gutter stays reserved (no layout shift), but the
+   thumb is invisible until the rail is hovered. */
+.sidebar-rail-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.sidebar-rail-scroll:hover {
+  scrollbar-color: var(--border) transparent;
+}
+.sidebar-rail-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.sidebar-rail-scroll:hover::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+.sidebar-rail-scroll:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* Chat message list scroll container: thin scrollbar, thumb revealed on
+   hover (same pattern as the sidebar rail — the gutter stays reserved so
+   hovering never shifts layout). The right-edge minimap remains the passive
+   position indicator; this is the explicit scrollbar affordance. */
+.chat-scroll-container {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.chat-scroll-container:hover {
+  scrollbar-color: var(--border) transparent;
+}
+.chat-scroll-container::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.chat-scroll-container:hover::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+.chat-scroll-container:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* Back-to-bottom: a circular arrow centered on the composer top edge. */
+.transcript-jump-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  transform: translateX(-50%);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+.transcript-jump-bottom:hover {
+  color: var(--text);
+  background: var(--bg-hover, var(--bg-panel));
+}
+
+:root {
+  --font-mono: 'Lilex', "zedMono Fallback", 'JetBrains Mono', 'Fira Code', 'Consolas', ui-monospace, 'PingFang SC', 'Microsoft YaHei', monospace;
+}
+
+pre, code {
+  font-family: var(--font-mono);
+}
+
+
+
+/* Shared conversational surface language. */
+.chat-user-message {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-bottom: 20px;
+}
+/* Valid @file / /skill: mentions — theme accent with a dotted underline.
+   Used both in the composer highlight layer and in rendered messages. */
+.mention-token {
+  color: var(--accent);
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+/* SDK-expanded /skill: block in a user bubble: styled name token + the
+   user's args; hovering the token reveals a floating tooltip (portaled to
+   document.body) with the skill's description and file path. */
+.chat-user-skill {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+/* The token must size to its visible text: the skill block column would
+   otherwise stretch it to the full width (flex default), making both the
+   hover target and the tooltip anchor wider than the text the user sees. */
+.chat-user-skill > .mention-token-skill {
+  align-self: flex-start;
+}
+.chat-user-skill-tip {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 340px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  font-weight: var(--text-weight-regular);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+.chat-user-skill-tip-desc {
+  color: var(--text-muted);
+}
+.chat-user-skill-tip-path {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  word-break: break-all;
+}
+.chat-user-bubble-wrap {
+  max-width: min(85%, 680px);
+  min-width: 0;
+}
+.chat-user-bubble {
+  min-width: 0;
+  max-height: 300px;
+  padding: 9px 14px;
+  border: none;
+  border-radius: 9px;
+  background: var(--user-bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+}
+.chat-assistant-message {
+  margin-bottom: 22px;
+}
+/* TranscriptList already virtualizes rows with measured heights. A second
+   content-visibility layer makes Chromium defer paint inside mounted rows,
+   producing flashes and lag while fast-scrolling. Keep mounted rows realized. */
+.chat-assistant-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.015em;
+}
+.chat-assistant-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Hover-only message chrome stays CSS-driven so scrolling content beneath a
+   stationary pointer never schedules React renders. Focus reveals the same
+   controls for keyboard users; touch keeps user actions reachable. */
+.chat-message-hover-actions,
+.chat-message-time {
+  opacity: 0;
+  pointer-events: none;
+}
+.chat-user-message:hover .chat-message-hover-actions,
+.chat-user-message:focus-within .chat-message-hover-actions,
+.chat-user-message.is-forking .chat-message-hover-actions,
+.chat-user-message:hover .chat-message-time,
+.chat-user-message:focus-within .chat-message-time,
+.chat-assistant-message:hover .chat-message-time,
+.chat-assistant-message:focus-within .chat-message-time {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .chat-user-message .chat-message-hover-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.chat-assistant-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent-red) 48%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent-red) 5%, var(--bg-card));
+  color: var(--accent-red);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-assistant-error svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.thinking-block {
+  min-width: 0;
+}
+.thinking-block-trigger {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  padding: 5px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  transition: color 150ms ease;
+}
+.thinking-block-trigger:hover { color: var(--text); }
+.thinking-block-caret {
+  display: inline-block;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  transition: transform 150ms ease;
+}
+.thinking-block-caret.is-expanded { transform: rotate(90deg); }
+.thinking-block-icon { color: var(--accent-blue); font-size: 12px; }
+.thinking-block-content {
+  margin-top: 4px;
+  padding: 8px 11px;
+  border-left: 2px solid var(--accent-blue);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.thinking-block-content.is-error { border-left-color: var(--accent-red); color: var(--accent-red); }
+
+.tool-call-block {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent-green) 28%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent-green) 4%, var(--bg-card));
+  font-size: 12px;
+}
+.tool-call-block.is-process {
+  border-radius: 4px;
+  border-color: var(--border);
+  background: var(--bg-secondary);
+}
+.tool-call-block.is-error {
+  border-color: color-mix(in srgb, var(--accent-red) 48%, var(--border));
+  background: color-mix(in srgb, var(--accent-red) 5%, var(--bg-card));
+}
+.tool-call-trigger {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+  transition: color 150ms ease, background 150ms ease;
+}
+.tool-call-trigger:hover { background: var(--bg-subtle); color: var(--text); }
+.tool-call-name {
+  flex-shrink: 0;
+  color: var(--accent-green);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--text-weight-strong);
+}
+.tool-call-block.is-process .tool-call-name { color: var(--text-muted); }
+.tool-call-block.is-error .tool-call-name { color: var(--accent-red); }
+.tool-call-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-call-caret {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  transition: transform 150ms ease;
+}
+.tool-call-caret.is-expanded { transform: rotate(180deg); }
+.tool-call-input {
+  max-height: 300px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.58;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Composer: matches the reference ChatInput's two-row, low-contrast form. */
+.chat-input-shell {
+  position: relative;
+  min-width: 0;
+  width: calc(100% + 20px);
+  margin-left: -10px;
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  box-shadow: none;
+}
+.chat-input-shell:focus-within {
+  border-color: var(--accent-blue);
+}
+.chat-input-shell.is-streaming {
+  border-color: var(--border);
+}
+.chat-input-shell.is-streaming:focus-within {
+  border-color: var(--accent-blue);
+}
+.chat-input-streaming-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: 7px;
+  opacity: 0.3;
+  pointer-events: none;
+}
+.chat-input-shell > :not(.chat-input-streaming-overlay) {
+  /* Position the editor row and toolbar above the streaming overlay
+     without assigning a z-index. A z-index here would create a stacking
+     context that traps the fixed-position dropdown menus (model /
+     thinking / tools, z-index 2000+) inside the toolbar's z-index: 1
+     layer, letting the floating steer/follow-up and maximize buttons
+     (z-index 4, shell-level) paint over them while the agent runs. The
+     overlay stays beneath all content anyway: z-index 0 / auto positioned
+     boxes share a paint layer and later siblings win. */
+  position: relative;
+}
+/* Drag handle straddling the composer's top border. Must stay after the
+   `.chat-input-shell > :not(.chat-input-streaming-overlay)` rule so its
+   absolute positioning and z-index win the specificity tie. */
+.chat-input-shell > .chat-input-resize-handle {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  height: 9px;
+  z-index: 3;
+  cursor: row-resize;
+  touch-action: none;
+  outline: none;
+}
+.chat-input-shell > .chat-input-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.12s;
+  /* fade the ends of the highlight bar */
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 18%, #000 82%, transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0%, #000 18%, #000 82%, transparent 100%);
+}
+.chat-input-shell > .chat-input-resize-handle:hover::before,
+.chat-input-shell > .chat-input-resize-handle:focus-visible::before,
+.chat-input-shell > .chat-input-resize-handle.is-resizing::before {
+  opacity: 1;
+}
+.chat-input-editor-row {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  align-items: stretch;
+  gap: 8px;
+  padding: 6px 12px;
+  overflow: hidden;
+}
+.chat-input-textarea {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.625;
+}
+.chat-input-textarea::placeholder {
+  color: var(--text-dim);
+  opacity: 1;
+}
+/* Fixed viewport for the highlight content. Keeping the clip separate from
+   the translated content prevents old lines from escaping the editor when
+   the textarea scrolls inside the capped input. */
+.chat-input-highlight-viewport {
+  position: absolute;
+  top: 6px;
+  left: 12px;
+  right: 12px;
+  bottom: 6px;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* Highlight layer behind the composer textarea: identical font metrics and
+   wrap behavior so its text sits pixel-aligned under the textarea's (which
+   is transparent). No z-index: it must stay in the row's paint layer (see
+   the .chat-input-shell stacking note). */
+.chat-input-highlight {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.625;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  text-align: left;
+}
+/* Keep the selection tint over the (transparent) textarea legible against
+   the highlight layer beneath it. */
+.chat-input-textarea::selection {
+  background: rgba(96, 165, 250, 0.28);
+}
+/* Fixed-height manual mode: the editor row fills the shell and the textarea
+   scrolls inside it instead of auto-growing. */
+.chat-input-shell.is-manual-height .chat-input-editor-row {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.chat-input-shell.is-manual-height .chat-input-textarea {
+  min-height: 0 !important; /* override the desktop 50px floor so it shrinks */
+}
+.chat-input-toolbar {
+  min-height: 32px;
+  padding: 4px;
+  border: 0;
+  font-size: 12px;
+}
+.chat-input-toolbar button {
+  border-radius: 4px !important;
+  font-size: inherit !important;
+}
+/* Dropdown panels inside the toolbar: menu options share the toolbar
+   button radius. */
+.chat-input-menu-panel button {
+  border-radius: 4px !important;
+}
+/* Group header rows in the model picker stay square */
+.chat-input-menu-panel .chat-input-menu-group-header {
+  border-radius: 0 !important;
+}
+.chat-input-toolbar-actions {
+  gap: 2px;
+}
+.chat-input-send {
+  display: inline-flex !important;
+  width: 24px !important;
+  height: 24px !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  color: var(--text-dim) !important;
+  box-shadow: none !important;
+  cursor: not-allowed !important;
+  transition: color 150ms ease, background 150ms ease !important;
+}
+.chat-input-send:not(:disabled) {
+  color: var(--accent-blue) !important;
+  cursor: pointer !important;
+  background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-panel)) !important;
+}
+.chat-input-send:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent-blue) 22%, var(--bg-panel)) !important;
+  color: var(--accent-blue) !important;
+  transform: none;
+}
+@media (min-width: 768px) {
+  .chat-input-textarea {
+    min-height: 50px !important;
+  }
+}
+
+.model-row:hover .model-star {
+  opacity: 1 !important;
+}
+
+@media (max-width: 640px) {
+  .chat-input-editor-row {
+    padding-left: 12px;
+  }
+  .chat-input-toolbar {
+    padding: 6px 12px;
+  }
+  .chat-input-toolbar-model {
+    /* Hard cap on mobile: long model names must ellipsize instead of
+       pushing the send/stop button off the row. Short names stay
+       content-sized (no blank stretch). No `width: max-content` here —
+       that defeats the cap. */
+    flex: 0 1 auto;
+    width: auto;
+    min-width: 0;
+    max-width: 200px;
+  }
+  .chat-input-toolbar-model > button {
+    width: auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+  /* Browsers auto-zoom when an input below 16px gains focus. Keep the
+     composer at 16px on mobile so tapping it never scales the page. */
+  .chat-input-textarea,
+  .chat-input-highlight {
+    font-size: 16px;
+  }
+}
+
+.group\/process {
+  padding: 1px 0;
+}
+.group\/summary-row {
+  min-height: 24px;
+}
+.group\/summary {
+  width: 100%;
+  max-width: 100%;
+  font-size: 14px;
+}
+.group\/process .process-group-summary-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(to right, #000 0%, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 0%, #000 calc(100% - 28px), transparent 100%);
+}
+.group\/process .process-group-caret {
+  opacity: 0;
+  color: var(--text-dim);
+  transition: opacity 120ms ease, transform 140ms ease;
+}
+.group\/process .process-group-caret.is-expanded {
+  transform: rotate(90deg);
+}
+.group\/summary:hover .process-group-caret,
+.group\/summary:focus-visible .process-group-caret {
+  opacity: 0.8;
+}
+.group\/process .disclosure-collapse {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-2px);
+  transition:
+    grid-template-rows 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 130ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    visibility 0s linear 180ms;
+}
+.group\/process .disclosure-collapse[data-state="open"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+.group\/process .disclosure-collapse-inner {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.group\/process .process-tab {
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 14px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.group\/process .process-tab:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+.group\/process .process-tab-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+.group\/process .process-tab-active:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+.group\/process .process-tab-streaming {
+  animation: tab-breathe 1.8s ease-in-out infinite;
+}
+@keyframes tab-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Session title while its title is being regenerated: gentle opacity
+   pulse that reads as "working on it" without shifting layout. */
+.session-title-generating {
+  animation: session-title-breathe 1.6s ease-in-out infinite;
+}
+@keyframes session-title-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.group\/process .process-tab-error {
+  background-color: rgba(248, 113, 113, 0.06);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 3px,
+    rgba(248, 113, 113, 0.12) 3px 6px
+  );
+  color: #f87171;
+}
+.group\/process .process-tab-error.process-tab-active {
+  background-color: rgba(248, 113, 113, 0.16);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 3px,
+    rgba(248, 113, 113, 0.2) 3px 6px
+  );
+  color: #f87171;
+}
+.group\/process .process-tab-error:hover {
+  background-color: rgba(248, 113, 113, 0.12);
+}
+.group\/process .process-tab-error.process-tab-active:hover {
+  background-color: rgba(248, 113, 113, 0.22);
+}
+
+.group\/process .process-file-tag {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 1px;
+  padding: 0 3px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 1em;
+  line-height: inherit;
+  cursor: inherit;
+  white-space: nowrap;
+}
+.group\/process .process-file-tag svg {
+  flex: 0 0 auto;
+}
+.group\/process [class*="overflow-y-auto"] {
+  scrollbar-color: var(--border) transparent;
+}
+
+/* An expanded ProcessGroup may use up to half of the actual transcript
+   viewport. ProcessGroup writes the max-height in CSS pixels; without a
+   fixed height, short output remains content-sized. */
+.group\/process.process-group-shell--expanded {
+  display: flex;
+  flex-direction: column;
+  max-height: var(--process-group-max-height);
+  min-height: 0;
+  margin-bottom: 0;
+}
+.group\/process .process-group-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  margin-top: 8px;
+}
+.group\/process.process-group-shell--expanded .process-group-collapse {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.group\/process .process-group-collapse-inner {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+.group\/process.process-group-shell--codex {
+  padding-bottom: 0;
+  box-shadow: none;
+}
+.group\/process.process-group-shell--codex .group\/summary-row {
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+}
+.group\/process .process-group-codex-body {
+  display: block;
+  margin-top: 16px;
+}
+.group\/process .codex-process-flow {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+.group\/process .codex-thinking-status {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  padding: 2px 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+.group\/process .codex-thinking-status-label {
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    var(--text-dim) 0%,
+    var(--text-dim) 38%,
+    color-mix(in srgb, var(--text) 72%, var(--text-muted)) 50%,
+    var(--text-dim) 62%,
+    var(--text-dim) 100%
+  );
+  background-size: 220% 100%;
+  background-position: -120% 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: codex-thinking-highlight 2.6s ease-in-out infinite;
+}
+.group\/process .codex-thinking-status-caret {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--text-dim) 78%, transparent);
+  transform: rotate(90deg);
+}
+@keyframes codex-thinking-highlight {
+  from { background-position: -120% 0; }
+  to { background-position: 120% 0; }
+}
+.group\/process .codex-tool-group {
+  min-width: 0;
+}
+.group\/process .codex-custom-group {
+  min-width: 0;
+}
+.group\/process .codex-tool-group-trigger,
+.group\/process .codex-tool-row-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+.group\/process .codex-tool-group-trigger:hover,
+.group\/process .codex-tool-row-trigger:hover {
+  color: var(--text-muted);
+}
+.group\/process .codex-tool-group.is-error > .codex-tool-group-trigger {
+  color: var(--accent-red);
+}
+/* Running tool (lone row or group): text-level left-to-right sheen on the
+   label, same pattern as codex-thinking-highlight — no background pulse. */
+.group\/process .codex-tool-group.is-running > .codex-tool-group-trigger .codex-tool-group-label,
+.group\/process .codex-tool-row.is-running .codex-tool-row-label {
+  color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    var(--text-dim) 0%,
+    var(--text-dim) 44%,
+    color-mix(in srgb, var(--text) 88%, var(--text-muted)) 50%,
+    var(--text-dim) 56%,
+    var(--text-dim) 100%
+  );
+  background-size: 220% 100%;
+  background-position: -120% 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: codex-running-sheen 4.2s ease-in-out infinite;
+}
+@keyframes codex-running-sheen {
+  /* 105% → -5%: the peak exits the right edge and immediately re-enters
+     from the left on loop — ends sit in the dim zone, so the wrap is
+     invisible and the between-sweep gap is nearly zero. */
+  from { background-position: 105% 0; }
+  to { background-position: -5% 0; }
+}
+.group\/process .codex-tool-group-trigger:focus-visible,
+.group\/process .codex-tool-row-trigger:focus-visible,
+.group\/process .codex-tool-show-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.group\/process .codex-tool-icon {
+  display: inline-flex;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+.group\/process .codex-tool-group-label,
+.group\/process .codex-tool-row-label {
+  /* fit-content keeps the sheen background glued to the text itself: a
+     flex-filling label would sweep its (invisible) right whitespace too. */
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.group\/process .codex-tool-caret {
+  flex: 0 0 auto;
+  opacity: 0;
+  color: var(--text-dim);
+  transition: opacity 120ms ease, transform 140ms ease;
+}
+.group\/process .codex-tool-caret.is-expanded {
+  transform: rotate(90deg);
+}
+.group\/process .codex-tool-group-trigger:hover .codex-tool-caret,
+.group\/process .codex-tool-group-trigger:focus-visible .codex-tool-caret,
+.group\/process .codex-tool-row-trigger:hover .codex-tool-caret,
+.group\/process .codex-tool-row-trigger:focus-visible .codex-tool-caret {
+  opacity: 0.8;
+}
+.group\/process .codex-tool-group-items {
+  display: grid;
+  gap: 7px;
+  padding-top: 8px;
+}
+.group\/process .codex-tool-group-items:empty {
+  display: none;
+}
+.group\/process .codex-image-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 160px));
+  gap: 8px;
+  padding-top: 10px;
+}
+.group\/process .codex-tool-group-scroll {
+  max-height: min(320px, 42vh);
+  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--border) transparent;
+  scrollbar-width: thin;
+}
+.group\/process .codex-image-strip img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  object-fit: cover;
+}
+.group\/process .codex-tool-row.is-error .codex-tool-icon,
+.group\/process .codex-tool-row.is-error .codex-tool-row-label {
+  color: var(--accent-red);
+}
+.group\/process .codex-tool-diff {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.group\/process .codex-tool-diff .is-added {
+  color: var(--accent-green);
+}
+.group\/process .codex-tool-diff .is-removed {
+  color: var(--accent-red);
+}
+.group\/process .codex-tool-duration {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.group\/process .codex-tool-details {
+  display: grid;
+  gap: 8px;
+  margin-top: 7px;
+}
+.group\/process .codex-tool-detail-section {
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--bg-subtle);
+}
+.group\/process .codex-tool-detail-label {
+  padding: 6px 9px 0;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 16px;
+}
+.group\/process .codex-tool-detail-section pre {
+  max-height: 320px;
+  margin: 0;
+  padding: 6px 9px 9px;
+  overflow: auto;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.group\/process .codex-tool-details.is-error .codex-tool-detail-section pre {
+  color: var(--accent-red);
+}
+.group\/process .codex-tool-empty {
+  padding: 6px 9px 9px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.group\/process .codex-tool-show-more {
+  margin: 0 9px 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.group\/process .codex-tool-images,
+.group\/process .codex-custom-content {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.group\/process .codex-tool-images {
+  padding: 0 9px 9px;
+}
+.group\/process .codex-tool-images img,
+.group\/process .codex-custom-content img,
+.group\/process .codex-process-image {
+  display: block;
+  max-width: 100%;
+  max-height: 288px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+.group\/process .codex-custom-content {
+  padding-top: 8px;
+}
+.transcript-compaction-status {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 20px;
+}
+.transcript-compaction-status svg {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--text-muted) 82%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .group\/process .process-group-caret,
+  .group\/process .codex-tool-caret,
+  .group\/process .disclosure-collapse,
+  .group\/process .codex-thinking-status-label {
+    transition: none;
+    animation: none;
+  }
+  .group\/process .disclosure-collapse {
+    transform: none;
+  }
+  .group\/process .codex-thinking-status-label {
+    color: var(--text-dim);
+    background: none;
+  }
+}
+.group\/process .process-group-layout {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+.group\/process .process-group-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Capped step navigators (timeline list + tab list): about 5 compact rows,
+   vertically scrollable. The scrollbar stays hidden by default and is revealed
+   only on hover (WebKit + Firefox) so the navigator reads as a clean list while
+   remaining reachable by wheel/trackpad/scrollbar. Content-pane scrollbars
+   (above) are intentionally untouched. */
+.group\/process .process-step-nav {
+  max-height: 144px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.group\/process .process-step-nav--fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: var(--process-group-max-height);
+}
+.group\/process .process-step-nav::-webkit-scrollbar {
+  width: 6px;
+}
+.group\/process .process-step-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+.group\/process .process-step-nav::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .group\/process .process-step-nav:hover {
+    scrollbar-color: var(--border) transparent;
+  }
+  .group\/process .process-step-nav:hover::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+  }
+}
+
+/* Restrained, layout-stable active-motion indicator: a small pulsing dot next
+   to the streaming summary. Opacity-only so nothing shifts; amplitude is kept
+   at or below the existing tab breathe. aria-hidden — the summary text already
+   carries the status. */
+.group\/process .process-streaming-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--accent);
+  animation: process-streaming-pulse 1.8s ease-in-out infinite;
+}
+@keyframes process-streaming-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.9; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .group\/process .process-streaming-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
+/* Chat markdown: compact enough for conversations, with a readable document hierarchy. */
+.markdown-body {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  font-size: 14px;
+  font-weight: var(--text-weight-regular);
+  line-height: 1.72;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.markdown-body p { margin: 0 0 10px; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+  font-weight: var(--text-weight-strong);
+  color: var(--text);
+}
+.markdown-body h4, .markdown-body h5, .markdown-body h6 { margin: 10px 0 4px; font-size: 1em; color: var(--text-muted); }
+.markdown-body ul, .markdown-body ol {
+  padding-left: 1.75em;
+  margin: 8px 0 10px;
+  list-style-position: outside;
+}
+.markdown-body li { margin: 4px 0; padding-left: 3px; }
+.markdown-body ul > li { list-style-type: disc; }
+.markdown-body ol > li { list-style-type: decimal; }
+.markdown-body li > p { margin: 0; }
+.markdown-body li::marker {
+  color: color-mix(in srgb, var(--accent) 72%, var(--text-muted));
+  font-weight: var(--text-weight-strong);
+}
+.markdown-body strong {
+  color: var(--text);
+  font-weight: var(--text-weight-strong);
+}
+.markdown-body em { color: var(--text-muted); }
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.markdown-body a:hover { text-decoration-color: var(--accent); }
+.markdown-body .contains-task-list {
+  padding-left: 0;
+  list-style: none;
+}
+.markdown-body .task-list-item {
+  display: block;
+  position: relative;
+  padding-left: 25px;
+}
+.markdown-body .task-list-item::marker { content: ""; }
+.markdown-body .task-list-item > input[type="checkbox"],
+.markdown-body .task-list-item > p:first-child > input[type="checkbox"]:first-child {
+  appearance: none;
+  position: absolute;
+  left: 0;
+  top: 0.35em;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  display: inline-grid;
+  place-content: center;
+}
+.markdown-body .task-list-item > input[type="checkbox"]:checked,
+.markdown-body .task-list-item > p:first-child > input[type="checkbox"]:first-child:checked {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+}
+.markdown-body .task-list-item > input[type="checkbox"]:checked::before,
+.markdown-body .task-list-item > p:first-child > input[type="checkbox"]:first-child:checked::before {
+  content: "";
+  width: 4px;
+  height: 8px;
+  border: solid var(--accent);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg) translateY(-1px);
+}
+.markdown-body blockquote {
+  margin: 12px 0;
+  padding: 2px 0 2px 14px;
+  border-left: 2px solid var(--text-muted);
+  color: var(--text-muted);
+  font-style: italic;
+}
+.markdown-body table {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 100%;
+  font-size: 13px;
+}
+.markdown-body th, .markdown-body td {
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-body th:last-child, .markdown-body td:last-child { border-right: 0; }
+.markdown-body tr:last-child td { border-bottom: 0; }
+.markdown-body th {
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--text-weight-strong);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.markdown-body tbody tr:nth-child(even) td { background: var(--bg-subtle); }
+.markdown-body hr {
+  border: none;
+  height: 1.5px;
+  margin: 12px 0;
+  background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--border) 45%, transparent) 0 6px, transparent 6px 10px);
+}
+.markdown-body .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+.markdown-body .katex {
+  font-size: 1.05em;
+}
+.markdown-user-message p {
+  white-space: pre-wrap;
+}
+.chat-user-bubble .markdown-body {
+  font-size: inherit;
+}
+
+.markdown-custom-message {
+  line-height: 1.32;
+}
+.markdown-custom-message p { margin: 0; }
+.markdown-custom-message h1,
+.markdown-custom-message h2,
+.markdown-custom-message h3,
+.markdown-custom-message h4,
+.markdown-custom-message h5,
+.markdown-custom-message h6 {
+  margin: 4px 0 2px;
+  line-height: 1.18;
+}
+.markdown-custom-message ul,
+.markdown-custom-message ol {
+  margin: 2px 0 3px;
+}
+.markdown-custom-message li { margin: 0; }
+.markdown-custom-message blockquote {
+  margin: 3px 0;
+  padding: 4px 8px;
+}
+.markdown-custom-message .markdown-code-block {
+  margin: 4px 0;
+}
+
+.markdown-compaction-message {
+  line-height: 1.5;
+}
+.markdown-compaction-message p { margin: 0 0 7px; }
+.markdown-compaction-message h1,
+.markdown-compaction-message h2,
+.markdown-compaction-message h3,
+.markdown-compaction-message h4,
+.markdown-compaction-message h5,
+.markdown-compaction-message h6 {
+  margin: 8px 0 3px;
+  line-height: 1.25;
+}
+.markdown-compaction-message ul,
+.markdown-compaction-message ol {
+  margin: 4px 0 8px;
+}
+.markdown-compaction-message li { margin: 2px 0; }
+.markdown-compaction-message .markdown-code-block {
+  margin: 6px 0;
+}
+
+.compaction-file-details {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.compaction-file-details summary {
+  cursor: pointer;
+  font-weight: var(--text-weight-strong);
+  line-height: 1.4;
+}
+.compaction-file-section {
+  margin-top: 8px;
+}
+.compaction-file-title {
+  margin-bottom: 4px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: var(--text-weight-strong);
+}
+.compaction-file-list {
+  max-height: 180px;
+  margin: 0;
+  padding: 7px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  list-style: none;
+}
+.compaction-file-list li {
+  overflow-wrap: anywhere;
+}
+.compaction-file-list li + li {
+  margin-top: 3px;
+}
+
+.markdown-code-block {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 12px 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+.markdown-code-streaming {
+  margin: 0;
+  padding: 10px 16px;
+  overflow-x: auto;
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre;
+}
+.markdown-code-streaming code {
+  font-family: inherit;
+}
+.markdown-code-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  min-height: 26px;
+  border: 0;
+  border-radius: 5px;
+  padding: 3px 7px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.25;
+}
+.markdown-code-action:hover:not(:disabled) {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+.markdown-code-action:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+.markdown-code-action.is-active {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+
+.mermaid-block {
+  padding: 12px;
+  overflow-x: auto;
+  background: "var(--bg-secondary)",
+}
+.mermaid-block svg {
+  display: block;
+  max-width: none;
+}
+.mermaid-block-loading {
+  min-height: 120px;
+}
+.mermaid-block-error {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* File viewer markdown preview — larger headings. Inline and block code
+   are deliberately NOT restyled here: they use the same components and
+   Tailwind utilities as in-chat markdown, and the code-block chrome comes
+   from the shared `.markdown-code-block` wrapper + SyntaxHighlighter inline
+   styles. Any element-level rule here would override the Tailwind utilities
+   (unlayered CSS beats layered utilities) and make the preview diverge from
+   the conversation view. */
+.markdown-file-preview h1 { font-size: 1.8em; }
+.markdown-file-preview h2 { font-size: 1.4em; }
+.markdown-file-preview h3 { font-size: 1.15em; }
+.markdown-file-preview p { margin: 0 0 12px; }
+
+/* syntax highlighter line numbers */
+.markdown-body span.linenumber,
+span.linenumber {
+  color: var(--text-dim) !important;
+  font-style: normal !important;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes notice-shelf-in {
+  from {
+    opacity: 0;
+    height: 0;
+    max-height: 0;
+    min-height: 0;
+    margin-bottom: 0;
+    transform: translateY(-6px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    height: 60px;
+    max-height: 60px;
+    min-height: 60px;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes notice-shelf-out {
+  from {
+    opacity: 1;
+    height: 60px;
+    max-height: 60px;
+    min-height: 60px;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    height: 0;
+    max-height: 0;
+    min-height: 0;
+    margin-bottom: 0;
+    transform: translateY(-5px) scale(0.995);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notice-shelf-item {
+    animation-duration: 0.001ms !important;
+  }
+}
+
+@keyframes saved-pop {
+  0%   { transform: scale(1); box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.55); }
+  40%  { transform: scale(1.08); box-shadow: 0 0 0 6px rgba(74, 222, 128, 0.25); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   SessionInfoBar — bottom-row session info bar (under ChatInput).
+   Replaces the inline-style implementation. Hover/active/compacting
+   states are handled in CSS, removing JS-driven onMouseEnter/Leave.
+   ───────────────────────────────────────────────────────────── */
+.session-info-bar {
+  display: flex;
+  align-items: center;
+  gap: 0px;
+  height: 26px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  position: relative;
+}
+
+/* Match ChatInput's actual visual box, not its 820px content wrapper:
+   .chat-input-shell expands 10px past that wrapper on each side
+   (width: calc(100% + 20px); margin-left: -10px). A 6px outer inset plus
+   an 840px cap therefore puts the info row's right edge exactly on the
+   input border at both capped and fluid widths. */
+.session-info-bar-wrap {
+  padding: 0 6px;
+  margin-top: -15px;       /* cancels ChatInput's 15px bottom padding */
+  padding-bottom: 4px;     /* breathing room under the row */
+}
+
+/* Mobile changes only the vertical cancellation; horizontal alignment still
+   follows the same expanded ChatInput shell. */
+@media (max-width: 640px) {
+  .session-info-bar-wrap {
+    margin-top: -6px;
+  }
+}
+.session-info-bar-inner {
+  max-width: 840px;
+  margin: 0 auto;
+}
+
+
+.session-info-bar-spacer {
+  flex: 1 1 auto;
+}
+
+.session-info-bar-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px;
+  height: 22px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.session-info-bar-button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.session-info-bar-button.is-active {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+.session-info-bar-button.is-active:hover {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+/* Compact button while compacting is inert — suppress the hover highlight. */
+.session-info-bar-button:disabled,
+.session-info-bar-button:disabled:hover {
+  background: none;
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+/* Compact button while compacting — the icon breathes (opacity pulse). */
+.session-info-bar-button.is-compacting svg {
+  animation: session-info-bar-compact-breathe 1.6s ease-in-out infinite;
+}
+@keyframes session-info-bar-compact-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+/* Token stats button uses a slightly wider internal gap than the icon buttons. */
+.session-info-bar-button.is-stats {
+  gap: 5px;
+}
+
+.session-info-bar-compact-wrap {
+  position: relative;
+}
+.session-info-bar-compact-error {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  background: #1f2937;
+  color: #f87171;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  z-index: 50;
+}
+
+.session-info-bar-token-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Context usage donut chart — arc length = usage %, color follows severity. */
+.session-info-bar-donut {
+  display: block;
+}
+.session-info-bar-donut-arc {
+  transition: stroke-dashoffset 0.35s ease;
+}
+
+/* Popover host — wraps a button and its popover so the popover
+   positions relative to the button, not the whole bar. */
+.session-info-bar-popover-host {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Popover cover (click-outside catcher) + base popover box. */
+.session-info-bar-popover-cover {
+  position: fixed;
+  inset: 0;
+  z-index: 499;
+}
+.session-info-bar-popover {
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 4px;
+  z-index: 500;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+.session-info-bar-popover.is-system {
+  left: 0;
+  max-width: 520px;
+  width: max-content;
+  max-height: 280px;
+}
+.session-info-bar-popover.is-system .session-info-bar-popover-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+.session-info-bar-system-body {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  white-space: normal;
+  line-height: 1.55;
+}
+.session-info-bar-system-body p {
+  margin: 0 0 0.5em 0;
+}
+.session-info-bar-system-body p:last-child {
+  margin-bottom: 0;
+}
+.session-info-bar-system-body h1,
+.session-info-bar-system-body h2,
+.session-info-bar-system-body h3,
+.session-info-bar-system-body h4,
+.session-info-bar-system-body h5,
+.session-info-bar-system-body h6 {
+  margin: 0.8em 0 0.35em 0;
+  color: var(--text);
+  font-weight: var(--text-weight-strong);
+}
+.session-info-bar-system-body h1 { font-size: 15px; }
+.session-info-bar-system-body h2 { font-size: 14px; }
+.session-info-bar-system-body h3 { font-size: 13px; }
+.session-info-bar-system-body h4,
+.session-info-bar-system-body h5,
+.session-info-bar-system-body h6 { font-size: 12px; }
+.session-info-bar-system-body code {
+  padding: 1px 4px;
+  background: var(--bg-hover);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.session-info-bar-system-body pre {
+  margin: 0.5em 0;
+  padding: 8px 10px;
+  background: var(--bg-hover);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.session-info-bar-system-body pre code {
+  padding: 0;
+  background: none;
+  font-size: 11px;
+}
+.session-info-bar-system-body ul,
+.session-info-bar-system-body ol {
+  margin: 0.35em 0;
+  padding-left: 1.5em;
+}
+.session-info-bar-system-body li {
+  margin: 0.15em 0;
+}
+.session-info-bar-system-body blockquote {
+  margin: 0.5em 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--text-dim);
+}
+.session-info-bar-system-body a {
+  color: var(--accent);
+}
+.session-info-bar-system-body hr {
+  margin: 0.8em 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.session-info-bar-system-body table {
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.session-info-bar-system-body th,
+.session-info-bar-system-body td {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+}
+.session-info-bar-system-body th {
+  background: var(--bg-hover);
+  font-weight: var(--text-weight-strong);
+}
+.session-info-bar-popover.is-session {
+  right: 0;
+  min-width: 320px;
+  max-width: 400px;
+}
+.session-info-bar-popover.is-branches {
+  left: 0;
+  min-width: 340px;
+  max-width: 480px;
+  max-height: 360px;
+}
+.session-info-bar-popover.is-branches .session-info-bar-popover-body {
+  max-height: 300px;
+  padding: 6px 0;
+  white-space: normal;
+  font-family: inherit;
+}
+.session-info-bar-popover-header {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+.session-info-bar-popover-title {
+  font-weight: var(--text-weight-strong);
+  color: var(--text);
+}
+.session-info-bar-popover-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+}
+.session-info-bar-popover-close:hover {
+  color: var(--text);
+}
+.session-info-bar-popover-body {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+.session-info-bar-popover-empty {
+  font-style: italic;
+}
+
+/* Session stats popover body */
+.session-stats-body {
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.session-stats-label {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.session-stats-value {
+  text-align: right;
+  white-space: nowrap;
+}
+.session-stats-section-title {
+  font-size: 11px;
+  font-weight: var(--text-weight-strong);
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.session-stats-compact-grid {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  column-gap: 14px;
+  row-gap: 3px;
+  justify-content: start;
+}
+.session-stats-row {
+  display: contents;
+}
+.session-stats-info-block {
+  margin-bottom: 2px;
+}
+.session-stats-info-name {
+  color: var(--text-dim);
+  white-space: nowrap;
+  margin-bottom: 4px;
+}
+.session-stats-info-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.session-stats-info-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-stats-side-by-side {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+.session-stats-column {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.session-stats-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.12s;
+}
+.session-stats-copy:hover {
+  color: var(--accent);
+}
+.session-stats-copy.is-copied {
+  color: var(--accent);
+}
+.session-stats-copy.is-copied:hover {
+  color: var(--accent);
+}
+
+@keyframes saved-check-draw {
+  from { stroke-dashoffset: 18; opacity: 0; }
+  to   { stroke-dashoffset: 0;  opacity: 1; }
+}
+
+/* Desktop workspace panels. Widths are supplied by useResizablePanel. */
+.workspace-panel-splitter {
+  display: none;
+}
+
+.sidebar-overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+  visibility: hidden;
+  background: rgba(0, 0, 0, 0.32);
+  opacity: 0;
+  pointer-events: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition:
+    opacity 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0s linear 180ms;
+}
+
+.sidebar-overlay-backdrop.is-open {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+/* Mobile: the header must blend with the page — a panel-gray strip at the
+   top reads as a frosted “mask”. Keep the same look as content bg. */
+@media (max-width: 640px) {
+  .app-title-bar {
+    background: var(--bg);
+    z-index: 100;
+    border-bottom: 0;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+  }
+}
+
+@media (min-width: 641px) {
+  .sidebar-overlay-backdrop {
+    display: none !important;
+  }
+
+  .sidebar-container {
+    position: relative;
+    align-self: stretch;
+    overflow: hidden;
+    transition: width 0.2s ease, min-width 0.2s ease;
+  }
+  .sidebar-container.sidebar-open {
+    width: var(--sidebar-width, 260px);
+    min-width: var(--sidebar-width, 260px);
+  }
+  .sidebar-container.sidebar-closed {
+    width: 0;
+    min-width: 0;
+  }
+  .sidebar-container > * {
+    width: var(--sidebar-width, 260px);
+    min-width: var(--sidebar-width, 260px);
+  }
+  .sidebar-container.sidebar-closed {
+    pointer-events: none;
+  }
+
+  .right-panel-container {
+    overflow: hidden;
+    transition: width 0.2s ease, min-width 0.2s ease;
+    flex-shrink: 0;
+  }
+  .right-panel-container.right-panel-open {
+    width: var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px));
+    min-width: var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px));
+  }
+  .right-panel-container.right-panel-closed {
+    width: 0;
+    min-width: 0;
+    border-left: none !important;
+  }
+  .right-panel-container.right-panel-open > * {
+    width: var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px));
+    min-width: var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px));
+  }
+
+  .workspace-panel-splitter {
+    display: block;
+    position: relative;
+    z-index: 201;
+    width: 9px;
+    margin: 0 -4px;
+    flex: 0 0 9px;
+    cursor: col-resize;
+    outline: none;
+    touch-action: none;
+  }
+  .workspace-panel-splitter::before {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 4px;
+    width: 1px;
+    /* The splitter line is the panel divider: the sidebar/right-panel
+       border was removed (it overlapped this line into a 2px rule), so the
+       line renders in the theme border color by default and the accent on
+       hover/focus as drag feedback. */
+    background: var(--border);
+    content: "";
+    transition: background 0.12s ease;
+  }
+  .workspace-panel-splitter:hover::before,
+  .workspace-panel-splitter:focus-visible::before {
+    background: var(--accent);
+  }
+  .sidebar-container.panel-is-resizing,
+  .right-panel-container.panel-is-resizing {
+    transition: none;
+  }
+}
+
+/* A file preview should not make a narrow desktop chat column unusable. */
+@media (min-width: 641px) and (max-width: 959px) {
+  .right-panel-container.right-panel-open {
+    position: absolute;
+    z-index: 202;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px)), calc(100% - 48px));
+    min-width: 0;
+    box-shadow: -8px 0 20px color-mix(in srgb, var(--text) 12%, transparent);
+  }
+  .right-panel-container.right-panel-open > * {
+    width: 100%;
+    min-width: 0;
+  }
+  .right-panel-splitter {
+    position: absolute;
+    z-index: 203;
+    top: 0;
+    right: min(var(--right-panel-width, clamp(360px, calc(42vw / var(--app-ui-scale, 1)), 640px)), calc(100% - 48px));
+    bottom: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .workspace-panel-splitter {
+    display: none !important;
+  }
+}
+
+/* Mobile sidebar: slide in/out as overlay */
+@media (max-width: 640px) {
+  .chat-stats-center {
+    display: none !important;
+  }
+  .sidebar-container {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    max-width: calc(85vw / var(--app-ui-scale, 1));
+    overflow: hidden;
+    will-change: transform;
+    transition:
+      transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      box-shadow 220ms ease,
+      visibility 0s linear 280ms;
+  }
+  .sidebar-container.sidebar-open {
+    width: 280px;
+    max-width: calc(85vw / var(--app-ui-scale, 1));
+    visibility: visible;
+    transform: translate3d(0, 0, 0);
+    box-shadow: 4px 0 20px rgba(0,0,0,0.15);
+    pointer-events: auto;
+    transition-delay: 0s;
+  }
+  .sidebar-container.sidebar-closed {
+    visibility: hidden;
+    transform: translate3d(-100%, 0, 0);
+    box-shadow: none;
+    pointer-events: none;
+  }
+  .sidebar-container > * {
+    width: 100%;
+    min-width: 0;
+  }
+  .right-panel-container {
+    overflow: hidden;
+    transition: width 0.2s ease, min-width 0.2s ease;
+    flex-shrink: 0;
+  }
+  .right-panel-container.right-panel-open {
+    width: 100%;
+    min-width: 0;
+  }
+  .right-panel-container.right-panel-closed {
+    width: 0 !important;
+    min-width: 0 !important;
+    border-left: none !important;
+    display: none !important;
+  }
+}
+
+@media (max-width: 640px) and (prefers-reduced-motion: reduce) {
+  .sidebar-container {
+    transform: none;
+    opacity: 0;
+    will-change: auto;
+    transition: opacity 120ms ease, visibility 0s linear 120ms;
+  }
+  .sidebar-container.sidebar-open {
+    transform: none;
+    opacity: 1;
+  }
+  .sidebar-overlay-backdrop {
+    transition: opacity 120ms ease, visibility 0s linear 120ms;
+  }
+}
+
+/* Startup splash: a CSS-only full-screen Pi logo (no JS needed) so the app
+   shows the logo from its very first paint — while the JS bundle loads and
+   before React hydrates — covering the initial-load gap. AppProviders adds
+   html.pi-booted after the provider tree commits, including the standalone
+   /login route where AppShell is never mounted. pointer-events: none keeps the
+   title bar draggable and never blocks input. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  background: #1a1a1a url("data:image/svg+xml,%3Csvg viewBox%3D%220 0 24 24%22 fill%3D%22%23ffffff%22 fill-rule%3D%22evenodd%22 xmlns%3D%22http%3A//www.w3.org/2000/svg%22%3E%3Cpath clip-rule%3D%22evenodd%22 d%3D%22M1 1h16.5v11H12v5.5H6.5V23H1V1zm5.5 5.5V12H12V6.5H6.5z%22/%3E%3Cpath d%3D%22M17.5 12H23v11h-5.5V12z%22/%3E%3C/svg%3E") center / 88px no-repeat;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+}
+html.pi-booted body::before {
+  content: none;
+  display: none;
+}
+
+/* LobeUI Streamdown: new characters fade in independently. Already-visible
+   characters stay revealed so later tokens do not restart the animation. */
+@keyframes pix-stream-char-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.markdown-body.is-streaming .stream-char {
+  opacity: 0;
+  animation-name: pix-stream-char-fade;
+  animation-duration: 280ms;
+  animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
+  animation-fill-mode: forwards;
+}
+.markdown-body.is-streaming .stream-char-revealed {
+  opacity: 1;
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .markdown-body.is-streaming .stream-char {
+    opacity: 1;
+    animation: none;
+  }
+}
+
+/* Calm loading dot for the transcript empty state (UI-first silent reconnect). */
+@keyframes pix-loading-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+.transcript-loading-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  vertical-align: middle;
+  animation: pix-loading-pulse 1.1s ease-in-out infinite;
+}

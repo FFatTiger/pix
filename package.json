@@ -1,0 +1,27 @@
+{
+  "name": "@fffattiger/pix",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone next-generation pix product workspace: Vite Client + Hono Host + independent pi-sessiond + per-session Worker + Runtime Protocol + Pi ACL. Zero Next.js.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "node scripts/run-workspaces.mjs build",
+    "typecheck": "node scripts/run-workspaces.mjs typecheck",
+    "test": "node scripts/run-node-test.mjs \"scripts/**/*.test.mjs\" \"tests/e2e/helpers/*.test.mjs\" && node scripts/run-workspaces.mjs test",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "start": "node scripts/product-entry.mjs start",
+    "cli": "node scripts/product-entry.mjs cli",
+    "test:e2e:startup": "node tests/e2e/startup.mjs",
+    "test:e2e:runtime": "node tests/e2e/runtime.mjs",
+    "test:e2e:sessions": "node tests/e2e/sessions-history.mjs",
+    "test:e2e:lifecycle-sdk": "node tests/e2e/lifecycle-real-sdk.mjs",
+    "test:e2e:lifecycle-browser": "node tests/e2e/lifecycle-browser.mjs",
+    "test:e2e:multi-tab": "node tests/e2e/multi-tab-model.mjs"
+  }
+}

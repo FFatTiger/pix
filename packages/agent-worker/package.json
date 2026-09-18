@@ -1,0 +1,38 @@
+{
+  "name": "@fffattiger/pix-agent-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Single-session agent worker: Protocol ↔ Runtime Core stateful mapper, application controller, and process composition root",
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./worker-main": { "types": "./dist/composition/worker-main.d.ts", "import": "./dist/composition/worker-main.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "clean": "node ../../scripts/remove-paths.mjs dist dist-test",
+    "build:deps": "node ./scripts/build-deps.mjs",
+    "prebuild": "npm run build:deps",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "pretypecheck": "npm run build:deps",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "prebuild:test": "npm run build:deps && npm run build",
+    "build:test": "node ../../scripts/remove-paths.mjs dist-test && tsc -p tsconfig.test.json",
+    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\"",
+    "precheck:boundaries": "npm run build",
+    "check:boundaries": "node ./scripts/check-boundaries.mjs"
+  },
+  "dependencies": {
+    "@fffattiger/pix-pi-sdk-adapter": "0.1.0",
+    "@fffattiger/pix-protocol": "0.1.0",
+    "@fffattiger/pix-runtime-core": "0.1.0"
+  },
+  "devDependencies": {
+    "@fffattiger/pix-sessiond": "0.1.0",
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,1700 @@
+
+import { memo, useState, useRef, useEffect, useMemo, useCallback, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
+import { MarkdownBody } from "./MarkdownBody";
+import { copyText } from "@/lib/clipboard";
+import { cssPx, cssViewportSize } from "@/lib/ui-scale";
+import { urls } from "@/api/urls";
+
+import { isEmptyThinkingBlock } from "@/lib/message-display";
+import { parseSkillBlock } from "@/lib/skill-block";
+import type { MentionValidators } from "@/lib/mention-tokens";
+import { CompactionSummary } from "./CompactionSummary";
+import { TurnWrittenFiles } from "./TurnWrittenFiles";
+import type { WrittenFile } from "@/lib/turn-written-files";
+import { isEditToolName } from "@/lib/tool-names";
+import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
+import { ArrowBendDownRightIcon } from "@phosphor-icons/react/ArrowBendDownRight";
+import { CloudArrowDownIcon } from "@phosphor-icons/react/CloudArrowDown";
+import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
+import { CheckIcon } from "@phosphor-icons/react/Check";
+import { CopyIcon } from "@phosphor-icons/react/Copy";
+import { WarningCircleIcon } from "@phosphor-icons/react/WarningCircle";
+import { GitForkIcon } from "@phosphor-icons/react/GitFork";
+import { useI18n } from "@/hooks/useI18n";
+import type {
+  AgentMessage,
+  UserMessage,
+  AssistantMessage,
+  CustomMessage,
+  BashExecutionMessage,
+  ToolResultMessage,
+  AssistantContentBlock,
+  TextContent,
+  ImageContent,
+  ToolCallContent,
+  ThinkingContent,
+} from "@/lib/chat-view-model";
+import type {
+  BashFullOutputLoader,
+  ChatSkillIndex,
+  DeferredThinkingLoader,
+} from "@/lib/chat-view-model";
+
+const MAX_THINKING_CACHE_ENTRIES = 100;
+// Keep in sync with .chat-user-skill-tip { max-width } in globals.css — used
+// to clamp the floating skill tooltip inside the window.
+const SKILL_TIP_MAX_WIDTH = 340;
+const thinkingContentCache = new Map<string, Promise<string>>();
+
+// Messages larger than this skip markdown rendering entirely. react-markdown +
+// KaTeX + syntax highlighting on multi-hundred-KB payloads (e.g. pasted HAR or
+// log dumps) freezes the browser main thread.
+const MAX_MARKDOWN_CHARS = 100_000;
+
+function formatMessageBytes(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} MB`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)} KB`;
+  return `${n} B`;
+}
+
+/**
+ * MarkdownBody with an oversized-content guard: huge messages render as a
+ * click-to-reveal plain-text <pre> instead of running the markdown pipeline.
+ */
+function SafeMarkdownBody({ children, className, ...props }: React.ComponentProps<typeof MarkdownBody>) {
+  const { t } = useI18n();
+  const [showRaw, setShowRaw] = useState(false);
+
+  if (children.length <= MAX_MARKDOWN_CHARS) {
+    return <MarkdownBody className={className} {...props}>{children}</MarkdownBody>;
+  }
+  if (!showRaw) {
+    return (
+      <button
+        onClick={() => setShowRaw(true)}
+        style={{
+          display: "block",
+          width: "100%",
+          margin: "4px 0",
+          padding: "7px 10px",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          background: "var(--bg-panel)",
+          color: "var(--text-muted)",
+          cursor: "pointer",
+          fontSize: 12,
+          textAlign: "left",
+        }}
+      >
+        ⚠ {t("desktop.largeMessageReveal", { size: formatMessageBytes(children.length) })}
+      </button>
+    );
+  }
+  return (
+    <div className={className} style={{ maxHeight: 420, overflow: "auto", fontSize: 12, lineHeight: 1.5 }}>
+      <pre
+        style={{
+          margin: 0,
+          padding: "8px 10px",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          fontFamily: "var(--font-mono)",
+          color: "var(--text-muted)",
+        }}
+      >
+        {children}
+      </pre>
+    </div>
+  );
+}
+
+// CJK chars are ~1 token each (GLM/DeepSeek/GPT-o200k vocabularies); other
+// chars average ~4 chars/token. The old chars/4 estimate under-counted CJK by
+// 4-5x, skewing the streaming TPS badge and estimated-token count for CJK.
+const CJK_PATTERN = /[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\u{20000}-\u{2fa1f}\uac00-\ud7af]/u;
+export function estimateTokens(text: string): number {
+  let cjk = 0;
+  let rest = 0;
+  for (const ch of text) {
+    if (CJK_PATTERN.test(ch)) cjk++;
+    else rest++;
+  }
+  return cjk + rest / 4;
+}
+
+interface TokenEstimateCacheEntry {
+  text: string;
+  tokens: number;
+}
+
+export function getTokenEstimateText(block: AssistantContentBlock): string | null {
+  if (block.type === "text") return block.text;
+  if (block.type === "thinking") return block.thinking;
+  if (block.type === "toolCall") return JSON.stringify(block.input ?? {}) ?? "";
+  return null;
+}
+
+function isHighSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
+/**
+ * Count only the freshly streamed suffix when the text grew since the last
+ * estimate, keeping per-frame cost O(delta) instead of O(whole message).
+ * A streamed delta can complete a surrogate pair that was previously counted
+ * as two non-CJK code points, so the boundary is re-checked for that case.
+ */
+export function estimateUpdatedTokens(previous: TokenEstimateCacheEntry | undefined, text: string): number {
+  if (!previous || !text.startsWith(previous.text)) return estimateTokens(text);
+
+  let baseTokens = previous.tokens;
+  let suffixStart = previous.text.length;
+  if (
+    suffixStart > 0
+    && suffixStart < text.length
+    && isHighSurrogate(previous.text.charCodeAt(suffixStart - 1))
+    && isLowSurrogate(text.charCodeAt(suffixStart))
+  ) {
+    baseTokens -= 1 / 4;
+    suffixStart--;
+  }
+  return baseTokens + estimateTokens(text.slice(suffixStart));
+}
+
+/**
+ * Replace the first text block of a user message (preserving image blocks).
+ * Used when re-editing a historical message as its compact command form, so
+ * the composer receives `/skill:name args` instead of the raw skill envelope.
+ */
+export function replaceUserMessageText(message: UserMessage, text: string): UserMessage {
+  if (typeof message.content === "string") return { ...message, content: text };
+
+  const content: Array<TextContent | ImageContent> = [];
+  let replaced = false;
+  for (const block of message.content) {
+    if (block.type !== "text") {
+      content.push(block);
+      continue;
+    }
+    if (!replaced) {
+      content.push({ ...block, text });
+      replaced = true;
+    }
+  }
+  if (!replaced) content.unshift({ type: "text", text });
+  return { ...message, content };
+}
+
+/**
+ * pix adapter: the source fetched the legacy sessions-entry thinking route
+ * directly. pix keeps the exact cache semantics but injects the loader as a
+ * view-model prop (client fetch boundary); it is wired to the host
+ * session-entry API by the future transcript wrapper.
+ */
+function loadThinkingContent(loader: DeferredThinkingLoader, sessionId: string, entryId: string, blockIndex: number): Promise<string> {
+  const key = `${sessionId}:${entryId}:${blockIndex}`;
+  const cached = thinkingContentCache.get(key);
+  if (cached) {
+    thinkingContentCache.delete(key);
+    thinkingContentCache.set(key, cached);
+    return cached;
+  }
+
+  const request = loader(sessionId, entryId, blockIndex).catch((error) => {
+    thinkingContentCache.delete(key);
+    throw error;
+  });
+
+  thinkingContentCache.set(key, request);
+  if (thinkingContentCache.size > MAX_THINKING_CACHE_ENTRIES) {
+    const oldestKey = thinkingContentCache.keys().next().value;
+    if (oldestKey) thinkingContentCache.delete(oldestKey);
+  }
+  return request;
+}
+
+interface Props {
+  message: AgentMessage;
+  isStreaming?: boolean | undefined;
+  toolResults?: Map<string, ToolResultMessage> | undefined;
+  modelNames?: Record<string, string> | undefined;
+  cwd?: string | undefined;
+  onOpenFile?: ((filePath: string, options?: { initialDisplayMode?: "diff" }) => void) | undefined;
+  entryId?: string;
+  onFork?: (entryId: string) => void;
+  forking?: boolean;
+  onNavigate?: (entryId: string) => void;
+  prevAssistantEntryId?: string;
+  onEditContent?: (message: UserMessage) => void;
+  showTimestamp?: boolean;
+  prevTimestamp?: number;
+  sessionId?: string;
+  writtenFiles?: WrittenFile[];
+  /** pix adapter: mention validity injected instead of a project-context data hook. */
+  mentionValidators?: MentionValidators | undefined;
+  /** pix adapter: skill tooltip metadata injected instead of a skills data hook. */
+  skillInfo?: ChatSkillIndex | null | undefined;
+  /** pix adapter: loads deferred thinking blocks (host session-entry API). */
+  loadDeferredThinking?: DeferredThinkingLoader | undefined;
+  /** pix adapter: loads the full output of a truncated bash execution. */
+  loadBashFullOutput?: BashFullOutputLoader | undefined;
+}
+
+function formatTime(ts?: number): string | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  const now = new Date();
+  const isToday = d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (isToday) return time;
+  const date = d.toLocaleDateString([], { month: "short", day: "numeric", year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined });
+  return `${date} ${time}`;
+}
+
+function haveSameRelevantToolResults(
+  message: AgentMessage,
+  previous: Map<string, ToolResultMessage> | undefined,
+  next: Map<string, ToolResultMessage> | undefined,
+): boolean {
+  if (previous === next || message.role !== "assistant") return true;
+  for (const block of (message as AssistantMessage).content ?? []) {
+    if (block.type === "toolCall" && previous?.get(block.toolCallId) !== next?.get(block.toolCallId)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles, mentionValidators, skillInfo, loadDeferredThinking, loadBashFullOutput }: Props) {
+  if (message.role === "user") {
+    return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} mentionValidators={mentionValidators} skillInfo={skillInfo} />;
+  }
+  if (message.role === "assistant") {
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} writtenFiles={writtenFiles} loadDeferredThinking={loadDeferredThinking} />;
+  }
+  if (message.role === "toolResult") {
+    // Rendered inline under its toolCall — skip standalone rendering if paired
+    return null;
+  }
+  if (message.role === "custom") {
+    if ((message as CustomMessage).customType === "compaction") {
+      return <CompactionSummary content={(message as CustomMessage).content} />;
+    }
+    return <CustomMessageView message={message as CustomMessage} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
+  }
+  if (message.role === "bashExecution") {
+    return <BashExecutionView message={message as BashExecutionMessage} sessionId={sessionId} loadFullOutput={loadBashFullOutput} />;
+  }
+  return null;
+}, (prev, next) => {
+  return prev.message === next.message
+    && prev.isStreaming === next.isStreaming
+    && haveSameRelevantToolResults(prev.message, prev.toolResults, next.toolResults)
+    && prev.modelNames === next.modelNames
+    && prev.cwd === next.cwd
+    && prev.onOpenFile === next.onOpenFile
+    && prev.entryId === next.entryId
+    && prev.onFork === next.onFork
+    && prev.forking === next.forking
+    && prev.onNavigate === next.onNavigate
+    && prev.prevAssistantEntryId === next.prevAssistantEntryId
+    && prev.onEditContent === next.onEditContent
+    && prev.showTimestamp === next.showTimestamp
+    && prev.prevTimestamp === next.prevTimestamp
+    && prev.sessionId === next.sessionId
+    && prev.mentionValidators === next.mentionValidators
+    && prev.skillInfo === next.skillInfo
+    && prev.loadDeferredThinking === next.loadDeferredThinking
+    && prev.loadBashFullOutput === next.loadBashFullOutput
+    && haveSameWrittenFiles(prev.writtenFiles, next.writtenFiles);
+});
+
+function haveSameWrittenFiles(previous: WrittenFile[] | undefined, next: WrittenFile[] | undefined): boolean {
+  if (previous === next) return true;
+  if (!previous || !next || previous.length !== next.length) return false;
+  return previous.every((file, i) => {
+    const other = next[i];
+    return file.filePath === other?.filePath
+      && file.additions === other?.additions
+      && file.deletions === other?.deletions;
+  });
+}
+
+function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, mentionValidators, skillInfo }: {
+  message: UserMessage;
+  cwd?: string | undefined;
+  onOpenFile?: ((filePath: string) => void) | undefined;
+  entryId?: string | undefined;
+  onFork?: ((entryId: string) => void) | undefined;
+  forking?: boolean | undefined;
+  onNavigate?: ((entryId: string) => void) | undefined;
+  prevAssistantEntryId?: string | undefined;
+  onEditContent?: ((message: UserMessage) => void) | undefined;
+  mentionValidators?: MentionValidators | undefined;
+  skillInfo?: ChatSkillIndex | null | undefined;
+}) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  // The skill tooltip is portaled to document.body and positioned fixed, so
+  // no chat container (including the bubble's overflow) can clip it. Scrolling re-anchors it to
+  // the token's current position instead of dismissing it — streaming grows
+  // the message list and the container scrolls at turn boundaries — and only
+  // a token that scrolls out of the viewport closes the tooltip.
+  const [skillTip, setSkillTip] = useState<{ left: number; top: number } | null>(null);
+  const skillTokenRef = useRef<HTMLSpanElement | null>(null);
+  const skillTipHideTimerRef = useRef<number | null>(null);
+  // Mirror of the tooltip visibility so the one-time scroll/resize listeners
+  // can check it without re-registering on every position update.
+  const skillTipOpenRef = useRef(false);
+  skillTipOpenRef.current = skillTip !== null;
+
+  const cancelSkillTipHide = useCallback(() => {
+    if (skillTipHideTimerRef.current !== null) {
+      window.clearTimeout(skillTipHideTimerRef.current);
+      skillTipHideTimerRef.current = null;
+    }
+  }, []);
+  const hideSkillTip = useCallback(() => {
+    if (skillTipHideTimerRef.current !== null) window.clearTimeout(skillTipHideTimerRef.current);
+    // Small grace so the mouse can travel from the token into the floating
+    // tooltip without it blinking away.
+    skillTipHideTimerRef.current = window.setTimeout(() => setSkillTip(null), 150);
+  }, []);
+
+  /** Text box of the token. The .chat-user-skill column stretches the span
+   *  to the full block width, so the element rect would be the whole row
+   *  while the visible text sits at its left. Measure the text node contents
+   *  instead so the tooltip anchors to what the user actually sees. */
+  const measureSkillTokenRect = useCallback((token: HTMLSpanElement): DOMRect => {
+    const range = document.createRange();
+    range.selectNodeContents(token);
+    const rect = range.getBoundingClientRect();
+    range.detach();
+    return rect;
+  }, []);
+
+  /** Viewport-fixed anchor for the tooltip. Returns null when the token
+   *  scrolled out of the viewport — a floating tooltip has nothing to anchor
+   *  to then. Left-aligned to the token's left edge (tooltip grows
+   *  rightward), clamped so it never leaves the window. */
+  const computeSkillTipPosition = useCallback((token: HTMLSpanElement): { left: number; top: number } | null => {
+    // Range rects and innerWidth/innerHeight are physical under CSS zoom;
+    // the fixed tooltip positions in CSS pixels that zoom paints at scale.
+    const rect = measureSkillTokenRect(token);
+    const rectTop = cssPx(rect.top);
+    const rectBottom = cssPx(rect.bottom);
+    const rectLeft = cssPx(rect.left);
+    const { width: vw, height: vh } = cssViewportSize();
+    if (rectBottom < 0 || rectTop > vh) return null;
+    const left = Math.min(
+      Math.max(rectLeft, 8),
+      vw - SKILL_TIP_MAX_WIDTH - 8,
+    );
+    return { left, top: rectBottom + 8 };
+  }, [measureSkillTokenRect]);
+
+  /** Re-anchor the tooltip after the list scrolled or the window resized.
+   *  Keeps the tooltip alive while the anchored token stays in view — only a
+   *  token that scrolled out of the viewport closes it. Functional update
+   *  with a sub-pixel threshold avoids re-render churn on every scroll tick. */
+  const repositionSkillTip = useCallback(() => {
+    const token = skillTokenRef.current;
+    if (!token) return;
+    const position = computeSkillTipPosition(token);
+    setSkillTip((prev) => {
+      if (!position) return null;
+      if (prev && Math.abs(prev.left - position.left) < 1 && Math.abs(prev.top - position.top) < 1) return prev;
+      return position;
+    });
+  }, [computeSkillTipPosition]);
+
+  const showSkillTip = useCallback(() => {
+    cancelSkillTipHide();
+    repositionSkillTip();
+  }, [cancelSkillTipHide, repositionSkillTip]);
+
+  // The leave may be caused by the layout shifting under a stationary cursor
+  // (streaming content pushing the token) rather than the mouse moving away.
+  // If the pointer is still inside the token's (possibly shifted) box, keep
+  // the tooltip and re-anchor it instead of hiding.
+  const handleSkillTokenMouseLeave = useCallback((event: MouseEvent<HTMLSpanElement>) => {
+    const token = skillTokenRef.current;
+    if (!token) return;
+    const rect = measureSkillTokenRect(token);
+    if (
+      event.clientX >= rect.left && event.clientX <= rect.right &&
+      event.clientY >= rect.top && event.clientY <= rect.bottom
+    ) {
+      repositionSkillTip();
+      return;
+    }
+    hideSkillTip();
+  }, [hideSkillTip, measureSkillTokenRect, repositionSkillTip]);
+
+  // One-time scroll/resize listeners (the open-ref guard keeps them cheap
+  // while closed). Capture catches scrolling inside any container, e.g. the
+  // chat list or the composer.
+  useEffect(() => {
+    const onScrollOrResize = () => {
+      if (!skillTipOpenRef.current) return;
+      repositionSkillTip();
+    };
+    document.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      document.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+    };
+  }, [repositionSkillTip]);
+
+  const content =
+    typeof message.content === "string"
+      ? message.content
+      : message.content
+          .filter((b): b is TextContent => b.type === "text")
+          .map((b) => b.text)
+          .join("\n");
+
+  // The SDK expands /skill:name into a <skill> block before storing the
+  // message; render that as a styled token instead of dumping the raw skill
+  // source into the bubble. Hovering the token reveals the skill's file path
+  // and description.
+  const skillBlock = content ? parseSkillBlock(content) : null;
+
+  // pix adapter: validity lookups for @file mentions and /skill: tokens are
+  // injected view-model props (the source read a project-context data hook).
+  // When absent, mentions stay plain — the same state as an unloaded index.
+  const markdownMentionProps = { cwd, onOpenFile, highlightMentions: true, mentionValidators } as const;
+  const skillMeta = skillBlock ? skillInfo?.get(skillBlock.name) : null;
+
+  // Editing a skill-expanded message restores the compact `/skill:name args`
+  // command rather than the raw `<skill>` envelope stored by the SDK.
+  const editTarget = skillBlock
+    ? replaceUserMessageText(message, `/skill:${skillBlock.name}${skillBlock.args ? ` ${skillBlock.args}` : ""}`)
+    : message;
+
+  const imageBlocks: ImageContent[] =
+    typeof message.content === "string"
+      ? []
+      : message.content.filter((b): b is ImageContent => b.type === "image");
+
+  const time = formatTime(message.timestamp);
+  const canFork = !!entryId && !!onFork;
+  const canNavigate = !!prevAssistantEntryId && !!onNavigate;
+
+  const copyContent = () => {
+    copyText(content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <div className={`chat-user-message${forking ? " is-forking" : ""}`}>
+      <div className="chat-user-bubble-wrap">
+        <div className="chat-user-bubble">
+          {imageBlocks.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: content ? 8 : 0 }}>
+              {imageBlocks.map((img, i) => {
+                // lib/types.ts ImageContent uses {source:{type,data,media_type,url}}
+                // pi-ai on-disk format uses flat {data, mimeType} — handle both
+                const flat = img as unknown as { data?: string; mimeType?: string };
+                const src = img.source
+                  ? img.source.type === "base64"
+                    ? `data:${img.source.media_type};base64,${img.source.data}`
+                    : img.source.url ?? ""
+                  : flat.data
+                    ? `data:${flat.mimeType};base64,${flat.data}`
+                    : "";
+                return (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    key={i}
+                    src={src}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    style={{ maxWidth: 240, maxHeight: 240, borderRadius: 6, objectFit: "contain", display: "block", border: "1px solid rgba(59,130,246,0.15)" }}
+                  />
+                );
+              })}
+            </div>
+          )}
+          {content && (skillBlock ? (
+            <div className="chat-user-skill">
+              <span
+                ref={skillTokenRef}
+                className="mention-token mention-token-skill"
+                onMouseEnter={showSkillTip}
+                onMouseLeave={handleSkillTokenMouseLeave}
+              >
+                /skill:{skillBlock.name}
+              </span>
+              {skillBlock.args && (
+                <MarkdownBody className="markdown-user-message" {...markdownMentionProps}>{skillBlock.args}</MarkdownBody>
+              )}
+            </div>
+          ) : (
+            <SafeMarkdownBody className="markdown-user-message" {...markdownMentionProps}>{content}</SafeMarkdownBody>
+          ))}
+        </div>
+
+      </div>
+
+      {/* Floating skill tooltip — portaled to body + fixed, so bubble overflow
+          cannot clip it. Dismissed on scroll/resize. */}
+      {skillTip !== null && (skillMeta || skillBlock?.location) && createPortal(
+        <div
+          className="chat-user-skill-tip"
+          role="tooltip"
+          style={{ left: skillTip.left, top: skillTip.top }}
+          onMouseEnter={cancelSkillTipHide}
+          onMouseLeave={hideSkillTip}
+        >
+          {skillMeta && skillMeta.description && (
+            <span className="chat-user-skill-tip-desc">{skillMeta.description}</span>
+          )}
+          <span className="chat-user-skill-tip-path">{skillMeta?.filePath ?? skillBlock?.location}</span>
+        </div>,
+        document.body,
+      )}
+
+      {/* Bottom row: action buttons + timestamp */}
+      {(time || canFork || canNavigate || true) && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "flex-end",
+          gap: 6, marginTop: 3,
+        }}>
+          <div className="chat-message-hover-actions" style={{ display: "flex", gap: 3 }}>
+            <button
+              onClick={copyContent}
+              title={t("desktop.copyMessage")}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 22, height: 22,
+                background: "none", border: "none",
+                borderRadius: 5,
+                color: copied ? "var(--accent)" : "var(--text-dim)",
+                cursor: "pointer",
+                transition: "color 0.12s",
+              }}
+              onMouseEnter={(e) => { if (!copied) e.currentTarget.style.color = "var(--accent)"; }}
+              onMouseLeave={(e) => { if (!copied) e.currentTarget.style.color = "var(--text-dim)"; }}
+            >
+              {copied ? (
+                <CheckIcon size={11} />
+              ) : (
+                <CopyIcon size={11} />
+              )}
+            </button>
+          </div>
+          {(canFork || canNavigate) && (
+            <div className="chat-message-hover-actions" style={{ display: "flex", gap: 3 }}>
+              {canNavigate && (
+                <button
+                  onClick={() => { onNavigate!(prevAssistantEntryId!); onEditContent?.(editTarget); }}
+                  title={t("desktop.editFromHere")}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 22, height: 22,
+                    background: "none", border: "none",
+                    borderRadius: 5,
+                    color: "var(--text-dim)",
+                    cursor: "pointer",
+                    transition: "color 0.12s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; }}
+                >
+                  <ArrowBendDownRightIcon size={11} />
+                </button>
+              )}
+              {canFork && (
+                <button
+                  onClick={() => { onFork!(entryId!); }}
+                  disabled={forking}
+                  title={forking ? t("desktop.creatingNewSession") : t("desktop.newSessionFromHere")}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 22, height: 22,
+                    background: "none", border: "none",
+                    borderRadius: 5,
+                    color: forking ? "var(--accent)" : "var(--text-dim)",
+                    cursor: forking ? "not-allowed" : "pointer",
+                    transition: "color 0.12s",
+                  }}
+                  onMouseEnter={(e) => { if (!forking) e.currentTarget.style.color = "var(--accent)"; }}
+                  onMouseLeave={(e) => { if (!forking) e.currentTarget.style.color = "var(--text-dim)"; }}
+                >
+                  <GitForkIcon size={11} />
+                </button>
+              )}
+            </div>
+          )}
+          {time && (
+            <span className="chat-message-time" style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {time}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssistantMessageView({
+  message,
+  isStreaming,
+  toolResults,
+  modelNames,
+  cwd,
+  onOpenFile,
+  showTimestamp,
+  prevTimestamp,
+  sessionId,
+  entryId,
+  writtenFiles,
+  loadDeferredThinking,
+}: {
+  message: AssistantMessage;
+  isStreaming?: boolean | undefined;
+  toolResults?: Map<string, ToolResultMessage> | undefined;
+  modelNames?: Record<string, string> | undefined;
+  cwd?: string | undefined;
+  onOpenFile?: ((filePath: string, options?: { initialDisplayMode?: "diff" }) => void) | undefined;
+  showTimestamp?: boolean | undefined;
+  prevTimestamp?: number | undefined;
+  sessionId?: string | undefined;
+  entryId?: string | undefined;
+  writtenFiles?: WrittenFile[] | undefined;
+  loadDeferredThinking?: DeferredThinkingLoader | undefined;
+}) {
+  const { t } = useI18n();
+  const time = showTimestamp ? formatTime(message.timestamp) : null;
+  const blockItems = (message.content ?? [])
+    .map((block, originalIndex) => ({ block, originalIndex }))
+    .filter(({ block }) => !isEmptyThinkingBlock(block, { isStreaming }));
+  const blocks = blockItems.map(({ block }) => block);
+  const [copied, setCopied] = useState(false);
+  const streamStartRef = useRef<number | null>(null);
+  const [tps, setTps] = useState<number | null>(null);
+  const blockItemsRef = useRef(blockItems);
+  blockItemsRef.current = blockItems;
+  // Token estimate with an append-only cache: re-running on every streamed
+  // chunk counts only the newly appended suffix, so the cost stays O(delta).
+  const tokenEstimateCacheRef = useRef<Map<number, TokenEstimateCacheEntry>>(new Map());
+  const estimatedTokens = useMemo(() => {
+    if (!isStreaming) {
+      tokenEstimateCacheRef.current = new Map();
+      return 0;
+    }
+    const nextCache = new Map<number, TokenEstimateCacheEntry>();
+    let total = 0;
+    for (const { block, originalIndex } of blockItems) {
+      const text = getTokenEstimateText(block);
+      if (text === null) continue;
+      const tokens = estimateUpdatedTokens(tokenEstimateCacheRef.current.get(originalIndex), text);
+      nextCache.set(originalIndex, { text, tokens });
+      total += tokens;
+    }
+    tokenEstimateCacheRef.current = nextCache;
+    return total;
+  }, [blockItems, isStreaming]);
+  // The 300ms tick reads the freshest estimate without re-creating the interval.
+  const estimatedTokensRef = useRef(estimatedTokens);
+  estimatedTokensRef.current = estimatedTokens;
+
+  // Streaming-based timing for thinking blocks
+  const blockStartTimesRef = useRef<Map<number, number>>(new Map());
+  const [streamingDurations, setStreamingDurations] = useState<Map<number, number>>(new Map());
+
+  // Thinking duration derived from file timestamps: time from prev message end to this message end
+  // This is the total generation time (thinking + any text before first tool call)
+  const thinkingDurationFromFile = useMemo<number | undefined>(() => {
+    if (!message.timestamp || !prevTimestamp) return undefined;
+    const secs = Math.round((message.timestamp - prevTimestamp) / 1000);
+    return secs > 0 ? secs : undefined;
+  }, [message.timestamp, prevTimestamp]);
+
+  // Tool call durations derived from session file timestamps (accurate for completed messages)
+  // assistant message timestamp = when generation ended = when tools started running
+  // toolResult timestamp = when tool execution finished
+  const toolCallDurations = useMemo<Map<string, number>>(() => {
+    const map = new Map<string, number>();
+    if (!toolResults || !message.timestamp) return map;
+    for (const [callId, result] of toolResults) {
+      if (result.timestamp && message.timestamp) {
+        const secs = Math.round((result.timestamp - message.timestamp) / 1000);
+        if (secs > 0) map.set(callId, secs);
+      }
+    }
+    return map;
+  }, [toolResults, message.timestamp]);
+
+  const textContent = blocks
+    .filter((b): b is TextContent => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+
+  const copyContent = () => {
+    copyText(textContent).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  useEffect(() => {
+    if (!isStreaming) {
+      // Finalise any un-finished thinking block durations on stream end
+      const now = new Date().getTime();
+      setStreamingDurations((prev: Map<number, number>) => {
+        const next = new Map(prev);
+        for (const [idx, start] of blockStartTimesRef.current) {
+          if (!next.has(idx)) next.set(idx, Math.round((now - start) / 1000));
+        }
+        return next;
+      });
+      streamStartRef.current = null;
+      setTps(null);
+      return;
+    }
+    const tick = () => {
+      const items = blockItemsRef.current;
+      const now = Date.now();
+
+      // Record start time for each block the first time we see it
+      items.forEach(({ originalIndex }) => {
+        if (!blockStartTimesRef.current.has(originalIndex)) blockStartTimesRef.current.set(originalIndex, now);
+      });
+
+      // When a non-last block has a successor already started, finalise its duration
+      setStreamingDurations((prev: Map<number, number>) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (let i = 0; i < items.length - 1; i++) {
+          const originalIndex = items[i]!.originalIndex;
+          const nextOriginalIndex = items[i + 1]!.originalIndex;
+          if (!next.has(originalIndex) && blockStartTimesRef.current.has(originalIndex)) {
+            const start = blockStartTimesRef.current.get(originalIndex)!;
+            const nextStart = blockStartTimesRef.current.get(nextOriginalIndex) ?? now;
+            next.set(originalIndex, Math.round((nextStart - start) / 1000));
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+
+      const tokens = estimatedTokensRef.current;
+      if (tokens === 0) return;
+      if (streamStartRef.current === null) streamStartRef.current = now;
+      const elapsed = (now - streamStartRef.current) / 1000;
+      if (elapsed > 0.5) setTps(tokens / elapsed);
+    };
+    const id = setInterval(tick, 300);
+    return () => clearInterval(id);
+  }, [isStreaming]);
+
+  const failureMessage = message.stopReason === "error" && message.errorMessage
+    ? message.errorMessage
+    : null;
+  if (blocks.length === 0 && !isStreaming && !failureMessage) return null;
+
+  return (
+    <div className={["chat-assistant-message", isStreaming ? "is-streaming" : ""].filter(Boolean).join(" ")}>
+      {isStreaming && (
+      <div className="chat-assistant-meta">
+        {(() => {
+          const est = Math.round(estimatedTokens);
+          return (
+            <>
+
+              {est > 0 && (
+                <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--text)" }} title={t("desktop.estimatedStreamingTokenCount")}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11, fontWeight: 400 }}>
+                    <CloudArrowDownIcon size={13} />
+                    {est}
+                  </span>
+                  {tps !== null && (() => {
+                    const speedVar = tps >= 50 ? "--accent-green" : tps >= 30 ? "--accent-blue" : tps >= 15 ? "--accent-orange" : "--accent-red";
+                    return (
+                      <span style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 4, background: `var(${speedVar})`, color: "var(--bg)", fontSize: 11, fontWeight: 400 }}>
+                        {t("desktop.tokensPerSecond", { count: tps.toFixed(1) })}
+                      </span>
+                    );
+                  })()}
+                </span>
+              )}
+            </>
+          );
+        })()}
+      </div>
+      )}
+
+      <div className="chat-assistant-content">
+        {failureMessage && (
+          <div className="chat-assistant-error" role="alert">
+            <WarningCircleIcon size={13} weight="bold" />
+            <span>{failureMessage}</span>
+          </div>
+        )}
+        {blockItems.map(({ block, originalIndex }) => (
+          <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} cwd={cwd} onOpenFile={onOpenFile} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} loadDeferredThinking={loadDeferredThinking} />
+        ))}
+      </div>
+
+      {writtenFiles && writtenFiles.length > 0 && (
+        <TurnWrittenFiles files={writtenFiles} onOpenFile={onOpenFile} />
+      )}
+
+      {!isStreaming && (textContent || time || message.provider) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+          {message.provider && (
+            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {modelNames?.[`${message.provider}:${message.model}`] ?? modelNames?.[message.model] ?? message.model}
+            </span>
+          )}
+          {textContent && (
+            <button
+              onClick={copyContent}
+              title={t("desktop.copyMessage")}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 22, height: 22,
+                background: "none", border: "none",
+                borderRadius: 5,
+                color: copied ? "var(--accent)" : "var(--text-dim)",
+                cursor: "pointer",
+                transition: "color 0.12s",
+              }}
+              onMouseEnter={(e) => { if (!copied) e.currentTarget.style.color = "var(--accent)"; }}
+              onMouseLeave={(e) => { if (!copied) e.currentTarget.style.color = "var(--text-dim)"; }}
+            >
+              {copied ? <CheckIcon size={11} /> : <CopyIcon size={11} />}
+            </button>
+          )}
+          {time && (
+            <span className="chat-message-time" style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {time}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, cwd, onOpenFile, sessionId, entryId, blockIndex, loadDeferredThinking }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage> | undefined; isStreaming?: boolean | undefined; streamingDuration?: number | undefined; toolCallDurations?: Map<string, number> | undefined; cwd?: string | undefined; onOpenFile?: ((filePath: string) => void) | undefined; sessionId?: string | undefined; entryId?: string | undefined; blockIndex: number; loadDeferredThinking?: DeferredThinkingLoader | undefined }) {
+  if (block.type === "text") {
+    return <TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} />;
+  }
+  if (block.type === "thinking") {
+    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} loadThinking={loadDeferredThinking} />;
+  }
+  if (block.type === "toolCall") {
+    const tc = block as ToolCallContent;
+    const result = toolResults?.get(tc.toolCallId);
+    const duration = toolCallDurations?.get(tc.toolCallId);
+    return <ToolCallBlock block={tc} result={result} duration={duration} />;
+  }
+  return null;
+}
+
+function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent; isStreaming?: boolean | undefined; cwd?: string | undefined; onOpenFile?: ((filePath: string) => void) | undefined }) {
+  return (
+    <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>
+  );
+}
+
+export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex, contentOnly = false, isStreaming, cwd, onOpenFile, className, loadThinking }: {
+  block: ThinkingContent;
+  duration?: number | undefined;
+  sessionId?: string | undefined;
+  entryId?: string | undefined;
+  blockIndex: number;
+  contentOnly?: boolean;
+  isStreaming?: boolean | undefined;
+  cwd?: string | undefined;
+  onOpenFile?: ((filePath: string) => void) | undefined;
+  className?: string | undefined;
+  /** pix adapter: injected deferred-thinking loader (host session-entry API). */
+  loadThinking?: DeferredThinkingLoader | undefined;
+}) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = async () => {
+    const nextExpanded = !expanded;
+    setExpanded(nextExpanded);
+    if (!nextExpanded || !block.deferred || content !== null) return;
+    if (!loadThinking || !sessionId || !entryId) {
+      setError(t("desktop.thinkingContentUnavailable"));
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      setContent(await loadThinkingContent(loadThinking, sessionId, entryId, blockIndex));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (contentOnly) {
+    return (
+      <ThinkingContentBody
+        block={block}
+        sessionId={sessionId}
+        entryId={entryId}
+        blockIndex={blockIndex}
+        isStreaming={isStreaming}
+        cwd={cwd}
+        onOpenFile={onOpenFile}
+        className={className}
+        loadThinking={loadThinking}
+      />
+    );
+  }
+
+  return (
+    <div className="thinking-block">
+      <button
+        onClick={() => void toggle()}
+        className="thinking-block-trigger"
+        aria-expanded={expanded}
+      >
+        <span className={`thinking-block-caret ${expanded ? "is-expanded" : ""}`} aria-hidden="true">›</span>
+        <span className="thinking-block-icon" aria-hidden="true">✦</span>
+        <span>{t("desktop.thinking")}</span>
+        {duration !== undefined && (
+          <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}>{duration}s</span>
+        )}
+      </button>
+      {expanded && (
+        <div className={`thinking-block-content ${error ? "is-error" : ""}`}>
+          {loading ? t("desktop.loadingThinking") : error ?? (block.deferred ? content : block.thinking)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThinkingContentBody({ block, sessionId, entryId, blockIndex, isStreaming, cwd, onOpenFile, className, loadThinking }: {
+  block: ThinkingContent;
+  sessionId?: string | undefined;
+  entryId?: string | undefined;
+  blockIndex: number;
+  isStreaming?: boolean | undefined;
+  cwd?: string | undefined;
+  onOpenFile?: ((filePath: string) => void) | undefined;
+  className?: string | undefined;
+  loadThinking?: DeferredThinkingLoader | undefined;
+}) {
+  const { t } = useI18n();
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(block.deferred === true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!block.deferred) {
+      setLoading(false);
+      return;
+    }
+    if (!loadThinking || !sessionId || !entryId) {
+      setLoading(false);
+      setError(t("desktop.thinkingContentUnavailable"));
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    void loadThinkingContent(loadThinking, sessionId, entryId, blockIndex)
+      .then((value) => { if (!cancelled) setContent(value); })
+      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [block.deferred, blockIndex, entryId, sessionId, t, loadThinking]);
+
+  if (loading) return <div className="text-xs text-text-dim">{t("desktop.loadingThinking")}</div>;
+  if (error) return <div className="text-xs text-red-400">{error}</div>;
+
+  return (
+    <MarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} className={className}>
+      {block.deferred ? (content ?? "") : block.thinking}
+    </MarkdownBody>
+  );
+}
+
+// Large tool outputs are rendered as plain text; cap the initial render and
+// let the user opt into the full payload so expanding a 45K result stays snappy.
+const RESULT_PREVIEW_CHARS = 8000;
+
+export const ToolCallBlock = memo(function ToolCallBlock({ block, result, duration, processStyle = false }: { block: ToolCallContent; result?: ToolResultMessage | undefined; duration?: number | undefined; processStyle?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const inputStr = useMemo(() => JSON.stringify(block.input, null, 2), [block.input]);
+  const isEditTool = isEditToolName(block.toolName);
+  const resultDiff = result && !result.isError ? getResultDiff(result) : null;
+
+  // Result display
+  const resultText = useMemo(
+    () => (result
+      ? result.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text).join("\n")
+      : null),
+    [result],
+  );
+  const resultIsEmpty = resultText === null ? false : (resultText.trim() === "(no output)" || resultText.trim() === "");
+  const isError = result?.isError ?? false;
+
+  return (
+    <div
+      className={`tool-call-block ${processStyle ? "is-process" : ""} ${isError ? "is-error" : ""}`}
+    >
+      {/* ── Tool call header ── */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="tool-call-trigger"
+        aria-expanded={expanded}
+      >
+        <span className="tool-call-name">
+          {block.toolName}
+        </span>
+        <span className="tool-call-preview">
+          {getToolPreview(block)}
+        </span>
+        {duration !== undefined && (
+          <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{duration}s</span>
+        )}
+        <span className={`tool-call-caret ${expanded ? "is-expanded" : ""}`} aria-hidden="true">
+          <CaretRightIcon size={12} />
+        </span>
+      </button>
+
+      {/* ── Expanded: input args ── */}
+      {expanded && !isEditTool && (
+        <pre className="tool-call-input">
+          {inputStr}
+        </pre>
+      )}
+
+      {/* ── Paired result — only shown when expanded ── */}
+      {expanded && result && (
+        resultDiff ? (
+          <PairedDiffResult
+            diff={resultDiff}
+            processStyle={processStyle}
+          />
+        ) : (
+          <PairedResult
+            text={resultText ?? ""}
+            isEmpty={resultIsEmpty}
+            isError={isError}
+            processStyle={processStyle}
+          />
+        )
+      )}
+    </div>
+  );
+});
+
+interface ResultDiff {
+  text: string;
+}
+
+function PairedDiffResult({ diff, processStyle = false }: {
+  diff: ResultDiff;
+  processStyle?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        borderTop: processStyle ? "1px solid var(--border)" : "1px solid rgba(34,197,94,0.15)",
+        background: "var(--bg)",
+      }}
+    >
+      <SplitPatchView text={diff.text} />
+    </div>
+  );
+}
+
+function SplitPatchView({ text }: { text: string }) {
+  const { t } = useI18n();
+  const files = useMemo(() => parseUnifiedPatch(text), [text]);
+  if (!files) return <PatchTextView text={text} />;
+  const showFileHeaders = files.length > 1;
+
+  return (
+    <div style={{ maxHeight: 560, overflowY: "auto", overflowX: "hidden", background: "var(--bg)" }}>
+      {files.map((file, fileIndex) => (
+        <div
+          key={fileIndex}
+          style={{
+            minWidth: 0,
+            borderTop: fileIndex === 0 ? "none" : "1px solid var(--border)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 12,
+            lineHeight: 1.55,
+          }}
+        >
+          {showFileHeaders && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+                position: "sticky",
+                top: 0,
+                zIndex: 1,
+                background: "var(--bg-panel)",
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              <SplitDiffHeader title={file.oldPath || t("desktop.before")} side="left" />
+              <SplitDiffHeader title={file.newPath || t("desktop.after")} side="right" />
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)" }}>
+            {file.rows.map((row, rowIndex) => {
+              if (row.type === "hunk") {
+                return null;
+              }
+
+              return (
+                <div key={rowIndex} style={{ display: "contents" }}>
+                  <SplitDiffCellView cell={row.left} side="left" />
+                  <SplitDiffCellView cell={row.right} side="right" />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SplitDiffHeader({ title, side }: { title: string; side: "left" | "right" }) {
+  return (
+    <div
+      title={title}
+      style={{
+        padding: "5px 10px",
+        color: "var(--text-dim)",
+        borderRight: side === "left" ? "1px solid var(--border)" : "none",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {title}
+    </div>
+  );
+}
+
+function SplitDiffCellView({ cell, side }: { cell: SplitDiffCell; side: "left" | "right" }) {
+  const bg =
+    cell.type === "added"
+      ? "rgba(34,197,94,0.12)"
+      : cell.type === "removed"
+      ? "rgba(248,113,113,0.13)"
+      : cell.type === "empty"
+      ? "var(--bg-subtle)"
+      : "transparent";
+  const marker =
+    cell.type === "added" ? "+" : cell.type === "removed" ? "-" : " ";
+  const markerColor =
+    cell.type === "added" ? "#22c55e" : cell.type === "removed" ? "#f87171" : "var(--text-dim)";
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        minWidth: 0,
+        background: bg,
+        borderRight: side === "left" ? "1px solid var(--border)" : "none",
+      }}
+    >
+      <span
+        style={{
+          width: 42,
+          padding: "0 6px",
+          textAlign: "right",
+          color: "var(--text-dim)",
+          userSelect: "none",
+          background: "var(--bg-panel)",
+          borderRight: "1px solid var(--border)",
+          flexShrink: 0,
+        }}
+      >
+        {cell.lineNo ?? ""}
+      </span>
+      <span
+        style={{
+          width: 18,
+          padding: "0 5px",
+          color: markerColor,
+          userSelect: "none",
+          fontWeight: cell.type === "context" || cell.type === "empty" ? 400 : 700,
+          flexShrink: 0,
+        }}
+      >
+        {marker}
+      </span>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          padding: "0 10px 0 0",
+          color: cell.type === "empty" ? "var(--text-dim)" : "var(--text)",
+          whiteSpace: "pre-wrap",
+          overflowWrap: "anywhere",
+        }}
+      >
+        {cell.text || "\u00a0"}
+      </span>
+    </div>
+  );
+}
+
+function PatchTextView({ text }: { text: string }) {
+  const lines = text.split(/\r?\n/);
+
+  return (
+    <div style={{ maxHeight: 520, overflowY: "auto", overflowX: "hidden", fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.55, minWidth: 0 }}>
+      {lines.map((line, i) => {
+        const kind =
+          line.startsWith("@@") ? "hunk" :
+          line.startsWith("+") && !line.startsWith("+++") ? "added" :
+          line.startsWith("-") && !line.startsWith("---") ? "removed" :
+          "context";
+        const bg =
+          kind === "added" ? "rgba(34,197,94,0.12)" :
+          kind === "removed" ? "rgba(248,113,113,0.13)" :
+          kind === "hunk" ? "rgba(96,165,250,0.12)" :
+          "transparent";
+        const color =
+          kind === "added" ? "#22c55e" :
+          kind === "removed" ? "#f87171" :
+          kind === "hunk" ? "var(--accent)" :
+          "var(--text)";
+
+        return (
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              background: bg,
+              borderLeft: kind === "added"
+                ? "3px solid #22c55e"
+                : kind === "removed"
+                ? "3px solid #f87171"
+                : kind === "hunk"
+                ? "3px solid var(--accent)"
+                : "3px solid transparent",
+            }}
+          >
+            <span
+              style={{
+                width: 48,
+                padding: "0 8px",
+                color: "var(--text-dim)",
+                background: "var(--bg-panel)",
+                borderRight: "1px solid var(--border)",
+                textAlign: "right",
+                userSelect: "none",
+                flexShrink: 0,
+              }}
+            >
+              {i + 1}
+            </span>
+            <span style={{ padding: "0 10px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", color }}>
+              {line || "\u00a0"}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function getResultDiff(result: ToolResultMessage): ResultDiff | null {
+  const details = (result as ToolResultMessage & { details?: unknown }).details;
+  if (!isRecord(details)) return null;
+
+  const patch = typeof details.patch === "string" ? details.patch : null;
+  if (patch) return { text: patch };
+
+  const diff = typeof details.diff === "string" ? details.diff : null;
+  if (diff) return { text: diff };
+
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function PairedResult({ text, isEmpty, isError, processStyle = false }: {
+  text: string;
+  isEmpty: boolean;
+  isError: boolean;
+  processStyle?: boolean;
+}) {
+  const { t } = useI18n();
+  const [showFull, setShowFull] = useState(false);
+  const border = processStyle ? "var(--border)" : isError ? "rgba(248,113,113,0.3)" : "rgba(34,197,94,0.15)";
+  const truncated = !isEmpty && text.length > RESULT_PREVIEW_CHARS && !showFull;
+  const displayText = truncated ? text.slice(0, RESULT_PREVIEW_CHARS) : text;
+  return (
+    <div
+      style={{
+        borderTop: `1px solid ${border}`,
+        background: processStyle ? "var(--bg-subtle)" : isError ? "rgba(248,113,113,0.04)" : "var(--bg-subtle)",
+      }}
+    >
+      <pre
+        style={{
+          margin: 0,
+          padding: "8px 10px",
+          color: isError ? "#f87171" : (isEmpty ? "var(--text-dim)" : "var(--text-muted)"),
+          fontSize: 12,
+          lineHeight: 1.5,
+          overflow: "auto",
+          maxHeight: 400,
+          background: "var(--bg)",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all",
+          fontStyle: isEmpty ? "italic" : "normal",
+          opacity: isEmpty ? 0.6 : 1,
+        }}
+      >
+        {isEmpty ? t("desktop.noOutput") : displayText}
+      </pre>
+      {truncated && (
+        <button
+          onClick={() => setShowFull(true)}
+          style={{
+            display: "block",
+            margin: "6px 8px 8px",
+            padding: "4px 10px",
+            border: "1px solid var(--border)",
+            borderRadius: 5,
+            background: "transparent",
+            color: "var(--text-dim)",
+            fontSize: 11,
+            cursor: "pointer",
+          }}
+        >
+          {t("desktop.loadFullOutput")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+
+
+function CustomMessageView({ message, isStreaming, cwd, onOpenFile }: { message: CustomMessage; isStreaming?: boolean | undefined; cwd?: string | undefined; onOpenFile?: ((filePath: string) => void) | undefined }) {
+  const { t } = useI18n();
+  const isHiddenDisplay = message.display === false;
+  const [contentExpanded, setContentExpanded] = useState(!isHiddenDisplay);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const text = getMessageText(message.content);
+  const images = getMessageImages(message.content);
+  const hasDetails = message.details !== undefined;
+  const detailsText = hasDetails ? safeJson(message.details) : "";
+  const title = formatCustomType(message.customType, t("desktop.extension"));
+  const time = formatTime(message.timestamp);
+
+  const copyContent = () => {
+    copyText(text || detailsText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          overflow: "hidden",
+          background: isHiddenDisplay ? "var(--bg-subtle)" : "var(--bg)",
+          opacity: isHiddenDisplay && !contentExpanded ? 0.82 : 1,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "7px 10px",
+            borderBottom: "1px solid var(--border)",
+            background: "var(--bg-panel)",
+            color: "var(--text-muted)",
+            fontSize: 12,
+          }}
+        >
+          <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 650 }}>
+            {title}
+          </span>
+          {isHiddenDisplay && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{t("desktop.hiddenExtensionMessage")}</span>}
+          {time && <span style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 10 }}>{time}</span>}
+        </div>
+
+        {contentExpanded ? (
+          <div style={{ padding: "6px 9px" }}>
+            {images.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: text ? 8 : 0 }}>
+                {images.map((img, i) => {
+                  const src = imageSource(img);
+                  if (!src) return null;
+                  return (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      key={i}
+                      src={src}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      style={{ maxWidth: 240, maxHeight: 240, borderRadius: 6, objectFit: "contain", display: "block", border: "1px solid var(--border)" }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+            {text ? <MarkdownBody className="markdown-custom-message" isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{text}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("desktop.noMessage")}</span>}
+          </div>
+        ) : (
+          <button
+            onClick={() => setContentExpanded(true)}
+            style={{
+              display: "block",
+              width: "100%",
+              padding: "8px 10px",
+              border: "none",
+              background: "transparent",
+              color: "var(--text-dim)",
+              cursor: "pointer",
+              fontSize: 12,
+              textAlign: "left",
+            }}
+          >
+            {text ? previewText(text, t("desktop.showExtensionMessage")) : t("desktop.showExtensionMessage")}
+          </button>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "4px 9px",
+            borderTop: "1px solid var(--border)",
+            background: "var(--bg-subtle)",
+          }}
+        >
+          {text || detailsText ? (
+            <button
+              onClick={copyContent}
+              style={{
+                padding: "3px 7px",
+                border: "none",
+                background: "none",
+                color: copied ? "var(--accent)" : "var(--text-dim)",
+                cursor: "pointer",
+                fontSize: 11,
+              }}
+            >
+              {copied ? t("desktop.copied") : t("desktop.copy")}
+            </button>
+          ) : null}
+          {(hasDetails || isHiddenDisplay) && (
+            <button
+              onClick={() => {
+                if (isHiddenDisplay) setContentExpanded((v) => !v);
+                else setDetailsExpanded((v) => !v);
+              }}
+              style={{
+                marginLeft: "auto",
+                padding: "3px 7px",
+                border: "none",
+                background: "none",
+                color: "var(--text-dim)",
+                cursor: "pointer",
+                fontSize: 11,
+              }}
+            >
+              {isHiddenDisplay
+                ? (contentExpanded ? t("desktop.collapse") : t("desktop.expand"))
+                : (detailsExpanded ? t("desktop.hideDetails") : t("desktop.showDetails"))}
+            </button>
+          )}
+        </div>
+
+        {hasDetails && ((isHiddenDisplay && contentExpanded) || (!isHiddenDisplay && detailsExpanded)) && (
+          <pre
+            style={{
+              margin: 0,
+              padding: "9px 10px",
+              borderTop: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--text-muted)",
+              fontSize: 12,
+              lineHeight: 1.5,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              maxHeight: 360,
+              overflow: "auto",
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            {detailsText}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BashExecutionView({ message, sessionId, loadFullOutput: onLoadFullOutput }: { message: BashExecutionMessage; sessionId?: string | undefined; loadFullOutput?: BashFullOutputLoader | undefined }) {
+  const { t } = useI18n();
+  const [fullOutput, setFullOutput] = useState<string | null>(null);
+  const [loadingFull, setLoadingFull] = useState(false);
+  const [fullError, setFullError] = useState<string | null>(null);
+  const isPending = !message.output && message.exitCode === undefined && !message.cancelled;
+  const isError = message.cancelled || (message.exitCode !== undefined && message.exitCode !== 0);
+  // pix adapter: the source fetched the legacy agent bash-output route and
+  // linked its download variant. pix injects the loader as a view-model prop and the
+  // download link points at the host `/v1/files?op=download` route.
+  const canLoadFullOutput = Boolean(sessionId && message.fullOutputPath && onLoadFullOutput);
+  const downloadUrl = sessionId && message.fullOutputPath
+    ? urls.files.resource(message.fullOutputPath, "download")
+    : null;
+  const displayOutput = fullOutput ?? message.output;
+
+  const loadFullOutput = async () => {
+    if (!onLoadFullOutput || !sessionId || !message.fullOutputPath) return;
+    setLoadingFull(true);
+    setFullError(null);
+    try {
+      setFullOutput(await onLoadFullOutput(sessionId, message.fullOutputPath));
+    } catch (error) {
+      setFullError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingFull(false);
+    }
+  };
+
+  const toolName = message.excludeFromContext ? "bash (local)" : "bash";
+  const block: ToolCallContent = {
+    type: "toolCall",
+    toolCallId: `bash-${message.timestamp ?? message.command}`,
+    toolName,
+    input: { command: message.command },
+  };
+  const result: ToolResultMessage | undefined = isPending ? undefined : {
+    role: "toolResult",
+    toolCallId: block.toolCallId,
+    toolName,
+    content: displayOutput ? [{ type: "text", text: displayOutput }] : [],
+    isError,
+    timestamp: message.timestamp,
+  };
+
+  return (
+    <div style={{ margin: "6px 0" }}>
+      <ToolCallBlock block={block} result={result} />
+      {message.truncated && (canLoadFullOutput || downloadUrl !== null) && fullOutput === null && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+          {canLoadFullOutput && (
+            <button
+              type="button"
+              onClick={() => void loadFullOutput()}
+              disabled={loadingFull}
+              style={{ padding: "3px 8px", border: "1px solid var(--border)", borderRadius: 4, background: "none", color: "var(--text-muted)", cursor: loadingFull ? "wait" : "pointer", fontSize: 11 }}
+            >
+              {loadingFull ? t("desktop.loading") : t("desktop.loadFullOutput")}
+            </button>
+          )}
+          {downloadUrl && <a href={downloadUrl} style={{ fontSize: 11, color: "var(--accent)" }}>{t("desktop.download")}</a>}
+        </div>
+      )}
+      {fullError && <div style={{ marginTop: 4, color: "var(--accent-red)", fontSize: 11 }}>{fullError}</div>}
+    </div>
+  );
+}
+
+function getMessageText(content: CustomMessage["content"] | UserMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((b): b is TextContent => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+}
+
+function getMessageImages(content: CustomMessage["content"] | UserMessage["content"]): ImageContent[] {
+  if (typeof content === "string") return [];
+  return content.filter((b): b is ImageContent => b.type === "image");
+}
+
+function imageSource(img: ImageContent): string {
+  const flat = img as unknown as { data?: string; mimeType?: string };
+  if (img.source) {
+    return img.source.type === "base64"
+      ? `data:${img.source.media_type};base64,${img.source.data}`
+      : img.source.url ?? "";
+  }
+  return flat.data ? `data:${flat.mimeType};base64,${flat.data}` : "";
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatCustomType(type: string, fallback: string): string {
+  return type || fallback;
+}
+
+function previewText(text: string, fallback: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return fallback;
+  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
+}
+
+
+function getToolPreview(block: ToolCallContent): string {
+  const input = block.input;
+  if (!input || typeof input !== "object") return "";
+  const keys = Object.keys(input);
+  if (keys.length === 0) return "";
+
+  // Common tool input patterns
+  if ("command" in input) return String(input.command).slice(0, 120);
+  if ("path" in input) return String(input.path).slice(0, 120);
+  if ("file_path" in input) return String(input.file_path).slice(0, 120);
+  if ("pattern" in input) return String(input.pattern).slice(0, 120);
+  if ("query" in input) return String(input.query).slice(0, 120);
+
+  const first = (input as Record<string, unknown>)[keys[0] as string];
+  return String(first).slice(0, 120);
+}
+
+

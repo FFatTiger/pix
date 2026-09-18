@@ -1,0 +1,92 @@
+import { reportPreferenceWrite } from "@/lib/preferences/preference-sync";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { translateMessage } from "@/lib/i18n/format";
+import { getLocalePlugin, getSupportedLocales, isSupportedLocale, resolveBrowserLocale } from "@/lib/i18n/registry";
+import type { Locale, LocalePlugin, TranslationParams } from "@/lib/i18n/types";
+
+const LOCALE_STORAGE_KEY = "pi-locale";
+
+interface I18nContextValue {
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  t: (key: string, params?: TranslationParams) => string;
+  supportedLocales: LocalePlugin[];
+}
+
+export const I18nContext = createContext<I18nContextValue | null>(null);
+
+function getMessages(): Record<Locale, Record<string, string>> {
+  const en = getLocalePlugin("en");
+  const zhCN = getLocalePlugin("zh-CN");
+  if (!en || !zhCN) throw new Error("Built-in locales must be registered before rendering I18nProvider");
+  return { en: en.messages, "zh-CN": zhCN.messages };
+}
+
+function readInitialLocale(): Locale {
+  try {
+    const storedLocale = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (isSupportedLocale(storedLocale)) return storedLocale;
+  } catch {
+    // Storage can be unavailable in private browsing or restricted desktop contexts.
+  }
+  return resolveBrowserLocale(window.navigator.languages.length ? window.navigator.languages : [window.navigator.language]);
+}
+
+function applyLocale(locale: Locale): void {
+  document.documentElement.lang = locale;
+  document.documentElement.dataset.language = locale;
+  try {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+    reportPreferenceWrite(LOCALE_STORAGE_KEY, locale);
+  } catch {
+    // Persisting a preference is optional; the active page still updates.
+  }
+}
+
+export function I18nProvider({ children }: { children: React.ReactNode }) {
+  // CSR adaptation: the source initialized with the default locale and gated
+  // children behind a hydration pass because Next SSR cannot read
+  // localStorage. pix renders client-only, so resolve the persisted locale
+  // synchronously — the first paint already uses the stored language.
+  const [locale, setLocaleState] = useState<Locale>(readInitialLocale);
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
+  const messages = useMemo(() => getMessages(), []);
+  const supportedLocales = useMemo(
+    () => getSupportedLocales().map((id) => getLocalePlugin(id)).filter((p): p is LocalePlugin => Boolean(p)),
+    [],
+  );
+  const setLocale = useCallback((next: Locale) => {
+    if (!getLocalePlugin(next)) return;
+    setLocaleState(next);
+    applyLocale(next);
+  }, []);
+
+  // Server preference hydration writes the mirror in localStorage; follow it
+  // so a cross-device locale applies to this session without a reload.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== LOCALE_STORAGE_KEY || !isSupportedLocale(event.newValue)) return;
+      setLocaleState(event.newValue);
+      document.documentElement.lang = event.newValue;
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+  const t = useCallback(
+    (key: string, params?: TranslationParams) => translateMessage(locale, key, messages, params),
+    [locale, messages],
+  );
+  const value = useMemo(() => ({ locale, setLocale, t, supportedLocales }), [locale, setLocale, t, supportedLocales]);
+
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
+}
+
+export function useI18n(): I18nContextValue {
+  const context = useContext(I18nContext);
+  if (!context) throw new Error("useI18n must be used inside I18nProvider");
+  return context;
+}

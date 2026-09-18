@@ -1,0 +1,37 @@
+{
+  "name": "@fffattiger/pix-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Production composition + lifecycle CLI for pix: ensure/reuse sessiond, host boot, status, down --all",
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "bin": {
+    "pix": "./bin/pix.mjs",
+    "pix-host": "./bin/pix-host.mjs",
+    "pix-sessiond": "./bin/pix-sessiond.mjs"
+  },
+  "files": ["dist", "bin"],
+  "scripts": {
+    "clean": "node ../../scripts/remove-paths.mjs dist dist-test",
+    "prebuild": "node scripts/prebuild-deps.mjs",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "pretypecheck": "node scripts/prebuild-deps.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "pretest": "node scripts/prebuild-deps.mjs",
+    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\" --test-concurrency=1",
+    "build:test": "node ../../scripts/remove-paths.mjs dist-test && tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@fffattiger/pix-host": "0.1.0",
+    "@fffattiger/pix-sessiond": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,592 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, mkdir, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createPiSdkResourceCatalog, type PiSdkResourceCatalogOptions } from "../src/resources/index.js";
+import type {
+  PluginInfo,
+  ResourceCatalogPort,
+  SkillInfo,
+  SlashCommandInfo,
+} from "@fffattiger/pix-runtime-core";
+
+// Compile-time proof: PiSdkResourceCatalogOptions.cwd is REQUIRED — an options
+// object omitting cwd is NOT assignable to the catalog options type.
+type Assignable<A, B> = A extends B ? true : false;
+const _noImplicitCwd: Assignable<
+  { agentDir: string; trusted: boolean },
+  PiSdkResourceCatalogOptions
+> = false;
+
+async function fixture(): Promise<{
+  root: string;
+  agentDir: string;
+  projectCwd: string;
+  markerPath: string;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "pix-resources-catalog-"));
+  const agentDir = join(root, "agent");
+  const projectCwd = join(root, "project");
+  const markerPath = join(root, "pwned.marker");
+  await mkdir(join(agentDir, "skills", "global-skill"), { recursive: true });
+  await writeFile(
+    join(agentDir, "skills", "global-skill", "SKILL.md"),
+    "---\nname: global-skill\ndescription: A global skill\n---\n# global-skill\nA global skill",
+    "utf8",
+  );
+  await mkdir(join(agentDir, "prompts"), { recursive: true });
+  await writeFile(
+    join(agentDir, "prompts", "global-prompt.md"),
+    "# global-prompt\nA prompt template",
+    "utf8",
+  );
+  // Project-local skill (trust-gated) + malicious extension (must never execute).
+  await mkdir(join(projectCwd, ".pi", "skills", "proj-skill"), {
+    recursive: true,
+  });
+  await writeFile(
+    join(projectCwd, ".pi", "skills", "proj-skill", "SKILL.md"),
+    "---\nname: proj-skill\ndescription: A project skill\n---\n# proj-skill\nA project skill",
+    "utf8",
+  );
+  await mkdir(join(projectCwd, ".pi", "extensions"), { recursive: true });
+  await writeFile(
+    join(projectCwd, ".pi", "extensions", "evil.ts"),
+    `import { writeFileSync } from "node:fs";\n` +
+      `// MALICIOUS: writes a marker if this module is ever imported/executed.\n` +
+      `writeFileSync(${JSON.stringify(markerPath)}, "executed");\n` +
+      `export default function () {}\n`,
+    "utf8",
+  );
+  return { root, agentDir, projectCwd, markerPath };
+}
+
+/** Network guard: throws if any outbound fetch happens during the probe. */
+function installNetworkGuard(): () => boolean {
+  let called = false;
+  const original = globalThis.fetch;
+  globalThis.fetch = (() => {
+    called = true;
+    throw new Error("network access is forbidden by the read-only resource catalog");
+  }) as typeof globalThis.fetch;
+  return () => {
+    globalThis.fetch = original;
+    return called;
+  };
+}
+
+describe("read-only resource catalog (D3B-R1A)", () => {
+  it("trusted project exposes global + project skills; malicious extension never executes", async () => {
+    const { root, agentDir, projectCwd, markerPath } = await fixture();
+    try {
+      const release = installNetworkGuard();
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const skills = await catalog.listSkills();
+      release();
+      const names = skills.map((s) => s.name);
+      assert.ok(names.includes("global-skill"), "global skill always visible");
+      assert.ok(names.includes("proj-skill"), "project skill visible when trusted");
+      // noExtensions:true must prevent the malicious extension from importing.
+      assert.equal(existsSync(markerPath), false, "malicious extension was executed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a contained project skill when the global skills root is absent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-resources-project-only-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    try {
+      await mkdir(agentDir, { recursive: true });
+      await mkdir(join(projectCwd, ".pi", "skills", "project-only"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(projectCwd, ".pi", "skills", "project-only", "SKILL.md"),
+        "---\nname: project-only\ndescription: Contained project skill\n---\n# project",
+        "utf8",
+      );
+
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      assert.ok(
+        (await catalog.listSkills()).some((skill) => skill.name === "project-only"),
+      );
+      assert.ok(
+        (await catalog.listCommands()).some(
+          (command) => command.name === "skill:project-only",
+        ),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filters project skill symlinks that escape the trusted project root", async (t) => {
+    if (process.platform === "win32") {
+      t.skip("directory symlinks require platform-specific privileges on Windows");
+      return;
+    }
+    const { root, agentDir, projectCwd } = await fixture();
+    try {
+      const outside = join(root, "outside", "escaped-skill");
+      await mkdir(outside, { recursive: true });
+      await writeFile(
+        join(outside, "SKILL.md"),
+        "---\nname: escaped-skill\ndescription: Must remain outside\n---\n# escaped",
+        "utf8",
+      );
+      await symlink(
+        outside,
+        join(projectCwd, ".pi", "skills", "escaped-link"),
+        "dir",
+      );
+
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const skills = await catalog.listSkills();
+      const commands = await catalog.listCommands();
+      const names = skills.map((skill) => skill.name);
+      assert.ok(names.includes("global-skill"));
+      assert.ok(names.includes("proj-skill"));
+      assert.ok(!names.includes("escaped-skill"), "outside skill metadata leaked through symlink");
+      assert.ok(
+        commands.every((command) => command.name !== "skill:escaped-skill"),
+        "outside skill command leaked through symlink",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filters an entire project skills root symlinked outside the project", async (t) => {
+    if (process.platform === "win32") {
+      t.skip("directory symlinks require platform-specific privileges on Windows");
+      return;
+    }
+    const root = await mkdtemp(join(tmpdir(), "pix-resources-root-link-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    const outsideSkills = join(root, "outside-skills");
+    try {
+      await mkdir(join(agentDir, "skills", "global-skill"), { recursive: true });
+      await writeFile(
+        join(agentDir, "skills", "global-skill", "SKILL.md"),
+        "---\nname: global-skill\ndescription: Global\n---\n# global",
+        "utf8",
+      );
+      await mkdir(join(projectCwd, ".pi"), { recursive: true });
+      await mkdir(join(outsideSkills, "escaped-root-skill"), { recursive: true });
+      await writeFile(
+        join(outsideSkills, "escaped-root-skill", "SKILL.md"),
+        "---\nname: escaped-root-skill\ndescription: Must remain outside\n---\n# escaped",
+        "utf8",
+      );
+      await symlink(outsideSkills, join(projectCwd, ".pi", "skills"), "dir");
+
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const names = (await catalog.listSkills()).map((skill) => skill.name);
+      assert.ok(names.includes("global-skill"));
+      assert.ok(!names.includes("escaped-root-skill"));
+      assert.ok(
+        (await catalog.listCommands()).every(
+          (command) => command.name !== "skill:escaped-root-skill",
+        ),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filters an entire global skills root symlinked outside agentDir", async (t) => {
+    if (process.platform === "win32") {
+      t.skip("directory symlinks require platform-specific privileges on Windows");
+      return;
+    }
+    const root = await mkdtemp(join(tmpdir(), "pix-resources-global-link-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    const outsideSkills = join(root, "outside-global-skills");
+    try {
+      await mkdir(agentDir, { recursive: true });
+      await mkdir(projectCwd, { recursive: true });
+      await mkdir(join(outsideSkills, "escaped-global-skill"), { recursive: true });
+      await writeFile(
+        join(outsideSkills, "escaped-global-skill", "SKILL.md"),
+        "---\nname: escaped-global-skill\ndescription: Must remain outside\n---\n# escaped",
+        "utf8",
+      );
+      await symlink(outsideSkills, join(agentDir, "skills"), "dir");
+
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      assert.deepEqual(await catalog.listSkills(), []);
+      assert.deepEqual(await catalog.listCommands(), []);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("untrusted project withholds project-local skills but keeps global ones", async () => {
+    const { root, agentDir, projectCwd, markerPath } = await fixture();
+    try {
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: false,
+      });
+      const skills = await catalog.listSkills();
+      const names = skills.map((s) => s.name);
+      assert.ok(names.includes("global-skill"), "global skill always visible");
+      assert.ok(!names.includes("proj-skill"), "project skill withheld when untrusted");
+      assert.equal(existsSync(markerPath), false, "malicious extension was executed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("denied trust also withholds project skills", async () => {
+    const { root, agentDir, projectCwd } = await fixture();
+    try {
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: false,
+      });
+      const skills = await catalog.listSkills();
+      assert.ok(skills.every((s) => s.name !== "proj-skill"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("commands surface skill commands; no extension commands", async () => {
+    const { root, agentDir, projectCwd, markerPath } = await fixture();
+    try {
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const commands = await catalog.listCommands();
+      const names = commands.map((c) => c.name);
+      assert.ok(
+        names.includes("skill:global-skill"),
+        "skill command present",
+      );
+      // Canonical source fields only.
+      for (const command of commands) {
+        const keys = Object.keys(command) as (keyof SlashCommandInfo)[];
+        for (const key of keys) {
+          assert.ok(
+            ["name", "description", "source", "sourceInfo"].includes(key),
+            `unexpected SlashCommandInfo field: ${key}`,
+          );
+        }
+      }
+      assert.equal(existsSync(markerPath), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skill metadata is canonical and backend-neutral", async () => {
+    const { root, agentDir, projectCwd } = await fixture();
+    try {
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const skills = await catalog.listSkills();
+      for (const skill of skills) {
+        const keys = Object.keys(skill) as (keyof SkillInfo)[];
+        for (const key of keys) {
+          assert.ok(
+            ["name", "description", "enabled", "version", "updateAvailable"].includes(
+              key,
+            ),
+            `unexpected SkillInfo field: ${key}`,
+          );
+        }
+        assert.equal(typeof skill.enabled, "boolean");
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("plugins list is canonical metadata (no execution)", async () => {
+    const { root, agentDir, projectCwd, markerPath } = await fixture();
+    try {
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const plugins = await catalog.listPlugins();
+      for (const plugin of plugins) {
+        const keys = Object.keys(plugin) as (keyof PluginInfo)[];
+        for (const key of keys) {
+          assert.ok(
+            ["name", "version", "enabled"].includes(key),
+            `unexpected PluginInfo field: ${key}`,
+          );
+        }
+      }
+      assert.equal(existsSync(markerPath), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("control: importing the malicious module WOULD create the marker", async () => {
+    // Proves the marker fixture is sound: if the extension were imported, the
+    // marker would appear. Its absence after catalog reads therefore proves
+    // noExtensions prevented execution (not a broken fixture).
+    const { root, markerPath } = await fixture();
+    try {
+      const probe = join(root, "probe.mjs");
+      await writeFile(
+        probe,
+        `import { writeFileSync } from "node:fs";` +
+          `writeFileSync(${JSON.stringify(markerPath)}, "executed");`,
+        "utf8",
+      );
+      await import(probe);
+      assert.equal(existsSync(markerPath), true, "control marker must fire on import");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("no network access occurs during resource discovery", async () => {
+    const { root, agentDir, projectCwd } = await fixture();
+    try {
+      const release = installNetworkGuard();
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      await catalog.listSkills();
+      await catalog.listPlugins();
+      await catalog.listCommands();
+      const networkCalled = release();
+      assert.equal(networkCalled, false, "resource catalog must not call network");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("plugins surface static configured-package metadata source", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-resources-pkg-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    try {
+      await mkdir(join(agentDir, "settings"), { recursive: true });
+      await mkdir(projectCwd, { recursive: true });
+      // Seed a configured (user-scoped) package source in global settings —
+      // static metadata only; the package is NOT installed, so no module is
+      // imported. The plugin must surface from configured metadata.
+      await writeFile(
+        join(agentDir, "settings.json"),
+        JSON.stringify({ packages: ["npm:@fake/plugin-pkg"] }),
+        "utf8",
+      );
+      const catalog = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const plugins = await catalog.listPlugins();
+      const pkg = plugins.find((p) => p.name.includes("@fake/plugin-pkg"));
+      assert.ok(pkg, "configured package surfaces as static plugin metadata");
+      assert.equal(typeof pkg!.enabled, "boolean");
+      // No installed module => version omitted (safe static metadata).
+      const keys = Object.keys(pkg!) as (keyof PluginInfo)[];
+      assert.ok(keys.every((k) => ["name", "version", "enabled"].includes(k)));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("catalog surface exposes no mutation methods", () => {
+    const catalog = createPiSdkResourceCatalog({
+      listSkills: () => Promise.resolve([]),
+      listPlugins: () => Promise.resolve([]),
+      listCommands: () => Promise.resolve([]),
+    });
+    const proto = Object.getPrototypeOf(catalog);
+    const methodNames = Object.getOwnPropertyNames(proto).filter(
+      (name) => name !== "constructor",
+    );
+    assert.deepEqual([...methodNames].sort(), [
+      "listCommands",
+      "listPlugins",
+      "listSkills",
+    ]);
+    for (const forbidden of [
+      "writePlugin", "setPluginEnabled", "installSkill", "updateSkill",
+      "setSkillEnabled", "reload",
+    ]) {
+      assert.equal(forbidden in catalog, false, `mutation method leaked: ${forbidden}`);
+    }
+  });
+
+  it("implements the read-only ResourceCatalogPort contract", () => {
+    const catalog: ResourceCatalogPort = createPiSdkResourceCatalog({
+      listSkills: () => Promise.resolve([]),
+      listPlugins: () => Promise.resolve([]),
+      listCommands: () => Promise.resolve([]),
+    });
+    assert.equal(typeof catalog.listSkills, "function");
+    assert.equal(typeof catalog.listPlugins, "function");
+    assert.equal(typeof catalog.listCommands, "function");
+  });
+
+  it("untrusted read skips project .pi discovery entirely (no parse of malformed project settings)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-res-gate-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    await mkdir(join(agentDir, "skills", "global-skill"), { recursive: true });
+    await writeFile(
+      join(agentDir, "skills", "global-skill", "SKILL.md"),
+      "---\nname: global-skill\ndescription: g\n---\n# global-skill",
+      "utf8",
+    );
+    await mkdir(join(projectCwd, ".pi", "skills", "proj-skill"), { recursive: true });
+    await writeFile(
+      join(projectCwd, ".pi", "skills", "proj-skill", "SKILL.md"),
+      "---\nname: proj-skill\ndescription: p\n---\n# proj-skill",
+      "utf8",
+    );
+    // MALFORMED project settings.json — if the untrusted read parsed it, this
+    // would surface as an error/diagnostic. It must never be read.
+    await mkdir(join(projectCwd, ".pi"), { recursive: true });
+    await writeFile(
+      join(projectCwd, ".pi", "settings.json"),
+      "{ this is deliberately invalid json {{{",
+      "utf8",
+    );
+    try {
+      const untrusted = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: false,
+      });
+      // Must not throw despite the malformed project settings.json.
+      const skills = await untrusted.listSkills();
+      const names = skills.map((s) => s.name);
+      assert.ok(names.includes("global-skill"), "global skill loads when untrusted");
+      assert.ok(!names.includes("proj-skill"), "project skill skipped when untrusted");
+      await untrusted.listPlugins();
+      await untrusted.listCommands();
+
+      // Trusted discovers the project skill (project .pi is read).
+      const trusted = createPiSdkResourceCatalog({
+        cwd: projectCwd,
+        agentDir,
+        trusted: true,
+      });
+      const trustedSkills = await trusted.listSkills();
+      assert.ok(
+        trustedSkills.some((s) => s.name === "proj-skill"),
+        "project skill discovered when trusted",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects construction without an explicit canonical cwd (no implicit fallback)", () => {
+    assert.throws(
+      () =>
+        createPiSdkResourceCatalog({ agentDir: "/tmp", trusted: true } as unknown as PiSdkResourceCatalogOptions),
+      (error: unknown) => (error as { code?: string }).code === "invalid_input",
+    );
+    assert.throws(
+      () => createPiSdkResourceCatalog({} as PiSdkResourceCatalogOptions),
+      (error: unknown) => (error as { code?: string }).code === "invalid_input",
+    );
+  });
+});
+
+describe("resource catalog default trust: malformed trust.json fails closed (D3B-R1A)", () => {
+  // The default `trusted` computation shares the corruption-safe logic with the
+  // trust catalog: a malformed/unreadable trust.json yields trusted=false so
+  // project resources are withheld — with NO throw and no raw path/content/stack.
+  it("withholds project resources without throwing when trust.json is corrupt (no `trusted` option)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-res-trust-corrupt-"));
+    const agentDir = join(root, "agent");
+    const projectCwd = join(root, "project");
+    await mkdir(join(agentDir, "skills", "global-skill"), { recursive: true });
+    await writeFile(
+      join(agentDir, "skills", "global-skill", "SKILL.md"),
+      "---\nname: global-skill\ndescription: g\n---\n# global-skill",
+      "utf8",
+    );
+    // Trust-requiring project resource (.pi/skills) so the gate is real.
+    await mkdir(join(projectCwd, ".pi", "skills", "proj-skill"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(projectCwd, ".pi", "skills", "proj-skill", "SKILL.md"),
+      "---\nname: proj-skill\ndescription: p\n---\n# proj-skill",
+      "utf8",
+    );
+    // CORRUPT trust.json in the agent dir.
+    await writeFile(
+      join(agentDir, "trust.json"),
+      "{ this is deliberately invalid json {{{",
+      "utf8",
+    );
+    try {
+      // No `trusted` option => default computation reads the corrupt trust.json.
+      const catalog = createPiSdkResourceCatalog({ cwd: projectCwd, agentDir });
+      // Must not throw despite the corrupt trust.json.
+      const skills = await catalog.listSkills();
+      const names = skills.map((s) => s.name);
+      assert.ok(
+        names.includes("global-skill"),
+        "global skill still loads under corrupt trust",
+      );
+      assert.ok(
+        !names.includes("proj-skill"),
+        "project skill withheld when trust.json is corrupt (fail closed)",
+      );
+      // No raw SDK Error, path, file content, or stack may surface.
+      const payload = JSON.stringify(skills);
+      assert.ok(!payload.includes("trust.json"), "trust path leaked");
+      assert.ok(
+        !payload.includes("this is deliberately invalid json"),
+        "corrupt file content leaked",
+      );
+      // Commands + plugins must also not throw under corrupt trust.
+      await catalog.listCommands();
+      await catalog.listPlugins();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

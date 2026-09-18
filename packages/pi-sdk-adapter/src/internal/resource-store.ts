@@ -1,0 +1,273 @@
+// Read-only resource catalog store backed by the Pi SDK standalone resource
+// loaders + package manager static metadata.
+//
+// This is the ONLY module in the resources domain that touches the Pi SDK. It
+// performs pure metadata discovery only — loadSkills / loadPromptTemplates
+// (filesystem metadata, never an extension module) plus
+// DefaultPackageManager.listConfiguredPackages (configured/package static
+// metadata, never an install or module import).
+//
+// Why standalone loaders and NOT DefaultResourceLoader.reload(): the loader's
+// reload() resolves configured package sources and AUTO-INSTALLS missing ones
+// over the network. The standalone skill/prompt loaders have NO extension
+// loading codepath at all — extensions are never imported/executed (strictly
+// stronger than noExtensions:true) — and never touch the package installer.
+//
+// Hard read-only + trust boundary:
+//  - No extension module is ever imported/executed (no extension codepath).
+//  - Project-local resources are gated by trust: when the project is not
+//    trusted, project-scope skills and project-scoped configured packages are
+//    withheld (loadSkills tags cwd/.pi/skills as scope "project"; the package
+//    manager tags settings-configured project sources as scope "project"). This
+//    mirrors the SDK's project-trust gate for project-local resources.
+//  - Settings semantics preserved: package enabled state comes from the
+//    configured/filtered flag in settings (enabled = !filtered); skill enabled
+//    comes from the SKILL.md disableModelInvocation flag.
+//  - No install/update/toggle/reload/package-manager write; no network.
+//  - Per-store lazy cache (not an unsafe global cache).
+//
+// The canonical cwd is captured once and threaded into the loaders + settings;
+// no method re-reads process.cwd.
+import { realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  DefaultPackageManager,
+  getAgentDir,
+  hasTrustRequiringProjectResources,
+  loadSkills,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import type { Skill } from "@earendil-works/pi-coding-agent";
+import type {
+  PluginInfo,
+  SkillInfo,
+  SlashCommandInfo,
+} from "@fffattiger/pix-runtime-core";
+import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
+import type { PiSdkResourceStore } from "../resources/index.js";
+// Shared corruption-safe trust logic (owned by the trust domain): a
+// malformed trust.json fails closed instead of throwing here.
+import { readTrustDecision } from "./trust-store.js";
+
+/** Options for the SDK-backed read-only resource store. */
+export interface PiSdkResourceStoreOptions {
+  /** Canonical absolute working directory; never re-read from process.cwd. */
+  cwd: string;
+  /** Agent config directory; defaults to the SDK agent dir. */
+  agentDir?: string;
+  /**
+   * Effective project trust gating resource discovery. Defaults to the exact
+   * SDK computation: no trust-requiring resources OR saved decision is trusted.
+   */
+  trusted?: boolean;
+  /** Inject a SettingsManager (tests/composition). */
+  settingsManager?: SettingsManager;
+}
+
+interface LoadedResources {
+  readonly skills: readonly SkillInfo[];
+  readonly commands: readonly SlashCommandInfo[];
+  readonly plugins: readonly PluginInfo[];
+}
+
+function toSkillInfo(skill: Skill): SkillInfo {
+  return {
+    name: skill.name,
+    ...(skill.description ? { description: skill.description } : {}),
+    enabled: !skill.disableModelInvocation,
+  };
+}
+
+function skillToCommand(skill: Skill): SlashCommandInfo {
+  return {
+    name: `skill:${skill.name}`,
+    ...(skill.description ? { description: skill.description } : {}),
+    source: "skill",
+  };
+}
+
+interface SkillContainmentRoot {
+  /** Canonical caller-owned base (agentDir or project cwd). */
+  readonly base: string;
+  /** The only subtree from that base allowed to contribute skills. */
+  readonly skills: string;
+}
+
+function isPathWithin(target: string, root: string): boolean {
+  const fromRoot = relative(root, target);
+  return (
+    fromRoot === "" ||
+    (!isAbsolute(fromRoot) && fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`))
+  );
+}
+
+/**
+ * Fail-closed containment check for SDK-discovered skills.
+ *
+ * The SDK intentionally follows symlinks while scanning. Pix catalog reads must
+ * not project metadata from outside the injected agent/project roots, so both
+ * the lexical discovery path and every resolved real path are checked. Checking
+ * the root itself against its base also rejects an entire `skills` directory
+ * that is a symlink outside the caller-owned directory.
+ */
+function isContainedSkill(
+  skill: Skill,
+  allowedRoots: readonly SkillContainmentRoot[],
+): boolean {
+  let lexicalFile: string;
+  let realFile: string;
+  try {
+    lexicalFile = resolve(skill.filePath);
+    realFile = realpathSync(skill.filePath);
+  } catch {
+    // A missing, unreadable, or racing skill path cannot be proven contained.
+    return false;
+  }
+
+  for (const allowed of allowedRoots) {
+    try {
+      const lexicalBase = resolve(allowed.base);
+      const lexicalSkills = resolve(allowed.skills);
+      if (!isPathWithin(lexicalSkills, lexicalBase)) continue;
+      if (!isPathWithin(lexicalFile, lexicalSkills)) continue;
+
+      const realBase = realpathSync(allowed.base);
+      const realSkills = realpathSync(allowed.skills);
+      if (!isPathWithin(realSkills, realBase)) continue;
+      if (!isPathWithin(realFile, realSkills)) continue;
+      if (!isPathWithin(realFile, realBase)) continue;
+      return true;
+    } catch {
+      // One absent/unreadable allowed root must not hide a skill contained by a
+      // different allowed root (for example project-only skills with no global
+      // `agentDir/skills` directory).
+    }
+  }
+  return false;
+}
+
+/** Resolve plugin name/version from a static package.json read (no import). */
+async function readPackageManifest(
+  installedPath: string,
+): Promise<{ name?: string; version?: string }> {
+  try {
+    const raw = await readFile(join(installedPath, "package.json"), "utf8");
+    const manifest = JSON.parse(raw) as { name?: unknown; version?: unknown };
+    return {
+      ...(typeof manifest.name === "string" ? { name: manifest.name } : {}),
+      ...(typeof manifest.version === "string"
+        ? { version: manifest.version }
+        : {}),
+    };
+  } catch {
+    // Static metadata unavailable — omit name/version, keep the source label.
+    return {};
+  }
+}
+
+/**
+ * Create a read-only resource store backed by the Pi SDK standalone resource
+ * loaders + package manager static metadata. Discovery is lazy (on first read)
+ * and cached per-store (not globally). No extension module is ever imported;
+ * project-local resources are gated by trust; no install/network/write.
+ */
+export function createPiSdkResourceStore(
+  options: PiSdkResourceStoreOptions,
+): PiSdkResourceStore {
+  if (!options.cwd || options.cwd.trim().length === 0) {
+    throw makeRuntimeError(
+      "invalid_input",
+      "PiSdkResourceStore requires an explicit canonical cwd (no implicit process.cwd)",
+    );
+  }
+  const agentDir = options.agentDir ?? getAgentDir();
+  // Default effective trust shares the EXACT corruption-safe logic with the
+  // trust catalog (readTrustDecision): a malformed/unreadable trust.json yields
+  // a null decision => trusted=false => project resources withheld, with NO
+  // throw and no raw path/content/stack leaking into the read.
+  const trusted =
+    options.trusted ??
+    (!hasTrustRequiringProjectResources(options.cwd) ||
+      readTrustDecision(agentDir, options.cwd) === true);
+  let cached: LoadedResources | undefined;
+
+  // Trust gate at the READ layer: when the project is not trusted, project
+  // discovery is skipped ENTIRELY (not parsed then filtered) by rooting skill +
+  // settings discovery at the trusted agent dir instead of the project cwd. The
+  // project's .pi/skills and .pi/settings.json are never read or parsed, so a
+  // malformed/permission-trapped/project-local resource cannot affect the
+  // untrusted read. Global/user metadata (agentDir) still loads.
+  const discoveryCwd = trusted ? options.cwd : agentDir;
+
+  const settings = (): SettingsManager =>
+    options.settingsManager ??
+    (trusted
+      ? SettingsManager.create(options.cwd, agentDir)
+      : SettingsManager.create(agentDir, agentDir));
+
+  const discover = async (): Promise<LoadedResources> => {
+    if (cached) return cached;
+
+    // Skills: filesystem metadata only; never an extension import. Project
+    // discovery is skipped when untrusted (discoveryCwd === agentDir).
+    const allowedSkillRoots: SkillContainmentRoot[] = [
+      { base: agentDir, skills: join(agentDir, "skills") },
+      ...(trusted
+        ? [{ base: options.cwd, skills: join(options.cwd, ".pi", "skills") }]
+        : []),
+    ];
+    const loadedSkills = loadSkills({
+      cwd: discoveryCwd,
+      agentDir,
+      skillPaths: [],
+      includeDefaults: true,
+    }).skills.filter((skill) => isContainedSkill(skill, allowedSkillRoots));
+    const skills = loadedSkills.map(toSkillInfo);
+
+    // Commands: skill commands (skill:name). Prompt-template and extension
+    // commands are residuals (the SDK does not export loadPromptTemplates from
+    // its main entry, and there is no extension codepath); deferred to R1B Host
+    // composition with a trust-aware package policy.
+    const commands: SlashCommandInfo[] = loadedSkills.map(skillToCommand);
+
+    // Plugins: configured/package static metadata (no module import, no
+    // install). Discovery roots at the trusted dir when untrusted, so the
+    // project's .pi/settings.json is never read.
+    const packages = new DefaultPackageManager({
+      cwd: discoveryCwd,
+      agentDir,
+      settingsManager: settings(),
+    }).listConfiguredPackages();
+    const plugins: PluginInfo[] = [];
+    for (const pkg of packages) {
+      // Defense-in-depth: withhold any project-scoped package even though
+      // untrusted discovery is already rooted at the trusted agent dir.
+      if (!trusted && pkg.scope === "project") continue;
+      const manifest =
+        pkg.installedPath === undefined
+          ? {}
+          : await readPackageManifest(pkg.installedPath);
+      plugins.push({
+        name: manifest.name ?? pkg.source,
+        ...(manifest.version === undefined ? {} : { version: manifest.version }),
+        enabled: !pkg.filtered,
+      });
+    }
+
+    cached = { skills, commands, plugins };
+    return cached;
+  };
+
+  return {
+    async listSkills(): Promise<readonly SkillInfo[]> {
+      return (await discover()).skills;
+    },
+    async listPlugins(): Promise<readonly PluginInfo[]> {
+      return (await discover()).plugins;
+    },
+    async listCommands(): Promise<readonly SlashCommandInfo[]> {
+      return (await discover()).commands;
+    },
+  };
+}

@@ -1,0 +1,33 @@
+/**
+ * @fffattiger/pix-protocol
+ *
+ * Pi Runtime Protocol v1 — frozen shared contract.
+ * Browser, Hono host, pi-sessiond, and agent-worker all import from here.
+ * Never re-export pi SDK types.
+ */
+
+export * from "./version.js";
+export * from "./capabilities.js";
+export * from "./features.js";
+export * from "./build.js";
+export * from "./common.js";
+export * from "./messages.js";
+export * from "./extension.js";
+export * from "./domain.js";
+export * from "./workspace-access.js";
+export * from "./results.js";
+export * from "./reads.js";
+export * from "./turns.js";
+export * from "./revision.js";
+export * from "./semantic-mapping.js";
+export * from "./commands.js";
+export * from "./events.js";
+export * from "./snapshot.js";
+export * from "./projection.js";
+export * from "./handshake.js";
+export * from "./ws.js";
+export * from "./sessiond.js";
+export * from "./worker.js";
+export * from "./themes.js";
+export * from "./model-config.js";
+export * from "./settings-config.js";

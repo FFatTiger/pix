@@ -1,0 +1,37 @@
+{
+  "name": "@fffattiger/pix-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi Runtime Protocol v1 — frozen shared contract for host, sessiond, worker, and client",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./workspace-access": {
+      "types": "./dist/workspace-access.d.ts",
+      "import": "./dist/workspace-access.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "npm run build && tsc -p tsconfig.test.json && node ../../scripts/run-node-test.mjs \"test/**/*.test.mjs\"",
+    "clean": "node ../../scripts/remove-paths.mjs dist"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,45 @@
+import { defineConfig } from "vitest/config";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import path from "node:path";
+
+// A fresh service-worker script URL/cache namespace for every production build.
+// An explicit deployment version remains available for reproducible releases.
+const serviceWorkerVersion = process.env.VITE_SW_VERSION ?? Date.now().toString(36);
+
+export default defineConfig({
+  define: {
+    __PIX_SW_VERSION__: JSON.stringify(serviceWorkerVersion),
+  },
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+    },
+  },
+  server: {
+    host: "127.0.0.1",
+    port: 5173,
+    proxy: {
+      // Host will own /v1; local Vite dev can forward when a host is running.
+      "/v1": {
+        target: "http://127.0.0.1:30141",
+        changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    outDir: "dist",
+    sourcemap: true,
+    target: "es2022",
+  },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // React 19 only exports `act` from the development build; keep tests off production entry.
+    env: {
+      NODE_ENV: "test",
+    },
+  },
+});

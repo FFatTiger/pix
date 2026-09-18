@@ -1,0 +1,48 @@
+{
+  "name": "@fffattiger/pix-pi-sdk-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js" },
+    "./sessions": { "types": "./dist/sessions/index.d.ts", "import": "./dist/sessions/index.js" },
+    "./models": { "types": "./dist/models/index.d.ts", "import": "./dist/models/index.js" },
+    "./settings": { "types": "./dist/settings/index.d.ts", "import": "./dist/settings/index.js" },
+    "./credentials": { "types": "./dist/credentials/index.d.ts", "import": "./dist/credentials/index.js" },
+    "./trust": { "types": "./dist/trust/index.d.ts", "import": "./dist/trust/index.js" },
+    "./resources": { "types": "./dist/resources/index.d.ts", "import": "./dist/resources/index.js" },
+    "./themes": { "types": "./dist/themes/index.d.ts", "import": "./dist/themes/index.js" },
+    "./testing": { "types": "./dist/internal/testing.d.ts", "import": "./dist/internal/testing.js" }
+  },
+  "scripts": {
+    "build:deps": "node ./scripts/build-deps.mjs",
+    "pretypecheck": "npm run build:deps",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prebuild": "npm run build:deps",
+    "build": "node ../../scripts/remove-paths.mjs dist && tsc -p tsconfig.json",
+    "prebuild:test": "npm run build:deps && npm run build",
+    "build:test": "node ../../scripts/remove-paths.mjs dist-test && tsc -p tsconfig.test.json",
+    "test": "npm run build:test && node ../../scripts/run-node-test.mjs \"dist-test/**/*.test.js\"",
+    "precheck:boundaries": "npm run build",
+    "check:boundaries": "node ./scripts/check-boundaries.mjs",
+    "check:commands": "node ./scripts/check-command-coverage.mjs",
+    "clean": "node ../../scripts/remove-paths.mjs dist dist-test"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.0",
+    "@earendil-works/pi-ai": "0.84.0",
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@fffattiger/pix-local-authority": "0.1.0",
+    "@fffattiger/pix-runtime-core": "0.1.0",
+    "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@fffattiger/pix-protocol": "0.1.0",
+    "@fffattiger/pix-runtime-contract-tests": "file:../runtime-contract-tests",
+    "@types/node": "^22",
+    "@types/proper-lockfile": "4.1.4",
+    "typescript": "^5"
+  }
+}
