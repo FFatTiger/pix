@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#f5f5f5" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta
+      name="description"
+      content="Local web interface for the pi coding agent"
+    />
+    <link rel="icon" type="image/png" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>pix</title>
+    <script>
+      // Pre-paint bootstrap: apply the persisted theme mode (dark / light /
+      // system), language and Text Size (font-scale) before first paint.
+      //
+      // This inline script CANNOT import modules (runs before the bundle); it
+      // must keep the `pi-theme-mode` / `pi-locale` / `pi-font-scale` key
+      // spellings in sync with src/lib/theme.ts, src/hooks/useI18n.tsx and
+      // src/lib/ui-scale.ts. Everything it does is a no-op once React
+      // hydrates from those modules.
+      (function(){
+        var h=document.documentElement;
+        // Theme mode: honor the persisted preference (dark/light/system)
+        // before first paint so there is no flash of the wrong palette.
+        try{
+          var tm=localStorage.getItem("pi-theme-mode");
+          var dark = tm==="light" ? false : (tm==="dark" ? true : (!window.matchMedia || window.matchMedia("(prefers-color-scheme: dark)").matches));
+          if(dark){h.classList.add("dark")}else{h.classList.remove("dark")}
+          var tc=document.querySelector('meta[name="theme-color"]');
+          if(tc) tc.setAttribute("content", dark ? "#242424" : "#f5f5f5");
+        }catch(e){h.classList.add("dark")}
+        try{
+          // Language bootstrap + one-time migration of the legacy
+          // "pi-language" key to "pi-locale" (same shape as the upstream
+          // desktop bootstrap).
+          var q=localStorage.getItem("pi-locale"),g=localStorage.getItem("pi-language"),l=q||g;
+          if(!q&&g){localStorage.setItem("pi-locale",g);localStorage.removeItem("pi-language")}
+          if(!l){var n=(navigator.languages&&navigator.languages[0])||navigator.language||"";if(/^zh(?:-|$)/i.test(n))l="zh-CN"}
+          if(l==="zh-CN"){h.lang=l;h.dataset.language=l}else{h.lang="en";h.dataset.language="en"}
+          // Text Size: apply the persisted UI scale before first paint.
+          var fs=parseFloat(localStorage.getItem("pi-font-scale"));
+          if(!isNaN(fs)&&fs>=0.8&&fs<=1.5){h.style.setProperty("--app-ui-scale",String(Math.round(fs*100)/100))}
+        }catch(e){var n=(navigator.languages&&navigator.languages[0])||navigator.language||"";h.lang=/^zh(?:-|$)/i.test(n)?"zh-CN":"en";h.dataset.language=h.lang}
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-DzF2xXut.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-ur9ydKHY.css">
+  </head>
+  <body
+    style="
+      height: calc(100dvh / var(--app-ui-scale, 1));
+      display: flex;
+      flex-direction: column;
+    "
+  >
+    <div id="root"></div>
+  </body>
+</html>

@@ -189,6 +189,27 @@ describe("chat-projection — user → process → final", () => {
 });
 
 describe("chat-projection — live merge", () => {
+  it("keeps a running turn live across segment-flush gaps (stopReason toolUse, no partial)", () => {
+    // Mid-turn the SDK flushes each finished segment as its own assistant
+    // entry (stopReason "toolUse") and the streaming partial is briefly
+    // null. The turn is still running — it must stay live, or the group
+    // collapses and re-expands on every flush.
+    const messages = [
+      user("go", { timestamp: 1_000 }),
+      assistant(
+        [{ type: "thinking", thinking: "plan" }, { type: "text", text: "interim note" }],
+        { stopReason: "toolUse", timestamp: 2_000 },
+      ),
+    ];
+    const rows = build(messages, { running: true, streamingMessage: null });
+    expect(kinds(rows)).toEqual(["message", "process"]);
+    expect(rows[1]).toMatchObject({ kind: "process", isStreaming: true });
+    if (rows[1]!.kind === "process") {
+      // The flushed interim text/thinking stay visible inside the live group.
+      expect(rows[1]!.blocks.length).toBeGreaterThan(0);
+    }
+  });
+
   it("shows a working process placeholder immediately after send, before any assistant tokens", () => {
     const rows = build([user("hello")], { running: true, streamingMessage: null });
     expect(kinds(rows)).toEqual(["message", "process"]);

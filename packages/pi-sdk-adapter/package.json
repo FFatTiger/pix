@@ -1,7 +1,7 @@
 {
   "name": "@fffattiger/pix-pi-sdk-adapter",
   "version": "0.1.0",
-  "private": true,
+  "files": ["dist"],
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "exports": {

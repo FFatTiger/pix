@@ -71,6 +71,28 @@ function hasFinalAssistantAnswer(message: AgentMessage): boolean {
   ));
 }
 
+/**
+ * True when the turn already contains a TERMINAL assistant commit: an answer
+ * block with a non-`toolUse` stop reason ("stop", error, length…). While a
+ * turn runs, the SDK flushes each completed segment as its own assistant
+ * entry with stopReason "toolUse" — those are interim commits, the turn keeps
+ * going, and the projection must stay live across streaming-partial gaps
+ * (tool/text flush windows where `streamingMessage` is briefly null).
+ */
+function hasTurnTerminalAnswer(messages: readonly AgentMessage[], userIdx: number, endIdx: number): boolean {
+  for (let idx = endIdx - 1; idx > userIdx; idx--) {
+    const message = messages[idx]!;
+    if (
+      message.role === "assistant"
+      && hasFinalAssistantAnswer(message)
+      && message.stopReason !== "toolUse"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function findFinalAssistantIndex(messages: readonly AgentMessage[], userIdx: number, endIdx: number): number {
   for (let candidateIdx = endIdx - 1; candidateIdx > userIdx; candidateIdx--) {
     if (hasFinalAssistantAnswer(messages[candidateIdx]!)) return candidateIdx;
@@ -406,17 +428,20 @@ export function buildChatTranscriptRows(input: BuildChatTranscriptRowsInput): Ch
 
     const finalAssistantIdx = findFinalAssistantIndex(messages, userIdx, endIdx);
     // A turn is live only while it can still produce content: a streaming
-    // partial exists, or the turn has no committed final assistant yet (the
-    // just-submitted-prompt window before the first partial arrives). When
-    // `running` flips true but the new user entry has not landed in
-    // `messages` yet, `lastUserIdx` still points at the PREVIOUS turn —
-    // without the guard below that settled turn gets re-split through the
-    // live streaming path and renders as a mangled duplicate until the new
-    // user entry arrives. A settled turn stays settled.
+    // partial exists, or nothing terminal has committed yet. Two windows put
+    // `running` ahead of the transcript with `streamingMessage === null`:
+    // (a) right after submit, before the new user entry lands — `lastUserIdx`
+    //     still points at the PREVIOUS turn, which is terminal and must stay
+    //     settled (re-splitting it through the live path rendered the old
+    //     answer as a mangled duplicate);
+    // (b) mid-turn segment flushes (stopReason "toolUse") — the turn is still
+    //     running and must STAY live, or the group visibly collapses and
+    //     re-expands on every tool/text flush.
+    // `hasTurnTerminalAnswer` separates the two.
     const isLiveTail = running
       && endIdx === messages.length
       && (userIdx === lastUserIdx || startsCompactionTurn)
-      && (streamingMessage !== null || finalAssistantIdx === -1);
+      && (streamingMessage !== null || !hasTurnTerminalAnswer(messages, userIdx, endIdx));
 
     if (isLiveTail) {
       rows.push(renderMessage(userIdx));

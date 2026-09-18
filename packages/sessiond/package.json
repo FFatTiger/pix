@@ -1,7 +1,6 @@
 {
   "name": "@fffattiger/pix-sessiond",
   "version": "0.1.0",
-  "private": true,
   "description": "Authoritative local runtime daemon for pix sessions",
   "type": "module",
   "engines": { "node": ">=22.19.0" },

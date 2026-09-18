@@ -1,7 +1,6 @@
 {
   "name": "@fffattiger/pix-protocol",
   "version": "0.1.0",
-  "private": true,
   "description": "Pi Runtime Protocol v1 — frozen shared contract for host, sessiond, worker, and client",
   "type": "module",
   "exports": {

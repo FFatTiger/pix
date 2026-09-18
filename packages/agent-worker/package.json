@@ -1,7 +1,6 @@
 {
   "name": "@fffattiger/pix-agent-worker",
   "version": "0.1.0",
-  "private": true,
   "description": "Single-session agent worker: Protocol ↔ Runtime Core stateful mapper, application controller, and process composition root",
   "type": "module",
   "engines": { "node": ">=22.19.0" },

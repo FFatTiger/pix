@@ -1,7 +1,6 @@
 {
   "name": "@fffattiger/pix-cli",
   "version": "0.1.0",
-  "private": true,
   "description": "Production composition + lifecycle CLI for pix: ensure/reuse sessiond, host boot, status, down --all",
   "type": "module",
   "engines": { "node": ">=22.19.0" },
@@ -15,7 +14,7 @@
     "pix-host": "./bin/pix-host.mjs",
     "pix-sessiond": "./bin/pix-sessiond.mjs"
   },
-  "files": ["dist", "bin"],
+  "files": ["dist", "bin", "client"],
   "scripts": {
     "clean": "node ../../scripts/remove-paths.mjs dist dist-test",
     "prebuild": "node scripts/prebuild-deps.mjs",

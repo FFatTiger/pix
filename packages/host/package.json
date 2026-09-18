@@ -1,7 +1,6 @@
 {
   "name": "@fffattiger/pix-host",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Hono host foundation + runtime WS gateway for pix: gate, request security, static client hosting, WS upgrade seam and sessiond-backed runtime gateway",
   "engines": {
