@@ -17,22 +17,21 @@ Your sessions live in a resident daemon, not in a browser tab. Close the window,
 Requires Node.js ≥ 22.19 and a working [pi](https://github.com/earendil-works/pi) setup (models and providers come from your existing `~/.pi` configuration).
 
 ```bash
-npm install
-npm run build
-npm start
+npm install -g @fffattiger/pix-cli
+pix start
 ```
 
 Your browser opens to `http://127.0.0.1:30141` with the pix UI. Useful flags:
 
 ```bash
-npm start -- --port 30142 --hostname 0.0.0.0 --no-open
+pix start --port 30142 --hostname 0.0.0.0 --no-open
 ```
 
 To manage the running services:
 
 ```bash
-npm run cli -- status   # sessiond / host health
-npm run cli -- down --all
+pix status   # sessiond / host health
+pix down --all
 ```
 
 ## How it works
@@ -54,6 +53,7 @@ The web process is disposable by design; `pix-sessiond` owns session lifecycle, 
 ## Development
 
 ```bash
+npm install
 npm run check:architecture   # package-boundary and tooling gates
 npm run typecheck
 npm test
@@ -64,4 +64,4 @@ End-to-end suites (build first): `npm run test:e2e:startup`, `test:e2e:runtime`,
 
 ## License
 
-Not yet decided. Third-party visual assets ported from MIT-licensed [pi-web-desktop](https://github.com/isWittHere/pi-web-desktop) are acknowledged in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Project licensing has not yet been decided. Third-party visual assets and their MIT attribution are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -1,6 +1,6 @@
 {
   "name": "@fffattiger/pix",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Standalone next-generation pix product workspace: Vite Client + Hono Host + independent pi-sessiond + per-session Worker + Runtime Protocol + Pi ACL. Zero Next.js.",
   "type": "module",

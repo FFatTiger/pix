@@ -1,20 +1,38 @@
 {
   "name": "@fffattiger/pix-cli",
-  "version": "0.1.0",
-  "description": "Production composition + lifecycle CLI for pix: ensure/reuse sessiond, host boot, status, down --all",
+  "version": "0.1.1",
+  "description": "Install and run pix, a local web workstation for the pi coding agent.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FFatTiger/pix.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/FFatTiger/pix#readme",
+  "bugs": {
+    "url": "https://github.com/FFatTiger/pix/issues"
+  },
   "type": "module",
-  "engines": { "node": ">=22.19.0" },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "bin": {
     "pix": "./bin/pix.mjs",
     "pix-host": "./bin/pix-host.mjs",
     "pix-sessiond": "./bin/pix-sessiond.mjs"
   },
-  "files": ["dist", "bin", "client"],
+  "files": [
+    "dist",
+    "bin",
+    "client"
+  ],
   "scripts": {
     "clean": "node ../../scripts/remove-paths.mjs dist dist-test",
     "prebuild": "node scripts/prebuild-deps.mjs",
