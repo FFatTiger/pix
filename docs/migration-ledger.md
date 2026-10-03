@@ -4305,3 +4305,9 @@ Client 已合入统一 Files / Agents / Side chat 右侧面板、设置中的内
 **最终代码验收**：root architecture/typecheck/test/build、Client/Adapter boundaries、Adapter commands、startup/runtime/sessions E2E 与 diff-check 全 PASS。root 测试 3,489 pass / 1 platform skip（Client 1,209、Adapter 511、Protocol 246、sessiond 397 pass）；subagents aaa56e9 全 check 120/120。两项独立 GPT 验收均 PASS：原真实 fast-handled gate 最终 server/client/composer 均 idle、模型/思考等级保留、下一次提交可发送；真实 stdin 背压零未处理拒绝，密钥 full/partial wire canary 脱敏，通知四项竞态与附加容量回收验证闭环。全局 Pi 配置已从旧 npm 0.3.7 固定源改为本地主项目，实际插件 0.3.8 与 SDK 1.0.0 一致。
 
 **生产切换已完成**：2026-10-03 14:02（Asia/Shanghai）用户明确授权后，由独立于当前 Worker 的执行器完成停旧 Host、经认证 RPC 关闭旧 sessiond、以完整生产环境及绝对入口启动。新 Host PID 48143，sessiond PID 48144，instance `c7a67e48-f5c9-4866-b58d-b26d57878e57`；认证 hello build 与当前 **8/7/7**、Protocol 2 完全一致。`http://127.0.0.1:30145/v1/health` 和 `https://m.huu.im:30145/v1/health` 均正常且 sessiond up；公网 `/assets/index-BJoo8o_k.js` 和 `/assets/index-owlMnlLU.css` 内容哈希与已验收 dist 一致。父流程再次独立核对认证 build 与公网 HTTP 200。执行器报告 `/tmp/pix-pi1-restart-result.json` 为 `verified`，完成时间 `2026-10-03T06:02:08.160Z`。PID 和资源名只为本次证据，下次操作仍须现查身份。
+
+## 114. Pix 0.2.0 npm 分发与 SDK shrinkwrap 桥接
+
+全量离线包保留完整依赖，用于 GitHub 附件及离线安装验收。首个 285.5 MiB 全量包被 npm 以 HTTP 413 拒绝，因此 npm 分发单独使用 `scripts/release-package.mjs`：内嵌七个 Pix runtime 包、网页、patched subagents 与 Pi coding-agent SDK；外部依赖统一由 CLI 根清单声明并经 npm 安装。内嵌包不得再引用外部 dependency/peer，否则 npm 会将尚未打包的文件误判为已经 bundled。内嵌代码不变；仅规范安装清单。
+
+**待移除桥接：Pi SDK 1.0.0 的发布 shrinkwrap**。真实空 prefix/cache 安装暴露 `invalid or damaged lockfile`，npm 删除 coding-agent 的 `chalk` 等依赖后仍返回 0，导致 CLI 无法加载。npm 分发保留 SDK 1.0.0 代码，移除该 SDK 自带 `npm-shrinkwrap.json` 与嵌入的依赖目录，将其依赖移至 CLI 根清单。桥接只接受 SDK **1.0.0**；升级离开此版本时必须删除桥接，并用无此处理的空目录安装验收。构造测试覆盖版本守卫、shrinkwrap 删除、SDK 代码保留、外部依赖迁移、错误版本/依赖冲突与源目录保护。源仓库根 lockfile 不变，普通第三方包的锁文件不受此处理影响。

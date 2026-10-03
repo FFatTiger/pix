@@ -67,15 +67,17 @@ then synchronize workspace versions and internal dependencies:
 
 ```bash
 node scripts/sync-version.mjs write
-node scripts/release-verify.mjs --publishable --keep
+npm run release:verify -- --publishable --keep
 ```
 
-This creates and verifies a self-contained `@fffattiger/pix-cli` tarball in an
-isolated temporary directory. It checks offline installation, runtime startup,
-state retention across an upgrade, and uninstall behavior. The command prints
-the archive path and checksum; it does not publish. Publish that verified
-archive with `npm publish <archive.tgz> --access public`. Workspace directories
-are not the release artifact.
+This creates a standalone archive and a smaller `-npm.tgz` distribution in an
+isolated temporary directory. The standalone checks cover offline installation,
+runtime startup, state retention across an upgrade, and uninstall behavior.
+The npm archive bundles Pix, Pi's coding-agent SDK, and the patched plugin;
+npm installs their external dependencies normally. The SDK 1.0.0 bundle omits
+its defective published shrinkwrap. Test the npm archive with a fresh npm
+install, then publish it with `npm publish <archive-npm.tgz> --access public`. Neither the script nor
+workspace directories publish a release automatically.
 
 ## License
 

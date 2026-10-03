@@ -20,6 +20,7 @@
     "typecheck": "node scripts/run-workspaces.mjs typecheck",
     "test": "node scripts/run-node-test.mjs \"scripts/**/*.test.mjs\" \"tests/e2e/helpers/*.test.mjs\" && node scripts/run-workspaces.mjs test",
     "check:architecture": "node scripts/check-architecture.mjs",
+    "release:verify": "node scripts/release-verify.mjs",
     "start": "node scripts/product-entry.mjs start",
     "cli": "node scripts/product-entry.mjs cli",
     "test:e2e:startup": "node tests/e2e/startup.mjs",

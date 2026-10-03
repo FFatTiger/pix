@@ -14,11 +14,11 @@
  * state) lives under a single temp sandbox removed on exit. No registry
  * access, no publish, no writes outside the sandbox.
  *
- * `--publishable` shapes the assembled manifest for registry publication
- * (private flag omitted, CLI repository/engines/bin/description carried over,
- * root README/THIRD_PARTY_NOTICES/LICENSE inlined, npm-normalized archive
- * permissions, symlink-escape audit, patched-plugin pin). It is STILL
- * verify-only: this script never publishes.
+ * `--publishable` also creates a small `-npm.tgz` distribution that bundles Pix
+ * and its patched plugin while declaring third-party npm dependencies. The
+ * standalone archive remains the input for the offline checks below. The npm
+ * archive needs a separate fresh registry install check before publication.
+ * This script never publishes.
  *
  * Usage: node scripts/release-verify.mjs [--keep] [--skip-build] [--publishable]
  */
@@ -29,6 +29,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { patchPiClaudeSubagents } from "./patch-pi-claude-subagents.mjs";
+import { createRegistryPackage } from "./release-package.mjs";
 import { resolveNpmInvocation } from "./run-workspaces.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -295,8 +296,16 @@ async function runAll(sandbox) {
     const digest = createHash("sha256").update(readFileSync(tarball)).digest("hex");
     const bytes = statSync(tarball).size;
     writeFileSync(join(sandbox, `pix-cli-${version}.tgz.sha256`), `${digest}  pix-cli-${version}.tgz\n`);
-    log(`  publishable artifact: ${tarball}`);
+    log(`  standalone artifact: ${tarball}`);
     log(`  sha256 ${digest} (${(bytes / 1_048_576).toFixed(1)} MiB)`);
+    const registryStage = join(sandbox, "registry-stage");
+    const rootManifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    createRegistryPackage(join(stage, "package"), join(registryStage, "package"), rootManifest.overrides ?? {});
+    const registryTarball = join(sandbox, `pix-cli-${version}-npm.tgz`);
+    packBundle(registryStage, registryTarball);
+    rmSync(registryStage, { recursive: true, force: true });
+    log(`  npm artifact (registry dependencies): ${registryTarball}`);
+    log("  verify the npm artifact with a fresh npm install before publishing");
   }
 
   // Installation uses the tarballs; drop duplicate staging trees before npm
