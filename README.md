@@ -62,6 +62,21 @@ npm run build
 
 End-to-end suites (build first): `npm run test:e2e:startup`, `test:e2e:runtime`, `test:e2e:sessions`, `test:e2e:lifecycle-sdk`, `test:e2e:lifecycle-browser`, `test:e2e:multi-tab`.
 
+For a release, update the root version and the Protocol product build version,
+then synchronize workspace versions and internal dependencies:
+
+```bash
+node scripts/sync-version.mjs write
+node scripts/release-verify.mjs --publishable --keep
+```
+
+This creates and verifies a self-contained `@fffattiger/pix-cli` tarball in an
+isolated temporary directory. It checks offline installation, runtime startup,
+state retention across an upgrade, and uninstall behavior. The command prints
+the archive path and checksum; it does not publish. Publish that verified
+archive with `npm publish <archive.tgz> --access public`. Workspace directories
+are not the release artifact.
+
 ## License
 
 Project licensing has not yet been decided. Third-party visual assets and their MIT attribution are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
