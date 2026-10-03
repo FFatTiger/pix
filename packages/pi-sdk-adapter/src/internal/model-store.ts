@@ -58,7 +58,7 @@ function toModelInfo(model: Model<Api>): ModelInfo {
     provider: model.provider,
     ...(model.name ? { displayName: model.name } : {}),
     thinking: model.reasoning,
-    contextWindow: model.contextWindow,
+    ...(model.contextWindow > 0 ? { contextWindow: model.contextWindow } : {}),
   };
 }
 

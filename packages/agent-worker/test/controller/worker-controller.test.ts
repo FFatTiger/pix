@@ -347,6 +347,37 @@ describe("WorkerController", () => {
     assert.deepEqual(results[0]?.payload.result.result, { ok: true, type: "prompt" });
   });
 
+  it("side command and targeted abort preserve identities and refresh authority before terminal results", async () => {
+    const factory = new FakeAgentRuntimeFactory();
+    factory.script = () => ({
+      sessionId: "sess-real",
+      onExecute: async (command) => command.type === "side_chat_start"
+        ? { ok: true, type: "side_chat_start", conversationId: "side-1" }
+        : ({ ok: true, type: command.type } as CoreRuntimeCommandResult),
+      onInterrupt: async (interrupt) => ({ ok: true, type: interrupt.type }),
+    });
+    const { controller, recorder } = createHarness(factory);
+    await controller.handleMessage(initMessage({ mode: "create" }));
+    const runtime = factory.created[0]!;
+    assert.equal(runtime.snapshotCalls, 1);
+
+    await controller.handleMessage(commandMessage({ type: "side_chat_start" }, "sess-real", "wire-side", "cmd-side"));
+    assert.equal(runtime.snapshotCalls, 2, "side mutation refreshes authority before ack");
+    const commandResult = recorder.messages.filter(isCommandResult).find((message) => message.id === "wire-side");
+    assert.deepEqual(commandResult?.payload.result.result, { ok: true, type: "side_chat_start", conversationId: "side-1" });
+
+    await controller.handleMessage({
+      type: "worker.interrupt",
+      id: "wire-side-abort",
+      protocolVersion: 2,
+      payload: { sessionId: "sess-real", epoch: "e1", commandId: "cmd-side-abort", interrupt: { type: "abort_side_chat", conversationId: "side-1" } },
+    });
+    assert.deepEqual(runtime.interruptCalls, [{ type: "abort_side_chat", conversationId: "side-1" }]);
+    assert.equal(runtime.snapshotCalls, 3, "side abort refreshes authority before ack");
+    const interruptResult = recorder.messages.filter(isInterruptResult).find((message) => message.id === "wire-side-abort");
+    assert.deepEqual(interruptResult?.payload.result.result, { ok: true, type: "abort_side_chat" });
+  });
+
   it("abort interrupt resolves exactly one correlated interruptResult", async () => {
     const factory = new FakeAgentRuntimeFactory();
     factory.script = () => ({

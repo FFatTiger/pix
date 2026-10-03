@@ -24,6 +24,8 @@ export interface SessionPageRequest extends CatalogPageRequest {
   cwd?: string;
   /** Canonical project-root filter for a project's nested session page. */
   projectRoot?: string;
+  /** Direct persisted children of this parent session (exact SDK parentSession). */
+  parentSessionId?: string;
 }
 
 export interface CatalogPageMeta {

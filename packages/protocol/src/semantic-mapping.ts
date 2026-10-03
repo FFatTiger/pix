@@ -34,6 +34,11 @@ export const RUNTIME_COMMAND_CAPABILITY_MATRIX = {
   bash: "runtime.bash",
   abort_bash: "runtime.bash.abort",
   generate_session_title: "runtime.auto_name",
+  side_chat_start: "runtime.side_chat",
+  side_chat_send: "runtime.side_chat",
+  side_chat_reset: "runtime.side_chat",
+  side_chat_set_mode: "runtime.side_chat",
+  side_chat_overlap_response: "runtime.side_chat",
 } as const satisfies Readonly<Record<RuntimeCommandType, RuntimeCapability | null>>;
 
 export const RUNTIME_INTERRUPT_CAPABILITY_MATRIX = {
@@ -41,6 +46,7 @@ export const RUNTIME_INTERRUPT_CAPABILITY_MATRIX = {
   abort_compaction: "runtime.compact.abort",
   abort_bash: "runtime.bash.abort",
   clear_queue: "runtime.queue",
+  abort_side_chat: "runtime.side_chat",
 } as const satisfies Readonly<Record<RuntimeInterruptType, RuntimeCapability>>;
 
 /** Stable mapper responsibilities exercised by protocol-local fixtures. */
@@ -75,4 +81,8 @@ export const ACL0_PROTOCOL_SEMANTIC_MATRIX = {
   interruptResult: "RuntimeInterruptResult <-> commandId-correlated result mirroring command result",
   dualAuth: "Runtime AuthProviderInfo.methods <-> Protocol methods[]",
   sessionEntries: "Runtime entryId/parentEntryId <-> Protocol session entries",
+  builtInRuntime: "Runtime BuiltInRuntimeState <-> Protocol BuiltInRuntimeState (loaded vs Host desired config)",
+  subagentProjection: "Runtime SubagentProjection <-> Protocol SubagentProjection (authority snapshot, never transcript)",
+  todoProjection: "Runtime TodoProjection <-> Protocol TodoProjection (authority snapshot, never transcript)",
+  sideChatProjection: "Runtime SideChatState <-> Protocol bounded SideChatState + identity-fenced stream deltas",
 } as const;

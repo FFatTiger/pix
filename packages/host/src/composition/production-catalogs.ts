@@ -20,6 +20,7 @@
 import { isAbsolute } from "node:path";
 import { createPiSdkModelCatalog, createPiSdkModelsConfig } from "@fffattiger/pix-pi-sdk-adapter/models";
 import { createPiSdkSettingsConfig } from "@fffattiger/pix-pi-sdk-adapter/settings";
+import { createPiSdkBuiltInCapabilityConfig } from "@fffattiger/pix-pi-sdk-adapter/builtins";
 import { createPiSdkCredentialCatalog } from "@fffattiger/pix-pi-sdk-adapter/credentials";
 import { createPiSdkResourceCatalog } from "@fffattiger/pix-pi-sdk-adapter/resources";
 import { createPiSdkTrustCatalog, createPiSdkTrustMutation } from "@fffattiger/pix-pi-sdk-adapter/trust";
@@ -31,6 +32,7 @@ import type {
   CatalogModelsSeam,
   CatalogModelsMutationSeam,
   CatalogSettingsMutationSeam,
+  CatalogBuiltInsMutationSeam,
   CatalogResourcesSeam,
   CatalogThemesSeam,
   CatalogTrustMutationSeam,
@@ -43,6 +45,7 @@ export const CATALOG_CAPABILITY_TOKENS: readonly HostCapability[] = [
   "models",
   "models.configure",
   "settings.configure",
+  "builtins.configure",
   "auth.providers",
   "skills",
   "plugins",
@@ -116,6 +119,14 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
   const settingsMutation: CatalogSettingsMutationSeam = {
     readConfig: () => settingsConfig.readConfig(),
     writeConfig: (input) => settingsConfig.writeConfig(input as never),
+    readToolsConfig: () => settingsConfig.readToolsConfig(),
+    writeToolsConfig: (input) => settingsConfig.writeToolsConfig(input as never),
+  };
+
+  const builtinsConfig = createPiSdkBuiltInCapabilityConfig({ agentDir });
+  const builtinsMutation: CatalogBuiltInsMutationSeam = {
+    readConfig: () => builtinsConfig.readConfig(),
+    writeConfig: (input) => builtinsConfig.writeConfig(input as never),
   };
 
   const credentials: CatalogCredentialsSeam = {
@@ -169,5 +180,5 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     },
   };
 
-  return { roots, models, modelsMutation, settingsMutation, credentials, resources, trust, trustMutation, themes };
+  return { roots, models, modelsMutation, settingsMutation, builtinsMutation, credentials, resources, trust, trustMutation, themes };
 }

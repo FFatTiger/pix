@@ -53,6 +53,11 @@ describe("command-mapper (protocol → core, commandId stripped)", () => {
       [{ type: "bash", command: "ls", excludeFromContext: true }, { type: "bash", command: "ls", excludeFromContext: true }],
       [{ type: "abort_bash" }, { type: "abort_bash" }],
       [{ type: "generate_session_title" }, { type: "generate_session_title" }],
+      [{ type: "side_chat_start" }, { type: "side_chat_start" }],
+      [{ type: "side_chat_send", conversationId: "side-1", message: "question" }, { type: "side_chat_send", conversationId: "side-1", message: "question" }],
+      [{ type: "side_chat_reset", conversationId: "side-1", mode: "refork" }, { type: "side_chat_reset", conversationId: "side-1", mode: "refork" }],
+      [{ type: "side_chat_set_mode", conversationId: "side-1", mode: "edit" }, { type: "side_chat_set_mode", conversationId: "side-1", mode: "edit" }],
+      [{ type: "side_chat_overlap_response", conversationId: "side-1", requestId: "overlap-1", proceed: false }, { type: "side_chat_overlap_response", conversationId: "side-1", requestId: "overlap-1", proceed: false }],
     ];
     for (const [protocol, expected] of cases) {
       const mapped = coreFor(protocol);
@@ -122,6 +127,9 @@ describe("command-mapper (core result → protocol outcome)", () => {
     assert.deepEqual(text, { ok: true, type: "get_last_assistant_text", text: "hello" });
     const fork = mapCoreResultToProtocol({ ok: true, type: "fork", forkedSessionId: "f1", forkPointEntryId: "e1" });
     assert.deepEqual(fork, { ok: true, type: "fork", forkedSessionId: "f1", forkPointEntryId: "e1" });
+    assert.deepEqual(mapCoreResultToProtocol({ ok: true, type: "side_chat_start", conversationId: "side-1" }), { ok: true, type: "side_chat_start", conversationId: "side-1" });
+    assert.deepEqual(mapCoreResultToProtocol({ ok: true, type: "side_chat_send", runId: "run-1" }), { ok: true, type: "side_chat_send", runId: "run-1" });
+    assert.deepEqual(mapCoreResultToProtocol({ ok: true, type: "side_chat_reset", conversationId: "side-2" }), { ok: true, type: "side_chat_reset", conversationId: "side-2" });
   });
 
   it("maps bare acks", () => {

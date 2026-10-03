@@ -179,6 +179,16 @@ function fixtureFor(type: RuntimeCommandType): RuntimeCommand {
       return { type };
     case "generate_session_title":
       return { type };
+    case "side_chat_start":
+      return { type };
+    case "side_chat_send":
+      return { type, conversationId: "side-1", message: "hi" };
+    case "side_chat_reset":
+      return { type, conversationId: "side-1", mode: "clear" };
+    case "side_chat_set_mode":
+      return { type, conversationId: "side-1", mode: "edit" };
+    case "side_chat_overlap_response":
+      return { type, conversationId: "side-1", requestId: "overlap-1", proceed: false };
   }
 }
 
@@ -284,17 +294,31 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
 
       it("every product command type executes with minimal valid input", async () => {
         const types = RUNTIME_COMMAND_TYPES.filter(
-          (type) => type !== "extension_ui_response" && type !== "extension_ui_input",
+          (type) => type !== "extension_ui_response" && type !== "extension_ui_input" && type !== "side_chat_overlap_response",
         );
-        assert.equal(types.length, 24, "26 commands minus 2 extension-response types");
+        assert.equal(types.length, 28, "31 commands minus 2 extension-response types and stateful overlap response");
         for (const type of types) {
           const factory = await harness.createFactory();
           const port = await factory.create({ cwd: "/workspace" });
+          const available = port.getCapabilities().capabilities;
+          const required = RUNTIME_COMMAND_CAPABILITIES[type];
+          if (required !== null && !available.includes(required)) {
+            assertErrorCode(await port.execute(fixtureFor(type)), "unsupported_capability");
+            await port.close("user");
+            continue;
+          }
           if (type === "fork") {
             // fork needs an existing fork point
             await port.execute({ type: "prompt", message: "hi" });
           }
-          const result = await port.execute(fixtureFor(type));
+          let fixture = fixtureFor(type);
+          if (type === "side_chat_send" || type === "side_chat_reset" || type === "side_chat_set_mode") {
+            const started = await port.execute({ type: "side_chat_start" });
+            assert.equal(started.ok, true);
+            if (!started.ok || started.type !== "side_chat_start") throw new Error("side chat setup failed");
+            fixture = { ...fixture, conversationId: started.conversationId } as RuntimeCommand;
+          }
+          const result = await port.execute(fixture);
           assert.equal(result.ok, true, `command "${type}" should succeed`);
           await port.close("user");
         }
@@ -318,16 +342,30 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
       });
 
       it("every declared capability gates every mapped command", async () => {
+        const availabilityOnly = new Set([
+          "runtime.subagents",
+          "runtime.todo",
+          "runtime.user_question",
+        ]);
+        for (const token of availabilityOnly) {
+          assert.equal(
+            Object.values(RUNTIME_COMMAND_CAPABILITIES).includes(token as never),
+            false,
+            `${token} must have no command mapping`,
+          );
+        }
         const mapped = new Set(
           Object.values(RUNTIME_COMMAND_CAPABILITIES).filter(
-            (capability): capability is (typeof RUNTIME_CAPABILITIES)[number] =>
-              capability !== null,
+            (capability): capability is Exclude<
+              (typeof RUNTIME_CAPABILITIES)[number],
+              "runtime.subagents" | "runtime.todo" | "runtime.user_question"
+            > => capability !== null,
           ),
         );
         assert.deepEqual(
           [...mapped].sort(),
-          [...RUNTIME_CAPABILITIES].sort(),
-          "every canonical capability must gate at least one command",
+          [...RUNTIME_CAPABILITIES].filter((token) => !availabilityOnly.has(token)).sort(),
+          "every command-gated canonical capability must gate at least one command",
         );
 
         for (const [type, capability] of Object.entries(RUNTIME_COMMAND_CAPABILITIES)) {
@@ -526,14 +564,17 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
 
     /* ---------------------------------------------------------------- */
     describe("interrupt", () => {
+      const mirroredInterruptTypes = ["abort", "abort_compaction", "abort_bash", "clear_queue"] as const;
+
       it("independent interrupts share canonical capability semantics with execute", async () => {
         assert.deepEqual(RUNTIME_INTERRUPT_TYPES, [
           "abort",
           "abort_compaction",
           "abort_bash",
           "clear_queue",
+          "abort_side_chat",
         ]);
-        for (const type of RUNTIME_INTERRUPT_TYPES) {
+        for (const type of mirroredInterruptTypes) {
           const capability = RUNTIME_INTERRUPT_CAPABILITIES[type];
           assert.equal(
             RUNTIME_COMMAND_CAPABILITIES[type],
@@ -559,6 +600,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
           assert.equal(after.state.isCompacting, before.state.isCompacting);
           await port.close("user");
         }
+        assert.equal(RUNTIME_INTERRUPT_CAPABILITIES.abort_side_chat, RUNTIME_COMMAND_CAPABILITIES.side_chat_start);
       });
 
       it("closed-state lifecycle errors outrank capabilities for every interrupt path", async () => {
@@ -578,9 +620,13 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
             const eventCountAfterClose = collector.events.length;
             assert.equal(collector.ofType("runtime_closed").length, 1);
 
-            const executeResult = await port.execute(fixtureFor(type));
+            const executeResult = await port.execute(
+              type === "abort_side_chat" ? { type: "side_chat_start" } : fixtureFor(type),
+            );
             assertErrorCode(executeResult, "unavailable");
-            const interruptResult = await port.interrupt({ type });
+            const interruptResult = await port.interrupt(
+              type === "abort_side_chat" ? { type, conversationId: "side-1" } : { type },
+            );
             assertInterruptErrorCode(interruptResult, "unavailable");
             assert.equal(executeResult.error.message, interruptResult.error.message);
 
@@ -674,7 +720,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
       });
 
       it("execute and interrupt supported paths have consistent state effects", async () => {
-        for (const type of RUNTIME_INTERRUPT_TYPES) {
+        for (const type of mirroredInterruptTypes) {
           const runPath = async (path: "execute" | "interrupt") => {
             const { port } = await newRuntime(harness);
             let pending: Promise<RuntimeCommandResult>;
@@ -1850,21 +1896,54 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
     });
 
     /* ---------------------------------------------------------------- */
-    const sideChatSuite = harness.getSideChatSnapshot ? describe : describe.skip;
-    sideChatSuite("side chat snapshot DTO (future-optional)", () => {
-      it("main snapshot is a serializable canonical DTO", async () => {
+    describe("side chat canonical runtime contract", () => {
+      it("is explicit, identity-fenced, ephemeral, and independently abortable", async () => {
         const { port } = await newRuntime(harness);
-        await port.execute({ type: "prompt", message: "hi" });
-        const snapshot = await harness.getSideChatSnapshot!(port.identity.sessionId);
-        assert.ok(snapshot, "side chat snapshot must be available");
-        assert.equal(snapshot!.sessionId, port.identity.sessionId);
-        assert.ok(snapshot!.systemPrompt && snapshot!.systemPrompt.length > 0);
-        assert.ok(snapshot!.writtenFiles.some((path) => path.endsWith(".md")));
-        assert.ok(snapshot!.activity.length >= 1);
-        assert.equal(typeof snapshot!.version, "number");
-        const roundTrip = JSON.parse(JSON.stringify(snapshot));
-        assert.deepEqual(roundTrip, snapshot, "DTO must survive JSON round-trip");
-        assert.ok(structuredClone(snapshot));
+        const collector = new EventCollector(port);
+        const before = await port.getSnapshot();
+        assert.equal(before.state.sideChat ?? null, null);
+
+        if (!port.getCapabilities().capabilities.includes("runtime.side_chat")) {
+          assertErrorCode(await port.execute({ type: "side_chat_start" }), "unsupported_capability");
+          collector.dispose();
+          await port.close("user");
+          return;
+        }
+
+        const started = await port.execute({ type: "side_chat_start" });
+        assert.equal(started.ok, true);
+        assert.equal(started.type, "side_chat_start");
+        if (!started.ok || started.type !== "side_chat_start") throw new Error("side chat did not start");
+        const conversationId = started.conversationId;
+        const initial = await port.getSnapshot();
+        assert.equal(initial.state.sideChat?.conversationId, conversationId);
+        assert.equal(initial.state.sideChat?.mode, "read_only");
+        assert.deepEqual(initial.state.sideChat?.capturedModel, initial.state.model);
+        assert.equal(initial.state.sideChat?.capturedThinkingLevel, initial.state.thinkingLevel);
+        assert.ok(collector.ofType("side_chat_changed").length >= 1, "state publishes before start acknowledgement");
+
+        assertErrorCode(await port.execute({ type: "side_chat_send", conversationId: "stale", message: "no" }), "not_found");
+        const sent = await port.execute({ type: "side_chat_send", conversationId, message: "question" });
+        assert.equal(sent.ok, true);
+        if (!sent.ok || sent.type !== "side_chat_send") throw new Error("side chat send was not admitted");
+        assert.equal((await port.getSnapshot()).state.sideChat?.runId, sent.runId);
+        assert.equal((await port.getSnapshot()).state.messageCount, before.state.messageCount, "side messages never enter the parent transcript");
+
+        const aborted = await port.interrupt({ type: "abort_side_chat", conversationId });
+        assert.equal(aborted.ok, true);
+        assert.equal((await port.getSnapshot()).state.isPromptRunning, false, "side abort does not alter the parent lane");
+        assertInterruptErrorCode(await port.interrupt({ type: "abort_side_chat", conversationId: "stale" }), "not_found");
+
+        const reset = await port.execute({ type: "side_chat_reset", conversationId, mode: "clear" });
+        assert.equal(reset.ok, true);
+        if (!reset.ok || reset.type !== "side_chat_reset") throw new Error("side chat did not reset");
+        assert.notEqual(reset.conversationId, conversationId);
+        assert.equal((await port.getSnapshot()).state.sideChat?.mode, "read_only");
+        assertErrorCode(await port.execute({ type: "side_chat_set_mode", conversationId, mode: "edit" }), "not_found");
+
+        await port.execute({ type: "reload" });
+        assert.equal((await port.getSnapshot()).state.sideChat ?? null, null, "reload clears ephemeral side state");
+        collector.dispose();
         await port.close("user");
       });
     });

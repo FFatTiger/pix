@@ -14,6 +14,7 @@ import { ToolboxIcon } from "@phosphor-icons/react/Toolbox";
 import { TrashIcon } from "@phosphor-icons/react/Trash";
 import { WarningCircleIcon } from "@phosphor-icons/react/WarningCircle";
 import { MarkdownBody } from "./MarkdownBody";
+import { NestedToolCallSummary } from "./NestedToolCallSummary";
 import { DisclosureCollapse } from "./DisclosureCollapse";
 import { useI18n } from "@/hooks/useI18n";
 import type { ImageContent, ToolResultMessage } from "@/lib/chat-view-model";
@@ -560,6 +561,10 @@ function CodexToolDetails({ block }: { block: ToolBlock }) {
           <pre>{json(block.input)}</pre>
         </div>
       )}
+      <NestedToolCallSummary value={block.result?.nestedCalls} />
+      {block.result?.structuredContent !== undefined && (
+        <div className="codex-tool-detail-section"><pre>{json(block.result.structuredContent)}</pre></div>
+      )}
       {block.result && (
         <div className="codex-tool-detail-section">
           <div className="codex-tool-detail-label">{t("desktop.codexProcessOutput")}</div>
@@ -688,7 +693,7 @@ function CodexToolGroup({ blocks, entries, cwd, onOpenFile, isStreaming }: {
                 if (entry.type === "toolCall") {
                   return (
                     <CodexToolRow
-                      key={entry.id}
+                      key={entry.toolCallId}
                       block={entry}
                     />
                   );
@@ -797,11 +802,11 @@ export function CodexProcessContent({ blocks, cwd, onOpenFile, isStreaming, isAn
           // Only runs of 2+ adjacent tools (possibly mixed with custom/image
           // entries) collapse into a CodexToolGroup.
           if (item.blocks.length === 1 && item.entries.length === 1) {
-            return <CodexToolRow key={item.id} block={item.blocks[0]!} />;
+            return <CodexToolRow key={item.blocks[0]!.toolCallId} block={item.blocks[0]!} />;
           }
           return (
             <CodexToolGroup
-              key={item.id}
+              key={item.blocks[0]!.toolCallId}
               blocks={item.blocks}
               entries={item.entries}
               cwd={cwd}

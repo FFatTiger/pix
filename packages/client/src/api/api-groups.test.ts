@@ -26,6 +26,7 @@ describe("API domain response parsing", () => {
   it("parses session list/detail/context baselines with revision", async () => {
     const page = { sessions: [header], page: 1, pageSize: 50, total: 1, totalPages: 1, catalogRevision: 2 };
     await expect(createSessionsApi(client(page)).list({ page: 1, pageSize: 50 })).resolves.toEqual(page);
+    await expect(createSessionsApi(client(page)).list({ page: 1, pageSize: 50, parentSessionId: "parent-1" })).resolves.toEqual(page);
     await expect(createSessionsApi(client({ session: header, revision: 3 })).detail("s")).resolves.toEqual({ session: header, revision: 3 });
     await expect(createSessionsApi(client({ context: { sessionId: "s", entries: [], pageInfo: { hasMore: false } }, revision: 4 })).context("s")).resolves.toEqual({ context: { sessionId: "s", entries: [], pageInfo: { hasMore: false } }, revision: 4 });
   });
@@ -72,6 +73,36 @@ describe("API domain response parsing", () => {
     };
     await expect(createModelsApi(client(legacy)).list()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
     await expect(createModelsApi(client({ models: [{ id: 1 }], defaultModel: null })).list()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
+  it("built-in settings use strict GET/PUT CAS envelopes", async () => {
+    const revision = "a".repeat(64);
+    const body = {
+      revision,
+      capabilities: [
+        { id: "subagents", enabled: true },
+        { id: "todo", enabled: true },
+        { id: "ask_user_question", enabled: false },
+        { id: "side_chat", enabled: false },
+      ],
+    } as const;
+    await expect(createConfigurationApi(client(body)).builtIns.get()).resolves.toEqual(body);
+
+    const calls: { url: string; method: string; body?: unknown }[] = [];
+    const recording = createHttpClient({
+      fetchImpl: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({
+          url: String(input),
+          method: (init?.method ?? "GET").toUpperCase(),
+          ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+        });
+        return json(body);
+      }) as unknown as typeof fetch,
+    });
+    const input = { expectedRevision: revision, capabilities: body.capabilities.map((row) => ({ ...row })) };
+    await expect(createConfigurationApi(recording).builtIns.save(input)).resolves.toEqual(body);
+    expect(calls).toEqual([{ url: "/v1/settings/built-ins", method: "PUT", body: input }]);
+    await expect(createConfigurationApi(client({ ...body, extra: true })).builtIns.get()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 
   it("trust setTrusted sends exactly POST /v1/trust with body {cwd, level:\"trusted\"}", async () => {

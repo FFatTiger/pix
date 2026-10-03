@@ -745,11 +745,24 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     return trackedPromise;
   }
 
-  /** sessionId → info index built from the current (warm or freshly scanned) cache. */
-  private indexById(): Map<string, SdkSessionInfo> {
-    const byId = new Map<string, SdkSessionInfo>();
-    for (const info of this.cache?.infos ?? []) byId.set(info.id, info);
-    return byId;
+  /**
+   * Targeted sessionId lookup. Duplicate IDs at the same path are identical
+   * history and OK; the same requested ID at two distinct paths is a canonical
+   * conflict — never last-wins, never open either history. Unrelated IDs stay
+   * resolvable so one ambiguous pair cannot take the whole catalog down.
+   */
+  private indexedInfo(sessionId: string): SdkSessionInfo | undefined {
+    let match: SdkSessionInfo | undefined;
+    for (const info of this.cache?.infos ?? []) {
+      if (info.id !== sessionId) continue;
+      if (match === undefined) {
+        match = info;
+        continue;
+      }
+      if (sessionPathKey(match.path) === sessionPathKey(info.path)) continue;
+      throw makeRuntimeError("conflict", `session id maps to multiple files: ${sessionId}`);
+    }
+    return match;
   }
 
   /** normalized path → sessionId index built from the current cache. */
@@ -786,7 +799,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     await this.listInfos();
     // Re-read the CURRENT cache: the snapshot may have been superseded or
     // invalidated while we waited.
-    const fromIndex = this.indexById().get(sessionId);
+    const fromIndex = this.indexedInfo(sessionId);
     if (fromIndex) return fromIndex;
     if (!listWasWarm) {
       // The cold `listInfos` scan that just ran is the freshest full snapshot.
@@ -803,7 +816,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     // Re-check the CURRENT cache: this scan may have been discarded by a newer
     // refresh, or a newer scan may still be in flight. Only record a negative
     // against the current trusted snapshot (warm, current generation, newest).
-    const current = this.indexById().get(sessionId);
+    const current = this.indexedInfo(sessionId);
     if (current) return current;
     if (
       this.generation === generation &&
@@ -972,10 +985,17 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     if (!Number.isSafeInteger(request.page) || request.page < 1 || !Number.isSafeInteger(request.pageSize) || request.pageSize < 1 || request.pageSize > 100) {
       throw makeRuntimeError("invalid_input", "session page is invalid");
     }
+    if (request.parentSessionId !== undefined) {
+      const opened = await this.openSession(request.parentSessionId);
+      if (!opened) throw notFound(request.parentSessionId);
+    }
     if (!this.projectionEnabled) {
       const sessions = await this.listSessions();
       const filtered = sessions.filter((session) =>
-        (request.cwd === undefined || session.cwd === request.cwd)
+        (request.parentSessionId !== undefined
+          ? session.parentSessionId === request.parentSessionId
+          : session.parentSessionId === undefined)
+        && (request.cwd === undefined || session.cwd === request.cwd)
         && (request.projectRoot === undefined || session.projectRoot === request.projectRoot));
       const offset = (request.page - 1) * request.pageSize;
       return { sessions: filtered.slice(offset, offset + request.pageSize), page: request.page, pageSize: request.pageSize, total: filtered.length, totalPages: filtered.length === 0 ? 0 : Math.ceil(filtered.length / request.pageSize), catalogRevision: this.lastAppliedRevision };
@@ -993,6 +1013,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       const sessions = await this.listSessions();
       const grouped = new Map<string, { representativeCwd: string; sessionCount: number; latestActivity: number }>();
       for (const session of sessions) {
+        if (session.parentSessionId !== undefined) continue;
         const root = session.projectRoot || session.cwd;
         const latestActivity = session.updatedAt ?? session.lastMessageAt ?? session.createdAt ?? 0;
         const current = grouped.get(root);

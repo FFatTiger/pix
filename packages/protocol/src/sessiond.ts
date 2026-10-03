@@ -210,6 +210,7 @@ export const SessionsListParamsSchema = z.strictObject({
   pageSize: z.number().int().positive().max(100).safe(),
   cwd: NonEmptyStringSchema.optional(),
   projectRoot: NonEmptyStringSchema.optional(),
+  parentSessionId: NonEmptyStringSchema.optional(),
 });
 export type SessionsListParams = z.infer<typeof SessionsListParamsSchema>;
 

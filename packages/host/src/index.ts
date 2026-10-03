@@ -222,6 +222,8 @@ export type {
   CatalogDeps,
   CatalogModelsSeam,
   CatalogModelsMutationSeam,
+  CatalogSettingsMutationSeam,
+  CatalogBuiltInsMutationSeam,
   CatalogCredentialsSeam,
   CatalogResourcesSeam,
   CatalogTrustSeam,

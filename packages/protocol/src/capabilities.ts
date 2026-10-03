@@ -21,6 +21,11 @@ import { z } from "zod";
  * never depends on the per-session Worker, so the token stays advertised in
  * the degraded (sessiond-down) projection too. The token is discovery, never
  * authorization — the route still fail-closes on gate/auth/root checks.
+ *
+ * Pix built-in desired-enablement token: `builtins.configure` — advertised
+ * ONLY while the Host mounts GET/PUT `/v1/settings/built-ins`. Independent of
+ * the read-only `plugins` inventory and of generic Pi `settings.json`.
+ * `plugins.manage` stays rejected.
  */
 export const HostCapabilitySchema = z.enum([
   "agent",
@@ -38,6 +43,7 @@ export const HostCapabilitySchema = z.enum([
   "models",
   "models.configure",
   "settings.configure",
+  "builtins.configure",
   "auth.providers",
   "skills",
   "plugins",

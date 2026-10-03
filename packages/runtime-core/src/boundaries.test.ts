@@ -67,7 +67,7 @@ test("runtime-core never mentions SDK/RPC type names", () => {
 });
 
 test("capabilities never encode backend identity (no sdk/rpc markers)", () => {
-  assert.equal(RUNTIME_CAPABILITIES.length, 20, "expected the 20 canonical capabilities");
+  assert.equal(RUNTIME_CAPABILITIES.length, 24, "expected the 24 canonical capabilities");
   for (const capability of RUNTIME_CAPABILITIES) {
     assert.match(capability, /^runtime\.[a-z_]+(\.[a-z_]+)?$/, `malformed capability "${capability}"`);
     assert.ok(

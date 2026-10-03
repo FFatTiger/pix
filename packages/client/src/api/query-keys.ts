@@ -25,7 +25,7 @@ export const queryKeys = {
   sessions: {
     all: ["pix", "sessions"] as const,
     lists: ["pix", "sessions", "page"] as const,
-    page: (page: number, pageSize: number, cwd?: string, projectRoot?: string) => ["pix", "sessions", "page", page, pageSize, cwd ?? null, projectRoot ?? null] as const,
+    page: (page: number, pageSize: number, cwd?: string, projectRoot?: string, parentSessionId?: string) => ["pix", "sessions", "page", page, pageSize, cwd ?? null, projectRoot ?? null, parentSessionId ?? null] as const,
     byId: (id: string) => ["pix", "sessions", "session", id] as const,
     detail: (id: string) => ["pix", "sessions", "session", id, "detail"] as const,
     context: (id: string) => ["pix", "sessions", "session", id, "context"] as const,
@@ -48,6 +48,10 @@ export const queryKeys = {
   settingsConfig: {
     /** Editable global settings.json raw text. */
     file: () => ["pix", "settings", "config"] as const,
+    /** Global tool selection (`pixDefaultTools`) snapshot. */
+    tools: () => ["pix", "settings", "tools"] as const,
+    /** Pix-owned curated Agent feature toggles. */
+    builtIns: () => ["pix", "settings", "built-ins"] as const,
   },
 
   files: {
@@ -113,14 +117,15 @@ export function createQueryOptions(http: HttpClient) {
       }),
     },
     sessions: {
-      page: (page: number, pageSize: number, input: { cwd?: string; projectRoot?: string; enabled?: boolean } = {}) => createSessionPageQueryOptions({
+      page: (page: number, pageSize: number, input: { cwd?: string; projectRoot?: string; parentSessionId?: string; enabled?: boolean } = {}) => createSessionPageQueryOptions({
         http,
         page,
         pageSize,
         enabled: input.enabled ?? true,
-        queryKey: queryKeys.sessions.page(page, pageSize, input.cwd, input.projectRoot),
+        queryKey: queryKeys.sessions.page(page, pageSize, input.cwd, input.projectRoot, input.parentSessionId),
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         ...(input.projectRoot === undefined ? {} : { projectRoot: input.projectRoot }),
+        ...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
       }),
       detail: (id: string) => queryOptions({ queryKey: queryKeys.sessions.detail(id), queryFn: ({ signal }) => sessions.detail(id, signal), enabled: Boolean(id) }),
       context: (id: string) => queryOptions({ queryKey: queryKeys.sessions.context(id), queryFn: ({ signal }) => sessions.context(id, { signal }), enabled: Boolean(id) }),
@@ -155,6 +160,20 @@ export function createQueryOptions(http: HttpClient) {
         queryOptions({
           queryKey: queryKeys.settingsConfig.file(),
           queryFn: ({ signal }) => configuration.settingsFile.get(signal),
+          staleTime: 0,
+          retry: false,
+        }),
+      builtIns: () =>
+        queryOptions({
+          queryKey: queryKeys.settingsConfig.builtIns(),
+          queryFn: ({ signal }) => configuration.builtIns.get(signal),
+          staleTime: 0,
+          retry: false,
+        }),
+      tools: () =>
+        queryOptions({
+          queryKey: queryKeys.settingsConfig.tools(),
+          queryFn: ({ signal }) => configuration.tools.get(signal),
           staleTime: 0,
           retry: false,
         }),

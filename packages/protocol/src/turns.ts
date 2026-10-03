@@ -10,6 +10,14 @@ import {
 } from "./common.js";
 import { RuntimeSnapshotSchema } from "./snapshot.js";
 
+/** Wire projection of runtime-core `PromptDisposition`. */
+export const PromptDispositionSchema = z.enum(["started", "handled", "queued"]);
+export type PromptDisposition = z.infer<typeof PromptDispositionSchema>;
+
+/** Wire projection of runtime-core `QueuedInputDisposition`. */
+export const QueuedInputDispositionSchema = z.enum(["handled", "queued"]);
+export type QueuedInputDisposition = z.infer<typeof QueuedInputDispositionSchema>;
+
 /** Protocol-v2 additive atomic prompt admission (runtime.submit-turn.v1). */
 export const TurnActivationOverridesSchema = z.strictObject({
   model: ModelSelectorSchema.optional(),
@@ -56,6 +64,10 @@ export const TurnStatusSchema = z.strictObject({
    */
   revision: z.number().int().nonnegative().safe(),
   state: TurnStatusStateSchema,
+  /** Pi 1.0 backend input receipt on terminal states: `handled` consumed the
+   * input (no assistant/user entry owed), `queued` parked it, `started` ran a
+   * turn. Absent when the backend reports no disposition (legacy adapters). */
+  disposition: PromptDispositionSchema.optional(),
   userEntryId: NonEmptyStringSchema.optional(),
   finalLeafId: NonEmptyStringSchema.optional(),
   error: ProtocolErrorSchema.optional(),
@@ -118,9 +130,29 @@ export const SubmitTurnAdmissionSchema = z.union([
 ]);
 export type SubmitTurnAdmission = z.infer<typeof SubmitTurnAdmissionSchema>;
 
+/** Session authority cursor, independent of the per-turn status revision. */
+export const TurnAuthoritySnapshotSchema = z.strictObject({
+  sessionId: NonEmptyStringSchema,
+  epoch: EpochSchema,
+  lastEventId: z.number().int().nonnegative().safe(),
+  snapshot: RuntimeSnapshotSchema,
+}).superRefine((value, ctx) => {
+  if (value.sessionId !== value.snapshot.sessionId) ctx.addIssue({ code: "custom", path: ["snapshot", "sessionId"], message: "snapshot sessionId mismatch" });
+});
+export type TurnAuthoritySnapshot = z.infer<typeof TurnAuthoritySnapshotSchema>;
+
 export const RuntimeTurnStatusPushSchema = z.strictObject({
   type: z.literal("turn_status"),
   status: TurnStatusSchema,
+  authority: TurnAuthoritySnapshotSchema.optional(),
+}).superRefine((value, ctx) => {
+  const terminal = value.status.state === "completed" || value.status.state === "failed";
+  if (value.status.state === "completed" && value.authority === undefined) ctx.addIssue({ code: "custom", path: ["authority"], message: "completed status requires authority" });
+  if (value.authority !== undefined) {
+    if (!terminal) ctx.addIssue({ code: "custom", path: ["authority"], message: "only terminal status may carry authority" });
+    if (value.authority.sessionId !== value.status.sessionId) ctx.addIssue({ code: "custom", path: ["authority", "sessionId"], message: "authority sessionId mismatch" });
+    if (value.authority.epoch !== value.status.epoch) ctx.addIssue({ code: "custom", path: ["authority", "epoch"], message: "authority epoch mismatch" });
+  }
 });
 export type RuntimeTurnStatusPush = z.infer<typeof RuntimeTurnStatusPushSchema>;
 

@@ -512,6 +512,45 @@ describe("pi-sdk sessions fork provenance", () => {
 // ---------------------------------------------------------------------------
 
 describe("pi-sdk sessions list performance (injected SDK)", () => {
+  it("rejects an ambiguous session id before SDK open/append; unrelated ids still work", async () => {
+    let openCalls = 0;
+    let appendCalls = 0;
+    const infos = [
+      mkInfo({ path: "/repo/sessions/a.jsonl", id: "dup" }),
+      mkInfo({ path: "/repo/sessions/b.jsonl", id: "dup" }),
+      mkInfo({ path: "/repo/sessions/ok.jsonl", id: "ok" }),
+      mkInfo({ path: "/repo/sessions/a.jsonl", id: "dup" }), // same path duplicate is identical history
+    ];
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() { return infos; },
+      open(path) {
+        openCalls += 1;
+        return {
+          ...fakeManager(idFromPath(path) === "ok" ? "ok" : "dup"),
+          appendSessionInfo: () => { appendCalls += 1; return ""; },
+        };
+      },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    await store.listSessions();
+    await assert.rejects(
+      () => store.readSession("dup"),
+      (error: unknown) => isRuntimeError(error) && error.code === "conflict",
+    );
+    await assert.rejects(
+      () => store.locate("dup"),
+      (error: unknown) => isRuntimeError(error) && error.code === "conflict",
+    );
+    assert.equal(openCalls, 0, "ambiguous id must not open either history");
+    assert.equal(appendCalls, 0);
+    const ok = await store.readSession("ok");
+    assert.equal(ok.sessionId, "ok");
+    assert.equal(openCalls, 1);
+    const located = await store.locate("ok");
+    assert.equal(located.exists, true);
+    assert.equal(located.sessionFile, "/repo/sessions/ok.jsonl");
+  });
+
   it("lists headers from a single listAll without opening any session file", async () => {
     let openCalls = 0;
     const sdk: PiSdkSessionsSurface = {
@@ -549,6 +588,47 @@ describe("pi-sdk sessions list performance (injected SDK)", () => {
     assert.equal(byId.get("c3")?.parentSessionId, undefined);     // relative path does not resolve
     assert.equal(byId.get("c4")?.parentSessionId, undefined);     // missing parent
     assert.equal(byId.get("c5")?.parentSessionId, undefined);     // no parentSessionPath
+  });
+
+  it("parent-filtered pages return direct children and fail closed for unknown parents", async () => {
+    const infos = [
+      mkInfo({ path: "/repo/sessions/p.jsonl", id: "parent" }),
+      mkInfo({ path: "/repo/sessions/c1.jsonl", id: "c1", parentSessionPath: "/repo/sessions/p.jsonl", modified: new Date(NOW + 3) }),
+      mkInfo({ path: "/repo/sessions/c2.jsonl", id: "c2", cwd: "/other", parentSessionPath: "/repo/sessions/p.jsonl", modified: new Date(NOW + 2) }),
+      mkInfo({ path: "/repo/sessions/other.jsonl", id: "other" }),
+    ];
+    let opened: string[] = [];
+    const sdk: PiSdkSessionsSurface = {
+      async listAll() { return infos; },
+      open(path) {
+        opened.push(path);
+        const info = infos.find((item) => item.path === path);
+        return fakeManager(info?.id ?? idFromPath(path));
+      },
+    };
+    const store = createPiSdkSessionStore({ sdk });
+    const unfiltered = await store.listSessionPage!({ page: 1, pageSize: 50 });
+    assert.deepEqual(unfiltered.sessions.map((session) => session.sessionId), ["parent", "other"]);
+    assert.equal(unfiltered.total, 2);
+    opened = [];
+    const page = await store.listSessionPage!({ page: 1, pageSize: 50, parentSessionId: "parent" });
+    assert.deepEqual(opened, ["/repo/sessions/p.jsonl"]);
+    assert.deepEqual(page.sessions.map((session) => session.sessionId), ["c1", "c2"]);
+    assert.equal(page.total, 2);
+    assert.equal(page.page, 1);
+    assert.equal(page.pageSize, 50);
+    assert.equal(page.totalPages, 1);
+    assert.ok(page.sessions.every((session) => session.parentSessionId === "parent"));
+    const cwdScoped = await store.listSessionPage!({ page: 1, pageSize: 50, parentSessionId: "parent", cwd: "/workspace" });
+    assert.deepEqual(cwdScoped.sessions.map((session) => session.sessionId), ["c1"]);
+    const sliced = await store.listSessionPage!({ page: 2, pageSize: 1, parentSessionId: "parent" });
+    assert.deepEqual(sliced.sessions.map((session) => session.sessionId), ["c2"]);
+    assert.equal(sliced.total, 2);
+    assert.equal(sliced.totalPages, 2);
+    await assert.rejects(
+      () => store.listSessionPage!({ page: 1, pageSize: 50, parentSessionId: "missing" }),
+      (error: unknown) => isNotFound(error),
+    );
   });
 
   it("serves a 30s TTL cache, coalesces concurrent calls to one scan, and retries after failure", async () => {
@@ -1418,7 +1498,7 @@ describe("pi-sdk sessions warm reads reuse the list index (real JSONL)", () => {
 // ---------------------------------------------------------------------------
 
 describe("pi-sdk sessions catalog filter (injected store)", () => {
-  function fixtureStore(sessions: { sessionId: string; cwd: string }[]): PiSdkSessionStore {
+  function fixtureStore(sessions: { sessionId: string; cwd: string; parentSessionId?: string }[]): PiSdkSessionStore {
     const headers = sessions.map((s) => ({
       sessionId: s.sessionId,
       cwd: s.cwd,
@@ -1427,6 +1507,7 @@ describe("pi-sdk sessions catalog filter (injected store)", () => {
       updatedAt: NOW,
       lastMessageAt: NOW,
       messageCount: 1,
+      ...(s.parentSessionId === undefined ? {} : { parentSessionId: s.parentSessionId }),
     }));
     const base: PiSdkSessionStore = {
       async listSessions() { return headers; },
@@ -1459,6 +1540,28 @@ describe("pi-sdk sessions catalog filter (injected store)", () => {
 
     const paged = await catalog.listSessions({ offset: 1, limit: 1 });
     assert.deepEqual(paged.map((h) => h.sessionId), ["b"]);
+  });
+
+  it("listSessionPage fallback filters parent children and fails closed for unknown parents", async () => {
+    const store = fixtureStore([
+      { sessionId: "parent", cwd: "/p1" },
+      { sessionId: "child-a", cwd: "/p1", parentSessionId: "parent" },
+      { sessionId: "child-b", cwd: "/p2", parentSessionId: "parent" },
+      { sessionId: "other", cwd: "/p2" },
+    ]);
+    const catalog = createPiSdkSessionCatalog(store);
+    const unfiltered = await catalog.listSessionPage!({ page: 1, pageSize: 50 });
+    assert.deepEqual(unfiltered.sessions.map((session) => session.sessionId), ["parent", "other"]);
+    const children = await catalog.listSessionPage!({ page: 1, pageSize: 50, parentSessionId: "parent" });
+    assert.deepEqual(children.sessions.map((session) => session.sessionId), ["child-a", "child-b"]);
+    assert.equal(children.total, 2);
+    assert.ok(children.sessions.every((session) => session.parentSessionId === "parent"));
+    const scopedChildren = await catalog.listSessionPage!({ page: 1, pageSize: 50, parentSessionId: "parent", cwd: "/p1" });
+    assert.deepEqual(scopedChildren.sessions.map((session) => session.sessionId), ["child-a"]);
+    await assert.rejects(
+      () => catalog.listSessionPage!({ page: 1, pageSize: 50, parentSessionId: "missing" }),
+      isNotFound,
+    );
   });
 
   it("delegates read/context/delete/locate/resolveLeafId to the store", async () => {

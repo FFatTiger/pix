@@ -80,7 +80,7 @@ Pi 防腐层（ACL）
 - Projects 与 Sessions 是两个独立资源：共享一个 JSONL-authoritative、SQLite-disposable Catalog Indexer，但拥有独立 Port/RPC/HTTP DTO、Query key和加载状态。项目列表绝不从当前 Session 页推断。
 - Wire/Host仍使用 one-based `page/pageSize/total/totalPages` 真分页；Client不展示页码、上一页或下一页，而以“查看更多”渐进追加。每次显式点击只请求该资源的恰好下一页，禁止后台自动补页、跨资源推进或“找下一个项目”。Projects=10/次；最近会话与项目内会话均为5/次，是当前 Client 固定值。
 - Index ready 后任一 page query必须是 indexed SQLite read：0 readdir、0 lstat、0 JSONL read、0 Git spawn；全量 identity reconcile仅允许在daemon启动、后台周期scrub、watch gap/损坏恢复。已知索引不可用时fail closed，不在请求路径回退全扫描。
-- `session_projection`物化session browse identity/排序键；`project_projection`物化projectRoot/sessionCount/latestActivity。过滤/分组/total先于slice；sessions稳定序为activity DESC + sessionId binary ASC，projects为latestActivity DESC + projectRoot binary ASC。当前临时可见性策略把所有带原生 `parentSession` lineage 或 `pix-fork-provenance.parentSessionId` 的 child/subagent/fork 在索引阶段归为 hidden，因此不进入Sessions/Projects items、totals或分页；exact deep-link detail仍是独立读取，不反插browse列表。
+- `session_projection`物化session browse identity/排序键；`project_projection`物化projectRoot/sessionCount/latestActivity。过滤/分组/total先于slice；sessions稳定序为activity DESC + sessionId binary ASC，projects为latestActivity DESC + projectRoot binary ASC。当前临时可见性策略把所有带原生 `parentSession` lineage 或 `pix-fork-provenance.parentSessionId` 的 child/subagent/fork 在索引阶段归为 hidden，因此不进入Sessions/Projects items、totals或普通分页；exact deep-link detail仍是独立读取，不反插browse列表。子代理交互只通过显式 `parentSessionId` 的只读 Session page读取直接children；父身份先做exact存在性校验，未知/陈旧ID返回`not_found`，读取全程0 Worker，且不会改变普通browse totals。
 - JSONL始终真相源。Pix mutation与exact file watch增量更新对应row/project summary；SQLite可删除重建。Host仍只拥有AllowedRoots workspaceAccess分类，不改变catalog membership/total。
 - Deep-link exact detail和未持久化new-session identity在page之外显示/缓存，绝不插入authoritative page或伪造total。
 
@@ -338,6 +338,24 @@ Client 按 `capabilities` 显隐功能：
 | `themes` | 隐藏主题切换（内置/自定义主题不可用） |
 
 > **当前状态（客户端）**：pix client 已移除主题功能（运行时切换、主题目录请求、设置、持久化/bootstrap、View Transitions）与壁纸（WallpaperLayer/设置/资源）。Client 固定深色外观（`html.dark` 常驻），不再消费 `/v1/themes`。下方 Host/runtime-core/pi-sdk-adapter 的只读主题契约保持不变（向后兼容、当前客户端未使用）。
+
+### Pix 内置能力期望配置
+
+`BuiltInCapabilityConfigStorePort`（runtime-core）→ `@fffattiger/pix-pi-sdk-adapter/builtins` → Host `GET/PUT /v1/settings/built-ins`。这是 Pix 产品配置，与通用 Pi `settings.json` / Plugins inventory 分开：持久化全局期望开关只住在 `$PI_CODING_AGENT_DIR/pix-builtins.json`。上层只使用规范 feature ID（`subagents` / `todo` / `ask_user_question` / `side_chat`）；Pi 包名不得出现在 adapter 之外。缺失文件表示四个内置全部启用。`builtins.configure` 仅在 seam 真实挂载时广告，sessiond down 时仍可用。Host 期望配置与 runtime 实际加载集不同：`RuntimeState.builtIns` 是当前会话实际装上的内置（含 `configRevision` 与 load failures），不是 desired Host config 的别名。子代理/待办 UI 只消费 snapshot 权威投影（`RuntimeState.subagents` / `RuntimeState.todo` 以及 `subagents_changed` / `todo_changed` 全量替换事件），禁止从 transcript/tool details 推导。
+
+### 全局工具选择（pixDefaultTools）
+
+`SettingsConfigStorePort.readToolsConfig/writeToolsConfig`（runtime-core）→ adapter settings-config-store（同一 settings.json owner、同一 mutation queue/proper-lockfile/CAS fence，无第二个文件 owner 或 queue）→ Host `GET/PUT /v1/settings/tools`（复用 `settings.configure` token 与 raw editor 的 HttpError 路径；无活动会话也可保存，禁止为列工具创建 Worker 或执行 plugin/MCP discovery）→ Client Settings → Tools tab。语义：`pixDefaultTools: null`（或该键与 native `defaultTools` 均不存在时的 Pix 默认）= 全部可声明工具（direct/model-only exposure，含 codemode/tool_search，未来新增自动启用）；数组 = 显式 allowlist（空数组 = 全关；forced-empty 系统提示随 none/重新启用正确切换）；键不存在时尊重 native `defaultTools`（含 `+`/`-`，由 SDK `SettingsManager` 解析，Pix 不复制 ± 算法，也不在 construct 时用 builtin 并集覆写它）。结构化写只改 `pixDefaultTools` 并保留 unknown values（`defaultTools` 原样，格式由 JSON.stringify 正规化）；raw editor 仍按字节原样读写，但 raw 写也校验 `pixDefaultTools`/`defaultTools` 字段类型，fail closed。Runtime 在 startup、bindExtensions 完成后与 reload 成功后重算全局选择（仅限跟随 prefs 的 runtime；显式 `input.toolNames`/`setTools` 覆盖仍优先，不新增 reset flag）。Client 保存后仅对捕获时仍当前且已附着的 exact 会话调用 `setTools(exactNames, { includeExtensionTools: false })`，apply 失败不回滚全局真相（可单独 retry）；picker 行只来自已附着会话 snapshot 的 tools 投影（adapter 已过滤为 direct/model-only，hidden/deferred/codemode-exposure 不作为 on/off 行），已保存但当前不可用的名称持久保留并如实提示，不伪造完整 registry。
+
+配置读取失败不得变成“全部启用”：只有缺失文件或缺失对应偏好键可以继承默认；现有空文件、坏 JSON、错误字段类型均报 `invalid_input`，非 ENOENT 的读取错误报 `unavailable`，结构化写也不覆盖损坏文件。设置页以一个显式异步流程等待保存与当前会话应用完成；期间控件保持禁用，保存失败不应用，应用失败可独立重试。
+
+Side chat 由每个活动父 Worker 内的 Adapter 独占一个临时 controller；只有显式 `side_chat_start` 才创建，浏览器/Host 重连复用 snapshot 权威状态，reload、能力撤回、Worker close/crash 都清除，永不写入父 JSONL。实现固定为 adapter 内部、带来源与许可证的 `pi-side-chat@0.4.0` headless port，只使用公开 SDK context/model/tool surface，不调用 TUI 或私有 runner patch；没有真实 controller seam 时必须移除 `runtime.side_chat`，不得广告假能力。五个 side 命令与 `abort_side_chat` 都按 exact conversation/request identity fail closed；父/side run 与 abort 彼此独立。Worker 在 side authority mutation 的 terminal ack 前强制读取权威 snapshot；sessiond journal/attach 持有 `side_chat_changed` 全量替换与 conversation/run/revision fenced `side_chat_delta`，side running/awaiting-overlap 会阻止 idle reclamation 和 epoch rollover，但不进入父回合 `busySessionIds`。Host 复用既有 bounded interleaving lane 路由五个 side 命令，interrupt 仍走独立 bypass。
+
+Side chat wire 仅投影显示数据：最多 64 条、每条/每个 stream 16,384 字符、总计 262,144 字符，模型上下文不裁剪。总预算先保留当前 stream，再从最新消息向旧消息分配；旧显示历史可被截断/移除并设置显式 sticky truncation flags，不能让旧历史把正在生成的答案挤成空。默认 `read_only` 只移除 upstream 内建写工具，extension tools 保留原权限，因此不是完整安全沙箱；edit mode 的文件重叠确认沿用 upstream heuristic 边界。
+
+Pi 1.0 的原生 MCP/codemode/tool-search factory 只在 Adapter 装配，项目 MCP 配置沿用 SDK trust gate；注册不等于启用，`defaultTools`、显式禁用与 forced-empty policy 必须保留。工具内的嵌套调用经 Core/Protocol 规范化为父工具结果摘要及 `parentToolCallId` 关系，不创建额外 transcript entry，也不是 subagent。Side chat 只复制当前 active/direct 工具，排除无 nested host 的 codemode/tool-search；namespaced 工具在 read_only 下须声明 readOnlyHint，不能将未知写权限当作只读。输入由扩展处理时以明确 `handled` 回执结束，不等待虚构 assistant 消息；通知、错误与乐观消息分别由各自 owner 处理。sessiond 在终态发布前有界刷新，并将同一次 session/epoch/cursor-fenced authority snapshot 经 observation FIFO 与 exact turn status 送达，禁止 Client 强制清 idle 或用旧 admission 覆盖终态；后台 controller 不抢观测 lease，观测中的新 cursor 等 FIFO 以保留排队的 committed entry。上下文编辑后的 usage 失效必须同时作用于 live/history，虚拟模型的实际窗口限制通过 SDK 获取。详细范围见 [pi-1.0-adaptation.md](./pi-1.0-adaptation.md)。
+
+子代理启动必须先持久化权威任务记录，再发布工具更新或返回后台启动结果；Adapter 按精确插件事件以及有界的任务/子 JSONL 文件事件重读权威状态，不轮询、不依赖会在父回合结束后才送达的自定义消息。子会话路径与 header 的父身份验证通过后，运行中任务即可进入只读详情；未建立身份时不得显示可打开详情的假入口。已验证子 JSONL 的写入推进父 `subagents.revision`，Client 据此失效当前子会话的 exact 历史查询，持续显示已提交消息；这不是未落盘的 token 流，也不 attach/激活子 Worker。文件观察随父 runtime 关闭、reload 或能力撤回清理；观察错误诚实报告，显式 snapshot 刷新可以重读并恢复。待办冷启动与成功压缩后的恢复读取 `SessionManager.getBranch()` 的选中持久化分支，包括已被压缩隐藏的工具结果；不能用裁剪后的 LLM messages，也不能混入兄弟分支。插件中的合法长标题/描述等文本按 Runtime Core 的显示长度限制投影为摘要，不能因此丢弃整份待办进度；错误类型、空字段、无效 ID/状态仍须拒绝。右上角状态卡片是独立悬浮层：展开/收起不得改变正文宽度、留白或横向位置。
 
 ### 全局 models.json 编辑器
 

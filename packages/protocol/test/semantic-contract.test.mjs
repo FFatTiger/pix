@@ -61,13 +61,14 @@ describe("method-bound RPC response envelopes", () => {
 });
 
 describe("independent interrupt wire path", () => {
-  for (const type of ["abort", "abort_compaction", "abort_bash", "clear_queue"]) {
+  for (const type of ["abort", "abort_compaction", "abort_bash", "clear_queue", "abort_side_chat"]) {
     it(`round-trips ${type} through sessiond and worker envelopes`, () => {
+      const interrupt = type === "abort_side_chat" ? { type, conversationId: "side-1" } : { type };
       const request = {
         protocolVersion: 2,
         id: `rpc-${type}`,
         method: "runtime.interrupt",
-        params: { sessionId: "s-1", commandId: `cmd-${type}`, epoch: "e-1", interrupt: { type } },
+        params: { sessionId: "s-1", commandId: `cmd-${type}`, epoch: "e-1", interrupt },
       };
       assert.equal(SessiondRpcRequestSchema.safeParse(request).success, true);
       assert.equal(SessiondToWorkerMessageSchema.safeParse({
@@ -103,12 +104,13 @@ describe("independent interrupt wire path", () => {
 
 describe("ACL0 semantic fixtures remain protocol-local", () => {
   it("keeps exhaustive command and interrupt capability matrices", () => {
-    assert.equal(Object.keys(RUNTIME_COMMAND_CAPABILITY_MATRIX).length, 26);
+    assert.equal(Object.keys(RUNTIME_COMMAND_CAPABILITY_MATRIX).length, 31);
     assert.deepEqual(RUNTIME_INTERRUPT_CAPABILITY_MATRIX, {
       abort: "runtime.abort",
       abort_compaction: "runtime.compact.abort",
       abort_bash: "runtime.bash.abort",
       clear_queue: "runtime.queue",
+      abort_side_chat: "runtime.side_chat",
     });
   });
 
@@ -187,6 +189,12 @@ describe("event vocabulary and cursor ownership", () => {
     extension_ui_request: { request: { id: "ui", method: "confirm", title: "Sure?", message: "Continue?" } },
     extension_statuses: { statuses: [] }, extension_widgets: { widgets: [] }, session_title: { name: "Title" },
     runtime_state_changed: {}, runtime_capabilities_changed: { capabilities: { capabilities: [], version: 2 } },
+    built_ins_changed: { builtIns: { configRevision: "a".repeat(64), loaded: ["todo"], failures: [] } },
+    subagents_changed: { subagents: { revision: 1, tasks: [{ taskId: "t1", description: "scan", agentType: "explore", status: "running" }] } },
+    todo_changed: { todo: { revision: 1, items: [{ id: 1, subject: "write", blockedBy: [], status: "pending" }] } },
+    side_chat_changed: { sideChat: null },
+    side_chat_delta: { delta: { conversationId: "side-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: "x" } },
+    subagent_delta: { childSessionId: "child-1", partial: { role: "assistant", content: [{ type: "text", text: "x" }] }, done: false },
     runtime_closed: { reason: "shutdown" }, session_changed: { cwd: "/p", leafId: "entry" },
     worker_crashed: { error: error("internal") }, running_sessions_changed: { sessionIds: ["s-1"], busySessionIds: ["s-1"] },
     runtime_unavailable: { error: error() }, runtime_error: { error: error("internal") },

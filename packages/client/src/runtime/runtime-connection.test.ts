@@ -12,7 +12,7 @@ import {
   type RuntimeConnectionOptions,
 } from "./runtime-connection";
 import type { RuntimeSocketDeps } from "./socket";
-import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "./testing/harness";
+import { authoritySnapshot, FakeWebSocket, flush, lastFrame, snapshotPayload } from "./testing/harness";
 
 function ack(features: readonly string[] = []): { type: "handshake_ack"; payload: ProtocolHandshakeResponse } {
   return {
@@ -280,7 +280,7 @@ describe("RuntimeConnection — exact multi-binding routing groundwork", () => {
     });
     expect(submit(bindingA, "A")).not.toBeNull();
     expect(submit(bindingB, "B")).not.toBeNull();
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "A", epoch: "eA", operationId: "same-op", turnId: "tA", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("A", "eA"), payload: { sessionId: "A", epoch: "eA", operationId: "same-op", turnId: "tA", revision: 1, state: "completed" } });
     ws.serverSend({ type: "turn_status", payload: { sessionId: "B", epoch: "eB", operationId: "same-op", turnId: "tB", revision: 1, state: "failed", error: { code: "internal", message: "failed", retryable: false } } });
     expect(a.statuses.map((status) => status.payload.sessionId)).toEqual(["A"]);
     expect(b.statuses.map((status) => status.payload.sessionId)).toEqual(["B"]);
@@ -320,8 +320,8 @@ describe("RuntimeConnection — exact multi-binding routing groundwork", () => {
     bindingA.unbind();
     ws.serverSend({ type: "response", id: attemptA.envelopeId, payload: { ok: true, result: { commandId: "cmd-A", result: { ok: true, type: "set_session_name" } } } });
     ws.serverSend({ type: "response", id: attemptB.envelopeId, payload: { ok: true, result: { commandId: "cmd-B", result: { ok: true, type: "set_session_name" } } } });
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "A", epoch: "eA", operationId: "op", turnId: "tA", revision: 1, state: "completed" } });
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "B", epoch: "eB", operationId: "op", turnId: "tB", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("A", "eA"), payload: { sessionId: "A", epoch: "eA", operationId: "op", turnId: "tA", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("B", "eB"), payload: { sessionId: "B", epoch: "eB", operationId: "op", turnId: "tB", revision: 1, state: "completed" } });
     expect(callbacksA.frames).toHaveLength(0);
     expect(callbacksB.frames).toHaveLength(1);
     expect(a.statuses).toHaveLength(0);

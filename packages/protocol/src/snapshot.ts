@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   ContextUsageSchema,
+  ExtensionNotificationItemSchema,
   ExtensionStatusItemSchema,
   ExtensionWidgetItemSchema,
   ModelRefSchema,
@@ -11,6 +12,13 @@ import {
 import { QueuedMessagesSchema, RuntimeCapabilitySetSchema } from "./domain.js";
 import { ExtensionUiRequestSchema } from "./extension.js";
 import { StreamingAgentMessageSchema } from "./messages.js";
+import { SideChatStateSchema } from "./side-chat.js";
+import {
+  BuiltInRuntimeStateSchema,
+  SubagentProjectionSchema,
+  SubagentStreamsSchema,
+  TodoProjectionSchema,
+} from "./runtime-projections.js";
 
 export const PendingExtensionUiSchema = ExtensionUiRequestSchema;
 export type PendingExtensionUi = z.infer<typeof PendingExtensionUiSchema>;
@@ -18,6 +26,11 @@ export const BashProjectionSchema = z.strictObject({ command: z.string(), output
 export type BashProjection = z.infer<typeof BashProjectionSchema>;
 export const CompactionProjectionSchema = z.strictObject({ reason: z.enum(["manual", "auto"]), status: z.enum(["running", "aborting"]), customInstructions: z.string().optional(), startedAt: z.number() });
 export type CompactionProjection = z.infer<typeof CompactionProjectionSchema>;
+
+export const SubagentRuntimeProjectionSchema = SubagentProjectionSchema.extend({
+  streams: SubagentStreamsSchema.optional(),
+});
+export type SubagentRuntimeProjection = z.infer<typeof SubagentRuntimeProjectionSchema>;
 
 export const RuntimeStateSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
@@ -41,10 +54,15 @@ export const RuntimeStateSchema = z.strictObject({
   thinkingLevelPinned: z.boolean().optional(),
   tools: z.array(ToolInfoSchema).optional(),
   extensionStatuses: z.array(ExtensionStatusItemSchema).optional(),
+  extensionNotifications: z.array(ExtensionNotificationItemSchema).optional(),
   extensionWidgets: z.array(ExtensionWidgetItemSchema).optional(),
   pendingExtensionUi: z.array(PendingExtensionUiSchema).optional(),
   sessionName: z.string().optional(),
   writtenFiles: z.array(z.string()).optional(),
+  builtIns: BuiltInRuntimeStateSchema.optional(),
+  sideChat: SideChatStateSchema.nullable().optional(),
+  subagents: SubagentRuntimeProjectionSchema.optional(),
+  todo: TodoProjectionSchema.optional(),
 });
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;
 
@@ -122,6 +140,9 @@ export const RuntimeSnapshotSchema = z
     }
     if (snapshot.sessionId !== snapshot.state.sessionId) {
       ctx.addIssue({ code: "custom", path: ["state", "sessionId"], message: "state.sessionId must match snapshot.sessionId" });
+    }
+    if (snapshot.state.sideChat !== undefined && snapshot.state.sideChat !== null && !snapshot.capabilities.capabilities.includes("runtime.side_chat")) {
+      ctx.addIssue({ code: "custom", path: ["state", "sideChat"], message: "side chat state requires runtime.side_chat capability" });
     }
     const stream = snapshot.streaming;
     const bashRunning = snapshot.state.isBashRunning;

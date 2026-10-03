@@ -30,6 +30,10 @@ export const RuntimeCapabilitySchema = z.enum([
   "runtime.session.rename",
   "runtime.queue",
   "runtime.stats",
+  "runtime.subagents",
+  "runtime.todo",
+  "runtime.user_question",
+  "runtime.side_chat",
 ]);
 export type RuntimeCapability = z.infer<typeof RuntimeCapabilitySchema>;
 

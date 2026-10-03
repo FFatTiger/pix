@@ -118,6 +118,7 @@ describe("capabilities", () => {
       "models",
       "models.configure",
       "settings.configure",
+      "builtins.configure",
       "auth.providers",
       "skills",
       "plugins",
@@ -133,6 +134,7 @@ describe("capabilities", () => {
 
   it("admits only the mounted model/trust mutations and rejects unknown management tokens", () => {
     assert.equal(HostCapabilitySchema.safeParse("models.configure").success, true);
+    assert.equal(HostCapabilitySchema.safeParse("builtins.configure").success, true);
     assert.equal(HostCapabilitySchema.safeParse("project.trust").success, true);
     for (const rejected of [
       "skills.manage",
@@ -295,11 +297,16 @@ describe("RuntimeCommand", () => {
       type: "generate_session_title",
       commandId: "c-title",
     },
+    side_chat_start: { type: "side_chat_start", commandId: "c-side-start" },
+    side_chat_send: { type: "side_chat_send", commandId: "c-side-send", conversationId: "side-1", message: "inspect this" },
+    side_chat_reset: { type: "side_chat_reset", commandId: "c-side-reset", conversationId: "side-1", mode: "refork" },
+    side_chat_set_mode: { type: "side_chat_set_mode", commandId: "c-side-mode", conversationId: "side-1", mode: "edit" },
+    side_chat_overlap_response: { type: "side_chat_overlap_response", commandId: "c-side-overlap", conversationId: "side-1", requestId: "overlap-1", proceed: true },
   };
 
-  it("enumerates exactly 26 command types", () => {
-    assert.equal(RUNTIME_COMMAND_TYPES.length, 26);
-    assert.equal(Object.keys(samples).length, 26);
+  it("enumerates exactly 31 command types", () => {
+    assert.equal(RUNTIME_COMMAND_TYPES.length, 31);
+    assert.equal(Object.keys(samples).length, 31);
   });
 
   it("parses every command type with commandId", () => {
@@ -862,6 +869,7 @@ describe("sessiond RPC", () => {
       rpc("runtime.hasBusyCwd", { cwd: "/tmp/project" }),
       rpc("runtime.stopByCwd", { cwd: "/tmp/project" }),
       rpc("sessions.list", { page: 3, pageSize: 10, cwd: "/tmp/project", projectRoot: "/tmp/root" }),
+      rpc("sessions.list", { page: 1, pageSize: 50, parentSessionId: "parent-1" }),
       rpc("projects.list", { page: 2, pageSize: 10 }),
       rpc("sessions.read", { sessionId: "s-1" }),
       rpc("sessions.context", { sessionId: "s-1", leafId: "entry-7" }),
@@ -922,6 +930,8 @@ describe("sessiond RPC", () => {
     assert.equal(safeParseSessiondRpcRequest(rpc("sessions.list", { page: 0, pageSize: 50 })).success, false);
     assert.equal(safeParseSessiondRpcRequest(rpc("sessions.list", { page: 1, pageSize: 101 })).success, false);
     assert.equal(safeParseSessiondRpcRequest(rpc("sessions.list", { page: 1, pageSize: 50, limit: 50 })).success, false);
+    assert.equal(safeParseSessiondRpcRequest(rpc("sessions.list", { page: 1, pageSize: 50, parentSessionId: "" })).success, false);
+    assert.equal(safeParseSessiondRpcRequest(rpc("sessions.list", { page: 1, pageSize: 50, parentSessionId: "  " })).success, false);
     assert.equal(safeParseSessiondRpcRequest(rpc("projects.list", { page: 1, pageSize: 51 })).success, false);
     // sessions.context leafId must be non-blank.
     assert.equal(

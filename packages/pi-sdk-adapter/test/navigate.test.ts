@@ -339,7 +339,7 @@ describe("adapter navigate busy guard + convergence (D2 navigate)", () => {
     // driver.prompt is awaited, which is the exact state during an
     // extension-UI wait.
     let releasePrompt: (() => void) | undefined;
-    (driver as { prompt: (m: string) => Promise<void> }).prompt = () => new Promise<void>((resolve) => { releasePrompt = resolve; });
+    driver.prompt = () => new Promise<{ disposition: "started" }>((resolve) => { releasePrompt = () => resolve({ disposition: "started" }); });
     const promptPromise = adapter.execute({ type: "prompt", message: "blocked" });
     await new Promise((resolve) => setTimeout(resolve, 10));
 

@@ -26,7 +26,7 @@
  *    a deferred fence (never applies a stale anchor to the next attach).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
+import { authoritySnapshot, createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
 import type { FakeWebSocket } from "./testing/harness";
 import type { SubmitTurnAdmission } from "@fffattiger/pix-protocol";
 
@@ -211,7 +211,7 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
     expect(h.controller("s1")!.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["entry-4"]);
 
     // Turn terminal releases the deferred rebase.
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
     await flush();
     expect(h.store.getSnapshot().turnActive).toBe(false);
     const rebased = h.store.getSnapshot();
@@ -284,7 +284,7 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
     await flush();
     expect(h.store.getSnapshot().historyAnchorLeafId).toBe("entry-3");
 
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
     await flush();
     expect(h.store.getSnapshot().historyAnchorLeafId).toBe("entry-2");
   });
@@ -344,7 +344,7 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
     const generation = rebased.historyGeneration;
     // The deferred fence was cleared: the (still active) turn terminal must NOT
     // re-apply the stale entry-1 anchor afterwards.
-    ws2.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+    ws2.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
     await flush();
     expect(h.store.getSnapshot().historyGeneration).toBe(generation);
     expect(h.store.getSnapshot().historyAnchorLeafId).toBe("entry-3");
@@ -440,7 +440,7 @@ describe("SessionController — Phase 5A committed session_changed leaf-fence re
     await flush();
     // Deferred, then applied at terminal — the bubble must survive BOTH.
     expect(h.store.getSnapshot().optimisticEntries.length).toBe(1);
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
     await flush();
     const after = h.store.getSnapshot();
     expect(after.historyAnchorLeafId).toBe("entry-2");

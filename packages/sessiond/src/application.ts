@@ -109,6 +109,7 @@ export class SessiondApplication implements SessiondRpcHandler {
           pageSize: input.pageSize,
           ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
           ...(input.projectRoot === undefined ? {} : { projectRoot: input.projectRoot }),
+          ...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
         }));
       }
       case "projects.list": {

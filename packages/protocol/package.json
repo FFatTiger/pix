@@ -11,6 +11,10 @@
     "./workspace-access": {
       "types": "./dist/workspace-access.d.ts",
       "import": "./dist/workspace-access.js"
+    },
+    "./built-in-capabilities": {
+      "types": "./dist/built-in-capabilities.d.ts",
+      "import": "./dist/built-in-capabilities.js"
     }
   },
   "main": "./dist/index.js",

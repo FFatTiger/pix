@@ -17,6 +17,8 @@ export interface FakeWorkerOptions {
   readDelayMs?: number;
   /** Phase 3: delay before the worker admits a submitTurn (0 = immediate). */
   submitAdmissionDelayMs?: number;
+  /** Deterministic fast no-model completion or explicit test-owned completion. */
+  turnCompletion?: "handled" | "manual";
   failStart?: boolean;
   /** Worker build-contract features; defaults to the current read RPC seam. */
   readyFeatures?: readonly string[];
@@ -103,7 +105,10 @@ export class FakeWorkerConnection implements WorkerConnection {
   private liveSnapshot: RuntimeSnapshot;
   /** Count of worker.getSnapshot responses already emitted (prime is first). */
   private snapshotResponses = 0;
+  private sideChatSequence = 0;
   private readonly pendingSnapshotTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** Post-command snapshot gate can be enabled after setup for phase-specific race tests. */
+  private holdPostCommandSnapshots: boolean;
   /** Post-command snapshots held behind the deterministic gate. */
   private readonly heldPostCommandSnapshots: Array<{ id: string | undefined; sessionId: string }> = [];
   private readonly heldSnapshotWaiters = new Set<() => void>();
@@ -114,6 +119,7 @@ export class FakeWorkerConnection implements WorkerConnection {
     this.liveSnapshot = options.snapshot
       ? structuredClone(options.snapshot)
       : fakeDefaultSnapshot(input.sessionId, input.cwd, input.projectRoot);
+    this.holdPostCommandSnapshots = options.holdPostCommandSnapshots ?? false;
   }
 
   async send(message: SessiondToWorkerMessage): Promise<void> {
@@ -174,6 +180,10 @@ export class FakeWorkerConnection implements WorkerConnection {
         const admissionSnapshot = structuredClone(this.liveSnapshot);
         const emitAdmission = () => {
           if (this.closed) return;
+          if (this.options.turnCompletion === "handled") {
+            this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, isPromptRunning: false } };
+            this.emitEvent({ type: "prompt_done", sessionId });
+          }
           this.emit({
             type: "worker.submitTurnResult",
             id: message.id,
@@ -182,10 +192,14 @@ export class FakeWorkerConnection implements WorkerConnection {
               result: { status: "accepted", delivery: "accepted", sessionId, epoch, revision: 0, operationId, turnId, snapshot: admissionSnapshot, turnStatus: { sessionId, epoch, operationId, turnId, revision: 0, state: "admitted" } },
             },
           });
+          if (this.options.turnCompletion === "handled") {
+            this.emit({ type: "worker.turnStatus", payload: { sessionId, epoch, operationId, turnId, revision: 1, state: "completed", disposition: "handled" } });
+          }
         };
         const admissionDelay = this.options.submitAdmissionDelayMs ?? 0;
         if (admissionDelay > 0) setTimeout(emitAdmission, admissionDelay);
         else queueMicrotask(emitAdmission);
+        if (this.options.turnCompletion !== undefined) return;
         setTimeout(() => {
           if (this.closed) return;
           this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, isPromptRunning: false, messageCount: this.liveSnapshot.state.messageCount + 1 } };
@@ -195,6 +209,7 @@ export class FakeWorkerConnection implements WorkerConnection {
       }
       case "worker.command": {
         const command = message.payload.command;
+        let commandOutcome = outcome(command.type, this.options, (command as { entryId?: string }).entryId);
         if (command.type === "prompt" && (this.options.commandDelayMs ?? 0) > 0) {
           this.emitEvent({ type: "agent_start", sessionId: message.payload.sessionId });
           const timer = setTimeout(() => {
@@ -257,6 +272,73 @@ export class FakeWorkerConnection implements WorkerConnection {
             },
           };
         }
+        if (command.type === "side_chat_start") {
+          const existing = this.liveSnapshot.state.sideChat;
+          const conversationId = existing?.conversationId ?? `side-conversation-${++this.sideChatSequence}`;
+          if (existing === undefined || existing === null) {
+            const sideChat = {
+              conversationId,
+              revision: 0,
+              capturedModel: this.liveSnapshot.state.model ?? { provider: "fake", id: "fake-model" },
+              capturedThinkingLevel: this.liveSnapshot.state.thinkingLevel ?? "off" as const,
+              mode: "read_only" as const,
+              status: "idle" as const,
+              messages: [],
+              messagesTruncated: false,
+              totalCharsTruncated: false,
+              stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false },
+              tools: [],
+            };
+            this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
+            this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
+          }
+          commandOutcome = { ok: true, type: "side_chat_start", conversationId };
+        }
+        if (command.type === "side_chat_send") {
+          const current = this.liveSnapshot.state.sideChat;
+          if (current === null || current === undefined || current.conversationId !== command.conversationId) {
+            commandOutcome = { ok: false, type: "side_chat_send", error: { code: "not_found", message: "side chat target not found", retryable: false } };
+          } else {
+            const runId = `side-run-${++this.sideChatSequence}`;
+            const sideChat = {
+              ...current,
+              revision: current.revision + 1,
+              runId,
+              status: "running" as const,
+              messages: [...current.messages, { id: `side-message-${current.messages.length}`, role: "user" as const, text: command.message, textTruncated: false, thinkingTruncated: false }],
+            };
+            this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
+            this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
+            commandOutcome = { ok: true, type: "side_chat_send", runId };
+          }
+        }
+        if (command.type === "side_chat_reset") {
+          const current = this.liveSnapshot.state.sideChat;
+          if (current === null || current === undefined || current.conversationId !== command.conversationId) {
+            commandOutcome = { ok: false, type: "side_chat_reset", error: { code: "not_found", message: "side chat target not found", retryable: false } };
+          } else {
+            const conversationId = `side-conversation-${++this.sideChatSequence}`;
+            const { runId: _runId, pendingOverlap: _pendingOverlap, ...base } = current;
+            const sideChat = { ...base, conversationId, revision: 0, mode: "read_only" as const, status: "idle" as const, messages: [], stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false }, tools: [] };
+            this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
+            this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
+            commandOutcome = { ok: true, type: "side_chat_reset", conversationId };
+          }
+        }
+        if (command.type === "side_chat_set_mode") {
+          const current = this.liveSnapshot.state.sideChat;
+          if (current === null || current === undefined || current.conversationId !== command.conversationId) {
+            commandOutcome = { ok: false, type: "side_chat_set_mode", error: { code: "not_found", message: "side chat target not found", retryable: false } };
+          } else {
+            const sideChat = { ...current, revision: current.revision + 1, mode: command.mode };
+            this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
+            this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
+            commandOutcome = { ok: true, type: "side_chat_set_mode" };
+          }
+        }
+        if (command.type === "side_chat_overlap_response") {
+          commandOutcome = { ok: false, type: "side_chat_overlap_response", error: { code: "not_found", message: "overlap request not found", retryable: false } };
+        }
         if (command.type === "reload") {
           this.liveSnapshot = {
             ...this.liveSnapshot,
@@ -309,7 +391,7 @@ export class FakeWorkerConnection implements WorkerConnection {
             },
           };
         }
-        setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, outcome(command.type, this.options, (command as { entryId?: string }).entryId)), this.options.commandDelayMs ?? 0);
+        setTimeout(() => this.emitResult(message.id, message.payload.sessionId, command.commandId, commandOutcome), this.options.commandDelayMs ?? 0);
         return;
       }
       case "worker.interrupt": {
@@ -321,6 +403,17 @@ export class FakeWorkerConnection implements WorkerConnection {
           this.runningPrompt = undefined;
           this.emitResult(running.id, running.sessionId, running.commandId, { ok: false, type: "prompt", error: { code: "interrupted", message: "interrupted", retryable: false } });
           this.emitEvent({ type: "prompt_error", sessionId: running.sessionId, errorMessage: "interrupted", error: { code: "interrupted", message: "interrupted", retryable: false } });
+        }
+        if (message.payload.interrupt.type === "abort_side_chat") {
+          const current = this.liveSnapshot.state.sideChat;
+          if (current === null || current === undefined || current.conversationId !== message.payload.interrupt.conversationId) {
+            const failed: RuntimeInterruptResult = { ok: false, type: "abort_side_chat", error: { code: "not_found", message: "side chat target not found", retryable: false } };
+            queueMicrotask(() => this.emit({ type: "worker.interruptResult", id: message.id, payload: { sessionId: message.payload.sessionId, result: { commandId, result: failed } } }));
+            return;
+          }
+          const sideChat = { ...current, revision: current.revision + 1, status: "idle" as const };
+          this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
+          this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
         }
         queueMicrotask(() => this.emit({ type: "worker.interruptResult", id: message.id, payload: { sessionId: message.payload.sessionId, result: { commandId, result } } }));
         return;
@@ -346,7 +439,7 @@ export class FakeWorkerConnection implements WorkerConnection {
   private scheduleSnapshotResponse(id: string | undefined, sessionId: string): void {
     const isPostCommand = this.snapshotResponses > 0;
     if (isPostCommand && this.options.dropPostCommandSnapshots) return;
-    if (isPostCommand && this.options.holdPostCommandSnapshots) {
+    if (isPostCommand && this.holdPostCommandSnapshots) {
       // Hold the authoritative refresh behind the gate: the singleflight entry
       // is installed before this refresh is dispatched, so the caller is
       // provably blocked until the gate is released.
@@ -404,6 +497,14 @@ export class FakeWorkerConnection implements WorkerConnection {
     });
   }
 
+  /** Replace the worker's truth without sending a projection event. */
+  setSnapshot(snapshot: RuntimeSnapshot): void { this.liveSnapshot = structuredClone(snapshot); }
+
+  /** Enable/disable the deterministic post-command snapshot gate for a specific test phase. */
+  setHoldPostCommandSnapshots(hold: boolean): void {
+    this.holdPostCommandSnapshots = hold;
+  }
+
   /** Release every held post-command snapshot, letting authority refresh converge. */
   releaseHeldSnapshots(): void {
     const held = this.heldPostCommandSnapshots.splice(0);
@@ -422,6 +523,12 @@ export class FakeWorkerConnection implements WorkerConnection {
     }
     this.snapshotResponses += 1;
     this.emit({ type: "worker.snapshot", id, payload: { sessionId, snapshot: snap } });
+  }
+
+  /** Capture a transport delivery already queued before unsubscribe/close. */
+  captureMessageDelivery(): (message: WorkerToSessiondMessage) => void {
+    const listeners = [...this.messageListeners];
+    return (message) => { for (const listener of listeners) listener(structuredClone(message)); };
   }
 
   subscribe(listener: (message: WorkerToSessiondMessage) => void): () => void { this.messageListeners.add(listener); return () => this.messageListeners.delete(listener); }
@@ -477,6 +584,12 @@ function outcome(type: RuntimeCommandOutcome["type"], options: FakeWorkerOptions
     case "get_last_assistant_text": return { ok: true, type, text: "" };
     case "fork": return { ok: true, type, forkedSessionId: options.forkedSessionId ?? "forked", forkPointEntryId: entryId ?? "entry" };
     case "generate_session_title": return { ok: true, type, title: options.autoTitle ?? "auto title" };
+    case "side_chat_start": return { ok: true, type, conversationId: "side-conversation-1" };
+    case "side_chat_send": return { ok: true, type, runId: "side-run-1" };
+    case "side_chat_reset": return { ok: true, type, conversationId: "side-conversation-2" };
+    case "steer":
+    case "follow_up": return { ok: true, type, disposition: "queued" };
+    case "prompt": return { ok: true, type, disposition: "started" };
     default: return { ok: true, type };
   }
 }

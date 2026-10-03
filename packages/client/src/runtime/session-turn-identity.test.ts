@@ -23,7 +23,7 @@
  *    wire-legal stream lifecycle, no synthetic bare completions.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
+import { authoritySnapshot, createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
 import type { FakeWebSocket } from "./testing/harness";
 import type { SubmitTurnAdmission } from "@fffattiger/pix-protocol";
 
@@ -104,7 +104,7 @@ function sendUserCommit(ws: FakeWebSocket, sessionId: string, entryId: string, f
 }
 
 function turnStatus(sessionId: string, operationId: string, revision: number, state: string, extra: Record<string, unknown> = {}, epoch = "e1", turnId = "turn-1") {
-  return { type: "turn_status", payload: { sessionId, epoch, operationId, turnId, revision, state, ...extra } };
+  return { type: "turn_status", ...(state === "completed" ? { authority: authoritySnapshot(sessionId, epoch) } : {}), payload: { sessionId, epoch, operationId, turnId, revision, state, ...extra } };
 }
 
 describe("SessionController — Phase 5A identity optimistic commit", () => {

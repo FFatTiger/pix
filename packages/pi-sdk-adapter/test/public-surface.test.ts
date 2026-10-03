@@ -37,7 +37,7 @@ describe("public agent factory surface", () => {
     });
   });
 
-  it("PRODUCTION_AGENT_CAPABILITIES is exactly the full 20-token command surface (D2 auto_name opens the last command)", () => {    assert.deepEqual([...PRODUCTION_AGENT_CAPABILITIES], [
+  it("PRODUCTION_AGENT_CAPABILITIES is the 20-token static base; side chat is detected dynamically", () => {    assert.deepEqual([...PRODUCTION_AGENT_CAPABILITIES], [
       "runtime.prompt",
       "runtime.abort",
       "runtime.stats",
@@ -59,9 +59,10 @@ describe("public agent factory surface", () => {
       "runtime.fork",
       "runtime.auto_name",
     ]);
-    // The full frozen command surface: every runtime command is now open, so
-    // auto_name MUST be present (this is the completeness inversion — the last
-    // closed command is now open).
+    // The static factory base contains the ordinary command surface. The
+    // adapter adds runtime.side_chat only after the enabled real controller
+    // seam is detected for the concrete SDK session.
     assert.ok(PRODUCTION_AGENT_CAPABILITIES.includes("runtime.auto_name"), "runtime.auto_name must be open");
-    assert.equal(PRODUCTION_AGENT_CAPABILITIES.length, 20, "exactly 20 production tokens");  });
+    assert.equal(new Set<string>(PRODUCTION_AGENT_CAPABILITIES).has("runtime.side_chat"), false, "side chat is dynamically advertised");
+    assert.equal(PRODUCTION_AGENT_CAPABILITIES.length, 20, "exactly 20 static production tokens");  });
 });

@@ -125,6 +125,12 @@ export const WsTurnStatusMessageSchema = z.strictObject({
   type: z.literal("turn_status"),
   id: NonEmptyStringSchema.optional(),
   payload: RuntimeTurnStatusPushSchema.shape.status,
+  authority: RuntimeTurnStatusPushSchema.shape.authority,
+}).superRefine((value, ctx) => {
+  const parsed = RuntimeTurnStatusPushSchema.safeParse({ type: value.type, status: value.payload, authority: value.authority });
+  if (!parsed.success) for (const issue of parsed.error.issues) {
+    ctx.addIssue({ ...issue, path: issue.path.map((part) => part === "status" ? "payload" : part) });
+  }
 });
 
 /** Read-only list of active runtime records; never activates a worker. */
@@ -172,7 +178,7 @@ export const WsInterruptResultMessageSchema = z.strictObject({
   payload: z.strictObject({
     sessionId: NonEmptyStringSchema,
     commandId: NonEmptyStringSchema,
-    interruptType: z.enum(["abort", "abort_compaction", "abort_bash", "clear_queue"]),
+    interruptType: z.enum(["abort", "abort_compaction", "abort_bash", "clear_queue", "abort_side_chat"]),
     result: RuntimeInterruptResultSchema,
   }).superRefine((value, ctx) => {
     if (value.interruptType !== value.result.type) ctx.addIssue({ code: "custom", path: ["result", "type"], message: "interrupt result type mismatch" });

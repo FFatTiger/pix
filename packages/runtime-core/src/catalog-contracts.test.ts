@@ -10,6 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  BUILT_IN_CAPABILITY_IDS,
   MAX_SESSION_TREE_DEPTH,
   MAX_SESSION_TREE_FRAME,
   MAX_SESSION_TREE_LABEL_LENGTH,
@@ -24,6 +25,7 @@ import {
   isSafeThemeCssValue,
 } from "./index.js";
 import type {
+  BuiltInCapabilityConfigStorePort,
   CredentialCatalogPort,
   CredentialStorePort,
   ModelCatalogPort,
@@ -132,6 +134,11 @@ const _themeExact: IsExact<
   "listThemeSets" | "resolveTheme"
 > = true;
 
+const _builtInsExact: IsExact<
+  keyof BuiltInCapabilityConfigStorePort,
+  "readConfig" | "writeConfig"
+> = true;
+
 // Mutation ports are separately declared and each EXTENDS its read-only port
 // (they are not a combined cross-domain writable object).
 const _storeExtendsCatalog: Assignable<
@@ -195,6 +202,15 @@ const _catalogNotMut: Assignable<SessionCatalogPort, SessionMutationPort> = fals
 /* ------------------------------------------------------------------ */
 /* Runtime vocabulary checks                                          */
 /* ------------------------------------------------------------------ */
+
+test("built-in capability IDs are the frozen canonical vocabulary", () => {
+  assert.deepEqual([...BUILT_IN_CAPABILITY_IDS], [
+    "subagents",
+    "todo",
+    "ask_user_question",
+    "side_chat",
+  ]);
+});
 
 const TRUST_STATES: readonly ProjectTrustState[] = [
   "unknown",

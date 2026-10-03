@@ -55,6 +55,7 @@ export type HostCapability =
   | "models"
   | "models.configure"
   | "settings.configure"
+  | "builtins.configure"
   | "auth.providers"
   | "skills"
   | "plugins"
@@ -77,6 +78,7 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "models",
   "models.configure",
   "settings.configure",
+  "builtins.configure",
   "auth.providers",
   "skills",
   "plugins",
@@ -95,11 +97,14 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
  * Host catalog capability that never depends on the per-session Worker, so
  * the token stays advertised in the degraded projection too; the route
  * fail-closes on its own authority at request time.
+ * `builtins.configure` is the Pix built-in desired-enablement token:
+ * advertised only while GET/PUT `/v1/settings/built-ins` is mounted.
  */
 export const CATALOG_CAPABILITIES: readonly HostCapability[] = [
   "models",
   "models.configure",
   "settings.configure",
+  "builtins.configure",
   "auth.providers",
   "skills",
   "plugins",
@@ -232,7 +237,7 @@ export interface SessiondProbe {
  * foundation module stays free of protocol DTO imports; the route narrows.
  */
 export interface SessionHistoryReadClient {
-  list(params: { page: number; pageSize: number; cwd?: string; projectRoot?: string }): Promise<unknown>;
+  list(params: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string }): Promise<unknown>;
   projects(params: { page: number; pageSize: number }): Promise<unknown>;
   read(sessionId: string): Promise<unknown>;
   /**
@@ -368,6 +373,16 @@ export interface CatalogModelsMutationSeam {
 export interface CatalogSettingsMutationSeam {
   readConfig(): Promise<unknown>;
   writeConfig(input: unknown): Promise<unknown>;
+  /** Structured global tool-selection read (`pixDefaultTools`). */
+  readToolsConfig(): Promise<unknown>;
+  /** Structured global tool-selection CAS write (`pixDefaultTools` only). */
+  writeToolsConfig(input: unknown): Promise<unknown>;
+}
+
+/** Pix built-in desired-enablement seam (`pix-builtins.json`, agent-dir scope). */
+export interface CatalogBuiltInsMutationSeam {
+  readConfig(): Promise<unknown>;
+  writeConfig(input: unknown): Promise<unknown>;
 }
 
 /** Global credentials/provider catalog (not project-scoped). */
@@ -448,6 +463,7 @@ export interface CatalogDeps {
   models?: CatalogModelsSeam;
   modelsMutation?: CatalogModelsMutationSeam;
   settingsMutation?: CatalogSettingsMutationSeam;
+  builtinsMutation?: CatalogBuiltInsMutationSeam;
   credentials?: CatalogCredentialsSeam;
   resources?: CatalogResourcesSeam;
   trust?: CatalogTrustSeam;

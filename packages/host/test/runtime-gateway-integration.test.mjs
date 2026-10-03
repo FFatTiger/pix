@@ -69,12 +69,31 @@ class FakeSession {
   constructor() {
     this.sent = [];
     this.messageListeners = new Set();
+    this.frameListeners = new Set();
     this.closeListeners = new Set();
     this.bufferedAmount = 0;
     this.closed = null;
   }
   send(data) {
     this.sent.push(data);
+    for (const listener of [...this.frameListeners]) listener(JSON.parse(data));
+  }
+  waitFor(predicate) {
+    const existing = this.sent.map((data) => JSON.parse(data)).find(predicate);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const listener = (frame) => {
+        if (!predicate(frame)) return;
+        clearTimeout(timer);
+        this.frameListeners.delete(listener);
+        resolve(frame);
+      };
+      const timer = setTimeout(() => {
+        this.frameListeners.delete(listener);
+        reject(new Error("gateway response did not arrive"));
+      }, 2000);
+      this.frameListeners.add(listener);
+    });
   }
   close(code, reason) {
     if (this.closed) return;
@@ -131,38 +150,33 @@ test("integration: create → attach (initial snapshot id) → command correlati
 
     // create
     session.receive(JSON.stringify({ type: "create", id: "c1", payload: { createRequestId: "cr1", cwd: "/p", projectRoot: "/p" } }));
-    await wait(30);
-    const createRes = session.sent.map((f) => JSON.parse(f)).find((m) => m.type === "response" && m.id === "c1");
+    const createRes = await session.waitFor((m) => m.type === "response" && m.id === "c1");
     assert.ok(createRes, "create response");
     assert.equal(createRes.payload.ok, true);
     const sessionId = createRes.payload.result.sessionId;
 
     // attach → initial snapshot echoes the attach request id
     session.receive(JSON.stringify({ type: "attach", id: "att1", payload: { sessionId } }));
-    await wait(20);
-    const snap = session.sent.map((f) => JSON.parse(f)).find((m) => m.type === "snapshot");
+    const snap = await session.waitFor((m) => m.type === "snapshot" && m.id === "att1");
     assert.ok(snap, "initial snapshot");
     assert.equal(snap.id, "att1");
     assert.equal(snap.payload.sessionId, sessionId);
 
     // command correlation (prompt resolves quickly)
     session.receive(JSON.stringify({ type: "command", id: "cmd1", payload: { sessionId, command: { commandId: "cmd-1", type: "prompt", message: "hi" } } }));
-    await wait(30);
-    const cmdRes = session.sent.map((f) => JSON.parse(f)).find((m) => m.type === "response" && m.id === "cmd1");
+    const cmdRes = await session.waitFor((m) => m.type === "response" && m.id === "cmd1");
     assert.ok(cmdRes, "command response");
     assert.equal(cmdRes.payload.result.commandId, "cmd-1");
 
     // getSnapshot
     session.receive(JSON.stringify({ type: "getSnapshot", id: "gs1", payload: { sessionId } }));
-    await wait(20);
-    const gsRes = session.sent.map((f) => JSON.parse(f)).find((m) => m.type === "response" && m.id === "gs1");
+    const gsRes = await session.waitFor((m) => m.type === "response" && m.id === "gs1");
     assert.ok(gsRes, "getSnapshot response");
     assert.equal(gsRes.payload.ok, true);
 
     // stop closes the attach subscription and stops the session
     session.receive(JSON.stringify({ type: "stop", id: "st1", payload: { sessionId } }));
-    await wait(20);
-    const stRes = session.sent.map((f) => JSON.parse(f)).find((m) => m.type === "response" && m.id === "st1");
+    const stRes = await session.waitFor((m) => m.type === "response" && m.id === "st1");
     assert.ok(stRes && stRes.payload.result.stopped === true, "stop response");
   } finally {
     await server.close();

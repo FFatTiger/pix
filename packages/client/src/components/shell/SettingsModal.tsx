@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { Archive, ChatCenteredText, Cpu, FileJs, Monitor, Plug, ShieldCheck, Stack, X } from "@phosphor-icons/react";
+import { Archive, ChatCenteredText, Cpu, FileJs, Monitor, Plug, Robot, ShieldCheck, Stack, Wrench, X } from "@phosphor-icons/react";
 import { ArchiveConfig } from "@/features/settings/ArchiveConfig";
+import { BuiltInCapabilitiesConfig } from "@/features/settings/BuiltInCapabilitiesConfig";
 import { ChatConfig } from "@/features/settings/ChatConfig";
 import { DisplayConfig } from "@/features/settings/DisplayConfig";
 import { SettingsFileConfig } from "@/features/settings/SettingsFileConfig";
 import { ModelsSettingsTab, PluginsSettingsTab, SkillsSettingsTab } from "@/features/settings/CatalogTabs";
 import { SecurityConfig } from "@/features/settings/SecurityConfig";
+import { ToolsConfig } from "@/features/settings/ToolsConfig";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 
-export type SettingsTab = "display" | "chat" | "models" | "config" | "skills" | "plugins" | "security" | "archive";
+export type SettingsTab = "display" | "chat" | "agents" | "tools" | "models" | "config" | "skills" | "plugins" | "security" | "archive";
 
 interface SettingsModalProps {
   initialTab?: SettingsTab;
@@ -26,6 +28,8 @@ function resolveSettingsTab(tab: SettingsTab, cwd: string | null): SettingsTab {
 const tabs: { id: SettingsTab; labelKey: string; Icon: typeof Cpu }[] = [
   { id: "display", labelKey: "desktop.display", Icon: Monitor },
   { id: "chat", labelKey: "desktop.chat", Icon: ChatCenteredText },
+  { id: "agents", labelKey: "desktop.agentFeatures", Icon: Robot },
+  { id: "tools", labelKey: "desktop.toolsSettingsTab", Icon: Wrench },
   { id: "models", labelKey: "desktop.models", Icon: Cpu },
   { id: "config", labelKey: "desktop.settingsFileTab", Icon: FileJs },
   { id: "skills", labelKey: "desktop.skills", Icon: Stack },
@@ -115,7 +119,7 @@ export function SettingsModal({
             <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>
               {t(tabs.find((tab) => tab.id === activeTab)?.labelKey ?? "desktop.settings")}
             </span>
-            {activeTab === "models" ? (
+            {activeTab === "models" || activeTab === "agents" || activeTab === "tools" ? (
               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 {t("desktop.global")}
               </span>
@@ -205,6 +209,12 @@ export function SettingsModal({
           </div>
           <div style={{ display: activeTab === "chat" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
             <ChatConfig />
+          </div>
+          <div style={{ display: activeTab === "agents" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
+            <BuiltInCapabilitiesConfig />
+          </div>
+          <div style={{ display: activeTab === "tools" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
+            <ToolsConfig />
           </div>
           <div style={{ display: activeTab === "models" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
             <ModelsSettingsTab onCloseAction={onCloseAction} />

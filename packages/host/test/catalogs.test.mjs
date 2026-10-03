@@ -59,9 +59,27 @@ function fakeModelsMutation(impl = {}) {
 
 function fakeSettingsMutation(impl = {}) {
   const snapshot = { revision: "5".repeat(64), content: '{\n  "defaultProvider": "acme-gpt",\n}\n' };
+  const toolsSnapshot = { revision: "5".repeat(64), selection: { mode: "all" } };
   return {
     readConfig: async () => impl.readConfig ? impl.readConfig() : snapshot,
     writeConfig: async (input) => impl.writeConfig ? impl.writeConfig(input) : { revision: "6".repeat(64), content: input.content },
+    readToolsConfig: async () => impl.readToolsConfig ? impl.readToolsConfig() : toolsSnapshot,
+    writeToolsConfig: async (input) => impl.writeToolsConfig ? impl.writeToolsConfig(input) : { revision: "6".repeat(64), selection: { mode: "custom", toolNames: input.toolNames ?? [] } },
+  };
+}
+
+const ALL_BUILTINS = [
+  { id: "subagents", enabled: true },
+  { id: "todo", enabled: true },
+  { id: "ask_user_question", enabled: true },
+  { id: "side_chat", enabled: true },
+];
+
+function fakeBuiltInsMutation(impl = {}) {
+  const snapshot = { revision: "7".repeat(64), capabilities: ALL_BUILTINS };
+  return {
+    readConfig: async () => impl.readConfig ? impl.readConfig() : snapshot,
+    writeConfig: async (input) => impl.writeConfig ? impl.writeConfig(input) : { revision: "8".repeat(64), capabilities: input.capabilities },
   };
 }
 
@@ -338,6 +356,222 @@ test("PUT /v1/settings/config maps stale revisions to a fixed conflict", async (
   assert.equal(JSON.stringify(body).includes("private"), false);
 });
 
+test("GET/PUT /v1/settings/tools round-trip with strict body rules, shared token and no session requirement", async () => {
+  const root = temp("pix-cat-settings-tools-");
+  const roots = await rootsFor(root);
+  let written;
+  const app = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({
+      writeToolsConfig: async (input) => { written = input; return { revision: "7".repeat(64), selection: { mode: "custom", toolNames: input.toolNames ?? [] } }; },
+    }),
+  });
+
+  const get = await call(app, "/v1/settings/tools");
+  assert.equal(get.status, 200);
+  const body = await get.json();
+  assert.equal(body.revision, "5".repeat(64));
+  assert.deepEqual(body.selection, { mode: "all" });
+  assert.equal(get.headers.get("cache-control"), "no-store");
+
+  const put = await app.request("http://localhost/v1/settings/tools", {
+    method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ expectedRevision: body.revision, toolNames: ["read", "bash"] }),
+  });
+  assert.equal(put.status, 200);
+  const saved = await put.json();
+  assert.equal(saved.revision, "7".repeat(64));
+  assert.deepEqual(saved.selection, { mode: "custom", toolNames: ["read", "bash"] });
+  assert.deepEqual(written, { expectedRevision: body.revision, toolNames: ["read", "bash"] });
+
+  // null = enable all; [] = all off; both travel verbatim.
+  const putNull = await app.request("http://localhost/v1/settings/tools", {
+    method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ expectedRevision: saved.revision, toolNames: null }),
+  });
+  assert.equal(putNull.status, 200);
+
+  for (const bad of [
+    { expectedRevision: body.revision, toolNames: "read" },
+    { expectedRevision: "nothex", toolNames: null },
+    { expectedRevision: body.revision },
+    { expectedRevision: body.revision, toolNames: [] , extra: 1 },
+    { expectedRevision: body.revision, toolNames: [""] },
+    { expectedRevision: body.revision, toolNames: ["read\n"] },
+  ]) {
+    const res = await app.request("http://localhost/v1/settings/tools", {
+      method: "PUT",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify(bad),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, "INVALID_TOOLS_CONFIG");
+  }
+
+  // A native selection projects its resolved list.
+  const nativeApp = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({ readToolsConfig: async () => ({ revision: "9".repeat(64), selection: { mode: "native", toolNames: ["bash"] } }) }),
+  });
+  const native = await call(nativeApp, "/v1/settings/tools");
+  assert.equal(native.status, 200);
+  assert.deepEqual((await native.json()).selection, { mode: "native", toolNames: ["bash"] });
+
+  const query = await call(app, "/v1/settings/tools?x=1");
+  assert.equal(query.status, 400);
+  assert.equal((await query.json()).code, "INVALID_QUERY");
+
+  // Same settings.configure capability token as the raw editor; absent seam
+  // => no route at all.
+  const health = await call(app, "/v1/health");
+  assert.ok((await health.json()).capabilities.includes("settings.configure"));
+  const bare = appWithCatalogs({ roots });
+  assert.equal((await call(bare, "/v1/settings/tools")).status, 404);
+});
+
+test("PUT /v1/settings/tools maps stale revisions and seam failures to fixed errors", async () => {
+  const root = temp("pix-cat-settings-tools-conflict-");
+  const roots = await rootsFor(root);
+  const conflict = new Error("secret stale path /tmp/private");
+  conflict.code = "conflict";
+  const app = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({ writeToolsConfig: async () => { throw conflict; } }),
+  });
+  const res = await app.request("http://localhost/v1/settings/tools", {
+    method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ expectedRevision: "0".repeat(64), toolNames: null }),
+  });
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.code, "CONFLICT");
+  assert.equal(JSON.stringify(body).includes("private"), false);
+
+  const invalid = new Error("bad input");
+  invalid.code = "invalid_input";
+  const invalidApp = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({ readToolsConfig: async () => { throw invalid; } }),
+  });
+  const readRes = await call(invalidApp, "/v1/settings/tools");
+  assert.equal(readRes.status, 400);
+  assert.equal((await readRes.json()).code, "INVALID_INPUT");
+});
+
+test("GET/PUT /v1/settings/built-ins round-trip with strict body rules and capability token", async () => {
+  const root = temp("pix-cat-builtins-config-");
+  const roots = await rootsFor(root);
+  let written;
+  const mixed = [
+    { id: "side_chat", enabled: false },
+    { id: "todo", enabled: true },
+    { id: "subagents", enabled: false },
+    { id: "ask_user_question", enabled: true },
+  ];
+  const app = appWithCatalogs({
+    roots,
+    builtinsMutation: fakeBuiltInsMutation({
+      writeConfig: async (input) => { written = input; return { revision: "8".repeat(64), capabilities: input.capabilities }; },
+    }),
+  });
+
+  const get = await call(app, "/v1/settings/built-ins");
+  assert.equal(get.status, 200);
+  const body = await get.json();
+  assert.equal(body.revision, "7".repeat(64));
+  assert.deepEqual(body.capabilities, ALL_BUILTINS);
+  assert.equal(get.headers.get("cache-control"), "no-store");
+
+  const put = await app.request("http://localhost/v1/settings/built-ins", {
+    method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ expectedRevision: body.revision, capabilities: mixed }),
+  });
+  assert.equal(put.status, 200);
+  assert.equal((await put.json()).revision, "8".repeat(64));
+  assert.deepEqual(written.capabilities, mixed);
+
+  for (const bad of [
+    { expectedRevision: body.revision, capabilities: mixed.slice(0, 3) },
+    { expectedRevision: "nothex", capabilities: mixed },
+    { expectedRevision: body.revision, capabilities: mixed, extra: 1 },
+    { expectedRevision: body.revision, capabilities: [...mixed.slice(0, 3), { id: "plugins", enabled: true }] },
+    {
+      expectedRevision: body.revision,
+      capabilities: [
+        { id: "subagents", enabled: true },
+        { id: "todo", enabled: true },
+        { id: "ask_user_question", enabled: true },
+        { id: "subagents", enabled: false },
+      ],
+    },
+  ]) {
+    const res = await app.request("http://localhost/v1/settings/built-ins", {
+      method: "PUT",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify(bad),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, "INVALID_BUILTINS_CONFIG");
+  }
+
+  const query = await call(app, "/v1/settings/built-ins?x=1");
+  assert.equal(query.status, 400);
+  assert.equal((await query.json()).code, "INVALID_QUERY");
+
+  const health = await call(app, "/v1/health");
+  assert.ok((await health.json()).capabilities.includes("builtins.configure"));
+
+  const bare = appWithCatalogs({ roots });
+  const missing = await call(bare, "/v1/settings/built-ins");
+  assert.equal(missing.status, 404);
+  const bareHealth = await call(bare, "/v1/health");
+  assert.equal((await bareHealth.json()).capabilities.includes("builtins.configure"), false);
+});
+
+test("PUT /v1/settings/built-ins maps stale revisions to a fixed conflict and never leaks paths", async () => {
+  const root = temp("pix-cat-builtins-conflict-");
+  const roots = await rootsFor(root);
+  const conflict = new Error("secret stale path /tmp/private/pix-builtins.json");
+  conflict.code = "conflict";
+  const app = appWithCatalogs({
+    roots,
+    builtinsMutation: fakeBuiltInsMutation({ writeConfig: async () => { throw conflict; } }),
+  });
+  const res = await app.request("http://localhost/v1/settings/built-ins", {
+    method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ expectedRevision: "0".repeat(64), capabilities: ALL_BUILTINS }),
+  });
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.code, "CONFLICT");
+  assert.equal(JSON.stringify(body).includes("private"), false);
+  assert.equal(JSON.stringify(body).includes("pix-builtins"), false);
+});
+
+test("GET /v1/settings/built-ins is gated before the seam", async () => {
+  const root = temp("pix-cat-builtins-gate-");
+  const roots = await rootsFor(root);
+  let reads = 0;
+  const app = createHostApp({
+    logger: {},
+    gate: { config: { read: () => ({ status: "enabled", password: "pw", source: "test" }) } },
+    catalogs: {
+      roots,
+      builtinsMutation: fakeBuiltInsMutation({
+        readConfig: async () => { reads += 1; return { revision: "7".repeat(64), capabilities: ALL_BUILTINS }; },
+      }),
+    },
+  }).app;
+  const res = await call(app, "/v1/settings/built-ins");
+  assert.equal(res.status, 401);
+  assert.equal(reads, 0);
+});
+
 test("GET /v1/auth/providers and status are global (no cwd) and no-store", async () => {
   const root = temp("pix-cat-auth-");
   const roots = await rootsFor(root);
@@ -580,6 +814,7 @@ test("catalog caps stay advertised when sessiond is down", async () => {
     trust: fakeTrust(),
     trustMutation: { setTrusted: async () => ({ cwd: "x", level: "trusted" }) },
     settingsMutation: fakeSettingsMutation(),
+    builtinsMutation: fakeBuiltInsMutation(),
   };
   const { sessiond, capabilities } = await resolveCapabilities({
     catalogs,

@@ -46,6 +46,7 @@ export class FakeAgentRuntime implements AgentRuntimePort {
   readonly submitTurnCalls: RuntimeTurnStart[] = [];
   readonly interruptCalls: RuntimeInterrupt[] = [];
   readonly closeReasons: RuntimeCloseReason[] = [];
+  snapshotCalls = 0;
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();
   private closed = false;
 
@@ -63,6 +64,7 @@ export class FakeAgentRuntime implements AgentRuntimePort {
   }
 
   async getSnapshot(): Promise<RuntimeSnapshot> {
+    this.snapshotCalls += 1;
     return structuredClone(this.config.snapshot ?? defaultCoreSnapshot(this.config.sessionId));
   }
 

@@ -67,9 +67,9 @@ function makeDriver(withContextState: boolean): { driver: PiRuntimeDriver; contr
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
-    prompt: async () => {},
-    steer: async () => {},
-    followUp: async () => {},
+    prompt: async () => ({ disposition: "started" as const }),
+    steer: async () => "queued" as const,
+    followUp: async () => "queued" as const,
     abort: async () => {},
     setModel: async (next) => { model = { provider: next.provider, id: next.id }; },
     setThinkingLevel: () => {},

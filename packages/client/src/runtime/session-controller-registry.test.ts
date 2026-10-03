@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProtocolHandshakeResponse } from "@fffattiger/pix-protocol";
-import { createHarness, flush, lastFrame, snapshotPayload, type FakeWebSocket, type RuntimeHarness } from "./testing/harness";
+import { authoritySnapshot, createHarness, flush, lastFrame, snapshotPayload, type FakeWebSocket, type RuntimeHarness } from "./testing/harness";
 import type { RuntimeControllerPort as ConnectionControllerPort } from "./runtime-connection";
 import { homePresentationKey, sessionPresentationKey } from "./session-controller-registry";
 import { sessionTabId } from "../features/workspace/tabs/workspace-tab-state";
@@ -486,6 +486,7 @@ describe("SessionControllerRegistry — exact bounded retention and one lease", 
     const attach = lastFrame<{ type: "attach"; id: string }>(ws, "attach")!;
     ws.serverSend({
       type: "turn_status",
+      authority: authoritySnapshot("A", "e-A"),
       payload: { sessionId: "A", epoch: "e-A", operationId: submit.payload.operationId, turnId: "turn-A", revision: 1, state: "completed" },
     });
     await flush();
@@ -1124,6 +1125,7 @@ describe("SessionControllerRegistry — exact bounded retention and one lease", 
     });
     ws.serverSend({
       type: "turn_status",
+      authority: authoritySnapshot("created-home", "eH"),
       payload: {
         sessionId: "created-home",
         epoch: "eH",

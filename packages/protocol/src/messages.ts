@@ -30,11 +30,40 @@ export const TokenUsageCostSchema = z.strictObject({ input: z.number(), output: 
 export const TokenUsageSchema = z.strictObject({ input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), cost: TokenUsageCostSchema });
 export type TokenUsage = z.infer<typeof TokenUsageSchema>;
 
+export const NESTED_TOOL_CALL_STATUSES = ["ok", "error", "unfinished"] as const;
+export const MAX_NESTED_TOOL_CALLS = 256;
+export const MAX_NESTED_TOOL_ERROR_CHARS = 500;
+export const NestedToolCallsSchema = z.strictObject({
+  calls: z.array(z.strictObject({
+    id: NonEmptyStringSchema,
+    name: NonEmptyStringSchema,
+    arguments: z.unknown().optional(),
+    argumentsBytes: z.number().int().nonnegative().optional(),
+    status: z.enum(NESTED_TOOL_CALL_STATUSES),
+    durationMs: z.number().finite().nonnegative().optional(),
+    error: z.string().max(MAX_NESTED_TOOL_ERROR_CHARS).optional(),
+  })).max(MAX_NESTED_TOOL_CALLS),
+  complete: z.boolean(),
+}).superRefine((value, ctx) => {
+  if (new Set(value.calls.map((call) => call.id)).size !== value.calls.length) {
+    ctx.addIssue({ code: "custom", path: ["calls"], message: "nested call ids must be unique" });
+  }
+  if (value.complete && value.calls.some((call) => call.status === "unfinished")) {
+    ctx.addIssue({ code: "custom", path: ["complete"], message: "unfinished calls cannot form a complete summary" });
+  }
+});
+export type NestedToolCalls = z.infer<typeof NestedToolCallsSchema>;
+const toolResultMetadata = {
+  nestedCalls: NestedToolCallsSchema.optional(),
+  structuredContent: z.unknown().optional(),
+  usage: TokenUsageSchema.optional(),
+};
+
 export const UserMessageSchema = z.strictObject({ role: z.literal("user"), content: UserContentSchema, timestamp: z.number().optional() });
 export type UserMessage = z.infer<typeof UserMessageSchema>;
 export const AssistantMessageSchema = z.strictObject({ role: z.literal("assistant"), content: z.array(AssistantContentBlockSchema), model: z.string(), provider: z.string(), stopReason: z.string().optional(), errorMessage: z.string().optional(), timestamp: z.number().optional(), usage: TokenUsageSchema.optional(), writtenFiles: z.array(z.string()).optional() });
 export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;
-export const ToolResultMessageSchema = z.strictObject({ role: z.literal("toolResult"), toolCallId: NonEmptyStringSchema, toolName: z.string().optional(), content: z.array(z.union([TextContentSchema, ImageContentSchema])), isError: z.boolean().optional(), details: z.unknown().optional(), timestamp: z.number().optional() });
+export const ToolResultMessageSchema = z.strictObject({ ...toolResultMetadata, role: z.literal("toolResult"), toolCallId: NonEmptyStringSchema, toolName: z.string().optional(), content: z.array(z.union([TextContentSchema, ImageContentSchema])), isError: z.boolean().optional(), details: z.unknown().optional(), timestamp: z.number().optional() });
 export type ToolResultMessage = z.infer<typeof ToolResultMessageSchema>;
 export const CustomMessageSchema = z.strictObject({ role: z.literal("custom"), customType: NonEmptyStringSchema, content: UserContentSchema, display: z.boolean(), details: z.unknown().optional(), timestamp: z.number().optional() });
 export type CustomMessage = z.infer<typeof CustomMessageSchema>;
@@ -46,7 +75,7 @@ export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 /** Base partial streaming DTO remains backwards compatible; updates use strict deltas below. */
 export const StreamingUserMessageSchema = z.strictObject({ role: z.literal("user"), content: UserContentSchema.optional(), timestamp: z.number().optional() });
 export const StreamingAssistantMessageSchema = z.strictObject({ role: z.literal("assistant"), content: z.array(AssistantContentBlockSchema).optional(), model: z.string().optional(), provider: z.string().optional(), stopReason: z.string().optional(), errorMessage: z.string().optional(), timestamp: z.number().optional(), usage: TokenUsageSchema.optional(), writtenFiles: z.array(z.string()).optional() });
-export const StreamingToolResultMessageSchema = z.strictObject({ role: z.literal("toolResult"), toolCallId: NonEmptyStringSchema.optional(), toolName: z.string().optional(), content: z.array(z.union([TextContentSchema, ImageContentSchema])).optional(), isError: z.boolean().optional(), details: z.unknown().optional(), timestamp: z.number().optional() });
+export const StreamingToolResultMessageSchema = z.strictObject({ ...toolResultMetadata, role: z.literal("toolResult"), toolCallId: NonEmptyStringSchema.optional(), toolName: z.string().optional(), content: z.array(z.union([TextContentSchema, ImageContentSchema])).optional(), isError: z.boolean().optional(), details: z.unknown().optional(), timestamp: z.number().optional() });
 export const StreamingCustomMessageSchema = z.strictObject({ role: z.literal("custom"), customType: NonEmptyStringSchema.optional(), content: UserContentSchema.optional(), display: z.boolean().optional(), details: z.unknown().optional(), timestamp: z.number().optional() });
 export const StreamingBashExecutionMessageSchema = z.strictObject({ role: z.literal("bashExecution"), command: z.string().optional(), output: z.string().optional(), exitCode: z.number().optional(), cancelled: z.boolean().optional(), truncated: z.boolean().optional(), fullOutputPath: z.string().optional(), excludeFromContext: z.boolean().optional(), timestamp: z.number().optional() });
 export const StreamingAgentMessageSchema = z.discriminatedUnion("role", [StreamingUserMessageSchema, StreamingAssistantMessageSchema, StreamingToolResultMessageSchema, StreamingCustomMessageSchema, StreamingBashExecutionMessageSchema]);

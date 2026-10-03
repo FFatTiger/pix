@@ -42,20 +42,6 @@ class Harness implements AdapterContractHarness {
     assert.ok(store, "factory must belong to harness");
     return createPortsFromBackend(store);
   }
-  async getSideChatSnapshot(sessionId: string) {
-    for (const store of this.stores.values()) {
-      const session = store.sessions.get(sessionId);
-      if (!session) continue;
-      return {
-        sessionId,
-        systemPrompt: "You are a coding agent.",
-        writtenFiles: [...session.written],
-        activity: session.entries.slice(-5).map((entry) => ({ entryId: entry.entryId, role: entry.message.role === "user" || entry.message.role === "assistant" || entry.message.role === "toolResult" ? entry.message.role : "toolResult", text: entry.message.role === "assistant" ? entry.message.content.filter((b) => b.type === "text").map((b) => b.text).join("\n") : entry.message.role === "user" && typeof entry.message.content === "string" ? entry.message.content : "activity" })),
-        version: session.entries.length,
-      };
-    }
-    return null;
-  }
   async teardown() { this.stores.clear(); }
 }
 

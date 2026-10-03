@@ -22,8 +22,8 @@ interface AppTitleBarProps {
 
 /**
  * Chat-column title bar: sidebar toggle → unified workspace tab strip. The
- * file-browser toggle is NOT here: AppShell pins it to the window's top-right
- * corner (see `FileBrowserToggle`).
+ * right-pane toggle is NOT here: AppShell pins it to the window's top-right
+ * corner (see `RightPaneToggle`).
  */
 export function AppTitleBar({
   sidebarOpen,
@@ -49,7 +49,7 @@ export function AppTitleBar({
         flexShrink: 0,
         height: "calc(36px + env(safe-area-inset-top, 0px))",
         paddingTop: "env(safe-area-inset-top, 0px)",
-        // Reserves the pinned file-browser toggle's column (AppShell renders
+        // Reserves the pinned right-pane toggle's column (AppShell renders
         // it outside this box) so the tab strip never slides underneath it.
         paddingRight: 36,
       }}
@@ -91,45 +91,42 @@ export function AppTitleBar({
   );
 }
 
-export interface FileBrowserToggleProps {
+export interface RightPaneToggleProps {
   open: boolean;
-  /** Honest gate — the button is disabled when files are unavailable. */
-  canFiles: boolean;
+  /** Honest gate — the button is disabled when no right-pane view is available. */
+  available: boolean;
   onToggle: () => void;
 }
 
-/**
- * Right file-browser toggle. AppShell pins it to the window's top-right corner
- * (absolute, outside the chat column) because the right panel animates its own
- * width out of the right edge: an in-flow title-bar button travels left with
- * the shrinking chat column while the panel opens, instead of staying under the
- * pointer. The panel's header reserves the same 36px slot, so the button also
- * has a landing place once the panel is open.
- */
-export function FileBrowserToggle({ open, canFiles, onToggle }: FileBrowserToggleProps) {
+/** Pinned window-level toggle for the shared Files / Agents / Side chat pane. */
+export function RightPaneToggle({ open, available, onToggle }: RightPaneToggleProps) {
   const { t: translate } = useI18n();
 
   return (
     <button
       className="app-no-drag"
       onClick={onToggle}
-      disabled={!canFiles}
-      data-testid="file-browser-toggle"
-      title={open ? translate("desktop.hideFileBrowser") : translate("desktop.showFileBrowser")}
-      aria-label={open ? translate("desktop.hideFileBrowser") : translate("desktop.showFileBrowser")}
+      disabled={!available}
+      data-testid="right-pane-toggle"
+      title={open ? translate("desktop.hideRightPane") : translate("desktop.showRightPane")}
+      aria-label={open ? translate("desktop.hideRightPane") : translate("desktop.showRightPane")}
       aria-pressed={open}
       style={{
         display: "flex", alignItems: "center", justifyContent: "center",
         width: 36, height: 36, padding: 0,
         background: open ? "var(--bg-selected)" : "none", border: "none",
-        color: open ? "var(--text)" : (canFiles ? "var(--text-muted)" : "var(--text-dim)"),
-        cursor: canFiles ? "pointer" : "not-allowed", flexShrink: 0, transition: "background 0.12s, color 0.12s",
-        opacity: canFiles ? 1 : 0.5,
+        color: open ? "var(--text)" : (available ? "var(--text-muted)" : "var(--text-dim)"),
+        cursor: available ? "pointer" : "not-allowed", flexShrink: 0, transition: "background 0.12s, color 0.12s",
+        opacity: available ? 1 : 0.5,
       }}
-      onMouseEnter={(e) => { if (!canFiles) return; e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
-      onMouseLeave={(e) => { if (!canFiles) return; e.currentTarget.style.background = open ? "var(--bg-selected)" : "none"; e.currentTarget.style.color = open ? "var(--text)" : "var(--text-muted)"; }}
+      onMouseEnter={(e) => { if (!available) return; e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
+      onMouseLeave={(e) => { if (!available) return; e.currentTarget.style.background = open ? "var(--bg-selected)" : "none"; e.currentTarget.style.color = open ? "var(--text)" : "var(--text-muted)"; }}
     >
       <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
     </button>
   );
 }
+
+/** @deprecated Use RightPaneToggle; retained for source compatibility. */
+export const FileBrowserToggle = RightPaneToggle;
+export type FileBrowserToggleProps = RightPaneToggleProps;

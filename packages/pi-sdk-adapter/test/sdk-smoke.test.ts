@@ -19,7 +19,7 @@ const EXPECTED = [
 ] as const;
 
 describe("real Pi SDK composition smoke", () => {
-  it("constructs through installed SDK 0.84 APIs and preserves initialization order", async () => {
+  it("constructs through installed SDK 0.87 APIs and preserves initialization order", async () => {
     const root = await mkdtemp(join(tmpdir(), "pix-pi-sdk-adapter-smoke-"));
     const cwd = join(root, "cwd");
     const agentDir = join(root, "agent");

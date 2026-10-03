@@ -2,6 +2,7 @@
 import { memo, useState, useRef, useEffect, useMemo, useCallback, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownBody } from "./MarkdownBody";
+import { NestedToolCallSummary } from "./NestedToolCallSummary";
 import { copyText } from "@/lib/clipboard";
 import { cssPx, cssViewportSize } from "@/lib/ui-scale";
 import { urls } from "@/api/urls";
@@ -1088,6 +1089,10 @@ export const ToolCallBlock = memo(function ToolCallBlock({ block, result, durati
         </pre>
       )}
 
+      {expanded && <NestedToolCallSummary value={result?.nestedCalls} />}
+      {expanded && result?.structuredContent !== undefined && (
+        <pre className="tool-call-input">{JSON.stringify(result.structuredContent, null, 2)}</pre>
+      )}
       {/* ── Paired result — only shown when expanded ── */}
       {expanded && result && (
         resultDiff ? (

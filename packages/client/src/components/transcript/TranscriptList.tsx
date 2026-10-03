@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowDown, ArrowUp } from "@phosphor-icons/react";
 import { ArticleIcon } from "@phosphor-icons/react/Article";
 import { useQuery } from "@tanstack/react-query";
-import type { AgentMessage, ToolResultMessage } from "@fffattiger/pix-protocol";
+import type { AgentMessage, StreamingAgentMessage, ToolResultMessage } from "@fffattiger/pix-protocol";
 import { useVirtualList } from "@/lib/virtual-list";
 import { createDeferredThinkingLoader } from "@/api/session-history";
 import {
@@ -55,6 +55,24 @@ export interface TranscriptListProps {
    * omitted the legacy behavior applies: live whenever the runtime is attached.
    */
   live?: boolean;
+  /** Publish this list as the parent chat/composer scroll owner. Nested history panes disable it. */
+  publishScrollRef?: boolean;
+  /**
+   * Present the final row as actively streaming while the runtime behind this
+   * history view is known to still be working (e.g. a running subagent child
+   * whose committed entries refresh via file-driven history reads). Only the
+   * caller with authoritative knowledge of the external runtime may set it;
+   * it never fabricates a live stream for settled history. Secondary to
+   * {@link externalStreaming}: used only until the first child token arrives.
+   */
+  tailActive?: boolean;
+  /**
+   * Live streaming partial from a parent-owned child stream (read-only pane).
+   * When `live` is false and this is provided, it becomes `streamingMessage`
+   * and the row builder treats the turn as running — same streaming tail as
+   * the main session. Does not take scroll ownership.
+   */
+  externalStreaming?: StreamingAgentMessage | null;
 }
 
 /** Combine the virtualizer measurement ref with the minimap message ref. */
@@ -70,7 +88,14 @@ function combineRefs(
 
 const JUMP_TO_BOTTOM_THRESHOLD_PX = 160;
 
-export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: TranscriptListProps) {
+export function TranscriptList({
+  sessionId,
+  overscan = 8,
+  live: liveProp,
+  publishScrollRef = true,
+  tailActive = false,
+  externalStreaming = null,
+}: TranscriptListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   // Row that currently owns DOM focus (kept mounted so focus follows content).
   const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
@@ -89,11 +114,12 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
   // Publish the scroll element so the composer's floating menus can cap their
   // height at the transcript's top edge (source messagesScrollRef wiring).
   useEffect(() => {
+    if (!publishScrollRef) return;
     transcriptScrollRef.current = parentRef.current;
     return () => {
       if (transcriptScrollRef.current === parentRef.current) transcriptScrollRef.current = null;
     };
-  }, []);
+  }, [publishScrollRef]);
 
   // The live projection is shown ONLY when the caller explicitly gates it (the
   // selected session IS the attached runtime). Without the prop, fall back to
@@ -113,7 +139,9 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
 
   const snapshot = isLive ? (exact?.snapshot ?? null) : null;
   const liveState = snapshot?.state;
-  const running = isLive && (liveState?.isStreaming === true || liveState?.isPromptRunning === true);
+  const externalPartial = !isLive && externalStreaming != null ? externalStreaming : null;
+  const running = (isLive && (liveState?.isStreaming === true || liveState?.isPromptRunning === true))
+    || externalPartial !== null;
 
   // Fail-closed: while the sessions capability is retracted the transcript
   // never derives rows from cached history (stale) and never trusts a
@@ -125,7 +153,7 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
   );
   const entryIds = useMemo<readonly string[]>(() => transcript.entryIds, [transcript.entryIds]);
 
-  const streamingPartial = isLive ? (exact?.partial ?? null) : null;
+  const streamingPartial = isLive ? (exact?.partial ?? null) : externalPartial;
   const streamingMessage = (streamingPartial ?? null) as AgentMessage | null;
   const cwd = isLive ? snapshot?.cwd : undefined;
   const effectiveSessionId = isLive ? (exact?.sessionId ?? null) : sessionId;
@@ -212,15 +240,31 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
 
   // Source render-loop projection → virtualizer rows.
   const chatRows = useMemo(
-    () =>
-      buildChatTranscriptRows({
+    () => {
+      const built = buildChatTranscriptRows({
         messages,
         entryIds,
         streamingMessage,
         running,
         ...(cwd === undefined ? {} : { cwd }),
-      }),
-    [messages, entryIds, streamingMessage, running, cwd],
+      });
+      // Externally-driven tail (running subagent child in a read-only pane):
+      // when a real partial exists, `running`/`streamingMessage` already own
+      // the live path. `tailActive` is the pre-token fallback only: mark the
+      // final non-user row as streaming so its process group opens until the
+      // first child token arrives. Never applied to a live list.
+      if (!isLive && tailActive && externalPartial === null && built.length > 0) {
+        for (let index = built.length - 1; index >= 0; index -= 1) {
+          const row = built[index]!;
+          if (row.kind === "process" || (row.kind === "message" && row.message.role !== "user")) {
+            built[index] = { ...row, isStreaming: true };
+            break;
+          }
+        }
+      }
+      return built;
+    },
+    [messages, entryIds, streamingMessage, running, cwd, isLive, tailActive, externalPartial],
   );
 
   // ── Scroll-owner policy ────────────────────────────────────────────────
@@ -623,13 +667,19 @@ export function TranscriptList({ sessionId, overscan = 8, live: liveProp }: Tran
         {showJumpToBottom ? (
           <button
             type="button"
-            className="transcript-jump-bottom"
+            className={`transcript-jump-bottom${running ? " is-running" : ""}`}
             data-testid="transcript-jump-bottom"
             onClick={jumpToBottom}
             title={t("desktop.scrollBottom")}
             aria-label={t("desktop.scrollBottom")}
           >
-            <ArrowDown size={16} weight="regular" aria-hidden="true" />
+            {running ? (
+              <span className="transcript-jump-bottom-dots" aria-hidden="true">
+                <span /><span /><span />
+              </span>
+            ) : (
+              <ArrowDown size={16} weight="regular" aria-hidden="true" />
+            )}
           </button>
         ) : null}
     </div>

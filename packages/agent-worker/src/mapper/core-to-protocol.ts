@@ -24,28 +24,35 @@ import type {
   ThinkingContent as ProtocolThinkingContent,
   UserContent as ProtocolUserContent,
   ExtensionUiRequest as ProtocolExtensionUiRequest,
+  SideChatState as ProtocolSideChatState,
 } from "@fffattiger/pix-protocol";
 import type {
   AgentMessage,
   AssistantContentBlock,
   BashProjection,
+  BuiltInRuntimeState,
   CompactionProjection,
   ContextUsage,
+  ExtensionNotificationItem,
   ExtensionStatusItem,
   ExtensionUiRequest,
   ExtensionWidgetItem,
   ImageContent,
   ImageContentSource,
   ModelRef,
+  NestedToolCalls,
   PendingExtensionUi,
   QueuedMessages,
   QueuedTurn,
   RuntimeCapabilitySet,
   RuntimeState,
+  SideChatState,
   SlashCommandInfo,
   StreamingAgentMessage,
+  SubagentProjection,
   TextContent,
   ThinkingContent,
+  TodoProjection,
   ToolCallContent,
   ToolInfo,
   TokenUsage,
@@ -54,6 +61,19 @@ import type {
 
 const copy = <T>(value: readonly T[] | undefined): T[] | undefined =>
   value === undefined ? undefined : [...value];
+
+function mapNestedToolCalls(value: NestedToolCalls) {
+  return {
+    complete: value.complete,
+    calls: value.calls.map((call) => ({
+      id: call.id, name: call.name, status: call.status,
+      ...(call.arguments === undefined ? {} : { arguments: call.arguments }),
+      ...(call.argumentsBytes === undefined ? {} : { argumentsBytes: call.argumentsBytes }),
+      ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
+      ...(call.error === undefined ? {} : { error: call.error }),
+    })),
+  };
+}
 
 export function mapModelRef(model: ModelRef | null): { id: string; provider: string } | null {
   return model === null ? null : { id: model.id, provider: model.provider };
@@ -70,6 +90,80 @@ export function mapContextUsage(
     percent: usage.percent,
     ...(usage.contextWindow === undefined ? {} : { contextWindow: usage.contextWindow }),
     ...(usage.tokens === undefined ? {} : { tokens: usage.tokens }),
+  };
+}
+
+export function mapBuiltIns(value: BuiltInRuntimeState) {
+  return {
+    configRevision: value.configRevision,
+    loaded: [...value.loaded],
+    failures: value.failures.map((failure) => ({ id: failure.id, code: failure.code })),
+  };
+}
+
+export function mapSubagents(value: SubagentProjection) {
+  const streams = (value as { streams?: Record<string, { partial: StreamingAgentMessage; updatedAt: number }> }).streams;
+  return {
+    revision: value.revision,
+    tasks: value.tasks.map((task) => ({
+      taskId: task.taskId,
+      description: task.description,
+      agentType: task.agentType,
+      status: task.status,
+      ...(task.name === undefined ? {} : { name: task.name }),
+      ...(task.background === undefined ? {} : { background: task.background }),
+      ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
+      ...(task.completedAt === undefined ? {} : { completedAt: task.completedAt }),
+      ...(task.childSessionId === undefined ? {} : { childSessionId: task.childSessionId }),
+      ...(task.preview === undefined ? {} : { preview: task.preview }),
+      ...(task.usage === undefined ? {} : { usage: { ...task.usage } }),
+    })),
+    ...(streams === undefined ? {} : {
+      streams: Object.fromEntries(
+        Object.entries(streams).map(([id, entry]) => [id, { partial: mapStreamingMessage(entry.partial), updatedAt: entry.updatedAt }]),
+      ),
+    }),
+  };
+}
+
+export function mapTodo(value: TodoProjection) {
+  return {
+    revision: value.revision,
+    items: value.items.map((item) => ({
+      id: item.id,
+      subject: item.subject,
+      blockedBy: [...item.blockedBy],
+      status: item.status,
+      ...(item.description === undefined ? {} : { description: item.description }),
+      ...(item.activeForm === undefined ? {} : { activeForm: item.activeForm }),
+      ...(item.owner === undefined ? {} : { owner: item.owner }),
+    })),
+  };
+}
+
+export function mapSideChatState(value: SideChatState): ProtocolSideChatState {
+  return {
+    conversationId: value.conversationId,
+    revision: value.revision,
+    ...(value.runId === undefined ? {} : { runId: value.runId }),
+    capturedModel: { ...value.capturedModel },
+    capturedThinkingLevel: value.capturedThinkingLevel,
+    mode: value.mode,
+    status: value.status,
+    messages: value.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      ...(message.thinking === undefined ? {} : { thinking: message.thinking }),
+      textTruncated: message.textTruncated,
+      thinkingTruncated: message.thinkingTruncated,
+    })),
+    messagesTruncated: value.messagesTruncated,
+    totalCharsTruncated: value.totalCharsTruncated,
+    stream: { ...value.stream },
+    tools: value.tools.map((tool) => ({ ...tool })),
+    ...(value.pendingOverlap === undefined ? {} : { pendingOverlap: { ...value.pendingOverlap } }),
+    ...(value.error === undefined ? {} : { error: { ...value.error } }),
   };
 }
 
@@ -177,6 +271,11 @@ export function mapTokenUsage(usage: TokenUsage | undefined) {
 export function mapExtensionStatuses(statuses: readonly ExtensionStatusItem[] | undefined) {
   if (statuses === undefined) return undefined;
   return statuses.map((status) => ({ key: status.key, text: status.text }));
+}
+
+export function mapExtensionNotifications(notices: readonly ExtensionNotificationItem[] | undefined) {
+  if (notices === undefined) return undefined;
+  return notices.map((notice) => ({ level: notice.level, message: notice.message, at: notice.at }));
 }
 
 export function mapExtensionWidgets(widgets: readonly ExtensionWidgetItem[] | undefined) {
@@ -345,9 +444,16 @@ export function mapRuntimeState(state: RuntimeState) {
     ...(state.thinkingLevel === undefined ? {} : { thinkingLevel: state.thinkingLevel }),
     ...(state.thinkingLevelPinned === undefined ? {} : { thinkingLevelPinned: state.thinkingLevelPinned }),
     ...(state.tools === undefined ? {} : { tools: mapToolInfo(state.tools) }),
+    ...(state.builtIns === undefined ? {} : { builtIns: mapBuiltIns(state.builtIns) }),
+    ...(state.subagents === undefined ? {} : { subagents: mapSubagents(state.subagents) }),
+    ...(state.todo === undefined ? {} : { todo: mapTodo(state.todo) }),
+    ...(state.sideChat === undefined ? {} : { sideChat: state.sideChat === null ? null : mapSideChatState(state.sideChat) }),
     ...(state.extensionStatuses === undefined
       ? {}
       : { extensionStatuses: mapExtensionStatuses(state.extensionStatuses) }),
+    ...(state.extensionNotifications === undefined
+      ? {}
+      : { extensionNotifications: mapExtensionNotifications(state.extensionNotifications) }),
     ...(state.extensionWidgets === undefined
       ? {}
       : { extensionWidgets: mapExtensionWidgets(state.extensionWidgets) }),
@@ -389,6 +495,9 @@ export function mapStreamingMessage(message: StreamingAgentMessage): ProtocolStr
         ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
         ...(message.toolName === undefined ? {} : { toolName: message.toolName }),
         ...(message.content === undefined ? {} : { content: mapToolResultContent(message.content) }),
+        ...(message.nestedCalls === undefined ? {} : { nestedCalls: mapNestedToolCalls(message.nestedCalls) }),
+        ...(message.structuredContent === undefined ? {} : { structuredContent: message.structuredContent }),
+        ...(message.usage === undefined ? {} : { usage: mapTokenUsage(message.usage) }),
         ...(message.isError === undefined ? {} : { isError: message.isError }),
         ...(message.details === undefined ? {} : { details: message.details }),
         ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
@@ -449,6 +558,9 @@ export function mapAgentMessage(message: AgentMessage): ProtocolAgentMessage {
         toolCallId: message.toolCallId,
         ...(message.toolName === undefined ? {} : { toolName: message.toolName }),
         content: mapToolResultContent(message.content),
+        ...(message.nestedCalls === undefined ? {} : { nestedCalls: mapNestedToolCalls(message.nestedCalls) }),
+        ...(message.structuredContent === undefined ? {} : { structuredContent: message.structuredContent }),
+        ...(message.usage === undefined ? {} : { usage: mapTokenUsage(message.usage) }),
         ...(message.isError === undefined ? {} : { isError: message.isError }),
         ...(message.details === undefined ? {} : { details: message.details }),
         ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),

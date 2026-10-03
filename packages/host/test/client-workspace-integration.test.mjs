@@ -101,7 +101,7 @@ test("capability projection advertises files+git+worktree but not agent while se
   // are not mounted (normalizeCatalogCapabilities honesty).
   const expected = [...RESOURCE_DEGRADED_CAPABILITIES].filter(
     (t) =>
-      !["models", "models.configure", "settings.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"].includes(t),
+      !["models", "models.configure", "settings.configure", "builtins.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"].includes(t),
   );
   assert.deepEqual([...body.capabilities].sort(), expected.sort());
   assert.ok(body.capabilities.includes("files"), "files capability advertised");

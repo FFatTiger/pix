@@ -113,6 +113,14 @@ export class ReferenceSessionCatalog implements SessionCatalogPort {
 
   async listSessionPage(request: SessionPageRequest): Promise<SessionPage> {
     let headers = this.store.listSessions();
+    if (request.parentSessionId !== undefined) {
+      if (!headers.some((header) => header.sessionId === request.parentSessionId)) {
+        throw makeRuntimeError("not_found", `session not found: ${request.parentSessionId}`);
+      }
+      headers = headers.filter((header) => header.parentSessionId === request.parentSessionId);
+    } else {
+      headers = headers.filter((header) => header.parentSessionId === undefined);
+    }
     if (request.cwd !== undefined) headers = headers.filter((header) => header.cwd === request.cwd);
     if (request.projectRoot !== undefined) headers = headers.filter((header) => header.projectRoot === request.projectRoot);
     const total = headers.length;

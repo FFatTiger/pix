@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RuntimeCommandResult, SessiondToWorkerMessage } from "@fffattiger/pix-protocol";
+import type { RuntimeCommandResult, SessiondToWorkerMessage, SessiondPush, SessiondTurnStatusPush, TurnStatus } from "@fffattiger/pix-protocol";
 import type { SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondService } from "../src/service.js";
 import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
@@ -8,8 +8,9 @@ import { FakeWorkerFactory } from "../src/testing/fake-worker.js";
 const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => { resolve = res; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 const waitUntil = async (predicate: () => boolean, timeoutMs = 2_000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -421,11 +422,8 @@ test("terminal turn subscribers close, allowing turn-operation capacity to rotat
     if (push.status.state === "completed" || push.status.state === "failed") terminal.resolve();
   });
   await terminal.promise;
-  // The lightweight fake's terminal status does not publish the real runtime's
-  // idle state event; inject the authoritative idle snapshot that production
-  // Worker events/snapshot convergence provides before rollover quiescence.
-  workers.workers[0]!.emit({ type: "worker.snapshot", payload: { sessionId: "s", snapshot: promptCapSnapshot() } });
-  await wait();
+  // Terminal delivery includes the worker's authoritative idle refresh.
+  assert.equal(service.getSnapshot("s").state.isPromptRunning, false);
 
   const terminalRevision = liveRevision(service, "s", activated.epoch);
   const trigger = await service.submitTurn({
@@ -534,7 +532,7 @@ test("Phase 3: activation fails closed when the Worker build lacks the submit-tu
 });
 
 test("Phase 3: a forged turnId in submitTurnResult is dropped without projection mutation; the exact frame settles", async () => {
-  const { service, workers } = makeService({ turnAdmissionTimeoutMs: 2000 }, { submitAdmissionDelayMs: 200, snapshot: promptCapSnapshot() });
+  const { service, workers } = makeService({ turnAdmissionTimeoutMs: 2000 }, { submitAdmissionDelayMs: 200, turnCompletion: "manual", snapshot: promptCapSnapshot() });
   const activated = await service.activate("s");
   const revision = liveRevision(service, "s", activated.epoch);
   const submitted = service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: revision, prompt: "hello", operationId: "op-forged-turnid" });
@@ -589,7 +587,7 @@ test("Phase 3: a forged turnId in submitTurnResult is dropped without projection
 });
 
 test("Phase 3: a nested turnStatus identity mismatch is dropped; the exact frame settles", async () => {
-  const { service, workers } = makeService({ turnAdmissionTimeoutMs: 2000 }, { submitAdmissionDelayMs: 200, snapshot: promptCapSnapshot() });
+  const { service, workers } = makeService({ turnAdmissionTimeoutMs: 2000 }, { submitAdmissionDelayMs: 200, turnCompletion: "manual", snapshot: promptCapSnapshot() });
   const activated = await service.activate("s");
   const revision = liveRevision(service, "s", activated.epoch);
   const submitted = service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: revision, prompt: "hello", operationId: "op-forged-nested" });
@@ -642,7 +640,7 @@ test("Phase 3: a nested turnStatus identity mismatch is dropped; the exact frame
 });
 
 test("Phase 3: a worker duplicate-status admission is dropped (expected result type is accepted/rejected only)", async () => {
-  const { service, workers } = makeService({ turnAdmissionTimeoutMs: 2000 }, { submitAdmissionDelayMs: 200, snapshot: promptCapSnapshot() });
+  const { service, workers } = makeService({ turnAdmissionTimeoutMs: 2000 }, { submitAdmissionDelayMs: 200, turnCompletion: "manual", snapshot: promptCapSnapshot() });
   const activated = await service.activate("s");
   const revision = liveRevision(service, "s", activated.epoch);
   const submitted = service.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: revision, prompt: "hello", operationId: "op-forged-duplicate" });
@@ -689,4 +687,450 @@ test("Phase 3: a worker duplicate-status admission is dropped (expected result t
   assert.equal(result.status, "accepted");
   if (result.status === "accepted") assert.equal(result.turnId, turnId);
   await service.shutdown();
+});
+
+const flushMicrotasks = async () => { for (let i = 0; i < 40; i += 1) await Promise.resolve(); };
+
+async function heldTerminalHarness(
+  serviceOptions: ConstructorParameters<typeof SessiondService>[1] = {},
+  workerOptions: Exclude<ConstructorParameters<typeof FakeWorkerFactory>[0], Function> = {},
+  beforeSubmit?: (worker: FakeWorkerFactory["workers"][number]) => void,
+) {
+  const { service, workers } = makeService(serviceOptions, {
+    snapshot: promptCapSnapshot(), turnCompletion: "handled", holdPostCommandSnapshots: true, ...workerOptions,
+  });
+  const activated = await service.activate("s");
+  const request = { sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: liveRevision(service, "s", activated.epoch), prompt: "fast", operationId: "fast-turn" };
+  beforeSubmit?.(workers.workers[0]!);
+  const prepared = await service.prepareSubmitTurn(request);
+  assert.equal(prepared.result.status, "accepted");
+  const received: TurnStatus[] = [];
+  const pushes: SessiondTurnStatusPush[] = [];
+  const terminal = deferred<TurnStatus>();
+  await prepared.flushTo((push) => {
+    received.push(push.status);
+    pushes.push(push);
+    if (push.status.state === "completed" || push.status.state === "failed") terminal.resolve(push.status);
+  });
+  const worker = workers.workers[0]!;
+  await worker.waitForHeldSnapshot();
+  const dispatch = worker.sent.find((message): message is Extract<SessiondToWorkerMessage, { type: "worker.submitTurn" }> => message.type === "worker.submitTurn")!;
+  const status: TurnStatus = { sessionId: "s", epoch: activated.epoch, operationId: request.operationId, turnId: dispatch.payload.turnId, revision: 1, state: "completed", disposition: "handled" };
+  const refreshCount = () => worker.sent.filter((message) => message.type === "worker.getSnapshot").length;
+  const refresh = [...worker.sent].reverse().find((message): message is Extract<SessiondToWorkerMessage, { type: "worker.getSnapshot" }> => message.type === "worker.getSnapshot")!;
+  return { service, worker, activated, request, prepared, received, pushes, terminal, status, refresh, refreshCount };
+}
+
+test("turn authority: fast handled completion repairs admission before terminal, duplicates and reconnect", async (t) => {
+  const h = await heldTerminalHarness();
+  t.after(() => h.service.shutdown());
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, true, "admission overwrote the earlier prompt_done");
+  assert.equal(h.received.length, 0, "terminal cannot escape the refresh gate");
+  const pendingDuplicate = await h.service.submitTurn(h.request);
+  assert.equal(pendingDuplicate.status, "duplicate");
+  if (pendingDuplicate.status === "duplicate") assert.equal(pendingDuplicate.turnStatus.state, "admitted");
+  const reconnect = await h.service.prepareSubmitTurn(h.request);
+  assert.equal(reconnect.result.status, "duplicate");
+  const reconnectStatuses: TurnStatus[] = [];
+  await reconnect.flushTo((push) => { reconnectStatuses.push(push.status); });
+  const refreshes = h.refreshCount();
+  h.worker.emit({ type: "worker.turnStatus", payload: h.status });
+  h.worker.emit({ type: "worker.turnStatus", payload: h.status });
+  await flushMicrotasks();
+  assert.equal(h.refreshCount(), refreshes, "same revision shares one snapshot refresh");
+  const interrupt = await h.service.interrupt("s", "during-refresh", { type: "abort" }, h.activated.epoch);
+  assert.equal(interrupt.result.ok, true, "independent control lane is not blocked");
+  assert.equal(h.received.length, 0);
+  h.worker.releaseHeldSnapshots();
+  const terminal = await h.terminal.promise;
+  assert.equal(terminal.state, "completed");
+  assert.equal(terminal.disposition, "handled");
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, false);
+  const attached = h.service.prepareAttach({ sessionId: "s" });
+  assert.equal(attached.result.snapshot.state.isPromptRunning, false);
+  attached.close();
+  const duplicate = await h.service.submitTurn(h.request);
+  assert.equal(duplicate.status, "duplicate");
+  if (duplicate.status === "duplicate") {
+    assert.equal(duplicate.turnStatus.state, "completed");
+    assert.equal(duplicate.snapshot?.state.isPromptRunning, false);
+  }
+  await flushMicrotasks();
+  assert.deepEqual(reconnectStatuses.map((status) => status.state), ["completed"]);
+  h.worker.emit({ type: "worker.turnStatus", payload: { ...h.status, revision: 2 } });
+  await flushMicrotasks();
+  assert.equal(h.refreshCount(), refreshes, "a settled turn does not reopen terminal refresh");
+  h.worker.setHoldPostCommandSnapshots(false);
+  const second = await h.service.submitTurn({ ...h.request, operationId: "second", expectedRevision: liveRevision(h.service, "s", h.activated.epoch) });
+  assert.equal(second.status, "accepted", "the fast handled turn must not leave session_busy behind");
+  reconnect.close();
+});
+
+test("turn authority: pending finalization stays busy and cannot roll epoch even when projection is idle", async (t) => {
+  const h = await heldTerminalHarness({ turnOperationLimit: 1 });
+  t.after(() => h.service.shutdown());
+  h.worker.emitEvent({ type: "prompt_done", sessionId: "s" });
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, false);
+  assert.equal(h.service.listRunning().sessions[0]?.workerStatus, "busy");
+  const blocked = await h.service.submitTurn({ ...h.request, operationId: "capacity", expectedRevision: liveRevision(h.service, "s", h.activated.epoch) });
+  assert.equal(blocked.status, "rejected");
+  if (blocked.status === "rejected") assert.equal(blocked.error.code, "session_busy");
+  assert.equal(h.worker.sent.filter((message) => message.type === "worker.rotateEpoch").length, 0);
+  h.worker.releaseHeldSnapshots();
+  await h.terminal.promise;
+  await flushMicrotasks();
+  const rotated = await h.service.submitTurn({ ...h.request, operationId: "capacity", expectedRevision: liveRevision(h.service, "s", h.activated.epoch) });
+  assert.equal(rotated.status, "rejected");
+  if (rotated.status === "rejected") assert.equal(rotated.error.code, "epoch_changed");
+  assert.equal(h.worker.sent.filter((message) => message.type === "worker.rotateEpoch").length, 1);
+});
+
+test("turn authority: refresh preserves a real external stream instead of forcing idle", async (t) => {
+  const h = await heldTerminalHarness();
+  t.after(() => h.service.shutdown());
+  const external = promptCapSnapshot();
+  external.state.isStreaming = true;
+  external.streaming = { active: true, phase: "streaming", streamId: "external", messageId: "external", partialMessage: { role: "assistant", content: [], provider: "p", model: "m" } };
+  h.worker.setSnapshot(external);
+  h.worker.releaseHeldSnapshots();
+  assert.equal((await h.terminal.promise).state, "completed");
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, false);
+  assert.equal(h.service.getSnapshot("s").state.isStreaming, true);
+  assert.equal(h.service.getSnapshot("s").streaming?.active, true);
+  assert.deepEqual(h.pushes[0]?.authority?.snapshot, external);
+  const second = await h.service.submitTurn({ ...h.request, operationId: "external-busy", expectedRevision: liveRevision(h.service, "s", h.activated.epoch) });
+  assert.equal(second.status, "rejected");
+  if (second.status === "rejected") assert.equal(second.error.code, "session_busy");
+});
+
+test("turn authority: rejected snapshot publishes structured unavailable and retains running truth", async (t) => {
+  const h = await heldTerminalHarness({}, { postCommandSnapshotMismatch: true });
+  t.after(() => h.service.shutdown());
+  h.worker.releaseHeldSnapshots();
+  const status = await h.terminal.promise;
+  assert.equal(status.state, "failed");
+  assert.equal(status.error?.code, "unavailable");
+  assert.equal(status.disposition, undefined, "failed refresh must not advertise handled success");
+  assert.equal(h.pushes[0]?.authority, undefined, "failed refresh must not package the running admission as authority");
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, true);
+  assert.deepEqual(h.received.map((status) => status.state), ["failed"]);
+  const duplicate = await h.service.submitTurn(h.request);
+  if (duplicate.status !== "duplicate") throw new Error("expected duplicate");
+  assert.equal(duplicate.turnStatus.state, "failed");
+});
+
+test("turn authority: bounded timeout publishes unavailable; late snapshot and terminal cannot fake success", async (t) => {
+  const h = await heldTerminalHarness({ commandTimeoutMs: 500 }, {}, () => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+  });
+  t.after(() => h.service.shutdown());
+  t.mock.timers.tick(500);
+  await flushMicrotasks();
+  const terminal = await h.terminal.promise;
+  assert.equal(terminal.state, "failed");
+  assert.equal(terminal.error?.code, "unavailable");
+  assert.match(terminal.error!.message, /timed out/);
+  assert.equal(h.pushes[0]?.authority, undefined);
+  h.worker.releaseHeldSnapshots();
+  h.worker.emit({ type: "worker.turnStatus", payload: { ...h.status, revision: 3 } });
+  await flushMicrotasks();
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, true, "expired refresh cannot overwrite projection");
+  assert.deepEqual(h.received.map((status) => status.state), ["failed"]);
+});
+
+test("turn authority: failed worker turn also refreshes, preserving its truthful failure", async (t) => {
+  const h = await heldTerminalHarness();
+  t.after(() => h.service.shutdown());
+  const failed: TurnStatus = { ...h.status, revision: 2, state: "failed", error: { code: "interrupted", message: "interrupted", retryable: false } };
+  h.worker.emit({ type: "worker.turnStatus", payload: failed });
+  await flushMicrotasks();
+  h.worker.releaseHeldSnapshots();
+  assert.deepEqual(await h.terminal.promise, failed);
+  assert.equal(h.pushes[0]?.authority?.snapshot.state.isPromptRunning, false, "truthful worker failure still carries successfully refreshed authority");
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, false);
+});
+
+test("turn authority: wrong identity frames are dropped while exact refresh settles once", async (t) => {
+  const h = await heldTerminalHarness();
+  t.after(() => h.service.shutdown());
+  const count = h.refreshCount();
+  for (const status of [
+    { ...h.status, epoch: "wrong" }, { ...h.status, sessionId: "wrong" },
+    { ...h.status, operationId: "wrong" }, { ...h.status, turnId: "wrong" },
+  ]) h.worker.emit({ type: "worker.turnStatus", payload: status });
+  h.worker.emit({ type: "worker.snapshot", id: "wrong-request", payload: { sessionId: "s", snapshot: promptCapSnapshot() } });
+  h.worker.emit({ type: "worker.snapshot", id: h.refresh.id, payload: { sessionId: "wrong", snapshot: promptCapSnapshot() } });
+  await flushMicrotasks();
+  assert.equal(h.refreshCount(), count);
+  assert.equal(h.received.length, 0);
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, true);
+  h.worker.releaseHeldSnapshots();
+  assert.equal((await h.terminal.promise).state, "completed");
+  await flushMicrotasks();
+  assert.equal(h.received.length, 1);
+});
+
+for (const lifecycle of ["stop", "crash", "rekey"] as const) {
+  test(`turn authority: ${lifecycle} invalidates pending refresh and same-operation replacement`, async (t) => {
+    const h = await heldTerminalHarness();
+    t.after(() => h.service.shutdown());
+    const lateDelivery = h.worker.captureMessageDelivery();
+    const lateSnapshot = promptCapSnapshot();
+    lateSnapshot.state.messageCount = 99;
+    if (lifecycle === "stop") await h.service.stop("s");
+    else if (lifecycle === "crash") h.worker.crash();
+    else {
+      h.worker.emit({ type: "worker.sessionDiscovered", payload: { sessionId: "rekeyed", cwd: "/s", sessionFile: "/sessions/rekeyed.jsonl" } });
+      await flushMicrotasks();
+    }
+    const terminal = await h.terminal.promise;
+    assert.equal(terminal.state, "failed");
+    const sessionId = lifecycle === "rekey" ? "rekeyed" : "s";
+    const activated = lifecycle === "rekey" ? h.service.listRunning().sessions[0]! : await h.service.activate("s");
+    assert.ok(activated.epoch);
+    assert.notEqual(activated.epoch, h.activated.epoch);
+    if (lifecycle === "rekey") {
+      // Rekey keeps the existing projection; converge the NEW epoch before
+      // submitting, while the old in-flight refresh must be rejected.
+      const current = h.service.snapshot(sessionId);
+      await flushMicrotasks();
+      h.worker.releaseHeldSnapshots();
+      h.worker.setSnapshot(await current);
+    }
+    const replacement = await h.service.prepareSubmitTurn({ ...h.request, sessionId, expectedEpoch: activated.epoch, expectedRevision: liveRevision(h.service, sessionId, activated.epoch) });
+    assert.equal(replacement.result.status, "accepted", JSON.stringify(replacement.result));
+    lateDelivery({ type: "worker.snapshot", id: h.refresh.id, payload: { sessionId, snapshot: { ...lateSnapshot, sessionId, state: { ...lateSnapshot.state, sessionId } } } });
+    lateDelivery({ type: "worker.turnStatus", payload: h.status });
+    lateDelivery({ type: "worker.turnStatus", payload: { ...h.status, sessionId, epoch: activated.epoch } });
+    h.worker.releaseHeldSnapshots();
+    await flushMicrotasks();
+    assert.equal(h.service.getSnapshot(sessionId).state.messageCount, 0, "old refresh must not mutate replacement authority");
+    assert.deepEqual(h.received.map((status) => status.state), ["failed"]);
+    if (lifecycle !== "rekey") replacement.close();
+    else {
+      const newTerminal = deferred<TurnStatus>();
+      await replacement.flushTo((push) => { if (push.status.state === "completed" || push.status.state === "failed") newTerminal.resolve(push.status); });
+      h.worker.releaseHeldSnapshots();
+      assert.equal((await newTerminal.promise).state, "completed");
+    }
+  });
+}
+
+test("turn authority: snapshot delivery failure publishes unavailable without a success receipt", async (t) => {
+  const h = await heldTerminalHarness();
+  t.after(() => h.service.shutdown());
+  const send = h.worker.send.bind(h.worker);
+  h.worker.send = async (message) => {
+    if (message.type === "worker.getSnapshot") throw new Error("test snapshot transport failure");
+    await send(message);
+  };
+  h.worker.emit({ type: "worker.turnStatus", payload: { ...h.status, revision: 2 } });
+  const terminal = await h.terminal.promise;
+  assert.equal(terminal.state, "failed");
+  assert.equal(terminal.error?.code, "unavailable");
+  assert.equal(terminal.disposition, undefined);
+  h.worker.releaseHeldSnapshots();
+  await flushMicrotasks();
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, true);
+  assert.deepEqual(h.received.map((status) => status.state), ["failed"]);
+});
+
+test("turn authority: deferred snapshot send cannot delay deadline or publish late success", async (t) => {
+  const sendGate = deferred<void>();
+  let sendSettled = false;
+  const h = await heldTerminalHarness({ commandTimeoutMs: 500 }, {}, (worker) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const send = worker.send.bind(worker);
+    worker.send = async (message) => {
+      await send(message);
+      if (message.type === "worker.getSnapshot") {
+        try { await sendGate.promise; }
+        finally { sendSettled = true; }
+      }
+    };
+  });
+  t.after(() => h.service.shutdown());
+  t.mock.timers.tick(499);
+  await flushMicrotasks();
+  assert.equal(h.received.length, 0);
+  t.mock.timers.tick(1);
+  await flushMicrotasks();
+  assert.equal(sendSettled, false, "send is still under backpressure at the deadline");
+  assert.equal(h.received.length, 1, "terminal deadline must settle without a send acknowledgement");
+  assert.equal(h.received[0]?.state, "failed");
+  assert.equal(h.received[0]?.error?.code, "unavailable");
+  assert.match(h.received[0]!.error!.message, /timed out/);
+  h.worker.releaseHeldSnapshots();
+  sendGate.reject(new Error("late send rejection"));
+  await flushMicrotasks();
+  assert.equal(sendSettled, true);
+  assert.deepEqual(h.received.map((status) => status.state), ["failed"]);
+  assert.equal(h.service.getSnapshot("s").state.isPromptRunning, true);
+});
+
+test("snapshot authority: deferred send timeout and late rejection cannot settle a newer slot", async (t) => {
+  const { service, workers } = makeService({ commandTimeoutMs: 500 }, { snapshot: promptCapSnapshot() });
+  await service.activate("s");
+  t.after(() => service.shutdown());
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const worker = workers.workers[0]!;
+  const send = worker.send.bind(worker);
+  const blocked: Array<{ message: Extract<SessiondToWorkerMessage, { type: "worker.getSnapshot" }>; gate: ReturnType<typeof deferred<void>> }> = [];
+  worker.send = (message) => {
+    if (message.type !== "worker.getSnapshot") return send(message);
+    const gate = deferred<void>();
+    blocked.push({ message, gate });
+    return gate.promise;
+  };
+  let firstError: unknown;
+  let firstSettled = false;
+  const first = service.snapshot("s").then(() => assert.fail("backpressured snapshot must time out"), (error: unknown) => {
+    firstError = error;
+    firstSettled = true;
+  });
+  await flushMicrotasks();
+  assert.equal(blocked.length, 1);
+  t.mock.timers.tick(500);
+  await flushMicrotasks();
+  assert.equal(firstSettled, true, "caller observes timeout while send remains pending");
+  assert.equal((firstError as { code?: string }).code, "timeout");
+  let secondSettled = false;
+  const second = service.snapshot("s").then((snapshot) => { secondSettled = true; return snapshot; });
+  await flushMicrotasks();
+  assert.equal(blocked.length, 2);
+  const stale = promptCapSnapshot();
+  stale.state.messageCount = 99;
+  worker.emit({ type: "worker.snapshot", id: blocked[0]!.message.id, payload: { sessionId: "s", snapshot: stale } });
+  blocked[0]!.gate.reject(new Error("expired send rejection"));
+  await flushMicrotasks();
+  assert.equal(secondSettled, false, "expired send cannot delete or reject the new slot");
+  assert.equal(service.getSnapshot("s").state.messageCount, 0);
+  const current = promptCapSnapshot();
+  current.state.messageCount = 2;
+  worker.emit({ type: "worker.snapshot", id: blocked[1]!.message.id, payload: { sessionId: "s", snapshot: current } });
+  await flushMicrotasks();
+  assert.equal(secondSettled, true, "response is observable before transport acknowledgement");
+  assert.equal((await second).state.messageCount, 2);
+  blocked[1]!.gate.reject(new Error("send rejection after exact response"));
+  t.mock.timers.tick(500);
+  await flushMicrotasks();
+  assert.equal(service.getSnapshot("s").state.messageCount, 2);
+  await first;
+});
+
+test("snapshot authority: late deferred-send rejection is fenced after rekey", async (t) => {
+  const { service, workers } = makeService({ commandTimeoutMs: 500 }, { snapshot: promptCapSnapshot() });
+  const activated = await service.activate("s");
+  t.after(() => service.shutdown());
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const worker = workers.workers[0]!;
+  const send = worker.send.bind(worker);
+  const blocked: Array<{ message: Extract<SessiondToWorkerMessage, { type: "worker.getSnapshot" }>; gate: ReturnType<typeof deferred<void>> }> = [];
+  worker.send = (message) => {
+    if (message.type !== "worker.getSnapshot") return send(message);
+    const gate = deferred<void>();
+    blocked.push({ message, gate });
+    return gate.promise;
+  };
+  let oldSettled = false;
+  let oldError: unknown;
+  const old = service.snapshot("s").then(() => assert.fail("old epoch snapshot cannot succeed"), (error: unknown) => {
+    oldSettled = true;
+    oldError = error;
+  });
+  await flushMicrotasks();
+  worker.emit({ type: "worker.sessionDiscovered", payload: { sessionId: "rekeyed", cwd: "/s", sessionFile: "/sessions/rekeyed.jsonl" } });
+  await flushMicrotasks();
+  assert.notEqual(service.listRunning().sessions[0]?.epoch, activated.epoch);
+  const current = service.snapshot("rekeyed");
+  await flushMicrotasks();
+  assert.equal(blocked.length, 2);
+  blocked[0]!.gate.reject(new Error("send failed after epoch changed"));
+  await flushMicrotasks();
+  assert.equal(oldSettled, false, "stale send failure must not settle across epochs");
+  const stale = promptCapSnapshot("rekeyed");
+  stale.state.messageCount = 99;
+  worker.emit({ type: "worker.snapshot", id: blocked[0]!.message.id, payload: { sessionId: "rekeyed", snapshot: stale } });
+  await flushMicrotasks();
+  assert.equal(oldSettled, true, "obsolete refresh is rejected without projecting");
+  assert.equal((oldError as { code?: string }).code, "worker_unavailable");
+  assert.equal(service.getSnapshot("rekeyed").state.messageCount, 0);
+  worker.emit({ type: "worker.snapshot", id: blocked[1]!.message.id, payload: { sessionId: "rekeyed", snapshot: promptCapSnapshot("rekeyed") } });
+  assert.equal((await current).sessionId, "rekeyed");
+  blocked[1]!.gate.resolve();
+  t.mock.timers.tick(500);
+  await flushMicrotasks();
+  await old;
+});
+
+
+test("turn authority: prompt_done observer gate preserves FIFO and exact terminal shares one sample", async (t) => {
+  const { service, workers } = makeService({}, { snapshot: promptCapSnapshot(), turnCompletion: "handled", holdPostCommandSnapshots: true });
+  t.after(() => service.shutdown());
+  const activated = await service.activate("s");
+  const worker = workers.workers[0]!;
+  const gate = deferred<void>();
+  const entered = deferred<void>();
+  const observation: SessiondPush[] = [];
+  const attach = service.attach({ sessionId: "s", epoch: activated.epoch, lastEventId: 1 }, async (push) => {
+    observation.push(push);
+    if (push.type === "event" && push.event.type === "prompt_done") { entered.resolve(); await gate.promise; }
+  });
+  t.after(() => attach.unsubscribe?.());
+  const prepared = await service.prepareSubmitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: 1, prompt: "fast", operationId: "gate", activationOverrides: { model: { provider: "openai", modelId: "gpt-6.1-sol" }, thinkingLevel: "high" } });
+  await entered.promise;
+  assert.equal(prepared.result.status, "accepted");
+  if (prepared.result.status !== "accepted") throw new Error("expected admission");
+  assert.equal(prepared.result.revision, 2);
+  assert.equal(prepared.result.snapshot.state.isPromptRunning, true);
+  const exact = deferred<SessiondTurnStatusPush>();
+  await prepared.flushTo((push) => { if (push.status.state === "completed") exact.resolve(push); });
+  await worker.waitForHeldSnapshot();
+  worker.releaseHeldSnapshots();
+  const terminal = await exact.promise;
+  assert.equal(terminal.status.disposition, "handled");
+  assert.equal(terminal.authority?.lastEventId, 3);
+  assert.equal(terminal.authority?.snapshot.state.isPromptRunning, false);
+  assert.deepEqual(terminal.authority?.snapshot.state.model, { provider: "openai", id: "gpt-6.1-sol" });
+  assert.equal(terminal.authority?.snapshot.state.thinkingLevel, "high");
+  assert.equal(observation.filter((push) => push.type === "snapshot").length, 0, "snapshot waits behind the observer gate");
+  gate.resolve();
+  await flushMicrotasks();
+  const snapshot = observation.find((push) => push.type === "snapshot");
+  assert.ok(snapshot && snapshot.type === "snapshot");
+  assert.deepEqual(terminal.authority, { sessionId: snapshot.sessionId, epoch: snapshot.epoch, lastEventId: snapshot.lastEventId, snapshot: snapshot.snapshot });
+  assert.equal(terminal.authority.snapshot, snapshot.snapshot, "both lanes retain the same captured snapshot");
+  assert.deepEqual(observation.map((push) => push.type === "event" ? `${push.event.type}:${push.event.eventId}` : `${push.type}:${push.type === "snapshot" ? push.lastEventId : ""}`), ["prompt_done:2", "running_sessions_changed:3", "snapshot:3", "running_sessions_changed:4"]);
+});
+
+test("turn authority: completion between submit return and prepare registration replays the original authority", async (t) => {
+  const { service, workers } = makeService({}, { snapshot: promptCapSnapshot(), turnCompletion: "handled", holdPostCommandSnapshots: true });
+  t.after(() => service.shutdown());
+  const activated = await service.activate("s");
+  const submit = service.submitTurn.bind(service);
+  const observation: SessiondPush[] = [];
+  const settled = deferred<void>();
+  const attach = service.attach({ sessionId: "s", epoch: activated.epoch, lastEventId: 0 }, (push) => {
+    observation.push(push);
+    if (push.type === "snapshot") settled.resolve();
+  });
+  t.after(() => attach.unsubscribe?.());
+  service.submitTurn = async (input) => {
+    const admission = await submit(input);
+    await workers.workers[0]!.waitForHeldSnapshot();
+    workers.workers[0]!.releaseHeldSnapshots();
+    await settled.promise;
+    await flushMicrotasks();
+    return admission;
+  };
+  const prepared = await service.prepareSubmitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: liveRevision(service, "s", activated.epoch), prompt: "fast", operationId: "prepare-race" });
+  assert.equal(prepared.result.status, "accepted");
+  const received: SessiondTurnStatusPush[] = [];
+  await prepared.flushTo((push) => { received.push(push); });
+  assert.equal(received.length, 1);
+  assert.equal(received[0]?.status.state, "completed");
+  assert.equal(received[0]?.authority?.snapshot.state.isPromptRunning, false);
+  const snapshot = observation.find((push) => push.type === "snapshot");
+  assert.ok(snapshot && snapshot.type === "snapshot");
+  assert.deepEqual(received[0]?.authority, { sessionId: snapshot.sessionId, epoch: snapshot.epoch, lastEventId: snapshot.lastEventId, snapshot: snapshot.snapshot });
 });

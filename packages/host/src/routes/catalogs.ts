@@ -6,12 +6,13 @@
  * do not take a cwd. Routes are registered only for the seams that are
  * actually mounted on {@link CatalogDeps}.
  *
- * This module is deliberately protocol-independent: catalog methods return
- * `unknown` and Host-side projectors emit only plain JSON primitives. No
- * runtime-core / pi-sdk-adapter / protocol imports. Malformed shape, getter
+ * Catalog methods return `unknown` and Host-side projectors emit only plain
+ * JSON primitives. The built-in ID vocabulary comes from Protocol's narrow
+ * wire-only subpath. Malformed shape, getter
  * throws, proxies, or extra nested material never reach the wire as raw data.
  */
 import type { Hono } from "hono";
+import { BUILT_IN_CAPABILITY_IDS } from "@fffattiger/pix-protocol/built-in-capabilities";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import { hasTrustMutationSeam } from "./health.js";
@@ -33,6 +34,7 @@ const TRUST_MUTATION_BODY_LIMIT = 4 * 1024;
 /** Bounded full models.json editor payload (matches adapter 1 MiB document cap). */
 const MODELS_CONFIG_BODY_LIMIT = 1024 * 1024;
 const SETTINGS_CONFIG_BODY_LIMIT = 256 * 1024 + 512;
+const BUILTINS_CONFIG_BODY_LIMIT = 4 * 1024;
 
 const AUTH_METHODS = new Set(["oauth", "apiKey", "deviceCode"]);
 const COMMAND_SOURCES = new Set(["extension", "prompt", "skill"]);
@@ -81,6 +83,14 @@ function mapSettingsConfigError(error: unknown): HttpError {
   const code = catalogErrorCode(error);
   if (code === "invalid_input") return new HttpError(400, "INVALID_INPUT", "Invalid settings configuration");
   if (code === "conflict") return new HttpError(409, "CONFLICT", "Settings configuration changed; reload and try again");
+  return new HttpError(503, "CATALOG_UNAVAILABLE", CATALOG_UNAVAILABLE_MESSAGE);
+}
+
+function mapBuiltInsConfigError(error: unknown): HttpError {
+  if (error instanceof HttpError) return error;
+  const code = catalogErrorCode(error);
+  if (code === "invalid_input") return new HttpError(400, "INVALID_INPUT", "Invalid built-in configuration");
+  if (code === "conflict") return new HttpError(409, "CONFLICT", "Built-in configuration changed; reload and try again");
   return new HttpError(503, "CATALOG_UNAVAILABLE", CATALOG_UNAVAILABLE_MESSAGE);
 }
 
@@ -519,6 +529,10 @@ function invalidSettingsConfigBody(): never {
   throw new HttpError(400, "INVALID_SETTINGS_CONFIG", "Invalid settings configuration body");
 }
 
+function invalidBuiltInsConfigBody(): never {
+  throw new HttpError(400, "INVALID_BUILTINS_CONFIG", "Invalid built-in configuration body");
+}
+
 function projectSettingsConfigSnapshot(raw: unknown): Record<string, unknown> {
   if (!isPlainObject(raw)) throw catalogUnavailable();
   const revision = requireNonEmptyString(readField(raw, "revision"));
@@ -609,6 +623,99 @@ function parseSettingsConfigMutation(body: Record<string, unknown>): Record<stri
   if (typeof body.expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(body.expectedRevision)) invalidSettingsConfigBody();
   if (typeof body.content !== "string" || !body.content.trim() || body.content.length > 256 * 1024) invalidSettingsConfigBody();
   return { expectedRevision: body.expectedRevision, content: body.content };
+}
+
+function invalidToolsConfigBody(): never {
+  throw new HttpError(400, "INVALID_TOOLS_CONFIG", "Invalid tool settings body");
+}
+
+/** Strict tool-name row: non-empty, bounded, no control characters. */
+function requireToolName(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 200 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw catalogUnavailable();
+  }
+  return value;
+}
+
+function projectToolsSelection(raw: unknown): Record<string, unknown> {
+  if (!isPlainObject(raw)) throw catalogUnavailable();
+  const mode = readField(raw, "mode");
+  if (mode !== "all" && mode !== "custom" && mode !== "native") throw catalogUnavailable();
+  if (mode === "all") return { mode };
+  const toolNamesRaw = readField(raw, "toolNames");
+  if (!Array.isArray(toolNamesRaw)) throw catalogUnavailable();
+  const seen = new Set<string>();
+  const toolNames: string[] = [];
+  for (const name of toolNamesRaw) {
+    const projected = requireToolName(name);
+    if (seen.has(projected)) throw catalogUnavailable();
+    seen.add(projected);
+    toolNames.push(projected);
+  }
+  return { mode, toolNames };
+}
+
+function projectToolsConfigSnapshot(raw: unknown): Record<string, unknown> {
+  if (!isPlainObject(raw)) throw catalogUnavailable();
+  const revision = requireNonEmptyString(readField(raw, "revision"));
+  if (!/^[0-9a-f]{64}$/.test(revision)) throw catalogUnavailable();
+  return { revision, selection: projectToolsSelection(readField(raw, "selection")) };
+}
+
+function parseToolsConfigMutation(body: Record<string, unknown>): Record<string, unknown> {
+  if (!exactKeys(body, ["expectedRevision", "toolNames"])) invalidToolsConfigBody();
+  if (typeof body.expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(body.expectedRevision)) invalidToolsConfigBody();
+  if (body.toolNames !== null && !Array.isArray(body.toolNames)) invalidToolsConfigBody();
+  const toolNames = body.toolNames === null ? null : body.toolNames.map((name) => {
+    if (typeof name !== "string" || !name.trim() || name.length > 200 || /[\u0000-\u001f\u007f]/.test(name)) invalidToolsConfigBody();
+    return name;
+  });
+  return { expectedRevision: body.expectedRevision, toolNames };
+}
+
+function projectBuiltInCapabilityList(raw: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(raw) || raw.length !== BUILT_IN_CAPABILITY_IDS.length) throw catalogUnavailable();
+  const seen = new Set<string>();
+  const capabilities: Record<string, unknown>[] = [];
+  for (const item of raw) {
+    if (!isPlainObject(item)) throw catalogUnavailable();
+    const id = requireNonEmptyString(readField(item, "id"));
+    const enabled = readField(item, "enabled");
+    if (typeof enabled !== "boolean") throw catalogUnavailable();
+    if (!(BUILT_IN_CAPABILITY_IDS as readonly string[]).includes(id) || seen.has(id)) throw catalogUnavailable();
+    seen.add(id);
+    capabilities.push({ id, enabled });
+  }
+  if (seen.size !== BUILT_IN_CAPABILITY_IDS.length) throw catalogUnavailable();
+  return capabilities;
+}
+
+function parseBuiltInCapabilityList(raw: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(raw) || raw.length !== BUILT_IN_CAPABILITY_IDS.length) invalidBuiltInsConfigBody();
+  const seen = new Set<string>();
+  const capabilities: Record<string, unknown>[] = [];
+  for (const item of raw) {
+    if (!isPlainObject(item) || !exactKeys(item, ["id", "enabled"])) invalidBuiltInsConfigBody();
+    if (typeof item.id !== "string" || typeof item.enabled !== "boolean") invalidBuiltInsConfigBody();
+    if (!(BUILT_IN_CAPABILITY_IDS as readonly string[]).includes(item.id) || seen.has(item.id)) invalidBuiltInsConfigBody();
+    seen.add(item.id);
+    capabilities.push({ id: item.id, enabled: item.enabled });
+  }
+  if (seen.size !== BUILT_IN_CAPABILITY_IDS.length) invalidBuiltInsConfigBody();
+  return capabilities;
+}
+
+function projectBuiltInsConfigSnapshot(raw: unknown): Record<string, unknown> {
+  if (!isPlainObject(raw)) throw catalogUnavailable();
+  const revision = requireNonEmptyString(readField(raw, "revision"));
+  if (!/^[0-9a-f]{64}$/.test(revision)) throw catalogUnavailable();
+  return { revision, capabilities: projectBuiltInCapabilityList(readField(raw, "capabilities")) };
+}
+
+function parseBuiltInsConfigMutation(body: Record<string, unknown>): Record<string, unknown> {
+  if (!exactKeys(body, ["expectedRevision", "capabilities"])) invalidBuiltInsConfigBody();
+  if (typeof body.expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(body.expectedRevision)) invalidBuiltInsConfigBody();
+  return { expectedRevision: body.expectedRevision, capabilities: parseBuiltInCapabilityList(body.capabilities) };
 }
 
 function parseModelsConfigMutation(body: Record<string, unknown>): Record<string, unknown> {
@@ -740,6 +847,62 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
         return c.json(projectSettingsConfigSnapshot(await deps.settingsMutation!.writeConfig(input)));
       } catch (error) {
         throw mapSettingsConfigError(error);
+      }
+    });
+
+    // Global tool selection (`pixDefaultTools`): same settings.json ownership,
+    // CAS fence and HttpError paths as the raw editor above. No session, Worker
+    // or plugin/MCP discovery is involved — a missing active session still
+    // saves; the `settings.configure` capability token covers this seam.
+    app.get("/v1/settings/tools", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      try {
+        return c.json(projectToolsConfigSnapshot(await deps.settingsMutation!.readToolsConfig()));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+
+    app.put("/v1/settings/tools", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      const input = parseToolsConfigMutation(await readJsonObject(c, SETTINGS_CONFIG_BODY_LIMIT));
+      try {
+        return c.json(projectToolsConfigSnapshot(await deps.settingsMutation!.writeToolsConfig(input)));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+  }
+
+  if (deps.builtinsMutation) {
+    app.get("/v1/settings/built-ins", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      try {
+        return c.json(projectBuiltInsConfigSnapshot(await deps.builtinsMutation!.readConfig()));
+      } catch (error) {
+        throw mapBuiltInsConfigError(error);
+      }
+    });
+
+    app.put("/v1/settings/built-ins", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      const input = parseBuiltInsConfigMutation(await readJsonObject(c, BUILTINS_CONFIG_BODY_LIMIT));
+      try {
+        return c.json(projectBuiltInsConfigSnapshot(await deps.builtinsMutation!.writeConfig(input)));
+      } catch (error) {
+        throw mapBuiltInsConfigError(error);
       }
     });
   }

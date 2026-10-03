@@ -9,7 +9,7 @@ class ResizeObserverStub {
   disconnect(): void {}
 }
 
-describe("ChatInput mobile model picker", () => {
+describe("ChatInput mobile controls", () => {
   const scrollIntoView = vi.fn();
 
   beforeEach(() => {

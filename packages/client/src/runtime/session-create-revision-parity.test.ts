@@ -18,7 +18,7 @@
  *    repaired envelope.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
+import { authoritySnapshot, createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
 import type { FakeWebSocket } from "./testing/harness";
 
 function ackSubmitTurn(caps: string[] = ["agent"]) {
@@ -183,7 +183,7 @@ describe("SessionController — Phase 5A provisional create/staging/repair parit
     expect(deferred.optimisticEntries).toHaveLength(1);
 
     // Terminal releases the deferred fence (leaf differs from the null anchor).
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "new-1", epoch: "eN", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("new-1", "eN"), payload: { sessionId: "new-1", epoch: "eN", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
     await flush();
     const rebased = controller.getSnapshot();
     expect(rebased.historyAnchorLeafId).toBe("entry-2");
@@ -259,7 +259,7 @@ describe("SessionController — Phase 5A provisional create/staging/repair parit
 
     // A SECOND conflict after the repair is a normal definite failure (never a
     // third repair frame) — bounded semantics untouched by Phase 5A.
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "new-1", epoch: "eN", operationId: retry.payload.operationId, turnId: "turn-repair", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("new-1", "eN"), payload: { sessionId: "new-1", epoch: "eN", operationId: retry.payload.operationId, turnId: "turn-repair", revision: 1, state: "completed" } });
     await flush();
     expect(h.controller("new-1")!.getSnapshot().turnActive).toBe(false);
     // Terminal never mints a new operation either.

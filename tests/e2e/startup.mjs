@@ -21,8 +21,8 @@ const PROD_MAX_UPLOAD = 25 * 1024 * 1024;
 // tokens are mounted on the Host and stay advertised in BOTH states; `agent`
 // (the runtime) and `sessions` (read-only session history) are added only
 // while sessiond is up. `worktree` is the read-only list token (no write token).
-const FULL_CAPS = ["agent", "sessions", "session.delete", "session.write", "session.settings", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "models.configure", "settings.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"];
-const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "models.configure", "settings.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"];
+const FULL_CAPS = ["agent", "sessions", "session.delete", "session.write", "session.settings", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "models.configure", "settings.configure", "builtins.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"];
+const DEGRADED_CAPS = ["files", "files.write", "files.watch", "files.upload", "git", "worktree", "models", "models.configure", "settings.configure", "builtins.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"];
 
 function delay(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));

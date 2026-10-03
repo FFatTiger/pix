@@ -53,6 +53,13 @@ import { SnapshotMapper } from "../mapper/snapshot-mapper.js";
 import { StatefulRuntimeMapper } from "../mapper/runtime-mapper.js";
 
 const READ_ONLY_COMMAND_TYPES = new Set<string>(READ_ONLY_RUNTIME_COMMAND_TYPES);
+const SIDE_CHAT_MUTATION_TYPES = new Set<RuntimeCommand["type"]>([
+  "side_chat_start",
+  "side_chat_send",
+  "side_chat_reset",
+  "side_chat_set_mode",
+  "side_chat_overlap_response",
+]);
 
 /** Type guard: narrow a Protocol command type onto the read-only vocabulary. */
 const isReadOnlyCommandType = (type: RuntimeCommand["type"]): type is (typeof READ_ONLY_RUNTIME_COMMAND_TYPES)[number] =>
@@ -351,6 +358,9 @@ export class WorkerController {
       const result = isReadOnlyCommandType(command.type)
         ? await this.port.read(mapProtocolReadToCoreRead({ type: command.type }))
         : await this.port.execute(core);
+      if (result.ok && SIDE_CHAT_MUTATION_TYPES.has(command.type)) {
+        await this.port.getSnapshot();
+      }
       await this.sendCommandResult(message, { commandId: command.commandId, result: mapCoreResultToProtocol(result) });
     } catch (error) {
       // port.execute / port.read never reject with backend errors, but a broken
@@ -526,7 +536,7 @@ export class WorkerController {
     try {
       const terminal = await completion;
       const snapshot = this.port ? this.snapshotMapper.map(terminal.snapshot, { cwd: this.cwdValue, projectRoot: this.projectRootValue }) : undefined;
-      const status: TurnStatus = { sessionId, epoch, operationId, turnId, revision: 1, state: terminal.ok ? "completed" : "failed", ...(terminal.userEntryId === undefined ? {} : { userEntryId: terminal.userEntryId }), ...(snapshot?.state.leafId === undefined ? {} : { finalLeafId: snapshot.state.leafId }), ...(terminal.ok ? {} : { error: runtimeErrorToProtocolError(terminal.error) }) };
+      const status: TurnStatus = { sessionId, epoch, operationId, turnId, revision: 1, state: terminal.ok ? "completed" : "failed", ...(terminal.disposition === undefined ? {} : { disposition: terminal.disposition }), ...(terminal.userEntryId === undefined ? {} : { userEntryId: terminal.userEntryId }), ...(snapshot?.state.leafId === undefined ? {} : { finalLeafId: snapshot.state.leafId }), ...(terminal.ok ? {} : { error: runtimeErrorToProtocolError(terminal.error) }) };
       ledger.status = status;
       await this.sendTurnStatus(status);
     } catch (error) {
@@ -582,7 +592,11 @@ export class WorkerController {
     this.seenInterruptIds.add(commandId);
 
     try {
-      const result = await this.port.interrupt({ type: interrupt.type });
+      const coreInterrupt = interrupt.type === "abort_side_chat"
+        ? { type: "abort_side_chat" as const, conversationId: interrupt.conversationId }
+        : { type: interrupt.type };
+      const result = await this.port.interrupt(coreInterrupt);
+      if (result.ok && interrupt.type === "abort_side_chat") await this.port.getSnapshot();
       const outcome: RuntimeInterruptResult = result.ok
         ? { ok: true, type: result.type }
         : { ok: false, type: result.type, error: runtimeErrorToProtocolError(result.error) };
@@ -693,6 +707,7 @@ export class WorkerController {
     const queued = state.queuedMessages;
     if (queued !== undefined && (queued.steering.length > 0 || queued.followUp.length > 0)) return false;
     if (state.pendingExtensionUi !== undefined && state.pendingExtensionUi.length > 0) return false;
+    if (state.sideChat?.status === "running" || state.sideChat?.status === "awaiting_overlap") return false;
     return true;
   }
 

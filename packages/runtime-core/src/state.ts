@@ -13,12 +13,19 @@ import type {
 } from "./messages.js";
 import type { ModelRef } from "./model.js";
 import type {
+  ExtensionNotificationItem,
   ExtensionStatusItem,
   ExtensionWidgetItem,
   PendingExtensionUi,
 } from "./extension.js";
 import type { QueuedMessages } from "./queue.js";
 import type { ToolInfo } from "./resources.js";
+import type { SideChatState } from "./side-chat.js";
+import type {
+  BuiltInRuntimeState,
+  SubagentProjection,
+  TodoProjection,
+} from "./runtime-projections.js";
 
 export type StreamingPhase =
   | "idle"
@@ -80,11 +87,21 @@ export interface RuntimeState {
   thinkingLevelPinned?: boolean;
   tools?: readonly ToolInfo[];
   extensionStatuses?: readonly ExtensionStatusItem[];
+  /** Most-recent non-error extension notifications (bounded ring). */
+  extensionNotifications?: readonly ExtensionNotificationItem[];
   extensionWidgets?: readonly ExtensionWidgetItem[];
   pendingExtensionUi?: readonly PendingExtensionUi[];
   sessionName?: string;
   /** Session-level aggregate of files written by agent turns (deduped). */
   writtenFiles?: readonly string[];
+  /** Actually loaded built-ins for this runtime; distinct from Host desired config. */
+  builtIns?: BuiltInRuntimeState;
+  /** Ephemeral side conversation; null before explicit start, absent when unsupported. */
+  sideChat?: SideChatState | null;
+  /** Authority snapshot for subagent UI; never derived from transcript. */
+  subagents?: SubagentProjection;
+  /** Authority snapshot for todo UI; never derived from transcript. */
+  todo?: TodoProjection;
 }
 
 /** Full runtime snapshot returned by getSnapshot(). */

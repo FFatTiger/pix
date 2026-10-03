@@ -1,22 +1,54 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import type {
+  BuiltInRuntimeState,
   ImageAttachment,
   ModelRef,
   RuntimeCapability,
   RuntimeCloseReason,
   RuntimeStartInput,
   SlashCommandInfo,
+  SubagentProjection,
   ThinkingLevel,
+  TodoProjection,
   ToolInfo,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError, RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
 import { redactText } from "./sanitize.js";
 import { createPiSdkSessionStore } from "./session-store.js";
+import { readGlobalToolsPreference } from "./settings-config-store.js";
 import { estimateSdkBranchContextTokens, type SdkContextMessage } from "./context-tokens.js";
 import { generateSessionTitle as generateSessionTitleForSession } from "./session-title.js";
+import { readBuiltInCapabilityConfigSync } from "./built-in-capability-store.js";
+import {
+  buildBuiltInRuntimeState,
+  capabilitiesWithLoadedTokens,
+  cloneBuiltIns,
+  detectLoadedBuiltIns,
+} from "./built-in-detection.js";
+import { resourceLoaderOptionsForBuiltIns } from "./curated-plugins.js";
+import {
+  cloneSubagents,
+  isSubagentRefreshEvent,
+  nextSubagentProjection,
+  projectSubagentStreamEvent,
+  readSubagentObservation,
+  type SubagentObservation,
+} from "./subagent-projection.js";
+import { SubagentArtifactObserver } from "./subagent-observer.js";
+import {
+  cloneTodo,
+  isTodoReplayEvent,
+  nextTodoProjection,
+  todoItemsFromBranch,
+  todoItemsFromToolEnd,
+} from "./todo-projection.js";
+import { createSideChatController, type FileActivityTracker, type SideChatController } from "./vendor/pi-side-chat/index.js";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
+  createCodemodeExtension,
+  createMcpExtension,
+  createToolSearchExtension,
   getAgentDir,
   hasTrustRequiringProjectResources,
   initTheme,
@@ -25,8 +57,7 @@ import {
   resolveModelScopeWithDiagnostics,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentSession, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { AgentState } from "@earendil-works/pi-agent-core";
+import type { AgentSession, AgentSessionEvent, ExtensionAPI, ExtensionUIContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
 import type {
   DriverContextState,
@@ -37,7 +68,38 @@ import type {
   InitializationTraceSink,
   PiRuntimeDriver,
   PiRuntimeDriverFactory,
+  PromptDisposition,
+  QueuedInputDisposition,
 } from "./types.js";
+
+const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"]);
+
+/**
+ * Extension/resource tools that activate on registration (SDK semantics):
+ * declarable exposure (`direct`/`model-only`) and not `defaultActive:false`.
+ * Tools the SDK registers inactive on purpose — codemode, tool_search, and
+ * MCP tools with codemode/deferred exposure — are only activated by naming
+ * them explicitly (defaultTools/setTools), never by the adapter's implicit
+ * include-extension-tools union.
+ */
+function registrationActivatedToolNames(session: AgentSession): string[] {
+  return session.getAllTools()
+    .filter((tool) => !BUILTIN_TOOL_NAMES.has(tool.name))
+    .filter((tool) =>
+      (tool.exposure === "direct" || tool.exposure === "model-only")
+      && session.getToolDefinition(tool.name)?.defaultActive !== false)
+    .map((tool) => tool.name);
+}
+
+interface ToolPolicyState {
+  forcedEmpty: boolean;
+}
+
+function createToolPolicyExtension(policy: ToolPolicyState) {
+  return (pi: ExtensionAPI): void => {
+    pi.on("before_agent_start", () => policy.forcedEmpty ? { systemPrompt: "" } : undefined);
+  };
+}
 
 function images(value: readonly ImageAttachment[] | undefined): ImageContent[] | undefined {
   return value?.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
@@ -53,9 +115,8 @@ function images(value: readonly ImageAttachment[] | undefined): ImageContent[] |
 export function contextUsageFromSession(session: AgentSession):
   | { percent: number | null; contextWindow: number; tokens: number | null }
   | undefined {
-  const model = session.model;
-  const contextWindow = model?.contextWindow ?? 0;
-  if (!model || contextWindow <= 0) return undefined;
+  const contextWindow = session.getContextUsage()?.contextWindow ?? 0;
+  if (contextWindow <= 0) return undefined;
   const tokens = estimateSdkBranchContextTokens(
     session.sessionManager.getBranch(),
     session.sessionManager.buildSessionContext().messages as SdkContextMessage[],
@@ -67,7 +128,83 @@ export function contextUsageFromSession(session: AgentSession):
 
 function toolsView(session: AgentSession): ToolInfo[] {
   const active = new Set(session.getActiveToolNames());
-  return session.getAllTools().map((tool): ToolInfo => ({ name: tool.name, ...(tool.description === undefined ? {} : { description: tool.description }), active: active.has(tool.name) }));
+  // Picker surface: only tools the user can directly turn on/off for the
+  // model — `direct` and `model-only` exposure. `hidden`, `codemode` and
+  // `deferred` tools (e.g. codemode-exposure MCP tools) are callable through
+  // ctx.executeTool without being active, so their active flag is not an ACL
+  // switch and they must not appear as on/off rows.
+  return session.getAllTools()
+    .filter((tool) => tool.exposure === "direct" || tool.exposure === "model-only")
+    .map((tool): ToolInfo => ({ name: tool.name, ...(tool.description === undefined ? {} : { description: tool.description }), active: active.has(tool.name) }));
+}
+
+/**
+ * Names the global tool selection may enable: every registered tool with
+ * `direct` or `model-only` exposure (the SDK defaults an omitted exposure to
+ * `direct`). Tools withheld by the `extensions` `-builtin:` gating are never
+ * in the registry, so the selection never crosses that gate.
+ */
+export function selectableToolNames(session: AgentSession): string[] {
+  return session.getAllTools()
+    .filter((tool) => tool.exposure === "direct" || tool.exposure === "model-only")
+    .map((tool) => tool.name);
+}
+
+/** Runtime form of the persisted global tool selection. */
+export type RuntimeToolsSelection =
+  | { mode: "all" }
+  | { mode: "custom"; toolNames: readonly string[] }
+  | { mode: "native" };
+
+/**
+ * Apply one tool selection to a live session.
+ *
+ * - `all`: activate every selectable registered tool (codemode/tool_search
+ *   included once their extensions register).
+ * - `custom`: activate the intersection with the selectable registry; saved
+ *   names that are currently unavailable stay persisted, they just do not
+ *   apply. An empty result keeps the registry intact with nothing active.
+ * - `native`: the SDK's own `defaultTools`-driven active set (including `+`/`-`
+ *   modifiers and registration activation) stays authoritative — pix adds
+ *   nothing and removes nothing.
+ *
+ * The forced-empty system-prompt policy follows the APPLIED set in every mode.
+ */
+export function applyToolsSelection(
+  session: AgentSession,
+  selection: RuntimeToolsSelection,
+  policy: ToolPolicyState,
+): void {
+  if (selection.mode === "native") {
+    policy.forcedEmpty = session.getActiveToolNames().length === 0;
+    return;
+  }
+  const selectable = new Set(selectableToolNames(session));
+  const names = selection.mode === "all"
+    ? [...selectable]
+    : selection.toolNames.filter((name) => selectable.has(name));
+  policy.forcedEmpty = names.length === 0;
+  session.setActiveToolsByName(names);
+}
+
+/**
+ * Resolve + apply the CURRENT global tool selection (pix `pixDefaultTools`
+ * first; absent key falls back to the effective native `defaultTools` of the
+ * session's own settings manager; neither key means Pix defaults to all).
+ * Used at startup, after bindExtensions and after a successful SDK reload —
+ * only for runtimes that FOLLOW the global preference (no explicit
+ * `input.toolNames` and no runtime `setTools` override).
+ */
+export async function applyGlobalToolsSelection(
+  session: AgentSession,
+  policy: ToolPolicyState,
+  agentDir: string,
+): Promise<void> {
+  const preference = await readGlobalToolsPreference(agentDir);
+  const selection: RuntimeToolsSelection = preference.mode === "unset"
+    ? (session.settingsManager.getDefaultTools() === undefined ? { mode: "all" } : { mode: "native" })
+    : preference;
+  applyToolsSelection(session, selection, policy);
 }
 
 function commandsView(session: AgentSession): SlashCommandInfo[] {
@@ -93,7 +230,12 @@ function sessionStatsView(session: AgentSession, usage: ReturnType<typeof contex
   };
 }
 
-function driverState(session: AgentSession, forcedEmpty: boolean, usage: ReturnType<typeof contextUsageFromSession>): DriverState {
+function driverState(
+  session: AgentSession,
+  forcedEmpty: boolean,
+  usage: ReturnType<typeof contextUsageFromSession>,
+  projections: { builtIns?: BuiltInRuntimeState; subagents?: SubagentProjection; todo?: TodoProjection },
+): DriverState {
   const model = session.model;
   const stats = session.getSessionStats();
   const leafId = session.sessionManager.getLeafId();
@@ -122,24 +264,38 @@ function driverState(session: AgentSession, forcedEmpty: boolean, usage: ReturnT
     lastAssistantText: session.getLastAssistantText() ?? "",
     commands: commandsView(session),
     ...(session.sessionName === undefined ? {} : { sessionName: session.sessionName }),
+    ...(projections.builtIns === undefined ? {} : { builtIns: cloneBuiltIns(projections.builtIns) }),
+    ...(projections.subagents === undefined ? {} : { subagents: cloneSubagents(projections.subagents) }),
+    ...(projections.todo === undefined ? {} : { todo: cloneTodo(projections.todo) }),
   };
 }
 
 class SdkRuntimeDriver implements PiRuntimeDriver {
   readonly identity;
-  readonly capabilities: readonly RuntimeCapability[];
-  private forcedEmpty = false;
+  private currentCapabilities: readonly RuntimeCapability[];
   private uiRequest: ((request: DriverUiRequest) => void) | undefined;
   private emitCanonical: ((event: never) => void) | undefined;
   private activeUiCancels = new Set<() => void>();
   private bashChunks: ((chunk: string) => void) | undefined;
-  private listenerMap = new Map<DriverEventListener, () => void>();
+  private readonly listeners = new Set<DriverEventListener>();
+  private readonly unsubscribeSession: () => void;
+  private rawFanoutDepth = 0;
+  private publishingProjection = false;
+  private readonly pendingProjections = new Map<string, { type: string; [key: string]: unknown }>();
+  private closed = false;
+  private builtIns: BuiltInRuntimeState | undefined;
+  private subagents: SubagentProjection | undefined;
+  private subagentChildSignatures: readonly string[] | undefined;
+  private subagentObserver: SubagentArtifactObserver | undefined;
+  private subagentStreamGeneration = 0;
+  private todo: TodoProjection | undefined;
 
   constructor(
     private readonly session: AgentSession,
-    capabilities: readonly RuntimeCapability[],
+    private readonly baseCapabilities: readonly RuntimeCapability[],
     private readonly reloadCapabilities: readonly RuntimeCapability[] | undefined,
-    forcedEmpty: boolean,
+    private readonly toolPolicy: ToolPolicyState,
+    private readonly agentDir: string,
     private configuredTools?: { toolNames: readonly string[]; includeExtensionTools: boolean },
     private readonly trace?: InitializationTraceSink,
   ) {
@@ -148,11 +304,23 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
       sessionFile: session.sessionFile ?? "",
       cwd: session.sessionManager.getCwd(),
     };
-    this.capabilities = capabilities;
-    this.forcedEmpty = forcedEmpty;
+    this.currentCapabilities = this.recomputeProjections(this.baseCapabilities);
+    this.unsubscribeSession = this.session.subscribe((event) => this.handleSessionEvent(event));
+    this.installSubagentStreamBridge();
   }
 
-  getState(): DriverState { return driverState(this.session, this.forcedEmpty, this.contextUsage()); }
+  get capabilities(): readonly RuntimeCapability[] { return this.currentCapabilities; }
+
+  getState(): DriverState {
+    if (!this.closed && !this.publishingProjection && this.builtIns?.loaded.includes("subagents")) {
+      this.subagentObserver?.refresh(true);
+    }
+    return driverState(this.session, this.toolPolicy.forcedEmpty, this.contextUsage(), {
+      ...(this.builtIns === undefined ? {} : { builtIns: this.builtIns }),
+      ...(this.subagents === undefined ? {} : { subagents: this.subagents }),
+      ...(this.todo === undefined ? {} : { todo: this.todo }),
+    });
+  }
 
   /**
    * Narrow read-lane accessors (Phase 2B). Each returns ONLY the requested
@@ -189,9 +357,9 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     return this.usageCacheTokens;
   }
   private contextUsage(): ReturnType<typeof contextUsageFromSession> {
-    const model = this.session.model;
-    const contextWindow = model?.contextWindow ?? 0;
-    if (!model || contextWindow <= 0) return undefined;
+    // The SDK resolves virtual selections to the last physical response's limits.
+    const contextWindow = this.session.getContextUsage()?.contextWindow ?? 0;
+    if (contextWindow <= 0) return undefined;
     const tokens = this.branchContextTokens();
     return tokens === null
       ? { percent: null, contextWindow, tokens: null }
@@ -220,20 +388,184 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
   }
 
   subscribe(listener: DriverEventListener): () => void {
-    const unsubscribe = this.session.subscribe((event) => {
-      if (event.type === "bash_execution_update") this.bashChunks?.(event.delta);
-      listener(event);
-    });
-    this.listenerMap.set(listener, unsubscribe);
-    return () => { unsubscribe(); this.listenerMap.delete(listener); };
+    if (this.closed) return () => {};
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
   }
 
-  async prompt(message: string, attached?: readonly ImageAttachment[], streamingBehavior?: "steer" | "followUp"): Promise<void> {
+  private handleSessionEvent(event: AgentSessionEvent): void {
+    if (this.closed) return;
+    this.rawFanoutDepth += 1;
+    try {
+      if (event.type === "bash_execution_update") this.bashChunks?.(event.delta);
+      const rawListeners = [...this.listeners];
+      for (const listener of rawListeners) {
+        if (this.closed) return;
+        if (this.listeners.has(listener)) listener(event);
+      }
+      if (!this.closed) this.refreshProjectionsFromEvent(event);
+    } finally {
+      this.rawFanoutDepth -= 1;
+      this.flushProjections();
+    }
+  }
+
+  private recomputeProjections(capabilityBase: readonly RuntimeCapability[]): RuntimeCapability[] {
+    const config = readBuiltInCapabilityConfigSync(this.agentDir);
+    const detected = new Set(detectLoadedBuiltIns({
+      tools: this.session.getAllTools(),
+      commands: this.session.extensionRunner.getRegisteredCommands().map((command) => ({ name: command.invocationName })),
+    }));
+    if (this.session.model !== undefined && this.session.model !== null) detected.add("side_chat");
+    this.builtIns = buildBuiltInRuntimeState({ config, loaded: detected });
+    const loaded = new Set(this.builtIns.loaded);
+    if (loaded.has("subagents")) {
+      if (this.subagentObserver === undefined) {
+        const observer = new SubagentArtifactObserver({
+          read: () => readSubagentObservation({
+            agentDir: this.agentDir,
+            parentSessionId: this.session.sessionId,
+            parentSessionFile: this.session.sessionFile ?? "",
+          }),
+          onObservation: (observation, publish) => this.applySubagentObservation(observation, publish),
+          onError: () => this.publishSubagentObserverError(),
+        });
+        this.subagentObserver = observer;
+        observer.start(false);
+      } else {
+        this.subagentObserver.refresh(false);
+      }
+      this.installSubagentStreamBridge();
+    } else {
+      this.subagentObserver?.close();
+      this.subagentObserver = undefined;
+      this.subagentChildSignatures = undefined;
+      this.subagents = nextSubagentProjection(this.subagents, []).projection;
+      this.uninstallSubagentStreamBridge();
+    }
+    this.todo = nextTodoProjection(
+      this.todo,
+      loaded.has("todo") ? todoItemsFromBranch(this.session.sessionManager.getBranch()) : [],
+    ).projection;
+    return capabilitiesWithLoadedTokens(capabilityBase, loaded);
+  }
+
+  private applySubagentObservation(observation: SubagentObservation, publish: boolean): void {
+    const contentChanged = this.subagentChildSignatures !== undefined
+      && JSON.stringify(this.subagentChildSignatures) !== JSON.stringify(observation.childSignatures);
+    const next = nextSubagentProjection(this.subagents, observation.tasks, { contentChanged });
+    this.subagentChildSignatures = [...observation.childSignatures];
+    if (!next.changed) return;
+    this.subagents = next.projection;
+    if (publish) this.publishToListeners({ type: "subagents_changed", subagents: cloneSubagents(next.projection) });
+  }
+
+  private publishToListeners(event: { type: string; [key: string]: unknown }): void {
+    if (this.closed) return;
+    // Full-replacement projections coalesce by type. Transient child streams
+    // coalesce per childSessionId so concurrent children do not clobber each other.
+    const key = event.type === "subagent_delta" && typeof event.childSessionId === "string"
+      ? `subagent_delta:${event.childSessionId}`
+      : event.type;
+    this.pendingProjections.set(key, event);
+    this.flushProjections();
+  }
+
+  private flushProjections(): void {
+    if (this.closed || this.rawFanoutDepth > 0 || this.publishingProjection) return;
+    this.publishingProjection = true;
+    try {
+      for (const [type, event] of this.pendingProjections) {
+        this.pendingProjections.delete(type);
+        for (const listener of [...this.listeners]) {
+          if (this.closed) return;
+          if (this.listeners.has(listener)) listener(event);
+        }
+      }
+    } finally {
+      this.publishingProjection = false;
+    }
+  }
+
+  private installSubagentStreamBridge(): void {
+    if (this.closed || !this.builtIns?.loaded.includes("subagents")) return;
+    const holder = globalThis as { __pixSubagentStream?: (childSessionId: string, event: unknown) => void };
+    if (holder.__pixSubagentStream !== undefined) return;
+    const generation = this.subagentStreamGeneration;
+    holder.__pixSubagentStream = (childSessionId, event) => this.handleSubagentStreamEvent(generation, childSessionId, event);
+  }
+
+  private uninstallSubagentStreamBridge(): void {
+    this.subagentStreamGeneration += 1;
+    const holder = globalThis as { __pixSubagentStream?: (childSessionId: string, event: unknown) => void };
+    delete holder.__pixSubagentStream;
+  }
+
+  private handleSubagentStreamEvent(generation: number, childSessionId: string, event: unknown): void {
+    if (this.closed || generation !== this.subagentStreamGeneration) return;
+    const projected = projectSubagentStreamEvent({
+      childSessionId,
+      event,
+      tasks: this.subagents?.tasks ?? [],
+      sessionId: this.identity.sessionId,
+    });
+    if (projected === undefined) return;
+    this.publishToListeners(projected);
+  }
+
+  private publishSubagentObserverError(): void {
+    this.publishToListeners({
+      type: "extension_error",
+      error: "Subagent filesystem observation failed; refresh the runtime snapshot to recover.",
+      details: { code: "subagent_observer_error", recovery: "refresh_snapshot" },
+    });
+  }
+
+  private refreshProjectionsFromEvent(event: unknown): void {
+    const subagentRefresh = isSubagentRefreshEvent(event);
+    if (subagentRefresh && this.builtIns?.loaded.includes("subagents")) {
+      try {
+        this.subagentObserver?.refresh(true);
+      } catch {
+        // The observer already emitted a structured extension_error.
+      }
+    }
+    const todoItems = todoItemsFromToolEnd(event);
+    if (todoItems !== null && this.builtIns?.loaded.includes("todo")) {
+      const next = nextTodoProjection(this.todo, todoItems);
+      if (next.changed) {
+        this.todo = next.projection;
+        this.publishToListeners({ type: "todo_changed", todo: cloneTodo(next.projection) });
+      }
+      return;
+    }
+    // Successful compaction rewrote the selected branch: replay the Todo cold
+    // seed from the authoritative durable branch, including entries hidden
+    // from the compacted LLM message view.
+    if (isTodoReplayEvent(event) && this.builtIns?.loaded.includes("todo")) {
+      const next = nextTodoProjection(this.todo, todoItemsFromBranch(this.session.sessionManager.getBranch()));
+      if (next.changed) {
+        this.todo = next.projection;
+        this.publishToListeners({ type: "todo_changed", todo: cloneTodo(next.projection) });
+      }
+    }
+  }
+
+  async prompt(message: string, attached?: readonly ImageAttachment[], streamingBehavior?: "steer" | "followUp"): Promise<{ disposition: PromptDisposition }> {
+    // Pi 1.0 receipt: the SDK reports how the accepted input was dispatched via
+    // the preflight callback (prompt() itself resolves void). "handled" means
+    // an extension command/input handler consumed it — NO assistant reply is
+    // owed and reusing a historical last-assistant as the "final" would be
+    // wrong. "queued" parks the input; the turn happens when the queue drains.
+    let disposition: PromptDisposition | undefined;
     await this.session.prompt(message, {
       ...(attached && attached.length > 0 ? { images: images(attached)! } : {}),
       ...(streamingBehavior === undefined ? {} : { streamingBehavior }),
       source: "rpc",
+      preflightResult: (value) => { disposition = value; },
     });
+    if (disposition === undefined) throw new Error("prompt completed without an input disposition receipt");
+    if (disposition !== "started") return { disposition };
     const final = [...this.session.messages].reverse().find((item): item is Extract<typeof item, { role: "assistant" }> => item.role === "assistant");
     if (!final) throw new Error("prompt completed without a final assistant message");
     if (final.stopReason === "aborted") {
@@ -244,9 +576,10 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
         cause: { kind: "model", detail: "model returned an error stop reason" },
       });
     }
+    return { disposition };
   }
-  async steer(message: string, attached?: readonly ImageAttachment[]): Promise<void> { await this.session.steer(message, images(attached)); }
-  async followUp(message: string, attached?: readonly ImageAttachment[]): Promise<void> { await this.session.followUp(message, images(attached)); }
+  async steer(message: string, attached?: readonly ImageAttachment[]): Promise<QueuedInputDisposition> { return this.session.steer(message, images(attached), { source: "rpc" }); }
+  async followUp(message: string, attached?: readonly ImageAttachment[]): Promise<QueuedInputDisposition> { return this.session.followUp(message, images(attached), { source: "rpc" }); }
   async abort(): Promise<void> { await this.session.abort(); }
   async setModel(model: ModelRef): Promise<void> {
     let resolved = this.session.modelRuntime.getModel(model.provider, model.id);
@@ -284,28 +617,37 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
       if (!seen.has(name)) { seen.add(name); normalized.push(name); }
     }
     this.configuredTools = { toolNames: normalized, includeExtensionTools };
-    this.forcedEmpty = normalized.length === 0;
-    const builtinNames = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+    this.toolPolicy.forcedEmpty = normalized.length === 0;
     const selected = normalized.length === 0
       ? []
       : [
           ...normalized,
-          ...(includeExtensionTools
-            ? this.session.getAllTools().map((tool) => tool.name).filter((name) => !builtinNames.has(name))
-            : []),
+          ...(includeExtensionTools ? registrationActivatedToolNames(this.session) : []),
         ];
     this.session.setActiveToolsByName([...new Set(selected)]);
-    this.applyForcedEmptySystemPrompt();
   }
   async reload(): Promise<readonly RuntimeCapability[]> {
-    await this.session.reload();
+    this.uninstallSubagentStreamBridge();
+    this.subagentObserver?.close();
+    this.subagentObserver = undefined;
+    try {
+      await this.session.reload();
+    } catch (error) {
+      this.currentCapabilities = this.recomputeProjections(this.currentCapabilities);
+      throw error;
+    }
     if (this.configuredTools) {
       this.setTools(this.configuredTools.toolNames, this.configuredTools.includeExtensionTools);
-    } else if (this.forcedEmpty) {
-      this.session.setActiveToolsByName([]);
+    } else {
+      // Global tool preference application point #3: a prefs-following runtime
+      // recomputes the selection after the SDK's own reload (fresh settings +
+      // re-registered extensions). An explicit runtime override (`setTools`)
+      // keeps winning — no reset flag, the override simply stays configured.
+      await applyGlobalToolsSelection(this.session, this.toolPolicy, this.agentDir);
     }
-    this.applyForcedEmptySystemPrompt();
-    return this.reloadCapabilities ?? this.capabilities;
+    this.currentCapabilities = this.recomputeProjections(this.reloadCapabilities ?? this.baseCapabilities);
+    this.installSubagentStreamBridge();
+    return this.currentCapabilities;
   }
 
   /**
@@ -431,11 +773,56 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
       shutdownHandler: () => { throw new Error("extension shutdown is not supported by the worker runtime"); },
       onError: (error) => emit({ type: "extension_error", sessionId: this.session.sessionId, error: error.error } as never),
     });
+    // Global tool preference application point #2: extension/resource tools
+    // (codemode, tool_search, MCP tools) only register during bindExtensions,
+    // so the selection is re-applied against the now-complete registry. Only
+    // prefs-following runtimes (no explicit input.toolNames, no setTools
+    // override) re-apply; an explicit override survives binding untouched.
+    if (this.configuredTools === undefined) {
+      await applyGlobalToolsSelection(this.session, this.toolPolicy, this.agentDir);
+    }
+    this.currentCapabilities = this.recomputeProjections(this.currentCapabilities);
     this.trace?.record("bind_extensions");
     this.trace?.record("ready");
   }
 
+  createSideChatController(tracker: FileActivityTracker): SideChatController {
+    if (this.closed) throw makeRuntimeError("unavailable", "runtime is closed");
+    const model = this.session.model;
+    if (model === undefined || model === null) throw makeRuntimeError("unavailable", "side chat requires an active model");
+    return createSideChatController({
+      forkContext: {
+        messages: this.session.sessionManager.buildSessionContext().messages,
+        model,
+        systemPrompt: this.toolPolicy.forcedEmpty ? "" : this.session.systemPrompt,
+        thinkingLevel: this.session.thinkingLevel,
+        cwd: this.session.sessionManager.getCwd(),
+        // Pi 1.0 surface fence: the side chat is a standalone Agent, so only
+        // tools whose SDK exposure semantics match a directly-declared,
+        // directly-callable tool may enter it. Hidden/codemode/deferred tools
+        // are never model-declared; model-only tools are never callable. The
+        // main session's CURRENT ACTIVE set is the baseline (a tool disabled
+        // in main is not resurrected in the side chat), and codemode/
+        // tool_search themselves are excluded: their value is nested calls via
+        // ctx.executeTool, which the side chat's agent loop does not host.
+        extensionTools: sideChatExtensionSurface(this.session),
+      },
+      modelRuntime: this.session.modelRuntime,
+      sessionManager: this.session.sessionManager,
+      createExtensionContext: () => this.session.extensionRunner.createContext(),
+      tracker,
+    });
+  }
+
   async close(reason: RuntimeCloseReason): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.uninstallSubagentStreamBridge();
+    this.pendingProjections.clear();
+    this.unsubscribeSession();
+    this.listeners.clear();
+    this.subagentObserver?.close();
+    this.subagentObserver = undefined;
     for (const cancel of [...this.activeUiCancels]) cancel();
     this.activeUiCancels.clear();
     try {
@@ -444,15 +831,7 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     if (this.session.isBashRunning) this.session.abortBash();
     if (this.session.isCompacting) this.session.abortCompaction();
     await this.session.extensionRunner.emit?.({ type: "session_shutdown", reason: reason === "shutdown" ? "quit" : "quit" });
-    for (const unsubscribe of this.listenerMap.values()) unsubscribe();
-    this.listenerMap.clear();
     this.session.dispose();
-  }
-
-  private applyForcedEmptySystemPrompt(): void {
-    if (!this.forcedEmpty) return;
-    const state = this.session.agent.state as AgentState & { systemPrompt?: string };
-    state.systemPrompt = "";
   }
 
   private createUiContext(): ExtensionUIContext {
@@ -494,7 +873,22 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
       confirm: (title, message, opts) => request({ id: crypto.randomUUID(), method: "confirm", title, message }, (result) => result.cancelled ? false : result.confirmed ?? false, opts),
       input: (title, placeholder, opts) => request({ id: crypto.randomUUID(), method: "input", title, ...(placeholder === undefined ? {} : { placeholder }) }, (result) => result.cancelled ? undefined : result.value, opts),
       editor: (title, prefill) => request({ id: crypto.randomUUID(), method: "editor", title, ...(prefill === undefined ? {} : { prefill }) }, (result) => result.cancelled ? undefined : result.value),
-      notify: (message, type) => this.emitCanonical?.({ type: "extension_error", sessionId: this.session.sessionId, error: `[${type ?? "info"}] ${message}` } as never),
+      notify: (message, type) => {
+        if (type === "error") {
+          this.emitCanonical?.({ type: "extension_error", sessionId: this.session.sessionId, error: message } as never);
+          return;
+        }
+        // info/warning are notifications, not errors: `/mcp` status text and
+        // OAuth authorization URLs arrive here and must stay visible as
+        // notices (typed event + bounded state ring), never as fake errors.
+        this.emitCanonical?.({
+          type: "extension_notification",
+          sessionId: this.session.sessionId,
+          level: type === "warning" ? "warning" : "info",
+          message,
+          at: Date.now(),
+        } as never);
+      },
       onTerminalInput: () => () => {},
       setStatus: (key, text) => this.emitCanonical?.({ type: "extension_statuses", sessionId: this.session.sessionId, statuses: text === undefined ? [] : [{ key, text }] } as never),
       setWorkingMessage: unsupported,
@@ -538,13 +932,77 @@ export function hasSdkContinuation(manager: SessionManager): boolean {
 export interface SdkRuntimeComposition {
   openSession(input: RuntimeStartInput | { sessionId: string; cwd?: string }): Promise<{ manager: SessionManager; cwd: string }>;
   initializeTheme(): void;
-  createServices(cwd: string, trusted: boolean): Promise<Awaited<ReturnType<typeof createAgentSessionServices>>>;
+  createServices(
+    cwd: string,
+    trusted: boolean,
+    toolPolicy?: ToolPolicyState,
+  ): Promise<Awaited<ReturnType<typeof createAgentSessionServices>>>;
   resolveProjectTrust(cwd: string): Promise<boolean>;
   prepareExtensionMode(cwd: string, trusted: boolean): Promise<void>;
   listVisibleModels(services: Awaited<ReturnType<typeof createAgentSessionServices>>): readonly Model<Api>[] | Promise<readonly Model<Api>[]>;
   getDefaults(services: Awaited<ReturnType<typeof createAgentSessionServices>>): { provider?: string; modelId?: string };
   hasContinuation(manager: SessionManager): boolean;
   createSession(options: Parameters<typeof createAgentSessionFromServices>[0]): ReturnType<typeof createAgentSessionFromServices>;
+}
+
+/**
+ * Pi 1.0 native built-in extension descriptors, mirroring the CLI's own
+ * assembly: named `builtin:<name>` resources (settings `extensions`
+ * `-builtin:mcp` etc. disable them), replaceable so a user extension that
+ * registers codemode/tool_search//mcp takes over instead of running a second
+ * authority. codemode/tool_search register with defaultActive:false — only
+ * defaultTools or MCP auto-activation turn them on. MCP reads the global
+ * agentDir mcp.json and the TRUSTED project .pi/mcp.json via the SDK's own
+ * trust gate. Exported so the deterministic factory tests compose the exact
+ * production list (no drift between wiring and tests).
+ */
+export function nativeBuiltinExtensionFactories(): InlineExtension[] {
+  return [
+    {
+      name: "codemode",
+      factory: createCodemodeExtension(),
+      builtin: true,
+      replaceable: true,
+    },
+    {
+      name: "tool-search",
+      factory: createToolSearchExtension(),
+      builtin: true,
+      replaceable: true,
+    },
+    {
+      name: "mcp",
+      // The worker is headless: never spawn a host-machine browser for OAuth.
+      // Web users follow the authorization URL from the typed
+      // extension_notification and paste the redirect via the existing
+      // extension input callback.
+      factory: createMcpExtension({ openUrl: () => {} }),
+      builtin: true,
+      replaceable: true,
+    },
+  ];
+}
+
+/** Tools that orchestrate other tools through ctx.executeTool; excluded
+ * from the side chat because its standalone agent loop hosts no nested
+ * runner (main-session-only until a nested host exists). */
+const NESTED_HOST_TOOL_NAMES = new Set(["codemode", "tool_search"]);
+
+/**
+ * Pi 1.0 side-chat extension surface: the MAIN session's registered tools
+ * that are (a) currently ACTIVE in main, (b) exposure `direct` (declared to
+ * the model AND callable — the only semantics a standalone agent tool has),
+ * and (c) not nested-host tools. Hidden/codemode/deferred/model-only tools
+ * and tools disabled in main never enter the side chat catalog.
+ */
+export function sideChatExtensionSurface(session: AgentSession) {
+  const active = new Set(session.getActiveToolNames());
+  const exposures = new Map(session.getAllTools().map((tool) => [tool.name, tool.exposure]));
+  return session.extensionRunner.getAllRegisteredTools().filter((registered) => {
+    if (!active.has(registered.definition.name)) return false;
+    if (NESTED_HOST_TOOL_NAMES.has(registered.definition.name)) return false;
+    return exposures.get(registered.definition.name) === "direct";
+  });
 }
 
 function defaultComposition(): SdkRuntimeComposition {
@@ -569,12 +1027,20 @@ function defaultComposition(): SdkRuntimeComposition {
       return { manager, cwd: manager.getCwd() };
     },
     initializeTheme: () => initTheme(),
-    createServices: (cwd, trusted) => {
+    createServices: (cwd, trusted, toolPolicy = { forcedEmpty: false }) => {
       const agentDir = getAgentDir();
       const trustOptions = hasTrustRequiringProjectResources(cwd)
         ? { resourceLoaderReloadOptions: { resolveProjectTrust: async () => trusted } }
         : {};
-      return createAgentSessionServices({ cwd, agentDir, ...trustOptions });
+      return createAgentSessionServices({
+        cwd,
+        agentDir,
+        resourceLoaderOptions: {
+          ...resourceLoaderOptionsForBuiltIns(agentDir),
+          extensionFactories: [createToolPolicyExtension(toolPolicy), ...nativeBuiltinExtensionFactories()],
+        },
+        ...trustOptions,
+      });
     },
     // RISK (project-trust coupling): the Pi SDK couples resource loading to its
     // own ProjectTrustStore under the Pi agent dir. A1 does NOT migrate a pix
@@ -628,7 +1094,8 @@ export class SdkRuntimeDriverFactory implements PiRuntimeDriverFactory {
     this.trace?.record("trust_gate");
     await this.composition.prepareExtensionMode(cwd, trusted);
     this.trace?.record("extension_mode");
-    const services = await this.composition.createServices(cwd, trusted);
+    const toolPolicy: ToolPolicyState = { forcedEmpty: input.toolNames?.length === 0 };
+    const services = await this.composition.createServices(cwd, trusted, toolPolicy);
     this.trace?.record("services");
     const models = await this.composition.listVisibleModels(services);
     this.trace?.record("visible_models");
@@ -674,33 +1141,28 @@ export class SdkRuntimeDriverFactory implements PiRuntimeDriverFactory {
     await services.settingsManager.flush();
     this.trace?.record("startup_preferences");
     if (input.toolNames === undefined) {
-      // Default = FULL permissions: every tool the SDK knows for this session
-      // (built-ins + extensions + custom) is active. The client no longer
-      // offers a tool-preset control; a caller that wants restrictions passes
-      // an explicit (possibly empty) toolNames list.
-      result.session.setActiveToolsByName(result.session.getAllTools().map((tool) => tool.name));
+      // Global tool preference application point #1 (pre-bind; point #2 after
+      // bindExtensions completes the registry). No unconditional builtin union
+      // anymore: a native `defaultTools` selection (e.g. `-read`) is honored
+      // verbatim, and the Pix default enables every selectable tool.
+      await applyGlobalToolsSelection(result.session, toolPolicy, services.agentDir);
     } else {
-      const builtinNames = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
       const selectedTools = input.toolNames.length === 0
         ? []
         : [
             ...input.toolNames,
-            ...result.session.getAllTools().map((tool) => tool.name).filter((name) => !builtinNames.has(name)),
+            ...registrationActivatedToolNames(result.session),
           ];
       result.session.setActiveToolsByName([...new Set(selectedTools)]);
     }
     this.trace?.record("active_tools");
-    const forcedEmpty = input.toolNames?.length === 0;
-    if (forcedEmpty) {
-      const state = result.session.agent.state as AgentState & { systemPrompt?: string };
-      state.systemPrompt = "";
-    }
     this.trace?.record("empty_system_prompt");
     const driver = new SdkRuntimeDriver(
       result.session,
       options.capabilities ?? RUNTIME_CAPABILITIES,
       options.reloadCapabilities,
-      forcedEmpty,
+      toolPolicy,
+      services.agentDir,
       input.toolNames === undefined
         ? undefined
         : { toolNames: [...input.toolNames], includeExtensionTools: true },

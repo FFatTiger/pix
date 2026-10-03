@@ -9,4 +9,11 @@ describe("buildAtMentionText / buildFileAtMentionsText — source lib/file-fuzzy
       buildFileAtMentionsText(["notes/todo.md", "project files/design brief.md"]),
     ).toBe('@notes/todo.md @"project files/design brief.md" ');
   });
+
+  it("preserves exact Unicode path bytes without NFC normalization", () => {
+    const nfdName = "\u00b0u\u0301_,.txt";
+    expect(nfdName).not.toBe(nfdName.normalize("NFC"));
+    expect(buildFileAtMentionsText([nfdName])).toBe(`@${nfdName} `);
+    expect(buildFileAtMentionsText([nfdName])).not.toBe(`@${nfdName.normalize("NFC")} `);
+  });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { I18nProvider } from "@/hooks/useI18n";
 import { ExtensionDialog, type ExtensionDialogRequest, type ExtensionDialogResponse } from "./ExtensionDialog";
@@ -19,6 +19,31 @@ function makeRespond() {
   const onRespond = vi.fn((_request: ExtensionDialogRequest, _response: ExtensionDialogResponse) => undefined);
   return onRespond;
 }
+
+describe("ExtensionDialog — compact heading and complete prompt", () => {
+  afterEach(cleanup);
+  const title = `[Ask test] ${"A long question that must remain readable in full. ".repeat(10)}\nPreview details`;
+  it.each<ExtensionDialogRequest>([
+    { id: "select", method: "select", title, options: ["Coffee — freshly brewed", "Tea"] },
+    { id: "confirm", method: "confirm", title, message: "Confirmation details" },
+    { id: "input", method: "input", title, placeholder: "Your answer" },
+    { id: "editor", method: "editor", title, prefill: "Draft answer" },
+  ])("separates the $method prompt from its short accessible title", (request) => {
+    const onRespond = makeRespond();
+    wrap(<ExtensionDialog request={request} onRespond={onRespond} />);
+    const dialog = screen.getByRole("dialog", { name: "Your response" });
+    const heading = screen.getByRole("heading", { name: "Your response" });
+    const prompt = document.getElementById(dialog.getAttribute("aria-describedby")!);
+    expect(prompt?.textContent).toBe(title);
+    expect(heading.parentElement?.contains(prompt)).toBe(false);
+    if (request.method === "select") {
+      fireEvent.click(screen.getByRole("button", { name: request.options[0]! }));
+      expect(onRespond).toHaveBeenCalledWith(request, { value: request.options[0] });
+    }
+    if (request.method === "confirm") expect(screen.getByText(request.message)).toBeTruthy();
+    if (request.method === "editor") expect(screen.getByDisplayValue("Draft answer")).toBeTruthy();
+  });
+});
 
 describe("ExtensionDialog — IME-composition submit guard (F1)", () => {
   it("input Enter submits when not composing, with preventDefault", () => {

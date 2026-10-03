@@ -151,6 +151,16 @@ function describeUnavailable(cause: unknown, translate?: (key: string) => string
   return COMPACT_ERROR_MESSAGE;
 }
 
+function describeReloadFailure(cause: unknown, translate: (key: string) => string): string {
+  if (cause && typeof cause === "object" && "code" in cause) {
+    const code = (cause as { code: unknown }).code;
+    if (code === "unsupported_capability") {
+      return describeRuntimeObservationError(cause, translate);
+    }
+  }
+  return translate("desktop.reloadFailed");
+}
+
 function workspaceAccessBoundary(
   decision: WorkspaceAccessDecision,
   translate: (key: string) => string,
@@ -283,6 +293,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   const hasQueue = hasCap("runtime.queue");
   const hasBash = hasCap("runtime.bash");
   const hasCompact = hasCap("runtime.compact");
+  const hasReload = hasCap("runtime.reload");
   const hasCompactAbort = hasCap("runtime.compact.abort");
   const hasModelSet = hasCap("runtime.model.set");
   const hasThinkingSet = hasCap("runtime.thinking.set");
@@ -599,12 +610,18 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // Builtin slash palette = the builtins {@link handleBuiltinCommand} ACTUALLY
   // handles (single source of truth, injected into ChatInput). An unlisted
   // builtin is never offered, so picking a palette entry can never fall through
-  // as a model prompt. `/compact` is ONLY offered while the runtime is live and
-  // advertises the compact capability — a stale/not-yet-activated session can
-  // not execute it, so it must not be offered (no silent fall-through).
+  // as a model prompt. Runtime controls are offered only while the exact
+  // runtime is live and advertises the matching capability.
   const builtinSlashCommands = useMemo(
-    () => (liveWorkspaceEnabled && live && hasCompact ? [{ name: "compact", description: t("desktop.compactCommandDescription"), source: "builtin" as const }] : []),
-    [liveWorkspaceEnabled, live, hasCompact, t],
+    () => [
+      ...(liveWorkspaceEnabled && live && hasCompact
+        ? [{ name: "compact", description: t("desktop.compactCommandDescription"), source: "builtin" as const }]
+        : []),
+      ...(liveWorkspaceEnabled && live && hasReload
+        ? [{ name: "reload", description: t("desktop.reloadCommandDescription"), source: "builtin" as const }]
+        : []),
+    ],
+    [liveWorkspaceEnabled, live, hasCompact, hasReload, t],
   );
 
   // --- error surfaces (fixed copy only) ---------------------------------------
@@ -1013,9 +1030,34 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
           return { handled: true, error: copy };
         }
       }
+      if (command === "/reload") {
+        if (!liveWorkspaceEnabled) {
+          return { handled: true, error: describeWorkspaceAccess(workspaceDecision, t) };
+        }
+        if (!hasReload || !exact) return { handled: false };
+        try {
+          await exact.reload();
+          await exact.fetchSnapshot();
+          await loadSlashCommands();
+          await queryClient.invalidateQueries({ queryKey: queryKeys.models.list() });
+          return { handled: true };
+        } catch (cause) {
+          return { handled: true, error: describeReloadFailure(cause, t) };
+        }
+      }
       return { handled: false };
     },
-    [liveWorkspaceEnabled, workspaceDecision, hasCompact, exact, isCurrent, t],
+    [
+      liveWorkspaceEnabled,
+      workspaceDecision,
+      hasCompact,
+      hasReload,
+      exact,
+      isCurrent,
+      loadSlashCommands,
+      queryClient,
+      t,
+    ],
   );
 
   const handleBranchLeafChange = useCallback(

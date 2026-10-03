@@ -20,8 +20,10 @@ import { RuntimeProvider } from "@/runtime/runtime-provider";
 import { I18nProvider } from "@/hooks/useI18n";
 import { flush, lastFrame, snapshotPayload, FakeWebSocket } from "@/runtime/testing/harness";
 import { CaptureTestRuntime } from "@/runtime/testing/capture-test-runtime";
+import { transcriptScrollRef } from "@/components/chat/chat-experience-bridge";
 import type { TestRuntimeStore } from "@/runtime/testing/test-runtime-store";
 import type { RuntimeSocketDeps } from "@/runtime";
+import type { StreamingAgentMessage } from "@fffattiger/pix-protocol";
 
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -665,6 +667,48 @@ describe("TranscriptList — live rebase keeps the user's scroll", () => {
     expect(status.textContent).toBe("Compacting context");
   });
 
+  it("shows a running indicator on the return-to-bottom control without changing its action", async () => {
+    const server = contextServer();
+    server.seed("L1", eightyUserEntries("s1"));
+    globalThis.fetch = server.fetch;
+    render(<LiveTree />);
+    const ws = await driveReady();
+    await fence(ws, "L1", 1);
+    await settle();
+    const transcript = screen.getByRole("log");
+    bindVirtualGeometry(transcript, 600);
+    act(() => {
+      transcript.scrollTop = 400;
+      fireEvent.scroll(transcript);
+    });
+    const button = screen.getByTestId("transcript-jump-bottom");
+    expect(button.querySelector("svg")).toBeTruthy();
+    expect(button.querySelector(".transcript-jump-bottom-dots")).toBeNull();
+
+    await act(async () => {
+      ws.serverSend({ type: "event", payload: { type: "agent_start", sessionId: "s1", eventId: 2, epoch: "e1" } });
+      await flush();
+    });
+    expect(button.classList.contains("is-running")).toBe(true);
+    expect(button.querySelectorAll(".transcript-jump-bottom-dots span")).toHaveLength(3);
+    expect(button.querySelector("svg")).toBeNull();
+    expect(button.getAttribute("aria-label")).toBeTruthy();
+    fireEvent.click(button);
+    expect(transcript.scrollTop).toBe(contentBottom(transcript));
+    expect(screen.queryByTestId("transcript-jump-bottom")).toBeNull();
+
+    act(() => {
+      transcript.scrollTop = 400;
+      fireEvent.scroll(transcript);
+    });
+    await act(async () => {
+      ws.serverSend({ type: "event", payload: { type: "agent_settled", sessionId: "s1", eventId: 3, epoch: "e1" } });
+      await flush();
+    });
+    expect(screen.getByTestId("transcript-jump-bottom").querySelector("svg")).toBeTruthy();
+    expect(screen.getByTestId("transcript-jump-bottom").querySelector(".transcript-jump-bottom-dots")).toBeNull();
+  });
+
   it("keeps the scrolled-up user's position across a pending rebase and a same-branch commit", async () => {
     const server = contextServer();
     server.seed("L1", eightyUserEntries("s1"));
@@ -852,5 +896,117 @@ describe("TranscriptList — live rebase keeps the user's scroll", () => {
     expect(transcript.scrollTop).toBe(contentBottom(transcript));
     expect(screen.getByText("committed send")).toBeTruthy();
     expect(screen.queryByText("pending send")).toBeNull();
+  });
+});
+
+describe("TranscriptList — read-only external streaming", () => {
+  const PARTIAL: StreamingAgentMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: "live child token" }],
+  };
+
+  function HistoryTree(props: {
+    sessionId: string;
+    tailActive?: boolean;
+    externalStreaming?: StreamingAgentMessage | null;
+    publishScrollRef?: boolean;
+  }): ReactNode {
+    const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+    return (
+      <QueryClientProvider client={queryClient}>
+        <HttpClientProvider>
+          <CapabilityProvider host={{ mode: "local", capabilities: ["agent", "sessions"] }}>
+            <RuntimeProvider deps={fakeDeps()}>
+              <I18nProvider>
+                <TranscriptList
+                  sessionId={props.sessionId}
+                  live={false}
+                  publishScrollRef={props.publishScrollRef ?? false}
+                  tailActive={props.tailActive ?? false}
+                  externalStreaming={props.externalStreaming ?? null}
+                />
+              </I18nProvider>
+            </RuntimeProvider>
+          </CapabilityProvider>
+        </HttpClientProvider>
+      </QueryClientProvider>
+    );
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    window.localStorage.setItem("pi-process-display-mode", "timeline");
+    previousFetch = globalThis.fetch;
+    previousIntersectionObserver = globalThis.IntersectionObserver;
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver =
+      IntersectionObserverStub as unknown as (typeof globalThis)["IntersectionObserver"];
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= ResizeObserverStub;
+    transcriptScrollRef.current = document.createElement("div");
+  });
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = previousFetch;
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = previousIntersectionObserver;
+    window.localStorage.removeItem("pi-process-display-mode");
+    transcriptScrollRef.current = null;
+    vi.useRealTimers();
+  });
+
+  it("renders an externalStreaming partial as a live tail and clears it on done", async () => {
+    globalThis.fetch = stubFetch((path) => {
+      if (path.includes("/v1/sessions/child/context")) {
+        return contextResponse("child", [
+          userEntry("child-u1", "inspect"),
+          {
+            entryId: "child-a1",
+            parentEntryId: "child-u1",
+            message: {
+              role: "assistant",
+              model: "m",
+              provider: "p",
+              content: [{ type: "thinking", thinking: "plan" }, { type: "text", text: "committed" }],
+            },
+          },
+        ]);
+      }
+      return json({});
+    });
+    const view = render(<HistoryTree sessionId="child" tailActive externalStreaming={PARTIAL} />);
+    await settle();
+    expect(Array.from(document.querySelectorAll(".stream-char")).map((node) => node.textContent).join("")).toContain("live child token");
+    expect(document.querySelector(".chat-assistant-message.is-streaming")).toBeTruthy();
+    expect(document.querySelector(".process-streaming-dot")).toBeTruthy();
+    expect(transcriptScrollRef.current).not.toBe(document.querySelector(".transcript-scroll"));
+
+    view.rerender(<HistoryTree sessionId="child" tailActive={false} externalStreaming={null} />);
+    await settle();
+    expect(document.querySelector(".chat-assistant-message.is-streaming")).toBeNull();
+    expect(document.querySelector(".process-streaming-dot")).toBeNull();
+  });
+
+  it("falls back to tailActive last-row marking when no partial exists yet", async () => {
+    globalThis.fetch = stubFetch((path) => {
+      if (path.includes("/v1/sessions/child/context")) {
+        return contextResponse("child", [
+          userEntry("child-u1", "inspect"),
+          {
+            entryId: "child-a1",
+            parentEntryId: "child-u1",
+            message: {
+              role: "assistant",
+              model: "m",
+              provider: "p",
+              content: [{ type: "thinking", thinking: "plan" }],
+            },
+          },
+        ]);
+      }
+      return json({});
+    });
+    render(<HistoryTree sessionId="child" tailActive />);
+    await settle();
+    expect(document.querySelector(".process-streaming-dot")).toBeTruthy();
+    expect(document.querySelector('button[aria-expanded="true"]')).toBeTruthy();
+    expect(document.querySelector(".chat-assistant-message.is-streaming")).toBeNull();
   });
 });

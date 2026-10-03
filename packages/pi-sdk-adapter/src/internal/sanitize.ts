@@ -12,8 +12,8 @@ export function redactText(value: string): string {
     .slice(0, MAX_STRING)
     .replace(/secret-token-[A-Za-z0-9_-]+/gi, "[REDACTED]")
     .replace(/\bsk-[A-Za-z0-9_-]+\b/g, "[REDACTED]")
-    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|credential|code)\s*[:=]\s*)[^\s,;\]}]+/gi, "$1[REDACTED]")
-    .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]");
+    .replace(/\b(Bearer|Basic)\s+[^\s,;\]}"']+/gi, "$1 [REDACTED]")
+    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization|credential|code)["']?\s*[:=]\s*)(?:"(?:\\[\s\S]?|[^"\\])*(?:"|$)|'(?:\\[\s\S]?|[^'\\])*(?:'|$)|[^\s,;\]}]+)/gi, "$1[REDACTED]");
 }
 
 export function sanitizeUnknown(value: unknown, depth = 0, key?: string): unknown {

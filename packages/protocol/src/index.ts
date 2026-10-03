@@ -31,3 +31,6 @@ export * from "./worker.js";
 export * from "./themes.js";
 export * from "./model-config.js";
 export * from "./settings-config.js";
+export * from "./built-in-capabilities.js";
+export * from "./runtime-projections.js";
+export * from "./side-chat.js";

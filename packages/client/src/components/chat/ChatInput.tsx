@@ -2,7 +2,7 @@
 import { reportPreferenceWrite } from "@/lib/preferences/preference-sync";
 import React, { useMemo, useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, type KeyboardEvent } from "react";
 import type { BuiltinSlashCommandResult, ChatFileIndexSnapshot, CompactResultInfo, QueuedMessages, SkillDormancyResponse, SlashCommandInfo } from "@/lib/chat-view-model";
-import { clearDraft, getDraft, setDraft, type ChatDraftImage } from "@/lib/draft-store";
+import { clearDraft, getDraft, getDraftFiles, setDraft, setDraftFiles, type ChatDraftFile, type ChatDraftImage } from "@/lib/draft-store";
 import { continueMarkdownList } from "@/lib/markdown-list";
 import { isBase64ImageWithinLimits, isBrowserImageFile, prepareBrowserImage } from "@/lib/image-attachments";
 import type { TextContent, UserMessage } from "@/lib/chat-view-model";
@@ -31,6 +31,7 @@ import { ArrowsInIcon } from "@phosphor-icons/react/ArrowsIn";
 import { ArrowsOutIcon } from "@phosphor-icons/react/ArrowsOut";
 import { AtIcon } from "@phosphor-icons/react/At";
 import { ImageIcon } from "@phosphor-icons/react/Image";
+import { UploadSimpleIcon } from "@phosphor-icons/react/UploadSimple";
 import { SortDescendingIcon } from "@phosphor-icons/react/SortDescending";
 
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
@@ -51,6 +52,13 @@ export interface AttachedImage {
   data: string;   // base64, no prefix
   mimeType: string;
   previewUrl: string; // object URL for display
+}
+
+type PendingFile = ChatDraftFile;
+
+interface FileSubmissionToken {
+  id: number;
+  identityRevision: number;
 }
 
 interface ModelOption {
@@ -131,7 +139,7 @@ interface Props {
   searchFiles?: (cwd: string, query: string) => Promise<{ matches?: FileIndexEntry[] }>;
   /** Skill catalog for slash-palette dormancy ("listSkills"); null = unavailable. */
   listSkills?: (cwd: string) => Promise<SkillDormancyResponse | null>;
-  /** Upload dropped files into cwd ("upload"); resolves to cwd-relative
+  /** Upload selected or dropped files into cwd ("upload"); resolves to cwd-relative
    *  mention names. Throws Error on failure (message is surfaced verbatim). */
   uploadFiles?: (files: File[], cwd: string) => Promise<string[]>;
   /** Mention-highlight validity snapshot (source useFileIndex); null = unknown. */
@@ -169,6 +177,12 @@ const MIN_MANUAL_HEIGHT_MOBILE = 80;
 const MANUAL_MAX_HEIGHT_CAP = 480;
 const MANUAL_MAX_HEIGHT_FRACTION = 0.55;
 const INPUT_HEIGHT_STORAGE_KEY = "pi-chat-input-height";
+let pendingFileSequence = 0;
+
+function nextPendingFileId(): string {
+  pendingFileSequence += 1;
+  return `file-${pendingFileSequence}`;
+}
 
 function compareModelOptions(a: ModelOption, b: ModelOption): number {
   return MODEL_OPTION_COLLATOR.compare(a.name || a.modelId, b.name || b.modelId)
@@ -326,16 +340,39 @@ function draftImagesToAttachedImages(images: ChatDraftImage[] | undefined): Atta
 
 /**
  * True when the composer is empty enough to restore a historical message:
- * no draft text, no attached images, and no image reads still in flight.
- * The pending-image guard prevents clobbering an image the user just dropped
- * while its FileReader is still running.
+ * no draft text, no attached images, no pending file chips, and no image
+ * reads still in flight. The pending-image/file guards prevent clobbering
+ * attachments the user just added.
  */
 export function canRestoreUserMessage(
   value: string,
   attachedImageCount: number,
   pendingImageCount: number,
+  pendingFileCount = 0,
 ): boolean {
-  return !value.trim() && attachedImageCount === 0 && pendingImageCount === 0;
+  return !value.trim() && attachedImageCount === 0 && pendingImageCount === 0 && pendingFileCount === 0;
+}
+
+function appendMentionText(message: string, mentions: string[]): string {
+  const mentionText = buildFileAtMentionsText(mentions);
+  if (!mentionText) return message;
+  if (!message) return mentionText;
+  return message.endsWith(" ") ? `${message}${mentionText}` : `${message} ${mentionText}`;
+}
+
+function collectPastedFiles(clipboardData: DataTransfer | null): File[] {
+  if (!clipboardData) return [];
+  if (clipboardData.files.length > 0) return Array.from(clipboardData.files);
+  const seen = new Set<File>();
+  const files: File[] = [];
+  for (const item of Array.from(clipboardData.items ?? [])) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (!file || seen.has(file)) continue;
+    seen.add(file);
+    files.push(file);
+  }
+  return files;
 }
 
 export function getUserMessageText(message: UserMessage): string {
@@ -467,9 +504,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (typeof window === "undefined") return [];
     return draftKey ? getDraft(draftKey)?.images.map(draftImageToAttachedImage) ?? [] : [];
   });
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>(() => (
+    draftKey ? getDraftFiles(draftKey) : []
+  ));
+  const [submittingFileIds, setSubmittingFileIds] = useState<ReadonlySet<string>>(() => new Set());
   const [imageAttachmentError, setImageAttachmentError] = useState<string | null>(null);
+  const [fileAttachmentError, setFileAttachmentError] = useState<string | null>(null);
   const trimmedValue = value.trimStart();
-  const bashMode = attachedImages.length === 0 && trimmedValue.startsWith("!");
+  const bashMode = attachedImages.length === 0 && pendingFiles.length === 0 && trimmedValue.startsWith("!");
   const bashExcluded = bashMode && trimmedValue.startsWith("!!");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
@@ -519,7 +561,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const thinkingDropdownRef = useRef<HTMLDivElement>(null);
   const projectDropdownRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
   const lastCompositionEndAtRef = useRef(0);
   const slashCommandsRequestedRef = useRef(false);
@@ -536,8 +579,21 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const draftKeyRef = useRef(draftKey);
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
+  const pendingFilesRef = useRef(pendingFiles);
+  const mountedRef = useRef(true);
+  const submissionSequenceRef = useRef(0);
+  const activeSubmissionRef = useRef<FileSubmissionToken | null>(null);
+  const composerIdentityRef = useRef({ draftKey, cwd, revision: 0 });
+  if (composerIdentityRef.current.draftKey !== draftKey || composerIdentityRef.current.cwd !== cwd) {
+    composerIdentityRef.current = {
+      draftKey,
+      cwd,
+      revision: composerIdentityRef.current.revision + 1,
+    };
+  }
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
+  pendingFilesRef.current = pendingFiles;
   // Image FileReader reads still in flight — replaceMessage must not clobber
   // an image the user just dropped before its read finished.
   const pendingImageCountRef = useRef(0);
@@ -607,12 +663,24 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ta.style.height = `${Math.min(ta.scrollHeight, AUTO_MAX_HEIGHT)}px`;
   }, []);
 
+  const updatePendingFiles = useCallback((update: (current: PendingFile[]) => PendingFile[]): void => {
+    setPendingFiles((current) => {
+      const next = update(current);
+      const key = draftKeyRef.current;
+      if (key) setDraftFiles(key, next);
+      return next;
+    });
+  }, []);
+
   useImperativeHandle(ref, () => ({
     promoteDraft(targetKey: string, submittedValue: string, submittedImageCount: number) {
       const ta = textareaRef.current;
       const currentValue = ta ? ta.value : value;
       const currentImages = attachedImagesRef.current;
-      const unchanged = currentValue === submittedValue && currentImages.length === submittedImageCount;
+      const currentFiles = pendingFilesRef.current;
+      const unchanged = currentValue === submittedValue
+        && currentImages.length === submittedImageCount
+        && currentFiles.length === 0;
       if (unchanged) {
         clearDraft(targetKey);
       } else {
@@ -620,10 +688,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           value: currentValue,
           images: currentImages.map(imageToDraftImage),
         });
+        setDraftFiles(targetKey, currentFiles);
       }
       if (draftKeyRef.current && draftKeyRef.current !== targetKey) clearDraft(draftKeyRef.current);
       setValue("");
       setAtQuery(null);
+      setFileAttachmentError(null);
+      setPendingFiles([]);
       setAttachedImages((prev) => {
         prev.forEach(revokeImagePreview);
         return [];
@@ -645,7 +716,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     replaceMessage(message: UserMessage) {
       const ta = textareaRef.current;
       const current = ta ? ta.value : value;
-      if (!canRestoreUserMessage(current, attachedImagesRef.current.length, pendingImageCountRef.current)) return;
+      if (!canRestoreUserMessage(
+        current,
+        attachedImagesRef.current.length,
+        pendingImageCountRef.current,
+        pendingFilesRef.current.length,
+      )) return;
 
       setValue(getUserMessageText(message));
       setAtQuery(null);
@@ -726,76 +802,56 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }, [t]);
 
-  /** Append `@relative/path ` mention tokens for dropped files. Cursor lands
-   *  at the end of the input so the user can keep typing right away. */
-  const insertFileMentionsAtEnd = useCallback((mentions: string[]) => {
-    const text = buildFileAtMentionsText(mentions);
-    if (!text) return;
-    const ta = textareaRef.current;
-    if (!ta) {
-      setValue((v) => (v ? `${v} ${text}` : text));
-      return;
-    }
-    const before = ta.value;
-    const sep = before.length > 0 && !before.endsWith(" ") ? " " : "";
-    const newVal = before + sep + text;
-    setValue(newVal);
-    setAtQuery(null);
-    requestAnimationFrame(() => {
-      if (!ta) return;
-      ta.focus();
-      ta.setSelectionRange(newVal.length, newVal.length);
-      applyAutoHeight();
-    });
-  }, [applyAutoHeight]);
+  const stagePendingFiles = useCallback((items: PendingFile[]) => {
+    if (!items.length) return;
+    setFileAttachmentError(null);
+    updatePendingFiles((current) => [...current, ...items]);
+  }, [updatePendingFiles]);
 
-  /** Upload dropped files into the session cwd (plain-browser fallback and
-   *  the "copy outside files into the project" path). Returns the uploaded
-   *  file names, which are cwd-relative mention paths by construction.
-   *  pix adapter: delegates to the injected uploadFiles loader (the source
-   *  posted multipart form data to its own /api/files route); without a
-   *  loader the drop degrades to a no-op instead of alerting. */
-  const uploadFilesToCwd = useCallback(async (files: File[], targetCwd: string): Promise<string[]> => {
-    if (!uploadFiles) return [];
-    return uploadFiles(files, targetCwd);
-  }, [uploadFiles]);
-
-  /** Turn dropped non-image files into @ mentions. Desktop resolves each
-   *  File's absolute path via the Electron bridge and references in-project
-   *  files in place (zero-copy); anything outside cwd is offered a copy into
-   *  the project. Plain browsers have no path API, so files are uploaded into
-   *  cwd first and then referenced by their uploaded name. */
-  const processFileMentions = useCallback(async (files: File[]) => {
-    if (isStreaming || !cwd) return;
+  /** Stage dropped/picked non-image files as visible chips. Desktop resolves
+   *  each File's absolute path via the Electron bridge and references
+   *  in-project files in place (zero-copy); anything outside cwd is offered a
+   *  copy into the project, uploaded only when the user later sends. Plain
+   *  browsers have no path API, so files stage as uploads. */
+  const processFileMentions = useCallback((files: File[]): boolean => {
+    if (!files.length || !cwd) return false;
+    const nextId = nextPendingFileId;
     const getPathForFile = window.piDesktop?.getPathForFile;
     if (getPathForFile) {
-      const absPaths = files.map((f) => getPathForFile(f)).filter((p): p is string => Boolean(p));
-      if (!absPaths.length) return;
-      const { mentions, rejected } = toCwdRelativeMentions(absPaths, cwd);
-      if (mentions.length) insertFileMentionsAtEnd(mentions);
-      if (!rejected.length) return;
-      const outsideName = (p: string) => p.split(/[\\/]/).pop() ?? p;
-      const copyOutside = window.confirm(
-        rejected.length === 1
-          ? t("desktop.dropOutsideProjectConfirm", { name: outsideName(rejected[0]!) })
-          : t("desktop.dropOutsideProjectConfirmMany", { count: rejected.length }),
-      );
-      if (!copyOutside) return;
-      try {
-        const uploaded = await uploadFilesToCwd(files, cwd);
-        if (uploaded.length) insertFileMentionsAtEnd(uploaded);
-      } catch (error) {
-        window.alert(error instanceof Error ? error.message : String(error));
+      const staged: PendingFile[] = [];
+      const outside: File[] = [];
+      for (const file of files) {
+        const absPath = getPathForFile(file);
+        if (!absPath) {
+          if (uploadFiles) staged.push({ id: nextId(), name: file.name, kind: "upload", file });
+          continue;
+        }
+        const { mentions, rejected } = toCwdRelativeMentions([absPath], cwd);
+        if (mentions[0]) {
+          staged.push({ id: nextId(), name: file.name, kind: "reference", mentionPath: mentions[0] });
+        } else if (rejected.length && uploadFiles) {
+          outside.push(file);
+        }
       }
-      return;
+      if (outside.length) {
+        const copyOutside = window.confirm(
+          outside.length === 1
+            ? t("desktop.dropOutsideProjectConfirm", { name: outside[0]!.name })
+            : t("desktop.dropOutsideProjectConfirmMany", { count: outside.length }),
+        );
+        if (copyOutside) {
+          for (const file of outside) {
+            staged.push({ id: nextId(), name: file.name, kind: "upload", file });
+          }
+        }
+      }
+      stagePendingFiles(staged);
+      return staged.length > 0;
     }
-    try {
-      const uploaded = await uploadFilesToCwd(files, cwd);
-      if (uploaded.length) insertFileMentionsAtEnd(uploaded);
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : String(error));
-    }
-  }, [cwd, isStreaming, insertFileMentionsAtEnd, uploadFilesToCwd, t]);
+    if (!uploadFiles) return false;
+    stagePendingFiles(files.map((file) => ({ id: nextId(), name: file.name, kind: "upload" as const, file })));
+    return true;
+  }, [cwd, stagePendingFiles, t, uploadFiles]);
 
   /** Insert "@" at the caret and open the @ file menu (shared by the Ctrl+I
    *  shortcut and the + toolbar menu's file entry). */
@@ -876,6 +932,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     });
   }, []);
 
+  const removePendingFile = useCallback((id: string) => {
+    if (submittingFileIds.has(id)) return;
+    updatePendingFiles((current) => current.filter((file) => file.id !== id));
+  }, [submittingFileIds, updatePendingFiles]);
+
   const clearImages = useCallback(() => {
     setAttachedImages((prev) => {
       prev.forEach(revokeImagePreview);
@@ -883,17 +944,23 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     });
   }, []);
 
+  const clearPendingFiles = useCallback(() => {
+    updatePendingFiles(() => []);
+  }, [updatePendingFiles]);
+
   const clearInput = useCallback(() => {
     setValue("");
     setAtQuery(null);
     setImageAttachmentError(null);
+    setFileAttachmentError(null);
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
     clearImages();
+    clearPendingFiles();
     if (!manualModeRef.current && textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [clearImages, draftKey]);
+  }, [clearImages, clearPendingFiles, draftKey]);
 
   useEffect(() => {
     if (!draftKey || draftRestoredRef.current !== draftKey) return;
@@ -921,12 +988,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         value: valueRef.current,
         images: attachedImagesRef.current.map(imageToDraftImage),
       });
+      setDraftFiles(previousDraftKey, pendingFilesRef.current);
     }
 
     const draft = draftKey ? getDraft(draftKey) : null;
     if (keyChanged) {
       setValue(draft?.value ?? "");
       setAtQuery(null);
+      setFileAttachmentError(null);
+      setPendingFiles(draftKey ? getDraftFiles(draftKey) : []);
       setAttachedImages((prev) => {
         prev.forEach(revokeImagePreview);
         return draft?.images.map(draftImageToAttachedImage) ?? [];
@@ -1016,16 +1086,119 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   useEffect(() => {
     return () => {
+      mountedRef.current = false;
+      activeSubmissionRef.current = null;
       attachedImagesRef.current.forEach(revokeImagePreview);
     };
   }, []);
 
+  const resolvePendingFileMentions = useCallback(async (files: PendingFile[]): Promise<string[]> => {
+    const mentions: string[] = [];
+    const uploadables: File[] = [];
+    for (const pending of files) {
+      if (pending.kind === "reference" && pending.mentionPath) {
+        mentions.push(pending.mentionPath);
+        continue;
+      }
+      if (pending.kind === "upload" && pending.file) {
+        uploadables.push(pending.file);
+        continue;
+      }
+      throw new Error("invalid pending file");
+    }
+    if (uploadables.length === 0) return mentions;
+    if (!cwd || !uploadFiles) throw new Error("file upload unavailable");
+    const uploaded = await uploadFiles(uploadables, cwd);
+    if (!Array.isArray(uploaded) || uploaded.length !== uploadables.length) {
+      throw new Error("incomplete file upload");
+    }
+    mentions.push(...uploaded);
+    return mentions;
+  }, [cwd, uploadFiles]);
+
+  const beginFileSubmission = useCallback((): FileSubmissionToken | null => {
+    const identityRevision = composerIdentityRef.current.revision;
+    if (activeSubmissionRef.current?.identityRevision === identityRevision) return null;
+    const token = { id: ++submissionSequenceRef.current, identityRevision };
+    activeSubmissionRef.current = token;
+    return token;
+  }, []);
+
+  const isFileSubmissionCurrent = useCallback((token: FileSubmissionToken): boolean => (
+    mountedRef.current && composerIdentityRef.current.revision === token.identityRevision
+  ), []);
+
+  const finishFileSubmission = useCallback((token: FileSubmissionToken): void => {
+    if (activeSubmissionRef.current?.id === token.id) activeSubmissionRef.current = null;
+  }, []);
+
+  const markSubmittingFiles = useCallback((files: PendingFile[], submitting: boolean): void => {
+    const ids = new Set(files.map((file) => file.id));
+    if (ids.size === 0) return;
+    setSubmittingFileIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) {
+        if (submitting) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const removeSubmittedFiles = useCallback((files: PendingFile[]): void => {
+    const submittedIds = new Set(files.map((file) => file.id));
+    updatePendingFiles((current) => current.filter((file) => !submittedIds.has(file.id)));
+  }, [updatePendingFiles]);
+
+  const commitUploadedMentionsToDraft = useCallback((mentions: string[], files: PendingFile[]): void => {
+    if (mentions.length === 0) return;
+    setValue((current) => appendMentionText(current, mentions));
+    setAtQuery(null);
+    removeSubmittedFiles(files);
+  }, [removeSubmittedFiles]);
+
+  const settleAcceptedSubmission = useCallback((snapshot: {
+    value: string;
+    images: AttachedImage[];
+    files: PendingFile[];
+  }): void => {
+    const currentImages = attachedImagesRef.current;
+    const currentFiles = pendingFilesRef.current;
+    const unchanged = valueRef.current === snapshot.value
+      && currentImages.length === snapshot.images.length
+      && currentImages.every((image, index) => image === snapshot.images[index])
+      && currentFiles.length === snapshot.files.length
+      && currentFiles.every((file, index) => file.id === snapshot.files[index]?.id);
+    if (unchanged) {
+      clearInput();
+      return;
+    }
+
+    removeSubmittedFiles(snapshot.files);
+    const submittedImages = new Set(snapshot.images);
+    setAttachedImages((current) => {
+      const next = current.filter((image) => !submittedImages.has(image));
+      current.forEach((image) => {
+        if (submittedImages.has(image)) revokeImagePreview(image);
+      });
+      return next;
+    });
+    if (valueRef.current === snapshot.value) {
+      setValue("");
+      setAtQuery(null);
+    }
+    setImageAttachmentError(null);
+    setFileAttachmentError(null);
+  }, [clearInput, removeSubmittedFiles]);
+
   const handleSend = useCallback(async () => {
     const msg = value.trim();
-    if (!msg && !attachedImages.length) return;
+    const images = attachedImages;
+    const files = pendingFiles;
+    if (!msg && !images.length && !files.length) return;
     if (isStreaming || sendDisabled) return;
     onAudioUnlock?.();
-    if (!attachedImages.length && msg.startsWith("!") && onBash) {
+    if (!images.length && !files.length && msg.startsWith("!") && onBash) {
       const excludeFromContext = msg.startsWith("!!");
       const command = msg.slice(excludeFromContext ? 2 : 1).trim();
       if (!command) return;
@@ -1033,16 +1206,45 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       clearInput();
       return;
     }
-    if (!attachedImages.length && msg.startsWith("/") && onBuiltinCommand) {
+    if (!images.length && !files.length && msg.startsWith("/") && onBuiltinCommand) {
       const result = await onBuiltinCommand(msg);
       if (result.handled) {
         if (!result.error) clearInput();
         return;
       }
     }
-    const accepted = onSend(msg, attachedImages.length ? attachedImages : undefined, { rawValue: value });
-    if (accepted) clearInput();
-  }, [value, attachedImages, isStreaming, sendDisabled, onBash, onBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+    const token = beginFileSubmission();
+    if (!token) return;
+    markSubmittingFiles(files, true);
+    try {
+      let mentions: string[];
+      try {
+        mentions = files.length ? await resolvePendingFileMentions(files) : [];
+      } catch {
+        if (isFileSubmissionCurrent(token)) setFileAttachmentError(t("desktop.attachFileFailed"));
+        return;
+      }
+      if (!isFileSubmissionCurrent(token)) return;
+      const message = appendMentionText(msg, mentions);
+      const rawValue = mentions.length ? appendMentionText(value, mentions) : value;
+      let accepted: boolean;
+      try {
+        accepted = onSend(message, images.length ? images : undefined, { rawValue });
+      } catch {
+        commitUploadedMentionsToDraft(mentions, files);
+        setFileAttachmentError(t("desktop.sendFailed"));
+        return;
+      }
+      if (accepted) {
+        settleAcceptedSubmission({ value, images, files });
+        return;
+      }
+      commitUploadedMentionsToDraft(mentions, files);
+    } finally {
+      if (mountedRef.current) markSubmittingFiles(files, false);
+      finishFileSubmission(token);
+    }
+  }, [value, attachedImages, pendingFiles, isStreaming, sendDisabled, onBash, onBuiltinCommand, onSend, onAudioUnlock, beginFileSubmission, commitUploadedMentionsToDraft, finishFileSubmission, isFileSubmissionCurrent, markSubmittingFiles, resolvePendingFileMentions, settleAcceptedSubmission, t]);
 
   // Slash menu trigger — caret-based, per the interaction rules:
   //   1. the slash is the first non-whitespace character of the input
@@ -1098,11 +1300,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [cwd, slashMenuOpen, listSkills]);
 
   const hasInputText = Boolean(value.trim());
+  const hasAttachments = attachedImages.length > 0 || pendingFiles.length > 0;
   // Popup height caps: once the space above the input is measured, it wins
   // over the static viewport-relative caps.
   const atMenuHeightCap = popupMaxHeight === null ? "min(calc(30vh / var(--app-ui-scale, 1)), 240px)" : Math.min(240, popupMaxHeight);
   const slashMenuHeightCap = popupMaxHeight === null ? "min(calc(38vh / var(--app-ui-scale, 1)), 300px)" : Math.min(300, popupMaxHeight);
-  const canQueueStreamingMessage = hasInputText || attachedImages.length > 0;
+  const canQueueStreamingMessage = hasInputText || hasAttachments;
 
   // ── @ file autocomplete ──────────────────────────────────────────────────
   // Recomputed from the text before the caret on every change/caret move.
@@ -1287,27 +1490,64 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     });
   }, [value, slashCaretPos, applyAutoHeight]);
 
-  const sendQueued = useCallback((mode: "steer" | "followup") => {
+  const sendQueued = useCallback(async (mode: "steer" | "followup") => {
     const msg = value.trim();
-    // Images can be delivered mid-stream now (pi accepts them in steering /
-    // follow-up prompts). Pass them through alongside the text; the action
-    // buttons are gated by canQueueStreamingMessage.
-    if (!msg && !attachedImages.length) return;
-    const images = attachedImages.length ? attachedImages : undefined;
+    const imagesSnapshot = attachedImages;
+    const files = pendingFiles;
+    // Images and staged files can be delivered mid-stream (pi accepts them in
+    // steering / follow-up prompts). Upload first; the action buttons are
+    // gated by canQueueStreamingMessage.
+    if (!msg && !imagesSnapshot.length && !files.length) return;
+    const identityRevision = composerIdentityRef.current.revision;
+    if (activeSubmissionRef.current?.identityRevision === identityRevision) return;
+    const images = imagesSnapshot.length ? imagesSnapshot : undefined;
     onAudioUnlock?.();
     const streamingBehavior = mode === "steer" ? "steer" : "followUp";
-    if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
+    if (msg.startsWith("/") && !files.length && onPromptWithStreamingBehavior) {
       onPromptWithStreamingBehavior(msg, streamingBehavior, images);
       clearInput();
       return;
     }
-    if (mode === "steer" && onSteer) {
-      onSteer(msg, images);
-    } else if (mode === "followup" && onFollowUp) {
-      onFollowUp(msg, images);
+    const token = beginFileSubmission();
+    if (!token) return;
+    markSubmittingFiles(files, true);
+    try {
+      let mentions: string[];
+      try {
+        mentions = files.length ? await resolvePendingFileMentions(files) : [];
+      } catch {
+        if (isFileSubmissionCurrent(token)) setFileAttachmentError(t("desktop.attachFileFailed"));
+        return;
+      }
+      if (!isFileSubmissionCurrent(token)) return;
+      const message = appendMentionText(msg, mentions);
+      let delivered = false;
+      try {
+        if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
+          onPromptWithStreamingBehavior(message, streamingBehavior, images);
+          delivered = true;
+        } else if (mode === "steer" && onSteer) {
+          onSteer(message, images);
+          delivered = true;
+        } else if (mode === "followup" && onFollowUp) {
+          onFollowUp(message, images);
+          delivered = true;
+        }
+      } catch {
+        commitUploadedMentionsToDraft(mentions, files);
+        setFileAttachmentError(t("desktop.sendFailed"));
+        return;
+      }
+      if (!delivered) {
+        commitUploadedMentionsToDraft(mentions, files);
+        return;
+      }
+      settleAcceptedSubmission({ value, images: imagesSnapshot, files });
+    } finally {
+      if (mountedRef.current) markSubmittingFiles(files, false);
+      finishFileSubmission(token);
     }
-    clearInput();
-  }, [value, attachedImages, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, pendingFiles, onPromptWithStreamingBehavior, onSteer, onFollowUp, onAudioUnlock, beginFileSubmission, commitUploadedMentionsToDraft, finishFileSubmission, isFileSubmissionCurrent, markSubmittingFiles, resolvePendingFileMentions, settleAcceptedSubmission, t]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1472,13 +1712,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [applyAutoHeight]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const items = Array.from(e.clipboardData?.items ?? []);
-    const imageItems = items.filter((item) => item.type.startsWith("image/"));
-    if (!imageItems.length) return;
+    const files = collectPastedFiles(e.clipboardData);
+    if (!files.length) return;
+    const images = files.filter(isBrowserImageFile);
+    const others = files.filter((file) => !isBrowserImageFile(file));
+    if (others.length && !processFileMentions(others)) return;
+    if (!images.length && !others.length) return;
     e.preventDefault();
-    const files = imageItems.map((item) => item.getAsFile()).filter((f): f is File => f !== null);
-    processImageFiles(files);
-  }, [processImageFiles]);
+    if (images.length) void processImageFiles(images);
+  }, [processFileMentions, processImageFiles]);
 
   useEffect(() => {
     if (historyActiveIndex >= (inputHistory?.length ?? 0)) {
@@ -1680,16 +1922,27 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         padding: isMobile ? "0 16px 6px" : "0 16px 15px",
       }}
     >
-      {/* Hidden file input */}
+      {/* Hidden image/file pickers keep native mobile selection behavior. */}
       <input
-        ref={fileInputRef}
+        ref={imageInputRef}
         type="file"
         accept="image/*"
         multiple
         style={{ display: "none" }}
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
-          processImageFiles(files);
+          void processImageFiles(files);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={uploadInputRef}
+        type="file"
+        multiple
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          processFileMentions(files);
           e.target.value = "";
         }}
       />
@@ -1799,17 +2052,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {compactResultText}
           </div>
         )}
-        {imageAttachmentError && (
+        {(imageAttachmentError || fileAttachmentError) && (
           <div
             role="alert"
             style={{ marginBottom: 6, fontSize: 12, lineHeight: 1.4, color: "var(--accent-red)" }}
           >
-            {imageAttachmentError}
+            {fileAttachmentError ?? imageAttachmentError}
           </div>
         )}
-        {/* Image previews */}
-        {attachedImages.length > 0 && (
-          <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+        {/* Image previews + pending ordinary-file chips */}
+        {(attachedImages.length > 0 || pendingFiles.length > 0) && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap", alignItems: "center" }}>
             {attachedImages.map((img, i) => (
               <div key={i} style={{ position: "relative", flexShrink: 0 }}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1828,6 +2081,48 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     background: "var(--bg-panel)", border: "1px solid var(--border)",
                     display: "flex", alignItems: "center", justifyContent: "center",
                     cursor: "pointer", padding: 0, color: "var(--text-muted)",
+                  }}
+                >
+                  <XIcon size={8} />
+                </button>
+              </div>
+            ))}
+            {pendingFiles.map((file) => (
+              <div
+                key={file.id}
+                style={{
+                  position: "relative",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  maxWidth: 180,
+                  height: 28,
+                  padding: "0 8px 0 6px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-panel)",
+                  color: "var(--text)",
+                  fontSize: 12,
+                }}
+              >
+                <span style={{ flexShrink: 0, display: "flex" }}>{getFileIcon(file.name, 14)}</span>
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {file.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removePendingFile(file.id)}
+                  disabled={submittingFileIds.has(file.id)}
+                  title={t("desktop.removeFile")}
+                  aria-label={t("desktop.removeFile")}
+                  style={{
+                    position: "absolute", top: -4, right: -4,
+                    width: 16, height: 16, borderRadius: "50%",
+                    background: "var(--bg-panel)", border: "1px solid var(--border)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    cursor: submittingFileIds.has(file.id) ? "wait" : "pointer",
+                    opacity: submittingFileIds.has(file.id) ? 0.6 : 1,
+                    padding: 0, color: "var(--text-muted)",
                   }}
                 >
                   <XIcon size={8} />
@@ -2389,17 +2684,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 width: 24, height: 24, padding: 0,
                 background: attachMenuOpen ? "var(--bg-hover)" : "none", border: "none",
                 borderRadius: 6,
-                color: attachedImages.length ? "var(--accent)" : "var(--text-muted)",
+                color: hasAttachments ? "var(--accent)" : "var(--text-muted)",
                 cursor: "pointer",
                 transition: "background 0.12s, color 0.12s",
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = "var(--bg-hover)";
-                e.currentTarget.style.color = attachedImages.length ? "var(--accent)" : "var(--text)";
+                e.currentTarget.style.color = hasAttachments ? "var(--accent)" : "var(--text)";
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = attachMenuOpen ? "var(--bg-hover)" : "none";
-                e.currentTarget.style.color = attachedImages.length ? "var(--accent)" : "var(--text-muted)";
+                e.currentTarget.style.color = hasAttachments ? "var(--accent)" : "var(--text-muted)";
               }}
             >
               <PlusIcon size={14} />
@@ -2441,9 +2736,31 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       <AtIcon size={14} weight="regular" aria-hidden="true" />
                       <span style={{ flex: 1 }}>{t("desktop.attachFileReference")}</span>
                     </button>
+                    {uploadFiles && (
+                      <button
+                        type="button"
+                        onClick={() => { setAttachMenuOpen(false); uploadInputRef.current?.click(); }}
+                        disabled={!cwd}
+                        style={{
+                          width: "100%", display: "flex", alignItems: "center", gap: 8,
+                          padding: "4px 10px", borderRadius: 4,
+                          background: "none", border: "none",
+                          color: cwd ? "var(--text)" : "var(--text-dim)",
+                          cursor: cwd ? "pointer" : "not-allowed",
+                          fontSize: 12, textAlign: "left",
+                          opacity: cwd ? 1 : 0.6,
+                          transition: "background 0.1s ease",
+                        }}
+                        onMouseEnter={(e) => { if (cwd) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
+                      >
+                        <UploadSimpleIcon size={14} weight="regular" aria-hidden="true" />
+                        <span style={{ flex: 1 }}>{t("desktop.uploadFiles")}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => { setAttachMenuOpen(false); fileInputRef.current?.click(); }}
+                      onClick={() => { setAttachMenuOpen(false); imageInputRef.current?.click(); }}
                       disabled={!modelSupportsImages}
                       title={!modelSupportsImages
                         ? t("desktop.attachImageModelUnsupported", { model: activeModelName })
@@ -3087,7 +3404,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={sendDisabled || (!value.trim() && !attachedImages.length)}
+                disabled={sendDisabled || (!value.trim() && !hasAttachments)}
                 className="chat-input-send"
                 title={t("desktop.sendMessage")}
                 aria-label={t("desktop.sendMessage")}

@@ -130,6 +130,24 @@ export interface AssistantMessage {
   writtenFiles?: readonly string[];
 }
 
+export const NESTED_TOOL_CALL_STATUSES = ["ok", "error", "unfinished"] as const;
+export const MAX_NESTED_TOOL_CALLS = 256;
+export const MAX_NESTED_TOOL_ERROR_CHARS = 500;
+
+/** Execution summaries belong to the parent tool result; they are not transcript entries. */
+export interface NestedToolCalls {
+  calls: readonly {
+    id: string;
+    name: string;
+    arguments?: unknown;
+    argumentsBytes?: number;
+    status: typeof NESTED_TOOL_CALL_STATUSES[number];
+    durationMs?: number;
+    error?: string;
+  }[];
+  complete: boolean;
+}
+
 export interface ToolResultMessage {
   role: "toolResult";
   toolCallId: string;
@@ -138,6 +156,10 @@ export interface ToolResultMessage {
   /** `true` when the tool failed; `false`/omitted means success. */
   isError?: boolean;
   details?: unknown;
+  nestedCalls?: NestedToolCalls;
+  structuredContent?: unknown;
+  /** Usage charged by this tool, including its nested calls exactly once. */
+  usage?: TokenUsage;
   timestamp?: number;
 }
 
@@ -203,6 +225,9 @@ export interface StreamingToolResultMessage {
   content?: readonly (TextContent | ImageContent)[];
   isError?: boolean;
   details?: unknown;
+  nestedCalls?: NestedToolCalls;
+  structuredContent?: unknown;
+  usage?: TokenUsage;
   timestamp?: number;
 }
 

@@ -1,4 +1,9 @@
+import type { FileActivityTracker, SideChatController } from "./vendor/pi-side-chat/index.js";
+import type { PromptDisposition, QueuedInputDisposition } from "@fffattiger/pix-runtime-core";
+export type { PromptDisposition, QueuedInputDisposition };
+
 import type {
+  BuiltInRuntimeState,
   RuntimeStateChangedContext,
   ImageAttachment,
   ModelRef,
@@ -7,7 +12,9 @@ import type {
   RuntimeEvent,
   RuntimeStartInput,
   SlashCommandInfo,
+  SubagentProjection,
   ThinkingLevel,
+  TodoProjection,
   ToolInfo,
 } from "@fffattiger/pix-runtime-core";
 
@@ -56,6 +63,9 @@ export interface DriverState {
   };
   lastAssistantText?: string;
   commands?: readonly SlashCommandInfo[];
+  builtIns?: BuiltInRuntimeState;
+  subagents?: SubagentProjection;
+  todo?: TodoProjection;
 }
 
 /** The driver's narrow read returns the canonical context event shape. */
@@ -99,9 +109,13 @@ export interface PiRuntimeDriver {
    */
   getContextState?(): DriverContextState;
   subscribe(listener: DriverEventListener): () => void;
-  prompt(message: string, images?: readonly ImageAttachment[], streamingBehavior?: "steer" | "followUp"): Promise<void>;
-  steer(message: string, images?: readonly ImageAttachment[]): Promise<void>;
-  followUp(message: string, images?: readonly ImageAttachment[]): Promise<void>;
+  /** Pi 1.0 input receipt: "started" (a model turn began), "handled" (an
+   * extension command/input handler consumed it — NO assistant reply and NO
+   * user transcript entry is owed), or "queued" (parked via steer/followUp;
+   * the turn happens later). */
+  prompt(message: string, images?: readonly ImageAttachment[], streamingBehavior?: "steer" | "followUp"): Promise<{ disposition: PromptDisposition }>;
+  steer(message: string, images?: readonly ImageAttachment[]): Promise<QueuedInputDisposition>;
+  followUp(message: string, images?: readonly ImageAttachment[]): Promise<QueuedInputDisposition>;
   abort(): Promise<void>;
   setModel(model: ModelRef): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<void> | void;
@@ -141,6 +155,8 @@ export interface PiRuntimeDriver {
   fork(entryId: string): Promise<{ sessionId: string; sessionFile: string }>;
   generateSessionTitle(options?: { model?: { provider: string; modelId: string } }): Promise<string>;
   bindUi(onRequest: (request: DriverUiRequest) => void, emit: (event: RuntimeEvent) => void): Promise<void>;
+  /** Create the real pinned headless side-chat controller from current parent authority. */
+  createSideChatController?(tracker: FileActivityTracker): SideChatController;
   close(reason: RuntimeCloseReason): Promise<void>;
 }
 

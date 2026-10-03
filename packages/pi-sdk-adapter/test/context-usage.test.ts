@@ -35,6 +35,9 @@ function fakeSession(options: {
 }): AgentSession {
   return {
     model: options.model ?? null,
+    // The SDK supplies limits (including virtual-model routing); the shared
+    // adapter estimator still owns the selected branch numerator.
+    getContextUsage: () => options.model ? { contextWindow: options.model.contextWindow ?? 0, tokens: 0, percent: 0 } : undefined,
     sessionManager: {
       getBranch: () => options.branch,
       buildSessionContext: () => ({ messages: options.messages, thinkingLevel: "off", model: null }),

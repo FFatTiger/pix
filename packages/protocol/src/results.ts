@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RUNTIME_COMMAND_TYPES } from "./commands.js";
+import { PromptDispositionSchema, QueuedInputDispositionSchema } from "./turns.js";
 import {
   NonEmptyStringSchema,
   ProtocolErrorSchema,
@@ -7,20 +8,26 @@ import {
   ToolInfoSchema,
 } from "./common.js";
 import { RuntimeStateSchema } from "./snapshot.js";
+import { SideChatIdSchema } from "./side-chat.js";
 
 export const RuntimeCommandTypeSchema = z.enum(RUNTIME_COMMAND_TYPES);
 
+const ackPayloadCommandTypes = new Set([
+  "get_state",
+  "get_tools",
+  "get_commands",
+  "get_session_stats",
+  "get_last_assistant_text",
+  "fork",
+  "generate_session_title",
+  "side_chat_start",
+  "side_chat_send",
+  "side_chat_reset",
+]);
+// steer/follow_up/prompt carry the Pi 1.0 input receipt instead of a bare ack.
+const dispositionPayloadCommandTypes = new Set(["steer", "follow_up", "prompt"]);
 const ackCommandTypes = RUNTIME_COMMAND_TYPES.filter(
-  (type) =>
-    ![
-      "get_state",
-      "get_tools",
-      "get_commands",
-      "get_session_stats",
-      "get_last_assistant_text",
-      "fork",
-      "generate_session_title",
-    ].includes(type),
+  (type) => !ackPayloadCommandTypes.has(type) && !dispositionPayloadCommandTypes.has(type),
 ) as [
   Exclude<
     (typeof RUNTIME_COMMAND_TYPES)[number],
@@ -31,6 +38,12 @@ const ackCommandTypes = RUNTIME_COMMAND_TYPES.filter(
     | "get_last_assistant_text"
     | "fork"
     | "generate_session_title"
+    | "side_chat_start"
+    | "side_chat_send"
+    | "side_chat_reset"
+    | "steer"
+    | "follow_up"
+    | "prompt"
   >,
   ...Exclude<
     (typeof RUNTIME_COMMAND_TYPES)[number],
@@ -41,6 +54,12 @@ const ackCommandTypes = RUNTIME_COMMAND_TYPES.filter(
     | "get_last_assistant_text"
     | "fork"
     | "generate_session_title"
+    | "side_chat_start"
+    | "side_chat_send"
+    | "side_chat_reset"
+    | "steer"
+    | "follow_up"
+    | "prompt"
   >[],
 ];
 
@@ -78,6 +97,26 @@ export const RuntimeCommandOkSchema = z.discriminatedUnion("type", [
     // §51 revisioned title overlay (never derived from a racy wire event).
     title: z.string(),
   }),
+  z.strictObject({ ok: z.literal(true), type: z.literal("side_chat_start"), conversationId: SideChatIdSchema }),
+  z.strictObject({ ok: z.literal(true), type: z.literal("side_chat_send"), runId: SideChatIdSchema }),
+  z.strictObject({ ok: z.literal(true), type: z.literal("side_chat_reset"), conversationId: SideChatIdSchema }),
+  z.strictObject({
+    ok: z.literal(true),
+    type: z.literal("steer"),
+    // Protocol v2 predates Pi 1.0 input receipts. Keep its payload-free ACK
+    // readable; absence does not assert "handled". Remove in Protocol v3.
+    disposition: QueuedInputDispositionSchema.optional(),
+  }),
+  z.strictObject({
+    ok: z.literal(true),
+    type: z.literal("follow_up"),
+    disposition: QueuedInputDispositionSchema.optional(),
+  }),
+  z.strictObject({
+    ok: z.literal(true),
+    type: z.literal("prompt"),
+    disposition: PromptDispositionSchema.optional(),
+  }),
   z.strictObject({ ok: z.literal(true), type: z.enum(ackCommandTypes) }),
 ]);
 
@@ -107,6 +146,7 @@ export const RuntimeInterruptTypeSchema = z.enum([
   "abort_compaction",
   "abort_bash",
   "clear_queue",
+  "abort_side_chat",
 ]);
 export type RuntimeInterruptType = z.infer<typeof RuntimeInterruptTypeSchema>;
 
@@ -115,6 +155,7 @@ export const RuntimeInterruptSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("abort_compaction") }),
   z.strictObject({ type: z.literal("abort_bash") }),
   z.strictObject({ type: z.literal("clear_queue") }),
+  z.strictObject({ type: z.literal("abort_side_chat"), conversationId: SideChatIdSchema }),
 ]);
 export type RuntimeInterrupt = z.infer<typeof RuntimeInterruptSchema>;
 

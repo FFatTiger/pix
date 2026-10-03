@@ -647,15 +647,22 @@ function safeJson(text: string): unknown {
 /**
  * True when a command must interleave with a long-running prompt on the
  * serial lane. D2-P4 queued turns (steer / follow_up) and D2-P8 extension UI
- * response/input run on the INDEPENDENT interleaving lane so they are never
- * HOL-blocked behind a prompt command that awaits an extension request (or
- * streams/queues). Read-only runtime commands use a third bounded read lane;
+ * response/input and all side-chat commands run on the INDEPENDENT
+ * interleaving lane so they are never HOL-blocked behind a parent prompt.
  * lifecycle mutations and the ordinary prompt stay on the serial lane.
  */
 function isInterleavingCommand(message: WsClientMessage): boolean {
   if (message.type !== "command") return false;
   const type = message.payload.command.type;
-  return type === "steer" || type === "follow_up" || type === "extension_ui_response" || type === "extension_ui_input";
+  return type === "steer"
+    || type === "follow_up"
+    || type === "extension_ui_response"
+    || type === "extension_ui_input"
+    || type === "side_chat_start"
+    || type === "side_chat_send"
+    || type === "side_chat_reset"
+    || type === "side_chat_set_mode"
+    || type === "side_chat_overlap_response";
 }
 
 const READ_ONLY_COMMAND_TYPES = new Set<string>(READ_ONLY_RUNTIME_COMMAND_TYPES);
@@ -1140,7 +1147,7 @@ class GatewayConnection {
     const onPush = (push: SessiondTurnStatusPush): void => {
       if (this.browserClosed) return;
       if (push.status.sessionId !== message.payload.sessionId || push.status.operationId !== message.payload.operationId) return;
-      this.send({ type: "turn_status", payload: push.status });
+      this.send({ type: "turn_status", payload: push.status, ...(push.authority === undefined ? {} : { authority: push.authority }) });
     };
     let subscription: SessiondRpcSubscription<SessiondMethodResult["runtime.submitTurn"]>;
     try {

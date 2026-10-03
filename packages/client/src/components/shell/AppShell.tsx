@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { PROJECT_PICKER_PAGE_SIZE, SESSION_PAGE_SIZE } from "@/api/session-list";
 import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
+import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
 import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
+import { SubagentActivityCard, type StatusCardDisplayMode } from "@/components/chat/SubagentActivityCard";
+import { SubagentPanel } from "@/components/chat/SubagentPanel";
 import { Composer } from "@/components/shell/Composer";
 import { Sidebar } from "@/components/shell/Sidebar";
-import { AppTitleBar, FileBrowserToggle } from "@/components/shell/AppTitleBar";
+import { AppTitleBar, RightPaneToggle } from "@/components/shell/AppTitleBar";
 import { SettingsModal, type SettingsTab } from "@/components/shell/SettingsModal";
 import { LoginPage } from "@/components/shell/LoginPage";
 import { ProjectTrustDialog } from "@/features/settings/ProjectTrustDialog";
@@ -19,6 +22,7 @@ import { ExtensionRequests } from "@/features/extension-request/ExtensionRequest
 import { registerChatOpenFileTarget } from "@/components/chat/chat-experience-bridge";
 import { FileViewer } from "@/features/workspace/viewer/FileViewer";
 import { ExplorerPanel } from "@/features/workspace/explorer/ExplorerPanel";
+import { SideChatPanel } from "@/features/side-chat/SideChatPanel";
 import {
   closeWorkspaceTab,
   closeOtherWorkspaceTabs,
@@ -40,14 +44,17 @@ import {
 } from "@/features/workspace/tabs/workspace-tab-state";
 import type { FileViewerState } from "@/features/workspace/viewer/file-viewer-state";
 import { useSelectedWorkspaceAccess } from "@/features/session-history/use-selected-workspace-access";
+import { useSubagentActivity } from "@/features/subagents/use-subagent-activity";
+import type { SubagentActivity } from "@/lib/subagent-activity";
 import { homePresentationKey, useRuntimeConnection, useRuntimeForegroundActivity, useRuntimeOwners, useSelectedRuntime, type PresentationProvenance } from "@/runtime";
 import { describeRuntimeObservationError } from "@/runtime/observation-errors";
-import { RUNTIME_OBSERVE_EXISTING_FEATURE } from "@fffattiger/pix-protocol";
+import { RUNTIME_OBSERVE_EXISTING_FEATURE, type ExtensionNotificationItem } from "@fffattiger/pix-protocol";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useVisualViewportFrame } from "@/hooks/useVisualViewportHeight";
 import { useGateStatus } from "@/features/gate/useGate";
 import { useHttpClient } from "@/app/http-context";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
+import { ChatsCircleIcon, FilesIcon, RobotIcon } from "@phosphor-icons/react";
 import {
   getDefaultRightPanelWidth,
   getRightPanelMaxWidth,
@@ -62,6 +69,8 @@ import {
 export interface AppShellProps {
   search: WorkspaceSearch;
 }
+
+type RightPane = "files" | "subagents" | "side_chat" | null;
 
 /** Shared session-label fallback: explicit title → first message → short id. */
 function sessionLabelFor(session: { title?: string | undefined; firstMessage?: string | undefined; sessionId: string }): string {
@@ -87,6 +96,50 @@ function sessionLabelFor(session: { title?: string | undefined; firstMessage?: s
  * trigger. A prior attachment may remain as a background event subscription;
  * every visible runtime surface is active-session identity-gated.
  */
+/** Latest non-error extension notification (`ctx.ui.notify` info/warning):
+ * `/mcp` status text and OAuth authorization URLs arrive here. Shows the most
+ * recent notice only, with a copy affordance when it carries a URL — the
+ * bounded history stays in the runtime projection. */
+function ExtensionNotices({ notices }: { notices: readonly ExtensionNotificationItem[] }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const latest = notices.at(-1);
+  useEffect(() => { setCopied(false); }, [latest?.message, latest?.at]);
+  if (latest === undefined) return null;
+  const url = /https?:\/\/\S+/.exec(latest.message)?.[0];
+  const color = latest.level === "warning" ? "var(--accent-orange)" : "var(--text-secondary)";
+  return (
+    <div
+      data-testid="extension-notices"
+      data-level={latest.level}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 14px",
+        fontSize: 12,
+        color,
+        background: "color-mix(in srgb, var(--bg-panel) 92%, transparent)",
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
+      <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{latest.message}</span>
+      {url ? (
+        <button
+          type="button"
+          className="pix-button"
+          style={{ padding: "2px 8px", fontSize: 11 }}
+          onClick={() => {
+            void copyText(url).then(() => setCopied(true));
+          }}
+        >
+          {copied ? t("desktop.extensionNoticeCopied") : t("desktop.extensionNoticeCopy")}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function AppShell({ search }: AppShellProps) {
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   // Connection-global transport/running/live/create surface (the provider-owned
@@ -316,8 +369,13 @@ export function AppShell({ search }: AppShellProps) {
     setSettingsOpen(true);
   }, []);
 
-  // ── Right file-browser panel (top-right button) ──────────────────────────
-  const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+  // ── Shared right panel (Files, Agents, or Side chat) ─────────────────────
+  const [rightPane, setRightPane] = useState<RightPane>(null);
+  const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
+  const [statusCardDisplayMode, setStatusCardDisplayMode] = useState<StatusCardDisplayMode>("auto");
+  const rightPanelOpen = rightPane !== null;
+  const fileBrowserOpen = rightPane === "files";
+  const subagentPanelOpen = rightPane === "subagents";
   const canFiles = can("files") && liveWorkspaceEnabled;
   const canGit = can("git") && liveWorkspaceEnabled;
 
@@ -420,17 +478,35 @@ export function AppShell({ search }: AppShellProps) {
   const liveSearchRef = useRef(search);
   liveSearchRef.current = search;
 
-  // Session labels for the tab strip — resolved from the shared sessions-list
-  // cache (same key the Sidebar queries) so renames update tab labels live;
-  // tabs never store a stale label as authority.
+  // Session labels for the tab strip — resolve the initial catalog page first,
+  // then fetch exact details for open tabs outside that page. Persisted tabs
+  // can outlive the five-row sidebar page, so selection must not be required
+  // before their titles become available.
+  const tabSessionIds = useMemo(
+    () => tabs.flatMap((tab) => tab.kind === "session" ? [tab.sessionId] : []),
+    [tabs],
+  );
+  const tabSessionDetailQueries = useQueries({
+    queries: tabSessionIds.map((sessionId) => ({
+      ...options.sessions.detail(sessionId),
+      enabled: canBrowseSessions
+        && sessionsQuery.data !== undefined
+        && !sessionsQuery.data.sessions.some((session) => session.sessionId === sessionId)
+        && selectedWorkspace.header?.sessionId !== sessionId,
+    })),
+  });
   const catalogSessions = useMemo(() => {
-    const loaded = sessionsQuery.data?.sessions ?? [];
+    const sessionsById = new Map(
+      (sessionsQuery.data?.sessions ?? []).map((session) => [session.sessionId, session]),
+    );
     const selectedHeader = selectedWorkspace.header;
-    return selectedHeader !== undefined
-      && !loaded.some((session) => session.sessionId === selectedHeader.sessionId)
-      ? [selectedHeader, ...loaded]
-      : loaded;
-  }, [selectedWorkspace.header, sessionsQuery.data]);
+    if (selectedHeader !== undefined) sessionsById.set(selectedHeader.sessionId, selectedHeader);
+    for (const query of tabSessionDetailQueries) {
+      const session = query.data?.session;
+      if (session !== undefined) sessionsById.set(session.sessionId, session);
+    }
+    return [...sessionsById.values()];
+  }, [selectedWorkspace.header, sessionsQuery.data, tabSessionDetailQueries]);
   const sessionLabels = useMemo(() => {
     const map: Record<string, string> = {};
     for (const session of catalogSessions) {
@@ -505,6 +581,21 @@ export function AppShell({ search }: AppShellProps) {
   // view while the Composer stays editable; sending performs the only
   // activation transition.
   const selectionMatchesLive = selectedRuntime?.attached === true;
+  const canAgents = canBrowseSessions && activeSessionId !== null;
+  const canSideChat = selectionMatchesLive
+    && selectedRuntime?.capabilities?.capabilities.includes("runtime.side_chat") === true;
+  const rightPaneAvailable = canFiles || canAgents || canSideChat;
+  const subagentActivity = useSubagentActivity({
+    sessionId: activeSessionId,
+    enabled: canBrowseSessions && activeSessionId !== null,
+    live: selectionMatchesLive,
+  });
+  // A child pane belongs to its selected parent session. Switching the URL
+  // closes it instead of showing A's child conversation beside B.
+  useEffect(() => {
+    setRightPane((current) => current === "files" ? current : null);
+    setSelectedChildSessionId(null);
+  }, [activeSessionId]);
   // Global running authority = connection.runningSessionIds (sessiond busy
   // baseline) UNION the registry foreground optimistic/turn owner (background
   // or mid-transfer send cue) UNION the selected exact session while it is
@@ -778,7 +869,7 @@ export function AppShell({ search }: AppShellProps) {
       initialDisplayMode: openOptions.initialDisplayMode,
     }));
     void navigate({ to: "/", search: { cwd, file: filePath } });
-    if (isMobile) setFileBrowserOpen(false);
+    if (isMobile) setRightPane(null);
   }, [canFiles, navigate, isMobile]);
 
   // Linked files inside the viewer open a new file tab carrying the active
@@ -817,10 +908,10 @@ export function AppShell({ search }: AppShellProps) {
   const getResponsiveSidebarMaxWidth = useCallback(
     () => getSidebarMaxWidth({
       viewportWidth: window.innerWidth,
-      rightPanelOpen: fileBrowserOpen,
+      rightPanelOpen,
       rightPanelWidth: rightPanelWidthRef.current,
     }),
-    [fileBrowserOpen],
+    [rightPanelOpen],
   );
   const getResponsiveRightPanelMaxWidth = useCallback(
     () => getRightPanelMaxWidth({
@@ -842,7 +933,7 @@ export function AppShell({ search }: AppShellProps) {
     widthRef: sidebarWidthRef,
   });
   const rightPanel = useResizablePanel({
-    ariaLabel: "Resize file browser",
+    ariaLabel: t("desktop.resizeRightPanel"),
     cssVariable: "--right-panel-width",
     defaultWidth: getDefaultRightPanelWidth(1366),
     getDefaultWidth: getResponsiveRightPanelWidth,
@@ -856,31 +947,41 @@ export function AppShell({ search }: AppShellProps) {
   const reclampSidebarWidth = sidebarPanel.reclampWidth;
   const reclampRightPanelWidth = rightPanel.reclampWidth;
   useEffect(() => {
-    if (!fileBrowserOpen) return;
+    if (!rightPanelOpen) return;
     reclampSidebarWidth();
     reclampRightPanelWidth();
-  }, [reclampRightPanelWidth, reclampSidebarWidth, fileBrowserOpen]);
+  }, [reclampRightPanelWidth, reclampSidebarWidth, rightPanelOpen]);
 
-  // ── Right file-browser panel toggling ────────────────────────────────────
-  // The top-right button toggles a resizable right-side panel containing the
-  // single ExplorerPanel instance. On mobile the file browser and the sidebar
-  // drawer are mutually exclusive.
-  const handleToggleFileBrowser = useCallback(() => {
-    setFileBrowserOpen((prev) => {
-      const next = !prev;
-      if (isMobile && next) {
-        const wasOpening = mobileSidebarOpeningRef.current;
-        mobileSidebarOpeningRef.current = false;
-        if (mobileSidebarOpenFrameRef.current !== null) {
-          window.cancelAnimationFrame(mobileSidebarOpenFrameRef.current);
-          mobileSidebarOpenFrameRef.current = null;
-        }
-        setSidebarOpen(false);
-        if (wasOpening) setMobileSidebarMounted(false);
-      }
-      return next;
-    });
+  // ── Shared right-panel toggling ──────────────────────────────────────────
+  const dismissMobileSidebar = useCallback(() => {
+    if (!isMobile) return;
+    const wasOpening = mobileSidebarOpeningRef.current;
+    mobileSidebarOpeningRef.current = false;
+    if (mobileSidebarOpenFrameRef.current !== null) {
+      window.cancelAnimationFrame(mobileSidebarOpenFrameRef.current);
+      mobileSidebarOpenFrameRef.current = null;
+    }
+    setSidebarOpen(false);
+    if (wasOpening) setMobileSidebarMounted(false);
   }, [isMobile]);
+
+  const selectRightPane = useCallback((pane: Exclude<RightPane, null>) => {
+    if ((pane === "files" && !canFiles) || (pane === "subagents" && !canAgents) || (pane === "side_chat" && !canSideChat)) return;
+    setRightPane(pane);
+    if (pane !== "subagents") setSelectedChildSessionId(null);
+    dismissMobileSidebar();
+  }, [canAgents, canFiles, canSideChat, dismissMobileSidebar]);
+
+  const handleToggleRightPane = useCallback(() => {
+    if (rightPane !== null) {
+      setRightPane(null);
+      setSelectedChildSessionId(null);
+      return;
+    }
+    if (canFiles) selectRightPane("files");
+    else if (canAgents) selectRightPane("subagents");
+    else if (canSideChat) selectRightPane("side_chat");
+  }, [canAgents, canFiles, canSideChat, rightPane, selectRightPane]);
 
   const handleSidebarToggle = useCallback(() => {
     if (isMobile) {
@@ -895,7 +996,8 @@ export function AppShell({ search }: AppShellProps) {
         if (wasOpening) setMobileSidebarMounted(false);
         return;
       }
-      setFileBrowserOpen(false);
+      setRightPane(null);
+      setSelectedChildSessionId(null);
       mobileSidebarOpeningRef.current = true;
       setMobileSidebarMounted(true);
       mobileSidebarOpenFrameRef.current = window.requestAnimationFrame(() => {
@@ -907,10 +1009,7 @@ export function AppShell({ search }: AppShellProps) {
       });
       return;
     }
-    setSidebarOpen((prev) => {
-      const next = !prev;
-      return next;
-    });
+    setSidebarOpen((prev) => !prev);
   }, [isMobile, sidebarOpen, sidebarPanel.panelRef]);
 
   const handleMobileSidebarClose = useCallback(() => {
@@ -920,6 +1019,21 @@ export function AppShell({ search }: AppShellProps) {
       mobileSidebarOpenFrameRef.current = null;
     }
     setSidebarOpen(false);
+  }, []);
+
+  const openSubagentPanel = useCallback((childSessionId: string | null) => {
+    if (!canAgents) return;
+    setSelectedChildSessionId(childSessionId);
+    setRightPane("subagents");
+    if (isMobile) handleMobileSidebarClose();
+  }, [canAgents, handleMobileSidebarClose, isMobile]);
+  const handleOpenSubagentActivity = useCallback((activity: SubagentActivity) => {
+    if (activity.childSessionId === undefined) return;
+    openSubagentPanel(activity.childSessionId);
+  }, [openSubagentPanel]);
+  const handleCloseSubagentPanel = useCallback(() => {
+    setRightPane(null);
+    setSelectedChildSessionId(null);
   }, []);
 
   const handleMobileSidebarTransitionEnd = useCallback((event: React.TransitionEvent<HTMLDivElement>) => {
@@ -1070,8 +1184,19 @@ export function AppShell({ search }: AppShellProps) {
           sessionLabels={sessionLabels}
           runningSessionIds={runningSessionIds}
         />
-        <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          <main className={`workspace${isHome ? " workspace--home" : ""}`}>
+        <div className="conversation-container" style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+          {activeSessionId !== null ? (
+            <SubagentActivityCard
+              key={activeSessionId}
+              activities={subagentActivity.activities}
+              todos={subagentActivity.todos}
+              displayMode={statusCardDisplayMode}
+              onDisplayModeChange={setStatusCardDisplayMode}
+              onOpenActivity={handleOpenSubagentActivity}
+              onOpenDirectory={() => openSubagentPanel(null)}
+            />
+          ) : null}
+          <main className={`workspace${isHome ? " workspace--home" : ""}`} data-status-display-mode={statusCardDisplayMode}>
             {isHome ? (
               <div className="home-stack" data-testid="home-stack">
                 <div className="transcript-home" data-testid="transcript-home">
@@ -1109,6 +1234,11 @@ export function AppShell({ search }: AppShellProps) {
                 {/* Keyed by the selected session: a selection swap remounts the
                     transcript (local reveal window, scroll pin, minimap refs all
                     reset per identity) instead of reconciling A's rows into B. */}
+                <ExtensionNotices
+                  notices={selectionMatchesLive
+                    ? selectedRuntime?.snapshot?.state.extensionNotifications ?? []
+                    : []}
+                />
                 {observationError ? (
                   <div
                     role="alert"
@@ -1149,10 +1279,8 @@ export function AppShell({ search }: AppShellProps) {
         </div>
       </div>
 
-      {/* Right file panel: no rail strip — the toggle is pinned to the window's
-          top-right (see below) on desktop and mobile. The panel closes to zero
-          width. */}
-      {fileBrowserOpen && (
+      {/* Files, Agents, and Side chat share the existing responsive pane. */}
+      {rightPanelOpen && (
         <div
           {...rightPanel.separatorProps}
           className="workspace-panel-splitter right-panel-splitter"
@@ -1160,28 +1288,67 @@ export function AppShell({ search }: AppShellProps) {
       )}
       <div
         ref={rightPanel.panelRef}
-        className={`right-panel-container ${fileBrowserOpen ? "right-panel-open" : "right-panel-closed"}${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
+        className={`right-panel-container ${rightPanelOpen ? "right-panel-open" : "right-panel-closed"}${rightPanel.isResizing ? " panel-is-resizing" : ""}`}
+        aria-hidden={!rightPanelOpen}
+        inert={!rightPanelOpen}
         style={{
           display: "flex",
           flexDirection: "column",
           background: "var(--bg-panel)",
         }}
       >
-        <ExplorerPanel
-          cwd={search.cwd}
-          canFiles={canFiles}
-          canGit={canGit}
-          visible={fileBrowserOpen}
-          onOpenFile={handleOpenFile}
-        />
+        <div className="right-pane-selector-wrap">
+          <div className="right-pane-selector" role="group" aria-label={t("desktop.rightPane")}>
+            <button type="button" aria-pressed={rightPane === "files"} disabled={!canFiles} onClick={() => selectRightPane("files")}>
+              <FilesIcon size={14} aria-hidden="true" />{t("desktop.files")}
+            </button>
+            <button type="button" aria-pressed={rightPane === "subagents"} disabled={!canAgents} onClick={() => selectRightPane("subagents")}>
+              <RobotIcon size={14} aria-hidden="true" />{t("desktop.agents")}
+            </button>
+            <button type="button" aria-pressed={rightPane === "side_chat"} disabled={!canSideChat} title={!canSideChat ? t("desktop.sideChatUnavailable") : undefined} onClick={() => selectRightPane("side_chat")}>
+              <ChatsCircleIcon size={14} aria-hidden="true" />{t("desktop.sideChat")}
+            </button>
+          </div>
+          {rightPane === "side_chat" && !canSideChat ? <div className="right-pane-selector-hint" role="status">{t("desktop.sideChatUnavailable")}</div> : null}
+        </div>
+        <div className="right-panel-content">
+          <div className="right-panel-surface" hidden={!fileBrowserOpen}>
+            <ExplorerPanel
+              cwd={search.cwd}
+              canFiles={canFiles}
+              canGit={canGit}
+              visible={fileBrowserOpen}
+              onOpenFile={handleOpenFile}
+            />
+          </div>
+          {subagentPanelOpen && activeSessionId !== null ? (
+            <SubagentPanel
+              activities={subagentActivity.activities}
+              error={subagentActivity.error}
+              loading={subagentActivity.loading}
+              refreshing={subagentActivity.refreshing}
+              parentSessionId={activeSessionId}
+              parentEpoch={subagentActivity.epoch}
+              subagentsRevision={subagentActivity.revision}
+              selectedChildSessionId={selectedChildSessionId}
+              onSelectActivity={handleOpenSubagentActivity}
+              onBack={() => setSelectedChildSessionId(null)}
+              onClose={handleCloseSubagentPanel}
+              onRefresh={subagentActivity.refresh}
+              childStream={subagentActivity.childStream(selectedChildSessionId)}
+            />
+          ) : null}
+          {rightPane === "side_chat" && canSideChat && selectedRuntime !== null ? (
+            <SideChatPanel
+              runtime={selectedRuntime}
+              cwd={search.cwd}
+              onOpenFile={(filePath) => handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: activeSessionId })}
+            />
+          ) : null}
+        </div>
       </div>
 
-      {/* File-browser toggle pinned to the window's top-right corner, OUTSIDE
-          the chat column: the panel animates its width out of the right edge
-          (right → left), and an in-flow title-bar button would slide left with
-          the shrinking chat column instead of staying under the pointer. The
-          explorer header reserves the same 36px slot, so opening the panel
-          does not move the button. */}
+      {/* Generic right-pane toggle remains pinned in the reserved 36px slot. */}
       <div
         style={{
           position: "absolute",
@@ -1193,10 +1360,10 @@ export function AppShell({ search }: AppShellProps) {
           height: 36,
         }}
       >
-        <FileBrowserToggle
-          open={fileBrowserOpen}
-          canFiles={canFiles}
-          onToggle={handleToggleFileBrowser}
+        <RightPaneToggle
+          open={rightPanelOpen}
+          available={rightPanelOpen || rightPaneAvailable}
+          onToggle={handleToggleRightPane}
         />
       </div>
     </div>

@@ -160,6 +160,93 @@ describe("StatefulRuntimeMapper + sessiond projection oracle", () => {
     }
   });
 
+  it("maps built-in authority projections as cloned full replacements", () => {
+    const mapper = new StatefulRuntimeMapper();
+    const builtIns = { configRevision: "a".repeat(64), loaded: ["subagents"] as const, failures: [] };
+    const subagents = {
+      revision: 2,
+      tasks: [{ taskId: "task-1", description: "Inspect", agentType: "Explore", status: "running" as const }],
+    };
+    const todo = {
+      revision: 3,
+      items: [{ id: 1, subject: "Implement", blockedBy: [], status: "in_progress" as const }],
+    };
+    const mapped = [
+      ...mapper.mapEvent({ type: "built_ins_changed", sessionId: SESSION, builtIns }),
+      ...mapper.mapEvent({ type: "subagents_changed", sessionId: SESSION, subagents }),
+      ...mapper.mapEvent({ type: "todo_changed", sessionId: SESSION, todo }),
+    ];
+    assert.deepEqual(mapped.map((event) => event.type), ["built_ins_changed", "subagents_changed", "todo_changed"]);
+    subagents.tasks[0]!.description = "mutated";
+    todo.items[0]!.subject = "mutated";
+    assert.equal(mapped[1]?.type === "subagents_changed" && mapped[1].subagents.tasks[0]?.description, "Inspect");
+    assert.equal(mapped[2]?.type === "todo_changed" && mapped[2].todo.items[0]?.subject, "Implement");
+    for (const event of mapped) {
+      const parsed = RuntimeEventDataSchema.safeParse(event);
+      assert.equal(parsed.success, true, parsed.success ? "" : parsed.error.message);
+    }
+  });
+
+  it("maps side-chat replacements and deltas with identity fences intact", () => {
+    const mapper = new StatefulRuntimeMapper();
+    const sideChat = {
+      conversationId: "side-1",
+      revision: 1,
+      runId: "run-1",
+      capturedModel: { provider: "test", id: "model" },
+      capturedThinkingLevel: "medium" as const,
+      mode: "read_only" as const,
+      status: "running" as const,
+      messages: [],
+      messagesTruncated: false,
+      totalCharsTruncated: false,
+      stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false },
+      tools: [],
+    };
+    const replacement = mapper.mapEvent({ type: "side_chat_changed", sessionId: SESSION, sideChat });
+    const delta = mapper.mapEvent({ type: "side_chat_delta", sessionId: SESSION, delta: { conversationId: "side-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: "answer" } });
+    assert.deepEqual(replacement[0], { type: "side_chat_changed", sessionId: SESSION, sideChat });
+    assert.deepEqual(delta[0], { type: "side_chat_delta", sessionId: SESSION, delta: { conversationId: "side-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: "answer" } });
+    const oracle = createOracle(SESSION);
+    oracle.apply(replacement[0]!);
+    oracle.apply(delta[0]!);
+    assert.equal(oracle.snapshot().state.sideChat?.stream.text, "answer");
+  });
+
+  it("maps subagent_delta as a field-by-field transient replacement without touching the parent stream", () => {
+    const mapper = new StatefulRuntimeMapper();
+    const partial = assistant([{ type: "text", text: "child live" }]);
+    const mapped = mapper.mapEvent({
+      type: "subagent_delta",
+      sessionId: SESSION,
+      childSessionId: "child-1",
+      partial,
+      done: false,
+    });
+    assert.deepEqual(mapped[0], {
+      type: "subagent_delta",
+      sessionId: SESSION,
+      childSessionId: "child-1",
+      partial,
+      done: false,
+    });
+    assert.equal(mapper.getActiveStream(), null);
+    const oracle = createOracle(SESSION);
+    oracle.apply(mapped[0]!);
+    const live = oracle.snapshot().state.subagents?.streams?.["child-1"]?.partial;
+    assert.equal(live?.role, "assistant");
+    assert.equal(live && live.role === "assistant" ? live.content?.[0] && live.content[0].type === "text" ? live.content[0].text : undefined : undefined, "child live");
+    const done = mapper.mapEvent({
+      type: "subagent_delta",
+      sessionId: SESSION,
+      childSessionId: "child-1",
+      partial,
+      done: true,
+    });
+    oracle.apply(done[0]!);
+    assert.equal(oracle.snapshot().state.subagents?.streams?.["child-1"], undefined);
+  });
+
   it("runtime_closed clears the active stream", () => {
     const mapper = new StatefulRuntimeMapper();
     for (const event of mapper.mapEvent({ type: "message_update", sessionId: SESSION, message: assistant([{ type: "text", text: "a" }]) })) {

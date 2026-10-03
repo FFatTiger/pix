@@ -7,18 +7,11 @@ import type {
   TokenUsage,
   UserContent,
 } from "@fffattiger/pix-runtime-core";
-import { sanitizeRuntimeError, sanitizeUnknown } from "../internal/sanitize.js";
-
-const SECRET_PATTERNS = [
-  /\bsk-[A-Za-z0-9_-]+\b/g,
-  /\b(?:api[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+/gi,
-  /secret-token-[a-z0-9]+/gi,
-];
+import { MAX_NESTED_TOOL_CALLS, MAX_NESTED_TOOL_ERROR_CHARS, NESTED_TOOL_CALL_STATUSES, makeRuntimeError, type NestedToolCalls } from "@fffattiger/pix-runtime-core";
+import { redactText, sanitizeRuntimeError, sanitizeUnknown } from "../internal/sanitize.js";
 
 function sanitizeString(value: string): string {
-  let sanitized = value.split("\n")[0] ?? "";
-  for (const pattern of SECRET_PATTERNS) sanitized = sanitized.replace(pattern, "[REDACTED]");
-  return sanitized;
+  return redactText(value).split("\n")[0] ?? "";
 }
 
 export function sanitizeValue(value: unknown): unknown {
@@ -149,6 +142,32 @@ function mapAssistantBlocks(value: unknown): AssistantContentBlock[] {
   return result;
 }
 
+function mapNestedCalls(value: unknown): NestedToolCalls | undefined {
+  if (value === undefined) return undefined;
+  const nested = asRecord(value);
+  const invalid = () => makeRuntimeError("external", "invalid nested tool call summary");
+  if (!Array.isArray(nested.calls) || nested.calls.length > MAX_NESTED_TOOL_CALLS || typeof nested.complete !== "boolean") throw invalid();
+  const seen = new Set<string>();
+  const calls = nested.calls.map((value): NestedToolCalls["calls"][number] => {
+    const call = asRecord(value);
+    if (typeof call.id !== "string" || !call.id || seen.has(call.id) || typeof call.name !== "string" || !call.name
+      || !NESTED_TOOL_CALL_STATUSES.includes(call.status as never)
+      || (call.argumentsBytes !== undefined && (!Number.isSafeInteger(call.argumentsBytes) || Number(call.argumentsBytes) < 0))
+      || (call.durationMs !== undefined && (typeof call.durationMs !== "number" || !Number.isFinite(call.durationMs) || call.durationMs < 0))
+      || (call.error !== undefined && typeof call.error !== "string")) throw invalid();
+    seen.add(call.id);
+    return {
+      id: call.id, name: call.name, status: call.status as NestedToolCalls["calls"][number]["status"],
+      ...(call.arguments === undefined ? {} : { arguments: sanitizeValue(call.arguments) }),
+      ...(call.argumentsBytes === undefined ? {} : { argumentsBytes: Number(call.argumentsBytes) }),
+      ...(call.durationMs === undefined ? {} : { durationMs: Number(call.durationMs) }),
+      ...(typeof call.error === "string" ? { error: sanitizeString(call.error).slice(0, MAX_NESTED_TOOL_ERROR_CHARS) } : {}),
+    };
+  });
+  if (nested.complete && calls.some((call) => call.status === "unfinished")) throw invalid();
+  return { calls, complete: nested.complete };
+}
+
 export function mapMessage(value: unknown, partial = false): AgentMessage | StreamingAgentMessage {
   const message = asRecord(value);
   switch (message.role) {
@@ -177,6 +196,9 @@ export function mapMessage(value: unknown, partial = false): AgentMessage | Stre
         content: Array.isArray(message.content) ? mapUserContent(message.content) as Exclude<UserContent, string> : [{ type: "text", text: String(message.content ?? "") }],
         ...(typeof message.isError === "boolean" ? { isError: message.isError } : {}),
         ...(message.details === undefined ? {} : { details: sanitizeValue(message.details) }),
+        ...(message.nestedCalls === undefined ? {} : { nestedCalls: mapNestedCalls(message.nestedCalls)! }),
+        ...(message.structuredContent === undefined ? {} : { structuredContent: sanitizeValue(message.structuredContent) }),
+        ...(mapUsage(message.usage) === undefined ? {} : { usage: mapUsage(message.usage)! }),
         ...(typeof message.timestamp === "number" ? { timestamp: message.timestamp } : {}),
       };
     case "bashExecution":

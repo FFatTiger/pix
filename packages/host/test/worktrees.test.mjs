@@ -439,9 +439,10 @@ test("concurrent create/delete/recreate stays consistent and ownership is never 
   assert.equal(deletion.status, 200);
   assert.ok([201, 409].includes(duplicate.status), `duplicate create while delete raced (got ${duplicate.status})`);
 
-  // Recreate after delete succeeds.
+  // If the concurrent create ran after deletion, it already recreated the
+  // worktree; a further create must conflict. Otherwise this call recreates it.
   const recreate = await create("conc-a");
-  assert.equal(recreate.status, 201);
+  assert.equal(recreate.status, duplicate.status === 201 ? 409 : 201);
   assert.equal(await app.request(`http://localhost/v1/worktrees?cwd=${encodeURIComponent(root)}`, { headers: headers() }).then((r) => r.status), 200);
   assert.ok((await managedLedger.read()).records.length >= 1, "recreate persists a managed record");
 });

@@ -182,6 +182,7 @@ interface RunningSubscriber {
 interface PendingCommand {
   commandId: string;
   commandType: RuntimeCommand["type"];
+  fingerprint: string;
   epoch: string;
   promise: Promise<CorrelatedRuntimeCommandResult>;
   resolve: (result: CorrelatedRuntimeCommandResult) => void;
@@ -191,6 +192,7 @@ interface PendingCommand {
 interface PendingInterrupt {
   commandId: string;
   type: RuntimeInterrupt["type"];
+  fingerprint: string;
   promise: Promise<CorrelatedRuntimeInterruptResult>;
   resolve: (result: CorrelatedRuntimeInterruptResult) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -224,9 +226,12 @@ interface TurnOperationRecord {
   status: TurnStatus;
   dispatched: boolean;
   subscribers: Set<TurnSubscriber>;
+  terminalPush?: SessiondTurnStatusPush;
+  terminalFinalization?: { revision: number; promise: Promise<void> };
 }
 
 interface PendingSnapshot {
+  isCurrent?: () => boolean;
   resolve: (snapshot: RuntimeSnapshot) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -266,6 +271,31 @@ interface PendingRead {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface FingerprintedCommandIdentity {
+  type: RuntimeCommand["type"];
+  fingerprint: string;
+}
+
+interface FingerprintedInterruptIdentity {
+  type: RuntimeInterrupt["type"];
+  fingerprint: string;
+}
+
+interface CachedCommandResult {
+  fingerprint: string;
+  result: CorrelatedRuntimeCommandResult;
+}
+
+interface CachedInterruptResult {
+  fingerprint: string;
+  result: CorrelatedRuntimeInterruptResult;
+}
+
+interface AuthorityFinalization {
+  fingerprint: string;
+  promise: Promise<CorrelatedRuntimeCommandResult>;
+}
+
 interface RecordState {
   sessionId: string;
   cwd: string;
@@ -281,11 +311,11 @@ interface RecordState {
   journalBaseSnapshot: RuntimeSnapshot;
   subscribers: Set<Subscriber>;
   /** Bounded terminal result cache for mutation commands. */
-  commandResults: Map<string, CorrelatedRuntimeCommandResult>;
+  commandResults: Map<string, CachedCommandResult>;
   /** Independent bounded read-result cache; read floods cannot evict mutation results. */
-  readResults: Map<string, CorrelatedRuntimeCommandResult>;
+  readResults: Map<string, CachedCommandResult>;
   /** Mutation command ids accepted during this epoch; reads do not consume it. */
-  acceptedCommands: Map<string, RuntimeCommand["type"]>;
+  acceptedCommands: Map<string, FingerprintedCommandIdentity>;
   pendingCommands: Map<string, PendingCommand>;
   pendingInterrupts: Map<string, PendingInterrupt>;
   /** Phase 3 accepted/uncertain operation ledger; never FIFO-evicted. */
@@ -297,10 +327,10 @@ interface RecordState {
   readQueue: string[];
   /** Phase 2B dispatch id of the currently Worker-bound read (at most one). */
   activeReadId: string | null;
-  /** commandId -> accepted interrupt type; dedups browser commandId per epoch. */
-  acceptedInterrupts: Map<string, RuntimeInterrupt["type"]>;
+  /** commandId -> accepted interrupt identity; dedups browser commandId per epoch. */
+  acceptedInterrupts: Map<string, FingerprintedInterruptIdentity>;
   /** commandId -> cached correlated result so retries return the same result. */
-  interruptResults: Map<string, CorrelatedRuntimeInterruptResult>;
+  interruptResults: Map<string, CachedInterruptResult>;
   pendingSnapshots: Map<string, PendingSnapshot>;
   /**
    * Per-commandId singleflight for post-success snapshot authority
@@ -313,7 +343,7 @@ interface RecordState {
    * the same promise before observing a terminal result. Exact-once / safe
    * join; never issues a second unbounded getSnapshot for the same commandId.
    */
-  authorityFinalizations: Map<string, Promise<CorrelatedRuntimeCommandResult>>;
+  authorityFinalizations: Map<string, AuthorityFinalization>;
   /**
    * Phase 5B single-flight epoch rollover slot (undefined = none pending).
    * While present, every new command/interrupt/read/snapshot/turn admission is
@@ -406,6 +436,11 @@ const AUTHORITY_COMMAND_TYPES = new Set<RuntimeCommand["type"]>([
   "reload",
   "compact",
   "navigate_tree",
+  "side_chat_start",
+  "side_chat_send",
+  "side_chat_reset",
+  "side_chat_set_mode",
+  "side_chat_overlap_response",
 ]);
 
 /**
@@ -506,6 +541,21 @@ const deferred = <T>() => {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 };
+
+/** Canonical JSON for already-validated wire values: object keys sort, arrays retain order, and undefined object fields are omitted. */
+function canonicalWireJson(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.map((item) => item === undefined ? "null" : canonicalWireJson(item)).join(",")}]`;
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().filter((key) => record[key] !== undefined).map((key) => `${JSON.stringify(key)}:${canonicalWireJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function operationFingerprint(value: RuntimeCommand | RuntimeInterrupt): string {
+  return createHash("sha256").update(canonicalWireJson(value)).digest("hex");
+}
 
 export class SessiondService {
   private readonly records = new Map<string, RecordState>();
@@ -866,6 +916,16 @@ export class SessiondService {
       case "worker.snapshot": {
         if (message.payload.sessionId !== record.sessionId) return;
         const pending = message.id === undefined ? undefined : record.pendingSnapshots.get(message.id);
+        // Correlated snapshots belong to one bounded refresh. Late/wrong ids
+        // and a refresh whose record/epoch/operation changed cannot project.
+        if (message.id !== undefined && !pending) return;
+        if (pending?.isCurrent && !pending.isCurrent()) {
+          clearTimeout(pending.timer);
+          record.pendingSnapshots.delete(message.id!);
+          pending.reject(new SessiondError("worker_unavailable", "snapshot authority changed during refresh", true));
+          return;
+        }
+        if (["crashed", "stopped", "stopping"].includes(record.status)) return;
         if (message.payload.snapshot.sessionId !== record.sessionId) {
           if (pending) {
             clearTimeout(pending.timer);
@@ -917,13 +977,13 @@ export class SessiondService {
         // refresh. Defer cache + resolve through the per-commandId singleflight
         // so same-id retries cannot observe a pre-authority success.
         if (result.result.ok && AUTHORITY_COMMAND_TYPES.has(result.result.type)) {
-          const finalized = this.ensureAuthorityFinalized(record, result);
+          const finalized = this.ensureAuthorityFinalized(record, result, pending.fingerprint);
           void finalized.then((finalResult) => {
             pending.resolve(finalResult);
           });
           break;
         }
-        this.cacheCommandResult(record, result);
+        this.cacheCommandResult(record, result, pending.fingerprint);
         pending.resolve(result);
         break;
       }
@@ -1003,7 +1063,13 @@ export class SessiondService {
         if (status.sessionId !== record.sessionId || status.epoch !== record.epoch) return;
         const operation = record.turnOperations.get(status.operationId);
         if (!operation || operation.turnId !== status.turnId || operation.epoch !== status.epoch) return;
+        if (operation.status.state === "completed" || operation.status.state === "failed") return;
         if (status.revision <= operation.status.revision) return;
+        if (operation.terminalFinalization && status.revision <= operation.terminalFinalization.revision) return;
+        if (status.state === "completed" || status.state === "failed") {
+          void this.finalizeTurnAuthority(record, operation, status);
+          break;
+        }
         operation.status = status;
         this.pushTurnStatus(operation, { type: "turn_status", status });
         this.broadcastRunningChanged(record.sessionId);
@@ -1019,7 +1085,7 @@ export class SessiondService {
         if (!pending || pending.commandId !== result.commandId || pending.type !== result.result.type) return;
         clearTimeout(pending.timer);
         record.pendingInterrupts.delete(message.id);
-        this.cacheInterruptResult(record, result);
+        this.cacheInterruptResult(record, result, pending.fingerprint);
         pending.resolve(result);
         break;
       }
@@ -1364,7 +1430,7 @@ export class SessiondService {
     // EXACT same per-session FIFO lane as `sessions.rename`, so the Client
     // SessionActions path can never bypass Host/API rename ordering. The private
     // non-reentrant command operation is never re-admitted into the lane.
-    if (command.type === "set_session_name") return this.commandRename(sessionId, command, epoch);
+    if (command.type === "set_session_name") return this.commandRename(sessionId, command, epoch, operationFingerprint(command));
     // D2 auto_name: public `runtime.command(generate_session_title)` shares the
     // SAME per-session FIFO lane as rename (reusing the "rename" kind, the §51
     // set_session_name semantics) so a user rename and an auto_name on the same
@@ -1384,9 +1450,10 @@ export class SessiondService {
    * is invoked by the rename lane operation for live `set_session_name` and by
    * the public `command` for every other command type.
    */
-  private async commandOnRecord(record: RecordState, command: RuntimeCommand, epoch?: string, allowCoordinatorLane = false): Promise<CorrelatedRuntimeCommandResult> {
+  private async commandOnRecord(record: RecordState, command: RuntimeCommand, epoch?: string, allowCoordinatorLane = false, admittedFingerprint = operationFingerprint(command)): Promise<CorrelatedRuntimeCommandResult> {
     const sessionId = record.sessionId;
     const readOnly = READ_ONLY_COMMAND_TYPES.has(command.type);
+    const fingerprint = admittedFingerprint;
     let immediate: CorrelatedRuntimeCommandResult | undefined;
     let pending!: PendingCommand;
     let finalization: Promise<CorrelatedRuntimeCommandResult> | undefined;
@@ -1410,33 +1477,43 @@ export class SessiondService {
         immediate = epochChangedCommand(command.commandId, command.type);
         return;
       }
-      const acceptedType = record.acceptedCommands.get(command.commandId);
-      if (acceptedType !== undefined && acceptedType !== command.type) {
-        immediate = rejectedCommand(command.commandId, command.type, `commandId was already accepted as ${acceptedType}`);
+      const accepted = record.acceptedCommands.get(command.commandId);
+      if (accepted !== undefined && accepted.type !== command.type) {
+        immediate = rejectedCommand(command.commandId, command.type, `commandId was already accepted as ${accepted.type}`);
+        return;
+      }
+      if (accepted !== undefined && accepted.fingerprint !== fingerprint) {
+        immediate = rejectedCommand(command.commandId, command.type, "commandId payload conflict");
         return;
       }
       // Join in-flight authority finalization before the result cache so
       // same-id retries never observe a pre-refresh success (and never start a
       // second worker.command / getSnapshot for this commandId).
       const finalizing = record.authorityFinalizations.get(command.commandId);
-      if (finalizing) { finalization = finalizing; return; }
+      if (finalizing) {
+        if (finalizing.fingerprint !== fingerprint) immediate = rejectedCommand(command.commandId, command.type, "commandId payload conflict");
+        else finalization = finalizing.promise;
+        return;
+      }
       const resultCache = readOnly ? record.readResults : record.commandResults;
       const otherResultCache = readOnly ? record.commandResults : record.readResults;
       const cached = resultCache.get(command.commandId);
       if (cached) {
         // A bounded result cache can outlive the accepted-id entry only for
         // read-only requests. Never let a reused commandId obtain a cached
-        // result for a different command type.
-        if (cached.result.type !== command.type) {
-          immediate = rejectedCommand(command.commandId, command.type, `commandId was already completed as ${cached.result.type}`);
+        // result for a different command type or payload.
+        if (cached.result.result.type !== command.type) {
+          immediate = rejectedCommand(command.commandId, command.type, `commandId was already completed as ${cached.result.result.type}`);
+        } else if (cached.fingerprint !== fingerprint) {
+          immediate = rejectedCommand(command.commandId, command.type, "commandId payload conflict");
         } else {
-          immediate = cached;
+          immediate = cached.result;
         }
         return;
       }
       const crossDomainCached = otherResultCache.get(command.commandId);
       if (crossDomainCached) {
-        immediate = rejectedCommand(command.commandId, command.type, `commandId was already completed as ${crossDomainCached.result.type}`);
+        immediate = rejectedCommand(command.commandId, command.type, `commandId was already completed as ${crossDomainCached.result.result.type}`);
         return;
       }
       const wireId = `command:${record.epoch}:${command.commandId}`;
@@ -1444,12 +1521,14 @@ export class SessiondService {
       if (existing) {
         if (existing.commandType !== command.type) {
           immediate = rejectedCommand(command.commandId, command.type, `commandId was already in progress as ${existing.commandType}`);
+        } else if (existing.fingerprint !== fingerprint) {
+          immediate = rejectedCommand(command.commandId, command.type, "commandId payload conflict");
         } else {
           pending = existing;
         }
         return;
       }
-      if (acceptedType !== undefined) { immediate = duplicateResultUnavailable(command.commandId, acceptedType); return; }
+      if (accepted !== undefined) { immediate = duplicateResultUnavailable(command.commandId, accepted.type); return; }
       // Only side-effecting commands consume the epoch's finite admission
       // ledger. Read-only command results remain bounded by the independent
       // readResults cache and may safely be re-issued after eviction; they never
@@ -1470,13 +1549,13 @@ export class SessiondService {
         needsRollover = true;
         return;
       }
-      if (!readOnly) record.acceptedCommands.set(command.commandId, command.type);
+      if (!readOnly) record.acceptedCommands.set(command.commandId, { type: command.type, fingerprint });
       const wait = deferred<CorrelatedRuntimeCommandResult>();
       const timer = setTimeout(() => {
         record.pendingCommands.delete(wireId);
         wait.resolve(unavailableCommand(command.commandId, command.type, "worker command timed out"));
       }, this.commandTimeoutMs);
-      pending = { commandId: command.commandId, commandType: command.type, epoch: record.epoch, promise: wait.promise, resolve: wait.resolve, timer };
+      pending = { commandId: command.commandId, commandType: command.type, fingerprint, epoch: record.epoch, promise: wait.promise, resolve: wait.resolve, timer };
       record.pendingCommands.set(wireId, pending);
       this.touch(record);
       if (readOnly) {
@@ -1497,7 +1576,7 @@ export class SessiondService {
             clearTimeout(timer);
             record.pendingCommands.delete(wireId);
             const result: CorrelatedRuntimeCommandResult = { commandId: command.commandId, result: toCommandOutcome(outcome) };
-            this.cacheCommandResult(record, result);
+            this.cacheCommandResult(record, result, pending.fingerprint);
             pending.resolve(result);
           })
           .catch(() => {
@@ -1515,7 +1594,7 @@ export class SessiondService {
           clearTimeout(timer);
           record.pendingCommands.delete(wireId);
           const result = unavailableCommand(command.commandId, command.type, "worker command send failed");
-          this.cacheCommandResult(record, result);
+          this.cacheCommandResult(record, result, fingerprint);
           immediate = result;
         }
       }
@@ -1543,7 +1622,7 @@ export class SessiondService {
       record.epoch === pending.epoch &&
       !(readOnly ? record.readResults : record.commandResults).has(result.commandId)
     ) {
-      this.cacheCommandResult(record, result);
+      this.cacheCommandResult(record, result, pending.fingerprint);
     }
     return result;
   }
@@ -1555,7 +1634,7 @@ export class SessiondService {
    * session (no live record) fails with a fixed unavailable result — the Client
    * SessionActions path never silently performs an offline mutation.
    */
-  private commandRename(sessionId: string, command: RuntimeCommand & { type: "set_session_name" }, epoch?: string): Promise<CorrelatedRuntimeCommandResult> {
+  private commandRename(sessionId: string, command: RuntimeCommand & { type: "set_session_name" }, epoch?: string, fingerprint?: string): Promise<CorrelatedRuntimeCommandResult> {
     let canonicalName: string;
     try {
       canonicalName = canonicalizeSessionName(command.name);
@@ -1576,7 +1655,7 @@ export class SessiondService {
         // A crashed/stopping record remains a reservation: never fall back offline.
         return unavailableCommand(command.commandId, "set_session_name", "runtime is not active");
       }
-      return this.executeLiveRename(record, command.commandId, canonicalName, epoch);
+      return this.executeLiveRename(record, command.commandId, canonicalName, epoch, fingerprint);
     });
   }
 
@@ -1674,12 +1753,13 @@ export class SessiondService {
    * command result must match the captured ownership; `{ok:false}` is a
    * failure and is never reported as success.
    */
-  private async executeLiveRename(record: RecordState, commandId: string, name: string, expectedEpoch?: string): Promise<CorrelatedRuntimeCommandResult> {
+  private async executeLiveRename(record: RecordState, commandId: string, name: string, expectedEpoch?: string, fingerprint?: string): Promise<CorrelatedRuntimeCommandResult> {
     const epochAtCapture = record.epoch;
     if (!this.ownsLiveRecord(record, epochAtCapture)) {
       return unavailableCommand(commandId, "set_session_name", "runtime stopped before rename command");
     }
-    const result = await this.commandOnRecord(record, { type: "set_session_name", commandId, name }, expectedEpoch);
+    const renameCommand: RuntimeCommand = { type: "set_session_name", commandId, name };
+    const result = await this.commandOnRecord(record, renameCommand, expectedEpoch, false, fingerprint ?? operationFingerprint(renameCommand));
     const stillOwned = this.ownsLiveRecord(record, epochAtCapture);
     const matchesCapture = result.commandId === commandId && result.result.type === "set_session_name";
     if (result.result.ok && stillOwned && matchesCapture) {
@@ -1801,18 +1881,19 @@ export class SessiondService {
   private ensureAuthorityFinalized(
     record: RecordState,
     successResult: CorrelatedRuntimeCommandResult,
+    fingerprint: string,
   ): Promise<CorrelatedRuntimeCommandResult> {
     const commandId = successResult.commandId;
     const commandType = successResult.result.type;
     const existing = record.authorityFinalizations.get(commandId);
-    if (existing) return existing;
+    if (existing) return existing.promise;
 
     const epochAtStart = record.epoch;
     const failClosed = (message: string): CorrelatedRuntimeCommandResult =>
       unavailableCommand(commandId, commandType, message);
     const cacheIfStillOwned = (result: CorrelatedRuntimeCommandResult): void => {
       if (this.records.get(record.sessionId) === record && record.epoch === epochAtStart) {
-        this.cacheCommandResult(record, result);
+        this.cacheCommandResult(record, result, fingerprint);
       }
     };
 
@@ -1852,7 +1933,7 @@ export class SessiondService {
         return failClosed("runtime stopped before snapshot authority converged");
       }
 
-      this.cacheCommandResult(record, successResult);
+      this.cacheCommandResult(record, successResult, fingerprint);
       return successResult;
     }).catch(() => {
       // Defensive bound: authority finalization must never reject into the RPC
@@ -1864,11 +1945,11 @@ export class SessiondService {
 
     let operation!: Promise<CorrelatedRuntimeCommandResult>;
     operation = execution.finally(() => {
-      if (record.authorityFinalizations.get(commandId) === operation) {
+      if (record.authorityFinalizations.get(commandId)?.promise === operation) {
         record.authorityFinalizations.delete(commandId);
       }
     });
-    record.authorityFinalizations.set(commandId, operation);
+    record.authorityFinalizations.set(commandId, { fingerprint, promise: operation });
     return operation;
   }
 
@@ -1988,7 +2069,7 @@ export class SessiondService {
     } };
     operation.subscribers.add(subscriber);
     const baselineRevision = result.status === "accepted" || result.status === "duplicate" ? result.turnStatus.revision : -1;
-    if (operation.status.revision > baselineRevision) buffered.push({ type: "turn_status", status: operation.status });
+    if (operation.status.revision > baselineRevision) buffered.push(operation.terminalPush ?? { type: "turn_status", status: operation.status });
     let closed = false;
     return {
       result,
@@ -2027,6 +2108,59 @@ export class SessiondService {
     return operation.admission;
   }
 
+  /** Terminal status is published only after the admission snapshot has
+   * converged with the worker, including turns that finish before admission. */
+  private finalizeTurnAuthority(record: RecordState, operation: TurnOperationRecord, terminal: TurnStatus): Promise<void> {
+    const existing = operation.terminalFinalization;
+    if (existing?.revision === terminal.revision) return existing.promise;
+    const sessionId = record.sessionId;
+    const epoch = record.epoch;
+    const revision = operation.status.revision;
+    let slot!: NonNullable<TurnOperationRecord["terminalFinalization"]>;
+    const isCurrent = (): boolean =>
+      this.records.get(sessionId) === record && record.sessionId === sessionId &&
+      this.ownsLiveRecord(record, epoch) && record.turnOperations.get(operation.operationId) === operation &&
+      operation.status.revision === revision && operation.terminalFinalization === slot &&
+      slot.revision === terminal.revision;
+    const execution = Promise.resolve().then(async () => {
+      if (!isCurrent()) return;
+      let status = terminal;
+      let refreshed = false;
+      try {
+        await this.snapshotOnRecord(record, isCurrent);
+        refreshed = true;
+      } catch (error) {
+        status = {
+          sessionId, epoch, operationId: operation.operationId, turnId: operation.turnId,
+          revision: terminal.revision, state: "failed",
+          error: { code: "unavailable", message: error instanceof SessiondError && error.code === "timeout"
+            ? "worker snapshot timed out during turn authority refresh"
+            : "snapshot authority refresh failed after turn completion", retryable: true },
+        };
+      }
+      if (!isCurrent()) return;
+      // Clear before notifying listeners: a terminal observer can immediately
+      // submit again, while the snapshot still preserves real external activity.
+      delete operation.terminalFinalization;
+      operation.status = status;
+      const push: SessiondTurnStatusPush = { type: "turn_status", status };
+      if (refreshed) {
+        const snapshot = this.snapshotPush(record, "snapshot");
+        const { sessionId, epoch, lastEventId, snapshot: authoritySnapshot } = snapshot;
+        push.authority = { sessionId, epoch, lastEventId, snapshot: authoritySnapshot };
+        this.push(record, snapshot);
+      }
+      this.pushTurnStatus(operation, push);
+      this.broadcastRunningChanged(sessionId);
+    });
+    const promise = execution.finally(() => {
+      if (operation.terminalFinalization === slot) delete operation.terminalFinalization;
+    });
+    slot = { revision: terminal.revision, promise };
+    operation.terminalFinalization = slot;
+    return promise;
+  }
+
   private rejectedTurn(sessionId: string, operationId: string, delivery: "not_delivered" | "uncertain", error: ProtocolError, epoch?: string, revision?: number): Extract<SubmitTurnAdmission, { status: "rejected" }> {
     return { status: "rejected", delivery, sessionId, operationId, ...(epoch === undefined ? {} : { epoch }), ...(revision === undefined ? {} : { revision }), error };
   }
@@ -2037,6 +2171,7 @@ export class SessiondService {
   }
 
   private pushTurnStatus(operation: TurnOperationRecord, push: SessiondTurnStatusPush): void {
+    if (push.status.state === "completed" || push.status.state === "failed") operation.terminalPush = push;
     for (const subscriber of [...operation.subscribers]) {
       if (subscriber.closed) continue;
       if (subscriber.queue.length >= this.subscriberQueueLimit) { this.closeTurnSubscriber(operation, subscriber); continue; }
@@ -2086,6 +2221,7 @@ export class SessiondService {
    */
   async interrupt(sessionId: string, commandId: string, interrupt: RuntimeInterrupt, epoch?: string): Promise<CorrelatedRuntimeInterruptResult> {
     const record = this.requireActive(sessionId);
+    const fingerprint = operationFingerprint(interrupt);
     let immediate: CorrelatedRuntimeInterruptResult | undefined;
     let pending!: PendingInterrupt;
     let needsRollover = false;
@@ -2104,17 +2240,29 @@ export class SessiondService {
         immediate = epochChangedInterrupt(commandId, interrupt.type);
         return;
       }
-      const acceptedType = record.acceptedInterrupts.get(commandId);
-      if (acceptedType !== undefined && acceptedType !== interrupt.type) {
-        immediate = rejectedInterrupt(commandId, interrupt.type, `commandId was already accepted as ${acceptedType}`);
+      const accepted = record.acceptedInterrupts.get(commandId);
+      if (accepted !== undefined && accepted.type !== interrupt.type) {
+        immediate = rejectedInterrupt(commandId, interrupt.type, `commandId was already accepted as ${accepted.type}`);
+        return;
+      }
+      if (accepted !== undefined && accepted.fingerprint !== fingerprint) {
+        immediate = rejectedInterrupt(commandId, interrupt.type, "commandId payload conflict");
         return;
       }
       const cached = record.interruptResults.get(commandId);
-      if (cached) { immediate = cached; return; }
+      if (cached) {
+        if (cached.fingerprint !== fingerprint) immediate = rejectedInterrupt(commandId, interrupt.type, "commandId payload conflict");
+        else immediate = cached.result;
+        return;
+      }
       const wireId = `interrupt:${record.epoch}:${commandId}`;
       const existing = record.pendingInterrupts.get(wireId);
-      if (existing) { pending = existing; return; }
-      if (acceptedType !== undefined) { immediate = duplicateInterruptUnavailable(commandId, acceptedType); return; }
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) immediate = rejectedInterrupt(commandId, interrupt.type, "commandId payload conflict");
+        else pending = existing;
+        return;
+      }
+      if (accepted !== undefined) { immediate = duplicateInterruptUnavailable(commandId, accepted.type); return; }
       // Phase 5B: capacity boundary — stale/missing-after-rollover epoch fails
       // epoch_changed (never rotates); otherwise start/join the whole-epoch
       // rollover (executed outside the lock below).
@@ -2130,13 +2278,13 @@ export class SessiondService {
         needsRollover = true;
         return;
       }
-      record.acceptedInterrupts.set(commandId, interrupt.type);
+      record.acceptedInterrupts.set(commandId, { type: interrupt.type, fingerprint });
       const wait = deferred<CorrelatedRuntimeInterruptResult>();
       const timer = setTimeout(() => {
         record.pendingInterrupts.delete(wireId);
         wait.resolve(unavailableInterrupt(commandId, interrupt.type, "worker interrupt timed out"));
       }, this.commandTimeoutMs);
-      pending = { commandId, type: interrupt.type, promise: wait.promise, resolve: wait.resolve, timer };
+      pending = { commandId, type: interrupt.type, fingerprint, promise: wait.promise, resolve: wait.resolve, timer };
       record.pendingInterrupts.set(wireId, pending);
       this.touch(record);
       try {
@@ -2145,7 +2293,7 @@ export class SessiondService {
         clearTimeout(timer);
         record.pendingInterrupts.delete(wireId);
         const result = unavailableInterrupt(commandId, interrupt.type, "worker interrupt send failed");
-        this.cacheInterruptResult(record, result);
+        this.cacheInterruptResult(record, result, fingerprint);
         immediate = result;
       }
     });
@@ -2195,16 +2343,36 @@ export class SessiondService {
     if (record.epochRollover !== undefined) {
       throw new SessiondError("epoch_changed", "session epoch changed", true);
     }
-    const id = `snapshot:${record.epoch}:${randomUUID()}`;
+    return this.snapshotOnRecord(record);
+  }
+
+  private async snapshotOnRecord(record: RecordState, ownsOperation: () => boolean = () => true): Promise<RuntimeSnapshot> {
+    const sessionId = record.sessionId;
+    const epoch = record.epoch;
+    const isCurrent = (): boolean => this.records.get(sessionId) === record && record.sessionId === sessionId &&
+      this.ownsLiveRecord(record, epoch) && ownsOperation();
+    if (!isCurrent()) throw new SessiondError("worker_unavailable", "snapshot authority changed before refresh", true);
+    const id = `snapshot:${epoch}:${randomUUID()}`;
     const wait = deferred<RuntimeSnapshot>();
-    const timer = setTimeout(() => { record.pendingSnapshots.delete(id); wait.reject(new SessiondError("timeout", "worker snapshot timed out", true)); }, this.commandTimeoutMs);
-    record.pendingSnapshots.set(id, { resolve: wait.resolve, reject: wait.reject, timer });
-    try {
-      await record.worker.send({ type: "worker.getSnapshot", id, protocolVersion: PROTOCOL_VERSION, payload: { sessionId } });
-    } catch {
+    const timer = setTimeout(() => {
+      if (record.pendingSnapshots.get(id) !== pending) return;
+      record.pendingSnapshots.delete(id);
+      wait.reject(new SessiondError("timeout", "worker snapshot timed out", true));
+    }, this.commandTimeoutMs);
+    const pending: PendingSnapshot = { isCurrent, resolve: wait.resolve, reject: wait.reject, timer };
+    record.pendingSnapshots.set(id, pending);
+    const sendFailed = (): void => {
+      if (record.pendingSnapshots.get(id) !== pending || !isCurrent()) return;
       clearTimeout(timer);
       record.pendingSnapshots.delete(id);
-      throw new SessiondError("worker_unavailable", "worker snapshot send failed", true);
+      wait.reject(new SessiondError("worker_unavailable", "worker snapshot send failed", true));
+    };
+    // Transport backpressure must not postpone observing the bounded waiter.
+    // A late send rejection belongs only to this still-owned pending slot.
+    try {
+      void record.worker.send({ type: "worker.getSnapshot", id, protocolVersion: PROTOCOL_VERSION, payload: { sessionId } }).catch(sendFailed);
+    } catch {
+      sendFailed();
     }
     return wait.promise;
   }
@@ -2727,7 +2895,7 @@ export class SessiondService {
     if (record.status !== "stopping" && record.status !== "stopped" && this.records.get(record.sessionId) === record) this.touch(record);
   }
 
-  private snapshotPush(record: RecordState, reason: SnapshotDeliveryReason): SessiondPush {
+  private snapshotPush(record: RecordState, reason: SnapshotDeliveryReason): Extract<SessiondPush, { type: "snapshot" }> {
     const snapshot = record.projection.snapshot();
     return {
       type: "snapshot",
@@ -2742,10 +2910,10 @@ export class SessiondService {
     };
   }
 
-  private cacheCommandResult(record: RecordState, result: CorrelatedRuntimeCommandResult): void {
+  private cacheCommandResult(record: RecordState, result: CorrelatedRuntimeCommandResult, fingerprint: string): void {
     const cache = READ_ONLY_COMMAND_TYPES.has(result.result.type) ? record.readResults : record.commandResults;
     if (cache.has(result.commandId)) cache.delete(result.commandId);
-    cache.set(result.commandId, result);
+    cache.set(result.commandId, { fingerprint, result });
     while (cache.size > this.commandResultCacheLimit) {
       const oldest = cache.keys().next().value as string | undefined;
       if (oldest === undefined) break;
@@ -2753,9 +2921,9 @@ export class SessiondService {
     }
   }
 
-  private cacheInterruptResult(record: RecordState, result: CorrelatedRuntimeInterruptResult): void {
+  private cacheInterruptResult(record: RecordState, result: CorrelatedRuntimeInterruptResult, fingerprint: string): void {
     if (record.interruptResults.has(result.commandId)) record.interruptResults.delete(result.commandId);
-    record.interruptResults.set(result.commandId, result);
+    record.interruptResults.set(result.commandId, { fingerprint, result });
     while (record.interruptResults.size > this.interruptLimit) {
       const oldest = record.interruptResults.keys().next().value as string | undefined;
       if (oldest === undefined) break;
@@ -2840,11 +3008,17 @@ export class SessiondService {
 
   private isTurnRunning(record: RecordState): boolean {
     const state = record.projection.snapshot().state;
-    return state.isPromptRunning || state.isStreaming || state.isBashRunning || state.isCompacting;
+    return state.isPromptRunning || state.isStreaming || state.isBashRunning || state.isCompacting ||
+      [...record.turnOperations.values()].some((operation) => operation.terminalFinalization !== undefined);
+  }
+
+  private isSideChatActive(record: RecordState): boolean {
+    const status = record.projection.snapshot().state.sideChat?.status;
+    return status === "running" || status === "awaiting_overlap";
   }
 
   private isBusy(record: RecordState): boolean {
-    return this.isTurnRunning(record) || record.pendingCommands.size > 0 || record.authorityFinalizations.size > 0;
+    return this.isTurnRunning(record) || this.isSideChatActive(record) || record.pendingCommands.size > 0 || record.authorityFinalizations.size > 0;
   }
 
   // ---------------------------------------------------------------------
@@ -2866,6 +3040,7 @@ export class SessiondService {
     const queued = state.queuedMessages;
     if (queued !== undefined && (queued.steering.length > 0 || queued.followUp.length > 0)) return false;
     if (state.pendingExtensionUi !== undefined && state.pendingExtensionUi.length > 0) return false;
+    if (state.sideChat?.status === "running" || state.sideChat?.status === "awaiting_overlap") return false;
     return true;
   }
 
@@ -3163,8 +3338,15 @@ export class SessiondService {
   }
 
   private async legacySessionPage(catalog: SessionCatalogPort, request: SessionPageRequest): Promise<SessionPage> {
-    const sessions = (await catalog.listSessions()).filter((session) =>
-      (request.cwd === undefined || session.cwd === request.cwd)
+    const allSessions = await catalog.listSessions();
+    if (request.parentSessionId !== undefined && !allSessions.some((session) => session.sessionId === request.parentSessionId)) {
+      throw new SessiondError("not_found", "parent session was not found", false);
+    }
+    const sessions = allSessions.filter((session) =>
+      (request.parentSessionId !== undefined
+        ? session.parentSessionId === request.parentSessionId
+        : session.parentSessionId === undefined)
+      && (request.cwd === undefined || session.cwd === request.cwd)
       && (request.projectRoot === undefined || session.projectRoot === request.projectRoot));
     const offset = (request.page - 1) * request.pageSize;
     return {

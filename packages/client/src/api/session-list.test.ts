@@ -61,6 +61,21 @@ describe("true numbered catalog pages", () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe("/v1/sessions?page=2&pageSize=20&projectRoot=%2Frepo+x");
   });
 
+  it("parent-filtered sessions have their own page identity", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ ...sessionPage, pageSize: 20 }));
+    const options = createSessionPageQueryOptions({
+      http: createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch }),
+      queryKey: queryKeys.sessions.page(1, 20, undefined, undefined, "parent-1"),
+      page: 1,
+      pageSize: 20,
+      parentSessionId: "parent-1",
+      enabled: true,
+    });
+    await options.queryFn!({ signal: new AbortController().signal } as never);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("/v1/sessions?page=1&pageSize=20&parentSessionId=parent-1");
+    expect(options.queryKey).toEqual(["pix", "sessions", "page", 1, 20, null, null, "parent-1"]);
+  });
+
   it("Projects are a separate resource and request", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json(projectPage));
     const options = createProjectPageQueryOptions({

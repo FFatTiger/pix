@@ -16,7 +16,6 @@ import type {
   RuntimeCapability,
   SessionCatalogPort,
   SessionLocatorPort,
-  SideChatMainSnapshot,
 } from "@fffattiger/pix-runtime-core";
 
 export interface HarnessFactoryOptions {
@@ -58,9 +57,6 @@ export interface AdapterContractHarness {
    * required to provide the complete bundle; absence is a contract failure.
    */
   createPorts(factory: AgentRuntimeFactory): Promise<AdapterPortBundle>;
-
-  /** Optional: build the side-chat main-snapshot DTO for a session. */
-  getSideChatSnapshot?(sessionId: string): Promise<SideChatMainSnapshot | null>;
 
   /** Clean up global state after the run. */
   teardown(): Promise<void>;

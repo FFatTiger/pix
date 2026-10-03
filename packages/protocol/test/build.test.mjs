@@ -110,9 +110,10 @@ describe("build fingerprint", () => {
 
 describe("canonical identities", () => {
   it("does not fingerprint Browser-Host lifecycle features", () => {
-    // Frozen digest: CAT-01 bumps ADAPTER_CONTRACT_VERSION only. Do not
-    // retarget this value for projection schema 5 or other Adapter policy.
-    assert.equal(SESSIOND_BUILD_IDENTITY.fingerprint, "8307373fd59c809d1dea4afd0c13e1769806d24a60fdf085b44b148a4f370c7f");
+    // Frozen digest: v5 runtime capability vocabulary adds availability-only
+    // subagent/todo/user_question/side_chat tokens. Recompute from source
+    // constants; do not retarget for unrelated Adapter policy.
+    assert.equal(SESSIOND_BUILD_IDENTITY.fingerprint, "65ce3af0104c8d69561034dc4618cbead77b057241df9734e51f9590896dfe00");
     assert.equal(SESSIOND_BUILD_CAPABILITIES.includes(RUNTIME_OBSERVE_EXISTING_FEATURE), false);
     assert.equal(SESSIOND_BUILD_CAPABILITIES.includes(RUNTIME_EXPLICIT_ACTIVATE_FEATURE), false);
     assert.equal(RUNTIME_CAPABILITY_VOCABULARY.includes(RUNTIME_OBSERVE_EXISTING_FEATURE), false);
@@ -197,12 +198,12 @@ describe("sessiond build matrix", () => {
     }
   });
 
-  it("release fences: pre-v4 Adapter generations are incompatible both ways before Worker SDK init", () => {
-    // v4 restores continuation models and excludes model mutation from turn
-    // admission. All prior Adapter generations must fail the reuse fence.
-    assert.equal(ADAPTER_CONTRACT_VERSION, 4);
-    assert.equal(SESSIOND_BUILD_IDENTITY.adapterContract, 4);
-    for (const superseded of [1, 2, 3]) {
+  it("release fences: pre-v7 Adapter generations are incompatible both ways before Worker SDK init", () => {
+    // v7 adds the Pi 1.0 input and nested-tool behavior contract. All prior
+    // Adapter generations must fail the reuse fence.
+    assert.equal(ADAPTER_CONTRACT_VERSION, 7);
+    assert.equal(SESSIOND_BUILD_IDENTITY.adapterContract, 7);
+    for (const superseded of [1, 2, 3, 4, 5, 6]) {
       const older = { ...SESSIOND_BUILD_IDENTITY, adapterContract: superseded };
       assert.deepEqual(evaluateSessiondBuild(older, SESSIOND_BUILD_IDENTITY), {
         state: "incompatible",
@@ -242,10 +243,11 @@ describe("worker build matrix", () => {
     }
   });
 
-  it("release fences: pre-v4 Worker Adapter generations are incompatible both ways", () => {
-    // Workers missing the model-submission behavior must not be reused.
-    assert.equal(WORKER_BUILD_IDENTITY.adapterContract, 4);
-    for (const superseded of [1, 2, 3]) {
+  it("release fences: pre-v7 Worker and Adapter generations are incompatible both ways", () => {
+    // Workers missing Pi 1.0 input receipts and nested metadata must not be reused.
+    assert.equal(WORKER_BUILD_IDENTITY.adapterContract, 7);
+    assert.equal(WORKER_BUILD_IDENTITY.workerContract, 7);
+    for (const superseded of [1, 2, 3, 4, 5, 6]) {
       const older = { ...WORKER_BUILD_IDENTITY, adapterContract: superseded };
       assert.deepEqual(evaluateWorkerBuild(older, WORKER_BUILD_IDENTITY), {
         state: "incompatible",

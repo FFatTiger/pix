@@ -32,6 +32,18 @@ export interface ExtensionWidgetItem {
   placement: ExtensionWidgetPlacement;
 }
 
+/** Non-error extension notifications (`ctx.ui.notify` with info/warning).
+ * Kept as a bounded most-recent ring; errors stay the structured
+ * `extension_error` event and are never demoted to notices. */
+export const MAX_EXTENSION_NOTIFICATIONS = 20;
+
+export interface ExtensionNotificationItem {
+  level: "info" | "warning";
+  message: string;
+  /** Emission time (epoch ms) for ordering/age display. */
+  at: number;
+}
+
 /**
  * A pending UI request from an extension. Method-specific fields:
  *

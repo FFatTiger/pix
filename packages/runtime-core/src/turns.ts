@@ -18,11 +18,21 @@ export type RuntimeTurnAdmission =
   | { readonly ok: true; readonly snapshot: RuntimeSnapshot }
   | { readonly ok: false; readonly error: RuntimeError; readonly snapshot: RuntimeSnapshot };
 
+/** Pi 1.0 input disposition reported by the runtime: "started" (a model
+ * turn began), "handled" (an extension command or input handler consumed the
+ * input — no assistant reply and no user transcript entry is owed), "queued"
+ * (parked for later delivery). Adapters must report the backend's actual
+ * receipt, never infer it from the absence of a user entry id. */
+export type PromptDisposition = "started" | "handled" | "queued";
+
+/** Pi 1.0 steer/followUp disposition. */
+export type QueuedInputDisposition = "handled" | "queued";
+
 /** Terminal result of an admitted turn. The entry id is optional until the
  * backend exposes a structural operation-to-entry correlation. */
 export type RuntimeTurnTerminal =
-  | { readonly ok: true; readonly snapshot: RuntimeSnapshot; readonly userEntryId?: string }
-  | { readonly ok: false; readonly error: RuntimeError; readonly snapshot: RuntimeSnapshot; readonly userEntryId?: string };
+  | { readonly ok: true; readonly snapshot: RuntimeSnapshot; readonly userEntryId?: string; readonly disposition?: PromptDisposition }
+  | { readonly ok: false; readonly error: RuntimeError; readonly snapshot: RuntimeSnapshot; readonly userEntryId?: string; readonly disposition?: PromptDisposition };
 
 /** Admission is quick; completion is a separate promise and never holds the
  * caller's ordinary control lane. */

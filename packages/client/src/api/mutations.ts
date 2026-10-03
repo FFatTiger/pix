@@ -146,6 +146,14 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
         mutationFn: (idleTimeoutMs: number) => configuration.sessionSettings.set(idleTimeoutMs),
         onSuccess: () => invalidate(queryClient, queryKeys.settings.all),
       }),
+      saveBuiltIns: () => ({
+        mutationKey: ["pix", "settings", "built-ins"] as const,
+        mutationFn: (input: Parameters<typeof configuration.builtIns.save>[0]) =>
+          configuration.builtIns.save(input),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.builtIns.save>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.builtIns(), data);
+        },
+      }),
       /** CAS write of the global settings.json raw text. */
       saveConfigFile: () => ({
         mutationKey: ["pix", "settings", "save-config"] as const,
@@ -153,6 +161,21 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
           configuration.settingsFile.save(input),
         onSuccess: (data: Awaited<ReturnType<typeof configuration.settingsFile.save>>) => {
           queryClient.setQueryData(queryKeys.settingsConfig.file(), data);
+          // A raw edit can change pixDefaultTools/defaultTools arbitrarily:
+          // the structured tools view must re-read the file.
+          return invalidate(queryClient, queryKeys.settingsConfig.tools());
+        },
+      }),
+      /** CAS write of the global tool selection, then apply to the attached session. */
+      saveTools: () => ({
+        mutationKey: ["pix", "settings", "save-tools"] as const,
+        mutationFn: (input: Parameters<typeof configuration.tools.save>[0]) =>
+          configuration.tools.save(input),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.tools.save>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.tools(), data);
+          // The structured write rewrote settings.json bytes: the raw editor
+          // cache is stale.
+          return invalidate(queryClient, queryKeys.settingsConfig.file());
         },
       }),
     },

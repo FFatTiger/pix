@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { HttpClient } from "./http-client";
 import { createSessionsApi } from "./sessions";
 import { queryKeys } from "./query-keys";
@@ -63,6 +63,26 @@ export function createSessionHistoryQueryOptions(input: {
     retry: false,
     retryOnMount: false,
   });
+}
+
+/**
+ * Restart one mounted read-only transcript after a child revision changes.
+ *
+ * TanStack invalidation alone does not restart an initial request with no
+ * cached data: that stale response can settle and clear `isInvalidated`.
+ * Cancel first so the transport AbortSignal fires, then refetch the exact
+ * active key only while the caller's parent/epoch/child/generation fence still
+ * owns this refresh.
+ */
+export async function refreshReadonlySessionHistory(
+  queryClient: QueryClient,
+  sessionId: string,
+  isCurrent: () => boolean,
+): Promise<void> {
+  const queryKey = queryKeys.sessions.history(sessionId, 0, null);
+  await queryClient.cancelQueries({ queryKey, exact: true });
+  if (!isCurrent()) return;
+  await queryClient.invalidateQueries({ queryKey, exact: true, refetchType: "active" });
 }
 
 /**

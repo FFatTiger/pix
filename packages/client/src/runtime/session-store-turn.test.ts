@@ -16,9 +16,10 @@
  * the main session-store suite (injected clock/timers/random).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
+import { authoritySnapshot, createHarness, flush, lastFrame, snapshotPayload, type RuntimeHarness } from "./testing/harness";
 import type { FakeWebSocket } from "./testing/harness";
-import type { SubmitTurnAdmission } from "@fffattiger/pix-protocol";
+import type { SubmitTurnAdmission, RuntimeSnapshot, WsTurnStatusMessage } from "@fffattiger/pix-protocol";
+import { sessionPresentationKey } from "./session-controller-registry";
 
 function ackSubmitTurn(caps: string[] = ["agent"]) {
   return {
@@ -166,7 +167,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     // Terminal status clears the slot and publishes the terminal signal.
     let terminal: unknown;
     h.store.subscribeTurnTerminal((info) => { terminal = info; });
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
     await flush();
     expect(h.store.getSnapshot().turnActive).toBe(false);
     expect(h.store.getSnapshot().turnDelivery).toBe(null);
@@ -182,10 +183,10 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     ws.serverSend({
       type: "submit_turn_result",
       id: submit.id,
-      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "epoch_changed", message: "session epoch changed", retryable: false } },
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: submit.payload.operationId, error: { code: "not_found", message: "session not found", retryable: false } },
     });
     await flush();
-    await expect(sendP).rejects.toMatchObject({ code: "epoch_changed", phase: "activation" });
+    await expect(sendP).rejects.toMatchObject({ code: "not_found", phase: "activation" });
     expect(h.store.getSnapshot().turnActive).toBe(false);
     expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
   });
@@ -222,15 +223,186 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     ws.serverSend(ackSubmitTurn());
     await flush();
     const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    expect(submitFrames(ws)).toHaveLength(0);
     ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
     await flush();
     const submit2 = lastFrame<{ type: string; id: string; payload: { operationId: string; prompt: string } }>(ws, "submit_turn")!;
     expect(submit2.payload.operationId).toBe(operationId);
     expect(submit2.payload.prompt).toBe("hello");
     expect(submit2.id).not.toBe(submit1.id);
+    expect(submitFrames(ws)).toHaveLength(1);
     // duplicate+accepted re-opens the subscription and resolves the promise.
     ws.serverSend({ type: "submit_turn_result", id: submit2.id, payload: { ...acceptedAdmission(h, operationId), status: "duplicate", delivery: "accepted" } });
     await expect(sendP).resolves.toBeTruthy();
+  });
+
+  it("waits for reconnect sendability before a new submit, then sends the same logical intent once", async () => {
+    const h = createHarness();
+    let ws = await openAndAttachTurn(h);
+    const closedSent = ws.sent.length;
+    ws.serverClose(1006);
+    await flush();
+
+    let settlements = 0;
+    const sendP = h.store.sendPromptToSession("s1", "after close");
+    void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
+    await flush();
+    expect(ws.sent.length).toBe(closedSent);
+    expect(submitFrames(ws)).toHaveLength(0);
+    expect(h.store.getSnapshot().turnActive).toBe(true);
+    expect(h.store.getSnapshot().turnDelivery).toBe("in_flight");
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
+    expect(settlements).toBe(0);
+
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ackSubmitTurn());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    expect(submitFrames(ws)).toHaveLength(0);
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot" }) });
+    await flush();
+    const submits = submitFrames(ws);
+    expect(submits).toHaveLength(1);
+    expect(submits[0]!.payload.prompt).toBe("after close");
+    expect(submits[0]!.payload.sessionId).toBe("s1");
+    expect(submits[0]!.payload.expectedEpoch).toBe("e1");
+    expect(submits[0]!.payload.operationId).toMatch(/^op:/);
+    ws.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission(h, submits[0]!.payload.operationId as string) });
+    await expect(sendP).resolves.toBeTruthy();
+    expect(settlements).toBe(1);
+    expect(submitFrames(ws)).toHaveLength(1);
+  });
+
+  it("waits for the e2 epoch_changed resume snapshot before fencing a new post-close submit", async () => {
+    const h = createHarness();
+    let ws = await openAndAttachTurn(h);
+    ws.serverClose(1006);
+    await flush();
+
+    const sendP = h.store.sendPromptToSession("s1", "after epoch change");
+    await flush();
+    expect(submitFrames(ws)).toHaveLength(0);
+    expect(h.store.getSnapshot().turnActive).toBe(true);
+
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ackSubmitTurn());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    expect(submitFrames(ws)).toHaveLength(0);
+    ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2", lastEventId: 3, resumeStatus: "epoch_changed" }) });
+    await flush();
+    const submits = submitFrames(ws);
+    expect(submits).toHaveLength(1);
+    expect(submits[0]!.payload.prompt).toBe("after epoch change");
+    expect(submits[0]!.payload.expectedEpoch).toBe("e2");
+    expect(submits[0]!.payload.expectedRevision).toBe(3);
+    expect(h.store.getSnapshot().turnActive).toBe(true);
+    expect(h.store.getSnapshot().turnDelivery).toBe("in_flight");
+    ws.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmissionFor("s1", submits[0]!.payload.operationId as string, "e2", "turn-e2", 3) });
+    await expect(sendP).resolves.toBeTruthy();
+    expect(submitFrames(ws)).toHaveLength(1);
+  });
+
+  it("continues unfenced when resume existing_only attach rejects worker_unavailable", async () => {
+    const h = createHarness();
+    h.store.connect();
+    let ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ackSubmitTurn());
+    await flush();
+    const observeP = h.registry.observeExisting("s1");
+    await flush();
+    expect(lastFrame<{ type: string; payload: { attachMode?: string } }>(ws, "attach")!.payload.attachMode).toBe("existing_only");
+    ws.serverClose(1006);
+    await flush();
+
+    const sendP = h.store.sendPromptToSession("s1", "after observe reject");
+    await flush();
+    expect(submitFrames(ws)).toHaveLength(0);
+
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ackSubmitTurn());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string; payload: { attachMode?: string } }>(ws, "attach")!;
+    expect(attachFrame.payload.attachMode).toBe("existing_only");
+    expect(submitFrames(ws)).toHaveLength(0);
+    ws.serverSend({
+      type: "response",
+      id: attachFrame.id,
+      payload: { ok: false, error: { code: "worker_unavailable", message: "worker gone", retryable: true } },
+    });
+    await expect(observeP).rejects.toMatchObject({ code: "worker_unavailable" });
+    await flush();
+    const submits = submitFrames(ws);
+    expect(submits).toHaveLength(1);
+    expect(submits[0]!.payload.prompt).toBe("after observe reject");
+    expect("expectedEpoch" in submits[0]!.payload).toBe(false);
+    expect("expectedRevision" in submits[0]!.payload).toBe(false);
+    ws.serverSend({ type: "submit_turn_result", id: submits[0]!.id, payload: acceptedAdmission(h, submits[0]!.payload.operationId as string) });
+    await expect(sendP).resolves.toBeTruthy();
+  });
+
+  it("a late snapshot after the 10s bound cannot send", async () => {
+    const h = createHarness();
+    let ws = await openAndAttachTurn(h);
+    ws.serverClose(1006);
+    await flush();
+
+    let settlements = 0;
+    const sendP = h.store.sendPromptToSession("s1", "late snapshot");
+    void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flush();
+    await expect(sendP).rejects.toMatchObject({ code: "timeout", phase: "activation", retryable: true });
+    expect(settlements).toBe(1);
+    expect(h.store.getSnapshot().turnActive).toBe(false);
+
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ackSubmitTurn());
+    await flush();
+    const attachFrame = lastFrame<{ type: string; id: string }>(ws, "attach");
+    if (attachFrame !== undefined) {
+      ws.serverSend({ type: "snapshot", id: attachFrame.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2", resumeStatus: "epoch_changed" }) });
+      await flush();
+    }
+    expect(submitFrames(ws)).toHaveLength(0);
+    expect(h.store.getSnapshot().turnActive).toBe(false);
+    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
+  });
+
+  it("rejects a closed-socket submit after the 10s readiness bound as proven non-delivery", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const closedSent = ws.sent.length;
+    ws.serverClose(1006);
+    await flush();
+
+    let settlements = 0;
+    const sendP = h.store.sendPromptToSession("s1", "never delivered");
+    void sendP.then(() => { settlements += 1; }, () => { settlements += 1; });
+    await flush();
+    expect(submitFrames(ws)).toHaveLength(0);
+    expect(h.store.getSnapshot().turnActive).toBe(true);
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flush();
+    await expect(sendP).rejects.toMatchObject({ code: "timeout", phase: "activation", retryable: true });
+    expect(settlements).toBe(1);
+    expect(ws.sent.length).toBe(closedSent);
+    expect(h.store.getSnapshot().turnActive).toBe(false);
+    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
+    expect(h.store.getSnapshot().error).toMatchObject({ code: "timeout", retryable: true });
   });
 
   it.each([
@@ -329,12 +501,12 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await sendP;
 
     // A status push for a WRONG session/operation is dropped.
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "other-session", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: "op:other", turnId: "turn-1", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("other-session", "e1"), payload: { sessionId: "other-session", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: "op:other", turnId: "turn-1", revision: 1, state: "completed" } });
     await flush();
     expect(h.store.getSnapshot().turnActive).toBe(true);
     // Correct status (revision > admission's 0) terminates the turn.
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
     await flush();
     expect(h.store.getSnapshot().turnActive).toBe(false);
   });
@@ -349,7 +521,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await flush();
     await sendP;
     // Terminal at revision 1.
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: submit.payload.operationId, turnId: "turn-1", revision: 1, state: "completed" } });
     await flush();
     expect(h.store.getSnapshot().turnActive).toBe(false);
     // A late stale revision 0 must not resurrect the turn.
@@ -613,7 +785,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     await flush();
 
     expect(submitFrames(ws)).toHaveLength(1);
-    await expect(sendP).rejects.toMatchObject({ code: "unavailable" });
+    await expect(sendP).rejects.toMatchObject({ code: "unavailable", phase: "activation" });
     expect(settlements).toBe(1);
     expect(h.store.getSnapshot().turnActive).toBe(false);
     expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
@@ -883,6 +1055,8 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
       ws.serverSend({ type: "submit_turn_result", id: attached.id, payload: { status: "rejected", delivery: "not_delivered", sessionId: "attached-seed", operationId: attached.payload.operationId, epoch: "eN", revision: 8, error: { code: "conflict", message: "x", retryable: false } } });
       await expect(attachedP).rejects.toBeTruthy();
       expect(submitFrames(ws)).toHaveLength(1);
+      // Explicit/attached conflict still never auto-drops the fence (stale-attached
+      // recovery is epoch_changed-only).
       const detachP = h.store.detach();
       await flush();
       const detach = lastFrame<{ type: string; id: string }>(ws, "detach")!;
@@ -922,6 +1096,91 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
       await expect(noneP).rejects.toMatchObject({ code: "conflict" });
       expect(submitFrames(ws)).toHaveLength(2);
     }
+  });
+
+  it("drops a stale attached fence on not_delivered epoch_changed and resends the same operation unfenced", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const sendP = h.store.sendPromptToSession("s1", "stale attached");
+    await flush();
+    const first = submitFrames(ws)[0]!;
+    expect(first.payload.expectedEpoch).toBe("e1");
+    expect(first.payload.expectedRevision).toBe(0);
+    const attachCount = ws.sent.filter((frame) => (frame as { type?: string }).type === "attach").length;
+    const detachCount = ws.sent.filter((frame) => (frame as { type?: string }).type === "detach").length;
+
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: first.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: first.payload.operationId, error: { code: "epoch_changed", message: "not active at expected epoch", retryable: false } },
+    });
+    await flush();
+    const retry = submitFrames(ws)[1]!;
+    expect(retry.payload.operationId).toBe(first.payload.operationId);
+    expect(retry.payload.prompt).toBe("stale attached");
+    expect("expectedEpoch" in retry.payload).toBe(false);
+    expect("expectedRevision" in retry.payload).toBe(false);
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(attachCount);
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "detach")).toHaveLength(detachCount);
+
+    ws.serverSend({ type: "submit_turn_result", id: retry.id, payload: acceptedAdmission(h, retry.payload.operationId as string) });
+    await expect(sendP).resolves.toBeTruthy();
+    expect(submitFrames(ws)).toHaveLength(2);
+  });
+
+  it("after attached→unfenced retry, repairs one exact authority fence then fails closed", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const sendP = h.store.sendPromptToSession("s1", "bound repair");
+    await flush();
+    const first = submitFrames(ws)[0]!;
+
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: first.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: first.payload.operationId, error: { code: "epoch_changed", message: "not active at expected epoch", retryable: false } },
+    });
+    await flush();
+    const unfenced = submitFrames(ws)[1]!;
+    expect("expectedEpoch" in unfenced.payload).toBe(false);
+    expect(unfenced.payload.operationId).toBe(first.payload.operationId);
+
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: unfenced.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: unfenced.payload.operationId, epoch: "eLive", revision: 4, error: { code: "conflict", message: "live worker fence", retryable: false } },
+    });
+    await flush();
+    const fenced = submitFrames(ws)[2]!;
+    expect(fenced.payload.operationId).toBe(first.payload.operationId);
+    expect(fenced.payload.expectedEpoch).toBe("eLive");
+    expect(fenced.payload.expectedRevision).toBe(4);
+
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: fenced.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: fenced.payload.operationId, epoch: "eLive", revision: 5, error: { code: "conflict", message: "second race", retryable: false } },
+    });
+    await expect(sendP).rejects.toMatchObject({ code: "conflict", phase: "activation" });
+    expect(submitFrames(ws)).toHaveLength(3);
+    expect(h.store.getSnapshot().turnActive).toBe(false);
+    expect(h.store.getSnapshot().optimisticEntries).toEqual([]);
+  });
+
+  it("never auto-drops an explicit fence on epoch_changed", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h, "s1", "e1");
+    const sendP = h.store.submitTurn({ sessionId: "s1", prompt: "explicit stale", expectedEpoch: "eF", expectedRevision: 7 });
+    await flush();
+    const first = submitFrames(ws)[0]!;
+    expect(first.payload.expectedEpoch).toBe("eF");
+    ws.serverSend({
+      type: "submit_turn_result",
+      id: first.id,
+      payload: { status: "rejected", delivery: "not_delivered", sessionId: "s1", operationId: first.payload.operationId, error: { code: "epoch_changed", message: "not active at expected epoch", retryable: false } },
+    });
+    await expect(sendP).rejects.toMatchObject({ code: "epoch_changed", phase: "activation" });
+    expect(submitFrames(ws)).toHaveLength(1);
   });
 
   it("uses the created snapshot leaf as the first prompt's optimistic base and never treats admission as final", async () => {
@@ -1070,7 +1329,7 @@ describe("SessionStore — Phase 3 negotiated submit-turn", () => {
     ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "two-turn", epoch: "eN", eventId: 5, streamId: "a1", messageId: "a1", entryId: "a1", parentEntryId: "u1", message: { role: "assistant", content: [{ type: "text", text: "answer one" }], model: "m", provider: "p" } } });
     await flush();
     expect(h.controller("two-turn")!.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u1", "a1"]);
-    ws.serverSend({ type: "turn_status", payload: { sessionId: "two-turn", epoch: "eN", operationId: first.payload.operationId, turnId: "turn-1", revision: 1, state: "completed", userEntryId: "u1", finalLeafId: "a1" } });
+    ws.serverSend({ type: "turn_status", authority: authoritySnapshot("two-turn", "eN"), payload: { sessionId: "two-turn", epoch: "eN", operationId: first.payload.operationId, turnId: "turn-1", revision: 1, state: "completed", userEntryId: "u1", finalLeafId: "a1" } });
     await flush();
     const controller = h.controller("two-turn")!;
     expect(controller.getSnapshot().historyAnchorLeafId).toBe("a1");
@@ -1351,5 +1610,209 @@ describe("SessionStore — Phase 3 legacy fallback (no negotiated submit seam)",
     expect(promptCmd.payload.command.message).toBe("first");
     ws.serverSend({ type: "response", id: promptCmd.id, payload: { ok: true, result: { commandId: promptCmd.payload.command.commandId, result: { ok: true, type: "prompt" } } } });
     await expect(sendP).resolves.toBeTruthy();
+  });
+});
+
+
+describe("SessionController — terminal authority convergence", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const terminal = (operationId: string, authority: ReturnType<typeof authoritySnapshot>, sessionId = "s1", epoch = "e1"): WsTurnStatusMessage => ({
+    type: "turn_status", authority,
+    payload: { sessionId, epoch, operationId, turnId: "turn-1", revision: 1, state: "completed", disposition: "handled", finalLeafId: "branch-parent" },
+  });
+  const settings = { model: { provider: "openai", id: "gpt-6.1-sol" }, thinkingLevel: "high" };
+  function idleAuthority(sessionId: string, epoch: string, lastEventId: number) {
+    const authority = authoritySnapshot(sessionId, epoch, lastEventId);
+    authority.snapshot = snapshotPayload({ sessionId, epoch, lastEventId, ...settings }).snapshot as RuntimeSnapshot;
+    authority.snapshot.state.leafId = "branch-parent";
+    return authority;
+  }
+  async function admitted(h: RuntimeHarness, ws: FakeWebSocket, revision = 1) {
+    const send = h.controller("s1")!.submitTurn({ sessionId: "s1", prompt: "fast", activationOverrides: { model: { provider: "openai", modelId: "gpt-6.1-sol" }, thinkingLevel: "high" } });
+    await flush();
+    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    const admission = acceptedAdmissionFor("s1", submit.payload.operationId, "e1", "turn-1", revision);
+    if (admission.status !== "accepted") throw new Error("expected accepted");
+    admission.snapshot = idleAuthority("s1", "e1", revision).snapshot;
+    admission.snapshot.state.isPromptRunning = true;
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: admission });
+    await send;
+    return submit;
+  }
+
+  it.each([2, 3])("prompt_done cursor 2 precedes busy admission; terminal authority cursor %i converges without losing settings", async (cursor) => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    ws.serverSend({ type: "snapshot", payload: { ...snapshotPayload(), snapshot: idleAuthority("s1", "e1", 0).snapshot } });
+    const send = h.controller("s1")!.submitTurn({ sessionId: "s1", prompt: "fast", activationOverrides: { model: { provider: "openai", modelId: "gpt-6.1-sol" }, thinkingLevel: "high" } });
+    await flush();
+    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    ws.serverSend({ type: "event", payload: { type: "running_sessions_changed", sessionId: "s1", epoch: "e1", eventId: 1, sessionIds: ["s1"], busySessionIds: [] } });
+    ws.serverSend({ type: "event", payload: { type: "prompt_done", sessionId: "s1", epoch: "e1", eventId: 2 } });
+    const admission = acceptedAdmissionFor("s1", submit.payload.operationId, "e1", "turn-1", 2);
+    if (admission.status !== "accepted") throw new Error("expected accepted");
+    admission.snapshot = idleAuthority("s1", "e1", 2).snapshot;
+    admission.snapshot.state.isPromptRunning = true;
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: admission });
+    await send;
+    const controller = h.controller("s1")!;
+    expect(controller.getSnapshot().snapshot?.state).toMatchObject({ ...settings, isPromptRunning: true });
+    const history = controller.getSnapshot();
+    const authority = idleAuthority("s1", "e1", cursor);
+    ws.serverSend(terminal(submit.payload.operationId, authority));
+    expect(controller.getSnapshot().turnActive).toBe(false);
+    expect((controller as unknown as { lastEventId: number }).lastEventId).toBe(2);
+    expect(controller.getSnapshot().snapshot?.state.isPromptRunning).toBe(cursor === 3);
+    if (cursor === 3) {
+      ws.serverSend({ type: "event", payload: { type: "running_sessions_changed", sessionId: "s1", epoch: "e1", eventId: 3, sessionIds: ["s1"], busySessionIds: ["s1"] } });
+      ws.serverSend({ type: "snapshot", payload: { ...snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 3 }), snapshot: authority.snapshot } });
+    }
+    ws.serverSend({ type: "event", payload: { type: "running_sessions_changed", sessionId: "s1", epoch: "e1", eventId: cursor + 1, sessionIds: ["s1"], busySessionIds: [] } });
+    expect(controller.getSnapshot().snapshot?.state).toMatchObject({ ...settings, isPromptRunning: false, isStreaming: false });
+    expect(controller.getSnapshot().optimisticEntries).toHaveLength(0);
+    expect(controller.getSnapshot().historyGeneration).toBe(history.historyGeneration);
+    expect(controller.getSnapshot().historyAnchorLeafId).toBe(history.historyAnchorLeafId);
+    const again = h.store.sendPrompt("again").catch(() => undefined);
+    await flush();
+    expect(submitFrames(ws)).toHaveLength(2);
+    expect(lastFrame(ws, "command")).toBeUndefined();
+    h.dispose();
+    await again;
+  });
+
+  it("sidecar ahead of observer message_end preserves its entry exactly once and its branch/history", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const initial = snapshotPayload({ sessionId: "s1", epoch: "e1", lastEventId: 1 });
+    const snapshot = initial.snapshot as RuntimeSnapshot;
+    snapshot.state.leafId = "branch-parent";
+    ws.serverSend({ type: "snapshot", payload: initial });
+    const submit = await admitted(h, ws);
+    const controller = h.controller("s1")!;
+    const history = controller.getSnapshot();
+    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", epoch: "e1", eventId: 2, streamId: "u1", messageId: "u1", message: { role: "user", content: "fast" } } });
+    const authority = idleAuthority("s1", "e1", 3);
+    authority.snapshot.state.leafId = "u1";
+    ws.serverSend({ ...terminal(submit.payload.operationId, authority), payload: { ...terminal(submit.payload.operationId, authority).payload, disposition: "started", userEntryId: "u1", finalLeafId: "u1" } });
+    expect((controller as unknown as { lastEventId: number }).lastEventId).toBe(2);
+    const end = { type: "event", payload: { type: "message_end", sessionId: "s1", epoch: "e1", eventId: 3, streamId: "u1", messageId: "u1", entryId: "u1", parentEntryId: "branch-parent", message: { role: "user", content: "fast" } } };
+    ws.serverSend(end);
+    ws.serverSend({ type: "snapshot", payload: { ...initial, lastEventId: 3, snapshot: authority.snapshot } });
+    ws.serverSend(end);
+    expect(controller.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["u1"]);
+    expect(controller.getSnapshot().historyGeneration).toBe(history.historyGeneration);
+    expect(controller.getSnapshot().historyAnchorLeafId).toBe(history.historyAnchorLeafId);
+    expect(controller.getSnapshot().snapshot?.state.leafId).toBe("u1");
+    h.dispose();
+  });
+
+  it("observing A while background exact B completes updates only B without attachment or history churn", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h, "B", "eB");
+    ws.serverSend({ type: "snapshot", payload: { ...snapshotPayload({ sessionId: "B", epoch: "eB" }), snapshot: idleAuthority("B", "eB", 0).snapshot } });
+    const observeA = h.store.openSession("A");
+    await flush();
+    const detach = lastFrame<{ type: string; id: string }>(ws, "detach")!;
+    ws.serverSend({ type: "response", id: detach.id, payload: { ok: true, result: { sessionId: "B", detached: true } } });
+    await flush();
+    const attach = lastFrame<{ type: string; id: string }>(ws, "attach")!;
+    ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "A", epoch: "eA" }) });
+    await observeA;
+    const a = h.controller("A")!;
+    const b = h.registry.getOrCreate("B");
+    h.registry.declarePresentation(sessionPresentationKey("B"), true);
+    const send = b.submitTurn({ sessionId: "B", prompt: "background" });
+    await flush();
+    const submit = lastFrame<{ type: string; id: string; payload: { operationId: string } }>(ws, "submit_turn")!;
+    const admission = acceptedAdmissionFor("B", submit.payload.operationId, "eB", "turn-1", 2);
+    if (admission.status !== "accepted") throw new Error("expected accepted");
+    admission.snapshot.state.isPromptRunning = true;
+    h.registry.declarePresentation(sessionPresentationKey("A"), true);
+    ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: admission });
+    await send;
+    const beforeA = a.getSnapshot();
+    const beforeB = b.getSnapshot();
+    const lease = h.registry.leaseSnapshot;
+    const frames = ws.sent.length;
+    ws.serverSend(terminal(submit.payload.operationId, idleAuthority("B", "eB", 4), "B", "eB"));
+    expect(a.getSnapshot()).toBe(beforeA);
+    expect(h.registry.leaseSnapshot).toEqual(lease);
+    expect(lease).toMatchObject({ phase: "held", holderSessionId: "A" });
+    expect(ws.sent).toHaveLength(frames);
+    expect(b.getSnapshot()).toMatchObject({ attached: false, turnActive: false, historyGeneration: beforeB.historyGeneration, historyAnchorLeafId: beforeB.historyAnchorLeafId });
+    expect((b as unknown as { lastEventId: number }).lastEventId).toBe(4);
+    expect(b.getSnapshot().snapshot?.state).toMatchObject({ ...settings, isPromptRunning: false });
+    expect(b.getSnapshot().liveEntries).toEqual(beforeB.liveEntries);
+    h.dispose();
+  });
+
+  it("equal-cursor authority retains a real external stream, capabilities, branch and committed live entries", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    ws.serverSend({ type: "snapshot", payload: { ...snapshotPayload(), snapshot: idleAuthority("s1", "e1", 0).snapshot } });
+    ws.serverSend({ type: "event", payload: { type: "message_start", sessionId: "s1", epoch: "e1", eventId: 1, streamId: "u", messageId: "u", message: { role: "user", content: "prior" } } });
+    ws.serverSend({ type: "event", payload: { type: "message_end", sessionId: "s1", epoch: "e1", eventId: 2, streamId: "u", messageId: "u", entryId: "prior", message: { role: "user", content: "prior" } } });
+    const submit = await admitted(h, ws, 2);
+    const controller = h.controller("s1")!;
+    const history = controller.getSnapshot();
+    const authority = idleAuthority("s1", "e1", 2);
+    authority.snapshot.state.isStreaming = true;
+    authority.snapshot.state.leafId = "external-branch";
+    authority.snapshot.streaming = { active: true, phase: "streaming", streamId: "external", messageId: "external", partialMessage: { role: "assistant", content: [], provider: "openai", model: "gpt-6.1-sol" } };
+    authority.snapshot.capabilities.capabilities.push("runtime.follow_up");
+    ws.serverSend(terminal(submit.payload.operationId, authority));
+    expect(controller.getSnapshot().snapshot).toEqual(authority.snapshot);
+    expect(controller.getSnapshot().historyGeneration).toBe(history.historyGeneration);
+    expect(controller.getSnapshot().historyAnchorLeafId).toBe(history.historyAnchorLeafId);
+    expect(controller.getSnapshot().liveEntries).toEqual(history.liveEntries);
+    expect(controller.getSnapshot().turnActive).toBe(false);
+    expect(controller.getSnapshot().snapshot?.state.isStreaming).toBe(true);
+    h.dispose();
+  });
+
+  it("terminal authority runs existing capability-loss cleanup and a late extension reply cannot settle twice", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const submit = await admitted(h, ws, 2);
+    const controller = h.controller("s1")!;
+    const extended = idleAuthority("s1", "e1", 2);
+    extended.snapshot.capabilities.capabilities.push("runtime.extension_ui");
+    const request = { id: "confirm", method: "confirm" as const, title: "Confirm", message: "Continue?" };
+    extended.snapshot.state.pendingExtensionUi = [request];
+    ws.serverSend({ type: "snapshot", payload: { ...snapshotPayload({ lastEventId: 2 }), snapshot: extended.snapshot } });
+    let settlements = 0;
+    const reply = controller.respondExtensionUi(request, { responseKind: "confirmed", confirmed: true }).catch((error: unknown) => { settlements += 1; return error; });
+    await flush();
+    const command = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command")!;
+    expect(controller.getSnapshot().extensionUiReplyPending).toBe(true);
+    ws.serverSend(terminal(submit.payload.operationId, idleAuthority("s1", "e1", 2)));
+    await expect(reply).resolves.toMatchObject({ code: "unsupported_capability" });
+    expect(controller.getSnapshot().extensionUiReplyPending).toBe(false);
+    ws.serverSend({ type: "response", id: command.id, payload: { ok: true, result: { commandId: command.payload.command.commandId, result: { ok: true, type: "extension_ui_response" } } } });
+    await flush();
+    expect(settlements).toBe(1);
+    h.dispose();
+  });
+
+  it("wrong session/epoch/turn/operation and old transport generation cannot replace or settle exact pending", async () => {
+    const h = createHarness();
+    const ws = await openAndAttachTurn(h);
+    const submit = await admitted(h, ws, 2);
+    const controller = h.controller("s1")!;
+    const frame = terminal(submit.payload.operationId, idleAuthority("s1", "e1", 2));
+    const before = controller.getSnapshot();
+    const generation = h.connection.currentGeneration;
+    controller.onTurnStatus(frame, generation - 1);
+    for (const status of [{ ...frame.payload, sessionId: "other" }, { ...frame.payload, epoch: "other" }, { ...frame.payload, operationId: "other" }, { ...frame.payload, turnId: "other" }]) controller.onTurnStatus({ ...frame, payload: status }, generation);
+    expect(controller.getSnapshot()).toBe(before);
+    // A stale authority cursor cannot overwrite the running truth, but the
+    // exact current terminal still settles its operation normally.
+    controller.onTurnStatus(terminal(submit.payload.operationId, idleAuthority("s1", "e1", 1)), generation);
+    expect(controller.getSnapshot().turnActive).toBe(false);
+    expect((controller as unknown as { lastEventId: number }).lastEventId).toBe(2);
+    expect(controller.getSnapshot().snapshot?.state.isPromptRunning).toBe(true);
+    h.dispose();
   });
 });

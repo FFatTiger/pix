@@ -1042,12 +1042,24 @@ async function scenarioCommandIdAtMostOnce(stack, projectDir) {
 
     const second = await client.command(
       sessionId,
-      { commandId, type: "prompt", message: "__count__ second-should-cache" },
+      { commandId, type: "prompt", message: "__count__ first" },
       { wireId: `wire-b-${commandId}` },
     );
     assert.equal(second.payload.ok, true);
     assert.equal(second.payload.result.commandId, commandId);
     assert.equal(second.payload.result.result.ok, true);
+    assert.deepEqual(second.payload.result, first.payload.result, "identical retry replays the accepted result");
+
+    // The full payload belongs to the accepted ID; changed content cannot
+    // borrow a cached success from the original operation.
+    const changedPayload = await client.command(
+      sessionId,
+      { commandId, type: "prompt", message: "__count__ different-must-reject" },
+      { wireId: `wire-changed-${commandId}` },
+    );
+    assert.equal(changedPayload.payload.ok, true);
+    assert.equal(changedPayload.payload.result.result.ok, false);
+    assert.equal(changedPayload.payload.result.result.error.code, "command_rejected");
 
     // Type conflict on same commandId is rejected.
     const conflict = await client.command(

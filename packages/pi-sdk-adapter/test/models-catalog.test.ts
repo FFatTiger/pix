@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPiSdkModelCatalog, type PiSdkModelCatalogOptions } from "../src/models/index.js";
 import { createPiSdkModelStore } from "../src/internal/model-store.js";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ModelCatalogPort, ModelInfo } from "@fffattiger/pix-runtime-core";
 
 // Seeded secrets that MUST NEVER appear in any catalog output, error, or log.
@@ -90,6 +90,26 @@ function withEnv(
 }
 
 describe("read-only model catalog (global, models.json-scoped)", () => {
+  it("keeps registered virtual chat models and omits an unknown context limit", async () => {
+    const { root, agentDir } = await seedAgentDir();
+    try {
+      const runtime = await ModelRuntime.create({ allowModelNetwork: false, modelsPath: join(agentDir, "models.json"), authPath: join(agentDir, "auth.json") });
+      runtime.registerVirtualModel({
+        provider: CUSTOM_PROVIDER_ID, id: "auto", name: "Auto",
+        route: () => { throw new Error("catalog reads must not route requests"); },
+      });
+      const store = createPiSdkModelStore({ agentDir, modelRuntime: runtime });
+      const models = await store.listModels();
+      const virtual = models.find((model) => model.id === "auto");
+      assert.ok(virtual);
+      assert.equal(virtual.contextWindow, undefined);
+      assert.ok(models.some((model) => model.id === "custom-mini"));
+      assert.deepEqual(await store.resolveModel({ provider: CUSTOM_PROVIDER_ID, modelId: "auto" }), virtual);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("listModels returns ONLY models.json-configured providers offline", async () => {
     const { root, agentDir } = await seedAgentDir();
     try {

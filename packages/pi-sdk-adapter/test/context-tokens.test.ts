@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createPiSdkSessionStore } from "../src/internal/session-store.js";
 import { contextUsageFromSession } from "../src/internal/sdk-runtime.js";
 import { estimateSdkBranchContextTokens } from "../src/internal/context-tokens.js";
@@ -56,6 +55,7 @@ function fakeLiveSession(
   return {
     model,
     sessionManager: manager,
+    getContextUsage: () => model === null ? undefined : { contextWindow: model.contextWindow, tokens: 0, percent: 0 },
   } as unknown as AgentSession;
 }
 
@@ -364,6 +364,70 @@ describe("shared context-token estimator (live ↔ history parity)", () => {
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }
+  });
+
+  it("re-estimates edited context and matches Pi 1.0 across live, history, and an old leaf", async () => {
+    const f = await setup();
+    try {
+      const manager = f.manager;
+      const user = manager.appendMessage({ role: "user", content: "long context ".repeat(3000), timestamp: NOW });
+      const assistant = manager.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "answer" }],
+        api: "anthropic", provider: "p", model: "m", usage: usage(200_000), stopReason: "stop", timestamp: NOW + 1,
+      });
+      manager.appendContextEdit(user, { content: "short context" });
+      const model = { provider: "p", id: "m", contextWindow: 1_000_000 };
+      const oracle = () => AgentSession.prototype.getContextUsage.call({
+        sessionManager: manager, _limitsModel: () => model,
+      } as unknown as AgentSession);
+      const store = createPiSdkSessionStore({ sessionDir: f.sessionDir });
+      const expected = oracle()?.tokens;
+      assert.ok(expected !== undefined && expected !== null && expected < 100);
+      assert.equal(contextUsageFromSession(fakeLiveSession(manager, model))?.tokens, expected);
+      assert.equal((await store.readSessionContext(manager.getSessionId())).contextTokens, expected);
+      assert.equal((await store.readSessionContext(manager.getSessionId(), { leafId: assistant })).contextTokens, 200_000);
+      manager.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "fresh answer" }],
+        api: "anthropic", provider: "p", model: "m", usage: usage(1000), stopReason: "stop", timestamp: NOW + 2,
+      });
+      assert.equal(oracle()?.tokens, 1000);
+      assert.equal(contextUsageFromSession(fakeLiveSession(manager, model))?.tokens, 1000);
+      assert.equal((await store.readSessionContext(manager.getSessionId())).contextTokens, 1000);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not trust a post-compaction usage that a later context edit removed", async () => {
+    const f = await setup();
+    try {
+      const manager = f.manager;
+      const user = manager.appendMessage({ role: "user", content: "context", timestamp: NOW });
+      manager.appendCompaction("summary", user, 200_000);
+      const assistant = manager.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "answer" }],
+        api: "anthropic", provider: "p", model: "m", usage: usage(1000), stopReason: "stop", timestamp: NOW + 1,
+      });
+      manager.appendContextEdit(assistant, null);
+      const model = { provider: "p", id: "m", contextWindow: 1_000_000 };
+      assert.equal(AgentSession.prototype.getContextUsage.call({
+        sessionManager: manager, _limitsModel: () => model,
+      } as unknown as AgentSession)?.tokens, null);
+      assert.equal(contextUsageFromSession(fakeLiveSession(manager, model))?.tokens, null);
+      const store = createPiSdkSessionStore({ sessionDir: f.sessionDir });
+      assert.equal((await store.readSessionContext(manager.getSessionId())).contextTokens, null);
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the SDK's physical response limits for a virtual selection", () => {
+    const manager = SessionManager.inMemory("/workspace");
+    manager.appendMessage({ role: "user", content: "question", timestamp: NOW });
+    manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "answer" }], api: "anthropic", provider: "physical", model: "actual", usage: usage(1000), stopReason: "stop", timestamp: NOW + 1 });
+    const session = fakeLiveSession(manager, { provider: "router", id: "auto", contextWindow: 0 });
+    session.getContextUsage = () => ({ tokens: 1000, percent: 1, contextWindow: 100_000 });
+    assert.deepEqual(contextUsageFromSession(session), { tokens: 1000, percent: 1, contextWindow: 100_000 });
   });
 
   it("empty branch is a KNOWN zero (never hidden as unknown)", () => {

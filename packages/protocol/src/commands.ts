@@ -3,6 +3,7 @@ import {
   ExtensionUiInputCommandSchema,
   ExtensionUiResponseCommandSchema,
 } from "./extension.js";
+import { SideChatIdSchema, SideChatModeSchema, MAX_SIDE_CHAT_MESSAGE_CHARS } from "./side-chat.js";
 import {
   ImageAttachmentSchema,
   NonBlankTextSchema,
@@ -170,8 +171,38 @@ export const GenerateSessionTitleCommandSchema = z.strictObject({
   model: z.strictObject({ provider: NonEmptyStringSchema, modelId: NonEmptyStringSchema }).optional(),
 });
 
+export const SideChatStartCommandSchema = z.strictObject({
+  ...commandBase,
+  type: z.literal("side_chat_start"),
+});
+export const SideChatSendCommandSchema = z.strictObject({
+  ...commandBase,
+  type: z.literal("side_chat_send"),
+  conversationId: SideChatIdSchema,
+  message: NonBlankTextSchema.max(MAX_SIDE_CHAT_MESSAGE_CHARS),
+});
+export const SideChatResetCommandSchema = z.strictObject({
+  ...commandBase,
+  type: z.literal("side_chat_reset"),
+  conversationId: SideChatIdSchema,
+  mode: z.enum(["refork", "clear"]),
+});
+export const SideChatSetModeCommandSchema = z.strictObject({
+  ...commandBase,
+  type: z.literal("side_chat_set_mode"),
+  conversationId: SideChatIdSchema,
+  mode: SideChatModeSchema,
+});
+export const SideChatOverlapResponseCommandSchema = z.strictObject({
+  ...commandBase,
+  type: z.literal("side_chat_overlap_response"),
+  conversationId: SideChatIdSchema,
+  requestId: SideChatIdSchema,
+  proceed: z.boolean(),
+});
+
 /**
- * All 26 RuntimeCommand variants.
+ * All RuntimeCommand variants.
  * extension_ui_response is a 3-way union nested inside the outer type union.
  */
 export const RuntimeCommandSchema = z.union([
@@ -200,6 +231,11 @@ export const RuntimeCommandSchema = z.union([
     BashCommandSchema,
     AbortBashCommandSchema,
     GenerateSessionTitleCommandSchema,
+    SideChatStartCommandSchema,
+    SideChatSendCommandSchema,
+    SideChatResetCommandSchema,
+    SideChatSetModeCommandSchema,
+    SideChatOverlapResponseCommandSchema,
   ]),
   ExtensionUiResponseCommandSchema,
   ExtensionUiInputCommandSchema,
@@ -234,6 +270,11 @@ export const RUNTIME_COMMAND_TYPES = [
   "bash",
   "abort_bash",
   "generate_session_title",
+  "side_chat_start",
+  "side_chat_send",
+  "side_chat_reset",
+  "side_chat_set_mode",
+  "side_chat_overlap_response",
 ] as const;
 
 export type RuntimeCommandType = (typeof RUNTIME_COMMAND_TYPES)[number];

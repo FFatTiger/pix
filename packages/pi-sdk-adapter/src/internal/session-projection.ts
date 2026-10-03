@@ -34,7 +34,7 @@
 //     recomputes the row checksum is out of the adversarial model.
 //
 // Reindex parity: the incremental reindex path re-derives a file's projected
-// fields with {@link parseSessionFile}, which mirrors the PINNED SDK 0.84.0
+// fields with {@link parseSessionFile}, which mirrors the PINNED SDK 0.87.1
 // `buildSessionInfo` semantics exactly (latest trimmed `session_info` name,
 // message-count, last-message-activity `modified` with the same fallback chain,
 // header `created`, header cwd/parentSessionPath). A parity test cross-checks
@@ -52,10 +52,11 @@
 // local-posix.ts. The adapter's `check:boundaries` allows this import in
 // `src/internal/**` and no local-authority type leaks into public declarations.
 import { createHash } from "node:crypto";
-import { rmSync } from "node:fs";
+import { createReadStream, rmSync } from "node:fs";
 import type { Dirent } from "node:fs";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { canonicalizeAbsolutePath, ensurePrivateDirectory } from "@fffattiger/pix-local-authority/state";
@@ -74,7 +75,7 @@ import type {
  * rebuilds the old policy; a newer adapter treats an older file as unusable and
  * rebuilds. Live mixed sharing will flap classification and totals.
  */
-export const PROJECTION_SCHEMA_VERSION = 5;
+export const PROJECTION_SCHEMA_VERSION = 6;
 const PROJECTION_FORMAT = "pix-scale1-session-projection";
 /** Index file name inside the Pix-owned projection directory. */
 export const PROJECTION_INDEX_FILENAME = "session-index.sqlite";
@@ -275,7 +276,7 @@ export class SessionProjectionIndex {
       );
       db.exec(
         "CREATE TABLE IF NOT EXISTS session_projection ("
-        + "path TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, cwd TEXT NOT NULL, name TEXT, "
+        + "path TEXT PRIMARY KEY, id TEXT NOT NULL, cwd TEXT NOT NULL, name TEXT, "
         + "parent_session_path TEXT, created_ms INTEGER, modified_ms INTEGER NOT NULL, "
         + "message_count INTEGER NOT NULL, first_message TEXT NOT NULL, "
         + "project_root TEXT NOT NULL, browse_kind TEXT NOT NULL, "
@@ -344,19 +345,39 @@ export class SessionProjectionIndex {
     let db: DatabaseSync | null = null;
     try {
       db = new DatabaseSync(this.indexPath);
-      const conditions = ["s.browse_kind != 'hidden'"];
+      const parentSessionId = request.parentSessionId;
+      const conditions: string[] = [];
       const parameters: Array<string | number> = [];
-      if (request.cwd !== undefined) {
-        conditions.push("s.cwd = ?");
-        parameters.push(request.cwd);
-      }
-      if (request.projectRoot !== undefined) {
-        conditions.push("s.project_root = ?");
-        parameters.push(request.projectRoot);
+      if (parentSessionId !== undefined) {
+        conditions.push("parent.id = ?");
+        conditions.push("s.parent_session_path IS NOT NULL");
+        conditions.push("s.parent_session_path != ''");
+        parameters.push(parentSessionId);
+        if (request.cwd !== undefined) {
+          conditions.push("s.cwd = ?");
+          parameters.push(request.cwd);
+        }
+        if (request.projectRoot !== undefined) {
+          conditions.push("s.project_root = ?");
+          parameters.push(request.projectRoot);
+        }
+      } else {
+        conditions.push("s.browse_kind != 'hidden'");
+        if (request.cwd !== undefined) {
+          conditions.push("s.cwd = ?");
+          parameters.push(request.cwd);
+        }
+        if (request.projectRoot !== undefined) {
+          conditions.push("s.project_root = ?");
+          parameters.push(request.projectRoot);
+        }
       }
       const where = conditions.join(" AND ");
       let total: number;
-      if (request.cwd === undefined && request.projectRoot === undefined) {
+      if (parentSessionId !== undefined) {
+        const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM session_projection s LEFT JOIN session_projection parent ON parent.path = s.parent_session_path WHERE ${where}`).get(...parameters) as { total: number | bigint };
+        total = Number(totalRow.total);
+      } else if (request.cwd === undefined && request.projectRoot === undefined) {
         total = metaInteger(db, "session_total");
       } else if (request.cwd === undefined && request.projectRoot !== undefined) {
         const row = db.prepare("SELECT session_count FROM project_projection WHERE project_root = ?").get(request.projectRoot) as { session_count?: number | bigint } | undefined;
@@ -550,43 +571,67 @@ async function fileIdentity(path: string): Promise<ProjectionFileIdentity | null
   }
 }
 
+/** Stream metadata one record at a time without adding a new SDK file limit. */
+async function forEachJsonlLine(
+  path: string,
+  onLine: (rawLine: string) => boolean | void | Promise<boolean | void>,
+): Promise<boolean> {
+  const stream = createReadStream(path, { encoding: "utf8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  const close = (): void => {
+    rl.close();
+    stream.destroy();
+  };
+  try {
+    for await (const rawLine of rl) {
+      if (await onLine(rawLine) === false) break;
+    }
+  } catch {
+    return false;
+  } finally {
+    close();
+  }
+  return true;
+}
+
 /**
  * Parse one session JSONL file into a {@link ProjectedSession}, mirroring the
- * pinned SDK 0.84.0 `buildSessionInfo` field semantics EXACTLY (see the module
+ * pinned SDK 0.87.1 `buildSessionInfo` field semantics EXACTLY (see the module
  * docstring). Returns null when the file is not a well-formed session (missing
  * header / non-regular / unreadable) — the same skip semantics as the SDK.
  */
 export async function parseSessionFile(path: string): Promise<ProjectedSession | null> {
   let identity: ProjectionFileIdentity | null;
-  let content: string;
   try {
     identity = await fileIdentity(path);
     if (identity === null) return null;
-    content = await readFile(path, "utf8");
   } catch {
     return null;
   }
-  let header: Record<string, unknown> | null = null;
+  let parsedHeader: Record<string, unknown> | undefined;
+  let invalidHeader = false;
   let messageCount = 0;
   let firstMessage = "";
-  const allMessages: string[] = [];
   let name: string | undefined;
   let hasCustomParentProvenance = false;
   let lastActivityTime: number | undefined;
-  for (const rawLine of content.split(/\r?\n/)) {
-    if (!rawLine.trim()) continue;
+  const ok = await forEachJsonlLine(path, (rawLine) => {
+    if (!rawLine.trim()) return;
     let entry: unknown;
     try {
       entry = JSON.parse(rawLine);
     } catch {
-      continue; // skip malformed lines (SDK parseSessionEntryLine)
+      return; // skip malformed lines (SDK parseSessionEntryLine)
     }
-    if (!entry || typeof entry !== "object") continue;
+    if (!entry || typeof entry !== "object") return;
     const record = entry as Record<string, unknown>;
-    if (header === null) {
-      if (record.type !== "session") return null;
-      header = record;
-      continue;
+    if (parsedHeader === undefined) {
+      if (record.type !== "session") {
+        invalidHeader = true;
+        return false;
+      }
+      parsedHeader = record;
+      return;
     }
     if (record.type === "session_info") {
       // Latest session_info name, trimmed; blank clears (SDK buildSessionInfo).
@@ -600,31 +645,30 @@ export async function parseSessionFile(path: string): Promise<ProjectedSession |
         hasCustomParentProvenance = true;
       }
     }
-    if (record.type !== "message") continue;
+    if (record.type !== "message") return;
     messageCount += 1;
     const activityTime = messageActivityTime(record);
     if (typeof activityTime === "number") {
       lastActivityTime = Math.max(lastActivityTime ?? 0, activityTime);
     }
     const message = record.message;
-    if (!isMessageWithContent(message)) continue;
-    if (message.role !== "user" && message.role !== "assistant") continue;
+    if (!isMessageWithContent(message)) return;
+    if (message.role !== "user" && message.role !== "assistant") return;
     const textContent = extractTextContent(message);
-    if (!textContent) continue;
-    allMessages.push(textContent);
+    if (!textContent) return;
     if (!firstMessage && message.role === "user") firstMessage = textContent;
-  }
-  if (header === null) return null;
-  const cwd = typeof header.cwd === "string" ? header.cwd : "";
-  const parentSessionPath = typeof header.parentSession === "string" ? header.parentSession : undefined;
-  const headerTime = typeof header.timestamp === "string" ? new Date(header.timestamp).getTime() : NaN;
+  });
+  if (!ok || invalidHeader || parsedHeader === undefined) return null;
+  const cwd = typeof parsedHeader.cwd === "string" ? parsedHeader.cwd : "";
+  const parentSessionPath = typeof parsedHeader.parentSession === "string" ? parsedHeader.parentSession : undefined;
+  const headerTime = typeof parsedHeader.timestamp === "string" ? new Date(parsedHeader.timestamp).getTime() : NaN;
   const createdMs = Number.isNaN(headerTime) ? null : headerTime;
   const modifiedMs = typeof lastActivityTime === "number" && lastActivityTime > 0
     ? lastActivityTime
     : !Number.isNaN(headerTime)
       ? headerTime
       : identity.mtimeMs;
-  const id = typeof header.id === "string" ? header.id : "";
+  const id = typeof parsedHeader.id === "string" ? parsedHeader.id : "";
   if (id.length === 0) return null;
   return {
     id,
@@ -842,29 +886,26 @@ export async function defaultProjectionDirectory(sessionDir?: string): Promise<s
 }
 
 async function hasCustomParentProvenance(path: string): Promise<boolean | null> {
-  let content: string;
-  try {
-    content = await readFile(path, "utf8");
-  } catch {
-    return null;
-  }
-  for (const rawLine of content.split(/\r?\n/)) {
-    if (!rawLine.trim()) continue;
+  let found = false;
+  const ok = await forEachJsonlLine(path, (rawLine) => {
+    if (!rawLine.trim()) return;
     let entry: unknown;
     try {
       entry = JSON.parse(rawLine);
     } catch {
-      continue;
+      return;
     }
-    if (entry === null || typeof entry !== "object") continue;
+    if (entry === null || typeof entry !== "object") return;
     const record = entry as Record<string, unknown>;
-    if (record.type !== "custom" || record.customType !== "pix-fork-provenance") continue;
+    if (record.type !== "custom" || record.customType !== "pix-fork-provenance") return;
     const data = record.data;
     if (data !== null && typeof data === "object" && typeof (data as Record<string, unknown>).parentSessionId === "string") {
-      return true;
+      found = true;
+      return false;
     }
-  }
-  return false;
+  });
+  if (!ok) return null;
+  return found;
 }
 
 /** Build a persisted row from an SDK SessionInfo + its current file identity. */

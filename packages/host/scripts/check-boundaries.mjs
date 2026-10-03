@@ -49,6 +49,7 @@ const COMPOSITION_ALLOWED_ADAPTER_SUBPATHS = new Set([
   "@fffattiger/pix-pi-sdk-adapter/trust",
   "@fffattiger/pix-pi-sdk-adapter/themes",
   "@fffattiger/pix-pi-sdk-adapter/settings",
+  "@fffattiger/pix-pi-sdk-adapter/builtins",
 ]);
 
 // These identifiers are intentionally assembled from parts so this
@@ -58,6 +59,7 @@ const FORBIDDEN_IDENTIFIERS = ["Agent" + "Session", "Session" + "Manager", "rpc-
 
 /** Exact Protocol subpath the foundation may import (Phase 6A vocabulary). */
 const FOUNDATION_ALLOWED_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/workspace-access";
+const FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/built-in-capabilities";
 
 // Protocol root / sessiond are forbidden in the foundation (handled by the
 // dedicated scans below). The sessiond main entry and every non-client
@@ -75,9 +77,10 @@ const ALLOWED_EXTERNAL_PREFIXES = [
   // Slice 1 (local-authority): the foundation may import ONLY the narrow
   // `.../state` secure-state surface (enforced exactly below, not by prefix).
   "@fffattiger/pix-local-authority/state",
-  // Phase 6A: foundation may import ONLY the workspace-access wire subpath
-  // (enforced exactly below, not by prefix).
+  // Foundation may import ONLY the two narrow Protocol wire-vocabulary
+  // subpaths below (enforced exactly, not by prefix).
   FOUNDATION_ALLOWED_PROTOCOL_SUBPATH,
+  FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH,
 ];
 
 /** Externals that composition source may import in addition to hono. */
@@ -92,6 +95,7 @@ const COMPOSITION_ALLOWED_EXTERNAL_PREFIXES = [
   "@fffattiger/pix-pi-sdk-adapter/trust",
   "@fffattiger/pix-pi-sdk-adapter/themes",
   "@fffattiger/pix-pi-sdk-adapter/settings",
+  "@fffattiger/pix-pi-sdk-adapter/builtins",
 ];
 
 function walk(dir, files = []) {
@@ -144,11 +148,11 @@ for (const file of walk(srcRoot)) {
   }
 
   // Protocol: composition may import the package root or any subpath;
-  // foundation may import ONLY the workspace-access wire subpath.
+  // foundation may import only the two narrow wire-vocabulary subpaths.
   for (const match of source.matchAll(/from\s+["'](@fffattiger\/pix-protocol(?:\/[^"']+)?)["']/g)) {
     const specifier = match[1];
-    if (!inComposition && specifier !== FOUNDATION_ALLOWED_PROTOCOL_SUBPATH) {
-      fail(`${relativePath} imports non-workspace-access protocol surface "${specifier}"`);
+    if (!inComposition && specifier !== FOUNDATION_ALLOWED_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH) {
+      fail(`${relativePath} imports non-foundation protocol surface "${specifier}"`);
     }
   }
 

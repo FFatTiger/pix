@@ -356,16 +356,22 @@ export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps
   });
 
   app.get("/v1/sessions", async (c) => {
-    requireOnlyQueryKeys(c.req.url, ["page", "pageSize", "cwd", "projectRoot"]);
+    requireOnlyQueryKeys(c.req.url, ["page", "pageSize", "cwd", "projectRoot", "parentSessionId"]);
     const cwdRaw = c.req.query("cwd");
     const cwd = cwdRaw && cwdRaw.length > 0 ? cwdRaw : undefined;
     const projectRootRaw = c.req.query("projectRoot");
     const projectRoot = projectRootRaw && projectRootRaw.length > 0 ? projectRootRaw : undefined;
+    const parentSessionIdRaw = c.req.query("parentSessionId");
+    if (parentSessionIdRaw !== undefined && parentSessionIdRaw.trim().length === 0) {
+      throw new HttpError(400, "INVALID_QUERY", "parentSessionId must be a non-empty string");
+    }
+    const parentSessionId = parentSessionIdRaw;
     const page = boundedInt(c.req.query("page"), "page", 1, Number.MAX_SAFE_INTEGER) ?? 1;
     const pageSize = boundedInt(c.req.query("pageSize"), "pageSize", 1, SESSIONS_MAX_PAGE_SIZE) ?? 50;
-    const params: { page: number; pageSize: number; cwd?: string; projectRoot?: string } = { page, pageSize };
+    const params: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string } = { page, pageSize };
     if (cwd !== undefined) params.cwd = cwd;
     if (projectRoot !== undefined) params.projectRoot = projectRoot;
+    if (parentSessionId !== undefined) params.parentSessionId = parentSessionId;
     let result: unknown;
     try {
       result = await deps.client.list(params);

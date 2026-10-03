@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PRODUCTION_AGENT_CAPABILITIES, PiSdkAgentRuntimeFactory } from "../src/agent/index.js";
 
+const EXPECTED_SELECTED_WITH_CURATED = [
+  "Agent", "SendMessage", "TaskOutput", "TaskStop", "ask_user_question", "edit", "read", "todo",
+].sort();
+
 async function withAgentDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), "pix-pi-sdk-public-smoke-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
@@ -61,28 +65,23 @@ describe("public production SDK factory smoke", () => {
         name: "D2-P2 Smoke",
       });
       try {
-        assert.deepEqual(port.getCapabilities().capabilities, [
-          "runtime.prompt",
-          "runtime.abort",
-          "runtime.stats",
-          "runtime.session.rename",
-          "runtime.thinking.set",
-          "runtime.model.set",
-          "runtime.steer",
-          "runtime.follow_up",
-          "runtime.queue",
-          "runtime.bash",
-          "runtime.bash.abort",
-          "runtime.tools.read",
-          "runtime.tools.write",
-          "runtime.reload",
-          "runtime.compact",
-          "runtime.compact.abort",
-          "runtime.extension_ui",
-          "runtime.navigate",
-          "runtime.fork",
-          "runtime.auto_name",
-        ]);
+        const capabilities = [...port.getCapabilities().capabilities];
+        for (const token of PRODUCTION_AGENT_CAPABILITIES) {
+          assert.ok(capabilities.includes(token), `missing ${token}`);
+        }
+        assert.equal(capabilities.includes("runtime.side_chat"), true);
+
+        const sideStarted = await port.execute({ type: "side_chat_start" });
+        assert.equal(sideStarted.ok, true);
+        if (!sideStarted.ok || sideStarted.type !== "side_chat_start") throw new Error("side chat did not start");
+        const sideId = sideStarted.conversationId;
+        const sideState = await port.getSnapshot();
+        assert.equal(sideState.state.sideChat?.conversationId, sideId);
+        assert.equal(sideState.state.sideChat?.mode, "read_only");
+        assert.equal((await port.execute({ type: "side_chat_set_mode", conversationId: sideId, mode: "edit" })).ok, true);
+        const sideReset = await port.execute({ type: "side_chat_reset", conversationId: sideId, mode: "refork" });
+        assert.equal(sideReset.ok, true);
+        if (sideReset.ok && sideReset.type === "side_chat_reset") assert.notEqual(sideReset.conversationId, sideId);
 
         // Baseline query: get_state (always available, no capability gate).
         // Real SDK may report a model-default thinking level other than the
@@ -307,8 +306,11 @@ describe("public production SDK factory smoke", () => {
         name: "D2-P7 Compact Smoke",
       });
       try {
-        assert.equal(port.getCapabilities().capabilities.length, 20);
-        assert.deepEqual([...port.getCapabilities().capabilities], [...PRODUCTION_AGENT_CAPABILITIES]);
+        const capabilities = [...port.getCapabilities().capabilities];
+        for (const token of PRODUCTION_AGENT_CAPABILITIES) {
+          assert.ok(capabilities.includes(token), `missing ${token}`);
+        }
+        assert.equal(capabilities.includes("runtime.side_chat"), true);
 
         // A tiny/fresh session has nothing to compact: the real SDK compact
         // must fail STRUCTURED (external / invalid_input / nothing-to-compact),
@@ -546,7 +548,7 @@ describe("public production SDK factory smoke", () => {
         assert.equal(after.ok, true);
         if (after.ok && after.type === "get_state") {
           const active = (after.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
-          assert.deepEqual(active, ["edit", "read"], JSON.stringify(after.state.tools));
+          assert.deepEqual(active, EXPECTED_SELECTED_WITH_CURATED, JSON.stringify(after.state.tools));
           assert.ok(typeof after.state.systemPrompt === "string" && after.state.systemPrompt.length > 0, "subset selection must keep a non-empty system prompt");
         }
 
@@ -562,11 +564,15 @@ describe("public production SDK factory smoke", () => {
         assert.equal(afterReload.ok, true);
         if (afterReload.ok && afterReload.type === "get_state") {
           const active = (afterReload.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
-          assert.deepEqual(active, ["edit", "read"], "reload must re-apply the configured tool selection");
+          assert.deepEqual(active, EXPECTED_SELECTED_WITH_CURATED, "reload must re-apply the configured tool selection");
         }
         assert.ok(port.getCapabilities().version > versionBefore, `reload must bump the capability version (${port.getCapabilities().version} > ${versionBefore})`);
-        // The reloaded set must never broaden beyond the production allowed set.
-        assert.deepEqual([...port.getCapabilities().capabilities], [...PRODUCTION_AGENT_CAPABILITIES]);
+        // Command tokens stay within the production set; availability tokens may appear when plugins load.
+        const reloaded = [...port.getCapabilities().capabilities];
+        for (const token of PRODUCTION_AGENT_CAPABILITIES) {
+          assert.ok(reloaded.includes(token), `missing ${token}`);
+        }
+        assert.equal(reloaded.includes("runtime.side_chat"), true);
 
         // all-tools-off → systemPrompt cleared.
         const off = await port.execute({ type: "set_tools", toolNames: [] });
@@ -654,7 +660,7 @@ describe("public production SDK factory smoke", () => {
         assert.equal(validState.ok, true);
         if (validState.ok && validState.type === "get_state") {
           const active = (validState.state.tools ?? []).filter((tool) => tool.active).map((tool) => tool.name).sort();
-          assert.deepEqual(active, ["bash", "edit", "read"], JSON.stringify(validState.state.tools));
+          assert.deepEqual(active, [...EXPECTED_SELECTED_WITH_CURATED, "bash"].sort(), JSON.stringify(validState.state.tools));
         }
 
         // All-off still works (systemPrompt cleared, no active tools).

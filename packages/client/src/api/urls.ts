@@ -48,7 +48,7 @@ export const urls = {
     list: (input: { page: number; pageSize: number }) => resource("projects", input),
   },
   sessions: {
-    list: (input: { page: number; pageSize: number; cwd?: string; projectRoot?: string }) => resource("sessions", input),
+    list: (input: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string }) => resource("sessions", input),
     byId: (id: string) => resource(`sessions/${encodedSegment(id)}`),
     /**
      * Session context. `leafId` pins the branch; omitting `limit` asks for the
@@ -159,6 +159,10 @@ export const urls = {
     sessionIdleTimeout: () => resource("settings/session-idle-timeout"),
     /** Global agent-dir settings.json raw-text editor; no query surface. */
     configFile: () => resource("settings/config"),
+    /** Global tool selection (`pixDefaultTools`) structured editor. */
+    tools: () => resource("settings/tools"),
+    /** Pix-owned curated Agent features desired-enablement document. */
+    builtIns: () => resource("settings/built-ins"),
   },
   runtime: { ws: () => resource("runtime") },
 } as const;

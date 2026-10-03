@@ -20,8 +20,48 @@ export interface SettingsConfigMutation {
   content: string;
 }
 
+/**
+ * How Pix selects the tools offered to new sessions.
+ *
+ * - `all`: every registered tool that can be declared to the model
+ *   (`direct`/`model-only` exposure, including codemode/tool_search). Tools
+ *   added in the future are enabled automatically.
+ * - `custom`: exactly the persisted allowlist. Unknown/not-currently-loaded
+ *   names stay persisted but simply do not apply.
+ * - `native`: the Pi `settings.json` `defaultTools` selection (including
+ *   `+`/`-` modifiers) is authoritative; Pix adds nothing on top.
+ */
+export type ToolsSelection =
+  | { mode: "all" }
+  | { mode: "custom"; toolNames: readonly string[] }
+  | { mode: "native"; toolNames: readonly string[] };
+
+/** Global tool-selection snapshot (`pixDefaultTools` in settings.json). */
+export interface ToolSettingsSnapshot {
+  /** SHA-256 of the exact settings.json bytes; empty-file digest when absent. */
+  revision: string;
+  selection: ToolsSelection;
+}
+
+/**
+ * CAS write of the global tool selection.
+ *
+ * `toolNames` semantics mirror the persisted `pixDefaultTools` key:
+ * `null` = enable all (the Pix default), an array (possibly empty = all
+ * off) = the explicit allowlist. The native `defaultTools` key is never
+ * rewritten by this mutation.
+ */
+export interface ToolSettingsMutation {
+  expectedRevision: string;
+  toolNames: readonly string[] | null;
+}
+
 /** Writable global settings.json authority. */
 export interface SettingsConfigStorePort {
   readConfig(): Promise<SettingsConfigSnapshot>;
   writeConfig(input: SettingsConfigMutation): Promise<SettingsConfigSnapshot>;
+  /** Structured read of the global tool selection (see {@link ToolSettingsSnapshot}). */
+  readToolsConfig(): Promise<ToolSettingsSnapshot>;
+  /** Structured CAS write of the global tool selection. */
+  writeToolsConfig(input: ToolSettingsMutation): Promise<ToolSettingsSnapshot>;
 }

@@ -16,8 +16,6 @@ import type {
   SessionTree,
   SessionTreeNode,
   SessionTreeNodeKind,
-  SideChatActivityItem,
-  SideChatMainSnapshot,
   UserMessage,
 } from "@fffattiger/pix-runtime-core";
 
@@ -157,52 +155,6 @@ export class ReferenceSessionStore {
       session.updatedAt = Date.now();
     }
     return removed;
-  }
-
-  buildSideChatSnapshot(sessionId: string): SideChatMainSnapshot | null {
-    const session = this.getSession(sessionId);
-    if (!session) return null;
-    const activity: SideChatActivityItem[] = session.entries.slice(-5).map((entry) => {
-      const message = entry.message;
-      const role =
-        message.role === "user" || message.role === "assistant" || message.role === "toolResult"
-          ? message.role
-          : "toolResult";
-      let text = "";
-      if (message.role === "assistant") {
-        text = message.content
-          .filter((block) => block.type === "text")
-          .map((block) => (block as { text: string }).text)
-          .join("\n")
-          .slice(0, 500);
-      } else if (message.role === "user") {
-        text = typeof message.content === "string" ? message.content.slice(0, 300) : "";
-      } else if (message.role === "toolResult") {
-        text = message.content
-          .filter((block) => block.type === "text")
-          .map((block) => block.text)
-          .join("\n")
-          .slice(0, 300);
-      } else if (message.role === "bashExecution") {
-        text = message.output.slice(0, 300);
-      }
-      const item: SideChatActivityItem = { entryId: entry.entryId, role, text };
-      if (message.role === "toolResult" && message.toolName) {
-        item.toolName = message.toolName;
-      }
-      return item;
-    });
-    const snapshot: SideChatMainSnapshot = {
-      sessionId,
-      systemPrompt: "You are a coding agent.",
-      writtenFiles: [...session.writtenFiles],
-      activity,
-      version: session.entries.length,
-    };
-    if (session.forkPointEntryId) {
-      snapshot.forkLeafId = session.forkPointEntryId;
-    }
-    return snapshot;
   }
 
   /* ---------------- catalog / locator operations ---------------- */

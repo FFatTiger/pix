@@ -1,4 +1,4 @@
-import type { SettingsConfigMutation } from "@fffattiger/pix-protocol";
+import { BuiltInCapabilityConfigResponseSchema, type BuiltInCapabilityConfigMutation, type SettingsConfigMutation, type ToolSettingsMutation, ToolSettingsResponseSchema } from "@fffattiger/pix-protocol";
 import type { HttpClient } from "./http-client";
 import { urls } from "./urls";
 import {
@@ -96,6 +96,18 @@ export function createConfigurationApi(http: HttpClient) {
           },
         ),
     },
+    builtIns: {
+      get: (signal?: AbortSignal) =>
+        http.get(urls.settings.builtIns(), {
+          schema: BuiltInCapabilityConfigResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      save: (input: BuiltInCapabilityConfigMutation, signal?: AbortSignal) =>
+        http.put(urls.settings.builtIns(), input, {
+          schema: BuiltInCapabilityConfigResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+    },
     settingsFile: {
       /** Global agent-dir settings.json raw text (comments preserved). */
       get: (signal?: AbortSignal) =>
@@ -107,6 +119,20 @@ export function createConfigurationApi(http: HttpClient) {
       save: (input: SettingsConfigMutation, signal?: AbortSignal) =>
         http.put(urls.settings.configFile(), input, {
           schema: SettingsConfigResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+    },
+    tools: {
+      /** Global tool selection (pixDefaultTools): all / custom allowlist / native. */
+      get: (signal?: AbortSignal) =>
+        http.get(urls.settings.tools(), {
+          schema: ToolSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      /** CAS write of the selection (`null` = all, array = allowlist). */
+      save: (input: ToolSettingsMutation, signal?: AbortSignal) =>
+        http.put(urls.settings.tools(), input, {
+          schema: ToolSettingsResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
     },

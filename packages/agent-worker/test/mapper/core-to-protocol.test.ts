@@ -45,6 +45,34 @@ describe("core-to-protocol DTO mapping", () => {
     assert.equal(parsed.success, true, parsed.success ? "" : parsed.error.message);
   });
 
+  it("preserves nested summaries and tool usage without manufacturing child messages", () => {
+    const message: AgentMessage = {
+      role: "toolResult", toolCallId: "outer", toolName: "codemode", content: [],
+      nestedCalls: { complete: true, calls: [{ id: "outer/0", name: "read", status: "ok", arguments: {}, durationMs: 0 }] },
+      structuredContent: { count: 1 },
+      usage: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    };
+    assert.deepEqual(AgentMessageSchema.parse(mapAgentMessage(message)), message);
+    assert.deepEqual(StreamingAgentMessageSchema.parse(mapStreamingMessage(message)), message);
+    const mapper = new StatefulRuntimeMapper();
+    mapper.mapEvent({ type: "message_start", sessionId: "s", message: { role: "toolResult", toolCallId: "outer", content: [] } });
+    const updated = mapper.mapEvent({ type: "message_update", sessionId: "s", message });
+    assert.equal(updated.length, 1);
+    assert.equal(updated[0]?.type, "message_start", "metadata requires a fresh partial instead of a lossy text delta");
+    if (updated[0]?.type === "message_start") assert.deepEqual(updated[0].message, message);
+    const ended = mapper.mapEvent({ type: "message_end", sessionId: "s", message, entryId: "only-parent" });
+    assert.equal(ended.length, 1);
+    assert.equal(ended[0]?.type, "message_end");
+    if (ended[0]?.type === "message_end") assert.equal(ended[0].entryId, "only-parent");
+    for (const type of ["tool_execution_start", "tool_execution_update", "tool_execution_end"] as const) {
+      const events = mapper.mapEvent({ type, sessionId: "s", toolCallId: "outer/0", parentToolCallId: "outer", toolName: "read" });
+      assert.equal(events.length, 1);
+      const parsed = RuntimeEventDataSchema.parse(events[0]);
+      assert.ok("parentToolCallId" in parsed);
+      assert.equal(parsed.parentToolCallId, "outer");
+    }
+  });
+
   it("maps runtime state and passes the schema", () => {
     const state = {
       sessionId: "s1",
@@ -90,6 +118,54 @@ describe("snapshot-mapper", () => {
     assert.equal(mapped.state.leafId, "entry-1");
     // Protocol v2: the mapped snapshot carries no transcript history.
     assert.equal("messages" in mapped, false);
+  });
+
+  it("preserves authority projections on attach snapshots without sharing references", () => {
+    const coreSnapshot: RuntimeSnapshot = {
+      sessionId: "s1",
+      state: {
+        sessionId: "s1",
+        isStreaming: false,
+        isPromptRunning: false,
+        isBashRunning: false,
+        isCompacting: false,
+        model: null,
+        messageCount: 0,
+        builtIns: {
+          configRevision: "a".repeat(64),
+          loaded: ["subagents", "todo"],
+          failures: [{ id: "ask_user_question", code: "load_failed" }],
+        },
+        subagents: {
+          revision: 3,
+          tasks: [{
+            taskId: "task-1",
+            description: "Inspect runtime",
+            agentType: "Explore",
+            status: "running",
+            childSessionId: "child-1",
+            usage: { turns: 2, toolCalls: 4 },
+          }],
+        },
+        todo: {
+          revision: 5,
+          items: [{ id: 1, subject: "Map snapshot", blockedBy: [], status: "in_progress" }],
+        },
+      },
+      capabilities: createCapabilitySet(["runtime.prompt", "runtime.subagents", "runtime.todo"]),
+    };
+    const mapped = new SnapshotMapper(new StatefulRuntimeMapper()).map(coreSnapshot, {
+      cwd: "/w",
+      projectRoot: "/w",
+    });
+    const parsed = RuntimeSnapshotSchema.safeParse(mapped);
+    assert.equal(parsed.success, true, parsed.success ? "" : parsed.error.message);
+    assert.deepEqual(mapped.state.builtIns, coreSnapshot.state.builtIns);
+    assert.deepEqual(mapped.state.subagents, coreSnapshot.state.subagents);
+    assert.deepEqual(mapped.state.todo, coreSnapshot.state.todo);
+    assert.notEqual(mapped.state.builtIns, coreSnapshot.state.builtIns);
+    assert.notEqual(mapped.state.subagents, coreSnapshot.state.subagents);
+    assert.notEqual(mapped.state.todo, coreSnapshot.state.todo);
   });
 
   it("coordinates streaming ids with the live stateful mapper", () => {

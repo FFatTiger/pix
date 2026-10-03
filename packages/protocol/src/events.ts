@@ -3,6 +3,7 @@ import {
   ContextUsageSchema,
   EpochSchema,
   EventIdSchema,
+  ExtensionNotificationLevelSchema,
   ExtensionStatusItemSchema,
   ExtensionWidgetItemSchema,
   ModelRefSchema,
@@ -20,6 +21,13 @@ import {
   StreamingAgentMessageSchema,
   StreamingMessageDeltaSchema,
 } from "./messages.js";
+import { SideChatDeltaSchema, SideChatStateSchema } from "./side-chat.js";
+import {
+  BoundedIdSchema,
+  BuiltInRuntimeStateSchema,
+  SubagentProjectionSchema,
+  TodoProjectionSchema,
+} from "./runtime-projections.js";
 
 /**
  * Runtime event product data is separate from the sessiond-owned wire cursor.
@@ -125,6 +133,7 @@ export const StreamingMessageLifecycleSchema = z
 export const ToolExecutionStartEventDataSchema = z.strictObject({
   ...eventDataBase,
   type: z.literal("tool_execution_start"),
+  parentToolCallId: NonEmptyStringSchema.optional(),
   toolCallId: NonEmptyStringSchema,
   toolName: NonEmptyStringSchema,
   args: z.unknown().optional(),
@@ -132,6 +141,7 @@ export const ToolExecutionStartEventDataSchema = z.strictObject({
 export const ToolExecutionUpdateEventDataSchema = z.strictObject({
   ...eventDataBase,
   type: z.literal("tool_execution_update"),
+  parentToolCallId: NonEmptyStringSchema.optional(),
   toolCallId: NonEmptyStringSchema,
   toolName: z.string().optional(),
   partialResult: z.unknown().optional(),
@@ -139,6 +149,7 @@ export const ToolExecutionUpdateEventDataSchema = z.strictObject({
 export const ToolExecutionEndEventDataSchema = z.strictObject({
   ...eventDataBase,
   type: z.literal("tool_execution_end"),
+  parentToolCallId: NonEmptyStringSchema.optional(),
   toolCallId: NonEmptyStringSchema,
   toolName: z.string().optional(),
   isError: z.boolean().optional(),
@@ -239,6 +250,14 @@ export const ExtensionStatusesEventDataSchema = z.strictObject({
   type: z.literal("extension_statuses"),
   statuses: z.array(ExtensionStatusItemSchema),
 });
+
+export const ExtensionNotificationEventDataSchema = z.strictObject({
+  ...eventDataBase,
+  type: z.literal("extension_notification"),
+  level: ExtensionNotificationLevelSchema,
+  message: z.string(),
+  at: z.number().int().nonnegative(),
+});
 export const ExtensionWidgetsEventDataSchema = z.strictObject({
   ...eventDataBase,
   type: z.literal("extension_widgets"),
@@ -275,6 +294,38 @@ export const RuntimeCapabilitiesChangedEventDataSchema = z.strictObject({
   ...eventDataBase,
   type: z.literal("runtime_capabilities_changed"),
   capabilities: RuntimeCapabilitySetSchema,
+});
+export const BuiltInsChangedEventDataSchema = z.strictObject({
+  ...eventDataBase,
+  type: z.literal("built_ins_changed"),
+  builtIns: BuiltInRuntimeStateSchema,
+});
+export const SubagentsChangedEventDataSchema = z.strictObject({
+  ...eventDataBase,
+  type: z.literal("subagents_changed"),
+  subagents: SubagentProjectionSchema,
+});
+export const TodoChangedEventDataSchema = z.strictObject({
+  ...eventDataBase,
+  type: z.literal("todo_changed"),
+  todo: TodoProjectionSchema,
+});
+export const SideChatChangedEventDataSchema = z.strictObject({
+  ...eventDataBase,
+  type: z.literal("side_chat_changed"),
+  sideChat: SideChatStateSchema.nullable(),
+});
+export const SideChatDeltaEventDataSchema = z.strictObject({
+  ...eventDataBase,
+  type: z.literal("side_chat_delta"),
+  delta: SideChatDeltaSchema,
+});
+export const SubagentDeltaEventDataSchema = z.strictObject({
+  ...eventDataBase,
+  type: z.literal("subagent_delta"),
+  childSessionId: BoundedIdSchema,
+  partial: StreamingAgentMessageSchema,
+  done: z.boolean(),
 });
 export const RuntimeClosedEventDataSchema = z.strictObject({
   ...eventDataBase,
@@ -320,8 +371,12 @@ const runtimeEventDataOptions = [
   AutoRetryEndEventDataSchema, CompactionStartEventDataSchema, CompactionEndEventDataSchema,
   AutoCompactionStartEventDataSchema, AutoCompactionEndEventDataSchema, BashUpdateEventDataSchema,
   ExtensionErrorEventDataSchema, ExtensionUiRequestEventDataSchema, ExtensionStatusesEventDataSchema,
+  ExtensionNotificationEventDataSchema,
   ExtensionWidgetsEventDataSchema, SessionTitleEventDataSchema, RuntimeStateChangedEventDataSchema,
-  RuntimeCapabilitiesChangedEventDataSchema, RuntimeClosedEventDataSchema, SessionChangedEventDataSchema,
+  RuntimeCapabilitiesChangedEventDataSchema, BuiltInsChangedEventDataSchema, SubagentsChangedEventDataSchema,
+  TodoChangedEventDataSchema, SideChatChangedEventDataSchema, SideChatDeltaEventDataSchema,
+  SubagentDeltaEventDataSchema,
+  RuntimeClosedEventDataSchema, SessionChangedEventDataSchema,
   WorkerCrashedEventDataSchema, RunningSessionsChangedEventDataSchema, RuntimeUnavailableEventDataSchema,
   RuntimeErrorEventDataSchema,
 ] as const;
@@ -354,10 +409,17 @@ export const BashUpdateEventSchema = wire(BashUpdateEventDataSchema);
 export const ExtensionErrorEventSchema = wire(ExtensionErrorEventDataSchema);
 export const ExtensionUiRequestEventSchema = wire(ExtensionUiRequestEventDataSchema);
 export const ExtensionStatusesEventSchema = wire(ExtensionStatusesEventDataSchema);
+export const ExtensionNotificationEventSchema = wire(ExtensionNotificationEventDataSchema);
 export const ExtensionWidgetsEventSchema = wire(ExtensionWidgetsEventDataSchema);
 export const SessionTitleEventSchema = wire(SessionTitleEventDataSchema);
 export const RuntimeStateChangedEventSchema = wire(RuntimeStateChangedEventDataSchema);
 export const RuntimeCapabilitiesChangedEventSchema = wire(RuntimeCapabilitiesChangedEventDataSchema);
+export const BuiltInsChangedEventSchema = wire(BuiltInsChangedEventDataSchema);
+export const SubagentsChangedEventSchema = wire(SubagentsChangedEventDataSchema);
+export const TodoChangedEventSchema = wire(TodoChangedEventDataSchema);
+export const SideChatChangedEventSchema = wire(SideChatChangedEventDataSchema);
+export const SideChatDeltaEventSchema = wire(SideChatDeltaEventDataSchema);
+export const SubagentDeltaEventSchema = wire(SubagentDeltaEventDataSchema);
 export const RuntimeClosedEventSchema = wire(RuntimeClosedEventDataSchema);
 export const SessionChangedEventSchema = wire(SessionChangedEventDataSchema);
 export const WorkerCrashedEventSchema = wire(WorkerCrashedEventDataSchema);
@@ -373,8 +435,11 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
   RetryStartEventSchema, RetryEndEventSchema, AutoRetryStartEventSchema, AutoRetryEndEventSchema,
   CompactionStartEventSchema, CompactionEndEventSchema, AutoCompactionStartEventSchema,
   AutoCompactionEndEventSchema, BashUpdateEventSchema, ExtensionErrorEventSchema,
-  ExtensionUiRequestEventSchema, ExtensionStatusesEventSchema, ExtensionWidgetsEventSchema,
+  ExtensionUiRequestEventSchema, ExtensionStatusesEventSchema, ExtensionNotificationEventSchema,
+  ExtensionWidgetsEventSchema,
   SessionTitleEventSchema, RuntimeStateChangedEventSchema, RuntimeCapabilitiesChangedEventSchema,
+  BuiltInsChangedEventSchema, SubagentsChangedEventSchema, TodoChangedEventSchema,
+  SideChatChangedEventSchema, SideChatDeltaEventSchema, SubagentDeltaEventSchema,
   RuntimeClosedEventSchema, SessionChangedEventSchema, WorkerCrashedEventSchema,
   RunningSessionsChangedEventSchema, RuntimeUnavailableEventSchema, RuntimeErrorEventSchema,
 ]);

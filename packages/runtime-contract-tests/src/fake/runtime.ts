@@ -34,6 +34,7 @@ import type {
   RuntimeState,
   RuntimeTurnHandle,
   RuntimeTurnStart,
+  SideChatState,
   BashProjection,
   ThinkingLevel,
   ToolInfo,
@@ -126,6 +127,8 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
   private compactionProjection: CompactionProjection | null = null;
   private lastAssistantText = "";
   private turnSeq = 0;
+  private sideChatSeq = 0;
+  private sideChat: SideChatState | null = null;
 
   private closed = false;
   private closedReason: RuntimeCloseReason | null = null;
@@ -278,6 +281,43 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       return { ok: false, type: command.type, error: unsupportedCapabilityError(capability) };
     }
     switch (command.type) {
+      case "side_chat_start": {
+        if (this.sideChat === null) this.createSideChat();
+        return { ok: true, type: "side_chat_start", conversationId: this.sideChat!.conversationId };
+      }
+      case "side_chat_send": {
+        if (this.sideChat?.conversationId !== command.conversationId) return this.sideChatNotFound("side_chat_send");
+        if (this.sideChat.status !== "idle") return { ok: false, type: "side_chat_send", error: makeRuntimeError("session_busy", "side chat is busy") };
+        const runId = `side-run-${++this.sideChatSeq}`;
+        this.sideChat = {
+          ...this.sideChat,
+          revision: this.sideChat.revision + 1,
+          runId,
+          status: "running",
+          messages: [...this.sideChat.messages, { id: `side-message-${this.sideChat.messages.length}`, role: "user", text: command.message, textTruncated: false, thinkingTruncated: false }],
+        };
+        this.emitSideChat();
+        void this.completeSideChat(runId, command.message);
+        return { ok: true, type: "side_chat_send", runId };
+      }
+      case "side_chat_reset": {
+        if (this.sideChat?.conversationId !== command.conversationId) return this.sideChatNotFound("side_chat_reset");
+        this.createSideChat();
+        return { ok: true, type: "side_chat_reset", conversationId: this.sideChat!.conversationId };
+      }
+      case "side_chat_set_mode": {
+        if (this.sideChat?.conversationId !== command.conversationId) return this.sideChatNotFound("side_chat_set_mode");
+        this.sideChat = { ...this.sideChat, revision: this.sideChat.revision + 1, mode: command.mode };
+        this.emitSideChat();
+        return { ok: true, type: "side_chat_set_mode" };
+      }
+      case "side_chat_overlap_response": {
+        if (this.sideChat?.conversationId !== command.conversationId || this.sideChat.pendingOverlap?.id !== command.requestId) return this.sideChatNotFound("side_chat_overlap_response");
+        const { pendingOverlap: _pendingOverlap, ...withoutOverlap } = this.sideChat;
+        this.sideChat = { ...withoutOverlap, revision: this.sideChat.revision + 1, status: "running" };
+        this.emitSideChat();
+        return { ok: true, type: "side_chat_overlap_response" };
+      }
       case "prompt":
         return this.executePrompt(command);
       case "steer":
@@ -368,6 +408,10 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       case "set_tools":
         return this.executeSetTools(command);
       case "reload": {
+        if (this.sideChat !== null) {
+          this.sideChat = null;
+          this.emit({ type: "side_chat_changed", sessionId: this.identity.sessionId, sideChat: null });
+        }
         const next = this.reloadCapabilities
           ? createCapabilitySet(
               this.reloadCapabilities.capabilities,
@@ -459,6 +503,15 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         this.queue = emptyQueuedMessages();
         this.emitQueueUpdate();
         break;
+      case "abort_side_chat":
+        if (this.sideChat?.conversationId !== interrupt.conversationId) {
+          return { ok: false, type: "abort_side_chat", error: makeRuntimeError("not_found", "side chat target not found") };
+        }
+        if (this.sideChat.status !== "idle") {
+          this.sideChat = { ...this.sideChat, revision: this.sideChat.revision + 1, status: "idle" };
+          this.emitSideChat();
+        }
+        break;
     }
     return { ok: true, type: interrupt.type };
   }
@@ -525,6 +578,53 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
     }
   }
 
+  private createSideChat(): void {
+    this.sideChat = {
+      conversationId: `side-conversation-${++this.sideChatSeq}`,
+      revision: 0,
+      capturedModel: { ...this.model },
+      capturedThinkingLevel: this.thinkingLevel,
+      mode: "read_only",
+      status: "idle",
+      messages: [],
+      messagesTruncated: false,
+      totalCharsTruncated: false,
+      stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false },
+      tools: [],
+    };
+    this.emitSideChat();
+  }
+
+  private emitSideChat(): void {
+    this.emit({
+      type: "side_chat_changed",
+      sessionId: this.identity.sessionId,
+      sideChat: this.sideChat === null ? null : structuredClone(this.sideChat),
+    });
+  }
+
+  private sideChatNotFound(type: "side_chat_send" | "side_chat_reset" | "side_chat_set_mode" | "side_chat_overlap_response"): RuntimeCommandResult {
+    return { ok: false, type, error: makeRuntimeError("not_found", "side chat target not found") } as RuntimeCommandResult;
+  }
+
+  private async completeSideChat(runId: string, prompt: string): Promise<void> {
+    await delay(STEP_MS);
+    if (this.closed || this.sideChat?.runId !== runId || this.sideChat.status !== "running") return;
+    this.sideChat = {
+      ...this.sideChat,
+      revision: this.sideChat.revision + 1,
+      status: "idle",
+      messages: [...this.sideChat.messages, {
+        id: `side-message-${this.sideChat.messages.length}`,
+        role: "assistant",
+        text: `Side response: ${prompt}`,
+        textTruncated: false,
+        thinkingTruncated: false,
+      }],
+    };
+    this.emitSideChat();
+  }
+
   async close(reason: RuntimeCloseReason): Promise<void> {
     this.shutdown(reason);
   }
@@ -588,7 +688,9 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
           ? { steering: [...steering, nextTurn], followUp }
           : { steering, followUp: [...followUp, nextTurn] };
       this.emitQueueUpdate();
-      return { ok: true, type: command.type };
+      // The fake runtime has no input handlers: a queued steer/follow_up is
+      // always actually queued (never "handled").
+      return { ok: true, type: command.type, disposition: "queued" as const };
     }
     if (this.status !== "idle") {
       return {
@@ -610,7 +712,9 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
     }
     this.status = "idle";
     this.drainQueue();
-    return { ok: true, type: command.type };
+    // A steer/follow_up admitted while idle runs as a turn immediately in
+    // this fake; it was still "queued" into the agent per the SDK receipt.
+    return { ok: true, type: command.type, disposition: "queued" as const };
   }
 
   private async executeSetModel(
@@ -1359,6 +1463,7 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       pendingExtensionUi: this.pendingExtension ? [this.pendingExtension.request] : [],
       ...(session?.title === undefined ? {} : { sessionName: session.title }),
       writtenFiles: session ? [...session.writtenFiles] : [],
+      sideChat: this.sideChat === null ? null : structuredClone(this.sideChat),
     };
   }
 }

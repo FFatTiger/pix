@@ -63,14 +63,6 @@ export function createReferenceHarness(options?: { baseDir?: string }): AdapterC
       };
     },
 
-    async getSideChatSnapshot(sessionId: string) {
-      for (const factory of factories) {
-        const snapshot = factory.store.buildSideChatSnapshot(sessionId);
-        if (snapshot) return snapshot;
-      }
-      return null;
-    },
-
     async teardown() {
       factories.clear();
     },

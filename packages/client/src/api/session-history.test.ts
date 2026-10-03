@@ -1,6 +1,12 @@
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpClient, type HttpClient } from "./http-client";
-import { createDeferredThinkingLoader, createSessionHistoryQueryOptions } from "./session-history";
+import {
+  createDeferredThinkingLoader,
+  createSessionHistoryQueryOptions,
+  refreshReadonlySessionHistory,
+} from "./session-history";
+import { queryKeys } from "./query-keys";
 
 const previousData = { context: { sessionId: "s1", entries: [], pageInfo: { hasMore: false } } };
 
@@ -97,6 +103,57 @@ describe("session history same-session placeholder", () => {
     expect(placeholder(previousData, {
       queryKey: ["pix", "sessions", "session", "s1", "history", 0, null],
     })).toBeUndefined();
+  });
+});
+
+describe("read-only session history revision refresh", () => {
+  it("cancels an uncached in-flight request before refetch so its late payload cannot become authoritative", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = queryKeys.sessions.history("child-a", 0, null);
+    const requests: Array<{ signal: AbortSignal; resolve(value: string): void }> = [];
+    const observer = new QueryObserver(client, {
+      queryKey: key,
+      queryFn: ({ signal }) => new Promise<string>((resolve) => requests.push({ signal, resolve })),
+    });
+    const samples: Array<string | undefined> = [];
+    const unsubscribe = observer.subscribe((result) => samples.push(result.data));
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+
+    const refresh = refreshReadonlySessionHistory(client, "child-a", () => true);
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[0]!.signal.aborted).toBe(true);
+    requests[0]!.resolve("stale-A");
+    requests[1]!.resolve("authoritative-B");
+    await refresh;
+    await vi.waitFor(() => expect(observer.getCurrentResult().data).toBe("authoritative-B"));
+    expect(samples).not.toContain("stale-A");
+    expect(client.getQueryData(key)).toBe("authoritative-B");
+    unsubscribe();
+    client.clear();
+  });
+
+  it("honors the caller identity fence after a child switch", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let currentChild = "child-a";
+    const keyA = queryKeys.sessions.history("child-a", 0, null);
+    const requests: Array<{ signal: AbortSignal; resolve(value: string): void }> = [];
+    const observer = new QueryObserver(client, {
+      queryKey: keyA,
+      queryFn: ({ signal }) => new Promise<string>((resolve) => requests.push({ signal, resolve })),
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+
+    const refresh = refreshReadonlySessionHistory(client, "child-a", () => currentChild === "child-a");
+    currentChild = "child-b";
+    await refresh;
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.signal.aborted).toBe(true);
+    requests[0]!.resolve("late-old-child");
+    await Promise.resolve();
+    expect(client.getQueryData(keyA)).toBeUndefined();
+    unsubscribe();
+    client.clear();
   });
 });
 

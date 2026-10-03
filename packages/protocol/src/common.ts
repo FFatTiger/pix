@@ -221,6 +221,22 @@ export const ExtensionStatusItemSchema = z.strictObject({
 
 export type ExtensionStatusItem = z.infer<typeof ExtensionStatusItemSchema>;
 
+export const ExtensionNotificationLevelSchema = z.enum(["info", "warning"]);
+export type ExtensionNotificationLevel = z.infer<typeof ExtensionNotificationLevelSchema>;
+
+/** Wire projection of runtime-core `ExtensionNotificationItem`. The kept ring
+ * size mirrors runtime-core `MAX_EXTENSION_NOTIFICATIONS` (cross-package
+ * parity tests pin the equality). */
+export const MAX_EXTENSION_NOTIFICATIONS = 20;
+
+export const ExtensionNotificationItemSchema = z.strictObject({
+  level: ExtensionNotificationLevelSchema,
+  message: z.string(),
+  at: z.number().int().nonnegative(),
+});
+
+export type ExtensionNotificationItem = z.infer<typeof ExtensionNotificationItemSchema>;
+
 export const ExtensionWidgetPlacementSchema = z.enum([
   "aboveEditor",
   "belowEditor",

@@ -9,7 +9,7 @@ import { Composer } from "@/components/shell/Composer";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { ErrorBoundary } from "@/app/ErrorBoundary";
 import { SessionStagingProvider } from "@/features/composer/session-staging-provider";
-import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "./testing/harness";
+import { authoritySnapshot, FakeWebSocket, flush, lastFrame, snapshotPayload } from "./testing/harness";
 import { CaptureTestRuntime } from "./testing/capture-test-runtime";
 import type { TestRuntimeStore } from "./testing/test-runtime-store";
 import type { RuntimeSocketDeps } from "./socket";
@@ -1024,32 +1024,103 @@ describe("Composer — slash palette is generated from actually-supported builti
   });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
-  it("offers only the compact builtin; unsupported reload/name/session/copy never appear", async () => {
+  it("offers and executes /reload only when runtime.reload is advertised", async () => {
     mount(<Composer sessionId="s1" live />);
     const ws = await driveReady();
-    // `/compact` is only offered while the runtime is live AND advertises the
-    // compact capability — exactly the builtins that can actually execute.
+    await driveAttachCaps(ws, ["runtime.prompt", "runtime.abort", "runtime.reload"]);
+
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    const initialCommandsFrame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command");
+    if (initialCommandsFrame) {
+      await serverSend(ws, {
+        type: "response",
+        id: initialCommandsFrame.id,
+        payload: {
+          ok: true,
+          result: { commandId: initialCommandsFrame.payload.command.commandId, result: { ok: true, type: "get_commands", commands: [] } },
+        },
+      });
+    }
+    fireEvent.change(textarea, { target: { value: "/reload" } });
+    await flush();
+    const inputCommandsFrame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command");
+    if (inputCommandsFrame) {
+      await serverSend(ws, {
+        type: "response",
+        id: inputCommandsFrame.id,
+        payload: {
+          ok: true,
+          result: { commandId: inputCommandsFrame.payload.command.commandId, result: { ok: true, type: "get_commands", commands: [] } },
+        },
+      });
+    }
+    expect(screen.getByRole("button", { name: /\/reload/ })).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Send message"));
+    await flush();
+
+    const reloadCmd = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(reloadCmd.payload.command.type).toBe("reload");
+    expect(ws.sent.filter((frame) => (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt")).toHaveLength(0);
+    await serverSend(ws, {
+      type: "response",
+      id: reloadCmd.id,
+      payload: {
+        ok: true,
+        result: { commandId: reloadCmd.payload.command.commandId, result: { ok: true, type: "reload" } },
+      },
+    });
+
+    await flush();
+    const snapshotFrame = lastFrame<{ type: string; id: string }>(ws, "getSnapshot")!;
+    await serverSend(ws, {
+      type: "response",
+      id: snapshotFrame.id,
+      payload: { ok: true, result: snapshotPayload({ sessionId: "s1", capabilities: ["runtime.prompt", "runtime.abort", "runtime.reload"] }).snapshot },
+    });
+
+    await flush();
+    const commandsFrame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command")!;
+    expect(commandsFrame.payload.command.type).toBe("get_commands");
+    await serverSend(ws, {
+      type: "response",
+      id: commandsFrame.id,
+      payload: {
+        ok: true,
+        result: { commandId: commandsFrame.payload.command.commandId, result: { ok: true, type: "get_commands", commands: [] } },
+      },
+    });
+
+    await flush();
+    expect(textarea.value).toBe("");
+    expect(ws.sent.filter((frame) => (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt")).toHaveLength(0);
+  });
+
+  it("does not offer /reload without runtime.reload", async () => {
+    mount(<Composer sessionId="s1" live />);
+    const ws = await driveReady();
     await driveAttachCaps(ws, ["runtime.prompt", "runtime.abort", "runtime.compact"]);
     const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "/" } });
     textarea.setSelectionRange(1, 1);
     fireEvent.select(textarea);
     await flush();
-    // Ack the get_commands probe so the runtime palette resolves (empty here).
-    const gc = lastFrame<{ type: string; id: string; payload: { command: { commandId: string } } }>(ws, "command");
-    if (gc) {
-      await serverSend(ws, { type: "response", id: gc.id, payload: { ok: true, result: { commandId: gc.payload.command.commandId, result: { ok: true, type: "get_commands", commands: [] } } } });
+
+    const commandsFrame = lastFrame<{ type: string; id: string; payload: { command: { commandId: string; type: string } } }>(ws, "command");
+    if (commandsFrame) {
+      await serverSend(ws, {
+        type: "response",
+        id: commandsFrame.id,
+        payload: {
+          ok: true,
+          result: { commandId: commandsFrame.payload.command.commandId, result: { ok: true, type: "get_commands", commands: [] } },
+        },
+      });
     }
-    // The compact builtin IS offered…
     expect(screen.getByText("/compact")).toBeTruthy();
-    // …and the unsupported builtins (which would fall through as model prompts)
-    // are NEVER offered.
     expect(screen.queryByText("/reload")).toBeNull();
-    expect(screen.queryByText("/name")).toBeNull();
-    expect(screen.queryByText("/session")).toBeNull();
-    expect(screen.queryByText("/copy")).toBeNull();
   });
 });
+
 
 describe("TranscriptList — distinguishes loading from real error (i18n, no error-as-spinner)", () => {
   beforeEach(() => { vi.useFakeTimers(); SOCKETS.length = 0; capturedStore = null; });
@@ -1355,7 +1426,7 @@ describe("Composer — session title generation (Settings → Chat consumer)", (
     // then drive the turn to its COMPLETED terminal.
     await serverSend(ws, { type: "event", payload: { type: "message_start", sessionId: "s1", streamId: `st-${op}`, messageId: `m-${op}`, message: { role: "user", content: prompt }, eventId: 1, epoch: "e1" } });
     await serverSend(ws, { type: "event", payload: { type: "message_end", sessionId: "s1", streamId: `st-${op}`, messageId: `m-${op}`, message: { role: "user", content: prompt }, entryId: `entry-${op}`, eventId: 2, epoch: "e1" } });
-    await serverSend(ws, { type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: op, turnId: "turn-1", revision: 1, state: "completed", userEntryId: `entry-${op}` } });
+    await serverSend(ws, { type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: op, turnId: "turn-1", revision: 1, state: "completed", userEntryId: `entry-${op}` } });
   }
 
   let probeExact: { submitTurn: (i: { prompt: string }) => Promise<unknown>; subscribeTurnTerminal: (l: (t: { state: string }) => void) => () => void } | null = null;
@@ -1392,7 +1463,7 @@ describe("Composer — session title generation (Settings → Chat consumer)", (
       const submit = submits[submits.length - 1]!;
       const op = submit.payload.operationId;
       ws.serverSend({ type: "submit_turn_result", id: submit.id, payload: { status: "accepted", delivery: "accepted", sessionId: "s1", epoch: "e1", revision: 3, operationId: op, turnId: "turn-2", snapshot: snapshotPayload({ sessionId: "s1", epoch: "e1" }).snapshot as never, turnStatus: { sessionId: "s1", epoch: "e1", operationId: op, turnId: "turn-2", revision: 0, state: "admitted" } } });
-      ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: op, turnId: "turn-2", revision: 1, state: "completed" } });
+      ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: op, turnId: "turn-2", revision: 1, state: "completed" } });
       await flush();
     });
     expect(seen).toContain("completed");

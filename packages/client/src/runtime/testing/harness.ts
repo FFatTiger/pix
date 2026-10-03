@@ -12,7 +12,7 @@ import { RuntimeConnection, type RuntimeConnectionOptions } from "../runtime-con
 import { SessionControllerRegistry } from "../session-controller-registry.js";
 import type { SessionController } from "../session-controller.js";
 import type { RuntimeSocketDeps } from "../socket.js";
-import type { ClientIdentity } from "@fffattiger/pix-protocol";
+import type { ClientIdentity, SubagentProjection, TodoProjection, TurnAuthoritySnapshot } from "@fffattiger/pix-protocol";
 
 const CONNECTING = 0;
 const OPEN = 1;
@@ -182,6 +182,8 @@ export function snapshotPayload(overrides: Partial<{
   autoRetryEnabled?: boolean;
   queuedMessages?: { steering: { message: string; images?: { type: "image"; data: string; mimeType: "image/png" }[] }[]; followUp: { message: string; images?: { type: "image"; data: string; mimeType: "image/png" }[] }[] };
   tools?: { name: string; description?: string; active: boolean }[];
+  subagents?: SubagentProjection;
+  todo?: TodoProjection;
   /**
    * Context-usage consistency: the live projection owns context usage — tests
    * seed it exactly where production gets it (worker snapshot state / the
@@ -217,10 +219,18 @@ export function snapshotPayload(overrides: Partial<{
         ...(overrides.autoRetryEnabled === undefined ? {} : { autoRetryEnabled: overrides.autoRetryEnabled }),
         ...(overrides.queuedMessages === undefined ? {} : { queuedMessages: overrides.queuedMessages }),
         ...(overrides.tools === undefined ? {} : { tools: overrides.tools }),
+        ...(overrides.subagents === undefined ? {} : { subagents: overrides.subagents }),
+        ...(overrides.todo === undefined ? {} : { todo: overrides.todo }),
         ...(overrides.contextUsage === undefined ? {} : { contextUsage: overrides.contextUsage }),
       },
       capabilities: { capabilities: overrides.capabilities ?? ["runtime.prompt", "runtime.abort"], version: 1 },
       streaming: { active: false, phase: "idle" },
     },
   };
+}
+
+/** Narrow authority sidecar for terminal-status fixtures. */
+export function authoritySnapshot(sessionId: string, epoch: string, lastEventId = 0): TurnAuthoritySnapshot {
+  const payload = snapshotPayload({ sessionId, epoch, lastEventId });
+  return { sessionId, epoch, lastEventId, snapshot: payload.snapshot as TurnAuthoritySnapshot["snapshot"] };
 }

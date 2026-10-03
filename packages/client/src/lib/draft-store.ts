@@ -3,6 +3,19 @@ export interface ChatDraftImage {
   mimeType: string;
 }
 
+/**
+ * Browser File objects cannot be serialized safely. They remain in this
+ * process-local draft layer so session switches and new-session promotion do
+ * not lose pending attachments; a page reload intentionally drops them.
+ */
+export interface ChatDraftFile {
+  id: string;
+  name: string;
+  kind: "upload" | "reference";
+  file?: File;
+  mentionPath?: string;
+}
+
 export interface ChatDraft {
   value: string;
   images: ChatDraftImage[];
@@ -13,6 +26,7 @@ export interface ChatDraft {
 // best-effort (image-heavy drafts may exceed the storage quota — in that case
 // the in-memory draft still works, it just won't survive a refresh).
 const drafts = new Map<string, ChatDraft>();
+const draftFiles = new Map<string, ChatDraftFile[]>();
 
 const STORAGE_KEY = "pi-drafts";
 
@@ -77,8 +91,21 @@ export function setDraft(key: string, draft: ChatDraft): void {
   persist();
 }
 
+export function getDraftFiles(key: string): ChatDraftFile[] {
+  return (draftFiles.get(key) ?? []).map((file) => ({ ...file }));
+}
+
+export function setDraftFiles(key: string, files: readonly ChatDraftFile[]): void {
+  if (files.length === 0) {
+    draftFiles.delete(key);
+    return;
+  }
+  draftFiles.set(key, files.map((file) => ({ ...file })));
+}
+
 export function clearDraft(key: string): void {
   ensureLoaded();
   drafts.delete(key);
+  draftFiles.delete(key);
   persist();
 }

@@ -16,6 +16,7 @@ import { createPiSdkSessionStore } from "../src/internal/session-store.js";
 import {
   browseKindForWorkspace,
   parseSessionFile,
+  projectInfo,
   PROJECTION_INDEX_FILENAME,
   PROJECTION_SCHEMA_VERSION,
   SessionProjectionIndex,
@@ -156,6 +157,59 @@ describe("SCALE1 session projection index module", () => {
     }
   });
 
+  it("streams CRLF, skips malformed lines, and fails closed on a missing file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-proj-stream-"));
+    try {
+      const lf = join(root, "lf.jsonl");
+      const crlf = join(root, "crlf.jsonl");
+      const lines = [
+        JSON.stringify({ type: "session", version: 3, id: "s1", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/repo" }),
+        "{not-json",
+        JSON.stringify({ type: "session_info", name: "  Streamed  " }),
+        JSON.stringify({ type: "message", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "user", content: "hello", timestamp: 1_700_000_000_000 } }),
+        JSON.stringify({ type: "message", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "hi" }], timestamp: 1_700_000_000_001 } }),
+      ];
+      await writeFile(lf, lines.join("\n") + "\n");
+      await writeFile(crlf, lines.join("\r\n") + "\r\n");
+      const fromLf = await parseSessionFile(lf);
+      const fromCrlf = await parseSessionFile(crlf);
+      assert.equal(fromLf?.id, "s1");
+      assert.equal(fromLf?.name, "Streamed");
+      assert.equal(fromLf?.messageCount, 2);
+      assert.equal(fromLf?.firstMessage, "hello");
+      assert.equal(fromLf?.cwd, "/repo");
+      assert.equal(fromCrlf?.id, fromLf?.id);
+      assert.equal(fromCrlf?.name, fromLf?.name);
+      assert.equal(fromCrlf?.messageCount, fromLf?.messageCount);
+      assert.equal(fromCrlf?.firstMessage, fromLf?.firstMessage);
+      assert.equal(await parseSessionFile(join(root, "missing.jsonl")), null);
+      const badHeader = join(root, "bad.jsonl");
+      await writeFile(badHeader, `${JSON.stringify({ type: "message", message: { role: "user", content: "nope" } })}\n`);
+      assert.equal(await parseSessionFile(badHeader), null);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps valid large JSONL records compatible with SDK metadata", async () => {
+    const corpus = await makeCorpus(1);
+    try {
+      appendTurn(firstManager(corpus), "large reply", "x".repeat(9 * 1024 * 1024), 1_700_000_010_000);
+      const [info] = await SessionManager.list(corpus.cwd, corpus.sessionDir);
+      assert.ok(info);
+      const parsed = await parseSessionFile(info.path);
+      assert.ok(parsed, "a valid large record must not hide its session");
+      assert.equal(parsed.messageCount, info.messageCount);
+      assert.equal(parsed.firstMessage, info.firstMessage);
+      assert.equal(parsed.modifiedMs, info.modified.getTime());
+      const projected = await projectInfo(info);
+      assert.ok(projected, "provenance scanning must preserve valid large records");
+      assert.equal(projected.id, info.id);
+    } finally {
+      await rm(corpus.root, { recursive: true, force: true });
+    }
+  });
+
   it("parses pix-fork-provenance parent identity as hidden even without a parentSession header", async () => {
     const root = await mkdtemp(join(tmpdir(), "pix-proj-custom-parent-"));
     try {
@@ -195,6 +249,72 @@ describe("SCALE1 session projection index module", () => {
       assert.deepEqual(sessions?.sessions.map((session) => session.sessionId), ["parent"]);
       assert.equal(sessions?.total, 1);
       assert.deepEqual(index.queryProjectPage({ page: 1, pageSize: 10 })?.projects.map((project) => [project.projectRoot, project.sessionCount]), [["/repo", 1]]);
+      const children = index.querySessionPage({ page: 1, pageSize: 50, parentSessionId: "parent" });
+      assert.deepEqual(children?.sessions.map((session) => session.sessionId), ["child"]);
+      assert.equal(children?.total, 1);
+      assert.equal(children?.sessions[0]?.parentSessionId, "parent");
+      const scopedChildren = index.querySessionPage({ page: 1, pageSize: 50, parentSessionId: "parent", cwd: "/other" });
+      assert.equal(scopedChildren?.total, 0);
+      assert.deepEqual(scopedChildren?.sessions, []);
+      const missingParent = index.querySessionPage({ page: 1, pageSize: 50, parentSessionId: "missing" });
+      assert.equal(missingParent?.total, 0);
+      assert.deepEqual(missingParent?.sessions, []);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps two files that share an id so one collision does not drop the catalog", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pix-proj-dup-id-"));
+    try {
+      const index = new SessionProjectionIndex(join(root, "idx.sqlite"));
+      const dupA: ProjectedSession = {
+        id: "shared", path: "/sessions/a.jsonl", cwd: "/repo",
+        createdMs: 1, modifiedMs: 30, messageCount: 2, firstMessage: "a",
+        projectRoot: "/repo", browseKind: "regular", mtimeMs: 1, size: 10,
+      };
+      const dupB: ProjectedSession = {
+        id: "shared", path: "/sessions/b.jsonl", cwd: "/repo",
+        createdMs: 2, modifiedMs: 20, messageCount: 3, firstMessage: "b",
+        projectRoot: "/repo", browseKind: "regular", mtimeMs: 2, size: 20,
+      };
+      const other: ProjectedSession = {
+        id: "other", path: "/sessions/c.jsonl", cwd: "/other",
+        createdMs: 3, modifiedMs: 10, messageCount: 1, firstMessage: "c",
+        projectRoot: "/other", browseKind: "regular", mtimeMs: 3, size: 30,
+      };
+      index.replaceAll([dupA, dupB, other]);
+      const loaded = index.load();
+      assert.ok(loaded !== null);
+      assert.equal(loaded.length, 3);
+      assert.deepEqual(
+        loaded.map((row) => [row.id, row.path]).sort((a, b) => String(a[1]).localeCompare(String(b[1]))),
+        [["shared", "/sessions/a.jsonl"], ["shared", "/sessions/b.jsonl"], ["other", "/sessions/c.jsonl"]],
+      );
+      const sessions = index.querySessionPage({ page: 1, pageSize: 50 });
+      assert.equal(sessions?.total, 3);
+      assert.equal(sessions?.sessions.length, 3);
+      const projects = index.queryProjectPage({ page: 1, pageSize: 10 });
+      assert.equal(projects?.total, 2);
+      assert.deepEqual(
+        projects?.projects.map((project) => [project.projectRoot, project.sessionCount]),
+        [["/repo", 2], ["/other", 1]],
+      );
+      const dupB2: ProjectedSession = { ...dupB, name: "renamed-b", messageCount: 9, modifiedMs: 40, mtimeMs: 9, size: 90 };
+      index.applyDelta([dupB2], []);
+      const after = index.load();
+      assert.ok(after !== null);
+      assert.equal(after.length, 3);
+      assert.deepEqual(after.find((row) => row.path === "/sessions/a.jsonl"), dupA);
+      assert.deepEqual(after.find((row) => row.path === "/sessions/b.jsonl"), dupB2);
+      assert.deepEqual(after.find((row) => row.path === "/sessions/c.jsonl"), other);
+      const afterPages = index.querySessionPage({ page: 1, pageSize: 50 });
+      assert.equal(afterPages?.total, 3);
+      assert.equal(afterPages?.sessions.find((session) => session.sessionFile === "/sessions/b.jsonl")?.title, "renamed-b");
+      const db = new DatabaseSync(join(root, "idx.sqlite"));
+      const version = db.prepare("SELECT value FROM session_projection_meta WHERE key = ?").get("schema_version") as { value: string };
+      db.close();
+      assert.equal(version.value, "6");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

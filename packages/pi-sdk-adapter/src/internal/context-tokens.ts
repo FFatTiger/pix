@@ -28,9 +28,11 @@
  * `pi-sdk-adapter` (this module); Client/Host/sessiond/Worker never estimate.
  */
 import {
+  buildSessionProjection,
   calculateContextTokens,
   estimateTokens,
   getLatestCompactionEntry,
+  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
 // The Pi SDK does not re-export the AgentMessage/Usage types; the arithmetic
@@ -40,6 +42,7 @@ type ContextUsageShape = Parameters<typeof calculateContextTokens>[0];
 
 /** Minimal structural shape of a raw selected-branch entry (compaction gate). */
 interface BranchEntryLike {
+  id?: string;
   type: string;
   message?: { role?: string; stopReason?: string; usage?: ContextUsageShape };
 }
@@ -69,6 +72,16 @@ export function estimateSdkBranchContextTokens(
   branchEntries: readonly BranchEntryLike[],
   contextMessages: readonly SdkContextMessage[],
 ): number | null {
+  // Pi 1.0 context edits can remove or replace an earlier usage source. Keep
+  // its provenance through the public SDK projection; a pre-edit usage no
+  // longer measures the edited context, even if that assistant is retained.
+  const hasEdits = branchEntries.some((entry) => entry.type === "context_edit");
+  const projection = hasEdits
+    ? buildSessionProjection(branchEntries as SessionEntry[])
+    : undefined;
+  const projectedUsageIds = projection === undefined ? undefined : new Set(
+    projection.entries.filter((entry) => entry.messages.some(isValidAssistantUsage)).map((entry) => entry.sourceEntry.id),
+  );
   const latestCompaction = getLatestCompactionEntry(branchEntries as never[]);
   if (latestCompaction !== null) {
     const compactionIndex = branchEntries.lastIndexOf(latestCompaction);
@@ -76,7 +89,7 @@ export function estimateSdkBranchContextTokens(
     for (let i = branchEntries.length - 1; i > compactionIndex; i -= 1) {
       const entry = branchEntries[i];
       if (!entry || entry.type !== "message") continue;
-      if (isValidAssistantUsage(entry.message)) {
+      if (isValidAssistantUsage(entry.message) && (projectedUsageIds === undefined || (entry.id !== undefined && projectedUsageIds.has(entry.id)))) {
         hasPostCompactionUsage = true;
         break;
       }
@@ -95,6 +108,39 @@ export function estimateSdkBranchContextTokens(
     );
     lastUsageIndex = i;
     break;
+  }
+  if (projection !== undefined) {
+    let projectedIndex = 0;
+    let usageSourceIndex = -1;
+    for (const entry of projection.entries) {
+      projectedIndex += entry.messages.length;
+      if (lastUsageIndex >= 0 && lastUsageIndex < projectedIndex) {
+        usageSourceIndex = branchEntries.findIndex((raw) => raw.id === entry.sourceEntry.id);
+        break;
+      }
+    }
+    let latestEditIndex = -1;
+    for (let i = branchEntries.length - 1; i >= 0; i -= 1) {
+      if (branchEntries[i]?.type === "context_edit" || branchEntries[i]?.type === "compaction") {
+        latestEditIndex = i;
+        break;
+      }
+    }
+    if (usageSourceIndex <= latestEditIndex) {
+      // Only the current system message contributes, as in Pi's projected
+      // estimator. Kept older system entries must not be counted twice.
+      let systemSeen = false;
+      let estimated = 0;
+      for (let i = contextMessages.length - 1; i >= 0; i -= 1) {
+        const message = contextMessages[i]!;
+        if (message.role === "system") {
+          if (systemSeen) continue;
+          systemSeen = true;
+        }
+        estimated += estimateTokens(message);
+      }
+      return estimated;
+    }
   }
   let trailingTokens = 0;
   for (let i = lastUsageIndex + 1; i < contextMessages.length; i += 1) {

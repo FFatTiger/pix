@@ -3,6 +3,7 @@ import type {
   SessiondMethodResult,
   SessiondRpcRequest,
   SessiondRpcResponse,
+  SessionsListParams,
 } from "./sessiond.js";
 import type { RuntimeCommandOutcome, RuntimeInterruptResult } from "./results.js";
 import type { WsClientMessage, WsHostMessage } from "./ws.js";
@@ -44,6 +45,31 @@ export type ProtocolTypeAssertions =
         { method: "confirm" }
       >["closed"],
       true | undefined
+    >>
+  | Assert<Equal<SessionsListParams["parentSessionId"], string | undefined>>
+  | Assert<Equal<
+      Extract<import("./events.js").RuntimeEventData, { type: "built_ins_changed" }> ["type"],
+      "built_ins_changed"
+    >>
+  | Assert<Equal<
+      Extract<import("./events.js").RuntimeEventData, { type: "subagents_changed" }> ["type"],
+      "subagents_changed"
+    >>
+  | Assert<Equal<
+      Extract<import("./events.js").RuntimeEventData, { type: "todo_changed" }> ["type"],
+      "todo_changed"
+    >>
+  | Assert<Equal<
+      Extract<import("./events.js").RuntimeEventData, { type: "subagent_delta" }> ["type"],
+      "subagent_delta"
+    >>
+  | Assert<Equal<
+      NonNullable<import("./snapshot.js").RuntimeState["todo"]>["revision"],
+      number
+    >>
+  | Assert<Equal<
+      NonNullable<NonNullable<import("./snapshot.js").RuntimeState["subagents"]>["streams"]>,
+      Record<string, { partial: import("./messages.js").StreamingAgentMessage; updatedAt: number }>
     >>;
 
 export const protocolTypeAssertions: ProtocolTypeAssertions = true;

@@ -54,8 +54,19 @@ export const PIX_PRODUCT_VERSION = "0.1.0" as const;
  * boundary), and worker→sessiond `runtime_state_changed` frames may carry the
  * atomic `context` payload. A v4 peer's strict schemas reject both, so mixed
  * dist deployments must fail closed at this fence instead of being reused.
+ * v6 (parent-filtered session pages): `sessions.list` accepts optional
+ * `parentSessionId` to expose direct persisted children without changing the
+ * ordinary hidden-child browse policy. A v5 daemon's strict request schema
+ * rejects this field, so Host/daemon reuse must fail closed at the fence.
+ * v7 (side-chat authority): sessiond command/interrupt RPC and snapshots carry
+ * the bounded side-chat command/result/event/state surface. A v6 Host cannot
+ * safely route or resume these strict-schema fields.
+ * v8 (Pi 1.0): RPC snapshots/results carry extension notifications, input
+ * dispositions and nested tool summaries. Terminal turn pushes carry the same
+ * refreshed authority snapshot as the observation FIFO (required on completed).
+ * Older strict-schema peers reject them.
  */
-export const SESSIOND_CONTRACT_VERSION = 5 as const;
+export const SESSIOND_CONTRACT_VERSION = 8 as const;
 
 /**
  * sessiond ↔ Worker IPC contract generation. Bumped on every change to the
@@ -68,8 +79,18 @@ export const SESSIOND_CONTRACT_VERSION = 5 as const;
  * after committed message/bash updates, model changes, navigation and
  * compaction terminals. A v3 sessiond's strict event schema rejects the
  * payload, so mixed dist deployments must fail closed at this fence.
+ * v5 (built-in/subagent/todo authority snapshot): RuntimeState may carry optional
+ * `builtIns`/`subagents`/`todo` projections; `worker.event` adds full-replacement
+ * `built_ins_changed`/`subagents_changed`/`todo_changed`. A v4 sessiond's strict
+ * event/snapshot schemas reject the fields, so mixed dist deployments must fail
+ * closed at this fence.
+ * v6 (side-chat authority): Worker IPC carries the five side-chat commands,
+ * independent abort, bounded snapshot state, full replacement events, and
+ * append-only stream deltas. A v5 peer rejects the strict additive surface.
+ * v7 (Pi 1.0): events carry nested parent identity and notifications; messages
+ * and terminal results retain the new metadata and input disposition.
  */
-export const WORKER_CONTRACT_VERSION = 4 as const;
+export const WORKER_CONTRACT_VERSION = 7 as const;
 
 /**
  * Adapter behavior-contract generation (the contract proven by
@@ -90,8 +111,16 @@ export const WORKER_CONTRACT_VERSION = 4 as const;
  * restoration before global defaults; model/thinking mutations exclude turn
  * admission per runtime, including external streams and close races. A v3
  * Worker may run a turn under another model and must not be reused.
+ * v5 (built-in/subagent/todo authority snapshot): adapters project actually-loaded
+ * built-ins plus safe subagent/todo snapshots onto RuntimeState and emit the
+ * matching full-replacement events. A v4 Worker/sessiond peer must not be reused.
+ * v6 (pinned side-chat controller): adapters own the real characterized
+ * pi-side-chat controller, independent lifecycle, overlap confirmation, and
+ * bounded canonical projection. A v5 Worker has no compatible behavior seam.
+ * v7 (Pi 1.0): native extension factories, input preflight dispositions,
+ * edited-context estimates and nested-call metadata require the matching SDK.
  */
-export const ADAPTER_CONTRACT_VERSION = 4 as const;
+export const ADAPTER_CONTRACT_VERSION = 7 as const;
 
 /**
  * Canonicalization format version for the capability fingerprint. Bumped only

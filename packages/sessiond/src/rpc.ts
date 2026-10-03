@@ -448,10 +448,12 @@ export class SessiondRpcClient {
     });
   }
 
-  async submitTurn(params: SessiondMethodParams["runtime.submitTurn"], onPush: (push: import("@fffattiger/pix-protocol").SessiondTurnStatusPush) => void | Promise<void>): Promise<SessiondRpcSubscription<SessiondMethodResult["runtime.submitTurn"]>> {
-    const id = crypto.randomUUID();
-    const request = SessiondRpcRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, id, method: "runtime.submitTurn", params });
+  submitTurn(params: SessiondMethodParams["runtime.submitTurn"], onPush: (push: import("@fffattiger/pix-protocol").SessiondTurnStatusPush) => void | Promise<void>): Promise<SessiondRpcSubscription<SessiondMethodResult["runtime.submitTurn"]>> {
+    // Return the admission promise directly: an async wrapper's adoption step
+    // lets the queued status callback run before the caller's admission await.
     return new Promise((resolve, reject) => {
+      const id = crypto.randomUUID();
+      const request = SessiondRpcRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, id, method: "runtime.submitTurn", params });
       const socket = createConnection(this.options.endpoint);
       let buffered = "";
       let authenticated = false;

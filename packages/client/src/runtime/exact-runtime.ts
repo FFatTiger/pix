@@ -155,8 +155,14 @@ export interface ExactRuntimeApi extends ExactRuntimeView {
   readonly setThinkingLevel: (level: ThinkingLevel) => Promise<void>;
   readonly setModel: (provider: string, modelId: string) => Promise<void>;
   readonly getTools: () => Promise<readonly ToolInfo[]>;
-  readonly setTools: (names: readonly string[]) => Promise<void>;
+  readonly setTools: (names: readonly string[], options?: { includeExtensionTools?: boolean }) => Promise<void>;
   readonly reload: () => Promise<void>;
+  readonly sideChatStart: () => Promise<string>;
+  readonly sideChatSend: (conversationId: string, message: string) => Promise<string>;
+  readonly sideChatReset: (conversationId: string, mode: "refork" | "clear") => Promise<string>;
+  readonly sideChatSetMode: (conversationId: string, mode: "read_only" | "edit") => Promise<void>;
+  readonly sideChatRespondOverlap: (conversationId: string, requestId: string, proceed: boolean) => Promise<void>;
+  readonly abortSideChat: (conversationId: string) => Promise<unknown>;
   readonly compact: (customInstructions?: string) => Promise<void>;
   readonly abortCompaction: () => Promise<unknown>;
   readonly navigateTree: (targetId: string) => Promise<unknown>;
@@ -290,8 +296,14 @@ export function createExactActions(
     setThinkingLevel: (level) => withController((controller) => controller.setThinkingLevel(level)),
     setModel: (provider, modelId) => withController((controller) => controller.setModel(provider, modelId)),
     getTools: () => withController((controller) => controller.getTools()),
-    setTools: (names) => withController((controller) => controller.setTools(names)),
+    setTools: (names: readonly string[], options?: { includeExtensionTools?: boolean }) => withController((controller) => controller.setTools(names, options)),
     reload: () => withController((controller) => controller.reload()),
+    sideChatStart: () => withController((controller) => controller.sideChatStart()),
+    sideChatSend: (conversationId, message) => withController((controller) => controller.sideChatSend(conversationId, message)),
+    sideChatReset: (conversationId, mode) => withController((controller) => controller.sideChatReset(conversationId, mode)),
+    sideChatSetMode: (conversationId, mode) => withController((controller) => controller.sideChatSetMode(conversationId, mode)),
+    sideChatRespondOverlap: (conversationId, requestId, proceed) => withController((controller) => controller.sideChatRespondOverlap(conversationId, requestId, proceed)),
+    abortSideChat: (conversationId) => withController((controller) => controller.abortSideChat(conversationId)),
     compact: (customInstructions) => withController((controller) => controller.compact(customInstructions)),
     abortCompaction: () => withController((controller) => controller.abortCompaction()),
     navigateTree: (targetId) =>

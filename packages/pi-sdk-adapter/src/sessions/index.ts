@@ -8,22 +8,23 @@
 // src/internal/session-store.ts. No model runtime, live agent, network,
 // credentials, resources or trust are involved; list / read / context /
 // thinking / locate / resolveLeafId / renameSession run with zero Workers.
-import type {
-  CatalogPageRequest,
-  ProjectCatalogPort,
-  ProjectPage,
-  SessionCatalogPort,
-  SessionContext,
-  SessionDetail,
-  SessionHeader,
-  SessionListFilter,
-  SessionLocation,
-  SessionLocatorPort,
-  SessionMutationPort,
-  SessionPage,
-  SessionPageRequest,
-  SessionThinkingBlock,
-  SessionTree,
+import {
+  makeRuntimeError,
+  type CatalogPageRequest,
+  type ProjectCatalogPort,
+  type ProjectPage,
+  type SessionCatalogPort,
+  type SessionContext,
+  type SessionDetail,
+  type SessionHeader,
+  type SessionListFilter,
+  type SessionLocation,
+  type SessionLocatorPort,
+  type SessionMutationPort,
+  type SessionPage,
+  type SessionPageRequest,
+  type SessionThinkingBlock,
+  type SessionTree,
 } from "@fffattiger/pix-runtime-core";
 import { createPiSdkSessionStore } from "../internal/session-store.js";
 
@@ -82,6 +83,14 @@ class PiSdkSessionCatalog implements SessionCatalogPort {
   async listSessionPage(request: SessionPageRequest): Promise<SessionPage> {
     if (this.store.listSessionPage) return this.store.listSessionPage(request);
     let sessions = [...await this.store.listSessions()];
+    if (request.parentSessionId !== undefined) {
+      if (!sessions.some((item) => item.sessionId === request.parentSessionId)) {
+        throw makeRuntimeError("not_found", `session not found: ${request.parentSessionId}`);
+      }
+      sessions = sessions.filter((item) => item.parentSessionId === request.parentSessionId);
+    } else {
+      sessions = sessions.filter((item) => item.parentSessionId === undefined);
+    }
     if (request.cwd !== undefined) sessions = sessions.filter((item) => item.cwd === request.cwd);
     if (request.projectRoot !== undefined) sessions = sessions.filter((item) => item.projectRoot === request.projectRoot);
     const total = sessions.length;
@@ -125,6 +134,7 @@ class PiSdkProjectCatalog implements ProjectCatalogPort {
     if (this.store.listProjectPage) return this.store.listProjectPage(request);
     const grouped = new Map<string, { representativeCwd: string; sessionCount: number; latestActivity: number }>();
     for (const session of await this.store.listSessions()) {
+      if (session.parentSessionId !== undefined) continue;
       const current = grouped.get(session.projectRoot);
       const activity = session.updatedAt ?? session.lastMessageAt ?? session.createdAt ?? 0;
       if (!current) grouped.set(session.projectRoot, { representativeCwd: session.cwd, sessionCount: 1, latestActivity: activity });

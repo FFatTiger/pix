@@ -75,7 +75,7 @@ function makeDriver(): { driver: PiRuntimeDriver; controls: DriverControls } {
     prompt: () => {
       promptModels.push(state.model === null ? null : { provider: state.model.provider, id: state.model.id });
       setImmediate(() => { for (const waiter of promptWaiters.splice(0)) waiter(); });
-      return new Promise<void>((resolve) => { promptGates.push(resolve); });
+      return new Promise<{ disposition: "started" }>((resolve) => { promptGates.push(() => resolve({ disposition: "started" })); });
     },
     steer: unused,
     followUp: unused,

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -84,6 +86,8 @@ async function productionFixture() {
   const outside = join(root, "outside");
   const markerPath = join(root, "pwned.marker");
 
+  mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  chmodSync(agentDir, 0o700);
   mkdirSync(join(agentDir, "skills", "global-skill"), { recursive: true });
   writeFileSync(
     join(agentDir, "skills", "global-skill", "SKILL.md"),
@@ -275,6 +279,52 @@ test("production catalogs: malformed trust fails closed; project skills withheld
   const names = (await skillsRes.json()).skills.map((s) => s.name);
   assert.ok(names.includes("global-skill"));
   assert.ok(!names.includes("proj-skill"), "project skill withheld under corrupt trust");
+});
+
+test("production catalogs: GET/PUT /v1/settings/built-ins persist pix-builtins.json and advertise builtins.configure", async () => {
+  const { agentDir, project, app } = await productionFixture();
+  chmodSync(agentDir, 0o700);
+  const get = await call(app, "/v1/settings/built-ins");
+  assert.equal(get.status, 200);
+  const snapshot = await get.json();
+  assert.deepEqual(snapshot.capabilities, [
+    { id: "subagents", enabled: true },
+    { id: "todo", enabled: true },
+    { id: "ask_user_question", enabled: true },
+    { id: "side_chat", enabled: true },
+  ]);
+  const health = await call(app, "/v1/health");
+  assert.ok((await health.json()).capabilities.includes("builtins.configure"));
+
+  const mixed = [
+    { id: "subagents", enabled: false },
+    { id: "todo", enabled: true },
+    { id: "ask_user_question", enabled: false },
+    { id: "side_chat", enabled: true },
+  ];
+  const put = await app.request("http://localhost/v1/settings/built-ins", {
+    method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ expectedRevision: snapshot.revision, capabilities: mixed }),
+  });
+  assert.equal(put.status, 200);
+  const saved = await put.json();
+  assert.deepEqual(saved.capabilities, mixed);
+  const persisted = JSON.parse(readFileSync(join(agentDir, "pix-builtins.json"), "utf8"));
+  assert.deepEqual(persisted, {
+    version: 1,
+    subagents: false,
+    todo: true,
+    ask_user_question: false,
+    side_chat: true,
+  });
+  const payload = JSON.stringify(saved);
+  assert.ok(!payload.includes(agentDir));
+  assert.ok(!payload.includes("pix-builtins.json"));
+
+  const plugins = await call(app, `/v1/plugins?cwd=${encodeURIComponent(project)}`);
+  assert.equal(plugins.status, 200);
+  assert.ok(Array.isArray((await plugins.json()).plugins));
 });
 
 test("production catalogs: catalog tokens advertised independent of sessiond", async () => {

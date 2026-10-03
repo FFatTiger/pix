@@ -17,6 +17,8 @@ const publicSourceDirs = new Set([
   "trust",
   "resources",
   "themes",
+  "settings",
+  "builtins",
 ]);
 const sdkImport = /@earendil-works\/pi-/;
 const sdkNames = /\b(?:AgentSession|SessionManager|ModelRuntime|DefaultResourceLoader|ProjectTrustStore|AuthStorage)\b/;

@@ -666,6 +666,42 @@ test("initial snapshot is sent before replay/live events", async () => {
   assert.equal(types[1], "event");
 });
 
+test("subagent_delta is forwarded as a live event without FIFO admission", async () => {
+  const client = new FakeClient();
+  const sub = new FakeSubscription(attachResponse("s1"));
+  client.attachFn = (_p, onPush) => {
+    sub.onPush = onPush;
+    return sub;
+  };
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "attach", id: "a1", payload: { sessionId: "s1" } }));
+  await wait();
+  await sub.deliver({
+    type: "event",
+    event: {
+      type: "subagent_delta",
+      eventId: 4,
+      sessionId: "s1",
+      epoch: "e1",
+      childSessionId: "child-1",
+      partial: { role: "assistant", content: [{ type: "text", text: "Hel" }] },
+      done: false,
+    },
+  });
+  assert.deepEqual(session.lastJson(), {
+    type: "event",
+    payload: {
+      type: "subagent_delta",
+      eventId: 4,
+      sessionId: "s1",
+      epoch: "e1",
+      childSessionId: "child-1",
+      partial: { role: "assistant", content: [{ type: "text", text: "Hel" }] },
+      done: false,
+    },
+  });
+});
+
 test("session switch: old subscription closed intentionally + best-effort detach", async () => {
   const client = new FakeClient();
   client.handlers["runtime.detach"] = { sessionId: "s1", detached: true };
@@ -948,6 +984,22 @@ test("F1: serial counter recovers after tasks settle (new frames accepted)", asy
   assert.equal(session.sent.filter((f) => JSON.parse(f).type === "response").length, 4);
 });
 
+test("side-chat abort keeps its conversation target on the independent interrupt bypass", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  client.handlers["runtime.interrupt"] = (params) => ({ commandId: params.commandId, result: { ok: true, type: params.interrupt.type } });
+  const session = await connect(makeGateway(client));
+  session.receive(cmdFrame("parent"));
+  await wait();
+  session.receive(JSON.stringify({ type: "interrupt", id: "side-abort", payload: { sessionId: "s1", commandId: "side-abort-command", interrupt: { type: "abort_side_chat", conversationId: "side-1" } } }));
+  await wait();
+  const call = client.calls.find((item) => item.method === "runtime.interrupt");
+  assert.deepEqual(call?.params.interrupt, { type: "abort_side_chat", conversationId: "side-1" });
+  const response = session.sent.map((frame) => JSON.parse(frame)).find((message) => message.type === "interrupt_result" && message.id === "side-abort");
+  assert.equal(response?.payload.interruptType, "abort_side_chat");
+  assert.ok(!session.closed);
+});
+
 test("F2: in-flight interrupts are capped; N+1 closes 1008 and opens no RPC", async () => {
   const client = new FakeClient();
   client.handlers["runtime.interrupt"] = () => hang();
@@ -1051,6 +1103,7 @@ const steerFrame = (id) => JSON.stringify({ type: "command", id, payload: { sess
 const followFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "follow_up", message: "follow" } } });
 const extensionResponseFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "extension_ui_response", id: "ui-1", method: "confirm", responseKind: "confirmed", confirmed: true } } });
 const extensionInputFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "extension_ui_input", id: "ui-1", method: "input", data: "typed" } } });
+const sideModeFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "side_chat_set_mode", conversationId: "side-1", mode: "edit" } } });
 const promptFrame = (id) => cmdFrame(id);
 const getSnapshotFrame = (id) => JSON.stringify({ type: "getSnapshot", id, payload: { sessionId: "s1" } });
 const createFrame = (id) => JSON.stringify({ type: "create", id, payload: { createRequestId: id, cwd: "/p", projectRoot: "/p" } });
@@ -1084,6 +1137,22 @@ test("D2-P4: steer/follow_up dispatch on the queued-turn lane while a prompt HOL
   // queued-turn lane is FIFO: s1 response before f1 response.
   assert.ok(ids.indexOf("s1") < ids.indexOf("f1"), `order=${ids.join(",")}`);
   assert.ok(!session.closed, "socket must stay open");
+});
+
+test("side-chat commands use the bounded interleaving lane while a parent prompt is pending", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = (p) => p.command.type === "prompt"
+    ? hang()
+    : { commandId: p.command.commandId, result: { ok: true, type: p.command.type } };
+  const session = await connect(makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } }));
+  session.receive(promptFrame("parent"));
+  await wait();
+  session.receive(sideModeFrame("side-mode"));
+  await wait();
+  assert.deepEqual(commandCalls(client).map((call) => call.params.command.type), ["prompt", "side_chat_set_mode"]);
+  assert.ok(responseIds(session).includes("side-mode"));
+  assert.ok(!responseIds(session).includes("parent"));
+  assert.ok(!session.closed);
 });
 
 test("Phase 2: read commands use the read lane while a prompt HOLs the mutation lane", async () => {
@@ -1441,14 +1510,15 @@ test("Phase 3: negotiated submitTurn sends the admission frame BEFORE statuses a
   assert.equal(admissionFrame.payload.status, "accepted");
 
   // Live status push forwards as turn_status with the full status payload.
-  await sub.deliver({ type: "turn_status", status: { sessionId: "s1", epoch: "e1", operationId: "op-1", turnId: "turn-1", revision: 1, state: "completed" } });
+  await sub.deliver({ type: "turn_status", authority: { sessionId: "s1", epoch: "e1", lastEventId: 0, snapshot: snapshot("s1") }, status: { sessionId: "s1", epoch: "e1", operationId: "op-1", turnId: "turn-1", revision: 1, state: "completed" } });
   await wait();
   const statusFrame = session.lastJson();
   assert.equal(statusFrame.type, "turn_status");
   assert.equal(statusFrame.payload.state, "completed");
+  assert.deepEqual(statusFrame.authority, { sessionId: "s1", epoch: "e1", lastEventId: 0, snapshot: snapshot("s1") });
 
   // A status for a WRONG operation/session is not forwarded.
-  await sub.deliver({ type: "turn_status", status: { sessionId: "s1", epoch: "e1", operationId: "op-other", turnId: "turn-1", revision: 2, state: "completed" } });
+  await sub.deliver({ type: "turn_status", authority: { sessionId: "s1", epoch: "e1", lastEventId: 0, snapshot: snapshot("s1") }, status: { sessionId: "s1", epoch: "e1", operationId: "op-other", turnId: "turn-1", revision: 2, state: "completed" } });
   const beforeWrong = session.sent.length;
   await wait();
   assert.equal(session.sent.length, beforeWrong, "wrong-identity status must be dropped");
@@ -1544,16 +1614,16 @@ test("Phase 4A.0: active turn subscriptions key by exact (sessionId, operationId
   assert.deepEqual(admissions.map((frame) => frame.id).sort(), ["st-A", "st-B"]);
 
   // Terminal status for A forwards via A's own subscription only.
-  await subA.deliver({ type: "turn_status", status: { sessionId: "A", epoch: "e1", operationId: "op-shared", turnId: "turn-1", revision: 1, state: "completed" } });
+  await subA.deliver({ type: "turn_status", authority: { sessionId: "A", epoch: "e1", lastEventId: 0, snapshot: snapshot("A") }, status: { sessionId: "A", epoch: "e1", operationId: "op-shared", turnId: "turn-1", revision: 1, state: "completed" } });
   assert.equal(session.lastJson().payload.sessionId, "A");
 
   // Wrong-session status on B's subscription cannot cross-route to A (dropped).
   const beforeWrong = session.sent.length;
-  await subB.deliver({ type: "turn_status", status: { sessionId: "A", epoch: "e1", operationId: "op-shared", turnId: "turn-1", revision: 1, state: "completed" } });
+  await subB.deliver({ type: "turn_status", authority: { sessionId: "A", epoch: "e1", lastEventId: 0, snapshot: snapshot("A") }, status: { sessionId: "A", epoch: "e1", operationId: "op-shared", turnId: "turn-1", revision: 1, state: "completed" } });
   assert.equal(session.sent.length, beforeWrong, "wrong-session status on B must be dropped");
 
   // B's terminal still forwards — A's terminal did NOT remove/close B.
-  await subB.deliver({ type: "turn_status", status: { sessionId: "B", epoch: "e1", operationId: "op-shared", turnId: "turn-1", revision: 1, state: "completed" } });
+  await subB.deliver({ type: "turn_status", authority: { sessionId: "B", epoch: "e1", lastEventId: 0, snapshot: snapshot("B") }, status: { sessionId: "B", epoch: "e1", operationId: "op-shared", turnId: "turn-1", revision: 1, state: "completed" } });
   assert.equal(session.lastJson().payload.sessionId, "B");
 
   // Browser close closes BOTH exact-owner subscriptions (old keying leaked A).
@@ -1582,7 +1652,7 @@ test("Phase 4A.0: closing A's turn subscription removes only A — B stays regis
   // exact composite key is removed; B must remain registered and routable.
   subA.remoteClose();
   await wait();
-  await subB.deliver({ type: "turn_status", status: { sessionId: "B", epoch: "e1", operationId: "op-shared", turnId: "turn-2", revision: 2, state: "completed" } });
+  await subB.deliver({ type: "turn_status", authority: { sessionId: "B", epoch: "e1", lastEventId: 0, snapshot: snapshot("B") }, status: { sessionId: "B", epoch: "e1", operationId: "op-shared", turnId: "turn-2", revision: 2, state: "completed" } });
   assert.equal(session.lastJson().payload.sessionId, "B", "B stays routable after A's subscription closed");
 
   // Browser close still owns and closes B (A was already closed by sessiond).

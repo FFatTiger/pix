@@ -17,6 +17,12 @@ import type { AgentMessage, ContextUsage, StreamingAgentMessage } from "./messag
 import type { ModelRef } from "./model.js";
 import type { QueuedTurn } from "./queue.js";
 import type { RuntimeError } from "./errors.js";
+import type { SideChatDelta, SideChatState } from "./side-chat.js";
+import type {
+  BuiltInRuntimeState,
+  SubagentProjection,
+  TodoProjection,
+} from "./runtime-projections.js";
 
 export interface RuntimeEventBase {
   sessionId: string;
@@ -80,6 +86,7 @@ export interface ToolExecutionStartEvent extends RuntimeEventBase {
   type: "tool_execution_start";
   toolCallId: string;
   toolName: string;
+  parentToolCallId?: string;
   args?: unknown;
 }
 
@@ -87,6 +94,7 @@ export interface ToolExecutionUpdateEvent extends RuntimeEventBase {
   type: "tool_execution_update";
   toolCallId: string;
   toolName?: string;
+  parentToolCallId?: string;
   partialResult?: unknown;
 }
 
@@ -94,6 +102,7 @@ export interface ToolExecutionEndEvent extends RuntimeEventBase {
   type: "tool_execution_end";
   toolCallId: string;
   toolName?: string;
+  parentToolCallId?: string;
   isError?: boolean;
   result?: unknown;
   /** Files this tool execution wrote or modified. */
@@ -182,6 +191,15 @@ export interface ExtensionStatusesEvent extends RuntimeEventBase {
   statuses: readonly ExtensionStatusItem[];
 }
 
+/** A non-error extension notification (`ctx.ui.notify` info/warning), e.g.
+ * `/mcp` status text or an OAuth authorization URL. */
+export interface ExtensionNotificationEvent extends RuntimeEventBase {
+  type: "extension_notification";
+  level: "info" | "warning";
+  message: string;
+  at: number;
+}
+
 export interface ExtensionWidgetsEvent extends RuntimeEventBase {
   type: "extension_widgets";
   widgets: readonly ExtensionWidgetItem[];
@@ -247,6 +265,42 @@ export interface RuntimeCapabilitiesChangedEvent extends RuntimeEventBase {
   capabilities: RuntimeCapabilitySet;
 }
 
+/** Full-replacement actually-loaded built-in projection. */
+export interface BuiltInsChangedEvent extends RuntimeEventBase {
+  type: "built_ins_changed";
+  builtIns: BuiltInRuntimeState;
+}
+
+/** Full-replacement subagent projection. UI must not derive this from transcript. */
+export interface SubagentsChangedEvent extends RuntimeEventBase {
+  type: "subagents_changed";
+  subagents: SubagentProjection;
+}
+
+/** Full-replacement todo projection. UI must not derive this from transcript. */
+export interface TodoChangedEvent extends RuntimeEventBase {
+  type: "todo_changed";
+  todo: TodoProjection;
+}
+
+export interface SideChatChangedEvent extends RuntimeEventBase {
+  type: "side_chat_changed";
+  sideChat: SideChatState | null;
+}
+
+export interface SideChatDeltaEvent extends RuntimeEventBase {
+  type: "side_chat_delta";
+  delta: SideChatDelta;
+}
+
+/** Transient in-process child stream; never persisted to parent or child JSONL. */
+export interface SubagentDeltaEvent extends RuntimeEventBase {
+  type: "subagent_delta";
+  childSessionId: string;
+  partial: StreamingAgentMessage;
+  done: boolean;
+}
+
 export interface RuntimeErrorEvent extends RuntimeEventBase {
   type: "runtime_error";
   error: RuntimeError;
@@ -281,10 +335,17 @@ export type RuntimeEvent =
   | ExtensionErrorEvent
   | ExtensionUiRequestEvent
   | ExtensionStatusesEvent
+  | ExtensionNotificationEvent
   | ExtensionWidgetsEvent
   | SessionTitleEvent
   | SessionChangedEvent
   | RuntimeStateChangedEvent
   | RuntimeCapabilitiesChangedEvent
+  | BuiltInsChangedEvent
+  | SubagentsChangedEvent
+  | TodoChangedEvent
+  | SideChatChangedEvent
+  | SideChatDeltaEvent
+  | SubagentDeltaEvent
   | RuntimeErrorEvent
   | RuntimeClosedEvent;

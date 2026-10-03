@@ -216,7 +216,7 @@ test("resolver: up ⇒ PRODUCTION_FULL_CAPABILITIES, down ⇒ RESOURCE_DEGRADED_
     });
     assert.equal(await resolver.isAvailable(), true);
     assert.deepEqual(await resolver.resolve(), [...PRODUCTION_FULL_CAPABILITIES]);
-    assert.deepEqual([...PRODUCTION_FULL_CAPABILITIES], ["agent", "sessions", "session.delete", "session.write", "session.settings", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "models.configure", "settings.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"]);
+    assert.deepEqual([...PRODUCTION_FULL_CAPABILITIES], ["agent", "sessions", "session.delete", "session.write", "session.settings", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write", "models", "models.configure", "settings.configure", "builtins.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"]);
     // sessions history requires the up authority; degraded never advertises it.
     assert.ok([...RESOURCE_DEGRADED_CAPABILITIES].includes("files"));
     assert.ok(![...RESOURCE_DEGRADED_CAPABILITIES].includes("sessions"));

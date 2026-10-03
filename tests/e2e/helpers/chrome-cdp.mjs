@@ -183,6 +183,7 @@ async function freePort() {
  *             waitFor(expression: string, options?: { timeoutMs?: number, pollMs?: number, label?: string }): Promise<unknown>,
  *             navigate(url: string): Promise<void>,
  *             reload(): Promise<void>,
+ *             setViewport(width: number, height: number, deviceScaleFactor?: number, mobile?: boolean): Promise<void>,
  *             screenshot(path: string): Promise<void>,
  *             close(): Promise<void>, readonly targetId: string }} ChromeCdpPage
  */
@@ -309,6 +310,9 @@ export async function launchChromeCdp(options = {}) {
       async reload() {
         await send("Page.reload", { ignoreCache: true }, targetSession);
         await this.waitFor("document.readyState === 'complete' || document.readyState === 'interactive'", { timeoutMs: 20_000, label: "reload" });
+      },
+      async setViewport(width, height, deviceScaleFactor = 1, mobile = false) {
+        await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor, mobile }, targetSession);
       },
       async screenshot(path) {
         const result = await send("Page.captureScreenshot", { format: "png" }, targetSession);

@@ -100,6 +100,7 @@ function makeParityApp({ withMutationSeams = false, withCatalogs = false }) {
       models: {},
       modelsMutation: {},
       settingsMutation: {},
+      builtinsMutation: {},
       credentials: {},
       resources: {},
       trust: {},
@@ -149,7 +150,7 @@ test("missing-seam parity: no mutation/catalog seams ⇒ HTTP and WS BOTH strip 
   const wsList = ws;
   assert.deepEqual(wsList, httpList, "WS handshake must mirror HTTP capabilities");
   assert.deepEqual(httpList, ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write"]);
-  for (const forbidden of ["session.delete", "session.write", "session.settings", "models", "models.configure", "settings.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"]) {
+  for (const forbidden of ["session.delete", "session.write", "session.settings", "models", "models.configure", "settings.configure", "builtins.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"]) {
     assert.ok(!httpList.includes(forbidden), `HTTP must not advertise unmounted token ${forbidden}`);
     assert.ok(!wsList.includes(forbidden), `WS must not advertise unmounted token ${forbidden}`);
   }

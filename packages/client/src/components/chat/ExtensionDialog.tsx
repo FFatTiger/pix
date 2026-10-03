@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { ExtensionUiRequest } from "@fffattiger/pix-protocol";
 import { useI18n } from "@/hooks/useI18n";
 
@@ -9,11 +9,7 @@ export type ExtensionDialogResponse =
   | { confirmed: boolean }
   | { cancelled: true };
 
-/**
- * Exact port of the source ExtensionDialog (components/ChatWindow.tsx).
- * DOM, class names and inline styles are unchanged; only the type imports
- * point at the pix protocol DTO.
- */
+/** Shared extension request dialog with compact chrome and a separate prompt. */
 export function ExtensionDialog({
   request,
   onRespond,
@@ -22,6 +18,8 @@ export function ExtensionDialog({
   onRespond: (request: ExtensionDialogRequest, response: ExtensionDialogResponse) => void;
 }) {
   const { t } = useI18n();
+  const titleId = useId();
+  const promptId = `${titleId}-prompt`;
   const [value, setValue] = useState(request.method === "editor" ? request.prefill ?? "" : "");
 
   useEffect(() => {
@@ -62,8 +60,13 @@ export function ExtensionDialog({
       <div
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={promptId}
         style={{
           width: "min(560px, 100%)",
+          maxHeight: "100%",
+          display: "flex",
+          flexDirection: "column",
           border: "1px solid var(--border)",
           borderRadius: 8,
           background: "var(--bg)",
@@ -71,12 +74,12 @@ export function ExtensionDialog({
           overflow: "hidden",
         }}
       >
-        <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
-          <div style={{ color: "var(--text)", fontSize: 14, fontWeight: 650 }}>{request.title}</div>
-          <div style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 11, fontFamily: "var(--font-mono)" }}>{t("desktop.extensionRequest")}</div>
+        <div style={{ flexShrink: 0, padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+          <h2 id={titleId} style={{ margin: 0, color: "var(--text)", fontSize: 14, fontWeight: 650 }}>{t("desktop.extensionRequest")}</h2>
         </div>
 
-        <div style={{ padding: 14 }}>
+        <div style={{ minHeight: 0, overflowY: "auto", padding: 14 }}>
+          <p id={promptId} style={{ margin: "0 0 12px", color: "var(--text)", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{request.title}</p>
           {request.method === "confirm" && (
             <div style={{ color: "var(--text-muted)", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{request.message}</div>
           )}
@@ -168,7 +171,7 @@ export function ExtensionDialog({
           )}
         </div>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+        <div style={{ display: "flex", flexShrink: 0, justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
           <button
             onClick={() => onRespond(request, { cancelled: true })}
             style={{

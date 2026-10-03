@@ -8,6 +8,7 @@
  * application controller and translate them to backend calls.
  */
 import type { ImageAttachment, StreamingBehavior, ThinkingLevel } from "./messages.js";
+import type { SideChatMode } from "./side-chat.js";
 
 export interface PromptCommand {
   type: "prompt";
@@ -151,6 +152,35 @@ export interface GenerateSessionTitleCommand {
   model?: { provider: string; modelId: string };
 }
 
+export interface SideChatStartCommand {
+  type: "side_chat_start";
+}
+
+export interface SideChatSendCommand {
+  type: "side_chat_send";
+  conversationId: string;
+  message: string;
+}
+
+export interface SideChatResetCommand {
+  type: "side_chat_reset";
+  conversationId: string;
+  mode: "refork" | "clear";
+}
+
+export interface SideChatSetModeCommand {
+  type: "side_chat_set_mode";
+  conversationId: string;
+  mode: SideChatMode;
+}
+
+export interface SideChatOverlapResponseCommand {
+  type: "side_chat_overlap_response";
+  conversationId: string;
+  requestId: string;
+  proceed: boolean;
+}
+
 export type RuntimeCommand =
   | PromptCommand
   | AbortCommand
@@ -177,9 +207,14 @@ export type RuntimeCommand =
   | SetAutoRetryCommand
   | BashCommand
   | AbortBashCommand
-  | GenerateSessionTitleCommand;
+  | GenerateSessionTitleCommand
+  | SideChatStartCommand
+  | SideChatSendCommand
+  | SideChatResetCommand
+  | SideChatSetModeCommand
+  | SideChatOverlapResponseCommand;
 
-/** All 26 canonical command types, in stable order. */
+/** All canonical command types, in stable order. */
 export const RUNTIME_COMMAND_TYPES = [
   "prompt",
   "abort",
@@ -207,6 +242,11 @@ export const RUNTIME_COMMAND_TYPES = [
   "bash",
   "abort_bash",
   "generate_session_title",
+  "side_chat_start",
+  "side_chat_send",
+  "side_chat_reset",
+  "side_chat_set_mode",
+  "side_chat_overlap_response",
 ] as const;
 
 export type RuntimeCommandType = (typeof RUNTIME_COMMAND_TYPES)[number];

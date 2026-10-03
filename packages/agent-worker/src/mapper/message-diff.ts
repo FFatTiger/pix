@@ -113,7 +113,10 @@ function diffToolResult(
   baseline: StreamingAgentMessage & { role: "toolResult" },
   current: StreamingAgentMessage & { role: "toolResult" },
 ): DiffResult {
-  if (current.toolCallId !== baseline.toolCallId) return { kind: "restart" };
+  if (current.toolCallId !== baseline.toolCallId
+    || !deepEqual(current.nestedCalls, baseline.nestedCalls)
+    || !deepEqual(current.structuredContent, baseline.structuredContent)
+    || !deepEqual(current.usage, baseline.usage)) return { kind: "restart" };
   const baselineContent = baseline.content ?? [];
   const currentContent = current.content ?? [];
   if (currentContent.length < baselineContent.length) return { kind: "restart" };

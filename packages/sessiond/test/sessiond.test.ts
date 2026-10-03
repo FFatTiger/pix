@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import type { RuntimeCapabilitySet, RuntimeSnapshot, SessiondMethodParams, SessiondRpcRequest, SessiondRuntimeAttachResult } from "@fffattiger/pix-protocol";
+import type { RuntimeCapabilitySet, RuntimeSnapshot, SessiondTurnStatusPush, SessiondMethodParams, SessiondRpcRequest, SessiondRuntimeAttachResult } from "@fffattiger/pix-protocol";
 import { PROTOCOL_VERSION } from "@fffattiger/pix-protocol";
 import { isRuntimeError, makeRuntimeError, type SessionCatalogPort, type SessionLocatorPort } from "@fffattiger/pix-runtime-core";
 import { SessiondApplication } from "../src/application.js";
@@ -27,6 +27,10 @@ const snapshot = (sessionId: string, cwd = "/workspace", projectRoot = cwd): Run
   capabilities: { capabilities: ["runtime.prompt", "runtime.abort", "runtime.bash", "runtime.bash.abort", "runtime.compact", "runtime.compact.abort", "runtime.queue"], version: 1 },
   streaming: { active: false, phase: "idle" },
 });
+const sideChatSnapshot = (sessionId: string): RuntimeSnapshot => {
+  const value = snapshot(sessionId);
+  return { ...value, state: { ...value.state, model: { provider: "fake", id: "fake-model" }, thinkingLevel: "medium" }, capabilities: { capabilities: [...value.capabilities.capabilities, "runtime.side_chat"], version: 1 } };
+};
 
 function harness(options: { worker?: ConstructorParameters<typeof FakeWorkerFactory>[0]; service?: ConstructorParameters<typeof SessiondService>[1] } = {}) {
   const locations = new Map<string, { sessionFile: string; exists: boolean }>();
@@ -102,6 +106,26 @@ test("duplicate commandId before and after result executes once", async () => {
   const c = await service.command("s", command);
   assert.deepEqual(a, b); assert.deepEqual(b, c);
   assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.command").length, 1);
+  await service.shutdown();
+});
+
+test("same commandId requires the complete canonical payload while pending and cached", async () => {
+  const { service, workers } = harness({ worker: { commandDelayMs: 20 } });
+  await service.activate("s");
+  const command = { type: "prompt", commandId: "payload-command", message: "alpha" } as const;
+  const first = service.command("s", command);
+  const identical = service.command("s", { message: "alpha", commandId: "payload-command", type: "prompt" });
+  const pendingConflict = await service.command("s", { ...command, message: "beta" });
+  assert.equal(pendingConflict.result.ok, false);
+  if (!pendingConflict.result.ok) assert.equal(pendingConflict.result.error.code, "command_rejected");
+  const [a, b] = await Promise.all([first, identical]);
+  assert.deepEqual(a, b);
+
+  const cachedConflict = await service.command("s", { ...command, message: "gamma" });
+  assert.equal(cachedConflict.result.ok, false);
+  if (!cachedConflict.result.ok) assert.equal(cachedConflict.result.error.code, "command_rejected");
+  assert.deepEqual(await service.command("s", command), a);
+  assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.command" && item.payload.command.commandId === command.commandId).length, 1);
   await service.shutdown();
 });
 
@@ -276,6 +300,37 @@ test("epoch mismatch and journal gap return authoritative full snapshots", async
   await service.shutdown();
 });
 
+test("subagent_delta is a transient passthrough that never mutates parent busy/authority", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const pushes: Array<{ type?: string; event?: { type?: string } }> = [];
+  const attached = service.attach({ sessionId: "s" }, (push) => { pushes.push(push); });
+  workers.workers[0]!.emitEvent({
+    type: "subagent_delta",
+    sessionId: "s",
+    childSessionId: "child-1",
+    partial: { role: "assistant", content: [{ type: "text", text: "Hel" }] },
+    done: false,
+  });
+  await wait();
+  const live = service.getSnapshot("s").state.subagents?.streams?.["child-1"]?.partial;
+  assert.equal(live?.role, "assistant");
+  assert.equal(live && live.role === "assistant" && live.content?.[0]?.type === "text" ? live.content[0].text : undefined, "Hel");
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "ready");
+  workers.workers[0]!.emitEvent({
+    type: "subagent_delta",
+    sessionId: "s",
+    childSessionId: "child-1",
+    partial: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
+    done: true,
+  });
+  await wait();
+  assert.equal(service.getSnapshot("s").state.subagents?.streams?.["child-1"], undefined);
+  assert.ok(pushes.some((push) => push.type === "event" && push.event?.type === "subagent_delta"));
+  attached.unsubscribe?.();
+  await service.shutdown();
+});
+
 test("snapshot projection recovers streaming queue extension bash compaction and written files", () => {
   const projection = new SnapshotProjection(snapshot("s"));
   projection.apply({ type: "message_start", sessionId: "s", streamId: "stream", messageId: "msg", message: { role: "assistant", model: "m", provider: "p" } });
@@ -411,6 +466,104 @@ test("runtime_capabilities_changed updates the projected capability set", async 
   workers.workers[0]!.emitEvent({ type: "runtime_capabilities_changed", sessionId: "s", capabilities: next });
   await wait();
   assert.deepEqual(service.getSnapshot("s").capabilities, next);
+  await service.shutdown();
+});
+
+test("side chat authority refreshes before ack, stays out of parent busy status, and blocks reclamation while active", async () => {
+  const { service, workers } = harness({ worker: { snapshot: sideChatSnapshot("s") } });
+  const activated = await service.activate("s");
+  const worker = workers.workers[0]!;
+  const snapshotsBefore = worker.sent.filter((item) => item.type === "worker.getSnapshot").length;
+
+  const started = await service.command("s", { type: "side_chat_start", commandId: "side-start" }, activated.epoch);
+  assert.equal(started.result.ok, true);
+  if (!started.result.ok || started.result.type !== "side_chat_start") throw new Error("side chat start failed");
+  const conversationId = started.result.conversationId;
+  assert.equal(service.getSnapshot("s").state.sideChat?.conversationId, conversationId);
+  assert.ok(worker.sent.filter((item) => item.type === "worker.getSnapshot").length > snapshotsBefore);
+
+  const sent = await service.command("s", { type: "side_chat_send", commandId: "side-send", conversationId, message: "question" }, activated.epoch);
+  assert.equal(sent.result.ok, true);
+  assert.equal(service.getSnapshot("s").state.sideChat?.status, "running");
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "ready", "side activity is not parent turn activity");
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, true, "active side chat blocks idle lifecycle operations");
+
+  const aborted = await service.interrupt("s", "side-abort", { type: "abort_side_chat", conversationId }, activated.epoch);
+  assert.equal(aborted.result.ok, true);
+  await wait();
+  assert.equal(service.getSnapshot("s").state.sideChat?.status, "idle");
+  assert.equal(service.hasBusyCwd("/cwd/s").busy, false);
+  await service.shutdown();
+});
+
+test("side chat command and interrupt dedup fingerprints exact targets and payloads across ledger phases", async () => {
+  const { service, workers } = harness({ worker: { snapshot: sideChatSnapshot("s"), commandDelayMs: 20 }, service: { commandTimeoutMs: 2_000 } });
+  const activated = await service.activate("s");
+  const worker = workers.workers[0]!;
+  const started = await service.command("s", { type: "side_chat_start", commandId: "side-fingerprint-start" }, activated.epoch);
+  if (!started.result.ok || started.result.type !== "side_chat_start") throw new Error("side chat start failed");
+  const conversationA = started.result.conversationId;
+
+  const send = { type: "side_chat_send", commandId: "side-fingerprint-send", conversationId: conversationA, message: "alpha" } as const;
+  const firstSend = service.command("s", send, activated.epoch);
+  const joinedSend = service.command("s", { message: "alpha", conversationId: conversationA, commandId: send.commandId, type: "side_chat_send" }, activated.epoch);
+  const textConflict = await service.command("s", { ...send, message: "beta" }, activated.epoch);
+  assert.equal(textConflict.result.ok, false);
+  if (!textConflict.result.ok) assert.equal(textConflict.result.error.code, "command_rejected");
+  assert.deepEqual(await firstSend, await joinedSend);
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command" && item.payload.command.commandId === send.commandId).length, 1);
+
+  await service.interrupt("s", "side-fingerprint-stop-run", { type: "abort_side_chat", conversationId: conversationA }, activated.epoch);
+  worker.setHoldPostCommandSnapshots(true);
+  const mode = { type: "side_chat_set_mode", commandId: "side-fingerprint-mode", conversationId: conversationA, mode: "edit" } as const;
+  const firstMode = service.command("s", mode, activated.epoch);
+  await worker.waitForHeldSnapshot();
+  const modeConflict = await service.command("s", { ...mode, mode: "read_only" }, activated.epoch);
+  assert.equal(modeConflict.result.ok, false);
+  if (!modeConflict.result.ok) assert.equal(modeConflict.result.error.code, "command_rejected");
+  const joinedMode = service.command("s", mode, activated.epoch);
+  worker.setHoldPostCommandSnapshots(false);
+  worker.releaseHeldSnapshots();
+  const [modeA, modeB] = await Promise.all([firstMode, joinedMode]);
+  assert.deepEqual(modeA, modeB);
+  assert.deepEqual(await service.command("s", mode, activated.epoch), modeA);
+  const cachedModeConflict = await service.command("s", { ...mode, mode: "read_only" }, activated.epoch);
+  assert.equal(cachedModeConflict.result.ok, false);
+  if (!cachedModeConflict.result.ok) assert.equal(cachedModeConflict.result.error.code, "command_rejected");
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command" && item.payload.command.commandId === mode.commandId).length, 1);
+
+  const abortA = await service.interrupt("s", "side-target-abort", { type: "abort_side_chat", conversationId: conversationA }, activated.epoch);
+  assert.equal(abortA.result.ok, true);
+  const reset = await service.command("s", { type: "side_chat_reset", commandId: "side-fingerprint-reset", conversationId: conversationA, mode: "refork" }, activated.epoch);
+  if (!reset.result.ok || reset.result.type !== "side_chat_reset") throw new Error("side chat reset failed");
+  const wrongTargetReplay = await service.interrupt("s", "side-target-abort", { type: "abort_side_chat", conversationId: reset.result.conversationId }, activated.epoch);
+  assert.equal(wrongTargetReplay.result.ok, false);
+  if (!wrongTargetReplay.result.ok) assert.equal(wrongTargetReplay.result.error.code, "command_rejected");
+  assert.equal(worker.sent.filter((item) => item.type === "worker.interrupt" && item.payload.commandId === "side-target-abort").length, 1);
+
+  const crossId = "cross-command-interrupt";
+  const crossCommand = await service.command("s", { type: "side_chat_set_mode", commandId: crossId, conversationId: reset.result.conversationId, mode: "edit" }, activated.epoch);
+  const crossInterrupt = await service.interrupt("s", crossId, { type: "abort_side_chat", conversationId: reset.result.conversationId }, activated.epoch);
+  assert.equal(crossCommand.result.ok, true);
+  assert.equal(crossInterrupt.result.ok, true);
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command" && item.payload.command.commandId === crossId).length, 1);
+  assert.equal(worker.sent.filter((item) => item.type === "worker.interrupt" && item.payload.commandId === crossId).length, 1);
+  await service.shutdown();
+});
+
+test("active side chat blocks whole-epoch rollover without becoming parent busy", async () => {
+  const { service, workers } = harness({ worker: { snapshot: sideChatSnapshot("s") }, service: { commandResultLimit: 2 } });
+  const activated = await service.activate("s");
+  const started = await service.command("s", { type: "side_chat_start", commandId: "side-cap-start" }, activated.epoch);
+  if (!started.result.ok || started.result.type !== "side_chat_start") throw new Error("side chat start failed");
+  await service.command("s", { type: "side_chat_send", commandId: "side-cap-send", conversationId: started.result.conversationId, message: "hold" }, activated.epoch);
+  assert.equal(service.getSnapshot("s").state.sideChat?.status, "running");
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "ready");
+
+  const blocked = await service.command("s", { type: "side_chat_set_mode", commandId: "side-cap-third", conversationId: started.result.conversationId, mode: "edit" }, activated.epoch);
+  assert.equal(blocked.result.ok, false);
+  if (!blocked.result.ok) assert.equal(blocked.result.error.code, "command_rejected");
+  assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.rotateEpoch").length, 0, "non-quiescent side activity is rejected before Worker rollover");
   await service.shutdown();
 });
 
@@ -2136,6 +2289,43 @@ test("read-only snapshot and catalog operations never activate a worker", async 
   assert.equal(workers.starts, 0);
 });
 
+test("legacy session pages hide parent-linked rows unless an exact parent filter is present", async () => {
+  const catalog: SessionCatalogPort = {
+    async listSessions() {
+      return [
+        { sessionId: "parent", cwd: "/p", projectRoot: "/p" },
+        { sessionId: "child-a", cwd: "/p", projectRoot: "/p", parentSessionId: "parent" },
+        { sessionId: "child-b", cwd: "/other", projectRoot: "/other", parentSessionId: "parent" },
+      ];
+    },
+    async readSession(sessionId) { return { sessionId, cwd: "/p", projectRoot: "/p", entries: [] }; },
+    async readSessionContext(sessionId) { return { sessionId, entries: [], pageInfo: { hasMore: false } }; },
+    async readSessionThinking(sessionId, entryId) { throw makeRuntimeError("not_found", `session not found: ${sessionId}/${entryId}`); },
+    async readSessionTree(sessionId) { return { sessionId, roots: [], entryCount: 0 }; },
+    async deleteSession() {},
+  };
+  const service = new SessiondService({
+    sessionLocator: { async locate(sessionId) { return { sessionId, sessionFile: `/s/${sessionId}.jsonl`, exists: true }; }, async resolveLeafId() { return "leaf"; } },
+    activationContext: { async resolve(_id, _loc, cwd) { return { cwd: cwd ?? "/p", projectRoot: cwd ?? "/p" }; } },
+    workerFactory: new FakeWorkerFactory(),
+    sessionCatalog: catalog,
+  }, { idleTimeoutMs: 0 });
+  try {
+    const unfiltered = await service.listSessionPage({ page: 1, pageSize: 50 });
+    assert.deepEqual(unfiltered.sessions.map((session) => session.sessionId), ["parent"]);
+    const children = await service.listSessionPage({ page: 1, pageSize: 50, parentSessionId: "parent" });
+    assert.deepEqual(children.sessions.map((session) => session.sessionId), ["child-a", "child-b"]);
+    const scoped = await service.listSessionPage({ page: 1, pageSize: 50, parentSessionId: "parent", cwd: "/p" });
+    assert.deepEqual(scoped.sessions.map((session) => session.sessionId), ["child-a"]);
+    await assert.rejects(
+      () => service.listSessionPage({ page: 1, pageSize: 50, parentSessionId: "missing" }),
+      (error: unknown) => error instanceof SessiondError && error.code === "not_found",
+    );
+  } finally {
+    await service.shutdown();
+  }
+});
+
 test("sessions.list forwards page/pageSize/cwd/projectRoot and sessions.context forwards leafId to the catalog", async () => {
   const listCalls: Array<Record<string, unknown>> = [];
   const contextCalls: Array<{ sessionId: string; leafId?: string }> = [];
@@ -2166,9 +2356,13 @@ test("sessions.list forwards page/pageSize/cwd/projectRoot and sessions.context 
   const app = new SessiondApplication(service);
   try {
     await app.handle("sessions.list", { page: 3, pageSize: 5, cwd: "/proj", projectRoot: "/root" });
+    await app.handle("sessions.list", { page: 1, pageSize: 50, parentSessionId: "parent-1" });
     const selectedContext = await app.handle("sessions.context", { sessionId: "s-1", leafId: "entry-7" });
     await app.handle("sessions.context", { sessionId: "s-2" });
-    assert.deepEqual(listCalls, [{ page: 3, pageSize: 5, cwd: "/proj", projectRoot: "/root" }]);
+    assert.deepEqual(listCalls, [
+      { page: 3, pageSize: 5, cwd: "/proj", projectRoot: "/root" },
+      { page: 1, pageSize: 50, parentSessionId: "parent-1" },
+    ]);
     assert.deepEqual((selectedContext as { settings?: unknown }).settings, {
       model: { provider: "openai", modelId: "gpt-5" },
       thinkingLevel: "high",
@@ -3232,4 +3426,61 @@ test("config idle timeout: RPC dispatch round-trips through SessiondApplication"
   assert.equal(set.idleTimeoutMs, 7 * 24 * 60 * 60_000);
   assert.equal(service.getIdleTimeoutMs(), 7 * 24 * 60 * 60_000);
   await service.shutdown();
+});
+
+
+test("RPC fast handled terminal buffered before response preserves authority and admission-before-status barrier", async (t) => {
+  if (process.platform === "win32") return t.skip("unix socket test");
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-turn-authority-"));
+  const endpoint = join(directory, "rpc.sock");
+  const { service, workers } = harness({ worker: { snapshot: snapshot("s"), turnCompletion: "handled", holdPostCommandSnapshots: true } });
+  const activated = await service.activate("s");
+  const attached = service.prepareAttach({ sessionId: "s" });
+  const revision = attached.result.lastEventId;
+  attached.close();
+  let authorityObserved!: () => void;
+  const observation = new Promise<void>((resolve) => { authorityObserved = resolve; });
+  const unsubscribe = service.subscribe("s", (push) => { if (push.type === "snapshot") authorityObserved(); });
+  const application = new SessiondApplication(service);
+  const prepare = application.submitTurn.bind(application);
+  application.submitTurn = async (params) => {
+    const prepared = await prepare(params);
+    await workers.workers[0]!.waitForHeldSnapshot();
+    workers.workers[0]!.releaseHeldSnapshots();
+    await observation;
+    return prepared;
+  };
+  const server = new SessiondRpcServer({ endpoint, secret: "a".repeat(40), handler: application });
+  await server.listen();
+  const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
+  let admissionReceived = false;
+  let terminalReceived!: (push: SessiondTurnStatusPush) => void;
+  let terminalFailed!: (error: Error) => void;
+  const terminal = new Promise<SessiondTurnStatusPush>((resolve, reject) => { terminalReceived = resolve; terminalFailed = reject; });
+  let subscription: Awaited<ReturnType<SessiondRpcClient["submitTurn"]>> | undefined;
+  try {
+    await assert.rejects(client.submitTurn({ sessionId: "s", prompt: " ", operationId: "invalid" }, () => { throw new Error("invalid input must not deliver a status"); }));
+    subscription = await client.submitTurn({ sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: revision, prompt: "fast", operationId: "rpc-fast" }, (push) => {
+      if (!admissionReceived) { terminalFailed(new Error("RPC status delivered before admission await")); return; }
+      terminalReceived(push);
+    });
+    admissionReceived = true;
+    const admission = subscription.response;
+    assert.equal(admission.status, "accepted");
+    if (admission.status !== "accepted") throw new Error("expected accepted");
+    assert.equal(admission.snapshot.state.isPromptRunning, true);
+    const push = await terminal;
+    assert.equal(push.status.state, "completed");
+    assert.equal(push.status.disposition, "handled");
+    assert.equal(push.authority?.epoch, activated.epoch);
+    assert.ok(push.authority && push.authority.lastEventId >= admission.revision);
+    assert.equal(push.authority.snapshot.state.isPromptRunning, false);
+    assert.deepEqual(push.authority.snapshot, service.getSnapshot("s"));
+  } finally {
+    subscription?.close();
+    unsubscribe();
+    await server.close();
+    await service.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

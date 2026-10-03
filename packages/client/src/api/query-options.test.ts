@@ -17,6 +17,8 @@ function invalidationHarness(body: unknown) {
 describe("query keys and options", () => {
   it("uses stable hierarchical keys including cwd and provider id", () => {
     expect(queryKeys.sessions.page(2, 50, "/repo")).toEqual(queryKeys.sessions.page(2, 50, "/repo"));
+    expect(queryKeys.sessions.page(1, 20, undefined, undefined, "parent-1")).toEqual(["pix", "sessions", "page", 1, 20, null, null, "parent-1"]);
+    expect(queryKeys.sessions.page(1, 20, undefined, undefined, "parent-1")).not.toEqual(queryKeys.sessions.page(1, 20));
     expect(queryKeys.projects.page(1, 10)).not.toEqual(queryKeys.projects.page(2, 10));
     expect(queryKeys.sessions.detail("s").slice(0, 4)).toEqual(queryKeys.sessions.byId("s"));
     expect(queryKeys.files.read("/a")).not.toEqual(queryKeys.files.read("/b"));
@@ -78,17 +80,25 @@ describe("query keys and options", () => {
   });
 
   it("session/project page options are independent and issue one numbered request", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(json({ sessions: [session], page: 1, pageSize: 50, total: 1, totalPages: 1, catalogRevision: 4 }));
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(json({ sessions: [session], page: 1, pageSize: 50, total: 1, totalPages: 1, catalogRevision: 4 })));
     const http = createHttpClient({ fetchImpl: fetchImpl as unknown as typeof fetch });
     const options = createQueryOptions(http);
 
     const byCwd = options.sessions.page(2, 50, { cwd: "/repo" });
     expect(byCwd.staleTime).toBe(30_000);
-    expect(byCwd.queryKey).toEqual(["pix", "sessions", "page", 2, 50, "/repo", null]);
+    expect(byCwd.queryKey).toEqual(["pix", "sessions", "page", 2, 50, "/repo", null, null]);
     const signal = new AbortController().signal;
     await byCwd.queryFn!({ signal } as never);
     expect(fetchImpl).toHaveBeenCalledWith(
       "/v1/sessions?page=2&pageSize=50&cwd=%2Frepo",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+
+    const byParent = options.sessions.page(1, 20, { parentSessionId: "parent-1" });
+    expect(byParent.queryKey).toEqual(["pix", "sessions", "page", 1, 20, null, null, "parent-1"]);
+    await byParent.queryFn!({ signal } as never);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/sessions?page=1&pageSize=20&parentSessionId=parent-1",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
@@ -245,7 +255,7 @@ describe("table-driven mutation invalidation", () => {
     }
   });
 
-  it("retains gate/cwd invalidation and exposes only the models.json + trust catalog mutations", async () => {
+  it("retains gate/cwd invalidation and exposes only mounted configuration mutations", async () => {
     const { options, invalidate } = invalidationHarness({ ok: true });
     await options.gate.login().onSuccess();
     expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
@@ -259,14 +269,16 @@ describe("table-driven mutation invalidation", () => {
       { queryKey: queryKeys.cwd.all },
     ]);
 
-    // Models exposes only the global models.json save; skills/plugins/auth
-    // remain read-only. Trust remains its independent single-method mutation.
+    // Models exposes only the global models.json mutations; skills/plugins/auth
+    // remain read-only. Trust and mounted settings keep their narrow mutations
+    // (sessionIdleTimeout + the three settings.json-backed writers: built-ins,
+    // raw text, and the structured global tool selection).
     expect(Object.keys(options.models)).toEqual(["saveConfig", "discover"]);
     expect(options).not.toHaveProperty("skills");
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");
     expect(Object.keys(options.trust)).toEqual(["setTrusted"]);
-    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveConfigFile"]);
+    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveConfigFile", "saveTools"]);
   });
 
   it("invalidates the session idle-timeout settings key after a successful write", async () => {

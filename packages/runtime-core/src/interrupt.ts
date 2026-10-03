@@ -11,6 +11,7 @@ export const RUNTIME_INTERRUPT_TYPES = [
   "abort_compaction",
   "abort_bash",
   "clear_queue",
+  "abort_side_chat",
 ] as const;
 
 export type RuntimeInterruptType = (typeof RUNTIME_INTERRUPT_TYPES)[number];
@@ -19,7 +20,8 @@ export type RuntimeInterrupt =
   | { type: "abort" }
   | { type: "abort_compaction" }
   | { type: "abort_bash" }
-  | { type: "clear_queue" };
+  | { type: "clear_queue" }
+  | { type: "abort_side_chat"; conversationId: string };
 
 export type RuntimeInterruptResult =
   | { ok: true; type: RuntimeInterruptType }

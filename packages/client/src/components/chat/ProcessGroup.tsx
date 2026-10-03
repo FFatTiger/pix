@@ -282,7 +282,7 @@ export function buildProcessSteps(
       const { displayLabel } = enrichedToolLabel(block, ts);
       steps.push({
         kind: "tool",
-        id: block.id,
+        id: block.toolCallId,
         label: displayLabel,
         block,
         leadBlocks: [],
@@ -426,7 +426,7 @@ function mergeConsecutiveToolSteps(
 
     result.push({
       kind: "toolGroup",
-      id: blocks.map((b) => b.id).join("+"),
+      id: `toolGroup:${blocks[0]!.toolCallId}`,
       label,
       blocks,
       leadBlocks: group.map((s) => s.leadBlocks),
@@ -765,6 +765,7 @@ export function ProcessGroup({
   const shellRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const wasStreamingRef = useRef(false);
+  const userToggledStepIdsRef = useRef(new Set<string>());
   const hasUserSelectedTabRef = useRef(false);
   const userScrolledUpRef = useRef(false);
   const ignoreProgrammaticScrollUntilRef = useRef(0);
@@ -832,6 +833,7 @@ export function ProcessGroup({
     if (!wasStreamingRef.current) return;
     userScrolledUpRef.current = false;
     navUserScrolledUpRef.current = false;
+    userToggledStepIdsRef.current.clear();
     setStepStates({});
     const timer = window.setTimeout(() => setAreaExpanded(false), 300);
     wasStreamingRef.current = false;
@@ -847,13 +849,24 @@ export function ProcessGroup({
     });
     if (isStreaming) {
       // `steps` is rebuilt from render-time block arrays, so its reference may
-      // change even while the latest step is unchanged. Preserve the current
-      // "only the latest step is open" behavior without scheduling a render
-      // when that state is already in place.
+      // change even while the latest step is unchanged. Keep manual open/close
+      // overrides; a new latest step still defaults open unless the user toggled it.
       setStepStates((current) => {
-        const isLatestOnlyOpen =
-          current[latest.id] === true && Object.keys(current).length === 1;
-        return isLatestOnlyOpen ? current : { [latest.id]: true };
+        const toggled = userToggledStepIdsRef.current;
+        const next: Record<string, boolean> = {};
+        for (const step of steps) {
+          if (toggled.has(step.id)) {
+            if (current[step.id]) next[step.id] = true;
+          } else if (step.id === latest.id) {
+            next[step.id] = true;
+          }
+        }
+        const nextIds = Object.keys(next);
+        const currentIds = Object.keys(current);
+        const unchanged =
+          nextIds.length === currentIds.length &&
+          nextIds.every((id) => current[id] === true);
+        return unchanged ? current : next;
       });
     }
   }, [isStreaming, steps]);
@@ -1027,7 +1040,11 @@ export function ProcessGroup({
                         {index < steps.length - 1 && <span className="absolute bottom-[-9px] left-[7px] top-[22px] border-l border-border" />}
                         <button
                           type="button"
-                          onClick={() => hasContent && setStepStates((state) => ({ ...state, [step.id]: !open }))}
+                          onClick={() => {
+                            if (!hasContent) return;
+                            userToggledStepIdsRef.current.add(step.id);
+                            setStepStates((state) => ({ ...state, [step.id]: !open }));
+                          }}
                           className={`flex w-full min-w-0 items-center gap-1.5 text-left text-sm leading-relaxed transition-colors ${
                             hasContent ? "cursor-pointer" : "cursor-default"
                           } ${isError ? "text-red-400 hover:text-red-300" : "text-text-dim hover:text-text-muted"}`}

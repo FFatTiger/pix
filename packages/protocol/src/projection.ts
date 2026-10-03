@@ -24,7 +24,10 @@ import type {
   StreamingAgentMessage,
   StreamingMessageDelta,
 } from "./messages.js";
-import type { RuntimeSnapshot, RuntimeState } from "./snapshot.js";
+import { applySideChatDelta } from "./side-chat.js";
+import { MAX_SUBAGENT_TASKS } from "./runtime-projections.js";
+import { MAX_EXTENSION_NOTIFICATIONS } from "./common.js";
+import type { RuntimeSnapshot, RuntimeState, SubagentRuntimeProjection } from "./snapshot.js";
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -86,6 +89,37 @@ export function applyStreamingDelta(
  * Throws on session mismatch. Internal helper; callers should use
  * {@link reduceRuntimeEventData} for the pure clone-and-return form.
  */
+function applySubagentDelta(
+  current: SubagentRuntimeProjection | undefined,
+  event: Extract<RuntimeEventData, { type: "subagent_delta" }>,
+): SubagentRuntimeProjection {
+  const tasks = current?.tasks ?? [];
+  const revision = current?.revision ?? 0;
+  const streams = { ...(current?.streams ?? {}) };
+  if (event.done) {
+    delete streams[event.childSessionId];
+  } else {
+    streams[event.childSessionId] = {
+      partial: clone(event.partial),
+      updatedAt: event.ts ?? Date.now(),
+    };
+    const ids = Object.keys(streams);
+    if (ids.length > MAX_SUBAGENT_TASKS) {
+      let oldestId = ids[0]!;
+      let oldestAt = streams[oldestId]!.updatedAt;
+      for (const id of ids) {
+        const at = streams[id]!.updatedAt;
+        if (at < oldestAt || (at === oldestAt && id < oldestId)) {
+          oldestId = id;
+          oldestAt = at;
+        }
+      }
+      delete streams[oldestId];
+    }
+  }
+  return { revision, tasks, streams };
+}
+
 function applyEventToSnapshot(snapshot: RuntimeSnapshot, event: RuntimeEventData): void {
   const state: RuntimeState = snapshot.state;
   switch (event.type) {
@@ -133,8 +167,34 @@ function applyEventToSnapshot(snapshot: RuntimeSnapshot, event: RuntimeEventData
       break;
     }
     case "extension_statuses": state.extensionStatuses = clone(event.statuses); break;
+    case "extension_notification": {
+      const items = [...(state.extensionNotifications ?? []), {
+        level: event.level,
+        message: event.message,
+        at: event.at,
+      }];
+      // Bounded most-recent ring; oldest dropped. Mirrors runtime-core
+      // MAX_EXTENSION_NOTIFICATIONS (parity pinned by cross-package tests).
+      state.extensionNotifications = items.slice(-MAX_EXTENSION_NOTIFICATIONS);
+      break;
+    }
     case "extension_widgets": state.extensionWidgets = clone(event.widgets); break;
     case "runtime_capabilities_changed": snapshot.capabilities = clone(event.capabilities); break;
+    case "built_ins_changed": state.builtIns = clone(event.builtIns); break;
+    case "subagents_changed": {
+      const previousStreams = state.subagents?.streams;
+      state.subagents = previousStreams === undefined
+        ? clone(event.subagents)
+        : { ...clone(event.subagents), streams: clone(previousStreams) };
+      break;
+    }
+    case "todo_changed": state.todo = clone(event.todo); break;
+    case "side_chat_changed": state.sideChat = clone(event.sideChat); break;
+    case "side_chat_delta": state.sideChat = applySideChatDelta(state.sideChat, event.delta); break;
+    case "subagent_delta": {
+      state.subagents = applySubagentDelta(state.subagents, event);
+      break;
+    }
     case "session_title": state.sessionName = event.name; break;
     case "bash_update": {
       // bash_update.output is a per-event DELTA chunk (see Protocol events.ts

@@ -108,6 +108,16 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
         type: "generate_session_title",
         ...(command.model === undefined ? {} : { model: { provider: command.model.provider, modelId: command.model.modelId } }),
       };
+    case "side_chat_start":
+      return { type: "side_chat_start" };
+    case "side_chat_send":
+      return { type: "side_chat_send", conversationId: command.conversationId, message: command.message };
+    case "side_chat_reset":
+      return { type: "side_chat_reset", conversationId: command.conversationId, mode: command.mode };
+    case "side_chat_set_mode":
+      return { type: "side_chat_set_mode", conversationId: command.conversationId, mode: command.mode };
+    case "side_chat_overlap_response":
+      return { type: "side_chat_overlap_response", conversationId: command.conversationId, requestId: command.requestId, proceed: command.proceed };
     case "extension_ui_response": {
       // Collapse method/responseKind into the Core value|confirmed|cancelled
       // form, PRESERVING the correlated method (the adapter validates the
@@ -267,8 +277,25 @@ export function mapCoreResultToProtocol(result: CoreRuntimeCommandResult) {
       // sessiond publishes the §51 revisioned title overlay from it (the
       // single source of truth).
       return { ok: true as const, type: "generate_session_title" as const, title: result.title };
+    case "side_chat_start":
+      return { ok: true as const, type: "side_chat_start" as const, conversationId: result.conversationId };
+    case "side_chat_send":
+      return { ok: true as const, type: "side_chat_send" as const, runId: result.runId };
+    case "side_chat_reset":
+      return { ok: true as const, type: "side_chat_reset" as const, conversationId: result.conversationId };
+    case "steer":
+    case "follow_up":
+      // Pi 1.0 queued-input receipt (required field on these results).
+      return { ok: true as const, type: result.type, disposition: result.disposition };
+    case "prompt":
+      // Pi 1.0 input receipt when the runtime reports one.
+      return {
+        ok: true as const,
+        type: "prompt" as const,
+        ...(result.disposition === undefined ? {} : { disposition: result.disposition }),
+      };
     default:
-      // Bare ack commands (prompt, abort, steer, …) carry no payload.
+      // Bare ack commands (abort, …) carry no payload.
       return { ok: true as const, type: result.type };
   }
 }

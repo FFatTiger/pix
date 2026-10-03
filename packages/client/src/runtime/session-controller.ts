@@ -63,6 +63,7 @@
  *  - Concurrent create is rejected as busy (both promises settle) (MEDIUM-6).
  */
 import {
+  MAX_SIDE_CHAT_MESSAGE_CHARS,
   reduceRuntimeEventData,
   RUNTIME_EPOCH_ROLLOVER_FEATURE,
   RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
@@ -84,6 +85,7 @@ import {
   type RuntimeInterrupt,
   type RuntimeReadOutcome,
   type RuntimeReadType,
+  type SideChatMode,
   type SessionEntry,
   type RuntimeSnapshot,
   type RuntimeState,
@@ -326,6 +328,9 @@ const INITIAL_VIEW: ControllerView = {
  */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type RuntimeCommandWithoutId = DistributiveOmit<RuntimeCommand, "commandId">;
+type SideChatCommandWithoutId = Extract<RuntimeCommandWithoutId, {
+  type: "side_chat_start" | "side_chat_send" | "side_chat_reset" | "side_chat_set_mode" | "side_chat_overlap_response";
+}>;
 
 /** Interactive extension request methods — the only ones that produce a response. */
 const INTERACTIVE_EXTENSION_METHODS: ReadonlySet<string> = new Set([
@@ -403,6 +408,8 @@ export interface SessionControllerOptions {
   readonly stopAckTimeoutMs?: number;
   /** Bounded wait for the detach ack response (single-flight detach envelope). */
   readonly detachAckTimeoutMs?: number;
+  /** Bounded lifetime for a side-chat command admission. */
+  readonly sideChatCommandTimeoutMs?: number;
 }
 
 /** Per-attempt transport ownership for a logical attach. */
@@ -429,6 +436,19 @@ interface CommandPending {
   attempt: RuntimeAttemptHandle | null;
   readonly sessionId: string;
   readonly command: WsClientMessage;
+  resolve(value: unknown): void;
+  reject(error: unknown): void;
+}
+
+/** Independent bounded command lane for the five side-chat mutations. */
+interface SideChatCommandPending {
+  readonly commandId: string;
+  attempt: RuntimeAttemptHandle | null;
+  readonly sessionId: string;
+  readonly command: WsClientMessage;
+  readonly type: "side_chat_start" | "side_chat_send" | "side_chat_reset" | "side_chat_set_mode" | "side_chat_overlap_response";
+  readonly promise: Promise<unknown>;
+  timer: unknown | null;
   resolve(value: unknown): void;
   reject(error: unknown): void;
 }
@@ -572,7 +592,8 @@ interface ReadPending {
 
 /**
  * Phase 3 atomic turn delivery state (see {@link TurnPending}):
- *  - `in_flight`: the submit frame is on the wire, admission not yet received;
+ *  - `in_flight`: the logical turn is active (waiting for sendability or on the
+ *    wire) and admission has not yet been received;
  *  - `accepted`: the authority admitted the turn (settings + prompt atomically);
  *  - `not_delivered`: the authority definitively did NOT admit the turn — the
  *    optimistic bubble is removed and the draft restored;
@@ -599,12 +620,18 @@ interface TurnPending {
    * expectedRevision; reconnect resends the current request unchanged. */
   request: SubmitTurnRequest;
   /** Authority source of the original admission fence. */
-  readonly fenceSource: SubmitTurnFenceSource;
+  fenceSource: SubmitTurnFenceSource;
   /** Bounded authority-fence repair attempts for this logical turn. */
   revisionRepairCount: RevisionRepairCount;
+  /** Bounded stale-attached-fence drop (idle-lost observation) — independent of revisionRepairCount. */
+  staleAttachedRepairCount: RevisionRepairCount;
   /** Exact fence identity submitted on the current wire attempt. */
   submittedExpectedEpoch: string | null;
   submittedExpectedRevision: number | null;
+  /** Monotonic send-attempt generation for this logical pending; late waiters must match. */
+  dispatchRevision: number;
+  /** Transport generation of the current wire attempt, or null until this logical operation has touched the wire since the last proven not_delivered. */
+  wireGeneration: number | null;
   readonly optimisticId: string;
   /** Optimistic bubble + running-overlay owner (single-flight prompt transaction). */
   readonly tx: PromptTransaction;
@@ -628,6 +655,7 @@ export interface ControllerEvictionProtection {
   readonly attached: boolean;
   readonly attachIntent: boolean;
   readonly pendingCommand: boolean;
+  readonly pendingSideChatCommand: boolean;
   readonly pendingRead: boolean;
   readonly pendingInterrupt: boolean;
   readonly pendingQueuedTurn: boolean;
@@ -651,6 +679,9 @@ export interface TurnTerminalInfo {
   readonly operationId: string;
   readonly turnId: string;
   readonly state: "completed" | "failed";
+  /** Pi 1.0 backend receipt: "handled" consumed the input (no assistant
+   * reply / user entry owed), "queued" parked it, "started" ran a turn. */
+  readonly disposition?: "started" | "handled" | "queued";
   readonly error?: ProtocolError;
   readonly userEntryId?: string;
 }
@@ -660,6 +691,9 @@ const DEFAULT_ABORT_TIMEOUT_MS = 5_000;
 const DEFAULT_STOP_SEND_TIMEOUT_MS = 10_000;
 const DEFAULT_STOP_ACK_TIMEOUT_MS = 10_000;
 const DEFAULT_DETACH_ACK_TIMEOUT_MS = 10_000;
+const DEFAULT_SIDE_CHAT_COMMAND_TIMEOUT_MS = 10_000;
+/** Bounded wait for shared transport sendability before a submit-turn envelope. */
+const SUBMIT_SEND_TIMEOUT_MS = 10_000;
 /** Browser-side bound below Host/sessiond limits; read floods fail closed locally. */
 const MAX_PENDING_READS = 16;
 export class SessionController implements RuntimeControllerPort {
@@ -672,6 +706,7 @@ export class SessionController implements RuntimeControllerPort {
   private readonly stopSendTimeoutMs: number;
   private readonly stopAckTimeoutMs: number;
   private readonly detachAckTimeoutMs: number;
+  private readonly sideChatCommandTimeoutMs: number;
   private readonly requestObservation: (sessionId: string, context: ObservationRequestContext) => Promise<void>;
   private readonly capturePresentationProvenance: (() => PresentationProvenance | null) | null;
   private readonly consumeCreatedSubmitProvenance: (() => PresentationProvenance | null) | null;
@@ -772,6 +807,8 @@ export class SessionController implements RuntimeControllerPort {
 
   // logical pending operations (transport attempts live in RuntimeConnection)
   private pendingCommand: CommandPending | null = null;
+  /** Side chat remains operable while the main turn/ordinary command lane is occupied. */
+  private pendingSideChatCommand: SideChatCommandPending | null = null;
   /** D2-P4 dual-slot: at most ONE queued turn (steer/follow_up) in flight, independent of prompt. */
   private pendingQueuedTurn: QueuedTurnPending | null = null;
   /** D2-P8 extension-UI reply slot: at most ONE final response in flight, independent of prompt + queued turn. */
@@ -812,6 +849,7 @@ export class SessionController implements RuntimeControllerPort {
     this.stopSendTimeoutMs = options.stopSendTimeoutMs ?? DEFAULT_STOP_SEND_TIMEOUT_MS;
     this.stopAckTimeoutMs = options.stopAckTimeoutMs ?? DEFAULT_STOP_ACK_TIMEOUT_MS;
     this.detachAckTimeoutMs = options.detachAckTimeoutMs ?? DEFAULT_DETACH_ACK_TIMEOUT_MS;
+    this.sideChatCommandTimeoutMs = options.sideChatCommandTimeoutMs ?? DEFAULT_SIDE_CHAT_COMMAND_TIMEOUT_MS;
     this.requestObservation = options.requestObservation ?? ((_sessionId: string, _context: ObservationRequestContext) => Promise.reject({ code: "unavailable", message: "no attachment coordinator", retryable: false } satisfies ProtocolError));
     this.capturePresentationProvenance = options.capturePresentationProvenance ?? null;
     this.consumeCreatedSubmitProvenance = options.consumeCreatedSubmitProvenance ?? null;
@@ -1046,6 +1084,7 @@ export class SessionController implements RuntimeControllerPort {
       }
       // MEDIUM-4: settle the in-flight prompt promise exactly once.
       this.settlePendingCommand({ code: "interrupted", message: "session stopped", retryable: false });
+      this.settlePendingSideChatCommand({ code: "interrupted", message: "session stopped", retryable: false });
       // Phase 2B: pending reads are invalidated by stop — settle each exactly once.
       this.settleAllPendingReads({ code: "interrupted", message: "session stopped", retryable: false });
       // Phase 3: a pending turn is invalidated by stop — settle exactly once.
@@ -1118,6 +1157,8 @@ export class SessionController implements RuntimeControllerPort {
         this.optimisticPromptRunning = false;
         this.optimisticPromptSessionId = null;
       }
+      this.settleExtensionUiOnCapabilityLoss();
+      this.settleSideChatOnCapabilityLoss();
       this.notify();
       return this.snapshot;
     });
@@ -1249,11 +1290,28 @@ export class SessionController implements RuntimeControllerPort {
       : { commandId, type: "follow_up", message: trimmed, ...imagePayload };
     const sessionId = this.sessionId;
     const wsMessage: WsClientMessage = { type: "command", id: this.id(), payload: this.withEpoch({ sessionId, command }) };
-    return this.withOptimisticGuard(optimisticId, new Promise((resolve, reject) => {
+    const dispatch = new Promise((resolve, reject) => {
       const pending: QueuedTurnPending = { commandId: command.commandId, attempt: null, sessionId, command: wsMessage, type, resolve, reject };
       this.pendingQueuedTurn = pending;
       this.notify();
       this.sendQueuedTurnAttempt(pending);
+    });
+    return this.withOptimisticGuard(optimisticId, dispatch.then((value) => {
+      // Pi 1.0 receipt: "handled" means an extension input handler consumed
+      // the message — nothing was queued and no user entry will ever commit,
+      // so THIS operation's optimistic bubble must go. "queued" keeps it (the
+      // message commits as a user message_end when the queue drains).
+      const disposition = value !== null && typeof value === "object"
+        && (value as { result?: { ok?: unknown; disposition?: unknown } }).result?.ok === true
+        ? (value as { result: { disposition?: unknown } }).result.disposition
+        : undefined;
+      if (disposition === "handled") {
+        this.optimisticUserEntries = this.optimisticUserEntries.filter(
+          (candidate) => candidate.entry.entryId !== optimisticId,
+        );
+        this.notify();
+      }
+      return value;
     }));
   }
 
@@ -1419,7 +1477,19 @@ export class SessionController implements RuntimeControllerPort {
       // Accepted is transport admission, not authoritative running state.
       // Keep the UI-first running marker until a real event takes ownership so
       // the sidebar/tab/project indicators never blink off between ack/start.
-      (value) => { this.settlePromptTransaction(tx, { removeBubble: false, clearRunning: false }); return value; },
+      // Exception — Pi 1.0 explicit "handled" receipt: the extension command
+      // consumed the input (no assistant reply, no user entry), so this
+      // transaction's own bubble is removed by receipt, not by inference.
+      (value) => {
+        const disposition = value !== null && typeof value === "object"
+          && (value as { result?: { ok?: unknown; disposition?: unknown } }).result?.ok === true
+          ? (value as { result: { disposition?: unknown } }).result.disposition
+          : undefined;
+        this.settlePromptTransaction(tx, disposition === "handled"
+          ? { removeBubble: true }
+          : { removeBubble: false, clearRunning: false });
+        return value;
+      },
       (cause: unknown) => {
         const retryable = cause !== null && typeof cause === "object"
           && (cause as { retryable?: unknown }).retryable === true;
@@ -1637,9 +1707,7 @@ export class SessionController implements RuntimeControllerPort {
     const expectedRevision = fence.revision;
     const tx = this.beginPromptTransaction(sessionId, input.prompt);
     if (!tx) return Promise.reject(this.promptBusyError());
-    // The submit frame is on the wire the moment this resolves — possible
-    // delivery, so the transaction is already past the activation phase.
-    tx.phase = "dispatching";
+    // Keep `activating` until sendSubmitTurn actually touches the wire.
     const overrides = input.activationOverrides;
     const activationOverrides = overrides === undefined || (overrides.model === undefined && overrides.thinkingLevel === undefined)
       ? undefined
@@ -1665,8 +1733,11 @@ export class SessionController implements RuntimeControllerPort {
         provenance,
         fenceSource: fence.source,
         revisionRepairCount: 0,
+        staleAttachedRepairCount: 0,
         submittedExpectedEpoch: expectedEpoch ?? null,
         submittedExpectedRevision: expectedRevision ?? null,
+        dispatchRevision: 0,
+        wireGeneration: null,
         optimisticId: tx.optimisticId,
         tx,
         userEntryId: null,
@@ -2312,11 +2383,14 @@ export class SessionController implements RuntimeControllerPort {
    * runtime. Names are strictly trimmed and de-duplicated (order preserved);
    * an all-blank name is `invalid_input` before any command is sent (consistent
    * with the Protocol `set_tools` schema which requires each name to contain a
-   * non-whitespace character). Resolves only once sessiond's authoritative
-   * snapshot refresh has converged `state.tools` and the related systemPrompt;
-   * the store makes no optimistic writes.
+   * non-whitespace character). `options.includeExtensionTools` passes the
+   * existing wire option through verbatim (default true; the global tools
+   * preference applier uses false so the exact list is applied as-is). Resolves
+   * only once sessiond's authoritative snapshot refresh has converged
+   * `state.tools` and the related systemPrompt; the store makes no optimistic
+   * writes.
    */
-  setTools(names: readonly string[]): Promise<void> {
+  setTools(names: readonly string[], options?: { includeExtensionTools?: boolean }): Promise<void> {
     const trimmed: string[] = [];
     const seen = new Set<string>();
     for (const raw of names) {
@@ -2330,7 +2404,11 @@ export class SessionController implements RuntimeControllerPort {
       }
       if (!seen.has(name)) { seen.add(name); trimmed.push(name); }
     }
-    return this.runTypedCommand({ type: "set_tools", toolNames: trimmed }, (outcome) => {
+    return this.runTypedCommand({
+      type: "set_tools",
+      toolNames: trimmed,
+      ...(options?.includeExtensionTools === undefined ? {} : { includeExtensionTools: options.includeExtensionTools }),
+    }, (outcome) => {
       if (outcome.type !== "set_tools") throw new Error("unexpected set_tools result");
     });
   }
@@ -2345,6 +2423,61 @@ export class SessionController implements RuntimeControllerPort {
     return this.runTypedCommand({ type: "reload" }, (outcome) => {
       if (outcome.type !== "reload") throw new Error("unexpected reload result");
     });
+  }
+
+  // --- side-chat control -------------------------------------------------
+
+  /** Idempotently initialize the ephemeral side conversation for this exact runtime. */
+  sideChatStart(): Promise<string> {
+    if (!this.sideChatAvailable()) return Promise.reject(this.sideChatUnavailableError());
+    const existing = this.snapshot?.state.sideChat;
+    if (existing) return Promise.resolve(existing.conversationId);
+    return this.runSideChatCommand({ type: "side_chat_start" }, (outcome) => {
+      if (outcome.type !== "side_chat_start") throw new Error("unexpected side_chat_start result");
+      return outcome.conversationId;
+    });
+  }
+
+  /** Admit one side-chat message without occupying or mutating the main turn lane. */
+  sideChatSend(conversationId: string, message: string): Promise<string> {
+    const trimmed = message.trim();
+    if (trimmed.length === 0 || trimmed.length > MAX_SIDE_CHAT_MESSAGE_CHARS) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: trimmed.length === 0 ? "side chat message cannot be empty" : "side chat message is too long",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    return this.runSideChatCommand({ type: "side_chat_send", conversationId, message: trimmed }, (outcome) => {
+      if (outcome.type !== "side_chat_send") throw new Error("unexpected side_chat_send result");
+      return outcome.runId;
+    });
+  }
+
+  sideChatReset(conversationId: string, mode: "refork" | "clear"): Promise<string> {
+    return this.runSideChatCommand({ type: "side_chat_reset", conversationId, mode }, (outcome) => {
+      if (outcome.type !== "side_chat_reset") throw new Error("unexpected side_chat_reset result");
+      return outcome.conversationId;
+    });
+  }
+
+  sideChatSetMode(conversationId: string, mode: SideChatMode): Promise<void> {
+    return this.runSideChatCommand({ type: "side_chat_set_mode", conversationId, mode }, (outcome) => {
+      if (outcome.type !== "side_chat_set_mode") throw new Error("unexpected side_chat_set_mode result");
+    });
+  }
+
+  sideChatRespondOverlap(conversationId: string, requestId: string, proceed: boolean): Promise<void> {
+    return this.runSideChatCommand({ type: "side_chat_overlap_response", conversationId, requestId, proceed }, (outcome) => {
+      if (outcome.type !== "side_chat_overlap_response") throw new Error("unexpected side_chat_overlap_response result");
+    });
+  }
+
+  abortSideChat(conversationId: string): Promise<unknown> {
+    if (!this.sideChatAvailable()) {
+      return Promise.reject(this.sideChatUnavailableError());
+    }
+    return this.sendInterrupt({ type: "abort_side_chat", conversationId });
   }
 
   // --- D2-P7 compact runtime control --------------------------------
@@ -2449,6 +2582,70 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /**
+   * Send a typed side-chat mutation through its dedicated bounded lane. It is
+   * independent of the main command/turn slots and coalesces repeated starts.
+   */
+  private runSideChatCommand<T>(
+    command: SideChatCommandWithoutId,
+    extract: (outcome: Extract<RuntimeCommandOutcome, { ok: true }>) => T,
+  ): Promise<T> {
+    if (!this.sideChatAvailable()) {
+      return Promise.reject(this.sideChatUnavailableError());
+    }
+    const active = this.pendingSideChatCommand;
+    if (active !== null) {
+      if (active.type === "side_chat_start" && command.type === "side_chat_start") {
+        return active.promise.then((value) => this.extractSideChatResult(value, extract));
+      }
+      return Promise.reject({
+        code: "session_busy",
+        message: "a side chat command is already in progress",
+        retryable: false,
+      } satisfies ProtocolError);
+    }
+    const commandId = this.id();
+    const runtimeCommand = { ...command, commandId } as RuntimeCommand;
+    const sessionId = this.sessionId;
+    const message: WsClientMessage = { type: "command", id: this.id(), payload: this.withEpoch({ sessionId, command: runtimeCommand }) };
+    let resolve!: (value: unknown) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<unknown>((res, rej) => { resolve = res; reject = rej; });
+    const pending: SideChatCommandPending = {
+      commandId,
+      attempt: null,
+      sessionId,
+      command: message,
+      type: command.type,
+      promise,
+      timer: null,
+      resolve,
+      reject,
+    };
+    this.pendingSideChatCommand = pending;
+    pending.timer = this.setTimeoutFn(() => {
+      if (this.pendingSideChatCommand !== pending) return;
+      this.pendingSideChatCommand = null;
+      pending.attempt?.cancel();
+      pending.attempt = null;
+      pending.timer = null;
+      pending.reject({ code: "timeout", message: "side chat command timed out", retryable: true } satisfies ProtocolError);
+      this.notify();
+    }, this.sideChatCommandTimeoutMs);
+    this.sendSideChatCommandAttempt(pending);
+    this.notify();
+    return promise.then((value) => this.extractSideChatResult(value, extract));
+  }
+
+  private extractSideChatResult<T>(
+    value: unknown,
+    extract: (outcome: Extract<RuntimeCommandOutcome, { ok: true }>) => T,
+  ): T {
+    const correlated = value as CorrelatedRuntimeCommandResult;
+    if (!correlated.result.ok) throw correlated.result.error;
+    return extract(correlated.result);
+  }
+
+  /**
    * Send a typed command through the single-inflight {@link sendCommand} path
    * with an internally-minted commandId, then unwrap the correlated result.
    * `extract` runs only on an `ok:true` outcome (the error path rejects).
@@ -2536,7 +2733,11 @@ export class SessionController implements RuntimeControllerPort {
   private sendInterrupt(interrupt: RuntimeInterrupt): Promise<unknown> {
     if (!this.sessionId) return Promise.reject(this.notAttachedError());
     if (this.pendingInterrupt) {
-      if (this.pendingInterrupt.message.payload.interrupt.type === interrupt.type && this.pendingInterruptPromise) {
+      const pendingInterrupt = this.pendingInterrupt.message.payload.interrupt;
+      const sameType = pendingInterrupt.type === interrupt.type;
+      const sameTarget = pendingInterrupt.type !== "abort_side_chat"
+        || (interrupt.type === "abort_side_chat" && pendingInterrupt.conversationId === interrupt.conversationId);
+      if (sameType && sameTarget && this.pendingInterruptPromise) {
         return this.pendingInterruptPromise;
       }
       return Promise.reject({
@@ -2591,7 +2792,7 @@ export class SessionController implements RuntimeControllerPort {
     const attachIntent = this.intendedSession !== null || this.attach !== null || this.attachAttempt !== null;
     const explicitActivation = this.explicitActivationPending;
     const quiescent = !this.attached && !attachIntent
-      && this.pendingCommand === null && this.pendingReads.size === 0
+      && this.pendingCommand === null && this.pendingSideChatCommand === null && this.pendingReads.size === 0
       && this.pendingInterrupt === null && this.pendingQueuedTurn === null
       && this.pendingExtensionUiCommand === null && !pendingExtensionInput
       && this.pendingTurn === null && !optimisticTransaction && !optimisticEntries
@@ -2601,6 +2802,7 @@ export class SessionController implements RuntimeControllerPort {
       attached: this.attached,
       attachIntent,
       pendingCommand: this.pendingCommand !== null,
+      pendingSideChatCommand: this.pendingSideChatCommand !== null,
       pendingRead: this.pendingReads.size > 0,
       pendingInterrupt: this.pendingInterrupt !== null,
       pendingQueuedTurn: this.pendingQueuedTurn !== null,
@@ -2650,6 +2852,7 @@ export class SessionController implements RuntimeControllerPort {
     this.attachGeneration += 1;
     this.attachGen = (this.attachGen ?? 0) + 1;
     this.rejectAttach({ code: "interrupted", message: "detached", retryable: false });
+    this.settlePendingSideChatCommand({ code: "interrupted", message: "detached", retryable: false });
     this.connection = this.runtimeConnection.connectionState === "stopped" ? "stopped" : "ready";
     this.notify();
   }
@@ -2734,7 +2937,7 @@ export class SessionController implements RuntimeControllerPort {
           this.optimisticPromptRunning = false;
           this.optimisticPromptSessionId = null;
         }
-        this.settleExtensionUiOnCapabilityLoss();
+        this.settleSnapshotCapabilityLoss();
         this.settleExtensionUiOnRequestClose(event);
         this.recordCommittedLiveEntries(event);
         // Phase 5A committed session_changed leaf fence (cross-tab/self
@@ -2762,9 +2965,10 @@ export class SessionController implements RuntimeControllerPort {
     }
   }
 
-  onTurnStatus(message: WsTurnStatusMessage, _generation: number): void {
+  onTurnStatus(message: WsTurnStatusMessage, generation: number): void {
     const pending = this.pendingTurn;
     if (!pending || pending.terminal) return;
+    if (generation !== this.runtimeConnection.currentGeneration || generation !== pending.wireGeneration) return;
     const status = message.payload;
     if (status.sessionId !== pending.sessionId || status.operationId !== pending.operationId) return;
     if (pending.turnId !== null && status.turnId !== pending.turnId) return;
@@ -2785,7 +2989,27 @@ export class SessionController implements RuntimeControllerPort {
       this.updateOptimisticIdentity(pending.optimisticId, { finalLeafId: status.finalLeafId });
     }
     if (status.state === "completed" || status.state === "failed") {
+      const authority = message.authority;
+      if (authority !== undefined
+        && authority.sessionId === this.sessionId && authority.snapshot.sessionId === this.sessionId
+        && authority.epoch === status.epoch && (this.epoch === null || this.epoch === authority.epoch)
+        && (!this.authorityCursorKnown || authority.lastEventId >= this.lastEventId)
+        // An observing controller consumes the queued events first. Advancing
+        // its cursor here could discard message_end before the FIFO snapshot.
+        && (!this.attached || authority.lastEventId === this.lastEventId)) {
+        this.epoch = authority.epoch;
+        this.lastEventId = authority.lastEventId;
+        this.authorityCursorKnown = true;
+        this.snapshot = structuredClone(authority.snapshot);
+        this.settleSnapshotCapabilityLoss();
+      }
       pending.terminal = true;
+      // Release only this turn's speculative overlay. The refreshed snapshot
+      // remains authoritative, including a genuinely running external stream.
+      if (this.optimisticPromptSessionId === pending.sessionId) {
+        this.optimisticPromptRunning = false;
+        this.optimisticPromptSessionId = null;
+      }
       // A brand-new session can receive its first committed events before the
       // observation snapshot establishes a history anchor. The terminal status
       // carries the exact final JSONL leaf: pin it without clearing the live
@@ -2805,11 +3029,21 @@ export class SessionController implements RuntimeControllerPort {
       this.binding.unregisterTurn(pending.operationId);
       this.pendingTurn = null;
       this.expireTerminalAdmitted(pending.operationId, status.epoch);
+      // Pi 1.0 explicit receipt: a terminal "handled" turn owes NO assistant
+      // reply and NO user transcript entry — remove THIS operation's optimistic
+      // bubble by its own identity. Never infer handled from a missing
+      // userEntryId (a failed/legacy turn may still commit an entry later).
+      if (status.disposition === "handled") {
+        this.optimisticUserEntries = this.optimisticUserEntries.filter(
+          (candidate) => candidate.entry.entryId !== pending.optimisticId,
+        );
+      }
       this.publishTurnTerminal({
         sessionId: status.sessionId,
         operationId: status.operationId,
         turnId: status.turnId,
         state: status.state,
+        ...(status.disposition === undefined ? {} : { disposition: status.disposition }),
         ...(status.error === undefined ? {} : { error: status.error }),
         ...(status.userEntryId === undefined ? {} : { userEntryId: status.userEntryId }),
       });
@@ -3004,29 +3238,60 @@ export class SessionController implements RuntimeControllerPort {
   }
 
   /**
-   * Phase 4A.0.1 bounded revision repair for a create-completion fence that was
-   * made stale by a later global compatibility journal event. Structural
-   * qualification is intentionally exact: definite non-delivery + conflict,
-   * original created-seed source, same submitted epoch, and a strictly newer
-   * authority revision. The exact seed advances on both the first and second
-   * qualifying conflict; only the first re-sends the SAME logical operation.
+   * Bounded fence repair. Two independent 0|1 counters:
+   *  - stale-attached: idle-lost observation sent an attached epoch that is no
+   *    longer active (`not_delivered` + `epoch_changed`). Drop the fence and
+   *    resend the SAME operation once. No attach/activate preflight.
+   *  - authority revision: created-seed conflict, or an unfenced (none-source)
+   *    live-worker conflict / epoch_changed that returns the exact authority
+   *    epoch+revision. Retry the SAME operation once with that fence.
+   * Explicit fences never auto-drop. Qualification is structural (codes +
+   * fence source + epoch/revision identity), never human error-message text.
    */
   private repairSubmitTurnFence(
     pending: TurnPending,
     admission: Extract<SubmitTurnAdmission, { status: "rejected" }>,
   ): boolean {
+    if (admission.delivery !== "not_delivered") return false;
+
     const submittedEpoch = pending.submittedExpectedEpoch;
     const submittedRevision = pending.submittedExpectedRevision;
+    const originalFenceSource = pending.fenceSource;
+    const currentFenceSource: SubmitTurnFenceSource =
+      submittedEpoch === null && submittedRevision === null ? "none" : originalFenceSource;
+
     if (
-      admission.delivery !== "not_delivered"
-      || admission.error.code !== "conflict"
+      admission.error.code === "epoch_changed"
+      && originalFenceSource === "attached"
+      && currentFenceSource === "attached"
+      && submittedEpoch !== null
+      && pending.staleAttachedRepairCount === 0
+    ) {
+      pending.staleAttachedRepairCount = 1;
+      pending.fenceSource = "none";
+      pending.submittedExpectedEpoch = null;
+      pending.submittedExpectedRevision = null;
+      pending.epoch = null;
+      const { expectedEpoch: _expectedEpoch, expectedRevision: _expectedRevision, ...unfenced } = pending.request;
+      pending.request = unfenced;
+      pending.delivery = "in_flight";
+      pending.wireGeneration = null;
+      this.sendSubmitTurn();
+      return true;
+    }
+
+    const authorityRepairable =
+      admission.error.code === "conflict"
+      || (admission.error.code === "epoch_changed" && currentFenceSource === "none");
+    if (
+      !authorityRepairable
       || admission.epoch === undefined
       || admission.revision === undefined
     ) {
       return false;
     }
 
-    if (pending.fenceSource === "created") {
+    if (currentFenceSource === "created") {
       if (
         submittedEpoch === null
         || submittedRevision === null
@@ -3035,7 +3300,7 @@ export class SessionController implements RuntimeControllerPort {
         || !this.advanceCreatedAuthority(submittedEpoch, admission.revision)
       ) return false;
       if (pending.revisionRepairCount === 1) return false;
-    } else if (pending.fenceSource === "none") {
+    } else if (currentFenceSource === "none") {
       // A detached Browser may target an already-live idle Worker without
       // having observed its epoch/revision. sessiond proves the first attempt
       // was NOT delivered and returns its exact current fence. Retry the SAME
@@ -3057,6 +3322,7 @@ export class SessionController implements RuntimeControllerPort {
       expectedRevision: admission.revision,
     };
     pending.delivery = "in_flight";
+    pending.wireGeneration = null;
     // Fresh Browser envelope/current generation; operationId, prompt, images,
     // overrides and their authority fingerprint remain unchanged.
     this.sendSubmitTurn();
@@ -3077,24 +3343,120 @@ export class SessionController implements RuntimeControllerPort {
     return { ...error, phase: "activation" as const };
   }
 
+  /** True only for this exact pending object at this exact dispatch revision. */
+  private isCurrentSubmitDispatch(pending: TurnPending, revision: number): boolean {
+    return this.pendingTurn === pending && pending.dispatchRevision === revision;
+  }
+
+  /**
+   * Proven pre-wire non-delivery: cancel/unregister, clear the pending slot and
+   * optimistic bubble exactly once, reject tagged `phase: "activation"`, and set
+   * the controller error. Composer restores the draft even when retryable=true.
+   */
+  private failSubmitTurnBeforeWire(pending: TurnPending, cause: unknown): void {
+    if (this.pendingTurn !== pending) return;
+    pending.attempt?.cancel();
+    this.binding.unregisterTurn(pending.operationId);
+    this.pendingTurn = null;
+    this.settlePromptTransaction(pending.tx, { removeBubble: true });
+    const error = this.activationFailure(cause);
+    pending.reject(error);
+    this.setError(error);
+  }
+
+  /** Swallow observation-attach rejection; submitTurn may still cold-activate unfenced. */
+  private async ignoreAttachRejection(promise: Promise<void>): Promise<void> {
+    try {
+      await promise;
+    } catch {
+      // Observation attach is not the user send. After it settles, continue.
+    }
+  }
+
+  /** Refresh a never-fenced none-source pending from the exact attached epoch. */
+  private refreshNoneSourceFenceFromAttached(pending: TurnPending): void {
+    if (
+      pending.fenceSource !== "none"
+      || pending.submittedExpectedEpoch !== null
+      || pending.submittedExpectedRevision !== null
+      || pending.staleAttachedRepairCount !== 0
+      || !this.attached
+      || this.sessionId !== pending.sessionId
+      || this.epoch === null
+    ) return;
+    pending.fenceSource = "attached";
+    pending.submittedExpectedEpoch = this.epoch;
+    pending.submittedExpectedRevision = this.lastEventId;
+    pending.epoch = this.epoch;
+    pending.request = {
+      ...pending.request,
+      expectedEpoch: this.epoch,
+      expectedRevision: this.lastEventId,
+    };
+  }
+
+  /** One 10s pre-wire gate covering reconnect sendability and exact resume-attach. */
+  private waitForSubmitWire(pending: TurnPending, revision: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        this.clearTimeoutFn(timer);
+        fn();
+      };
+      const timer = this.setTimeoutFn(() => {
+        finish(() => reject({ code: "timeout", message: "runtime not sendable in time", retryable: true } satisfies ProtocolError));
+      }, SUBMIT_SEND_TIMEOUT_MS);
+      void (async () => {
+        try {
+          if (this.runtimeConnection.connectionState === "idle") this.runtimeConnection.connect();
+          if (!canSend(this.runtimeConnection.connectionState)) await this.whenSendable(SUBMIT_SEND_TIMEOUT_MS);
+          if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
+          await Promise.resolve();
+          if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
+          const attach = this.attach;
+          if (attach !== null && attach.sessionId === pending.sessionId) {
+            await this.ignoreAttachRejection(attach.promise);
+            if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
+          }
+          finish(() => resolve());
+        } catch (cause) {
+          finish(() => reject(cause));
+        }
+      })();
+    });
+  }
+
   /** Send (or re-send) the pending turn's submit frame on the current envelope. */
   private sendSubmitTurn(): void {
     const pending = this.pendingTurn;
     if (!pending) return;
-    if (!this.runtimeConnection.hasFeature(RUNTIME_SUBMIT_TURN_FEATURE)) {
-      // Defensive: a frame would be rejected by the Host fail-closed — settle as
-      // non-delivery before touching the wire.
-      this.binding.unregisterTurn(pending.operationId);
-      this.pendingTurn = null;
-      this.settlePromptTransaction(pending.tx, { removeBubble: true });
-      pending.reject({
-        code: "unsupported_capability",
-        message: "atomic turn admission is unavailable",
-        retryable: false,
-      } satisfies ProtocolError);
-      return;
-    }
-    this.sendTurnAttempt(pending);
+    const revision = pending.dispatchRevision + 1;
+    pending.dispatchRevision = revision;
+    pending.attempt?.cancel();
+    pending.attempt = null;
+    void this.waitForSubmitWire(pending, revision).then(
+      () => {
+        if (!this.isCurrentSubmitDispatch(pending, revision)) return;
+        if (!this.runtimeConnection.hasFeature(RUNTIME_SUBMIT_TURN_FEATURE)) {
+          this.failSubmitTurnBeforeWire(pending, {
+            code: "unsupported_capability",
+            message: "atomic turn admission is unavailable",
+            retryable: false,
+          } satisfies ProtocolError);
+          return;
+        }
+        this.refreshNoneSourceFenceFromAttached(pending);
+        pending.tx.phase = "dispatching";
+        pending.wireGeneration = this.runtimeConnection.currentGeneration;
+        this.sendTurnAttempt(pending);
+      },
+      (cause: unknown) => {
+        if (!this.isCurrentSubmitDispatch(pending, revision)) return;
+        this.failSubmitTurnBeforeWire(pending, cause);
+      },
+    );
   }
 
   /**
@@ -3103,9 +3465,7 @@ export class SessionController implements RuntimeControllerPort {
    * re-opens the status subscription. Never called across an epoch boundary.
    */
   private resendTurn(): void {
-    const pending = this.pendingTurn;
-    if (!pending) return;
-    this.sendTurnAttempt(pending);
+    this.sendSubmitTurn();
   }
 
   /**
@@ -3312,6 +3672,14 @@ export class SessionController implements RuntimeControllerPort {
         this.setError(decision.error);
       }
     }
+    if (this.pendingSideChatCommand) {
+      const decision = decideCommandRetry(laneStatus(this.pendingSideChatCommand.sessionId));
+      if (decision.decision === "resend") {
+        this.resendSideChatCommand();
+      } else {
+        this.settlePendingSideChatCommand(decision.error);
+      }
+    }
     // D2-P4 dual-slot queued turn: same-epoch snapshot/gap → resend with the
     // SAME commandId on a fresh envelope; epoch_changed / session mismatch →
     // reject, never resend.
@@ -3375,37 +3743,24 @@ export class SessionController implements RuntimeControllerPort {
     // accepted/uncertain turn keeps its bubble and only drops the status tracker.
     if (this.pendingTurn) {
       const pending = this.pendingTurn;
-      // Phase 4A.0.1 attach interleaving: an explicit fresh observation attach
-      // can land on the SAME socket generation while a created-seed admission
-      // (initial or repaired envelope) is still pending. That attach neither
-      // invalidates nor retransports the already-sent logical turn. Preserve
-      // its original fence source/repair count/envelope; acceptTurn will also
-      // observe that the target is already attached and avoid a duplicate.
-      // A real reconnect has a different pending generation, while an epoch
-      // change fails this exact submitted-epoch check and uses the normal
-      // fail-closed path below.
-      const sameGenerationCreatedSeedAttach =
-        pending.fenceSource === "created"
-        && pending.attempt?.generation === this.runtimeConnection.currentGeneration
-        && pending.sessionId === attachedSessionId
-        && pending.submittedExpectedEpoch === snapshotEpoch
-        && resumeStatus !== "epoch_changed";
-      if (!sameGenerationCreatedSeedAttach) {
-        const decision = decideCommandRetry(laneStatus(pending.sessionId));
-        if (decision.decision === "resend") {
-          this.resendTurn();
-        } else {
-          this.binding.unregisterTurn(pending.operationId);
-          this.pendingTurn = null;
-          if (pending.delivery === "in_flight") {
-            const err: ProtocolError = { code: "epoch_changed", message: "turn epoch changed; delivery uncertain", retryable: true };
-            this.retainedUncertainDelivery = true;
-            this.settlePromptTransaction(pending.tx, { removeBubble: false });
-            pending.reject(err);
-            this.setError(err);
-          }
-          this.notify();
+      const currentGeneration = this.runtimeConnection.currentGeneration;
+      // Current-generation admission is authoritative (accept/reject/repair).
+      // A proven pre-wire pending waits for the 10s gate after this attach.
+      if (pending.wireGeneration === currentGeneration || pending.wireGeneration === null) return;
+      const decision = decideCommandRetry(laneStatus(pending.sessionId));
+      if (decision.decision === "resend") {
+        this.resendTurn();
+      } else {
+        this.binding.unregisterTurn(pending.operationId);
+        this.pendingTurn = null;
+        if (pending.delivery === "in_flight") {
+          const err: ProtocolError = { code: "epoch_changed", message: "turn epoch changed; delivery uncertain", retryable: true };
+          this.retainedUncertainDelivery = true;
+          this.settlePromptTransaction(pending.tx, { removeBubble: false });
+          pending.reject(err);
+          this.setError(err);
         }
+        this.notify();
       }
     }
   }
@@ -3413,6 +3768,11 @@ export class SessionController implements RuntimeControllerPort {
   /** Re-send a pending command with the SAME commandId (at-most-once per epoch). */
   private resendCommand(): void {
     if (this.pendingCommand) this.sendCommandAttempt(this.pendingCommand);
+  }
+
+  /** Re-send a pending side-chat command with the SAME commandId. */
+  private resendSideChatCommand(): void {
+    if (this.pendingSideChatCommand) this.sendSideChatCommandAttempt(this.pendingSideChatCommand);
   }
 
   /** Re-send a pending queued turn with the SAME commandId (at-most-once per epoch). */
@@ -3512,9 +3872,13 @@ export class SessionController implements RuntimeControllerPort {
       // rebase (the fresh/rebase snapshot is the newer authority position).
       this.pendingLeafRebase = null;
     }
-    // D2-P8: a snapshot that drops `runtime.extension_ui` settles an in-flight reply.
-    this.settleExtensionUiOnCapabilityLoss();
+    this.settleSnapshotCapabilityLoss();
     this.notify();
+  }
+
+  private settleSnapshotCapabilityLoss(): void {
+    this.settleExtensionUiOnCapabilityLoss();
+    this.settleSideChatOnCapabilityLoss();
   }
 
   /**
@@ -3772,6 +4136,35 @@ export class SessionController implements RuntimeControllerPort {
     });
   }
 
+  private sendSideChatCommandAttempt(pending: SideChatCommandPending): void {
+    pending.attempt?.cancel();
+    pending.attempt = this.binding.sendAttempt({
+      buildMessage: (id) => ({ ...pending.command, id }),
+      expectation: { kind: "command", sessionId: pending.sessionId, commandId: pending.commandId, resultType: pending.type },
+      disconnectPolicy: "logical_retry",
+      onFrame: (frame) => {
+        if (this.pendingSideChatCommand !== pending || frame.type !== "response") return;
+        this.pendingSideChatCommand = null;
+        pending.attempt = null;
+        if (pending.timer !== null) this.clearTimeoutFn(pending.timer);
+        pending.timer = null;
+        if (frame.payload.ok) pending.resolve(frame.payload.result);
+        else pending.reject(frame.payload.error);
+        this.notify();
+      },
+      onSendFailure: (cause) => {
+        if (this.pendingSideChatCommand !== pending) return;
+        this.pendingSideChatCommand = null;
+        pending.attempt = null;
+        if (pending.timer !== null) this.clearTimeoutFn(pending.timer);
+        pending.timer = null;
+        pending.reject(cause);
+        this.notify();
+      },
+      onDisconnect: () => { /* same-epoch resync decides whether to resend */ },
+    });
+  }
+
   private sendCommandAttempt(pending: CommandPending): void {
     pending.attempt?.cancel();
     const command = pending.command.type === "command" ? pending.command.payload.command : null;
@@ -3953,13 +4346,7 @@ export class SessionController implements RuntimeControllerPort {
       },
       onSendFailure: (cause) => {
         if (this.pendingTurn !== pending) return;
-        this.binding.unregisterTurn(pending.operationId);
-        this.pendingTurn = null;
-        pending.attempt = null;
-        this.settlePromptTransaction(pending.tx, { removeBubble: true });
-        const error = this.protocolErrorFrom(cause, "submit turn send failed");
-        pending.reject(error);
-        this.setError(error);
+        this.failSubmitTurnBeforeWire(pending, cause);
       },
       onDisconnect: () => {},
     });
@@ -3989,6 +4376,38 @@ export class SessionController implements RuntimeControllerPort {
       this.pendingCommand.attempt?.cancel();
       this.pendingCommand.reject(error);
       this.pendingCommand = null;
+    }
+  }
+
+  /** Reject the in-flight side-chat command exactly once. */
+  private settlePendingSideChatCommand(error: ProtocolError): void {
+    const pending = this.pendingSideChatCommand;
+    if (pending === null) return;
+    this.pendingSideChatCommand = null;
+    pending.attempt?.cancel();
+    pending.attempt = null;
+    if (pending.timer !== null) this.clearTimeoutFn(pending.timer);
+    pending.timer = null;
+    pending.reject(error);
+    this.notify();
+  }
+
+  private sideChatAvailable(): boolean {
+    return this.attached && this.epoch !== null && this.hasRuntimeCapability("runtime.side_chat");
+  }
+
+  private sideChatUnavailableError(): ProtocolError {
+    return {
+      code: "unsupported_capability",
+      message: "side chat is unavailable",
+      retryable: false,
+    };
+  }
+
+  /** Capability revocation invalidates the independent lane immediately. */
+  private settleSideChatOnCapabilityLoss(): void {
+    if (this.snapshot?.capabilities.capabilities.includes("runtime.side_chat") !== true) {
+      this.settlePendingSideChatCommand(this.sideChatUnavailableError());
     }
   }
 
@@ -4126,6 +4545,7 @@ export class SessionController implements RuntimeControllerPort {
   private failAllPending(error: ProtocolError): void {
     this.rejectAttach(error);
     this.settlePendingCommand(error);
+    this.settlePendingSideChatCommand(error);
     this.settleAllPendingReads(error);
     this.settlePendingQueuedTurn(error);
     this.settlePendingExtensionUi(error);

@@ -25,6 +25,7 @@ import { diffSameRole } from "./message-diff.js";
 import { runtimeErrorToProtocolError } from "./protocol-error.js";
 import {
   mapAgentMessage,
+  mapBuiltIns,
   mapCapabilitySet,
   mapExtensionStatuses,
   mapExtensionUiRequest,
@@ -32,6 +33,9 @@ import {
   mapModelRef,
   mapQueuedMessages,
   mapStreamingMessage,
+  mapSubagents,
+  mapTodo,
+  mapSideChatState,
   mapQueuedTurns,
 } from "./core-to-protocol.js";
 
@@ -77,6 +81,9 @@ function completeToStreaming(message: AgentMessage): StreamingAgentMessage {
         toolCallId: message.toolCallId,
         ...(message.toolName === undefined ? {} : { toolName: message.toolName }),
         content: message.content,
+        ...(message.nestedCalls === undefined ? {} : { nestedCalls: message.nestedCalls }),
+        ...(message.structuredContent === undefined ? {} : { structuredContent: message.structuredContent }),
+        ...(message.usage === undefined ? {} : { usage: message.usage }),
         ...(message.isError === undefined ? {} : { isError: message.isError }),
         ...(message.details === undefined ? {} : { details: message.details }),
         ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
@@ -192,6 +199,7 @@ export class StatefulRuntimeMapper {
         return [
           {
             type: "tool_execution_start",
+            ...(event.parentToolCallId === undefined ? {} : { parentToolCallId: event.parentToolCallId }),
             sessionId,
             toolCallId: event.toolCallId,
             toolName: event.toolName,
@@ -203,6 +211,7 @@ export class StatefulRuntimeMapper {
         return [
           {
             type: "tool_execution_update",
+            ...(event.parentToolCallId === undefined ? {} : { parentToolCallId: event.parentToolCallId }),
             sessionId,
             toolCallId: event.toolCallId,
             ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
@@ -214,6 +223,7 @@ export class StatefulRuntimeMapper {
         return [
           {
             type: "tool_execution_end",
+            ...(event.parentToolCallId === undefined ? {} : { parentToolCallId: event.parentToolCallId }),
             sessionId,
             toolCallId: event.toolCallId,
             ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
@@ -333,6 +343,17 @@ export class StatefulRuntimeMapper {
             ...ts(event),
           },
         ];
+      case "extension_notification":
+        return [
+          {
+            type: "extension_notification",
+            sessionId,
+            level: event.level,
+            message: event.message,
+            at: event.at,
+            ...ts(event),
+          },
+        ];
       case "extension_widgets":
         return [
           {
@@ -400,6 +421,25 @@ export class StatefulRuntimeMapper {
             ...ts(event),
           },
         ];
+      case "built_ins_changed":
+        return [{ type: "built_ins_changed", sessionId, builtIns: mapBuiltIns(event.builtIns), ...ts(event) }];
+      case "subagents_changed":
+        return [{ type: "subagents_changed", sessionId, subagents: mapSubagents(event.subagents), ...ts(event) }];
+      case "todo_changed":
+        return [{ type: "todo_changed", sessionId, todo: mapTodo(event.todo), ...ts(event) }];
+      case "side_chat_changed":
+        return [{ type: "side_chat_changed", sessionId, sideChat: event.sideChat === null ? null : mapSideChatState(event.sideChat), ...ts(event) }];
+      case "side_chat_delta":
+        return [{ type: "side_chat_delta", sessionId, delta: { ...event.delta }, ...ts(event) }];
+      case "subagent_delta":
+        return [{
+          type: "subagent_delta",
+          sessionId,
+          childSessionId: event.childSessionId,
+          partial: mapStreamingMessage(event.partial),
+          done: event.done,
+          ...ts(event),
+        }];
       case "runtime_error":
         return [
           {

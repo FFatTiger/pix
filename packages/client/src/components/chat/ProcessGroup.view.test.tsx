@@ -11,11 +11,16 @@ class ResizeObserverStub {
   disconnect(): void {}
 }
 
-function tool(status: "running" | "success", id = "tool-1", path = "/x/a.ts"): ProcessContentBlock {
+function tool(
+  status: "running" | "success",
+  id = "tool-1",
+  path = "/x/a.ts",
+  toolCallId = id,
+): ProcessContentBlock {
   return {
     id,
     type: "toolCall",
-    toolCallId: id,
+    toolCallId,
     toolName: "read",
     input: { path },
     status,
@@ -252,6 +257,106 @@ describe("ProcessGroup — expanded lifecycle", () => {
     // default (no running auto-expand at the row level either).
     const row = group.querySelector<HTMLElement>("[data-tool-id=\"tool-1\"]")!;
     expect(row.querySelector(".codex-tool-details")).toBeNull();
+  });
+
+  it("keeps a manually expanded Codex tool group and child row open while the run grows", () => {
+    window.localStorage.setItem("pi-process-display-mode", "codex");
+    const view = render(
+      <I18nProvider>
+        <div className="transcript-scroll">
+          <ProcessGroup
+            blocks={[tool("success", "blk-1", "/x/a.ts", "call-a"), tool("running", "blk-2", "/x/b.ts", "call-b")]}
+            isStreaming
+            startedAt={1_000}
+          />
+        </div>
+      </I18nProvider>,
+    );
+
+    const group = view.container.querySelector<HTMLElement>(".codex-tool-group")!;
+    const groupTrigger = group.querySelector<HTMLButtonElement>(".codex-tool-group-trigger")!;
+    fireEvent.click(groupTrigger);
+    const firstRow = group.querySelector<HTMLElement>('[data-tool-id="call-a"]')!;
+    fireEvent.click(firstRow.querySelector<HTMLButtonElement>(".codex-tool-row-trigger")!);
+    expect(groupTrigger.getAttribute("aria-expanded")).toBe("true");
+    expect(firstRow.querySelector<HTMLButtonElement>(".codex-tool-row-trigger")?.getAttribute("aria-expanded")).toBe("true");
+    expect(firstRow.querySelector(".codex-tool-details")).toBeTruthy();
+
+    view.rerender(
+      <I18nProvider>
+        <div className="transcript-scroll">
+          <ProcessGroup
+            blocks={[
+              tool("success", "blk-1-rewritten", "/x/a.ts", "call-a"),
+              tool("success", "blk-2-rewritten", "/x/b.ts", "call-b"),
+              tool("running", "blk-3", "/x/c.ts", "call-c"),
+            ]}
+            isStreaming
+            startedAt={1_000}
+          />
+        </div>
+      </I18nProvider>,
+    );
+
+    const grown = view.container.querySelector<HTMLElement>(".codex-tool-group")!;
+    expect(grown.dataset.toolCount).toBe("3");
+    expect(grown.querySelector<HTMLButtonElement>(".codex-tool-group-trigger")?.getAttribute("aria-expanded")).toBe("true");
+    const persistedRow = grown.querySelector<HTMLElement>('[data-tool-id="call-a"]')!;
+    expect(persistedRow.querySelector<HTMLButtonElement>(".codex-tool-row-trigger")?.getAttribute("aria-expanded")).toBe("true");
+    expect(persistedRow.querySelector(".codex-tool-details")).toBeTruthy();
+    expect(grown.querySelector<HTMLElement>('[data-tool-id="call-c"]')?.querySelector(".codex-tool-details")).toBeNull();
+  });
+
+  it("keeps timeline manual step overrides while streaming appends a new latest step", () => {
+    window.localStorage.setItem("pi-process-display-mode", "timeline");
+    const view = render(
+      <I18nProvider>
+        <div className="transcript-scroll">
+          <ProcessGroup
+            blocks={[
+              tool("success", "blk-1", "/x/a.ts", "call-a"),
+              namedTool("bash", "blk-2", { command: "npm test" }, "running"),
+            ]}
+            isStreaming
+            startedAt={1_000}
+          />
+        </div>
+      </I18nProvider>,
+    );
+
+    const stepRows = () => Array.from(view.container.querySelectorAll<HTMLElement>(".process-step-nav > div"));
+    const openBlocks = (row: HTMLElement) => row.querySelectorAll(".tool-call-block").length;
+    expect(stepRows()).toHaveLength(2);
+    expect(openBlocks(stepRows()[0]!)).toBe(0);
+    expect(openBlocks(stepRows()[1]!)).toBe(1);
+
+    fireEvent.click(stepRows()[0]!.querySelector("button")!);
+    fireEvent.click(stepRows()[1]!.querySelector("button")!);
+    expect(openBlocks(stepRows()[0]!)).toBe(1);
+    expect(openBlocks(stepRows()[1]!)).toBe(0);
+
+    const firstCommand = namedTool("bash", "blk-2-rewritten", { command: "npm test" }, "success", 2);
+    if (firstCommand.type === "toolCall") firstCommand.toolCallId = "blk-2";
+    view.rerender(
+      <I18nProvider>
+        <div className="transcript-scroll">
+          <ProcessGroup
+            blocks={[
+              tool("success", "blk-1-rewritten", "/x/a.ts", "call-a"),
+              firstCommand,
+              namedTool("bash", "blk-3", { command: "npm run lint" }, "running"),
+            ]}
+            isStreaming
+            startedAt={1_000}
+          />
+        </div>
+      </I18nProvider>,
+    );
+
+    expect(stepRows()).toHaveLength(3);
+    expect(openBlocks(stepRows()[0]!)).toBe(1);
+    expect(openBlocks(stepRows()[1]!)).toBe(0);
+    expect(openBlocks(stepRows()[2]!)).toBe(1);
   });
 
   it("uses only the live trailing thought as the next Codex group title", () => {

@@ -5,12 +5,13 @@ import type { ReactNode } from "react";
 import { AppShell } from "./AppShell";
 import type { WorkspaceSearch } from "@/lib/search-params";
 import { queryKeys } from "@/api/query-keys";
-import type { SessionHeader } from "@fffattiger/pix-protocol";
+import type { SessionEntry, SessionHeader } from "@fffattiger/pix-protocol";
 import { RuntimeProvider, SelectedSessionProvider } from "@/runtime/runtime-provider";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
 import { HttpClientProvider } from "@/app/http-context";
 import { ContextMenuProvider } from "@/components/ContextMenu";
+import { transcriptScrollRef } from "@/components/chat/chat-experience-bridge";
 import { SessionStagingProvider } from "@/features/composer/session-staging-provider";
 import { FakeWebSocket, flush, lastFrame, snapshotPayload } from "@/runtime/testing/harness";
 import { CaptureTestRuntime } from "@/runtime/testing/capture-test-runtime";
@@ -112,6 +113,7 @@ const SESSION_HEADERS: readonly SessionHeader[] = [
 function controllableStubFetch(opts: {
   sessions?: readonly SessionHeader[];
   contextDeferreds?: Map<string, Deferred>;
+  contextEntries?: Map<string, SessionEntry[]>;
   contextCalls?: string[];
   contextError?: { body: unknown; status: number };
   projectsError?: { body: unknown; status: number };
@@ -130,6 +132,17 @@ function controllableStubFetch(opts: {
       const id = decodeURIComponent(p.split("/v1/sessions/")[1]!.split("/")[0]!);
       opts.contextCalls?.push(id);
       if (opts.contextError !== undefined) return jsonStatus(opts.contextError.body, opts.contextError.status);
+      const immediateEntries = opts.contextEntries?.get(id);
+      if (immediateEntries !== undefined) {
+        return json({
+          context: {
+            sessionId: id,
+            entries: immediateEntries,
+            settings: { model: { provider: "anthropic", modelId: "claude-opus-4" }, thinkingLevel: "off" },
+            pageInfo: { hasMore: false },
+          },
+        });
+      }
       const deferred = createDeferred<Response>();
       opts.contextDeferreds?.set(id, deferred);
       return deferred.promise;
@@ -166,10 +179,13 @@ function controllableStubFetch(opts: {
       const page = Number(url.searchParams.get("page") ?? 1);
       const pageSize = Number(url.searchParams.get("pageSize") ?? 50);
       const projectRoot = url.searchParams.get("projectRoot");
+      const parentSessionId = url.searchParams.get("parentSessionId");
       if (projectRoot !== null && opts.projectSessionsError !== undefined) {
         return jsonStatus(opts.projectSessionsError.body, opts.projectSessionsError.status);
       }
-      const visible = sessions.filter((session) => session.parentSessionId === undefined && !/pi-(?:claude-)?subagents/.test(session.projectRoot));
+      const visible = parentSessionId === null
+        ? sessions.filter((session) => session.parentSessionId === undefined && !/pi-(?:claude-)?subagents/.test(session.projectRoot))
+        : sessions.filter((session) => session.parentSessionId === parentSessionId);
       const filtered = projectRoot === null ? visible : visible.filter((session) => session.projectRoot === projectRoot);
       const offset = (page - 1) * pageSize;
       return json({ sessions: filtered.slice(offset, offset + pageSize), page, pageSize, total: filtered.length, totalPages: filtered.length === 0 ? 0 : Math.ceil(filtered.length / pageSize), catalogRevision: 0 });
@@ -2654,7 +2670,7 @@ describe("AppShell — source-like sidebar rail", () => {
 
   const catalogCaps: HostInfo["capabilities"] = ["agent", "sessions", "files", "models", "plugins", "skills"];
 
-  it("renders the source hierarchy: Pix, New Session, Projects, Sessions, Settings + pinned file browser", async () => {
+  it("renders the source hierarchy: Pix, New Session, Projects, Sessions, Settings + pinned right pane", async () => {
     mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
     await settle();
     expect(screen.getByTestId("sidebar-brand").textContent).toBe("Pix");
@@ -2667,8 +2683,8 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
     expect(screen.queryByTestId("sidebar-files")).toBeNull();
     expect(screen.getByTestId("sidebar-nav-settings").textContent).toBe("Settings");
-    // The file browser toggle is pinned to the window's top-right; no rail strip.
-    expect(screen.getByTestId("file-browser-toggle")).toBeTruthy();
+    // The right-pane toggle is pinned to the window's top-right; no rail strip.
+    expect(screen.getByTestId("right-pane-toggle")).toBeTruthy();
     expect(screen.queryByTestId("file-browser-rail")).toBeNull();
     expect(railOrder()).toEqual([
       "sidebar-home-header",
@@ -3057,7 +3073,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
     expect(screen.getAllByTestId("session-select-A").length).toBeGreaterThan(0);
     expect(screen.getAllByTestId("session-select-D").length).toBeGreaterThan(1);
-    expect(screen.getByTestId("file-browser-toggle")).toBeTruthy();
+    expect(screen.getByTestId("right-pane-toggle")).toBeTruthy();
   });
 
   it("a selected session's auto-revealed project stays collapsed after the user collapses it", async () => {
@@ -3267,6 +3283,28 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(countMockFetchCalls(fetchImpl, "/v1/sessions/child")).toBeGreaterThanOrEqual(1);
     expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=1&pageSize=5")).toBeGreaterThanOrEqual(1);
     expect(countMockFetchCalls(fetchImpl, "/v1/sessions?page=2&pageSize=5")).toBe(0);
+  });
+
+  it("keeps recent and project session order stable when selecting an older session", async () => {
+    const now = Date.now();
+    globalThis.fetch = controllableStubFetch({
+      sessions: [
+        { sessionId: "newer", cwd: "/x", projectRoot: "/x", title: "Newer", createdAt: 1000, updatedAt: now, messageCount: 1, workspaceAccess: AUTHORIZED },
+        { sessionId: "older", cwd: "/x", projectRoot: "/x", title: "Older", createdAt: 1000, updatedAt: now - 1000, messageCount: 1, workspaceAccess: AUTHORIZED },
+      ],
+    });
+    const view = mountApp({ cwd: "/x", session: "older" });
+    await settle();
+    const order = (container: HTMLElement) => Array.from(container.querySelectorAll("[data-testid^='session-select-']"))
+      .map((row) => row.getAttribute("data-testid"));
+    expect(order(screen.getByTestId("sidebar-sessions"))).toEqual(["session-select-newer", "session-select-older"]);
+    expect(order(screen.getByTestId("sidebar-project-sessions"))).toEqual(["session-select-newer", "session-select-older"]);
+    view.rerender({ cwd: "/x", session: "newer" });
+    await settle();
+    view.rerender({ cwd: "/x", session: "older" });
+    await settle();
+    expect(order(screen.getByTestId("sidebar-sessions"))).toEqual(["session-select-newer", "session-select-older"]);
+    expect(order(screen.getByTestId("sidebar-project-sessions"))).toEqual(["session-select-newer", "session-select-older"]);
   });
 
   it("shows five recent sessions initially, then appends the remaining page", async () => {
@@ -3799,6 +3837,30 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     });
   });
 
+  it("loads titles for persisted tabs outside the initial session page", async () => {
+    const sessions: SessionHeader[] = Array.from({ length: 7 }, (_, index) => ({
+      sessionId: `T${index + 1}`,
+      cwd: "/x",
+      projectRoot: "/x",
+      title: `Tab session ${index + 1}`,
+      createdAt: 1000,
+      updatedAt: Date.now() - index * 1000,
+      messageCount: 1,
+      workspaceAccess: AUTHORIZED,
+    }));
+    window.localStorage.setItem(WORKSPACE_SESSION_TABS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      sessions: [{ sessionId: "T7", cwd: "/x" }],
+    }));
+    const fetchImpl = controllableStubFetch({ sessions });
+    globalThis.fetch = fetchImpl;
+    mountApp({ cwd: "/x" });
+    await settle();
+
+    expect(screen.getByRole("tab", { name: "Tab session 7" })).toBeTruthy();
+    expect(countMockFetchCalls(fetchImpl, "/v1/sessions/T7")).toBeGreaterThanOrEqual(1);
+  });
+
   it("restores the last active session once on an empty PWA cold-start route", async () => {
     window.localStorage.setItem(WORKSPACE_SESSION_TABS_STORAGE_KEY, JSON.stringify({
       version: 1,
@@ -3909,13 +3971,299 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(screen.getByRole("menuitem", { name: "Close tabs to the right" }).getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("the pinned file browser button toggles the FILE BROWSER panel without leaving the window's top-right", async () => {
+  it("opens a persisted child Agent session from the compact card in the shared right pane", async () => {
+    const parent: SessionHeader = {
+      sessionId: "parent",
+      sessionFile: "/sessions/parent.jsonl",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Parent",
+      createdAt: 1000,
+      updatedAt: Date.now(),
+      messageCount: 3,
+      workspaceAccess: AUTHORIZED,
+    };
+    const child: SessionHeader = {
+      sessionId: "child",
+      sessionFile: "/sessions/child.jsonl",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Child agent",
+      parentSessionId: "parent",
+      createdAt: 2000,
+      updatedAt: Date.now(),
+      messageCount: 1,
+      workspaceAccess: AUTHORIZED,
+    };
+    const contextEntries = new Map<string, SessionEntry[]>([
+      // No Agent tool call/result exists in parent history. The card must come
+      // only from the authority snapshot below.
+      ["parent", []],
+      ["child", []],
+    ]);
+    const contextCalls: string[] = [];
+    const fetchImpl = controllableStubFetch({ sessions: [parent, child], contextEntries, contextCalls });
+    globalThis.fetch = fetchImpl;
+    mountApp({ cwd: "/x", session: "parent" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("parent").catch(() => undefined);
+      const attach = await waitForAttach(ws, "parent");
+      ws.serverSend({
+        type: "snapshot",
+        id: attach.id,
+        payload: snapshotPayload({
+          sessionId: "parent",
+          capabilities: ["runtime.prompt", "runtime.subagents"],
+          subagents: {
+            revision: 1,
+            tasks: [{
+              taskId: "task-1",
+              description: "Inspect runtime",
+              agentType: "Explore",
+              status: "running",
+              startedAt: Date.parse("2026-09-27T00:00:00.000Z"),
+              childSessionId: "child",
+            }],
+          },
+        }),
+      });
+      await flush();
+    });
+    await settle();
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "subagents_changed",
+          sessionId: "parent",
+          epoch: "e1",
+          eventId: 1,
+          subagents: {
+            revision: 2,
+            tasks: [{
+              taskId: "task-1",
+              description: "Inspect runtime live",
+              agentType: "Explore",
+              status: "running",
+              startedAt: Date.parse("2026-09-27T00:00:00.000Z"),
+              childSessionId: "child",
+            }],
+          },
+        },
+      });
+      await flush();
+    });
+
+    const parentTranscriptScroll = transcriptScrollRef.current;
+    expect(parentTranscriptScroll).toBeTruthy();
+    expect(document.querySelector(".conversation-container")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
+    expect(screen.getByRole("button", { name: "Agents" }).getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Open agent Inspect runtime live" }));
+    await settle();
+
+    expect(screen.getByTestId("subagent-panel")).toBeTruthy();
+    expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-open");
+    expect(screen.getAllByText("Inspect runtime live").length).toBeGreaterThanOrEqual(1);
+    expect(contextCalls).toContain("child");
+    expect(transcriptScrollRef.current).toBe(parentTranscriptScroll);
+    expect(countMockFetchCalls(fetchImpl, "parentSessionId=parent")).toBe(0);
+    const childAttaches = ws.sent.filter((frame) => (
+      (frame as { type?: string; payload?: { sessionId?: string } }).type === "attach"
+      && (frame as { payload?: { sessionId?: string } }).payload?.sessionId === "child"
+    ));
+    expect(childAttaches).toHaveLength(0);
+
+    const childCallsBeforeRevision = contextCalls.filter((id) => id === "child").length;
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "subagents_changed",
+          sessionId: "parent",
+          epoch: "e1",
+          eventId: 2,
+          subagents: {
+            revision: 3,
+            tasks: [{
+              taskId: "task-1",
+              description: "Inspect runtime live",
+              agentType: "Explore",
+              status: "running",
+              startedAt: Date.parse("2026-09-27T00:00:00.000Z"),
+              childSessionId: "child",
+            }],
+          },
+        },
+      });
+      await flush();
+    });
+    await settle();
+    expect(contextCalls.filter((id) => id === "child")).toHaveLength(childCallsBeforeRevision + 1);
+    expect(transcriptScrollRef.current).toBe(parentTranscriptScroll);
+    expect(ws.sent.filter((frame) => (
+      (frame as { type?: string; payload?: { sessionId?: string } }).type === "attach"
+      && (frame as { payload?: { sessionId?: string } }).payload?.sessionId === "child"
+    ))).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Files" }));
+    expect(screen.queryByTestId("subagent-panel")).toBeNull();
+    expect(screen.getByTestId("right-pane-toggle").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("opens side chat only for the exact live parent, preserves it across pane close, and closes on parent switch", async () => {
+    const sessions: readonly SessionHeader[] = [
+      { sessionId: "parent", cwd: "/x", projectRoot: "/x", title: "Parent", createdAt: 1000, updatedAt: Date.now(), messageCount: 1, workspaceAccess: AUTHORIZED },
+      { sessionId: "B", cwd: "/x", projectRoot: "/x", title: "Session B", createdAt: 1000, updatedAt: Date.now(), messageCount: 1, workspaceAccess: AUTHORIZED },
+    ];
+    globalThis.fetch = controllableStubFetch({ sessions, contextEntries: new Map([["parent", []], ["B", []]]) });
+    const { rerender } = mountApp({ cwd: "/x", session: "parent" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("parent").catch(() => undefined);
+      const attach = await waitForAttach(ws, "parent");
+      ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({ sessionId: "parent", capabilities: ["runtime.prompt", "runtime.abort", "runtime.side_chat"] }) });
+      await flush();
+    });
+    await settle();
+
+    fireEvent.click(screen.getByTestId("right-pane-toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Side chat" }));
+    await act(async () => { await flush(8); });
+    const starts = () => ws.sent.filter((frame) => (
+      (frame as { type?: string; payload?: { command?: { type?: string } } }).type === "command"
+      && (frame as { payload?: { command?: { type?: string } } }).payload?.command?.type === "side_chat_start"
+    )) as Array<{ id: string; payload: { command: { commandId: string } } }>;
+    expect(starts()).toHaveLength(1);
+    const start = starts()[0]!;
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "side_chat_changed",
+          sessionId: "parent",
+          epoch: "e1",
+          eventId: 1,
+          sideChat: {
+            conversationId: "side-1",
+            revision: 1,
+            runId: "run-1",
+            capturedModel: { provider: "anthropic", id: "claude-sonnet" },
+            capturedThinkingLevel: "medium",
+            mode: "read_only",
+            status: "running",
+            messages: [],
+            messagesTruncated: false,
+            totalCharsTruncated: false,
+            stream: { text: "Side response", thinking: "", textTruncated: false, thinkingTruncated: false },
+            tools: [],
+          },
+        },
+      });
+      ws.serverSend({ type: "response", id: start.id, payload: { ok: true, result: { commandId: start.payload.command.commandId, result: { ok: true, type: "side_chat_start", conversationId: "side-1" } } } });
+      await flush();
+    });
+    expect(screen.getByTestId("side-chat-panel").textContent).toContain("Side response");
+    expect((document.querySelector(".chat-input-textarea") as HTMLTextAreaElement).disabled).toBe(false);
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "side_chat_delta",
+          sessionId: "parent",
+          epoch: "e1",
+          eventId: 2,
+          delta: { conversationId: "side-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: " continued" },
+        },
+      });
+      await flush();
+      vi.advanceTimersByTime(1_000);
+      await flush();
+    });
+    expect(screen.getByTestId("side-chat-panel").textContent).toContain("Side response continued");
+
+    fireEvent.click(screen.getByTestId("right-pane-toggle"));
+    expect(screen.queryByTestId("side-chat-panel")).toBeNull();
+    fireEvent.click(screen.getByTestId("right-pane-toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Side chat" }));
+    expect(screen.getByTestId("side-chat-panel").textContent).toContain("Side response");
+    expect(starts()).toHaveLength(1);
+
+    rerender({ cwd: "/x", session: "B" });
+    await settle();
+    expect(screen.getByTestId("right-pane-toggle").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByTestId("side-chat-panel")).toBeNull();
+    expect(ws.sent.filter((frame) => (frame as { type?: string; payload?: { sessionId?: string } }).type === "attach" && (frame as { payload?: { sessionId?: string } }).payload?.sessionId === "B")).toHaveLength(0);
+  });
+
+  it("updates the Status capsule from snapshot Todo then todo_changed through the production reducer", async () => {
+    const parent: SessionHeader = {
+      sessionId: "parent",
+      sessionFile: "/sessions/parent.jsonl",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Parent",
+      createdAt: 1000,
+      updatedAt: Date.now(),
+      messageCount: 3,
+      workspaceAccess: AUTHORIZED,
+    };
+    const fetchImpl = controllableStubFetch({ sessions: [parent], contextEntries: new Map([["parent", []]]) });
+    globalThis.fetch = fetchImpl;
+    mountApp({ cwd: "/x", session: "parent" });
+    const ws = await connectReady();
+    await act(async () => {
+      void capturedStore!.openSession("parent").catch(() => undefined);
+      const attach = await waitForAttach(ws, "parent");
+      ws.serverSend({
+        type: "snapshot",
+        id: attach.id,
+        payload: snapshotPayload({
+          sessionId: "parent",
+          capabilities: ["runtime.prompt", "runtime.subagents", "runtime.todo"],
+          todo: {
+            revision: 1,
+            items: [{ id: 1, subject: "Draft the capsule", blockedBy: [], status: "pending" }],
+          },
+        }),
+      });
+      await flush();
+    });
+    await settle();
+    expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Draft the capsule");
+
+    await act(async () => {
+      ws.serverSend({
+        type: "event",
+        payload: {
+          type: "todo_changed",
+          sessionId: "parent",
+          epoch: "e1",
+          eventId: 1,
+          todo: {
+            revision: 2,
+            items: [
+              { id: 1, subject: "Draft the capsule", blockedBy: [], status: "completed" },
+              { id: 2, subject: "Ship the panel", blockedBy: [], status: "in_progress" },
+            ],
+          },
+        },
+      });
+      await flush();
+    });
+    expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Ship the panel");
+    expect(screen.getByRole("button", { name: "Expand status" }).textContent).not.toContain("Draft the capsule");
+    expect(countMockFetchCalls(fetchImpl, "parentSessionId=parent")).toBe(0);
+  });
+
+  it("the pinned right-pane button toggles the Files panel without leaving the window's top-right", async () => {
     globalThis.fetch = fileFetch();
     mountApp({ cwd: "/x" });
     await settle();
     const panel = document.querySelector(".right-panel-container");
     expect(panel?.className).toContain("right-panel-closed");
-    const toggle = screen.getByTestId("file-browser-toggle");
+    const toggle = screen.getByTestId("right-pane-toggle");
     // Pinned: the button's containing block is the shell body (window
     // top-right), not the chat column whose width the panel animation takes —
     // otherwise opening the panel drags the button leftwards.
@@ -3928,8 +4276,10 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect((document.querySelector(".app-title-bar") as HTMLElement).style.paddingRight).toBe("36px");
     fireEvent.click(toggle);
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-open");
-    expect(screen.getByRole("button", { name: "Hide file browser" })).toBeTruthy();
-    fireEvent.click(screen.getByTestId("file-browser-toggle"));
+    expect((screen.getByRole("button", { name: "Side chat" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Side chat" }).getAttribute("title")).toContain("selected live session");
+    expect(screen.getByRole("button", { name: "Hide right pane" })).toBeTruthy();
+    fireEvent.click(screen.getByTestId("right-pane-toggle"));
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-closed");
   });
 });

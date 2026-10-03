@@ -212,9 +212,17 @@ class ScriptedSdkDriver implements PiRuntimeDriver {
   subscribe(listener: DriverEventListener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   emit(event: unknown) { for (const listener of [...this.listeners]) listener(event); }
   async bindUi(ui: (request: DriverUiRequest) => void, emit: (event: RuntimeEvent) => void) { this.ui = ui; void emit; }
-  async prompt(message: string, images?: readonly ImageAttachment[], streaming?: "steer" | "followUp") { if (this.status === "prompt") { if (!streaming) throw new Error("runtime busy"); return streaming === "steer" ? this.steer(message, images) : this.followUp(message, images); } await this.runTurn(message, images, true); }
-  async steer(message: string, images?: readonly ImageAttachment[]) { if (this.status === "prompt") { this.steering.push({ message, ...(images === undefined ? {} : { images }) }); this.emit({ type: "queue_update" }); return; } await this.runTurn(message, images, true); }
-  async followUp(message: string, images?: readonly ImageAttachment[]) { if (this.status === "prompt") { this.follow.push({ message, ...(images === undefined ? {} : { images }) }); this.emit({ type: "queue_update" }); return; } await this.runTurn(message, images, true); }
+  async prompt(message: string, images?: readonly ImageAttachment[], streaming?: "steer" | "followUp"): Promise<{ disposition: "started" | "handled" | "queued" }> {
+    if (this.status === "prompt") {
+      if (!streaming) throw new Error("runtime busy");
+      const disposition = streaming === "steer" ? await this.steer(message, images) : await this.followUp(message, images);
+      return { disposition };
+    }
+    await this.runTurn(message, images, true);
+    return { disposition: "started" };
+  }
+  async steer(message: string, images?: readonly ImageAttachment[]): Promise<"handled" | "queued"> { if (this.status === "prompt") { this.steering.push({ message, ...(images === undefined ? {} : { images }) }); this.emit({ type: "queue_update" }); return "queued"; } await this.runTurn(message, images, true); return "queued"; }
+  async followUp(message: string, images?: readonly ImageAttachment[]): Promise<"handled" | "queued"> { if (this.status === "prompt") { this.follow.push({ message, ...(images === undefined ? {} : { images }) }); this.emit({ type: "queue_update" }); return "queued"; } await this.runTurn(message, images, true); return "queued"; }
   async abort() { this.abortPrompt = true; this.pendingUi?.cancel(); this.pendingUi = undefined; }
   async setModel(model: ModelRef) { await this.store.resolveModel(model.provider, model.id); this.model = model; this.session.model = model; this.thinking = "off"; }
   setThinkingLevel(level: ThinkingLevel) { this.thinking = level; }

@@ -10,7 +10,12 @@
   "workspaces": [
     "packages/*"
   ],
+  "overrides": {
+    "@earendil-works/pi-tui": "1.0.0"
+  },
   "scripts": {
+    "postinstall": "node scripts/patch-pi-claude-subagents.mjs",
+    "prebuild": "node scripts/patch-pi-claude-subagents.mjs",
     "build": "node scripts/run-workspaces.mjs build",
     "typecheck": "node scripts/run-workspaces.mjs typecheck",
     "test": "node scripts/run-node-test.mjs \"scripts/**/*.test.mjs\" \"tests/e2e/helpers/*.test.mjs\" && node scripts/run-workspaces.mjs test",

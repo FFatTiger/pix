@@ -13,10 +13,11 @@ import {
 
 export function createSessionsApi(http: HttpClient) {
   return {
-    list: (input: { page: number; pageSize: number; cwd?: string; projectRoot?: string; signal?: AbortSignal }) => {
-      const params: { page: number; pageSize: number; cwd?: string; projectRoot?: string } = { page: input.page, pageSize: input.pageSize };
+    list: (input: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string; signal?: AbortSignal }) => {
+      const params: { page: number; pageSize: number; cwd?: string; projectRoot?: string; parentSessionId?: string } = { page: input.page, pageSize: input.pageSize };
       if (input.cwd !== undefined) params.cwd = input.cwd;
       if (input.projectRoot !== undefined) params.projectRoot = input.projectRoot;
+      if (input.parentSessionId !== undefined) params.parentSessionId = input.parentSessionId;
       return http.get(urls.sessions.list(params), { schema: SessionListSchema, ...(input.signal === undefined ? {} : { signal: input.signal }) });
     },
     projects: (input: { page: number; pageSize: number; signal?: AbortSignal }) => http.get(

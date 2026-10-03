@@ -24,7 +24,7 @@ import {
 } from "./runtime-provider";
 import type { ExactRuntimeApi, RuntimeConnectionApi } from "./exact-runtime";
 import { parseWorkspaceSearch } from "@/lib/search-params";
-import { createHarness, FakeWebSocket, flush, lastFrame, snapshotPayload } from "./testing/harness";
+import { authoritySnapshot, createHarness, FakeWebSocket, flush, lastFrame, snapshotPayload } from "./testing/harness";
 import { CaptureTestRuntime } from "./testing/capture-test-runtime";
 import type { TestRuntimeStore } from "./testing/test-runtime-store";
 import type { RuntimeSocketDeps } from "./socket";
@@ -412,7 +412,7 @@ describe("exact React hooks (4A.3.2a)", () => {
           turnStatus: { sessionId: "s1", epoch: "e1", operationId: op, turnId: "turn-1", revision: 0, state: "admitted" },
         },
       });
-      ws.serverSend({ type: "turn_status", payload: { sessionId: "s1", epoch: "e1", operationId: op, turnId: "turn-1", revision: 1, state: "completed" } });
+      ws.serverSend({ type: "turn_status", authority: authoritySnapshot("s1", "e1"), payload: { sessionId: "s1", epoch: "e1", operationId: op, turnId: "turn-1", revision: 1, state: "completed" } });
       await flush();
     });
     expect(terminals).toEqual(["s1"]);

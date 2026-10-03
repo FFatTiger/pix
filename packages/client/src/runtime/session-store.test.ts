@@ -1240,6 +1240,27 @@ describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clea
     ws.serverSend({ type: "response", id, payload: { ok: true, result: { commandId, result: { ok: true, type } } } });
   }
 
+  it.each(["steer", "follow_up"] as const)("%s handled receipt removes only its own bubble; queued receipts retain theirs", async (type) => {
+    const h = createHarness();
+    const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.steer", "runtime.follow_up"]);
+    const send = (message: string) => type === "steer" ? h.store.steer(message) : h.store.followUp(message);
+    const queued = send("keep this queued message");
+    await flush();
+    const first = commandFrame(ws);
+    ws.serverSend({ type: "response", id: first.id, payload: { ok: true, result: { commandId: first.payload.command.commandId, result: { ok: true, type, disposition: "queued" } } } });
+    await queued;
+    const handled = send("/extension-consumes-this");
+    await flush();
+    const second = commandFrame(ws);
+    expect(h.store.getSnapshot().optimisticEntries).toHaveLength(2);
+    ws.serverSend({ type: "response", id: second.id, payload: { ok: true, result: { commandId: second.payload.command.commandId, result: { ok: true, type, disposition: "handled" } } } });
+    await handled;
+    const remaining = h.store.getSnapshot().optimisticEntries;
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.entry.message).toMatchObject({ role: "user", content: "keep this queued message" });
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+  });
+
   it("steer sends a trimmed steer command on the queued-turn slot and toggles queuedTurnPending", async () => {
     const h = createHarness();
     const ws = await attachWithCaps(h, ["runtime.prompt", "runtime.steer", "runtime.follow_up"]);

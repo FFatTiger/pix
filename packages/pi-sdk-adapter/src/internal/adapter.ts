@@ -23,6 +23,7 @@ import type {
   RuntimeTurnHandle,
   RuntimeTurnStart,
   RuntimeTurnTerminal,
+  SideChatState,
   StreamingAgentMessage,
 } from "@fffattiger/pix-runtime-core";
 import {
@@ -32,12 +33,119 @@ import {
   requiredCapabilityForInterrupt,
   RUNTIME_COMMAND_TYPES,
   unsupportedCapabilityError,
+  normalizeBuiltInRuntimeState,
+  normalizeSubagentProjection,
+  normalizeTodoProjection,
+  applySideChatDelta,
+  boundSideChatState,
+  MAX_EXTENSION_NOTIFICATIONS,
+  type PromptDisposition,
+  type BuiltInRuntimeState,
+  type ExtensionNotificationItem,
+  type SubagentProjection,
+  type TodoProjection,
 } from "@fffattiger/pix-runtime-core";
-import { mapDriverError, mapMessage } from "../mappers/index.js";
+import { mapDriverError, mapMessage, sanitizeValue } from "../mappers/index.js";
 import { redactText } from "./sanitize.js";
 import type { DriverUiRequest, PiRuntimeDriver } from "./types.js";
+import {
+  extractWritePaths,
+  FileActivityTracker,
+  SideChatControllerError,
+  type SideChatController,
+  type SideChatState as ControllerSideChatState,
+} from "./vendor/pi-side-chat/index.js";
 
 const COMMAND_TYPES = new Set<string>(RUNTIME_COMMAND_TYPES);
+
+function sideChatContentText(content: unknown, kind: "text" | "thinking" = "text"): string {
+  if (typeof content === "string") return kind === "text" ? content : "";
+  if (!Array.isArray(content)) return "";
+  return content.map((block) => {
+    if (typeof block !== "object" || block === null || (block as { type?: unknown }).type !== kind) return "";
+    const field = kind === "text" ? (block as { text?: unknown }).text : (block as { thinking?: unknown }).thinking;
+    return typeof field === "string" ? field : "";
+  }).join("");
+}
+
+function canonicalSideChatState(
+  state: ControllerSideChatState,
+  capturedModel: NonNullable<RuntimeState["model"]>,
+  capturedThinkingLevel: NonNullable<RuntimeState["thinkingLevel"]>,
+): SideChatState {
+  const messages = state.messages.flatMap((message, index) => {
+    if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return [];
+    const text = sideChatContentText(message.content);
+    const thinking = message.role === "assistant" ? sideChatContentText(message.content, "thinking") : "";
+    return [{
+      id: `side-message-${index}`,
+      role: message.role,
+      text,
+      ...(thinking.length === 0 ? {} : { thinking }),
+      ...(message.role !== "toolResult" || message.toolName === undefined ? {} : { toolName: message.toolName }),
+      ...(message.role !== "toolResult" || message.isError === undefined ? {} : { isError: message.isError }),
+      textTruncated: false,
+      thinkingTruncated: false,
+    }];
+  });
+  return boundSideChatState({
+    conversationId: state.conversationId,
+    revision: state.revision,
+    ...(state.runId === undefined ? {} : { runId: state.runId }),
+    capturedModel,
+    capturedThinkingLevel,
+    mode: state.mode,
+    status: state.status === "disposed" ? "idle" : state.status,
+    messages,
+    messagesTruncated: false,
+    totalCharsTruncated: false,
+    stream: {
+      text: state.streamingAssistant.text,
+      thinking: state.streamingAssistant.thinking,
+      textTruncated: false,
+      thinkingTruncated: false,
+    },
+    tools: state.tools.map((tool) => ({ ...tool, nameTruncated: false })),
+    ...(state.pendingOverlap === undefined ? {} : {
+      pendingOverlap: {
+        id: state.pendingOverlap.requestId,
+        runId: state.pendingOverlap.runId,
+        path: state.pendingOverlap.path,
+        pathTruncated: false,
+      },
+    }),
+    ...(state.error === undefined ? {} : {
+      error: { code: "run_failed" as const, message: "Side chat request failed" as const },
+    }),
+  });
+}
+
+function mapSideChatControllerError(error: unknown): RuntimeError {
+  if (!(error instanceof SideChatControllerError)) return mapDriverError(error);
+  const message = error.code === "not_found"
+    ? "side chat target not found"
+    : error.code === "session_busy"
+      ? "side chat is busy"
+      : error.code === "invalid_input"
+        ? "side chat input is invalid"
+        : "side chat is unavailable";
+  return makeRuntimeError(error.code, message);
+}
+
+function cloneBuiltIns(value: unknown): BuiltInRuntimeState | undefined {
+  const normalized = normalizeBuiltInRuntimeState(value);
+  return normalized ?? undefined;
+}
+
+function cloneSubagents(value: unknown): SubagentProjection | undefined {
+  const normalized = normalizeSubagentProjection(value);
+  return normalized ?? undefined;
+}
+
+function cloneTodo(value: unknown): TodoProjection | undefined {
+  const normalized = normalizeTodoProjection(value);
+  return normalized ?? undefined;
+}
 
 /**
  * Fixed sanitized navigate-failure message per canonical code. The worker/adapter
@@ -157,9 +265,21 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private forwardedCompactionStartAt: number | null = null;
   private pendingUi = new Map<string, PendingUi>();
   private extensionStatuses = new Map<string, string>();
+  /** Bounded most-recent non-error extension notifications (`ctx.ui.notify`). */
+  private extensionNotifications: ExtensionNotificationItem[] = [];
   private extensionWidgets = new Map<string, { key: string; lines: readonly string[]; placement: "aboveEditor" | "belowEditor" }>();
   private writtenFiles = new Set<string>();
-  private pendingToolWrites = new Map<string, { toolName: string; path: string }>();
+  private pendingToolWrites = new Map<string, { toolName: string; path?: string; trackerPaths: readonly string[] }>();
+  private readonly sideChatTracker = new FileActivityTracker();
+  private sideChat: {
+    controller: SideChatController;
+    unsubscribe: () => void;
+    capturedModel: NonNullable<RuntimeState["model"]>;
+    capturedThinkingLevel: NonNullable<RuntimeState["thinkingLevel"]>;
+  } | undefined;
+  private sideChatState: SideChatState | null = null;
+  /** Serializes reload with side-chat lifecycle commands; interrupts and close deliberately bypass it. */
+  private sideChatLifecycleBusy = false;
   private completedToolCalls = new Set<string>();
   private pendingBashTerminals: PendingBashTerminal[] = [];
   private thinkingPinned = false;
@@ -174,14 +294,22 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       sessionFile: driver.identity.sessionFile,
       ...(driver.identity.createdAt === undefined ? {} : { createdAt: driver.identity.createdAt }),
     };
-    this.capabilities = createCapabilitySet(driver.capabilities, 1);
+    const driverCapabilities = driver.createSideChatController === undefined
+      ? driver.capabilities.filter((capability) => capability !== "runtime.side_chat")
+      : driver.capabilities;
+    this.capabilities = createCapabilitySet(driverCapabilities, 1);
     this.thinkingPinned = options?.thinkingPinned ?? false;
     if (this.thinkingPinned) this.pinnedThinkingLevel = driver.getState().thinkingLevel;
     this.unsubscribeDriver = driver.subscribe((event) => this.handleDriverEvent(event));
     this.readyPromise = driver.bindUi(
       (request) => this.registerUiRequest(request),
-      (event) => this.emit(event),
-    );
+      (event) => this.handleDriverCanonicalEvent(event),
+    ).then(() => {
+      const boundCapabilities = this.driver.createSideChatController === undefined
+        ? this.driver.capabilities.filter((capability) => capability !== "runtime.side_chat")
+        : this.driver.capabilities;
+      this.capabilities = createCapabilitySet(boundCapabilities, this.capabilities.version);
+    });
   }
 
   async ready(): Promise<void> {
@@ -222,6 +350,27 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   }
 
   /**
+   * Driver-projected canonical UI events (bindUi emit lane): keep the
+   * snapshot-visible rings (statuses/widgets/notifications) in sync, then
+   * publish unchanged. Single ownership: the driver projects SDK uiContext
+   * calls; ONLY the adapter mutates its own projection state.
+   */
+  private handleDriverCanonicalEvent(event: RuntimeEvent): void {
+    if (event.type === "extension_statuses") {
+      this.extensionStatuses = new Map(event.statuses.map((item) => [item.key, item.text]));
+    } else if (event.type === "extension_widgets") {
+      this.extensionWidgets = new Map(event.widgets.map((item) => [item.key, item]));
+    } else if (event.type === "extension_notification") {
+      this.extensionNotifications = [...this.extensionNotifications, {
+        level: event.level,
+        message: event.message,
+        at: event.at,
+      }].slice(-MAX_EXTENSION_NOTIFICATIONS);
+    }
+    this.emit(event);
+  }
+
+  /**
    * Phase 5A: publish the canonical `session_changed` RuntimeEvent on the
    * REGULAR subscribe channel, built from the AUTHORITATIVE driver
    * identity/state at call time (never a caller-supplied or cached leaf —
@@ -245,11 +394,40 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       return this.failure(type, makeRuntimeError("invalid_command", `unknown command type: ${type}`));
     }
     const capability = requiredCapabilityForCommand(command.type);
+    const commandType = command.type;
     if (capability && !this.capabilities.capabilities.includes(capability)) {
       return this.failure(command.type, unsupportedCapabilityError(capability));
     }
+    const usesSideChatLifecycle = command.type === "reload" || command.type === "side_chat_start" || command.type === "side_chat_send" || command.type === "side_chat_reset" || command.type === "side_chat_set_mode" || command.type === "side_chat_overlap_response";
+    if (usesSideChatLifecycle && this.sideChatLifecycleBusy) {
+      return this.failure(command.type, makeRuntimeError("session_busy", "side chat lifecycle is busy", { retryable: true }));
+    }
+    if (usesSideChatLifecycle) this.sideChatLifecycleBusy = true;
     try {
       switch (command.type) {
+        case "side_chat_start": {
+          const conversationId = this.startSideChat();
+          return { ok: true, type: "side_chat_start", conversationId };
+        }
+        case "side_chat_send": {
+          const side = this.requireSideChat(command.conversationId);
+          const submission = side.controller.submit(command.message);
+          return { ok: true, type: "side_chat_send", runId: submission.runId };
+        }
+        case "side_chat_reset": {
+          this.requireSideChat(command.conversationId);
+          await this.disposeSideChat(true);
+          const conversationId = this.startSideChat();
+          return { ok: true, type: "side_chat_reset", conversationId };
+        }
+        case "side_chat_set_mode": {
+          this.requireSideChat(command.conversationId).controller.setMode(command.mode);
+          return { ok: true, type: "side_chat_set_mode" };
+        }
+        case "side_chat_overlap_response": {
+          this.requireSideChat(command.conversationId).controller.resolveOverlap(command.requestId, command.proceed);
+          return { ok: true, type: "side_chat_overlap_response" };
+        }
         case "prompt": {
           // Protocol-v2 compatibility path: reuse the SAME atomic turn-start
           // implementation, but preserve the old command contract by awaiting
@@ -260,33 +438,38 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           });
           if (!handle.admission.ok) return this.failure("prompt", handle.admission.error);
           const terminal = await handle.completion;
-          return terminal.ok ? { ok: true, type: "prompt" } : this.failure("prompt", terminal.error);
+          if (!terminal.ok) return this.failure("prompt", terminal.error);
+          return {
+            ok: true,
+            type: "prompt",
+            ...(terminal.disposition === undefined ? {} : { disposition: terminal.disposition }),
+          };
         }
         case "steer": {
-          if (this.driver.getState().isStreaming) {
+          // Pi 1.0 receipt: only "queued" parks a queue entry; "handled" means
+          // an extension input handler consumed it and the SDK queued nothing.
+          // The SDK emits queue_update synchronously while the call runs; an
+          // authoritative reconcile from driver state covers any missed event.
+          const disposition = await this.driver.steer(command.message, command.images);
+          if (disposition === "queued") {
+            const state = this.driver.getState();
             this.queued = {
-              ...this.queued,
-              steering: [...this.queued.steering, {
-                message: command.message,
-                ...(command.images === undefined ? {} : { images: command.images }),
-              }],
+              steering: this.reconcileQueue(this.queued.steering, state.steering),
+              followUp: this.reconcileQueue(this.queued.followUp, state.followUp),
             };
           }
-          await this.driver.steer(command.message, command.images);
-          return { ok: true, type: "steer" };
+          return { ok: true, type: "steer", disposition };
         }
         case "follow_up": {
-          if (this.driver.getState().isStreaming) {
+          const disposition = await this.driver.followUp(command.message, command.images);
+          if (disposition === "queued") {
+            const state = this.driver.getState();
             this.queued = {
-              ...this.queued,
-              followUp: [...this.queued.followUp, {
-                message: command.message,
-                ...(command.images === undefined ? {} : { images: command.images }),
-              }],
+              steering: this.reconcileQueue(this.queued.steering, state.steering),
+              followUp: this.reconcileQueue(this.queued.followUp, state.followUp),
             };
           }
-          await this.driver.followUp(command.message, command.images);
-          return { ok: true, type: "follow_up" };
+          return { ok: true, type: "follow_up", disposition };
         }
         case "abort":
           await this.driver.abort();
@@ -430,10 +613,22 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         }
         case "reload": {
           this.clearToolCorrelations();
+          await this.disposeSideChat(true);
+          if (this.closed) return this.failure("reload", makeRuntimeError("unavailable", "runtime is closed"));
           const capabilities = await this.driver.reload();
+          if (this.closed) return this.failure("reload", makeRuntimeError("unavailable", "runtime is closed"));
           await this.reapplyPinnedThinking();
-          this.capabilities = createCapabilitySet(capabilities, this.capabilities.version + 1);
+          if (this.closed) return this.failure("reload", makeRuntimeError("unavailable", "runtime is closed"));
+          const advertisedCapabilities = this.driver.createSideChatController === undefined
+            ? capabilities.filter((capability) => capability !== "runtime.side_chat")
+            : capabilities;
+          this.capabilities = createCapabilitySet(advertisedCapabilities, this.capabilities.version + 1);
           this.emit({ type: "runtime_capabilities_changed", sessionId: this.identity.sessionId, capabilities: this.capabilities });
+          const reloaded = this.driver.getState();
+          if (reloaded.builtIns) this.emit({ type: "built_ins_changed", sessionId: this.identity.sessionId, builtIns: cloneBuiltIns(reloaded.builtIns)! });
+          if (reloaded.subagents) this.emit({ type: "subagents_changed", sessionId: this.identity.sessionId, subagents: cloneSubagents(reloaded.subagents)! });
+          if (reloaded.todo) this.emit({ type: "todo_changed", sessionId: this.identity.sessionId, todo: cloneTodo(reloaded.todo)! });
+          this.emitState();
           return { ok: true, type: "reload" };
         }
         case "extension_ui_response": return this.resolveUi(command);
@@ -473,6 +668,9 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
                 : { excludeFromContext: command.excludeFromContext }),
             });
           });
+          for (const path of extractWritePaths("bash", { command: command.command })) {
+            this.sideChatTracker.trackWrite(path, this.driver.identity.cwd);
+          }
           const prior = this.bash;
           const streamed = prior?.output ?? "";
           const authoritative = result.output;
@@ -654,7 +852,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         }
       }
     } catch (error) {
-      const mapped = mapDriverError(error);
+      const mapped = mapSideChatControllerError(error);
       if (command.type === "prompt") {
         this.promptRunning = false;
         this.clearPendingToolWrites();
@@ -667,7 +865,10 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         });
       }
       return this.failure(command.type, mapped);
+    } finally {
+      if (usesSideChatLifecycle) this.sideChatLifecycleBusy = false;
     }
+    return this.failure(commandType, makeRuntimeError("invalid_command", "command was not handled"));
   }
 
   /**
@@ -766,8 +967,9 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       // Launch the prompt EXACTLY once; the long completion runs in the returned
       // promise and never holds the caller's ordinary control lane.
       const completion = (async (): Promise<RuntimeTurnTerminal> => {
+        let disposition: PromptDisposition | undefined;
         try {
-          await this.driver.prompt(input.prompt, input.images);
+          disposition = (await this.driver.prompt(input.prompt, input.images)).disposition;
           // Allow the message_end structural-correlation microtask to publish
           // the committed user identity before terminal snapshot capture.
           await Promise.resolve();
@@ -776,6 +978,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           return {
             ok: true,
             snapshot,
+            disposition,
             ...(this.activeTurnUserEntryId === undefined ? {} : { userEntryId: this.activeTurnUserEntryId }),
           };
         } catch (error) {
@@ -793,6 +996,9 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
             ok: false,
             error: mapped,
             snapshot,
+            // A rejected input still consumed the submission; without a real
+            // receipt the disposition is unknown, not "started".
+            ...(disposition === undefined ? {} : { disposition }),
             ...(this.activeTurnUserEntryId === undefined ? {} : { userEntryId: this.activeTurnUserEntryId }),
           };
         } finally {
@@ -864,10 +1070,15 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         case "abort_bash": this.driver.abortBash(); break;
         case "abort_compaction": this.driver.abortCompaction(); if (this.compaction) this.compaction = { ...this.compaction, status: "aborting" }; break;
         case "clear_queue": this.driver.clearQueue(); this.queued = { steering: [], followUp: [] }; break;
+        case "abort_side_chat": {
+          const side = this.requireSideChat(interrupt.conversationId);
+          await side.controller.abort();
+          break;
+        }
       }
       return { ok: true, type: interrupt.type };
     } catch (error) {
-      return { ok: false, type: interrupt.type, error: mapDriverError(error) };
+      return { ok: false, type: interrupt.type, error: mapSideChatControllerError(error) };
     }
   }
 
@@ -876,6 +1087,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     this.closed = true;
     this.closeReason = reason;
     this.unsubscribeDriver();
+    await this.disposeSideChat(false);
     this.clearToolCorrelations();
     // Cancel every pending request and emit its canonical close tombstone via
     // finishUiRequest (idempotent per id, so a synchronous onSettled and this
@@ -889,9 +1101,94 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     this.listeners.clear();
   }
 
+  private startSideChat(): string {
+    const existing = this.sideChat;
+    if (existing !== undefined) return existing.controller.getState().conversationId;
+    if (this.driver.createSideChatController === undefined) {
+      throw makeRuntimeError("unavailable", "side chat is unavailable");
+    }
+    const driverState = this.driver.getState();
+    if (driverState.model === null) throw makeRuntimeError("unavailable", "side chat requires an active model");
+    const capturedModel = { ...driverState.model };
+    const capturedThinkingLevel = driverState.thinkingLevel;
+    const controller = this.driver.createSideChatController(this.sideChatTracker);
+    const record = {
+      controller,
+      unsubscribe: () => {},
+      capturedModel,
+      capturedThinkingLevel,
+    };
+    record.unsubscribe = controller.subscribe((event) => {
+      if (this.closed || this.sideChat?.controller !== controller) return;
+      this.publishSideChatState(canonicalSideChatState(event.state, capturedModel, capturedThinkingLevel));
+    });
+    this.sideChat = record;
+    this.publishSideChatState(canonicalSideChatState(controller.getState(), capturedModel, capturedThinkingLevel), true);
+    return controller.getState().conversationId;
+  }
+
+  private requireSideChat(conversationId: string): NonNullable<CanonicalAgentRuntimeAdapter["sideChat"]> {
+    const side = this.sideChat;
+    if (side === undefined || side.controller.getState().conversationId !== conversationId) {
+      throw new SideChatControllerError("not_found", "side chat target not found");
+    }
+    return side;
+  }
+
+  private publishSideChatState(next: SideChatState, forceReplacement = false): void {
+    const previous = this.sideChatState;
+    this.sideChatState = next;
+    if (!forceReplacement && previous !== null && previous.conversationId === next.conversationId && previous.runId === next.runId) {
+      for (const kind of ["text", "thinking"] as const) {
+        const before = previous.stream[kind];
+        const after = next.stream[kind];
+        if (!after.startsWith(before) || after === before) continue;
+        const runId = next.runId;
+        if (runId === undefined) continue;
+        const delta = {
+          conversationId: next.conversationId,
+          runId,
+          previousRevision: previous.revision,
+          revision: next.revision,
+          kind,
+          delta: after.slice(before.length),
+        };
+        try {
+          if (JSON.stringify(applySideChatDelta(previous, delta)) === JSON.stringify(next)) {
+            this.emit({ type: "side_chat_delta", sessionId: this.identity.sessionId, delta });
+            return;
+          }
+        } catch { /* fall through to authoritative replacement */ }
+      }
+    }
+    this.emit({ type: "side_chat_changed", sessionId: this.identity.sessionId, sideChat: next });
+  }
+
+  private async disposeSideChat(publish: boolean): Promise<void> {
+    const side = this.sideChat;
+    if (side === undefined) {
+      if (publish && this.sideChatState !== null) {
+        this.sideChatState = null;
+        this.emit({ type: "side_chat_changed", sessionId: this.identity.sessionId, sideChat: null });
+      }
+      return;
+    }
+    side.unsubscribe();
+    this.sideChat = undefined;
+    await side.controller.dispose();
+    if (this.sideChat !== undefined) return;
+    this.sideChatState = null;
+    if (publish && !this.closed) {
+      this.emit({ type: "side_chat_changed", sessionId: this.identity.sessionId, sideChat: null });
+    }
+  }
+
   private buildState(): RuntimeState {
     const state = this.driver.getState();
     const queuedMessages: QueuedMessages = this.queued;
+    const builtIns = cloneBuiltIns(state.builtIns);
+    const subagents = cloneSubagents(state.subagents);
+    const todo = cloneTodo(state.todo);
     return {
       sessionId: this.identity.sessionId,
       sessionFile: this.identity.sessionFile,
@@ -914,10 +1211,15 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       thinkingLevelPinned: this.thinkingPinned,
       tools: state.tools,
       extensionStatuses: [...this.extensionStatuses].map(([key, text]) => ({ key, text })),
+      extensionNotifications: [...this.extensionNotifications],
       extensionWidgets: [...this.extensionWidgets.values()],
       pendingExtensionUi: [...this.pendingUi.values()].map((item) => item.request),
       ...(state.sessionName === undefined ? {} : { sessionName: state.sessionName }),
       writtenFiles: [...this.writtenFiles],
+      ...(builtIns === undefined ? {} : { builtIns }),
+      ...(subagents === undefined ? {} : { subagents }),
+      ...(todo === undefined ? {} : { todo }),
+      sideChat: this.sideChatState,
     };
   }
 
@@ -1010,12 +1312,18 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         const toolName = String(raw.toolName ?? raw.name ?? "");
         this.completedToolCalls.delete(toolCallId);
         const target = this.writtenTarget(toolName, raw.args);
-        if (target) this.pendingToolWrites.set(toolCallId, { toolName, path: target });
-        else this.pendingToolWrites.delete(toolCallId);
-        this.emit({ type, sessionId, toolCallId, toolName, ...(raw.args === undefined ? {} : { args: raw.args }) });
+        const trackerPaths = extractWritePaths(toolName, raw.args);
+        if (target !== undefined || trackerPaths.length > 0) {
+          this.pendingToolWrites.set(toolCallId, {
+            toolName,
+            ...(target === undefined ? {} : { path: target }),
+            trackerPaths,
+          });
+        } else this.pendingToolWrites.delete(toolCallId);
+        this.emit({ type, sessionId, toolCallId, toolName, ...(typeof raw.parentToolCallId === "string" ? { parentToolCallId: raw.parentToolCallId } : {}), ...(raw.args === undefined ? {} : { args: sanitizeValue(raw.args) }) });
         return;
       }
-      case "tool_execution_update": this.emit({ type, sessionId, toolCallId: String(raw.toolCallId ?? raw.id ?? ""), ...(typeof raw.toolName === "string" ? { toolName: raw.toolName } : {}), ...(raw.partialResult === undefined ? {} : { partialResult: raw.partialResult }) }); return;
+      case "tool_execution_update": this.emit({ type, sessionId, toolCallId: String(raw.toolCallId ?? raw.id ?? ""), ...(typeof raw.parentToolCallId === "string" ? { parentToolCallId: raw.parentToolCallId } : {}), ...(typeof raw.toolName === "string" ? { toolName: raw.toolName } : {}), ...(raw.partialResult === undefined ? {} : { partialResult: sanitizeValue(raw.partialResult) }) }); return;
       case "tool_execution_end": {
         const toolCallId = String(raw.toolCallId ?? raw.id ?? "");
         if (this.completedToolCalls.has(toolCallId)) return;
@@ -1024,9 +1332,12 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         this.pendingToolWrites.delete(toolCallId);
         const endToolName = typeof raw.toolName === "string" ? raw.toolName : undefined;
         const target = correlation && endToolName === correlation.toolName ? correlation.path : undefined;
+        if (raw.isError === false && correlation !== undefined && endToolName === correlation.toolName) {
+          for (const path of correlation.trackerPaths) this.sideChatTracker.trackWrite(path, this.driver.identity.cwd);
+        }
         const writtenFiles = raw.isError === false && target ? [target] : [];
         for (const path of writtenFiles) this.writtenFiles.add(path);
-        this.emit({ type, sessionId, toolCallId, ...(typeof raw.toolName === "string" ? { toolName: raw.toolName } : {}), ...(typeof raw.isError === "boolean" ? { isError: raw.isError } : {}), ...(raw.result === undefined ? {} : { result: raw.result }), ...(writtenFiles.length ? { writtenFiles } : {}) });
+        this.emit({ type, sessionId, toolCallId, ...(typeof raw.parentToolCallId === "string" ? { parentToolCallId: raw.parentToolCallId } : {}), ...(typeof raw.toolName === "string" ? { toolName: raw.toolName } : {}), ...(typeof raw.isError === "boolean" ? { isError: raw.isError } : {}), ...(raw.result === undefined ? {} : { result: sanitizeValue(raw.result) }), ...(writtenFiles.length ? { writtenFiles } : {}) });
         return;
       }
       case "queue_update": {
@@ -1113,6 +1424,32 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         return;
       }
       case "session_info_changed": if (typeof raw.name === "string") this.emit({ type: "session_title", sessionId, name: raw.name }); this.emitState(); return;
+      case "built_ins_changed": {
+        const builtIns = cloneBuiltIns(raw.builtIns as BuiltInRuntimeState);
+        if (builtIns) this.emit({ type: "built_ins_changed", sessionId, builtIns });
+        return;
+      }
+      case "subagents_changed": {
+        const subagents = cloneSubagents(raw.subagents as SubagentProjection);
+        if (subagents) this.emit({ type: "subagents_changed", sessionId, subagents });
+        return;
+      }
+      case "subagent_delta": {
+        if (typeof raw.childSessionId !== "string" || typeof raw.done !== "boolean") return;
+        this.emit({
+          type: "subagent_delta",
+          sessionId,
+          childSessionId: raw.childSessionId,
+          partial: mapMessage(raw.partial, true) as StreamingAgentMessage,
+          done: raw.done,
+        });
+        return;
+      }
+      case "todo_changed": {
+        const todo = cloneTodo(raw.todo as TodoProjection);
+        if (todo) this.emit({ type: "todo_changed", sessionId, todo });
+        return;
+      }
       default: return;
     }
   }
@@ -1174,7 +1511,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   }
 
   private writtenTarget(toolName: string, args: unknown): string | undefined {
-    // Pi SDK 0.84 built-in write/edit both expose the target only as start args.path.
+    // Pi SDK 0.87 built-in write/edit both expose the target only as start args.path.
     if (toolName !== "write" && toolName !== "edit") return undefined;
     if (!args || typeof args !== "object") return undefined;
     const path = (args as Record<string, unknown>).path;

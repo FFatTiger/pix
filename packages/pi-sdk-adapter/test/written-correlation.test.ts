@@ -14,6 +14,23 @@ async function setup() {
 }
 
 describe("production adapter written-file correlation", () => {
+  it("preserves parent call identity on nested writes without losing write tracking", async () => {
+    const { driver, adapter, events } = await setup();
+    try {
+      driver.emit({ type: "tool_execution_start", toolCallId: "code/0", parentToolCallId: "code", toolName: "write", args: { path: "nested.txt", content: "a" } });
+      driver.emit({ type: "tool_execution_update", toolCallId: "code/0", parentToolCallId: "code", toolName: "write", partialResult: { api_key: "private-value" } });
+      driver.emit({ type: "tool_execution_end", toolCallId: "code/0", parentToolCallId: "code", toolName: "write", isError: false, result: { token: "private-value" } });
+      const nested = events.filter((event) => event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end");
+      assert.equal(nested.length, 3);
+      assert.ok(nested.every((event) => event.parentToolCallId === "code"));
+      assert.equal(events.some((event) => event.type === "message_end"), false, "nested execution must not fabricate transcript entries");
+      assert.equal(JSON.stringify(nested).includes("private-value"), false);
+      assert.deepEqual((await adapter.getSnapshot()).state.writtenFiles, ["/workspace/nested.txt"]);
+    } finally {
+      await adapter.close("user");
+    }
+  });
+
   it("derives a canonical path from real-shaped start args, not end result fields", async () => {
     const { adapter, events } = await setup();
     const result = await adapter.execute({ type: "prompt", message: "write file" });

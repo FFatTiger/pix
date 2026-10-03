@@ -269,18 +269,6 @@ function buildSessionTree(sessions: readonly SessionHeader[]): SessionTreeNode[]
   return roots;
 }
 
-function treeContainsSession(node: SessionTreeNode, sessionId: string): boolean {
-  return node.session.sessionId === sessionId
-    || node.children.some((child) => treeContainsSession(child, sessionId));
-}
-
-function selectedRootFirst(nodes: readonly SessionTreeNode[], sessionId: string | null): SessionTreeNode[] {
-  if (sessionId === null) return [...nodes];
-  const index = nodes.findIndex((node) => treeContainsSession(node, sessionId));
-  if (index <= 0) return [...nodes];
-  return [nodes[index]!, ...nodes.slice(0, index), ...nodes.slice(index + 1)];
-}
-
 function dedupeSessions(sessions: readonly SessionHeader[]): SessionHeader[] {
   const seen = new Set<string>();
   return sessions.filter((session) => {
@@ -592,7 +580,7 @@ export function Sidebar({
   const pinnedProjectRoots = new Set(itemState.pinnedProjects);
 
   const recentSessionPool = searchScopedSessions.filter((session) => !archivedSessionIds.has(session.sessionId));
-  const sessionTree = selectedRootFirst(buildSessionTree(recentSessionPool), selectedSessionId);
+  const sessionTree = buildSessionTree(recentSessionPool);
   const pinnedSessionNodes = itemState.pinnedSessions
     .map((sessionId, index): SessionTreeNode | undefined => {
       const loaded = sessionTree.find((node) => node.session.sessionId === sessionId);
@@ -651,7 +639,7 @@ export function Sidebar({
     const nestedSessions = (nestedPages?.sessions ?? []).filter(
       (session) => !archivedSessionIds.has(session.sessionId),
     );
-    const nestedTree = selectedRootFirst(buildSessionTree(nestedSessions), selectedSessionId);
+    const nestedTree = buildSessionTree(nestedSessions);
     const projectRunning = runningProjectRoots.has(project)
       || nestedSessions.some((session) => runningSessionIds.has(session.sessionId));
     const pinned = pinnedProjectRoots.has(project);

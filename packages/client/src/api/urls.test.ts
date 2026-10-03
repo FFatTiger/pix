@@ -7,6 +7,7 @@ describe("v1 URL builders", () => {
     expect(urls.bootstrap()).toBe("/v1/bootstrap");
     expect(urls.sessions.byId("a/b ?#")).toBe("/v1/sessions/a%2Fb%20%3F%23");
     expect(urls.sessions.list({ page: 3, pageSize: 50, cwd: "/repo x" })).toBe("/v1/sessions?page=3&pageSize=50&cwd=%2Frepo+x");
+    expect(urls.sessions.list({ page: 1, pageSize: 50, parentSessionId: "parent-1" })).toBe("/v1/sessions?page=1&pageSize=50&parentSessionId=parent-1");
     expect(urls.projects.list({ page: 2, pageSize: 10 })).toBe("/v1/projects?page=2&pageSize=10");
     expect(urls.sessions.thinking("s/1", "e/2", 3)).toBe("/v1/sessions/s%2F1/entries/e%2F2/thinking?blockIndex=3");
     expect(urls.sessions.context("s1", { deferThinking: true, deferMedia: true })).toBe("/v1/sessions/s1/context?deferThinking=1&deferMedia=1");

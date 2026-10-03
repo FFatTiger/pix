@@ -141,6 +141,57 @@ test("GET /v1/sessions forwards page/pageSize/cwd/projectRoot params", async () 
   assert.deepEqual(captured, { page: 3, pageSize: 5, cwd: "/p", projectRoot: "/root" });
 });
 
+test("GET /v1/sessions forwards parentSessionId and rejects unknown query keys", async () => {
+  let captured;
+  const app = appWith(
+    fakeClient({
+      async list(params) {
+        captured = params;
+        return { sessions: [] };
+      },
+      async read() {
+        return { ...header() };
+      },
+      async context() {
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
+      },
+    }),
+  );
+  const res = await call(app, "/v1/sessions?page=1&pageSize=50&parentSessionId=parent-1");
+  assert.equal(res.status, 200);
+  assert.deepEqual(captured, { page: 1, pageSize: 50, parentSessionId: "parent-1" });
+  const rejected = await call(app, "/v1/sessions?page=1&pageSize=50&childOf=parent-1");
+  assert.equal(rejected.status, 400);
+  assert.equal((await rejected.json()).code, "INVALID_QUERY");
+  for (const invalidParent of ["", "%20%20"]) {
+    const invalid = await call(app, `/v1/sessions?parentSessionId=${invalidParent}`);
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).code, "INVALID_QUERY");
+  }
+  assert.equal(captured.parentSessionId, "parent-1");
+});
+
+test("GET /v1/sessions maps unknown parent not_found to 404", async () => {
+  const app = appWith(
+    fakeClient({
+      async list() {
+        throw { code: "not_found", message: "session not found: secret-parent", retryable: false };
+      },
+      async read() {
+        return { ...header() };
+      },
+      async context() {
+        return { sessionId: "s1", entries: [], pageInfo: { hasMore: false } };
+      },
+    }),
+  );
+  const res = await call(app, "/v1/sessions?parentSessionId=secret-parent");
+  assert.equal(res.status, 404);
+  const body = await res.json();
+  assert.equal(body.code, "SESSION_NOT_FOUND");
+  assert.ok(!JSON.stringify(body).includes("secret-parent"));
+});
+
 test("empty cwd is treated as no filter", async () => {
   let captured;
   const app = appWith(

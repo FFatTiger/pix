@@ -16,6 +16,7 @@ import {
 
 type UserMessage = Extract<AgentMessage, { role: "user" }>;
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
+type AssistantToolCall = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
 
 const USAGE: AssistantMessage["usage"] = {
   input: 0,
@@ -66,7 +67,7 @@ function textBlock(text: string): { type: "text"; text: string } {
 function toolCallBlock(
   id: string,
   name = "grep",
-): { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> } {
+): AssistantToolCall {
   return { type: "toolCall", id, name, arguments: {} };
 }
 
