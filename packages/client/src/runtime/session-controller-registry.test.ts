@@ -1417,6 +1417,48 @@ describe("SessionControllerRegistry — exact bounded retention and one lease", 
     h.dispose();
   });
 
+  it("held B is unaffected when superseded A's pending existing_only attach later fails", async () => {
+    const h = createHarness({ storeOptions: { maxControllers: 3 } });
+    const ws = await ready(h, ["runtime.running-watch.v1", "runtime.submit-turn.v1", "runtime.observe-existing.v1"]);
+    const observeA = h.registry.observeExisting("A");
+    await flush();
+    const attachA = lastFrame<{ type: "attach"; id: string; payload: Record<string, unknown> }>(ws, "attach")!;
+    expect(attachA.payload).toEqual({ sessionId: "A", attachMode: "existing_only" });
+
+    const observeB = h.registry.observeExisting("B");
+    await flush();
+    const attachB = lastFrame<{ type: "attach"; id: string; payload: Record<string, unknown> }>(ws, "attach")!;
+    expect(attachB.payload).toEqual({ sessionId: "B", attachMode: "existing_only" });
+    expect(attachB.id).not.toBe(attachA.id);
+    ws.serverSend({ type: "snapshot", id: attachB.id, payload: snapshotPayload({ sessionId: "B", epoch: "eB" }) });
+    await observeB;
+    expect(h.registry.leaseSnapshot).toMatchObject({ phase: "held", holderSessionId: "B", desiredSessionId: "B" });
+    const heldB = h.controller("B")!.getSnapshot();
+    expect(heldB).toMatchObject({ sessionId: "B", attached: true, epoch: "eB", error: null });
+    const activateBeforeLateA = ws.sent.filter((frame) => (frame as { type?: string }).type === "activate").length;
+
+    ws.serverSend({
+      type: "response",
+      id: attachA.id,
+      payload: { ok: false, error: { code: "not_found", message: "A gone", retryable: false } },
+    });
+    await expect(observeA).rejects.toMatchObject({ code: "interrupted", retryable: false });
+    await flush();
+
+    expect(h.registry.leaseSnapshot).toMatchObject({ phase: "held", holderSessionId: "B", desiredSessionId: "B" });
+    expect(h.controller("B")!.getSnapshot()).toMatchObject({
+      sessionId: "B",
+      attached: true,
+      epoch: "eB",
+      error: null,
+      snapshot: expect.objectContaining({ sessionId: "B" }),
+    });
+    expect(h.controller("B")!.getSnapshot().error).toBeNull();
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "activate")).toHaveLength(activateBeforeLateA);
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "activate")).toHaveLength(0);
+    h.dispose();
+  });
+
   it("observeExisting stamps attachMode existing_only and never falls back to activating attach", async () => {
     const h = createHarness();
     const ws = await ready(h, ["runtime.running-watch.v1", "runtime.submit-turn.v1", "runtime.observe-existing.v1"]);

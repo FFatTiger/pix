@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import type { ExtensionUiRequest } from "@fffattiger/pix-protocol";
 import { useI18n } from "@/hooks/useI18n";
 
@@ -20,11 +20,14 @@ export function ExtensionDialog({
   const { t } = useI18n();
   const titleId = useId();
   const promptId = `${titleId}-prompt`;
-  const [value, setValue] = useState(request.method === "editor" ? request.prefill ?? "" : "");
-
-  useEffect(() => {
-    setValue(request.method === "editor" ? request.prefill ?? "" : "");
-  }, [request]);
+  const initialValue = request.method === "editor" ? request.prefill ?? "" : "";
+  const [value, setValue] = useState(initialValue);
+  const [draftIdentity, setDraftIdentity] = useState(`${request.id}:${request.method}`);
+  const nextIdentity = `${request.id}:${request.method}`;
+  if (draftIdentity !== nextIdentity) {
+    setDraftIdentity(nextIdentity);
+    setValue(initialValue);
+  }
 
   const submitValue = () => {
     if (request.method === "confirm") {

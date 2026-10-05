@@ -169,7 +169,7 @@ switch (mode) {
     break;
   }
   case "oversize": {
-    const huge = "x".repeat(2 * 1024 * 1024 + 64);
+    const huge = "x".repeat(16 * 1024 * 1024 + 64);
     process.stdout.write(`{"type":"worker.ready","id":"x","payload":{"sessionId":"${huge}","workerStatus":"ready"}}\n`);
     process.exit(0);
     break;

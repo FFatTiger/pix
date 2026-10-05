@@ -11,11 +11,12 @@
  * giving the composition root a graceful-exit gate before process.exit.
  */
 import type { Writable as NodeWritableStream } from "node:stream";
+import { MAX_RUNTIME_FRAME_COUNT, MAX_RUNTIME_QUEUED_BYTES } from "@fffattiger/pix-protocol";
 
 export interface SerialStdoutWriterOptions {
   /** Max frames waiting in the queue. */
   maxQueuedFrames?: number;
-  /** Max queued bytes before overflow. */
+  /** Max queued UTF-8 bytes, including NDJSON newlines, before overflow. */
   maxQueuedBytes?: number;
 }
 
@@ -41,8 +42,8 @@ export class SerialStdoutWriter {
   private readonly maxQueuedBytes: number;
 
   constructor(private readonly stream: NodeWritableStream, options: SerialStdoutWriterOptions = {}) {
-    this.maxQueuedFrames = options.maxQueuedFrames ?? 256;
-    this.maxQueuedBytes = options.maxQueuedBytes ?? 4 * 1024 * 1024;
+    this.maxQueuedFrames = options.maxQueuedFrames ?? MAX_RUNTIME_FRAME_COUNT;
+    this.maxQueuedBytes = options.maxQueuedBytes ?? MAX_RUNTIME_QUEUED_BYTES;
     stream.once("close", () => this.fail(new Error("stdout writer closed")));
     stream.once("error", (error) => this.fail(error));
   }
@@ -56,7 +57,7 @@ export class SerialStdoutWriter {
     if (this.closed) {
       return Promise.reject(this.failure ?? new Error("stdout writer is closed"));
     }
-    const bytes = Buffer.byteLength(data);
+    const bytes = Buffer.byteLength(data, "utf8") + 1;
     if (this.queue.length >= this.maxQueuedFrames || this.queuedBytes + bytes > this.maxQueuedBytes) {
       const error = new Error("stdout writer queue overflowed");
       this.fail(error);

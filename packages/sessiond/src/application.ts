@@ -4,6 +4,7 @@ import type {
   SessiondRpcMethod,
 } from "@fffattiger/pix-protocol";
 import {
+  MAX_HISTORY_RESPONSE_BYTES,
   PROTOCOL_VERSION,
   SESSIOND_BUILD_CAPABILITIES,
   SESSIOND_BUILD_IDENTITY,
@@ -139,7 +140,11 @@ export class SessiondApplication implements SessiondRpcHandler {
           ...(input.deferThinking === undefined ? {} : { deferThinking: input.deferThinking }),
           ...(input.deferMedia === undefined ? {} : { deferMedia: input.deferMedia }),
         });
-        return SessionContextSchema.parse(context);
+        const parsed = SessionContextSchema.parse(context);
+        if (Buffer.byteLength(JSON.stringify(parsed) + "\n", "utf8") > MAX_HISTORY_RESPONSE_BYTES) {
+          throw new SessiondError("unavailable", "sessions.context exceeds the lightweight history budget", false);
+        }
+        return parsed;
       }
       case "sessions.thinking": {
         // Read-only deferred-thinking resolution over the SAME persisted-JSONL

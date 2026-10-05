@@ -58,3 +58,12 @@ export type RuntimeObserveExistingFeature = typeof RUNTIME_OBSERVE_EXISTING_FEAT
 /** Browser-to-Host explicit activation request; never implies prompt dispatch. */
 export const RUNTIME_EXPLICIT_ACTIVATE_FEATURE = "runtime.explicit-activate.v1" as const;
 export type RuntimeExplicitActivateFeature = typeof RUNTIME_EXPLICIT_ACTIVATE_FEATURE;
+
+/**
+ * Native questionnaire extension UI (typed request/response, no RPC walker).
+ * Advertised by a compatible Client; accepted only by a backend whose wire
+ * schemas and Host fence understand `method: "questionnaire"`. Old strict v2
+ * clients that omit this token never receive questionnaire-bearing frames.
+ */
+export const RUNTIME_QUESTIONNAIRE_FEATURE = "runtime.questionnaire.v1" as const;
+export type RuntimeQuestionnaireFeature = typeof RUNTIME_QUESTIONNAIRE_FEATURE;

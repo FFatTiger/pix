@@ -36,7 +36,12 @@ const _confirmedMethod: IsExact<
 // The cancelled variant is allowed for every interactive method.
 const _cancelledMethods: IsExact<
   Extract<ExtensionUiResponseCommand, { cancelled: true }>["method"],
-  "select" | "confirm" | "input" | "editor" | "custom"
+  "select" | "confirm" | "input" | "editor" | "custom" | "questionnaire"
+> = true;
+
+const _questionnaireMethods: IsExact<
+  Extract<ExtensionUiResponseCommand, { answers: readonly import("./questionnaire.js").QuestionnaireAnswer[] }> ["method"],
+  "questionnaire"
 > = true;
 
 // Incremental input is input/editor/custom (E15: custom panels stream raw key data).
@@ -62,6 +67,29 @@ test("extension_ui_input carries the exact correlated method", () => {
   assert.equal(custom.method, "custom");
   // JSON-serializable, backend-neutral (terminal control bytes survive a wire hop).
   assert.doesNotThrow(() => JSON.parse(JSON.stringify([input, editor, custom])));
+});
+
+test("questionnaire response carries explicit answers without collapsing custom text", () => {
+  const answers: import("./questionnaire.js").QuestionnaireAnswer[] = [
+    { kind: "option", questionIndex: 0, optionIndex: 1 },
+    { kind: "multi", questionIndex: 1, optionIndices: [] },
+    { kind: "custom", questionIndex: 2, text: "3" },
+  ];
+  const submitted: ExtensionUiResponseCommand = {
+    type: "extension_ui_response",
+    id: "r1",
+    method: "questionnaire",
+    answers,
+  };
+  const cancelled: ExtensionUiResponseCommand = {
+    type: "extension_ui_response",
+    id: "r1",
+    method: "questionnaire",
+    cancelled: true,
+  };
+  assert.equal(submitted.method, "questionnaire");
+  assert.equal(cancelled.cancelled, true);
+  assert.doesNotThrow(() => JSON.parse(JSON.stringify([submitted, cancelled])));
 });
 
 test("ExtensionUiRequest models the canonical closed marker", () => {

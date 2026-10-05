@@ -23,9 +23,11 @@ import type { RuntimeSocketDeps } from "@/runtime/socket";
 import type { HostInfo } from "@fffattiger/pix-protocol";
 
 // AppShell is the single owner of URL-session selection intent; this suite
-// proves idle/history selection never activates a target, authorized busy
-// selection uses observation-only attachment, background runtime state remains
-// identity-gated, and send-time supersession has no hung/late clobber.
+// proves inactive/history selection never activates a target, authorized
+// already-live selection (busy OR idle Worker) uses observation-only
+// attachment, background runtime state remains identity-gated, and send-time
+// supersession has no hung/late clobber. Live/idle observation is a read of
+// an existing Worker — never create/activate, never a busy cue.
 
 const navigateMock = vi.fn();
 vi.mock("@tanstack/react-router", async () => {
@@ -562,6 +564,12 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
       await flush();
     });
     expect(countType(ws, "attach")).toBe(0);
+    expect(countType(ws, "activate")).toBe(0);
+    // Live-idle A without negotiated observe-existing is an honest deny, not a
+    // silent history view and not an activating fallback.
+    expect(screen.getByTestId("observation-error").textContent).toBe(
+      describeRuntimeObservationError({ code: "unsupported_capability", retryable: false }),
+    );
 
     const rowA = screen.getAllByTestId("session-select-A")[0]!.closest<HTMLElement>(".sidebar-list-row")!;
     fireEvent.contextMenu(rowA);
@@ -574,7 +582,9 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     });
 
     const listFrame = lastFrame<{ type: "listRunning"; id: string }>(ws, "listRunning");
-    expect(screen.queryAllByRole("alert").map((node) => node.textContent)).toEqual([]);
+    expect(screen.queryAllByRole("alert").map((node) => node.textContent)).toEqual([
+      describeRuntimeObservationError({ code: "unsupported_capability", retryable: false }),
+    ]);
     expect(ws.sent.map((frame) => (frame as { type?: string }).type)).toContain("listRunning");
     expect(listFrame).toEqual(expect.objectContaining({ id: expect.any(String) }));
     await act(async () => {
@@ -751,44 +761,285 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     openSpy.mockRestore();
   });
 
-  it("does NOT attach an idle selected session (read-only history invariant)", async () => {
+  it("does NOT attach inactive history when another session is live (0-Worker invariant)", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
     mountApp({ cwd: "/x", session: "B" }, { queryClient: authenticatedQueryClient() });
-    const ws = await acceptAutomaticConnection();
-    const list = lastFrame<{ type: string; id: string }>(ws, "listRunning")!;
+    const ws = await acceptAutomaticConnection(lifecycleAck());
     await act(async () => {
-      ws.serverSend({
-        type: "response",
-        id: list.id,
-        payload: {
-          ok: true,
-          result: { sessions: [{ sessionId: "A", cwd: "/x", projectRoot: "/x", workerStatus: "busy", epoch: "e1" }] },
-        },
-      });
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: ["A"] } });
       await flush();
     });
     expect(lastFrame(ws, "attach")).toBeUndefined();
+    expect(countType(ws, "activate")).toBe(0);
+    expect(countType(ws, "create")).toBe(0);
+    expect(countType(ws, "stop")).toBe(0);
+    expect(screen.queryByTestId("subagent-activity-card")).toBeNull();
+    expect(capturedStore!.registry.leaseSnapshot.holderSessionId).not.toBe("B");
   });
 
-  it("does NOT attach an idle-but-live selected session (selection remains history until send)", async () => {
+  it("observes a live-idle selected session without activating a Worker", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
     mountApp({ cwd: "/x", session: "B" }, { queryClient: authenticatedQueryClient() });
-    const ws = await acceptAutomaticConnection();
-    const list = lastFrame<{ type: string; id: string }>(ws, "listRunning")!;
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["B"], busySessionIds: [] } });
+      await flush();
+    });
+    const attach = lastFrame<{ type: "attach"; payload: { sessionId: string; attachMode?: string } }>(ws, "attach");
+    expect(attach?.payload).toEqual({ sessionId: "B", attachMode: "existing_only" });
+    expect(countType(ws, "activate")).toBe(0);
+    expect(countType(ws, "create")).toBe(0);
+    expect(countType(ws, "stop")).toBe(0);
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "submit_turn")).toHaveLength(0);
+    expect(screen.queryByText("Opening session…")).toBeNull();
+  });
+
+  const LIVE_IDLE_CHILD_TASK = {
+    taskId: "task-child",
+    description: "Inspect runtime",
+    agentType: "Explore",
+    status: "running" as const,
+    startedAt: Date.parse("2026-09-27T00:00:00.000Z"),
+    childSessionId: "child",
+  };
+  const LIVE_IDLE_TODO = {
+    revision: 1,
+    items: [{ id: 1, subject: "Keep the status card honest", blockedBy: [], status: "in_progress" as const }],
+  };
+
+  it("renders the top-right activity card from a live-idle parent's attach snapshot with zero activation", async () => {
+    const parent: SessionHeader = {
+      sessionId: "A",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Session A",
+      createdAt: 1000,
+      updatedAt: Date.now(),
+      messageCount: 1,
+      workspaceAccess: AUTHORIZED,
+    };
+    const child: SessionHeader = {
+      sessionId: "child",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Child",
+      parentSessionId: "A",
+      createdAt: 2000,
+      updatedAt: Date.now(),
+      messageCount: 1,
+      workspaceAccess: AUTHORIZED,
+    };
+    const contextEntries = new Map<string, SessionEntry[]>([["A", []], ["child", []]]);
+    globalThis.fetch = controllableStubFetch({ sessions: [parent, child], contextEntries });
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: [] } });
+      await flush();
+    });
+    const attach = lastFrame<{ type: "attach"; id: string; payload: { sessionId: string; attachMode?: string } }>(ws, "attach")!;
+    expect(attach.payload).toEqual({ sessionId: "A", attachMode: "existing_only" });
+    expect(countType(ws, "attach")).toBe(1);
+    expect(countType(ws, "activate")).toBe(0);
+    expect(countType(ws, "create")).toBe(0);
+    expect(ws.sent.filter((frame) => ["submit_turn", "command"].includes((frame as { type?: string }).type ?? ""))).toHaveLength(0);
     await act(async () => {
       ws.serverSend({
-        type: "response",
-        id: list.id,
-        payload: {
-          ok: true,
-          result: { sessions: [{ sessionId: "B", cwd: "/x", projectRoot: "/x", workerStatus: "ready", epoch: "e1" }] },
-        },
+        type: "snapshot",
+        id: attach.id,
+        payload: snapshotPayload({
+          sessionId: "A",
+          capabilities: ["runtime.prompt", "runtime.subagents", "runtime.todo"],
+          subagents: { revision: 1, tasks: [LIVE_IDLE_CHILD_TASK] },
+          todo: LIVE_IDLE_TODO,
+        }),
       });
       await flush();
     });
-    expect(lastFrame(ws, "attach")).toBeUndefined();
-    expect(countType(ws, "detach")).toBe(0);
-    expect(countType(ws, "stop")).toBe(0);
-    expect(capturedStore!.getSnapshot().attached).toBe(false);
+    const card = screen.getByTestId("subagent-activity-card");
+    expect(card).toBeTruthy();
+    expect(card.closest(".app-title-bar")).toBeNull();
+    expect(document.querySelector(".conversation-container")?.contains(card)).toBe(true);
     expect(screen.queryByText("Opening session…")).toBeNull();
+    expect(screen.getAllByTestId("session-select-A")[0]!.closest('[data-running="true"]')).toBeNull();
+    expect(capturedStore!.registry.leaseSnapshot.holderSessionId).toBe("A");
+    expect(capturedStore!.getSnapshot().attached).toBe(true);
+  });
+
+  it("renders the top-right activity card immediately for a busy already-live parent", async () => {
+    const parent: SessionHeader = {
+      sessionId: "A",
+      cwd: "/x",
+      projectRoot: "/x",
+      title: "Session A",
+      createdAt: 1000,
+      updatedAt: Date.now(),
+      messageCount: 1,
+      workspaceAccess: AUTHORIZED,
+    };
+    globalThis.fetch = controllableStubFetch({
+      sessions: [parent],
+      contextEntries: new Map([["A", []]]),
+    });
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: ["A"] } });
+      await flush();
+    });
+    const attach = lastFrame<{ type: "attach"; id: string; payload: { sessionId: string; attachMode?: string } }>(ws, "attach")!;
+    expect(attach.payload).toEqual({ sessionId: "A", attachMode: "existing_only" });
+    expect(countType(ws, "activate")).toBe(0);
+    await act(async () => {
+      ws.serverSend({
+        type: "snapshot",
+        id: attach.id,
+        payload: snapshotPayload({
+          sessionId: "A",
+          capabilities: ["runtime.prompt", "runtime.subagents", "runtime.todo"],
+          subagents: { revision: 1, tasks: [LIVE_IDLE_CHILD_TASK] },
+          todo: LIVE_IDLE_TODO,
+        }),
+      });
+      await flush();
+    });
+    expect(screen.getByTestId("subagent-activity-card")).toBeTruthy();
+    expect(screen.queryByText("Opening session…")).toBeNull();
+  });
+
+  it("inactive history baseline never attaches, never paints the activity card, and never creates a Worker", async () => {
+    globalThis.fetch = controllableStubFetch({
+      sessions: SESSION_HEADERS,
+      contextEntries: new Map([["A", []]]),
+    });
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: [], busySessionIds: [] } });
+      await flush();
+    });
+    expect(lastFrame(ws, "attach")).toBeUndefined();
+    expect(countType(ws, "activate")).toBe(0);
+    expect(countType(ws, "create")).toBe(0);
+    expect(screen.queryByTestId("subagent-activity-card")).toBeNull();
+    expect(screen.queryByText("Opening session…")).toBeNull();
+    expect(capturedStore!.getSnapshot().attached).toBe(false);
+  });
+
+  it("a late A observation snapshot cannot paint the activity card on selected B", async () => {
+    globalThis.fetch = controllableStubFetch({
+      sessions: SESSION_HEADERS,
+      contextEntries: new Map([["A", []], ["B", []]]),
+    });
+    const { rerender } = mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A", "B"], busySessionIds: [] } });
+      await flush();
+    });
+    const attachA = lastFrame<{ type: "attach"; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    expect(attachA.payload.sessionId).toBe("A");
+    rerender({ cwd: "/x", session: "B" });
+    await act(async () => { await flush(); });
+    const detachA = lastFrame<{ type: "detach"; id: string; payload: { sessionId: string } }>(ws, "detach");
+    if (detachA?.payload.sessionId === "A") {
+      await act(async () => {
+        ws.serverSend({ type: "response", id: detachA.id, payload: { ok: true, result: { sessionId: "A", detached: true } } });
+        await flush();
+      });
+    }
+    const attachB = lastFrame<{ type: "attach"; id: string; payload: { sessionId: string } }>(ws, "attach")!;
+    expect(attachB.payload.sessionId).toBe("B");
+    await act(async () => {
+      ws.serverSend({
+        type: "snapshot",
+        id: attachA.id,
+        payload: snapshotPayload({
+          sessionId: "A",
+          capabilities: ["runtime.prompt", "runtime.subagents"],
+          subagents: { revision: 1, tasks: [LIVE_IDLE_CHILD_TASK] },
+        }),
+      });
+      await flush();
+    });
+    expect(screen.queryByTestId("subagent-activity-card")).toBeNull();
+    expect(capturedStore!.registry.getSnapshot().presentationKey).toBe("session:B");
+    expect(countType(ws, "activate")).toBe(0);
+  });
+
+  it("does not auto-observe a live-idle session when observe-existing was not negotiated", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(watchAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: [] } });
+      await flush();
+    });
+    expect(lastFrame(ws, "attach")).toBeUndefined();
+    expect(countType(ws, "activate")).toBe(0);
+    expect(screen.getByTestId("observation-error").textContent).toBe(
+      describeRuntimeObservationError({ code: "unsupported_capability", retryable: false }),
+    );
+    expect(screen.queryByTestId("subagent-activity-card")).toBeNull();
+    expect(capturedStore!.registry.leaseSnapshot.holderSessionId).not.toBe("A");
+  });
+
+  it("does not auto-observe a live-idle session without the agent capability", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
+    mountApp(
+      { cwd: "/x", session: "A" },
+      { queryClient: authenticatedQueryClient(), capabilities: ["sessions", "files", "models"] },
+    );
+    await act(async () => { await flush(); });
+    expect(SOCKETS).toHaveLength(0);
+    expect(screen.queryByTestId("subagent-activity-card")).toBeNull();
+  });
+
+  it("does not auto-observe a live-idle session when the gate requires login", async () => {
+    globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(queryKeys.gate.status(), { status: "enabled", required: true, authenticated: false, mode: "local" });
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: qc });
+    await act(async () => { await flush(); });
+    expect(SOCKETS).toHaveLength(0);
+    expect(document.querySelector(".login-page")).toBeTruthy();
+    expect(screen.queryByTestId("subagent-activity-card")).toBeNull();
+  });
+
+  it("does not auto-observe a live-idle session with unknown/history-only workspace", async () => {
+    const deferred = createDeferred<Response>();
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
+      if (path.includes("/v1/sessions/A") && path.includes("/context")) {
+        return json({ context: { sessionId: "A", entries: [], pageInfo: { hasMore: false } } });
+      }
+      if (path.match(/\/v1\/sessions\/A(?:\?.*)?$/)) return deferred.promise;
+      if (path.includes("/v1/sessions")) return json({ sessions: [], page: 1, pageSize: 50, total: 0, totalPages: 0, catalogRevision: 0 });
+      if (path.includes("/v1/projects")) return json({ projects: [], page: 1, pageSize: 10, total: 0, totalPages: 0, catalogRevision: 0 });
+      if (path.includes("/v1/models")) return json(modelsCatalog);
+      return json({});
+    }) as unknown as typeof fetch;
+    mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
+    const ws = await acceptAutomaticConnection(lifecycleAck());
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: [] } });
+      await flush();
+    });
+    expect(lastFrame(ws, "attach")).toBeUndefined();
+    expect(countType(ws, "activate")).toBe(0);
+    deferred.resolve(json({
+      session: {
+        sessionId: "A",
+        cwd: "/x",
+        projectRoot: "/x",
+        workspaceAccess: { state: "history_only", reason: "outside_allowed_roots" },
+      },
+    }));
+    await act(async () => { await flush(); vi.advanceTimersByTime(0); await flush(); });
+    expect(lastFrame(ws, "attach")).toBeUndefined();
+    expect(countType(ws, "activate")).toBe(0);
+    expect(screen.queryByTestId("subagent-activity-card")).toBeNull();
   });
 
   it("busy=false before an in-flight observation snapshot does not detach or send stop", async () => {
@@ -1110,12 +1361,12 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     expect(capturedStore!.registry.getSnapshot().presentationKey).toBe("session:A");
   });
 
-  it("an observation error does not hammer-loop, but a later busy authority recovers", async () => {
+  it("an observation error does not hammer-loop, but a later live-set authority recovers", async () => {
     globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
     mountApp({ cwd: "/x", session: "A" }, { queryClient: authenticatedQueryClient() });
     const ws = await acceptAutomaticConnection(lifecycleAck());
     await act(async () => {
-      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: ["A"] } });
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: [] } });
       await flush();
     });
     const first = lastFrame<{ type: "attach"; id: string; payload: { sessionId: string } }>(ws, "attach")!;
@@ -1135,7 +1386,12 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     });
     expect(countType(ws, "attach")).toBe(attachCountAfterError);
     await act(async () => {
-      ws.serverSend({ type: "running_state", payload: { revision: 3, sessionIds: ["A"], busySessionIds: ["A"] } });
+      ws.serverSend({ type: "running_state", payload: { revision: 3, sessionIds: [], busySessionIds: [] } });
+      await flush();
+    });
+    expect(countType(ws, "attach")).toBe(attachCountAfterError);
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 4, sessionIds: ["A"], busySessionIds: [] } });
       await flush();
     });
     expect(countType(ws, "attach")).toBeGreaterThan(attachCountAfterError);
@@ -1675,11 +1931,29 @@ describe("Composer — coherent history and staged context", () => {
       ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: [] } });
       await flush();
     });
+    const attachA = lastFrame<{ type: "attach"; id: string; payload: { sessionId: string; attachMode?: string } }>(ws, "attach");
+    expect(attachA?.payload).toEqual({ sessionId: "A", attachMode: "existing_only" });
+    expect(countType(ws, "activate")).toBe(0);
+    expect(countType(ws, "create")).toBe(0);
+    expect(countType(ws, "read")).toBe(0);
+    expect(countType(ws, "command")).toBe(0);
+    await act(async () => {
+      ws.serverSend({
+        type: "snapshot",
+        id: attachA!.id,
+        payload: snapshotPayload({
+          sessionId: "A",
+          model: { provider: "deepseek-official", id: "deepseek-v4-flash" },
+          capabilities: LIVE_CAPS,
+          contextUsage: { percent: 26.4, tokens: 263_711, contextWindow: 1_000_000 },
+        }),
+      });
+      await flush();
+    });
     await settleQueryNotifications();
     expect(screen.getByLabelText("Change model").textContent).toContain("Latest persisted model");
     expect(screen.getByText("26%")).toBeTruthy();
-    expect(screen.getByLabelText("Session info").title).toContain("Estimated context for selected model: 26.4%");
-    for (const type of ["attach", "activate", "read", "command"]) expect(countType(ws, type)).toBe(0);
+    expect(screen.getByLabelText("Session info").title).toContain("26.4%");
     rerender({ cwd: "/x", session: "B" });
     await settleQueryNotifications();
     expect(screen.getByText("0%")).toBeTruthy();
@@ -1687,7 +1961,9 @@ describe("Composer — coherent history and staged context", () => {
     rerender({ cwd: "/x", session: "A" });
     await settleQueryNotifications();
     expect(screen.getByText("26%")).toBeTruthy();
-    for (const type of ["attach", "activate", "read", "command"]) expect(countType(ws, type)).toBe(0);
+    expect(countType(ws, "activate")).toBe(0);
+    expect(countType(ws, "read")).toBe(0);
+    expect(countType(ws, "command")).toBe(0);
   });
 
   it("keeps pending model intent through automatic observation without showing another model's usage, then follows accepted context events", async () => {
@@ -1697,21 +1973,24 @@ describe("Composer — coherent history and staged context", () => {
       ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["A"], busySessionIds: [] } });
       await flush();
     });
+    const attach = await waitForAttach(ws, "A");
+    expect(attach.payload).toMatchObject({ sessionId: "A", attachMode: "existing_only" });
+    expect(countType(ws, "activate")).toBe(0);
     await settleQueryNotifications();
     await pickModel("Pending model");
     expect(screen.getByText("13%")).toBeTruthy();
     expect(screen.getByLabelText("Session info").title).toContain("Estimated context for selected model");
     expect(countType(ws, "command")).toBe(0);
-    expect(countType(ws, "attach")).toBe(0);
     await act(async () => {
-      ws.serverSend({ type: "running_state", payload: { revision: 2, sessionIds: ["A"], busySessionIds: ["A"] } });
-      const attach = await waitForAttach(ws, "A");
-      expect(attach.payload).toMatchObject({ attachMode: "existing_only" });
       ws.serverSend({ type: "snapshot", id: attach.id, payload: snapshotPayload({
         sessionId: "A", model: { provider: "acme-gpt", id: "gpt-6-astra" },
         capabilities: LIVE_CAPS,
         contextUsage: { percent: 79.6358, tokens: 836_176, contextWindow: 1_050_000 },
       }) });
+      await flush();
+    });
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 2, sessionIds: ["A"], busySessionIds: ["A"] } });
       await flush();
     });
     await settleQueryNotifications();

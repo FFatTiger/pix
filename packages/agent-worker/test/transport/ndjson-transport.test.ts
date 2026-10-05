@@ -1,9 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
+import { createHash } from "node:crypto";
 import { NdjsonStdioTransport } from "../../src/transport/ndjson-transport.js";
 import type { NdjsonTransportOptions } from "../../src/transport/ndjson-transport.js";
-import type { SessiondToWorkerMessage } from "@fffattiger/pix-protocol";
+import {
+  MAX_RUNTIME_FRAME_BYTES,
+  type SessiondToWorkerMessage,
+  type WorkerToSessiondMessage,
+} from "@fffattiger/pix-protocol";
 
 interface TransportHarness {
   transport: NdjsonStdioTransport;
@@ -156,5 +161,88 @@ describe("NdjsonStdioTransport outbound", () => {
     const out = await collect(h.stdout);
     assert.deepEqual(h.exitCodes, [0]);
     assert.ok(out.includes("worker.status"));
+  });
+
+  it("default budget accepts a 2.1MB PNG-equivalent valid image frame with MIME/hash equality", { timeout: 10_000 }, async () => {
+    const h = createHarness();
+    const chunks: Buffer[] = [];
+    h.stdout.on("data", (chunk: Buffer) => { chunks.push(chunk); });
+    const decodedBytes = 2_108_283;
+    const data = Buffer.alloc(decodedBytes, 0x41).toString("base64");
+    const digest = createHash("sha256").update(data).digest("hex");
+    const message: WorkerToSessiondMessage = {
+      type: "worker.event",
+      payload: {
+        sessionId: "s1",
+        event: {
+          type: "message_start",
+          sessionId: "s1",
+          streamId: "st1",
+          messageId: "m1",
+          message: {
+            role: "toolResult",
+            toolCallId: "t1",
+            content: [{ type: "image", source: { type: "base64", media_type: "image/png", data } }],
+          },
+        },
+      },
+    };
+    await h.transport.send(message);
+    const out = Buffer.concat(chunks).toString("utf8");
+    assert.deepEqual(h.exitCodes, []);
+    const parsed = JSON.parse(out.trim().split("\n")[0]!);
+    const image = parsed.payload.event.message.content[0];
+    assert.equal(image.source.media_type, "image/png");
+    assert.equal(image.source.data, data);
+    assert.equal(createHash("sha256").update(image.source.data).digest("hex"), digest);
+    assert.ok(Buffer.byteLength(out.trim().split("\n")[0]!, "utf8") > 2 * 1024 * 1024);
+    h.transport.stop();
+  });
+
+  it("one-over the default runtime frame budget still fails closed", async () => {
+    const h = createHarness();
+    const data = Buffer.alloc(10_000_000, 0x41).toString("base64");
+    const pad = "x".repeat(MAX_RUNTIME_FRAME_BYTES);
+    await assert.rejects(
+      () => h.transport.send({
+        type: "worker.event",
+        payload: {
+          sessionId: pad,
+          event: {
+            type: "message_start",
+            sessionId: pad,
+            streamId: "st1",
+            messageId: "m1",
+            message: {
+              role: "toolResult",
+              toolCallId: "t1",
+              content: [{ type: "image", source: { type: "base64", media_type: "image/png", data } }],
+            },
+          },
+        },
+      }),
+      /outbound frame exceeds the size limit/,
+    );
+    const out = await collect(h.stdout);
+    assert.deepEqual(h.exitCodes, [1]);
+    assert.equal(JSON.parse(out.trim().split("\n")[0]!).type, "worker.fatal");
+  });
+
+  it("exact UTF-8 byte boundary is accepted and one multibyte-over fails closed", async () => {
+    const exactBody = JSON.stringify({ type: "worker.ping", id: "p1", protocolVersion: 2, payload: {} });
+    const limit = Buffer.byteLength(exactBody, "utf8");
+    const exact = createHarness({ maxFrameBytes: limit });
+    exact.stdin.write(`${exactBody}\n`);
+    await tick();
+    assert.equal(exact.messages.length, 1);
+    assert.deepEqual(exact.exitCodes, []);
+    exact.transport.stop();
+
+    const over = createHarness({ maxFrameBytes: limit });
+    const overBody = JSON.stringify({ type: "worker.ping", id: "p1é", protocolVersion: 2, payload: {} });
+    assert.equal(Buffer.byteLength(overBody, "utf8"), limit + 2);
+    over.stdin.write(`${overBody}\n`);
+    await tick();
+    assert.deepEqual(over.exitCodes, [1]);
   });
 });

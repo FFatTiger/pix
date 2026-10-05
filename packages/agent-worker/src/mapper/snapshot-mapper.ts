@@ -86,8 +86,9 @@ export class SnapshotMapper {
       capabilities: mapCapabilitySet(snapshot.capabilities),
       ...(streaming === undefined ? {} : { streaming }),
       // Protocol v2: the snapshot is control/reconnect state only — it never
-      // carries completed transcript history. Persisted history comes from the
-      // cursor-paginated session context endpoint.
+      // carries completed transcript history. Active partials, including images,
+      // remain and use the Protocol runtime frame budget. Persisted history
+      // comes from the cursor-paginated session context endpoint.
     };
   }
 }

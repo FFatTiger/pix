@@ -4,6 +4,8 @@
  * extension UI state into these serializable shapes.
  */
 
+import type { QuestionnaireQuestion } from "./questionnaire.js";
+
 export const EXTENSION_UI_METHODS = [
   "select",
   "confirm",
@@ -15,6 +17,7 @@ export const EXTENSION_UI_METHODS = [
   "setTitle",
   "set_editor_text",
   "custom",
+  "questionnaire",
 ] as const;
 
 export type ExtensionUiMethod = (typeof EXTENSION_UI_METHODS)[number];
@@ -57,6 +60,7 @@ export interface ExtensionNotificationItem {
  * - setTitle     → title
  * - set_editor_text → text
  * - custom       → lines
+ * - questionnaire → questions
  */
 export interface ExtensionUiRequest {
   id: string;
@@ -76,6 +80,7 @@ export interface ExtensionUiRequest {
   widgetPlacement?: ExtensionWidgetPlacement;
   text?: string;
   lines?: readonly string[];
+  questions?: readonly QuestionnaireQuestion[];
   closed?: boolean;
 }
 

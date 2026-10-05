@@ -23,6 +23,7 @@ import { join } from "node:path";
 // unaffected fields track the live constants instead of hardcoded numbers.
 import {
   ADAPTER_CONTRACT_VERSION,
+  PIX_PRODUCT_VERSION,
   PROTOCOL_VERSION,
   WORKER_CONTRACT_VERSION,
   SESSIOND_CONTRACT_VERSION,
@@ -80,7 +81,7 @@ const buildBlock = () => {
   switch (staleKind) {
     case "contract":
       return {
-        product: "0.1.0",
+        product: PIX_PRODUCT_VERSION,
         protocol: PROTOCOL_VERSION,
         sessiond: SESSIOND_CONTRACT_VERSION,
         workerContract: 99,
@@ -98,7 +99,7 @@ const buildBlock = () => {
       };
     case "malformed":
       return {
-        product: "0.1.0",
+        product: PIX_PRODUCT_VERSION,
         protocol: PROTOCOL_VERSION,
         sessiond: SESSIOND_CONTRACT_VERSION,
         workerContract: WORKER_CONTRACT_VERSION,

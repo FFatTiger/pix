@@ -165,6 +165,7 @@ describe("C: extension method/response binding", () => {
     { id: "8", method: "setTitle", title: "T" },
     { id: "9", method: "set_editor_text", text: "x" },
     { id: "10", method: "custom", lines: ["x"] },
+    { id: "11", method: "questionnaire", questions: [{ header: "H", question: "Q?", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }], multiSelect: false }] },
   ];
   it("accepts every request method and rejects cross-method fields", () => {
     for (const request of validRequests) assert.equal(ExtensionUiRequestSchema.safeParse(request).success, true, request.method);

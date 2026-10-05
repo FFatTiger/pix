@@ -11,6 +11,7 @@ export * from "./capabilities.js";
 export * from "./features.js";
 export * from "./build.js";
 export * from "./common.js";
+export * from "./transport-limits.js";
 export * from "./messages.js";
 export * from "./extension.js";
 export * from "./domain.js";

@@ -73,6 +73,7 @@ describe("ExtensionUiRequestSchema — strict optional closed marker", () => {
       { id: "a", method: "setTitle", title: "t", closed: true },
       { id: "a", method: "set_editor_text", text: "t", closed: true },
       { id: "a", method: "custom", lines: ["l"], closed: true },
+      { id: "a", method: "questionnaire", questions: [{ header: "H", question: "Q?", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }], multiSelect: false }], closed: true },
     ]) {
       assert.equal(ExtensionUiRequestSchema.parse(request).closed, true);
     }
@@ -87,8 +88,8 @@ describe("ExtensionUiRequestSchema — strict optional closed marker", () => {
     assert.equal(event.request.closed, true);
   });
 
-  it("interactive methods are exactly select/confirm/input/editor/custom", () => {
-    assert.deepEqual([...ExtensionUiInteractiveMethodSchema.options], ["select", "confirm", "input", "editor", "custom"]);
+  it("interactive methods are exactly select/confirm/input/editor/custom/questionnaire", () => {
+    assert.deepEqual([...ExtensionUiInteractiveMethodSchema.options], ["select", "confirm", "input", "editor", "custom", "questionnaire"]);
   });
 });
 
@@ -227,5 +228,52 @@ describe("extension command correlation — exact method on the wire", () => {
     assert.equal(ExtensionUiResponseCommandSchema.safeParse({
       commandId: "c1", type: "extension_ui_response", id: "r1", method: "confirm", responseKind: "selected", selected: "x",
     }).success, false);
+  });
+});
+
+const questionnaireRequest = {
+  id: "q1",
+  method: "questionnaire",
+  questions: [{
+    header: "Auth",
+    question: "Which auth?",
+    options: [{ label: "OAuth", description: "Browser" }, { label: "Token", description: "Static" }],
+    multiSelect: false,
+  }, {
+    header: "Features",
+    question: "Which features?",
+    options: [{ label: "A", description: "a" }, { label: "B", description: "b" }],
+    multiSelect: true,
+  }],
+};
+
+describe("native questionnaire request/response", () => {
+  it("accepts questionnaire requests and rejects incremental input", () => {
+    assert.equal(ExtensionUiRequestSchema.safeParse(questionnaireRequest).success, true);
+    assert.equal(ExtensionUiInputCommandSchema.safeParse({
+      commandId: "c1", type: "extension_ui_input", id: "q1", method: "questionnaire", data: "x",
+    }).success, false);
+  });
+
+  it("keeps numeric custom text as custom and allows empty multi", () => {
+    const command = {
+      commandId: "c1",
+      type: "extension_ui_response",
+      id: "q1",
+      method: "questionnaire",
+      responseKind: "questionnaire",
+      answers: [
+        { kind: "custom", questionIndex: 0, text: "2" },
+        { kind: "multi", questionIndex: 1, optionIndices: [] },
+      ],
+    };
+    assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request: questionnaireRequest, command }).success, true);
+  });
+
+  it("rejects incomplete, mismatched, duplicate, and out-of-range answers", () => {
+    const base = { commandId: "c1", type: "extension_ui_response", id: "q1", method: "questionnaire", responseKind: "questionnaire" };
+    assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request: questionnaireRequest, command: { ...base, answers: [{ kind: "option", questionIndex: 0, optionIndex: 0 }] } }).success, false);
+    assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request: questionnaireRequest, command: { ...base, answers: [{ kind: "multi", questionIndex: 0, optionIndices: [0] }, { kind: "option", questionIndex: 1, optionIndex: 0 }] } }).success, false);
+    assert.equal(ExtensionUiResponseExchangeSchema.safeParse({ request: questionnaireRequest, command: { ...base, answers: [{ kind: "option", questionIndex: 0, optionIndex: 9 }, { kind: "multi", questionIndex: 1, optionIndices: [] }] } }).success, false);
   });
 });

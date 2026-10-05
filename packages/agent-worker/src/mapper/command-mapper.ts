@@ -18,6 +18,7 @@ import type {
   RuntimeReadRequest as CoreRuntimeReadRequest,
   ExtensionUiResponseCommand as CoreExtensionUiResponseCommand,
   ImageAttachment as CoreImageAttachment,
+  QuestionnaireAnswer as CoreQuestionnaireAnswer,
 } from "@fffattiger/pix-runtime-core";
 import {
   mapRuntimeState,
@@ -137,6 +138,20 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
           id: command.id,
           method: command.method,
           confirmed: command.confirmed,
+        };
+        return core;
+      }
+      if (command.responseKind === "questionnaire") {
+        const answers: CoreQuestionnaireAnswer[] = command.answers.map((answer) => {
+          if (answer.kind === "option") return { kind: "option", questionIndex: answer.questionIndex, optionIndex: answer.optionIndex };
+          if (answer.kind === "multi") return { kind: "multi", questionIndex: answer.questionIndex, optionIndices: [...answer.optionIndices] };
+          return { kind: "custom", questionIndex: answer.questionIndex, text: answer.text };
+        });
+        const core: CoreExtensionUiResponseCommand = {
+          type: "extension_ui_response",
+          id: command.id,
+          method: "questionnaire",
+          answers,
         };
         return core;
       }

@@ -7,8 +7,8 @@
  * Inbound (stdin):
  *   - each complete line is one frame, parsed with the strict
  *     `SessiondToWorkerMessageSchema` (no params: unknown).
- *   - malformed JSON / schema violation / oversized frame (> 2 MiB) produces a
- *     `worker.fatal` frame and a failing exit — never a hang.
+ *   - malformed JSON / schema violation / oversized frame (Protocol runtime
+ *     budget) produces a `worker.fatal` frame and a failing exit — never a hang.
  *   - stdin `end`/`close` triggers the ordered shutdown callback.
  *
  * Outbound (stdout):
@@ -22,12 +22,14 @@
  * / `worker.ready` frame is never lost.
  */
 import type { Readable, Writable as NodeWritableStream } from "node:stream";
-import type {
-  ProtocolError,
-  SessiondToWorkerMessage,
-  WorkerToSessiondMessage,
+import {
+  MAX_RUNTIME_FRAME_BYTES,
+  WorkerToSessiondPushSchema,
+  safeParseSessiondToWorkerMessage,
+  type ProtocolError,
+  type SessiondToWorkerMessage,
+  type WorkerToSessiondMessage,
 } from "@fffattiger/pix-protocol";
-import { WorkerToSessiondPushSchema, safeParseSessiondToWorkerMessage } from "@fffattiger/pix-protocol";
 import { protocolError } from "../mapper/protocol-error.js";
 import { SerialStdoutWriter, type SerialStdoutWriterOptions } from "./serial-stdout-writer.js";
 import {
@@ -36,7 +38,7 @@ import {
   installProcessStdioGuards,
 } from "./safe-stdio.js";
 
-export const DEFAULT_MAX_FRAME_BYTES = 2 * 1024 * 1024;
+export const DEFAULT_MAX_FRAME_BYTES = MAX_RUNTIME_FRAME_BYTES;
 
 export interface NdjsonTransportOptions extends SerialStdoutWriterOptions {
   readonly stdin?: Readable;
@@ -142,7 +144,11 @@ export class NdjsonStdioTransport {
       void this.sendFatalAndExit(protocolError("internal", "outbound frame exceeds the size limit"), 1);
       return Promise.reject(new Error("outbound frame exceeds the size limit"));
     }
-    return this.writer.enqueue(frame);
+    return this.writer.enqueue(frame).catch((error) => {
+      const err = error instanceof Error ? error : new Error(String(error));
+      void this.sendFatalAndExit(protocolError("internal", `stdout writer failed: ${err.message}`), 1);
+      return Promise.reject(err);
+    });
   }
 
   /**

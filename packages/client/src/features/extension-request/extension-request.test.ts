@@ -15,6 +15,7 @@ const requests: ExtensionUiRequest[] = [
   { id: "r3", method: "input", title: "Name", placeholder: "x" },
   { id: "r4", method: "editor", title: "Edit", prefill: "seed" },
   { id: "r5", method: "custom", lines: ["line"] },
+  { id: "r11", method: "questionnaire", questions: [{ header: "H", question: "Q?", multiSelect: false, options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] }] },
   { id: "r6", method: "notify", message: "hi", notifyType: "info" },
   { id: "r7", method: "setStatus", statusKey: "k", statusText: "working" },
   { id: "r8", method: "setWidget", widgetKey: "w", widgetLines: ["a"] },
@@ -23,15 +24,15 @@ const requests: ExtensionUiRequest[] = [
 ];
 
 describe("extension-request helpers — interactive/noninteractive classification", () => {
-  it("classifies the five interactive methods", () => {
-    for (const request of requests.slice(0, 5)) {
+  it("classifies the interactive methods including questionnaire", () => {
+    for (const request of requests.slice(0, 6)) {
       expect(isInteractiveRequest(request)).toBe(true);
       expect(isNoninteractiveRequest(request)).toBe(false);
     }
   });
 
   it("classifies non-interactive event/state methods as passive", () => {
-    for (const request of requests.slice(5)) {
+    for (const request of requests.slice(6)) {
       expect(isInteractiveRequest(request)).toBe(false);
       expect(isNoninteractiveRequest(request)).toBe(true);
     }
@@ -39,10 +40,10 @@ describe("extension-request helpers — interactive/noninteractive classificatio
 
   it("activeInteractiveRequests preserves deterministic projection order and only returns interactive", () => {
     const snapshot = {
-      state: { pendingExtensionUi: [requests[1], requests[5], requests[0], requests[9]] },
+      state: { pendingExtensionUi: [requests[1], requests[6], requests[0], requests[5], requests[10]] },
     } as unknown as RuntimeSnapshot;
     const active = activeInteractiveRequests(snapshot);
-    expect(active.map((r) => r.id)).toEqual(["r2", "r1"]);
+    expect(active.map((r) => r.id)).toEqual(["r2", "r1", "r11"]);
 
     const malformed = { state: { pendingExtensionUi: {} } } as unknown as RuntimeSnapshot;
     expect(activeInteractiveRequests(malformed)).toEqual([]);
@@ -52,22 +53,22 @@ describe("extension-request helpers — interactive/noninteractive classificatio
     expect(hasPendingInteractiveRequest(null)).toBe(false);
     const empty = { state: {} } as unknown as RuntimeSnapshot;
     expect(hasPendingInteractiveRequest(empty)).toBe(false);
-    const onlyPassive = { state: { pendingExtensionUi: [requests[5]] } } as unknown as RuntimeSnapshot;
+    const onlyPassive = { state: { pendingExtensionUi: [requests[6]] } } as unknown as RuntimeSnapshot;
     expect(hasPendingInteractiveRequest(onlyPassive)).toBe(false);
-    const mixed = { state: { pendingExtensionUi: [requests[5], requests[2]] } } as unknown as RuntimeSnapshot;
+    const mixed = { state: { pendingExtensionUi: [requests[6], requests[2]] } } as unknown as RuntimeSnapshot;
     expect(hasPendingInteractiveRequest(mixed)).toBe(true);
   });
 });
 
 describe("extension-request helpers — reply compatibility", () => {
   it("cancelled is valid for every interactive method and invalid for non-interactive", () => {
-    for (const request of requests.slice(0, 5)) {
+    for (const request of requests.slice(0, 6)) {
       expect(isExtensionReplyCompatible(request, { responseKind: "cancelled", cancelled: true })).toBe(true);
     }
-    expect(isExtensionReplyCompatible(requests[5]!, { responseKind: "cancelled", cancelled: true })).toBe(false);
+    expect(isExtensionReplyCompatible(requests[6]!, { responseKind: "cancelled", cancelled: true })).toBe(false);
   });
 
-  it("selected/confirmed/value are method-bound", () => {
+  it("selected/confirmed/value/questionnaire are method-bound", () => {
     expect(isExtensionReplyCompatible(requests[0]!, { responseKind: "selected", selected: "A" })).toBe(true);
     expect(isExtensionReplyCompatible(requests[1]!, { responseKind: "selected", selected: "A" })).toBe(false);
     expect(isExtensionReplyCompatible(requests[1]!, { responseKind: "confirmed", confirmed: true })).toBe(true);
@@ -76,6 +77,8 @@ describe("extension-request helpers — reply compatibility", () => {
     expect(isExtensionReplyCompatible(requests[3]!, { responseKind: "value", value: "x" })).toBe(true);
     expect(isExtensionReplyCompatible(requests[4]!, { responseKind: "value", value: "x" })).toBe(true);
     expect(isExtensionReplyCompatible(requests[1]!, { responseKind: "value", value: "x" })).toBe(false);
+    expect(isExtensionReplyCompatible(requests[5]!, { responseKind: "questionnaire", answers: [{ kind: "option", questionIndex: 0, optionIndex: 0 }] })).toBe(true);
+    expect(isExtensionReplyCompatible(requests[0]!, { responseKind: "questionnaire", answers: [{ kind: "option", questionIndex: 0, optionIndex: 0 }] })).toBe(false);
     expect(isExtensionReplyCompatible(requests[0]!, null)).toBe(false);
     expect(isExtensionReplyCompatible(requests[0]!, { responseKind: "unknown" } as never)).toBe(false);
   });

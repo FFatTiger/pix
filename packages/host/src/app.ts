@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { createNodeWebSocket } from "@hono/node-ws";
 import type { ServerType } from "@hono/node-server";
+import { MAX_HOST_INBOUND_WS_BYTES } from "@fffattiger/pix-protocol";
 import type { HostEnv } from "./env.js";
 import { unifiedErrorHandler, HttpError } from "./errors.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
@@ -51,7 +52,7 @@ export interface HostApp {
 export function createHostApp(deps: HostDeps = {}): HostApp {
   const app = new Hono<HostEnv>();
   const ws = createNodeWebSocket({ app });
-  ws.wss.options.maxPayload = deps.wsMaxPayloadBytes ?? 1024 * 1024;
+  ws.wss.options.maxPayload = deps.wsMaxPayloadBytes ?? MAX_HOST_INBOUND_WS_BYTES;
   const logger: HostLogger = deps.logger ?? consoleLogger;
   const exposureMode = deps.exposureMode ?? "local";
   const watchManager = deps.resources

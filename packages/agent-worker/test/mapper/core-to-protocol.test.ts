@@ -9,7 +9,7 @@ import {
 } from "@fffattiger/pix-protocol";
 import type { AgentMessage, RuntimeSnapshot, StreamingAgentMessage } from "@fffattiger/pix-runtime-core";
 import { createCapabilitySet } from "@fffattiger/pix-runtime-core";
-import { mapAgentMessage, mapRuntimeState, mapStreamingMessage } from "../../src/mapper/core-to-protocol.js";
+import { mapAgentMessage, mapExtensionUiRequest, mapRuntimeState, mapStreamingMessage } from "../../src/mapper/core-to-protocol.js";
 import { SnapshotMapper } from "../../src/mapper/snapshot-mapper.js";
 import { StatefulRuntimeMapper } from "../../src/mapper/runtime-mapper.js";
 
@@ -89,6 +89,29 @@ describe("core-to-protocol DTO mapping", () => {
     const mapped = mapRuntimeState(state);
     const parsed = RuntimeStateSchema.safeParse(mapped);
     assert.equal(parsed.success, true, parsed.success ? "" : parsed.error.message);
+  });
+
+  it("maps questionnaire requests field-by-field onto the protocol schema", () => {
+    const mapped = mapExtensionUiRequest({
+      id: "q1",
+      method: "questionnaire",
+      questions: [{
+        header: "Auth",
+        question: "Which auth?",
+        options: [{ label: "OAuth", description: "Browser", preview: "code" }, { label: "Token", description: "Static" }],
+        multiSelect: false,
+      }],
+      timeout: 900000,
+    });
+    const parsed = RuntimeEventDataSchema.safeParse({
+      type: "extension_ui_request",
+      sessionId: "s1",
+      request: mapped,
+    });
+    assert.equal(parsed.success, true, parsed.success ? "" : parsed.error.message);
+    if (mapped.method === "questionnaire") {
+      assert.equal(mapped.questions[0]?.options[0]?.preview, "code");
+    }
   });
 });
 

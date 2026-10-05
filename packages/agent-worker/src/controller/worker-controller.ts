@@ -757,6 +757,7 @@ export class WorkerController {
     for (const data of mapped) {
       void this.outbound.send({ type: "worker.event", payload: { sessionId: data.sessionId, event: data } }).catch((error) => {
         this.logger(`[controller] event write failed: ${error instanceof Error ? error.message : String(error)}`);
+        void this.failFatal(toProtocolError(error, "internal"), 1);
       });
     }
   }

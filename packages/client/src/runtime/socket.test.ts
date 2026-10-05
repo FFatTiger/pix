@@ -54,6 +54,7 @@ describe("RuntimeSocket", () => {
     expect(handshake.payload.features).toContain("runtime.running-watch.v1");
     expect(handshake.payload.features).toContain("runtime.observe-existing.v1");
     expect(handshake.payload.features).toContain("runtime.explicit-activate.v1");
+    expect(handshake.payload.features).toContain("runtime.questionnaire.v1");
     ws.serverSend({ type: "handshake_ack", payload: ackPayload(["agent", "files"]) });
     expect(socket.connectionState).toBe("ready");
     expect(rec.acks[0]?.caps).toEqual(["agent", "files"]);

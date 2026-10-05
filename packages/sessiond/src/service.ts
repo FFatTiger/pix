@@ -35,6 +35,7 @@ import type {
   WorkerSubmitTurnMessage,
 } from "@fffattiger/pix-protocol";
 import {
+  MAX_RUNTIME_QUEUED_BYTES,
   PROTOCOL_VERSION,
   RUNTIME_READ_RPC_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
@@ -51,6 +52,7 @@ import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailabl
 import { EventJournal, type EventJournalOptions } from "./journal.js";
 import { AsyncMutex } from "./internal/mutex.js";
 import { SessionOperationCoordinator, SessionTitleOverlay } from "./internal/session-operation-coordinator.js";
+import { createClosedGate, ndjsonQueuedBytes, subscriberOverflowError } from "./internal/subscriber-queue.js";
 import { SnapshotProjection } from "./projection.js";
 import type { WorkerConnection, WorkerProcessFactory, WorkerStartInput } from "./worker.js";
 
@@ -69,6 +71,8 @@ export interface SessiondOptions {
   commandTimeoutMs?: number;
   idleTimeoutMs?: number;
   subscriberQueueLimit?: number;
+  /** Queued NDJSON byte budget (JSON + newline) per subscriber; default {@link MAX_RUNTIME_QUEUED_BYTES}. */
+  subscriberQueueByteLimit?: number;
   commandResultLimit?: number;
   commandResultCacheLimit?: number;
   createRequestLimit?: number;
@@ -147,6 +151,8 @@ export interface PreparedAttachment {
   flushTo(listener: PushListener): Promise<void>;
   /** Exactly-once detach. Never stops the worker. */
   close(): void;
+  /** Settles exactly once: `SessiondError` on overflow/listener failure, otherwise `null`. */
+  readonly closed: Promise<SessiondError | null>;
 }
 
 export type PushListener = (push: SessiondPush) => void | Promise<void>;
@@ -157,26 +163,34 @@ export interface PreparedTurnSubmission {
   readonly result: SubmitTurnAdmission;
   flushTo(listener: TurnStatusListener): Promise<void>;
   close(): void;
+  /** Settles exactly once: `SessiondError` on overflow/listener failure, otherwise `null`. */
+  readonly closed: Promise<SessiondError | null>;
 }
 
 export interface PreparedRunningWatch {
   readonly result: RuntimeRunningState;
   flushTo(listener: RunningStateListener): Promise<void>;
   close(): void;
+  /** Settles exactly once: `SessiondError` on overflow/listener failure, otherwise `null`. */
+  readonly closed: Promise<SessiondError | null>;
 }
 
 interface Subscriber {
   closed: boolean;
   draining: boolean;
-  queue: SessiondPush[];
+  queue: Array<{ push: SessiondPush; bytes: number }>;
+  queuedBytes: number;
   listener: PushListener;
+  onClosed?: (error: SessiondError | null) => void;
 }
 
 interface RunningSubscriber {
   closed: boolean;
   draining: boolean;
-  queue: SessiondRunningStatePush[];
+  queue: Array<{ push: SessiondRunningStatePush; bytes: number }>;
+  queuedBytes: number;
   listener: RunningStateListener;
+  onClosed?: (error: SessiondError | null) => void;
 }
 
 interface PendingCommand {
@@ -212,8 +226,10 @@ interface PendingTurnAdmission {
 interface TurnSubscriber {
   closed: boolean;
   draining: boolean;
-  queue: SessiondTurnStatusPush[];
+  queue: Array<{ push: SessiondTurnStatusPush; bytes: number }>;
+  queuedBytes: number;
   listener: TurnStatusListener;
+  onClosed?: (error: SessiondError | null) => void;
 }
 
 interface TurnOperationRecord {
@@ -580,6 +596,7 @@ export class SessiondService {
   private readonly commandTimeoutMs: number;
   private idleTimeoutMs: number;
   private readonly subscriberQueueLimit: number;
+  private readonly subscriberQueueByteLimit: number;
   private readonly commandResultLimit: number;
   private readonly commandResultCacheLimit: number;
   private readonly createRequestLimit: number;
@@ -605,6 +622,7 @@ export class SessiondService {
     // the persisted daemon setting is honored; otherwise the 1-day default.
     this.idleTimeoutMs = options.idleTimeoutMs ?? this.loadPersistedIdleTimeoutMs() ?? 24 * 60 * 60_000;
     this.subscriberQueueLimit = options.subscriberQueueLimit ?? 256;
+    this.subscriberQueueByteLimit = options.subscriberQueueByteLimit ?? MAX_RUNTIME_QUEUED_BYTES;
     this.commandResultLimit = options.commandResultLimit ?? 10_000;
     this.commandResultCacheLimit = options.commandResultCacheLimit ?? 1_000;
     this.createRequestLimit = options.createRequestLimit ?? 1_000;
@@ -615,6 +633,8 @@ export class SessiondService {
     this.turnOperationLimit = options.turnOperationLimit ?? 1_000;
     this.epochRolloverTimeoutMs = options.epochRolloverTimeoutMs ?? 10_000;
     this.expectedWorkerBuild = options.expectedWorkerBuild ?? WORKER_BUILD_IDENTITY;
+    if (!Number.isSafeInteger(this.subscriberQueueLimit) || this.subscriberQueueLimit < 1) throw new RangeError("subscriberQueueLimit must be positive");
+    if (!Number.isSafeInteger(this.subscriberQueueByteLimit) || this.subscriberQueueByteLimit < 1) throw new RangeError("subscriberQueueByteLimit must be positive");
     if (!Number.isSafeInteger(this.commandResultLimit) || this.commandResultLimit < 1) throw new RangeError("commandResultLimit must be positive");
     if (!Number.isSafeInteger(this.commandResultCacheLimit) || this.commandResultCacheLimit < 1) throw new RangeError("commandResultCacheLimit must be positive");
     if (!Number.isSafeInteger(this.createRequestLimit) || this.createRequestLimit < 1) throw new RangeError("createRequestLimit must be positive");
@@ -1035,6 +1055,13 @@ export class SessiondService {
             record.projection.replace(workerResult.snapshot);
           } catch {
             result = this.rejectedTurn(pending.sessionId, pending.operationId, "not_delivered", { code: "worker_unavailable", message: "worker turn snapshot was rejected", retryable: true }, pending.epoch, record.journal.lastEventId);
+            const operation = record.turnOperations.get(pending.operationId);
+            if (operation && operation.dispatchId === pending.dispatchId) {
+              operation.admission = result;
+              operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: result.error };
+              this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+            }
+            this.broadcastRunningChanged(record.sessionId);
             pending.resolve(result);
             return;
           }
@@ -1053,7 +1080,12 @@ export class SessiondService {
           }
           result = { ...workerResult, revision: record.journal.lastEventId };
           const operation = record.turnOperations.get(pending.operationId);
-          if (operation && operation.dispatchId === pending.dispatchId) operation.admission = result;
+          if (operation && operation.dispatchId === pending.dispatchId) {
+            operation.admission = result;
+            operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: workerResult.error };
+            this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+          }
+          this.broadcastRunningChanged(record.sessionId);
         }
         pending.resolve(result);
         break;
@@ -1960,7 +1992,7 @@ export class SessiondService {
   async submitTurn(input: RuntimeSubmitTurnParams): Promise<SubmitTurnAdmission> {
     if (this.shuttingDown) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "unavailable", message: "sessiond is shutting down", retryable: true });
     const fingerprint = this.turnFingerprint(input);
-    return this.coordinator.admit(input.sessionId, "submit", async (ctx) => {
+    const admitted = await this.coordinator.admit<SubmitTurnAdmission | { pending: Promise<SubmitTurnAdmission> }>(input.sessionId, "submit", async (ctx) => {
       if (this.shuttingDown) return this.rejectedTurn(input.sessionId, input.operationId, "not_delivered", { code: "unavailable", message: "sessiond is shutting down", retryable: true });
       let record = this.records.get(ctx.canonicalId);
       if (record && !["crashed", "stopped", "stopping"].includes(record.status)) {
@@ -2033,23 +2065,30 @@ export class SessiondService {
         const uncertain = this.rejectedTurn(record!.sessionId, input.operationId, "uncertain", { code: "timeout", message: "worker turn admission timed out", retryable: true }, epoch, record!.journal.lastEventId);
         operation.admission = uncertain;
         operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
+        this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+        this.broadcastRunningChanged(record!.sessionId);
         wait.resolve(uncertain);
       }, this.turnAdmissionTimeoutMs);
       record.pendingTurnAdmissions.set(dispatchId, { dispatchId, sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, fingerprint, resolve: wait.resolve, timer });
       this.touch(record);
-      try {
-        const workerMessage: WorkerSubmitTurnMessage = { type: "worker.submitTurn", id: dispatchId, protocolVersion: PROTOCOL_VERSION, payload: { sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, fingerprint, request: { ...input, sessionId: record.sessionId } } };
-        await record.worker.send(workerMessage);
-      } catch {
+      this.broadcastRunningChanged(record.sessionId);
+      const workerMessage: WorkerSubmitTurnMessage = { type: "worker.submitTurn", id: dispatchId, protocolVersion: PROTOCOL_VERSION, payload: { sessionId: record.sessionId, epoch, operationId: input.operationId, turnId, fingerprint, request: { ...input, sessionId: record.sessionId } } };
+      void Promise.resolve().then(() => record.worker.send(workerMessage)).catch(() => {
+        if (!record.pendingTurnAdmissions.has(dispatchId)) return;
         clearTimeout(timer);
         record.pendingTurnAdmissions.delete(dispatchId);
         const uncertain = this.rejectedTurn(record.sessionId, input.operationId, "uncertain", { code: "worker_unavailable", message: "worker turn admission send failed", retryable: true }, epoch, record.journal.lastEventId);
         operation.admission = uncertain;
         operation.status = { ...operation.status, revision: operation.status.revision + 1, state: "failed", error: uncertain.error };
-        return uncertain;
-      }
-      return wait.promise;
+        this.pushTurnStatus(operation, { type: "turn_status", status: operation.status });
+        this.broadcastRunningChanged(record.sessionId);
+        wait.resolve(uncertain);
+      });
+      // Release the identity lane after dispatch: stop and same-id retries must
+      // progress while admission is pending, including a stalled worker send.
+      return { pending: wait.promise };
     });
+    return "pending" in admitted ? admitted.pending : admitted;
   }
 
   async prepareSubmitTurn(input: RuntimeSubmitTurnParams): Promise<PreparedTurnSubmission> {
@@ -2057,43 +2096,77 @@ export class SessiondService {
     const record = this.records.get(result.sessionId);
     const operation = record?.turnOperations.get(result.operationId);
     if (!record || !operation || (result.status !== "accepted" && result.status !== "duplicate")) {
-      return { result, async flushTo() {}, close() {} };
+      const gate = createClosedGate();
+      gate.settle(null);
+      return { result, async flushTo() {}, close() {}, closed: gate.promise };
     }
-    const buffered: SessiondTurnStatusPush[] = [];
+    const buffered: Array<{ push: SessiondTurnStatusPush; bytes: number }> = [];
+    let bufferedBytes = 0;
     let liveListener: TurnStatusListener | undefined;
     let overflowed = false;
-    const subscriber: TurnSubscriber = { closed: false, draining: false, queue: [], listener: (push) => {
-      if (liveListener) return liveListener(push);
-      if (buffered.length >= this.subscriberQueueLimit) { overflowed = true; this.closeTurnSubscriber(operation, subscriber); return; }
-      buffered.push(push);
+    let closed = false;
+    let flushed = false;
+    const gate = createClosedGate();
+    const failOverflow = (): void => {
+      overflowed = true;
+      this.closeTurnSubscriber(operation, subscriber, subscriberOverflowError());
+    };
+    const subscriber: TurnSubscriber = { closed: false, draining: false, queue: [], queuedBytes: 0, listener: (push) => {
+      if (liveListener) return Promise.resolve(liveListener(push)).then(() => {
+        if (push.status.state === "completed" || push.status.state === "failed") close();
+      });
+      const bytes = ndjsonQueuedBytes(push);
+      if (buffered.length >= this.subscriberQueueLimit || bufferedBytes + bytes > this.subscriberQueueByteLimit) {
+        failOverflow();
+        return;
+      }
+      buffered.push({ push, bytes });
+      bufferedBytes += bytes;
+    }, onClosed: (error) => {
+      closed = true;
+      buffered.length = 0;
+      bufferedBytes = 0;
+      gate.settle(error);
     } };
     operation.subscribers.add(subscriber);
     const baselineRevision = result.status === "accepted" || result.status === "duplicate" ? result.turnStatus.revision : -1;
-    if (operation.status.revision > baselineRevision) buffered.push(operation.terminalPush ?? { type: "turn_status", status: operation.status });
-    let closed = false;
+    if (operation.status.revision > baselineRevision) {
+      const push = operation.terminalPush ?? { type: "turn_status", status: operation.status };
+      const bytes = ndjsonQueuedBytes(push);
+      if (buffered.length >= this.subscriberQueueLimit || bufferedBytes + bytes > this.subscriberQueueByteLimit) failOverflow();
+      else { buffered.push({ push, bytes }); bufferedBytes += bytes; }
+    }
+    const close = (error: SessiondError | null = null): void => {
+      if (closed) return;
+      closed = true;
+      buffered.length = 0;
+      bufferedBytes = 0;
+      this.closeTurnSubscriber(operation, subscriber, error);
+    };
     return {
       result,
+      closed: gate.promise,
       flushTo: async (listener) => {
-        if (closed || overflowed) throw new SessiondError("unavailable", "turn status buffer overflowed", true);
-        let terminalDelivered = false;
-        while (buffered.length > 0) {
-          const push = buffered.shift();
-          if (push) {
-            await listener(push);
-            if (push.status.state === "completed" || push.status.state === "failed") terminalDelivered = true;
+        if (closed || overflowed) throw subscriberOverflowError();
+        if (flushed) throw new SessiondError("conflict", "turn submission was already flushed");
+        flushed = true;
+        try {
+          let terminalDelivered = false;
+          while (buffered.length > 0) {
+            const item = buffered.shift()!;
+            bufferedBytes -= item.bytes;
+            await listener(item.push);
+            if (closed || overflowed) throw new SessiondError("unavailable", "turn submission closed while flushing", true);
+            if (item.push.status.state === "completed" || item.push.status.state === "failed") terminalDelivered = true;
           }
+          if (terminalDelivered) close();
+          else liveListener = listener;
+        } catch (error) {
+          close(error instanceof SessiondError ? error : new SessiondError("unavailable", "turn status listener rejected", true));
+          throw error;
         }
-        // Phase 5B: once a completed/failed status has been delivered (live or
-        // buffered), remove the TurnSubscriber from the operation so terminal
-        // turns cannot permanently block strict quiescence. The operation is
-        // NOT deleted — the epoch rollover clears it later.
-        if (terminalDelivered || subscriber.closed) {
-          this.closeTurnSubscriber(operation, subscriber);
-          return;
-        }
-        liveListener = listener;
       },
-      close: () => { if (closed) return; closed = true; buffered.length = 0; this.closeTurnSubscriber(operation, subscriber); },
+      close: () => close(),
     };
   }
 
@@ -2172,10 +2245,15 @@ export class SessiondService {
 
   private pushTurnStatus(operation: TurnOperationRecord, push: SessiondTurnStatusPush): void {
     if (push.status.state === "completed" || push.status.state === "failed") operation.terminalPush = push;
+    const bytes = ndjsonQueuedBytes(push);
     for (const subscriber of [...operation.subscribers]) {
       if (subscriber.closed) continue;
-      if (subscriber.queue.length >= this.subscriberQueueLimit) { this.closeTurnSubscriber(operation, subscriber); continue; }
-      subscriber.queue.push(push);
+      if (subscriber.queue.length >= this.subscriberQueueLimit || subscriber.queuedBytes + bytes > this.subscriberQueueByteLimit) {
+        this.closeTurnSubscriber(operation, subscriber, subscriberOverflowError());
+        continue;
+      }
+      subscriber.queue.push({ push, bytes });
+      subscriber.queuedBytes += bytes;
       if (!subscriber.draining) void this.drainTurnSubscriber(operation, subscriber);
     }
   }
@@ -2184,28 +2262,24 @@ export class SessiondService {
     subscriber.draining = true;
     try {
       while (!subscriber.closed && subscriber.queue.length > 0) {
-        const push = subscriber.queue.shift();
-        if (push) {
-          await subscriber.listener(push);
-          // Phase 5B: after a completed/failed status is delivered, remove the
-          // TurnSubscriber from the operation so terminal subscribers cannot
-          // permanently block strict quiescence (the operation itself is kept
-          // until the epoch rollover clears it).
-          if (push.status.state === "completed" || push.status.state === "failed") {
-            this.closeTurnSubscriber(operation, subscriber);
-            break;
-          }
+        const item = subscriber.queue.shift();
+        if (item) {
+          subscriber.queuedBytes -= item.bytes;
+          await subscriber.listener(item.push);
         }
       }
-    } catch { this.closeTurnSubscriber(operation, subscriber); }
-    finally { subscriber.draining = false; }
+    } catch (error) {
+      this.closeTurnSubscriber(operation, subscriber, error instanceof SessiondError ? error : new SessiondError("unavailable", "turn status listener rejected", true));
+    } finally { subscriber.draining = false; }
   }
 
-  private closeTurnSubscriber(operation: TurnOperationRecord, subscriber: TurnSubscriber): void {
+  private closeTurnSubscriber(operation: TurnOperationRecord, subscriber: TurnSubscriber, error: SessiondError | null = null): void {
     if (subscriber.closed) return;
     subscriber.closed = true;
     subscriber.queue.length = 0;
+    subscriber.queuedBytes = 0;
     operation.subscribers.delete(subscriber);
+    subscriber.onClosed?.(error);
   }
 
   /**
@@ -2567,17 +2641,30 @@ export class SessiondService {
 
   prepareAttach(params: RuntimeAttachParams, onBoundary?: () => void): PreparedAttachment {
     const record = this.requireActive(params.sessionId);
-    const liveBuffer: SessiondPush[] = [];
+    const liveBuffer: Array<{ push: SessiondPush; bytes: number }> = [];
+    let liveBufferBytes = 0;
     let overflowed = false;
+    let closed = false;
     let liveListener: PushListener | undefined;
+    const gate = createClosedGate();
+    const failOverflow = (): void => {
+      overflowed = true;
+      subscription.unsubscribe(subscriberOverflowError());
+    };
     const subscription = this.createSubscriber(record, (push) => {
       if (liveListener) return liveListener(push);
-      if (liveBuffer.length >= this.subscriberQueueLimit) {
-        overflowed = true;
-        subscription.unsubscribe();
+      const bytes = ndjsonQueuedBytes(push);
+      if (liveBuffer.length >= this.subscriberQueueLimit || liveBufferBytes + bytes > this.subscriberQueueByteLimit) {
+        failOverflow();
         return;
       }
-      liveBuffer.push(push);
+      liveBuffer.push({ push, bytes });
+      liveBufferBytes += bytes;
+    }, (error) => {
+      closed = true;
+      liveBuffer.length = 0;
+      liveBufferBytes = 0;
+      gate.settle(error);
     });
     // No await is allowed between subscription establishment and boundary capture.
     const boundary = record.journal.lastEventId;
@@ -2610,37 +2697,44 @@ export class SessiondService {
       resumeStatus: reason,
       snapshot: boundarySnapshot,
     };
-    let closed = false;
     let flushed = false;
-    const close = () => {
+    const close = (error: SessiondError | null = null) => {
       if (closed) return;
       closed = true;
       liveBuffer.length = 0;
-      subscription.unsubscribe();
+      liveBufferBytes = 0;
+      subscription.unsubscribe(error);
     };
     this.touch(record);
     return {
       result,
       replay,
+      closed: gate.promise,
       async flushTo(listener) {
-        if (closed || overflowed) throw new SessiondError("unavailable", "attach buffer overflowed", true);
+        if (closed || overflowed) throw subscriberOverflowError();
         if (flushed) throw new SessiondError("conflict", "attach was already flushed");
         flushed = true;
         try {
-          for (const push of replay) await listener(push);
+          for (const push of replay) {
+            await listener(push);
+            if (closed || overflowed) throw new SessiondError("unavailable", "attach closed while flushing", true);
+          }
           while (liveBuffer.length > 0) {
-            const push = liveBuffer.shift();
-            if (push) await listener(push);
+            const item = liveBuffer.shift();
+            if (item) {
+              liveBufferBytes -= item.bytes;
+              await listener(item.push);
+            }
             if (closed || overflowed) throw new SessiondError("unavailable", "attach closed while flushing", true);
           }
           // Synchronous switch: future subscriber drains enqueue directly after all buffered items.
           liveListener = listener;
         } catch (error) {
-          close();
+          close(error instanceof SessiondError ? error : new SessiondError("unavailable", "attach listener rejected", true));
           throw error;
         }
       },
-      close,
+      close: () => close(),
     };
   }
 
@@ -2677,47 +2771,64 @@ export class SessiondService {
    * RPC response is delivered, then switches atomically to live delivery.
    */
   prepareRunningWatch(): PreparedRunningWatch {
-    const liveBuffer: SessiondRunningStatePush[] = [];
+    const liveBuffer: Array<{ push: SessiondRunningStatePush; bytes: number }> = [];
+    let liveBufferBytes = 0;
     let overflowed = false;
+    let closed = false;
     let liveListener: RunningStateListener | undefined;
+    const gate = createClosedGate();
+    const failOverflow = (): void => {
+      overflowed = true;
+      this.closeRunningSubscriber(subscriber, subscriberOverflowError());
+    };
     let subscriber: RunningSubscriber;
     subscriber = this.createRunningSubscriber((push) => {
       if (liveListener) return liveListener(push);
-      if (liveBuffer.length >= this.subscriberQueueLimit) {
-        overflowed = true;
-        this.closeRunningSubscriber(subscriber);
+      const bytes = ndjsonQueuedBytes(push);
+      if (liveBuffer.length >= this.subscriberQueueLimit || liveBufferBytes + bytes > this.subscriberQueueByteLimit) {
+        failOverflow();
         return;
       }
-      liveBuffer.push(push);
+      liveBuffer.push({ push, bytes });
+      liveBufferBytes += bytes;
+    }, (error) => {
+      closed = true;
+      liveBuffer.length = 0;
+      liveBufferBytes = 0;
+      gate.settle(error);
     });
     const result = this.currentRunningState();
-    let closed = false;
     let flushed = false;
-    const close = () => {
+    const close = (error: SessiondError | null = null) => {
       if (closed) return;
       closed = true;
       liveBuffer.length = 0;
-      this.closeRunningSubscriber(subscriber);
+      liveBufferBytes = 0;
+      this.closeRunningSubscriber(subscriber, error);
     };
     return {
       result,
+      closed: gate.promise,
       async flushTo(listener) {
-        if (closed || overflowed || subscriber.closed) throw new SessiondError("unavailable", "running watch buffer overflowed", true);
+        if (closed || overflowed || subscriber.closed) throw subscriberOverflowError();
         if (flushed) throw new SessiondError("conflict", "running watch was already flushed");
         flushed = true;
         try {
           while (liveBuffer.length > 0) {
-            const push = liveBuffer.shift();
-            if (push) await listener(push);
+            const item = liveBuffer.shift();
+            if (item) {
+              liveBufferBytes -= item.bytes;
+              await listener(item.push);
+            }
             if (closed || overflowed || subscriber.closed) throw new SessiondError("unavailable", "running watch closed while flushing", true);
           }
           liveListener = listener;
         } catch (error) {
-          close();
+          close(error instanceof SessiondError ? error : new SessiondError("unavailable", "running watch listener rejected", true));
           throw error;
         }
       },
-      close,
+      close: () => close(),
     };
   }
 
@@ -2816,27 +2927,29 @@ export class SessiondService {
     return this.createSubscriber(this.requireActive(sessionId), listener).unsubscribe;
   }
 
-  private createSubscriber(record: RecordState, listener: PushListener): { subscriber: Subscriber; unsubscribe: () => void } {
-    const subscriber: Subscriber = { closed: false, draining: false, queue: [], listener };
+  private createSubscriber(record: RecordState, listener: PushListener, onClosed?: (error: SessiondError | null) => void): { subscriber: Subscriber; unsubscribe: (error?: SessiondError | null) => void } {
+    const subscriber: Subscriber = { closed: false, draining: false, queue: [], queuedBytes: 0, listener, ...(onClosed === undefined ? {} : { onClosed }) };
     record.subscribers.add(subscriber);
     this.touch(record);
-    return { subscriber, unsubscribe: () => this.closeSubscriber(record, subscriber) };
+    return { subscriber, unsubscribe: (error) => this.closeSubscriber(record, subscriber, error) };
   }
 
-  private createRunningSubscriber(listener: RunningStateListener): RunningSubscriber {
-    const subscriber: RunningSubscriber = { closed: false, draining: false, queue: [], listener };
+  private createRunningSubscriber(listener: RunningStateListener, onClosed?: (error: SessiondError | null) => void): RunningSubscriber {
+    const subscriber: RunningSubscriber = { closed: false, draining: false, queue: [], queuedBytes: 0, listener, ...(onClosed === undefined ? {} : { onClosed }) };
     this.runningSubscribers.add(subscriber);
     return subscriber;
   }
 
   private pushRunningState(push: SessiondRunningStatePush): void {
+    const bytes = ndjsonQueuedBytes(push);
     for (const subscriber of [...this.runningSubscribers]) {
       if (subscriber.closed) continue;
-      if (subscriber.queue.length >= this.subscriberQueueLimit) {
-        this.closeRunningSubscriber(subscriber);
+      if (subscriber.queue.length >= this.subscriberQueueLimit || subscriber.queuedBytes + bytes > this.subscriberQueueByteLimit) {
+        this.closeRunningSubscriber(subscriber, subscriberOverflowError());
         continue;
       }
-      subscriber.queue.push(push);
+      subscriber.queue.push({ push, bytes });
+      subscriber.queuedBytes += bytes;
       if (!subscriber.draining) void this.drainRunningSubscriber(subscriber);
     }
   }
@@ -2845,21 +2958,26 @@ export class SessiondService {
     subscriber.draining = true;
     try {
       while (!subscriber.closed && subscriber.queue.length > 0) {
-        const push = subscriber.queue.shift();
-        if (push) await subscriber.listener(push);
+        const item = subscriber.queue.shift();
+        if (item) {
+          subscriber.queuedBytes -= item.bytes;
+          await subscriber.listener(item.push);
+        }
       }
-    } catch {
-      this.closeRunningSubscriber(subscriber);
+    } catch (error) {
+      this.closeRunningSubscriber(subscriber, error instanceof SessiondError ? error : new SessiondError("unavailable", "running watch listener rejected", true));
     } finally {
       subscriber.draining = false;
     }
   }
 
-  private closeRunningSubscriber(subscriber: RunningSubscriber): void {
+  private closeRunningSubscriber(subscriber: RunningSubscriber, error: SessiondError | null = null): void {
     if (subscriber.closed) return;
     subscriber.closed = true;
     subscriber.queue.length = 0;
+    subscriber.queuedBytes = 0;
     this.runningSubscribers.delete(subscriber);
+    subscriber.onClosed?.(error);
   }
 
   private push(record: RecordState, push: SessiondPush): void {
@@ -2868,8 +2986,13 @@ export class SessiondService {
 
   private pushToSubscriber(record: RecordState, subscriber: Subscriber | undefined, push: SessiondPush): void {
     if (!subscriber || subscriber.closed) return;
-    if (subscriber.queue.length >= this.subscriberQueueLimit) { this.closeSubscriber(record, subscriber); return; }
-    subscriber.queue.push(push);
+    const bytes = ndjsonQueuedBytes(push);
+    if (subscriber.queue.length >= this.subscriberQueueLimit || subscriber.queuedBytes + bytes > this.subscriberQueueByteLimit) {
+      this.closeSubscriber(record, subscriber, subscriberOverflowError());
+      return;
+    }
+    subscriber.queue.push({ push, bytes });
+    subscriber.queuedBytes += bytes;
     if (!subscriber.draining) void this.drainSubscriber(record, subscriber);
   }
 
@@ -2878,20 +3001,25 @@ export class SessiondService {
     try {
       while (!subscriber.closed && subscriber.queue.length) {
         const item = subscriber.queue.shift();
-        if (item) await subscriber.listener(item);
+        if (item) {
+          subscriber.queuedBytes -= item.bytes;
+          await subscriber.listener(item.push);
+        }
       }
-    } catch {
-      this.closeSubscriber(record, subscriber);
+    } catch (error) {
+      this.closeSubscriber(record, subscriber, error instanceof SessiondError ? error : new SessiondError("unavailable", "subscriber listener rejected", true));
     } finally {
       subscriber.draining = false;
     }
   }
 
-  private closeSubscriber(record: RecordState, subscriber: Subscriber): void {
+  private closeSubscriber(record: RecordState, subscriber: Subscriber, error: SessiondError | null = null): void {
     if (subscriber.closed) return;
     subscriber.closed = true;
     subscriber.queue.length = 0;
+    subscriber.queuedBytes = 0;
     record.subscribers.delete(subscriber);
+    subscriber.onClosed?.(error);
     if (record.status !== "stopping" && record.status !== "stopped" && this.records.get(record.sessionId) === record) this.touch(record);
   }
 
@@ -3009,7 +3137,12 @@ export class SessiondService {
   private isTurnRunning(record: RecordState): boolean {
     const state = record.projection.snapshot().state;
     return state.isPromptRunning || state.isStreaming || state.isBashRunning || state.isCompacting ||
-      [...record.turnOperations.values()].some((operation) => operation.terminalFinalization !== undefined);
+      [...record.turnOperations.values()].some((operation) => operation.epoch === record.epoch && (
+        operation.terminalFinalization !== undefined ||
+        (operation.status.state !== "completed" && operation.status.state !== "failed" &&
+          (record.pendingTurnAdmissions.has(operation.dispatchId) ||
+            operation.admission.status === "accepted" || operation.admission.status === "duplicate"))
+      ));
   }
 
   private isSideChatActive(record: RecordState): boolean {

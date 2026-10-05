@@ -65,8 +65,15 @@ export const PIX_PRODUCT_VERSION = "0.2.0" as const;
  * dispositions and nested tool summaries. Terminal turn pushes carry the same
  * refreshed authority snapshot as the observation FIFO (required on completed).
  * Older strict-schema peers reject them.
+ * v9 (runtime frame capacity): Worker/sessiond/Host runtime transports share a
+ * Protocol-owned aggregate frame/queue budget that can carry one max inline
+ * image plus envelope. Overflow remains fail-closed at existing owners.
+ * Lightweight history and inbound control budgets stay independent.
+ * v10 (native questionnaire): snapshots, events, command/read results, and
+ * turn authority may carry `method: "questionnaire"` requests/answers. A v9
+ * peer's strict schemas reject the new method, so mixed dist must fail closed.
  */
-export const SESSIOND_CONTRACT_VERSION = 8 as const;
+export const SESSIOND_CONTRACT_VERSION = 10 as const;
 
 /**
  * sessiond ↔ Worker IPC contract generation. Bumped on every change to the
@@ -89,8 +96,12 @@ export const SESSIOND_CONTRACT_VERSION = 8 as const;
  * append-only stream deltas. A v5 peer rejects the strict additive surface.
  * v7 (Pi 1.0): events carry nested parent identity and notifications; messages
  * and terminal results retain the new metadata and input disposition.
+ * v8 (runtime frame capacity): NDJSON Worker frames and stdin/stdout queues use
+ * the Protocol runtime budget so schema-valid image content is not fatal.
+ * v9 (native questionnaire): Worker IPC events/snapshots/command mapping carry
+ * the typed questionnaire request/response. A v8 peer rejects the method.
  */
-export const WORKER_CONTRACT_VERSION = 7 as const;
+export const WORKER_CONTRACT_VERSION = 9 as const;
 
 /**
  * Adapter behavior-contract generation (the contract proven by
@@ -119,8 +130,11 @@ export const WORKER_CONTRACT_VERSION = 7 as const;
  * bounded canonical projection. A v5 Worker has no compatible behavior seam.
  * v7 (Pi 1.0): native extension factories, input preflight dispositions,
  * edited-context estimates and nested-call metadata require the matching SDK.
+ * v8 (native questionnaire): Adapter wraps the exact bundled ask tool, issues
+ * typed questionnaire UI requests, and maps accepted answers to the package
+ * result. A v7 Worker/sessiond peer must not be reused.
  */
-export const ADAPTER_CONTRACT_VERSION = 7 as const;
+export const ADAPTER_CONTRACT_VERSION = 8 as const;
 
 /**
  * Canonicalization format version for the capability fingerprint. Bumped only

@@ -378,4 +378,80 @@ describe("adapter extension UI (D2-P8)", () => {
     assert.equal(notFound.ok, false);
     assert.ok(!JSON.stringify(notFound).includes("SECRET-TITLE-xyz"));
   });
+
+  it("questionnaire answers are validated against the pending request before settle", async () => {
+    const { driver, controls } = makeDriver();
+    const adapter = new CanonicalAgentRuntimeAdapter(driver);
+    await adapter.ready();
+    const events = await collectEvents(adapter);
+    const questions = [{
+      header: "Auth",
+      question: "Which auth?",
+      options: [{ label: "OAuth", description: "Browser" }, { label: "Token", description: "Static" }],
+      multiSelect: false,
+    }];
+    controls.requestUi({ id: "ui-q", method: "questionnaire", questions });
+    const invalid = await adapter.execute({
+      type: "extension_ui_response",
+      id: "ui-q",
+      method: "questionnaire",
+      answers: [{ kind: "option", questionIndex: 0, optionIndex: 9 }],
+    } as RuntimeCommand);
+    assert.equal(invalid.ok, false);
+    if (!invalid.ok) assert.equal(invalid.error.code, "invalid_input");
+    assert.deepEqual(controls.settleCalls, []);
+    assert.deepEqual(await pendingIds(adapter), ["ui-q"]);
+
+    const incremental = await adapter.execute({
+      type: "extension_ui_input",
+      id: "ui-q",
+      method: "custom",
+      data: "x",
+    } as RuntimeCommand);
+    assert.equal(incremental.ok, false);
+    if (!incremental.ok) assert.equal(incremental.error.code, "invalid_input");
+    assert.deepEqual(await pendingIds(adapter), ["ui-q"]);
+
+    const numericCustom = await adapter.execute({
+      type: "extension_ui_response",
+      id: "ui-q",
+      method: "questionnaire",
+      answers: [{ kind: "custom", questionIndex: 0, text: "1" }],
+    } as RuntimeCommand);
+    assert.equal(numericCustom.ok, true);
+    assert.deepEqual(controls.settleCalls, [{ id: "ui-q", value: { answers: [{ kind: "custom", questionIndex: 0, text: "1" }] } }]);
+    assert.deepEqual(await pendingIds(adapter), []);
+    assert.equal(uiRequests(events).filter((r) => r.closed === true).length, 1);
+  });
+
+  it("questionnaire cancel is a user decline; late replies cannot settle another request", async () => {
+    const { driver, controls } = makeDriver();
+    const adapter = new CanonicalAgentRuntimeAdapter(driver);
+    await adapter.ready();
+    const questions = [{
+      header: "Auth",
+      question: "Which auth?",
+      options: [{ label: "OAuth", description: "Browser" }, { label: "Token", description: "Static" }],
+      multiSelect: false,
+    }];
+    controls.requestUi({ id: "ui-q1", method: "questionnaire", questions });
+    const cancelled = await adapter.execute({
+      type: "extension_ui_response",
+      id: "ui-q1",
+      method: "questionnaire",
+      cancelled: true,
+    } as RuntimeCommand);
+    assert.equal(cancelled.ok, true);
+    assert.deepEqual(controls.settleCalls, [{ id: "ui-q1", value: { cancelled: true } }]);
+    controls.requestUi({ id: "ui-q2", method: "questionnaire", questions });
+    const late = await adapter.execute({
+      type: "extension_ui_response",
+      id: "ui-q1",
+      method: "questionnaire",
+      answers: [{ kind: "option", questionIndex: 0, optionIndex: 0 }],
+    } as RuntimeCommand);
+    assert.equal(late.ok, false);
+    if (!late.ok) assert.equal(late.error.code, "not_found");
+    assert.deepEqual(await pendingIds(adapter), ["ui-q2"]);
+  });
 });

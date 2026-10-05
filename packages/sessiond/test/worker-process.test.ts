@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { PROTOCOL_VERSION, SESSIOND_BUILD_IDENTITY } from "@fffattiger/pix-protocol";
+import { MAX_RUNTIME_FRAME_BYTES, PROTOCOL_VERSION, SESSIOND_BUILD_IDENTITY } from "@fffattiger/pix-protocol";
 import {
   buildWorkerEnv,
   createProductionWorkerProcessFactory,
@@ -666,6 +666,47 @@ test("spawn error (missing binary) rejects start", async () => {
     factory.start(startInput),
     (error: unknown) => error instanceof SessiondError && error.code === "worker_unavailable",
   );
+});
+
+test("send honors configured maxFrameBytes rather than the default constant", async () => {
+  const factory = factoryWithArgvMode("echo", { maxFrameBytes: 64 });
+  const connection = await factory.start(startInput);
+  await assert.rejects(
+    connection.send({
+      type: "worker.command",
+      id: "p-oversize",
+      protocolVersion: PROTOCOL_VERSION,
+      payload: {
+        sessionId: "sess-1",
+        epoch: "e1",
+        command: { type: "prompt", commandId: "cmd-oversize", message: "x".repeat(80) },
+      },
+    }),
+    (error: unknown) => error instanceof SessiondError && error.code === "invalid_request" && /size limit/.test(error.message),
+  );
+  await connection.close();
+});
+
+test("send admits a PNG-equivalent image-bearing frame under the Protocol runtime budget", async () => {
+  const factory = factoryWithArgvMode("echo", { maxFrameBytes: MAX_RUNTIME_FRAME_BYTES });
+  const connection = await factory.start(startInput);
+  const data = Buffer.alloc(2_108_283, 0x41).toString("base64");
+  await connection.send({
+    type: "worker.command",
+    id: "img-1",
+    protocolVersion: PROTOCOL_VERSION,
+    payload: {
+      sessionId: "sess-1",
+      epoch: "e1",
+      command: {
+        type: "prompt",
+        commandId: "cmd-img",
+        message: "read",
+        images: [{ type: "image", data, mimeType: "image/png" }],
+      },
+    },
+  });
+  await connection.close();
 });
 
 test("send rejects invalid schema and closed connection", async () => {

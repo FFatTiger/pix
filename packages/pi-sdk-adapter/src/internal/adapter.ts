@@ -39,6 +39,7 @@ import {
   applySideChatDelta,
   boundSideChatState,
   MAX_EXTENSION_NOTIFICATIONS,
+  validateQuestionnaireAnswers,
   type PromptDisposition,
   type BuiltInRuntimeState,
   type ExtensionNotificationItem,
@@ -335,9 +336,10 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           }
         : { active: false, phase: "idle" },
       // Protocol v2: the snapshot is control/reconnect state only — it NEVER
-      // carries completed transcript history (a huge JSONL would blow the
-      // Worker 2 MiB / Host ~4 MiB frame budgets during primeProjection).
-      // Persisted history comes from the cursor-paginated session context.
+      // carries completed transcript history (a huge JSONL would blow runtime
+      // frame budgets during primeProjection). Active partials, including
+      // images, stay in-snapshot. Persisted history comes from the
+      // cursor-paginated session context.
     };
   }
 
@@ -1464,6 +1466,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
       ...(driver.placeholder === undefined ? {} : { placeholder: driver.placeholder }),
       ...(driver.prefill === undefined ? {} : { prefill: driver.prefill }),
       ...(driver.lines === undefined ? {} : { lines: driver.lines }),
+      ...(driver.questions === undefined ? {} : { questions: driver.questions }),
       ...(driver.timeout === undefined ? {} : { timeout: driver.timeout, expiresAt: Date.now() + driver.timeout }),
     };
     this.pendingUi.set(driver.id, { request, driver });
@@ -1485,6 +1488,24 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     if (pending.request.method !== command.method) {
       return this.failure(command.type, makeRuntimeError("invalid_input", `extension response method mismatch for request ${command.id}`));
     }
+    if (command.method === "questionnaire" && pending.request.method === "questionnaire") {
+      if (pending.request.questions === undefined) {
+        return this.failure(command.type, makeRuntimeError("invalid_input", `extension questionnaire request is missing questions: ${command.id}`));
+      }
+      if ("cancelled" in command && command.cancelled === true) {
+        pending.driver.settle({ cancelled: true });
+        return { ok: true, type: command.type };
+      }
+      if (!("answers" in command)) {
+        return this.failure(command.type, makeRuntimeError("invalid_input", `extension questionnaire response is missing answers: ${command.id}`));
+      }
+      const validated = validateQuestionnaireAnswers(pending.request.questions, command.answers);
+      if (!validated.ok) {
+        return this.failure(command.type, makeRuntimeError("invalid_input", `extension questionnaire answers are invalid for request ${command.id}`));
+      }
+      pending.driver.settle({ answers: command.answers });
+      return { ok: true, type: command.type };
+    }
     if ("value" in command) pending.driver.settle({ value: command.value });
     else if ("confirmed" in command) pending.driver.settle({ confirmed: command.confirmed });
     else pending.driver.settle({ cancelled: true });
@@ -1498,6 +1519,9 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     // (E15: custom panels stream raw key data), so a mismatch rejects
     // select/confirm with structured invalid_input; the request stays pending
     // and usable (no SDK input call, no close).
+    if (pending.request.method === "questionnaire") {
+      return this.failure("extension_ui_input", makeRuntimeError("invalid_input", `questionnaire requests do not accept incremental input: ${command.id}`));
+    }
     if (pending.request.method !== command.method) {
       return this.failure("extension_ui_input", makeRuntimeError("invalid_input", `extension input method mismatch for request ${command.id}`));
     }

@@ -206,11 +206,12 @@ export function AppShell({ search }: AppShellProps) {
   const gateAllowsRuntime = gate.data !== undefined && !gateRequired;
 
   // Connect the control plane at shell startup so a refreshed page can ask
-  // sessiond which workers are already running. Connecting the WebSocket does
-  // NOT attach or activate a session: idle history stays 0-Worker. If the
-  // a selected URL names a BUSY live Worker, the bounded resume effect below
-  // reacquires observation only, so an in-flight stream remains visible after
-  // re-entry/refresh without creating or activating anything.
+  // sessiond which workers are already live. Connecting the WebSocket does
+  // NOT attach or activate a session: pure history stays 0-Worker. If a
+  // selected URL names an ALREADY-LIVE Worker (busy or idle), the bounded
+  // resume effect below reacquires observation only, so an in-flight stream
+  // or child-task projection remains visible after re-entry/refresh without
+  // creating or activating anything.
   useEffect(() => {
     if (canAgent && gateAllowsRuntime) connectRuntime();
   }, [canAgent, connectRuntime, gateAllowsRuntime]);
@@ -248,18 +249,24 @@ export function AppShell({ search }: AppShellProps) {
 
   // Auto-observe the selected session ONLY when the full admission predicate
   // holds: gate allowed + Host agent capability + negotiated observe-existing
-  // feature + exact HTTP workspace authorized + authoritative busy baseline
-  // known + the session is in sessiond's busy set + not already attached.
-  // Initial idle/inactive selections attach NOTHING (0-Worker history). A
-  // busy→idle transition does NOT cancel an eligible in-flight attach or drop
-  // a terminal (this effect only ever ADDS observation); the acquired idle
-  // subscription is kept until a transfer/release/stop. A missing feature or
-  // a failed observation is surfaced honestly — never an activating fallback,
-  // never a silent catch. Settlement is gated by the registry-owned
-  // presentation token captured BEFORE the call; a late A result cannot paint
-  // or clear B.
+  // feature + exact HTTP workspace authorized + authoritative live baseline
+  // known + the session already has a Worker in sessiond's live set + the
+  // registry does not already hold/desire that observation lease.
+  // Live includes idle Workers: a parent may be idle while children/todos
+  // still need a fresh snapshot for the status card. Pure history (not in
+  // liveSessionIds) still attaches NOTHING — never activate/createWorker,
+  // never a failedExisting→activate fallback. Live/idle ≠ busy: this does
+  // not mint runningSessionIds or render an idle Worker as working. A
+  // live→absent transition does NOT cancel an eligible in-flight attach or
+  // drop a terminal (this effect only ever ADDS observation); the acquired
+  // idle subscription is kept until a transfer/release/stop. A missing
+  // feature or a failed observation of a stale/inactive live baseline is
+  // surfaced honestly and scoped to the exact controller — never an
+  // activating fallback, never a silent catch, never stealing a previous
+  // foreground lease. Settlement is gated by the registry-owned presentation
+  // token captured BEFORE the call; a late A result cannot paint or clear B.
   const observeFeatureNegotiated = connection.acceptedFeatures.includes(RUNTIME_OBSERVE_EXISTING_FEATURE);
-  const selectedBusy = selectedSessionId !== null && connection.runningSessionIds.includes(selectedSessionId);
+  const selectedLive = selectedSessionId !== null && connection.liveSessionIds.includes(selectedSessionId);
   const [observationError, setObservationError] = useState<string | null>(null);
   useEffect(() => {
     setObservationError(null);
@@ -272,8 +279,8 @@ export function AppShell({ search }: AppShellProps) {
     const sessionId = selectedSessionId;
     if (sessionId === null || !presentationAuthorized || !connection.liveSessionStateKnown) return;
     // Lease/attached are guards only — not effect deps. An error that vacates
-    // the lease while selectedBusy stays true must not hammer-retry; idle→busy
-    // or a later transport generation is the recovery trigger. Registry
+    // the lease while selectedLive stays true must not hammer-retry; a later
+    // live-set / generation change is the recovery trigger. Registry
     // single-flight coalesces an already in-flight/held observe.
     const current = registry.leaseSnapshot;
     const observingSelected = current.holderSessionId === sessionId
@@ -281,17 +288,17 @@ export function AppShell({ search }: AppShellProps) {
       || current.targetSessionId === sessionId;
     if (observingSelected) return;
     if (!observeFeatureNegotiated) {
-      if (!selectedBusy) return;
+      if (!selectedLive) return;
       applyObservationOutcome(registry.capturePresentation(), { code: "unsupported_capability", retryable: false });
       return;
     }
-    if (!selectedBusy) return;
+    if (!selectedLive) return;
     const token = registry.capturePresentation();
     void registry.observeExisting(sessionId).then(
       () => { applyObservationOutcome(token, null); },
       (cause: unknown) => { applyObservationOutcome(token, cause); },
     );
-  }, [applyObservationOutcome, connection.generation, connection.liveSessionStateKnown, observeFeatureNegotiated, presentationAuthorized, registry, selectedBusy, selectedSessionId]);
+  }, [applyObservationOutcome, connection.generation, connection.liveSessionStateKnown, observeFeatureNegotiated, presentationAuthorized, registry, selectedLive, selectedSessionId]);
 
   // Workspace revoke is exact-selected. Global gate/agent revoke (and a genuine
   // observe-feature true→false edge) releases ANY held/pending browser observer,
@@ -456,16 +463,18 @@ export function AppShell({ search }: AppShellProps) {
 
   // ── Session selection is READ-ONLY (0-Worker history invariant) ───────────
   // Selecting/browsing a session (sidebar row OR a session tab) MUST NOT
-  // activate/open a worker: the selected session stays a read-only history
-  // view while the Composer remains editable; sending is the activation
-  // trigger through `sendPromptToSession`. The ONE observation-only exception
-  // is a session in sessiond's busy set under the full admission predicate
-  // (LC-02 auto-observe above): an observation-only attach
-  // (`attachMode: existing_only`) with zero activation, applied to EVERY
-  // entry point — initial URL, sidebar, tab, back/forward — so an in-flight
-  // stream stays visible across re-entry/refresh and A→B→A switches. An
-  // acquired subscription is kept across busy→idle until transfer/release;
-  // every visible surface stays active-session identity-gated.
+  // activate/open a worker: a non-live selected session stays a read-only
+  // history view while the Composer remains editable; sending is the
+  // activation trigger through `sendPromptToSession`. The ONE observation-
+  // only exception is a session already in sessiond's live set under the
+  // full admission predicate (LC-02 auto-observe above): an observation-only
+  // attach (`attachMode: existing_only`) with zero activation, applied to
+  // EVERY entry point — initial URL, sidebar, tab, back/forward — so an
+  // in-flight stream or live idle parent's task projection stays visible
+  // across re-entry/refresh and A→B→A switches. Live/idle is not busy: the
+  // Worker is not rendered as working. An acquired subscription is kept
+  // across busy→idle until transfer/release; every visible surface stays
+  // active-session identity-gated.
 
   // ── Immediate session navigation ──────────────────────────────────────────
   // Sidebar selection navigates the URL IMMEDIATELY: the selected session's
@@ -620,9 +629,9 @@ export function AppShell({ search }: AppShellProps) {
   // connection.liveSessionIds is the authoritative list of session ids with a
   // live Worker (busy OR idle) from sessiond; the selected exact session is
   // additionally live while it is attached (its exact controller holds the
-  // observation lease). This feeds indicators; the resume effect may reacquire
-  // an already-busy Worker for the selected session, never activate an idle
-  // one or create a Worker.
+  // observation lease). This feeds indicators. The resume effect may also
+  // observe an already-live selected Worker (idle included) for a fresh
+  // snapshot; it never activates inactive history or creates a Worker.
   const liveSessionIds = useMemo<ReadonlySet<string>>(() => {
     const ids = new Set<string>(connection.liveSessionIds);
     if (selectedRuntime?.attached === true) ids.add(selectedRuntime.sessionId);

@@ -7,6 +7,8 @@ import type {
   RuntimeStateChangedContext,
   ImageAttachment,
   ModelRef,
+  QuestionnaireAnswer,
+  QuestionnaireQuestion,
   RuntimeCapability,
   RuntimeCloseReason,
   RuntimeEvent,
@@ -73,17 +75,19 @@ export type DriverContextState = RuntimeStateChangedContext;
 
 export interface DriverUiRequest {
   id: string;
-  method: "select" | "confirm" | "input" | "editor" | "custom";
+  method: "select" | "confirm" | "input" | "editor" | "custom" | "questionnaire";
   title?: string;
   message?: string;
   options?: readonly string[];
   placeholder?: string;
   prefill?: string;
   lines?: readonly string[];
+  questions?: readonly QuestionnaireQuestion[];
   timeout?: number;
-  settle(value: { value?: string; confirmed?: boolean; cancelled?: true }): void;
+  settle(value: { value?: string; confirmed?: boolean; cancelled?: true; answers?: readonly QuestionnaireAnswer[] }): void;
   input?(data: string): void;
   cancel(): void;
+  fail?(error: unknown): void;
   onSettled(listener: () => void): void;
 }
 

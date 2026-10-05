@@ -34,6 +34,11 @@ const selectRequest: ExtensionUiRequest = { id: "req-select", method: "select", 
 const inputRequest: ExtensionUiRequest = { id: "req-input", method: "input", title: "Name", placeholder: "type here" };
 const editorRequest: ExtensionUiRequest = { id: "req-editor", method: "editor", title: "Edit", prefill: "seed text" };
 const customRequest: ExtensionUiRequest = { id: "req-custom", method: "custom", lines: ["line one"] };
+const questionnaireRequest: ExtensionUiRequest = {
+  id: "req-questionnaire",
+  method: "questionnaire",
+  questions: [{ header: "H", question: "Q?", multiSelect: false, options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] }],
+};
 const notifyRequest: ExtensionUiRequest = { id: "req-notify", method: "notify", message: "hello", notifyType: "info" };
 
 interface CommandFrame {
@@ -94,6 +99,7 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
       { request: inputRequest, reply: { responseKind: "value", value: "typed" }, expectCommand: { id: "req-input", method: "input", responseKind: "value", value: "typed" } },
       { request: editorRequest, reply: { responseKind: "value", value: "edited" }, expectCommand: { id: "req-editor", method: "editor", responseKind: "value", value: "edited" } },
       { request: customRequest, reply: { responseKind: "value", value: "custom answer" }, expectCommand: { id: "req-custom", method: "custom", responseKind: "value", value: "custom answer" } },
+      { request: questionnaireRequest, reply: { responseKind: "questionnaire", answers: [{ kind: "option", questionIndex: 0, optionIndex: 1 }] }, expectCommand: { id: "req-questionnaire", method: "questionnaire", responseKind: "questionnaire", answers: [{ kind: "option", questionIndex: 0, optionIndex: 1 }] } },
     ];
     for (const c of cases) {
       const p = h.store.respondExtensionUi(c.request, c.reply as never);
@@ -112,7 +118,7 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
     }
 
     // cancelled is valid for every interactive method.
-    for (const request of [confirmRequest, selectRequest, inputRequest, editorRequest, customRequest]) {
+    for (const request of [confirmRequest, selectRequest, inputRequest, editorRequest, customRequest, questionnaireRequest]) {
       const p = h.store.respondExtensionUi(request, { responseKind: "cancelled", cancelled: true });
       await flush();
       const frame = extFrame(ws);
@@ -181,6 +187,7 @@ describe("SessionStore — D2-P8 extension-UI reply slot", () => {
     await expect(h.store.respondExtensionUi(confirmRequest, { responseKind: "value", value: "x" })).rejects.toMatchObject({ code: "invalid_input", retryable: false });
     // confirmed reply on a select request → invalid_input before send.
     await expect(h.store.respondExtensionUi(selectRequest, { responseKind: "confirmed", confirmed: true })).rejects.toMatchObject({ code: "invalid_input", retryable: false });
+    await expect(h.store.respondExtensionUi(confirmRequest, { responseKind: "questionnaire", answers: [{ kind: "option", questionIndex: 0, optionIndex: 0 }] })).rejects.toMatchObject({ code: "invalid_input", retryable: false });
     // Non-interactive request can never be answered.
     await expect(h.store.respondExtensionUi(notifyRequest, { responseKind: "cancelled", cancelled: true })).rejects.toMatchObject({ code: "invalid_input", retryable: false });
     expect(h.store.getSnapshot().extensionUiReplyPending).toBe(false);

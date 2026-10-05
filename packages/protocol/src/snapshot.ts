@@ -132,8 +132,9 @@ export const RuntimeSnapshotSchema = z
   .superRefine((snapshot, ctx) => {
     // Protocol v2 hard invariant: a RuntimeSnapshot is control/reconnect state
     // only and must NEVER carry completed transcript history (a huge JSONL
-    // would blow the Worker 2 MiB / Host ~4 MiB frame budgets during
-    // primeProjection). The strict object already rejects an unknown
+    // would blow runtime frame budgets during primeProjection). Active partial
+    // messages, including images, remain in-snapshot and use the Protocol
+    // runtime frame budget. The strict object already rejects an unknown
     // `messages` key; this adds a dedicated, discoverable error.
     if ("messages" in (snapshot as Record<string, unknown>)) {
       ctx.addIssue({ code: "custom", path: ["messages"], message: "runtime snapshots must not carry transcript history; use the cursor-paginated session context endpoint" });

@@ -17,6 +17,15 @@ export interface FakeWorkerOptions {
   readDelayMs?: number;
   /** Phase 3: delay before the worker admits a submitTurn (0 = immediate). */
   submitAdmissionDelayMs?: number;
+  /**
+   * Hold submitTurn admission behind a deterministic gate (release via
+   * {@link FakeWorkerConnection.releaseHeldAdmissions}; observe via
+   * {@link FakeWorkerConnection.waitForHeldAdmission}). Used to prove running
+   * overview busy without wall-clock delays or agent_start/message events.
+   */
+  holdSubmitAdmission?: boolean;
+  /** Admit before any SDK running-state event or snapshot flag. */
+  submitSnapshotIdle?: boolean;
   /** Deterministic fast no-model completion or explicit test-owned completion. */
   turnCompletion?: "handled" | "manual";
   failStart?: boolean;
@@ -112,6 +121,9 @@ export class FakeWorkerConnection implements WorkerConnection {
   /** Post-command snapshots held behind the deterministic gate. */
   private readonly heldPostCommandSnapshots: Array<{ id: string | undefined; sessionId: string }> = [];
   private readonly heldSnapshotWaiters = new Set<() => void>();
+  /** SubmitTurn admissions held behind the deterministic gate. */
+  private readonly heldAdmissions: Array<() => void> = [];
+  private readonly heldAdmissionWaiters = new Set<() => void>();
 
   constructor(readonly input: WorkerStartInput, private readonly options: FakeWorkerOptions, pid: number) {
     this.pid = pid;
@@ -176,7 +188,7 @@ export class FakeWorkerConnection implements WorkerConnection {
         if (request.activationOverrides?.thinkingLevel !== undefined) {
           this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, thinkingLevel: request.activationOverrides.thinkingLevel, thinkingLevelPinned: true } };
         }
-        this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, isPromptRunning: true } };
+        this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, isPromptRunning: !this.options.submitSnapshotIdle } };
         const admissionSnapshot = structuredClone(this.liveSnapshot);
         const emitAdmission = () => {
           if (this.closed) return;
@@ -196,10 +208,20 @@ export class FakeWorkerConnection implements WorkerConnection {
             this.emit({ type: "worker.turnStatus", payload: { sessionId, epoch, operationId, turnId, revision: 1, state: "completed", disposition: "handled" } });
           }
         };
+        const emitOrHoldAdmission = (): void => {
+          if (this.options.holdSubmitAdmission) {
+            this.heldAdmissions.push(emitAdmission);
+            for (const waiter of [...this.heldAdmissionWaiters]) waiter();
+            return;
+          }
+          emitAdmission();
+        };
         const admissionDelay = this.options.submitAdmissionDelayMs ?? 0;
-        if (admissionDelay > 0) setTimeout(emitAdmission, admissionDelay);
-        else queueMicrotask(emitAdmission);
-        if (this.options.turnCompletion !== undefined) return;
+        if (admissionDelay > 0) setTimeout(emitOrHoldAdmission, admissionDelay);
+        else queueMicrotask(emitOrHoldAdmission);
+        // Held/manual turns stay test-owned; never auto-complete a turn whose
+        // admission has not been released.
+        if (this.options.turnCompletion !== undefined || this.options.holdSubmitAdmission) return;
         setTimeout(() => {
           if (this.closed) return;
           this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, isPromptRunning: false, messageCount: this.liveSnapshot.state.messageCount + 1 } };
@@ -503,6 +525,48 @@ export class FakeWorkerConnection implements WorkerConnection {
   /** Enable/disable the deterministic post-command snapshot gate for a specific test phase. */
   setHoldPostCommandSnapshots(hold: boolean): void {
     this.holdPostCommandSnapshots = hold;
+  }
+
+  /**
+   * Resolves as soon as at least one submitTurn admission is held behind the
+   * deterministic gate (bounded). Never a fixed sleep.
+   */
+  waitForHeldAdmission(timeoutMs = 2_000): Promise<void> {
+    if (this.heldAdmissions.length > 0) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.heldAdmissionWaiters.delete(waiter);
+        reject(new Error(`timed out waiting for a held submitTurn admission (${this.heldAdmissions.length} held)`));
+      }, timeoutMs);
+      const waiter = (): void => {
+        clearTimeout(timer);
+        this.heldAdmissionWaiters.delete(waiter);
+        resolve();
+      };
+      this.heldAdmissionWaiters.add(waiter);
+    });
+  }
+
+  /** Release every held submitTurn admission. */
+  releaseHeldAdmissions(): void {
+    const held = this.heldAdmissions.splice(0);
+    for (const emit of held) emit();
+  }
+
+  /** Emit a deterministic rejected submitTurn admission for each held dispatch. */
+  rejectHeldAdmissions(error: ProtocolError = { code: "command_rejected", message: "worker rejected turn", retryable: false }): void {
+    this.heldAdmissions.splice(0);
+    const dispatch = [...this.sent].reverse().find((message): message is Extract<SessiondToWorkerMessage, { type: "worker.submitTurn" }> => message.type === "worker.submitTurn");
+    if (!dispatch || this.closed) return;
+    const { sessionId, epoch, operationId } = dispatch.payload;
+    this.emit({
+      type: "worker.submitTurnResult",
+      id: dispatch.id,
+      payload: {
+        sessionId, epoch, operationId, dispatchId: dispatch.id, fingerprint: dispatch.payload.fingerprint,
+        result: { status: "rejected", delivery: "not_delivered", sessionId, operationId, epoch, error },
+      },
+    });
   }
 
   /** Release every held post-command snapshot, letting authority refresh converge. */

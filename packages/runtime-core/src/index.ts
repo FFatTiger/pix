@@ -15,6 +15,7 @@ export * from "./commands.js";
 export * from "./errors.js";
 export * from "./events.js";
 export * from "./extension.js";
+export * from "./questionnaire.js";
 export * from "./identity.js";
 export * from "./interrupt.js";
 export * from "./messages.js";

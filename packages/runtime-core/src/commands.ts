@@ -8,6 +8,7 @@
  * application controller and translate them to backend calls.
  */
 import type { ImageAttachment, StreamingBehavior, ThinkingLevel } from "./messages.js";
+import type { QuestionnaireAnswer } from "./questionnaire.js";
 import type { SideChatMode } from "./side-chat.js";
 
 export interface PromptCommand {
@@ -117,7 +118,8 @@ export interface AbortCompactionCommand {
 export type ExtensionUiResponseCommand =
   | { type: "extension_ui_response"; id: string; method: "select" | "input" | "editor" | "custom"; value: string }
   | { type: "extension_ui_response"; id: string; method: "confirm"; confirmed: boolean }
-  | { type: "extension_ui_response"; id: string; method: "select" | "confirm" | "input" | "editor" | "custom"; cancelled: true };
+  | { type: "extension_ui_response"; id: string; method: "questionnaire"; answers: readonly QuestionnaireAnswer[] }
+  | { type: "extension_ui_response"; id: string; method: "select" | "confirm" | "input" | "editor" | "custom" | "questionnaire"; cancelled: true };
 
 export interface ExtensionUiInputCommand {
   type: "extension_ui_input";

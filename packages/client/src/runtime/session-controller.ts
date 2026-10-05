@@ -74,6 +74,7 @@ import {
   type CorrelatedRuntimeCommandResult,
   type ExtensionUiInteractiveMethod,
   type ExtensionUiRequest,
+  type QuestionnaireAnswer,
   type ImageAttachment,
   type ProtocolError,
   type RuntimeCapability,
@@ -334,7 +335,7 @@ type SideChatCommandWithoutId = Extract<RuntimeCommandWithoutId, {
 
 /** Interactive extension request methods — the only ones that produce a response. */
 const INTERACTIVE_EXTENSION_METHODS: ReadonlySet<string> = new Set([
-  "select", "confirm", "input", "editor", "custom",
+  "select", "confirm", "input", "editor", "custom", "questionnaire",
 ]);
 
 function isInteractiveExtensionMethod(method: ExtensionUiRequest["method"]): method is ExtensionUiInteractiveMethod {
@@ -377,6 +378,8 @@ function extensionReplyIncompatibility(method: ExtensionUiInteractiveMethod, rep
       return method === "input" || method === "editor" || method === "custom"
         ? null
         : "value reply is only valid for an input/editor/custom request";
+    case "questionnaire":
+      return method === "questionnaire" ? null : "questionnaire reply is only valid for a questionnaire request";
   }
 }
 
@@ -530,6 +533,7 @@ export type ExtensionUiReply =
   | { responseKind: "selected"; selected: string }
   | { responseKind: "confirmed"; confirmed: boolean }
   | { responseKind: "value"; value: string }
+  | { responseKind: "questionnaire"; answers: readonly QuestionnaireAnswer[] }
   | { responseKind: "cancelled"; cancelled: true };
 
 /**

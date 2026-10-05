@@ -7,13 +7,13 @@
  * All error copy is FIXED — the raw Host/Protocol message, request text, user
  * input, ids and paths are NEVER rendered.
  */
-import type { ExtensionUiInteractiveMethod, ExtensionUiRequest, RuntimeSnapshot } from "@fffattiger/pix-protocol";
+import type { ExtensionUiInteractiveMethod, ExtensionUiRequest, QuestionnaireAnswer, RuntimeSnapshot } from "@fffattiger/pix-protocol";
 
 /** The runtime capability that gates extension UI (authority = runtime snapshot). */
 export const EXTENSION_UI_CAPABILITY = "runtime.extension_ui";
 
 /** Interactive request methods — the only ones that produce a client response. */
-const INTERACTIVE_METHODS = new Set<string>(["select", "confirm", "input", "editor", "custom"]);
+const INTERACTIVE_METHODS = new Set<string>(["select", "confirm", "input", "editor", "custom", "questionnaire"]);
 
 /** An interactive extension request (select/confirm/input/editor/custom). */
 export type InteractiveExtensionUiRequest = Extract<ExtensionUiRequest, { method: ExtensionUiInteractiveMethod }>;
@@ -53,6 +53,7 @@ export type ExtensionUiReply =
   | { responseKind: "selected"; selected: string }
   | { responseKind: "confirmed"; confirmed: boolean }
   | { responseKind: "value"; value: string }
+  | { responseKind: "questionnaire"; answers: readonly QuestionnaireAnswer[] }
   | { responseKind: "cancelled"; cancelled: true };
 
 /**
@@ -70,6 +71,7 @@ export function isExtensionReplyCompatible(
     case "selected": return request.method === "select";
     case "confirmed": return request.method === "confirm";
     case "value": return request.method === "input" || request.method === "editor" || request.method === "custom";
+    case "questionnaire": return request.method === "questionnaire";
     default: return false;
   }
 }

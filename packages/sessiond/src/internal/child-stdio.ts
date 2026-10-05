@@ -1,19 +1,24 @@
 /**
  * Child stdio helpers for the R2 Worker process factory.
  *
- * - stdout: line-delimited NDJSON, 2 MiB max frame (UTF-8 bytes), split/coalesced
- *   chunks, CRLF, and EOF partial-line handling.
+ * - stdout: line-delimited NDJSON, Protocol runtime max frame (UTF-8 bytes),
+ *   split/coalesced chunks, CRLF, and EOF partial-line handling.
  * - stdin: ordered, bounded, backpressure-aware writer (one frame per line).
  * - stderr: always drained into a bounded, redacted ring for diagnostics so the
  *   child never blocks on a full pipe and secrets/paths never leak outward.
  */
 import type { Readable, Writable } from "node:stream";
 import { once } from "node:events";
+import {
+  MAX_RUNTIME_FRAME_BYTES,
+  MAX_RUNTIME_FRAME_COUNT,
+  MAX_RUNTIME_QUEUED_BYTES,
+} from "@fffattiger/pix-protocol";
 
-export const DEFAULT_MAX_FRAME_BYTES = 2 * 1024 * 1024;
+export const DEFAULT_MAX_FRAME_BYTES = MAX_RUNTIME_FRAME_BYTES;
 export const DEFAULT_STDERR_RING_BYTES = 64 * 1024;
-export const DEFAULT_STDIN_MAX_QUEUED_FRAMES = 256;
-export const DEFAULT_STDIN_MAX_QUEUED_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_STDIN_MAX_QUEUED_FRAMES = MAX_RUNTIME_FRAME_COUNT;
+export const DEFAULT_STDIN_MAX_QUEUED_BYTES = MAX_RUNTIME_QUEUED_BYTES;
 
 // ---------------------------------------------------------------------------
 // stdout NDJSON reader
@@ -136,6 +141,7 @@ export class NdjsonStdoutReader {
 
 export interface SerialStdinWriterOptions {
   maxQueuedFrames?: number;
+  /** Queued UTF-8 bytes include the NDJSON newline written for each frame. */
   maxQueuedBytes?: number;
 }
 
@@ -178,7 +184,7 @@ export class SerialStdinWriter {
     if (this.closed || this.ended) {
       return Promise.reject(this.failure ?? new Error("worker stdin is closed"));
     }
-    const bytes = Buffer.byteLength(data);
+    const bytes = Buffer.byteLength(data, "utf8") + 1;
     if (this.queue.length >= this.maxQueuedFrames || this.queuedBytes + bytes > this.maxQueuedBytes) {
       const error = new Error("worker stdin queue overflowed");
       this.fail(error);

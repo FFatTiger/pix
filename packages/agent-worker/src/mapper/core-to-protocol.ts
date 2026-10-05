@@ -410,6 +410,23 @@ export function mapExtensionUiRequest(request: ExtensionUiRequest): ProtocolExte
       return { id, method: "set_editor_text", text: request.text ?? "", ...timing, ...closed };
     case "custom":
       return { id, method: "custom", lines: [...(request.lines ?? [])], ...timing, ...closed };
+    case "questionnaire":
+      return {
+        id,
+        method: "questionnaire",
+        questions: (request.questions ?? []).map((question) => ({
+          header: question.header,
+          question: question.question,
+          multiSelect: question.multiSelect,
+          options: question.options.map((option) => ({
+            label: option.label,
+            description: option.description,
+            ...(option.preview === undefined ? {} : { preview: option.preview }),
+          })),
+        })),
+        ...timing,
+        ...closed,
+      };
   }
 }
 

@@ -3,6 +3,8 @@ import type {
   BuiltInRuntimeState,
   ImageAttachment,
   ModelRef,
+  QuestionnaireAnswer,
+  QuestionnaireQuestion,
   RuntimeCapability,
   RuntimeCloseReason,
   RuntimeStartInput,
@@ -12,7 +14,7 @@ import type {
   TodoProjection,
   ToolInfo,
 } from "@fffattiger/pix-runtime-core";
-import { makeRuntimeError, RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
+import { makeRuntimeError, QUESTIONNAIRE_LIMITS, RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
 import { redactText } from "./sanitize.js";
 import { createPiSdkSessionStore } from "./session-store.js";
 import { readGlobalToolsPreference } from "./settings-config-store.js";
@@ -25,6 +27,11 @@ import {
   cloneBuiltIns,
   detectLoadedBuiltIns,
 } from "./built-in-detection.js";
+import {
+  ASK_QUESTIONNAIRE_CUSTOM,
+  isAskQuestionnaireCustomOptions,
+  mapQuestionnaireAnswersToPackageResult,
+} from "./ask-questionnaire-bridge.js";
 import { resourceLoaderOptionsForBuiltIns } from "./curated-plugins.js";
 import {
   cloneSubagents,
@@ -835,35 +842,59 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
   }
 
   private createUiContext(): ExtensionUIContext {
+    type UiSettle = { value?: string; confirmed?: boolean; cancelled?: true; answers?: readonly QuestionnaireAnswer[] };
     const request = <T>(
-      body: Omit<DriverUiRequest, "settle" | "cancel" | "input" | "onSettled">,
-      parse: (result: { value?: string; confirmed?: boolean; cancelled?: true }) => T,
-      options?: { signal?: AbortSignal; timeout?: number; incremental?: boolean },
-    ): Promise<T> => new Promise((resolve) => {
+      body: Omit<DriverUiRequest, "settle" | "cancel" | "input" | "fail" | "onSettled">,
+      parse: (result: UiSettle) => T,
+      options?: { signal?: AbortSignal; timeout?: number; incremental?: boolean; operational?: boolean },
+    ): Promise<T> => new Promise((resolve, reject) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const listeners = new Set<() => void>();
-      const finish = (result: { value?: string; confirmed?: boolean; cancelled?: true }) => {
+      const finish = (result: UiSettle) => {
         if (settled) return;
         settled = true;
         this.activeUiCancels.delete(cancel);
         if (timer !== undefined) clearTimeout(timer);
-        options?.signal?.removeEventListener("abort", cancel);
+        options?.signal?.removeEventListener("abort", onAbort);
         for (const listener of listeners) listener();
         listeners.clear();
         resolve(parse(result));
       };
-      const cancel = () => finish({ cancelled: true });
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        this.activeUiCancels.delete(cancel);
+        if (timer !== undefined) clearTimeout(timer);
+        options?.signal?.removeEventListener("abort", onAbort);
+        for (const listener of listeners) listener();
+        listeners.clear();
+        reject(error);
+      };
+      const cancel = () => {
+        if (options?.operational) fail(makeRuntimeError("unavailable", "questionnaire UI is unavailable"));
+        else finish({ cancelled: true });
+      };
+      const onAbort = () => {
+        if (options?.operational) fail(makeRuntimeError("interrupted", "questionnaire was interrupted"));
+        else finish({ cancelled: true });
+      };
       this.activeUiCancels.add(cancel);
-      if (options?.signal?.aborted) { cancel(); return; }
-      options?.signal?.addEventListener("abort", cancel, { once: true });
-      if (options?.timeout !== undefined) timer = setTimeout(cancel, options.timeout);
+      if (options?.signal?.aborted) { onAbort(); return; }
+      options?.signal?.addEventListener("abort", onAbort, { once: true });
+      if (options?.timeout !== undefined) {
+        timer = setTimeout(() => {
+          if (options.operational) fail(makeRuntimeError("timeout", "questionnaire timed out"));
+          else finish({ cancelled: true });
+        }, options.timeout);
+      }
       this.uiRequest?.({
         ...body,
         ...(options?.timeout === undefined ? {} : { timeout: options.timeout }),
         settle: finish,
         input: options?.incremental ? () => {} : (data) => finish({ value: data }),
         cancel,
+        fail,
         onSettled: (listener) => { if (settled) listener(); else listeners.add(listener); },
       });
     });
@@ -899,7 +930,32 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
       setFooter: unsupported,
       setHeader: unsupported,
       setTitle: (title) => this.emitCanonical?.({ type: "session_title", sessionId: this.session.sessionId, name: title } as never),
-      custom: async () => request({ id: crypto.randomUUID(), method: "custom", lines: ["Custom extension UI"] }, (result) => result.value as never, { incremental: true }),
+      custom: async (factory, options) => {
+        if (isAskQuestionnaireCustomOptions(options)) {
+          const payload = options[ASK_QUESTIONNAIRE_CUSTOM];
+          if (payload === undefined) {
+            throw makeRuntimeError("unavailable", "questionnaire UI is unavailable");
+          }
+          if (payload.signal?.aborted) {
+            throw makeRuntimeError("interrupted", "questionnaire was interrupted");
+          }
+          const questions: readonly QuestionnaireQuestion[] = payload.questions;
+          return request({
+            id: crypto.randomUUID(),
+            method: "questionnaire",
+            questions,
+          }, (result) => {
+            if (result.cancelled) return { answers: [], cancelled: true } as never;
+            return mapQuestionnaireAnswersToPackageResult(questions, result.answers ?? []) as never;
+          }, {
+            ...(payload.signal === undefined ? {} : { signal: payload.signal }),
+            timeout: QUESTIONNAIRE_LIMITS.timeoutMs,
+            operational: true,
+          });
+        }
+        void factory;
+        return request({ id: crypto.randomUUID(), method: "custom", lines: ["Custom extension UI"] }, (result) => result.value as never, { incremental: true });
+      },
       pasteToEditor: unsupported,
       setEditorText: unsupported,
       getEditorText: () => "",

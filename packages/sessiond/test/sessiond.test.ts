@@ -2742,6 +2742,8 @@ test("RPC throwing logger never produces an unhandled rejection (late drop + out
       },
       attach() {
         let closeCalls = 0;
+        let settleClosed!: (error: SessiondError | null) => void;
+        const closed = new Promise<SessiondError | null>((resolve) => { settleClosed = resolve; });
         // Attachment whose flush fails AND whose FIRST close() throws: the close()
         // throw escapes the attach catch, so `process` rejects and the fire-and-forget
         // `.catch(error => this.log(...))` runs — with a throwing logger. Later
@@ -2752,8 +2754,10 @@ test("RPC throwing logger never produces an unhandled rejection (late drop + out
             workerStatus: "ready", resumeStatus: "snapshot", snapshot: snapshot("s", "/w", "/w"),
           } as SessiondRuntimeAttachResult,
           replay: [],
+          closed,
           async flushTo() { throw flushBoom; },
           close() {
+            settleClosed(null);
             closeCalls += 1;
             if (closeCalls === 1) throw closeBoom;
           },

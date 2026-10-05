@@ -1,10 +1,14 @@
 import {
+  MAX_RUNTIME_FRAME_BYTES,
+  MAX_RUNTIME_FRAME_COUNT,
+  MAX_RUNTIME_QUEUED_BYTES,
   PROTOCOL_VERSION,
   ProtocolErrorCodeSchema,
   READ_ONLY_RUNTIME_COMMAND_TYPES,
   RUNTIME_EPOCH_ROLLOVER_FEATURE,
   RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
   RUNTIME_OBSERVE_EXISTING_FEATURE,
+  RUNTIME_QUESTIONNAIRE_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
   RUNTIME_RUNNING_WATCH_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
@@ -69,11 +73,11 @@ export interface SessiondRuntimeGatewayLimits {
 }
 
 export interface SessiondRuntimeGatewayOutboundLimits {
-  /** Max queued outbound frames before fail-closed close (default 256). */
+  /** Max queued outbound frames before fail-closed close (default Protocol runtime count). */
   readonly maxFrames?: number;
-  /** Max queued outbound bytes before fail-closed close (default 4 MiB). */
+  /** Max queued outbound bytes before fail-closed close (default two runtime frames including newlines). */
   readonly maxBytes?: number;
-  /** Max raw socket bufferedAmount before fail-closed close (default 4 MiB). */
+  /** Max raw socket bufferedAmount before fail-closed close (default two runtime frames including newlines). */
   readonly maxBufferedAmount?: number;
 }
 
@@ -157,9 +161,9 @@ export interface SessiondRuntimeGatewayOptions {
   readonly clearTimeoutFn?: (handle: unknown) => void;
 }
 
-const DEFAULT_MAX_FRAMES = 256;
-const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
-const DEFAULT_MAX_BUFFERED = 4 * 1024 * 1024;
+const DEFAULT_MAX_FRAMES = MAX_RUNTIME_FRAME_COUNT;
+const DEFAULT_MAX_BYTES = MAX_RUNTIME_QUEUED_BYTES;
+const DEFAULT_MAX_BUFFERED = MAX_RUNTIME_QUEUED_BYTES;
 const DEFAULT_MAX_OPEN_SESSIONS = 4;
 const DEFAULT_MAX_SERIAL_FRAMES = 256;
 const DEFAULT_MAX_SERIAL_BYTES = 4 * 1024 * 1024;
@@ -325,7 +329,7 @@ class BoundedOutbound {
   enqueue(frame: string): boolean {
     if (this.closed || this.overflowed) return true;
     const size = Buffer.byteLength(frame, "utf8");
-    if (this.queue.length + 1 > this.maxFrames || this.queuedBytes + size > this.maxBytes) {
+    if (size > MAX_RUNTIME_FRAME_BYTES || this.queue.length + 1 > this.maxFrames || this.queuedBytes + size > this.maxBytes) {
       this.markOverflow();
       return false;
     }
@@ -390,6 +394,7 @@ interface GatewayConfig {
   readonly epochRolloverEnabled: boolean;
   readonly observeExistingEnabled: boolean;
   readonly explicitActivateEnabled: boolean;
+  readonly questionnaireEnabled: boolean;
   readonly runtimeWorkspaceAuthorizer: RuntimeWorkspaceAuthorizer | undefined;
   readonly currentCapabilities: () => Promise<readonly HostCapability[]>;
   readonly lifecycleAuthorizationTimeoutMs: number;
@@ -562,14 +567,16 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     const requestedEpochRollover = handshake.payload.features.includes(RUNTIME_EPOCH_ROLLOVER_FEATURE);
     const requestedObserveExisting = handshake.payload.features.includes(RUNTIME_OBSERVE_EXISTING_FEATURE);
     const requestedExplicitActivate = handshake.payload.features.includes(RUNTIME_EXPLICIT_ACTIVATE_FEATURE);
+    const requestedQuestionnaire = handshake.payload.features.includes(RUNTIME_QUESTIONNAIRE_FEATURE);
     let runningWatchEnabled = false;
     let readRpcEnabled = false;
     let submitTurnEnabled = false;
     let epochRolloverEnabled = false;
     let observeExistingEnabled = false;
     let explicitActivateEnabled = false;
+    let questionnaireEnabled = false;
     const wantsLifecycle = requestedObserveExisting || requestedExplicitActivate;
-    if (requestedRunningWatch || requestedReadRpc || requestedSubmitTurn || requestedEpochRollover || wantsLifecycle) {
+    if (requestedRunningWatch || requestedReadRpc || requestedSubmitTurn || requestedEpochRollover || wantsLifecycle || requestedQuestionnaire) {
       try {
         // Single system.hello for negotiated additive features. A seam that is
         // not wired/verified is never negotiated (fail closed to false).
@@ -585,6 +592,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
         const attachActivateCompatible = buildCompatible && hello.capabilities?.includes("runtime.authority") === true;
         observeExistingEnabled = requestedObserveExisting && authorizerWired && gateVerifierWired && hostHasAgent && attachActivateCompatible;
         explicitActivateEnabled = requestedExplicitActivate && authorizerWired && gateVerifierWired && hostHasAgent && attachActivateCompatible;
+        questionnaireEnabled = requestedQuestionnaire && buildCompatible;
       } catch {
         runningWatchEnabled = false;
         readRpcEnabled = false;
@@ -592,6 +600,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
         epochRolloverEnabled = false;
         observeExistingEnabled = false;
         explicitActivateEnabled = false;
+        questionnaireEnabled = false;
       }
     }
     const acceptedFeatures = [
@@ -601,6 +610,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       ...(epochRolloverEnabled ? [RUNTIME_EPOCH_ROLLOVER_FEATURE] : []),
       ...(observeExistingEnabled ? [RUNTIME_OBSERVE_EXISTING_FEATURE] : []),
       ...(explicitActivateEnabled ? [RUNTIME_EXPLICIT_ACTIVATE_FEATURE] : []),
+      ...(questionnaireEnabled ? [RUNTIME_QUESTIONNAIRE_FEATURE] : []),
     ];
     const handshakeResponse = this.buildHandshakeResponse(resolved.capabilities, acceptedFeatures);
     this.write(session, {
@@ -622,6 +632,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       epochRolloverEnabled,
       observeExistingEnabled,
       explicitActivateEnabled,
+      questionnaireEnabled,
       runtimeWorkspaceAuthorizer: this.runtimeWorkspaceAuthorizer,
       currentCapabilities: async () => (await this.resolveConnectionCapabilities()).capabilities,
       lifecycleAuthorizationTimeoutMs: this.lifecycleAuthorizationTimeoutMs,
@@ -679,6 +690,61 @@ function isReadOnlyCommand(message: WsClientMessage): boolean {
  */
 function turnSubscriptionKey(sessionId: string, operationId: string): string {
   return `${sessionId.length}:${sessionId}${operationId.length}:${operationId}`;
+}
+
+function isQuestionnaireRequest(value: unknown): boolean {
+  return typeof value === "object" && value !== null && (value as { method?: unknown }).method === "questionnaire";
+}
+
+function snapshotContainsQuestionnaire(snapshot: unknown): boolean {
+  if (typeof snapshot !== "object" || snapshot === null) return false;
+  const pending = (snapshot as { state?: { pendingExtensionUi?: unknown } }).state?.pendingExtensionUi;
+  return Array.isArray(pending) && pending.some(isQuestionnaireRequest);
+}
+
+function outgoingContainsQuestionnaire(message: unknown): boolean {
+  if (typeof message !== "object" || message === null) return false;
+  const frame = message as {
+    type?: unknown;
+    payload?: unknown;
+    authority?: { snapshot?: unknown };
+  };
+  if (frame.type === "event") {
+    const event = frame.payload as { type?: unknown; request?: unknown } | undefined;
+    return event?.type === "extension_ui_request" && isQuestionnaireRequest(event.request);
+  }
+  if (frame.type === "snapshot") {
+    const payload = frame.payload as { snapshot?: unknown } | undefined;
+    return snapshotContainsQuestionnaire(payload?.snapshot);
+  }
+  if (frame.type === "response") {
+    const payload = frame.payload as { ok?: unknown; result?: unknown } | undefined;
+    if (payload?.ok !== true) return false;
+    const result = payload.result as {
+      type?: unknown;
+      state?: { pendingExtensionUi?: unknown };
+      snapshot?: unknown;
+    } | undefined;
+    if (result === undefined) return false;
+    if (result.type === "get_state") return Array.isArray(result.state?.pendingExtensionUi) && result.state.pendingExtensionUi.some(isQuestionnaireRequest);
+    if (snapshotContainsQuestionnaire(result)) return true;
+    return snapshotContainsQuestionnaire(result.snapshot);
+  }
+  if (frame.type === "read_result") {
+    const payload = frame.payload as { result?: { ok?: unknown; type?: unknown; state?: { pendingExtensionUi?: unknown } } } | undefined;
+    return payload?.result?.ok === true
+      && payload.result.type === "get_state"
+      && Array.isArray(payload.result.state?.pendingExtensionUi)
+      && payload.result.state.pendingExtensionUi.some(isQuestionnaireRequest);
+  }
+  if (frame.type === "submit_turn_result") {
+    const payload = frame.payload as { snapshot?: unknown } | undefined;
+    return snapshotContainsQuestionnaire(payload?.snapshot);
+  }
+  if (frame.type === "turn_status") {
+    return snapshotContainsQuestionnaire(frame.authority?.snapshot);
+  }
+  return false;
 }
 
 /**
@@ -1091,6 +1157,12 @@ class GatewayConnection {
 
   private async handleCommand(message: Extract<WsClientMessage, { type: "command" }>): Promise<void> {
     const id = message.id ?? message.payload.command.commandId;
+    const command = message.payload.command;
+    if (!this.config.questionnaireEnabled && command.type === "extension_ui_response"
+      && command.method === "questionnaire") {
+      this.send({ type: "response", id, payload: { ok: false, error: { code: "unsupported_capability", message: "native questionnaire feature was not negotiated", retryable: false } } });
+      return;
+    }
     // Phase 5B: on a connection that negotiated `runtime.epoch-rollover.v1`,
     // every command frame MUST carry the exact controller epoch — an absent
     // epoch is rejected pre-RPC (never reaches sessiond).
@@ -1340,8 +1412,36 @@ class GatewayConnection {
 
   private send(message: unknown): void {
     if (this.outbound.failed) return;
+    if (!this.config.questionnaireEnabled && outgoingContainsQuestionnaire(message)) {
+      const sessionId = this.active?.sessionId;
+      this.sendIncompatibleQuestionnaire(sessionId);
+      this.closeBrowser(CLOSE_PROTOCOL_ERROR, "questionnaire requires runtime.questionnaire.v1");
+      return;
+    }
     const frame = JSON.stringify(message);
     this.outbound.enqueue(frame); // overflow closes via onOutboundOverflow
+  }
+
+  private sendIncompatibleQuestionnaire(sessionId: string | undefined): void {
+    if (sessionId !== undefined) {
+      const unavailable = JSON.stringify({
+        type: "runtime_unavailable",
+        payload: {
+          sessionId,
+          error: { code: "runtime_unavailable", message: "native questionnaire requires a negotiated runtime.questionnaire.v1 client", retryable: false },
+        },
+      });
+      this.outbound.enqueue(unavailable);
+    }
+    const unsupported = JSON.stringify({
+      type: "response",
+      id: "questionnaire-unsupported",
+      payload: {
+        ok: false,
+        error: { code: "unsupported_capability", message: "native questionnaire requires runtime.questionnaire.v1", retryable: false },
+      },
+    });
+    this.outbound.enqueue(unsupported);
   }
 
   private onOutboundOverflow(): void {

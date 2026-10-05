@@ -1,4 +1,5 @@
 import type { Socket } from "node:net";
+import { MAX_RUNTIME_FRAME_COUNT, MAX_RUNTIME_QUEUED_BYTES } from "@fffattiger/pix-protocol";
 import { SessiondError } from "../errors.js";
 
 export interface SerialSocketWriterOptions {
@@ -81,8 +82,8 @@ export class SerialSocketWriter {
   }
 
   constructor(private readonly socket: Socket, options: SerialSocketWriterOptions = {}) {
-    this.maxQueuedFrames = options.maxQueuedFrames ?? 256;
-    this.maxQueuedBytes = options.maxQueuedBytes ?? 4 * 1024 * 1024;
+    this.maxQueuedFrames = options.maxQueuedFrames ?? MAX_RUNTIME_FRAME_COUNT;
+    this.maxQueuedBytes = options.maxQueuedBytes ?? MAX_RUNTIME_QUEUED_BYTES;
     // Listener lifetime == socket lifetime (the writer is per-connection and the
     // socket is destroyed on close), so these never leak.
     socket.on("close", () => this.fail(new SessiondError("unavailable", "RPC socket closed", true)));

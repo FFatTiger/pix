@@ -84,6 +84,29 @@ describe("command-mapper (protocol → core, commandId stripped)", () => {
       coreFor({ type: "extension_ui_response", id: "r1", method: "select", responseKind: "cancelled", cancelled: true }),
       { type: "extension_ui_response", id: "r1", method: "select", cancelled: true },
     );
+    assert.deepEqual(
+      coreFor({
+        type: "extension_ui_response",
+        id: "r1",
+        method: "questionnaire",
+        responseKind: "questionnaire",
+        answers: [
+          { kind: "option", questionIndex: 0, optionIndex: 1 },
+          { kind: "multi", questionIndex: 1, optionIndices: [] },
+          { kind: "custom", questionIndex: 2, text: "3" },
+        ],
+      }),
+      {
+        type: "extension_ui_response",
+        id: "r1",
+        method: "questionnaire",
+        answers: [
+          { kind: "option", questionIndex: 0, optionIndex: 1 },
+          { kind: "multi", questionIndex: 1, optionIndices: [] },
+          { kind: "custom", questionIndex: 2, text: "3" },
+        ],
+      },
+    );
   });
 
   it("extension_ui_input preserves method/commandId-strip and carries data", () => {

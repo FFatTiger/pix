@@ -522,6 +522,139 @@ test("Phase 3: a live session rejects a second concurrent turn as session_busy (
   await service.shutdown();
 });
 
+test("running overview: pending/accepted turns are busy before agent_start and clear without a message", async (t) => {
+  const { service, workers } = makeService({ turnAdmissionTimeoutMs: 50 }, {
+    snapshot: promptCapSnapshot(),
+    holdSubmitAdmission: true,
+    holdPostCommandSnapshots: true,
+    submitSnapshotIdle: true,
+    turnCompletion: "manual",
+  });
+  t.after(() => service.shutdown());
+  const activated = await service.activate("s");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const idle = service.listRunning().sessions.find((item) => item.sessionId === "s");
+  assert.equal(idle?.workerStatus, "ready", "idle live workers stay ready");
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, []);
+
+  const watch = service.prepareRunningWatch();
+  const states: Array<{ revision: number; sessionIds: string[]; busySessionIds: string[] }> = [];
+  await watch.flushTo((push) => { states.push(push.state); });
+  t.after(() => watch.close());
+
+  const request = {
+    sessionId: "s",
+    expectedEpoch: activated.epoch,
+    expectedRevision: liveRevision(service, "s", activated.epoch),
+    prompt: "hello",
+    operationId: "op-overview",
+  };
+  const submitted = service.submitTurn(request);
+  const worker = workers.workers[0]!;
+  await worker.waitForHeldAdmission();
+  await flushMicrotasks();
+
+  assert.equal(service.getSnapshot("s").state.isPromptRunning, false, "no agent_start/message yet");
+  assert.equal(service.getSnapshot("s").state.messageCount, 0);
+  assert.equal(service.diagnostics().workersByStatus.ready, 1, "overview busy does not change lifecycle status");
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, ["s"]);
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "busy");
+  assert.ok(states.some((state) => state.busySessionIds.includes("s")), "busy publishes on operation insertion without a message");
+
+  const coalesced = await service.submitTurn(request);
+  assert.equal(coalesced.status, "duplicate");
+  if (coalesced.status === "duplicate") assert.equal(coalesced.delivery, "uncertain");
+  assert.equal(worker.sent.filter((message) => message.type === "worker.submitTurn").length, 1, "same turn id coalesces without a second dispatch");
+
+  worker.releaseHeldAdmissions();
+  const accepted = await submitted;
+  assert.equal(accepted.status, "accepted");
+  await flushMicrotasks();
+  assert.equal(service.getSnapshot("s").state.messageCount, 0, "accepted admission still has no message_*");
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, ["s"], "accepted with no message stays busy");
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "busy");
+
+  const dispatch = worker.sent.find((message): message is Extract<SessiondToWorkerMessage, { type: "worker.submitTurn" }> => message.type === "worker.submitTurn")!;
+  const { sessionId, epoch, operationId, turnId } = dispatch.payload;
+  const status: TurnStatus = { sessionId, epoch, operationId, turnId, revision: 1, state: "completed" };
+  worker.emit({ type: "worker.turnStatus", payload: { ...status, operationId: "wrong" } });
+  worker.emit({ type: "worker.turnStatus", payload: { ...status, epoch: "wrong" } });
+  worker.emit({ type: "worker.turnStatus", payload: { ...status, sessionId: "wrong" } });
+  await flushMicrotasks();
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "busy", "old/wrong id/epoch cannot clear current work");
+
+  worker.emit({ type: "worker.turnStatus", payload: status });
+  await worker.waitForHeldSnapshot();
+  await flushMicrotasks();
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "busy", "terminal stays busy until authoritative refresh");
+  worker.releaseHeldSnapshots();
+  await flushMicrotasks();
+  assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "ready");
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, []);
+  assert.ok(states.at(-1)?.busySessionIds.length === 0, "authoritative finish publishes idle without a message");
+
+  const rejectedWatch = service.prepareRunningWatch();
+  const rejectedStates: Array<{ busySessionIds: string[] }> = [];
+  await rejectedWatch.flushTo((push) => { rejectedStates.push(push.state); });
+  t.after(() => rejectedWatch.close());
+  const rejectedSubmit = service.submitTurn({
+    ...request,
+    operationId: "op-reject",
+    expectedRevision: liveRevision(service, "s", activated.epoch),
+  });
+  await worker.waitForHeldAdmission();
+  await flushMicrotasks();
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, ["s"]);
+  worker.rejectHeldAdmissions();
+  const rejected = await rejectedSubmit;
+  assert.equal(rejected.status, "rejected");
+  await flushMicrotasks();
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, [], "rejection clears busy without a message");
+  assert.ok(rejectedStates.some((state) => state.busySessionIds.includes("s")));
+  assert.ok(rejectedStates.some((state) => state.busySessionIds.length === 0));
+
+  const cancelWatch = service.prepareRunningWatch();
+  const cancelStates: Array<{ busySessionIds: string[] }> = [];
+  await cancelWatch.flushTo((push) => { cancelStates.push(push.state); });
+  t.after(() => cancelWatch.close());
+  const cancelSubmit = service.submitTurn({
+    ...request,
+    operationId: "op-cancel",
+    expectedRevision: liveRevision(service, "s", activated.epoch),
+  });
+  await worker.waitForHeldAdmission();
+  await flushMicrotasks();
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, ["s"]);
+  t.mock.timers.tick(50);
+  const cancelled = await cancelSubmit;
+  assert.equal(cancelled.status, "rejected");
+  if (cancelled.status === "rejected") assert.equal(cancelled.delivery, "uncertain");
+  await flushMicrotasks();
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, [], "timeout/cancel clears busy without a message");
+  assert.ok(cancelStates.some((state) => state.busySessionIds.length === 0));
+
+  worker.releaseHeldAdmissions();
+  const stopWatch = service.prepareRunningWatch();
+  const stopStates: Array<{ sessionIds: string[]; busySessionIds: string[] }> = [];
+  await stopWatch.flushTo((push) => { stopStates.push(push.state); });
+  t.after(() => stopWatch.close());
+  const stopSubmit = service.submitTurn({
+    ...request,
+    operationId: "op-stop",
+    expectedRevision: liveRevision(service, "s", activated.epoch),
+  });
+  await worker.waitForHeldAdmission();
+  await flushMicrotasks();
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, ["s"]);
+  await service.stop("s");
+  const stopped = await stopSubmit;
+  assert.equal(stopped.status, "rejected");
+  await flushMicrotasks();
+  assert.equal(service.listRunning().sessions.length, 0);
+  assert.deepEqual(service.runningStateSnapshot().busySessionIds, []);
+  assert.ok(stopStates.some((state) => state.sessionIds.length === 0 && state.busySessionIds.length === 0));
+});
+
 test("Phase 3: activation fails closed when the Worker build lacks the submit-turn contract", async () => {
   const { service } = makeService({}, { readyFeatures: ["runtime.read-rpc.v1"] });
   await assert.rejects(
@@ -1081,7 +1214,7 @@ test("turn authority: prompt_done observer gate preserves FIFO and exact termina
   await entered.promise;
   assert.equal(prepared.result.status, "accepted");
   if (prepared.result.status !== "accepted") throw new Error("expected admission");
-  assert.equal(prepared.result.revision, 2);
+  assert.equal(prepared.result.revision, 3);
   assert.equal(prepared.result.snapshot.state.isPromptRunning, true);
   const exact = deferred<SessiondTurnStatusPush>();
   await prepared.flushTo((push) => { if (push.status.state === "completed") exact.resolve(push); });
@@ -1100,7 +1233,7 @@ test("turn authority: prompt_done observer gate preserves FIFO and exact termina
   assert.ok(snapshot && snapshot.type === "snapshot");
   assert.deepEqual(terminal.authority, { sessionId: snapshot.sessionId, epoch: snapshot.epoch, lastEventId: snapshot.lastEventId, snapshot: snapshot.snapshot });
   assert.equal(terminal.authority.snapshot, snapshot.snapshot, "both lanes retain the same captured snapshot");
-  assert.deepEqual(observation.map((push) => push.type === "event" ? `${push.event.type}:${push.event.eventId}` : `${push.type}:${push.type === "snapshot" ? push.lastEventId : ""}`), ["prompt_done:2", "running_sessions_changed:3", "snapshot:3", "running_sessions_changed:4"]);
+  assert.deepEqual(observation.map((push) => push.type === "event" ? `${push.event.type}:${push.event.eventId}` : `${push.type}:${push.type === "snapshot" ? push.lastEventId : ""}`), ["running_sessions_changed:2", "prompt_done:3", "snapshot:3", "running_sessions_changed:4"]);
 });
 
 test("turn authority: completion between submit return and prepare registration replays the original authority", async (t) => {
@@ -1134,3 +1267,40 @@ test("turn authority: completion between submit return and prepare registration 
   assert.ok(snapshot && snapshot.type === "snapshot");
   assert.deepEqual(received[0]?.authority, { sessionId: snapshot.sessionId, epoch: snapshot.epoch, lastEventId: snapshot.lastEventId, snapshot: snapshot.snapshot });
 });
+
+for (const outcome of ["send failure", "timeout"] as const) {
+  test(`pending admission ${outcome} publishes idle and settles a coalesced observer`, async (t) => {
+    const { service, workers } = makeService({ turnAdmissionTimeoutMs: 50 }, { snapshot: promptCapSnapshot() });
+    t.after(() => service.shutdown());
+    const activated = await service.activate("s");
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const worker = workers.workers[0]!;
+    const send = worker.send.bind(worker);
+    const heldSend = deferred<void>();
+    worker.send = (message) => message.type === "worker.submitTurn" ? heldSend.promise : send(message);
+    const watch = service.prepareRunningWatch();
+    const states: string[][] = [];
+    await watch.flushTo((push) => { states.push(push.state.busySessionIds); });
+    t.after(() => watch.close());
+    const request = { sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: liveRevision(service, "s", activated.epoch), operationId: outcome, prompt: "hello" };
+    const pending = service.submitTurn(request);
+    await flushMicrotasks();
+    assert.deepEqual(service.runningStateSnapshot().busySessionIds, ["s"]);
+    const observer = await service.prepareSubmitTurn(request);
+    assert.equal(observer.result.status, "duplicate");
+    const terminal = deferred<TurnStatus>();
+    await observer.flushTo((push) => { terminal.resolve(push.status); });
+    if (outcome === "send failure") heldSend.reject(new Error("send failed"));
+    else t.mock.timers.tick(50);
+    const result = await pending;
+    assert.equal(result.status, "rejected");
+    assert.equal((await terminal.promise).state, "failed");
+    assert.equal(await observer.closed, null);
+    assert.deepEqual(states, [["s"], []]);
+    assert.equal(service.listRunning().sessions[0]?.workerStatus, "ready");
+    assert.equal(service.getSnapshot("s").state.messageCount, 0);
+    heldSend.reject(new Error("late send failure"));
+    await flushMicrotasks();
+    assert.deepEqual(states, [["s"], []], "late transport settlement cannot publish twice");
+  });
+}

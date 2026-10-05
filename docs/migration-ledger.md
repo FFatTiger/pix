@@ -4311,3 +4311,17 @@ Client 已合入统一 Files / Agents / Side chat 右侧面板、设置中的内
 全量离线包保留完整依赖，用于 GitHub 附件及离线安装验收。首个 285.5 MiB 全量包被 npm 以 HTTP 413 拒绝，因此 npm 分发单独使用 `scripts/release-package.mjs`：内嵌七个 Pix runtime 包、网页、patched subagents 与 Pi coding-agent SDK；外部依赖统一由 CLI 根清单声明并经 npm 安装。内嵌包不得再引用外部 dependency/peer，否则 npm 会将尚未打包的文件误判为已经 bundled。内嵌代码不变；仅规范安装清单。
 
 **待移除桥接：Pi SDK 1.0.0 的发布 shrinkwrap**。真实空 prefix/cache 安装暴露 `invalid or damaged lockfile`，npm 删除 coding-agent 的 `chalk` 等依赖后仍返回 0，导致 CLI 无法加载。npm 分发保留 SDK 1.0.0 代码，移除该 SDK 自带 `npm-shrinkwrap.json` 与嵌入的依赖目录，将其依赖移至 CLI 根清单。桥接只接受 SDK **1.0.0**；升级离开此版本时必须删除桥接，并用无此处理的空目录安装验收。构造测试覆盖版本守卫、shrinkwrap 删除、SDK 代码保留、外部依赖迁移、错误版本/依赖冲突与源目录保护。源仓库根 lockfile 不变，普通第三方包的锁文件不受此处理影响。
+
+## 115. Image runtime transport and existing-runtime activity
+
+Live image output keeps its complete inline body through Worker, Session Daemon, Host, snapshot, and resume. The Protocol owns the aggregate frame limit: one maximum supported image plus the existing 2 MiB envelope allowance (16,097,152 bytes). Runtime queues allow two maximum frames including NDJSON newlines. RPC control input remains 2 MiB, Host WebSocket input remains 1 MiB, lightweight history responses remain 4 MiB including the newline, and the event journal retains its existing 10 MiB gap policy.
+
+Session Daemon subscriptions and prepared attach/turn buffers enforce both event counts and serialized UTF-8 bytes. Their required `closed` notification settles once on close, overflow, or listener failure. An overflow after attachment also closes the RPC socket, so an unsubscribed observer cannot appear active. The outbound frame limit counts the JSON body; the queue limit counts the newline too.
+
+Running-session projections include current-epoch pending or accepted turns until authoritative terminal refresh finishes. Admission, rejection, send failure, timeout, and stop publish state changes without waiting for a message event. The Worker lifecycle remains `ready`; the authority derives the displayed busy state. Browsing an existing live parent uses `observeExisting`, including an idle parent with a running child. Inactive history starts no Worker. Draft and observation identity remain fenced by session, epoch, request, and foreground lease ownership.
+
+## 116. Native ask questionnaire (Pi SDK 1.0.0 + rpiv-ask-user-question 2.11.0)
+
+Typed native `method: "questionnaire"` request/response. Protocol major stays v2; build fence is sessiond **10** / Worker **9** / Adapter **8**. Feature token `runtime.questionnaire.v1` is optional and only accepted on a compatible backend. Host fences known questionnaire-bearing events/snapshots/state/read/authority envelopes for old strict clients and rejects unnegotiated native questionnaire responses before RPC; it does not hide or cancel the pending request.
+
+**待移除桥接：Adapter `ask-questionnaire-bridge.ts`**。公开 `extensionsOverride` 只包装 exact bundled `ask_user_question` 注册，覆盖 `mode='tui'` + `ui.custom`，用 Adapter-private symbol 把问卷参数交给 `createUiContext`。原始 execute 仍负责校验、TUI import 失败信封和结果构造。字段投影仅匹配 2.11.0 的 CRLF→LF / 删除 lone CR。有限移除条件：升级到提供 structured questionnaire responder API 的上游依赖；该升级必须重新 characterize 或删除本桥，不得静默扩大支持范围。

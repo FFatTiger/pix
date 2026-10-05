@@ -134,3 +134,74 @@ describe("ExtensionDialog — IME-composition submit guard (F1)", () => {
     cleanup();
   });
 });
+
+describe("ExtensionDialog — draft retention across cloned request snapshots", () => {
+  afterEach(cleanup);
+
+  it("keeps a typed input draft when the same request is structuredClone-refreshed and submits that draft", () => {
+    const onRespond = makeRespond();
+    const request = inputRequest();
+    const { rerender } = wrap(<ExtensionDialog request={request} onRespond={onRespond} />);
+    const input = screen.getByPlaceholderText("type");
+    fireEvent.change(input, { target: { value: "custom answer" } });
+    expect((input as HTMLInputElement).value).toBe("custom answer");
+
+    rerender(
+      <I18nProvider>
+        <ExtensionDialog request={structuredClone(request)} onRespond={onRespond} />
+      </I18nProvider>,
+    );
+    const refreshed = screen.getByPlaceholderText("type") as HTMLInputElement;
+    expect(refreshed.value).toBe("custom answer");
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(onRespond).toHaveBeenCalledTimes(1);
+    expect(onRespond.mock.calls[0]![1]).toEqual({ value: "custom answer" });
+  });
+
+  it("keeps editor edits when the same prefill request is structuredClone-refreshed", () => {
+    const onRespond = makeRespond();
+    const request = editorRequest();
+    const { rerender } = wrap(<ExtensionDialog request={request} onRespond={onRespond} />);
+    const textarea = screen.getByDisplayValue("seed");
+    fireEvent.change(textarea, { target: { value: "edited seed" } });
+
+    rerender(
+      <I18nProvider>
+        <ExtensionDialog request={structuredClone(request)} onRespond={onRespond} />
+      </I18nProvider>,
+    );
+    const refreshed = screen.getByDisplayValue("edited seed") as HTMLTextAreaElement;
+    expect(refreshed.value).toBe("edited seed");
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(onRespond.mock.calls[0]![1]).toEqual({ value: "edited seed" });
+  });
+
+  it("initializes a new request id without leaking the previous draft", () => {
+    const onRespond = makeRespond();
+    const { rerender } = wrap(<ExtensionDialog request={inputRequest()} onRespond={onRespond} />);
+    fireEvent.change(screen.getByPlaceholderText("type"), { target: { value: "old draft" } });
+
+    rerender(
+      <I18nProvider>
+        <ExtensionDialog request={{ id: "r-new", method: "input", title: "Next", placeholder: "type" }} onRespond={onRespond} />
+      </I18nProvider>,
+    );
+    const next = screen.getByPlaceholderText("type") as HTMLInputElement;
+    expect(next.value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(onRespond.mock.calls[0]![1]).toEqual({ value: "" });
+  });
+
+  it("resets immediately when the method changes on the same request id", () => {
+    const onRespond = makeRespond();
+    const { rerender } = wrap(<ExtensionDialog request={inputRequest()} onRespond={onRespond} />);
+    fireEvent.change(screen.getByPlaceholderText("type"), { target: { value: "typed" } });
+
+    rerender(
+      <I18nProvider>
+        <ExtensionDialog request={{ id: "r1", method: "editor", title: "Edit", prefill: "fresh prefill" }} onRespond={onRespond} />
+      </I18nProvider>,
+    );
+    expect((screen.getByDisplayValue("fresh prefill") as HTMLTextAreaElement).value).toBe("fresh prefill");
+  });
+});

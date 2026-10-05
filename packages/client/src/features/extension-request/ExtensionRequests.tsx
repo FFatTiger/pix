@@ -24,8 +24,10 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useSelectedRuntime } from "@/runtime";
+import { useI18n } from "@/hooks/useI18n";
 import { ExtensionDialog, type ExtensionDialogRequest, type ExtensionDialogResponse } from "@/components/chat/ExtensionDialog";
 import { ExtensionCustomPanel, type ExtensionCustomRequest } from "@/components/chat/ExtensionCustomPanel";
+import { ExtensionQuestionnaire, type ExtensionQuestionnaireRequest, type ExtensionQuestionnaireResponse } from "@/components/chat/ExtensionQuestionnaire";
 import {
   EXTENSION_UI_CAPABILITY,
   activeInteractiveRequests,
@@ -55,7 +57,13 @@ function toReply(request: ExtensionDialogRequest, response: ExtensionDialogRespo
   return { responseKind: "value", value: response.value };
 }
 
+function toQuestionnaireReply(response: ExtensionQuestionnaireResponse): ExtensionUiReply {
+  if ("cancelled" in response) return { responseKind: "cancelled", cancelled: true };
+  return { responseKind: "questionnaire", answers: response.answers };
+}
+
 export function ExtensionRequests({ live, composerTextareaRef }: ExtensionRequestsProps) {
+  const { t } = useI18n();
   // Exact selected-session runtime (4A.3.2b1a): the surface has no sessionId
   // prop, so it reads the SelectedSessionProvider context via useSelectedRuntime.
   // Null-safe: with no selection (home/file) the exact surface is null and this
@@ -68,6 +76,7 @@ export function ExtensionRequests({ live, composerTextareaRef }: ExtensionReques
   const mountedRef = useRef(true);
   const liveRef = useRef(live);
   const sessionIdRef = useRef<string | null>(exact?.sessionId ?? null);
+  const epochRef = useRef<string | null>(exact?.epoch ?? null);
   const capabilityRef = useRef(false);
   const requestGenRef = useRef(0);
   /** Synchronous same-tick singleflight: React state is async, this ref is not. */
@@ -92,6 +101,12 @@ export function ExtensionRequests({ live, composerTextareaRef }: ExtensionReques
       requestGenRef.current += 1;
     }
   }, [exact?.sessionId]);
+  useLayoutEffect(() => {
+    if (epochRef.current !== (exact?.epoch ?? null)) {
+      epochRef.current = exact?.epoch ?? null;
+      requestGenRef.current += 1;
+    }
+  }, [exact?.epoch]);
 
   const capability = exact?.capabilities?.capabilities.includes(EXTENSION_UI_CAPABILITY) === true;
   useLayoutEffect(() => {
@@ -123,7 +138,7 @@ export function ExtensionRequests({ live, composerTextareaRef }: ExtensionReques
       if (prevActive !== null) {
         activeRequestIdRef.current = null;
         const textarea = composerTextareaRef?.current;
-        if (textarea !== null && textarea !== undefined && mountedRef.current && liveRef.current && capabilityRef.current && sessionIdRef.current === (exact?.sessionId ?? null)) {
+        if (textarea !== null && textarea !== undefined && mountedRef.current && liveRef.current && capabilityRef.current && sessionIdRef.current === (exact?.sessionId ?? null) && epochRef.current === (exact?.epoch ?? null)) {
           textarea.focus();
         }
       }
@@ -134,13 +149,14 @@ export function ExtensionRequests({ live, composerTextareaRef }: ExtensionReques
 
   if (!gated || first === null) return null;
 
-  const isCurrent = (gen: number, sessionId: string | null): boolean =>
+  const isCurrent = (gen: number, sessionId: string | null, epoch: string | null): boolean =>
     mountedRef.current &&
     liveRef.current &&
     capabilityRef.current &&
     gen === requestGenRef.current &&
     sessionId !== null &&
-    sessionId === sessionIdRef.current;
+    sessionId === sessionIdRef.current &&
+    epoch === epochRef.current;
 
   const runRespond = (request: ExtensionDialogRequest, response: ExtensionDialogResponse): void => {
     if (busyRef.current !== null) return;
@@ -149,15 +165,39 @@ export function ExtensionRequests({ live, composerTextareaRef }: ExtensionReques
     if (exact.extensionUiReplyPending) return;
     if (activeRequestIdRef.current !== request.id) return;
     const sessionId = sessionIdRef.current;
+    const epoch = epochRef.current;
     const gen = ++requestGenRef.current;
     busyRef.current = request.id;
     setError(null);
     void exact.respondExtensionUi(request, toReply(request, response)).then(
       () => {
-        if (isCurrent(gen, sessionId)) setError(null);
+        if (isCurrent(gen, sessionId, epoch)) setError(null);
       },
       (cause: unknown) => {
-        if (isCurrent(gen, sessionId)) setError(describeExtensionUiError(cause));
+        if (isCurrent(gen, sessionId, epoch)) setError(describeExtensionUiError(cause));
+      },
+    ).finally(() => {
+      if (busyRef.current === request.id) busyRef.current = null;
+    });
+  };
+
+  const runQuestionnaireRespond = (request: ExtensionQuestionnaireRequest, response: ExtensionQuestionnaireResponse): void => {
+    if (busyRef.current !== null) return;
+    if (!mountedRef.current || !liveRef.current || !capabilityRef.current) return;
+    if (exact === null) return;
+    if (exact.extensionUiReplyPending) return;
+    if (activeRequestIdRef.current !== request.id) return;
+    const sessionId = sessionIdRef.current;
+    const epoch = epochRef.current;
+    const gen = ++requestGenRef.current;
+    busyRef.current = request.id;
+    setError(null);
+    void exact.respondExtensionUi(request, toQuestionnaireReply(response)).then(
+      () => {
+        if (isCurrent(gen, sessionId, epoch)) setError(null);
+      },
+      (cause: unknown) => {
+        if (isCurrent(gen, sessionId, epoch)) setError(describeExtensionUiError(cause));
       },
     ).finally(() => {
       if (busyRef.current === request.id) busyRef.current = null;
@@ -174,23 +214,27 @@ export function ExtensionRequests({ live, composerTextareaRef }: ExtensionReques
     // session guard drops late settles, and the next successful input (or the
     // pending-landscape effect) clears the error.
     const sessionId = sessionIdRef.current;
+    const epoch = epochRef.current;
     const gen = ++requestGenRef.current;
     void exact.sendExtensionUiInput(request, data).then(
       () => {
-        if (isCurrent(gen, sessionId)) setError(null);
+        if (isCurrent(gen, sessionId, epoch)) setError(null);
       },
       (cause: unknown) => {
-        if (isCurrent(gen, sessionId)) setError(describeExtensionUiError(cause));
+        if (isCurrent(gen, sessionId, epoch)) setError(describeExtensionUiError(cause));
       },
     );
   };
 
+  const dialogKey = `${exact.sessionId}:${exact.epoch ?? ""}:${first.id}:${first.method}`;
   return (
-    <section className="extension-requests" aria-label="Extension request">
+    <section className="extension-requests" aria-label={t("desktop.extensionRequestSection")}>
       {first.method === "custom" ? (
         <ExtensionCustomPanel request={first} onInput={runInput} />
+      ) : first.method === "questionnaire" ? (
+        <ExtensionQuestionnaire key={dialogKey} request={first} onRespond={runQuestionnaireRespond} />
       ) : (
-        <ExtensionDialog request={first} onRespond={runRespond} />
+        <ExtensionDialog key={dialogKey} request={first} onRespond={runRespond} />
       )}
       {error !== null ? (
         <p className="extension-request-error" role="alert" style={{ margin: 0 }}>{error}</p>

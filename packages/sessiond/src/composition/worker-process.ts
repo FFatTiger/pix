@@ -4,7 +4,7 @@
  * Spawns one non-detached Node child per session via
  * `process.execPath` + the absolute dist path of
  * `@fffattiger/pix-agent-worker/worker-main`. Wire is NDJSON on stdio
- * (2 MiB/frame). Listeners are installed before spawn settles so early
+ * (Protocol runtime frame budget). Listeners are installed before spawn settles so early
  * stdout messages and exit/error events are buffered and delivered
  * exactly-once to later subscribers.
  *
@@ -105,7 +105,7 @@ export interface ProductionWorkerProcessOptions {
   sigtermMs?: number;
   /** Close escalation: wait after SIGKILL before giving up. */
   sigkillMs?: number;
-  /** Max NDJSON frame size in UTF-8 bytes (default 2 MiB). */
+  /** Max NDJSON frame size in UTF-8 bytes (default Protocol runtime budget). */
   maxFrameBytes?: number;
   /** Spawn cwd (neutral; real cwd is carried by worker.init). Defaults to dirname(workerMain). */
   spawnCwd?: string;
@@ -227,6 +227,7 @@ class ProductionWorkerConnection implements WorkerConnection {
   private readonly stdinEndMs: number;
   private readonly sigtermMs: number;
   private readonly sigkillMs: number;
+  private readonly maxFrameBytes: number;
 
   constructor(
     child: ChildProcessWithoutNullStreams,
@@ -245,6 +246,7 @@ class ProductionWorkerConnection implements WorkerConnection {
     this.stdinEndMs = options.stdinEndMs;
     this.sigtermMs = options.sigtermMs;
     this.sigkillMs = options.sigkillMs;
+    this.maxFrameBytes = options.maxFrameBytes;
 
     this.stdin = new SerialStdinWriter(child.stdin);
     this.stderr = new StderrRing(child.stderr);
@@ -300,7 +302,7 @@ class ProductionWorkerConnection implements WorkerConnection {
       throw new SessiondError("invalid_request", `invalid worker frame: ${detail || "schema violation"}`, false);
     }
     const frame = JSON.stringify(parsed.data);
-    if (Buffer.byteLength(frame, "utf8") > DEFAULT_MAX_FRAME_BYTES) {
+    if (Buffer.byteLength(frame, "utf8") > this.maxFrameBytes) {
       throw new SessiondError("invalid_request", "worker frame exceeds the size limit", false);
     }
     try {

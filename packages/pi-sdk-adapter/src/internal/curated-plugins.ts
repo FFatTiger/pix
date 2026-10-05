@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { BuiltInCapabilityId, BuiltInCapabilityState } from "@fffattiger/pix-runtime-core";
+import { createAskQuestionnaireExtensionsOverride } from "./ask-questionnaire-bridge.js";
 import { readBuiltInCapabilityConfigSync } from "./built-in-capability-store.js";
 
 export const CURATED_PLUGIN_IDS = ["subagents", "todo", "ask_user_question"] as const;
@@ -158,10 +159,11 @@ export function filterCuratedExtensions<T extends ExtensionLike, R>(
 }
 
 export function createCuratedExtensionsOverride(agentDir: string) {
-  return <T extends ExtensionLike, R>(base: LoadExtensionsLike<T, R>): LoadExtensionsLike<T, R> => {
+  const filter = <T extends ExtensionLike, R>(base: LoadExtensionsLike<T, R>): LoadExtensionsLike<T, R> => {
     const config = readBuiltInCapabilityConfigSync(agentDir);
     return filterCuratedExtensions(base, desiredEnabledSet(config.capabilities));
   };
+  return createAskQuestionnaireExtensionsOverride(filter);
 }
 
 export function resourceLoaderOptionsForBuiltIns(agentDir: string) {

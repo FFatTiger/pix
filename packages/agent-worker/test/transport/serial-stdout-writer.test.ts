@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import type { Writable as NodeWritableStream } from "node:stream";
+import { MAX_RUNTIME_FRAME_BYTES, MAX_RUNTIME_FRAME_COUNT, MAX_RUNTIME_QUEUED_BYTES } from "@fffattiger/pix-protocol";
 import { SerialStdoutWriter } from "../../src/transport/serial-stdout-writer.js";
 
 class FakeWritable extends EventEmitter {
@@ -78,6 +79,38 @@ describe("SerialStdoutWriter", () => {
     const writer = new SerialStdoutWriter(stream as unknown as NodeWritableStream);
     await writer.flush();
     assert.deepEqual(stream.writes, []);
+  });
+
+  it("default queue admits two full runtime frames including newlines under backpressure", async () => {
+    const stream = new FakeWritable();
+    stream.block = true;
+    const writer = new SerialStdoutWriter(stream as unknown as NodeWritableStream);
+    const first = "a".repeat(MAX_RUNTIME_FRAME_BYTES);
+    const second = "b".repeat(MAX_RUNTIME_FRAME_BYTES);
+    const firstWrite = writer.enqueue(first);
+    const secondWrite = writer.enqueue(second);
+    await tick();
+    assert.equal(stream.writes.length, 1);
+    stream.block = false;
+    stream.emit("drain");
+    await Promise.all([firstWrite, secondWrite]);
+    assert.deepEqual(stream.writes, [`${first}\n`, `${second}\n`]);
+    assert.equal(MAX_RUNTIME_QUEUED_BYTES, 2 * (MAX_RUNTIME_FRAME_BYTES + 1));
+    assert.equal(MAX_RUNTIME_FRAME_COUNT, 256);
+  });
+
+  it("queue bytes include UTF-8 payloads and their NDJSON newlines", async (t) => {
+    const stream = new FakeWritable();
+    stream.block = true;
+    const writer = new SerialStdoutWriter(stream as unknown as NodeWritableStream, { maxQueuedBytes: 6 });
+    t.after(() => writer.close());
+    const pending = [writer.enqueue("hold"), writer.enqueue("é"), writer.enqueue("é")];
+    assert.equal(writer.isClosed, false, "two queued three-byte NDJSON lines fit exactly");
+    pending.push(writer.enqueue(""));
+    const outcomes = Promise.allSettled(pending);
+    assert.equal(writer.isClosed, true, "a newline-only frame exceeds the full queue");
+    assert.ok((await outcomes).every((outcome) => outcome.status === "rejected"));
+    assert.deepEqual(stream.writes, ["hold\n"]);
   });
 
   it("close rejects pending and future enqueues", async () => {

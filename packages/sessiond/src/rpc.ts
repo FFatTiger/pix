@@ -1,6 +1,8 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { timingSafeEqual } from "node:crypto";
 import {
+  MAX_RPC_INBOUND_FRAME_BYTES,
+  MAX_RUNTIME_FRAME_BYTES,
   PROTOCOL_VERSION,
   SESSIOND_RPC_METHODS,
   SessiondRpcRequestSchema,
@@ -16,10 +18,12 @@ import {
   type SessiondMethodResult,
 } from "@fffattiger/pix-protocol";
 import { SessiondError, toBoundaryProtocolError } from "./errors.js";
+import { NdjsonLineDecoder } from "./internal/ndjson-line-decoder.js";
+import { enqueueRpcOutboundFrame } from "./internal/rpc-outbound-frame.js";
 import { SerialSocketWriter, type SerialSocketWriterOptions } from "./internal/serial-writer.js";
 import type { PreparedAttachment, PreparedRunningWatch, PreparedTurnSubmission } from "./service.js";
 
-const MAX_FRAME_BYTES = 2 * 1024 * 1024;
+const MAX_INBOUND_FRAME_BYTES = MAX_RPC_INBOUND_FRAME_BYTES;
 /** Bounded ACK barrier for the `system.shutdown` response delivery (see {@link SessiondRpcServerOptions.shutdownAckTimeoutMs}). */
 const SHUTDOWN_ACK_TIMEOUT_MS = 2_000;
 
@@ -43,6 +47,8 @@ export interface SessiondRpcServerOptions {
   secret: string;
   handler: SessiondRpcHandler;
   maxFrameBytes?: number;
+  /** Outbound NDJSON body budget excluding the trailing newline. Independent of inbound `maxFrameBytes`. */
+  maxOutboundBodyBytes?: number;
   writer?: SerialSocketWriterOptions;
   /**
    * Optional daemon-owned shutdown authority. When present, the server accepts
@@ -89,7 +95,12 @@ export class SessiondRpcServer {
   private server: Server | undefined;
   private readonly sockets = new Set<Socket>();
 
-  constructor(private readonly options: SessiondRpcServerOptions) {}
+  constructor(private readonly options: SessiondRpcServerOptions) {
+    const limit = options.maxOutboundBodyBytes ?? MAX_RUNTIME_FRAME_BYTES;
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_RUNTIME_FRAME_BYTES) {
+      throw new SessiondError("invalid_input", "invalid RPC outbound body budget");
+    }
+  }
 
   async listen(): Promise<void> {
     if (this.server) return;
@@ -105,22 +116,19 @@ export class SessiondRpcServer {
     this.sockets.add(socket);
     socket.setNoDelay(true);
     let authenticated = false;
-    let buffered = "";
     let attachment: PreparedAttachment | undefined;
     let runningWatch: PreparedRunningWatch | undefined;
     let turnSubmission: PreparedTurnSubmission | undefined;
+    const inboundLimit = this.options.maxFrameBytes ?? MAX_INBOUND_FRAME_BYTES;
+    const decoder = new NdjsonLineDecoder({ maxFrameBytes: inboundLimit });
     const writer = new SerialSocketWriter(socket, this.options.writer);
     socket.on("data", (chunk) => {
-      buffered += chunk.toString("utf8");
-      if (Buffer.byteLength(buffered) > (this.options.maxFrameBytes ?? MAX_FRAME_BYTES)) {
+      const decoded = decoder.push(chunk);
+      if (decoded.overflow) {
         socket.destroy();
         return;
       }
-      while (true) {
-        const newline = buffered.indexOf("\n");
-        if (newline < 0) break;
-        const line = buffered.slice(0, newline);
-        buffered = buffered.slice(newline + 1);
+      for (const line of decoded.lines) {
         if (!authenticated) {
           authenticated = line.startsWith("AUTH ") && equalSecret(line.slice(5), this.options.secret);
           if (!authenticated) { socket.destroy(); return; }
@@ -181,6 +189,7 @@ export class SessiondRpcServer {
         return;
       }
       setAttach(attached);
+      this.bindPreparedClosed(socket, writer, attached);
       try {
         // The response is the first queued frame. Replay/buffer flush cannot overtake it.
         await this.write(writer, { id: request.id, ok: true, method: request.method, result: attached.result });
@@ -198,6 +207,7 @@ export class SessiondRpcServer {
       try { submission = await this.options.handler.submitTurn(request.params); }
       catch (error) { await this.writeFailureSafely(writer, request.id, request.method, toBoundaryProtocolError(error), error); return; }
       setTurnSubmission(submission);
+      this.bindPreparedClosed(socket, writer, submission);
       try {
         await this.write(writer, { id: request.id, ok: true, method: request.method, result: submission.result });
         await submission.flushTo((push) => this.writeTurnStatusPush(writer, push));
@@ -216,6 +226,7 @@ export class SessiondRpcServer {
         return;
       }
       setRunningWatch(watch);
+      this.bindPreparedClosed(socket, writer, watch);
       try {
         await this.write(writer, { id: request.id, ok: true, method: request.method, result: watch.result });
         await watch.flushTo((push) => this.writeRunningPush(writer, push));
@@ -293,22 +304,45 @@ export class SessiondRpcServer {
 
   private writePush(writer: SerialSocketWriter, push: import("@fffattiger/pix-protocol").SessiondPush): Promise<void> {
     const parsed = SessiondPushSchema.parse(push);
-    return writer.enqueue(`${JSON.stringify(parsed)}\n`);
+    return this.enqueueSerialized(writer, `${JSON.stringify(parsed)}\n`);
   }
 
   private writeTurnStatusPush(writer: SerialSocketWriter, push: import("@fffattiger/pix-protocol").SessiondTurnStatusPush): Promise<void> {
     const parsed = SessiondTurnStatusPushSchema.parse(push);
-    return writer.enqueue(`${JSON.stringify(parsed)}\n`);
+    return this.enqueueSerialized(writer, `${JSON.stringify(parsed)}\n`);
   }
 
   private writeRunningPush(writer: SerialSocketWriter, push: import("@fffattiger/pix-protocol").SessiondRunningStatePush): Promise<void> {
     const parsed = SessiondRunningStatePushSchema.parse(push);
-    return writer.enqueue(`${JSON.stringify(parsed)}\n`);
+    return this.enqueueSerialized(writer, `${JSON.stringify(parsed)}\n`);
   }
 
   private write(writer: SerialSocketWriter, response: SessiondRpcResponse): Promise<void> {
     const parsed = SessiondRpcResponseSchema.parse(response);
-    return writer.enqueue(`${JSON.stringify(parsed)}\n`);
+    return this.enqueueSerialized(writer, `${JSON.stringify(parsed)}\n`);
+  }
+
+  /** Close the observer transport on a terminal prepared-subscription failure. */
+  private bindPreparedClosed(
+    socket: Socket,
+    writer: SerialSocketWriter,
+    prepared: { readonly closed: Promise<SessiondError | null>; close(): void },
+  ): void {
+    void prepared.closed.then((error) => {
+      if (!error) return;
+      prepared.close();
+      writer.close(error);
+      socket.destroy(error);
+    });
+  }
+
+  private enqueueSerialized(writer: SerialSocketWriter, frame: string, flushedTimeoutMs?: number): Promise<void> {
+    return enqueueRpcOutboundFrame(
+      writer,
+      frame,
+      this.options.maxOutboundBodyBytes ?? MAX_RUNTIME_FRAME_BYTES,
+      flushedTimeoutMs,
+    );
   }
 
   /**
@@ -318,7 +352,7 @@ export class SessiondRpcServer {
    */
   private writeAcked(writer: SerialSocketWriter, response: SessiondRpcResponse): Promise<void> {
     const parsed = SessiondRpcResponseSchema.parse(response);
-    return writer.enqueueFlushed(`${JSON.stringify(parsed)}\n`, this.options.shutdownAckTimeoutMs ?? SHUTDOWN_ACK_TIMEOUT_MS);
+    return this.enqueueSerialized(writer, `${JSON.stringify(parsed)}\n`, this.options.shutdownAckTimeoutMs ?? SHUTDOWN_ACK_TIMEOUT_MS);
   }
 
   /**
@@ -385,6 +419,9 @@ async function dispatchHandler(handler: SessiondRpcHandler, request: SessiondRpc
   return handler.handle(request.method, request.params as never, { requestId: request.id }) as Promise<SessiondMethodResult[SessiondRpcMethod]>;
 }
 
+const clientResponseDecoder = (): NdjsonLineDecoder => new NdjsonLineDecoder({ maxFrameBytes: MAX_RUNTIME_FRAME_BYTES });
+const oversizeResponseError = (): SessiondError => new SessiondError("unavailable", "RPC response frame exceeds the size limit", true);
+
 export interface SessiondRpcClientOptions { endpoint: string; secret: string; timeoutMs?: number }
 export interface SessiondRpcSubscription<T> { response: T; close(): void; /** Settles exactly once when the attach stream ends (remote close/error or local close()). */ closed: Promise<void> }
 
@@ -396,7 +433,7 @@ export class SessiondRpcClient {
     const request = SessiondRpcRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, id, method: "runtime.attach", params });
     return new Promise((resolve, reject) => {
       const socket = createConnection(this.options.endpoint);
-      let buffered = "";
+      const decoder = clientResponseDecoder();
       let authenticated = false;
       let attached = false;
       let deliveryReady = false;
@@ -414,11 +451,9 @@ export class SessiondRpcClient {
       const fail = (error: Error) => { clearTimeout(timer); socket.destroy(); if (!settled) { settled = true; reject(error); } };
       socket.on("connect", () => socket.write(`AUTH ${this.options.secret}\n`));
       socket.on("data", (chunk) => {
-        buffered += chunk.toString("utf8");
-        while (true) {
-          const newline = buffered.indexOf("\n");
-          if (newline < 0) break;
-          const line = buffered.slice(0, newline); buffered = buffered.slice(newline + 1);
+        const decoded = decoder.push(chunk);
+        if (decoded.overflow) return fail(oversizeResponseError());
+        for (const line of decoded.lines) {
           if (!authenticated) {
             if (line !== "OK") return fail(new SessiondError("unauthorized", "sessiond authentication failed"));
             authenticated = true; socket.write(`${JSON.stringify(request)}\n`); continue;
@@ -433,14 +468,14 @@ export class SessiondRpcClient {
             resolve({ response: response.data.result, closed, close: () => { settleClosed(); socket.destroy(); } });
             queueMicrotask(() => {
               deliveryReady = true;
-              for (const push of pendingPushes.splice(0)) Promise.resolve(onPush(push)).catch(() => socket.destroy());
+              for (const push of pendingPushes.splice(0)) Promise.resolve().then(() => onPush(push)).catch(() => socket.destroy());
             });
             continue;
           }
           const push = SessiondPushSchema.safeParse(value);
           if (!push.success) { socket.destroy(); return; }
           if (!deliveryReady) pendingPushes.push(push.data);
-          else Promise.resolve(onPush(push.data)).catch(() => socket.destroy());
+          else Promise.resolve().then(() => onPush(push.data)).catch(() => socket.destroy());
         }
       });
       socket.on("error", (error) => { if (!settled) fail(error); else settleClosed(); });
@@ -455,7 +490,7 @@ export class SessiondRpcClient {
       const id = crypto.randomUUID();
       const request = SessiondRpcRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, id, method: "runtime.submitTurn", params });
       const socket = createConnection(this.options.endpoint);
-      let buffered = "";
+      const decoder = clientResponseDecoder();
       let authenticated = false;
       let submitted = false;
       let deliveryReady = false;
@@ -468,11 +503,9 @@ export class SessiondRpcClient {
       const fail = (error: Error) => { clearTimeout(timer); socket.destroy(); if (!settled) { settled = true; reject(error); } };
       socket.on("connect", () => socket.write(`AUTH ${this.options.secret}\n`));
       socket.on("data", (chunk) => {
-        buffered += chunk.toString("utf8");
-        while (true) {
-          const newline = buffered.indexOf("\n");
-          if (newline < 0) break;
-          const line = buffered.slice(0, newline); buffered = buffered.slice(newline + 1);
+        const decoded = decoder.push(chunk);
+        if (decoded.overflow) return fail(oversizeResponseError());
+        for (const line of decoded.lines) {
           if (!authenticated) { if (line !== "OK") return fail(new SessiondError("unauthorized", "sessiond authentication failed")); authenticated = true; socket.write(`${JSON.stringify(request)}\n`); continue; }
           let value: unknown;
           try { value = JSON.parse(line); } catch { return fail(new SessiondError("invalid_request", "invalid sessiond frame")); }
@@ -482,12 +515,12 @@ export class SessiondRpcClient {
             if (!response.data.ok) return fail(new SessiondError(response.data.error.code, response.data.error.message, response.data.error.retryable, response.data.error.details));
             submitted = true; settled = true; clearTimeout(timer);
             resolve({ response: response.data.result, closed, close: () => { settleClosed(); socket.destroy(); } });
-            queueMicrotask(() => { deliveryReady = true; for (const push of pendingPushes.splice(0)) Promise.resolve(onPush(push)).catch(() => socket.destroy()); });
+            queueMicrotask(() => { deliveryReady = true; for (const push of pendingPushes.splice(0)) Promise.resolve().then(() => onPush(push)).catch(() => socket.destroy()); });
             continue;
           }
           const push = SessiondTurnStatusPushSchema.safeParse(value);
           if (!push.success) { socket.destroy(); return; }
-          if (!deliveryReady) pendingPushes.push(push.data); else Promise.resolve(onPush(push.data)).catch(() => socket.destroy());
+          if (!deliveryReady) pendingPushes.push(push.data); else Promise.resolve().then(() => onPush(push.data)).catch(() => socket.destroy());
         }
       });
       socket.on("error", (error) => { if (!settled) fail(error); else settleClosed(); });
@@ -500,7 +533,7 @@ export class SessiondRpcClient {
     const request = SessiondRpcRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, id, method: "runtime.watchRunning", params: {} });
     return new Promise((resolve, reject) => {
       const socket = createConnection(this.options.endpoint);
-      let buffered = "";
+      const decoder = clientResponseDecoder();
       let authenticated = false;
       let watching = false;
       let deliveryReady = false;
@@ -518,11 +551,9 @@ export class SessiondRpcClient {
       const fail = (error: Error) => { clearTimeout(timer); socket.destroy(); if (!settled) { settled = true; reject(error); } };
       socket.on("connect", () => socket.write(`AUTH ${this.options.secret}\n`));
       socket.on("data", (chunk) => {
-        buffered += chunk.toString("utf8");
-        while (true) {
-          const newline = buffered.indexOf("\n");
-          if (newline < 0) break;
-          const line = buffered.slice(0, newline); buffered = buffered.slice(newline + 1);
+        const decoded = decoder.push(chunk);
+        if (decoded.overflow) return fail(oversizeResponseError());
+        for (const line of decoded.lines) {
           if (!authenticated) {
             if (line !== "OK") return fail(new SessiondError("unauthorized", "sessiond authentication failed"));
             authenticated = true; socket.write(`${JSON.stringify(request)}\n`); continue;
@@ -537,14 +568,14 @@ export class SessiondRpcClient {
             resolve({ response: response.data.result, closed, close: () => { settleClosed(); socket.destroy(); } });
             queueMicrotask(() => {
               deliveryReady = true;
-              for (const push of pendingPushes.splice(0)) Promise.resolve(onPush(push)).catch(() => socket.destroy());
+              for (const push of pendingPushes.splice(0)) Promise.resolve().then(() => onPush(push)).catch(() => socket.destroy());
             });
             continue;
           }
           const push = SessiondRunningStatePushSchema.safeParse(value);
           if (!push.success) { socket.destroy(); return; }
           if (!deliveryReady) pendingPushes.push(push.data);
-          else Promise.resolve(onPush(push.data)).catch(() => socket.destroy());
+          else Promise.resolve().then(() => onPush(push.data)).catch(() => socket.destroy());
         }
       });
       socket.on("error", (error) => { if (!settled) fail(error); else settleClosed(); });
@@ -557,18 +588,16 @@ export class SessiondRpcClient {
     const request = SessiondRpcRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, id, method, params });
     return new Promise<SessiondMethodResult[M]>((resolve, reject) => {
       const socket = createConnection(this.options.endpoint);
-      let buffered = "";
+      const decoder = clientResponseDecoder();
       let authenticated = false;
       const effectiveTimeoutMs = timeoutMs ?? this.options.timeoutMs ?? 10_000;
       const timer = setTimeout(() => { socket.destroy(); reject(new SessiondError("timeout", "sessiond RPC timed out", true)); }, effectiveTimeoutMs);
       const finish = (callback: () => void) => { clearTimeout(timer); socket.destroy(); callback(); };
       socket.on("connect", () => socket.write(`AUTH ${this.options.secret}\n`));
       socket.on("data", (chunk) => {
-        buffered += chunk.toString("utf8");
-        while (true) {
-          const newline = buffered.indexOf("\n");
-          if (newline < 0) break;
-          const line = buffered.slice(0, newline); buffered = buffered.slice(newline + 1);
+        const decoded = decoder.push(chunk);
+        if (decoded.overflow) { finish(() => reject(oversizeResponseError())); return; }
+        for (const line of decoded.lines) {
           if (!authenticated) {
             if (line !== "OK") { finish(() => reject(new SessiondError("unauthorized", "sessiond authentication failed"))); return; }
             authenticated = true;

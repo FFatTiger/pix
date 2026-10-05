@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  MAX_RUNTIME_FRAME_BYTES,
+  MAX_RUNTIME_FRAME_COUNT,
+  MAX_RUNTIME_QUEUED_BYTES,
   PROTOCOL_VERSION,
   RUNTIME_EPOCH_ROLLOVER_FEATURE,
   RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
   RUNTIME_OBSERVE_EXISTING_FEATURE,
+  RUNTIME_QUESTIONNAIRE_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
   RUNTIME_RUNNING_WATCH_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
@@ -799,6 +803,51 @@ test("detach without id sends no response; with id sends detached result", async
   assert.equal(sub.localClosed, true);
 });
 
+test("default outbound queue admits two Protocol runtime frames including newlines", async () => {
+  const client = new FakeClient();
+  const sub = new FakeSubscription(attachResponse("s1"));
+  client.attachFn = (_p, onPush) => {
+    sub.onPush = onPush;
+    return sub;
+  };
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "attach", id: "a1", payload: { sessionId: "s1" } }));
+  await wait();
+  const event = { type: "prompt_error", eventId: 1, sessionId: "s1", epoch: "e1", errorMessage: "" };
+  const overhead = Buffer.byteLength(JSON.stringify({ type: "event", payload: event }), "utf8");
+  const pad = "x".repeat(MAX_RUNTIME_FRAME_BYTES - overhead);
+  await sub.deliver({ type: "event", event: { ...event, errorMessage: pad } });
+  await sub.deliver({ type: "event", event: { ...event, eventId: 2, errorMessage: pad } });
+  assert.equal(session.closed, null);
+  const frames = session.sent.filter((frame) => JSON.parse(frame).type === "event");
+  assert.equal(frames.length, 2);
+  assert.ok(frames.every((frame) => Buffer.byteLength(frame, "utf8") === MAX_RUNTIME_FRAME_BYTES));
+  assert.equal(MAX_RUNTIME_FRAME_COUNT, 256);
+});
+
+test("outbound frame one UTF-8 byte over the body cap closes before send even within the queue budget", async () => {
+  const client = new FakeClient();
+  const sub = new FakeSubscription(attachResponse("s1"));
+  client.attachFn = (_p, onPush) => {
+    sub.onPush = onPush;
+    return sub;
+  };
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "attach", id: "a1", payload: { sessionId: "s1" } }));
+  await wait();
+  const event = { type: "prompt_error", eventId: 1, sessionId: "s1", epoch: "e1", errorMessage: "" };
+  const overhead = Buffer.byteLength(JSON.stringify({ type: "event", payload: event }), "utf8");
+  event.errorMessage = "x".repeat(MAX_RUNTIME_FRAME_BYTES - overhead - 1) + "é";
+  const bytes = Buffer.byteLength(JSON.stringify({ type: "event", payload: event }), "utf8");
+  assert.equal(bytes, MAX_RUNTIME_FRAME_BYTES + 1);
+  assert.ok(bytes < MAX_RUNTIME_QUEUED_BYTES);
+  const before = session.sent.length;
+  await sub.deliver({ type: "event", event });
+  assert.equal(session.closed?.code, 1009);
+  assert.equal(session.sent.length, before, "oversized frame must never reach the socket");
+  assert.equal(sub.localClosed, true);
+});
+
 test("outbound overflow fail-closes the browser socket (1009)", async () => {
   const client = new FakeClient();
   const sub = new FakeSubscription(attachResponse("s1"));
@@ -1090,7 +1139,7 @@ test("non-finite byte and bufferedAmount limits cannot disable fail-closed bound
   const outboundSession = await connect(makeGateway(outboundClient, {
     outbound: { maxBufferedAmount: Number.NaN },
   }));
-  outboundSession.bufferedAmount = 4 * 1024 * 1024 + 1;
+  outboundSession.bufferedAmount = MAX_RUNTIME_QUEUED_BYTES + 1;
   outboundSession.receive(cmdFrame("buffered"));
   await wait();
   assert.equal(outboundSession.closed.code, 1009);
@@ -2242,4 +2291,105 @@ test("LC-01: never-settling verifyGate at the final recheck fires the 2000ms bud
   await wait();
   assert.equal(session.sent.slice(1).map((frame) => JSON.parse(frame)).some((frame) => frame.type === "snapshot" && frame.id === "a2"), true);
   assert.equal(client.calls.filter((call) => call.method === "runtime.activate").length, 0);
+});
+
+const questionnaireRequest = {
+  id: "q1",
+  method: "questionnaire",
+  questions: [{
+    header: "Auth",
+    question: "Which auth?",
+    options: [{ label: "OAuth", description: "Browser" }, { label: "Token", description: "Static" }],
+    multiSelect: false,
+  }],
+};
+
+const questionnaireHello = JSON.stringify({
+  type: "handshake",
+  payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [RUNTIME_QUESTIONNAIRE_FEATURE] },
+});
+
+function questionnaireSnapshot(sessionId) {
+  const base = snapshot(sessionId);
+  return { ...base, state: { ...base.state, pendingExtensionUi: [questionnaireRequest] } };
+}
+
+for (const responseKind of ["questionnaire", "cancelled"]) {
+  test(`unnegotiated native questionnaire ${responseKind} reply is rejected before RPC`, async () => {
+    const client = new FakeClient();
+    const session = await connect(makeGateway(client));
+    const command = {
+      commandId: "answer-1", type: "extension_ui_response", id: "q1", method: "questionnaire", responseKind,
+      ...(responseKind === "cancelled" ? { cancelled: true } : { answers: [{ kind: "option", questionIndex: 0, optionIndex: 0 }] }),
+    };
+    session.receive(JSON.stringify({ type: "command", id: "answer-1", payload: { sessionId: "s1", command } }));
+    await wait();
+    const response = session.lastJson();
+    assert.equal(response.id, "answer-1");
+    assert.equal(response.payload.ok, false);
+    assert.equal(response.payload.error.code, "unsupported_capability");
+    assert.equal(client.calls.some((call) => call.method === "runtime.command"), false);
+    assert.equal(session.closed, null);
+  });
+}
+
+test("negotiated native questionnaire reply forwards the exact command once", async () => {
+  const client = new FakeClient();
+  client.handlers["system.hello"] = { protocolVersion: 2, capabilities: [], build: SESSIOND_BUILD_IDENTITY };
+  client.handlers["runtime.command"] = ({ command }) => ({ commandId: command.commandId, result: { ok: true, type: command.type } });
+  const session = await connect(makeGateway(client), questionnaireHello);
+  const payload = { sessionId: "s1", command: { commandId: "answer-1", type: "extension_ui_response", id: "q1", method: "questionnaire", responseKind: "questionnaire", answers: [{ kind: "option", questionIndex: 0, optionIndex: 1 }] } };
+  session.receive(JSON.stringify({ type: "command", id: "answer-1", payload }));
+  await wait();
+  assert.equal(session.lastJson().payload.ok, true);
+  const calls = client.calls.filter((call) => call.method === "runtime.command");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].params, payload);
+});
+
+test("questionnaire incremental input is rejected before RPC", async () => {
+  const client = new FakeClient();
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "command", id: "input-1", payload: { sessionId: "s1", command: { commandId: "input-1", type: "extension_ui_input", id: "q1", method: "questionnaire", data: "typed" } } }));
+  await wait();
+  assert.equal(client.calls.some((call) => call.method === "runtime.command"), false);
+  assert.equal(session.closed?.code, 1008);
+});
+
+test("questionnaire feature is accepted only for a compatible backend handshake", async () => {
+  const client = new FakeClient();
+  client.handlers["system.hello"] = { protocolVersion: 2, capabilities: [], build: SESSIOND_BUILD_IDENTITY };
+  const session = await connect(makeGateway(client), questionnaireHello);
+  assert.deepEqual(session.jsonAt(0).payload.acceptedFeatures, [RUNTIME_QUESTIONNAIRE_FEATURE]);
+});
+
+test("legacy v2 attach still delivers generic dialogs and receipts without questionnaire", async () => {
+  const client = new FakeClient();
+  const sub = new FakeSubscription(attachResponse("s1"));
+  client.attachFn = (_params, onPush) => { sub.onPush = onPush; return sub; };
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "attach", id: "a1", payload: { sessionId: "s1" } }));
+  await wait();
+  assert.equal(session.jsonAt(1).type, "snapshot");
+  await sub.deliver({
+    type: "event",
+    event: { type: "extension_ui_request", sessionId: "s1", eventId: 1, epoch: "e1", request: { id: "c1", method: "confirm", title: "Sure?", message: "Continue?" } },
+  });
+  const event = session.lastJson();
+  assert.equal(event.type, "event");
+  assert.equal(event.payload.request.method, "confirm");
+  assert.equal(session.closed, null);
+});
+
+test("old client is fail-closed before a questionnaire-bearing event, snapshot, read, or authority snapshot", async () => {
+  const client = new FakeClient();
+  const sub = new FakeSubscription({ ...attachResponse("s1"), snapshot: questionnaireSnapshot("s1") });
+  client.attachFn = (_params, onPush) => { sub.onPush = onPush; return sub; };
+  const session = await connect(makeGateway(client));
+  session.receive(JSON.stringify({ type: "attach", id: "a1", payload: { sessionId: "s1" } }));
+  await wait();
+  const frames = session.sent.map((frame) => JSON.parse(frame));
+  assert.equal(frames.some((frame) => frame.type === "runtime_unavailable"), true);
+  assert.equal(frames.some((frame) => frame.payload?.error?.code === "unsupported_capability"), true);
+  assert.equal(frames.some((frame) => frame.payload?.snapshot?.state?.pendingExtensionUi?.[0]?.method === "questionnaire"), false);
 });
