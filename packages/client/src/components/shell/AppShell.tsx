@@ -659,9 +659,7 @@ export function AppShell({ search }: AppShellProps) {
   // D4 session-history delete navigation. AppShell is the single navigation
   // owner: when the deleted session equals the URL-selected session it clears
   // Multi-tab session creation remains available while another session is
-  // attached (capability + cwd gate for the sidebar New Session action).
-  const hasProject = Boolean(search.cwd);
-  const canCreate = canAgent && hasProject;
+  // attached (Host agent capability gate for the sidebar New Session action).
 
   // ONLY the `session` param while preserving the current `cwd`. It never
   // detaches/stops a Runtime. The deleted session's tab is removed; if it was
@@ -1165,7 +1163,7 @@ export function AppShell({ search }: AppShellProps) {
           onSessionDeleted={handleSessionDeleted}
           onSelectSession={handleSelectSession}
           onNewSession={handleOpenNewSessionPage}
-          canNewSession={canCreate}
+          canNewSession={canAgent}
           onOpenSettings={openSettings}
           onNewSessionInProject={handleOpenHomeForProject}
         />

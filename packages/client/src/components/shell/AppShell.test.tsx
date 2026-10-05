@@ -3087,6 +3087,35 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("home-stack")).toBeTruthy();
   });
 
+  it("enables New Session on a session URL without cwd and navigates to a blank draft", async () => {
+    mountApp({ session: "A" }, { capabilities: catalogCaps });
+    const ws = await connectReady();
+    await settle();
+    const button = screen.getByTestId("sidebar-new-session") as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(button.title).toBe("New Session");
+    fireEvent.click(button);
+    await settle();
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/", search: {} });
+    expect(countType(ws, "create")).toBe(0);
+    expect(countType(ws, "activate")).toBe(0);
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "submit_turn")).toHaveLength(0);
+  });
+
+  it("enables New Session on home without cwd", async () => {
+    mountApp({}, { capabilities: catalogCaps });
+    await settle();
+    const button = screen.getByTestId("sidebar-new-session") as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(button.title).toBe("New Session");
+  });
+
+  it("keeps New Session disabled without the agent capability", async () => {
+    mountApp({ session: "A" }, { capabilities: ["sessions", "files", "models"] });
+    await settle();
+    expect((screen.getByTestId("sidebar-new-session") as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("promotes B only after its first prompt transaction owns the command slot", async () => {
     globalThis.fetch = controllableStubFetch({ sessions: SESSION_HEADERS });
     const view = mountApp({ cwd: "/x", session: "A" });

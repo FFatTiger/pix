@@ -76,7 +76,7 @@ export interface SidebarProps {
   onSelectSession: (sessionId: string, cwd?: string) => void;
   /** Start a new session in the current workspace (AppShell-owned). */
   onNewSession: () => void;
-  /** Honest gate for the new-session action (capability + cwd). */
+  /** Honest Host agent-capability gate for navigating to a blank new-session draft. */
   canNewSession: boolean;
   /** Open the existing SettingsModal on a specific tab (plugins / skills / settings). */
   onOpenSettings?: (tab: SettingsTab) => void;
@@ -731,7 +731,7 @@ export function Sidebar({
             className="sidebar-nav-item"
             data-testid="sidebar-new-session"
             disabled={!canNewSession}
-            title={cwd ? t("desktop.newSessionIn", { cwd }) : t("desktop.selectProjectFirst")}
+            title={t("desktop.newSession")}
             aria-label={t("desktop.newSession")}
             onClick={onNewSession}
           >
