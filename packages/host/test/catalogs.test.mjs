@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realpath } from "node:fs/promises";
@@ -119,6 +119,13 @@ function fakeResources(impl = {}) {
   const seen = [];
   return {
     seen,
+    global() {
+      return {
+        listSkills: async () => impl.listSkills ? impl.listSkills() : [{ name: "s", enabled: true }],
+        listPlugins: async () => impl.listPlugins ? impl.listPlugins() : [{ name: "pl", enabled: true }],
+        listCommands: async () => impl.listCommands ? impl.listCommands() : [{ name: "c", source: "prompt" }],
+      };
+    },
     forCwd(cwd, trusted) {
       seen.push({ cwd, trusted });
       return {
@@ -638,7 +645,7 @@ test("GET /v1/trust returns canonical cwd, level, trusted, canReloadResources", 
 // cwd authorization: missing / relative / out-of-root / nonexistent
 // ---------------------------------------------------------------------------
 
-test("missing cwd → 400 CWD_REQUIRED on project routes", async () => {
+test("missing cwd → 400 CWD_REQUIRED on trust; resource catalogs are global", async () => {
   const root = temp("pix-cat-cwd-");
   const roots = await rootsFor(root);
   const app = appWithCatalogs({
@@ -647,7 +654,7 @@ test("missing cwd → 400 CWD_REQUIRED on project routes", async () => {
     resources: fakeResources(),
     trust: fakeTrust(),
   });
-  for (const path of ["/v1/skills", "/v1/plugins", "/v1/commands", "/v1/trust"]) {
+  for (const path of ["/v1/trust"]) {
     const res = await call(app, path);
     assert.equal(res.status, 400, path);
     const body = await res.json();
@@ -1199,4 +1206,49 @@ test("explicit override omitting catalog tokens still advertises mounted seams",
     [...capabilities],
     ["agent", "files", "models", "auth.providers", "skills", "plugins"],
   );
+});
+
+
+test("no-cwd resources bypass roots and trust and preserve strict projection and no-store", async () => {
+  const forbidden = () => { throw new Error("project/runtime dependency consulted"); };
+  const resources = fakeResources({
+    listSkills: async () => [{ name: "s", enabled: true, secret: "hidden" }],
+  });
+  resources.forCwd = forbidden;
+  const app = appWithCatalogs({
+    roots: { authorizeExisting: forbidden }, resources,
+    trust: fakeTrust({ isTrusted: forbidden }),
+  }, { sessiond: { isAvailable: forbidden } });
+  for (const [path, body] of [
+    ["skills", { skills: [{ name: "s", enabled: true }] }],
+    ["plugins", { plugins: [{ name: "pl", enabled: true }] }],
+    ["commands", { commands: [{ name: "c", source: "prompt" }] }],
+  ]) {
+    const res = await call(app, `/v1/${path}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await res.json(), body);
+  }
+});
+
+test("present cwd never falls back to global on empty, relative, outside, symlink, or deleted paths", async () => {
+  const root = temp("pix-cat-global-boundary-");
+  const outside = temp("pix-cat-global-outside-");
+  const linked = join(root, "escape");
+  symlinkSync(outside, linked, "dir");
+  const deleted = join(root, "deleted");
+  mkdirSync(deleted);
+  const roots = await rootsFor(root);
+  rmSync(deleted, { recursive: true });
+  const resources = fakeResources();
+  resources.global = () => { throw new Error("must not fall back to global"); };
+  const app = appWithCatalogs({ roots, resources, trust: fakeTrust() });
+  for (const path of ["skills", "plugins", "commands"]) {
+    for (const [cwd, status] of [["", 400], ["relative", 400], [outside, 403], [linked, 403], [deleted, 404]]) {
+      const res = await call(app, `/v1/${path}?cwd=${encodeURIComponent(cwd)}`);
+      assert.equal(res.status, status, `${path} ${cwd}`);
+      assert.equal(res.headers.get("cache-control"), "no-store");
+    }
+  }
+  assert.deepEqual(resources.seen, []);
 });

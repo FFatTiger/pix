@@ -285,8 +285,30 @@ async function main() {
   // ensurePixHostDir refuses intermediate path-text symlinks. Leave sessiond on
   // the shorter `/var/...` form so the AF_UNIX socket path stays within 104 bytes.
   const hostDir = join(realpathSync(temp), "host");
-  // Empty agent dir so gate does not pick up the operator ~/.pi/pix.json password.
+  // Isolated persisted global/project fixtures; neither package may execute.
   const agentDir = join(temp, "agent");
+  const globalSkillDir = join(agentDir, "skills", "settings-static");
+  const projectSkillDir = join(project, ".pi", "skills", "project-settings-static");
+  const globalPackageDir = join(agentDir, "static-package");
+  const projectPackageDir = join(project, ".pi", "static-package");
+  const extensionMarker = join(temp, "catalog-extension-executed.marker");
+  const packageCommandMarker = join(temp, "catalog-command-executed.marker");
+  const packageCommandProbe = join(temp, "catalog-command-probe.mjs");
+  writeFileSync(packageCommandProbe, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(packageCommandMarker)}, "executed");\nconsole.log(${JSON.stringify(join(temp, "legacy-node-modules"))});\n`);
+  for (const directory of [globalSkillDir, projectSkillDir, globalPackageDir, projectPackageDir]) {
+    mkdirSync(directory, { recursive: true });
+  }
+  writeFileSync(join(globalSkillDir, "SKILL.md"), "---\nname: settings-static\ndescription: Persisted global settings fixture\n---\nGlobal fixture.\n");
+  writeFileSync(join(projectSkillDir, "SKILL.md"), "---\nname: project-settings-static\ndescription: Project-only settings fixture\n---\nProject fixture.\n");
+  for (const [directory, name] of [[globalPackageDir, "global-static-package"], [projectPackageDir, "project-static-package"]]) {
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", pi: { extensions: ["index.js"] } }));
+    writeFileSync(join(directory, "index.js"), `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(extensionMarker)}, "executed");\nthrow new Error("Static catalogs must never execute extensions");\n`);
+  }
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
+    packages: [globalPackageDir, "npm:pix-static-uninstalled"],
+    npmCommand: [process.execPath, packageCommandProbe],
+  }));
+  writeFileSync(join(project, ".pi", "settings.json"), JSON.stringify({ packages: [projectPackageDir] }));
   const env = {
     ...process.env,
     PIX_SESSIOND_DIR: runtimeDir,
@@ -369,6 +391,16 @@ async function main() {
     assert.equal(Array.isArray(plugins.plugins), true);
     const commands = await fetchJson(`${origin}/v1/commands?cwd=${encodeURIComponent(project)}`);
     assert.equal(Array.isArray(commands.commands), true);
+    const globalCatalogs = {};
+    for (const domain of ["skills", "plugins", "commands"]) {
+      globalCatalogs[domain] = await fetchJson(`${origin}/v1/${domain}`);
+      assert.equal(Array.isArray(globalCatalogs[domain][domain]), true, `${domain} settings are readable without a project`);
+    }
+    assert.deepEqual(globalCatalogs.skills.skills.map((skill) => skill.name), ["settings-static"]);
+    assert.deepEqual(globalCatalogs.plugins.plugins.map((plugin) => plugin.name), ["global-static-package", "npm:pix-static-uninstalled"]);
+    assert.deepEqual(globalCatalogs.commands.commands.map((command) => command.name), ["skill:settings-static"]);
+    assert.equal(existsSync(extensionMarker), false, "global settings reads must not execute configured extensions");
+    assert.equal(existsSync(packageCommandMarker), false, "settings catalogs must not probe package-manager commands");
     const trust = await fetchJson(`${origin}/v1/trust?cwd=${encodeURIComponent(project)}`);
     assert.equal(trust.cwd, project);
     assert.ok(["unknown", "trusted", "denied"].includes(trust.level));
@@ -421,6 +453,18 @@ async function main() {
     assert.equal(persisted[project], true, "real Pi SDK trust.json must carry the decision");
     const persistedStat = lstatSync(join(agentDir, "trust.json"));
     assert.equal(persistedStat.mode & 0o077, 0, "persisted trust.json must be owner-only");
+    // The project fixtures are discoverable after trust, but never enter global settings.
+    const projectSkills = await fetchJson(`${origin}/v1/skills?cwd=${encodeURIComponent(project)}`);
+    assert.ok(projectSkills.skills.some((skill) => skill.name === "project-settings-static"));
+    const projectPlugins = await fetchJson(`${origin}/v1/plugins?cwd=${encodeURIComponent(project)}`);
+    assert.ok(projectPlugins.plugins.some((plugin) => plugin.name === "project-static-package"));
+    const projectCommands = await fetchJson(`${origin}/v1/commands?cwd=${encodeURIComponent(project)}`);
+    assert.ok(projectCommands.commands.some((command) => command.name === "skill:project-settings-static"));
+    for (const domain of ["skills", "plugins", "commands"]) {
+      assert.deepEqual(await fetchJson(`${origin}/v1/${domain}`), globalCatalogs[domain], `${domain} global settings exclude trusted project resources`);
+    }
+    assert.equal(existsSync(extensionMarker), false, "static catalogs must not execute global or trusted project extensions");
+    assert.equal(existsSync(packageCommandMarker), false, "project catalogs must not probe package-manager commands");
 
     // ---- D3B-R6 read-only theme catalog surface ---------------------------
     // Real catalog reads: builtin sets are listed/resolved with zero Workers,
@@ -707,6 +751,14 @@ async function main() {
     // D4: session.write is the sessiond-guarded rename capability — full only.
     assert.ok(FULL_CAPS.includes("session.write"), "full must include session.write");
     assert.ok(!DEGRADED_CAPS.includes("session.write"), "degraded must exclude session.write");
+
+    // Static settings catalogs remain readable without a project or sessiond.
+    for (const domain of ["skills", "plugins", "commands"]) {
+      const downCatalog = await fetchJson(`${origin}/v1/${domain}`);
+      assert.deepEqual(downCatalog, globalCatalogs[domain], `${domain} global settings do not depend on sessiond`);
+    }
+    assert.equal(existsSync(extensionMarker), false, "degraded settings reads must not execute extensions");
+    assert.equal(existsSync(packageCommandMarker), false, "degraded settings reads must not execute package-manager commands");
 
     // Resources stay usable while the authority is down: file read + upload
     // are pure Host-mounted filesystem ops and are NOT runtime-guarded.

@@ -5,7 +5,7 @@
 //
 //   1. capability honesty: catalog tokens only when seams are mounted;
 //   2. exact Host shapes for models/providers/status/skills/plugins/commands/trust;
-//   3. cwd required for project endpoints; providers global;
+//   3. resource catalogs are global without cwd; trust requires cwd;
 //   4. no mutation routes for D3B domains.
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
@@ -52,6 +52,7 @@ function fakeCredentials() {
 
 function fakeResources() {
   return {
+    global() { return this.forCwd(); },
     forCwd() {
       return {
         listSkills: async () => [{ name: "ship", enabled: true, version: "1.0.0", updateAvailable: true }],
@@ -144,18 +145,18 @@ test("Host catalog shapes match Client strict schemas", async () => {
   assert.equal(statusBody.status.providerId, "openai");
   assert.equal(statusBody.status.authorized, true);
 
-  const skills = await app.request(`http://localhost/v1/skills?cwd=${cwd}`, { headers: headers() });
+  const skills = await app.request("http://localhost/v1/skills", { headers: headers() });
   assert.equal(skills.status, 200);
   const skillsBody = await skills.json();
   assert.deepEqual(Object.keys(skillsBody), ["skills"]);
   assert.equal(skillsBody.skills[0].name, "ship");
 
-  const plugins = await app.request(`http://localhost/v1/plugins?cwd=${cwd}`, { headers: headers() });
+  const plugins = await app.request("http://localhost/v1/plugins", { headers: headers() });
   assert.equal(plugins.status, 200);
   const pluginsBody = await plugins.json();
   assert.deepEqual(Object.keys(pluginsBody), ["plugins"]);
 
-  const commands = await app.request(`http://localhost/v1/commands?cwd=${cwd}`, { headers: headers() });
+  const commands = await app.request("http://localhost/v1/commands", { headers: headers() });
   assert.equal(commands.status, 200);
   const commandsBody = await commands.json();
   assert.deepEqual(Object.keys(commandsBody), ["commands"]);
@@ -170,9 +171,9 @@ test("Host catalog shapes match Client strict schemas", async () => {
   assert.equal(trustBody.canReloadResources.allowed, true);
 });
 
-test("project catalog endpoints require cwd; models and providers are global", async () => {
+test("trust requires cwd; resources, models and providers are global", async () => {
   const { app } = await fixture(true);
-  for (const path of ["/v1/skills", "/v1/plugins", "/v1/commands", "/v1/trust"]) {
+  for (const path of ["/v1/trust"]) {
     const res = await app.request(`http://localhost${path}`, { headers: headers() });
     assert.equal(res.status, 400, path);
     const body = await res.json();

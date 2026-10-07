@@ -15,15 +15,11 @@ export type SettingsTab = "display" | "chat" | "agents" | "tools" | "models" | "
 
 interface SettingsModalProps {
   initialTab?: SettingsTab;
-  cwd: string | null;
-  /** Exact selected-session HTTP workspace gate; new-session home remains true. */
-  liveWorkspaceEnabled: boolean;
   onCloseAction: () => void;
 }
 
-function resolveSettingsTab(tab: SettingsTab, cwd: string | null): SettingsTab {
-  return tab === "skills" || tab === "plugins" ? (cwd ? tab : "display") : tab;
-}
+const GLOBAL_TABS = new Set<SettingsTab>(["models", "agents", "tools", "config", "skills", "plugins", "security"]);
+const LOCAL_TABS = new Set<SettingsTab>(["display", "archive"]);
 
 const tabs: { id: SettingsTab; labelKey: string; Icon: typeof Cpu }[] = [
   { id: "display", labelKey: "desktop.display", Icon: Monitor },
@@ -39,32 +35,31 @@ const tabs: { id: SettingsTab; labelKey: string; Icon: typeof Cpu }[] = [
 ];
 
 /**
- * Settings modal (source: upstream desktop app components/SettingsModal.tsx skeleton).
- *
- * The nav is always display / chat / models / skills / plugins (REF rule;
- * skills+plugins disabled without a cwd). Display and Chat are the ported real
- * components; Models expands into the global models.json editor while skills
- * and plugins remain project-scoped read-only catalogs.
+ * Settings modal. Every tab is always available: catalogs are the global
+ * on-disk agent-dir sources, never a selected folder or live session.
  */
 export function SettingsModal({
   initialTab = "models",
-  cwd,
-  liveWorkspaceEnabled,
   onCloseAction,
 }: SettingsModalProps) {
   const isMobile = useIsMobile();
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<SettingsTab>(resolveSettingsTab(initialTab, cwd));
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const dialogRef = useRef<HTMLElement>(null);
 
-  // Focus the dialog on open so keyboard users land inside immediately.
   useEffect(() => {
     dialogRef.current?.focus();
   }, []);
 
   useEffect(() => {
-    setActiveTab(resolveSettingsTab(initialTab, cwd));
-  }, [cwd, initialTab]);
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  const scopeLabel = GLOBAL_TABS.has(activeTab)
+    ? t("desktop.global")
+    : LOCAL_TABS.has(activeTab)
+      ? t("desktop.localPreferences")
+      : null;
 
   return (
     <div
@@ -119,15 +114,11 @@ export function SettingsModal({
             <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>
               {t(tabs.find((tab) => tab.id === activeTab)?.labelKey ?? "desktop.settings")}
             </span>
-            {activeTab === "models" || activeTab === "agents" || activeTab === "tools" ? (
+            {scopeLabel ? (
               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {t("desktop.global")}
+                {scopeLabel}
               </span>
-            ) : cwd && (
-              <code style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {cwd}
-              </code>
-            )}
+            ) : null}
           </div>
           <button
             type="button"
@@ -156,13 +147,11 @@ export function SettingsModal({
             }}
           >
             {tabs.map(({ id, labelKey, Icon }) => {
-              const disabled = (id === "skills" || id === "plugins") && !cwd;
               const active = activeTab === id;
               return (
                 <button
                   key={id}
                   type="button"
-                  disabled={disabled}
                   onClick={() => setActiveTab(id)}
                   data-testid={`settings-tab-${id}`}
                   aria-current={active ? "page" : undefined}
@@ -177,15 +166,14 @@ export function SettingsModal({
                     borderRadius: 6,
                     background: active ? "var(--bg-selected)" : "none",
                     color: active ? "var(--text)" : "var(--text-muted)",
-                    cursor: disabled ? "not-allowed" : "pointer",
-                    opacity: disabled ? 0.4 : 1,
+                    cursor: "pointer",
                     fontSize: 12,
                     fontWeight: active ? 600 : 400,
                     textAlign: "left",
                     transition: "background 0.12s, color 0.12s",
                   }}
                   onMouseEnter={(event) => {
-                    if (!active && !disabled) {
+                    if (!active) {
                       event.currentTarget.style.background = "var(--bg-hover)";
                       event.currentTarget.style.color = "var(--text)";
                     }
@@ -222,16 +210,12 @@ export function SettingsModal({
           <div style={{ display: activeTab === "config" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
             <SettingsFileConfig />
           </div>
-          {cwd && (
-            <div style={{ display: activeTab === "skills" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-              <SkillsSettingsTab cwd={cwd} liveWorkspaceEnabled={liveWorkspaceEnabled} />
-            </div>
-          )}
-          {cwd && (
-            <div style={{ display: activeTab === "plugins" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-              <PluginsSettingsTab cwd={cwd} liveWorkspaceEnabled={liveWorkspaceEnabled} />
-            </div>
-          )}
+          <div style={{ display: activeTab === "skills" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
+            <SkillsSettingsTab />
+          </div>
+          <div style={{ display: activeTab === "plugins" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
+            <PluginsSettingsTab />
+          </div>
           <div style={{ display: activeTab === "security" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
             <SecurityConfig />
           </div>

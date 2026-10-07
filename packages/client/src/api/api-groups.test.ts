@@ -142,6 +142,9 @@ describe("API domain response parsing", () => {
     expect(providers.providers[0]).toEqual({ id: "anthropic", methods: ["oauth", "apiKey"] });
     expect(JSON.stringify(providers)).not.toMatch(/sdk|rpc/i);
 
+    await expect(createConfigurationApi(client({ skills: [{ name: "s", enabled: true }] })).skills.list()).resolves.toEqual({ skills: [{ name: "s", enabled: true }] });
+    await expect(createConfigurationApi(client({ plugins: [{ name: "p", enabled: false }] })).plugins.list()).resolves.toEqual({ plugins: [{ name: "p", enabled: false }] });
+    await expect(createConfigurationApi(client({ commands: [{ name: "cmd", source: "skill" }] })).commands.list()).resolves.toEqual({ commands: [{ name: "cmd", source: "skill" }] });
     await expect(createConfigurationApi(client({ skills: [{ name: "s", enabled: true }] })).skills.list("/repo")).resolves.toEqual({ skills: [{ name: "s", enabled: true }] });
     await expect(createConfigurationApi(client({ plugins: [{ name: "p", enabled: false }] })).plugins.list("/repo")).resolves.toEqual({ plugins: [{ name: "p", enabled: false }] });
     await expect(createConfigurationApi(client({ commands: [{ name: "cmd", source: "skill" }] })).commands.list("/repo")).resolves.toEqual({ commands: [{ name: "cmd", source: "skill" }] });

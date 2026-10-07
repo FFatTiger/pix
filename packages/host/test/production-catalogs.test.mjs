@@ -351,3 +351,80 @@ test("createProductionCatalogs rejects non-absolute agentDir before any adapter 
     InvalidCatalogAgentDirError,
   );
 });
+
+
+test("production global resources reread persisted metadata without roots, trust, runtime, or network", async () => {
+  const { root, agentDir, project, markerPath, catalogs } = await productionFixture();
+  const packageDir = join(agentDir, "static-plugin");
+  mkdirSync(packageDir);
+  writeFileSync(join(packageDir, "package.json"), JSON.stringify({
+    name: "global-plugin", version: "1.0.0", type: "module", main: "index.js",
+    pi: { extensions: ["index.js"] },
+  }));
+  writeFileSync(join(packageDir, "index.js"),
+    `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(markerPath)}, "executed");`);
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: ["./static-plugin"] }));
+  symlinkSync(join(project, ".pi"), join(agentDir, ".pi"), "dir");
+  writeFileSync(join(project, ".pi", "settings.json"), "{ malformed project trap");
+  writeFileSync(join(agentDir, "trust.json"), "{ malformed trust trap");
+  const forbidden = () => { throw new Error("global resource read consulted project/runtime"); };
+  const app = createHostApp({
+    logger: {}, gate: { config: DISABLED_GATE },
+    catalogs: {
+      roots: { authorizeExisting: forbidden },
+      resources: catalogs.resources,
+      trust: { isTrusted: forbidden },
+    },
+    sessiond: { isAvailable: forbidden },
+  }).app;
+  const before = listFilesRecursive(root).sort();
+  const release = installNetworkGuard();
+  try {
+    for (const [path, names] of [
+      ["skills", ["global-skill"]],
+      ["commands", ["skill:global-skill"]],
+      ["plugins", ["global-plugin"]],
+    ]) {
+      const res = await call(app, `/v1/${path}`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("cache-control"), "no-store");
+      assert.deepEqual((await res.json())[path].map((entry) => entry.name), names);
+    }
+    assert.equal(existsSync(markerPath), false);
+    assert.deepEqual(listFilesRecursive(root).sort(), before, "catalog creates no files");
+    // Same Host app, new reader per request: skills, settings and manifests all refresh.
+    writeFileSync(join(agentDir, "skills", "global-skill", "SKILL.md"),
+      "---\nname: revised-skill\ndescription: Revised skill\ndisable-model-invocation: true\n---\n# revised");
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "global-plugin", version: "2.0.0" }));
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [
+      "./static-plugin", { source: "npm:@fake/not-installed" },
+    ] }));
+    assert.deepEqual((await (await call(app, "/v1/skills")).json()).skills, [
+      { name: "revised-skill", description: "Revised skill", enabled: false },
+    ]);
+    assert.deepEqual((await (await call(app, "/v1/commands")).json()).commands, [
+      { name: "skill:revised-skill", description: "Revised skill", source: "skill" },
+    ]);
+    assert.deepEqual((await (await call(app, "/v1/plugins")).json()).plugins, [
+      { name: "global-plugin", version: "2.0.0", enabled: true },
+      { name: "npm:@fake/not-installed", enabled: false },
+    ]);
+    writeFileSync(join(agentDir, "settings.json"), "{ SECRET malformed global settings");
+    for (const path of ["skills", "plugins", "commands"]) {
+      const res = await call(app, `/v1/${path}`);
+      assert.equal(res.status, 400);
+      assert.equal(res.headers.get("cache-control"), "no-store");
+      const body = await res.json();
+      assert.equal(body.code, "INVALID_INPUT");
+      assert.ok(!JSON.stringify(body).includes("SECRET"));
+      assert.ok(!JSON.stringify(body).includes(agentDir));
+    }
+    rmSync(join(agentDir, "settings.json"));
+    mkdirSync(join(agentDir, "settings.json"));
+    const unavailable = await call(app, "/v1/plugins");
+    assert.equal(unavailable.status, 503);
+    assert.equal((await unavailable.json()).code, "CATALOG_UNAVAILABLE");
+  } finally {
+    assert.equal(release(), false, "no network requests");
+  }
+});

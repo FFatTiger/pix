@@ -423,6 +423,10 @@ async function main() {
       { id: FIXTURE_BRANCH_E6, parentId: FIXTURE_BRANCH_E5, role: "assistant", text: "branch a1", timestamp: branchTs + 5 },
     ]);
 
+    const staticSkillDir = join(agentDir, "skills", "settings-static");
+    await mkdir(staticSkillDir, { recursive: true });
+    await writeFile(join(staticSkillDir, "SKILL.md"), "---\nname: settings-static\ndescription: Persisted global settings fixture\n---\nRead-only fixture.\n");
+
     stack = await bootStack({ agentDir, sessiondDir, projectCwd, hostDir });
     const rpc = new SessiondRpcClient({ endpoint: stack.daemon.endpoint, secret: stack.daemon.secret, timeoutMs: 5_000 });
     const get = (path) => fetch(`${stack.origin}${path}`).then(async (r) => ({ status: r.status, body: r.status === 204 ? null : await r.json().catch(() => null) }));
@@ -433,6 +437,18 @@ async function main() {
     assert.ok(boot.body.capabilities.includes("sessions"), `bootstrap caps must include sessions: ${JSON.stringify(boot.body.capabilities)}`);
     assert.ok(boot.body.capabilities.includes("agent"));
     assert.equal(boot.body.sessiond, "up");
+
+    // Settings catalogs read persisted global resources without a selected project.
+    const staticSkills = await get("/v1/skills");
+    assert.equal(staticSkills.status, 200);
+    assert.ok(staticSkills.body.skills.some((skill) => skill.name === "settings-static"));
+    for (const domain of ["plugins", "commands"]) {
+      const catalog = await get(`/v1/${domain}`);
+      assert.equal(catalog.status, 200);
+      assert.equal(Array.isArray(catalog.body[domain]), true);
+    }
+    assert.deepEqual((await rpc.call("runtime.listRunning", {})).sessions, [], "settings reads must not start a runtime");
+    assert.deepEqual(stack.daemon.diagnostics.workerPids(), [], "settings reads must not create a Worker");
 
     // 2. list / detail / context succeed against real JSONL.
     const list = await get("/v1/sessions");

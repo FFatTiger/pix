@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
 import type {
   AvailableModelProvider,
-  DiscoveredModelConfig,
   EditableModelConfig,
   EditableProviderConfig,
   ModelConfigApi,
@@ -131,28 +130,14 @@ function SecretInput({
 
 function ProviderDetail({
   provider,
-  revision,
   onChange,
   onDelete,
-  onAddModels,
 }: {
   provider: DraftProvider;
-  revision: string;
   onChange: (patch: Partial<DraftProvider>) => void;
   onDelete: () => void;
-  onAddModels: (models: readonly DiscoveredModelConfig[]) => void;
 }) {
-  const http = useHttpClient();
-  const queryClient = useQueryClient();
   const { t } = useI18n();
-  const discovery = useMutation(createMutationOptions(http, queryClient).models.discover());
-  const [selected, setSelected] = useState<string[]>([]);
-  const existing = useMemo(() => new Set(provider.models.map((model) => model.id)), [provider.models]);
-
-  useEffect(() => {
-    discovery.reset();
-    setSelected([]);
-  }, [provider.key, provider.id, provider.baseUrl, provider.api, provider.apiKeyValue]);
 
   return (
     <div className="models-detail-page">
@@ -200,54 +185,6 @@ function ProviderDetail({
               ) : null}
             </div>
           </SettingsField>
-        </div>
-      </SettingsSection>
-
-      <SettingsSection title={t("desktop.modelsImportModels")} description={t("desktop.modelsImportDescription")}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <SettingsButton
-            disabled={!provider.baseUrl?.trim() || discovery.isPending}
-            onClick={() => discovery.mutate({
-              expectedRevision: revision,
-              sourceId: provider.sourceId,
-              providerId: provider.id,
-              baseUrl: provider.baseUrl!,
-              api: provider.api ?? "openai-completions",
-              ...(provider.apiKeyMutation === "replace" && provider.apiKeyValue ? { apiKey: provider.apiKeyValue } : {}),
-            })}
-            style={{ alignSelf: "flex-start" }}
-          >
-            {discovery.isPending ? t("desktop.modelsImportingModels") : t("desktop.modelsImportModels")}
-          </SettingsButton>
-          {discovery.isError ? <p className="workspace-hint workspace-hint--error" role="alert">{describeModelsConfigError(discovery.error, t)}</p> : null}
-          {discovery.data ? (
-            <>
-              <div className="models-discovery-list">
-                {discovery.data.models.map((model) => {
-                  const added = existing.has(model.id);
-                  const checked = added || selected.includes(model.id);
-                  return (
-                    <label key={model.id}>
-                      <input type="checkbox" checked={checked} disabled={added} onChange={() => setSelected((current) => current.includes(model.id) ? current.filter((id) => id !== model.id) : [...current, model.id])} />
-                      <span><strong>{model.name ?? model.id}</strong>{model.name ? <small>{model.id}</small> : null}</span>
-                      {added ? <small>{t("desktop.modelsImportAdded")}</small> : null}
-                    </label>
-                  );
-                })}
-              </div>
-              <SettingsButton
-                variant="primary"
-                disabled={selected.length === 0}
-                onClick={() => {
-                  onAddModels(discovery.data!.models.filter((model) => selected.includes(model.id)));
-                  setSelected([]);
-                }}
-                style={{ alignSelf: "flex-end" }}
-              >
-                {selected.length ? t("desktop.modelsImportAddSelectedCount", { count: selected.length }) : t("desktop.modelsImportAddSelected")}
-              </SettingsButton>
-            </>
-          ) : null}
         </div>
       </SettingsSection>
     </div>
@@ -486,21 +423,6 @@ function ModelsEditor({ snapshot, onCloseAction }: { snapshot: ModelsConfigRespo
     setProviders((current) => [...current, provider]);
     setSelection({ type: "provider", providerKey: provider.key });
   };
-  const addDiscoveredModels = (providerKey: string, discovered: readonly DiscoveredModelConfig[]) => {
-    setProviders((current) => current.map((provider) => {
-      if (provider.key !== providerKey) return provider;
-      const ids = new Set(provider.models.map((model) => model.id));
-      const additions = discovered
-        .filter((model) => !ids.has(model.id))
-        .map((model) => ({
-          key: `new:${crypto.randomUUID()}`,
-          sourceIndex: null,
-          id: model.id,
-          ...(model.name === undefined ? {} : { name: model.name }),
-        }));
-      return additions.length ? { ...provider, modelsDefined: true, models: [...provider.models, ...additions] } : provider;
-    }));
-  };
   const addModel = (providerKey: string) => {
     const model: DraftModel = { key: `new:${crypto.randomUUID()}`, sourceIndex: null, id: "" };
     setProviders((current) => current.map((provider) => provider.key === providerKey
@@ -578,10 +500,8 @@ function ModelsEditor({ snapshot, onCloseAction }: { snapshot: ModelsConfigRespo
           {selectedProvider && selection?.type === "provider" ? (
             <ProviderDetail
               provider={selectedProvider}
-              revision={revision}
               onChange={(patch) => updateProvider(selectedProvider.key, patch)}
               onDelete={() => removeProvider(selectedProvider.key)}
-              onAddModels={(models) => addDiscoveredModels(selectedProvider.key, models)}
             />
           ) : selectedProvider && selectedModel && selection?.type === "model" ? (
             <ModelDetail model={selectedModel} onChange={(patch) => updateModel(selectedProvider.key, selectedModel.key, patch)} onDelete={() => removeModel(selectedProvider.key, selectedModel.key)} />

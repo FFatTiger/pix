@@ -25,21 +25,21 @@ import {
 export function createConfigurationApi(http: HttpClient) {
   return {
     skills: {
-      list: (cwd: string, signal?: AbortSignal) =>
+      list: (cwd?: string, signal?: AbortSignal) =>
         http.get(urls.skills.list(cwd), {
           schema: SkillsResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
     },
     plugins: {
-      list: (cwd: string, signal?: AbortSignal) =>
+      list: (cwd?: string, signal?: AbortSignal) =>
         http.get(urls.plugins.list(cwd), {
           schema: PluginsResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
     },
     commands: {
-      list: (cwd: string, signal?: AbortSignal) =>
+      list: (cwd?: string, signal?: AbortSignal) =>
         http.get(urls.commands.list(cwd), {
           schema: CommandsResponseSchema,
           ...(signal === undefined ? {} : { signal }),

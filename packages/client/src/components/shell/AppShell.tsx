@@ -1386,8 +1386,6 @@ export function AppShell({ search }: AppShellProps) {
     {settingsOpen ? (
       <SettingsModal
         initialTab={settingsTab}
-        cwd={search.cwd ?? null}
-        liveWorkspaceEnabled={liveWorkspaceEnabled}
         onCloseAction={() => setSettingsOpen(false)}
       />
     ) : null}

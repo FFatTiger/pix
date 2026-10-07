@@ -12,8 +12,8 @@
  *   - Credentials + Trust are singletons bound to agentDir.
  *   - Models are a global singleton bound to agentDir (models.json + global
  *     settings; not project-scoped).
- *   - Resources are created per canonical cwd AFTER `trust.isTrusted(cwd)` so
- *     a trust decision cannot go stale behind a long-lived resource catalog.
+ *   - Resources are created per request: global metadata without cwd, or per
+ *     canonical cwd AFTER `trust.isTrusted(cwd)` so trust cannot go stale.
  *   - Production always reuses the same {@link AllowedRootService} as
  *     resources (`roots` option).
  */
@@ -22,7 +22,7 @@ import { createPiSdkModelCatalog, createPiSdkModelsConfig } from "@fffattiger/pi
 import { createPiSdkSettingsConfig } from "@fffattiger/pix-pi-sdk-adapter/settings";
 import { createPiSdkBuiltInCapabilityConfig } from "@fffattiger/pix-pi-sdk-adapter/builtins";
 import { createPiSdkCredentialCatalog } from "@fffattiger/pix-pi-sdk-adapter/credentials";
-import { createPiSdkResourceCatalog } from "@fffattiger/pix-pi-sdk-adapter/resources";
+import { createPiSdkGlobalResourceCatalog, createPiSdkResourceCatalog } from "@fffattiger/pix-pi-sdk-adapter/resources";
 import { createPiSdkTrustCatalog, createPiSdkTrustMutation } from "@fffattiger/pix-pi-sdk-adapter/trust";
 import { createPiSdkThemeCatalog } from "@fffattiger/pix-pi-sdk-adapter/themes";
 import type { AllowedRootService } from "../resources/allowed-roots.js";
@@ -136,6 +136,10 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
   };
 
   const resources: CatalogResourcesSeam = {
+    global() {
+      // Fresh persisted metadata on every request, independent of roots/trust.
+      return createPiSdkGlobalResourceCatalog({ agentDir });
+    },
     forCwd(cwd: string, trusted: boolean) {
       // Fresh catalog per request cwd+trusted so a trust flip is not masked by
       // a long-lived resource loader cache.

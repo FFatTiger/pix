@@ -131,16 +131,16 @@ export const urls = {
     mutate: () => resource("worktrees"),
   },
   skills: {
-    /** Project-scoped skills catalog. Host requires absolute authorized cwd. */
-    list: (cwd: string) => resource("skills", { cwd }),
+    /** Global disk catalog when cwd is omitted; project consumers still pass cwd. */
+    list: (cwd?: string) => resource("skills", { cwd }),
   },
   plugins: {
-    /** Project-scoped plugins catalog. Host requires absolute authorized cwd. */
-    list: (cwd: string) => resource("plugins", { cwd }),
+    /** Global disk catalog when cwd is omitted; project consumers still pass cwd. */
+    list: (cwd?: string) => resource("plugins", { cwd }),
   },
   commands: {
-    /** Project-scoped slash-command catalog. Host requires absolute authorized cwd. */
-    list: (cwd: string) => resource("commands", { cwd }),
+    /** Global disk catalog when cwd is omitted; project consumers still pass cwd. */
+    list: (cwd?: string) => resource("commands", { cwd }),
   },
   trust: {
     /** Project trust summary. Host requires absolute authorized cwd. */

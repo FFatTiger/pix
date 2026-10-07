@@ -196,6 +196,8 @@ function controllableStubFetch(opts: {
     if (p.includes("/v1/models")) return json(modelsCatalog);
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
+    if (p.includes("/v1/plugins")) return json({ plugins: [] });
+    if (p.includes("/v1/commands")) return json({ commands: [] });
     return json({});
   }) as unknown as typeof fetch;
 }
@@ -262,6 +264,8 @@ function stubFetch(): typeof fetch {
     if (p.includes("/v1/models")) return json(modelsCatalog);
     if (p.includes("/v1/files/") && p.includes("/index")) return json({ files: [], truncated: false });
     if (p.includes("/v1/skills")) return json({ skills: [] });
+    if (p.includes("/v1/plugins")) return json({ plugins: [] });
+    if (p.includes("/v1/commands")) return json({ commands: [] });
     return json({});
   }) as unknown as typeof fetch;
 }
@@ -3021,7 +3025,8 @@ describe("AppShell — source-like sidebar rail", () => {
     fireEvent.click(screen.getByTestId("settings-tab-models"));
     await settle();
     expect(screen.getByText("Global Model")).toBeTruthy();
-    expect(screen.queryByText(/Open a project to browse/i)).toBeNull();
+    expect(screen.getByTestId("settings-tab-skills").hasAttribute("disabled")).toBe(false);
+    expect(screen.getByTestId("settings-tab-plugins").hasAttribute("disabled")).toBe(false);
     const modelUrls = (fetchImpl as typeof fetch & {
       mock: { calls: Array<[RequestInfo | URL, RequestInit?]> };
     }).mock.calls
@@ -4620,7 +4625,7 @@ describe("AppShell / Composer — Phase 6B workspaceAccess fail-closed", () => {
     const legacy: SessionHeader = { sessionId: "legacy", cwd: "/x", projectRoot: "/x", title: "Legacy", createdAt: 1000, updatedAt: Date.now(), messageCount: 1 };
     const fetchImpl = controllableStubFetch({ sessions: [legacy] });
     globalThis.fetch = fetchImpl;
-    mountApp({ cwd: "/x", session: "legacy" }, { queryClient: authenticatedQueryClient() });
+    mountApp({ cwd: "/x", session: "legacy" }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "files", "models", "skills", "plugins"] });
     const ws = await acceptAutomaticConnection();
     await settle();
     const legacyRows = screen.getAllByTestId("session-select-legacy");
@@ -4640,14 +4645,22 @@ describe("AppShell / Composer — Phase 6B workspaceAccess fail-closed", () => {
     // Settings may legitimately prefetch, so no zero-count assertion for it.
     expect(countMockFetchCalls(fetchImpl, "/v1/files")).toBe(0);
 
-    // Settings mounts every catalog tab even when hidden; the exact workspace
-    // gate must keep all cwd-owned catalog queries pre-wire disabled.
+    // Settings catalogs are global on-disk reads. History-only still permits
+    // them, but they must not carry a project path or live-activate a Worker.
     fireEvent.click(screen.getByTestId("sidebar-nav-settings"));
     await settle();
     expect(screen.getByRole("dialog", { name: "Settings" })).toBeTruthy();
-    expect(countMockFetchCalls(fetchImpl, "/v1/skills")).toBe(0);
-    expect(countMockFetchCalls(fetchImpl, "/v1/plugins")).toBe(0);
-    expect(countMockFetchCalls(fetchImpl, "/v1/commands")).toBe(0);
+    fireEvent.click(screen.getByTestId("settings-tab-skills"));
+    await settle();
+    fireEvent.click(screen.getByTestId("settings-tab-plugins"));
+    await settle();
+    const catalogUrls = (fetchImpl as typeof fetch & {
+      mock: { calls: Array<[RequestInfo | URL, RequestInit?]> };
+    }).mock.calls.map((call) => String(call[0])).filter((url) => /\/v1\/(skills|plugins|commands)/.test(url));
+    expect([...new Set(catalogUrls)].sort()).toEqual(["/v1/commands", "/v1/plugins", "/v1/skills"]);
+    expect(countMockFetchCalls(fetchImpl, "/v1/files")).toBe(0);
+    expect(countType(ws, "attach")).toBe(0);
+    expect(countType(ws, "command")).toBe(0);
   });
 
   it("authorized existing session keeps models/send; history_only B never leaks A's live surface", async () => {

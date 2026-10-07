@@ -90,7 +90,7 @@ Pi 防腐层（ACL）
 12. 对外 Client/Host 只认 Protocol；进程内应用服务只认 Runtime/Resource Ports；按 **capabilities** 降级
 13. Web 退出/崩溃：**不**终止 sessiond，不杀 worker
 14. capability 只声明已经完整接通并验证的能力
-15. Session catalog 可见性不是工作区授权。Host AllowedRoots 是路径安全权威；session list/detail 的 additive `workspaceAccess`（`authorized | history_only | unavailable`）由 Host 分类，Protocol 只做严格投影。缺字段是 unknown legacy，不得猜测为 `authorized`。history-only 可读 JSONL，但不得因此展示 models/files/skills/write/send，也不得自动扩根。Client 以 HTTP session header/detail 为权威，对现有选中会话 fail-closed（history_only/unavailable/unknown 零 controller admission）。**Phase 6 已落地并获 Fresh GLM verifier PASS。**
+15. Session catalog 可见性不是工作区授权。Host AllowedRoots 是路径安全权威；session list/detail 的 additive `workspaceAccess`（`authorized | history_only | unavailable`）由 Host 分类，Protocol 只做严格投影。缺字段是 unknown legacy，不得猜测为 `authorized`。history-only 可读 JSONL，但不得因此展示项目 files/skills 或开放工作区 write/send，也不得自动扩根；全局模型、配置与全局资源目录不受选中会话的工作区授权状态限制。Client 以 HTTP session header/detail 为权威，对现有选中会话 fail-closed（history_only/unavailable/unknown 零 controller admission）。**Phase 6 已落地并获 Fresh GLM verifier PASS。**
 16. Daemon/Worker 复用不能只比较 protocol major。Protocol build contract 是 product/sessiond/Worker/adapter contract generation + current capability/IPC vocabulary fingerprint 的唯一 owner；missing/malformed/mismatch 均不得静默复用。普通 CLI start/ensure 遇到不兼容的存活 daemon 必须保留实例并报告维护需求，不自动 shutdown；显式维护关闭须走 authenticated instance-fenced RPC，不能以 PID/SIGTERM 代替。sessiond/Worker 双方在创建 runtime、rekey、projection、dispatch 前互验 build。历史 Phase 7A 验证与本轮维护条件分别见 ledger 和 lifecycle-reassessment §7。
 17. Session revision 不得混域：live revision 是 same-epoch `(epoch,eventId)`，跨 epoch永不排序；persisted branch fence只做 `leafId` equality；turn status revision仍是 per-turn sequence。已提供 `operationId/turnId/userEntryId/finalLeafId` 时 optimistic/history必须按 identity对账，禁止文本/FIFO猜测；navigate/compact的 authoritative `session_changed` 走 regular adapter event channel并由 sessiond journal加 cursor。**Phase 5A 已落地并通过独立 verifier + Runtime E2E；Phase 5B strict quiescent whole-epoch rollover已获 Fresh DeepSeek verifier PASS（§88）。**
 18. Epoch容量只能整体旋转，禁止单ID eviction、提高上限或重启Worker伪装修复。rotation必须由sessiond与Worker双重证明严格idle，触发请求在admission前保持零dispatch；exact rotate ack后原子切换epoch/journal/cursor0并清整组per-epoch ledgers，再向现有attach推`epoch_changed` snapshot。old/missing epoch零副作用；ack不确定/commit失权必须关闭live record，绝不在sessiond/Worker epoch分裂时继续服务。
@@ -335,10 +335,16 @@ Client 按 `capabilities` 显隐功能：
 | `agent` | 只读浏览 |
 | `files.write` | 禁用写入 |
 | `worktree` | 隐藏 worktree 切换 |
-| `models.configure` | Models 退化为只读目录，不显示 models.json 保存/导入面 |
+| `models.configure` | Models 退化为只读目录，不显示 models.json 编辑与保存面 |
 | `themes` | 隐藏主题切换（内置/自定义主题不可用） |
 
 > **当前状态（客户端）**：pix client 已移除主题功能（运行时切换、主题目录请求、设置、持久化/bootstrap、View Transitions）与壁纸（WallpaperLayer/设置/资源）。Client 固定深色外观（`html.dark` 常驻），不再消费 `/v1/themes`。下方 Host/runtime-core/pi-sdk-adapter 的只读主题契约保持不变（向后兼容、当前客户端未使用）。
+
+### 设置页静态持久化契约
+
+设置只读取和编辑持久化配置、磁盘上的静态元数据及设备偏好，不以当前文件夹或已连接会话作为全局配置的加载条件。`settings.json`、`models.json`、`pix-builtins.json` 与 gate 配置沿用各自既有 owner；空闲回收时长仍由 sessiond 的持久化配置 owner 管理，归档详情仍是 0 Worker 的 JSONL 只读目录。设置组件不得读取 runtime snapshot、列举运行中扩展工具、发送 `setTools`/`reload` 或执行模型网络发现；保存只提交对应 owner 的持久化变更。
+
+Settings 中的 Skills / Plugins / Commands 只展示全局磁盘目录。Host `GET /v1/skills|plugins|commands` 缺省 `cwd` 时调用明确的全局资源读取入口，不读取项目 `.pi`，也不查询项目授权或信任；显式传入 `cwd` 的其他调用方仍先经过 AllowedRoots 校验，再按信任状态读取项目有效目录。空或非法 `cwd` 必须失败，不能降级为全局成功。全局与项目 Query key 分别按 `null` 和 canonical cwd 隔离；只有成功读到空数组才能显示空目录，读取失败必须诚实报错。读取不执行扩展、包管理器命令或旧版全局安装目录探测，不安装、不访问网络、不创建 Worker。npm 包引用直接按保存的 source 展示，不探测运行时安装状态；本地/git 包可读取静态 manifest。已存在资源目录或候选技能文件读取失败必须报错，不能返回空目录冒充成功。
 
 ### Pix 内置能力期望配置
 
@@ -346,9 +352,9 @@ Client 按 `capabilities` 显隐功能：
 
 ### 全局工具选择（pixDefaultTools）
 
-`SettingsConfigStorePort.readToolsConfig/writeToolsConfig`（runtime-core）→ adapter settings-config-store（同一 settings.json owner、同一 mutation queue/proper-lockfile/CAS fence，无第二个文件 owner 或 queue）→ Host `GET/PUT /v1/settings/tools`（复用 `settings.configure` token 与 raw editor 的 HttpError 路径；无活动会话也可保存，禁止为列工具创建 Worker 或执行 plugin/MCP discovery）→ Client Settings → Tools tab。语义：`pixDefaultTools: null`（或该键与 native `defaultTools` 均不存在时的 Pix 默认）= 全部可声明工具（direct/model-only exposure，含 codemode/tool_search，未来新增自动启用）；数组 = 显式 allowlist（空数组 = 全关；forced-empty 系统提示随 none/重新启用正确切换）；键不存在时尊重 native `defaultTools`（含 `+`/`-`，由 SDK `SettingsManager` 解析，Pix 不复制 ± 算法，也不在 construct 时用 builtin 并集覆写它）。结构化写只改 `pixDefaultTools` 并保留 unknown values（`defaultTools` 原样，格式由 JSON.stringify 正规化）；raw editor 仍按字节原样读写，但 raw 写也校验 `pixDefaultTools`/`defaultTools` 字段类型，fail closed。Runtime 在 startup、bindExtensions 完成后与 reload 成功后重算全局选择（仅限跟随 prefs 的 runtime；显式 `input.toolNames`/`setTools` 覆盖仍优先，不新增 reset flag）。Client 保存后仅对捕获时仍当前且已附着的 exact 会话调用 `setTools(exactNames, { includeExtensionTools: false })`，apply 失败不回滚全局真相（可单独 retry）；picker 行只来自已附着会话 snapshot 的 tools 投影（adapter 已过滤为 direct/model-only，hidden/deferred/codemode-exposure 不作为 on/off 行），已保存但当前不可用的名称持久保留并如实提示，不伪造完整 registry。
+`SettingsConfigStorePort.readToolsConfig/writeToolsConfig`（runtime-core）→ adapter settings-config-store（同一 settings.json owner、同一 mutation queue/proper-lockfile/CAS fence，无第二个文件 owner 或 queue）→ Host `GET/PUT /v1/settings/tools`（复用 `settings.configure` token 与 raw editor 的 HttpError 路径；无活动会话也可保存，禁止为列工具创建 Worker 或执行 plugin/MCP discovery）→ Client Settings → Tools tab。语义：`pixDefaultTools: null`（或该键与 native `defaultTools` 均不存在时的 Pix 默认）= 全部可声明工具（direct/model-only exposure，含 codemode/tool_search，未来新增自动启用）；数组 = 显式 allowlist（空数组 = 全关；forced-empty 系统提示随 none/重新启用正确切换）；键不存在时尊重 native `defaultTools`（含 `+`/`-`，由 SDK `SettingsManager` 解析，Pix 不复制 ± 算法，也不在 construct 时用 builtin 并集覆写它）。结构化写只改 `pixDefaultTools` 并保留 unknown values（`defaultTools` 原样，格式由 JSON.stringify 正规化）；raw editor 仍按字节原样读写，但 raw 写也校验 `pixDefaultTools`/`defaultTools` 字段类型，fail closed。Runtime 在 startup、bindExtensions 完成后与 reload 成功后重算全局选择（仅限跟随 prefs 的 runtime；显式 `input.toolNames`/`setTools` 覆盖仍优先，不新增 reset flag）。Client 工具页直接编辑文件中的 all/custom/native 默认选择与保存的工具名称，允许输入尚未加载的名称并完整保留。保存只执行全局 CAS 写入，不读取当前会话 registry、不发送 `setTools`，也不显示运行态启用标记；Runtime 沿用上述 startup/bind/reload 的偏好读取时机。
 
-配置读取失败不得变成“全部启用”：只有缺失文件或缺失对应偏好键可以继承默认；现有空文件、坏 JSON、错误字段类型均报 `invalid_input`，非 ENOENT 的读取错误报 `unavailable`，结构化写也不覆盖损坏文件。设置页以一个显式异步流程等待保存与当前会话应用完成；期间控件保持禁用，保存失败不应用，应用失败可独立重试。
+配置读取失败不得变成“全部启用”：只有缺失文件或缺失对应偏好键可以继承默认；现有空文件、坏 JSON、错误字段类型均报 `invalid_input`，非 ENOENT 的读取错误报 `unavailable`，结构化写也不覆盖损坏文件。设置页只等待持久化保存完成，期间控件保持禁用；保存失败保留编辑内容，冲突后重读文件并提示用户检查最新配置。
 
 Side chat 由每个活动父 Worker 内的 Adapter 独占一个临时 controller；只有显式 `side_chat_start` 才创建，浏览器/Host 重连复用 snapshot 权威状态，reload、能力撤回、Worker close/crash 都清除，永不写入父 JSONL。实现固定为 adapter 内部、带来源与许可证的 `pi-side-chat@0.4.0` headless port，只使用公开 SDK context/model/tool surface，不调用 TUI 或私有 runner patch；没有真实 controller seam 时必须移除 `runtime.side_chat`，不得广告假能力。五个 side 命令与 `abort_side_chat` 都按 exact conversation/request identity fail closed；父/side run 与 abort 彼此独立。Worker 在 side authority mutation 的 terminal ack 前强制读取权威 snapshot；sessiond journal/attach 持有 `side_chat_changed` 全量替换与 conversation/run/revision fenced `side_chat_delta`，side running/awaiting-overlap 会阻止 idle reclamation 和 epoch rollover，但不进入父回合 `busySessionIds`。Host 复用既有 bounded interleaving lane 路由五个 side 命令，interrupt 仍走独立 bypass。
 
@@ -364,12 +370,12 @@ Pi 1.0 的原生 MCP/codemode/tool-search factory 只在 Adapter 装配，项目
 
 ### 全局 models.json 编辑器
 
-`ModelConfigStorePort`（runtime-core）→ `@fffattiger/pix-pi-sdk-adapter/models` → Host `GET/PUT /v1/models/config` 与 `POST /v1/models/discover` → Client Models Settings。它与只读 `/v1/models` 独立：只在 `models.configure` seam 真实挂载时广告，sessiond down 时仍可用。
+`ModelConfigStorePort`（runtime-core）→ `@fffattiger/pix-pi-sdk-adapter/models` → Host `GET/PUT /v1/models/config` → Client Models Settings。它与只读 `/v1/models` 独立：只在 `models.configure` seam 真实挂载时广告，sessiond down 时仍可用。Host 的 `POST /v1/models/discover` 独立保留，设置页不调用它。
 
 - GET 返回 SHA-256 revision、Provider/显式模型编辑投影和内置 Provider 目录；API Key 只投影 `apiKeyConfigured`，绝不返回 key/header 值。
 - PUT 使用 expectedRevision compare-and-swap；API Key 只能 `preserve/remove/replace` 单向输入。Adapter 按 `sourceId/sourceIndex` 合并，保留 UI 未编辑且可能含敏感值的 headers/compat/modelOverrides/sampling 等 Pi 字段；候选文件先通过离线 ModelRuntime 验证，再以 owner-only bounded atomic document 写入。
 - discovery 是认证后的显式网络动作：20 秒有界、2 MiB 响应上限、只接受 http/https；已有 key 仅在 Provider identity 与 Base URL 都未改变时可内部复用，改 endpoint 必须重新输入 key，shell-command key 不执行。响应只返回去重后的模型 id/name。
-- Client 使用 typed transport/TanStack mutation；无裸 fetch。Models 页为独立 Provider/模型树、Provider/模型表单、密钥遮罩、导入、增删与保存/取消；Add Provider 目录按自定义、订阅、API Key 分组。OAuth 订阅卡在 OAuth mutation seam 未交付前诚实 disabled，不伪造登录成功。
+- Client 使用 typed transport/TanStack mutation；无裸 fetch。Models 页为独立 Provider/模型树、Provider/模型表单、密钥遮罩、手动增删与保存/取消，不提供网络导入；Add Provider 目录为离线内置元数据，按自定义、订阅、API Key 分组。OAuth 订阅卡在 OAuth mutation seam 未交付前诚实 disabled，不伪造登录成功。
 
 ### 只读主题目录（D3B-R6）
 

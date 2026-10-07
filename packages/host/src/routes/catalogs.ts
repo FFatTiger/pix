@@ -940,10 +940,12 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
   if (deps.resources) {
     app.get("/v1/skills", async (c) => {
       noStore(c);
-      const cwd = await requireAuthorizedCwd(deps, c.req.query("cwd"));
+      const rawCwd = c.req.query("cwd");
+      const cwd = rawCwd === undefined ? undefined : await requireAuthorizedCwd(deps, rawCwd);
       try {
-        const trusted = deps.trust ? await deps.trust.isTrusted(cwd) : false;
-        const catalog = deps.resources!.forCwd(cwd, trusted === true);
+        const catalog = cwd === undefined
+          ? deps.resources!.global()
+          : deps.resources!.forCwd(cwd, deps.trust ? await deps.trust.isTrusted(cwd) === true : false);
         const skills = projectArray(await catalog.listSkills(), projectSkillInfo);
         return c.json({ skills });
       } catch (error) {
@@ -953,10 +955,12 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
 
     app.get("/v1/plugins", async (c) => {
       noStore(c);
-      const cwd = await requireAuthorizedCwd(deps, c.req.query("cwd"));
+      const rawCwd = c.req.query("cwd");
+      const cwd = rawCwd === undefined ? undefined : await requireAuthorizedCwd(deps, rawCwd);
       try {
-        const trusted = deps.trust ? await deps.trust.isTrusted(cwd) : false;
-        const catalog = deps.resources!.forCwd(cwd, trusted === true);
+        const catalog = cwd === undefined
+          ? deps.resources!.global()
+          : deps.resources!.forCwd(cwd, deps.trust ? await deps.trust.isTrusted(cwd) === true : false);
         const plugins = projectArray(await catalog.listPlugins(), projectPluginInfo);
         return c.json({ plugins });
       } catch (error) {
@@ -966,10 +970,12 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
 
     app.get("/v1/commands", async (c) => {
       noStore(c);
-      const cwd = await requireAuthorizedCwd(deps, c.req.query("cwd"));
+      const rawCwd = c.req.query("cwd");
+      const cwd = rawCwd === undefined ? undefined : await requireAuthorizedCwd(deps, rawCwd);
       try {
-        const trusted = deps.trust ? await deps.trust.isTrusted(cwd) : false;
-        const catalog = deps.resources!.forCwd(cwd, trusted === true);
+        const catalog = cwd === undefined
+          ? deps.resources!.global()
+          : deps.resources!.forCwd(cwd, deps.trust ? await deps.trust.isTrusted(cwd) === true : false);
         const commands = projectArray(await catalog.listCommands(), projectSlashCommandInfo);
         return c.json({ commands });
       } catch (error) {

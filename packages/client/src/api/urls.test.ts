@@ -22,10 +22,13 @@ describe("v1 URL builders", () => {
     expect(urls.worktrees.list("/repo?a=b")).toBe("/v1/worktrees?cwd=%2Frepo%3Fa%3Db");
   });
 
-  it("builds D3B catalog URLs with required cwd and encoded provider id", () => {
+  it("builds D3B catalog URLs with optional cwd and encoded provider id", () => {
     expect(urls.models.list()).toBe("/v1/models");
     expect(urls.models.config()).toBe("/v1/models/config");
     expect(urls.models.discover()).toBe("/v1/models/discover");
+    expect(urls.skills.list()).toBe("/v1/skills");
+    expect(urls.plugins.list()).toBe("/v1/plugins");
+    expect(urls.commands.list()).toBe("/v1/commands");
     expect(urls.skills.list("/repo?x=1")).toBe("/v1/skills?cwd=%2Frepo%3Fx%3D1");
     expect(urls.plugins.list("/tmp/a b")).toBe("/v1/plugins?cwd=%2Ftmp%2Fa+b");
     expect(urls.commands.list("/proj#1")).toBe("/v1/commands?cwd=%2Fproj%231");

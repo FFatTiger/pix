@@ -15,7 +15,7 @@ import type {
   SkillInfo,
   SlashCommandInfo,
 } from "@fffattiger/pix-runtime-core";
-import { createPiSdkResourceStore } from "../internal/resource-store.js";
+import { createPiSdkGlobalResourceStore, createPiSdkResourceStore } from "../internal/resource-store.js";
 
 /**
  * Injectable read-only resource store contract. The default implementation
@@ -88,4 +88,11 @@ export function createPiSdkResourceCatalog(
         ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
       });
   return new PiSdkResourceCatalog(store);
+}
+
+/** Global persisted skills and package manifests, independent of project trust. */
+export function createPiSdkGlobalResourceCatalog(
+  options: { readonly agentDir?: string } = {},
+): ResourceCatalogPort {
+  return new PiSdkResourceCatalog(createPiSdkGlobalResourceStore(options));
 }

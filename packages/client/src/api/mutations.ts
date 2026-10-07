@@ -161,20 +161,26 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
           configuration.settingsFile.save(input),
         onSuccess: (data: Awaited<ReturnType<typeof configuration.settingsFile.save>>) => {
           queryClient.setQueryData(queryKeys.settingsConfig.file(), data);
-          // A raw edit can change pixDefaultTools/defaultTools arbitrarily:
-          // the structured tools view must re-read the file.
-          return invalidate(queryClient, queryKeys.settingsConfig.tools());
+          // A raw edit can change tools, catalogs, models, or auth arbitrarily.
+          return invalidate(
+            queryClient,
+            queryKeys.settingsConfig.tools(),
+            queryKeys.settingsConfig.builtIns(),
+            queryKeys.skills.all,
+            queryKeys.plugins.all,
+            queryKeys.commands.all,
+            queryKeys.models.all,
+            queryKeys.auth.all,
+          );
         },
       }),
-      /** CAS write of the global tool selection, then apply to the attached session. */
+      /** CAS write of the global tool selection. */
       saveTools: () => ({
         mutationKey: ["pix", "settings", "save-tools"] as const,
         mutationFn: (input: Parameters<typeof configuration.tools.save>[0]) =>
           configuration.tools.save(input),
         onSuccess: (data: Awaited<ReturnType<typeof configuration.tools.save>>) => {
           queryClient.setQueryData(queryKeys.settingsConfig.tools(), data);
-          // The structured write rewrote settings.json bytes: the raw editor
-          // cache is stale.
           return invalidate(queryClient, queryKeys.settingsConfig.file());
         },
       }),

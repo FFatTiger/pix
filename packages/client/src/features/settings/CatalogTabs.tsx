@@ -83,7 +83,7 @@ function ReadOnlyModelsSettingsTab() {
       <SectionHeader title={t("desktop.catalog.models")} />
       {!canModels ? (
         <EmptyState message={t("desktop.catalog.notAvailable", { what: t("desktop.catalog.models") })} />
-      ) : modelsQuery.isLoading ? (
+      ) : modelsQuery.isPending ? (
         <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.models") })} />
       ) : modelsQuery.isError ? (
         <ErrorState error={modelsQuery.error} />
@@ -121,7 +121,7 @@ function ReadOnlyModelsSettingsTab() {
       {canProviders ? (
         <>
           <SectionHeader title={t("desktop.catalog.authProviders")} />
-          {providersQuery.isLoading ? (
+          {providersQuery.isPending ? (
             <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.providers") })} />
           ) : providersQuery.isError ? (
             <ErrorState error={providersQuery.error} />
@@ -178,27 +178,19 @@ export function ModelsSettingsTab({ onCloseAction }: { onCloseAction: () => void
     : <ReadOnlyModelsSettingsTab />;
 }
 
-export function SkillsSettingsTab({
-  cwd,
-  liveWorkspaceEnabled = true,
-}: {
-  cwd: string | null;
-  liveWorkspaceEnabled?: boolean;
-}) {
+export function SkillsSettingsTab() {
   const http = useHttpClient();
   const { can } = useCapabilities();
   const { t } = useCatalogI18n();
   const canSkills = can("skills");
-  const canFetch = canSkills && liveWorkspaceEnabled && Boolean(cwd);
 
   const query = useQuery({
-    ...createQueryOptions(http).skills.list(cwd ?? ""),
-    enabled: canFetch,
+    ...createQueryOptions(http).skills.list(),
+    enabled: canSkills,
   });
 
-  if (!cwd) return <EmptyState message={t("desktop.catalog.openProjectToBrowse", { what: t("desktop.catalog.skills") })} />;
   if (!canSkills) return <EmptyState message={t("desktop.catalog.notAvailable", { what: t("desktop.catalog.skills") })} />;
-  if (query.isLoading) return <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.skills") })} />;
+  if (query.isPending) return <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.skills") })} />;
   if (query.isError) return <ErrorState error={query.error} />;
 
   const skills = (query.data?.skills ?? []) as SkillInfo[];
@@ -227,37 +219,27 @@ export function SkillsSettingsTab({
   );
 }
 
-export function PluginsSettingsTab({
-  cwd,
-  liveWorkspaceEnabled = true,
-}: {
-  cwd: string | null;
-  liveWorkspaceEnabled?: boolean;
-}) {
+export function PluginsSettingsTab() {
   const http = useHttpClient();
   const { can } = useCapabilities();
   const { t } = useCatalogI18n();
   const canPlugins = can("plugins");
   const canCommands = can("skills") || can("plugins");
-  const canFetchPlugins = canPlugins && liveWorkspaceEnabled && Boolean(cwd);
-  const canFetchCommands = canCommands && liveWorkspaceEnabled && Boolean(cwd);
 
   const pluginsQuery = useQuery({
-    ...createQueryOptions(http).plugins.list(cwd ?? ""),
-    enabled: canFetchPlugins,
+    ...createQueryOptions(http).plugins.list(),
+    enabled: canPlugins,
   });
   const commandsQuery = useQuery({
-    ...createQueryOptions(http).commands.list(cwd ?? ""),
-    enabled: canFetchCommands,
+    ...createQueryOptions(http).commands.list(),
+    enabled: canCommands,
   });
-
-  if (!cwd) return <EmptyState message={t("desktop.catalog.openProjectToBrowse", { what: t("desktop.catalog.plugins") })} />;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
       {!canPlugins ? (
         <EmptyState message={t("desktop.catalog.notAvailable", { what: t("desktop.catalog.plugins") })} />
-      ) : pluginsQuery.isLoading ? (
+      ) : pluginsQuery.isPending ? (
         <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.plugins") })} />
       ) : pluginsQuery.isError ? (
         <ErrorState error={pluginsQuery.error} />
@@ -286,7 +268,7 @@ export function PluginsSettingsTab({
       {canCommands ? (
         <>
           <SectionHeader title={t("desktop.catalog.commands")} />
-          {commandsQuery.isLoading ? (
+          {commandsQuery.isPending ? (
             <EmptyState message={t("desktop.catalog.loading", { what: t("desktop.catalog.commands") })} />
           ) : commandsQuery.isError ? (
             <ErrorState error={commandsQuery.error} />

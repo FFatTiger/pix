@@ -68,6 +68,52 @@ export function SettingsField({ label, children }: { label: string; children: Re
   );
 }
 
+export function SettingsTextarea({
+  value,
+  onChange,
+  placeholder,
+  mono,
+  rows = 8,
+  disabled,
+  id,
+  name,
+  style,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  mono?: boolean;
+  rows?: number;
+  disabled?: boolean;
+  id?: string;
+  name?: string;
+  style?: CSSProperties;
+}) {
+  return (
+    <textarea
+      id={id}
+      name={name}
+      value={value}
+      rows={rows}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      spellCheck={false}
+      wrap="off"
+      style={{
+        ...inputStyle,
+        height: "auto",
+        minHeight: 140,
+        padding: "8px var(--control-pad-x)",
+        resize: "vertical",
+        fontFamily: mono ? "var(--font-mono)" : "inherit",
+        lineHeight: 1.5,
+        ...style,
+      }}
+    />
+  );
+}
+
 export function SettingsInput({
   value,
   onChange,

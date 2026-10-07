@@ -67,15 +67,16 @@ export const queryKeys = {
   worktrees: { all: ["pix", "worktrees"] as const, list: (cwd: string) => ["pix", "worktrees", "list", cwd] as const },
   skills: {
     all: ["pix", "skills"] as const,
-    list: (cwd: string) => ["pix", "skills", "list", cwd] as const,
+    /** `null` is the global disk catalog; a string is a project-scoped consumer. */
+    list: (cwd?: string) => ["pix", "skills", "list", cwd ?? null] as const,
   },
   plugins: {
     all: ["pix", "plugins"] as const,
-    list: (cwd: string) => ["pix", "plugins", "list", cwd] as const,
+    list: (cwd?: string) => ["pix", "plugins", "list", cwd ?? null] as const,
   },
   commands: {
     all: ["pix", "commands"] as const,
-    list: (cwd: string) => ["pix", "commands", "list", cwd] as const,
+    list: (cwd?: string) => ["pix", "commands", "list", cwd ?? null] as const,
   },
   trust: {
     all: ["pix", "trust"] as const,
@@ -194,31 +195,31 @@ export function createQueryOptions(http: HttpClient) {
     },
     worktrees: { list: (cwd: string) => queryOptions({ queryKey: queryKeys.worktrees.list(cwd), queryFn: ({ signal }) => resources.worktrees.list(cwd, signal), enabled: Boolean(cwd) }) },
     skills: {
-      list: (cwd: string) =>
+      list: (cwd?: string) =>
         queryOptions({
           queryKey: queryKeys.skills.list(cwd),
           queryFn: ({ signal }) => configuration.skills.list(cwd, signal),
-          enabled: Boolean(cwd),
+          enabled: cwd === undefined || Boolean(cwd),
           staleTime: CATALOG_STALE_MS,
           retry: false,
         }),
     },
     plugins: {
-      list: (cwd: string) =>
+      list: (cwd?: string) =>
         queryOptions({
           queryKey: queryKeys.plugins.list(cwd),
           queryFn: ({ signal }) => configuration.plugins.list(cwd, signal),
-          enabled: Boolean(cwd),
+          enabled: cwd === undefined || Boolean(cwd),
           staleTime: CATALOG_STALE_MS,
           retry: false,
         }),
     },
     commands: {
-      list: (cwd: string) =>
+      list: (cwd?: string) =>
         queryOptions({
           queryKey: queryKeys.commands.list(cwd),
           queryFn: ({ signal }) => configuration.commands.list(cwd, signal),
-          enabled: Boolean(cwd),
+          enabled: cwd === undefined || Boolean(cwd),
           staleTime: CATALOG_STALE_MS,
           retry: false,
         }),

@@ -1874,13 +1874,6 @@ html.dark .catalog-meta-item--error {
 .models-provider-card strong { font-size: 12px; font-weight: var(--text-weight-strong); }
 .models-provider-card small { margin-top: 3px; color: var(--text-dim); font-size: 10px; }
 .models-provider-add-icon { width: 27px; height: 27px; flex: none; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--control-radius); color: var(--text-dim); }
-.models-discovery-list { max-height: 230px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-card); }
-.models-discovery-list label { min-height: 38px; padding: 6px 10px; display: flex; align-items: center; gap: 9px; border-top: 1px solid var(--border); cursor: pointer; }
-.models-discovery-list label:first-child { border-top: 0; }
-.models-discovery-list input { width: 14px; height: 14px; flex: none; accent-color: var(--accent); }
-.models-discovery-list span { min-width: 0; flex: 1; }
-.models-discovery-list strong, .models-discovery-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.models-discovery-list strong { color: var(--text); font-size: 11px; font-weight: var(--text-weight-strong); }
 /* Global settings.json raw-text editor. */
 .settings-json-editor { width: 100%; min-height: 340px; resize: vertical; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-panel); color: var(--text); font: 12px/1.6 var(--font-mono); tab-size: 2; outline: none; }
 .settings-json-editor:focus { border-color: var(--border-hover); }
@@ -1898,7 +1891,6 @@ html.dark .catalog-meta-item--error {
   color: var(--text-muted);
 }
 
-.models-discovery-list small { color: var(--text-dim); font: 10px/1.35 var(--font-mono); }
 @media (max-width: 720px) {
   .models-config-body { flex-direction: column; }
   .models-tree { width: 100%; max-height: 30dvh; border-right: 0; border-bottom: 1px solid var(--border); }

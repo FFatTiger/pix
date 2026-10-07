@@ -23,8 +23,12 @@ describe("query keys and options", () => {
     expect(queryKeys.sessions.detail("s").slice(0, 4)).toEqual(queryKeys.sessions.byId("s"));
     expect(queryKeys.files.read("/a")).not.toEqual(queryKeys.files.read("/b"));
     expect(queryKeys.models.list()).toEqual(["pix", "models", "list"]);
+    expect(queryKeys.skills.list()).toEqual(["pix", "skills", "list", null]);
     expect(queryKeys.skills.list("/repo")).toEqual(["pix", "skills", "list", "/repo"]);
+    expect(queryKeys.skills.list()).not.toEqual(queryKeys.skills.list("/repo"));
+    expect(queryKeys.plugins.list()).toEqual(["pix", "plugins", "list", null]);
     expect(queryKeys.plugins.list("/repo")).toEqual(["pix", "plugins", "list", "/repo"]);
+    expect(queryKeys.commands.list()).toEqual(["pix", "commands", "list", null]);
     expect(queryKeys.commands.list("/repo")).toEqual(["pix", "commands", "list", "/repo"]);
     expect(queryKeys.trust.get("/repo")).toEqual(["pix", "trust", "get", "/repo"]);
     expect(queryKeys.auth.providerStatus("openai")).toEqual(["pix", "auth", "provider-status", "openai"]);
@@ -103,7 +107,7 @@ describe("query keys and options", () => {
     );
   });
 
-  it("models options are global and always enabled; cwd catalogs require cwd", async () => {
+  it("models options are global and always enabled; skill catalogs omit undefined cwd", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json({
       models: [{ id: "m", provider: "p" }],
       defaultModel: null,
@@ -127,18 +131,24 @@ describe("query keys and options", () => {
     );
 
     const skills = options.skills.list("/repo");
-    expect(skills.enabled).toBe(true);
+    expect(skills.enabled ?? true).toBe(true);
     expect(skills.staleTime).toBe(15_000);
     expect(skills.retry).toBe(false);
+    expect(options.skills.list().enabled).toBe(true);
     expect(options.skills.list("").enabled).toBe(false);
+    expect(options.plugins.list("").enabled).toBe(false);
+    expect(options.commands.list("").enabled).toBe(false);
+    expect(options.skills.list().queryKey).toEqual(["pix", "skills", "list", null]);
 
     const plugins = options.plugins.list("/x");
     expect(plugins.staleTime).toBe(15_000);
     expect(plugins.retry).toBe(false);
+    expect(options.plugins.list().queryKey).toEqual(["pix", "plugins", "list", null]);
 
     const commands = options.commands.list("/x");
     expect(commands.staleTime).toBe(15_000);
     expect(commands.retry).toBe(false);
+    expect(options.commands.list().queryKey).toEqual(["pix", "commands", "list", null]);
 
     const trust = options.trust.get("/x");
     expect(trust.staleTime).toBe(15_000);
@@ -279,6 +289,23 @@ describe("table-driven mutation invalidation", () => {
     expect(options).not.toHaveProperty("auth");
     expect(Object.keys(options.trust)).toEqual(["setTrusted"]);
     expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveConfigFile", "saveTools"]);
+  });
+
+  it("raw settings save invalidates tools, catalogs, models, and auth", async () => {
+    const body = { revision: "a".repeat(64), content: "{}" };
+    const { options, invalidate } = invalidationHarness(body);
+    const mutation = options.settings.saveConfigFile();
+    await mutation.mutationFn({ expectedRevision: body.revision, content: body.content });
+    await mutation.onSuccess(body);
+    expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
+      { queryKey: queryKeys.settingsConfig.tools() },
+      { queryKey: queryKeys.settingsConfig.builtIns() },
+      { queryKey: queryKeys.skills.all },
+      { queryKey: queryKeys.plugins.all },
+      { queryKey: queryKeys.commands.all },
+      { queryKey: queryKeys.models.all },
+      { queryKey: queryKeys.auth.all },
+    ]);
   });
 
   it("invalidates the session idle-timeout settings key after a successful write", async () => {

@@ -8,7 +8,6 @@ import { useHttpClient } from "@/app/http-context";
 import { SettingToggle } from "@/components/SettingToggle";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
-import { useSelectedRuntime } from "@/runtime";
 import { SettingsSection } from "./settings-ui";
 
 const VISIBLE_FEATURES: readonly { readonly id: BuiltInCapabilityId; readonly labelKey: string }[] = [
@@ -23,7 +22,6 @@ export function BuiltInCapabilitiesConfig() {
   const { can } = useCapabilities();
   const http = useHttpClient();
   const queryClient = useQueryClient();
-  const runtime = useSelectedRuntime();
   const configurable = can("builtins.configure");
   const query = useQuery({
     ...createQueryOptions(http).settingsFile.builtIns(),
@@ -40,14 +38,6 @@ export function BuiltInCapabilitiesConfig() {
       expectedRevision: current.revision,
       capabilities: current.capabilities.map((row) => row.id === id ? { ...row, enabled } : row),
     }, {
-      onSuccess: async () => {
-        if (runtime?.available !== true || !runtime.capabilities?.capabilities.includes("runtime.reload")) return;
-        try {
-          await runtime.reload();
-        } catch {
-          setErrorKey("desktop.agentFeaturesReloadFailed");
-        }
-      },
       onError: (error) => {
         const conflict = error instanceof HttpError && error.code === "CONFLICT";
         if (conflict) void query.refetch();

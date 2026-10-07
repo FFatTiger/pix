@@ -78,6 +78,9 @@ describe("catalog configuration APIs", () => {
       .mockResolvedValueOnce(json({ skills: [] }))
       .mockResolvedValueOnce(json({ plugins: [] }))
       .mockResolvedValueOnce(json({ commands: [] }))
+      .mockResolvedValueOnce(json({ skills: [] }))
+      .mockResolvedValueOnce(json({ plugins: [] }))
+      .mockResolvedValueOnce(json({ commands: [] }))
       .mockResolvedValueOnce(json({
         cwd: "/repo a",
         level: "unknown",
@@ -93,6 +96,9 @@ describe("catalog configuration APIs", () => {
     const models = createModelsApi(http);
     const config = createConfigurationApi(http);
     await models.list();
+    await config.skills.list();
+    await config.plugins.list();
+    await config.commands.list();
     await config.skills.list("/repo a");
     await config.plugins.list("/repo a");
     await config.commands.list("/repo a");
@@ -101,6 +107,9 @@ describe("catalog configuration APIs", () => {
     await config.auth.providerStatus("a/b");
     expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual([
       "/v1/models",
+      "/v1/skills",
+      "/v1/plugins",
+      "/v1/commands",
       "/v1/skills?cwd=%2Frepo+a",
       "/v1/plugins?cwd=%2Frepo+a",
       "/v1/commands?cwd=%2Frepo+a",

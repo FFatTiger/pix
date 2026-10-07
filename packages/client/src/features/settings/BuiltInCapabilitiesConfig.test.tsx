@@ -5,7 +5,6 @@ import type { HostCapability } from "@fffattiger/pix-protocol";
 import { HttpClientProvider } from "@/app/http-context";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
-import { RuntimeProvider } from "@/runtime";
 import { BuiltInCapabilitiesConfig } from "./BuiltInCapabilitiesConfig";
 
 const revision = "a".repeat(64);
@@ -15,6 +14,17 @@ const capabilities = [
   { id: "ask_user_question", enabled: true },
   { id: "side_chat", enabled: false },
 ] as const;
+
+const reload = vi.hoisted(() => vi.fn());
+const useSelectedRuntime = vi.hoisted(() => vi.fn());
+vi.mock("@/runtime", () => ({
+  useSelectedRuntime: useSelectedRuntime.mockReturnValue({
+    available: true,
+    attached: true,
+    capabilities: { capabilities: ["runtime.reload"] },
+    reload,
+  }),
+}));
 
 function json(value: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" }, ...init });
@@ -27,9 +37,7 @@ function mount(fetchImpl: ReturnType<typeof vi.fn>, hostCapabilities: HostCapabi
     <QueryClientProvider client={queryClient}>
       <HttpClientProvider>
         <CapabilityProvider host={{ mode: "local", capabilities: hostCapabilities }}>
-          <RuntimeProvider>
-            <I18nProvider><BuiltInCapabilitiesConfig /></I18nProvider>
-          </RuntimeProvider>
+          <I18nProvider><BuiltInCapabilitiesConfig /></I18nProvider>
         </CapabilityProvider>
       </HttpClientProvider>
     </QueryClientProvider>,
@@ -37,6 +45,8 @@ function mount(fetchImpl: ReturnType<typeof vi.fn>, hostCapabilities: HostCapabi
 }
 
 afterEach(() => {
+  expect(useSelectedRuntime).not.toHaveBeenCalled();
+  expect(reload).not.toHaveBeenCalled();
   vi.unstubAllGlobals();
 });
 
@@ -74,5 +84,11 @@ describe("BuiltInCapabilitiesConfig", () => {
     expect(await screen.findByText("Agent feature settings are unavailable.")).toBeTruthy();
     expect(screen.queryByRole("switch")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not consult the selected runtime hook", async () => {
+    const fetchMock = vi.fn(async () => json({ revision, capabilities }));
+    mount(fetchMock);
+    expect(await screen.findByRole("switch", { name: "Subagents" })).toBeTruthy();
   });
 });

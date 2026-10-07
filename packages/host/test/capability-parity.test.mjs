@@ -102,7 +102,10 @@ function makeParityApp({ withMutationSeams = false, withCatalogs = false }) {
       settingsMutation: {},
       builtinsMutation: {},
       credentials: {},
-      resources: {},
+      resources: {
+        global() { throw new Error("capability probes must not read catalogs"); },
+        forCwd() { throw new Error("capability probes must not read catalogs"); },
+      },
       trust: {},
       trustMutation: {},
       themes: {},

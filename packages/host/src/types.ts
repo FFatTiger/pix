@@ -393,12 +393,17 @@ export interface CatalogCredentialsSeam {
 }
 
 /**
- * Project-cwd-aware resource catalog (skills/plugins/commands). Composition
- * creates one per canonical cwd after consulting trust; foundation routes pass
+ * Global or project resource catalog (skills/plugins/commands). Composition
+ * creates global readers per request, or project readers after consulting trust; routes pass
  * the trust-gated `trusted` flag so the resource seam never re-reads a stale
  * trust cache itself.
  */
 export interface CatalogResourcesSeam {
+  global(): {
+    listSkills(): Promise<unknown>;
+    listPlugins(): Promise<unknown>;
+    listCommands(): Promise<unknown>;
+  };
   forCwd(
     cwd: string,
     trusted: boolean,

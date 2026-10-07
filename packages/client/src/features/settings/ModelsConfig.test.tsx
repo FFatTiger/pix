@@ -71,21 +71,29 @@ describe("ModelsConfig", () => {
     expect(screen.getAllByText("GitHub Copilot")[0]?.closest("button")?.hasAttribute("disabled")).toBe(true);
   });
 
-  it("imports models through the typed discovery mutation and appends selected rows locally", async () => {
+  it("does not import or discover models over the network; manual add persists on save", async () => {
+    let putBody: unknown;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "/v1/models/discover") {
-        expect(init?.method).toBe("POST");
-        return json({ models: [{ id: "new-model", name: "New Model" }] });
+      expect(String(input)).not.toBe("/v1/models/discover");
+      if (init?.method === "PUT") {
+        putBody = JSON.parse(String(init.body));
+        return json({ ...snapshot, revision: "b".repeat(64) });
       }
       return json(snapshot);
     });
     mount(fetchMock);
     await screen.findAllByText("acme-deepseek");
-    fireEvent.click(screen.getByRole("button", { name: /Import models/i }));
-    const checkbox = await screen.findByRole("checkbox");
-    fireEvent.click(checkbox);
-    fireEvent.click(screen.getByRole("button", { name: "Add selected (1)" }));
-    expect(screen.getAllByText("new-model").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Import models/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "+ model" }));
+    const id = screen.getByText("ID *").parentElement!.querySelector("input")!;
+    fireEvent.change(id, { target: { value: "manual-model" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(putBody).toBeTruthy());
+    expect(putBody).toMatchObject({
+      expectedRevision: revision,
+      providers: [{ models: [{ id: "deepseek-v4-flash" }, { id: "manual-model" }] }],
+    });
+    expect(fetchMock.mock.calls.every((call) => String(call[0]) !== "/v1/models/discover")).toBe(true);
   });
 
   it("can explicitly remove a stored API key without exposing it", async () => {
