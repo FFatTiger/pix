@@ -4,31 +4,36 @@ import { createMutationOptions } from "@/api/mutations";
 import { createQueryOptions } from "@/api/query-keys";
 import { HttpError } from "@/api/http-client";
 import { useHttpClient } from "@/app/http-context";
+import { SettingToggle } from "@/components/SettingToggle";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
-import { SettingsButton, SettingsSection, SettingsTextarea } from "./settings-ui";
+import { SettingsButton, SettingsSection } from "./settings-ui";
 
-function namesFromText(text: string): string[] {
-  const seen = new Set<string>();
-  const names: string[] = [];
-  for (const line of text.split("\n")) {
-    const name = line.trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    names.push(name);
-  }
-  return names;
-}
-
-function textFromNames(names: readonly string[]): string {
-  return names.join("\n");
-}
+// Presentation choices only; saved names outside this palette remain editable.
+const VISIBLE_TOOLS = [
+  { name: "read", labelKey: "desktop.tool.read" },
+  { name: "write", labelKey: "desktop.tool.write" },
+  { name: "edit", labelKey: "desktop.tool.edit" },
+  { name: "bash", labelKey: "desktop.tool.bash" },
+  { name: "powershell", labelKey: "desktop.tool.powershell" },
+  { name: "grep", labelKey: "desktop.tool.grep" },
+  { name: "find", labelKey: "desktop.tool.find" },
+  { name: "ls", labelKey: "desktop.tool.ls" },
+  { name: "codemode", labelKey: "desktop.tool.codemode" },
+  { name: "tool_search", labelKey: "desktop.tool.tool_search" },
+  { name: "Agent", labelKey: "desktop.tool.Agent" },
+  { name: "SendMessage", labelKey: "desktop.tool.SendMessage" },
+  { name: "TaskOutput", labelKey: "desktop.tool.TaskOutput" },
+  { name: "TaskStop", labelKey: "desktop.tool.TaskStop" },
+  { name: "todo", labelKey: "desktop.tool.todo" },
+  { name: "ask_user_question", labelKey: "desktop.tool.ask_user_question" },
+];
 
 /**
  * Global "Tools" settings tab.
  *
  * The SAVED truth is the global `pixDefaultTools` selection (all / custom
- * allowlist / native Pi `defaultTools`). The editor is a persisted name list
+ * allowlist / native Pi `defaultTools`). The switches edit a persisted name list
  * only — never a runtime snapshot, registry scan, or live session apply.
  */
 export function ToolsConfig() {
@@ -44,13 +49,13 @@ export function ToolsConfig() {
   });
   const save = useMutation(createMutationOptions(http, queryClient).settings.saveTools());
   const [errorKey, setErrorKey] = useState<string | null>(null);
-  const [draft, setDraft] = useState<{ text: string; expectedRevision: string } | null>(null);
+  const [draft, setDraft] = useState<{ toolNames: string[]; expectedRevision: string } | null>(null);
 
   const selection = query.data?.selection;
   const savedNames = selection !== undefined && selection.mode !== "all" ? selection.toolNames : [];
-  const savedText = textFromNames(savedNames);
   const editing = draft !== null;
-  const text = draft?.text ?? savedText;
+  const selectedNames = draft?.toolNames ?? (selection?.mode === "all" ? VISIBLE_TOOLS.map(({ name }) => name) : savedNames);
+  const visibleNames = [...new Set([...VISIBLE_TOOLS.map(({ name }) => name), ...savedNames, ...(draft?.toolNames ?? [])])];
 
   const busy = save.isPending || query.isFetching;
 
@@ -67,8 +72,17 @@ export function ToolsConfig() {
     }
   };
 
+  const toggleTool = (name: string, enabled: boolean) => {
+    if (!query.data || busy) return;
+    const toolNames = [...new Set(selectedNames)];
+    setDraft({
+      toolNames: enabled ? [...toolNames, name] : toolNames.filter((candidate) => candidate !== name),
+      expectedRevision: draft?.expectedRevision ?? query.data.revision,
+    });
+  };
+
   const saveCustom = () => {
-    if (draft) void persist(namesFromText(draft.text), draft.expectedRevision);
+    if (draft) void persist(draft.toolNames, draft.expectedRevision);
   };
 
   const reloadSaved = async () => {
@@ -90,10 +104,10 @@ export function ToolsConfig() {
     content = (
       <>
         <div className="workspace-hint" data-testid="tools-selection-mode">
-          {selection?.mode === "native"
-            ? t("desktop.toolsSettingsModeNativeNote")
-            : selection?.mode === "custom"
-              ? t("desktop.toolsSettingsModeCustomNote")
+          {editing || selection?.mode === "custom"
+            ? t("desktop.toolsSettingsModeCustomNote")
+            : selection?.mode === "native"
+              ? t("desktop.toolsSettingsModeNativeNote")
               : t("desktop.toolsSettingsModeAllNote")}
         </div>
         <div style={{ display: "flex", gap: 8, margin: "8px 0 12px" }}>
@@ -104,22 +118,19 @@ export function ToolsConfig() {
             {t("desktop.toolsSettingsDisableAll")}
           </SettingsButton>
         </div>
-        <label htmlFor="tools-custom-names" style={{ display: "block", fontSize: 11, color: "var(--text-muted)", fontWeight: 500, marginBottom: 4 }}>
-          {t("desktop.toolsSettingsCustomNames")}
-        </label>
-        <SettingsTextarea
-          id="tools-custom-names"
-          name="tools-custom-names"
-          value={text}
-          onChange={(text) => setDraft((current) => ({
-            text,
-            expectedRevision: current?.expectedRevision ?? query.data!.revision,
-          }))}
-          placeholder={t("desktop.toolsSettingsCustomNamesPlaceholder")}
-          mono
-          disabled={busy}
-        />
-        <p className="workspace-hint">{t("desktop.toolsSettingsCustomNamesHelp")}</p>
+        {visibleNames.map((name) => {
+          const tool = VISIBLE_TOOLS.find((candidate) => candidate.name === name);
+          return (
+            <SettingToggle
+              key={name}
+              label={tool ? t(tool.labelKey) : t("desktop.toolsSettingsUnknownTool", { name })}
+              description={t("desktop.toolsSettingsToolName", { name })}
+              checked={selectedNames.includes(name)}
+              onChange={(enabled) => toggleTool(name, enabled)}
+              disabled={busy}
+            />
+          );
+        })}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
           <SettingsButton size="sm" disabled={busy || !editing} onClick={() => { void reloadSaved(); }}>
             {t("desktop.toolsSettingsReloadSaved")}
