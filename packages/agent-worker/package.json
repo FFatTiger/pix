@@ -1,6 +1,6 @@
 {
   "name": "@fffattiger/pix-agent-worker",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Single-session agent worker: Protocol ↔ Runtime Core stateful mapper, application controller, and process composition root",
   "type": "module",
   "engines": { "node": ">=22.19.0" },
@@ -25,12 +25,12 @@
     "check:boundaries": "node ./scripts/check-boundaries.mjs"
   },
   "dependencies": {
-    "@fffattiger/pix-pi-sdk-adapter": "0.2.0",
-    "@fffattiger/pix-protocol": "0.2.0",
-    "@fffattiger/pix-runtime-core": "0.2.0"
+    "@fffattiger/pix-pi-sdk-adapter": "0.2.1",
+    "@fffattiger/pix-protocol": "0.2.1",
+    "@fffattiger/pix-runtime-core": "0.2.1"
   },
   "devDependencies": {
-    "@fffattiger/pix-sessiond": "0.2.0",
+    "@fffattiger/pix-sessiond": "0.2.1",
     "@types/node": "^22",
     "typescript": "^5"
   }

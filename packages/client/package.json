@@ -1,6 +1,6 @@
 {
   "name": "@fffattiger/pix-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "Vite React client shell for pix (protocol-aware workstation UI)",
@@ -21,7 +21,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@fffattiger/pix-protocol": "0.2.0",
+    "@fffattiger/pix-protocol": "0.2.1",
     "@fontsource/lilex": "5.3.0",
     "@lobehub/icons": "5.6.0",
     "@phosphor-icons/react": "2.1.10",
