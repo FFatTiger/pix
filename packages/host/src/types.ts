@@ -377,6 +377,8 @@ export interface CatalogSettingsMutationSeam {
   readToolsConfig(): Promise<unknown>;
   /** Structured global tool-selection CAS write (`pixDefaultTools` only). */
   writeToolsConfig(input: unknown): Promise<unknown>;
+  readSubagentConfig(): Promise<unknown>;
+  writeSubagentConfig(input: unknown): Promise<unknown>;
 }
 
 /** Pix built-in desired-enablement seam (`pix-builtins.json`, agent-dir scope). */

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { NonEmptyStringSchema, ThinkingLevelSchema } from "./common.js";
 
 /** 256 KiB raw-text bound shared by the response and the mutation. */
 export const SETTINGS_CONFIG_MAX_BYTES = 256 * 1024;
@@ -44,3 +45,42 @@ export const ToolSettingsMutationSchema = z.strictObject({
   toolNames: z.array(ToolNameSchema).nullable(),
 });
 export type ToolSettingsMutation = z.infer<typeof ToolSettingsMutationSchema>;
+
+const SubagentModelSchema = z.string().trim().min(1).nullable();
+
+export const SubagentAgentOverrideSchema = z.strictObject({
+  /** Exact role identity, including case and spaces. */
+  name: NonEmptyStringSchema,
+  model: SubagentModelSchema,
+  fallbackModel: SubagentModelSchema,
+  thinking: ThinkingLevelSchema.nullable(),
+});
+export type SubagentAgentOverrideWire = z.infer<typeof SubagentAgentOverrideSchema>;
+
+/**
+ * Mirrors runtime-core SubagentSettings; cross-package tests pin parity.
+ * Global configuration only. Required nullable fields clear native overrides.
+ * Adapters merge role rows by exact name, preserving omitted roles and unknown
+ * native metadata. Metadata-only native roles project as rows with null fields.
+ */
+export const SubagentSettingsSchema = z.strictObject({
+  defaultModel: SubagentModelSchema,
+  fallbackModel: SubagentModelSchema,
+  agentOverrides: z.array(SubagentAgentOverrideSchema).refine(
+    (rows) => new Set(rows.map((row) => row.name)).size === rows.length,
+    { message: "duplicate subagent role names" },
+  ),
+});
+export type SubagentSettingsWire = z.infer<typeof SubagentSettingsSchema>;
+
+export const SubagentSettingsResponseSchema = z.strictObject({
+  revision: z.string().regex(/^[0-9a-f]{64}$/),
+  settings: SubagentSettingsSchema,
+});
+export type SubagentSettingsResponse = z.infer<typeof SubagentSettingsResponseSchema>;
+
+export const SubagentSettingsMutationSchema = z.strictObject({
+  expectedRevision: z.string().regex(/^[0-9a-f]{64}$/),
+  settings: SubagentSettingsSchema,
+});
+export type SubagentSettingsMutation = z.infer<typeof SubagentSettingsMutationSchema>;

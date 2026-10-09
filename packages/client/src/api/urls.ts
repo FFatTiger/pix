@@ -163,6 +163,7 @@ export const urls = {
     tools: () => resource("settings/tools"),
     /** Pix-owned curated Agent features desired-enablement document. */
     builtIns: () => resource("settings/built-ins"),
+    subagents: () => resource("settings/subagents"),
   },
   runtime: { ws: () => resource("runtime") },
 } as const;

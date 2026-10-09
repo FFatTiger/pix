@@ -105,6 +105,34 @@ describe("API domain response parsing", () => {
     await expect(createConfigurationApi(client({ ...body, extra: true })).builtIns.get()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 
+  it("subagent settings use strict GET/PUT CAS envelopes and propagate cancellation", async () => {
+    const body = { revision: "a".repeat(64), settings: {
+      defaultModel: "provider/model", fallbackModel: null,
+      agentOverrides: [{ name: "Custom CASE", model: "unknown/model", fallbackModel: null, thinking: "max" }],
+    } } as const;
+    const fetchImpl = vi.fn(async () => json(body));
+    const api = createConfigurationApi(createHttpClient({ fetchImpl }));
+    const controller = new AbortController();
+    await expect(api.subagents.get(controller.signal)).resolves.toEqual(body);
+    const input = { expectedRevision: body.revision, settings: { ...body.settings, agentOverrides: [...body.settings.agentOverrides] } };
+    await expect(api.subagents.save(input, controller.signal)).resolves.toEqual(body);
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, "/v1/settings/subagents", expect.objectContaining({ method: "GET", signal: expect.any(AbortSignal) }));
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, "/v1/settings/subagents", expect.objectContaining({ method: "PUT", body: JSON.stringify(input), signal: expect.any(AbortSignal) }));
+    controller.abort();
+    await expect(api.subagents.get(controller.signal)).rejects.toMatchObject({ kind: "aborted", code: "ABORTED" });
+    await expect(api.subagents.save(input, controller.signal)).rejects.toMatchObject({ kind: "aborted", code: "ABORTED" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    for (const invalid of [
+      { ...body, extra: true },
+      { ...body, settings: { ...body.settings, timeout: 123 } },
+      { ...body, settings: { ...body.settings, agentOverrides: [{ ...body.settings.agentOverrides[0], thinking: "impossible" }] } },
+      { ...body, settings: { ...body.settings, agentOverrides: [...body.settings.agentOverrides, ...body.settings.agentOverrides] } },
+    ]) {
+      await expect(createConfigurationApi(client(invalid)).subagents.get()).rejects.toMatchObject({ kind: "decode", code: "INVALID_RESPONSE" });
+      await expect(createConfigurationApi(client(invalid)).subagents.save(input)).rejects.toMatchObject({ kind: "decode", code: "INVALID_RESPONSE" });
+    }
+  });
+
   it("trust setTrusted sends exactly POST /v1/trust with body {cwd, level:\"trusted\"}", async () => {
     const state = { cwd: "/repo", level: "trusted", trusted: true, canReloadResources: { allowed: true, level: "trusted" } };
     const calls: { url: string; method: string; body?: unknown }[] = [];

@@ -154,6 +154,15 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
           queryClient.setQueryData(queryKeys.settingsConfig.builtIns(), data);
         },
       }),
+      saveSubagents: () => ({
+        mutationKey: ["pix", "settings", "save-subagents"] as const,
+        mutationFn: (input: Parameters<typeof configuration.subagents.save>[0]) =>
+          configuration.subagents.save(input),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.subagents.save>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.subagents(), data);
+          return invalidate(queryClient, queryKeys.settingsConfig.file(), queryKeys.settingsConfig.tools());
+        },
+      }),
       /** CAS write of the global settings.json raw text. */
       saveConfigFile: () => ({
         mutationKey: ["pix", "settings", "save-config"] as const,
@@ -166,6 +175,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
             queryClient,
             queryKeys.settingsConfig.tools(),
             queryKeys.settingsConfig.builtIns(),
+            queryKeys.settingsConfig.subagents(),
             queryKeys.skills.all,
             queryKeys.plugins.all,
             queryKeys.commands.all,
@@ -181,7 +191,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
           configuration.tools.save(input),
         onSuccess: (data: Awaited<ReturnType<typeof configuration.tools.save>>) => {
           queryClient.setQueryData(queryKeys.settingsConfig.tools(), data);
-          return invalidate(queryClient, queryKeys.settingsConfig.file());
+          return invalidate(queryClient, queryKeys.settingsConfig.file(), queryKeys.settingsConfig.subagents());
         },
       }),
     },

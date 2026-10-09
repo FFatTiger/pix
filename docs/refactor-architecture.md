@@ -350,6 +350,14 @@ Settings 中的 Skills / Plugins / Commands 只展示全局磁盘目录。Host `
 
 `BuiltInCapabilityConfigStorePort`（runtime-core）→ `@fffattiger/pix-pi-sdk-adapter/builtins` → Host `GET/PUT /v1/settings/built-ins`。这是 Pix 产品配置，与通用 Pi `settings.json` / Plugins inventory 分开：持久化全局期望开关只住在 `$PI_CODING_AGENT_DIR/pix-builtins.json`。上层只使用规范 feature ID（`subagents` / `todo` / `ask_user_question` / `side_chat`）；Pi 包名不得出现在 adapter 之外。缺失文件表示四个内置全部启用。`builtins.configure` 仅在 seam 真实挂载时广告，sessiond down 时仍可用。Host 期望配置与 runtime 实际加载集不同：`RuntimeState.builtIns` 是当前会话实际装上的内置（含 `configRevision` 与 load failures），不是 desired Host config 的别名。子代理/待办 UI 只消费 snapshot 权威投影（`RuntimeState.subagents` / `RuntimeState.todo` 以及 `subagents_changed` / `todo_changed` 全量替换事件），禁止从 transcript/tool details 推导。
 
+### 子代理模型默认配置
+
+`SettingsConfigStorePort.readSubagentConfig/writeSubagentConfig` → 同一 adapter settings-config-store → Host `GET/PUT /v1/settings/subagents`（`settings.configure`）→ Agent 能力页中的子代理配置。配置写入全局 `settings.json.subagents` 的 `defaultModel` / `fallbackModel` 和按精确角色名保存的 `agentOverrides`（`model` / `fallbackModel` / `thinking`），不另建 Pix 配置文件。模型选项来自既有全局静态模型目录，保存值使用 `provider/model-id`；已保存但不在目录中的引用和自定义角色仍可显示与保留，客户端不复制 SDK 模型解析规则。
+
+Wire 使用完整 nullable 字段：`null` 删除对应已知属性以恢复继承；提交的角色只改这三个已知属性，未提交角色及根、子代理对象、角色对象中的未知属性均保留。空文件、坏 JSON 或已知字段类型错误必须失败，不以默认值掩盖读取错误。结构化保存与 raw/tools 写共用 mutation queue、文件锁、revision CAS 和原子文档发布。每份编辑稿保持最初文件 revision，后台重读或冲突不得自动改成新 revision；明确重读成功或保存成功后才清稿。
+
+界面展示保存的全局默认值与各角色覆盖，不声称是当前会话有效值。没有全局 fallback 不代表角色定义或项目没有 fallback；角色空项沿用角色定义和默认配置。插件在后续子代理启动时读取这些设置；设置页不发运行态 reload、不创建 Worker，也不修改已有子代理的启动参数。
+
 ### 全局工具选择（pixDefaultTools）
 
 `SettingsConfigStorePort.readToolsConfig/writeToolsConfig`（runtime-core）→ adapter settings-config-store（同一 settings.json owner、同一 mutation queue/proper-lockfile/CAS fence，无第二个文件 owner 或 queue）→ Host `GET/PUT /v1/settings/tools`（复用 `settings.configure` token 与 raw editor 的 HttpError 路径；无活动会话也可保存，禁止为列工具创建 Worker 或执行 plugin/MCP discovery）→ Client Settings → Tools tab。语义：`pixDefaultTools: null`（或该键与 native `defaultTools` 均不存在时的 Pix 默认）= 全部可声明工具（direct/model-only exposure，含 codemode/tool_search，未来新增自动启用）；数组 = 显式 allowlist（空数组 = 全关；forced-empty 系统提示随 none/重新启用正确切换）；键不存在时尊重 native `defaultTools`（含 `+`/`-`，由 SDK `SettingsManager` 解析，Pix 不复制 ± 算法，也不在 construct 时用 builtin 并集覆写它）。结构化写只改 `pixDefaultTools` 并保留 unknown values（`defaultTools` 原样，格式由 JSON.stringify 正规化）；raw editor 仍按字节原样读写，但 raw 写也校验 `pixDefaultTools`/`defaultTools` 字段类型，fail closed。Runtime 在 startup、bindExtensions 完成后与 reload 成功后重算全局选择（仅限跟随 prefs 的 runtime；显式 `input.toolNames`/`setTools` 覆盖仍优先，不新增 reset flag）。Client 工具页用固定常用工具与已保存名称的开关编辑 all/custom/native 默认选择，不要求手输名称；已有额外名称保留为独立开关。开关编辑在保存前保留草稿与其原始文件 revision，all/native 首次点选转换为显式 custom allowlist。保存只执行全局 CAS 写入，不读取当前会话 registry、不发送 `setTools`，也不显示运行态启用标记；Runtime 沿用上述 startup/bind/reload 的偏好读取时机。

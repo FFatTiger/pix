@@ -30,7 +30,7 @@ function json(value: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" }, ...init });
 }
 
-function mount(fetchImpl: ReturnType<typeof vi.fn>, hostCapabilities: HostCapability[] = ["builtins.configure"]) {
+function mount(fetchImpl: ReturnType<typeof vi.fn>, hostCapabilities: HostCapability[] = ["builtins.configure", "settings.configure"]) {
   vi.stubGlobal("fetch", fetchImpl);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -54,6 +54,7 @@ describe("BuiltInCapabilitiesConfig", () => {
   it("shows all loadable features and saves a four-entry CAS full replacement", async () => {
     let putBody: unknown;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/v1/settings/subagents") return json({ revision, settings: { defaultModel: null, fallbackModel: null, agentOverrides: [] } });
       expect(String(input)).toBe("/v1/settings/built-ins");
       if (init?.method === "PUT") {
         putBody = JSON.parse(String(init.body));
@@ -87,7 +88,9 @@ describe("BuiltInCapabilitiesConfig", () => {
   });
 
   it("does not consult the selected runtime hook", async () => {
-    const fetchMock = vi.fn(async () => json({ revision, capabilities }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/v1/settings/subagents"
+      ? json({ revision, settings: { defaultModel: null, fallbackModel: null, agentOverrides: [] } })
+      : json({ revision, capabilities }));
     mount(fetchMock);
     expect(await screen.findByRole("switch", { name: "Subagents" })).toBeTruthy();
   });

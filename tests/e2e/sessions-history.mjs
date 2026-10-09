@@ -447,8 +447,26 @@ async function main() {
       assert.equal(catalog.status, 200);
       assert.equal(Array.isArray(catalog.body[domain]), true);
     }
-    assert.deepEqual((await rpc.call("runtime.listRunning", {})).sessions, [], "settings reads must not start a runtime");
-    assert.deepEqual(stack.daemon.diagnostics.workerPids(), [], "settings reads must not create a Worker");
+    const subagentDefaults = await get("/v1/settings/subagents");
+    assert.equal(subagentDefaults.status, 200);
+    assert.deepEqual(subagentDefaults.body.settings, { defaultModel: null, fallbackModel: null, agentOverrides: [] });
+    const subagentSave = await fetch(`${stack.origin}/v1/settings/subagents`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedRevision: subagentDefaults.body.revision,
+        settings: {
+          defaultModel: "fixture/agent-model",
+          fallbackModel: "fixture/backup-model",
+          agentOverrides: [{ name: "Explore", model: null, fallbackModel: null, thinking: "high" }],
+        },
+      }),
+    });
+    assert.equal(subagentSave.status, 200);
+    const persistedSubagents = await subagentSave.json();
+    assert.deepEqual((await get("/v1/settings/subagents")).body, persistedSubagents);
+    assert.deepEqual((await rpc.call("runtime.listRunning", {})).sessions, [], "settings reads and writes must not start a runtime");
+    assert.deepEqual(stack.daemon.diagnostics.workerPids(), [], "settings reads and writes must not create a Worker");
 
     // 2. list / detail / context succeed against real JSONL.
     const list = await get("/v1/sessions");

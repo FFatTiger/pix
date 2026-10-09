@@ -8,14 +8,17 @@
  */
 
 /** Reasoning level used by the runtime. */
-export type ThinkingLevel =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+export const THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /** Image attachment on prompt / steer / follow_up commands. */
 export interface ImageAttachment {

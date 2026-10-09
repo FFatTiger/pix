@@ -6,12 +6,13 @@ import { createPosixSecureStateBackend } from "@fffattiger/pix-local-authority";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type {
   SettingsConfigMutation,
-  SettingsConfigSnapshot,
   SettingsConfigStorePort,
   ToolSettingsMutation,
-  ToolSettingsSnapshot,
   ToolsSelection,
+  SubagentSettings,
+  SubagentSettingsMutation,
 } from "@fffattiger/pix-runtime-core";
+import { normalizeSubagentSettings } from "@fffattiger/pix-runtime-core";
 import { stripJsonComments } from "./models-json.js";
 
 const SETTINGS_MAX_BYTES = 256 * 1024;
@@ -72,7 +73,7 @@ function validateSettingsText(content: string): void {
 
 /**
  * Type-check the fields whose types other readers depend on (models catalog,
- * tools selection). A wrong type fails closed instead of being silently
+ * tools and subagent settings). A wrong type fails closed instead of being silently
  * reinterpreted at read time.
  */
 function validateKnownFieldTypes(parsed: Record<string, unknown>): void {
@@ -82,6 +83,7 @@ function validateKnownFieldTypes(parsed: Record<string, unknown>): void {
       throw runtimeError("invalid_input", `settings.json ${key} must be a string`);
     }
   }
+  projectSubagentSettings(parsed);
   const enabled = parsed.enabledModels;
   if (enabled !== undefined && !Array.isArray(enabled)) {
     throw runtimeError("invalid_input", "settings.json enabledModels must be an array");
@@ -101,6 +103,66 @@ function validateKnownFieldTypes(parsed: Record<string, unknown>): void {
   ) {
     throw runtimeError("invalid_input", "settings.json pixDefaultTools must be null or an array of tool names");
   }
+}
+
+/** Native fields are optional, but a present null (or malformed value) is invalid. */
+function ownValue(record: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
+function nativeSubagentObject(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = ownValue(record, key);
+  if (value === undefined) return {};
+  if (!isRecord(value)) throw runtimeError("invalid_input", "subagent configuration is invalid");
+  return value;
+}
+
+function nativeSubagentField(record: Record<string, unknown>, key: string): unknown {
+  const value = ownValue(record, key);
+  if (value === null) throw runtimeError("invalid_input", "subagent configuration is invalid");
+  return value === undefined ? null : value;
+}
+
+function projectSubagentSettings(parsed: Record<string, unknown>): SubagentSettings {
+  const subagents = nativeSubagentObject(parsed, "subagents");
+  const overrides = nativeSubagentObject(subagents, "agentOverrides");
+  const settings = normalizeSubagentSettings({
+    defaultModel: nativeSubagentField(subagents, "defaultModel"),
+    fallbackModel: nativeSubagentField(subagents, "fallbackModel"),
+    agentOverrides: Object.keys(overrides).map((name) => {
+      const role = nativeSubagentObject(overrides, name);
+      return {
+        name,
+        model: nativeSubagentField(role, "model"),
+        fallbackModel: nativeSubagentField(role, "fallbackModel"),
+        thinking: nativeSubagentField(role, "thinking"),
+      };
+    }),
+  });
+  if (!settings) throw runtimeError("invalid_input", "subagent configuration is invalid");
+  return settings;
+}
+
+function patchSubagentSettings(parsed: Record<string, unknown>, settings: SubagentSettings): void {
+  const subagents = { ...nativeSubagentObject(parsed, "subagents") };
+  const overrides = { ...nativeSubagentObject(subagents, "agentOverrides") };
+  for (const key of ["defaultModel", "fallbackModel"] as const) {
+    if (settings[key] === null) delete subagents[key];
+    else subagents[key] = settings[key];
+  }
+  for (const row of settings.agentOverrides) {
+    const role = { ...nativeSubagentObject(overrides, row.name) };
+    for (const key of ["model", "fallbackModel", "thinking"] as const) {
+      if (row[key] === null) delete role[key];
+      else role[key] = row[key];
+    }
+    // UI default rows with no overrides must not create native empty roles.
+    if (Object.keys(role).length || Object.hasOwn(overrides, row.name)) {
+      Object.defineProperty(overrides, row.name, { value: role, enumerable: true, writable: true, configurable: true });
+    }
+  }
+  if (Object.keys(overrides).length || Object.hasOwn(subagents, "agentOverrides")) subagents.agentOverrides = overrides;
+  if (Object.keys(subagents).length || Object.hasOwn(parsed, "subagents")) parsed.subagents = subagents;
 }
 
 /** Strict, order-preserving normalization of a `pixDefaultTools` allowlist. */
@@ -196,13 +258,19 @@ export interface PiSdkSettingsConfigOptions {
  * Raw-text global settings.json editor store. The user's bytes are returned
  * and written verbatim (comments/formatting preserved); writes are validated
  * offline, fenced by a SHA-256 revision, serialized per agentDir, and
- * persisted with an owner-only atomic document write. The structured tools
- * selection read/write rides the SAME queue, lock and CAS fence, so a raw
- * editor save and a tools toggle can never interleave.
+ * persisted with an owner-only atomic document write. Structured tools and
+ * subagent settings use the SAME queue, lock and CAS fence, so writes from
+ * these editors can never interleave.
  */
 export function createPiSdkSettingsConfigStore(options: PiSdkSettingsConfigOptions = {}): SettingsConfigStorePort {
   const configuredAgentDir = resolve(options.agentDir ?? getAgentDir());
-  const canonicalAgentDir = () => secureState.canonicalizePath(configuredAgentDir);
+  const canonicalAgentDir = async () => {
+    try {
+      return await secureState.canonicalizePath(configuredAgentDir);
+    } catch {
+      throw runtimeError("unavailable", "settings configuration is unavailable");
+    }
+  };
   return {
     readConfig: async () => {
       const source = await readSource(await canonicalAgentDir());
@@ -240,6 +308,49 @@ export function createPiSdkSettingsConfigStore(options: PiSdkSettingsConfigOptio
       }
       const source = await readSource(agentDir);
       return { revision: source.revision, content: source.text };
+    }),
+    readSubagentConfig: async () => {
+      const source = await readSource(await canonicalAgentDir());
+      const settings = projectSubagentSettings(source.present ? parseSettingsObject(source.text) : {});
+      return { revision: source.revision, settings };
+    },
+    writeSubagentConfig: (input: SubagentSettingsMutation) => withMutationQueue(configuredAgentDir, async () => {
+      const settings = normalizeSubagentSettings(input?.settings);
+      if (typeof input?.expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(input.expectedRevision) || !settings) {
+        throw runtimeError("invalid_input", "subagent configuration input is invalid");
+      }
+      const agentDir = await canonicalAgentDir();
+      const settingsPath = join(agentDir, "settings.json");
+      try {
+        await secureState.ensurePrivateDirectory(agentDir);
+      } catch {
+        throw runtimeError("unavailable", "settings configuration is unavailable");
+      }
+      let release: (() => Promise<void>) | undefined;
+      try {
+        release = await lockfile.lock(agentDir, {
+          realpath: false,
+          lockfilePath: `${settingsPath}.lock`,
+          retries: { retries: 9, minTimeout: 20, maxTimeout: 20 },
+        });
+        const current = await readSource(agentDir);
+        if (current.revision !== input.expectedRevision) {
+          throw runtimeError("conflict", "settings configuration changed");
+        }
+        const parsed = current.present ? parseSettingsObject(current.text) : {};
+        patchSubagentSettings(parsed, settings);
+        const content = `${JSON.stringify(parsed, null, 2)}\n`;
+        validateSettingsText(content);
+        await secureState.writeStateDocument(settingsPath, content, { maxBytes: SETTINGS_MAX_BYTES });
+        // Capture this commit's bytes and projection before releasing the shared lock.
+        return { revision: revisionOf(content), settings: projectSubagentSettings(parseSettingsObject(content)) };
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error
+          && ["invalid_input", "conflict", "unavailable"].includes(String(error.code))) throw error;
+        throw runtimeError("unavailable", "settings configuration could not be saved");
+      } finally {
+        await release?.().catch(() => {});
+      }
     }),
     readToolsConfig: async () => {
       const source = await readSource(await canonicalAgentDir());

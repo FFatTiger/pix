@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { createNodeWebSocket } from "@hono/node-ws";
 import type { ServerType } from "@hono/node-server";
-import { MAX_HOST_INBOUND_WS_BYTES } from "@fffattiger/pix-protocol";
+import { MAX_HOST_INBOUND_WS_BYTES } from "@fffattiger/pix-protocol/transport-limits";
 import type { HostEnv } from "./env.js";
 import { unifiedErrorHandler, HttpError } from "./errors.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";

@@ -59,10 +59,10 @@ export function SettingsSection({
 }
 
 /** Field wrapper: small muted label above the control. */
-export function SettingsField({ label, children }: { label: string; children: ReactNode }) {
+export function SettingsField({ label, htmlFor, children }: { label: string; htmlFor?: string; children: ReactNode }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <label style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>{label}</label>
+      <label htmlFor={htmlFor} style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>{label}</label>
       {children}
     </div>
   );
@@ -202,6 +202,9 @@ export function SettingsSelect({
   options,
   emptyLabel,
   style,
+  id,
+  disabled,
+  "aria-label": ariaLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -210,9 +213,15 @@ export function SettingsSelect({
   /** Label for the empty "inherit / none" option. Only rendered when provided. */
   emptyLabel?: string;
   style?: CSSProperties;
+  id?: string;
+  disabled?: boolean;
+  "aria-label"?: string;
 }) {
   return (
     <select
+      id={id}
+      disabled={disabled}
+      aria-label={ariaLabel}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       style={{ ...inputStyle, color: value ? "var(--text)" : "var(--text-dim)", cursor: "pointer", ...style }}

@@ -287,6 +287,7 @@ async function main() {
   const hostDir = join(realpathSync(temp), "host");
   // Isolated persisted global/project fixtures; neither package may execute.
   const agentDir = join(temp, "agent");
+  mkdirSync(agentDir, { mode: 0o700 });
   const globalSkillDir = join(agentDir, "skills", "settings-static");
   const projectSkillDir = join(project, ".pi", "skills", "project-settings-static");
   const globalPackageDir = join(agentDir, "static-package");
@@ -307,7 +308,13 @@ async function main() {
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
     packages: [globalPackageDir, "npm:pix-static-uninstalled"],
     npmCommand: [process.execPath, packageCommandProbe],
-  }));
+    customPreference: { retained: true },
+    subagents: {
+      defaultModel: "test/main",
+      fallbackModel: "test/backup",
+      agentOverrides: { Explore: { model: "test/research", thinking: "high", operatorNote: "keep" } },
+    },
+  }), { mode: 0o600 });
   writeFileSync(join(project, ".pi", "settings.json"), JSON.stringify({ packages: [projectPackageDir] }));
   const env = {
     ...process.env,
@@ -401,6 +408,41 @@ async function main() {
     assert.deepEqual(globalCatalogs.commands.commands.map((command) => command.name), ["skill:settings-static"]);
     assert.equal(existsSync(extensionMarker), false, "global settings reads must not execute configured extensions");
     assert.equal(existsSync(packageCommandMarker), false, "settings catalogs must not probe package-manager commands");
+    const initialSubagents = await fetchJson(`${origin}/v1/settings/subagents`);
+    assert.deepEqual(initialSubagents.settings, {
+      defaultModel: "test/main",
+      fallbackModel: "test/backup",
+      agentOverrides: [{ name: "Explore", model: "test/research", fallbackModel: null, thinking: "high" }],
+    });
+    const subagentSettings = {
+      defaultModel: "test/revised",
+      fallbackModel: null,
+      agentOverrides: [{ name: "Explore", model: null, fallbackModel: "test/role-backup", thinking: "medium" }],
+    };
+    const subagentSave = await fetch(`${origin}/v1/settings/subagents`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: initialSubagents.revision, settings: subagentSettings }),
+    });
+    assert.equal(subagentSave.status, 200);
+    const savedSubagents = await subagentSave.json();
+    assert.deepEqual(savedSubagents.settings, subagentSettings);
+    const settingsBytes = readFileSync(join(agentDir, "settings.json"), "utf8");
+    const settingsFile = JSON.parse(settingsBytes);
+    assert.deepEqual(settingsFile.customPreference, { retained: true });
+    assert.deepEqual(settingsFile.packages, [globalPackageDir, "npm:pix-static-uninstalled"]);
+    assert.equal(settingsFile.subagents.fallbackModel, undefined, "inheritance clears the native key");
+    assert.deepEqual(settingsFile.subagents.agentOverrides.Explore, { operatorNote: "keep", fallbackModel: "test/role-backup", thinking: "medium" });
+    const staleSubagentSave = await fetch(`${origin}/v1/settings/subagents`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: initialSubagents.revision, settings: subagentSettings }),
+    });
+    assert.equal(staleSubagentSave.status, 409);
+    assert.equal((await staleSubagentSave.json()).code, "CONFLICT");
+    assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), settingsBytes, "stale settings writes preserve every byte");
+    const subagentsQuery = await fetch(`${origin}/v1/settings/subagents?cwd=${encodeURIComponent(project)}`);
+    assert.equal(subagentsQuery.status, 400, "subagent defaults are global, never scoped by project");
     const trust = await fetchJson(`${origin}/v1/trust?cwd=${encodeURIComponent(project)}`);
     assert.equal(trust.cwd, project);
     assert.ok(["unknown", "trusted", "denied"].includes(trust.level));
@@ -759,6 +801,7 @@ async function main() {
     }
     assert.equal(existsSync(extensionMarker), false, "degraded settings reads must not execute extensions");
     assert.equal(existsSync(packageCommandMarker), false, "degraded settings reads must not execute package-manager commands");
+    assert.deepEqual(await fetchJson(`${origin}/v1/settings/subagents`), savedSubagents, "subagent defaults stay readable without sessiond");
 
     // Resources stay usable while the authority is down: file read + upload
     // are pure Host-mounted filesystem ops and are NOT runtime-guarded.

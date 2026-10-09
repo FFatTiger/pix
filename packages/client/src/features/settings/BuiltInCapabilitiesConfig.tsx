@@ -8,6 +8,7 @@ import { useHttpClient } from "@/app/http-context";
 import { SettingToggle } from "@/components/SettingToggle";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
+import { SubagentSettingsConfig } from "./SubagentSettingsConfig";
 import { SettingsSection } from "./settings-ui";
 
 const VISIBLE_FEATURES: readonly { readonly id: BuiltInCapabilityId; readonly labelKey: string }[] = [
@@ -80,6 +81,7 @@ export function BuiltInCapabilitiesConfig() {
         {content}
         {errorKey ? <div className="workspace-hint workspace-hint--error" role="alert">{t(errorKey)}</div> : null}
       </SettingsSection>
+      <SubagentSettingsConfig />
     </div>
   );
 }

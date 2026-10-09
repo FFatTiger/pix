@@ -428,3 +428,59 @@ test("production global resources reread persisted metadata without roots, trust
     assert.equal(release(), false, "no network requests");
   }
 });
+
+test("production subagent settings persist native global fields with shared revisions while daemon is down and no runtime or network work", async () => {
+  const { root, agentDir, project, markerPath, catalogs } = await productionFixture();
+  const settingsPath = join(agentDir, "settings.json");
+  const source = JSON.stringify({ extensions: [join(project, ".pi/extensions/evil.ts")], custom: { keep: true }, subagents: {
+    defaultModel: "old", fallbackModel: "old-fallback", metadata: "keep",
+    agentOverrides: { "Custom Role": { model: "old-role", description: "keep" }, omitted: { model: "keep" } },
+  } });
+  writeFileSync(settingsPath, source);
+  writeFileSync(join(project, ".pi/settings.json"), "malformed project settings trap");
+  let runtimeCalls = 0;
+  const forbidden = () => { runtimeCalls++; throw new Error("must not activate runtime or consult project"); };
+  const app = createHostApp({ logger: {}, gate: { config: DISABLED_GATE },
+    catalogs: { ...catalogs, roots: { authorizeExisting: forbidden }, trust: { isTrusted: forbidden } },
+    sessiond: { isAvailable: async () => false },
+    sessions: { client: { list: forbidden, read: forbidden, context: forbidden, tree: forbidden } },
+  }).app;
+  const release = installNetworkGuard();
+  const beforeFiles = listFilesRecursive(root).sort();
+  const put = (path, body) => app.request(`http://localhost/v1/settings/${path}`, {
+    method: "PUT", headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  try {
+    const health = await (await call(app, "/v1/health")).json();
+    assert.equal(health.sessiond, "down");
+    assert.ok(health.capabilities.includes("settings.configure"));
+    const before = await (await call(app, "/v1/settings/subagents")).json();
+    assert.equal(readFileSync(settingsPath, "utf8"), source, "read is byte-preserving");
+    assert.equal(before.revision, (await (await call(app, "/v1/settings/config")).json()).revision);
+    assert.equal(before.revision, (await (await call(app, "/v1/settings/tools")).json()).revision);
+    const res = await put("subagents", { expectedRevision: before.revision, settings: {
+      defaultModel: "  future/provider-model  ", fallbackModel: null,
+      agentOverrides: [{ name: "Custom Role", model: null, fallbackModel: " unknown-fallback ", thinking: "high" }],
+    } });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const saved = await res.json();
+    const native = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(native.subagents, {
+      defaultModel: "future/provider-model", metadata: "keep",
+      agentOverrides: { "Custom Role": { description: "keep", fallbackModel: "unknown-fallback", thinking: "high" }, omitted: { model: "keep" } },
+    });
+    assert.deepEqual(native.custom, { keep: true });
+    assert.equal(saved.revision, (await (await call(app, "/v1/settings/config")).json()).revision);
+    assert.equal(saved.revision, (await (await call(app, "/v1/settings/tools")).json()).revision);
+    assert.deepEqual(saved, await (await call(app, "/v1/settings/subagents")).json());
+    assert.equal((await put("tools", { expectedRevision: before.revision, toolNames: [] })).status, 409);
+    assert.equal((await put("config", { expectedRevision: before.revision, content: "{}" })).status, 409);
+    const tools = await put("tools", { expectedRevision: saved.revision, toolNames: [] });
+    assert.equal(tools.status, 200);
+    assert.deepEqual((await (await call(app, "/v1/settings/subagents")).json()).settings, saved.settings);
+    assert.equal(runtimeCalls, 0);
+    assert.equal(existsSync(markerPath), false, "extension not executed");
+    assert.deepEqual(listFilesRecursive(root).sort(), beforeFiles, "no Worker/session files created");
+  } finally { assert.equal(release(), false, "no outbound network"); }
+});

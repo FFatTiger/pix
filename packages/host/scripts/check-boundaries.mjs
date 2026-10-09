@@ -6,10 +6,10 @@
  * import Pi SDK / sessiond / protocol root / legacy Next code, and must not
  * reference AgentSession / SessionManager / Pi RPC concepts.
  *
- * Phase 6A exception: foundation may import ONLY the exact Protocol
- * workspace-access wire subpath (`@fffattiger/pix-protocol/workspace-access`)
- * so Host is not a third vocabulary owner. The Protocol package root and
- * every other protocol subpath stay forbidden in foundation.
+ * Foundation may import ONLY the exact Protocol workspace-access,
+ * built-in-capabilities, settings-config and transport-limits wire subpaths.
+ * The Protocol package root and every other protocol subpath stay forbidden
+ * in foundation.
  *
  * The composition layer (src/composition/**) — the runtime WS gateway — is the
  * ONE place allowed to depend on the pix Runtime Protocol and the narrow
@@ -60,6 +60,8 @@ const FORBIDDEN_IDENTIFIERS = ["Agent" + "Session", "Session" + "Manager", "rpc-
 /** Exact Protocol subpath the foundation may import (Phase 6A vocabulary). */
 const FOUNDATION_ALLOWED_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/workspace-access";
 const FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/built-in-capabilities";
+const FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/settings-config";
+const FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH = "@fffattiger/pix-protocol/transport-limits";
 
 // Protocol root / sessiond are forbidden in the foundation (handled by the
 // dedicated scans below). The sessiond main entry and every non-client
@@ -77,10 +79,12 @@ const ALLOWED_EXTERNAL_PREFIXES = [
   // Slice 1 (local-authority): the foundation may import ONLY the narrow
   // `.../state` secure-state surface (enforced exactly below, not by prefix).
   "@fffattiger/pix-local-authority/state",
-  // Foundation may import ONLY the two narrow Protocol wire-vocabulary
+  // Foundation may import ONLY the exact narrow Protocol wire-vocabulary
   // subpaths below (enforced exactly, not by prefix).
   FOUNDATION_ALLOWED_PROTOCOL_SUBPATH,
   FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH,
+  FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH,
+  FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH,
 ];
 
 /** Externals that composition source may import in addition to hono. */
@@ -148,10 +152,10 @@ for (const file of walk(srcRoot)) {
   }
 
   // Protocol: composition may import the package root or any subpath;
-  // foundation may import only the two narrow wire-vocabulary subpaths.
+  // foundation may import only the exact narrow wire-vocabulary subpaths.
   for (const match of source.matchAll(/from\s+["'](@fffattiger\/pix-protocol(?:\/[^"']+)?)["']/g)) {
     const specifier = match[1];
-    if (!inComposition && specifier !== FOUNDATION_ALLOWED_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH) {
+    if (!inComposition && specifier !== FOUNDATION_ALLOWED_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_BUILT_INS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_SETTINGS_PROTOCOL_SUBPATH && specifier !== FOUNDATION_ALLOWED_TRANSPORT_PROTOCOL_SUBPATH) {
       fail(`${relativePath} imports non-foundation protocol surface "${specifier}"`);
     }
   }

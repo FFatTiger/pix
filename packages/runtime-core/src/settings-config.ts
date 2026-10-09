@@ -1,3 +1,5 @@
+import { THINKING_LEVELS, type ThinkingLevel } from "./messages.js";
+
 /**
  * Canonical editable global settings.json projection.
  *
@@ -56,6 +58,69 @@ export interface ToolSettingsMutation {
   toolNames: readonly string[] | null;
 }
 
+/** Exact native role name; model strings may be provider-qualified or fuzzy. */
+export interface SubagentAgentOverride {
+  name: string;
+  model: string | null;
+  fallbackModel: string | null;
+  thinking: ThinkingLevel | null;
+}
+
+/**
+ * Global subagent configuration only; no current runtime or project resolution.
+ * All fields are required. Null clears the corresponding native override.
+ * Adapters merge role rows by exact name and preserve omitted roles and unknown
+ * native metadata. Metadata-only native roles project as rows with null fields.
+ */
+export interface SubagentSettings {
+  defaultModel: string | null;
+  fallbackModel: string | null;
+  agentOverrides: readonly SubagentAgentOverride[];
+}
+
+export interface SubagentSettingsSnapshot {
+  /** SHA-256 of the exact settings.json bytes; empty-file digest when absent. */
+  revision: string;
+  settings: SubagentSettings;
+}
+
+export interface SubagentSettingsMutation {
+  expectedRevision: string;
+  settings: SubagentSettings;
+}
+
+/** Validate the strict editable DTO, preserving role identity and trimming models. */
+export function normalizeSubagentSettings(value: unknown): SubagentSettings | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.length !== 3 || !keys.includes("defaultModel") || !keys.includes("fallbackModel") || !keys.includes("agentOverrides")) return null;
+  const input = value as { defaultModel: unknown; fallbackModel: unknown; agentOverrides: unknown };
+  const defaultModel = normalizeSubagentModel(input.defaultModel);
+  const fallbackModel = normalizeSubagentModel(input.fallbackModel);
+  if (defaultModel === undefined || fallbackModel === undefined || !Array.isArray(input.agentOverrides)) return null;
+  const names = new Set<string>();
+  const agentOverrides: SubagentAgentOverride[] = [];
+  for (const item of input.agentOverrides) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) return null;
+    const rowKeys = Object.keys(item);
+    if (rowKeys.length !== 4 || !rowKeys.includes("name") || !rowKeys.includes("model") || !rowKeys.includes("fallbackModel") || !rowKeys.includes("thinking")) return null;
+    const row = item as { name: unknown; model: unknown; fallbackModel: unknown; thinking: unknown };
+    if (typeof row.name !== "string" || row.name.trim().length === 0 || names.has(row.name)) return null;
+    const model = normalizeSubagentModel(row.model);
+    const rowFallbackModel = normalizeSubagentModel(row.fallbackModel);
+    if (model === undefined || rowFallbackModel === undefined) return null;
+    if (row.thinking !== null && (typeof row.thinking !== "string" || !THINKING_LEVELS.includes(row.thinking as ThinkingLevel))) return null;
+    names.add(row.name);
+    agentOverrides.push({ name: row.name, model, fallbackModel: rowFallbackModel, thinking: row.thinking as ThinkingLevel | null });
+  }
+  return { defaultModel, fallbackModel, agentOverrides };
+}
+
+function normalizeSubagentModel(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
 /** Writable global settings.json authority. */
 export interface SettingsConfigStorePort {
   readConfig(): Promise<SettingsConfigSnapshot>;
@@ -64,4 +129,8 @@ export interface SettingsConfigStorePort {
   readToolsConfig(): Promise<ToolSettingsSnapshot>;
   /** Structured CAS write of the global tool selection. */
   writeToolsConfig(input: ToolSettingsMutation): Promise<ToolSettingsSnapshot>;
+  /** Structured global subagent configuration, independent of any session. */
+  readSubagentConfig(): Promise<SubagentSettingsSnapshot>;
+  /** Structured CAS write; nullable fields clear native overrides. */
+  writeSubagentConfig(input: SubagentSettingsMutation): Promise<SubagentSettingsSnapshot>;
 }

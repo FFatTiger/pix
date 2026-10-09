@@ -36,6 +36,18 @@ describe("query keys and options", () => {
     expect(queryKeys.settings.sessionIdleTimeout()).toEqual(["pix", "settings", "session-idle-timeout"]);
   });
 
+  it("subagent settings have a global key and pass an abort signal", async () => {
+    const body = { revision: "a".repeat(64), settings: { defaultModel: null, fallbackModel: null, agentOverrides: [] } };
+    const fetchImpl = vi.fn(async () => json(body));
+    const option = createQueryOptions(createHttpClient({ fetchImpl })).settingsFile.subagents();
+    expect(queryKeys.settingsConfig.subagents()).toEqual(["pix", "settings", "subagents"]);
+    expect(option.queryKey).toEqual(queryKeys.settingsConfig.subagents());
+    expect(option.staleTime).toBe(0);
+    expect(option.retry).toBe(false);
+    await expect(option.queryFn!({ signal: new AbortController().signal } as never)).resolves.toEqual(body);
+    expect(fetchImpl).toHaveBeenCalledWith("/v1/settings/subagents", expect.objectContaining({ method: "GET", signal: expect.any(AbortSignal) }));
+  });
+
   it("file index options key by cwd + q with cwd/q isolation and pass signal", async () => {
     expect(queryKeys.files.index("/a", "foo")).toEqual(["pix", "files", "index", "/a", "foo"]);
     expect(queryKeys.files.index("/a", "foo")).not.toEqual(queryKeys.files.index("/b", "foo"));
@@ -281,14 +293,14 @@ describe("table-driven mutation invalidation", () => {
 
     // Models exposes only the global models.json mutations; skills/plugins/auth
     // remain read-only. Trust and mounted settings keep their narrow mutations
-    // (sessionIdleTimeout + the three settings.json-backed writers: built-ins,
+    // (sessionIdleTimeout + the settings writers: built-ins, subagents,
     // raw text, and the structured global tool selection).
     expect(Object.keys(options.models)).toEqual(["saveConfig", "discover"]);
     expect(options).not.toHaveProperty("skills");
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");
     expect(Object.keys(options.trust)).toEqual(["setTrusted"]);
-    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveConfigFile", "saveTools"]);
+    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveSubagents", "saveConfigFile", "saveTools"]);
   });
 
   it("raw settings save invalidates tools, catalogs, models, and auth", async () => {
@@ -300,11 +312,41 @@ describe("table-driven mutation invalidation", () => {
     expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
       { queryKey: queryKeys.settingsConfig.tools() },
       { queryKey: queryKeys.settingsConfig.builtIns() },
+      { queryKey: queryKeys.settingsConfig.subagents() },
       { queryKey: queryKeys.skills.all },
       { queryKey: queryKeys.plugins.all },
       { queryKey: queryKeys.commands.all },
       { queryKey: queryKeys.models.all },
       { queryKey: queryKeys.auth.all },
+    ]);
+  });
+
+  it("subagent save primes its response and invalidates only the raw and tool settings previews", async () => {
+    const body = { revision: "a".repeat(64), settings: { defaultModel: null, fallbackModel: null, agentOverrides: [] } };
+    const http = createHttpClient({ fetchImpl: vi.fn(async () => json(body)) });
+    const queryClient = new QueryClient();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockImplementation(async () => {
+      expect(queryClient.getQueryData(queryKeys.settingsConfig.subagents())).toEqual(body);
+    });
+    const mutation = createMutationOptions(http, queryClient).settings.saveSubagents();
+    expect(mutation.mutationKey).toEqual(["pix", "settings", "save-subagents"]);
+    await expect(mutation.mutationFn({ expectedRevision: body.revision, settings: body.settings })).resolves.toEqual(body);
+    await mutation.onSuccess(body);
+    expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
+      { queryKey: queryKeys.settingsConfig.file() },
+      { queryKey: queryKeys.settingsConfig.tools() },
+    ]);
+  });
+
+  it("tools save invalidates the raw and subagent settings sharing its revision", async () => {
+    const body = { revision: "a".repeat(64), selection: { mode: "all" as const } };
+    const { options, invalidate } = invalidationHarness(body);
+    const mutation = options.settings.saveTools();
+    await mutation.mutationFn({ expectedRevision: body.revision, toolNames: null });
+    await mutation.onSuccess(body);
+    expect(invalidate.mock.calls.map((call) => call[0])).toEqual([
+      { queryKey: queryKeys.settingsConfig.file() },
+      { queryKey: queryKeys.settingsConfig.subagents() },
     ]);
   });
 

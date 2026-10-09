@@ -121,6 +121,8 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     writeConfig: (input) => settingsConfig.writeConfig(input as never),
     readToolsConfig: () => settingsConfig.readToolsConfig(),
     writeToolsConfig: (input) => settingsConfig.writeToolsConfig(input as never),
+    readSubagentConfig: () => settingsConfig.readSubagentConfig(),
+    writeSubagentConfig: (input) => settingsConfig.writeSubagentConfig(input as never),
   };
 
   const builtinsConfig = createPiSdkBuiltInCapabilityConfig({ agentDir });

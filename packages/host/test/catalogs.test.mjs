@@ -63,6 +63,8 @@ function fakeSettingsMutation(impl = {}) {
   return {
     readConfig: async () => impl.readConfig ? impl.readConfig() : snapshot,
     writeConfig: async (input) => impl.writeConfig ? impl.writeConfig(input) : { revision: "6".repeat(64), content: input.content },
+    readSubagentConfig: async () => impl.readSubagentConfig ? impl.readSubagentConfig() : { revision: "5".repeat(64), settings: { defaultModel: null, fallbackModel: null, agentOverrides: [] } },
+    writeSubagentConfig: async (input) => impl.writeSubagentConfig ? impl.writeSubagentConfig(input) : { revision: "6".repeat(64), settings: input.settings },
     readToolsConfig: async () => impl.readToolsConfig ? impl.readToolsConfig() : toolsSnapshot,
     writeToolsConfig: async (input) => impl.writeToolsConfig ? impl.writeToolsConfig(input) : { revision: "6".repeat(64), selection: { mode: "custom", toolNames: input.toolNames ?? [] } },
   };
@@ -1251,4 +1253,118 @@ test("present cwd never falls back to global on empty, relative, outside, symlin
     }
   }
   assert.deepEqual(resources.seen, []);
+});
+
+const SUBAGENT_SETTINGS = { defaultModel: null, fallbackModel: null, agentOverrides: [] };
+const SUBAGENT_INPUT = { expectedRevision: "5".repeat(64), settings: SUBAGENT_SETTINGS };
+const putSubagents = (app, body = SUBAGENT_INPUT, suffix = "", headers = {}) => app.request(`http://localhost/v1/settings/subagents${suffix}`, {
+  method: "PUT", headers: { host: "localhost", "content-type": "application/json", ...headers }, body: JSON.stringify(body),
+});
+
+test("subagent settings use strict Protocol projection, exact role names, shared capability and no-store", async () => {
+  const roots = await rootsFor(temp("pix-cat-subagents-"));
+  let written;
+  const app = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({
+    writeSubagentConfig: async (input) => { written = input; return { revision: "6".repeat(64), settings: input.settings }; },
+  }) });
+  const get = await call(app, "/v1/settings/subagents");
+  assert.equal(get.status, 200);
+  assert.equal(get.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await get.json(), { revision: "5".repeat(64), settings: SUBAGENT_SETTINGS });
+  const put = await putSubagents(app, { ...SUBAGENT_INPUT, settings: {
+    defaultModel: "  provider/future  ", fallbackModel: null,
+    agentOverrides: [{ name: " Exact Role ", model: " fuzzy ", fallbackModel: null, thinking: "high" }],
+  } });
+  assert.equal(put.status, 200);
+  assert.equal(put.headers.get("cache-control"), "no-store");
+  assert.deepEqual(written.settings, {
+    defaultModel: "provider/future", fallbackModel: null,
+    agentOverrides: [{ name: " Exact Role ", model: "fuzzy", fallbackModel: null, thinking: "high" }],
+  });
+  assert.deepEqual(await put.json(), { revision: "6".repeat(64), settings: written.settings });
+  assert.ok((await (await call(app, "/v1/health")).json()).capabilities.includes("settings.configure"));
+  const bare = appWithCatalogs({ roots });
+  assert.equal((await call(bare, "/v1/settings/subagents")).status, 404);
+  assert.equal((await putSubagents(bare)).status, 404);
+  assert.ok(!(await (await call(bare, "/v1/health")).json()).capabilities.includes("settings.configure"));
+});
+
+test("subagent requests reject every query, malformed DTO and bounded body before seam calls", async () => {
+  const roots = await rootsFor(temp("pix-cat-subagents-invalid-"));
+  let calls = 0;
+  const forbidden = async () => { calls++; throw new Error("must not call"); };
+  const app = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({ readSubagentConfig: forbidden, writeSubagentConfig: forbidden }) });
+  for (const suffix of ["?", "?cwd=/tmp", "?unknown=1"]) {
+    for (const res of [await call(app, `/v1/settings/subagents${suffix}`), await putSubagents(app, SUBAGENT_INPUT, suffix)]) {
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).code, "INVALID_QUERY");
+    }
+  }
+  const row = { name: "role", model: null, fallbackModel: null, thinking: null };
+  for (const input of [
+    {}, { ...SUBAGENT_INPUT, expectedRevision: "bad" }, { ...SUBAGENT_INPUT, extra: true },
+    ...[null, {}, { ...SUBAGENT_SETTINGS, extra: true }, { ...SUBAGENT_SETTINGS, defaultModel: " " },
+      { ...SUBAGENT_SETTINGS, fallbackModel: 5 }, { ...SUBAGENT_SETTINGS, agentOverrides: {} },
+      { ...SUBAGENT_SETTINGS, agentOverrides: [row, row] },
+      { ...SUBAGENT_SETTINGS, agentOverrides: [{ ...row, thinking: "bad" }] },
+      { ...SUBAGENT_SETTINGS, agentOverrides: [{ ...row, name: " " }] },
+      { ...SUBAGENT_SETTINGS, agentOverrides: [{ ...row, metadata: true }] },
+    ].map((settings) => ({ ...SUBAGENT_INPUT, settings })),
+  ]) {
+    const res = await putSubagents(app, input);
+    assert.equal(res.status, 400, JSON.stringify(input));
+    assert.equal((await res.json()).code, "INVALID_SETTINGS_CONFIG");
+  }
+  for (const body of ["not json", "null", "[]"]) {
+    const res = await app.request("http://localhost/v1/settings/subagents", {
+      method: "PUT", headers: { host: "localhost", "content-type": "application/json" }, body,
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, "INVALID_JSON");
+  }
+  assert.equal((await putSubagents(app, { ...SUBAGENT_INPUT, settings: { ...SUBAGENT_SETTINGS, defaultModel: "x".repeat(257 * 1024) } })).status, 413);
+  assert.equal((await putSubagents(app, SUBAGENT_INPUT, "", { "content-type": "text/plain" })).status, 415);
+  assert.equal(calls, 0);
+});
+
+test("subagent seam errors and malformed success frames have fixed sanitized responses", async () => {
+  const roots = await rootsFor(temp("pix-cat-subagents-seam-"));
+  const valid = { revision: "5".repeat(64), settings: SUBAGENT_SETTINGS };
+  for (const frame of [
+    null, {}, { ...valid, revision: "bad" }, { ...valid, raw: PATH_MARKER },
+    { ...valid, settings: { ...SUBAGENT_SETTINGS, defaultModel: 1 } },
+    { ...valid, settings: { ...SUBAGENT_SETTINGS, agentOverrides: [null] } },
+    { get revision() { throw Object.assign(new Error(PATH_MARKER), { code: "invalid_input" }); }, settings: SUBAGENT_SETTINGS },
+    new Proxy({}, { ownKeys() { throw new Error(PATH_MARKER); }, get() { throw new Error(PATH_MARKER); } }),
+  ]) {
+    const app = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({ readSubagentConfig: async () => frame, writeSubagentConfig: async () => frame }) });
+    for (const res of [await call(app, "/v1/settings/subagents"), await putSubagents(app)]) {
+      assert.equal(res.status, 503);
+      const body = await res.json();
+      assert.equal(body.code, "CATALOG_UNAVAILABLE");
+      assertNoMarkers(body);
+    }
+  }
+  for (const [code, status, responseCode] of [["invalid_input", 400, "INVALID_INPUT"], ["conflict", 409, "CONFLICT"], ["unavailable", 503, "CATALOG_UNAVAILABLE"], ["unsupported_capability", 503, "CATALOG_UNAVAILABLE"]]) {
+    const fail = async () => { throw Object.assign(new Error(PATH_MARKER), { code }); };
+    const app = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({ readSubagentConfig: fail, writeSubagentConfig: fail }) });
+    for (const res of [await call(app, "/v1/settings/subagents"), await putSubagents(app)]) {
+      assert.equal(res.status, status);
+      const body = await res.json();
+      assert.equal(body.code, responseCode);
+      assertNoMarkers(body);
+    }
+  }
+});
+
+test("subagent auth gate and Origin checks run before reads and mutations", async () => {
+  const roots = await rootsFor(temp("pix-cat-subagents-gate-"));
+  let calls = 0;
+  const forbidden = async () => { calls++; throw new Error("must not call"); };
+  const catalogs = { roots, settingsMutation: fakeSettingsMutation({ readSubagentConfig: forbidden, writeSubagentConfig: forbidden }) };
+  const gated = createHostApp({ logger: {}, exposureMode: "lan", catalogs, gate: { config: { read: () => ({ status: "enabled", source: "test", password: "secret" }) } } }).app;
+  for (const res of [await call(gated, "/v1/settings/subagents"), await putSubagents(gated)]) assert.equal(res.status, 401);
+  const local = appWithCatalogs(catalogs);
+  assert.equal((await putSubagents(local, SUBAGENT_INPUT, "", { origin: "https://evil.example" })).status, 403);
+  assert.equal(calls, 0);
 });

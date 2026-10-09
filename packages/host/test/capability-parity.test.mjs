@@ -99,7 +99,14 @@ function makeParityApp({ withMutationSeams = false, withCatalogs = false }) {
       roots: { isAuthorized: () => true },
       models: {},
       modelsMutation: {},
-      settingsMutation: {},
+      settingsMutation: {
+        async readConfig() { throw new Error("capability probes must not read settings"); },
+        async writeConfig() { throw new Error("capability probes must not write settings"); },
+        async readToolsConfig() { throw new Error("capability probes must not read settings"); },
+        async writeToolsConfig() { throw new Error("capability probes must not write settings"); },
+        async readSubagentConfig() { throw new Error("capability probes must not read settings"); },
+        async writeSubagentConfig() { throw new Error("capability probes must not write settings"); },
+      },
       builtinsMutation: {},
       credentials: {},
       resources: {

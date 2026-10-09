@@ -52,6 +52,7 @@ export const queryKeys = {
     tools: () => ["pix", "settings", "tools"] as const,
     /** Pix-owned curated Agent feature toggles. */
     builtIns: () => ["pix", "settings", "built-ins"] as const,
+    subagents: () => ["pix", "settings", "subagents"] as const,
   },
 
   files: {
@@ -168,6 +169,13 @@ export function createQueryOptions(http: HttpClient) {
         queryOptions({
           queryKey: queryKeys.settingsConfig.builtIns(),
           queryFn: ({ signal }) => configuration.builtIns.get(signal),
+          staleTime: 0,
+          retry: false,
+        }),
+      subagents: () =>
+        queryOptions({
+          queryKey: queryKeys.settingsConfig.subagents(),
+          queryFn: ({ signal }) => configuration.subagents.get(signal),
           staleTime: 0,
           retry: false,
         }),

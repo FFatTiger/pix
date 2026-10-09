@@ -40,6 +40,9 @@ import type {
   SessionTree,
   SessionTreeNode,
   SessionTreeNodeKind,
+  SettingsConfigStorePort,
+  SubagentSettingsMutation,
+  SubagentSettingsSnapshot,
   ThemeCatalogPort,
   TrustGateResult,
   WorkspaceAccess,
@@ -132,6 +135,24 @@ const _resourceCatalogNotTheme: Assignable<
 const _themeExact: IsExact<
   keyof ThemeCatalogPort,
   "listThemeSets" | "resolveTheme"
+> = true;
+
+const _settingsExact: IsExact<
+  keyof SettingsConfigStorePort,
+  | "readConfig"
+  | "writeConfig"
+  | "readToolsConfig"
+  | "writeToolsConfig"
+  | "readSubagentConfig"
+  | "writeSubagentConfig"
+> = true;
+const _subagentReadExact: IsExact<
+  SettingsConfigStorePort["readSubagentConfig"],
+  () => Promise<SubagentSettingsSnapshot>
+> = true;
+const _subagentWriteExact: IsExact<
+  SettingsConfigStorePort["writeSubagentConfig"],
+  (input: SubagentSettingsMutation) => Promise<SubagentSettingsSnapshot>
 > = true;
 
 const _builtInsExact: IsExact<

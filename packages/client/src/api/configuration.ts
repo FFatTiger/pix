@@ -1,4 +1,12 @@
-import { BuiltInCapabilityConfigResponseSchema, type BuiltInCapabilityConfigMutation, type SettingsConfigMutation, type ToolSettingsMutation, ToolSettingsResponseSchema } from "@fffattiger/pix-protocol";
+import {
+  BuiltInCapabilityConfigResponseSchema,
+  SubagentSettingsResponseSchema,
+  ToolSettingsResponseSchema,
+  type BuiltInCapabilityConfigMutation,
+  type SettingsConfigMutation,
+  type SubagentSettingsMutation,
+  type ToolSettingsMutation,
+} from "@fffattiger/pix-protocol";
 import type { HttpClient } from "./http-client";
 import { urls } from "./urls";
 import {
@@ -105,6 +113,18 @@ export function createConfigurationApi(http: HttpClient) {
       save: (input: BuiltInCapabilityConfigMutation, signal?: AbortSignal) =>
         http.put(urls.settings.builtIns(), input, {
           schema: BuiltInCapabilityConfigResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+    },
+    subagents: {
+      get: (signal?: AbortSignal) =>
+        http.get(urls.settings.subagents(), {
+          schema: SubagentSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      save: (input: SubagentSettingsMutation, signal?: AbortSignal) =>
+        http.put(urls.settings.subagents(), input, {
+          schema: SubagentSettingsResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
     },

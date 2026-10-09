@@ -13,6 +13,7 @@
  */
 import type { Hono } from "hono";
 import { BUILT_IN_CAPABILITY_IDS } from "@fffattiger/pix-protocol/built-in-capabilities";
+import { SubagentSettingsResponseSchema, SubagentSettingsMutationSchema } from "@fffattiger/pix-protocol/settings-config";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import { hasTrustMutationSeam } from "./health.js";
@@ -542,6 +543,16 @@ function projectSettingsConfigSnapshot(raw: unknown): Record<string, unknown> {
   return { revision, content };
 }
 
+function projectSubagentSettingsSnapshot(raw: unknown) {
+  try {
+    const result = SubagentSettingsResponseSchema.safeParse(raw);
+    if (result.success) return result.data;
+  } catch {
+    // Untrusted getters/proxies cannot turn projection failure into raw errors.
+  }
+  throw catalogUnavailable();
+}
+
 function parseModelsConfigModel(raw: unknown): Record<string, unknown> {
   if (!isPlainObject(raw)) invalidModelsConfigBody();
   const allowed = ["sourceIndex", "id", "name", "api", "reasoning", "input", "contextWindow", "maxTokens", "cost"];
@@ -874,6 +885,32 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
       const input = parseToolsConfigMutation(await readJsonObject(c, SETTINGS_CONFIG_BODY_LIMIT));
       try {
         return c.json(projectToolsConfigSnapshot(await deps.settingsMutation!.writeToolsConfig(input)));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+
+    app.get("/v1/settings/subagents", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      try {
+        return c.json(projectSubagentSettingsSnapshot(await deps.settingsMutation!.readSubagentConfig()));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+
+    app.put("/v1/settings/subagents", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      const input = SubagentSettingsMutationSchema.safeParse(await readJsonObject(c, SETTINGS_CONFIG_BODY_LIMIT));
+      if (!input.success) invalidSettingsConfigBody();
+      try {
+        return c.json(projectSubagentSettingsSnapshot(await deps.settingsMutation!.writeSubagentConfig(input.data)));
       } catch (error) {
         throw mapSettingsConfigError(error);
       }
