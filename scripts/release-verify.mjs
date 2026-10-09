@@ -445,7 +445,7 @@ console.log(JSON.stringify({ sessionId: manager.getSessionId(), file: manager.ge
   const listProbe = writeRpcProbe(sandbox, "rpc-list.mjs", sessiondPkg, `
   const list = await client.call("sessions.list", { page: 1, pageSize: 20 });
   if (!Array.isArray(list.sessions)) throw new Error("sessions.list returned no array");
-  if (!list.sessions.some((session) => session.id === ${JSON.stringify(persisted.sessionId)})) throw new Error("vNext daemon cannot find the exact vPrev session");
+  if (!list.sessions.some((session) => session.sessionId === ${JSON.stringify(persisted.sessionId)})) throw new Error("vNext daemon cannot find the exact vPrev session");
   const context = await client.call("sessions.context", { sessionId: ${JSON.stringify(persisted.sessionId)} });
   const text = JSON.stringify(context);
   if (!text.includes("rel1 upgrade sim") || !text.includes("persisted by vPrev")) throw new Error("upgraded context lost persisted messages");
