@@ -340,6 +340,29 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     expect(onRespond).not.toHaveBeenCalled();
   });
 
+  it("starts multi-select from the visible unchecked state when leaving a custom answer", () => {
+    const onRespond = makeRespond();
+    wrap(
+      <ExtensionQuestionnaire
+        request={questionnaireRequest([question({ header: "H", question: "Tools?", multiSelect: true })])}
+        onRespond={onRespond}
+      />,
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: /One/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Two/ }));
+    activateCustom("saved custom");
+    expect((screen.getByRole("checkbox", { name: /One/ }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: /Two/ }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByRole("checkbox", { name: /One/ }));
+    expect((screen.getByRole("checkbox", { name: /One/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("checkbox", { name: /Two/ }) as HTMLInputElement).checked).toBe(false);
+    expect(customInput().value).toBe("saved custom");
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(onRespond).toHaveBeenCalledWith(expect.anything(), {
+      answers: [{ kind: "multi", questionIndex: 0, optionIndices: [0] }],
+    });
+  });
+
   it("keeps custom input single-line, ignores plain Enter, and blocks Ctrl/Cmd+Enter during IME", () => {
     const onRespond = makeRespond();
     wrap(

@@ -162,7 +162,7 @@ export function ExtensionQuestionnaire({
                           if (showPreviewPane) setPreviewIndex(optionIndex);
                           updateDraft({
                             mode: "options",
-                            selected: toggleIndex(draft.selected, optionIndex, current.multiSelect),
+                            selected: toggleIndex(optionsActive ? draft.selected : [], optionIndex, current.multiSelect),
                           });
                         }}
                       />
