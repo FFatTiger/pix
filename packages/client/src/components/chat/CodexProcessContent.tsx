@@ -373,7 +373,9 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
     const preview = concise(command ?? block.toolName);
     const detail = block.status === "running"
       ? t("desktop.codexProcessToolRunning", { command: preview })
-      : t("desktop.codexProcessToolRan", { command: preview });
+      : block.duration !== undefined
+        ? t("desktop.codexProcessToolRanIn", { command: preview, duration: block.duration })
+        : t("desktop.codexProcessToolRan", { command: preview });
     return {
       action: t("desktop.codexProcessGroupRanCommands"),
       completedAction: t("desktop.codexProcessCompletedRanCommands"),
@@ -620,7 +622,6 @@ function CodexToolRow({ block }: { block: ToolBlock }) {
       >
         <span className="codex-tool-icon" aria-hidden="true">{iconFor(presentation.iconName)}</span>
         <span className="codex-tool-row-label" title={presentation.target ?? presentation.detail}>
-          {block.sharedBatch?.result.isError && `${t("desktop.codemodeBatchFailed")} · `}
           {presentation.detail}
         </span>
         {stats && (stats.additions > 0 || stats.deletions > 0) && (
@@ -629,9 +630,10 @@ function CodexToolRow({ block }: { block: ToolBlock }) {
             <span className="is-removed">-{stats.deletions}</span>
           </span>
         )}
-        {block.duration !== undefined && (
-          <span className="codex-tool-duration" title={t("desktop.codexProcessToolDuration", { duration: block.duration })}>{t("desktop.codexProcessToolDuration", { duration: block.duration })}</span>
+        {block.duration !== undefined && presentation.tone !== "command_execution" && (
+          <span className="codex-tool-duration">{t("desktop.codexProcessToolDuration", { duration: block.duration })}</span>
         )}
+        {block.sharedBatch?.result.isError && <span className="codex-tool-duration">{t("desktop.codemodeBatchFailed")}</span>}
         {block.nested && <span className="codemode-tool-badge">{t("desktop.codemodeLabel")}</span>}
         {hasDetails && (
           <CaretRightIcon className={`codex-tool-caret${expanded ? " is-expanded" : ""}`} size={13} aria-hidden="true" />

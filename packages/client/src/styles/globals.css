@@ -1191,6 +1191,7 @@ pre, code {
 }
 .group\/process .codex-tool-group-trigger,
 .group\/process .codex-tool-row-trigger {
+  display: flex;
   width: 100%;
   min-width: 0;
   align-items: center;
@@ -1204,18 +1205,6 @@ pre, code {
   text-align: left;
   cursor: pointer;
 }
-.group\/process .codex-tool-group-trigger {
-  display: flex;
-}
-.group\/process .codex-tool-row-trigger {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) 7ch 7ch 64px 13px;
-}
-.group\/process .codex-tool-row-trigger > .codex-tool-icon { grid-column: 1; }
-.group\/process .codex-tool-row-trigger > .codex-tool-diff { grid-column: 3; }
-.group\/process .codex-tool-row-trigger > .codex-tool-duration { grid-column: 4; }
-.group\/process .codex-tool-row-trigger > .codemode-tool-badge { grid-column: 5; }
-.group\/process .codex-tool-row-trigger > .codex-tool-caret { grid-column: 6; }
 .group\/process .codex-tool-group-trigger:hover,
 .group\/process .codex-tool-row-trigger:hover {
   color: var(--text-muted);
@@ -1267,19 +1256,15 @@ pre, code {
 }
 .group\/process .codex-tool-group-label,
 .group\/process .codex-tool-row-label {
+  /* fit-content keeps the sheen background glued to the text itself: a
+     flex-filling label would sweep its (invisible) right whitespace too. */
   flex: 0 1 auto;
+  width: fit-content;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-.group\/process .codex-tool-group-label {
-  /* Keep the group sheen background fitted to its summary text. */
-  width: fit-content;
-  max-width: 100%;
-}
-.group\/process .codex-tool-row-label {
-  grid-column: 2;
 }
 .group\/process .codex-tool-caret {
   flex: 0 0 auto;
@@ -1335,10 +1320,7 @@ pre, code {
 }
 .group\/process .codex-tool-diff {
   display: inline-flex;
-  justify-self: end;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
+  flex: 0 0 auto;
   gap: 4px;
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1352,11 +1334,7 @@ pre, code {
   color: var(--accent-red);
 }
 .group\/process .codex-tool-duration {
-  justify-self: end;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
   color: var(--text-dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -1365,11 +1343,11 @@ pre, code {
 .codemode-tool-badge {
   flex: 0 0 auto;
   margin-left: auto;
-  padding: 1px 6px;
-  border: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-  color: var(--text-muted);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
   font-family: var(--font-mono);
   font-size: 10px;
   line-height: 16px;

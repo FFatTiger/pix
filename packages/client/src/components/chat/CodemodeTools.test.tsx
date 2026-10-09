@@ -126,4 +126,44 @@ describe("canonical codemode display", () => {
     expect(view.container.textContent).toContain("Arguments were not recorded.");
     expect(view.container.textContent).toContain("shared failure");
   });
+  it("keeps a long nested bash command on the native row and opens the full args in details", () => {
+    const command = `node --input-type=module -e ${"x".repeat(620)}`;
+    const root = parent();
+    root.result = {
+      ...root.result!,
+      nestedCalls: {
+        complete: true,
+        calls: [
+          { id: "same-child", name: "read", arguments: { path: "README.md" }, status: "ok", durationMs: 0 },
+          { id: "long-bash", name: "bash", arguments: { command }, status: "ok", durationMs: 4000 },
+          { id: "child-3", name: "grep", arguments: { pattern: "token" }, status: "ok", durationMs: 0 },
+        ],
+      },
+    };
+    const ordinary = (id: string): ToolBlock => ({ id, type: "toolCall", toolCallId: id, toolName: "read", input: { path: id }, status: "success", origin });
+    const items = [ordinary("before"), ...expandNestedToolBlocks(root), ordinary("after")];
+    expect(items).toHaveLength(5);
+    expect(items.map(item => item.toolName)).toEqual(["read", "read", "bash", "grep", "read"]);
+    expect(items.every(item => item.toolName !== "codemode")).toBe(true);
+    expect(items[2]!.result).toBeUndefined();
+    const view = render(<I18nProvider><ProcessGroup blocks={items} isStreaming={false} /></I18nProvider>);
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>("button[aria-expanded]")!);
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>(".codex-tool-group-trigger")!);
+    const rows = Array.from(view.container.querySelectorAll<HTMLElement>(".codex-tool-row"));
+    expect(rows).toHaveLength(5);
+    expect(view.container.querySelectorAll(".codemode-tool-badge")).toHaveLength(3);
+    const nested = rows[2]!;
+    const preview = `${command.slice(0, 117)}...`;
+    expect(nested.querySelector(".codex-tool-row-label")?.textContent).toBe(`Ran ${preview} in 4s`);
+    expect(nested.querySelector(".codex-tool-row-label")?.textContent).not.toContain(command);
+    expect(nested.querySelector(".codemode-tool-badge")?.textContent).toBe("codemode");
+    expect(nested.querySelector(".codex-tool-duration")).toBeNull();
+    const triggers = rows.map(row => row.querySelector<HTMLButtonElement>(".codex-tool-row-trigger")!);
+    expect(triggers.every(trigger => trigger.getAttribute("aria-expanded") === "false")).toBe(true);
+    fireEvent.click(triggers[2]!);
+    expect(triggers[2]!.getAttribute("aria-expanded")).toBe("true");
+    expect(triggers.filter((_, index) => index !== 2).every(trigger => trigger.getAttribute("aria-expanded") === "false")).toBe(true);
+    expect(nested.querySelector("pre")?.textContent).toBe(JSON.stringify({ command }, null, 2));
+    expect(nested.querySelector(".nested-tool-details")?.textContent).not.toContain("shared failure");
+  });
 });
