@@ -15,6 +15,7 @@ import { TrashIcon } from "@phosphor-icons/react/Trash";
 import { WarningCircleIcon } from "@phosphor-icons/react/WarningCircle";
 import { MarkdownBody } from "./MarkdownBody";
 import { NestedToolCallSummary } from "./NestedToolCallSummary";
+import { NestedToolDetails } from "./NestedToolDetails";
 import { DisclosureCollapse } from "./DisclosureCollapse";
 import { useI18n } from "@/hooks/useI18n";
 import type { ImageContent, ToolResultMessage } from "@/lib/chat-view-model";
@@ -185,11 +186,14 @@ function isCommandInvocation(block: ToolBlock): boolean {
 
 function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation {
   const tone = toolTone(block);
+  if (block.status === "unfinished") {
+    return { action: t("desktop.nestedToolCallUnfinished"), detail: t("desktop.nestedToolUnfinished", { tool: block.toolName }), iconName: "toolbox", tone };
+  }
 
   // A command's non-zero exit is not enough to infer failure: probes such as
   // grep/test commonly use it as expected control flow. Preserve the command
   // action and raw output without inventing a failure label.
-  if (block.status === "error" && tone !== "command_execution") {
+  if (block.status === "error" && (block.nested || tone !== "command_execution")) {
     return {
       action: t("desktop.codexProcessGroupFailed"),
       detail: t("desktop.codexProcessToolFailed", { tool: block.toolName }),
@@ -198,6 +202,9 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
     };
   }
 
+  if (block.nested && (block.nested.call.arguments === undefined || isImageViewTool(block))) {
+    return { action: t("desktop.codexProcessCompletedUsedTool", { tool: block.toolName }), detail: block.toolName, iconName: "toolbox", tone };
+  }
   const target = toolTarget(block);
   const shortTarget = target ? basenameResourcePath(target) : undefined;
 
@@ -468,7 +475,7 @@ function uniqueActions(
   blocks.forEach((block, index) => {
     const presentation = presentations[index];
     const identity = presentation?.action;
-    const displayStatus = block.status === "error" && isCommandInvocation(block)
+    const displayStatus = block.status === "error" && !block.nested && isCommandInvocation(block)
       ? "success"
       : block.status;
     if (displayStatus !== status || !presentation || !identity || seen.has(identity)) return;
@@ -484,7 +491,7 @@ function uniqueActions(
 }
 
 function isPresentationFailure(block: ToolBlock): boolean {
-  return block.status === "error" && !isCommandInvocation(block);
+  return Boolean(block.sharedBatch?.result.isError) || (block.status === "error" && (Boolean(block.nested) || !isCommandInvocation(block)));
 }
 
 function summarizeGroupActions(
@@ -498,7 +505,7 @@ function summarizeGroupActions(
       if (!result.includes(item.action)) result.push(item.action);
       return result;
     }, []);
-    return actions.slice(0, MAX_GROUP_ACTIONS).join(" · ");
+    return [...actions.slice(0, MAX_GROUP_ACTIONS), ...(blocks.some((block) => block.sharedBatch?.result.isError) ? [t("desktop.codemodeBatchFailed")] : []), ...(blocks.some((block) => block.status === "unfinished") ? [t("desktop.nestedToolCallUnfinished")] : [])].join(" · ");
   }
 
   // Codex's Chinese labels concatenate actions without punctuation. Deduplicate
@@ -507,6 +514,7 @@ function summarizeGroupActions(
   const completedAll = uniqueActions(blocks, presentations, "success");
   const runningAll = uniqueActions(blocks, presentations, "running");
   const hasFailure = blocks.some(isPresentationFailure);
+  const hasUnfinished = blocks.some((block) => block.status === "unfinished");
   const actionBudget = MAX_GROUP_ACTIONS - (hasFailure ? 1 : 0);
   const runningActions = runningAll.slice(0, actionBudget);
   const completedActions = completedAll.slice(0, Math.max(0, actionBudget - runningActions.length));
@@ -525,6 +533,7 @@ function summarizeGroupActions(
       ? t("desktop.codexProcessActionsWithFailure", { actions: summary })
       : t("desktop.codexProcessSomeFailed");
   }
+  if (hasUnfinished) summary = summary ? `${summary} · ${t("desktop.nestedToolCallUnfinished")}` : t("desktop.nestedToolCallUnfinished");
   return summary || t("desktop.codexProcessGroupUsedTools");
 }
 
@@ -597,7 +606,7 @@ function CodexToolRow({ block }: { block: ToolBlock }) {
   // Tools never auto-expand: a newly appeared tool stays collapsed until the
   // user opens it, matching Codex's quiet default.
   const [expanded, setExpanded] = useState(false);
-  const hasDetails = Object.keys(block.input).length > 0 || Boolean(block.result);
+  const hasDetails = Boolean(block.nested) || Object.keys(block.input).length > 0 || Boolean(block.result);
   const stats = patchStats(block);
 
   return (
@@ -624,12 +633,14 @@ function CodexToolRow({ block }: { block: ToolBlock }) {
         {block.duration !== undefined && presentation.tone !== "command_execution" && (
           <span className="codex-tool-duration">{t("desktop.codexProcessToolDuration", { duration: block.duration })}</span>
         )}
+        {block.sharedBatch?.result.isError && <span className="codex-tool-duration">{t("desktop.codemodeBatchFailed")}</span>}
+        {block.nested && <span className="codemode-tool-badge">{t("desktop.codemodeLabel")}</span>}
         {hasDetails && (
           <CaretRightIcon className={`codex-tool-caret${expanded ? " is-expanded" : ""}`} size={13} aria-hidden="true" />
         )}
       </button>
       <DisclosureCollapse open={expanded && hasDetails} className="codex-tool-row-collapse">
-        <CodexToolDetails block={block} />
+        {block.nested ? <NestedToolDetails block={block} /> : <CodexToolDetails block={block} />}
       </DisclosureCollapse>
     </div>
   );

@@ -3,6 +3,8 @@ import { memo, useState, useRef, useEffect, useMemo, useCallback, type MouseEven
 import { createPortal } from "react-dom";
 import { MarkdownBody } from "./MarkdownBody";
 import { NestedToolCallSummary } from "./NestedToolCallSummary";
+import { NestedToolDetails } from "./NestedToolDetails";
+import { expandNestedToolBlocks, type ProcessContentBlock } from "@/lib/process-content";
 import { copyText } from "@/lib/clipboard";
 import { cssPx, cssViewportSize } from "@/lib/ui-scale";
 import { urls } from "@/api/urls";
@@ -902,7 +904,13 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} />;
+    const items = expandNestedToolBlocks({
+      id: tc.toolCallId, type: "toolCall", toolCallId: tc.toolCallId, toolName: tc.toolName,
+      input: tc.input as Record<string, unknown>, result, duration,
+      status: result?.isError ? "error" : result ? "success" : "running",
+      origin: { phase: "process", placement: "inline", sourceMessageIndex: 0, sourceBlockIndex: blockIndex },
+    });
+    return <>{items.map((item) => <ToolCallBlock key={item.toolCallId} block={{ type: "toolCall", toolCallId: item.toolCallId, toolName: item.toolName, input: item.input }} result={item.result} duration={item.duration} displayBlock={item} />)}</>;
   }
   return null;
 }
@@ -1042,7 +1050,8 @@ function ThinkingContentBody({ block, sessionId, entryId, blockIndex, isStreamin
 // let the user opt into the full payload so expanding a 45K result stays snappy.
 const RESULT_PREVIEW_CHARS = 8000;
 
-export const ToolCallBlock = memo(function ToolCallBlock({ block, result, duration, processStyle = false }: { block: ToolCallContent; result?: ToolResultMessage | undefined; duration?: number | undefined; processStyle?: boolean }) {
+export const ToolCallBlock = memo(function ToolCallBlock({ block, result, duration, processStyle = false, displayBlock }: { block: ToolCallContent; result?: ToolResultMessage | undefined; duration?: number | undefined; processStyle?: boolean; displayBlock?: Extract<ProcessContentBlock, { type: "toolCall" }> | undefined }) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const inputStr = useMemo(() => JSON.stringify(block.input, null, 2), [block.input]);
   const isEditTool = isEditToolName(block.toolName);
@@ -1056,7 +1065,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({ block, result, durati
     [result],
   );
   const resultIsEmpty = resultText === null ? false : (resultText.trim() === "(no output)" || resultText.trim() === "");
-  const isError = result?.isError ?? false;
+  const isError = Boolean(result?.isError || displayBlock?.status === "error" || displayBlock?.sharedBatch?.result.isError);
 
   return (
     <div
@@ -1077,13 +1086,17 @@ export const ToolCallBlock = memo(function ToolCallBlock({ block, result, durati
         {duration !== undefined && (
           <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{duration}s</span>
         )}
+        {displayBlock?.status === "unfinished" && <span className="tool-call-preview">{t("desktop.nestedToolCallUnfinished")}</span>}
+        {displayBlock?.sharedBatch?.result.isError && <span className="tool-call-preview">{t("desktop.codemodeBatchFailed")}</span>}
+        {displayBlock?.nested && <span className="codemode-tool-badge">{t("desktop.codemodeLabel")}</span>}
         <span className={`tool-call-caret ${expanded ? "is-expanded" : ""}`} aria-hidden="true">
           <CaretRightIcon size={12} />
         </span>
       </button>
 
       {/* ── Expanded: input args ── */}
-      {expanded && !isEditTool && (
+      {expanded && displayBlock?.nested && <NestedToolDetails block={displayBlock} />}
+      {expanded && !displayBlock?.nested && !isEditTool && (
         <pre className="tool-call-input">
           {inputStr}
         </pre>

@@ -72,7 +72,9 @@ function enrichedToolLabel(
   ts: BuildLabelFn,
 ): { displayLabel: string; iconName: StepIconName; target?: string | undefined; tone?: StepTone | undefined; typeLabel?: string | undefined } {
   const fallback = toolFallbackLabel(block);
-  const isError = block.status === "error";
+  const isError = block.status === "error" || Boolean(block.sharedBatch?.result.isError);
+  if (block.status === "unfinished") return { displayLabel: `${fallback} · ${ts("desktop.nestedToolCallUnfinished")}`, iconName: "toolbox" };
+  if (block.nested && block.nested.call.arguments === undefined && !isError) return { displayLabel: fallback, iconName: "toolbox" };
 
   if (isError) {
     return { displayLabel: fallback, iconName: "warning", tone: undefined };
@@ -331,7 +333,7 @@ function mergeConsecutiveToolSteps(
 
     // Error steps are never merged — push directly
     const toolStep = step as Extract<Step, { kind: "tool" }>;
-    if (toolStep.block.status === "error") {
+    if (toolStep.block.status === "error" || toolStep.block.sharedBatch?.result.isError) {
       result.push(step);
       i++;
       continue;
@@ -352,7 +354,7 @@ function mergeConsecutiveToolSteps(
     let j = i + 1;
     while (j < steps.length && steps[j]!.kind === "tool") {
       const nextStep = steps[j]! as Extract<Step, { kind: "tool" }>;
-      if (nextStep.block.status === "error") break;
+      if (nextStep.block.status === "error" || nextStep.block.sharedBatch?.result.isError) break;
       const nextEnriched = enrichedToolLabel(nextStep.block, ts);
       if (nextEnriched.tone !== currentTone) break;
       j++;
@@ -648,6 +650,7 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
           } as ToolCallContent}
           result={step.block.result}
           duration={step.block.duration}
+          displayBlock={step.block}
           processStyle
         />
       </div>
@@ -672,6 +675,7 @@ function StepContent({ step, cwd, onOpenFile, sessionId, ts, isStreaming, loadTh
               } as ToolCallContent}
               result={block.result}
               duration={block.duration}
+              displayBlock={block}
               processStyle
             />
           </div>
@@ -1031,8 +1035,8 @@ export function ProcessGroup({
                   const open = stepStates[step.id] ?? false;
                   const hasContent = stepHasContent(step);
                   const isError =
-                    (step.kind === "tool" && step.block.status === "error") ||
-                    (step.kind === "toolGroup" && step.blocks.some(b => b.status === "error"));
+                    (step.kind === "tool" && (step.block.status === "error" || Boolean(step.block.sharedBatch?.result.isError))) ||
+                    (step.kind === "toolGroup" && step.blocks.some(b => b.status === "error" || b.sharedBatch?.result.isError));
                   const toolInfo = step.kind === "tool" ? enrichedToolLabel(step.block, ts) : null;
                   const hasFileTag = step.kind !== "toolGroup" && toolInfo?.target !== undefined && toolInfo?.typeLabel !== undefined;
                   return (
@@ -1098,8 +1102,8 @@ export function ProcessGroup({
               <div ref={navScrollRef} className="process-step-nav flex flex-wrap gap-1">
                 {steps.map((step, index) => {
                   const isError =
-                    (step.kind === "tool" && step.block.status === "error") ||
-                    (step.kind === "toolGroup" && step.blocks.some(b => b.status === "error"));
+                    (step.kind === "tool" && (step.block.status === "error" || Boolean(step.block.sharedBatch?.result.isError))) ||
+                    (step.kind === "toolGroup" && step.blocks.some(b => b.status === "error" || b.sharedBatch?.result.isError));
                   const toolInfo = step.kind === "tool" ? enrichedToolLabel(step.block, ts) : null;
                   const hasFileTag = step.kind !== "toolGroup" && toolInfo?.target !== undefined && toolInfo?.typeLabel !== undefined;
                   const isRunning = isStreaming && index === steps.length - 1;

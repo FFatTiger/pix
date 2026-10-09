@@ -1,3 +1,4 @@
+import type { NestedToolCalls } from "@fffattiger/pix-protocol";
 import type {
   AgentMessage,
   AssistantContentBlock,
@@ -32,9 +33,34 @@ export type ProcessContentBlock =
       input: Record<string, unknown>;
       result?: ToolResultMessage | undefined;
       duration?: number | undefined;
-      status: "running" | "success" | "error";
+      status: "running" | "success" | "error" | "unfinished";
+      nested?: { parentToolCallId: string; call: NestedToolCalls["calls"][number] } | undefined;
+      sharedBatch?: { input: unknown; result: ToolResultMessage; complete: boolean } | undefined;
     })
   | (ProcessBlockBase & { type: "custom"; customType: string; message: CustomMessage });
+
+type ToolBlock = Extract<ProcessContentBlock, { type: "toolCall" }>;
+
+export function expandNestedToolBlocks(block: ToolBlock): ToolBlock[] {
+  const summary = block.result?.nestedCalls;
+  if (block.toolName !== "codemode" || !summary?.calls.length) return [block];
+  return summary.calls.map((call, index) => {
+    const id = JSON.stringify([block.toolCallId, call.id]);
+    const input = call.arguments;
+    return {
+      id,
+      type: "toolCall",
+      toolCallId: id,
+      toolName: call.name,
+      input: typeof input === "object" && input !== null && !Array.isArray(input) ? input as Record<string, unknown> : {},
+      status: call.status === "ok" ? "success" : call.status === "error" ? "error" : "unfinished",
+      duration: call.durationMs === undefined ? undefined : call.durationMs / 1000,
+      origin: { ...block.origin, groupId: block.toolCallId },
+      nested: { parentToolCallId: block.toolCallId, call },
+      sharedBatch: index === summary.calls.length - 1 ? { input: block.input, result: block.result!, complete: summary.complete } : undefined,
+    };
+  });
+}
 
 interface ConvertMessageOptions {
   messageIndex: number;
@@ -100,7 +126,7 @@ export function messageToProcessContentBlocks(
   const assistant = message as AssistantMessage;
   const selectedBlocks = options.blocks ?? displayableAssistantBlocks(assistant, isStreaming);
 
-  return selectedBlocks.map((block, localIndex) => {
+  return selectedBlocks.flatMap<ProcessContentBlock>((block, localIndex) => {
     const sourceBlockIndex = assistant.content.indexOf(block);
     const resolvedBlockIndex = sourceBlockIndex >= 0 ? sourceBlockIndex : localIndex;
     const originBase = {
@@ -113,23 +139,23 @@ export function messageToProcessContentBlocks(
     const id = blockId(entryId, messageIndex, resolvedBlockIndex);
 
     if (block.type === "text") {
-      return { id, type: "text", text: block.text, origin: originBase };
+      return [{ id, type: "text", text: block.text, origin: originBase }];
     }
     if (block.type === "image") {
-      return { id, type: "image", source: block.source, origin: originBase };
+      return [{ id, type: "image", source: block.source, origin: originBase }];
     }
     if (block.type === "thinking") {
-      return {
+      return [{
         id,
         type: "thinking",
         thinking: block.thinking,
         deferred: block.deferred,
         origin: originBase,
-      };
+      }];
     }
 
     const result = toolResults?.get(block.toolCallId);
-    return {
+    return expandNestedToolBlocks({
       id,
       type: "toolCall",
       toolCallId: block.toolCallId,
@@ -141,7 +167,7 @@ export function messageToProcessContentBlocks(
       duration: toolDuration(assistant, result),
       status: result?.isError ? "error" : result ? "success" : "running",
       origin: { ...originBase, groupId: block.toolCallId },
-    };
+    });
   });
 }
 

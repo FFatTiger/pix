@@ -226,6 +226,12 @@ interface AgentRuntimePort {
 - 选择历史/文件 Tab 不启动目标 Worker；已有 attach 可作为后台事件订阅保留，所有 transcript/composer/capability/context 均按 active session identity fail-closed，后台 A 状态绝不投影到 B。
 - **本轮评估澄清**：零 Worker 历史浏览限制的是隐式启动执行，不禁止观察一个已运行的 Worker。选择身份、观察订阅、执行激活、中断当前 turn 和结束 Worker 必须分别定义；具体重构契约与迁移顺序见本轮方案。在服务端证明“观察绝不激活”之前，不把放宽客户端自动 attach 条件当作完整修复。
 
+### 嵌套工具展示
+
+- Client 的共享 process-content 展示转换将 `codemode` 结果中已有的 `nestedCalls` 展开为独立工具行，与普通工具进入同一个现有工具分组；来源只用淡色 `codemode` 标签表示。
+- 子调用的身份、参数、状态和耗时来自规范化记录。缺失参数和 `unfinished` 如实展示，不伪造子工具输出；父脚本与真实聚合结果保留在最后一条子调用的共享详情中。没有内部调用记录时保留原始父工具行。
+- 该转换只改变 Client 展示，不写回 transcript 或运行时投影，不新增协议字段或自动激活 Worker。
+
 ### 上下文占用来源
 
 - 历史页的 `SessionContext.contextTokens` 与 `settings.model`、`leafId` 来自同一次已验证的 selected-branch 读取；Adapter 在分页和 thinking/media deferral 之前计算完整原始上下文的 token 估算。Client 只使用现有模型目录中 exact provider/id 的窗口，缺少分子、模型或窗口时保持未知，不借用同 ID 后台 Worker 的统计。

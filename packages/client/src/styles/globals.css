@@ -1339,6 +1339,32 @@ pre, code {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+.codemode-tool-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.nested-tool-details {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+.nested-tool-details pre {
+  max-height: 400px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.nested-tool-details .is-error { color: var(--accent-red); }
+.nested-tool-details img { max-width: 100%; max-height: 300px; object-fit: contain; }
 .group\/process .codex-tool-details {
   display: grid;
   gap: 8px;
