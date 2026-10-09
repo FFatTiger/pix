@@ -1191,7 +1191,6 @@ pre, code {
 }
 .group\/process .codex-tool-group-trigger,
 .group\/process .codex-tool-row-trigger {
-  display: flex;
   width: 100%;
   min-width: 0;
   align-items: center;
@@ -1205,6 +1204,18 @@ pre, code {
   text-align: left;
   cursor: pointer;
 }
+.group\/process .codex-tool-group-trigger {
+  display: flex;
+}
+.group\/process .codex-tool-row-trigger {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 7ch 7ch 64px 13px;
+}
+.group\/process .codex-tool-row-trigger > .codex-tool-icon { grid-column: 1; }
+.group\/process .codex-tool-row-trigger > .codex-tool-diff { grid-column: 3; }
+.group\/process .codex-tool-row-trigger > .codex-tool-duration { grid-column: 4; }
+.group\/process .codex-tool-row-trigger > .codemode-tool-badge { grid-column: 5; }
+.group\/process .codex-tool-row-trigger > .codex-tool-caret { grid-column: 6; }
 .group\/process .codex-tool-group-trigger:hover,
 .group\/process .codex-tool-row-trigger:hover {
   color: var(--text-muted);
@@ -1268,7 +1279,7 @@ pre, code {
   max-width: 100%;
 }
 .group\/process .codex-tool-row-label {
-  width: 70%;
+  grid-column: 2;
 }
 .group\/process .codex-tool-caret {
   flex: 0 0 auto;
@@ -1324,7 +1335,10 @@ pre, code {
 }
 .group\/process .codex-tool-diff {
   display: inline-flex;
-  flex: 0 0 auto;
+  justify-self: end;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   gap: 4px;
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1338,7 +1352,11 @@ pre, code {
   color: var(--accent-red);
 }
 .group\/process .codex-tool-duration {
-  flex: 0 0 auto;
+  justify-self: end;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--text-dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;

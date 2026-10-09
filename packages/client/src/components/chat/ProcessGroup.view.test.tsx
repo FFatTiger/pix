@@ -515,7 +515,8 @@ describe("ProcessGroup — expanded lifecycle", () => {
       </I18nProvider>,
     );
 
-    expect(row.querySelector(".codex-tool-row-label")?.textContent).toBe(`已在 11s 内运行 ${command}`);
+    expect(row.querySelector(".codex-tool-row-label")?.textContent).toBe(`已运行 ${command}`);
+    expect(row.querySelector(".codex-tool-duration")?.textContent).toBe("11秒");
     expect(row.classList.contains("is-running")).toBe(false);
   });
 
@@ -591,10 +592,11 @@ describe("ProcessGroup — expanded lifecycle", () => {
     expect(group.querySelector(".codex-tool-group-label")?.textContent).toBe("运行了命令");
     fireEvent.click(group.querySelector<HTMLButtonElement>(".codex-tool-group-trigger")!);
     expect(Array.from(group.querySelectorAll(".codex-tool-row-label"), (row) => row.textContent)).toEqual([
-      "已在 57s 内运行 npm test",
+      "已运行 npm test",
       "已运行 node --input-type=module -",
-      "已在 1s 内运行 npm run check:architecture",
+      "已运行 npm run check:architecture",
     ]);
+    expect(Array.from(group.querySelectorAll(".codex-tool-row"), (row) => row.querySelector(".codex-tool-duration")?.textContent)).toEqual(["57秒", undefined, "1秒"]);
   });
 
   it("uses action summaries for ordinary reads and image copy for a production read result", () => {
