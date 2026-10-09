@@ -214,8 +214,12 @@ export function isValidInstanceId(value: unknown): value is string {
  * normalized (no "." / ".." / empty / trailing-slash / leading-double-slash
  * segments), bounded, no NUL. Equivalent to the old Host
  * `isAbsolute && resolve(value) === value` check without a path import, so it
- * stays platform-neutral.
+ * stays platform-neutral. On win32 a canonical path is `C:\a\b` (drive letter,
+ * backslash separators); on POSIX it is `/a/b`. The predicate accepts the
+ * shape matching the CURRENT platform so stored ledgers stay consistent per-OS.
  */
+const WINDOWS_DRIVE_PREFIX = /^[A-Za-z]:\\/;
+
 export function isAbsoluteCanonicalShape(value: unknown): value is string {
   if (
     typeof value !== "string"
@@ -224,6 +228,18 @@ export function isAbsoluteCanonicalShape(value: unknown): value is string {
     || value.includes("\0")
   ) {
     return false;
+  }
+  if (process.platform === "win32") {
+    // Windows canonical shape: `C:\a\b` (no trailing slash, no `.`/`..`
+    // components, backslash separators only).
+    if (!WINDOWS_DRIVE_PREFIX.test(value)) return false;
+    if (value.length <= 3) return false; // bare drive root `C:\` is never a stored canonical target
+    if (value.endsWith("\\")) return false;
+    const segments = value.slice(3).split("\\");
+    for (const segment of segments) {
+      if (segment === "" || segment === "." || segment === "..") return false;
+    }
+    return true;
   }
   if (!value.startsWith("/")) return false;
   // Filesystem root is a valid *shape* (matches the original

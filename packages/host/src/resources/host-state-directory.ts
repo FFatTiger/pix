@@ -69,7 +69,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, realpath, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import {
   createPosixSecureStateBackend,
   LocalAuthorityError,
@@ -337,15 +337,22 @@ function buildTempPatterns(documents: readonly string[]): RegExp[] {
  * "no symlinked intermediate components beyond canonical alias" invariant:
  * only a root-level system alias is accepted — a generic user symlink fails
  * closed before any mutation (nothing is created behind it).
+ *
+ * On win32 paths are drive-letter rooted and split on both separators; there
+ * are no canonical root-level aliases, so any symlink/junction intermediate
+ * is rejected (subst/canonical drive mappings are resolved by realpath inside
+ * the canonicalize step instead).
  */
 async function assertNoUnsafeIntermediateSymlink(original: string): Promise<void> {
-  const normalized = resolve(original);
-  const segments = normalized === "/"
+  const isWin = process.platform === "win32";
+  const normalized = isWin ? win32.resolve(original) : resolve(original);
+  const root = isWin ? win32.parse(normalized).root : "/";
+  const segments = normalized === root || normalized === "/"
     ? []
-    : normalized.slice(1).split("/").filter((segment) => segment.length > 0);
-  let current = "/";
+    : normalized.slice(root.length).split(/[\\/]/).filter((segment) => segment.length > 0);
+  let current = root;
   for (const segment of segments) {
-    current = current === "/" ? `/${segment}` : `${current}/${segment}`;
+    current = isWin ? win32.join(current, segment) : (current === "/" ? `/${segment}` : `${current}/${segment}`);
     let info;
     try {
       info = await lstat(current);
@@ -357,8 +364,9 @@ async function assertNoUnsafeIntermediateSymlink(original: string): Promise<void
     if (info.isDirectory() && !info.isSymbolicLink()) continue;
     if (info.isSymbolicLink()) {
       // Root-level canonical system alias (macOS /var → /private/var etc.):
-      // accept only when it resolves to a real directory.
-      if (dirname(current) === "/") {
+      // accept only when it resolves to a real directory (POSIX only — win32
+      // has no canonical alias concept).
+      if (!isWin && dirname(current) === "/") {
         let target: string | undefined;
         try {
           target = await realpath(current);
@@ -413,6 +421,11 @@ async function ensurePixHostDir(
     await assertNoUnsafeIntermediateSymlink(hostDir);
 
     // Reserved destinations: home itself and shared tmp itself (never the leaf).
+    // win32 compares paths case-insensitively (drive letters/profile paths may
+    // differ in case between env vars and realpath).
+    const pathEq = process.platform === "win32"
+      ? (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+      : (a: string, b: string) => a === b;
     const home = homedir();
     const tmp = tmpdir();
     for (const candidate of [home, tmp]) {
@@ -423,7 +436,7 @@ async function ensurePixHostDir(
       } catch {
         canonicalCandidate = resolve(candidate);
       }
-      if (canonical === resolve(candidate) || canonical === canonicalCandidate) {
+      if (pathEq(canonical, resolve(candidate)) || pathEq(canonical, canonicalCandidate)) {
         throw new HostStateDirectoryError("HOST_DIR_INVALID", "Host directory must not be a reserved shared directory");
       }
     }

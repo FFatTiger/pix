@@ -36,7 +36,7 @@
  */
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve, win32 as win32Path } from "node:path";
 import {
   canonicalizeAbsolutePath,
   currentPrincipal,
@@ -47,6 +47,8 @@ import {
   type LocalAuthorityCode,
   type PosixFileIdentity,
 } from "@fffattiger/pix-local-authority/state";
+
+const IS_WIN32 = process.platform === "win32";
 
 /**
  * Frozen required private mode for the sessiond runtime directory. Existing
@@ -185,6 +187,9 @@ export async function ensureSessiondPrivateDirectoryWithFs(
   path: string,
   fs: EnsurePrivateDirectoryFs,
 ): Promise<{ path: string; created: boolean; identity: PosixFileIdentity }> {
+  if (IS_WIN32) {
+    return ensureSessiondPrivateDirectoryWithFsWin32(path, fs);
+  }
   const requireOwnedByCurrentUser = currentPrincipal().uid !== undefined;
   const normalized = resolve(path);
   if (
@@ -421,6 +426,236 @@ export async function ensureSessiondPrivateDirectoryWithFs(
 /** Real-fs injection for the production entry point. */
 function realFs(): EnsurePrivateDirectoryFs {
   return { lstat, mkdir, realpath, open, isOwnedByCurrentUser };
+}
+
+/**
+ * Windows variant of the sessiond private-directory walk. Same frozen sessiond
+ * policy (component-by-component walk, fd-identity pinning of a created leaf,
+ * raced-EEXIST classification, final re-lstat + realpath re-verify), adapted
+ * to win32 realities:
+ *   - paths are drive-letter absolute (`C:\…`), joined with backslashes and
+ *     compared case-insensitively;
+ *   - NTFS reports 0666 through lstat regardless of the mkdir creation mode,
+ *     so the strict `(mode & 0o777) === 0o700` existing-leaf / raced-component
+ *     checks are SKIPPED (documented NOT_PRIVATE degradation: privacy is
+ *     enforced by the per-user profile layout + NTFS ACLs, not mode bits);
+ *   - uid is undefined on win32, so ownership checks degrade to
+ *     inspectable-identity;
+ *   - the created leaf is still pinned by fd identity (fstat dev/ino before
+ *     and after the inert chmod) preserving the swap-detection guarantee.
+ *
+ * TEST-ONLY EXPORT: same reachability contract as the POSIX walk above.
+ */
+export async function ensureSessiondPrivateDirectoryWithFsWin32(
+  path: string,
+  fs: EnsurePrivateDirectoryFs,
+): Promise<{ path: string; created: boolean; identity: PosixFileIdentity }> {
+  const normalized = win32Path.resolve(path);
+  if (
+    typeof path !== "string"
+    || path.length === 0
+    || path.includes("\0")
+    || hasControlChar(path)
+    || !isAbsolute(path)
+    || !/^[A-Za-z]:[\\/]/.test(path)
+  ) {
+    throw new LocalAuthorityError("INVALID_PATH", SESSIOND_PRIVATE_DIR_MESSAGES.INVALID_PATH);
+  }
+  const parsed = win32Path.parse(normalized);
+  if (normalized.toLowerCase() === parsed.root.toLowerCase()) {
+    throw new LocalAuthorityError("ROOT_PATH", SESSIOND_PRIVATE_DIR_MESSAGES.ROOT_PATH);
+  }
+
+  const segments = normalized
+    .slice(parsed.root.length)
+    .split(/[\\/]/)
+    .filter((segment) => segment.length > 0);
+  for (const segment of segments) {
+    if (segment === "." || segment === "..") {
+      throw new LocalAuthorityError("PARENT_ESCAPE", SESSIOND_PRIVATE_DIR_MESSAGES.PARENT_ESCAPE);
+    }
+    if (segment.includes("\0") || segment.includes("/") || segment.includes("\\")) {
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+    }
+  }
+
+  const eqCaseInsensitive = (left: string, right: string): boolean =>
+    left.toLowerCase() === right.toLowerCase();
+
+  let current = parsed.root;
+  let creating = false;
+  let leafCreated = false;
+  let createdIdentity: { dev: number; ino: number } | null = null;
+  let racedParent: { path: string; dev: number; ino: number } | null = null;
+
+  for (const segment of segments) {
+    current = win32Path.join(current, segment);
+    const isLeaf = eqCaseInsensitive(current, normalized);
+
+    if (racedParent !== null) {
+      let parentInfo;
+      try {
+        parentInfo = await fs.lstat(racedParent.path);
+      } catch {
+        throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+      }
+      if (
+        parentInfo.isSymbolicLink()
+        || !parentInfo.isDirectory()
+        || parentInfo.dev !== racedParent.dev
+        || parentInfo.ino !== racedParent.ino
+      ) {
+        throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+      }
+      racedParent = null;
+    }
+
+    if (!creating) {
+      let info;
+      try {
+        info = await fs.lstat(current);
+      } catch (error) {
+        if (errnoCode(error) !== "ENOENT") {
+          throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+        }
+        creating = true;
+      }
+      if (!creating) {
+        if (info!.isSymbolicLink()) {
+          throw new LocalAuthorityError("SYMLINK", SESSIOND_PRIVATE_DIR_MESSAGES.SYMLINK);
+        }
+        if (!info!.isDirectory()) {
+          throw new LocalAuthorityError("NOT_DIRECTORY", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_DIRECTORY);
+        }
+        continue;
+      }
+    }
+
+    let mkdirFulfilled = false;
+    try {
+      await fs.mkdir(current, { recursive: false, mode: SESSIOND_PRIVATE_DIR_MODE });
+      mkdirFulfilled = true;
+    } catch (mkdirError) {
+      if (errnoCode(mkdirError) !== "EEXIST") {
+        throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+      }
+    }
+
+    let info;
+    try {
+      info = await fs.lstat(current);
+    } catch {
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+    }
+    if (info.isSymbolicLink()) {
+      throw new LocalAuthorityError("SYMLINK", SESSIOND_PRIVATE_DIR_MESSAGES.SYMLINK);
+    }
+    if (!info.isDirectory()) {
+      throw new LocalAuthorityError("NOT_DIRECTORY", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_DIRECTORY);
+    }
+
+    if (mkdirFulfilled) {
+      if (isLeaf) {
+        leafCreated = true;
+        createdIdentity = { dev: info.dev, ino: info.ino };
+      }
+      continue;
+    }
+
+    // Raced EEXIST: on win32 there are no mode bits to require; a raced
+    // intermediate/leaf is accepted after identity pinning only.
+    if (!isLeaf) {
+      racedParent = { path: current, dev: info.dev, ino: info.ino };
+      continue;
+    }
+    // Raced final leaf → existing-leaf validate-only branch below.
+  }
+
+  let finalInfo;
+  try {
+    finalInfo = await fs.lstat(current);
+  } catch {
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+  }
+  if (finalInfo.isSymbolicLink()) {
+    throw new LocalAuthorityError("SYMLINK", SESSIOND_PRIVATE_DIR_MESSAGES.SYMLINK);
+  }
+  if (!finalInfo.isDirectory()) {
+    throw new LocalAuthorityError("NOT_DIRECTORY", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_DIRECTORY);
+  }
+
+  if (leafCreated) {
+    if (
+      createdIdentity === null
+      || createdIdentity.dev !== finalInfo.dev
+      || createdIdentity.ino !== finalInfo.ino
+    ) {
+      throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+    }
+    let dirHandle;
+    try {
+      dirHandle = await fs.open(current, constants.O_RDONLY);
+      try {
+        const opened = await dirHandle.stat();
+        if (
+          !opened.isDirectory()
+          || opened.dev !== createdIdentity.dev
+          || opened.ino !== createdIdentity.ino
+        ) {
+          throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+        }
+        // Inert on NTFS; kept for cross-platform semantic parity.
+        await dirHandle.chmod(SESSIOND_PRIVATE_DIR_MODE).catch(() => {});
+        const after = await dirHandle.stat();
+        if (
+          !after.isDirectory()
+          || after.dev !== createdIdentity.dev
+          || after.ino !== createdIdentity.ino
+        ) {
+          throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+        }
+      } finally {
+        await dirHandle.close().catch(() => {});
+      }
+    } catch (error) {
+      if (error instanceof LocalAuthorityError) throw error;
+      throw new LocalAuthorityError("NOT_PRIVATE", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_PRIVATE);
+    }
+  } else {
+    // Existing directory on win32: uid checks degrade (uid undefined), and the
+    // strict 0o700 mode check is skipped (NTFS reports 0666 always).
+    if (currentPrincipal().uid !== undefined && !fs.isOwnedByCurrentUser(toIdentity(finalInfo))) {
+      throw new LocalAuthorityError("NOT_OWNED", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_OWNED);
+    }
+  }
+
+  const verifiedDev = createdIdentity !== null ? createdIdentity.dev : finalInfo.dev;
+  const verifiedIno = createdIdentity !== null ? createdIdentity.ino : finalInfo.ino;
+  let finalRecheck;
+  try {
+    finalRecheck = await fs.lstat(current);
+  } catch {
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+  }
+  if (
+    finalRecheck.isSymbolicLink()
+    || !finalRecheck.isDirectory()
+    || finalRecheck.dev !== verifiedDev
+    || finalRecheck.ino !== verifiedIno
+  ) {
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+  }
+
+  let finalReal;
+  try {
+    finalReal = await fs.realpath(current);
+  } catch {
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+  }
+  if (!eqCaseInsensitive(finalReal, current)) {
+    throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
+  }
+  return { path: current, created: leafCreated, identity: toIdentity(finalRecheck) };
 }
 
 /**

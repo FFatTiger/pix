@@ -505,7 +505,8 @@ test("checkNoLegacyProductName flags every legacy brand casing", (t) => {
   const result = checkNoLegacyProductName({ files, rootDir: dir });
   assert.equal(result.ok, false);
   for (const f of ["a.ts", "b.ts", "c.tsx", "README.md", "protocol/package.json", "manifest.webmanifest"]) {
-    assert.match(result.details, new RegExp(f));
+    // `f` uses forward slashes; the details may use platform separators.
+    assert.match(result.details.replaceAll("\\", "/"), new RegExp(f.replaceAll("/", "[\\\\/]")));
   }
 });
 
@@ -598,7 +599,8 @@ test("collectFiles skips node_modules, dist, dist-test, coverage and dot-entries
   write(dir, ".hidden/secret.ts", "x");
   write(dir, "packages/protocol/src/index.ts", "export {};");
   const files = collectFiles(dir);
-  const rel = files.map((f) => f.slice(dir.length + 1));
+  // Normalize separators so the assertion is platform-independent.
+  const rel = files.map((f) => f.slice(dir.length + 1).replaceAll("\\", "/"));
   assert.ok(rel.includes("packages/protocol/src/index.ts"));
   for (const bad of [
     "node_modules/next/package.json",

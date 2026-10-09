@@ -39,11 +39,14 @@ test("isRootPath recognizes posix root and Windows-style roots", () => {
 });
 
 test("isWithin is true for children and false for parents or siblings", () => {
-  assert.equal(isWithin("/a/b", "/a/b/c"), true);
-  assert.equal(isWithin("/a/b", "/a/b"), true);
-  assert.equal(isWithin("/a/b", "/a"), false);
-  assert.equal(isWithin("/a/b", "/a/bc"), false);
-  assert.equal(isWithin("/a/b", "/a/bc/d"), false);
+  // POSIX-style probes are only meaningful on POSIX; on win32 the function
+  // legitimately uses backslash separators, so probe with the native separator.
+  const p = process.platform === "win32" ? (s) => s.replaceAll("/", "\\") : (s) => s;
+  assert.equal(isWithin(p("/a/b"), p("/a/b/c")), true);
+  assert.equal(isWithin(p("/a/b"), p("/a/b")), true);
+  assert.equal(isWithin(p("/a/b"), p("/a")), false);
+  assert.equal(isWithin(p("/a/b"), p("/a/bc")), false);
+  assert.equal(isWithin(p("/a/b"), p("/a/bc/d")), false);
 });
 
 test("resolveTarget rejects empty, NUL, whitespace-only and root paths", (t) => {
@@ -88,11 +91,13 @@ test("resolveTarget rejects an absolute path even when it is beneath cwd", (t) =
 test("resolveTarget rejects Windows drive paths and UNC roots as probes", (t) => {
   const root = makeRoot();
   t.after(() => cleanup(root));
-  assert.throws(() => resolveTarget(root, "C:\\"), /drive path|root path/);
-  assert.throws(() => resolveTarget(root, "C:\\foo"), /drive path/);
-  assert.throws(() => resolveTarget(root, "C:/foo"), /drive path/);
-  assert.throws(() => resolveTarget(root, "\\\\server\\share"), /UNC root/);
-  assert.throws(() => resolveTarget(root, "\\\\server\\share\\"), /UNC root/);
+  // On win32 `C:\` is the real drive root; both the drive-path and root-path
+  // rejections apply. On POSIX it is an absolute drive-shaped artifact.
+  assert.throws(() => resolveTarget(root, "C:\\"), /drive path|root path|absolute path/);
+  assert.throws(() => resolveTarget(root, "C:\\foo"), /drive path|absolute path/);
+  assert.throws(() => resolveTarget(root, "C:/foo"), /drive path|absolute path/);
+  assert.throws(() => resolveTarget(root, "\\\\server\\share"), /UNC root|absolute path/);
+  assert.throws(() => resolveTarget(root, "\\\\server\\share\\"), /UNC root|absolute path/);
 });
 
 test("resolveTarget accepts nested paths inside cwd", (t) => {

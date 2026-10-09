@@ -80,7 +80,7 @@ test("discovers only directories that contain a package.json", (t) => {
   addWorkspace(root, "a");
   mkdirSync(join(root, "packages", "b"), { recursive: true }); // no manifest
   addWorkspace(root, "c");
-  const dirs = readWorkspaceConfig(root).dirs.map((d) => d.replace(root, ""));
+  const dirs = readWorkspaceConfig(root).dirs.map((d) => d.replace(root, "").replaceAll("\\", "/"));
   assert.deepEqual(dirs.sort(), ["/packages/a", "/packages/c"]);
 });
 
@@ -94,7 +94,7 @@ test("supports recursive ** and literal workspace patterns", (t) => {
   const meta = join(root, "tools", "meta");
   mkdirSync(meta, { recursive: true });
   writeFileSync(join(meta, "package.json"), JSON.stringify({ name: "meta" }));
-  const dirs = readWorkspaceConfig(root).dirs.map((d) => d.replace(root, ""));
+  const dirs = readWorkspaceConfig(root).dirs.map((d) => d.replace(root, "").replaceAll("\\", "/"));
   assert.deepEqual(dirs.sort(), ["/packages/a", "/packages/nested/deep", "/tools/meta"]);
 });
 
