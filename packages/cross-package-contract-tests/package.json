@@ -1,6 +1,6 @@
 {
   "name": "@fffattiger/pix-cross-package-contract-tests",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "TEST-ONLY cross-package semantic/architecture contract tests: parity between otherwise-independent package projections. No production exports, no runtime consumers — the sole purpose is pinning frozen projections (Protocol DTOs, Host sanitization) to their canonical runtime-core authority across package boundaries without weakening architecture gates.",
   "type": "module",
