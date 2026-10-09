@@ -120,7 +120,8 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
         onRespond={onRespond}
       />,
     );
-    expect(screen.queryByText("preview-A")).toBeNull();
+    expect(screen.getByText("preview-A")).toBeTruthy();
+    expect((screen.getByRole("checkbox", { name: /A/ }) as HTMLInputElement).checked).toBe(false);
     fireEvent.mouseEnter(screen.getByRole("checkbox", { name: /A/ }).closest("label")!);
     expect(screen.getByText("preview-A")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
