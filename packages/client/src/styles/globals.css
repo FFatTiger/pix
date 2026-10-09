@@ -1256,20 +1256,19 @@ pre, code {
 }
 .group\/process .codex-tool-group-label,
 .group\/process .codex-tool-row-label {
-  /* fit-content keeps the sheen background glued to the text itself: a
-     flex-filling label would sweep its (invisible) right whitespace too. */
   flex: 0 1 auto;
-  width: fit-content;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 .group\/process .codex-tool-group-label {
+  /* Keep the group sheen background fitted to its summary text. */
+  width: fit-content;
   max-width: 100%;
 }
 .group\/process .codex-tool-row-label {
-  max-width: min(64ch, 100%);
+  width: 70%;
 }
 .group\/process .codex-tool-caret {
   flex: 0 0 auto;
@@ -1347,6 +1346,7 @@ pre, code {
 }
 .codemode-tool-badge {
   flex: 0 0 auto;
+  margin-left: auto;
   padding: 1px 6px;
   border: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
   border-radius: 4px;
