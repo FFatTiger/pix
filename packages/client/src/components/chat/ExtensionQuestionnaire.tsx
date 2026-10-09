@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { QUESTIONNAIRE_LIMITS, type ExtensionUiRequest, type QuestionnaireAnswer } from "@fffattiger/pix-protocol";
 import { useI18n } from "@/hooks/useI18n";
+import "./ExtensionQuestionnaire.css";
 
 export type ExtensionQuestionnaireRequest = Extract<ExtensionUiRequest, { method: "questionnaire" }>;
 
@@ -51,6 +52,15 @@ function collectAnswers(request: ExtensionQuestionnaireRequest, drafts: readonly
   return answers;
 }
 
+function questionHasPreviews(question: ExtensionQuestionnaireRequest["questions"][number]): boolean {
+  return question.options.some((option) => option.preview);
+}
+
+function previewCopy(option: ExtensionQuestionnaireRequest["questions"][number]["options"][number] | undefined): string | undefined {
+  if (option === undefined) return undefined;
+  return option.preview ?? option.description;
+}
+
 /** Native whole-questionnaire dialog. Navigation is local; only Cancel/Submit leave the component. */
 export function ExtensionQuestionnaire({
   request,
@@ -65,15 +75,27 @@ export function ExtensionQuestionnaire({
   const [questionIndex, setQuestionIndex] = useState(0);
   const [drafts, setDrafts] = useState<QuestionDraft[]>(() => request.questions.map(() => emptyDraft()));
   const [missing, setMissing] = useState(false);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const questions = request.questions;
   const lastIndex = Math.max(0, questions.length - 1);
   const current = questions[questionIndex] ?? questions[0];
   const draft = drafts[questionIndex] ?? emptyDraft();
   const showNav = questions.length > 1;
   const isLast = questionIndex >= lastIndex;
+  const showPreviewPane = current !== undefined && questionHasPreviews(current);
+  const previewOption = current !== undefined && previewIndex !== null ? current.options[previewIndex] : undefined;
+  const previewText = previewCopy(previewOption);
+  const optionsActive = draft.mode === "options";
+  const customActive = draft.mode === "custom";
 
   const updateDraft = (patch: Partial<QuestionDraft>) => {
     setDrafts((prev) => prev.map((item, index) => (index === questionIndex ? { ...item, ...patch } : item)));
+    setMissing(false);
+  };
+
+  const navigate = (index: number) => {
+    setQuestionIndex(index);
+    setPreviewIndex(null);
     setMissing(false);
   };
 
@@ -89,92 +111,94 @@ export function ExtensionQuestionnaire({
   if (current === undefined) return null;
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        zIndex: 90,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 20,
-        background: "rgba(0,0,0,0.18)",
-      }}
-    >
+    <div className="questionnaire-overlay">
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={promptId}
-        style={{
-          width: "min(560px, 100%)",
-          maxHeight: "100%",
-          display: "flex",
-          flexDirection: "column",
-          border: "1px solid var(--border)",
-          borderRadius: 8,
-          background: "var(--bg)",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.28)",
-          overflow: "hidden",
-        }}
+        className={`questionnaire-dialog${showPreviewPane ? " questionnaire-dialog--split" : " questionnaire-dialog--compact"}`}
       >
-        <div style={{ flexShrink: 0, padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
-          <h2 id={titleId} style={{ margin: 0, color: "var(--text)", fontSize: 14, fontWeight: 650 }}>{t("desktop.extensionRequest")}</h2>
-        </div>
+        <header className="questionnaire-heading">
+          <div className="questionnaire-eyebrow">
+            <h2 id={titleId}>{t("desktop.extensionRequest")}</h2>
+            {showNav ? (
+              <span className="questionnaire-step">{t("desktop.questionnaire.progress", { current: questionIndex + 1, total: questions.length })}</span>
+            ) : null}
+          </div>
+          <p className="questionnaire-scope">{current.header}</p>
+          <p className="questionnaire-question" id={promptId}>{current.question}</p>
+        </header>
 
-        <div style={{ minHeight: 0, overflowY: "auto", padding: 14 }}>
-          {showNav ? (
-            <p style={{ margin: "0 0 10px", color: "var(--text-muted)", fontSize: 12 }}>
-              {t("desktop.questionnaire.progress", { current: questionIndex + 1, total: questions.length })}
-            </p>
-          ) : null}
-          <p style={{ margin: "0 0 8px", color: "var(--text-muted)", fontSize: 12, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{current.header}</p>
-          <p id={promptId} style={{ margin: "0 0 12px", color: "var(--text)", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{current.question}</p>
-
-          {draft.mode === "options" ? (
-            <div role={current.multiSelect ? "group" : "radiogroup"} aria-label={current.multiSelect ? t("desktop.questionnaire.optionsMulti") : t("desktop.questionnaire.options")} style={{ display: "grid", gap: 8 }}>
+        <div className="questionnaire-body">
+          <div className={`questionnaire-choice-layout${showPreviewPane ? " is-split" : ""}`}>
+            <div
+              className="questionnaire-options"
+              role={current.multiSelect ? "group" : "radiogroup"}
+              aria-label={current.multiSelect ? t("desktop.questionnaire.optionsMulti") : t("desktop.questionnaire.options")}
+            >
               {current.options.map((option, optionIndex) => {
-                const checked = draft.selected.includes(optionIndex);
+                const checked = optionsActive && draft.selected.includes(optionIndex);
+                const previewed = showPreviewPane && previewIndex === optionIndex;
                 return (
-                  <label
+                  <div
                     key={`${optionIndex}:${option.label}`}
-                    style={{
-                      display: "grid",
-                      gap: 4,
-                      padding: "9px 10px",
-                      borderRadius: 7,
-                      border: "1px solid var(--border)",
-                      background: "var(--bg-panel)",
-                      color: "var(--text)",
-                      cursor: "pointer",
-                      fontSize: 13,
-                    }}
+                    className={`questionnaire-option${checked ? " is-selected" : ""}${previewed ? " is-previewed" : ""}`}
                   >
-                    <span style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <label
+                      className="questionnaire-option-label"
+                      onMouseEnter={() => {
+                        if (showPreviewPane) setPreviewIndex(optionIndex);
+                      }}
+                    >
                       <input
                         type={current.multiSelect ? "checkbox" : "radio"}
                         name={`${titleId}-q${questionIndex}`}
                         checked={checked}
-                        onChange={() => updateDraft({ mode: "options", selected: toggleIndex(draft.selected, optionIndex, current.multiSelect) })}
+                        onFocus={() => {
+                          if (showPreviewPane) setPreviewIndex(optionIndex);
+                        }}
+                        onChange={() => {
+                          if (showPreviewPane) setPreviewIndex(optionIndex);
+                          updateDraft({
+                            mode: "options",
+                            selected: toggleIndex(draft.selected, optionIndex, current.multiSelect),
+                          });
+                        }}
                       />
-                      <span>
-                        <span style={{ fontWeight: 600 }}>{option.label}</span>
-                        <span style={{ display: "block", color: "var(--text-muted)", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{option.description}</span>
+                      <span className="questionnaire-option-copy">
+                        <span className="questionnaire-option-title">{option.label}</span>
+                        <span className="questionnaire-description">{option.description}</span>
                       </span>
-                    </span>
-                    {option.preview ? (
-                      <span style={{ color: "var(--text-muted)", fontSize: 12, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{option.preview}</span>
-                    ) : null}
-                  </label>
+                    </label>
+                  </div>
                 );
               })}
             </div>
-          ) : (
-            <textarea
-              autoFocus
+            {showPreviewPane ? (
+              <aside className="questionnaire-preview-panel" aria-live="polite">
+                {previewOption !== undefined ? (
+                  <>
+                    <div className="questionnaire-preview-eyebrow">{t("desktop.questionnaire.preview")}</div>
+                    <h3>{previewOption.label}</h3>
+                    {previewText ? <div className="questionnaire-preview-lines">{previewText}</div> : null}
+                  </>
+                ) : null}
+              </aside>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="questionnaire-custom-block">
+          <label className={`questionnaire-custom${customActive ? " is-active" : ""}`}>
+            <span className="questionnaire-custom-indicator" aria-hidden="true" />
+            <input
+              type="text"
               aria-label={t("desktop.questionnaire.customAnswer")}
+              placeholder={t("desktop.questionnaire.customAnswer")}
               maxLength={QUESTIONNAIRE_LIMITS.maxCustomAnswerChars}
               value={draft.text}
+              onFocus={() => updateDraft({ mode: "custom" })}
               onChange={(event) => {
                 const text = event.target.value;
                 if (text.length > QUESTIONNAIRE_LIMITS.maxCustomAnswerChars) return;
@@ -192,74 +216,30 @@ export function ExtensionQuestionnaire({
                   if (isLast) submit();
                 }
               }}
-              style={{
-                width: "100%",
-                minHeight: 120,
-                padding: 10,
-                borderRadius: 7,
-                border: "1px solid var(--border)",
-                background: "var(--bg-panel)",
-                color: "var(--text)",
-                outline: "none",
-                resize: "vertical",
-                fontSize: 13,
-                lineHeight: 1.55,
-                fontFamily: "var(--font-mono)",
-              }}
             />
-          )}
-
-          <button
-            type="button"
-            onClick={() => updateDraft({ mode: draft.mode === "custom" ? "options" : "custom" })}
-            style={{
-              marginTop: 10,
-              padding: "6px 10px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              background: "var(--bg)",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-            }}
-          >
-            {draft.mode === "custom" ? t("desktop.questionnaire.chooseOptions") : t("desktop.questionnaire.useCustom")}
-          </button>
+          </label>
           {missing ? (
-            <p role="alert" style={{ margin: "10px 0 0", color: "var(--danger, #c44)", fontSize: 12 }}>{t("desktop.questionnaire.incomplete")}</p>
+            <p role="alert" className="questionnaire-error">{t("desktop.questionnaire.incomplete")}</p>
           ) : null}
         </div>
 
-        <div style={{ display: "flex", flexShrink: 0, justifyContent: "space-between", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
-          <div style={{ display: "flex", gap: 8 }}>
+        <footer className="questionnaire-footer">
+          <div className="questionnaire-navigation">
             {showNav ? (
               <>
                 <button
                   type="button"
+                  className="questionnaire-button"
                   disabled={questionIndex === 0}
-                  onClick={() => { setQuestionIndex((index) => Math.max(0, index - 1)); setMissing(false); }}
-                  style={{
-                    padding: "6px 10px",
-                    borderRadius: 6,
-                    border: "1px solid var(--border)",
-                    background: "var(--bg)",
-                    color: "var(--text-muted)",
-                    cursor: questionIndex === 0 ? "default" : "pointer",
-                  }}
+                  onClick={() => navigate(Math.max(0, questionIndex - 1))}
                 >
                   {t("desktop.questionnaire.previous")}
                 </button>
                 {!isLast ? (
                   <button
                     type="button"
-                    onClick={() => { setQuestionIndex((index) => Math.min(lastIndex, index + 1)); setMissing(false); }}
-                    style={{
-                      padding: "6px 10px",
-                      borderRadius: 6,
-                      border: "1px solid var(--border)",
-                      background: "var(--bg)",
-                      color: "var(--text-muted)",
-                      cursor: "pointer",
-                    }}
+                    className="questionnaire-button"
+                    onClick={() => navigate(Math.min(lastIndex, questionIndex + 1))}
                   >
                     {t("desktop.questionnaire.next")}
                   </button>
@@ -267,39 +247,21 @@ export function ExtensionQuestionnaire({
               </>
             ) : null}
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="questionnaire-actions">
             <button
               type="button"
+              className="questionnaire-button is-quiet"
               onClick={() => onRespond(request, { cancelled: true })}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                background: "var(--bg)",
-                color: "var(--text-muted)",
-                cursor: "pointer",
-              }}
             >
               {t("desktop.cancel")}
             </button>
             {isLast ? (
-              <button
-                type="button"
-                onClick={submit}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 6,
-                  border: "1px solid var(--accent)",
-                  background: "var(--accent)",
-                  color: "#fff",
-                  cursor: "pointer",
-                }}
-              >
+              <button type="button" className="questionnaire-button is-primary" onClick={submit}>
                 {t("desktop.submit")}
               </button>
             ) : null}
           </div>
-        </div>
+        </footer>
       </div>
     </div>
   );

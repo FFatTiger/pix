@@ -294,6 +294,7 @@ export const enLocale = {
     "desktop.questionnaire.customAnswer": "Custom answer",
     "desktop.questionnaire.useCustom": "Use a custom answer",
     "desktop.questionnaire.chooseOptions": "Choose options",
+    "desktop.questionnaire.preview": "Preview",
     "desktop.questionnaire.previous": "Previous",
     "desktop.questionnaire.next": "Next",
     "desktop.questionnaire.incomplete": "Choose an option before submitting.",

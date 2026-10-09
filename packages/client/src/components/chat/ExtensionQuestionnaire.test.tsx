@@ -26,6 +26,17 @@ function makeRespond() {
   return vi.fn((_request: ExtensionQuestionnaireRequest, _response: ExtensionQuestionnaireResponse) => undefined);
 }
 
+function customInput(): HTMLInputElement {
+  return screen.getByLabelText("Custom answer") as HTMLInputElement;
+}
+
+function activateCustom(value?: string) {
+  const input = customInput();
+  fireEvent.focus(input);
+  if (value !== undefined) fireEvent.change(input, { target: { value } });
+  return input;
+}
+
 describe("ExtensionQuestionnaire — native whole questionnaire", () => {
   afterEach(() => {
     cleanup();
@@ -36,14 +47,13 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     const onRespond = makeRespond();
     const request = questionnaireRequest([question({ header: "H1", question: "Q1?", multiSelect: false })]);
     const { rerender } = wrap(<ExtensionQuestionnaire request={request} onRespond={onRespond} />);
-    fireEvent.click(screen.getByRole("button", { name: "Use a custom answer" }));
-    fireEvent.change(screen.getByLabelText("Custom answer"), { target: { value: "typed 123" } });
+    activateCustom("typed 123");
     rerender(
       <I18nProvider>
         <ExtensionQuestionnaire request={structuredClone(request)} onRespond={onRespond} />
       </I18nProvider>,
     );
-    expect((screen.getByLabelText("Custom answer") as HTMLTextAreaElement).value).toBe("typed 123");
+    expect(customInput().value).toBe("typed 123");
     rerender(
       <I18nProvider>
         <ExtensionQuestionnaire request={structuredClone(request)} onRespond={onRespond} />
@@ -76,21 +86,18 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
       />,
     );
     fireEvent.click(screen.getByRole("radio", { name: /One/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Use a custom answer" }));
-    fireEvent.change(screen.getByLabelText("Custom answer"), { target: { value: "draft-one" } });
-    fireEvent.click(screen.getByRole("button", { name: "Choose options" }));
+    activateCustom("draft-one");
+    fireEvent.click(screen.getByRole("radio", { name: /One/ }));
     expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     fireEvent.click(screen.getByRole("checkbox", { name: /A/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Use a custom answer" }));
-    fireEvent.change(screen.getByLabelText("Custom answer"), { target: { value: "42" } });
+    activateCustom("42");
     fireEvent.click(screen.getByRole("button", { name: "Previous" }));
     expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Use a custom answer" }));
-    expect((screen.getByLabelText("Custom answer") as HTMLTextAreaElement).value).toBe("draft-one");
-    fireEvent.click(screen.getByRole("button", { name: "Choose options" }));
+    expect(customInput().value).toBe("draft-one");
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    expect((screen.getByLabelText("Custom answer") as HTMLTextAreaElement).value).toBe("42");
+    expect(customInput().value).toBe("42");
+    expect((screen.getByRole("checkbox", { name: /A/ }) as HTMLInputElement).checked).toBe(false);
     expect(onRespond).not.toHaveBeenCalled();
   });
 
@@ -113,11 +120,12 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
         onRespond={onRespond}
       />,
     );
+    expect(screen.queryByText("preview-A")).toBeNull();
+    fireEvent.mouseEnter(screen.getByRole("checkbox", { name: /A/ }).closest("label")!);
     expect(screen.getByText("preview-A")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    fireEvent.click(screen.getByRole("button", { name: "Use a custom answer" }));
-    fireEvent.change(screen.getByLabelText("Custom answer"), { target: { value: "007" } });
+    activateCustom("007");
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     expect(onRespond).toHaveBeenCalledTimes(1);
     expect(onRespond.mock.calls[0]![1]).toEqual({
@@ -155,9 +163,7 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
         onRespond={makeRespond()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Use a custom answer" }));
-    const textarea = screen.getByLabelText("Custom answer") as HTMLTextAreaElement;
-    expect(textarea.maxLength).toBe(QUESTIONNAIRE_LIMITS.maxCustomAnswerChars);
+    expect(customInput().maxLength).toBe(QUESTIONNAIRE_LIMITS.maxCustomAnswerChars);
   });
 
   it("cancels from the footer and from custom Escape, and never submits while IME is composing", () => {
@@ -178,14 +184,12 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
         onRespond={second}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Use a custom answer" }));
-    const textarea = screen.getByLabelText("Custom answer");
-    fireEvent.change(textarea, { target: { value: "ime" } });
-    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true, isComposing: true });
+    const input = activateCustom("ime");
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, isComposing: true });
     expect(second).not.toHaveBeenCalled();
-    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true, keyCode: 229 });
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, keyCode: 229 });
     expect(second).not.toHaveBeenCalled();
-    const escaped = fireEvent.keyDown(textarea, { key: "Escape", keyCode: 27 });
+    const escaped = fireEvent.keyDown(input, { key: "Escape", keyCode: 27 });
     expect(escaped).toBe(false);
     expect(second).toHaveBeenCalledWith(expect.anything(), { cancelled: true });
   });
@@ -206,7 +210,10 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     expect(screen.getByText("原文问题")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Previous" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Next" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Use a custom answer" })).toBeTruthy();
+    expect(customInput()).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use a custom answer" })).toBeNull();
+    fireEvent.mouseEnter(screen.getByRole("radio", { name: /One/ }).closest("label")!);
+    expect(screen.getByText("Preview")).toBeTruthy();
     cleanup();
     window.localStorage.setItem("pi-locale", "zh-CN");
     wrap(
@@ -222,7 +229,138 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     expect(screen.getByText("原文问题")).toBeTruthy();
     expect(screen.getByRole("button", { name: "上一题" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "下一题" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "使用自定义回答" })).toBeTruthy();
+    expect(screen.getByLabelText("自定义回答")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "使用自定义回答" })).toBeNull();
+    fireEvent.mouseEnter(screen.getByRole("radio", { name: /One/ }).closest("label")!);
+    expect(screen.getByText("预览")).toBeTruthy();
     expect(screen.getByRole("button", { name: "取消" })).toBeTruthy();
+  });
+
+  it("shows the custom field without a toggle and hides the preview pane when no option has a preview", () => {
+    wrap(
+      <ExtensionQuestionnaire
+        request={questionnaireRequest([
+          question({
+            header: "H",
+            question: "Q?",
+            multiSelect: false,
+            options: [
+              { label: "One", description: "first" },
+              { label: "Two", description: "second" },
+            ],
+          }),
+        ])}
+        onRespond={makeRespond()}
+      />,
+    );
+    expect(customInput()).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use a custom answer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Choose options" })).toBeNull();
+    expect(document.querySelector(".questionnaire-preview-panel")).toBeNull();
+    expect(document.querySelector(".questionnaire-dialog--compact")).toBeTruthy();
+  });
+
+  it("treats custom focus as the active answer, keeps empty custom valid, and restores option submit after choosing again", () => {
+    const onRespond = makeRespond();
+    wrap(
+      <ExtensionQuestionnaire
+        request={questionnaireRequest([question({ header: "H", question: "Q?", multiSelect: false })])}
+        onRespond={onRespond}
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /One/ }));
+    expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.focus(customInput());
+    expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(false);
+    expect(document.querySelector(".questionnaire-custom.is-active")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(onRespond).toHaveBeenCalledWith(expect.anything(), {
+      answers: [{ kind: "custom", questionIndex: 0, text: "" }],
+    });
+    cleanup();
+    const second = makeRespond();
+    wrap(
+      <ExtensionQuestionnaire
+        request={questionnaireRequest([question({ header: "H", question: "Q?", multiSelect: false })])}
+        onRespond={second}
+      />,
+    );
+    activateCustom("keep-me");
+    fireEvent.click(screen.getByRole("radio", { name: /Two/ }));
+    expect((screen.getByRole("radio", { name: /Two/ }) as HTMLInputElement).checked).toBe(true);
+    expect(customInput().value).toBe("keep-me");
+    expect(document.querySelector(".questionnaire-custom.is-active")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(second).toHaveBeenCalledWith(expect.anything(), {
+      answers: [{ kind: "option", questionIndex: 0, optionIndex: 1 }],
+    });
+  });
+
+  it("updates the preview on hover/focus without changing the answer, and resets preview on next question", () => {
+    const onRespond = makeRespond();
+    wrap(
+      <ExtensionQuestionnaire
+        request={questionnaireRequest([
+          question({ header: "H1", question: "Color?", multiSelect: false }),
+          question({
+            header: "H2",
+            question: "More?",
+            multiSelect: false,
+            options: [
+              { label: "A", description: "alpha", preview: "preview-A" },
+              { label: "B", description: "beta", preview: "preview-B" },
+            ],
+          }),
+        ])}
+        onRespond={onRespond}
+      />,
+    );
+    expect(document.querySelector(".questionnaire-preview-lines")).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /One/ }));
+    expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-one");
+    fireEvent.mouseEnter(screen.getByRole("radio", { name: /Two/ }).closest("label")!);
+    expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("second");
+    expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("radio", { name: /Two/ }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.focus(screen.getByRole("radio", { name: /Two/ }));
+    expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(true);
+    activateCustom("still-custom");
+    expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.mouseEnter(screen.getByRole("radio", { name: /Two/ }).closest("label")!);
+    fireEvent.focus(screen.getByRole("radio", { name: /Two/ }));
+    expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("radio", { name: /Two/ }) as HTMLInputElement).checked).toBe(false);
+    expect(document.querySelector(".questionnaire-custom.is-active")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(document.querySelector(".questionnaire-preview-lines")).toBeNull();
+    fireEvent.mouseEnter(screen.getByRole("radio", { name: /B/ }).closest("label")!);
+    expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-B");
+    expect(onRespond).not.toHaveBeenCalled();
+  });
+
+  it("keeps custom input single-line, ignores plain Enter, and blocks Ctrl/Cmd+Enter during IME", () => {
+    const onRespond = makeRespond();
+    wrap(
+      <ExtensionQuestionnaire
+        request={questionnaireRequest([question({ header: "H", question: "Q?", multiSelect: false })])}
+        onRespond={onRespond}
+      />,
+    );
+    const input = customInput();
+    expect(input.tagName).toBe("INPUT");
+    expect(input.type).toBe("text");
+    expect(input.maxLength).toBe(QUESTIONNAIRE_LIMITS.maxCustomAnswerChars);
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onRespond).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "keep" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true, isComposing: true });
+    expect(onRespond).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, keyCode: 229 });
+    expect(onRespond).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+    expect(onRespond).toHaveBeenCalledWith(expect.anything(), {
+      answers: [{ kind: "custom", questionIndex: 0, text: "keep" }],
+    });
   });
 });

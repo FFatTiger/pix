@@ -294,6 +294,7 @@ export const zhCNLocale = {
     "desktop.questionnaire.customAnswer": "自定义回答",
     "desktop.questionnaire.useCustom": "使用自定义回答",
     "desktop.questionnaire.chooseOptions": "选择选项",
+    "desktop.questionnaire.preview": "预览",
     "desktop.questionnaire.previous": "上一题",
     "desktop.questionnaire.next": "下一题",
     "desktop.questionnaire.incomplete": "提交前请先选择一个选项。",
