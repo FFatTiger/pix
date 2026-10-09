@@ -75,7 +75,7 @@ export function ExtensionQuestionnaire({
   const [questionIndex, setQuestionIndex] = useState(0);
   const [drafts, setDrafts] = useState<QuestionDraft[]>(() => request.questions.map(() => emptyDraft()));
   const [missing, setMissing] = useState(false);
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [previewIndex, setPreviewIndex] = useState(0);
   const questions = request.questions;
   const lastIndex = Math.max(0, questions.length - 1);
   const current = questions[questionIndex] ?? questions[0];
@@ -83,7 +83,7 @@ export function ExtensionQuestionnaire({
   const showNav = questions.length > 1;
   const isLast = questionIndex >= lastIndex;
   const showPreviewPane = current !== undefined && questionHasPreviews(current);
-  const previewOption = current !== undefined && previewIndex !== null ? current.options[previewIndex] : undefined;
+  const previewOption = current?.options[previewIndex] ?? current?.options[0];
   const previewText = previewCopy(previewOption);
   const optionsActive = draft.mode === "options";
   const customActive = draft.mode === "custom";
@@ -95,7 +95,7 @@ export function ExtensionQuestionnaire({
 
   const navigate = (index: number) => {
     setQuestionIndex(index);
-    setPreviewIndex(null);
+    setPreviewIndex(0);
     setMissing(false);
   };
 

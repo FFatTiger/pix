@@ -6,7 +6,8 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: rgb(0 0 0 / 18%);
+  background: rgb(0 0 0 / 56%);
+  backdrop-filter: blur(3px);
   overflow: hidden;
 }
 
@@ -18,10 +19,10 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 20px 60px rgb(0 0 0 / 28%);
+  background: var(--bg-panel);
+  border: 1px solid var(--questionnaire-line);
+  border-radius: 17px;
+  box-shadow: 0 24px 90px rgb(0 0 0 / 45%);
 }
 
 .questionnaire-dialog--split {
@@ -171,7 +172,7 @@
 .questionnaire-preview-panel {
   min-width: 0;
   min-height: 72px;
-  background: color-mix(in srgb, var(--bg-panel) 60%, transparent);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
   border: 1px solid var(--questionnaire-line);
   border-radius: 11px;
   padding: 19px 18px;
@@ -213,7 +214,7 @@
   min-height: 36px;
   border: 1px solid var(--questionnaire-line);
   border-radius: 8px;
-  background: var(--bg-panel);
+  background: var(--bg);
   box-sizing: border-box;
 }
 
@@ -272,9 +273,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
+  padding: 15px 27px;
+  border-top: 1px solid var(--questionnaire-line);
 }
 
 .questionnaire-actions,
@@ -290,23 +290,24 @@
   justify-content: center;
   min-height: 36px;
   padding: 7px 14px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text-muted);
+  border: 1px solid var(--questionnaire-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
 }
 
 .questionnaire-button.is-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--text);
+  border-color: transparent;
+  color: var(--bg);
 }
 
 .questionnaire-button.is-quiet {
   border-color: transparent;
+  color: var(--text-muted);
 }
 
 .questionnaire-button:disabled {
@@ -326,6 +327,10 @@
 }
 
 @media (max-width: 620px) {
+  .questionnaire-dialog {
+    border-radius: 14px;
+  }
+
   .questionnaire-overlay {
     padding: 12px;
   }

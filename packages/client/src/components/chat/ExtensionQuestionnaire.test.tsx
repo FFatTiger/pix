@@ -315,7 +315,8 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
         onRespond={onRespond}
       />,
     );
-    expect(document.querySelector(".questionnaire-preview-lines")).toBeNull();
+    expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-one");
+    expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(false);
     fireEvent.click(screen.getByRole("radio", { name: /One/ }));
     expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-one");
     fireEvent.mouseEnter(screen.getByRole("radio", { name: /Two/ }).closest("label")!);
@@ -332,7 +333,8 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     expect((screen.getByRole("radio", { name: /Two/ }) as HTMLInputElement).checked).toBe(false);
     expect(document.querySelector(".questionnaire-custom.is-active")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    expect(document.querySelector(".questionnaire-preview-lines")).toBeNull();
+    expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-A");
+    expect((screen.getByRole("radio", { name: /A/ }) as HTMLInputElement).checked).toBe(false);
     fireEvent.mouseEnter(screen.getByRole("radio", { name: /B/ }).closest("label")!);
     expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-B");
     expect(onRespond).not.toHaveBeenCalled();
