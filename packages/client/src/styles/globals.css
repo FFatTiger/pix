@@ -243,17 +243,6 @@ html {
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
-.app-title-trailing {
-  position: relative;
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  min-width: 0;
-  max-width: min(220px, 100%);
-  height: 100%;
-  margin-left: 4px;
-  padding-right: 4px;
-}
 .app-no-drag {
   -webkit-app-region: no-drag;
 }
@@ -2335,13 +2324,15 @@ span.linenumber {
   container-type: inline-size;
 }
 
-/* Subagent activity: header capsule + independent popover, plus the shared right pane. */
+/* Subagent activity: floating capsule overlay in the conversation host. */
 .subagent-activity-card {
-  position: relative;
-  z-index: 1;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 30;
   min-width: 0;
   max-width: 100%;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .status-card-shell {
@@ -2351,7 +2342,7 @@ span.linenumber {
   justify-content: flex-end;
   min-width: 0;
   max-width: 100%;
-  height: 100%;
+  pointer-events: auto;
 }
 
 .status-card-panel {
@@ -2572,8 +2563,9 @@ span.linenumber {
   display: flex;
   min-width: 0;
   align-items: center;
-  height: 36px;
-  padding: 0 6px 0 11px;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--bg-panel);
   border-bottom: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
 }
 
@@ -2739,7 +2731,11 @@ span.linenumber {
 .right-pane-selector button[aria-pressed="true"] {
   color: var(--text);
   background: transparent;
-  border-bottom-color: var(--accent);
+  border-bottom-color: color-mix(in srgb, var(--text) 28%, transparent);
+}
+.right-pane-selector button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--text) 28%, transparent);
+  outline-offset: -2px;
 }
 .right-pane-selector button:disabled { color: var(--text-dim); cursor: not-allowed; opacity: 0.55; }
 
@@ -2774,8 +2770,9 @@ span.linenumber {
   flex: 0 0 auto;
   flex-direction: column;
   gap: 3px;
-  padding: 9px 11px;
-  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
   color: var(--text-dim);
   font-size: 10px;
   line-height: 14px;
@@ -2800,11 +2797,12 @@ span.linenumber {
 
 .side-chat-toolbar {
   display: flex;
-  flex: 0 0 36px;
+  flex: 0 0 28px;
   align-items: center;
   gap: 4px;
-  padding: 4px 7px;
-  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
 }
 
 .side-chat-modes {
@@ -2812,10 +2810,8 @@ span.linenumber {
   min-width: 0;
   flex: 1;
   gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-secondary);
+  padding: 0;
+  background: transparent;
 }
 
 .side-chat-modes button {
@@ -3000,14 +2996,11 @@ span.linenumber {
 }
 
 .subagent-panel-head {
-  flex: 0 0 36px;
-  padding-right: 38px;
-  padding-left: 6px;
-  background: var(--bg-panel);
+  flex: 0 0 28px;
 }
 
 .subagent-panel-heading {
-  padding-left: 5px;
+  padding-left: 0;
 }
 
 .subagent-panel-child-title {
@@ -3081,9 +3074,6 @@ span.linenumber {
 }
 
 @media (max-width: 640px) {
-  .app-title-trailing {
-    max-width: min(148px, 100%);
-  }
   .subagent-activity-capsule {
     max-width: 148px;
   }

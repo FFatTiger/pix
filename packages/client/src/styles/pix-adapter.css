@@ -1504,9 +1504,8 @@ html.dark .catalog-meta-item--error {
   pointer-events: auto;
 }
 
-/* File explorer header: the fused browser toggle is ALWAYS visible (it is
-   the panel's right edge); upload/refresh stay in the hover overlay, which
-   is offset left of the toggle so it never covers the Files label. */
+/* File explorer toolbar: inline actions at the right edge. The pane toggle
+   lives in the top tab row, so this header no longer parks a 38px slot. */
 .explorer-header-action {
   display: flex;
   align-items: center;
@@ -1519,20 +1518,46 @@ html.dark .catalog-meta-item--error {
 }
 
 .explorer-panel .sidebar-section-actions {
-  right: 38px;
+  position: static;
+  top: auto;
+  right: auto;
+  transform: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  gap: 1px;
   opacity: 1;
   pointer-events: auto;
 }
 
-.explorer-panel .sidebar-section-toggle {
-  padding-right: 76px;
+.explorer-panel .sidebar-section-head {
+  height: 28px;
+  padding: 0 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
 }
 
-/* The pinned file-browser toggle (AppShell, window top-right) lands in this
-   header's reserved right edge once the panel is open: match the title bar's
-   36px row so the button has no vertical offset between the two states. */
-.explorer-panel .sidebar-section-head {
-  height: 36px;
+.explorer-panel .sidebar-section-label-text.explorer-files-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.explorer-project-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-section-head {

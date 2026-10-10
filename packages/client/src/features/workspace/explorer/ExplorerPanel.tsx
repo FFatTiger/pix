@@ -168,7 +168,8 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
     return (
       <div className="explorer-panel" aria-label="Files">
         <div className="sidebar-section-head">
-          <span className="sidebar-section-label-text">{t("desktop.files")}</span>
+          <span className="sidebar-section-label-text explorer-files-heading">{t("desktop.files")}</span>
+          {cwd ? <span className="explorer-project-label">{baseName(cwd)}</span> : null}
           {headerAction ? <div className="explorer-header-action">{headerAction}</div> : null}
         </div>
         <p className="workspace-hint">
@@ -308,7 +309,8 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
           }}
         >
           <div className="sidebar-section-head">
-            <span className="sidebar-section-label-text">{t("desktop.files")}</span>
+            <span className="sidebar-section-label-text explorer-files-heading">{t("desktop.files")}</span>
+            {cwd ? <span className="explorer-project-label">{baseName(cwd)}</span> : null}
             <div className="sidebar-section-actions">
               <button
                 type="button"

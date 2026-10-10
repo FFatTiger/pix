@@ -1193,7 +1193,9 @@ export function AppShell({ search }: AppShellProps) {
           onCloseAllTabs={handleCloseAllTabs}
           sessionLabels={sessionLabels}
           runningSessionIds={runningSessionIds}
-          trailing={activeSessionId === null ? undefined : (
+        />
+        <div className="conversation-container" style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+          {activeSessionId === null ? null : (
             <SubagentActivityCard
               key={activeSessionId}
               activities={subagentActivity.activities}
@@ -1204,8 +1206,6 @@ export function AppShell({ search }: AppShellProps) {
               onOpenDirectory={() => openSubagentPanel(null)}
             />
           )}
-        />
-        <div className="conversation-container" style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           <main className={`workspace${isHome ? " workspace--home" : ""}`}>
             {isHome ? (
               <div className="home-stack" data-testid="home-stack">
