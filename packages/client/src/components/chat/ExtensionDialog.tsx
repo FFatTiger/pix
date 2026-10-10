@@ -52,7 +52,7 @@ export function ExtensionDialog({
       style={{
         position: "absolute",
         inset: 0,
-        zIndex: 90,
+        zIndex: 140,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
