@@ -581,7 +581,7 @@ export interface HostDeps {
   runtimeWs?: RuntimeWsSeam;
   /** Hello-frame timeout in ms for the WS upgrade seam (default 10_000). */
   helloTimeoutMs?: number;
-  /** Maximum WebSocket message payload enforced by ws (default 1 MiB). */
+  /** Maximum WebSocket message payload enforced by ws (default Protocol runtime frame bound). */
   wsMaxPayloadBytes?: number;
   /** Maximum initial hello-frame bytes (default 64 KiB). */
   wsHelloMaxBytes?: number;

@@ -4,9 +4,15 @@ import {
   ExtensionUiInputExchangeSchema,
   ExtensionUiRequestSchema,
   ExtensionUiResponseExchangeSchema,
+  ImageAttachmentArraySchema,
   ImageAttachmentSchema,
   ImageContentSourceSchema,
+  MAX_IMAGE_ATTACHMENTS,
   MAX_IMAGE_BASE64_LENGTH,
+  MAX_IMAGE_INPUT_BASE64_LENGTH,
+  PromptCommandSchema,
+  SubmitTurnRequestSchema,
+  UserMessageSchema,
   RuntimeAttachParamsSchema,
   RuntimeCommandSchema,
   RuntimeEventSchema,
@@ -231,6 +237,36 @@ describe("D: image validation", () => {
     assert.equal(ImageAttachmentSchema.safeParse({ type: "image", data: "AA==", mimeType: "text/plain" }).success, false);
     assert.equal(ImageContentSourceSchema.safeParse({ type: "base64", data: "AA==", media_type: "text/plain" }).success, false);
     assert.equal(ImageContentSourceSchema.safeParse({ type: "url", url: `https://example.com/${"a".repeat(9_000)}` }).success, false);
+  });
+  it("accepts eight input images and rejects nine", () => {
+    const eight = Array.from({ length: MAX_IMAGE_ATTACHMENTS }, () => ({ type: "image", data: "AA==", mimeType: "image/png" }));
+    const nine = [...eight, { type: "image", data: "AA==", mimeType: "image/png" }];
+    assert.equal(ImageAttachmentArraySchema.safeParse(eight).success, true);
+    assert.equal(ImageAttachmentArraySchema.safeParse(nine).success, false);
+    assert.equal(PromptCommandSchema.safeParse({ commandId: "c1", type: "prompt", message: "hi", images: eight }).success, true);
+    assert.equal(PromptCommandSchema.safeParse({ commandId: "c1", type: "prompt", message: "hi", images: nine }).success, false);
+    assert.equal(SubmitTurnRequestSchema.safeParse({ sessionId: "s1", prompt: "hi", operationId: "op1", images: eight }).success, true);
+    assert.equal(SubmitTurnRequestSchema.safeParse({ sessionId: "s1", prompt: "hi", operationId: "op1", images: nine }).success, false);
+  });
+  it("accepts the exact aggregate and rejects one quartet over", () => {
+    const half = MAX_IMAGE_INPUT_BASE64_LENGTH / 2;
+    const exact = [
+      { type: "image", data: "A".repeat(half), mimeType: "image/png" },
+      { type: "image", data: "A".repeat(half), mimeType: "image/png" },
+    ];
+    assert.equal(ImageAttachmentArraySchema.safeParse(exact).success, true);
+    const over = [
+      { type: "image", data: "A".repeat(half), mimeType: "image/png" },
+      { type: "image", data: "A".repeat(half + 4), mimeType: "image/png" },
+    ];
+    assert.equal(ImageAttachmentArraySchema.safeParse(over).success, false);
+  });
+  it("does not restrict historical transcript images by the input count", () => {
+    const content = Array.from({ length: MAX_IMAGE_ATTACHMENTS + 1 }, () => ({
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: "AA==" },
+    }));
+    assert.equal(UserMessageSchema.safeParse({ role: "user", content }).success, true);
   });
   it("rejects relative and dangerous image URLs", () => {
     for (const url of ["/relative.png", "javascript:alert(1)", "file:///tmp/a", "data:image/png;base64,AA==", "ftp://example.com/a", "https://user:pass@example.com/a.png"]) assert.equal(ImageContentSourceSchema.safeParse({ type: "url", url }).success, false, url);

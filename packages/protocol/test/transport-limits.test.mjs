@@ -32,10 +32,9 @@ describe("Protocol runtime transport limits", () => {
   it("keeps inbound control and lightweight history independent of runtime capacity", () => {
     assert.equal(MAX_RPC_INBOUND_FRAME_BYTES, 2 * MiB);
     assert.equal(MAX_HISTORY_RESPONSE_BYTES, 4 * MiB);
-    assert.equal(MAX_HOST_INBOUND_WS_BYTES, MiB);
+    assert.equal(MAX_HOST_INBOUND_WS_BYTES, MAX_RUNTIME_FRAME_BYTES);
     assert.ok(MAX_RPC_INBOUND_FRAME_BYTES < MAX_RUNTIME_FRAME_BYTES);
     assert.ok(MAX_HISTORY_RESPONSE_BYTES < MAX_RUNTIME_FRAME_BYTES);
-    assert.ok(MAX_HOST_INBOUND_WS_BYTES < MAX_RUNTIME_FRAME_BYTES);
   });
 
   it("counts UTF-8 bytes, including multibyte code points", () => {
@@ -49,8 +48,8 @@ describe("Protocol runtime transport limits", () => {
   it("uses Protocol v2 and the integrated image/questionnaire build generations", () => {
     assert.equal(PROTOCOL_VERSION, 2);
     assert.equal(ADAPTER_CONTRACT_VERSION, 8);
-    assert.equal(SESSIOND_CONTRACT_VERSION, 10);
-    assert.equal(WORKER_CONTRACT_VERSION, 9);
+    assert.equal(SESSIOND_CONTRACT_VERSION, 11);
+    assert.equal(WORKER_CONTRACT_VERSION, 10);
   });
 });
 

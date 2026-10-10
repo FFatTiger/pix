@@ -243,10 +243,10 @@ describe("worker build matrix", () => {
     }
   });
 
-  it("release fences: pre-v9 Worker and pre-v8 Adapter generations are incompatible both ways", () => {
-    // Workers missing native questionnaire mapping must not be reused.
+  it("release fences: pre-v10 Worker and pre-v8 Adapter generations are incompatible both ways", () => {
+    // Workers missing image-bearing RPC admission must not be reused.
     assert.equal(WORKER_BUILD_IDENTITY.adapterContract, 8);
-    assert.equal(WORKER_BUILD_IDENTITY.workerContract, 9);
+    assert.equal(WORKER_BUILD_IDENTITY.workerContract, 10);
     for (let superseded = 1; superseded < WORKER_CONTRACT_VERSION; superseded += 1) {
       const older = { ...WORKER_BUILD_IDENTITY, workerContract: superseded };
       assert.deepEqual(evaluateWorkerBuild(older, WORKER_BUILD_IDENTITY), {

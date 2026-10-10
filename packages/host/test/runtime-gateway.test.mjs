@@ -1127,7 +1127,7 @@ test("non-finite byte and bufferedAmount limits cannot disable fail-closed bound
   const oversized = JSON.stringify({
     type: "command",
     id: "large",
-    payload: { sessionId: "s1", command: { commandId: "large", type: "prompt", message: "x".repeat(4 * 1024 * 1024) } },
+    payload: { sessionId: "s1", command: { commandId: "large", type: "prompt", message: "x".repeat(MAX_RUNTIME_QUEUED_BYTES) } },
   });
   inboundSession.receive(oversized);
   await wait();
@@ -2392,4 +2392,80 @@ test("old client is fail-closed before a questionnaire-bearing event, snapshot, 
   assert.equal(frames.some((frame) => frame.type === "runtime_unavailable"), true);
   assert.equal(frames.some((frame) => frame.payload?.error?.code === "unsupported_capability"), true);
   assert.equal(frames.some((frame) => frame.payload?.snapshot?.state?.pendingExtensionUi?.[0]?.method === "questionnaire"), false);
+});
+
+function pngImage(decodedBytes) {
+  return { type: "image", data: Buffer.alloc(decodedBytes, 0).toString("base64"), mimeType: "image/png" };
+}
+
+function promptImageFrame(decodedBytes) {
+  return JSON.stringify({
+    type: "command",
+    id: "img-cmd",
+    payload: {
+      sessionId: "s1",
+      command: { commandId: "cmd-img", type: "prompt", message: "hi", images: [pngImage(decodedBytes)] },
+    },
+  });
+}
+
+function submitImageFrame(decodedBytes) {
+  return JSON.stringify({
+    type: "submit_turn",
+    id: "img-st",
+    payload: { sessionId: "s1", prompt: "hi", operationId: "op-img", images: [pngImage(decodedBytes)] },
+  });
+}
+
+test("image-bearing prompt >2 MiB reaches fake RPC on the serial lane", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = okCommand;
+  const session = await connect(makeGateway(client));
+  const frame = promptImageFrame(2.1 * 1024 * 1024);
+  assert.ok(Buffer.byteLength(frame, "utf8") > 2 * 1024 * 1024);
+  session.receive(frame);
+  await wait();
+  assert.equal(session.closed, null);
+  const cmds = client.calls.filter((call) => call.method === "runtime.command");
+  assert.equal(cmds.length, 1);
+  assert.equal(cmds[0].params.command.images[0].data, JSON.parse(frame).payload.command.images[0].data);
+});
+
+test("image-bearing submit_turn ~10 MiB decoded reaches fake RPC on the turn lane", async () => {
+  const client = new FakeClient();
+  const sub = new FakeSubscription(turnAdmission("s1", "op-img"));
+  client.submitTurnFn = (_params, onPush) => { sub.onPush = onPush; return sub; };
+  const session = await connect(submitTurnGateway(client), submitHello);
+  const frame = submitImageFrame(10 * 1024 * 1024);
+  assert.ok(Buffer.byteLength(frame, "utf8") > 10 * 1024 * 1024);
+  session.receive(frame);
+  await wait();
+  assert.equal(session.closed, null);
+  const calls = client.calls.filter((call) => call.method === "runtime.submitTurn");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].params.images[0].data, JSON.parse(frame).payload.images[0].data);
+});
+
+test("single inbound frame over the runtime budget closes 1009 before parse even when the queue could hold it", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = okCommand;
+  const session = await connect(makeGateway(client));
+  const oversized = `${"x".repeat(MAX_RUNTIME_FRAME_BYTES + 1)}\n`;
+  session.receive(oversized);
+  await wait();
+  assert.equal(session.closed?.code, 1009);
+  assert.equal(client.calls.filter((call) => call.method === "runtime.command").length, 0);
+});
+
+test("interrupt bypass stays independent of an oversized image-bearing serial frame", async () => {
+  const client = new FakeClient();
+  client.handlers["runtime.command"] = () => hang();
+  client.handlers["runtime.interrupt"] = okInterrupt;
+  const session = await connect(makeGateway(client));
+  session.receive(promptImageFrame(32 * 1024));
+  await wait();
+  session.receive(interruptFrame("abort-1"));
+  await wait();
+  assert.equal(client.calls.some((call) => call.method === "runtime.interrupt"), true);
+  assert.equal(session.closed, null);
 });

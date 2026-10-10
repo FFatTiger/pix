@@ -339,6 +339,8 @@ export const enLocale = {
     "desktop.attachImage": "Attach image",
     "desktop.attachImageModelUnsupported": "The selected model ({model}) does not support image input",
     "desktop.attachImageFailed": "Could not read this photo. Try exporting it as JPEG or PNG.",
+    "desktop.attachImageCount": "A message can include at most {count} images",
+    "desktop.attachImageTotalTooLarge": "These photos together are too large. Keep the total under {limit} characters.",
     "desktop.dropToAdd": "Drop to add",
     "desktop.dropOutsideProjectConfirm": "Copy \"{name}\" into the project so it can be referenced?",
     "desktop.dropOutsideProjectConfirmMany": "Copy {count} files outside the project into it so they can be referenced?",

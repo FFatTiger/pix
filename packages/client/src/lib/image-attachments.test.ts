@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_IMAGE_ATTACHMENTS,
+  MAX_IMAGE_INPUT_BASE64_LENGTH,
+  MAX_IMAGE_SOURCE_BYTES,
+} from "@fffattiger/pix-protocol";
+import {
   canonicalPromptImageMimeType,
+  combinedImageLimitReason,
   getBase64DecodedByteLength,
   isBrowserImageFile,
   MAX_ATTACHED_IMAGE_BYTES,
@@ -34,13 +40,22 @@ describe("image attachment limits", () => {
   });
 
   it("rejects invalid MIME, oversized, and too many image attachments", () => {
-    const oversizedData = "AAAA".repeat(Math.ceil((MAX_ATTACHED_IMAGE_BYTES + 1) / 3));
-
+    expect(MAX_ATTACHED_IMAGES).toBe(MAX_IMAGE_ATTACHMENTS);
+    expect(MAX_ATTACHED_IMAGE_BYTES).toBe(MAX_IMAGE_SOURCE_BYTES);
     expect(validateAgentImages([image])).toBeNull();
-    expect(validateAgentImages([{ ...image, type: "text" }])).toMatch(/valid base64 image/);
-    expect(validateAgentImages([{ ...image, mimeType: "image/" }])).toMatch(/image MIME type/);
-    expect(validateAgentImages([{ ...image, mimeType: "text/plain" }])).toMatch(/image MIME type/);
-    expect(validateAgentImages([{ ...image, data: oversizedData }])).toMatch(/10MB/);
+    expect(validateAgentImages([{ ...image, type: "text" }])).toMatch(/canonical base64/);
+    expect(validateAgentImages([{ ...image, mimeType: "image/" }])).toMatch(/supported image MIME type/);
+    expect(validateAgentImages([{ ...image, mimeType: "text/plain" }])).toMatch(/supported image MIME type/);
+    expect(validateAgentImages([{ ...image, data: "A".repeat(MAX_IMAGE_INPUT_BASE64_LENGTH + 4) }])).toMatch(/together/);
     expect(validateAgentImages(Array.from({ length: MAX_ATTACHED_IMAGES + 1 }, () => image))).toMatch(/at most/);
+  });
+
+  it("combined proposed images honor count and aggregate before append", () => {
+    const eight = Array.from({ length: MAX_IMAGE_ATTACHMENTS }, () => image);
+    expect(combinedImageLimitReason(eight.slice(0, 7), [image])).toBeNull();
+    expect(combinedImageLimitReason(eight, [image])).toBe("count");
+    const half = "A".repeat(MAX_IMAGE_INPUT_BASE64_LENGTH / 2);
+    expect(combinedImageLimitReason([{ data: half }], [{ data: half }])).toBeNull();
+    expect(combinedImageLimitReason([{ data: half }], [{ data: half + "AAAA" }])).toBe("totalTooLarge");
   });
 });

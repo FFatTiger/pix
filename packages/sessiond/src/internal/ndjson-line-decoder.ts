@@ -14,7 +14,7 @@ export interface NdjsonLineDecoderOptions {
 export class NdjsonLineDecoder {
   private decoder = new TextDecoder("utf8", { fatal: false });
   private buffer = "";
-  private readonly maxFrameBytes: number;
+  readonly maxFrameBytes: number;
 
   constructor(options: NdjsonLineDecoderOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? MAX_RPC_INBOUND_FRAME_BYTES;
@@ -38,5 +38,12 @@ export class NdjsonLineDecoder {
       return { lines, overflow: true };
     }
     return { lines, overflow: false };
+  }
+
+  /** Drain unfinished bytes so a replacement decoder can own the remainder. */
+  takeRemainder(): string {
+    const remainder = this.buffer;
+    this.buffer = "";
+    return remainder;
   }
 }

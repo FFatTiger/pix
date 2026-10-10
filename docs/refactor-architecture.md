@@ -74,7 +74,7 @@ Pi 防腐层（ACL）
 - Client session selection 立即提交 URL，不等待历史 body；Transcript subtree 按 session identity remount，Query key 绑定 `(sessionId, historyGeneration, anchor)`，迟到的 A 响应不能投影到 B。完整 branch 到达后只显示最后 50 个 rendered rows，向上每次仅在本地再 reveal 50，不发隐藏历史请求。
 - 历史 JSON、Vite JS 与 CSS 由 Host 原生压缩中间件按 `Accept-Encoding` 压缩；206、已编码、SSE、图片与 binary 不进入该压缩面。
 - 任意单个 deferred media 即使超过 RPC frame 上限，也必须在 adapter 投影阶段被移除；不得提高 sessiond frame/queue/timeout 来容纳它。重文本导致完整轻量响应仍超过既有 lightweight-history 上限（`MAX_HISTORY_RESPONSE_BYTES`，4 MiB 含换行，与 live runtime frame 预算独立）时诚实失败，不伪装截断或成功。
-- live runtime 帧容量由 Protocol `MAX_RUNTIME_FRAME_BYTES`（一张最大 inline 图 + 2 MiB 信封）与 `MAX_RUNTIME_QUEUED_BYTES`（两整帧含换行）拥有；Worker stdout/stdin、sessiond child stdio、RPC outbound、Host outbound queue/buffer 走该契约。RPC inbound 控制请求保持 2 MiB，Host inbound WS `maxPayload` 保持 1 MiB，二者不承载 read-output，也不因 live 媒体放大。整帧是聚合上限：多图仅在序列化信封仍落入预算时通过，否则 fail-closed。
+- live runtime 帧容量由 Protocol `MAX_RUNTIME_FRAME_BYTES`（一张最大 inline 图 + 2 MiB 信封）与 `MAX_RUNTIME_QUEUED_BYTES`（两整帧含换行）拥有；Worker stdout/stdin、sessiond child stdio、RPC outbound、Host inbound WS `maxPayload`、Host outbound queue/buffer 走该契约。RPC inbound AUTH/非图片控制请求保持 2 MiB，lightweight history 保持 4 MiB，二者不因 live 媒体放大。输入图片数组上限 8 张、合计 base64 14M；整帧是聚合上限：多图仅在序列化信封仍落入预算时通过，否则 fail-closed。
 
 ### Materialized Catalog 分页契约
 

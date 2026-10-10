@@ -4,7 +4,13 @@ import React, { useMemo, useRef, useState, useCallback, useEffect, useImperative
 import type { BuiltinSlashCommandResult, ChatFileIndexSnapshot, CompactResultInfo, QueuedMessages, SkillDormancyResponse, SlashCommandInfo } from "@/lib/chat-view-model";
 import { clearDraft, getDraft, getDraftFiles, setDraft, setDraftFiles, type ChatDraftFile, type ChatDraftImage } from "@/lib/draft-store";
 import { continueMarkdownList } from "@/lib/markdown-list";
-import { isBase64ImageWithinLimits, isBrowserImageFile, prepareBrowserImage } from "@/lib/image-attachments";
+import {
+  combinedImageLimitReason,
+  isBase64ImageWithinLimits,
+  isBrowserImageFile,
+  prepareBrowserImage,
+} from "@/lib/image-attachments";
+import { MAX_IMAGE_ATTACHMENTS, MAX_IMAGE_INPUT_BASE64_LENGTH } from "@fffattiger/pix-protocol";
 import type { TextContent, UserMessage } from "@/lib/chat-view-model";
 import {
   buildEntriesFromFiles, buildAtInsertText, buildFileAtMentionsText, extractAtQuery, filterFileEntries,
@@ -597,6 +603,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // Image FileReader reads still in flight — replaceMessage must not clobber
   // an image the user just dropped before its read finished.
   const pendingImageCountRef = useRef(0);
+  const pendingImageBase64Ref = useRef(0);
 
   // Highlight layer segments: valid @file mentions and /skill: commands get
   // accent + dotted underline styling in the backdrop behind the textarea.
@@ -788,17 +795,45 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     // passes protocol-safe formats through and transcodes the rest to JPEG.
     const imageFiles = files.filter(isBrowserImageFile);
     if (!imageFiles.length) return;
+    if (attachedImagesRef.current.length + pendingImageCountRef.current + imageFiles.length > MAX_IMAGE_ATTACHMENTS) {
+      setImageAttachmentError(t("desktop.attachImageCount", { count: MAX_IMAGE_ATTACHMENTS }));
+      return;
+    }
+    const reservedSource = imageFiles.reduce((sum, file) => sum + Math.ceil(file.size * 4 / 3) + 4, 0);
+    const existingBase64 = attachedImagesRef.current.reduce((sum, image) => sum + image.data.length, 0);
+    if (existingBase64 + pendingImageBase64Ref.current + reservedSource > MAX_IMAGE_INPUT_BASE64_LENGTH) {
+      setImageAttachmentError(t("desktop.attachImageTotalTooLarge", { limit: MAX_IMAGE_INPUT_BASE64_LENGTH }));
+      return;
+    }
     setImageAttachmentError(null);
     pendingImageCountRef.current += imageFiles.length;
+    pendingImageBase64Ref.current += reservedSource;
+    let prepared: Awaited<ReturnType<typeof prepareBrowserImage>>[] = [];
     try {
       const results = await Promise.allSettled(imageFiles.map(prepareBrowserImage));
-      const prepared = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
-      if (prepared.length > 0) setAttachedImages((prev) => [...prev, ...prepared]);
-      if (prepared.length !== imageFiles.length) {
+      prepared = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      const decodeFailed = prepared.length !== imageFiles.length;
+      let rejected: ReturnType<typeof combinedImageLimitReason> = null;
+      setAttachedImages((prev) => {
+        if (prepared.length === 0) return prev;
+        const reason = combinedImageLimitReason(prev, prepared);
+        if (reason) {
+          rejected = reason;
+          return prev;
+        }
+        return [...prev, ...prepared];
+      });
+      if (rejected) {
+        for (const image of prepared) URL.revokeObjectURL(image.previewUrl);
+        setImageAttachmentError(rejected === "count"
+          ? t("desktop.attachImageCount", { count: MAX_IMAGE_ATTACHMENTS })
+          : t("desktop.attachImageTotalTooLarge", { limit: MAX_IMAGE_INPUT_BASE64_LENGTH }));
+      } else if (decodeFailed) {
         setImageAttachmentError(t("desktop.attachImageFailed"));
       }
     } finally {
       pendingImageCountRef.current = Math.max(0, pendingImageCountRef.current - imageFiles.length);
+      pendingImageBase64Ref.current = Math.max(0, pendingImageBase64Ref.current - reservedSource);
     }
   }, [t]);
 

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@/hooks/useI18n";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
+import { MAX_IMAGE_ATTACHMENTS } from "@fffattiger/pix-protocol";
 
 class ResizeObserverStub {
   observe(): void {}
@@ -393,5 +394,25 @@ describe("ChatInput pending file attachments", () => {
     await waitFor(() => expect(uploadFiles).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onFollowUp).toHaveBeenCalledWith("@notes.txt ", undefined));
     expect(screen.queryByText("notes.txt")).toBeNull();
+  });
+
+  it("keeps existing images when overlapping picker batches would exceed the count", async () => {
+    const png = (name: string) => new File(["fake"], name, { type: "image/png" });
+    const handle = createRef<ChatInputHandle>();
+    render(
+      <I18nProvider>
+        <ChatInput ref={handle} onSend={() => true} onAbort={() => {}} isStreaming={false} />
+      </I18nProvider>,
+    );
+    await act(async () => {
+      handle.current?.addImages(Array.from({ length: MAX_IMAGE_ATTACHMENTS }, (_, index) => png(`keep-${index}.png`)));
+    });
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Remove image" })).toHaveLength(MAX_IMAGE_ATTACHMENTS));
+    await act(async () => {
+      handle.current?.addImages([png("ninth.png")]);
+    });
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(screen.getAllByRole("button", { name: "Remove image" })).toHaveLength(MAX_IMAGE_ATTACHMENTS);
+    expect(screen.getByRole("alert").textContent).toMatch(/at most 8/i);
   });
 });

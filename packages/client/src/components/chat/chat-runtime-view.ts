@@ -6,14 +6,15 @@
  * semantics — just data shaping shared by Composer / TranscriptList /
  * SessionInfoBar so each surface stays honest about what pix actually has.
  */
-import type {
-  AgentMessage,
-  ContextUsage,
-  ImageAttachment,
-  QueuedMessages,
-  RuntimeState,
-  SessionStats,
-  ThinkingLevel,
+import {
+  SupportedImageMediaTypeSchema,
+  type AgentMessage,
+  type ContextUsage,
+  type ImageAttachment,
+  type QueuedMessages,
+  type RuntimeState,
+  type SessionStats,
+  type ThinkingLevel,
 } from "@fffattiger/pix-protocol";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
 import type { SessionTreeNode as ProtocolSessionTreeNode } from "@/lib/session-tree";
@@ -240,12 +241,7 @@ export function toQueuedMessagesView(
 }
 
 /** Composer AttachedImage list → protocol prompt images (base64, no prefix). */
-const SUPPORTED_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-]);
+const SUPPORTED_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set(SupportedImageMediaTypeSchema.options);
 
 export function toImageAttachments(
   images: readonly AttachedImage[] | undefined,

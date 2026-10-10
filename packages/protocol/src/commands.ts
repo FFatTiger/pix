@@ -5,7 +5,7 @@ import {
 } from "./extension.js";
 import { SideChatIdSchema, SideChatModeSchema, MAX_SIDE_CHAT_MESSAGE_CHARS } from "./side-chat.js";
 import {
-  ImageAttachmentSchema,
+  ImageAttachmentArraySchema,
   NonBlankTextSchema,
   NonEmptyStringSchema,
   StreamingBehaviorSchema,
@@ -24,7 +24,7 @@ export const PromptCommandSchema = z.strictObject({
   ...commandBase,
   type: z.literal("prompt"),
   message: NonBlankTextSchema,
-  images: z.array(ImageAttachmentSchema).optional(),
+  images: ImageAttachmentArraySchema.optional(),
   streamingBehavior: StreamingBehaviorSchema.optional(),
 });
 
@@ -100,14 +100,14 @@ export const SteerCommandSchema = z.strictObject({
   ...commandBase,
   type: z.literal("steer"),
   message: NonBlankTextSchema,
-  images: z.array(ImageAttachmentSchema).optional(),
+  images: ImageAttachmentArraySchema.optional(),
 });
 
 export const FollowUpCommandSchema = z.strictObject({
   ...commandBase,
   type: z.literal("follow_up"),
   message: NonBlankTextSchema,
-  images: z.array(ImageAttachmentSchema).optional(),
+  images: ImageAttachmentArraySchema.optional(),
 });
 
 export const GetToolsCommandSchema = z.strictObject({

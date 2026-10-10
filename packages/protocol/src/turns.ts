@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   EpochSchema,
-  ImageAttachmentSchema,
+  ImageAttachmentArraySchema,
   ModelSelectorSchema,
   NonBlankTextSchema,
   NonEmptyStringSchema,
@@ -30,7 +30,7 @@ export const SubmitTurnRequestSchema = z.strictObject({
   expectedEpoch: EpochSchema.optional(),
   expectedRevision: z.number().int().nonnegative().safe().optional(),
   prompt: NonBlankTextSchema,
-  images: z.array(ImageAttachmentSchema).max(8).optional(),
+  images: ImageAttachmentArraySchema.optional(),
   activationOverrides: TurnActivationOverridesSchema.optional(),
   operationId: NonEmptyStringSchema,
 }).superRefine((value, ctx) => {

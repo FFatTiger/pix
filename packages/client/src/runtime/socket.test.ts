@@ -171,4 +171,42 @@ describe("RuntimeSocket", () => {
     expect(rec.messages).toHaveLength(1);
     socket.dispose();
   });
+
+  it("rejects invalid image-bearing frames before any bytes are written", () => {
+    const sockets: FakeWebSocket[] = [];
+    const rec: Recorded = { states: [], acks: [], rejects: [], messages: [] };
+    const socket = new RuntimeSocket(makeDeps(sockets), makeHandler(rec));
+    socket.connect();
+    sockets[0]!.serverOpen();
+    sockets[0]!.serverSend({ type: "handshake_ack", payload: ackPayload() });
+    const before = sockets[0]!.sent.length;
+    expect(() => socket.send({
+      type: "command",
+      id: "c1",
+      payload: {
+        sessionId: "s1",
+        command: {
+          commandId: "cmd-1",
+          type: "prompt",
+          message: "hi",
+          images: Array.from({ length: 9 }, () => ({ type: "image", data: "AA==", mimeType: "image/png" })),
+        },
+      },
+    })).toThrow();
+    expect(sockets[0]!.sent.length).toBe(before);
+    socket.send({
+      type: "command",
+      id: "c2",
+      payload: {
+        sessionId: "s1",
+        command: {
+          commandId: "cmd-2",
+          type: "prompt",
+          message: "hi",
+          images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+        },
+      },
+    });
+    expect(sockets[0]!.sent.at(-1)).toMatchObject({ type: "command", id: "c2" });
+  });
 });

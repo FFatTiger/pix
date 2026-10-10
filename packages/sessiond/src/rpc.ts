@@ -1,6 +1,7 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { timingSafeEqual } from "node:crypto";
 import {
+  inboundRpcFrameBudgetFor,
   MAX_RPC_INBOUND_FRAME_BYTES,
   MAX_RUNTIME_FRAME_BYTES,
   PROTOCOL_VERSION,
@@ -10,6 +11,7 @@ import {
   SessiondPushSchema,
   SessiondRunningStatePushSchema,
   SessiondTurnStatusPushSchema,
+  utf8ByteLength,
   type ProtocolError,
   type SessiondRpcMethod,
   type SessiondRpcRequest,
@@ -119,19 +121,20 @@ export class SessiondRpcServer {
     let attachment: PreparedAttachment | undefined;
     let runningWatch: PreparedRunningWatch | undefined;
     let turnSubmission: PreparedTurnSubmission | undefined;
-    const inboundLimit = this.options.maxFrameBytes ?? MAX_INBOUND_FRAME_BYTES;
-    const decoder = new NdjsonLineDecoder({ maxFrameBytes: inboundLimit });
+    const configuredInbound = this.options.maxFrameBytes;
+    const authLimit = Math.min(configuredInbound ?? MAX_INBOUND_FRAME_BYTES, MAX_INBOUND_FRAME_BYTES);
+    const postAuthLimit = Math.min(configuredInbound ?? MAX_RUNTIME_FRAME_BYTES, MAX_RUNTIME_FRAME_BYTES);
+    let decoder = new NdjsonLineDecoder({ maxFrameBytes: authLimit });
     const writer = new SerialSocketWriter(socket, this.options.writer);
-    socket.on("data", (chunk) => {
-      const decoded = decoder.push(chunk);
+    const handleDecoded = (decoded: { lines: string[]; overflow: boolean }): boolean => {
       if (decoded.overflow) {
         socket.destroy();
-        return;
+        return false;
       }
       for (const line of decoded.lines) {
         if (!authenticated) {
           authenticated = line.startsWith("AUTH ") && equalSecret(line.slice(5), this.options.secret);
-          if (!authenticated) { socket.destroy(); return; }
+          if (!authenticated) { socket.destroy(); return false; }
           void writer.enqueue("OK\n").catch(() => socket.destroy());
           continue;
         }
@@ -142,11 +145,30 @@ export class SessiondRpcServer {
           socket,
           writer,
           line,
+          postAuthLimit,
           (next) => { attachment?.close(); attachment = next; },
           (next) => { runningWatch?.close(); runningWatch = next; },
           (next) => { turnSubmission?.close(); turnSubmission = next; },
         ).catch((error) => this.log(`[sessiond] rpc request process failed: ${describeSafe(error)}`));
       }
+      return true;
+    };
+    socket.on("data", (chunk) => {
+      if (!authenticated) {
+        for (const segment of splitIncomingBufferAtNewlines(chunk)) {
+          if (!authenticated) {
+            if (!handleDecoded(decoder.push(segment))) return;
+            if (authenticated) {
+              decoder.takeRemainder();
+              decoder = new NdjsonLineDecoder({ maxFrameBytes: postAuthLimit });
+            }
+          } else if (!handleDecoded(decoder.push(segment))) {
+            return;
+          }
+        }
+        return;
+      }
+      if (!handleDecoded(decoder.push(chunk))) return;
     });
     socket.on("close", () => { attachment?.close(); runningWatch?.close(); turnSubmission?.close(); writer.close(); this.sockets.delete(socket); });
     socket.on("error", () => { attachment?.close(); runningWatch?.close(); turnSubmission?.close(); writer.close(); this.sockets.delete(socket); });
@@ -156,6 +178,7 @@ export class SessiondRpcServer {
     socket: Socket,
     writer: SerialSocketWriter,
     line: string,
+    postAuthLimit: number,
     setAttach: (attachment: PreparedAttachment) => void,
     setRunningWatch: (watch: PreparedRunningWatch) => void,
     setTurnSubmission: (submission: PreparedTurnSubmission) => void,
@@ -174,6 +197,15 @@ export class SessiondRpcServer {
       return;
     }
     const request = parsed.data;
+    const allowed = Math.min(postAuthLimit, inboundRpcFrameBudgetFor(request));
+    if (utf8ByteLength(line) > allowed) {
+      await this.writeFailureSafely(writer, request.id, request.method, {
+        code: "invalid_input",
+        message: "RPC request frame exceeds the size limit",
+        retryable: false,
+      });
+      return;
+    }
     if (request.method === "system.shutdown") {
       await this.handleShutdown(writer, request);
       return;
@@ -419,6 +451,38 @@ async function dispatchHandler(handler: SessiondRpcHandler, request: SessiondRpc
   return handler.handle(request.method, request.params as never, { requestId: request.id }) as Promise<SessiondMethodResult[SessiondRpcMethod]>;
 }
 
+/** Feed AUTH-sized segments ending at a newline so coalesced image frames are not decoded under the 2 MiB AUTH budget. */
+function splitIncomingBufferAtNewlines(chunk: Buffer | Uint8Array): Buffer[] {
+  const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  const segments: Buffer[] = [];
+  let start = 0;
+  for (let index = 0; index < buffer.length; index += 1) {
+    if (buffer[index] === 0x0a) {
+      segments.push(buffer.subarray(start, index + 1));
+      start = index + 1;
+    }
+  }
+  if (start < buffer.length) segments.push(buffer.subarray(start));
+  return segments.length > 0 ? segments : [buffer];
+}
+
+function outboundRpcFrameBudgetFor(request: SessiondRpcRequest): number {
+  return inboundRpcFrameBudgetFor(request);
+}
+
+function serializedRpcRequestFrame(request: SessiondRpcRequest): { frame: string; budget: number } {
+  const frame = `${JSON.stringify(request)}\n`;
+  return { frame, budget: outboundRpcFrameBudgetFor(request) };
+}
+
+function writeSerializedRpcRequest(socket: Socket, request: SessiondRpcRequest): void {
+  const { frame, budget } = serializedRpcRequestFrame(request);
+  if (utf8ByteLength(frame.slice(0, -1)) > budget) {
+    throw new SessiondError("invalid_input", "RPC request frame exceeds the size limit", false);
+  }
+  socket.write(frame);
+}
+
 const clientResponseDecoder = (): NdjsonLineDecoder => new NdjsonLineDecoder({ maxFrameBytes: MAX_RUNTIME_FRAME_BYTES });
 const oversizeResponseError = (): SessiondError => new SessiondError("unavailable", "RPC response frame exceeds the size limit", true);
 
@@ -456,7 +520,9 @@ export class SessiondRpcClient {
         for (const line of decoded.lines) {
           if (!authenticated) {
             if (line !== "OK") return fail(new SessiondError("unauthorized", "sessiond authentication failed"));
-            authenticated = true; socket.write(`${JSON.stringify(request)}\n`); continue;
+            authenticated = true;
+            try { writeSerializedRpcRequest(socket, request); } catch (error) { return fail(error instanceof Error ? error : new SessiondError("invalid_input", "RPC request frame exceeds the size limit")); }
+            continue;
           }
           let value: unknown;
           try { value = JSON.parse(line); } catch { return fail(new SessiondError("invalid_request", "invalid sessiond frame")); }
@@ -506,7 +572,12 @@ export class SessiondRpcClient {
         const decoded = decoder.push(chunk);
         if (decoded.overflow) return fail(oversizeResponseError());
         for (const line of decoded.lines) {
-          if (!authenticated) { if (line !== "OK") return fail(new SessiondError("unauthorized", "sessiond authentication failed")); authenticated = true; socket.write(`${JSON.stringify(request)}\n`); continue; }
+          if (!authenticated) {
+            if (line !== "OK") return fail(new SessiondError("unauthorized", "sessiond authentication failed"));
+            authenticated = true;
+            try { writeSerializedRpcRequest(socket, request); } catch (error) { return fail(error instanceof Error ? error : new SessiondError("invalid_input", "RPC request frame exceeds the size limit")); }
+            continue;
+          }
           let value: unknown;
           try { value = JSON.parse(line); } catch { return fail(new SessiondError("invalid_request", "invalid sessiond frame")); }
           if (!submitted) {
@@ -556,7 +627,9 @@ export class SessiondRpcClient {
         for (const line of decoded.lines) {
           if (!authenticated) {
             if (line !== "OK") return fail(new SessiondError("unauthorized", "sessiond authentication failed"));
-            authenticated = true; socket.write(`${JSON.stringify(request)}\n`); continue;
+            authenticated = true;
+            try { writeSerializedRpcRequest(socket, request); } catch (error) { return fail(error instanceof Error ? error : new SessiondError("invalid_input", "RPC request frame exceeds the size limit")); }
+            continue;
           }
           let value: unknown;
           try { value = JSON.parse(line); } catch { return fail(new SessiondError("invalid_request", "invalid sessiond frame")); }
@@ -601,7 +674,8 @@ export class SessiondRpcClient {
           if (!authenticated) {
             if (line !== "OK") { finish(() => reject(new SessiondError("unauthorized", "sessiond authentication failed"))); return; }
             authenticated = true;
-            socket.write(`${JSON.stringify(request)}\n`);
+            try { writeSerializedRpcRequest(socket, request); }
+            catch (error) { finish(() => reject(error instanceof Error ? error : new SessiondError("invalid_input", "RPC request frame exceeds the size limit"))); return; }
             continue;
           }
           try {

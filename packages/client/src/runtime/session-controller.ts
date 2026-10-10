@@ -4188,7 +4188,7 @@ export class SessionController implements RuntimeControllerPort {
         if (this.pendingCommand !== pending) return;
         this.pendingCommand = null;
         pending.attempt = null;
-        pending.reject(cause);
+        pending.reject(this.protocolErrorFrom(cause, "command send failed"));
       },
       onDisconnect: () => { /* logical command re-registers after exact attach resync */ },
     });
@@ -4212,7 +4212,7 @@ export class SessionController implements RuntimeControllerPort {
         if (this.pendingQueuedTurn !== pending) return;
         this.pendingQueuedTurn = null;
         pending.attempt = null;
-        pending.reject(cause);
+        pending.reject(this.protocolErrorFrom(cause, "queued turn send failed"));
         this.notify();
       },
       onDisconnect: () => {},

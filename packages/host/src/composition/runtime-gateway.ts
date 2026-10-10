@@ -1,4 +1,5 @@
 import {
+  isWithinRuntimeFrameBudget,
   MAX_RUNTIME_FRAME_BYTES,
   MAX_RUNTIME_FRAME_COUNT,
   MAX_RUNTIME_QUEUED_BYTES,
@@ -84,7 +85,7 @@ export interface SessiondRuntimeGatewayOutboundLimits {
 export interface SessiondRuntimeGatewayInboundLimits {
   /** Max pending non-interrupt frames in the inbound serial queue (default 256). */
   readonly maxSerialFrames?: number;
-  /** Max pending non-interrupt bytes in the inbound serial queue (default 4 MiB). */
+  /** Max pending non-interrupt bytes in the inbound serial/interleaving queues (default two runtime frames). */
   readonly maxSerialBytes?: number;
   /** Max concurrently in-flight interrupts per socket (default 16). */
   readonly maxInflightInterrupts?: number;
@@ -166,12 +167,12 @@ const DEFAULT_MAX_BYTES = MAX_RUNTIME_QUEUED_BYTES;
 const DEFAULT_MAX_BUFFERED = MAX_RUNTIME_QUEUED_BYTES;
 const DEFAULT_MAX_OPEN_SESSIONS = 4;
 const DEFAULT_MAX_SERIAL_FRAMES = 256;
-const DEFAULT_MAX_SERIAL_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_SERIAL_BYTES = MAX_RUNTIME_QUEUED_BYTES;
 const DEFAULT_MAX_INFLIGHT_INTERRUPTS = 16;
 const DEFAULT_READ_MAX_SERIAL_FRAMES = 16;
 const DEFAULT_READ_MAX_SERIAL_BYTES = 512 * 1024;
 const DEFAULT_TURN_MAX_SERIAL_FRAMES = 16;
-const DEFAULT_TURN_MAX_SERIAL_BYTES = 1024 * 1024;
+const DEFAULT_TURN_MAX_SERIAL_BYTES = MAX_RUNTIME_QUEUED_BYTES;
 const DEFAULT_CONTROL_MAX_SERIAL_FRAMES = 16;
 const DEFAULT_CONTROL_MAX_SERIAL_BYTES = 256 * 1024;
 export const DEFAULT_LIFECYCLE_AUTHORIZATION_TIMEOUT_MS = 2_000;
@@ -843,6 +844,13 @@ class GatewayConnection {
 
   private onFrame(raw: string): void {
     if (this.browserClosed) return;
+    if (!isWithinRuntimeFrameBudget(raw)) {
+      this.config.logger.warn?.("runtime gateway inbound frame exceeds runtime budget; closing", {
+        bytes: Buffer.byteLength(raw, "utf8"),
+      });
+      this.closeBrowser(CLOSE_MESSAGE_TOO_BIG, "inbound frame too large");
+      return;
+    }
     const data = safeJson(raw);
     if (data === undefined) {
       this.failProtocol("invalid JSON runtime frame");

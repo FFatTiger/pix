@@ -72,8 +72,11 @@ export const PIX_PRODUCT_VERSION = "0.2.2" as const;
  * v10 (native questionnaire): snapshots, events, command/read results, and
  * turn authority may carry `method: "questionnaire"` requests/answers. A v9
  * peer's strict schemas reject the new method, so mixed dist must fail closed.
+ * v11 (image-bearing ingress): Host inbound WS and image-bearing RPC frames
+ * share the Protocol runtime frame bound; input image arrays are 8 + 14M
+ * aggregate. AUTH/non-image control stay 2 MiB. Mixed dist must fail closed.
  */
-export const SESSIOND_CONTRACT_VERSION = 10 as const;
+export const SESSIOND_CONTRACT_VERSION = 11 as const;
 
 /**
  * sessiond ↔ Worker IPC contract generation. Bumped on every change to the
@@ -100,8 +103,10 @@ export const SESSIOND_CONTRACT_VERSION = 10 as const;
  * the Protocol runtime budget so schema-valid image content is not fatal.
  * v9 (native questionnaire): Worker IPC events/snapshots/command mapping carry
  * the typed questionnaire request/response. A v8 peer rejects the method.
+ * v10 (image-bearing ingress): sessiond RPC admits schema-valid image frames
+ * at the runtime bound after AUTH. A v9 peer's 2 MiB inbound still rejects.
  */
-export const WORKER_CONTRACT_VERSION = 9 as const;
+export const WORKER_CONTRACT_VERSION = 10 as const;
 
 /**
  * Adapter behavior-contract generation (the contract proven by

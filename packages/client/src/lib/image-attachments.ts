@@ -1,12 +1,20 @@
-export const MAX_ATTACHED_IMAGE_BYTES = 10 * 1024 * 1024;
-export const MAX_ATTACHED_IMAGES = 10;
+import {
+  ImageAttachmentArraySchema,
+  ImageAttachmentSchema,
+  MAX_IMAGE_ATTACHMENTS,
+  MAX_IMAGE_INPUT_BASE64_LENGTH,
+  MAX_IMAGE_SOURCE_BYTES,
+  SupportedImageMediaTypeSchema,
+  type ImageAttachment,
+  type SupportedImageMediaType,
+} from "@fffattiger/pix-protocol";
 
-export const PROMPT_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-]);
+/** @deprecated Use Protocol `MAX_IMAGE_SOURCE_BYTES`. Kept as a Protocol-derived alias. */
+export const MAX_ATTACHED_IMAGE_BYTES = MAX_IMAGE_SOURCE_BYTES;
+/** @deprecated Use Protocol `MAX_IMAGE_ATTACHMENTS`. Kept as a Protocol-derived alias. */
+export const MAX_ATTACHED_IMAGES = MAX_IMAGE_ATTACHMENTS;
+
+export const PROMPT_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set(SupportedImageMediaTypeSchema.options);
 
 const IMAGE_FILE_EXTENSION = /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|webp)$/i;
 const MOBILE_IMAGE_MAX_EDGE = 2048;
@@ -14,9 +22,11 @@ const MOBILE_JPEG_QUALITY = 0.86;
 
 export interface PreparedBrowserImage {
   data: string;
-  mimeType: string;
+  mimeType: SupportedImageMediaType;
   previewUrl: string;
 }
+
+export type Base64ImageAttachment = ImageAttachment;
 
 /** iOS can omit the MIME type for Photos picker files; the name is the fallback. */
 export function isBrowserImageFile(file: Pick<File, "name" | "type">): boolean {
@@ -24,10 +34,11 @@ export function isBrowserImageFile(file: Pick<File, "name" | "type">): boolean {
 }
 
 /** Return the protocol-safe media type when the original bytes can pass through. */
-export function canonicalPromptImageMimeType(file: Pick<File, "name" | "type">): string | null {
+export function canonicalPromptImageMimeType(file: Pick<File, "name" | "type">): SupportedImageMediaType | null {
   const declared = file.type.toLowerCase();
   const normalized = declared === "image/jpg" || declared === "image/pjpeg" ? "image/jpeg" : declared;
-  if (PROMPT_IMAGE_MIME_TYPES.has(normalized)) return normalized;
+  const parsed = SupportedImageMediaTypeSchema.safeParse(normalized);
+  if (parsed.success) return parsed.data;
   if (normalized) return null;
   const extension = file.name.toLowerCase().match(/\.([^.]+)$/)?.[1];
   if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
@@ -72,13 +83,13 @@ function canvasToJpeg(canvas: HTMLCanvasElement): Promise<Blob> {
 
 /**
  * Prepare a picker/drop image for the wire protocol. PNG/JPEG/GIF/WebP pass
- * through when already within the 10 MiB bound. Unsupported mobile formats
+ * through when already within the source-byte bound. Unsupported mobile formats
  * (notably iPhone HEIC/HEIF, sometimes with an empty MIME type) and oversized
  * photos are decoded by the browser, resized, and re-encoded as JPEG.
  */
 export async function prepareBrowserImage(file: File): Promise<PreparedBrowserImage> {
   const canonicalMimeType = canonicalPromptImageMimeType(file);
-  if (canonicalMimeType && file.size <= MAX_ATTACHED_IMAGE_BYTES) {
+  if (canonicalMimeType && file.size <= MAX_IMAGE_SOURCE_BYTES) {
     return {
       data: await readBlobAsBase64(file),
       mimeType: canonicalMimeType,
@@ -101,7 +112,7 @@ export async function prepareBrowserImage(file: File): Promise<PreparedBrowserIm
     if (!context) throw new Error("image canvas is unavailable");
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
     const jpeg = await canvasToJpeg(canvas);
-    if (jpeg.size > MAX_ATTACHED_IMAGE_BYTES) throw new Error("converted image is too large");
+    if (jpeg.size > MAX_IMAGE_SOURCE_BYTES) throw new Error("converted image is too large");
     return {
       data: await readBlobAsBase64(jpeg),
       mimeType: "image/jpeg",
@@ -112,12 +123,6 @@ export async function prepareBrowserImage(file: File): Promise<PreparedBrowserIm
   }
 }
 
-export interface Base64ImageAttachment {
-  type: "image";
-  data: string;
-  mimeType: string;
-}
-
 function base64Value(code: number): number | null {
   if (code >= 0x41 && code <= 0x5a) return code - 0x41;
   if (code >= 0x61 && code <= 0x7a) return code - 0x61 + 26;
@@ -125,10 +130,6 @@ function base64Value(code: number): number | null {
   if (code === 0x2b) return 62;
   if (code === 0x2f) return 63;
   return null;
-}
-
-function isImageMimeType(value: string): boolean {
-  return /^image\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/.test(value);
 }
 
 /** Returns the decoded size only for canonical, padded base64 without whitespace. */
@@ -153,32 +154,41 @@ export function getBase64DecodedByteLength(data: string): number | null {
   return (data.length / 4) * 3 - padding;
 }
 
-export function isBase64ImageWithinLimits(value: unknown): value is Base64ImageAttachment {
-  if (!value || typeof value !== "object") return false;
-  const image = value as Partial<Base64ImageAttachment>;
-  if (
-    image.type !== "image"
-    || typeof image.data !== "string"
-    || typeof image.mimeType !== "string"
-    || !isImageMimeType(image.mimeType)
-  ) {
-    return false;
-  }
-  const bytes = getBase64DecodedByteLength(image.data);
-  return bytes !== null && bytes <= MAX_ATTACHED_IMAGE_BYTES;
+export function isBase64ImageWithinLimits(value: unknown): value is ImageAttachment {
+  return ImageAttachmentSchema.safeParse(value).success;
+}
+
+export type CombinedImageLimitReason = "count" | "totalTooLarge";
+
+export function combinedImageLimitReason(
+  existing: readonly { data: string }[],
+  incoming: readonly { data: string }[],
+): CombinedImageLimitReason | null {
+  if (existing.length + incoming.length > MAX_IMAGE_ATTACHMENTS) return "count";
+  let total = 0;
+  for (const image of existing) total += image.data.length;
+  for (const image of incoming) total += image.data.length;
+  if (total > MAX_IMAGE_INPUT_BASE64_LENGTH) return "totalTooLarge";
+  return null;
 }
 
 /** Return an API-safe error for prompt, steering, and follow-up image arrays. */
 export function validateAgentImages(value: unknown): string | null {
   if (value === undefined) return null;
   if (!Array.isArray(value)) return "images must be an array";
-  if (value.length > MAX_ATTACHED_IMAGES) {
-    return `A message can include at most ${MAX_ATTACHED_IMAGES} images`;
+  const parsed = ImageAttachmentArraySchema.safeParse(value);
+  if (parsed.success) return null;
+  if (value.length > MAX_IMAGE_ATTACHMENTS) {
+    return `A message can include at most ${MAX_IMAGE_ATTACHMENTS} images`;
   }
+  let total = 0;
   for (const image of value) {
-    if (!isBase64ImageWithinLimits(image)) {
-      return `Each image must be valid base64 image data with an image MIME type and be ${MAX_ATTACHED_IMAGE_BYTES / (1024 * 1024)}MB or smaller`;
+    if (image && typeof image === "object" && "data" in image && typeof image.data === "string") {
+      total += image.data.length;
     }
   }
-  return null;
+  if (total > MAX_IMAGE_INPUT_BASE64_LENGTH) {
+    return `Attached images together must stay within ${MAX_IMAGE_INPUT_BASE64_LENGTH} base64 characters`;
+  }
+  return "Each image must be valid canonical base64 with a supported image MIME type";
 }

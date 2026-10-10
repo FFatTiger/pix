@@ -20,12 +20,31 @@ export const THINKING_LEVELS = [
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+/** Supported input image media types (PNG / JPEG / GIF / WebP). */
+export const SUPPORTED_IMAGE_MEDIA_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+] as const;
+
+export type SupportedImageMediaType = (typeof SUPPORTED_IMAGE_MEDIA_TYPES)[number];
+
+/** Max canonical base64 characters of one image (existing per-image ceiling). */
+export const MAX_IMAGE_BASE64_LENGTH = 14_000_000;
+/** Max images on one prompt / steer / follow_up / submit_turn input. */
+export const MAX_IMAGE_ATTACHMENTS = 8;
+/** Shared aggregate base64 character budget across all input images. */
+export const MAX_IMAGE_INPUT_BASE64_LENGTH = 14_000_000;
+/** Preparation threshold for original source bytes; not a JPEG-quality policy. */
+export const MAX_IMAGE_SOURCE_BYTES = 10 * 1024 * 1024;
+
 /** Image attachment on prompt / steer / follow_up commands. */
 export interface ImageAttachment {
   type: "image";
   /** Base64-encoded image data. */
   data: string;
-  /** Image mime type, e.g. `image/png`. */
+  /** Image mime type, e.g. `image/png`. Vocabulary is {@link SUPPORTED_IMAGE_MEDIA_TYPES}. */
   mimeType: string;
 }
 

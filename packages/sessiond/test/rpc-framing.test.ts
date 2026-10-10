@@ -188,6 +188,124 @@ test("RPC outbound body limit is inclusive, excludes LF, and counts UTF-8 bytes"
   assert.deepEqual(written, [exact], "one byte over must never reach the socket");
 });
 
+function pngImage(decodedBytes: number) {
+  return { type: "image" as const, data: Buffer.alloc(decodedBytes, 0).toString("base64"), mimeType: "image/png" as const };
+}
+
+test("AUTH and non-image control still reject above 2 MiB", async () => {
+  const h = await listen();
+  try {
+    const oversizedAuth = await new Promise<{ closed: boolean }>((resolve) => {
+      const socket = createConnection(h.endpoint);
+      socket.on("connect", () => socket.write(`AUTH ${"x".repeat(MAX_RPC_INBOUND_FRAME_BYTES)}\n`));
+      socket.on("close", () => resolve({ closed: true }));
+      socket.on("error", () => {});
+    });
+    assert.equal(oversizedAuth.closed, true);
+    const ping = JSON.stringify({ protocolVersion: 2, id: "big-ping", method: "system.ping", params: { pad: "x".repeat(MAX_RPC_INBOUND_FRAME_BYTES) } });
+    const { lines, closed } = await rawCall(h.endpoint, `${ping}\n`);
+    assert.equal(closed, true);
+    assert.equal(lines.some((line) => line.startsWith("{") && JSON.parse(line).ok === true), false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("coalesced AUTH + image-bearing submitTurn above 2 MiB is admitted unchanged", async () => {
+  const seen: unknown[] = [];
+  const h = await listen({
+    async handle(method) {
+      if (method === "system.ping") return { pong: true } as never;
+      throw new SessiondError("unsupported_capability", method, false);
+    },
+    async submitTurn(params) {
+      seen.push(params);
+      return {
+        result: {
+          status: "rejected",
+          delivery: "not_delivered",
+          sessionId: params.sessionId,
+          operationId: params.operationId,
+          error: { code: "not_found", message: "missing", retryable: false },
+        },
+        closed: Promise.resolve(null),
+        close() {},
+        async flushTo() {},
+      };
+    },
+  });
+  try {
+    const params = {
+      sessionId: "s1",
+      prompt: "hi",
+      operationId: "op-1",
+      images: [pngImage(2.1 * 1024 * 1024)],
+    };
+    const request = JSON.stringify({ protocolVersion: 2, id: "st-big", method: "runtime.submitTurn", params });
+    assert.ok(Buffer.byteLength(request, "utf8") > MAX_RPC_INBOUND_FRAME_BYTES);
+    const { lines } = await rawCall(h.endpoint, `${request}\n`);
+    const body = JSON.parse(lines.find((line) => line !== "OK")!);
+    assert.equal(body.ok, true);
+    assert.equal(body.method, "runtime.submitTurn");
+    const admitted = seen[0] as { images: { data: string }[] };
+    assert.equal(admitted.images[0]!.data, params.images[0]!.data);
+  } finally {
+    await h.close();
+  }
+});
+
+test("small maxFrameBytes override still rejects image-bearing requests", async () => {
+  const h = await listen(pingHandler, { maxFrameBytes: 64 });
+  try {
+    const request = JSON.stringify({
+      protocolVersion: 2,
+      id: "st-over",
+      method: "runtime.submitTurn",
+      params: { sessionId: "s1", prompt: "hi", operationId: "op-1", images: [pngImage(128)] },
+    });
+    const { lines, closed } = await rawCall(h.endpoint, `${request}\n`);
+    assert.equal(closed, true);
+    assert.equal(lines.some((line) => line.startsWith("{") && JSON.parse(line).ok === true), false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("client refuses to write an image-bearing envelope one UTF-8 byte over the runtime bound", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sessiond-rpc-client-oversize-"));
+  const endpoint = join(directory, "rpc.sock");
+  const { createServer } = await import("node:net");
+  const written: string[] = [];
+  const server = createServer((socket) => {
+    socket.on("error", () => {});
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      written.push(chunk.toString("utf8"));
+      buffer += chunk.toString("utf8");
+      if (buffer.includes("AUTH ")) socket.write("OK\n");
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(endpoint, () => { server.off("error", reject); resolve(); });
+  });
+  try {
+    const client = new SessiondRpcClient({ endpoint, secret, timeoutMs: 2_000 });
+    const pad = "é".repeat(Math.ceil((MAX_RUNTIME_FRAME_BYTES + 8) / 2));
+    await assert.rejects(
+      () => client.call("runtime.command", {
+        sessionId: "s1",
+        command: { commandId: "c1", type: "prompt", message: pad, images: [pngImage(4)] },
+      }),
+      (error: unknown) => error instanceof SessiondError && error.code === "invalid_input" && error.retryable === false,
+    );
+    assert.equal(written.join("").includes('"method":"runtime.command"'), false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("RPC outbound override rejects invalid budgets without changing inbound capacity", async () => {
   for (const limit of [0, -1, 1.5, NaN, Infinity, MAX_RUNTIME_FRAME_BYTES + 1]) {
     assert.throws(() => new SessiondRpcServer({ endpoint: "unused", secret, handler: pingHandler, maxOutboundBodyBytes: limit }), { code: "invalid_input" });

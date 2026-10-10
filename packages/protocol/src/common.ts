@@ -129,7 +129,14 @@ export const ContextUsageSchema = z.strictObject({
 
 export type ContextUsage = z.infer<typeof ContextUsageSchema>;
 
+/** Per-image canonical base64 ceiling. Mirrors Runtime Core; no Core import. */
 export const MAX_IMAGE_BASE64_LENGTH = 14_000_000;
+/** Max images on one input array. Mirrors Runtime Core; no Core import. */
+export const MAX_IMAGE_ATTACHMENTS = 8;
+/** Aggregate base64 characters across all input images on one command/turn. */
+export const MAX_IMAGE_INPUT_BASE64_LENGTH = 14_000_000;
+/** Original source-byte preparation threshold. Not a JPEG compression license. */
+export const MAX_IMAGE_SOURCE_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_URL_LENGTH = 8_192;
 
 export const SupportedImageMediaTypeSchema = z.enum([
@@ -196,6 +203,47 @@ export const ImageAttachmentSchema = z.strictObject({
 });
 
 export type ImageAttachment = z.infer<typeof ImageAttachmentSchema>;
+
+/**
+ * One input image array for prompt / steer / follow_up / submit_turn.
+ * Count and aggregate base64 are checked before walking a large invalid array.
+ * Empty arrays and omitted fields stay legal. Historical transcript images are
+ * not this schema.
+ */
+export const ImageAttachmentArraySchema = z.array(z.unknown()).transform((images, ctx) => {
+  if (images.length > MAX_IMAGE_ATTACHMENTS) {
+    ctx.addIssue({
+      code: "too_big",
+      origin: "array",
+      maximum: MAX_IMAGE_ATTACHMENTS,
+      inclusive: true,
+    });
+    return z.NEVER;
+  }
+  let total = 0;
+  for (const image of images) {
+    if (!image || typeof image !== "object" || !("data" in image) || typeof image.data !== "string") continue;
+    total += image.data.length;
+    if (total > MAX_IMAGE_INPUT_BASE64_LENGTH) {
+      ctx.addIssue({
+        code: "too_big",
+        origin: "string",
+        maximum: MAX_IMAGE_INPUT_BASE64_LENGTH,
+        inclusive: true,
+        path: ["data"],
+      });
+      return z.NEVER;
+    }
+  }
+  const parsed = z.array(ImageAttachmentSchema).safeParse(images);
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) ctx.addIssue({ ...issue });
+    return z.NEVER;
+  }
+  return parsed.data;
+});
+
+export type ImageAttachmentArray = z.infer<typeof ImageAttachmentArraySchema>;
 
 export const StreamingBehaviorSchema = z.enum(["steer", "followUp"]);
 

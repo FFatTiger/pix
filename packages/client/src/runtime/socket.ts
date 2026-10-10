@@ -22,6 +22,10 @@
  * online/visibility hooks) are injected for deterministic testing.
  */
 import {
+  FollowUpCommandSchema,
+  ImageAttachmentArraySchema,
+  isWithinRuntimeFrameBudget,
+  PromptCommandSchema,
   RUNTIME_EPOCH_ROLLOVER_FEATURE,
   RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
   RUNTIME_OBSERVE_EXISTING_FEATURE,
@@ -29,6 +33,8 @@ import {
   RUNTIME_READ_RPC_FEATURE,
   RUNTIME_RUNNING_WATCH_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
+  SteerCommandSchema,
+  SubmitTurnRequestSchema,
   type ClientIdentity,
   type HostLimits,
   type HostMode,
@@ -97,6 +103,34 @@ export interface RuntimeSocketHandler {
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const WS_OPEN = 1;
 
+const invalidInput = (message: string): ProtocolError => ({
+  code: "invalid_input",
+  message,
+  retryable: false,
+});
+
+function invalidImageBearingClientMessage(message: WsClientMessage): ProtocolError | null {
+  if (message.type === "submit_turn") {
+    const parsed = SubmitTurnRequestSchema.safeParse(message.payload);
+    return parsed.success ? null : invalidInput("invalid submit turn images");
+  }
+  if (message.type !== "command") return null;
+  const command = message.payload.command;
+  if (command.type === "prompt") {
+    return PromptCommandSchema.safeParse(command).success ? null : invalidInput("invalid prompt images");
+  }
+  if (command.type === "steer") {
+    return SteerCommandSchema.safeParse(command).success ? null : invalidInput("invalid steer images");
+  }
+  if (command.type === "follow_up") {
+    return FollowUpCommandSchema.safeParse(command).success ? null : invalidInput("invalid follow-up images");
+  }
+  if ("images" in command && command.images !== undefined) {
+    return ImageAttachmentArraySchema.safeParse(command.images).success ? null : invalidInput("invalid command images");
+  }
+  return null;
+}
+
 export class RuntimeSocket {
   private readonly deps: RuntimeSocketDeps;
   private readonly handler: RuntimeSocketHandler;
@@ -146,7 +180,17 @@ export class RuntimeSocket {
     if (!ws || ws.readyState !== WS_OPEN || !canSend(this.state)) {
       throw new Error(`runtime socket not sendable (state=${this.state})`);
     }
-    ws.send(JSON.stringify(message));
+    const invalid = invalidImageBearingClientMessage(message);
+    if (invalid) throw invalid;
+    const frame = JSON.stringify(message);
+    if (!isWithinRuntimeFrameBudget(frame)) {
+      throw {
+        code: "invalid_input",
+        message: "runtime frame exceeds the size limit",
+        retryable: false,
+      } satisfies ProtocolError;
+    }
+    ws.send(frame);
   }
 
   /** Idempotent transport teardown. NEVER triggers runtime.stop (browser unload rule). */
