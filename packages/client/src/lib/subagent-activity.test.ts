@@ -8,6 +8,7 @@ const TASKS: readonly SubagentTask[] = [
     name: "runtime-audit",
     description: "Inspect runtime",
     agentType: "Explore",
+    model: "anthropic/claude-sonnet-4",
     status: "running",
     background: true,
     startedAt: 10,
@@ -51,6 +52,7 @@ describe("selectSubagentActivity", () => {
         taskId: "task-1",
         title: "runtime-audit",
         agentType: "Explore",
+        model: "anthropic/claude-sonnet-4",
         status: "running",
         startedAt: 10,
         childSessionId: "child-1",
@@ -75,11 +77,18 @@ describe("selectSubagentActivity", () => {
       "taskId",
       "title",
       "agentType",
+      "model",
       "status",
       "startedAt",
       "childSessionId",
     ]);
     expect(JSON.stringify(activity)).not.toContain("reading");
+  });
+
+  it("omits model when the authority task has none", () => {
+    const [withoutModel] = selectSubagentActivity([TASKS[1]!]);
+    expect(withoutModel).toBeDefined();
+    expect(withoutModel).not.toHaveProperty("model");
   });
 
   it("returns no speculative row when authority has no task", () => {

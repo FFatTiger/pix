@@ -179,6 +179,13 @@ export function SubagentActivityCard({
   const togglePanel = (): void => {
     onDisplayModeChange?.(panelOpen ? "mini" : "panel");
   };
+  const endedRow = endedCount > 0 ? (
+    <button type="button" className="subagent-ended-row" onClick={onOpenDirectory}>
+      <span>{t("desktop.endedAgents")}</span>
+      <span className="subagent-ended-count">{endedCount}</span>
+      <CaretRightIcon size={14} aria-hidden="true" />
+    </button>
+  ) : null;
 
   return (
     <div
@@ -270,7 +277,7 @@ export function SubagentActivityCard({
                 ) : null}
               </section>
             ) : null}
-            {activities.length > 0 ? (
+            {hasRunning ? (
               <section
                 className={`status-card-section${todos.length > 0 ? " is-separated" : ""}`}
                 data-testid="status-agents-section"
@@ -308,6 +315,9 @@ export function SubagentActivityCard({
                               {activity.agentType ? <span>{activity.agentType}</span> : null}
                               {activity.startedAt === undefined ? null : <span>{elapsedLabel(activity.startedAt, now, t)}</span>}
                             </span>
+                            {activity.model === undefined ? null : (
+                              <span className="subagent-activity-model" title={activity.model}>{activity.model}</span>
+                            )}
                           </span>
                           {activity.childSessionId === undefined ? null : <CaretRightIcon size={14} aria-hidden="true" />}
                         </>
@@ -332,21 +342,11 @@ export function SubagentActivityCard({
                         </button>
                       );
                     })}
-                    {endedCount > 0 ? (
-                      <button
-                        type="button"
-                        className="subagent-ended-row"
-                        onClick={onOpenDirectory}
-                      >
-                        <span>{t("desktop.endedAgents")}</span>
-                        <span className="subagent-ended-count">{endedCount}</span>
-                        <CaretRightIcon size={14} aria-hidden="true" />
-                      </button>
-                    ) : null}
+                    {endedRow}
                   </div>
                 ) : null}
               </section>
-            ) : null}
+            ) : endedRow}
           </div>
         </div>
       </aside>

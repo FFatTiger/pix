@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   BuiltInRuntimeStateSchema,
   BuiltInsChangedEventDataSchema,
+  MAX_SUBAGENT_MODEL_LENGTH,
   MAX_SUBAGENT_TASKS,
   MAX_TODO_ITEMS,
   RuntimeSnapshotSchema,
@@ -47,6 +48,7 @@ const subagents = {
     description: "scan the repo",
     agentType: "explore",
     status: "running",
+    model: "anthropic/claude-sonnet-4",
     usage: { turns: 1, toolCalls: 2, tokens: 9 },
   }],
 };
@@ -96,6 +98,23 @@ describe("built-in / subagent / todo snapshot schemas", () => {
       revision: 1,
       tasks: [{ ...subagents.tasks[0], usage: { turns: -1 } }],
     }).success, false);
+    assert.equal(MAX_SUBAGENT_MODEL_LENGTH, 512);
+    assert.equal(SubagentProjectionSchema.safeParse({
+      revision: 1,
+      tasks: [{ ...subagents.tasks[0], model: "   " }],
+    }).success, false);
+    assert.equal(SubagentProjectionSchema.safeParse({
+      revision: 1,
+      tasks: [{ ...subagents.tasks[0], model: "x".repeat(MAX_SUBAGENT_MODEL_LENGTH + 1) }],
+    }).success, false);
+    assert.equal(SubagentProjectionSchema.safeParse({
+      revision: 1,
+      tasks: [{ ...subagents.tasks[0], model: undefined }],
+    }).success, true);
+    assert.equal(SubagentProjectionSchema.safeParse({
+      revision: 1,
+      tasks: [{ ...subagents.tasks[0], model: "x".repeat(MAX_SUBAGENT_MODEL_LENGTH) }],
+    }).success, true);
     assert.equal(SubagentProjectionSchema.safeParse({
       revision: 1,
       tasks: Array.from({ length: MAX_SUBAGENT_TASKS + 1 }, (_, i) => ({

@@ -35,6 +35,7 @@ export const MAX_SUBAGENT_TASK_ID_LENGTH = 128;
 export const MAX_SUBAGENT_NAME_LENGTH = 80;
 export const MAX_SUBAGENT_DESCRIPTION_LENGTH = 240;
 export const MAX_SUBAGENT_AGENT_TYPE_LENGTH = 64;
+export const MAX_SUBAGENT_MODEL_LENGTH = 512;
 export const MAX_SUBAGENT_PREVIEW_LENGTH = 240;
 export const MAX_TODO_SUBJECT_LENGTH = 160;
 export const MAX_TODO_DESCRIPTION_LENGTH = 240;
@@ -102,6 +103,7 @@ export const SubagentTaskSchema = z.strictObject({
   name: NonEmptyStringSchema.max(MAX_SUBAGENT_NAME_LENGTH).optional(),
   description: NonEmptyStringSchema.max(MAX_SUBAGENT_DESCRIPTION_LENGTH),
   agentType: NonEmptyStringSchema.max(MAX_SUBAGENT_AGENT_TYPE_LENGTH),
+  model: NonEmptyStringSchema.max(MAX_SUBAGENT_MODEL_LENGTH).optional(),
   status: SubagentTaskStatusSchema,
   background: z.boolean().optional(),
   startedAt: SafeNonNegativeInt.optional(),

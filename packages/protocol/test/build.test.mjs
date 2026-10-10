@@ -198,12 +198,12 @@ describe("sessiond build matrix", () => {
     }
   });
 
-  it("release fences: pre-v8 Adapter generations are incompatible both ways before Worker SDK init", () => {
-    // v8 adds the native questionnaire Adapter behavior contract. All prior
-    // Adapter generations must fail the reuse fence.
-    assert.equal(ADAPTER_CONTRACT_VERSION, 8);
-    assert.equal(SESSIOND_BUILD_IDENTITY.adapterContract, 8);
-    for (const superseded of [1, 2, 3, 4, 5, 6, 7]) {
+  it("release fences: pre-v9 Adapter generations are incompatible both ways before Worker SDK init", () => {
+    // v9 adds actual child-model Adapter projection. All prior Adapter
+    // generations must fail the reuse fence.
+    assert.equal(ADAPTER_CONTRACT_VERSION, 9);
+    assert.equal(SESSIOND_BUILD_IDENTITY.adapterContract, 9);
+    for (const superseded of [1, 2, 3, 4, 5, 6, 7, 8]) {
       const older = { ...SESSIOND_BUILD_IDENTITY, adapterContract: superseded };
       assert.deepEqual(evaluateSessiondBuild(older, SESSIOND_BUILD_IDENTITY), {
         state: "incompatible",
@@ -243,10 +243,10 @@ describe("worker build matrix", () => {
     }
   });
 
-  it("release fences: pre-v10 Worker and pre-v8 Adapter generations are incompatible both ways", () => {
-    // Workers missing image-bearing RPC admission must not be reused.
-    assert.equal(WORKER_BUILD_IDENTITY.adapterContract, 8);
-    assert.equal(WORKER_BUILD_IDENTITY.workerContract, 10);
+  it("release fences: pre-v11 Worker and pre-v9 Adapter generations are incompatible both ways", () => {
+    // Workers missing optional actual child-model on subagent tasks must not be reused.
+    assert.equal(WORKER_BUILD_IDENTITY.adapterContract, 9);
+    assert.equal(WORKER_BUILD_IDENTITY.workerContract, 11);
     for (let superseded = 1; superseded < WORKER_CONTRACT_VERSION; superseded += 1) {
       const older = { ...WORKER_BUILD_IDENTITY, workerContract: superseded };
       assert.deepEqual(evaluateWorkerBuild(older, WORKER_BUILD_IDENTITY), {
@@ -258,7 +258,7 @@ describe("worker build matrix", () => {
         reason: "worker_contract",
       });
     }
-    for (const superseded of [1, 2, 3, 4, 5, 6, 7]) {
+    for (const superseded of [1, 2, 3, 4, 5, 6, 7, 8]) {
       const older = { ...WORKER_BUILD_IDENTITY, adapterContract: superseded };
       assert.deepEqual(evaluateWorkerBuild(older, WORKER_BUILD_IDENTITY), {
         state: "incompatible",

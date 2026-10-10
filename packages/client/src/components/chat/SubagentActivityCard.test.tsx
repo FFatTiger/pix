@@ -9,6 +9,7 @@ const RUNNING: SubagentActivity = {
   taskId: "running",
   title: "Inspect runtime",
   agentType: "Explore",
+  model: "anthropic/claude-sonnet-4",
   status: "running",
   startedAt: Date.now() - 2_000,
   childSessionId: "child-running",
@@ -210,6 +211,7 @@ describe("SubagentActivityCard", () => {
     expect(heading.getAttribute("aria-expanded")).toBe("true");
     expect(heading.textContent).toContain("1 running");
     expect(screen.getByText("Inspect runtime")).toBeTruthy();
+    expect(screen.getByText("anthropic/claude-sonnet-4")).toBeTruthy();
     expect(screen.queryByText("Check tests")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open agent Inspect runtime" }));
     expect(onOpenActivity).toHaveBeenCalledWith(RUNNING);
@@ -227,18 +229,33 @@ describe("SubagentActivityCard", () => {
     expect(heading.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("Updated progress")).toBeNull();
     rerender(card([COMPLETED]));
+    expect(screen.queryByRole("button", { name: "Agents" })).toBeNull();
     rerender(card([{ ...RUNNING, key: "task:next", taskId: "next" }, COMPLETED]));
-    expect(heading.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "Agents" }).getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("Inspect runtime")).toBeTruthy();
   });
 
-  it("keeps ended-only Agents collapsed until opened", () => {
-    renderCard({ activities: [COMPLETED], todos: [], displayMode: "panel" });
-    const heading = screen.getByRole("button", { name: "Agents" });
-    expect(heading.getAttribute("aria-expanded")).toBe("false");
+  it.each(["completed", "failed", "partial", "stopped"] as const)("hides the Agents section for %s-only activity and preserves the ended entry", (status) => {
+    const { onOpenDirectory } = renderCard({ activities: [{ ...COMPLETED, status }], todos: [], displayMode: "panel" });
+    expect(screen.queryByTestId("status-agents-section")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Agents" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Ended/ }));
+    expect(onOpenDirectory).toHaveBeenCalledOnce();
+  });
+
+  it("omits the actual model line when the running task has none", () => {
+    const { model: _model, ...withoutModel } = RUNNING;
+    renderCard({ activities: [withoutModel], todos: [], displayMode: "panel" });
+    expect(screen.getByText("Inspect runtime")).toBeTruthy();
+    expect(screen.getByText("Explore")).toBeTruthy();
+    expect(screen.queryByText("anthropic/claude-sonnet-4")).toBeNull();
+  });
+
+  it("keeps progress without an empty Agents section when there are no children", () => {
+    renderCard({ activities: [], displayMode: "panel" });
+    expect(screen.getByTestId("status-progress-section")).toBeTruthy();
+    expect(screen.queryByTestId("status-agents-section")).toBeNull();
     expect(screen.queryByRole("button", { name: /Ended/ })).toBeNull();
-    fireEvent.click(heading);
-    expect(screen.getByRole("button", { name: /Ended/ })).toBeTruthy();
   });
 
   it("keeps a running task pending until its validated child session arrives", () => {

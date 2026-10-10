@@ -2327,8 +2327,8 @@ span.linenumber {
 /* Subagent activity: floating capsule overlay in the conversation host. */
 .subagent-activity-card {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  top: 32px;
+  right: 32px;
   z-index: 30;
   min-width: 0;
   max-width: 100%;
@@ -2650,6 +2650,16 @@ span.linenumber {
   color: var(--text-dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+.subagent-activity-model,
+.subagent-directory-model {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .subagent-ended-row {

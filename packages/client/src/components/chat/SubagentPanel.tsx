@@ -182,6 +182,9 @@ export function SubagentPanel({
                     {activity.agentType ? <span>{activity.agentType}</span> : null}
                     <span>{statusLabel(activity.status, t)}</span>
                   </span>
+                  {activity.model === undefined ? null : (
+                    <span className="subagent-directory-model" title={activity.model}>{activity.model}</span>
+                  )}
                 </span>
                 {canOpen ? <CaretRightIcon size={14} aria-hidden="true" /> : null}
               </>

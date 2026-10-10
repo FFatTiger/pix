@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { MAX_SUBAGENT_MODEL_LENGTH } from "@fffattiger/pix-runtime-core";
 import {
   isSubagentRefreshEvent,
   nextSubagentProjection,
@@ -52,6 +53,7 @@ describe("subagent projection seed and live refresh", () => {
         startedAt: "2026-01-01T00:00:02.000Z",
         sessionFile: childFile,
         preview: "reading",
+        model: "anthropic/claude-sonnet-4",
         usage: { turns: 2, toolCalls: 3, input: 10, output: 4, cacheRead: 0, cacheWrite: 0 },
       });
       await writeTask(agentDir, "aaaaaaaa", {
@@ -67,6 +69,8 @@ describe("subagent projection seed and live refresh", () => {
       const tasks = readSubagentProjection({ agentDir, parentSessionId, parentSessionFile });
       assert.deepEqual(tasks.map((task) => task.taskId), ["aaaaaaaa", "bbbbbbbb"]);
       assert.equal(tasks[1]?.childSessionId, childId);
+      assert.equal(tasks[1]?.model, "anthropic/claude-sonnet-4");
+      assert.equal(tasks[0]?.model, undefined);
       assert.equal(JSON.stringify(tasks).includes("RAW"), false);
       assert.equal(JSON.stringify(tasks).includes("prompt"), false);
       assert.equal(JSON.stringify(tasks).includes(childFile), false);
@@ -141,6 +145,75 @@ describe("subagent projection seed and live refresh", () => {
       assert.equal(childOf("meta"), undefined);
       assert.equal(childOf("link"), undefined);
       assert.equal(childOf("none"), undefined);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("copies only a valid native model and omits absent, blank, non-string, or oversized values without dropping the task", async () => {
+    const { root, agentDir, parentSessionFile } = await fixture();
+    try {
+      await writeTask(agentDir, "actual", {
+        id: "actual",
+        parentSessionId,
+        agent: "explore",
+        description: "keep actual",
+        status: "running",
+        model: "google/gemini-2.5-pro",
+      });
+      await writeTask(agentDir, "parent-shaped", {
+        id: "parent-shaped",
+        parentSessionId,
+        agent: "explore",
+        description: "do not invent parent",
+        status: "running",
+        parentModel: "openai/gpt-5",
+        defaultModel: "openai/gpt-4.1",
+        fallbackModel: "openai/gpt-4.1-mini",
+      });
+      await writeTask(agentDir, "blank", {
+        id: "blank",
+        parentSessionId,
+        agent: "explore",
+        description: "blank model",
+        status: "running",
+        model: "   ",
+      });
+      await writeTask(agentDir, "nonstring", {
+        id: "nonstring",
+        parentSessionId,
+        agent: "explore",
+        description: "nonstring model",
+        status: "running",
+        model: { id: "anthropic/claude-sonnet-4" },
+      });
+      await writeTask(agentDir, "oversize", {
+        id: "oversize",
+        parentSessionId,
+        agent: "explore",
+        description: "oversize model",
+        status: "running",
+        model: `p/${"x".repeat(MAX_SUBAGENT_MODEL_LENGTH)}`,
+      });
+      const tasks = readSubagentProjection({ agentDir, parentSessionId, parentSessionFile });
+      const byId = Object.fromEntries(tasks.map((task) => [task.taskId, task]));
+      assert.equal(tasks.length, 5);
+      assert.equal(byId.actual?.model, "google/gemini-2.5-pro");
+      assert.equal(byId["parent-shaped"]?.model, undefined);
+      assert.equal(byId.blank?.model, undefined);
+      assert.equal(byId.nonstring?.model, undefined);
+      assert.equal(byId.oversize?.model, undefined);
+      assert.equal(JSON.stringify(tasks).includes("openai/gpt"), false);
+      assert.equal(JSON.stringify(tasks).includes("parentModel"), false);
+      const first = nextSubagentProjection(undefined, tasks);
+      assert.equal(first.projection.revision, 1);
+      const fallback = tasks.map((task) => task.taskId === "actual"
+        ? { ...task, model: "anthropic/claude-sonnet-4" }
+        : task);
+      const changed = nextSubagentProjection(first.projection, fallback);
+      assert.equal(changed.changed, true);
+      assert.equal(changed.projection.revision, 2);
+      assert.equal(changed.projection.tasks.find((task) => task.taskId === "actual")?.model, "anthropic/claude-sonnet-4");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

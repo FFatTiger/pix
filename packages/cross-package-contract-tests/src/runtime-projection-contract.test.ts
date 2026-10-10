@@ -8,6 +8,7 @@ import {
   BUILT_IN_CAPABILITY_IDS as CANONICAL_IDS,
   BUILT_IN_LOAD_FAILURE_CODES as CANONICAL_FAILURES,
   MAX_SUBAGENT_TASKS as CANONICAL_MAX_SUBAGENT_TASKS,
+  MAX_SUBAGENT_MODEL_LENGTH as CANONICAL_MAX_SUBAGENT_MODEL_LENGTH,
   MAX_SUBAGENT_STREAM_CHARS as CANONICAL_MAX_SUBAGENT_STREAM_CHARS,
   MAX_TODO_ITEMS as CANONICAL_MAX_TODO_ITEMS,
   RUNTIME_CAPABILITIES as CANONICAL_CAPABILITIES,
@@ -27,6 +28,7 @@ import {
   BuiltInRuntimeStateSchema,
   BuiltInsChangedEventDataSchema,
   MAX_SUBAGENT_TASKS as WIRE_MAX_SUBAGENT_TASKS,
+  MAX_SUBAGENT_MODEL_LENGTH as WIRE_MAX_SUBAGENT_MODEL_LENGTH,
   MAX_SUBAGENT_STREAM_CHARS as WIRE_MAX_SUBAGENT_STREAM_CHARS,
   MAX_TODO_ITEMS as WIRE_MAX_TODO_ITEMS,
   RUNTIME_COMMAND_CAPABILITY_MATRIX,
@@ -60,6 +62,8 @@ test("loaded built-in / subagent / todo vocabularies match runtime-core", () => 
   assert.deepEqual([...WIRE_SUBAGENT_STATUSES], [...CANONICAL_SUBAGENT_STATUSES]);
   assert.deepEqual([...WIRE_TODO_STATUSES], [...CANONICAL_TODO_STATUSES]);
   assert.equal(WIRE_MAX_SUBAGENT_TASKS, CANONICAL_MAX_SUBAGENT_TASKS);
+  assert.equal(WIRE_MAX_SUBAGENT_MODEL_LENGTH, CANONICAL_MAX_SUBAGENT_MODEL_LENGTH);
+  assert.equal(WIRE_MAX_SUBAGENT_MODEL_LENGTH, 512);
   assert.equal(WIRE_MAX_SUBAGENT_STREAM_CHARS, CANONICAL_MAX_SUBAGENT_STREAM_CHARS);
   assert.equal(WIRE_MAX_TODO_ITEMS, CANONICAL_MAX_TODO_ITEMS);
 });
@@ -72,7 +76,7 @@ test("protocol schemas accept canonical projection shapes and reject extras/dupl
   })!;
   const subagents: CanonicalSubagents = normalizeSubagentProjection({
     revision: 1,
-    tasks: [{ taskId: "t1", description: "scan", agentType: "explore", status: "running" }],
+    tasks: [{ taskId: "t1", description: "scan", agentType: "explore", status: "running", model: "anthropic/claude-sonnet-4" }],
   })!;
   const todo: CanonicalTodo = normalizeTodoProjection({
     revision: 2,

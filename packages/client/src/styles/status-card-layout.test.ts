@@ -65,8 +65,8 @@ describe("status card responsive layout", () => {
     expect(cardOpen).toBeGreaterThan(conversationOpen);
     expect(cardOpen).toBeGreaterThan(titleClose);
     expect(rule(css, ".subagent-activity-card")).toContain("position: absolute");
-    expect(rule(css, ".subagent-activity-card")).toContain("top: 12px");
-    expect(rule(css, ".subagent-activity-card")).toContain("right: 12px");
+    expect(rule(css, ".subagent-activity-card")).toContain("top: 32px");
+    expect(rule(css, ".subagent-activity-card")).toContain("right: 32px");
     expect(css).not.toMatch(/@container conversation \(min-width: 1280px\)/);
     expect(card).not.toContain('"auto"');
     expect(css).toContain("top: calc(100% + 6px)");

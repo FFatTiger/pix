@@ -3,6 +3,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   MAX_SUBAGENT_AGENT_TYPE_LENGTH,
   MAX_SUBAGENT_DESCRIPTION_LENGTH,
+  MAX_SUBAGENT_MODEL_LENGTH,
   MAX_SUBAGENT_NAME_LENGTH,
   MAX_SUBAGENT_PREVIEW_LENGTH,
   MAX_SUBAGENT_TASKS,
@@ -257,6 +258,7 @@ function mapTask(record: unknown, input: {
     if (!isBoundedText(record.name, MAX_SUBAGENT_NAME_LENGTH)) return null;
     task.name = record.name;
   }
+  if (isBoundedText(record.model, MAX_SUBAGENT_MODEL_LENGTH)) task.model = record.model;
   if (typeof record.background === "boolean") task.background = record.background;
   const startedAt = millis(record.startedAt);
   if (startedAt !== undefined) task.startedAt = startedAt;

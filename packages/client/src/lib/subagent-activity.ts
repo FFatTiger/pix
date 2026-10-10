@@ -14,6 +14,7 @@ export interface SubagentActivity {
   readonly taskId: string;
   readonly title: string;
   readonly agentType: string;
+  readonly model?: string | undefined;
   readonly status: SubagentActivityStatus;
   readonly startedAt?: number | undefined;
   readonly completedAt?: number | undefined;
@@ -45,6 +46,7 @@ export function selectSubagentActivity(tasks: readonly SubagentTask[]): Subagent
     taskId: task.taskId,
     title: task.name ?? task.description,
     agentType: task.agentType,
+    ...(task.model === undefined ? {} : { model: task.model }),
     status: task.status,
     ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
     ...(task.completedAt === undefined ? {} : { completedAt: task.completedAt }),

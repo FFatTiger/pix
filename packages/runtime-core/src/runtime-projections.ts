@@ -36,6 +36,7 @@ export const MAX_SUBAGENT_TASK_ID_LENGTH = 128;
 export const MAX_SUBAGENT_NAME_LENGTH = 80;
 export const MAX_SUBAGENT_DESCRIPTION_LENGTH = 240;
 export const MAX_SUBAGENT_AGENT_TYPE_LENGTH = 64;
+export const MAX_SUBAGENT_MODEL_LENGTH = 512;
 export const MAX_SUBAGENT_PREVIEW_LENGTH = 240;
 export const MAX_TODO_SUBJECT_LENGTH = 160;
 export const MAX_TODO_DESCRIPTION_LENGTH = 240;
@@ -78,6 +79,8 @@ export interface SubagentTask {
   name?: string;
   description: string;
   agentType: string;
+  /** Actual resolved child provider/id. Absent when native record has none. */
+  model?: string;
   status: SubagentTaskStatus;
   background?: boolean;
   startedAt?: number;
@@ -184,7 +187,7 @@ function normalizeUsage(value: unknown): SubagentTaskUsage | null {
 function normalizeSubagentTask(value: unknown): SubagentTask | null {
   if (!isRecord(value)) return null;
   const allowed = new Set([
-    "taskId", "name", "description", "agentType", "status", "background",
+    "taskId", "name", "description", "agentType", "model", "status", "background",
     "startedAt", "completedAt", "childSessionId", "preview", "usage",
   ]);
   for (const key of Object.keys(value)) {
@@ -203,6 +206,10 @@ function normalizeSubagentTask(value: unknown): SubagentTask | null {
   if (value.name !== undefined) {
     if (!isBoundedText(value.name, MAX_SUBAGENT_NAME_LENGTH)) return null;
     task.name = value.name;
+  }
+  if (value.model !== undefined) {
+    if (!isBoundedText(value.model, MAX_SUBAGENT_MODEL_LENGTH)) return null;
+    task.model = value.model;
   }
   if (value.background !== undefined) {
     if (typeof value.background !== "boolean") return null;

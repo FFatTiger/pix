@@ -75,8 +75,10 @@ export const PIX_PRODUCT_VERSION = "0.2.2" as const;
  * v11 (image-bearing ingress): Host inbound WS and image-bearing RPC frames
  * share the Protocol runtime frame bound; input image arrays are 8 + 14M
  * aggregate. AUTH/non-image control stay 2 MiB. Mixed dist must fail closed.
+ * v12 (actual child model): snapshot and `subagents_changed` task rows may
+ * carry optional bounded `model`. A v11 peer's strict schemas reject it.
  */
-export const SESSIOND_CONTRACT_VERSION = 11 as const;
+export const SESSIOND_CONTRACT_VERSION = 12 as const;
 
 /**
  * sessiond ↔ Worker IPC contract generation. Bumped on every change to the
@@ -105,8 +107,10 @@ export const SESSIOND_CONTRACT_VERSION = 11 as const;
  * the typed questionnaire request/response. A v8 peer rejects the method.
  * v10 (image-bearing ingress): sessiond RPC admits schema-valid image frames
  * at the runtime bound after AUTH. A v9 peer's 2 MiB inbound still rejects.
+ * v11 (actual child model): Worker snapshot/event subagent tasks may carry
+ * optional bounded `model`. A v10 peer's strict schemas reject it.
  */
-export const WORKER_CONTRACT_VERSION = 10 as const;
+export const WORKER_CONTRACT_VERSION = 11 as const;
 
 /**
  * Adapter behavior-contract generation (the contract proven by
@@ -138,8 +142,11 @@ export const WORKER_CONTRACT_VERSION = 10 as const;
  * v8 (native questionnaire): Adapter wraps the exact bundled ask tool, issues
  * typed questionnaire UI requests, and maps accepted answers to the package
  * result. A v7 Worker/sessiond peer must not be reused.
+ * v9 (actual child model): Adapter copies only a valid native `task.json`
+ * `model` onto the safe subagent projection. A v8 Worker/sessiond peer must
+ * not be reused.
  */
-export const ADAPTER_CONTRACT_VERSION = 8 as const;
+export const ADAPTER_CONTRACT_VERSION = 9 as const;
 
 /**
  * Canonicalization format version for the capability fingerprint. Bumped only

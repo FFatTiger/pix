@@ -28,6 +28,7 @@ const ACTIVITIES: SubagentActivity[] = [
     taskId: "running",
     title: "Inspect runtime",
     agentType: "Explore",
+    model: "anthropic/claude-sonnet-4",
     status: "running",
   },
   {
@@ -185,12 +186,33 @@ describe("SubagentPanel", () => {
     });
 
     expect(screen.getByText("Inspect runtime").closest("[aria-disabled='true']")).toBeTruthy();
+    expect(screen.getByText("anthropic/claude-sonnet-4")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open agent Check tests" }));
     expect(onSelectActivity).toHaveBeenCalledWith(ACTIVITIES[1]);
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(onRefresh).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("omits the actual model line when the directory row has none", () => {
+    renderPanel({
+      activities: ACTIVITIES.slice(1),
+      error: false,
+      loading: false,
+      refreshing: false,
+      parentSessionId: "parent",
+      parentEpoch: "epoch-1",
+      subagentsRevision: 1,
+      selectedChildSessionId: null,
+      onSelectActivity: () => undefined,
+      onBack: () => undefined,
+      onClose: () => undefined,
+      onRefresh: () => undefined,
+    });
+    expect(screen.getByText("Check tests")).toBeTruthy();
+    expect(screen.getByText("verification")).toBeTruthy();
+    expect(screen.queryByText("anthropic/claude-sonnet-4")).toBeNull();
   });
 
   it("reports child-catalog failures honestly", () => {

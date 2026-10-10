@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { BUILT_IN_CAPABILITY_IDS } from "./built-in-capabilities.js";
 import {
   BUILT_IN_LOAD_FAILURE_CODES,
+  MAX_SUBAGENT_MODEL_LENGTH,
   MAX_SUBAGENT_TASKS,
   MAX_TODO_ITEMS,
   SUBAGENT_TASK_STATUSES,
@@ -74,6 +75,7 @@ test("subagent projection accepts safe fields and unique task ids", () => {
         childSessionId: "child-1",
         preview: "reading files",
         usage: { turns: 2, toolCalls: 4, tokens: 80 },
+        model: "anthropic/claude-sonnet-4",
       },
       {
         taskId: "task-2",
@@ -87,6 +89,9 @@ test("subagent projection accepts safe fields and unique task ids", () => {
   assert.equal(normalized?.revision, 3);
   assert.equal(normalized?.tasks.length, 2);
   assert.equal(normalized?.tasks[0]?.taskId, "task-1");
+  assert.equal(normalized?.tasks[0]?.model, "anthropic/claude-sonnet-4");
+  assert.equal(normalized?.tasks[1]?.model, undefined);
+  assert.equal(MAX_SUBAGENT_MODEL_LENGTH, 512);
   assert.deepEqual([...SUBAGENT_TASK_STATUSES], ["running", "completed", "partial", "failed", "stopped"]);
 });
 
@@ -103,6 +108,12 @@ test("subagent projection rejects path/raw-prompt extras, duplicates, and bad st
   assert.equal(normalizeSubagentProjection({ revision: 1, tasks: [{ ...task, path: "/tmp/x" }] }), null);
   assert.equal(normalizeSubagentProjection({ revision: 1, tasks: [{ ...task, prompt: "raw" }] }), null);
   assert.equal(normalizeSubagentProjection({ revision: 1, tasks: [{ ...task, usage: { turns: -1 } }] }), null);
+  assert.equal(normalizeSubagentProjection({ revision: 1, tasks: [{ ...task, model: "   " }] }), null);
+  assert.equal(normalizeSubagentProjection({ revision: 1, tasks: [{ ...task, model: "x".repeat(MAX_SUBAGENT_MODEL_LENGTH + 1) }] }), null);
+  assert.equal(normalizeSubagentProjection({
+    revision: 1,
+    tasks: [{ ...task, model: "x".repeat(MAX_SUBAGENT_MODEL_LENGTH) }],
+  })?.tasks[0]?.model?.length, MAX_SUBAGENT_MODEL_LENGTH);
   assert.equal(normalizeSubagentProjection({
     revision: 1,
     tasks: Array.from({ length: MAX_SUBAGENT_TASKS + 1 }, (_, i) => ({ ...task, taskId: `t-${i}` })),
