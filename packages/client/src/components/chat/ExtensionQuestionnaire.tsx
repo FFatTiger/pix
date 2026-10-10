@@ -145,12 +145,7 @@ export function ExtensionQuestionnaire({
                     key={`${optionIndex}:${option.label}`}
                     className={`questionnaire-option${checked ? " is-selected" : ""}${previewed ? " is-previewed" : ""}`}
                   >
-                    <label
-                      className="questionnaire-option-label"
-                      onMouseEnter={() => {
-                        if (showPreviewPane) setPreviewIndex(optionIndex);
-                      }}
-                    >
+                    <label className="questionnaire-option-label">
                       <input
                         type={current.multiSelect ? "checkbox" : "radio"}
                         name={`${titleId}-q${questionIndex}`}

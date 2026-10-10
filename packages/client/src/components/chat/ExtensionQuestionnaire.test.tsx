@@ -122,7 +122,7 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     );
     expect(screen.getByText("preview-A")).toBeTruthy();
     expect((screen.getByRole("checkbox", { name: /A/ }) as HTMLInputElement).checked).toBe(false);
-    fireEvent.mouseEnter(screen.getByRole("checkbox", { name: /A/ }).closest("label")!);
+    fireEvent.focus(screen.getByRole("checkbox", { name: /A/ }));
     expect(screen.getByText("preview-A")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
@@ -213,7 +213,7 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     expect(screen.getByRole("button", { name: "Next" })).toBeTruthy();
     expect(customInput()).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Use a custom answer" })).toBeNull();
-    fireEvent.mouseEnter(screen.getByRole("radio", { name: /One/ }).closest("label")!);
+    fireEvent.focus(screen.getByRole("radio", { name: /One/ }));
     expect(screen.getByText("Preview")).toBeTruthy();
     cleanup();
     window.localStorage.setItem("pi-locale", "zh-CN");
@@ -232,7 +232,7 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     expect(screen.getByRole("button", { name: "下一题" })).toBeTruthy();
     expect(screen.getByLabelText("自定义回答")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "使用自定义回答" })).toBeNull();
-    fireEvent.mouseEnter(screen.getByRole("radio", { name: /One/ }).closest("label")!);
+    fireEvent.focus(screen.getByRole("radio", { name: /One/ }));
     expect(screen.getByText("预览")).toBeTruthy();
     expect(screen.getByRole("button", { name: "取消" })).toBeTruthy();
   });
@@ -303,7 +303,7 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     });
   });
 
-  it("updates the preview on hover/focus without changing the answer, and resets preview on next question", () => {
+  it("updates the preview on focus, not pointer hover, without changing the answer", () => {
     const onRespond = makeRespond();
     wrap(
       <ExtensionQuestionnaire
@@ -327,6 +327,8 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     fireEvent.click(screen.getByRole("radio", { name: /One/ }));
     expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-one");
     fireEvent.mouseEnter(screen.getByRole("radio", { name: /Two/ }).closest("label")!);
+    expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-one");
+    fireEvent.focus(screen.getByRole("radio", { name: /Two/ }));
     expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("second");
     expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(true);
     expect((screen.getByRole("radio", { name: /Two/ }) as HTMLInputElement).checked).toBe(false);
@@ -334,7 +336,6 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(true);
     activateCustom("still-custom");
     expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(false);
-    fireEvent.mouseEnter(screen.getByRole("radio", { name: /Two/ }).closest("label")!);
     fireEvent.focus(screen.getByRole("radio", { name: /Two/ }));
     expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(false);
     expect((screen.getByRole("radio", { name: /Two/ }) as HTMLInputElement).checked).toBe(false);
@@ -342,7 +343,7 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-A");
     expect((screen.getByRole("radio", { name: /A/ }) as HTMLInputElement).checked).toBe(false);
-    fireEvent.mouseEnter(screen.getByRole("radio", { name: /B/ }).closest("label")!);
+    fireEvent.focus(screen.getByRole("radio", { name: /B/ }));
     expect(document.querySelector(".questionnaire-preview-lines")?.textContent).toBe("preview-B");
     expect(onRespond).not.toHaveBeenCalled();
   });
