@@ -165,9 +165,15 @@ describe("snapshot-mapper", () => {
             taskId: "task-1",
             description: "Inspect runtime",
             agentType: "Explore",
+            model: "anthropic/claude-sonnet-4",
             status: "running",
             childSessionId: "child-1",
             usage: { turns: 2, toolCalls: 4 },
+          }, {
+            taskId: "task-without-model",
+            description: "Await model selection",
+            agentType: "Explore",
+            status: "running",
           }],
         },
         todo: {
@@ -189,6 +195,18 @@ describe("snapshot-mapper", () => {
     assert.notEqual(mapped.state.builtIns, coreSnapshot.state.builtIns);
     assert.notEqual(mapped.state.subagents, coreSnapshot.state.subagents);
     assert.notEqual(mapped.state.todo, coreSnapshot.state.todo);
+    assert.equal(Object.hasOwn(mapped.state.subagents!.tasks[1]!, "model"), false);
+
+    const [event] = new StatefulRuntimeMapper().mapEvent({
+      type: "subagents_changed",
+      sessionId: "s1",
+      subagents: coreSnapshot.state.subagents!,
+    });
+    assert.equal(event?.type, "subagents_changed");
+    assert.equal(RuntimeEventDataSchema.safeParse(event).success, true);
+    if (event?.type !== "subagents_changed") assert.fail("Expected child projection event");
+    assert.deepEqual(event.subagents, coreSnapshot.state.subagents);
+    assert.equal(Object.hasOwn(event.subagents.tasks[1]!, "model"), false);
   });
 
   it("coordinates streaming ids with the live stateful mapper", () => {

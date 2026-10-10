@@ -111,6 +111,7 @@ export function mapSubagents(value: SubagentProjection) {
       agentType: task.agentType,
       status: task.status,
       ...(task.name === undefined ? {} : { name: task.name }),
+      ...(task.model === undefined ? {} : { model: task.model }),
       ...(task.background === undefined ? {} : { background: task.background }),
       ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
       ...(task.completedAt === undefined ? {} : { completedAt: task.completedAt }),
