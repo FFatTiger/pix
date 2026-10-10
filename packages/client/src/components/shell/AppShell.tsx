@@ -380,9 +380,6 @@ export function AppShell({ search }: AppShellProps) {
   const [rightPane, setRightPane] = useState<RightPane>(null);
   const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
   const [statusCardDisplayMode, setStatusCardDisplayMode] = useState<StatusCardDisplayMode>("mini");
-  useEffect(() => {
-    setStatusCardDisplayMode("mini");
-  }, [activeSessionId]);
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
@@ -408,6 +405,9 @@ export function AppShell({ search }: AppShellProps) {
     return null;
   }, [activeTabId, tabs, search.file, search.cwd, search.session]);
   const activeSessionId = activeTab?.kind === "session" ? activeTab.sessionId : null;
+  useEffect(() => {
+    setStatusCardDisplayMode("mini");
+  }, [activeSessionId]);
 
   // URL → tab reconciliation: keep the in-memory tab list in sync with the URL
   // and the current cwd. File tabs are cwd-owned (a cwd switch clears them);
