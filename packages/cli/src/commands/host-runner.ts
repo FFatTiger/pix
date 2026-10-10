@@ -271,7 +271,6 @@ export async function runHost(
     logger: consoleLogger,
     // WS transport ceiling matches the advertised maxUpload so a full upload is
     // actually receivable instead of being rejected at the frame layer.
-    wsMaxPayloadBytes: PRODUCTION_MAX_UPLOAD_BYTES,
   };
   const capabilityResolver = createCapabilityResolver(hostDeps);
 
