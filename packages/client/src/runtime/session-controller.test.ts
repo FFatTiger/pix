@@ -83,6 +83,37 @@ describe("SessionController — immutable exact-session ownership", () => {
     h.dispose();
   });
 
+  it("rejects invalid atomic images before transport and releases the next turn", async () => {
+    const h = createHarness();
+    const controller = new SessionController("A", h.connection);
+    h.connection.connect();
+    const ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack(["runtime.submit-turn.v1"]));
+    await attachExact(controller, h, "A");
+    const sentBefore = ws.sent.length;
+    let settlements = 0;
+    const rejected = controller.submitTurn({
+      sessionId: "A", prompt: "keep my draft",
+      images: Array.from({ length: 9 }, () => ({ type: "image" as const, mimeType: "image/png", data: "YQ==" })),
+    }).catch((error: unknown) => { settlements += 1; return error; });
+    await flush();
+    expect(settlements).toBe(1);
+    await expect(rejected).resolves.toMatchObject({ code: "invalid_input", retryable: false });
+    expect(ws.sent).toHaveLength(sentBefore);
+    expect(controller.getSnapshot().turnActive).toBe(false);
+    expect(controller.getSnapshot().optimisticEntries).toHaveLength(0);
+
+    const next = controller.submitTurn({ sessionId: "A", prompt: "valid next turn" }).catch((error: unknown) => error);
+    await flush();
+    expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "submit_turn")).toHaveLength(1);
+    expect(controller.getSnapshot().turnActive).toBe(true);
+    controller.dispose();
+    await next;
+    expect(settlements).toBe(1);
+    h.dispose();
+  });
+
   it("keeps pending atomic lanes and optimistic entries session-local across A/B controllers", async () => {
     let seq = 0;
     const h = createHarness({ id: () => `id-${++seq}` });

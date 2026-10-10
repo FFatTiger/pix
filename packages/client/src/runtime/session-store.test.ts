@@ -1353,10 +1353,18 @@ describe("SessionStore — D2-P4 dual-slot queued turns (steer/follow_up) + clea
   it("send throw rejects the queued turn and clears the slot", async () => {
     const h = createHarness();
     const ws = await attachWithCaps(h, ["runtime.steer"]);
+    const send = ws.send.bind(ws);
     (ws as unknown as { send: (data: string) => void }).send = () => { throw new Error("boom"); };
     const p = h.store.steer("x");
     await flush();
-    await expect(p).rejects.toThrow("boom");
+    await expect(p).rejects.toMatchObject({ code: "unavailable", message: "queued turn send failed", retryable: true });
+    expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
+    ws.send = send;
+    const next = h.store.steer("next");
+    await flush();
+    const command = commandFrame(ws);
+    respondOk(ws, command.id, command.payload.command.commandId, "steer");
+    await expect(next).resolves.toBeTruthy();
     expect(h.store.getSnapshot().queuedTurnPending).toBe(false);
   });
 
