@@ -291,7 +291,8 @@
   cursor: default;
 }
 
-.questionnaire-dialog :is(button, input):focus-visible {
+.questionnaire-dialog button:focus-visible,
+.questionnaire-option input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
 }
