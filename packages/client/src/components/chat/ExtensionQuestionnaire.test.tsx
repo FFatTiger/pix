@@ -269,11 +269,15 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
         onRespond={onRespond}
       />,
     );
+    expect(document.querySelector(".questionnaire-custom-indicator")).toBeNull();
+    expect(document.querySelector(".questionnaire-choice-layout.is-inactive")).toBeNull();
     fireEvent.click(screen.getByRole("radio", { name: /One/ }));
     expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(true);
     fireEvent.focus(customInput());
     expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).checked).toBe(false);
     expect(document.querySelector(".questionnaire-custom.is-active")).toBeTruthy();
+    expect(document.querySelector(".questionnaire-choice-layout.is-inactive")).toBeTruthy();
+    expect((screen.getByRole("radio", { name: /One/ }) as HTMLInputElement).disabled).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     expect(onRespond).toHaveBeenCalledWith(expect.anything(), {
       answers: [{ kind: "custom", questionIndex: 0, text: "" }],
@@ -287,7 +291,9 @@ describe("ExtensionQuestionnaire — native whole questionnaire", () => {
       />,
     );
     activateCustom("keep-me");
+    expect(document.querySelector(".questionnaire-choice-layout.is-inactive")).toBeTruthy();
     fireEvent.click(screen.getByRole("radio", { name: /Two/ }));
+    expect(document.querySelector(".questionnaire-choice-layout.is-inactive")).toBeNull();
     expect((screen.getByRole("radio", { name: /Two/ }) as HTMLInputElement).checked).toBe(true);
     expect(customInput().value).toBe("keep-me");
     expect(document.querySelector(".questionnaire-custom.is-active")).toBeNull();

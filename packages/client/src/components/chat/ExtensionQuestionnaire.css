@@ -88,6 +88,10 @@
   gap: 24px;
 }
 
+.questionnaire-choice-layout.is-inactive {
+  opacity: 0.5;
+}
+
 .questionnaire-options {
   min-width: 0;
 }
@@ -208,7 +212,6 @@
 .questionnaire-custom {
   display: flex;
   align-items: center;
-  gap: 10px;
   width: 100%;
   padding: 0 12px;
   min-height: 36px;
@@ -220,33 +223,6 @@
 
 .questionnaire-custom.is-active {
   border-color: var(--accent);
-}
-
-.questionnaire-custom-indicator {
-  width: 17px;
-  height: 17px;
-  min-width: 17px;
-  border: 1px solid color-mix(in srgb, var(--text) 28%, transparent);
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-}
-
-.questionnaire-custom-indicator::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: inherit;
-  background: var(--accent);
-  opacity: 0;
-}
-
-.questionnaire-custom.is-active .questionnaire-custom-indicator {
-  border-color: var(--accent);
-}
-
-.questionnaire-custom.is-active .questionnaire-custom-indicator::before {
-  opacity: 1;
 }
 
 .questionnaire-custom input {

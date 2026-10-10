@@ -131,7 +131,7 @@ export function ExtensionQuestionnaire({
         </header>
 
         <div className="questionnaire-body">
-          <div className={`questionnaire-choice-layout${showPreviewPane ? " is-split" : ""}`}>
+          <div className={`questionnaire-choice-layout${showPreviewPane ? " is-split" : ""}${customActive ? " is-inactive" : ""}`}>
             <div
               className="questionnaire-options"
               role={current.multiSelect ? "group" : "radiogroup"}
@@ -191,7 +191,6 @@ export function ExtensionQuestionnaire({
 
         <div className="questionnaire-custom-block">
           <label className={`questionnaire-custom${customActive ? " is-active" : ""}`}>
-            <span className="questionnaire-custom-indicator" aria-hidden="true" />
             <input
               type="text"
               aria-label={t("desktop.questionnaire.customAnswer")}
