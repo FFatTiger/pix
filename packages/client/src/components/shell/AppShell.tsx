@@ -380,6 +380,9 @@ export function AppShell({ search }: AppShellProps) {
   const [rightPane, setRightPane] = useState<RightPane>(null);
   const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
   const [statusCardDisplayMode, setStatusCardDisplayMode] = useState<StatusCardDisplayMode>("mini");
+  useEffect(() => {
+    setStatusCardDisplayMode("mini");
+  }, [activeSessionId]);
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";

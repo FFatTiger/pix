@@ -166,7 +166,16 @@ describe("SubagentActivityCard", () => {
     expect(onDisplayModeChange).not.toHaveBeenCalled();
   });
 
-  it("keeps Progress open by default with honest statuses and count, and collapses on the header", () => {
+  it("does not close when another modal already consumed Escape", () => {
+    const onDisplayModeChange = vi.fn();
+    renderCard({ displayMode: "panel", onDisplayModeChange });
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    event.preventDefault();
+    window.dispatchEvent(event);
+    expect(onDisplayModeChange).not.toHaveBeenCalled();
+  });
+
+
     renderCard({ displayMode: "panel" });
     const heading = screen.getByRole("button", { name: "Progress" });
     expect(heading.getAttribute("aria-expanded")).toBe("true");

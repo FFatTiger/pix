@@ -160,7 +160,8 @@ export function SubagentActivityCard({
       onDisplayModeChange?.("mini");
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onDisplayModeChange?.("mini");
+      if (event.defaultPrevented || event.key !== "Escape") return;
+      onDisplayModeChange?.("mini");
     };
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKeyDown);
