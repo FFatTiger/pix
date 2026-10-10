@@ -191,6 +191,7 @@ export function SubagentPanel({
                 type="button"
                 className="subagent-directory-row"
                 key={activity.key}
+                data-selected={selectedChildSessionId === activity.childSessionId}
                 onClick={() => onSelectActivity(activity)}
                 aria-label={t("desktop.openSubagent", { title: activity.title })}
               >

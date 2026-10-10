@@ -7,6 +7,7 @@ export const SIDEBAR_MAX_WIDTH = 480;
 
 export const RIGHT_PANEL_MIN_WIDTH = 300;
 export const RIGHT_PANEL_MAX_WIDTH = 1200;
+export const RIGHT_PANEL_DEFAULT_WIDTH = 312;
 
 const COMPACT_CHAT_MIN_WIDTH = 320;
 const DESKTOP_CHAT_MIN_WIDTH = 420;
@@ -18,7 +19,15 @@ export function clampPanelWidth(width: number, minWidth: number, maxWidth: numbe
 }
 
 export function getDefaultRightPanelWidth(viewportWidth: number): number {
-  return clampPanelWidth(viewportWidth * 0.42, 360, 640);
+  return clampPanelWidth(
+    RIGHT_PANEL_DEFAULT_WIDTH,
+    RIGHT_PANEL_MIN_WIDTH,
+    getRightPanelMaxWidth({
+      viewportWidth,
+      sidebarOpen: false,
+      sidebarWidth: 0,
+    }),
+  );
 }
 
 export function getSidebarMaxWidth(options: {

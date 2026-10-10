@@ -1,17 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowRightIcon } from "@phosphor-icons/react/ArrowRight";
-import { ArrowsInSimpleIcon } from "@phosphor-icons/react/ArrowsInSimple";
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CheckCircleIcon } from "@phosphor-icons/react/CheckCircle";
 import { CircleIcon } from "@phosphor-icons/react/Circle";
 import { CircleNotchIcon } from "@phosphor-icons/react/CircleNotch";
-import { DotsThreeIcon } from "@phosphor-icons/react/DotsThree";
 import { RobotIcon } from "@phosphor-icons/react/Robot";
 import { useI18n } from "@/hooks/useI18n";
 import type { StatusTodoItem, SubagentActivity } from "@/lib/subagent-activity";
 
-export type StatusCardDisplayMode = "auto" | "panel" | "mini";
+export type StatusCardDisplayMode = "panel" | "mini";
 
 export interface SubagentActivityCardProps {
   activities: readonly SubagentActivity[];
@@ -123,18 +121,17 @@ function TodoStatusIcon({ status }: { status: StatusTodoItem["status"] }) {
 export function SubagentActivityCard({
   activities,
   todos = EMPTY_TODOS,
-  displayMode = "auto",
+  displayMode = "mini",
   onDisplayModeChange,
   onOpenActivity,
   onOpenDirectory,
 }: SubagentActivityCardProps) {
   const { t } = useI18n();
+  const rootRef = useRef<HTMLDivElement>(null);
   const [now, setNow] = useState(() => Date.now());
   const [progressOpen, setProgressOpen] = useState(true);
   const [agentsOpen, setAgentsOpen] = useState(() => activities.some((activity) => activity.status === "running"));
   const [allTodosOpen, setAllTodosOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLSpanElement>(null);
   const running = useMemo(() => activities.filter((activity) => activity.status === "running"), [activities]);
   const endedCount = activities.length - running.length;
   const completedTodoCount = useMemo(
@@ -144,6 +141,7 @@ export function SubagentActivityCard({
   const summary = capsuleSummary(todos, running, endedCount, t);
   const todoWindow = todoFocusWindow(todos);
   const hasRunning = running.length > 0;
+  const panelOpen = displayMode === "panel";
 
   useEffect(() => {
     if (hasRunning) setAgentsOpen(true);
@@ -154,14 +152,15 @@ export function SubagentActivityCard({
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [running.length]);
+
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!panelOpen) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) return;
-      setMenuOpen(false);
+      if (rootRef.current?.contains(event.target as Node)) return;
+      onDisplayModeChange?.("mini");
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape") onDisplayModeChange?.("mini");
     };
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKeyDown);
@@ -169,17 +168,17 @@ export function SubagentActivityCard({
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [menuOpen]);
+  }, [onDisplayModeChange, panelOpen]);
 
   if (todos.length === 0 && activities.length === 0) return null;
 
-  const setMode = (mode: StatusCardDisplayMode): void => {
-    setMenuOpen(false);
-    onDisplayModeChange?.(mode);
+  const togglePanel = (): void => {
+    onDisplayModeChange?.(panelOpen ? "mini" : "panel");
   };
 
   return (
     <div
+      ref={rootRef}
       className="subagent-activity-card"
       data-testid="subagent-activity-card"
       data-display-mode={displayMode}
@@ -189,46 +188,20 @@ export function SubagentActivityCard({
         aria-label={t("desktop.status")}
         data-testid="status-card-shell"
       >
-        <div className="status-card-panel">
-          <div className="subagent-activity-head">
-            <span className="subagent-activity-title">{t("desktop.status")}</span>
-            <span className="status-card-head-actions">
-              <span className="status-card-menu" ref={menuRef}>
-                <button
-                  type="button"
-                  className="subagent-icon-button"
-                  aria-haspopup="menu"
-                  aria-expanded={menuOpen}
-                  aria-label={t("desktop.statusDisplayMode")}
-                  onClick={() => setMenuOpen((open) => !open)}
-                >
-                  <DotsThreeIcon size={15} aria-hidden="true" />
-                </button>
-                {menuOpen ? (
-                  <div className="status-card-menu-list" role="menu">
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={displayMode === "auto"}
-                      className="status-card-menu-item"
-                      onClick={() => setMode("auto")}
-                    >
-                      {t("desktop.statusDisplayModeAuto")}
-                    </button>
-                  </div>
-                ) : null}
-              </span>
-              <button
-                type="button"
-                className="subagent-icon-button"
-                onClick={() => setMode("mini")}
-                title={t("desktop.minimizeStatus")}
-                aria-label={t("desktop.minimizeStatus")}
-              >
-                <ArrowsInSimpleIcon size={15} aria-hidden="true" />
-              </button>
-            </span>
-          </div>
+        {summary ? (
+          <button
+            type="button"
+            className="subagent-activity-capsule"
+            onClick={togglePanel}
+            title={summary.label}
+            aria-label={t("desktop.expandStatus")}
+            aria-expanded={panelOpen}
+          >
+            {summary.icon}
+            <span className="status-capsule-label">{summary.label}</span>
+          </button>
+        ) : null}
+        <div className="status-card-panel" hidden={!panelOpen}>
           <div className="status-card-body">
             {todos.length > 0 ? (
               <section className="status-card-section" data-testid="status-progress-section">
@@ -371,18 +344,6 @@ export function SubagentActivityCard({
             ) : null}
           </div>
         </div>
-        {summary ? (
-          <button
-            type="button"
-            className="subagent-activity-capsule"
-            onClick={() => setMode("panel")}
-            aria-label={t("desktop.expandStatus")}
-            aria-expanded="false"
-          >
-            {summary.icon}
-            <span className="status-capsule-label">{summary.label}</span>
-          </button>
-        ) : null}
       </aside>
     </div>
   );

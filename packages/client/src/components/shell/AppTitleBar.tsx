@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { List, SidebarSimple } from "@phosphor-icons/react";
 import { useI18n } from "@/hooks/useI18n";
 import { WorkspaceTabBar } from "@/features/workspace/tabs/WorkspaceTabBar";
@@ -18,6 +19,8 @@ interface AppTitleBarProps {
   /** Live session labels resolved from the shared sessions-list query cache. */
   sessionLabels: Record<string, string>;
   runningSessionIds: ReadonlySet<string>;
+  /** Trailing accessory after the tab strip, before the reserved 36px right toggle. */
+  trailing?: ReactNode;
 }
 
 /**
@@ -37,6 +40,7 @@ export function AppTitleBar({
   onCloseAllTabs,
   sessionLabels,
   runningSessionIds,
+  trailing,
 }: AppTitleBarProps) {
   const { t: translate } = useI18n();
 
@@ -52,6 +56,7 @@ export function AppTitleBar({
         // Reserves the pinned right-pane toggle's column (AppShell renders
         // it outside this box) so the tab strip never slides underneath it.
         paddingRight: 36,
+        overflow: "visible",
       }}
     >
       {/* Sidebar toggle — first control, left of the tab strip. */}
@@ -87,6 +92,7 @@ export function AppTitleBar({
           runningSessionIds={runningSessionIds}
         />
       </div>
+      {trailing ? <div className="app-title-trailing app-no-drag">{trailing}</div> : null}
     </div>
   );
 }

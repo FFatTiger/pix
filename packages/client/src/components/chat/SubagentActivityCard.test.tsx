@@ -40,7 +40,7 @@ function renderCard(
       <SubagentActivityCard
         activities={props.activities ?? [RUNNING, COMPLETED]}
         todos={props.todos ?? TODOS}
-        displayMode={props.displayMode ?? "auto"}
+        displayMode={props.displayMode ?? "mini"}
         onDisplayModeChange={onDisplayModeChange}
         onOpenActivity={onOpenActivity}
         onOpenDirectory={onOpenDirectory}
@@ -83,7 +83,7 @@ describe("SubagentActivityCard", () => {
         <SubagentActivityCard
           activities={[RUNNING, COMPLETED]}
           todos={[{ id: 1, subject: "Write the capsule", status: "completed" }]}
-          displayMode="auto"
+          displayMode="mini"
           onDisplayModeChange={() => undefined}
           onOpenActivity={() => undefined}
           onOpenDirectory={() => undefined}
@@ -97,7 +97,7 @@ describe("SubagentActivityCard", () => {
         <SubagentActivityCard
           activities={[RUNNING, COMPLETED]}
           todos={[]}
-          displayMode="auto"
+          displayMode="mini"
           onDisplayModeChange={() => undefined}
           onOpenActivity={() => undefined}
           onOpenDirectory={() => undefined}
@@ -111,7 +111,7 @@ describe("SubagentActivityCard", () => {
         <SubagentActivityCard
           activities={[COMPLETED]}
           todos={[]}
-          displayMode="auto"
+          displayMode="mini"
           onDisplayModeChange={() => undefined}
           onOpenActivity={() => undefined}
           onOpenDirectory={() => undefined}
@@ -121,23 +121,49 @@ describe("SubagentActivityCard", () => {
     expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Ended 1");
   });
 
-  it("forces panel from the capsule and mini from Minimize, then Auto from the menu", () => {
-    const { onDisplayModeChange } = renderCard({ displayMode: "mini" });
-    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
+  it("keeps the capsule visible and toggles panel from the same control", () => {
+    const { onDisplayModeChange, rerender } = renderCard({ displayMode: "mini" });
+    const capsule = screen.getByRole("button", { name: "Expand status" });
+    expect(capsule.getAttribute("aria-expanded")).toBe("false");
+    expect(capsule.getAttribute("title")).toBe("Ship the panel");
+    expect(screen.queryByRole("button", { name: "Progress" })).toBeNull();
+    fireEvent.click(capsule);
     expect(onDisplayModeChange).toHaveBeenCalledWith("panel");
-    cleanup();
 
-    const { onDisplayModeChange: onMinimize } = renderCard({ displayMode: "panel" });
-    fireEvent.click(screen.getByRole("button", { name: "Minimize status" }));
-    expect(onMinimize).toHaveBeenCalledWith("mini");
+    rerender(
+      <I18nProvider>
+        <SubagentActivityCard
+          activities={[RUNNING, COMPLETED]}
+          todos={TODOS}
+          displayMode="panel"
+          onDisplayModeChange={onDisplayModeChange}
+          onOpenActivity={() => undefined}
+          onOpenDirectory={() => undefined}
+        />
+      </I18nProvider>,
+    );
+    const openCapsule = screen.getByRole("button", { name: "Expand status" });
+    expect(openCapsule.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "Progress" })).toBeTruthy();
+    fireEvent.click(openCapsule);
+    expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "Status display mode" }));
-    expect(screen.getByRole("menuitemradio", { name: "Auto" })).toBeTruthy();
+  it("closes the panel on Escape, outside pointer, and not on inside clicks", () => {
+    const onDisplayModeChange = vi.fn();
+    const { unmount } = renderCard({ displayMode: "panel", onDisplayModeChange });
+    fireEvent.click(screen.getByRole("button", { name: "Progress" }));
+    expect(onDisplayModeChange).not.toHaveBeenCalled();
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByRole("menuitemradio", { name: "Auto" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Status display mode" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Auto" }));
-    expect(onMinimize).toHaveBeenCalledWith("auto");
+    expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
+    onDisplayModeChange.mockClear();
+    fireEvent.pointerDown(document.body);
+    expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
+    unmount();
+    onDisplayModeChange.mockClear();
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.pointerDown(document.body);
+    expect(onDisplayModeChange).not.toHaveBeenCalled();
   });
 
   it("keeps Progress open by default with honest statuses and count, and collapses on the header", () => {

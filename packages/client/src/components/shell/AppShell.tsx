@@ -379,7 +379,7 @@ export function AppShell({ search }: AppShellProps) {
   // ── Shared right panel (Files, Agents, or Side chat) ─────────────────────
   const [rightPane, setRightPane] = useState<RightPane>(null);
   const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
-  const [statusCardDisplayMode, setStatusCardDisplayMode] = useState<StatusCardDisplayMode>("auto");
+  const [statusCardDisplayMode, setStatusCardDisplayMode] = useState<StatusCardDisplayMode>("mini");
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
@@ -1177,7 +1177,7 @@ export function AppShell({ search }: AppShellProps) {
 
       {/* Center: title bar + active content. Tabs sit to the right of the
           full-height sidebar instead of spanning the whole window. */}
-      <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+      <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "visible", minWidth: 0 }}>
         <AppTitleBar
           sidebarOpen={sidebarOpen}
           onSidebarToggle={handleSidebarToggle}
@@ -1190,9 +1190,7 @@ export function AppShell({ search }: AppShellProps) {
           onCloseAllTabs={handleCloseAllTabs}
           sessionLabels={sessionLabels}
           runningSessionIds={runningSessionIds}
-        />
-        <div className="conversation-container" style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          {activeSessionId !== null ? (
+          trailing={activeSessionId === null ? undefined : (
             <SubagentActivityCard
               key={activeSessionId}
               activities={subagentActivity.activities}
@@ -1202,8 +1200,10 @@ export function AppShell({ search }: AppShellProps) {
               onOpenActivity={handleOpenSubagentActivity}
               onOpenDirectory={() => openSubagentPanel(null)}
             />
-          ) : null}
-          <main className={`workspace${isHome ? " workspace--home" : ""}`} data-status-display-mode={statusCardDisplayMode}>
+          )}
+        />
+        <div className="conversation-container" style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+          <main className={`workspace${isHome ? " workspace--home" : ""}`}>
             {isHome ? (
               <div className="home-stack" data-testid="home-stack">
                 <div className="transcript-home" data-testid="transcript-home">

@@ -862,8 +862,9 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     });
     const card = screen.getByTestId("subagent-activity-card");
     expect(card).toBeTruthy();
-    expect(card.closest(".app-title-bar")).toBeNull();
-    expect(document.querySelector(".conversation-container")?.contains(card)).toBe(true);
+    expect(card.closest(".app-title-bar")).toBeTruthy();
+    expect(card.closest(".app-title-trailing")).toBeTruthy();
+    expect(document.querySelector(".conversation-container")?.contains(card)).toBe(false);
     expect(screen.queryByText("Opening session…")).toBeNull();
     expect(screen.getAllByTestId("session-select-A")[0]!.closest('[data-running="true"]')).toBeNull();
     expect(capturedStore!.registry.leaseSnapshot.holderSessionId).toBe("A");
@@ -4369,15 +4370,20 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     });
 
     const parentTranscriptScroll = transcriptScrollRef.current;
+    const titleBar = document.querySelector(".app-title-bar");
     expect(parentTranscriptScroll).toBeTruthy();
     expect(document.querySelector(".conversation-container")).toBeTruthy();
+    expect(screen.getByTestId("subagent-activity-card").closest(".app-title-bar")).toBe(titleBar);
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
+    expect(screen.getByRole("button", { name: "Expand status" }).getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByRole("button", { name: "Agents" }).getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Open agent Inspect runtime live" }));
     await settle();
 
+    expect(screen.getByTestId("subagent-activity-card").closest(".app-title-bar")).toBe(titleBar);
     expect(screen.getByTestId("subagent-panel")).toBeTruthy();
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-open");
+    expect(screen.getByRole("button", { name: "Hide right pane" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getAllByText("Inspect runtime live").length).toBeGreaterThanOrEqual(1);
     expect(contextCalls).toContain("child");
     expect(transcriptScrollRef.current).toBe(parentTranscriptScroll);
