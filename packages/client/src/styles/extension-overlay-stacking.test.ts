@@ -28,4 +28,13 @@ describe("extension overlay stacking", () => {
     expect(dialog).toContain('zIndex: 140');
     expect(chatInput).toContain("zIndex: 130");
   });
+
+  it("keeps preview changes from resizing the centered dialog", () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const questionnaireCss = readFileSync(join(root, "components/chat/ExtensionQuestionnaire.css"), "utf8");
+    const preview = rule(questionnaireCss, ".questionnaire-preview-panel");
+
+    expect(preview).toContain("min-height: 0");
+    expect(preview).toContain("overflow: auto");
+  });
 });
