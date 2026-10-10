@@ -239,7 +239,6 @@ html {
 .app-title-bar {
   -webkit-app-region: drag;
   position: relative;
-  z-index: 600;
   overflow: visible;
   border-bottom: 1px solid var(--border);
   background: var(--bg);

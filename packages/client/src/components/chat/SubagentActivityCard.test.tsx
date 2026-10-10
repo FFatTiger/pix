@@ -175,7 +175,20 @@ describe("SubagentActivityCard", () => {
     expect(onDisplayModeChange).not.toHaveBeenCalled();
   });
 
+  it("restores capsule focus when Escape closes a focused panel", () => {
+    const onDisplayModeChange = vi.fn();
+    renderCard({ displayMode: "panel", onDisplayModeChange });
+    const progress = screen.getByRole("button", { name: "Progress" });
+    progress.focus();
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    progress.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(onDisplayModeChange).toHaveBeenCalledOnce();
+    expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Expand status" }));
+  });
 
+  it("keeps Progress open by default with honest statuses and count, and collapses on the header", () => {
     renderCard({ displayMode: "panel" });
     const heading = screen.getByRole("button", { name: "Progress" });
     expect(heading.getAttribute("aria-expanded")).toBe("true");

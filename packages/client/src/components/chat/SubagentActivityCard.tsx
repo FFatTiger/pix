@@ -128,6 +128,7 @@ export function SubagentActivityCard({
 }: SubagentActivityCardProps) {
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
+  const capsuleRef = useRef<HTMLButtonElement>(null);
   const [now, setNow] = useState(() => Date.now());
   const [progressOpen, setProgressOpen] = useState(true);
   const [agentsOpen, setAgentsOpen] = useState(() => activities.some((activity) => activity.status === "running"));
@@ -161,6 +162,8 @@ export function SubagentActivityCard({
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.key !== "Escape") return;
+      event.preventDefault();
+      if (rootRef.current?.contains(document.activeElement)) capsuleRef.current?.focus();
       onDisplayModeChange?.("mini");
     };
     window.addEventListener("pointerdown", onPointerDown);
@@ -191,6 +194,7 @@ export function SubagentActivityCard({
       >
         {summary ? (
           <button
+            ref={capsuleRef}
             type="button"
             className="subagent-activity-capsule"
             onClick={togglePanel}
