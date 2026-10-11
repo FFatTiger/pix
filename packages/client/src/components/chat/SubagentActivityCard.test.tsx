@@ -127,7 +127,7 @@ describe("SubagentActivityCard", () => {
     const capsule = screen.getByRole("button", { name: "Expand status" });
     expect(capsule.getAttribute("aria-expanded")).toBe("false");
     expect(capsule.getAttribute("title")).toBe("Ship the panel");
-    expect(screen.queryByRole("button", { name: "Progress" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Progress" }).closest(".status-card-panel")?.hasAttribute("inert")).toBe(true);
     fireEvent.click(capsule);
     expect(onDisplayModeChange).toHaveBeenCalledWith("panel");
 
@@ -150,15 +150,13 @@ describe("SubagentActivityCard", () => {
     expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
   });
 
-  it("closes the panel on Escape, outside pointer, and not on inside clicks", () => {
+  it("keeps the panel open on outside pointer and closes only on Escape or the capsule", () => {
     const onDisplayModeChange = vi.fn();
     const { unmount } = renderCard({ displayMode: "panel", onDisplayModeChange });
     fireEvent.click(screen.getByRole("button", { name: "Progress" }));
+    fireEvent.pointerDown(document.body);
     expect(onDisplayModeChange).not.toHaveBeenCalled();
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
-    onDisplayModeChange.mockClear();
-    fireEvent.pointerDown(document.body);
     expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
     unmount();
     onDisplayModeChange.mockClear();

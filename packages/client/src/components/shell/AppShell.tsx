@@ -10,7 +10,8 @@ import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
 import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
-import { SubagentActivityCard, type StatusCardDisplayMode } from "@/components/chat/SubagentActivityCard";
+import { SubagentActivityCard } from "@/components/chat/SubagentActivityCard";
+import { loadStatusCardDisplayMode, saveStatusCardDisplayMode, type StatusCardDisplayMode } from "@/lib/status-card-display";
 import { SubagentPanel } from "@/components/chat/SubagentPanel";
 import { Composer } from "@/components/shell/Composer";
 import { Sidebar } from "@/components/shell/Sidebar";
@@ -379,7 +380,11 @@ export function AppShell({ search }: AppShellProps) {
   // ── Shared right panel (Files, Agents, or Side chat) ─────────────────────
   const [rightPane, setRightPane] = useState<RightPane>(null);
   const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
-  const [statusCardDisplayMode, setStatusCardDisplayMode] = useState<StatusCardDisplayMode>("mini");
+  const [statusCardDisplayMode, setStatusCardDisplayModeState] = useState<StatusCardDisplayMode>(loadStatusCardDisplayMode);
+  const setStatusCardDisplayMode = useCallback((mode: StatusCardDisplayMode) => {
+    setStatusCardDisplayModeState(mode);
+    saveStatusCardDisplayMode(mode);
+  }, []);
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
@@ -405,9 +410,6 @@ export function AppShell({ search }: AppShellProps) {
     return null;
   }, [activeTabId, tabs, search.file, search.cwd, search.session]);
   const activeSessionId = activeTab?.kind === "session" ? activeTab.sessionId : null;
-  useEffect(() => {
-    setStatusCardDisplayMode("mini");
-  }, [activeSessionId]);
 
   // URL → tab reconciliation: keep the in-memory tab list in sync with the URL
   // and the current cwd. File tabs are cwd-owned (a cwd switch clears them);
@@ -1358,7 +1360,7 @@ export function AppShell({ search }: AppShellProps) {
         </div>
       </div>
 
-      {/* Generic right-pane toggle remains pinned in the reserved 36px slot. */}
+      {/* Status capsule and right-pane toggle sit above the clipped shell. */}
       <div
         style={{
           position: "absolute",

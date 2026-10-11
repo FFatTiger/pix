@@ -26,6 +26,7 @@ export const PREFERENCE_KEYS: readonly string[] = [
   "pi-fork-tree-collapsed",
   "pi-collapsed-time-groups",
   "pi-process-display-mode",
+  "pi-status-card-display",
   "pi-title-auto",
   "pi-title-model",
   "pi-input-shortcut",

@@ -156,20 +156,14 @@ export function SubagentActivityCard({
 
   useEffect(() => {
     if (!panelOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current?.contains(event.target as Node)) return;
-      onDisplayModeChange?.("mini");
-    };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.key !== "Escape") return;
       event.preventDefault();
       if (rootRef.current?.contains(document.activeElement)) capsuleRef.current?.focus();
       onDisplayModeChange?.("mini");
     };
-    window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [onDisplayModeChange, panelOpen]);
@@ -213,7 +207,7 @@ export function SubagentActivityCard({
             <span className="status-capsule-label">{summary.label}</span>
           </button>
         ) : null}
-        <div className="status-card-panel" hidden={!panelOpen}>
+        <div className="status-card-panel" inert={!panelOpen}>
           <div className="status-card-body">
             {todos.length > 0 ? (
               <section className="status-card-section" data-testid="status-progress-section">

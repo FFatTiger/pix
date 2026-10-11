@@ -50,8 +50,6 @@ describe("status card responsive layout", () => {
     const card = readFileSync(join(root, "components/chat/SubagentActivityCard.tsx"), "utf8");
     const conversationOpen = shell.indexOf('className="conversation-container"');
     const cardOpen = shell.indexOf("<SubagentActivityCard");
-    const titleOpen = shell.indexOf("<AppTitleBar");
-    const titleClose = shell.indexOf("/>", titleOpen);
 
     expect(css).toContain("container-name: conversation");
     expect(css).toContain("container-type: inline-size");
@@ -62,16 +60,21 @@ describe("status card responsive layout", () => {
     expect(titleBar).not.toContain("app-title-trailing");
     expect(css).not.toContain(".app-title-trailing");
     expect(shell).not.toContain("trailing={");
-    expect(cardOpen).toBeGreaterThan(conversationOpen);
-    expect(cardOpen).toBeGreaterThan(titleClose);
     expect(rule(css, ".subagent-activity-card")).toContain("position: absolute");
-    expect(rule(css, ".subagent-activity-card")).toContain("top: 32px");
-    expect(rule(css, ".subagent-activity-card")).toContain("right: 32px");
+    expect(cardOpen).toBeGreaterThan(conversationOpen);
+    expect(rule(css, ".subagent-activity-card")).toContain("top: 44px");
+    expect(rule(css, ".subagent-activity-card")).toContain("right: 56px");
+    const mobileStart = css.indexOf("@media (max-width: 640px)", css.indexOf(".subagent-transcript"));
+    const mobile = css.slice(mobileStart, css.indexOf("}", css.indexOf(".status-card-panel", mobileStart)) + 1);
+    expect(rule(mobile, ".subagent-activity-card")).toContain("right: 12px");
+    expect(titleBar).toContain("paddingRight: 36");
     expect(css).not.toMatch(/@container conversation \(min-width: 1280px\)/);
     expect(card).not.toContain('"auto"');
     expect(css).toContain("top: calc(100% + 6px)");
     expect(css).toContain("max-height: min(64dvh, 32rem)");
     expect(rule(css, ".status-card-panel")).toContain("width: 280px");
+    expect(rule(css, ".status-card-panel")).toContain("visibility 0s linear 160ms");
+    expect(rule(css, '.subagent-activity-card[data-display-mode="panel"] .status-card-panel')).toContain("opacity: 1");
     expect(rule(css, ".subagent-activity-capsule")).toContain("max-width: 220px");
     expect(rule(css, ".subagent-activity-capsule")).toContain("border-radius: 999px");
     expect(css).not.toContain("data-display-mode=\"auto\"");

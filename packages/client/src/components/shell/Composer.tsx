@@ -810,10 +810,12 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
           onCreatedSessionDispatched?.({ ...created, firstMessage: message });
         })
         .catch((cause: unknown) => {
-          // The transient draft was deliberately NOT cleared during create, so
-          // a proven failure leaves the exact user input in place. Staging is
-          // preserved (no clear).
-          if (isCurrent() && (isActivationFailure(cause) || isDefiniteFailure(cause))) {
+          // Create is identity-only and does not dispatch the prompt. Any
+          // failure here (including retryable timeout) is proven non-delivery:
+          // keep the unsent draft/images/staging and surface the error. A
+          // post-create sync throw in this chain is the same UX; it does not
+          // invent a session URL or drop a resolved identity.
+          if (isCurrent()) {
             restoreDraft(message);
             setSendError(describeSendFailure(cause));
           }

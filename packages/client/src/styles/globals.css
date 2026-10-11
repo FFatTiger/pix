@@ -2327,11 +2327,11 @@ span.linenumber {
 /* Subagent activity: floating capsule overlay in the conversation host. */
 .subagent-activity-card {
   position: absolute;
-  top: 32px;
-  right: 32px;
+  top: 44px;
+  right: 56px;
   z-index: 30;
   min-width: 0;
-  max-width: 100%;
+  max-width: calc(100% - 72px);
   pointer-events: none;
 }
 
@@ -2346,11 +2346,11 @@ span.linenumber {
 }
 
 .status-card-panel {
-  display: none;
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
   z-index: 40;
+  display: flex;
   width: 280px;
   max-width: min(280px, calc(100vw - 16px));
   max-height: min(64dvh, 32rem);
@@ -2360,11 +2360,32 @@ span.linenumber {
   border-radius: 12px;
   background: var(--bg-panel);
   box-shadow: 0 12px 32px color-mix(in srgb, #000 24%, transparent);
-  pointer-events: auto;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top right;
+  transition:
+    opacity 160ms ease-out,
+    transform 160ms ease-out,
+    visibility 0s linear 160ms;
+  visibility: hidden;
 }
 
 .subagent-activity-card[data-display-mode="panel"] .status-card-panel {
-  display: flex;
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  transition:
+    opacity 160ms ease-out,
+    transform 160ms ease-out,
+    visibility 0s linear 0s;
+  visibility: visible;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-card-panel {
+    transition: none;
+  }
 }
 
 .subagent-activity-capsule,
@@ -3084,8 +3105,12 @@ span.linenumber {
 }
 
 @media (max-width: 640px) {
+  .subagent-activity-card {
+    right: 12px;
+    max-width: calc(100% - 24px);
+  }
   .subagent-activity-capsule {
-    max-width: 148px;
+    max-width: 220px;
   }
   .status-card-panel {
     width: min(280px, calc(100vw - 16px));

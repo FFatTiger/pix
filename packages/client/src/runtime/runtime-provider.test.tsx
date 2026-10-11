@@ -405,6 +405,67 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
     expect(textarea.value).toBe("keep this first message");
     expect(screen.getByRole("alert").textContent).toBe("The message was not sent. Your draft has been kept.");
   });
+
+  it("surfaces a retryable create timeout, keeps the draft, and allows one manual retry", async () => {
+    function Harness() {
+      const runtime = useRuntimeConnection();
+      const [sessionId, setSessionId] = useState<string | null>(null);
+      if (sessionId) {
+        return <div data-testid="promoted-session">{sessionId}</div>;
+      }
+      return (
+        <Composer
+          live={false}
+          cwd="/x"
+          onCreateSession={async () => {
+            const result = await runtime.createSession({ cwd: "/x", projectRoot: "/x" });
+            return { sessionId: result.sessionId, cwd: "/x" };
+          }}
+          onCreatedSessionDispatched={(created) => setSessionId(created.sessionId)}
+        />
+      );
+    }
+
+    mount(<Harness />);
+    const ws = await driveReady();
+    const textarea = document.querySelector("textarea.chat-input-textarea") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "keep this timeout draft" } });
+    fireEvent.click(screen.getByLabelText("Send message"));
+    await flush();
+    fireEvent.click(screen.getByLabelText("Send message"));
+    await flush();
+
+    const creates = () => ws.sent.filter((frame) => (frame as { type?: string }).type === "create");
+    const prompts = () => ws.sent.filter((frame) => {
+      const typed = frame as { type?: string; payload?: { command?: { type?: string } } };
+      return typed.type === "command" && typed.payload?.command?.type === "prompt"
+        || typed.type === "submit_turn";
+    });
+    expect(creates()).toHaveLength(1);
+    expect(prompts()).toHaveLength(0);
+
+    const create = lastFrame<{ type: string; id: string }>(ws, "create")!;
+    await serverSend(ws, {
+      type: "response",
+      id: create.id,
+      payload: { ok: false, error: { code: "timeout", message: "sessiond RPC timed out", retryable: true } },
+    });
+    await act(async () => { await flush(4); });
+
+    expect(document.querySelector("textarea.chat-input-textarea")).toBe(textarea);
+    expect(textarea.value).toBe("keep this timeout draft");
+    expect(screen.getByRole("alert").textContent).toBe("The message was not sent. Your draft has been kept.");
+    expect(screen.queryByTestId("promoted-session")).toBeNull();
+    expect(prompts()).toHaveLength(0);
+    expect(creates()).toHaveLength(1);
+
+    fireEvent.click(screen.getByLabelText("Send message"));
+    await flush();
+    expect(creates()).toHaveLength(2);
+    expect(prompts()).toHaveLength(0);
+    expect(screen.queryByTestId("promoted-session")).toBeNull();
+    expect(textarea.value).toBe("keep this timeout draft");
+  });
 });
 
 describe("Composer — capability honesty + send/abort", () => {
