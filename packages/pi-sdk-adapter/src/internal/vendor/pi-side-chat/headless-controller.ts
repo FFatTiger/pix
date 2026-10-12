@@ -4,7 +4,6 @@ import { Type, type Api, type Model } from "@earendil-works/pi-ai";
 import {
   buildSessionContext,
   convertToLlm,
-  createCodingTools,
   createReadOnlyTools,
   type ExtensionContext,
   type ExtensionToolContext,
@@ -12,9 +11,7 @@ import {
   type ModelRuntime,
   type RegisteredTool,
 } from "@earendil-works/pi-coding-agent";
-import { FileActivityTracker } from "./file-activity-tracker.js";
 import { forkSurgery } from "./fork-surgery.js";
-import { wrapToolsWithOverlapDetection } from "./tool-wrapper.js";
 
 const SIDE_CHAT_PROMPT = `
 ---
@@ -29,11 +26,9 @@ The copied main context is reference only. Do not continue its pending user requ
 
 Be concise - this is for quick questions. If user wants something main is doing, suggest waiting.`;
 
-const OVERLAP_TIMEOUT_MS = 30_000;
 const DISPOSE_WAIT_MS = 1_000;
 
-export type SideChatMode = "read_only" | "edit";
-export type SideChatStatus = "idle" | "running" | "awaiting_overlap" | "disposed";
+export type SideChatStatus = "idle" | "running" | "disposed";
 
 export interface SideChatForkContext {
   messages: AgentMessage[];
@@ -50,19 +45,12 @@ export interface SideChatToolStatus {
   status: "running" | "completed" | "failed";
 }
 
-export interface SideChatOverlapRequest {
-  requestId: string;
-  runId: string;
-  path: string;
-}
-
 export interface SideChatState {
   conversationId: string;
   generation: number;
   revision: number;
   parentSessionId: string;
   agentSessionId: string;
-  mode: SideChatMode;
   status: SideChatStatus;
   runId?: string;
   messages: AgentMessage[];
@@ -71,7 +59,6 @@ export interface SideChatState {
     thinking: string;
   };
   tools: SideChatToolStatus[];
-  pendingOverlap?: SideChatOverlapRequest;
   error?: {
     code: "run_failed";
     message: string;
@@ -106,7 +93,6 @@ export interface CreateSideChatControllerOptions {
   modelRuntime: SideChatModelRuntime;
   sessionManager: ExtensionContext["sessionManager"];
   createExtensionContext: () => ExtensionContext;
-  tracker: FileActivityTracker;
 }
 
 export type SideChatControllerErrorCode = "invalid_input" | "not_found" | "session_busy" | "unavailable";
@@ -127,19 +113,10 @@ interface ActiveRun {
   settled: boolean;
 }
 
-interface PendingOverlap {
-  request: SideChatOverlapRequest;
-  generation: number;
-  timer: NodeJS.Timeout;
-  resolve: (proceed: boolean) => void;
-}
-
 export interface SideChatController {
   getState(): SideChatState;
   subscribe(listener: (event: SideChatControllerEvent) => void): () => void;
   submit(text: string): SideChatSubmission;
-  setMode(mode: SideChatMode): void;
-  resolveOverlap(requestId: string, proceed: boolean): void;
   abort(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -160,11 +137,9 @@ class HeadlessSideChatController implements SideChatController {
   private readonly unsubscribeAgent: () => void;
   private generation = 1;
   private revision = 0;
-  private mode: SideChatMode = "read_only";
   private status: SideChatStatus = "idle";
   private activeRun: ActiveRun | undefined;
   private lastRunId: string | undefined;
-  private pendingOverlap: PendingOverlap | undefined;
   private tools: SideChatToolStatus[] = [];
   private streamingText = "";
   private streamingThinking = "";
@@ -198,7 +173,7 @@ class HeadlessSideChatController implements SideChatController {
         systemPrompt: forkContext.systemPrompt + SIDE_CHAT_PROMPT,
         model: forkContext.model,
         thinkingLevel: forkContext.thinkingLevel,
-        tools: this.toolsForMode(this.mode, forkContext),
+        tools: this.readOnlyTools(forkContext),
         messages: [...forkedMessages, framingMessage],
       },
       convertToLlm,
@@ -217,13 +192,11 @@ class HeadlessSideChatController implements SideChatController {
       revision: this.revision,
       parentSessionId: this.parentSessionId,
       agentSessionId: this.agentSessionId,
-      mode: this.mode,
       status: this.status,
       ...(runId === undefined ? {} : { runId }),
       messages: structuredClone(this.agent.state.messages.slice(this.baselineMessageCount)),
       streamingAssistant: { text: this.streamingText, thinking: this.streamingThinking },
       tools: this.tools.map((tool) => ({ ...tool })),
-      ...(this.pendingOverlap === undefined ? {} : { pendingOverlap: { ...this.pendingOverlap.request } }),
       ...(this.error === undefined ? {} : { error: { ...this.error } }),
     };
   }
@@ -265,37 +238,11 @@ class HeadlessSideChatController implements SideChatController {
     return { conversationId: this.conversationId, runId, completion };
   }
 
-  setMode(mode: SideChatMode): void {
-    this.assertAvailable();
-    if (mode !== "read_only" && mode !== "edit") {
-      throw new SideChatControllerError("invalid_input", "invalid side chat mode");
-    }
-    if (mode === this.mode) return;
-    this.mode = mode;
-    this.agent.state.tools = this.toolsForMode(mode, this.forkContext);
-    this.publish();
-  }
-
-  resolveOverlap(requestId: string, proceed: boolean): void {
-    this.assertAvailable();
-    const pending = this.pendingOverlap;
-    if (
-      pending === undefined
-      || pending.request.requestId !== requestId
-      || pending.generation !== this.generation
-      || pending.request.runId !== this.activeRun?.id
-    ) {
-      throw new SideChatControllerError("not_found", "overlap request not found");
-    }
-    this.settleOverlap(proceed);
-  }
-
   async abort(): Promise<void> {
     if (this.disposed) return;
     const run = this.activeRun;
     if (run === undefined) return;
     run.aborted = true;
-    this.settleOverlap(false);
     this.agent.abort();
     const settled = await boundedWait(run.completion, DISPOSE_WAIT_MS);
     if (!settled && this.accepts(run)) this.quarantineRun(run);
@@ -312,7 +259,6 @@ class HeadlessSideChatController implements SideChatController {
     this.disposed = true;
     const run = this.activeRun;
     if (run !== undefined) run.aborted = true;
-    this.settleOverlap(false, false);
     this.agent.abort();
     this.unsubscribeAgent();
     this.generation++;
@@ -330,7 +276,6 @@ class HeadlessSideChatController implements SideChatController {
 
   private quarantineRun(run: ActiveRun): void {
     this.disposed = true;
-    this.settleOverlap(false, false);
     this.unsubscribeAgent();
     this.generation++;
     this.activeRun = undefined;
@@ -360,7 +305,6 @@ class HeadlessSideChatController implements SideChatController {
         this.error = { code: "run_failed", message: "Side chat request failed" };
       }
     } finally {
-      this.settleOverlap(false, false);
       if (this.accepts(run)) {
         this.activeRun = undefined;
         this.status = "idle";
@@ -403,16 +347,10 @@ class HeadlessSideChatController implements SideChatController {
     this.publish();
   }
 
-  private toolsForMode(mode: SideChatMode, forkContext: SideChatForkContext): AgentTool[] {
-    const builtIns = mode === "read_only"
-      ? createReadOnlyTools(forkContext.cwd)
-      : wrapToolsWithOverlapDetection(
-        createCodingTools(forkContext.cwd),
-        this.options.tracker,
-        forkContext.cwd,
-        (path) => this.confirmOverlap(path),
-      );
-    return [...builtIns, ...this.extensionTools(forkContext.extensionTools, mode), this.createPeekMainTool()];
+  /** The side chat is permanently read-only: Pi read-only built-ins, the
+   *  read-only-filtered extension surface, and peek_main. */
+  private readOnlyTools(forkContext: SideChatForkContext): AgentTool[] {
+    return [...createReadOnlyTools(forkContext.cwd), ...this.extensionTools(forkContext.extensionTools), this.createPeekMainTool()];
   }
 
   /**
@@ -420,18 +358,18 @@ class HeadlessSideChatController implements SideChatController {
    * closed on Pi 1.0 exposure semantics: only `direct` (declared AND callable)
    * tools fit a standalone agent tool. Hidden/codemode/deferred tools are
    * never model-declared, model-only tools are never callable — neither may
-   * be declared here. In read_only mode a namespaced (MCP) tool additionally
-   * needs the trusted `readOnlyHint` annotation; unknown write capability is
-   * NEVER treated as read-only. Ordinary (unnamespaced) extension tools keep
-   * their existing side-chat availability. Nested calls (codemode scripts,
+   * be declared here. A namespaced (MCP) tool additionally needs the trusted
+   * `readOnlyHint` annotation; unknown write capability is NEVER treated as
+   * read-only. Ordinary (unnamespaced) extension tools keep their existing
+   * side-chat availability. Nested calls (codemode scripts,
    * tool_search) are main-session-only: this controller hosts no nested
    * runner, so those tools are not part of the fork surface at all and
    * ctx.executeTool returns the explicit unsupported outcome.
    */
-  private extensionTools(tools: readonly RegisteredTool[], mode: SideChatMode): AgentTool[] {
+  private extensionTools(tools: readonly RegisteredTool[]): AgentTool[] {
     return tools.flatMap(({ definition }): AgentTool[] => {
       if (definition.exposure !== undefined && definition.exposure !== "direct") return [];
-      if (mode === "read_only" && definition.namespace !== undefined && definition.annotations?.readOnlyHint !== true) {
+      if (definition.namespace !== undefined && definition.annotations?.readOnlyHint !== true) {
         return [];
       }
       return [{
@@ -511,32 +449,6 @@ class HeadlessSideChatController implements SideChatController {
         };
       },
     };
-  }
-
-  private confirmOverlap(path: string): Promise<boolean> {
-    const run = this.activeRun;
-    if (run === undefined || !this.accepts(run) || this.pendingOverlap !== undefined) return Promise.resolve(false);
-
-    const request: SideChatOverlapRequest = { requestId: randomUUID(), runId: run.id, path };
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => {
-        if (this.pendingOverlap?.request.requestId === request.requestId) this.settleOverlap(false);
-      }, OVERLAP_TIMEOUT_MS);
-      timer.unref?.();
-      this.pendingOverlap = { request, generation: run.generation, timer, resolve };
-      this.status = "awaiting_overlap";
-      this.publish();
-    });
-  }
-
-  private settleOverlap(proceed: boolean, publish = true): void {
-    const pending = this.pendingOverlap;
-    if (pending === undefined) return;
-    this.pendingOverlap = undefined;
-    clearTimeout(pending.timer);
-    if (!this.disposed && this.activeRun !== undefined) this.status = "running";
-    pending.resolve(proceed);
-    if (publish && !this.disposed) this.publish();
   }
 
   private accepts(run: ActiveRun): boolean {

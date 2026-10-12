@@ -115,10 +115,6 @@ export function mapProtocolCommandToCore(command: ProtocolRuntimeCommand): CoreR
       return { type: "side_chat_send", conversationId: command.conversationId, message: command.message };
     case "side_chat_reset":
       return { type: "side_chat_reset", conversationId: command.conversationId, mode: command.mode };
-    case "side_chat_set_mode":
-      return { type: "side_chat_set_mode", conversationId: command.conversationId, mode: command.mode };
-    case "side_chat_overlap_response":
-      return { type: "side_chat_overlap_response", conversationId: command.conversationId, requestId: command.requestId, proceed: command.proceed };
     case "extension_ui_response": {
       // Collapse method/responseKind into the Core value|confirmed|cancelled
       // form, PRESERVING the correlated method (the adapter validates the

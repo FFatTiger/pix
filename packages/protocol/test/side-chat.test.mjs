@@ -25,7 +25,6 @@ function sideChat(patch = {}) {
     runId: "run-1",
     capturedModel: { provider: "test", id: "model" },
     capturedThinkingLevel: "medium",
-    mode: "read_only",
     status: "running",
     messages: [],
     messagesTruncated: false,
@@ -61,8 +60,9 @@ describe("side chat wire contract", () => {
     assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c1", type: "side_chat_start" }).success, true);
     assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c2", type: "side_chat_send", conversationId: "x", message: "hello" }).success, true);
     assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c3", type: "side_chat_reset", conversationId: "x", mode: "refork" }).success, true);
-    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c4", type: "side_chat_set_mode", conversationId: "x", mode: "edit" }).success, true);
-    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c5", type: "side_chat_overlap_response", conversationId: "x", requestId: "o1", proceed: false }).success, true);
+    // The edit mode and overlap approval are gone: their command types fail closed.
+    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c4", type: "side_chat_set_mode", conversationId: "x", mode: "read_only" }).success, false);
+    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c5", type: "side_chat_overlap_response", conversationId: "x", requestId: "o1", proceed: false }).success, false);
     assert.equal(RuntimeInterruptSchema.safeParse({ type: "abort_side_chat", conversationId: "x" }).success, true);
     assert.equal(RuntimeCommandOutcomeSchema.safeParse({ ok: true, type: "side_chat_start", conversationId: "x" }).success, true);
     assert.equal(RuntimeCommandOutcomeSchema.safeParse({ ok: true, type: "side_chat_send", runId: "r1" }).success, true);
@@ -72,7 +72,7 @@ describe("side chat wire contract", () => {
   it("bounds every side identity through command, interrupt, RPC, WS, Worker, and result schemas", () => {
     const validId = "x".repeat(MAX_SIDE_CHAT_ID_CHARS);
     const oversizedId = `${validId}x`;
-    const command = { commandId: "c", type: "side_chat_overlap_response", conversationId: validId, requestId: validId, proceed: true };
+    const command = { commandId: "c", type: "side_chat_send", conversationId: validId, message: "hi" };
     const interrupt = { type: "abort_side_chat", conversationId: validId };
 
     assert.equal(RuntimeCommandSchema.safeParse(command).success, true);
@@ -169,7 +169,9 @@ describe("side chat wire contract", () => {
   });
 
   it("rejects incoherent or oversized state", () => {
-    assert.equal(SideChatStateSchema.safeParse(sideChat({ status: "awaiting_overlap" })).success, false);
+    assert.equal(SideChatStateSchema.safeParse(sideChat({ status: "running", runId: undefined })).success, false);
+    assert.equal(SideChatStateSchema.safeParse(sideChat({ mode: "edit" })).success, false, "edit mode is gone");
+    assert.equal(SideChatStateSchema.safeParse(sideChat({ pendingOverlap: { id: "o1", runId: "r1", path: "a.ts", pathTruncated: false } })).success, false, "overlap approval is gone");
     assert.equal(SideChatStateSchema.safeParse(sideChat({ stream: { text: "x".repeat(MAX_SIDE_CHAT_STREAM_CHARS + 1), thinking: "", textTruncated: false, thinkingTruncated: false } })).success, false);
   });
 });

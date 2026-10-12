@@ -9,7 +9,6 @@
  */
 import type { ImageAttachment, StreamingBehavior, ThinkingLevel } from "./messages.js";
 import type { QuestionnaireAnswer } from "./questionnaire.js";
-import type { SideChatMode } from "./side-chat.js";
 
 export interface PromptCommand {
   type: "prompt";
@@ -170,19 +169,6 @@ export interface SideChatResetCommand {
   mode: "refork" | "clear";
 }
 
-export interface SideChatSetModeCommand {
-  type: "side_chat_set_mode";
-  conversationId: string;
-  mode: SideChatMode;
-}
-
-export interface SideChatOverlapResponseCommand {
-  type: "side_chat_overlap_response";
-  conversationId: string;
-  requestId: string;
-  proceed: boolean;
-}
-
 export type RuntimeCommand =
   | PromptCommand
   | AbortCommand
@@ -212,9 +198,7 @@ export type RuntimeCommand =
   | GenerateSessionTitleCommand
   | SideChatStartCommand
   | SideChatSendCommand
-  | SideChatResetCommand
-  | SideChatSetModeCommand
-  | SideChatOverlapResponseCommand;
+  | SideChatResetCommand;
 
 /** All canonical command types, in stable order. */
 export const RUNTIME_COMMAND_TYPES = [
@@ -247,8 +231,6 @@ export const RUNTIME_COMMAND_TYPES = [
   "side_chat_start",
   "side_chat_send",
   "side_chat_reset",
-  "side_chat_set_mode",
-  "side_chat_overlap_response",
 ] as const;
 
 export type RuntimeCommandType = (typeof RUNTIME_COMMAND_TYPES)[number];

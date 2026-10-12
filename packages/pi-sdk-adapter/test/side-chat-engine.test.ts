@@ -23,10 +23,8 @@ import {
 import { CanonicalAgentRuntimeAdapter } from "../src/internal/adapter.js";
 import type { PiRuntimeDriver } from "../src/internal/types.js";
 import {
-  FileActivityTracker,
   SideChatControllerError,
   createSideChatController,
-  extractWritePaths,
   forkSurgery,
   type SideChatController,
   type SideChatForkContext,
@@ -192,14 +190,12 @@ function controller(
   manager: SessionManager,
   runtime: SideChatModelRuntime,
   context: SideChatForkContext = forkContext(manager),
-  tracker = new FileActivityTracker(),
 ): SideChatController {
   return createSideChatController({
     forkContext: context,
     modelRuntime: runtime,
     sessionManager: manager,
     createExtensionContext: () => ({ cwd: manager.getCwd(), sessionManager: manager } as unknown as ExtensionContext),
-    tracker,
   });
 }
 
@@ -302,10 +298,10 @@ function adapterDriver(
     fork: async () => ({ sessionId: "fork", sessionFile: "/fork.jsonl" }),
     generateSessionTitle: async () => "title",
     bindUi: async () => {},
-    createSideChatController: (tracker) => {
+    createSideChatController: () => {
       const runtime = runtimes.shift();
       assert.ok(runtime, "unexpected side-chat controller creation");
-      return controller(manager, runtime, forkContext(manager), tracker);
+      return controller(manager, runtime, forkContext(manager));
     },
     close: async () => {},
   };
@@ -325,7 +321,7 @@ async function waitForAdapterState(
 }
 
 describe("vendored pi-side-chat characterization", () => {
-  it("repairs a fork cut through a tool sequence and characterizes path tracking", () => {
+  it("repairs a fork cut through a tool sequence", () => {
     const messages: AgentMessage[] = [
       { role: "user", content: "parent request", timestamp: 1 },
       assistant([{ type: "toolCall", id: "pending-call", name: "write", arguments: { path: "a.txt", content: "x" } }], "toolUse"),
@@ -339,15 +335,6 @@ describe("vendored pi-side-chat characterization", () => {
       assert.equal(result.toolCallId, "pending-call");
       assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /forked mid-execution/);
     }
-
-    const tracker = new FileActivityTracker();
-    tracker.trackWrite("src/../src/a.ts", "/work");
-    assert.equal(tracker.hasWritten("src/a.ts", "/work"), true);
-    assert.equal(tracker.writeCount, 1);
-    assert.deepEqual(
-      extractWritePaths("bash", { command: "cat x > 'out one.txt' && cp -- source.txt copy.txt; echo no >/dev/null" }),
-      ["out one.txt", "copy.txt"],
-    );
   });
 
   it("makes the captured prompt and fresh side tools authoritative over every copied system message", async () => {
@@ -464,8 +451,6 @@ describe("vendored pi-side-chat characterization", () => {
     const runtime = new ScriptedModelRuntime([
       toolCallStream("ext_write_like", { value: "discussion" }),
       textStream("extension done"),
-      toolCallStream("write", { path: "built-in.txt", content: "written in edit mode" }),
-      textStream("write done"),
     ]);
     const side = controller(manager, runtime, forkContext(manager, [ext]));
 
@@ -480,17 +465,23 @@ describe("vendored pi-side-chat characterization", () => {
     assert.equal(readOnlyTools.includes("write"), false);
     assert.deepEqual(extensionCalls, [{ value: "discussion", cwd: root }]);
     assert.match(textOf(runtime.calls[1]!.context.messages), /extension:discussion/);
+    await side.dispose();
+  });
 
-    side.setMode("edit");
-    const editRun = side.submit("write file");
-    assert.equal((await editRun.completion).status, "completed");
-    const editTools = activeToolNames(runtime.calls[2]!.context);
-    assert.ok(editTools.includes("bash"));
-    assert.ok(editTools.includes("edit"));
-    assert.ok(editTools.includes("write"));
-    assert.ok(editTools.includes("ext_write_like"));
-    assert.equal(await readFile(join(root, "built-in.txt"), "utf8"), "written in edit mode");
-    assert.equal(side.getState().tools.find((tool) => tool.name === "write")?.status, "completed");
+  it("never exposes write-capable built-ins: the side chat is permanently read-only", async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "pix-side-chat-readonly-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const manager = SessionManager.inMemory(root, { id: "readonly-parent" });
+    const runtime = new ScriptedModelRuntime([textStream("read only answer")]);
+    const side = controller(manager, runtime);
+    const run = side.submit("inspect");
+    assert.equal((await run.completion).status, "completed");
+    const tools = activeToolNames(runtime.calls[0]!.context);
+    assert.ok(tools.includes("read"));
+    assert.ok(tools.includes("peek_main"));
+    assert.equal(tools.includes("bash"), false, "bash is never part of the side-chat surface");
+    assert.equal(tools.includes("edit"), false);
+    assert.equal(tools.includes("write"), false);
     await side.dispose();
   });
 
@@ -507,66 +498,17 @@ describe("vendored pi-side-chat characterization", () => {
     const safe = extensionTool("mcp_read", result);
     safe.definition.namespace = { name: "mcp__test" };
     safe.definition.annotations = { readOnlyHint: true };
-    const runtime = new ScriptedModelRuntime([textStream("read mode"), textStream("edit mode")]);
+    const runtime = new ScriptedModelRuntime([textStream("read mode")]);
     const side = controller(manager, runtime, forkContext(manager, [...tools, unknown, safe]));
     try {
       await side.submit("inspect").completion;
       const readTools = activeToolNames(runtime.calls[0]!.context);
       assert.ok(readTools.includes("mcp_read"));
-      assert.equal(readTools.includes("mcp_unknown"), false);
+      assert.equal(readTools.includes("mcp_unknown"), false, "namespaced tools need the trusted readOnlyHint");
       assert.ok(tools.every((tool) => !readTools.includes(tool.definition.name)));
-      side.setMode("edit");
-      await side.submit("edit").completion;
-      const editTools = activeToolNames(runtime.calls[1]!.context);
-      assert.ok(editTools.includes("mcp_unknown"));
-      assert.ok(tools.every((tool) => !editTools.includes(tool.definition.name)));
     } finally {
       await side.dispose();
     }
-  });
-
-  it("confirms or denies overlap by exact request ID and clears pending confirmation on abort", async (t) => {
-    const root = await mkdtemp(join(tmpdir(), "pix-side-chat-overlap-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
-    const manager = SessionManager.inMemory(root, { id: "overlap-parent" });
-    const tracker = new FileActivityTracker();
-    tracker.trackWrite("shared.txt", root);
-    const runtime = new ScriptedModelRuntime([
-      toolCallStream("write", { path: "shared.txt", content: "denied" }, "deny-call"),
-      textStream("denied handled"),
-      toolCallStream("write", { path: "shared.txt", content: "approved" }, "approve-call"),
-      textStream("approved handled"),
-      toolCallStream("write", { path: "shared.txt", content: "aborted" }, "abort-call"),
-    ]);
-    const side = controller(manager, runtime, forkContext(manager), tracker);
-    side.setMode("edit");
-
-    const deniedRun = side.submit("deny overlap");
-    const deniedState = await waitForState(side, (state) => state.pendingOverlap !== undefined);
-    const deniedId = deniedState.pendingOverlap!.requestId;
-    assert.throws(() => side.resolveOverlap("stale-request", true), (error) => errorCode(error) === "not_found");
-    side.resolveOverlap(deniedId, false);
-    assert.equal((await deniedRun.completion).status, "completed");
-    await assert.rejects(readFile(join(root, "shared.txt")), { code: "ENOENT" });
-    assert.throws(() => side.resolveOverlap(deniedId, true), (error) => errorCode(error) === "not_found");
-
-    const approvedRun = side.submit("approve overlap");
-    const approvedState = await waitForState(side, (state) => state.pendingOverlap !== undefined);
-    const approvedId = approvedState.pendingOverlap!.requestId;
-    assert.notEqual(approvedId, deniedId);
-    side.resolveOverlap(approvedId, true);
-    assert.equal((await approvedRun.completion).status, "completed");
-    assert.equal(await readFile(join(root, "shared.txt"), "utf8"), "approved");
-
-    const abortedRun = side.submit("abort overlap");
-    const abortedState = await waitForState(side, (state) => state.pendingOverlap !== undefined);
-    const abortedId = abortedState.pendingOverlap!.requestId;
-    await side.abort();
-    assert.equal((await abortedRun.completion).status, "aborted");
-    assert.equal(side.getState().pendingOverlap, undefined);
-    assert.throws(() => side.resolveOverlap(abortedId, true), (error) => errorCode(error) === "not_found");
-    assert.equal(await readFile(join(root, "shared.txt"), "utf8"), "approved");
-    await Promise.all([side.dispose(), side.dispose()]);
   });
 
   it("peek_main reads the live main snapshot while the forked conversation stays stable", async () => {
@@ -661,8 +603,6 @@ describe("vendored pi-side-chat characterization", () => {
       { type: "side_chat_start" as const },
       { type: "side_chat_send" as const, conversationId, message: "blocked" },
       { type: "side_chat_reset" as const, conversationId, mode: "refork" as const },
-      { type: "side_chat_set_mode" as const, conversationId, mode: "edit" as const },
-      { type: "side_chat_overlap_response" as const, conversationId, requestId: "overlap", proceed: false },
     ]) {
       const result = await adapter.execute(command);
       assert.equal(result.ok, false, JSON.stringify(result));
@@ -793,6 +733,5 @@ describe("vendored pi-side-chat characterization", () => {
     assert.equal(events.length, eventCount, "late stream callbacks are dropped");
     assert.equal(side.getState().revision, disposedState.revision);
     assert.throws(() => side.submit("too late"), (error) => errorCode(error) === "unavailable");
-    assert.throws(() => side.setMode("edit"), (error) => errorCode(error) === "unavailable");
   });
 });

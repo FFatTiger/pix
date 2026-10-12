@@ -11,9 +11,7 @@ export const MAX_SIDE_CHAT_TOOL_NAME_CHARS = 128;
 export const MAX_SIDE_CHAT_PATH_CHARS = 4_096;
 
 export const SideChatIdSchema = NonEmptyStringSchema.max(MAX_SIDE_CHAT_ID_CHARS);
-export const SideChatModeSchema = z.enum(["read_only", "edit"]);
-export type SideChatMode = z.infer<typeof SideChatModeSchema>;
-export const SideChatStatusSchema = z.enum(["idle", "running", "awaiting_overlap"]);
+export const SideChatStatusSchema = z.enum(["idle", "running"]);
 export type SideChatStatus = z.infer<typeof SideChatStatusSchema>;
 
 export const SideChatMessageSchema = z.strictObject({
@@ -44,14 +42,6 @@ export const SideChatToolStatusSchema = z.strictObject({
 });
 export type SideChatToolStatus = z.infer<typeof SideChatToolStatusSchema>;
 
-export const SideChatOverlapSchema = z.strictObject({
-  id: SideChatIdSchema,
-  runId: SideChatIdSchema,
-  path: z.string().max(MAX_SIDE_CHAT_PATH_CHARS),
-  pathTruncated: z.boolean(),
-});
-export type SideChatOverlap = z.infer<typeof SideChatOverlapSchema>;
-
 export const SideChatErrorSchema = z.strictObject({
   code: z.literal("run_failed"),
   message: z.literal("Side chat request failed"),
@@ -64,24 +54,16 @@ export const SideChatStateSchema = z.strictObject({
   runId: SideChatIdSchema.optional(),
   capturedModel: ModelRefSchema,
   capturedThinkingLevel: ThinkingLevelSchema,
-  mode: SideChatModeSchema,
   status: SideChatStatusSchema,
   messages: z.array(SideChatMessageSchema).max(MAX_SIDE_CHAT_MESSAGES),
   messagesTruncated: z.boolean(),
   totalCharsTruncated: z.boolean(),
   stream: SideChatStreamSchema,
   tools: z.array(SideChatToolStatusSchema).max(MAX_SIDE_CHAT_TOOLS),
-  pendingOverlap: SideChatOverlapSchema.optional(),
   error: SideChatErrorSchema.optional(),
 }).superRefine((state, ctx) => {
-  if ((state.status === "running" || state.status === "awaiting_overlap") && state.runId === undefined) {
+  if (state.status === "running" && state.runId === undefined) {
     ctx.addIssue({ code: "custom", path: ["runId"], message: "active side chat requires runId" });
-  }
-  if ((state.status === "awaiting_overlap") !== (state.pendingOverlap !== undefined)) {
-    ctx.addIssue({ code: "custom", path: ["pendingOverlap"], message: "pending overlap must match awaiting status" });
-  }
-  if (state.pendingOverlap !== undefined && state.pendingOverlap.runId !== state.runId) {
-    ctx.addIssue({ code: "custom", path: ["pendingOverlap", "runId"], message: "overlap runId must match state runId" });
   }
   const total = state.messages.reduce((sum, message) => sum + message.text.length + (message.thinking?.length ?? 0), 0)
     + state.stream.text.length + state.stream.thinking.length;

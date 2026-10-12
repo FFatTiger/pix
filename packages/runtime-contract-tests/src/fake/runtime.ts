@@ -305,19 +305,6 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         this.createSideChat();
         return { ok: true, type: "side_chat_reset", conversationId: this.sideChat!.conversationId };
       }
-      case "side_chat_set_mode": {
-        if (this.sideChat?.conversationId !== command.conversationId) return this.sideChatNotFound("side_chat_set_mode");
-        this.sideChat = { ...this.sideChat, revision: this.sideChat.revision + 1, mode: command.mode };
-        this.emitSideChat();
-        return { ok: true, type: "side_chat_set_mode" };
-      }
-      case "side_chat_overlap_response": {
-        if (this.sideChat?.conversationId !== command.conversationId || this.sideChat.pendingOverlap?.id !== command.requestId) return this.sideChatNotFound("side_chat_overlap_response");
-        const { pendingOverlap: _pendingOverlap, ...withoutOverlap } = this.sideChat;
-        this.sideChat = { ...withoutOverlap, revision: this.sideChat.revision + 1, status: "running" };
-        this.emitSideChat();
-        return { ok: true, type: "side_chat_overlap_response" };
-      }
       case "prompt":
         return this.executePrompt(command);
       case "steer":
@@ -584,7 +571,6 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       revision: 0,
       capturedModel: { ...this.model },
       capturedThinkingLevel: this.thinkingLevel,
-      mode: "read_only",
       status: "idle",
       messages: [],
       messagesTruncated: false,
@@ -603,7 +589,7 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
     });
   }
 
-  private sideChatNotFound(type: "side_chat_send" | "side_chat_reset" | "side_chat_set_mode" | "side_chat_overlap_response"): RuntimeCommandResult {
+  private sideChatNotFound(type: "side_chat_send" | "side_chat_reset"): RuntimeCommandResult {
     return { ok: false, type, error: makeRuntimeError("not_found", "side chat target not found") } as RuntimeCommandResult;
   }
 

@@ -1,4 +1,4 @@
-import type { FileActivityTracker, SideChatController } from "./vendor/pi-side-chat/index.js";
+import type { SideChatController } from "./vendor/pi-side-chat/index.js";
 import type { PromptDisposition, QueuedInputDisposition } from "@fffattiger/pix-runtime-core";
 export type { PromptDisposition, QueuedInputDisposition };
 
@@ -160,7 +160,7 @@ export interface PiRuntimeDriver {
   generateSessionTitle(options?: { model?: { provider: string; modelId: string } }): Promise<string>;
   bindUi(onRequest: (request: DriverUiRequest) => void, emit: (event: RuntimeEvent) => void): Promise<void>;
   /** Create the real pinned headless side-chat controller from current parent authority. */
-  createSideChatController?(tracker: FileActivityTracker): SideChatController;
+  createSideChatController?(): SideChatController;
   close(reason: RuntimeCloseReason): Promise<void>;
 }
 

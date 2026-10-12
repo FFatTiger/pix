@@ -34,7 +34,7 @@ import type { RuntimeInterruptType } from "./interrupt.js";
  * - set_session_name → `runtime.session.rename`
  * - get_session_stats → `runtime.stats`
  * - side_chat_start / side_chat_send / side_chat_reset /
- *   side_chat_set_mode / side_chat_overlap_response / abort_side_chat → `runtime.side_chat`
+ *   abort_side_chat → `runtime.side_chat`
  * - get_state / get_commands / get_last_assistant_text are always available.
  *
  * Availability-only tokens (no command mapping): `runtime.subagents`,
@@ -104,8 +104,6 @@ export const RUNTIME_COMMAND_CAPABILITIES = {
   side_chat_start: "runtime.side_chat",
   side_chat_send: "runtime.side_chat",
   side_chat_reset: "runtime.side_chat",
-  side_chat_set_mode: "runtime.side_chat",
-  side_chat_overlap_response: "runtime.side_chat",
 } as const satisfies Readonly<Record<RuntimeCommandType, RuntimeCapability | null>>;
 
 export function requiredCapabilityForCommand(

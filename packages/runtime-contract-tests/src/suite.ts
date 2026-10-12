@@ -185,10 +185,6 @@ function fixtureFor(type: RuntimeCommandType): RuntimeCommand {
       return { type, conversationId: "side-1", message: "hi" };
     case "side_chat_reset":
       return { type, conversationId: "side-1", mode: "clear" };
-    case "side_chat_set_mode":
-      return { type, conversationId: "side-1", mode: "edit" };
-    case "side_chat_overlap_response":
-      return { type, conversationId: "side-1", requestId: "overlap-1", proceed: false };
   }
 }
 
@@ -294,9 +290,9 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
 
       it("every product command type executes with minimal valid input", async () => {
         const types = RUNTIME_COMMAND_TYPES.filter(
-          (type) => type !== "extension_ui_response" && type !== "extension_ui_input" && type !== "side_chat_overlap_response",
+          (type) => type !== "extension_ui_response" && type !== "extension_ui_input",
         );
-        assert.equal(types.length, 28, "31 commands minus 2 extension-response types and stateful overlap response");
+        assert.equal(types.length, 27, "29 commands minus 2 extension-response types");
         for (const type of types) {
           const factory = await harness.createFactory();
           const port = await factory.create({ cwd: "/workspace" });
@@ -312,7 +308,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
             await port.execute({ type: "prompt", message: "hi" });
           }
           let fixture = fixtureFor(type);
-          if (type === "side_chat_send" || type === "side_chat_reset" || type === "side_chat_set_mode") {
+          if (type === "side_chat_send" || type === "side_chat_reset") {
             const started = await port.execute({ type: "side_chat_start" });
             assert.equal(started.ok, true);
             if (!started.ok || started.type !== "side_chat_start") throw new Error("side chat setup failed");
@@ -1917,7 +1913,6 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const conversationId = started.conversationId;
         const initial = await port.getSnapshot();
         assert.equal(initial.state.sideChat?.conversationId, conversationId);
-        assert.equal(initial.state.sideChat?.mode, "read_only");
         assert.deepEqual(initial.state.sideChat?.capturedModel, initial.state.model);
         assert.equal(initial.state.sideChat?.capturedThinkingLevel, initial.state.thinkingLevel);
         assert.ok(collector.ofType("side_chat_changed").length >= 1, "state publishes before start acknowledgement");
@@ -1938,8 +1933,11 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         assert.equal(reset.ok, true);
         if (!reset.ok || reset.type !== "side_chat_reset") throw new Error("side chat did not reset");
         assert.notEqual(reset.conversationId, conversationId);
-        assert.equal((await port.getSnapshot()).state.sideChat?.mode, "read_only");
-        assertErrorCode(await port.execute({ type: "side_chat_set_mode", conversationId, mode: "edit" }), "not_found");
+        // The edit mode and its overlap approval were removed with the
+        // read-only-only side chat: the commands are no longer part of the
+        // command vocabulary (unknown types fail closed as invalid_command).
+        assert.equal((RUNTIME_COMMAND_TYPES as readonly string[]).includes("side_chat_set_mode"), false);
+        assert.equal((RUNTIME_COMMAND_TYPES as readonly string[]).includes("side_chat_overlap_response"), false);
 
         await port.execute({ type: "reload" });
         assert.equal((await port.getSnapshot()).state.sideChat ?? null, null, "reload clears ephemeral side state");

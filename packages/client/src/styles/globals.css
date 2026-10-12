@@ -2806,36 +2806,6 @@ span.linenumber {
   background: var(--bg);
 }
 
-.side-chat-context {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: column;
-  gap: 3px;
-  padding: 6px 8px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
-  color: var(--text-dim);
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.side-chat-context-row {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--text-muted);
-}
-
-.side-chat-context-row strong {
-  overflow: hidden;
-  color: var(--text);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .side-chat-toolbar {
   display: flex;
   flex: 0 0 28px;
@@ -2846,29 +2816,9 @@ span.linenumber {
   border-bottom: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
 }
 
-.side-chat-modes {
-  display: flex;
-  min-width: 0;
+.side-chat-toolbar-spacer {
   flex: 1;
-  gap: 2px;
-  padding: 0;
-  background: transparent;
 }
-
-.side-chat-modes button {
-  min-width: 0;
-  height: 24px;
-  flex: 1;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.side-chat-modes button.is-active { background: var(--bg-selected); color: var(--text); }
-.side-chat-modes button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .side-chat-icon-button,
 .side-chat-send {
@@ -2889,14 +2839,6 @@ span.linenumber {
 .side-chat-icon-button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .side-chat-icon-button:disabled,
 .side-chat-send:disabled { cursor: not-allowed; opacity: 0.45; }
-
-.side-chat-mode-note {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: 10px;
-  line-height: 14px;
-}
 
 .side-chat-messages {
   min-width: 0;
@@ -2970,35 +2912,6 @@ span.linenumber {
   background: color-mix(in srgb, var(--accent-red) 8%, var(--bg));
   color: var(--accent-red);
   font-size: 11px;
-}
-
-.side-chat-overlap {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 10px 0;
-  padding: 9px;
-  border: 1px solid color-mix(in srgb, var(--accent-orange) 45%, var(--border));
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--accent-orange) 8%, var(--bg));
-  color: var(--text-muted);
-  font-size: 11px;
-  overflow-wrap: anywhere;
-}
-
-.side-chat-overlap > div:last-child { display: flex; justify-content: flex-end; gap: 6px; }
-.side-chat-overlap button {
-  display: inline-flex;
-  height: 26px;
-  align-items: center;
-  gap: 4px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-panel);
-  color: var(--text);
-  font-size: 11px;
-  cursor: pointer;
 }
 
 .side-chat-composer {

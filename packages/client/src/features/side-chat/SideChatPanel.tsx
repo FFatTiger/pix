@@ -137,35 +137,8 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
 
   return (
     <section className="side-chat-panel" aria-label={t("desktop.sideChat")} data-testid="side-chat-panel">
-      <header className="side-chat-context">
-        <div className="side-chat-context-row">
-          <strong>{state.capturedModel.provider}/{state.capturedModel.id}</strong>
-          <span>{state.capturedThinkingLevel}</span>
-        </div>
-        <div>{t("desktop.sideChatLifetime")}</div>
-      </header>
-
       <div className="side-chat-toolbar">
-        <div className="side-chat-modes" role="group" aria-label={t("desktop.sideChatMode")}>
-          <button
-            type="button"
-            className={state.mode === "read_only" ? "is-active" : undefined}
-            aria-pressed={state.mode === "read_only"}
-            disabled={pending !== null}
-            onClick={() => void run("mode", () => runtime.sideChatSetMode(state.conversationId, "read_only"))}
-          >
-            {t("desktop.sideChatDiscussion")}
-          </button>
-          <button
-            type="button"
-            className={state.mode === "edit" ? "is-active" : undefined}
-            aria-pressed={state.mode === "edit"}
-            disabled={pending !== null}
-            onClick={() => void run("mode", () => runtime.sideChatSetMode(state.conversationId, "edit"))}
-          >
-            {t("desktop.sideChatEdit")}
-          </button>
-        </div>
+        <span className="side-chat-toolbar-spacer" />
         <button
           type="button"
           className="side-chat-icon-button"
@@ -187,7 +160,6 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
           <TrashIcon size={15} aria-hidden="true" />
         </button>
       </div>
-      <div className="side-chat-mode-note">{state.mode === "read_only" ? t("desktop.sideChatDiscussionNote") : t("desktop.sideChatEditNote")}</div>
 
       <div className="side-chat-messages" ref={scrollRef} data-testid="side-chat-scroll">
         {state.messages.length === 0 && state.stream.text.length === 0 && state.stream.thinking.length === 0 ? (
@@ -240,21 +212,6 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
           <div className="side-chat-error" role="alert"><WarningCircleIcon size={15} aria-hidden="true" />{t("desktop.sideChatRunFailed")}</div>
         ) : null}
         {error ? <div className="side-chat-error" role="alert"><WarningCircleIcon size={15} aria-hidden="true" />{error}</div> : null}
-        {state.pendingOverlap ? (
-          <div className="side-chat-overlap" role="alert">
-            <strong>{t("desktop.sideChatOverlapTitle")}</strong>
-            <span>{state.pendingOverlap.path}</span>
-            {state.pendingOverlap.pathTruncated ? <TruncationNotice /> : null}
-            <div>
-              <button type="button" disabled={pending !== null} onClick={() => void run("overlap", () => runtime.sideChatRespondOverlap(state.conversationId, state.pendingOverlap!.id, false))}>
-                <XIcon size={14} aria-hidden="true" />{t("desktop.sideChatDeny")}
-              </button>
-              <button type="button" disabled={pending !== null} onClick={() => void run("overlap", () => runtime.sideChatRespondOverlap(state.conversationId, state.pendingOverlap!.id, true))}>
-                <CheckIcon size={14} aria-hidden="true" />{t("desktop.sideChatApprove")}
-              </button>
-            </div>
-          </div>
-        ) : null}
       </div>
 
       <form className="side-chat-composer" onSubmit={send}>
@@ -269,7 +226,7 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
           onCompositionEnd={() => { composingRef.current = false; }}
           onKeyDown={handleKeyDown}
         />
-        {state.status === "running" || state.status === "awaiting_overlap" ? (
+        {state.status === "running" ? (
           <button type="button" className="side-chat-send" aria-label={t("desktop.sideChatStop")} title={t("desktop.sideChatStop")} disabled={pending !== null} onClick={() => void run("abort", () => runtime.abortSideChat(state.conversationId))}>
             <StopIcon size={15} weight="fill" aria-hidden="true" />
           </button>

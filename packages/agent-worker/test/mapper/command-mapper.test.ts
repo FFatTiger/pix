@@ -56,8 +56,6 @@ describe("command-mapper (protocol → core, commandId stripped)", () => {
       [{ type: "side_chat_start" }, { type: "side_chat_start" }],
       [{ type: "side_chat_send", conversationId: "side-1", message: "question" }, { type: "side_chat_send", conversationId: "side-1", message: "question" }],
       [{ type: "side_chat_reset", conversationId: "side-1", mode: "refork" }, { type: "side_chat_reset", conversationId: "side-1", mode: "refork" }],
-      [{ type: "side_chat_set_mode", conversationId: "side-1", mode: "edit" }, { type: "side_chat_set_mode", conversationId: "side-1", mode: "edit" }],
-      [{ type: "side_chat_overlap_response", conversationId: "side-1", requestId: "overlap-1", proceed: false }, { type: "side_chat_overlap_response", conversationId: "side-1", requestId: "overlap-1", proceed: false }],
     ];
     for (const [protocol, expected] of cases) {
       const mapped = coreFor(protocol);

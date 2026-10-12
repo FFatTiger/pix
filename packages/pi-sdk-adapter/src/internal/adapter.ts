@@ -50,8 +50,6 @@ import { mapDriverError, mapMessage, sanitizeValue } from "../mappers/index.js";
 import { redactText } from "./sanitize.js";
 import type { DriverUiRequest, PiRuntimeDriver } from "./types.js";
 import {
-  extractWritePaths,
-  FileActivityTracker,
   SideChatControllerError,
   type SideChatController,
   type SideChatState as ControllerSideChatState,
@@ -95,7 +93,6 @@ function canonicalSideChatState(
     ...(state.runId === undefined ? {} : { runId: state.runId }),
     capturedModel,
     capturedThinkingLevel,
-    mode: state.mode,
     status: state.status === "disposed" ? "idle" : state.status,
     messages,
     messagesTruncated: false,
@@ -107,14 +104,6 @@ function canonicalSideChatState(
       thinkingTruncated: false,
     },
     tools: state.tools.map((tool) => ({ ...tool, nameTruncated: false })),
-    ...(state.pendingOverlap === undefined ? {} : {
-      pendingOverlap: {
-        id: state.pendingOverlap.requestId,
-        runId: state.pendingOverlap.runId,
-        path: state.pendingOverlap.path,
-        pathTruncated: false,
-      },
-    }),
     ...(state.error === undefined ? {} : {
       error: { code: "run_failed" as const, message: "Side chat request failed" as const },
     }),
@@ -270,8 +259,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private extensionNotifications: ExtensionNotificationItem[] = [];
   private extensionWidgets = new Map<string, { key: string; lines: readonly string[]; placement: "aboveEditor" | "belowEditor" }>();
   private writtenFiles = new Set<string>();
-  private pendingToolWrites = new Map<string, { toolName: string; path?: string; trackerPaths: readonly string[] }>();
-  private readonly sideChatTracker = new FileActivityTracker();
+  private pendingToolWrites = new Map<string, { toolName: string; path?: string }>();
   private sideChat: {
     controller: SideChatController;
     unsubscribe: () => void;
@@ -400,7 +388,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     if (capability && !this.capabilities.capabilities.includes(capability)) {
       return this.failure(command.type, unsupportedCapabilityError(capability));
     }
-    const usesSideChatLifecycle = command.type === "reload" || command.type === "side_chat_start" || command.type === "side_chat_send" || command.type === "side_chat_reset" || command.type === "side_chat_set_mode" || command.type === "side_chat_overlap_response";
+    const usesSideChatLifecycle = command.type === "reload" || command.type === "side_chat_start" || command.type === "side_chat_send" || command.type === "side_chat_reset";
     if (usesSideChatLifecycle && this.sideChatLifecycleBusy) {
       return this.failure(command.type, makeRuntimeError("session_busy", "side chat lifecycle is busy", { retryable: true }));
     }
@@ -421,14 +409,6 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           await this.disposeSideChat(true);
           const conversationId = this.startSideChat();
           return { ok: true, type: "side_chat_reset", conversationId };
-        }
-        case "side_chat_set_mode": {
-          this.requireSideChat(command.conversationId).controller.setMode(command.mode);
-          return { ok: true, type: "side_chat_set_mode" };
-        }
-        case "side_chat_overlap_response": {
-          this.requireSideChat(command.conversationId).controller.resolveOverlap(command.requestId, command.proceed);
-          return { ok: true, type: "side_chat_overlap_response" };
         }
         case "prompt": {
           // Protocol-v2 compatibility path: reuse the SAME atomic turn-start
@@ -670,9 +650,6 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
                 : { excludeFromContext: command.excludeFromContext }),
             });
           });
-          for (const path of extractWritePaths("bash", { command: command.command })) {
-            this.sideChatTracker.trackWrite(path, this.driver.identity.cwd);
-          }
           const prior = this.bash;
           const streamed = prior?.output ?? "";
           const authoritative = result.output;
@@ -1113,7 +1090,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     if (driverState.model === null) throw makeRuntimeError("unavailable", "side chat requires an active model");
     const capturedModel = { ...driverState.model };
     const capturedThinkingLevel = driverState.thinkingLevel;
-    const controller = this.driver.createSideChatController(this.sideChatTracker);
+    const controller = this.driver.createSideChatController();
     const record = {
       controller,
       unsubscribe: () => {},
@@ -1314,12 +1291,10 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         const toolName = String(raw.toolName ?? raw.name ?? "");
         this.completedToolCalls.delete(toolCallId);
         const target = this.writtenTarget(toolName, raw.args);
-        const trackerPaths = extractWritePaths(toolName, raw.args);
-        if (target !== undefined || trackerPaths.length > 0) {
+        if (target !== undefined) {
           this.pendingToolWrites.set(toolCallId, {
             toolName,
-            ...(target === undefined ? {} : { path: target }),
-            trackerPaths,
+            path: target,
           });
         } else this.pendingToolWrites.delete(toolCallId);
         this.emit({ type, sessionId, toolCallId, toolName, ...(typeof raw.parentToolCallId === "string" ? { parentToolCallId: raw.parentToolCallId } : {}), ...(raw.args === undefined ? {} : { args: sanitizeValue(raw.args) }) });
@@ -1334,9 +1309,6 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
         this.pendingToolWrites.delete(toolCallId);
         const endToolName = typeof raw.toolName === "string" ? raw.toolName : undefined;
         const target = correlation && endToolName === correlation.toolName ? correlation.path : undefined;
-        if (raw.isError === false && correlation !== undefined && endToolName === correlation.toolName) {
-          for (const path of correlation.trackerPaths) this.sideChatTracker.trackWrite(path, this.driver.identity.cwd);
-        }
         const writtenFiles = raw.isError === false && target ? [target] : [];
         for (const path of writtenFiles) this.writtenFiles.add(path);
         this.emit({ type, sessionId, toolCallId, ...(typeof raw.parentToolCallId === "string" ? { parentToolCallId: raw.parentToolCallId } : {}), ...(typeof raw.toolName === "string" ? { toolName: raw.toolName } : {}), ...(typeof raw.isError === "boolean" ? { isError: raw.isError } : {}), ...(raw.result === undefined ? {} : { result: sanitizeValue(raw.result) }), ...(writtenFiles.length ? { writtenFiles } : {}) });

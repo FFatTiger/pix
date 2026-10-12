@@ -455,8 +455,6 @@ const AUTHORITY_COMMAND_TYPES = new Set<RuntimeCommand["type"]>([
   "side_chat_start",
   "side_chat_send",
   "side_chat_reset",
-  "side_chat_set_mode",
-  "side_chat_overlap_response",
 ]);
 
 /**
@@ -3147,7 +3145,7 @@ export class SessiondService {
 
   private isSideChatActive(record: RecordState): boolean {
     const status = record.projection.snapshot().state.sideChat?.status;
-    return status === "running" || status === "awaiting_overlap";
+    return status === "running";
   }
 
   private isBusy(record: RecordState): boolean {
@@ -3173,7 +3171,7 @@ export class SessiondService {
     const queued = state.queuedMessages;
     if (queued !== undefined && (queued.steering.length > 0 || queued.followUp.length > 0)) return false;
     if (state.pendingExtensionUi !== undefined && state.pendingExtensionUi.length > 0) return false;
-    if (state.sideChat?.status === "running" || state.sideChat?.status === "awaiting_overlap") return false;
+    if (state.sideChat?.status === "running") return false;
     return true;
   }
 

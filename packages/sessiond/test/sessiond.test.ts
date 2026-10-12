@@ -515,26 +515,27 @@ test("side chat command and interrupt dedup fingerprints exact targets and paylo
 
   await service.interrupt("s", "side-fingerprint-stop-run", { type: "abort_side_chat", conversationId: conversationA }, activated.epoch);
   worker.setHoldPostCommandSnapshots(true);
-  const mode = { type: "side_chat_set_mode", commandId: "side-fingerprint-mode", conversationId: conversationA, mode: "edit" } as const;
-  const firstMode = service.command("s", mode, activated.epoch);
+  const reseed = { type: "side_chat_reset", commandId: "side-fingerprint-reseed", conversationId: conversationA, mode: "refork" } as const;
+  const firstReseed = service.command("s", reseed, activated.epoch);
   await worker.waitForHeldSnapshot();
-  const modeConflict = await service.command("s", { ...mode, mode: "read_only" }, activated.epoch);
-  assert.equal(modeConflict.result.ok, false);
-  if (!modeConflict.result.ok) assert.equal(modeConflict.result.error.code, "command_rejected");
-  const joinedMode = service.command("s", mode, activated.epoch);
+  const reseedConflict = await service.command("s", { ...reseed, mode: "clear" }, activated.epoch);
+  assert.equal(reseedConflict.result.ok, false);
+  if (!reseedConflict.result.ok) assert.equal(reseedConflict.result.error.code, "command_rejected");
+  const joinedReseed = service.command("s", reseed, activated.epoch);
   worker.setHoldPostCommandSnapshots(false);
   worker.releaseHeldSnapshots();
-  const [modeA, modeB] = await Promise.all([firstMode, joinedMode]);
-  assert.deepEqual(modeA, modeB);
-  assert.deepEqual(await service.command("s", mode, activated.epoch), modeA);
-  const cachedModeConflict = await service.command("s", { ...mode, mode: "read_only" }, activated.epoch);
-  assert.equal(cachedModeConflict.result.ok, false);
-  if (!cachedModeConflict.result.ok) assert.equal(cachedModeConflict.result.error.code, "command_rejected");
-  assert.equal(worker.sent.filter((item) => item.type === "worker.command" && item.payload.command.commandId === mode.commandId).length, 1);
+  const [reseedA, reseedB] = await Promise.all([firstReseed, joinedReseed]);
+  assert.deepEqual(reseedA, reseedB);
+  assert.deepEqual(await service.command("s", reseed, activated.epoch), reseedA);
+  const cachedReseedConflict = await service.command("s", { ...reseed, mode: "clear" }, activated.epoch);
+  assert.equal(cachedReseedConflict.result.ok, false);
+  if (!cachedReseedConflict.result.ok) assert.equal(cachedReseedConflict.result.error.code, "command_rejected");
+  assert.equal(worker.sent.filter((item) => item.type === "worker.command" && item.payload.command.commandId === reseed.commandId).length, 1);
 
-  const abortA = await service.interrupt("s", "side-target-abort", { type: "abort_side_chat", conversationId: conversationA }, activated.epoch);
+  const reseededConversation = reseedA.result.ok && reseedA.result.type === "side_chat_reset" ? reseedA.result.conversationId : conversationA;
+  const abortA = await service.interrupt("s", "side-target-abort", { type: "abort_side_chat", conversationId: reseededConversation }, activated.epoch);
   assert.equal(abortA.result.ok, true);
-  const reset = await service.command("s", { type: "side_chat_reset", commandId: "side-fingerprint-reset", conversationId: conversationA, mode: "refork" }, activated.epoch);
+  const reset = await service.command("s", { type: "side_chat_reset", commandId: "side-fingerprint-reset", conversationId: reseededConversation, mode: "refork" }, activated.epoch);
   if (!reset.result.ok || reset.result.type !== "side_chat_reset") throw new Error("side chat reset failed");
   const wrongTargetReplay = await service.interrupt("s", "side-target-abort", { type: "abort_side_chat", conversationId: reset.result.conversationId }, activated.epoch);
   assert.equal(wrongTargetReplay.result.ok, false);
@@ -542,7 +543,7 @@ test("side chat command and interrupt dedup fingerprints exact targets and paylo
   assert.equal(worker.sent.filter((item) => item.type === "worker.interrupt" && item.payload.commandId === "side-target-abort").length, 1);
 
   const crossId = "cross-command-interrupt";
-  const crossCommand = await service.command("s", { type: "side_chat_set_mode", commandId: crossId, conversationId: reset.result.conversationId, mode: "edit" }, activated.epoch);
+  const crossCommand = await service.command("s", { type: "side_chat_send", commandId: crossId, conversationId: reset.result.conversationId, message: "cross" }, activated.epoch);
   const crossInterrupt = await service.interrupt("s", crossId, { type: "abort_side_chat", conversationId: reset.result.conversationId }, activated.epoch);
   assert.equal(crossCommand.result.ok, true);
   assert.equal(crossInterrupt.result.ok, true);
@@ -560,7 +561,7 @@ test("active side chat blocks whole-epoch rollover without becoming parent busy"
   assert.equal(service.getSnapshot("s").state.sideChat?.status, "running");
   assert.equal(service.listRunning().sessions.find((item) => item.sessionId === "s")?.workerStatus, "ready");
 
-  const blocked = await service.command("s", { type: "side_chat_set_mode", commandId: "side-cap-third", conversationId: started.result.conversationId, mode: "edit" }, activated.epoch);
+  const blocked = await service.command("s", { type: "side_chat_send", commandId: "side-cap-third", conversationId: started.result.conversationId, message: "third" }, activated.epoch);
   assert.equal(blocked.result.ok, false);
   if (!blocked.result.ok) assert.equal(blocked.result.error.code, "command_rejected");
   assert.equal(workers.workers[0]!.sent.filter((item) => item.type === "worker.rotateEpoch").length, 0, "non-quiescent side activity is rejected before Worker rollover");

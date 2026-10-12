@@ -11,7 +11,6 @@ function sideState(patch: Partial<SideChatState> = {}): SideChatState {
     revision: 1,
     capturedModel: { provider: "anthropic", id: "claude-sonnet" },
     capturedThinkingLevel: "medium",
-    mode: "read_only",
     status: "idle",
     messages: [],
     messagesTruncated: false,
@@ -31,8 +30,6 @@ function runtime(state: SideChatState | null, methods: Partial<ExactRuntimeApi> 
     sideChatStart: vi.fn(async () => "conversation-1"),
     sideChatSend: vi.fn(async () => "run-1"),
     sideChatReset: vi.fn(async () => "conversation-2"),
-    sideChatSetMode: vi.fn(async () => undefined),
-    sideChatRespondOverlap: vi.fn(async () => undefined),
     abortSideChat: vi.fn(async () => ({ ok: true })),
     ...methods,
   } as unknown as ExactRuntimeApi;
@@ -108,34 +105,27 @@ describe("SideChatPanel", () => {
     expect(screen.getByRole("alert").textContent).not.toContain("raw provider text");
   });
 
-  it("uses exact conversation and overlap identities for mode, reset, overlap, and stop", async () => {
-    const setMode = vi.fn(async () => undefined);
+  it("uses exact conversation identity for reset and stop, with no mode or overlap controls", async () => {
     const reset = vi.fn(async () => "conversation-2");
-    const overlap = vi.fn(async () => undefined);
     const abort = vi.fn(async () => ({ ok: true }));
     const value = runtime(sideState({
-      status: "awaiting_overlap",
+      status: "running",
       runId: "run-7",
-      pendingOverlap: { id: "overlap-3", runId: "run-7", path: "src/file.ts", pathTruncated: false },
     }), {
-      sideChatSetMode: setMode,
       sideChatReset: reset,
-      sideChatRespondOverlap: overlap,
       abortSideChat: abort,
     });
     mount(value);
 
-    const editButton = screen.getByRole("button", { name: "Edit" });
-    fireEvent.click(editButton);
-    await waitFor(() => expect(setMode).toHaveBeenCalledWith("conversation-1", "edit"));
+    // The discussion/edit toggle and overlap approval were removed with the
+    // read-only-only side chat; only refork/clear remain in the toolbar.
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Discussion" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Proceed" })).toBeNull();
     const reforkButton = screen.getByRole("button", { name: "Refork from current conversation" }) as HTMLButtonElement;
     await waitFor(() => expect(reforkButton.disabled).toBe(false));
     fireEvent.click(reforkButton);
     await waitFor(() => expect(reset).toHaveBeenCalledWith("conversation-1", "refork"));
-    const proceedButton = screen.getByRole("button", { name: "Proceed" }) as HTMLButtonElement;
-    await waitFor(() => expect(proceedButton.disabled).toBe(false));
-    fireEvent.click(proceedButton);
-    await waitFor(() => expect(overlap).toHaveBeenCalledWith("conversation-1", "overlap-3", true));
     const stopButton = screen.getByRole("button", { name: "Stop side chat" }) as HTMLButtonElement;
     await waitFor(() => expect(stopButton.disabled).toBe(false));
     fireEvent.click(stopButton);

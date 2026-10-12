@@ -44,14 +44,12 @@ test("protocol accepts the exact canonical renderer state shape", () => {
     runId: "run-1",
     capturedModel: { provider: "test", id: "model" },
     capturedThinkingLevel: "medium",
-    mode: "edit",
-    status: "awaiting_overlap",
+    status: "running",
     messages: [{ id: "m1", role: "assistant", text: "answer", thinking: "reason", textTruncated: false, thinkingTruncated: false }],
     messagesTruncated: false,
     totalCharsTruncated: false,
     stream: { text: "partial", thinking: "", textTruncated: false, thinkingTruncated: false },
-    tools: [{ toolCallId: "tc1", name: "write", status: "running", nameTruncated: false }],
-    pendingOverlap: { id: "o1", runId: "run-1", path: "src/a.ts", pathTruncated: false },
+    tools: [{ toolCallId: "tc1", name: "read", status: "running", nameTruncated: false }],
   };
   const wire: WireSideChatState = SideChatStateSchema.parse(core);
   assert.deepEqual(wire, core);

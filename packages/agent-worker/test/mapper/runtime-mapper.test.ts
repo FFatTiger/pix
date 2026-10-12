@@ -195,7 +195,6 @@ describe("StatefulRuntimeMapper + sessiond projection oracle", () => {
       runId: "run-1",
       capturedModel: { provider: "test", id: "model" },
       capturedThinkingLevel: "medium" as const,
-      mode: "read_only" as const,
       status: "running" as const,
       messages: [],
       messagesTruncated: false,

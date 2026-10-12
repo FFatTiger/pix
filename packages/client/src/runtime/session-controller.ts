@@ -86,7 +86,6 @@ import {
   type RuntimeInterrupt,
   type RuntimeReadOutcome,
   type RuntimeReadType,
-  type SideChatMode,
   type SessionEntry,
   type RuntimeSnapshot,
   type RuntimeState,
@@ -449,7 +448,7 @@ interface SideChatCommandPending {
   attempt: RuntimeAttemptHandle | null;
   readonly sessionId: string;
   readonly command: WsClientMessage;
-  readonly type: "side_chat_start" | "side_chat_send" | "side_chat_reset" | "side_chat_set_mode" | "side_chat_overlap_response";
+  readonly type: "side_chat_start" | "side_chat_send" | "side_chat_reset";
   readonly promise: Promise<unknown>;
   timer: unknown | null;
   resolve(value: unknown): void;
@@ -2464,18 +2463,6 @@ export class SessionController implements RuntimeControllerPort {
     return this.runSideChatCommand({ type: "side_chat_reset", conversationId, mode }, (outcome) => {
       if (outcome.type !== "side_chat_reset") throw new Error("unexpected side_chat_reset result");
       return outcome.conversationId;
-    });
-  }
-
-  sideChatSetMode(conversationId: string, mode: SideChatMode): Promise<void> {
-    return this.runSideChatCommand({ type: "side_chat_set_mode", conversationId, mode }, (outcome) => {
-      if (outcome.type !== "side_chat_set_mode") throw new Error("unexpected side_chat_set_mode result");
-    });
-  }
-
-  sideChatRespondOverlap(conversationId: string, requestId: string, proceed: boolean): Promise<void> {
-    return this.runSideChatCommand({ type: "side_chat_overlap_response", conversationId, requestId, proceed }, (outcome) => {
-      if (outcome.type !== "side_chat_overlap_response") throw new Error("unexpected side_chat_overlap_response result");
     });
   }
 

@@ -77,8 +77,6 @@ describe("public production SDK factory smoke", () => {
         const sideId = sideStarted.conversationId;
         const sideState = await port.getSnapshot();
         assert.equal(sideState.state.sideChat?.conversationId, sideId);
-        assert.equal(sideState.state.sideChat?.mode, "read_only");
-        assert.equal((await port.execute({ type: "side_chat_set_mode", conversationId: sideId, mode: "edit" })).ok, true);
         const sideReset = await port.execute({ type: "side_chat_reset", conversationId: sideId, mode: "refork" });
         assert.equal(sideReset.ok, true);
         if (sideReset.ok && sideReset.type === "side_chat_reset") assert.notEqual(sideReset.conversationId, sideId);

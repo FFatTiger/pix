@@ -340,26 +340,12 @@ export class FakeWorkerConnection implements WorkerConnection {
             commandOutcome = { ok: false, type: "side_chat_reset", error: { code: "not_found", message: "side chat target not found", retryable: false } };
           } else {
             const conversationId = `side-conversation-${++this.sideChatSequence}`;
-            const { runId: _runId, pendingOverlap: _pendingOverlap, ...base } = current;
-            const sideChat = { ...base, conversationId, revision: 0, mode: "read_only" as const, status: "idle" as const, messages: [], stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false }, tools: [] };
+            const { runId: _runId, ...base } = current;
+            const sideChat = { ...base, conversationId, revision: 0, status: "idle" as const, messages: [], stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false }, tools: [] };
             this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
             this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
             commandOutcome = { ok: true, type: "side_chat_reset", conversationId };
           }
-        }
-        if (command.type === "side_chat_set_mode") {
-          const current = this.liveSnapshot.state.sideChat;
-          if (current === null || current === undefined || current.conversationId !== command.conversationId) {
-            commandOutcome = { ok: false, type: "side_chat_set_mode", error: { code: "not_found", message: "side chat target not found", retryable: false } };
-          } else {
-            const sideChat = { ...current, revision: current.revision + 1, mode: command.mode };
-            this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
-            this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
-            commandOutcome = { ok: true, type: "side_chat_set_mode" };
-          }
-        }
-        if (command.type === "side_chat_overlap_response") {
-          commandOutcome = { ok: false, type: "side_chat_overlap_response", error: { code: "not_found", message: "overlap request not found", retryable: false } };
         }
         if (command.type === "reload") {
           this.liveSnapshot = {

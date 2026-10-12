@@ -265,28 +265,6 @@ async function clickSideAction(chrome, ariaLabel) {
   assert.equal(clicked, true, `${ariaLabel} must be clickable`);
 }
 
-async function setSideMode(chrome, label, expectedMode, stack, sessionId) {
-  await chrome.waitFor(`(() => {
-    const button = Array.from(document.querySelectorAll('.side-chat-modes button'))
-      .find((node) => (node.textContent ?? '').trim() === ${JSON.stringify(label)});
-    return Boolean(button && !button.disabled);
-  })()`, { timeoutMs: STEP_TIMEOUT_MS, label: `${label} mode enabled` });
-  const clicked = await chrome.evaluate(`(() => {
-    const button = Array.from(document.querySelectorAll('.side-chat-modes button'))
-      .find((node) => (node.textContent ?? '').trim() === ${JSON.stringify(label)});
-    if (!button || button.disabled) return false;
-    button.click();
-    return true;
-  })()`);
-  assert.equal(clicked, true, `${label} mode must be clickable`);
-  await snapshotWhen(
-    stack,
-    sessionId,
-    (snapshot) => snapshot.state.sideChat?.mode === expectedMode,
-    `side mode ${expectedMode}`,
-  );
-}
-
 function assertExactlyOneRequest(provider, prompt, label) {
   markExactPrompt(provider, prompt);
   const hash = hashPrompt(prompt);
@@ -509,8 +487,6 @@ async function main() {
     assertNoSideTextInParent(await sessionContext(stack, parent.sessionId), sideTexts, "parallel side");
     assert.equal(await desktop.evaluate(`Array.from(document.querySelectorAll('.chat-user-message,.chat-assistant-message')).some((node) => node.textContent.includes(${JSON.stringify(sidePrompt1)}) || node.textContent.includes(${JSON.stringify(sideReply1)}))`), false, "main transcript must exclude side chat");
 
-    await setSideMode(desktop, "Edit", "edit", stack, parent.sessionId);
-    await setSideMode(desktop, "Discussion", "read_only", stack, parent.sessionId);
     await desktop.screenshot(join(tmpdir(), "pix-side-chat-desktop.png"));
 
     provider.release();
@@ -671,19 +647,15 @@ async function main() {
     assert.equal(staleSend.ok, false, "prior conversation must reject side_chat_send");
     assert.equal(staleSend.error.code, "not_found", "prior conversation rejection must be not_found");
 
-    const staleOverlap = await command(control, parent.sessionId, {
-      type: "side_chat_overlap_response",
+    const unknownMode = await command(control, parent.sessionId, {
+      type: "side_chat_set_mode",
       conversationId: conversation2,
-      requestId: "missing-overlap-request",
-      proceed: false,
-    }, "stale-side-overlap");
-    assert.equal(staleOverlap.ok, false, "unknown overlap response must fail");
-    assert.equal(staleOverlap.error.code, "not_found", "unknown overlap response must be not_found");
-    await setSideMode(desktop, "Edit", "edit", stack, parent.sessionId);
-    await setSideMode(desktop, "Discussion", "read_only", stack, parent.sessionId);
+      mode: "edit",
+    }, "removed-side-set-mode");
+    assert.equal(unknownMode.ok, false, "removed side mode command must fail closed");
 
     const bytesAfterSide = await readFile(sessionFile);
-    assert.deepEqual(bytesAfterSide, bytesBeforeSideControl, "side-chat abort/reset/mode commands must not append parent JSONL");
+    assert.deepEqual(bytesAfterSide, bytesBeforeSideControl, "side-chat abort/reset commands must not append parent JSONL");
     const finalContext = await sessionContext(stack, parent.sessionId);
     assertNoSideTextInParent(finalContext, sideTexts, "final parent history");
     assert.equal(JSON.stringify(finalContext.context.entries).includes(mainPrompt), true, "completed main prompt must remain in parent history");

@@ -57,8 +57,6 @@ const SIDE_CHAT_MUTATION_TYPES = new Set<RuntimeCommand["type"]>([
   "side_chat_start",
   "side_chat_send",
   "side_chat_reset",
-  "side_chat_set_mode",
-  "side_chat_overlap_response",
 ]);
 
 /** Type guard: narrow a Protocol command type onto the read-only vocabulary. */
@@ -707,7 +705,7 @@ export class WorkerController {
     const queued = state.queuedMessages;
     if (queued !== undefined && (queued.steering.length > 0 || queued.followUp.length > 0)) return false;
     if (state.pendingExtensionUi !== undefined && state.pendingExtensionUi.length > 0) return false;
-    if (state.sideChat?.status === "running" || state.sideChat?.status === "awaiting_overlap") return false;
+    if (state.sideChat?.status === "running") return false;
     return true;
   }
 

@@ -17,7 +17,6 @@ function state(patch: Partial<SideChatState> = {}): SideChatState {
     runId: "run-1",
     capturedModel: { provider: "test", id: "model" },
     capturedThinkingLevel: "medium",
-    mode: "read_only",
     status: "running",
     messages: [],
     messagesTruncated: false,
@@ -57,9 +56,6 @@ describe("canonical side chat projection", () => {
     assert.equal(bounded.runId, validId);
     assert.throws(() => boundSideChatState(state({ conversationId: `${validId}x` })), /conversation id is invalid/);
     assert.throws(() => boundSideChatState(state({ runId: " " })), /run id is invalid/);
-    assert.throws(() => boundSideChatState(state({
-      pendingOverlap: { id: `${validId}x`, runId: "run-1", path: "/a", pathTruncated: false },
-    })), /overlap request id is invalid/);
   });
 
   it("prioritizes a growing current stream over older display history", () => {

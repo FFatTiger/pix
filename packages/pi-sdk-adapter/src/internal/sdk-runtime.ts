@@ -49,7 +49,7 @@ import {
   todoItemsFromBranch,
   todoItemsFromToolEnd,
 } from "./todo-projection.js";
-import { createSideChatController, type FileActivityTracker, type SideChatController } from "./vendor/pi-side-chat/index.js";
+import { createSideChatController, type SideChatController } from "./vendor/pi-side-chat/index.js";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
@@ -793,7 +793,7 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     this.trace?.record("ready");
   }
 
-  createSideChatController(tracker: FileActivityTracker): SideChatController {
+  createSideChatController(): SideChatController {
     if (this.closed) throw makeRuntimeError("unavailable", "runtime is closed");
     const model = this.session.model;
     if (model === undefined || model === null) throw makeRuntimeError("unavailable", "side chat requires an active model");
@@ -817,7 +817,6 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
       modelRuntime: this.session.modelRuntime,
       sessionManager: this.session.sessionManager,
       createExtensionContext: () => this.session.extensionRunner.createContext(),
-      tracker,
     });
   }
 

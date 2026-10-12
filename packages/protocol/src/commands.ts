@@ -3,7 +3,7 @@ import {
   ExtensionUiInputCommandSchema,
   ExtensionUiResponseCommandSchema,
 } from "./extension.js";
-import { SideChatIdSchema, SideChatModeSchema, MAX_SIDE_CHAT_MESSAGE_CHARS } from "./side-chat.js";
+import { SideChatIdSchema, MAX_SIDE_CHAT_MESSAGE_CHARS } from "./side-chat.js";
 import {
   ImageAttachmentArraySchema,
   NonBlankTextSchema,
@@ -187,19 +187,6 @@ export const SideChatResetCommandSchema = z.strictObject({
   conversationId: SideChatIdSchema,
   mode: z.enum(["refork", "clear"]),
 });
-export const SideChatSetModeCommandSchema = z.strictObject({
-  ...commandBase,
-  type: z.literal("side_chat_set_mode"),
-  conversationId: SideChatIdSchema,
-  mode: SideChatModeSchema,
-});
-export const SideChatOverlapResponseCommandSchema = z.strictObject({
-  ...commandBase,
-  type: z.literal("side_chat_overlap_response"),
-  conversationId: SideChatIdSchema,
-  requestId: SideChatIdSchema,
-  proceed: z.boolean(),
-});
 
 /**
  * All RuntimeCommand variants.
@@ -234,8 +221,6 @@ export const RuntimeCommandSchema = z.union([
     SideChatStartCommandSchema,
     SideChatSendCommandSchema,
     SideChatResetCommandSchema,
-    SideChatSetModeCommandSchema,
-    SideChatOverlapResponseCommandSchema,
   ]),
   ExtensionUiResponseCommandSchema,
   ExtensionUiInputCommandSchema,
@@ -273,8 +258,6 @@ export const RUNTIME_COMMAND_TYPES = [
   "side_chat_start",
   "side_chat_send",
   "side_chat_reset",
-  "side_chat_set_mode",
-  "side_chat_overlap_response",
 ] as const;
 
 export type RuntimeCommandType = (typeof RUNTIME_COMMAND_TYPES)[number];

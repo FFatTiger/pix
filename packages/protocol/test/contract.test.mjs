@@ -300,13 +300,11 @@ describe("RuntimeCommand", () => {
     side_chat_start: { type: "side_chat_start", commandId: "c-side-start" },
     side_chat_send: { type: "side_chat_send", commandId: "c-side-send", conversationId: "side-1", message: "inspect this" },
     side_chat_reset: { type: "side_chat_reset", commandId: "c-side-reset", conversationId: "side-1", mode: "refork" },
-    side_chat_set_mode: { type: "side_chat_set_mode", commandId: "c-side-mode", conversationId: "side-1", mode: "edit" },
-    side_chat_overlap_response: { type: "side_chat_overlap_response", commandId: "c-side-overlap", conversationId: "side-1", requestId: "overlap-1", proceed: true },
   };
 
-  it("enumerates exactly 31 command types", () => {
-    assert.equal(RUNTIME_COMMAND_TYPES.length, 31);
-    assert.equal(Object.keys(samples).length, 31);
+  it("enumerates exactly 29 command types", () => {
+    assert.equal(RUNTIME_COMMAND_TYPES.length, 29);
+    assert.equal(Object.keys(samples).length, 29);
   });
 
   it("parses every command type with commandId", () => {

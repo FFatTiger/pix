@@ -149,7 +149,6 @@ export function mapSideChatState(value: SideChatState): ProtocolSideChatState {
     ...(value.runId === undefined ? {} : { runId: value.runId }),
     capturedModel: { ...value.capturedModel },
     capturedThinkingLevel: value.capturedThinkingLevel,
-    mode: value.mode,
     status: value.status,
     messages: value.messages.map((message) => ({
       id: message.id,
@@ -163,7 +162,6 @@ export function mapSideChatState(value: SideChatState): ProtocolSideChatState {
     totalCharsTruncated: value.totalCharsTruncated,
     stream: { ...value.stream },
     tools: value.tools.map((tool) => ({ ...tool })),
-    ...(value.pendingOverlap === undefined ? {} : { pendingOverlap: { ...value.pendingOverlap } }),
     ...(value.error === undefined ? {} : { error: { ...value.error } }),
   };
 }

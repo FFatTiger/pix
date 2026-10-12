@@ -57,7 +57,6 @@ function snapshotWithSideChat(overrides: Parameters<typeof snapshotPayload>[0] =
     revision: 1,
     capturedModel: { provider: "anthropic", id: "claude-sonnet" },
     capturedThinkingLevel: "medium",
-    mode: "read_only",
     status: "idle",
     messages: [],
     messagesTruncated: false,
@@ -150,7 +149,7 @@ describe("SessionController side-chat lane", () => {
     const ws = await attach(h);
     const controller = h.controller("s1")!;
 
-    const lost = controller.sideChatSetMode("conversation-1", "edit");
+    const lost = controller.sideChatReset("conversation-1", "clear");
     await flush();
     ws.serverSend({ type: "snapshot", payload: snapshotPayload({ sessionId: "s1", epoch: "e1", resumeStatus: "snapshot", capabilities: [] }) });
     await expect(lost).rejects.toMatchObject({ code: "unsupported_capability" });
@@ -210,7 +209,7 @@ describe("SessionController side-chat lane", () => {
     const h = createHarness();
     const ws = await attach(h);
     const controller = h.controller("s1")!;
-    const oldPending = controller.sideChatSetMode("conversation-1", "edit");
+    const oldPending = controller.sideChatReset("conversation-1", "clear");
     await flush();
     const oldFrame = sideCommandFrames(ws).at(-1)!;
 
@@ -228,7 +227,7 @@ describe("SessionController side-chat lane", () => {
     await flush();
     const nextFrame = sideCommandFrames(ws).at(-1)!;
     expect(nextFrame.id).not.toBe(oldFrame.id);
-    respond(ws, oldFrame, { type: "side_chat_set_mode" });
+    respond(ws, oldFrame, { type: "side_chat_reset", conversationId: "conversation-2" });
     await flush();
     let nextSettled = false;
     void nextPending.then(() => { nextSettled = true; });

@@ -160,8 +160,6 @@ export interface ExactRuntimeApi extends ExactRuntimeView {
   readonly sideChatStart: () => Promise<string>;
   readonly sideChatSend: (conversationId: string, message: string) => Promise<string>;
   readonly sideChatReset: (conversationId: string, mode: "refork" | "clear") => Promise<string>;
-  readonly sideChatSetMode: (conversationId: string, mode: "read_only" | "edit") => Promise<void>;
-  readonly sideChatRespondOverlap: (conversationId: string, requestId: string, proceed: boolean) => Promise<void>;
   readonly abortSideChat: (conversationId: string) => Promise<unknown>;
   readonly compact: (customInstructions?: string) => Promise<void>;
   readonly abortCompaction: () => Promise<unknown>;
@@ -301,8 +299,6 @@ export function createExactActions(
     sideChatStart: () => withController((controller) => controller.sideChatStart()),
     sideChatSend: (conversationId, message) => withController((controller) => controller.sideChatSend(conversationId, message)),
     sideChatReset: (conversationId, mode) => withController((controller) => controller.sideChatReset(conversationId, mode)),
-    sideChatSetMode: (conversationId, mode) => withController((controller) => controller.sideChatSetMode(conversationId, mode)),
-    sideChatRespondOverlap: (conversationId, requestId, proceed) => withController((controller) => controller.sideChatRespondOverlap(conversationId, requestId, proceed)),
     abortSideChat: (conversationId) => withController((controller) => controller.abortSideChat(conversationId)),
     compact: (customInstructions) => withController((controller) => controller.compact(customInstructions)),
     abortCompaction: () => withController((controller) => controller.abortCompaction()),

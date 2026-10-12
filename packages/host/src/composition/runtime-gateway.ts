@@ -672,9 +672,7 @@ function isInterleavingCommand(message: WsClientMessage): boolean {
     || type === "extension_ui_input"
     || type === "side_chat_start"
     || type === "side_chat_send"
-    || type === "side_chat_reset"
-    || type === "side_chat_set_mode"
-    || type === "side_chat_overlap_response";
+    || type === "side_chat_reset";
 }
 
 const READ_ONLY_COMMAND_TYPES = new Set<string>(READ_ONLY_RUNTIME_COMMAND_TYPES);

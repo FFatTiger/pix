@@ -1,10 +1,7 @@
 import type { ThinkingLevel } from "./messages.js";
 import type { ModelRef } from "./model.js";
 
-export const SIDE_CHAT_MODES = ["read_only", "edit"] as const;
-export type SideChatMode = (typeof SIDE_CHAT_MODES)[number];
-
-export const SIDE_CHAT_STATUSES = ["idle", "running", "awaiting_overlap"] as const;
+export const SIDE_CHAT_STATUSES = ["idle", "running"] as const;
 export type SideChatStatus = (typeof SIDE_CHAT_STATUSES)[number];
 
 export const SIDE_CHAT_MESSAGE_ROLES = ["user", "assistant", "toolResult"] as const;
@@ -47,13 +44,6 @@ export interface SideChatToolStatus {
   nameTruncated: boolean;
 }
 
-export interface SideChatOverlap {
-  id: string;
-  runId: string;
-  path: string;
-  pathTruncated: boolean;
-}
-
 export interface SideChatError {
   code: "run_failed";
   message: "Side chat request failed";
@@ -66,14 +56,12 @@ export interface SideChatState {
   runId?: string;
   capturedModel: ModelRef;
   capturedThinkingLevel: ThinkingLevel;
-  mode: SideChatMode;
   status: SideChatStatus;
   messages: readonly SideChatMessage[];
   messagesTruncated: boolean;
   totalCharsTruncated: boolean;
   stream: SideChatStream;
   tools: readonly SideChatToolStatus[];
-  pendingOverlap?: SideChatOverlap;
   error?: SideChatError;
 }
 
@@ -152,7 +140,6 @@ export function boundSideChatState(input: Omit<SideChatState, "messagesTruncated
     ...(input.runId === undefined ? {} : { runId: sideChatId(input.runId, "side chat run id") }),
     capturedModel: { ...input.capturedModel },
     capturedThinkingLevel: input.capturedThinkingLevel,
-    mode: input.mode,
     status: input.status,
     messages,
     messagesTruncated: input.messagesTruncated === true || input.messages.length > MAX_SIDE_CHAT_MESSAGES || omittedMessages,
@@ -171,14 +158,6 @@ export function boundSideChatState(input: Omit<SideChatState, "messagesTruncated
         status: tool.status,
         nameTruncated: tool.nameTruncated || name.truncated,
       };
-    }),
-    ...(input.pendingOverlap === undefined ? {} : {
-      pendingOverlap: {
-        id: sideChatId(input.pendingOverlap.id, "side chat overlap request id"),
-        runId: sideChatId(input.pendingOverlap.runId, "side chat overlap run id"),
-        path: bounded(input.pendingOverlap.path, MAX_SIDE_CHAT_PATH_CHARS).value,
-        pathTruncated: input.pendingOverlap.pathTruncated || input.pendingOverlap.path.length > MAX_SIDE_CHAT_PATH_CHARS,
-      },
     }),
     ...(input.error === undefined ? {} : { error: { code: "run_failed", message: "Side chat request failed" } }),
   };

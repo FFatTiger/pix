@@ -1152,7 +1152,7 @@ const steerFrame = (id) => JSON.stringify({ type: "command", id, payload: { sess
 const followFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "follow_up", message: "follow" } } });
 const extensionResponseFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "extension_ui_response", id: "ui-1", method: "confirm", responseKind: "confirmed", confirmed: true } } });
 const extensionInputFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "extension_ui_input", id: "ui-1", method: "input", data: "typed" } } });
-const sideModeFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "side_chat_set_mode", conversationId: "side-1", mode: "edit" } } });
+const sideSendFrame = (id) => JSON.stringify({ type: "command", id, payload: { sessionId: "s1", command: { commandId: id, type: "side_chat_send", conversationId: "side-1", message: "question" } } });
 const promptFrame = (id) => cmdFrame(id);
 const getSnapshotFrame = (id) => JSON.stringify({ type: "getSnapshot", id, payload: { sessionId: "s1" } });
 const createFrame = (id) => JSON.stringify({ type: "create", id, payload: { createRequestId: id, cwd: "/p", projectRoot: "/p" } });
@@ -1196,10 +1196,10 @@ test("side-chat commands use the bounded interleaving lane while a parent prompt
   const session = await connect(makeGateway(client, { inbound: { maxSerialFrames: 8, maxSerialBytes: 4 * 1024 * 1024, maxInflightInterrupts: 16 } }));
   session.receive(promptFrame("parent"));
   await wait();
-  session.receive(sideModeFrame("side-mode"));
+  session.receive(sideSendFrame("side-send"));
   await wait();
-  assert.deepEqual(commandCalls(client).map((call) => call.params.command.type), ["prompt", "side_chat_set_mode"]);
-  assert.ok(responseIds(session).includes("side-mode"));
+  assert.deepEqual(commandCalls(client).map((call) => call.params.command.type), ["prompt", "side_chat_send"]);
+  assert.ok(responseIds(session).includes("side-send"));
   assert.ok(!responseIds(session).includes("parent"));
   assert.ok(!session.closed);
 });

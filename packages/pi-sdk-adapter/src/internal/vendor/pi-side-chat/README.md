@@ -15,11 +15,9 @@ Source SHA-1 values from that tarball:
 
 | Upstream source | SHA-1 | Downstream file/use |
 | --- | --- | --- |
-| `side-chat-overlay.ts` | `577b474bdcde329625f5c2ae692517f6cf60c9a3` | `headless-controller.ts` agent construction, prompt lifecycle, mode tools, `peek_main`, event projection |
+| `side-chat-overlay.ts` | `577b474bdcde329625f5c2ae692517f6cf60c9a3` | `headless-controller.ts` agent construction, prompt lifecycle, read-only tools, `peek_main`, event projection |
 | `fork-surgery.ts` | `06d85e8832578396cf5686b921c2a4a494be887a` | `fork-surgery.ts` |
-| `file-activity-tracker.ts` | `171c74abca0cce983257b82aff9f941c27b1b4f9` | `file-activity-tracker.ts` |
-| `tool-wrapper.ts` | `bceaee0b404947a76a485617c1a448f93e2d2c76` | `tool-wrapper.ts` |
-| `index.ts` | `d1d9b05de262532875f7b499001745aa9e71a9a1` | Extension-tool adaptation and main-write tracking behavior only; its global `ExtensionRunner.prototype` patch is deliberately excluded |
+| `index.ts` | `d1d9b05de262532875f7b499001745aa9e71a9a1` | Extension-tool adaptation only; its global `ExtensionRunner.prototype` patch and write tracking are deliberately excluded |
 | `package.json` | `baaaf3e554dcf3702af98df16979c7288d04d6e6` | Version/license metadata |
 
 The tarball can be rechecked without modifying this repository:
@@ -36,12 +34,11 @@ shasum pi-side-chat-0.4.0.tgz
 - Retargeted `@mariozechner/pi-*` imports to Pix's pinned `@earendil-works/pi-*` 0.87.1 APIs and the current camel-case `toolCall` message shape.
 - Extracted the reusable `Agent` lifecycle from the private TUI overlay into a typed headless controller. Terminal rendering, editor, layout, focus, shortcuts, overlay persistence, and `ctx.ui.custom` are not copied.
 - Uses the caller's real `ModelRuntime` or `ModelRegistry` `streamSimple` method, read-only session manager, registered extension tools, and public extension-context factory. It does not patch `ExtensionRunner` or inspect private fields.
-- Added synchronous run admission, conversation/run IDs, monotonic revisions, generation fences, structured streaming thinking/text and tool status, bounded overlap waits, stale overlap rejection, independent abort, and bounded idempotent disposal.
+- Added synchronous run admission, conversation/run IDs, monotonic revisions, generation fences, structured streaming thinking/text and tool status, independent abort, and bounded idempotent disposal.
 - Added `details: undefined` to short-circuit tool results required by the 0.87.1 `AgentToolResult` contract.
-- Replaced the upstream unbounded overlap confirmation promise with a 30-second deny timeout. Abort/dispose also deny and settle a pending confirmation.
 - Side display state starts after the fork baseline and framing message, so copied parent messages are model context only.
 
-Discussion (`read_only`) mode removes the built-in `bash`, `edit`, and `write` tools by using upstream `createReadOnlyTools`. Registered extension tools remain available with their original permissions; this is not a complete mutation sandbox. Edit-mode bash overlap detection remains heuristic, as upstream documents.
+The side chat is permanently read-only: the built-in `bash`, `edit`, and `write` tools are never loaded (upstream `createReadOnlyTools`), registered extension tools keep their own permissions (this is not a complete mutation sandbox), and namespaced MCP tools additionally require the trusted `readOnlyHint` annotation. Upstream edit mode and its overlap confirmation flow (including `tool-wrapper.ts` and `file-activity-tracker.ts`) were removed downstream.
 
 Reset, clear, and refork are intentionally not controller mutations. The owner disposes this controller and creates a new one, which captures a fresh parent branch/model/thinking/system prompt and receives a new conversation identity.
 
