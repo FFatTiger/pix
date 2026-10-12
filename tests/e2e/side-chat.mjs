@@ -173,14 +173,19 @@ async function setMainComposer(chrome, text) {
   assert.equal(await chrome.evaluate(`(${PAGE.clickSend})()`), true, "main send click must land");
 }
 
+function sideRailButton() {
+  return `Array.from(document.querySelectorAll('.right-pane-rail button'))
+    .find((node) => (node.getAttribute('aria-label') ?? '') === 'Side chat')`;
+}
+
 async function openRightPane(chrome) {
   const open = await chrome.evaluate(`(() => {
-    const toggle = document.querySelector('[data-testid="right-pane-toggle"]');
+    const toggle = document.querySelector('[data-testid="right-pane-toggle"]') ?? document.querySelector('.right-pane-rail button');
     if (!toggle) return false;
     if (toggle.getAttribute('aria-pressed') !== 'true') toggle.click();
     return true;
   })()`);
-  assert.equal(open, true, "right-pane toggle must exist");
+  assert.equal(open, true, "right-pane rail or toggle must exist");
   await chrome.waitFor(`document.querySelector('.right-panel-container')?.classList.contains('right-panel-open')`, {
     timeoutMs: STEP_TIMEOUT_MS,
     label: "right pane open",
@@ -189,12 +194,12 @@ async function openRightPane(chrome) {
 
 async function closeRightPane(chrome) {
   const closed = await chrome.evaluate(`(() => {
-    const toggle = document.querySelector('[data-testid="right-pane-toggle"]');
+    const toggle = document.querySelector('[data-testid="right-pane-toggle"]') ?? document.querySelector('.right-pane-rail button[aria-pressed="true"]');
     if (!toggle) return false;
     if (toggle.getAttribute('aria-pressed') === 'true') toggle.click();
     return true;
   })()`);
-  assert.equal(closed, true, "right-pane toggle must exist");
+  assert.equal(closed, true, "right-pane rail or toggle must exist");
   await chrome.waitFor(`document.querySelector('.right-panel-container')?.classList.contains('right-panel-closed')`, {
     timeoutMs: STEP_TIMEOUT_MS,
     label: "right pane closed",
@@ -203,21 +208,21 @@ async function closeRightPane(chrome) {
 
 async function sideButtonState(chrome) {
   return chrome.evaluate(`(() => {
-    const button = Array.from(document.querySelectorAll('.right-pane-selector button'))
-      .find((node) => (node.textContent ?? '').trim() === 'Side chat');
+    const button = Array.from(document.querySelectorAll('.right-pane-selector button, .right-pane-rail button'))
+      .find((node) => (node.getAttribute('aria-label') ?? node.textContent ?? '').trim() === 'Side chat');
     return button ? { disabled: button.disabled, pressed: button.getAttribute('aria-pressed') } : null;
   })()`);
 }
 
 async function selectSideChat(chrome) {
   const selected = await chrome.evaluate(`(() => {
-    const button = Array.from(document.querySelectorAll('.right-pane-selector button'))
-      .find((node) => (node.textContent ?? '').trim() === 'Side chat');
+    const button = Array.from(document.querySelectorAll('.right-pane-selector button, .right-pane-rail button'))
+      .find((node) => (node.getAttribute('aria-label') ?? node.textContent ?? '').trim() === 'Side chat');
     if (!button || button.disabled) return false;
     button.click();
     return true;
   })()`);
-  assert.equal(selected, true, "enabled Side chat selector must be clickable");
+  assert.equal(selected, true, "enabled Side chat rail button must be clickable");
   await chrome.waitFor(`Boolean(document.querySelector('[data-testid="side-chat-panel"]'))`, {
     timeoutMs: STEP_TIMEOUT_MS,
     label: "side-chat panel",
