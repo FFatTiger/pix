@@ -686,13 +686,19 @@ export function TranscriptList({
   );
 }
 
-function ChatTranscriptRowView({
+/** Shared row renderer: one process group or message row of the chat
+ *  transcript. Also used by the side-chat panel so its rendering rules are
+ *  literally the main session's (actions the caller lacks are omitted). */
+export function ChatTranscriptRowView({
   row,
   cwd,
   sessionId,
   toolResults,
   onOpenFile,
   onEditContent,
+  onFork,
+  onNavigate,
+  modelNames,
   mentionValidators,
   skillInfo,
   loadDeferredThinking,
@@ -702,11 +708,14 @@ function ChatTranscriptRowView({
   sessionId: string | undefined;
   toolResults: Map<string, ToolResultMessage>;
   onOpenFile: ((filePath: string, options?: { initialDisplayMode?: "diff" }) => void) | undefined;
-  onEditContent: (message: UserMessage) => void;
+  onEditContent?: (message: UserMessage) => void;
+  onFork?: (entryId: string) => void;
+  onNavigate?: (entryId: string) => void;
+  modelNames?: Record<string, string>;
   mentionValidators: MentionValidators | undefined;
   skillInfo: ChatSkillIndex | null;
   /** Typed deferred-thinking loader (persisted history blocks only). */
-  loadDeferredThinking: DeferredThinkingLoader;
+  loadDeferredThinking?: DeferredThinkingLoader;
 }): ReactNode {
   if (row.kind === "process") {
     return (
@@ -719,7 +728,7 @@ function ChatTranscriptRowView({
         {...(cwd === undefined ? {} : { cwd })}
         {...(onOpenFile === undefined ? {} : { onOpenFile })}
         {...(sessionId === undefined ? {} : { sessionId })}
-        loadDeferredThinking={loadDeferredThinking}
+        {...(loadDeferredThinking === undefined ? {} : { loadDeferredThinking })}
       />
     );
   }
@@ -751,14 +760,17 @@ function ChatTranscriptRowView({
       {...(onOpenFile === undefined ? {} : { onOpenFile })}
       {...(row.entryId === undefined ? {} : { entryId: row.entryId })}
       {...(row.prevAssistantEntryId === undefined ? {} : { prevAssistantEntryId: row.prevAssistantEntryId })}
-      onEditContent={onEditContent}
+      {...(onEditContent === undefined ? {} : { onEditContent })}
+      {...(onFork === undefined ? {} : { onFork })}
+      {...(onNavigate === undefined ? {} : { onNavigate })}
+      {...(modelNames === undefined ? {} : { modelNames })}
       {...(row.showTimestamp === undefined ? {} : { showTimestamp: row.showTimestamp })}
       {...(row.prevTimestamp === undefined ? {} : { prevTimestamp: row.prevTimestamp })}
       {...(sessionId === undefined ? {} : { sessionId })}
       {...(row.writtenFiles === undefined ? {} : { writtenFiles: row.writtenFiles })}
       {...(mentionValidators === undefined ? {} : { mentionValidators })}
       skillInfo={skillInfo}
-      loadDeferredThinking={loadDeferredThinking}
+      {...(loadDeferredThinking === undefined ? {} : { loadDeferredThinking })}
     />
   );
 }

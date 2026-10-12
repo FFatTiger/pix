@@ -61,8 +61,7 @@ function snapshotWithSideChat(overrides: Parameters<typeof snapshotPayload>[0] =
     messages: [],
     messagesTruncated: false,
     totalCharsTruncated: false,
-    stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false },
-    tools: [],
+    partialMessage: null,
   };
   return payload;
 }

@@ -2,19 +2,17 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowsClockwiseIcon,
-  CheckIcon,
-  CircleNotchIcon,
   PaperPlaneRightIcon,
   SquareIcon,
   TrashIcon,
   WarningCircleIcon,
-  XIcon,
 } from "@phosphor-icons/react";
-import { MAX_SIDE_CHAT_MESSAGE_CHARS, type ProtocolError } from "@fffattiger/pix-protocol";
+import { MAX_SIDE_CHAT_MESSAGE_CHARS, type ProtocolError, type ToolResultMessage } from "@fffattiger/pix-protocol";
 import { createQueryOptions } from "@/api/query-keys";
 import { AUTO_MAX_HEIGHT } from "@/components/chat/ChatInput";
-import { MarkdownBody } from "@/components/chat/MarkdownBody";
 import { ModelSelector, ThinkingLevelSelector } from "@/components/chat/composer-selectors";
+import { ChatTranscriptRowView } from "@/components/transcript/TranscriptList";
+import { buildChatTranscriptRows } from "@/components/transcript/chat-projection";
 import { useHttpClient } from "@/app/http-context";
 import { useI18n } from "@/hooks/useI18n";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
@@ -97,7 +95,7 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
   useEffect(() => {
     const node = scrollRef.current;
     if (node) node.scrollTop = node.scrollHeight;
-  }, [state?.revision, state?.stream.text, state?.stream.thinking]);
+  }, [state?.revision, state?.partialMessage]);
 
   const run = async (name: string, action: () => Promise<unknown>, onSuccess?: () => void): Promise<void> => {
     if (pending !== null) return;
@@ -153,6 +151,32 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
     })),
     [modelsQuery.data],
   );
+  const modelNames = useMemo(() => {
+    const names: Record<string, string> = {};
+    for (const model of modelList) names[`${model.provider}:${model.id}`] = model.name;
+    return names;
+  }, [modelList]);
+  // Main-transcript projection over the side state (bounded by the wire
+  // contract; identical rendering rules to the session transcript).
+  const sideToolResults = useMemo(() => {
+    const map = new Map<string, ToolResultMessage>();
+    for (const message of state?.messages ?? []) {
+      if (message.role === "toolResult") map.set(message.toolCallId, message);
+    }
+    return map;
+  }, [state?.messages]);
+  const sideChatRows = useMemo(() => {
+    if (state === null) return [];
+    return buildChatTranscriptRows({
+      messages: state.messages,
+      entryIds: state.messages.map((_message, index) => `side-${state.conversationId}-${index}`),
+      // Same cast TranscriptList applies: the streaming partial feeds the
+      // row projection as the live tail message.
+      streamingMessage: (state.partialMessage ?? null) as Parameters<typeof buildChatTranscriptRows>[0]["streamingMessage"],
+      running: state.status === "running",
+      cwd,
+    });
+  }, [state?.conversationId, state?.messages, state?.partialMessage, state?.status, cwd]);
   const selectorsIdle = state !== null && state.status === "idle" && pending === null;
   const applyModel = (provider: string, modelId: string, thinkingLevel: ThinkingLevelOption): void => {
     if (state === null || thinkingLevel === "auto") return;
@@ -197,49 +221,24 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
       </div>
 
       <div className="side-chat-messages" ref={scrollRef} data-testid="side-chat-scroll">
-        {state.messages.length === 0 && state.stream.text.length === 0 && state.stream.thinking.length === 0 ? (
+        {state.messages.length === 0 && state.partialMessage === null ? (
           <div className="side-chat-empty">{t("desktop.sideChatEmpty")}</div>
         ) : null}
-        {state.messages.map((message) => (
-          <article key={message.id} className={`side-chat-message is-${message.role}${message.isError ? " is-error" : ""}`}>
-            <div className="side-chat-message-label">
-              {message.role === "user" ? t("desktop.sideChatYou") : message.role === "assistant" ? t("desktop.sideChatAssistant") : (message.toolName ?? t("desktop.sideChatTool"))}
-            </div>
-            {message.thinking ? (
-              <details className="side-chat-thinking">
-                <summary>{t("desktop.sideChatThinking")}</summary>
-                <div>{message.thinking}</div>
-                {message.thinkingTruncated ? <TruncationNotice /> : null}
-              </details>
-            ) : null}
-            {message.role === "assistant" ? (
-              <MarkdownBody cwd={cwd} onOpenFile={onOpenFile}>{message.text}</MarkdownBody>
-            ) : (
-              <div className="side-chat-plain-text">{message.text}</div>
-            )}
-            {message.textTruncated ? <TruncationNotice /> : null}
-          </article>
-        ))}
-        {state.stream.thinking ? (
-          <details className="side-chat-thinking" open>
-            <summary>{t("desktop.sideChatThinking")}</summary>
-            <div>{state.stream.thinking}</div>
-            {state.stream.thinkingTruncated ? <TruncationNotice /> : null}
-          </details>
-        ) : null}
-        {state.stream.text ? (
-          <article className="side-chat-message is-assistant is-streaming">
-            <div className="side-chat-message-label">{t("desktop.sideChatAssistant")}</div>
-            <MarkdownBody isStreaming cwd={cwd} onOpenFile={onOpenFile}>{state.stream.text}</MarkdownBody>
-            {state.stream.textTruncated ? <TruncationNotice /> : null}
-          </article>
-        ) : null}
-        {state.tools.map((tool) => (
-          <div key={tool.toolCallId} className={`side-chat-tool is-${tool.status}`}>
-            {tool.status === "running" ? <CircleNotchIcon className="side-chat-spin" size={14} aria-hidden="true" /> : tool.status === "completed" ? <CheckIcon size={14} aria-hidden="true" /> : <XIcon size={14} aria-hidden="true" />}
-            <span>{tool.name}</span>
-            <span>{t(`desktop.sideChatToolStatus.${tool.status}`)}</span>
-            {tool.nameTruncated ? <span title={t("desktop.sideChatTruncated")}>…</span> : null}
+        {/* Main-session rendering pipeline: the same row projection and row
+            renderer as TranscriptList (process groups, thinking blocks, tool
+            rows with arguments/results, model labels, streaming tail). */}
+        {sideChatRows.map((row) => (
+          <div key={row.key} className="transcript-row transcript-row--chat">
+            <ChatTranscriptRowView
+              row={row}
+              cwd={cwd}
+              sessionId={undefined}
+              toolResults={sideToolResults}
+              onOpenFile={onOpenFile === undefined ? undefined : (filePath) => onOpenFile(filePath)}
+              modelNames={modelNames}
+              mentionValidators={undefined}
+              skillInfo={null}
+            />
           </div>
         ))}
         {state.messagesTruncated || state.totalCharsTruncated ? <TruncationNotice /> : null}

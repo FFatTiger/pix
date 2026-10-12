@@ -79,6 +79,24 @@ async function waitForProviderGate(provider, label) {
   await waitUntil(() => provider.gated, `${label} provider gate`);
 }
 
+function messageDisplayText(message) {
+  if (message.role === "user") return typeof message.content === "string" ? message.content : "";
+  if (message.role === "assistant" || message.role === "toolResult") {
+    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+  }
+  return "";
+}
+
+function sideChatText(sideChat) {
+  return (sideChat?.messages ?? []).map(messageDisplayText).join("\n");
+}
+
+function sideChatPartialText(sideChat) {
+  const partial = sideChat?.partialMessage;
+  if (!partial || partial.role !== "assistant" || !partial.content) return "";
+  return partial.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+}
+
 async function snapshotWhen(stack, sessionId, predicate, label, timeoutMs = STEP_TIMEOUT_MS) {
   return waitUntil(async () => {
     const snapshot = await stack.rpc.call("runtime.getSnapshot", { sessionId });
@@ -472,7 +490,7 @@ async function main() {
     const parallelSnapshot = await snapshotWhen(
       stack,
       parent.sessionId,
-      (snapshot) => snapshot.state.sideChat?.status === "idle" && snapshot.state.sideChat.messages.some((message) => message.text.includes(sideReply1)),
+      (snapshot) => snapshot.state.sideChat?.status === "idle" && sideChatText(snapshot.state.sideChat).includes(sideReply1),
       "parallel side terminal snapshot",
     );
     assert.equal(parallelSnapshot.state.isPromptRunning, true, "main turn must remain held while side turn completes");
@@ -484,13 +502,13 @@ async function main() {
     assertRequestContainsPrompt(mainRecord, mainPrompt, "held main");
     assertExactlyOneRequest(provider, sidePrompt1, "parallel side");
     assertNoSideTextInParent(await sessionContext(stack, parent.sessionId), sideTexts, "parallel side");
-    assert.equal(await desktop.evaluate(`Array.from(document.querySelectorAll('.chat-user-message,.chat-assistant-message')).some((node) => node.textContent.includes(${JSON.stringify(sidePrompt1)}) || node.textContent.includes(${JSON.stringify(sideReply1)}))`), false, "main transcript must exclude side chat");
+    assert.equal(await desktop.evaluate(`Array.from(document.querySelectorAll('.conversation-container .chat-user-message,.conversation-container .chat-assistant-message')).some((node) => node.textContent.includes(${JSON.stringify(sidePrompt1)}) || node.textContent.includes(${JSON.stringify(sideReply1)}))`), false, "main transcript must exclude side chat");
 
     await desktop.screenshot(join(tmpdir(), "pix-side-chat-desktop.png"));
 
     provider.release();
     await desktop.waitFor(`(() => {
-      const nodes = document.querySelectorAll('.chat-assistant-message');
+      const nodes = document.querySelectorAll('.conversation-container .chat-assistant-message');
       return nodes.length > 0 && nodes[nodes.length - 1].textContent.includes(${JSON.stringify(MAIN_DONE)});
     })()`, { timeoutMs: STEP_TIMEOUT_MS, label: "main terminal in browser" });
     await snapshotWhen(stack, parent.sessionId, (snapshot) => snapshot.state.isPromptRunning === false, "main idle after release");
@@ -510,14 +528,14 @@ async function main() {
     await sendSideMessage(desktop, sidePrompt2);
     await waitForProviderRequest(provider, sidePrompt2, "held side");
     await waitForProviderGate(provider, "held side");
-    await desktop.waitFor(`document.querySelector('.side-chat-message.is-streaming')?.textContent.includes(${JSON.stringify(sideReply2)})`, {
+    await desktop.waitFor(`document.querySelector('[data-testid="side-chat-panel"]')?.textContent.includes(${JSON.stringify(sideReply2)})`, {
       timeoutMs: STEP_TIMEOUT_MS,
       label: "side partial stream",
     });
     const heldSide = await snapshotWhen(
       stack,
       parent.sessionId,
-      (snapshot) => snapshot.state.sideChat?.status === "running" && snapshot.state.sideChat.stream.text.includes(sideReply2),
+      (snapshot) => snapshot.state.sideChat?.status === "running" && sideChatPartialText(snapshot.state.sideChat).includes(sideReply2),
       "held side authoritative snapshot",
     );
     assert.equal(heldSide.state.isPromptRunning, false, "side activity must not become parent prompt activity");
@@ -550,7 +568,7 @@ async function main() {
     const afterReload = await stack.rpc.call("runtime.getSnapshot", { sessionId: parent.sessionId });
     assert.equal(afterReload.state.sideChat.conversationId, conversation1, "reload must preserve side conversation in the same Worker");
     assert.equal(afterReload.state.sideChat.runId, heldRunId, "reload must preserve active side run");
-    assert.ok(afterReload.state.sideChat.stream.text.includes(sideReply2), "reload snapshot must preserve partial side text");
+    assert.ok(sideChatPartialText(afterReload.state.sideChat).includes(sideReply2), "reload snapshot must preserve partial side text");
     await openSideChat(desktop);
     await desktop.waitFor(`document.querySelector('[data-testid="side-chat-panel"]')?.textContent.includes(${JSON.stringify(sideReply2)})`, {
       timeoutMs: STEP_TIMEOUT_MS,
@@ -580,7 +598,7 @@ async function main() {
     mobile = undefined;
 
     await desktop.navigate(otherUrl);
-    await desktop.waitFor(`document.querySelectorAll('.chat-user-message').length >= 1`, { timeoutMs: STEP_TIMEOUT_MS, label: "other parent history" });
+    await desktop.waitFor(`document.querySelectorAll('.conversation-container .chat-user-message').length >= 1`, { timeoutMs: STEP_TIMEOUT_MS, label: "other parent history" });
     await requireObserveFeature(desktop, "other parent history");
     assert.equal(await desktop.evaluate(`Boolean(document.querySelector('[data-testid="side-chat-panel"]'))`), false, "other parent must not expose hidden side panel");
     const runningOnOther = await stack.rpc.call("runtime.listRunning", {});
@@ -632,7 +650,7 @@ async function main() {
     );
     const conversation2 = reforked.state.sideChat.conversationId;
     assert.equal(reforked.state.sideChat.messages.length, 0, "refork must clear old side messages");
-    assert.equal(reforked.state.sideChat.stream.text, "", "refork must clear old side stream");
+    assert.equal(sideChatPartialText(reforked.state.sideChat), "", "refork must clear old side partial");
     assert.equal(await desktop.evaluate(`document.querySelector('[data-testid="side-chat-panel"]')?.textContent.includes(${JSON.stringify(sideReply1)})`), false, "refork UI must clear old output");
     const runningAfterRefork = await stack.rpc.call("runtime.listRunning", {});
     assert.equal(runningAfterRefork.sessions.length, 1, "refork must reuse the same parent Worker");

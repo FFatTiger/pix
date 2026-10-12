@@ -21,8 +21,7 @@ function sideState(patch: Partial<SideChatState> = {}): SideChatState {
     messages: [],
     messagesTruncated: false,
     totalCharsTruncated: false,
-    stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false },
-    tools: [],
+    partialMessage: null,
     ...patch,
   };
 }
@@ -82,29 +81,43 @@ async function settleDeferred<T>(pending: ReturnType<typeof deferred<T>>, outcom
 }
 
 describe("SideChatPanel", () => {
-  it("renders canonical messages, stream, tools, errors, and truncation without owning global chat", () => {
+  it("renders through the main transcript components: user bubble, process tools, model label", () => {
     const value = runtime(sideState({
       revision: 4,
-      status: "running",
-      runId: "run-1",
       messages: [
-        { id: "u1", role: "user", text: "Question", textTruncated: false, thinkingTruncated: false },
-        { id: "a1", role: "assistant", text: "**Answer**", thinking: "Reasoning", textTruncated: true, thinkingTruncated: false },
-        { id: "t1", role: "toolResult", text: "tool output", toolName: "read", textTruncated: false, thinkingTruncated: false },
+        { role: "user", content: "Question" },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Reasoning" },
+            { type: "toolCall", toolCallId: "tc1", toolName: "read", input: { path: "a.ts" } },
+            { type: "text", text: "Committed answer" },
+          ],
+          model: "claude-sonnet",
+          provider: "anthropic",
+        },
+        { role: "toolResult", toolCallId: "tc1", toolName: "read", content: [{ type: "text", text: "tool output" }] },
       ],
       messagesTruncated: true,
-      stream: { text: "Streaming reply", thinking: "Working", textTruncated: false, thinkingTruncated: true },
-      tools: [{ toolCallId: "tool-1", name: "search", status: "running", nameTruncated: false }],
       error: { code: "run_failed", message: "Side chat request failed" },
     }));
     mount(value);
 
-    expect(screen.getByText("Question")).toBeTruthy();
-    expect(screen.getByText("Answer")).toBeTruthy();
-    expect(screen.getByTestId("side-chat-scroll").textContent).toContain("Streaming reply");
-    expect(screen.getByText("search")).toBeTruthy();
+    // User message renders as the main transcript's user bubble.
+    expect(document.querySelector(".chat-user-message")?.textContent).toContain("Question");
+    // The assistant turn renders through the shared process-group pipeline
+    // (collapsed summary exactly like a settled main-session turn), not the
+    // removed side-only markup.
+    const scroll = screen.getByTestId("side-chat-scroll");
+    expect(scroll.querySelector(".side-chat-message")).toBeNull();
+    expect(scroll.querySelector(".side-chat-tool")).toBeNull();
+    expect(scroll.querySelector(".process-group-shell")).toBeTruthy();
+    // The committed answer renders with the model label resolved from the
+    // shared models catalog query.
+    expect(scroll.textContent).toContain("Committed answer");
+    waitFor(() => expect(scroll.textContent).toContain("Claude Sonnet"));
     expect(screen.getByText("The side chat request failed.")).toBeTruthy();
-    expect(screen.getAllByText("Some side chat content was truncated.").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("Some side chat content was truncated.").length).toBeGreaterThan(0);
     // The side chat shares the main composer's chat-input-* classes by design
     // (one shell/textarea/toolbar styling); what it must NOT own is the main
     // composer machinery: no drag-resize handle, no highlight layer, and
@@ -113,6 +126,34 @@ describe("SideChatPanel", () => {
     expect(document.querySelector(".chat-input-highlight")).toBeNull();
     expect(document.querySelectorAll(".chat-input-textarea")).toHaveLength(1);
     expect(document.querySelector(".chat-input-textarea")?.getAttribute("aria-label")).toBe("Side chat message");
+  });
+
+  it("renders the live turn through the shared streaming tail", () => {
+    const value = runtime(sideState({
+      status: "running",
+      runId: "run-1",
+      messages: [{ role: "user", content: "Question" }],
+      partialMessage: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Working" },
+          { type: "toolCall", toolCallId: "tc-live", toolName: "read", input: { path: "live.ts" } },
+          { type: "text", text: "Streaming reply" },
+        ],
+        model: "claude-sonnet",
+        provider: "anthropic",
+      },
+    }));
+    mount(value);
+
+    const scroll = screen.getByTestId("side-chat-scroll");
+    expect(scroll.textContent).toContain("Streaming reply");
+    // The streaming partial feeds the SAME process-group/message pipeline the
+    // main transcript uses for its live tail — tool rows render with their
+    // arguments while the group auto-follows the stream.
+    expect(scroll.querySelector(".process-group-shell")).toBeTruthy();
+    expect(scroll.textContent).toContain("Read");
+    expect(scroll.textContent).toContain("live.ts");
     expect(screen.getByRole("button", { name: "Stop side chat" })).toBeTruthy();
   });
 

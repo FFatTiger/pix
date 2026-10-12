@@ -4475,11 +4475,15 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
             model: { provider: "anthropic", id: "claude-sonnet" },
             thinkingLevel: "medium",
             status: "running",
-            messages: [],
+            messages: [{ role: "user", content: "Side question" }],
             messagesTruncated: false,
             totalCharsTruncated: false,
-            stream: { text: "Side response", thinking: "", textTruncated: false, thinkingTruncated: false },
-            tools: [],
+            partialMessage: {
+              role: "assistant",
+              content: [{ type: "text", text: "Side response" }],
+              model: "claude-sonnet",
+              provider: "anthropic",
+            },
           },
         },
       });
@@ -4496,7 +4500,18 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
           sessionId: "parent",
           epoch: "e1",
           eventId: 2,
-          delta: { conversationId: "side-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: " continued" },
+          delta: {
+            conversationId: "side-1",
+            runId: "run-1",
+            previousRevision: 1,
+            revision: 2,
+            partial: {
+              role: "assistant",
+              content: [{ type: "text", text: "Side response continued" }],
+              model: "claude-sonnet",
+              provider: "anthropic",
+            },
+          },
         },
       });
       await flush();
