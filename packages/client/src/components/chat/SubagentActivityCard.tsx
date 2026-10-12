@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
 import { ArrowRightIcon } from "@phosphor-icons/react/ArrowRight";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CheckCircleIcon } from "@phosphor-icons/react/CheckCircle";
@@ -129,7 +130,10 @@ export function SubagentActivityCard({
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   const capsuleRef = useRef<HTMLButtonElement>(null);
+  const headerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  // The card morphs out of the tab, so it needs the tab's resting width.
+  const [tabWidth, setTabWidth] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [allTodosOpen, setAllTodosOpen] = useState(false);
   const running = useMemo(() => activities.filter((activity) => activity.status === "running"), [activities]);
@@ -147,6 +151,18 @@ export function SubagentActivityCard({
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [running.length]);
+
+  useLayoutEffect(() => {
+    if (open) return;
+    const width = capsuleRef.current?.offsetWidth ?? 0;
+    setTabWidth((previous) => (previous === width ? previous : width));
+  });
+
+  const toggle = (next: boolean): void => {
+    setOpen(next);
+    // Move focus with the visible control: tab <-> card header.
+    window.requestAnimationFrame(() => (next ? headerRef.current : capsuleRef.current)?.focus());
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -170,6 +186,25 @@ export function SubagentActivityCard({
 
   if (todos.length === 0 && activities.length === 0) return null;
 
+  const capsuleContent = summary ? (
+    <>
+      {summary.icon}
+      <span className="status-capsule-label">{summary.label}</span>
+      {todos.length > 0 ? (
+        <span className="status-capsule-count">{completedTodoCount}/{todos.length}</span>
+      ) : null}
+      {hasRunning ? (
+        <span
+          className="status-capsule-agents"
+          title={t("desktop.runningAgentsCount", { count: running.length })}
+        >
+          <CircleNotchIcon className="subagent-running-icon" size={12} aria-hidden="true" />
+          {running.length}
+        </span>
+      ) : null}
+    </>
+  ) : null;
+
   const endedRow = endedCount > 0 ? (
     <button type="button" className="subagent-ended-row" onClick={onOpenDirectory}>
       <span>{t("desktop.endedAgents")}</span>
@@ -184,6 +219,7 @@ export function SubagentActivityCard({
       className="subagent-activity-card"
       data-testid="subagent-activity-card"
       data-open={open || undefined}
+      style={{ "--status-tab-width": `${tabWidth}px` } as CSSProperties}
     >
       <aside
         className="status-card-shell"
@@ -195,25 +231,13 @@ export function SubagentActivityCard({
             ref={capsuleRef}
             type="button"
             className="subagent-activity-capsule"
-            onClick={() => setOpen((value) => !value)}
+            onClick={() => toggle(true)}
             title={summary.label}
             aria-label={t("desktop.expandStatus")}
             aria-expanded={open}
+            tabIndex={open ? -1 : 0}
           >
-            {summary.icon}
-            <span className="status-capsule-label">{summary.label}</span>
-            {todos.length > 0 ? (
-              <span className="status-capsule-count">{completedTodoCount}/{todos.length}</span>
-            ) : null}
-            {hasRunning ? (
-              <span
-                className="status-capsule-agents"
-                title={t("desktop.runningAgentsCount", { count: running.length })}
-              >
-                <CircleNotchIcon className="subagent-running-icon" size={12} aria-hidden="true" />
-                {running.length}
-              </span>
-            ) : null}
+            {capsuleContent}
           </button>
         ) : null}
         <div className="status-card-panel" inert={!open}>
@@ -306,6 +330,19 @@ export function SubagentActivityCard({
               </section>
             ) : endedRow}
           </div>
+          {summary ? (
+            <button
+              ref={headerRef}
+              type="button"
+              className="status-card-header"
+              onClick={() => toggle(false)}
+              aria-label={t("desktop.showLess")}
+              aria-expanded={open}
+            >
+              {capsuleContent}
+              <CaretDownIcon className="status-card-header-caret" size={12} aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
       </aside>
     </div>

@@ -140,8 +140,14 @@ describe("SubagentActivityCard", () => {
     expect(screen.getByTestId("status-card-shell").querySelector(".status-card-panel")?.hasAttribute("inert")).toBe(false);
     expect(screen.getByTestId("status-progress-section")).toBeTruthy();
 
-    fireEvent.click(capsule);
+    // Tab and card never coexist: the tab leaves the tab order and the card's
+    // own header (same summary + caret) collapses it back.
+    expect(capsule.getAttribute("tabindex")).toBe("-1");
+    const header = screen.getByRole("button", { name: "Show less" });
+    expect(header.textContent).toContain(capsule.textContent ?? "");
+    fireEvent.click(header);
     expect(capsule.getAttribute("aria-expanded")).toBe("false");
+    expect(capsule.getAttribute("tabindex")).toBe("0");
     expect(screen.getByTestId("status-card-shell").querySelector(".status-card-panel")?.hasAttribute("inert")).toBe(true);
   });
 

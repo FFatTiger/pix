@@ -51,15 +51,18 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, ".subagent-activity-card")).toContain("max-width: 852px");
     expect(rule(css, ".subagent-activity-card")).toContain("margin: 0 auto -1px");
     expect(rule(css, ".subagent-activity-card")).toContain("padding: 0 16px;");
-    // Card floats just above the tab in the composer material (surface,
-    // border, radius), aligned to the tab, never downward over the composer.
-    expect(rule(css, ".status-card-panel")).toContain("bottom: calc(100% + 6px)");
+    // The tab grows into the card: same spot and material, open bottom; the
+    // closed clip is the tab footprint (measured width), the open clip is full.
+    expect(rule(css, ".status-card-panel")).toContain("bottom: 0");
     expect(rule(css, ".status-card-panel")).toContain("left: 12px");
-    expect(rule(css, ".status-card-panel")).toContain("border: 1px solid var(--border)");
-    expect(rule(css, ".status-card-panel")).toContain("border-radius: 10px;");
+    expect(rule(css, ".status-card-panel")).toContain("border-bottom: 0");
+    expect(rule(css, ".status-card-panel")).toContain("border-radius: 10px 10px 0 0");
     expect(rule(css, ".status-card-panel")).toContain("background: var(--bg-secondary)");
-    expect(css).not.toContain("status-capsule-joint");
-    expect(rule(css, ".status-card-panel")).toContain("transform-origin: bottom left");
+    expect(rule(css, ".status-card-panel")).toContain("clip-path: inset(calc(100% - 28px) calc(100% - var(--status-tab-width, 120px)) 0 0");
+    expect(rule(css, '.subagent-activity-card[data-open="true"] .status-card-panel')).toContain("clip-path: inset(0 0 0 0");
+    expect(rule(css, '.subagent-activity-card[data-open="true"] .subagent-activity-capsule')).toContain("opacity: 0");
+    expect(card).toContain("--status-tab-width");
+    expect(card).toContain("status-card-header");
     expect(rule(css, ".status-card-panel")).toContain("max-height: min(64dvh, 32rem)");
     expect(rule(css, '.subagent-activity-card[data-open="true"] .status-card-panel')).toContain("opacity: 1");
     expect(css).not.toContain('data-display-mode="panel"');
