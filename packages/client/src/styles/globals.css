@@ -2327,8 +2327,9 @@ span.linenumber {
 
 .status-card-panel {
   position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
+  /* Grows up out of the tab: same surface/border, joined along the tab top. */
+  bottom: calc(100% - 1px);
+  left: 12px;
   z-index: 40;
   display: flex;
   width: 340px;
@@ -2336,10 +2337,10 @@ span.linenumber {
   max-height: min(64dvh, 32rem);
   overflow: hidden;
   flex-direction: column;
-  border: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
-  border-radius: 12px;
-  background: var(--bg-panel);
-  box-shadow: 0 12px 32px color-mix(in srgb, #000 24%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px 10px 10px 0;
+  background: var(--bg-secondary);
+  box-shadow: 0 -6px 18px -10px color-mix(in srgb, #000 22%, transparent);
   opacity: 0;
   pointer-events: none;
   transform: translateY(4px) scale(0.98);
@@ -3021,8 +3022,9 @@ span.linenumber {
 
 @media (max-width: 640px) {
   .status-card-panel {
-    width: min(340px, calc(100vw - 16px));
-    max-width: calc(100vw - 16px);
+    /* Row padding (2 x 16px) + tab inset (12px) keep the card on screen. */
+    width: min(340px, calc(100vw - 44px));
+    max-width: calc(100vw - 44px);
   }
 }
 
@@ -3317,3 +3319,25 @@ html.pi-booted body::before {
 
 /* Hover must not break the seam with the composer surface. */
 .subagent-activity-capsule:hover { background: var(--bg-secondary); }
+
+/* Open: the tab and the card read as one shape — the tab sits over the card's
+   bottom edge, so its own top edge and shadow disappear. */
+.subagent-activity-card[data-open="true"] .subagent-activity-capsule {
+  z-index: 41;
+  border-top-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Concave joint where the open card's bottom edge meets the tab's right side. */
+.status-capsule-joint { display: none; }
+.subagent-activity-card[data-open="true"] .status-capsule-joint {
+  position: absolute;
+  top: -1px;
+  right: -9px;
+  display: block;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+  background: radial-gradient(circle at 100% 100%, transparent 8.5px, var(--border) 8.5px, var(--border) 9.5px, var(--bg-secondary) 10px);
+}

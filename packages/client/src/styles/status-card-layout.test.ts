@@ -51,9 +51,15 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, ".subagent-activity-card")).toContain("max-width: 852px");
     expect(rule(css, ".subagent-activity-card")).toContain("margin: 0 auto -1px");
     expect(rule(css, ".subagent-activity-card")).toContain("padding: 0 16px;");
-    // Card expands upward from the strip, never downward over the composer.
-    expect(rule(css, ".status-card-panel")).toContain("bottom: calc(100% + 6px)");
-    expect(rule(css, ".status-card-panel")).toContain("left: 0");
+    // Card grows up out of the tab (joined along the tab top, same surface),
+    // never downward over the composer.
+    expect(rule(css, ".status-card-panel")).toContain("bottom: calc(100% - 1px)");
+    expect(rule(css, ".status-card-panel")).toContain("left: 12px");
+    expect(rule(css, ".status-card-panel")).toContain("border-radius: 10px 10px 10px 0");
+    expect(rule(css, ".status-card-panel")).toContain("background: var(--bg-secondary)");
+    expect(rule(css, '.subagent-activity-card[data-open="true"] .subagent-activity-capsule')).toContain("border-top-color: transparent");
+    expect(rule(css, '.subagent-activity-card[data-open="true"] .status-capsule-joint')).toContain("radial-gradient");
+    expect(card).toContain("status-capsule-joint");
     expect(rule(css, ".status-card-panel")).toContain("transform-origin: bottom left");
     expect(rule(css, ".status-card-panel")).toContain("max-height: min(64dvh, 32rem)");
     expect(rule(css, '.subagent-activity-card[data-open="true"] .status-card-panel')).toContain("opacity: 1");
@@ -102,14 +108,14 @@ describe("status card composer-strip layout", () => {
     expect(rule(css, ".subagent-activity-capsule")).toContain("max-width: 100%");
   });
 
-  it("caps the mobile card at min(340px, viewport - 16px)", () => {
+  it("caps the mobile card at min(340px, viewport - 44px)", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const css = readFileSync(join(root, "styles/globals.css"), "utf8");
     const mobileStart = css.indexOf("@media (max-width: 640px)", css.indexOf(".subagent-transcript"));
     expect(mobileStart).toBeGreaterThanOrEqual(0);
     const mobile = css.slice(mobileStart, css.indexOf("}", css.indexOf(".status-card-panel", mobileStart)) + 1);
-    expect(rule(mobile, ".status-card-panel")).toContain("width: min(340px, calc(100vw - 16px))");
-    expect(rule(mobile, ".status-card-panel")).toContain("max-width: calc(100vw - 16px)");
+    expect(rule(mobile, ".status-card-panel")).toContain("width: min(340px, calc(100vw - 44px))");
+    expect(rule(mobile, ".status-card-panel")).toContain("max-width: calc(100vw - 44px)");
   });
 
   it("replaces the desktop pane tabs with the icon rail (mobile keeps tabs)", () => {
