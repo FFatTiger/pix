@@ -72,6 +72,10 @@ interface Props {
   isStreaming: boolean;
   /** Compaction is running outside a prompt — the send slot becomes a Stop button */
   isCompacting?: boolean;
+  /** Context window usage (0-100) shown as the ring around Send; null when unknown. */
+  contextPercent?: number | null;
+  /** Tooltip for the context ring (usage breakdown). */
+  contextTitle?: string;
   /** Abort an in-progress compaction (used by the Stop button while compacting) */
   onAbortCompaction?: () => void;
   model?: { provider: string; modelId: string } | null;
@@ -378,7 +382,7 @@ function QueuedMessageRow({ kind, text, label }: { kind: "steer" | "follow-up"; 
 
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange,
+  onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, onAbortCompaction, contextPercent = null, contextTitle, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange,
   compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
@@ -2208,7 +2212,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {...inputHeightResizer.separatorProps}
             className={`chat-input-resize-handle${inputHeightResizer.isResizing ? " is-resizing" : ""}`}
           />
-          {isStreaming && <div className="chat-input-streaming-overlay hatch-45" aria-hidden="true" />}
+          {isStreaming && <div className="chat-input-streaming-overlay" aria-hidden="true" />}
           {/* Transient composer notices live inside the input box too. */}
           {(retryInfo || compactResultText || imageAttachmentError || fileAttachmentError) && (
             <div className="chat-input-notices">
@@ -2546,15 +2550,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </div>
               );
             })()}
-            {onThinkingLevelChange && (
-              <ThinkingLevelSelector
-                thinkingLevel={thinkingLevel}
-                onThinkingLevelChange={onThinkingLevelChange}
-                {...(availableThinkingLevels === undefined ? {} : { availableThinkingLevels })}
-                {...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap })}
-                {...(isStreaming ? { title: t("desktop.changeReasoningLevelWhileRunning", { level: thinkingTitleLabel }) } : {})}
-              />
-            )}
             {onProjectChange && projectRoots && (
               <div ref={projectDropdownRef} className="chat-input-toolbar-project" style={{ position: "relative" }}>
                 <button
@@ -2759,28 +2754,29 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 {manualHeight !== null ? <ArrowsInIcon size={14} /> : <ArrowsOutIcon size={14} />}
               </button>
             )}
-            {/* Model selector — always interactive; changes apply from the next turn while streaming */}
-            {onModelChange && (
-              <ModelSelector
-                {...(model === undefined ? { model: null } : { model })}
-                modelList={selectorModelList}
-                onModelChange={onModelChange}
-                allowReselect={isAutoModelSelection === true}
-                {...(isStreaming ? { title: t("desktop.changeModelWhileRunning") } : {})}
-              />
-            )}
-
-            {!isStreaming && !isCompacting && (
-              <button
-                type="button"
-                onClick={handleSend}
-                disabled={sendDisabled || (!value.trim() && !hasAttachments)}
-                className="chat-input-send"
-                title={t("desktop.sendMessage")}
-                aria-label={t("desktop.sendMessage")}
-              >
-                <PaperPlaneRightIcon size={14} />
-              </button>
+            {/* Run config: thinking level + model read as one segmented chip. */}
+            {(onThinkingLevelChange || onModelChange) && (
+              <div className="chat-input-run-config">
+                {onThinkingLevelChange && (
+                  <ThinkingLevelSelector
+                    thinkingLevel={thinkingLevel}
+                    onThinkingLevelChange={onThinkingLevelChange}
+                    {...(availableThinkingLevels === undefined ? {} : { availableThinkingLevels })}
+                    {...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap })}
+                    {...(isStreaming ? { title: t("desktop.changeReasoningLevelWhileRunning", { level: thinkingTitleLabel }) } : {})}
+                  />
+                )}
+                {/* Model selector — always interactive; changes apply from the next turn while streaming */}
+                {onModelChange && (
+                  <ModelSelector
+                    {...(model === undefined ? { model: null } : { model })}
+                    modelList={selectorModelList}
+                    onModelChange={onModelChange}
+                    allowReselect={isAutoModelSelection === true}
+                    {...(isStreaming ? { title: t("desktop.changeModelWhileRunning") } : {})}
+                  />
+                )}
+              </div>
             )}
 
             {/* While the agent runs, typed text can steer the current turn or
@@ -2815,18 +2811,39 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 )}
               </div>
             )}
+            {/* Send doubles as the context gauge: the ring is window usage, and it
+                becomes a running sweep while the agent works. */}
+            <span
+              className={`chat-input-send-ring${isStreaming || isCompacting ? " is-running" : ""}`}
+              data-level={contextPercent === null ? undefined : contextPercent >= 85 ? "high" : contextPercent >= 65 ? "mid" : "low"}
+              style={{ "--ctx": contextPercent === null ? 0 : Math.max(0, Math.min(100, contextPercent)) } as React.CSSProperties}
+              title={contextTitle}
+            >
+              {!isStreaming && !isCompacting && (
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  disabled={sendDisabled || (!value.trim() && !hasAttachments)}
+                  className="chat-input-send"
+                  title={t("desktop.sendMessage")}
+                  aria-label={t("desktop.sendMessage")}
+                >
+                  <PaperPlaneRightIcon size={14} />
+                </button>
+              )}
 
-            {(isStreaming || isCompacting) && (
-              <button
-                type="button"
-                onClick={isCompacting ? onAbortCompaction : onAbort}
-                className={`chat-input-send is-stop${isCompacting ? " is-compacting" : ""}`}
-                title={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
-                aria-label={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
-              >
-                <SquareIcon size={12} weight="fill" />
-              </button>
-            )}
+              {(isStreaming || isCompacting) && (
+                <button
+                  type="button"
+                  onClick={isCompacting ? onAbortCompaction : onAbort}
+                  className={`chat-input-send is-stop${isCompacting ? " is-compacting" : ""}`}
+                  title={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
+                  aria-label={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
+                >
+                  <SquareIcon size={12} weight="fill" />
+                </button>
+              )}
+            </span>
             </div>
           </div>
         </div>

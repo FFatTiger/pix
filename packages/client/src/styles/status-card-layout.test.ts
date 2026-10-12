@@ -107,6 +107,11 @@ describe("status card composer-strip layout", () => {
     expect(chatInput.indexOf('className="chat-input-notices"')).toBeGreaterThan(shellAt);
     expect(chatInput.indexOf('className="chat-input-queue-group"')).toBeGreaterThan(chatInput.indexOf('className="chat-input-toolbar"'));
     expect(rule(css, ".subagent-activity-capsule")).toContain("max-width: 100%");
+    // Send doubles as the context gauge and thinking+model read as one chip.
+    expect(chatInput).toContain("chat-input-send-ring");
+    expect(rule(css, ".chat-input-send-ring")).toContain("conic-gradient(var(--ring) calc(var(--ctx) * 1%)");
+    expect(chatInput.indexOf("<ThinkingLevelSelector")).toBeGreaterThan(chatInput.indexOf('className="chat-input-run-config"'));
+    expect(chatInput.indexOf("<ModelSelector")).toBeGreaterThan(chatInput.indexOf('className="chat-input-run-config"'));
   });
 
   it("caps the mobile card at min(340px, viewport - 44px)", () => {
