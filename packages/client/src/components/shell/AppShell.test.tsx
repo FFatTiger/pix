@@ -1886,7 +1886,7 @@ async function pickModel(name: string): Promise<void> {
 
 /** Open the reasoning dropdown and click the exact level option. */
 async function pickThinking(level: string): Promise<void> {
-  await act(async () => { fireEvent.click(screen.getByLabelText("Change reasoning level")); await flush(); });
+  await act(async () => { fireEvent.click(screen.getByLabelText("Thinking effort")); await flush(); });
   const panel = [...document.querySelectorAll<HTMLDivElement>(".chat-input-menu-panel")]
     .find((el) => el.textContent?.includes(level));
   const btn = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
@@ -2052,12 +2052,12 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     await mountLiveA(ws);
     // LIVE A: model + reasoning selectors present, showing A's runtime model.
     expect(screen.getByLabelText("Change model").textContent).toContain("GPT-5");
-    expect(screen.getByLabelText("Change reasoning level")).toBeTruthy();
+    expect(screen.getByLabelText("Thinking effort")).toBeTruthy();
 
     // Select B → DETACHED: toolbar structure stays stable (both selectors remain).
     await selectDetachedB(ws, rerender);
     const modelBtnB = screen.getByLabelText("Change model");
-    const thinkingBtnB = screen.getByLabelText("Change reasoning level");
+    const thinkingBtnB = screen.getByLabelText("Thinking effort");
     expect(modelBtnB).toBeTruthy();
     expect(thinkingBtnB).toBeTruthy();
 
@@ -2077,7 +2077,7 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     // The staged values now display on B (still never A's).
     expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
     expect(screen.getByLabelText("Change model").textContent).not.toContain("GPT-5");
-    expect(screen.getByLabelText("Change reasoning level").textContent).toContain("high");
+    expect(screen.getByLabelText("Thinking effort").textContent).toContain("high");
   });
 
   it("missing additive v2 settings stays unknown instead of falling back to catalog model/auto", async () => {
@@ -2092,7 +2092,7 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
 
     expect(screen.getByLabelText("Change model").textContent).toContain("Select a provider or model");
     expect(screen.getByLabelText("Change model").textContent).not.toContain("Claude Opus 4");
-    expect(screen.queryByLabelText("Change reasoning level")).toBeNull();
+    expect(screen.queryByLabelText("Thinking effort")).toBeNull();
     expect(countType(ws, "attach")).toBe(0);
     expect(countType(ws, "command")).toBe(0);
   });
@@ -2404,7 +2404,7 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
       await flush();
     });
     expect(screen.getByLabelText("Change model").textContent).toContain("Claude Sonnet 4");
-    expect(screen.getByLabelText("Change reasoning level").textContent).toContain("high");
+    expect(screen.getByLabelText("Thinking effort").textContent).toContain("high");
     expect(textarea.value).toBe("will fail");
   });
 
@@ -2477,7 +2477,7 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
       ws.serverSend({ type: "response", id: thinkingSnapshot.id, payload: { ok: true, result: snapshotPayload({ sessionId: "A", model: { provider: "anthropic", id: "claude-sonnet-4" }, thinkingLevel: "high", capabilities: LIVE_CAPS }).snapshot } });
       await flush();
     });
-    expect(screen.getByLabelText("Change reasoning level").textContent).toContain("high");
+    expect(screen.getByLabelText("Thinking effort").textContent).toContain("high");
     // No prompt was sent by the control interactions alone.
     expect(ws.sent.some((f) => (f as { payload?: { command?: { type?: string } } }).payload?.command?.type === "prompt")).toBe(false);
   });

@@ -279,7 +279,7 @@ describe("SideChatPanel", () => {
     // Both selectors render beside the send button with the effective values.
     const modelButton = await screen.findByRole("button", { name: "Change model" });
     expect(modelButton.textContent).toContain("Claude Sonnet");
-    const thinkingButton = screen.getByRole("button", { name: "Change reasoning level" });
+    const thinkingButton = screen.getByRole("button", { name: "Thinking effort" });
     expect(thinkingButton.textContent).toContain("medium");
 
     // Model change carries the CURRENT thinking level; no "auto" level exists.
@@ -302,7 +302,7 @@ describe("SideChatPanel", () => {
     const modelButton = await screen.findByRole("button", { name: "Change model" });
     expect((modelButton as HTMLButtonElement).disabled).toBe(true);
     expect(modelButton.getAttribute("title")).toBe("The model is locked while the side chat is running.");
-    const thinkingButton = screen.getByRole("button", { name: "Change reasoning level" });
+    const thinkingButton = screen.getByRole("button", { name: "Thinking effort" });
     expect((thinkingButton as HTMLButtonElement).disabled).toBe(true);
     expect(setModel).not.toHaveBeenCalled();
   });
