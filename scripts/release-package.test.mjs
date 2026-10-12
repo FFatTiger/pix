@@ -22,7 +22,7 @@ function fixture(t) {
   put("node_modules/@fffattiger/pix-host/package.json", { name: "@fffattiger/pix-host", version: "0.2.0", dependencies: { "@fffattiger/pix-pi-sdk-adapter": "0.2.0", hono: "^4.9.0" } });
   put("node_modules/@fffattiger/pix-pi-sdk-adapter/package.json", { name: "@fffattiger/pix-pi-sdk-adapter", version: "0.2.0", dependencies: { "pi-claude-subagents": "file:../../vendor/pinned.tgz", "@earendil-works/pi-tui": "1.0.0" } });
   put("node_modules/@fffattiger/pix-pi-sdk-adapter/dist/index.js", "// runtime\n");
-  put("node_modules/pi-claude-subagents/package.json", { name: "pi-claude-subagents", version: "0.3.8", peerDependencies: { "@earendil-works/pi-tui": ">=1.0.0 <2", typebox: "*" }, devDependencies: { typescript: "5.9.3" } });
+  put("node_modules/pi-claude-subagents/package.json", { name: "pi-claude-subagents", version: "0.3.9", peerDependencies: { "@earendil-works/pi-tui": ">=1.0.0 <2", typebox: "*" }, devDependencies: { typescript: "5.9.3" } });
   put("node_modules/typebox/package.json", { name: "typebox", version: "1.1.38" });
   put("node_modules/@earendil-works/pi-coding-agent/package.json", { name: "@earendil-works/pi-coding-agent", version: "1.0.0", dependencies: { "@earendil-works/pi-tui": "^1.0.0", chalk: "6.0.0", typebox: "1.1.38" } });
   put("node_modules/@earendil-works/pi-coding-agent/dist/index.js", "// SDK runtime\n");
@@ -38,7 +38,7 @@ test("registry package bundles Pix and patched plugin while declaring external d
   const manifest = createRegistryPackage(source, destination, { "@earendil-works/pi-tui": "1.0.0" });
   assert.equal(manifest.private, undefined);
   assert.equal(manifest.dependencies.hono, "^4.9.0");
-  assert.equal(manifest.dependencies["pi-claude-subagents"], "0.3.8");
+  assert.equal(manifest.dependencies["pi-claude-subagents"], "0.3.9");
   assert.deepEqual(manifest.bundledDependencies, ["@fffattiger/pix-host", "@fffattiger/pix-pi-sdk-adapter", "@earendil-works/pi-coding-agent", "pi-claude-subagents"]);
   assert.equal(existsSync(join(destination, "node_modules/@earendil-works/pi-coding-agent/npm-shrinkwrap.json")), false);
   assert.equal(existsSync(join(destination, "node_modules/@earendil-works/pi-coding-agent/node_modules")), false);
@@ -49,7 +49,7 @@ test("registry package bundles Pix and patched plugin while declaring external d
   assert.equal(readFileSync(join(destination, "node_modules/pi-claude-subagents/src/runtime.ts"), "utf8"), "// patched plugin\n");
   assert.equal(readFileSync(join(destination, "client/index.html"), "utf8"), "<html>client</html>\n");
   const adapter = JSON.parse(readFileSync(join(destination, "node_modules/@fffattiger/pix-pi-sdk-adapter/package.json"), "utf8"));
-  assert.equal(adapter.dependencies["pi-claude-subagents"], "0.3.8");
+  assert.equal(adapter.dependencies["pi-claude-subagents"], "0.3.9");
   assert.equal(adapter.dependencies["@earendil-works/pi-tui"], undefined);
   const plugin = JSON.parse(readFileSync(join(destination, "node_modules/pi-claude-subagents/package.json"), "utf8"));
   assert.equal(plugin.peerDependencies, undefined);

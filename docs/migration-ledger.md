@@ -4267,7 +4267,7 @@ Adapter contract 2 / schema 5 不能与旧进程混用同一持久索引；后�
 
 同一 shim 还在 launch/resume 两条 `childSession.subscribe` 路径上把 `message_update`（以及 assistant `message_end` 终态）经 `globalThis.__pixSubagentStream?.(childSessionId, event)` 转发给父 Worker 的 in-process Adapter。`childSessionId` 在 launch 路径取 `childSession.sessionId`，在 resume 路径取显式打开的 `sessionManager.getSessionId()`。桥接调用是可选链、无 try/catch、桥缺席为零行为，且不改既有 `message_end` 落盘/preview/usage 逻辑；delta 不写父/子 JSONL。哈希门控仍是 pristine/patched 双 SHA-256 失败即关。
 
-**版本桥接（Pi 1.0 适配）**：依赖现为本地 immutable `vendor/pi-claude-subagents-0.3.8-pi1-aaa56e9.tgz`（上游基线 737e775，通知合并、已读去重、本次结果定位及准备阶段竞态修复后的源码 commit aaa56e9；`runtime.ts` 新增 durable resume preparation 和本轮 preview 更新，patch 与测试的 pristine/patched 双 SHA-256 随精确源码一起更新；stale-index 修复由包内 `index.ts` 直接提供，本 shim 不重复补）。有限移除条件：上游 `0.3.9+` 原生发布“先持久化 running record 再返回”的运行记录写入与子会话事件流接口后，删除本 patch 与 postinstall/prebuild 两个 hook；届时必须先确认上述两项已测行为已由原生接口覆盖。
+**版本桥接（Pi 1.0 适配）**：依赖现为本地 immutable `vendor/pi-claude-subagents-0.3.9-pi1-eccf9bc.tgz`（上游 v0.3.9 合并 commit `eccf9bc`；包内新增 parent-shutdown 中断任务恢复、notify/auto/off 模式和结构化 auto 失败报告，141 个测试通过；`runtime.ts` 与上一版精确字节一致，因此现有 pristine/patched 双 SHA-256 和五处 runtime bridge 保持不变；stale-index 修复由包内 `index.ts` 直接提供，本 shim 不重复补）。有限移除条件：上游后续版本原生提供“先持久化 running record 再返回”的运行记录写入与子会话事件流接口后，删除本 patch 与 postinstall/prebuild 两个 hook；届时必须先确认上述两项已测行为已由原生接口覆盖。
 
 ## 111. Side chat 后端与规范 wire 集成（Backend DONE）
 

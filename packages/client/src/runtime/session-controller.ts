@@ -749,6 +749,8 @@ export class SessionController implements RuntimeControllerPort {
     epoch: string;
     terminalWithoutFinalLeaf: boolean;
   } | null = null;
+  /** Latest authoritative head for an attached submit fence; independent of the replay cursor. */
+  private attachedFenceRevision: number | null = null;
   /** History-layer state (Protocol v2): generation + anchor + committed live entries. */
   private historyGeneration = 0;
   private historyAnchorLeafId: string | null = null;
@@ -1800,7 +1802,7 @@ export class SessionController implements RuntimeControllerPort {
       return { epoch: explicitEpoch, revision: explicitRevision, source: "explicit", error: null };
     }
     if (this.attached && this.sessionId === sessionId && this.epoch !== null) {
-      return { epoch: this.epoch, revision: this.lastEventId, source: "attached", error: null };
+      return { epoch: this.epoch, revision: this.attachedFenceRevision ?? this.lastEventId, source: "attached", error: null };
     }
     if (this.createdFenceAvailable && this.createdFenceRevision !== null && this.epoch !== null) {
       return { epoch: this.epoch, revision: this.createdFenceRevision, source: "created", error: null };
@@ -2850,6 +2852,7 @@ export class SessionController implements RuntimeControllerPort {
     if (this.observationId !== observationId) return;
     this.releasedObservationId = observationId;
     this.admittedSnapshot = null;
+    this.attachedFenceRevision = null;
     this.attached = false;
     this.awaitingSnapshot = false;
     this.intendedSession = null;
@@ -2924,6 +2927,7 @@ export class SessionController implements RuntimeControllerPort {
       try {
         this.snapshot = reduceRuntimeEventData(this.snapshot, event as RuntimeEventData);
         this.lastEventId = event.eventId;
+        this.attachedFenceRevision = Math.max(this.attachedFenceRevision ?? event.eventId, event.eventId);
         if (event.type === "running_sessions_changed") this.binding.acceptLegacyRunningEvent(event);
         if (this.optimisticPromptRunning
           && this.optimisticPromptSessionId === event.sessionId
@@ -3083,7 +3087,7 @@ export class SessionController implements RuntimeControllerPort {
     // roll authority back. A later same-epoch snapshot may advance normally.
     if (!staleSameEpoch) {
       if (attemptIntent === "existing") this.admittedSnapshot = null;
-      this.applySnapshot(message.payload, applyMode, applyMode === "same-epoch");
+      this.applySnapshot(message.payload, applyMode, applyMode === "same-epoch" && attemptMode === "resume");
     }
     this.attachGen = generation;
     this.awaitingSnapshot = false;
@@ -3557,6 +3561,7 @@ export class SessionController implements RuntimeControllerPort {
       this.settlePendingExtensionUiInputs({ code: "interrupted", message: "session switched", retryable: false });
     }
     this.attached = false;
+    this.attachedFenceRevision = null;
     this.awaitingSnapshot = true;
     if (this.attach && this.attach.sessionId === sessionId) {
       // Reuse the in-flight deferred (reconnect handoff) and send a new attempt.
@@ -3624,6 +3629,7 @@ export class SessionController implements RuntimeControllerPort {
   private reattach(): void {
     if (!this.sessionId) return;
     this.attached = false;
+    this.attachedFenceRevision = null;
     this.awaitingSnapshot = true;
     void this.startAttach(this.sessionId, "resume", this.intendedSession?.intent ?? "legacy").catch(() => undefined);
   }
@@ -3826,6 +3832,11 @@ export class SessionController implements RuntimeControllerPort {
     // including message_end, is not dropped. Fresh/rebase/epoch change still take payload.
     if (!(preserveResumeCursor && priorEpoch !== null && priorEpoch === payload.epoch)) {
       this.lastEventId = payload.lastEventId;
+    }
+    if (priorSessionId !== payload.sessionId || priorEpoch !== payload.epoch || this.attachedFenceRevision === null) {
+      this.attachedFenceRevision = payload.lastEventId;
+    } else {
+      this.attachedFenceRevision = Math.max(this.attachedFenceRevision, payload.lastEventId);
     }
     this.authorityCursorKnown = true;
     this.snapshot = structuredClone(payload.snapshot);

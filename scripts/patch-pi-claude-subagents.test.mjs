@@ -11,8 +11,8 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const installedRoot = join(repoRoot, "node_modules", "pi-claude-subagents");
 const pristineRuntimeHash = "176a4d6c678af81c95acdd8f2bf6fa2374ce33fb8f10ea493c6ea4cad83d4cd2";
 const patchedRuntimeHash = "bc9b3ef4e92263ba9aac1b184621f25e3afb05ee42684b7719bd36a4f23fc218";
-// Packaged source at aaa56e9; the Pix patch must never alter its notification owner.
-const pristineIndexHash = "bc68335a3c33ece4ce8751558e48c22cf9f3f762bf4182f108bf209638a6d0e4";
+// Packaged source at eccf9bc; the Pix patch must never alter its notification owner.
+const pristineIndexHash = "f919977e3362f12a6647c12f631f92cb9dd825c42a18df25ae3eaf660c5acc7e";
 
 function hash(source) {
   return createHash("sha256").update(source).digest("hex");
@@ -100,7 +100,7 @@ async function copyInstalledPackage() {
 }
 
 describe("pi-claude-subagents downstream patch", () => {
-  it("patches the exact pristine 0.3.8 runtime, leaves index pristine, and is idempotent", async () => {
+  it("patches the exact pristine 0.3.9 runtime, leaves index pristine, and is idempotent", async () => {
     const installedRuntime = await readFile(join(installedRoot, "src", "runtime.ts"), "utf8");
     const installedIndex = await readFile(join(installedRoot, "src", "index.ts"), "utf8");
     assert.equal(hash(installedRuntime), patchedRuntimeHash);
@@ -140,7 +140,7 @@ describe("pi-claude-subagents downstream patch", () => {
 
       const packagePath = join(root, "package.json");
       const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
-      await writeFile(packagePath, JSON.stringify({ ...packageJson, version: "0.3.9" }));
+      await writeFile(packagePath, JSON.stringify({ ...packageJson, version: "0.3.10" }));
       assert.throws(() => patchPiClaudeSubagents(root), /unsupported pi-claude-subagents version/);
       assert.equal(await readFile(runtimePath, "utf8"), ambiguous);
     } finally {

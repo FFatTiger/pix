@@ -3,13 +3,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PATCHED_PLUGIN_VERSION = "0.3.8";
-// Remove this patch and the postinstall/prebuild hooks once upstream 0.3.9+
-// publishes native run-record / child event interfaces, after preserving
-// (1) publish-before-return of the persisted running record and (2) in-process
-// child message_update forwarding. 0.3.8 already ships the stale-index fix
-// (737e775). The Pi 1.0 package also has durable resume preparation and fresh
-// progress previews; only the two Pix bridge behaviors above are patched here.
+const PATCHED_PLUGIN_VERSION = "0.3.9";
+// Keep this bridge for 0.3.9: the upstream plugin still lacks native
+// run-record persistence-before-return and child message_update interfaces.
+// Remove this patch and the postinstall/prebuild hooks in the first Pix
+// release that upgrades to a plugin providing both interfaces, after
+// preserving (1) publish-before-return of the persisted running record and
+// (2) in-process child message_update forwarding.
 const PRISTINE_RUNTIME_SHA256 = "176a4d6c678af81c95acdd8f2bf6fa2374ce33fb8f10ea493c6ea4cad83d4cd2";
 const PATCHED_RUNTIME_SHA256 = "bc9b3ef4e92263ba9aac1b184621f25e3afb05ee42684b7719bd36a4f23fc218";
 const RUNTIME_PATH = ["src", "runtime.ts"];

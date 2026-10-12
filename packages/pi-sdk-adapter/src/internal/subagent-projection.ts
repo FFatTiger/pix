@@ -76,7 +76,7 @@ export interface SubagentObservation {
 }
 
 export const SUBAGENT_REFRESH_TOOLS = new Set(["Agent", "TaskOutput", "SendMessage", "TaskStop"]);
-export const SUBAGENT_REFRESH_CUSTOM_TYPES = new Set(["pi-subagent-notification", "pi-subagent-progress-warning", "pi-subagent-notification-batch"]);
+export const SUBAGENT_REFRESH_CUSTOM_TYPES = new Set(["pi-subagent-notification", "pi-subagent-progress-warning", "pi-subagent-notification-batch", "pi-subagent-interrupted-tasks"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);

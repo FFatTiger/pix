@@ -324,6 +324,10 @@ describe("subagent projection seed and live refresh", () => {
     }), true);
     assert.equal(isSubagentRefreshEvent({
       type: "message_end",
+      message: { role: "custom", customType: "pi-subagent-interrupted-tasks" },
+    }), true);
+    assert.equal(isSubagentRefreshEvent({
+      type: "message_end",
       message: { role: "custom", customType: "pi-subagent-notification-batch-untrusted" },
     }), false);
     assert.equal(isSubagentRefreshEvent({
