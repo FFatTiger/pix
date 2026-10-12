@@ -1155,10 +1155,6 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
     <div ref={rootRef} className="chat-composer-region">
       <ChatInput
         ref={inputRef}
-        contextPercent={contextUsage?.percent ?? null}
-        {...(contextUsage?.contextWindow && contextUsage.percent !== null
-          ? { contextTitle: `${Math.round(contextUsage.percent)}% · ${(contextUsage.tokens ?? 0).toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()}` }
-          : {})}
         onSend={handleSend}
         sendDisabled={!liveWorkspaceEnabled && Boolean(selectedSessionId)}
         {...(hasBash && liveWorkspaceEnabled ? { onBash: handleBash } : {})}

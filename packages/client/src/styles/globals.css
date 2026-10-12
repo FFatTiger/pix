@@ -713,30 +713,13 @@ pre, code {
 .chat-input-shell.is-streaming:focus-within {
   border-color: var(--accent-blue);
 }
-/* Running pulse: a light sweeping along the composer's top edge. */
 .chat-input-streaming-overlay {
   position: absolute;
   inset: 0;
   z-index: 0;
-  overflow: hidden;
   border-radius: 7px;
+  opacity: 0.3;
   pointer-events: none;
-}
-.chat-input-streaming-overlay::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: -40%;
-  width: 40%;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent-blue), transparent);
-  animation: composer-run-sweep 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
-@keyframes composer-run-sweep {
-  to { left: 100%; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-input-streaming-overlay::before { animation: none; left: 0; width: 100%; opacity: 0.5; }
 }
 .chat-input-shell > :not(.chat-input-streaming-overlay) {
   /* Position the editor row and toolbar above the streaming overlay
@@ -3441,76 +3424,3 @@ html.pi-booted body::before {
   gap: 6px;
   padding: 10px 12px 0;
 }
-
-/* Run config chip: thinking level | model as one segmented control. */
-.chat-input-run-config {
-  display: inline-flex;
-  height: 28px;
-  align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-panel);
-  padding: 0 2px;
-}
-.chat-input-run-config > * + * {
-  border-left: 1px solid var(--border);
-}
-.chat-input-run-config button {
-  border-radius: 999px !important;
-}
-
-/* Send ring: conic gauge of context usage around the round send button. */
-.chat-input-send-ring {
-  --ring: var(--accent-green, #16a34a);
-  position: relative;
-  display: inline-flex;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: conic-gradient(var(--ring) calc(var(--ctx) * 1%), color-mix(in srgb, var(--text) 10%, transparent) 0);
-}
-.chat-input-send-ring[data-level="mid"] { --ring: var(--accent-orange); }
-.chat-input-send-ring[data-level="high"] { --ring: var(--accent-red); }
-.chat-input-send-ring::after {
-  content: "";
-  position: absolute;
-  inset: 2px;
-  border-radius: 50%;
-  background: var(--bg-secondary);
-}
-.chat-input-send-ring > .chat-input-send {
-  position: relative;
-  z-index: 1;
-  border-radius: 50% !important;
-}
-.chat-input-send-ring.is-running {
-  background: color-mix(in srgb, var(--accent-red) 14%, transparent);
-}
-.chat-input-send-ring.is-running::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: conic-gradient(from 0deg, transparent 0 55%, var(--accent-red) 100%);
-  animation: composer-ring-spin 1.1s linear infinite;
-}
-@keyframes composer-ring-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) {
-  .chat-input-send-ring.is-running::before { animation: none; }
-}
-
-/* The session strip under the composer recedes until you reach for it. */
-.chat-composer-region .session-info-bar {
-  opacity: 0.45;
-  transition: opacity 160ms ease;
-}
-.chat-composer-region:hover .session-info-bar,
-.chat-composer-region:focus-within .session-info-bar {
-  opacity: 1;
-}
-
-.chat-input-send-ring { margin-right: 2px; }
-.chat-input-queue-group { border-radius: 999px; }
