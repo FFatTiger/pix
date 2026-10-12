@@ -3083,7 +3083,7 @@ export class SessionController implements RuntimeControllerPort {
     // roll authority back. A later same-epoch snapshot may advance normally.
     if (!staleSameEpoch) {
       if (attemptIntent === "existing") this.admittedSnapshot = null;
-      this.applySnapshot(message.payload, applyMode);
+      this.applySnapshot(message.payload, applyMode, applyMode === "same-epoch");
     }
     this.attachGen = generation;
     this.awaitingSnapshot = false;
@@ -3812,6 +3812,7 @@ export class SessionController implements RuntimeControllerPort {
   private applySnapshot(
     payload: WsSnapshotMessage["payload"],
     mode: "fresh" | "same-epoch" | "rebase" = "same-epoch",
+    preserveResumeCursor = false,
   ): void {
     if (payload.sessionId !== this.sessionId || payload.snapshot.sessionId !== this.sessionId) return;
     const priorSessionId = this.sessionId;
@@ -3820,7 +3821,12 @@ export class SessionController implements RuntimeControllerPort {
       this.admittedSnapshot = null;
     }
     this.epoch = payload.epoch;
-    this.lastEventId = payload.lastEventId;
+    // Same-epoch resume snapshot is reconstructed at the prior client cursor;
+    // payload.lastEventId is the journal head. Keep the cursor so replay,
+    // including message_end, is not dropped. Fresh/rebase/epoch change still take payload.
+    if (!(preserveResumeCursor && priorEpoch !== null && priorEpoch === payload.epoch)) {
+      this.lastEventId = payload.lastEventId;
+    }
     this.authorityCursorKnown = true;
     this.snapshot = structuredClone(payload.snapshot);
     // Phase 2B: pending reads are bound to the PRIOR session/epoch. When either

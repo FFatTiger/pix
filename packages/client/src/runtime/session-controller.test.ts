@@ -368,3 +368,231 @@ describe("SessionController — streamingPartial follows the shared projection",
     h.dispose();
   });
 });
+
+describe("SessionController — same-epoch resume preserves cursor for replay", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("replays message_end after a journal-head resume snapshot instead of dropping at the prior cursor", async () => {
+    const h = createHarness();
+    const controller = new SessionController("A", h.connection);
+    h.connection.connect();
+    let ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await attachExact(controller, h, "A");
+
+    const firstGeneration = h.connection.currentGeneration;
+    controller.onEvent({
+      type: "event",
+      payload: {
+        type: "message_start",
+        sessionId: "A",
+        epoch: "e-A",
+        eventId: 1,
+        streamId: "stream-A-1",
+        messageId: "message-A-1",
+        message: { role: "assistant", model: "m", provider: "p" },
+      },
+    }, firstGeneration);
+    controller.onEvent({
+      type: "event",
+      payload: {
+        type: "message_update",
+        sessionId: "A",
+        epoch: "e-A",
+        eventId: 2,
+        streamId: "stream-A-1",
+        messageId: "message-A-1",
+        delta: { role: "assistant", delta: { type: "text", text: "cursor text" } },
+      },
+    }, firstGeneration);
+    expect(assistantPartialText(controller.getSnapshot().streamingPartial)).toBe("cursor text");
+    expect(controller.getSnapshot().streaming).toBe(true);
+
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await flush();
+    const resume = lastFrame<{ type: "attach"; id: string; payload: Record<string, unknown> }>(ws, "attach")!;
+    expect(resume.payload).toEqual({ sessionId: "A", epoch: "e-A", lastEventId: 2 });
+
+    ws.serverSend({
+      type: "snapshot",
+      id: resume.id,
+      payload: streamingResumeSnapshot({ lastEventId: 5, resumeStatus: "snapshot" }),
+    });
+    await flush();
+    expect(controller.getSnapshot().attached).toBe(true);
+    expect(assistantPartialText(controller.getSnapshot().streamingPartial)).toBe("cursor text");
+    expect(controller.getSnapshot().streaming).toBe(true);
+    expect(controller.getSnapshot().liveEntries).toEqual([]);
+
+    sendStreamReplay(ws);
+    await flush();
+    assertSettledComplete(controller);
+
+    controller.onSnapshot({
+      type: "snapshot",
+      payload: snapshotPayload({ sessionId: "A", epoch: "e-A", lastEventId: 2, resumeStatus: "snapshot" }),
+    } as WsSnapshotMessage, h.connection.currentGeneration);
+    expect(controller.getSnapshot().liveEntries.map((entry) => entry.entryId)).toEqual(["entry-A-1"]);
+    expect(controller.getSnapshot().streamingPartial).toBeNull();
+
+    controller.dispose();
+    h.dispose();
+  });
+
+  it("id-less same-epoch current snapshot advances the cursor without replay", async () => {
+    const h = createHarness();
+    const controller = new SessionController("A", h.connection);
+    h.connection.connect();
+    const ws = h.lastSocket();
+    ws.serverOpen();
+    ws.serverSend(ack());
+    await attachExact(controller, h, "A");
+
+    const generation = h.connection.currentGeneration;
+    controller.onEvent({
+      type: "event",
+      payload: {
+        type: "message_start",
+        sessionId: "A",
+        epoch: "e-A",
+        eventId: 1,
+        streamId: "stream-A-1",
+        messageId: "message-A-1",
+        message: { role: "assistant", model: "m", provider: "p" },
+      },
+    }, generation);
+    controller.onEvent({
+      type: "event",
+      payload: {
+        type: "message_update",
+        sessionId: "A",
+        epoch: "e-A",
+        eventId: 2,
+        streamId: "stream-A-1",
+        messageId: "message-A-1",
+        delta: { role: "assistant", delta: { type: "text", text: "cursor text" } },
+      },
+    }, generation);
+
+    const payload = streamingResumeSnapshot({ lastEventId: 5, resumeStatus: "snapshot" });
+    const snapshot = payload.snapshot as {
+      streaming: {
+        partialMessage?: {
+          role: "assistant";
+          content: { type: "text"; text: string }[];
+          model: string;
+          provider: string;
+        };
+      };
+    };
+    snapshot.streaming.partialMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "current at head" }],
+      model: "m",
+      provider: "p",
+    };
+    controller.onSnapshot({ type: "snapshot", payload } as WsSnapshotMessage, generation);
+    expect(assistantPartialText(controller.getSnapshot().streamingPartial)).toBe("current at head");
+
+    controller.onEvent({
+      type: "event",
+      payload: {
+        type: "message_update",
+        sessionId: "A",
+        epoch: "e-A",
+        eventId: 6,
+        streamId: "stream-A-1",
+        messageId: "message-A-1",
+        delta: { role: "assistant", delta: { type: "text", text: " + next" } },
+      },
+    }, generation);
+    expect(assistantPartialText(controller.getSnapshot().streamingPartial)).toBe("current at head + next");
+
+    controller.dispose();
+    h.dispose();
+  });
+});
+
+function streamingResumeSnapshot(overrides: { lastEventId: number; resumeStatus: string }) {
+  const payload = snapshotPayload({ sessionId: "A", epoch: "e-A", lastEventId: overrides.lastEventId, resumeStatus: overrides.resumeStatus });
+  const snapshot = payload.snapshot as {
+    state: { isStreaming: boolean; isPromptRunning: boolean };
+    streaming: {
+      active: boolean;
+      phase: string;
+      streamId?: string;
+      messageId?: string;
+      partialMessage?: { role: "assistant"; content: { type: "text"; text: string }[]; model: string; provider: string };
+    };
+  };
+  snapshot.state.isStreaming = true;
+  snapshot.state.isPromptRunning = true;
+  snapshot.streaming = {
+    active: true,
+    phase: "streaming",
+    streamId: "stream-A-1",
+    messageId: "message-A-1",
+    partialMessage: {
+      role: "assistant",
+      content: [{ type: "text", text: "cursor text" }],
+      model: "m",
+      provider: "p",
+    },
+  };
+  return payload;
+}
+
+function sendStreamReplay(ws: ReturnType<ReturnType<typeof createHarness>["lastSocket"]>): void {
+  ws.serverSend({
+    type: "event",
+    payload: {
+      type: "message_update",
+      sessionId: "A",
+      epoch: "e-A",
+      eventId: 3,
+      streamId: "stream-A-1",
+      messageId: "message-A-1",
+      delta: { role: "assistant", delta: { type: "text", text: " then complete" } },
+    },
+  });
+  ws.serverSend({
+    type: "event",
+    payload: {
+      type: "message_end",
+      sessionId: "A",
+      epoch: "e-A",
+      eventId: 4,
+      streamId: "stream-A-1",
+      messageId: "message-A-1",
+      entryId: "entry-A-1",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "cursor text then complete" }],
+        model: "m",
+        provider: "p",
+      },
+    },
+  });
+  ws.serverSend({
+    type: "event",
+    payload: { type: "agent_settled", sessionId: "A", epoch: "e-A", eventId: 5 },
+  });
+}
+
+function assertSettledComplete(controller: SessionController): void {
+  const view = controller.getSnapshot();
+  expect(view.liveEntries.map((entry) => entry.entryId)).toEqual(["entry-A-1"]);
+  expect(view.liveEntries[0]?.message).toMatchObject({
+    role: "assistant",
+    content: [{ type: "text", text: "cursor text then complete" }],
+  });
+  expect(view.streamingPartial).toBeNull();
+  expect(view.streaming).toBe(false);
+  expect(view.snapshot?.state.isStreaming).toBe(false);
+}
