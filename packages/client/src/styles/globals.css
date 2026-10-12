@@ -24,39 +24,6 @@
 
 
 
-.git-changes-indicator {
-  display: inline-flex;
-  overflow: hidden;
-  margin-left: 4px;
-  border-radius: 999px;
-  font-size: 11px;
-  line-height: 1.4;
-  font-variant-numeric: tabular-nums;
-}
-
-.git-changes-indicator-part {
-  padding: 1px 6px;
-}
-
-.git-changes-indicator-part + .git-changes-indicator-part {
-  border-left: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
-}
-
-.git-changes-indicator-modified {
-  color: var(--git-status-modified);
-  background: var(--git-status-modified-bg);
-}
-
-.git-changes-indicator-added {
-  color: var(--git-status-added);
-  background: var(--git-status-added-bg);
-}
-
-.git-changes-indicator-deleted {
-  color: var(--git-status-deleted);
-  background: var(--git-status-deleted-bg);
-}
-
 /* Font fallback — reduce CLS by matching Arial metrics to the custom mono font. */
 @font-face {
   font-family: "zedMono Fallback";

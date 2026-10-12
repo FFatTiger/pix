@@ -5,7 +5,7 @@ import { openWatchSession, type WatchSession } from "@/api/files-watch";
  * pix API adapter for the file viewer.
  *
  * The viewer's reads/meta/diff are owned by React Query (see
- * createQueryOptions in query-keys.ts) so FileExplorer/QuickChanges/Viewer
+ * createQueryOptions in query-keys.ts) so FileExplorer/Viewer
  * share one remote-state authority. This seam only keeps the two transport
  * pieces that do not belong to a query: URL building for element src/href and
  * the per-file watch session (files-watch.ts).

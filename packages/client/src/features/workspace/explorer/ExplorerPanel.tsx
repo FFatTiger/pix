@@ -10,14 +10,13 @@ import { getFileIcon } from "@/components/files/FileIcons";
 import { getFileName } from "@/lib/file-paths";
 import { baseName, joinRelative } from "../paths";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
-import { QuickChangesPanel } from "./QuickChangesPanel";
 
 /**
  * Files explorer panel — the source sidebar's file-workspace composition
- * (explorer section header + lazy tree + quick-changes footer) fused with the
- * pix file search (250 ms debounce, canonical-root `joinRelative` joins), all
- * behind honest capability props: no request fires unless the outer layer
- * negotiated the capability.
+ * (explorer section header + lazy tree) fused with the pix file search
+ * (250 ms debounce, canonical-root `joinRelative` joins), all behind honest
+ * capability props: no request fires unless the outer layer negotiated the
+ * capability.
  */
 
 /** Debounce for the file search input (same value as the pix FilesPanel). */
@@ -28,8 +27,6 @@ export interface ExplorerPanelProps {
   cwd: string | undefined;
   /** Honest capability gate — when false the panel never requests the API. */
   canFiles: boolean;
-  /** Honest git capability gate for the quick-changes footer (default off). */
-  canGit?: boolean | undefined;
   /** Open a file (viewer tab ownership stays with the outer shell). */
   onOpenFile: (filePath: string, fileName: string, options?: { initialDisplayMode?: "diff" }) => void;
   /** Insert a path into the chat input (@ mention). */
@@ -74,7 +71,7 @@ function describeIndexError(error: unknown): string {
   return "Unable to search files.";
 }
 
-export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtMention, onAtMentions, headerAction, visible = true }: ExplorerPanelProps) {
+export function ExplorerPanel({ cwd, canFiles, onOpenFile, onAtMention, onAtMentions, headerAction, visible = true }: ExplorerPanelProps) {
   const { t } = useI18n();
   const http = useHttpClient();
   const options = useMemo(() => createQueryOptions(http), [http]);
@@ -100,8 +97,8 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
 
   // Reset search when the project root changes: raw is cleared and the pending
   // debounce timer is torn down by the effect cleanup, so a cwd B can never
-  // render results keyed to cwd A. FileExplorer/QuickChanges re-key their own
-  // queries on cwd (queryKeys are cwd-scoped) and reset their ephemeral UI.
+  // render results keyed to cwd A. FileExplorer re-keys its own queries on
+  // cwd (queryKeys are cwd-scoped) and resets its ephemeral UI.
   useEffect(() => {
     setRaw("");
     setDebouncedQuery("");
@@ -366,13 +363,6 @@ export function ExplorerPanel({ cwd, canFiles, canGit = false, onOpenFile, onAtM
           )}
         </div>
       )}
-
-      {canGit && visible ? (
-        <QuickChangesPanel
-          cwd={cwd}
-          onOpenFile={onOpenFile}
-        />
-      ) : null}
     </div>
   );
 }

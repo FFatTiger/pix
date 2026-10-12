@@ -4,8 +4,8 @@ import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/
  * pix workspace domain helper.
  *
  * Directory listings, git status/diff, reads/meta and search/index are owned
- * by React Query (queryKeys/createQueryOptions) so FileExplorer/QuickChanges/
- * Viewer share one remote-state authority. This file only keeps the small
+ * by React Query (queryKeys/createQueryOptions) so FileExplorer/Viewer
+ * share one remote-state authority. This file only keeps the small
  * shared MAPPERS that translate schema-shaped query data onto the domain types
  * the explorer surfaces consume — a single definition both panels use, so the
  * shared git.status(cwd) query is rendered identically everywhere.

@@ -383,7 +383,6 @@ export function AppShell({ search }: AppShellProps) {
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
   const canFiles = can("files") && liveWorkspaceEnabled;
-  const canGit = can("git") && liveWorkspaceEnabled;
 
   // ── Top-level workspace tabs (URL drives ACTIVE; session tabs are durable) ──
   const [tabs, setTabs] = useState<WorkspaceTab[]>(loadWorkspaceSessionTabs);
@@ -854,8 +853,8 @@ export function AppShell({ search }: AppShellProps) {
   }, [navigate, search.cwd]);
 
   // ── File open ────────────────────────────────────────────────────────────
-  // Opening a file (file browser, chat file links, written-file rows, quick
-  // changes, linked files) creates/activates ONE file tab owned by the current
+  // Opening a file (file browser, chat file links, written-file rows,
+  // linked files) creates/activates ONE file tab owned by the current
   // cwd and navigates the URL to cwd+file (the active-content source of truth).
   // On mobile the file browser is closed so the central file viewer is visible.
   const handleOpenFile = useCallback((
@@ -1338,7 +1337,6 @@ export function AppShell({ search }: AppShellProps) {
             <ExplorerPanel
               cwd={search.cwd}
               canFiles={canFiles}
-              canGit={canGit}
               visible={fileBrowserOpen}
               onOpenFile={handleOpenFile}
             />

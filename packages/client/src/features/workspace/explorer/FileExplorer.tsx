@@ -433,9 +433,9 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const uploadAbortRef = useRef<AbortController | null>(null);
   const uploadBusy = uploadPhase !== "idle";
 
-  // Root listing + git status are owned by React Query. Git status is shared
-  // with QuickChangesPanel via the same queryKeys.git.status(cwd) key, so the
-  // two surfaces never issue competing requests.
+  // Root listing + git status are owned by React Query under the shared
+  // queryKeys.git.status(cwd) key, so every git-status consumer (file
+  // decorations, refresh invalidation) reads one authority.
   const rootQuery = useQuery({ ...options.files.list(cwd), enabled: Boolean(cwd) });
   const gitQuery = useQuery({ ...options.git.status(cwd), enabled: Boolean(cwd) });
   const gitStatus: GitStatusResponse | null = useMemo(
