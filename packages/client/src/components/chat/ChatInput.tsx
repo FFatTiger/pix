@@ -484,7 +484,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // Whether the composer textarea currently holds focus. Drives the
   // conditional visibility of the floating maximize/restore button above the
   // input box — it only appears while the user is typing-focused.
-  const [inputFocused, setInputFocused] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightLayerRef = useRef<HTMLDivElement>(null);
@@ -1937,36 +1936,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
         )}
         {/* Retry banner */}
-        {retryInfo && (
-          <div style={{
-            marginBottom: 8, padding: "5px 10px",
-            background: "rgba(234,179,8,0.08)", border: "1px solid rgba(234,179,8,0.25)",
-            borderRadius: 6, fontSize: 12, color: "rgba(180,130,0,0.9)",
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
-            <ArrowClockwiseIcon size={11} style={{ flexShrink: 0 }} />
-            {t("desktop.retrying")} ({retryInfo.attempt}/{retryInfo.maxAttempts})…{retryInfo.errorMessage && <span style={{ opacity: 0.7, marginLeft: 4 }}>— {retryInfo.errorMessage}</span>}
-          </div>
-        )}
-        {compactResultText && (
-          <div style={{
-            marginBottom: 8, padding: "5px 10px",
-            background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.24)",
-            borderRadius: 6, fontSize: 12, color: "rgba(5,150,105,0.95)",
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
-            <CheckIcon size={11} style={{ flexShrink: 0 }} />
-            {compactResultText}
-          </div>
-        )}
-        {(imageAttachmentError || fileAttachmentError) && (
-          <div
-            role="alert"
-            style={{ marginBottom: 6, fontSize: 12, lineHeight: 1.4, color: "var(--accent-red)" }}
-          >
-            {fileAttachmentError ?? imageAttachmentError}
-          </div>
-        )}
         {/* Main input */}
         <div ref={inputAreaRef} style={{ position: "relative" }}>
           {historyMenuOpen && inputHistory.length > 0 && (
@@ -2240,171 +2209,41 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             className={`chat-input-resize-handle${inputHeightResizer.isResizing ? " is-resizing" : ""}`}
           />
           {isStreaming && <div className="chat-input-streaming-overlay hatch-45" aria-hidden="true" />}
-          {/* Floating controls above the composer's top-right corner: the
-              steer/follow-up group only appears while the agent runs; the
-              maximize group appears only while the input box is focused.
-              Styled inline because Turbopack does not hot-reload globals.css
-              in the Electron dev setup — inline tweaks ride the JS HMR instead. */}
-          <div
-            style={{
-              position: "absolute",
-              // Above the @/slash/history popups (z-index 120) and the resize
-              // handle (3), below the fixed toolbar dropdowns (2000+).
-              zIndex: 130,
-              top: -22,
-              right: isMobile ? 12 : 20,
-              display: "flex",
-              alignItems: "stretch",
-              gap: 6,
-            }}
-          >
-            {(isStreaming && (onSteer || onFollowUp)) && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "stretch",
-                  overflow: "hidden",
-                  border: "1px solid color-mix(in srgb, var(--border) 62%, transparent)",
-                  borderRadius: 7,
-                  background: "var(--bg-panel)",
-                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.07)",
-                }}
-              >
-                {isStreaming && onSteer && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!canQueueStreamingMessage) return;
-                      sendQueued("steer");
-                    }}
-                    // onMouseDown preventDefault keeps focus in the textarea so
-                    // the maximize group (which is focus-gated and must stay
-                    // collapsed with zero space while unfocused) does not unmount
-                    // and shift the right-anchored actions row under the cursor.
-                    // The button is intentionally NOT `disabled`: a disabled
-                    // button swallows mouse events (no mousedown fires), so the
-                    // blur could not be prevented and the maximize group would
-                    // still collapse under the cursor. `aria-disabled` + the
-                    // onClick guard below preserve the disabled semantics while
-                    // keeping the pointer event path live.
-                    onMouseDown={(e) => e.preventDefault()}
-                    aria-disabled={!canQueueStreamingMessage}
-                    tabIndex={canQueueStreamingMessage ? 0 : -1}
-                    title={t("desktop.injectMessageNow")}
-                    aria-label={t("desktop.steer")}
-                    style={{
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      width: 36, height: 28, padding: 0,
-                      border: 0,
-                      background: "transparent",
-                      color: canQueueStreamingMessage ? "var(--accent)" : "var(--text-dim)",
-                      cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                      opacity: canQueueStreamingMessage ? 1 : 0.55,
-                      transition: "background 0.12s, color 0.12s",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!canQueueStreamingMessage) return;
-                      e.currentTarget.style.background = "var(--bg-hover)";
-                      e.currentTarget.style.color = "var(--text)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "transparent";
-                      e.currentTarget.style.color = canQueueStreamingMessage ? "var(--accent)" : "var(--text-dim)";
-                    }}
-                  >
-                    <ArrowElbowUpLeftIcon size={15} />
-                  </button>
-                )}
-                {isStreaming && onFollowUp && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!canQueueStreamingMessage) return;
-                      sendQueued("followup");
-                    }}
-                    // Same focus-preservation guard as the steer button above:
-                    // never `disabled`, keeps the pointer event path live.
-                    onMouseDown={(e) => e.preventDefault()}
-                    aria-disabled={!canQueueStreamingMessage}
-                    tabIndex={canQueueStreamingMessage ? 0 : -1}
-                    title={t("desktop.queueMessageAfterFinish")}
-                    aria-label={t("desktop.followUp")}
-                    style={{
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      width: 36, height: 28, padding: 0,
-                      border: 0,
-                      borderLeft: "1px solid color-mix(in srgb, var(--border) 62%, transparent)",
-                      background: "transparent",
-                      color: canQueueStreamingMessage ? "var(--text-muted)" : "var(--text-dim)",
-                      cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                      opacity: canQueueStreamingMessage ? 1 : 0.55,
-                      transition: "background 0.12s, color 0.12s",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!canQueueStreamingMessage) return;
-                      e.currentTarget.style.background = "var(--bg-hover)";
-                      e.currentTarget.style.color = "var(--text)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "transparent";
-                      e.currentTarget.style.color = canQueueStreamingMessage ? "var(--text-muted)" : "var(--text-dim)";
-                    }}
-                  >
-                    <SortDescendingIcon size={15} />
-                  </button>
-                )}
-              </div>
-            )}
-            {inputFocused && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "stretch",
-                overflow: "hidden",
-                border: "1px solid color-mix(in srgb, var(--border) 62%, transparent)",
-                borderRadius: 7,
-                background: "var(--bg-panel)",
-                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.07)",
-              }}
-            >
-              {/* Maximize / restore the composer height to the manual ceiling.
-                  onMouseDown preventDefault keeps focus in the textarea so blur
-                  does not hide this button before the click registers. */}
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  if (manualHeight !== null) {
-                    inputHeightResizer.resetHeight();
-                  } else {
-                    inputHeightResizer.setHeight(getMaxManualHeight());
-                  }
-                }}
-                title={manualHeight !== null ? t("desktop.restoreInputHeight") : t("desktop.maximizeInput")}
-                aria-label={manualHeight !== null ? t("desktop.restoreInputHeight") : t("desktop.maximizeInput")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 36, height: 28, padding: 0,
-                  border: 0,
-                  background: "transparent",
-                  color: manualHeight !== null ? "var(--accent)" : "var(--text-muted)",
-                  cursor: "pointer",
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = manualHeight !== null ? "var(--accent)" : "var(--text)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                  e.currentTarget.style.color = manualHeight !== null ? "var(--accent)" : "var(--text-muted)";
-                }}
-              >
-                {manualHeight !== null ? <ArrowsInIcon size={15} /> : <ArrowsOutIcon size={15} />}
-              </button>
+          {/* Transient composer notices live inside the input box too. */}
+          {(retryInfo || compactResultText || imageAttachmentError || fileAttachmentError) && (
+            <div className="chat-input-notices">
+              {retryInfo && (
+                <div style={{
+                  padding: "5px 10px",
+                  background: "rgba(234,179,8,0.08)", border: "1px solid rgba(234,179,8,0.25)",
+                  borderRadius: 6, fontSize: 12, color: "rgba(180,130,0,0.9)",
+                  display: "flex", alignItems: "center", gap: 6,
+                }}>
+                  <ArrowClockwiseIcon size={11} style={{ flexShrink: 0 }} />
+                  {t("desktop.retrying")} ({retryInfo.attempt}/{retryInfo.maxAttempts})…{retryInfo.errorMessage && <span style={{ opacity: 0.7, marginLeft: 4 }}>— {retryInfo.errorMessage}</span>}
+                </div>
+              )}
+              {compactResultText && (
+                <div style={{
+                  padding: "5px 10px",
+                  background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.24)",
+                  borderRadius: 6, fontSize: 12, color: "rgba(5,150,105,0.95)",
+                  display: "flex", alignItems: "center", gap: 6,
+                }}>
+                  <CheckIcon size={11} style={{ flexShrink: 0 }} />
+                  {compactResultText}
+                </div>
+              )}
+              {(imageAttachmentError || fileAttachmentError) && (
+                <div
+                  role="alert"
+                  style={{ fontSize: 12, lineHeight: 1.4, color: "var(--accent-red)" }}
+                >
+                  {fileAttachmentError ?? imageAttachmentError}
+                </div>
+              )}
             </div>
-            )}
-          </div>
+          )}
           {/* Image previews + pending ordinary-file chips live inside the input box,
               so nothing sits between the status tab and the composer. */}
           {(attachedImages.length > 0 || pendingFiles.length > 0) && (
@@ -2521,8 +2360,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             }}
             onInput={handleInput}
             onPaste={handlePaste}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => setInputFocused(false)}
             placeholder={
               isStreaming && (onSteer || onFollowUp)
                 ? t("desktop.steerOrQueueFollowUp")
@@ -2907,6 +2744,21 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               alignItems: "center",
               gap: 2,
             }}>
+            {!isMobile && (
+              <button
+                type="button"
+                className="chat-input-tool-button"
+                data-active={manualHeight !== null || undefined}
+                onClick={() => {
+                  if (manualHeight !== null) inputHeightResizer.resetHeight();
+                  else inputHeightResizer.setHeight(getMaxManualHeight());
+                }}
+                title={manualHeight !== null ? t("desktop.restoreInputHeight") : t("desktop.maximizeInput")}
+                aria-label={manualHeight !== null ? t("desktop.restoreInputHeight") : t("desktop.maximizeInput")}
+              >
+                {manualHeight !== null ? <ArrowsInIcon size={14} /> : <ArrowsOutIcon size={14} />}
+              </button>
+            )}
             {/* Model selector — always interactive; changes apply from the next turn while streaming */}
             {onModelChange && (
               <ModelSelector
@@ -2931,34 +2783,48 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </button>
             )}
 
+            {/* While the agent runs, typed text can steer the current turn or
+                queue after it; the choice sits right next to Stop. */}
+            {isStreaming && (onSteer || onFollowUp) && canQueueStreamingMessage && (
+              <div className="chat-input-queue-group" role="group">
+                {onSteer && (
+                  <button
+                    type="button"
+                    className="chat-input-queue-button is-steer"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => sendQueued("steer")}
+                    title={t("desktop.injectMessageNow")}
+                    aria-label={t("desktop.steer")}
+                  >
+                    <ArrowElbowUpLeftIcon size={13} aria-hidden="true" />
+                    {isMobile ? null : <span>{t("desktop.steer")}</span>}
+                  </button>
+                )}
+                {onFollowUp && (
+                  <button
+                    type="button"
+                    className="chat-input-queue-button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => sendQueued("followup")}
+                    title={t("desktop.queueMessageAfterFinish")}
+                    aria-label={t("desktop.followUp")}
+                  >
+                    <SortDescendingIcon size={13} aria-hidden="true" />
+                    {isMobile ? null : <span>{t("desktop.followUp")}</span>}
+                  </button>
+                )}
+              </div>
+            )}
+
             {(isStreaming || isCompacting) && (
               <button
+                type="button"
                 onClick={isCompacting ? onAbortCompaction : onAbort}
+                className={`chat-input-send is-stop${isCompacting ? " is-compacting" : ""}`}
                 title={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
                 aria-label={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  padding: "3px 6px",
-                  height: 24,
-                  background: isCompacting
-                    ? "color-mix(in srgb, var(--accent-orange) 14%, var(--bg-panel))"
-                    : "color-mix(in srgb, var(--accent-red) 12%, var(--bg-panel))",
-                  border: "none",
-                  borderRadius: 6,
-                  color: isCompacting ? "var(--accent-orange)" : "var(--accent-red)",
-                  cursor: "pointer",
-                  fontSize: 12, fontWeight: 600,
-                  whiteSpace: "nowrap", letterSpacing: "-0.01em",
-                  transition: "background 0.12s",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = isCompacting
-                  ? "color-mix(in srgb, var(--accent-orange) 24%, var(--bg-panel))"
-                  : "color-mix(in srgb, var(--accent-red) 20%, var(--bg-panel))"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = isCompacting
-                  ? "color-mix(in srgb, var(--accent-orange) 14%, var(--bg-panel))"
-                  : "color-mix(in srgb, var(--accent-red) 12%, var(--bg-panel))"; }}
               >
-                <SquareIcon size={14} />
+                <SquareIcon size={12} weight="fill" />
               </button>
             )}
             </div>
