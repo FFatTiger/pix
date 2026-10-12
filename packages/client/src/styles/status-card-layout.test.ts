@@ -39,17 +39,19 @@ describe("status card composer-strip layout", () => {
     expect(layer(rule(tablet, ".right-panel-container.right-panel-open"))).toBeGreaterThan(layer(rule(css, ".subagent-activity-card")));
   });
 
-  it("anchors the strip to the composer column and opens the card upward", () => {
+  it("anchors the pill row to the composer column and opens the card upward", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const css = readFileSync(join(root, "styles/globals.css"), "utf8");
     const shell = readFileSync(join(root, "components/shell/AppShell.tsx"), "utf8");
     const card = readFileSync(join(root, "components/chat/SubagentActivityCard.tsx"), "utf8");
 
-    // Strip: in-flow above the composer, aligned to its 820px content column.
+    // Row: in-flow above the composer, aligned to its 820px content column,
+    // with a positive ~6px gap (never a negative margin tab attachment).
     expect(rule(css, ".subagent-activity-card")).toContain("position: relative");
     expect(rule(css, ".subagent-activity-card")).toContain("max-width: 852px");
-    expect(rule(css, ".subagent-activity-card")).toContain("margin: 0 auto -6px");
-    expect(rule(css, ".subagent-activity-card")).toContain("padding: 0 16px");
+    expect(rule(css, ".subagent-activity-card")).toContain("margin: 0 auto");
+    expect(rule(css, ".subagent-activity-card")).not.toContain("-6px");
+    expect(rule(css, ".subagent-activity-card")).toContain("padding: 0 16px 6px");
     // Card expands upward from the strip, never downward over the composer.
     expect(rule(css, ".status-card-panel")).toContain("bottom: calc(100% + 6px)");
     expect(rule(css, ".status-card-panel")).toContain("left: 0");
@@ -61,10 +63,17 @@ describe("status card composer-strip layout", () => {
     expect(shell).not.toContain("statusCardDisplayMode");
     expect(shell).not.toContain("StatusCardDisplayMode");
     expect(card).not.toContain("displayMode");
-    // Capsule spans the strip width and carries the completion/agent counts.
-    expect(rule(css, ".subagent-activity-capsule")).toContain("width: 100%");
-    expect(rule(css, ".subagent-activity-capsule")).not.toContain("max-width: 220px");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("border-radius: 8px 8px 0 0");
+    // Capsule: content-width standalone pill (the pre-layout-C look) with a
+    // full border, panel background, and a light shadow — left-aligned, long
+    // titles ellipsize inside it.
+    expect(rule(css, ".subagent-activity-capsule")).not.toMatch(/^\s*width: 100%;/m);
+    expect(rule(css, ".subagent-activity-capsule")).toContain("min-height: 28px");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("border-radius: 999px");
+    expect(rule(css, ".subagent-activity-capsule")).not.toContain("border-bottom: 0");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("background: var(--bg-panel)");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("box-shadow");
+    // Long titles ellipsize inside the label span.
+    expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
     expect(rule(css, ".status-capsule-count,\n.status-capsule-agents")).toContain("font-variant-numeric: tabular-nums");
     expect(card).toContain("status-capsule-count");
     expect(card).toContain("status-capsule-agents");
@@ -73,13 +82,30 @@ describe("status card composer-strip layout", () => {
     expect(shell).toContain("key={`status:${activeSessionId}`}");
   });
 
-  it("caps the mobile card at min(320px, viewport - 16px)", () => {
+  it("reserves the composer's top-right floating controls so the pill never overlaps them", () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const css = readFileSync(join(root, "styles/globals.css"), "utf8");
+    const chatInput = readFileSync(join(root, "components/chat/ChatInput.tsx"), "utf8");
+
+    // One shared variable sizes the reserve (footprint derivation lives next
+    // to its definition); the pill row consumes exactly that variable.
+    expect(css).toContain("--composer-floating-controls-reserve: 160px");
+    expect(rule(css, ".status-card-shell")).toContain("padding-right: var(--composer-floating-controls-reserve)");
+    // The floating group really sits at the composer's top-right (ChatInput),
+    // so the reserve is the single knob keeping the two apart.
+    expect(chatInput).toContain("top: -22");
+    expect(chatInput).toContain("right: isMobile ? 12 : 20");
+    // The pill itself can only shrink within the reserved row.
+    expect(rule(css, ".subagent-activity-capsule")).toContain("max-width: 100%");
+  });
+
+  it("caps the mobile card at min(340px, viewport - 16px)", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const css = readFileSync(join(root, "styles/globals.css"), "utf8");
     const mobileStart = css.indexOf("@media (max-width: 640px)", css.indexOf(".subagent-transcript"));
     expect(mobileStart).toBeGreaterThanOrEqual(0);
     const mobile = css.slice(mobileStart, css.indexOf("}", css.indexOf(".status-card-panel", mobileStart)) + 1);
-    expect(rule(mobile, ".status-card-panel")).toContain("width: min(320px, calc(100vw - 16px))");
+    expect(rule(mobile, ".status-card-panel")).toContain("width: min(340px, calc(100vw - 16px))");
     expect(rule(mobile, ".status-card-panel")).toContain("max-width: calc(100vw - 16px)");
   });
 

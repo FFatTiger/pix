@@ -2291,16 +2291,27 @@ span.linenumber {
   container-type: inline-size;
 }
 
-/* Subagent activity: status strip above the composer. The capsule spans the
-   composer column; the expanded card opens upward from it. */
+/* Composer top-right floating controls (ChatInput: steer/follow-up group
+   while streaming + maximize group while focused, anchored at the shell's
+   top-right). Worst-case footprint — right offset 20 + steer group ~75 +
+   gap 6 + maximize group ~38 + breathing room — reserved on the status
+   strip row so the capsule can never overlap them at any width. The button
+   widths live in ChatInput's inline styles (36px); if they change, adjust
+   this single variable. */
+:root {
+  --composer-floating-controls-reserve: 160px;
+}
+
+/* Subagent activity: status pill above the composer, content-width and
+   left-aligned; the expanded card opens upward from it. */
 .subagent-activity-card {
   position: relative;
   z-index: 30;
   flex: 0 0 auto;
   width: 100%;
   max-width: 852px;
-  margin: 0 auto -6px;
-  padding: 0 16px;
+  margin: 0 auto;
+  padding: 0 16px 6px;
 }
 
 .status-card-shell {
@@ -2310,6 +2321,8 @@ span.linenumber {
   justify-content: flex-start;
   min-width: 0;
   max-width: 100%;
+  /* Keep the pill clear of the composer's top-right floating controls. */
+  padding-right: var(--composer-floating-controls-reserve);
 }
 
 .status-card-panel {
@@ -2368,15 +2381,16 @@ span.linenumber {
 
 .subagent-activity-capsule {
   min-width: 0;
-  min-height: 26px;
-  width: 100%;
+  min-height: 28px;
+  max-width: 100%;
+  justify-content: flex-start;
   gap: 7px;
   padding: 0 10px;
   border: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
-  border-bottom: 0;
-  border-radius: 8px 8px 0 0;
+  border-radius: 999px;
   color: var(--text);
-  background: color-mix(in srgb, var(--text) 3%, var(--bg-panel));
+  background: var(--bg-panel);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.07);
   font-size: 12px;
 }
 
@@ -2980,7 +2994,7 @@ span.linenumber {
 
 @media (max-width: 640px) {
   .status-card-panel {
-    width: min(320px, calc(100vw - 16px));
+    width: min(340px, calc(100vw - 16px));
     max-width: calc(100vw - 16px);
   }
 }
