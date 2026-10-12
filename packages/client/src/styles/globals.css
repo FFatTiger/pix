@@ -2310,8 +2310,8 @@ span.linenumber {
   flex: 0 0 auto;
   width: 100%;
   max-width: 852px;
-  margin: 0 auto;
-  padding: 0 16px 6px;
+  margin: 0 auto -1px; /* the tab covers the composer top border */
+  padding: 0 16px;
 }
 
 .status-card-shell {
@@ -2380,18 +2380,45 @@ span.linenumber {
 }
 
 .subagent-activity-capsule {
+  position: relative;
   min-width: 0;
   min-height: 28px;
   max-width: 100%;
   justify-content: flex-start;
   gap: 7px;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
-  border-radius: 999px;
+  margin-left: 12px;
+  padding: 0 12px;
+  /* A tab growing out of the composer: same surface and border, open bottom. */
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
   color: var(--text);
-  background: var(--bg-panel);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.07);
+  background: var(--bg-secondary);
+  box-shadow: 0 -3px 8px -4px color-mix(in srgb, #000 16%, transparent);
   font-size: 12px;
+}
+
+/* Concave fillets where the tab meets the composer, so the edge flows out. */
+.subagent-activity-capsule::before,
+.subagent-activity-capsule::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
+  pointer-events: none;
+}
+.subagent-activity-capsule::before {
+  left: -8px;
+  background: radial-gradient(circle at 0 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
+}
+.subagent-activity-capsule::after {
+  right: -8px;
+  background: radial-gradient(circle at 100% 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
+}
+
+.workspace:has(.chat-input-shell:focus-within) .subagent-activity-capsule {
+  border-color: var(--accent-blue);
 }
 
 .status-capsule-label {
@@ -3287,3 +3314,6 @@ html.pi-booted body::before {
   vertical-align: middle;
   animation: pix-loading-pulse 1.1s ease-in-out infinite;
 }
+
+/* Hover must not break the seam with the composer surface. */
+.subagent-activity-capsule:hover { background: var(--bg-secondary); }

@@ -45,13 +45,12 @@ describe("status card composer-strip layout", () => {
     const shell = readFileSync(join(root, "components/shell/AppShell.tsx"), "utf8");
     const card = readFileSync(join(root, "components/chat/SubagentActivityCard.tsx"), "utf8");
 
-    // Row: in-flow above the composer, aligned to its 820px content column,
-    // with a positive ~6px gap (never a negative margin tab attachment).
+    // Row: in-flow above the composer, aligned to its 820px content column;
+    // the tab overlaps the composer's top border by exactly 1px.
     expect(rule(css, ".subagent-activity-card")).toContain("position: relative");
     expect(rule(css, ".subagent-activity-card")).toContain("max-width: 852px");
-    expect(rule(css, ".subagent-activity-card")).toContain("margin: 0 auto");
-    expect(rule(css, ".subagent-activity-card")).not.toContain("-6px");
-    expect(rule(css, ".subagent-activity-card")).toContain("padding: 0 16px 6px");
+    expect(rule(css, ".subagent-activity-card")).toContain("margin: 0 auto -1px");
+    expect(rule(css, ".subagent-activity-card")).toContain("padding: 0 16px;");
     // Card expands upward from the strip, never downward over the composer.
     expect(rule(css, ".status-card-panel")).toContain("bottom: calc(100% + 6px)");
     expect(rule(css, ".status-card-panel")).toContain("left: 0");
@@ -63,15 +62,19 @@ describe("status card composer-strip layout", () => {
     expect(shell).not.toContain("statusCardDisplayMode");
     expect(shell).not.toContain("StatusCardDisplayMode");
     expect(card).not.toContain("displayMode");
-    // Capsule: content-width standalone pill (the pre-layout-C look) with a
-    // full border, panel background, and a light shadow — left-aligned, long
-    // titles ellipsize inside it.
+    // Capsule: content-width tab growing out of the composer — composer
+    // surface and border, rounded top corners, open bottom, concave fillets,
+    // a soft upward shadow, and it follows the composer's focus border.
     expect(rule(css, ".subagent-activity-capsule")).not.toMatch(/^\s*width: 100%;/m);
     expect(rule(css, ".subagent-activity-capsule")).toContain("min-height: 28px");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("border-radius: 999px");
-    expect(rule(css, ".subagent-activity-capsule")).not.toContain("border-bottom: 0");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("background: var(--bg-panel)");
-    expect(rule(css, ".subagent-activity-capsule")).toContain("box-shadow");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("border-radius: 10px 10px 0 0");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("border-bottom: 0");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("border: 1px solid var(--border)");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("background: var(--bg-secondary)");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("box-shadow: 0 -3px 8px -4px");
+    expect(css).toContain(".subagent-activity-capsule::before,\n.subagent-activity-capsule::after {");
+    expect(rule(css, ".workspace:has(.chat-input-shell:focus-within) .subagent-activity-capsule")).toContain("border-color: var(--accent-blue)");
+    expect(rule(css, ".subagent-activity-capsule:hover")).toContain("background: var(--bg-secondary)");
     // Long titles ellipsize inside the label span.
     expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
     expect(rule(css, ".status-capsule-count,\n.status-capsule-agents")).toContain("font-variant-numeric: tabular-nums");
