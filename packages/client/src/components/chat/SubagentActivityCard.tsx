@@ -214,7 +214,6 @@ export function SubagentActivityCard({
                 {running.length}
               </span>
             ) : null}
-            <span className="status-capsule-joint" aria-hidden="true" />
           </button>
         ) : null}
         <div className="status-card-panel" inert={!open}>
