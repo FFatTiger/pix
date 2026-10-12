@@ -150,18 +150,10 @@ export function mapSideChatState(value: SideChatState): ProtocolSideChatState {
     model: { ...value.model },
     thinkingLevel: value.thinkingLevel,
     status: value.status,
-    messages: value.messages.map((message) => ({
-      id: message.id,
-      role: message.role,
-      text: message.text,
-      ...(message.thinking === undefined ? {} : { thinking: message.thinking }),
-      textTruncated: message.textTruncated,
-      thinkingTruncated: message.thinkingTruncated,
-    })),
+    messages: value.messages.map(mapAgentMessage),
+    partialMessage: value.partialMessage === null ? null : mapStreamingMessage(value.partialMessage),
     messagesTruncated: value.messagesTruncated,
     totalCharsTruncated: value.totalCharsTruncated,
-    stream: { ...value.stream },
-    tools: value.tools.map((tool) => ({ ...tool })),
     ...(value.error === undefined ? {} : { error: { ...value.error } }),
   };
 }

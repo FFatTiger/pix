@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { StreamingMessageLifecycleSchema, RuntimeEventDataSchema } from "@fffattiger/pix-protocol";
 import type { RuntimeEventData } from "@fffattiger/pix-protocol";
-import type { AgentMessage, AssistantContentBlock, RuntimeEvent, StreamingAgentMessage } from "@fffattiger/pix-runtime-core";
+import type { AgentMessage, AssistantContentBlock, RuntimeEvent, SideChatState, StreamingAgentMessage } from "@fffattiger/pix-runtime-core";
 import { StatefulRuntimeMapper } from "../../src/mapper/runtime-mapper.js";
 import { createOracle, textOf, toolCallsOf, type StreamLike } from "../helpers/projection-oracle.js";
 
@@ -187,7 +187,7 @@ describe("StatefulRuntimeMapper + sessiond projection oracle", () => {
     }
   });
 
-  it("maps side-chat replacements and deltas with identity fences intact", () => {
+  it("maps side-chat replacements and partial-replacement deltas with identity fences intact", () => {
     const mapper = new StatefulRuntimeMapper();
     const sideChat = {
       conversationId: "side-1",
@@ -196,20 +196,37 @@ describe("StatefulRuntimeMapper + sessiond projection oracle", () => {
       model: { provider: "test", id: "model" },
       thinkingLevel: "medium" as const,
       status: "running" as const,
-      messages: [],
+      messages: [
+        { role: "user" as const, content: "question" },
+        {
+          role: "assistant" as const,
+          content: [{ type: "toolCall" as const, toolCallId: "tc1", toolName: "read", input: { path: "a.ts" } }],
+          model: "model",
+          provider: "test",
+        },
+        { role: "toolResult" as const, toolCallId: "tc1", toolName: "read", content: [{ type: "text" as const, text: "body" }] },
+      ] as SideChatState["messages"],
       messagesTruncated: false,
       totalCharsTruncated: false,
-      stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false },
-      tools: [],
+      partialMessage: null,
+    };
+    const delta = {
+      conversationId: "side-1",
+      runId: "run-1",
+      previousRevision: 1,
+      revision: 2,
+      partial: { role: "assistant" as const, content: [{ type: "text" as const, text: "answer" }], model: "model", provider: "test" },
     };
     const replacement = mapper.mapEvent({ type: "side_chat_changed", sessionId: SESSION, sideChat });
-    const delta = mapper.mapEvent({ type: "side_chat_delta", sessionId: SESSION, delta: { conversationId: "side-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: "answer" } });
+    const deltaEvent = mapper.mapEvent({ type: "side_chat_delta", sessionId: SESSION, delta });
     assert.deepEqual(replacement[0], { type: "side_chat_changed", sessionId: SESSION, sideChat });
-    assert.deepEqual(delta[0], { type: "side_chat_delta", sessionId: SESSION, delta: { conversationId: "side-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: "answer" } });
+    assert.deepEqual(deltaEvent[0], { type: "side_chat_delta", sessionId: SESSION, delta });
     const oracle = createOracle(SESSION);
     oracle.apply(replacement[0]!);
-    oracle.apply(delta[0]!);
-    assert.equal(oracle.snapshot().state.sideChat?.stream.text, "answer");
+    oracle.apply(deltaEvent[0]!);
+    const projected = oracle.snapshot().state.sideChat;
+    assert.ok(projected?.partialMessage && projected.partialMessage.role === "assistant");
+    assert.equal(projected.messages.length, 3, "committed history survives the partial replacement");
   });
 
   it("maps subagent_delta as a field-by-field transient replacement without touching the parent stream", () => {

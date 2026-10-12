@@ -36,7 +36,6 @@ import {
   normalizeBuiltInRuntimeState,
   normalizeSubagentProjection,
   normalizeTodoProjection,
-  applySideChatDelta,
   boundSideChatState,
   MAX_EXTENSION_NOTIFICATIONS,
   validateQuestionnaireAnswers,
@@ -45,6 +44,8 @@ import {
   type ExtensionNotificationItem,
   type SubagentProjection,
   type TodoProjection,
+  type AgentMessage as CoreAgentMessage,
+  type StreamingAgentMessage as CoreStreamingAgentMessage,
 } from "@fffattiger/pix-runtime-core";
 import { mapDriverError, mapMessage, sanitizeValue } from "../mappers/index.js";
 import { redactText } from "./sanitize.js";
@@ -57,36 +58,17 @@ import {
 
 const COMMAND_TYPES = new Set<string>(RUNTIME_COMMAND_TYPES);
 
-function sideChatContentText(content: unknown, kind: "text" | "thinking" = "text"): string {
-  if (typeof content === "string") return kind === "text" ? content : "";
-  if (!Array.isArray(content)) return "";
-  return content.map((block) => {
-    if (typeof block !== "object" || block === null || (block as { type?: unknown }).type !== kind) return "";
-    const field = kind === "text" ? (block as { text?: unknown }).text : (block as { thinking?: unknown }).thinking;
-    return typeof field === "string" ? field : "";
-  }).join("");
-}
-
+/**
+ * Canonical bounded projection. Committed messages and the live partial reuse
+ * the MAIN-SESSION message projection (mapMessage) so the side chat renders
+ * through the same transcript components with full tool args/results, thinking
+ * blocks, and model labels — no bespoke side-only message shape.
+ */
 function canonicalSideChatState(
   state: ControllerSideChatState,
   model: NonNullable<RuntimeState["model"]>,
   thinkingLevel: NonNullable<RuntimeState["thinkingLevel"]>,
 ): SideChatState {
-  const messages = state.messages.flatMap((message, index) => {
-    if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return [];
-    const text = sideChatContentText(message.content);
-    const thinking = message.role === "assistant" ? sideChatContentText(message.content, "thinking") : "";
-    return [{
-      id: `side-message-${index}`,
-      role: message.role,
-      text,
-      ...(thinking.length === 0 ? {} : { thinking }),
-      ...(message.role !== "toolResult" || message.toolName === undefined ? {} : { toolName: message.toolName }),
-      ...(message.role !== "toolResult" || message.isError === undefined ? {} : { isError: message.isError }),
-      textTruncated: false,
-      thinkingTruncated: false,
-    }];
-  });
   return boundSideChatState({
     conversationId: state.conversationId,
     revision: state.revision,
@@ -94,16 +76,12 @@ function canonicalSideChatState(
     model,
     thinkingLevel,
     status: state.status === "disposed" ? "idle" : state.status,
-    messages,
+      messages: state.messages.map((message) => mapMessage(message) as CoreAgentMessage),
     messagesTruncated: false,
     totalCharsTruncated: false,
-    stream: {
-      text: state.streamingAssistant.text,
-      thinking: state.streamingAssistant.thinking,
-      textTruncated: false,
-      thinkingTruncated: false,
-    },
-    tools: state.tools.map((tool) => ({ ...tool, nameTruncated: false })),
+    partialMessage: state.streamingPartial === null
+      ? null
+      : mapMessage(state.streamingPartial, true) as CoreStreamingAgentMessage,
     ...(state.error === undefined ? {} : {
       error: { code: "run_failed" as const, message: "Side chat request failed" as const },
     }),
@@ -267,6 +245,8 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     thinkingLevel: NonNullable<RuntimeState["thinkingLevel"]>;
   } | undefined;
   private sideChatState: SideChatState | null = null;
+  /** messagesRevision of the controller state that produced sideChatState. */
+  private sideChatMessagesRevision = 0;
   /** Serializes reload with side-chat lifecycle commands; interrupts and close deliberately bypass it. */
   private sideChatLifecycleBusy = false;
   private completedToolCalls = new Set<string>();
@@ -1118,7 +1098,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     };
     record.unsubscribe = controller.subscribe((event) => {
       if (this.closed || this.sideChat?.controller !== controller) return;
-      this.publishSideChatState(canonicalSideChatState(event.state, record.model, record.thinkingLevel));
+      this.publishSideChatState(canonicalSideChatState(event.state, record.model, record.thinkingLevel), false, event.state.messagesRevision);
     });
     this.sideChat = record;
     this.publishSideChatState(canonicalSideChatState(controller.getState(), record.model, record.thinkingLevel), true);
@@ -1133,31 +1113,38 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     return side;
   }
 
-  private publishSideChatState(next: SideChatState, forceReplacement = false): void {
+  private publishSideChatState(next: SideChatState, forceReplacement = false, messagesRevision?: number): void {
     const previous = this.sideChatState;
+    const previousMessagesRevision = this.sideChatMessagesRevision;
     this.sideChatState = next;
-    if (!forceReplacement && previous !== null && previous.conversationId === next.conversationId && previous.runId === next.runId) {
-      for (const kind of ["text", "thinking"] as const) {
-        const before = previous.stream[kind];
-        const after = next.stream[kind];
-        if (!after.startsWith(before) || after === before) continue;
-        const runId = next.runId;
-        if (runId === undefined) continue;
-        const delta = {
+    if (messagesRevision !== undefined) this.sideChatMessagesRevision = messagesRevision;
+    // A streamed chunk updates ONLY the live partial (same run, same status,
+    // committed messages untouched — the controller's messagesRevision fence
+    // proves it). Emit the cheap revision-fenced partial replacement instead
+    // of the full state.
+    if (
+      !forceReplacement
+      && messagesRevision !== undefined
+      && previous !== null
+      && previous.conversationId === next.conversationId
+      && previous.runId !== undefined
+      && previous.runId === next.runId
+      && previous.status === next.status
+      && previousMessagesRevision === messagesRevision
+      && next.partialMessage !== null
+    ) {
+      this.emit({
+        type: "side_chat_delta",
+        sessionId: this.identity.sessionId,
+        delta: {
           conversationId: next.conversationId,
-          runId,
+          runId: next.runId,
           previousRevision: previous.revision,
           revision: next.revision,
-          kind,
-          delta: after.slice(before.length),
-        };
-        try {
-          if (JSON.stringify(applySideChatDelta(previous, delta)) === JSON.stringify(next)) {
-            this.emit({ type: "side_chat_delta", sessionId: this.identity.sessionId, delta });
-            return;
-          }
-        } catch { /* fall through to authoritative replacement */ }
-      }
+          partial: next.partialMessage,
+        },
+      });
+      return;
     }
     this.emit({ type: "side_chat_changed", sessionId: this.identity.sessionId, sideChat: next });
   }

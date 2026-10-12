@@ -294,7 +294,7 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
           revision: this.sideChat.revision + 1,
           runId,
           status: "running",
-          messages: [...this.sideChat.messages, { id: `side-message-${this.sideChat.messages.length}`, role: "user", text: command.message, textTruncated: false, thinkingTruncated: false }],
+          messages: [...this.sideChat.messages, { role: "user" as const, content: command.message }],
         };
         this.emitSideChat();
         void this.completeSideChat(runId, command.message);
@@ -590,8 +590,7 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       messages: [],
       messagesTruncated: false,
       totalCharsTruncated: false,
-      stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false },
-      tools: [],
+      partialMessage: null,
     };
     this.emitSideChat();
   }
@@ -615,12 +614,12 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
       ...this.sideChat,
       revision: this.sideChat.revision + 1,
       status: "idle",
+      partialMessage: null,
       messages: [...this.sideChat.messages, {
-        id: `side-message-${this.sideChat.messages.length}`,
-        role: "assistant",
-        text: `Side response: ${prompt}`,
-        textTruncated: false,
-        thinkingTruncated: false,
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: `Side response: ${prompt}` }],
+        model: this.model.id,
+        provider: this.model.provider,
       }],
     };
     this.emitSideChat();

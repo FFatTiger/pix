@@ -430,7 +430,18 @@ export class StatefulRuntimeMapper {
       case "side_chat_changed":
         return [{ type: "side_chat_changed", sessionId, sideChat: event.sideChat === null ? null : mapSideChatState(event.sideChat), ...ts(event) }];
       case "side_chat_delta":
-        return [{ type: "side_chat_delta", sessionId, delta: { ...event.delta }, ...ts(event) }];
+        return [{
+          type: "side_chat_delta",
+          sessionId,
+          delta: {
+            conversationId: event.delta.conversationId,
+            runId: event.delta.runId,
+            previousRevision: event.delta.previousRevision,
+            revision: event.delta.revision,
+            partial: mapStreamingMessage(event.delta.partial),
+          },
+          ...ts(event),
+        }];
       case "subagent_delta":
         return [{
           type: "subagent_delta",

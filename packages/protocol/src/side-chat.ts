@@ -1,52 +1,51 @@
 import { z } from "zod";
 import { ModelRefSchema, NonEmptyStringSchema, ThinkingLevelSchema } from "./common.js";
+import { AgentMessageSchema, type AgentMessage, type StreamingAgentMessage, StreamingAgentMessageSchema } from "./messages.js";
 
 export const MAX_SIDE_CHAT_MESSAGES = 64;
 export const MAX_SIDE_CHAT_MESSAGE_CHARS = 16_384;
 export const MAX_SIDE_CHAT_STREAM_CHARS = 16_384;
 export const MAX_SIDE_CHAT_TOTAL_DISPLAY_CHARS = 262_144;
-export const MAX_SIDE_CHAT_TOOLS = 64;
 export const MAX_SIDE_CHAT_ID_CHARS = 128;
-export const MAX_SIDE_CHAT_TOOL_NAME_CHARS = 128;
-export const MAX_SIDE_CHAT_PATH_CHARS = 4_096;
 
 export const SideChatIdSchema = NonEmptyStringSchema.max(MAX_SIDE_CHAT_ID_CHARS);
 export const SideChatStatusSchema = z.enum(["idle", "running"]);
 export type SideChatStatus = z.infer<typeof SideChatStatusSchema>;
-
-export const SideChatMessageSchema = z.strictObject({
-  id: SideChatIdSchema,
-  role: z.enum(["user", "assistant", "toolResult"]),
-  text: z.string().max(MAX_SIDE_CHAT_MESSAGE_CHARS),
-  thinking: z.string().max(MAX_SIDE_CHAT_MESSAGE_CHARS).optional(),
-  toolName: z.string().max(MAX_SIDE_CHAT_TOOL_NAME_CHARS).optional(),
-  isError: z.boolean().optional(),
-  textTruncated: z.boolean(),
-  thinkingTruncated: z.boolean(),
-});
-export type SideChatMessage = z.infer<typeof SideChatMessageSchema>;
-
-export const SideChatStreamSchema = z.strictObject({
-  text: z.string().max(MAX_SIDE_CHAT_STREAM_CHARS),
-  thinking: z.string().max(MAX_SIDE_CHAT_STREAM_CHARS),
-  textTruncated: z.boolean(),
-  thinkingTruncated: z.boolean(),
-});
-export type SideChatStream = z.infer<typeof SideChatStreamSchema>;
-
-export const SideChatToolStatusSchema = z.strictObject({
-  toolCallId: SideChatIdSchema,
-  name: z.string().max(MAX_SIDE_CHAT_TOOL_NAME_CHARS),
-  status: z.enum(["running", "completed", "failed"]),
-  nameTruncated: z.boolean(),
-});
-export type SideChatToolStatus = z.infer<typeof SideChatToolStatusSchema>;
 
 export const SideChatErrorSchema = z.strictObject({
   code: z.literal("run_failed"),
   message: z.literal("Side chat request failed"),
 });
 export type SideChatError = z.infer<typeof SideChatErrorSchema>;
+
+/**
+ * Display budget: text/thinking characters across every message plus the live
+ * partial. Tool arguments/results and other structured content are sanitized
+ * by the adapter and are not counted — same semantics the side chat always
+ * had (only prose was budgeted).
+ */
+function messageDisplayChars(message: AgentMessage): number {
+  let total = 0;
+  if (message.role === "assistant") {
+    for (const block of message.content) {
+      if (block.type === "text") total += block.text.length;
+      else if (block.type === "thinking") total += block.thinking.length;
+    }
+  } else if (message.role === "user" && typeof message.content === "string") {
+    total += message.content.length;
+  }
+  return total;
+}
+
+function partialDisplayChars(partial: StreamingAgentMessage | null): number {
+  if (partial === null || partial.role !== "assistant" || partial.content === undefined) return 0;
+  let total = 0;
+  for (const block of partial.content) {
+    if (block.type === "text") total += block.text.length;
+    else if (block.type === "thinking") total += block.thinking.length;
+  }
+  return total;
+}
 
 export const SideChatStateSchema = z.strictObject({
   conversationId: SideChatIdSchema,
@@ -56,31 +55,57 @@ export const SideChatStateSchema = z.strictObject({
   model: ModelRefSchema,
   thinkingLevel: ThinkingLevelSchema,
   status: SideChatStatusSchema,
-  messages: z.array(SideChatMessageSchema).max(MAX_SIDE_CHAT_MESSAGES),
+  /** Committed side conversation, reusing the main transcript message spec. */
+  messages: z.array(AgentMessageSchema).max(MAX_SIDE_CHAT_MESSAGES),
   messagesTruncated: z.boolean(),
   totalCharsTruncated: z.boolean(),
-  stream: SideChatStreamSchema,
-  tools: z.array(SideChatToolStatusSchema).max(MAX_SIDE_CHAT_TOOLS),
+  /** Live streaming partial for the in-flight turn (main-session shape). */
+  partialMessage: StreamingAgentMessageSchema.nullable(),
   error: SideChatErrorSchema.optional(),
 }).superRefine((state, ctx) => {
   if (state.status === "running" && state.runId === undefined) {
     ctx.addIssue({ code: "custom", path: ["runId"], message: "active side chat requires runId" });
   }
-  const total = state.messages.reduce((sum, message) => sum + message.text.length + (message.thinking?.length ?? 0), 0)
-    + state.stream.text.length + state.stream.thinking.length;
+  state.messages.forEach((message, index) => {
+    if (message.role === "user" && typeof message.content === "string" && message.content.length > MAX_SIDE_CHAT_MESSAGE_CHARS) {
+      ctx.addIssue({ code: "custom", path: ["messages", index, "content"], message: "side chat message exceeds per-message cap" });
+    }
+    if (message.role !== "assistant") return;
+    message.content.forEach((block, blockIndex) => {
+      const size = block.type === "text" ? block.text.length : block.type === "thinking" ? block.thinking.length : 0;
+      if (size > MAX_SIDE_CHAT_MESSAGE_CHARS) {
+        ctx.addIssue({ code: "custom", path: ["messages", index, "content", blockIndex], message: "side chat message exceeds per-message cap" });
+      }
+    });
+  });
+  const partial = state.partialMessage;
+  if (partial !== null && partial.role === "assistant" && partial.content !== undefined) {
+    partial.content.forEach((block, blockIndex) => {
+      const size = block.type === "text" ? block.text.length : block.type === "thinking" ? block.thinking.length : 0;
+      if (size > MAX_SIDE_CHAT_STREAM_CHARS) {
+        ctx.addIssue({ code: "custom", path: ["partialMessage", "content", blockIndex], message: "side chat partial exceeds stream cap" });
+      }
+    });
+  }
+  const total = state.messages.reduce((sum, message) => sum + messageDisplayChars(message), 0)
+    + partialDisplayChars(partial);
   if (total > MAX_SIDE_CHAT_TOTAL_DISPLAY_CHARS) {
     ctx.addIssue({ code: "custom", path: ["messages"], message: "side chat display budget exceeded" });
   }
 });
 export type SideChatState = z.infer<typeof SideChatStateSchema>;
 
+/**
+ * Revision-fenced replacement of the live streaming partial. Cheaper than a
+ * full state replacement per streamed chunk while staying a single
+ * authoritative shape (no text-diff reconstruction on the client).
+ */
 export const SideChatDeltaSchema = z.strictObject({
   conversationId: SideChatIdSchema,
   runId: SideChatIdSchema,
   previousRevision: z.number().int().nonnegative().safe(),
   revision: z.number().int().positive().safe(),
-  kind: z.enum(["text", "thinking"]),
-  delta: z.string().max(MAX_SIDE_CHAT_STREAM_CHARS),
+  partial: StreamingAgentMessageSchema,
 }).superRefine((delta, ctx) => {
   if (delta.revision <= delta.previousRevision) {
     ctx.addIssue({ code: "custom", path: ["revision"], message: "side chat delta revision must advance" });
@@ -88,66 +113,27 @@ export const SideChatDeltaSchema = z.strictObject({
 });
 export type SideChatDelta = z.infer<typeof SideChatDeltaSchema>;
 
-function bounded(value: string, max: number): { value: string; truncated: boolean } {
-  return value.length <= max ? { value, truncated: false } : { value: value.slice(0, max), truncated: true };
-}
-
-/** Apply a side stream delta while preserving the live answer before newest history. */
+/**
+ * Apply a streaming-partial replacement while preserving the fences. The
+ * display budget is enforced exactly like the authority: the live partial is
+ * kept intact and the OLDEST whole messages are dropped when history fills
+ * the aggregate budget (the adapter already published fine-clamped state;
+ * this is the client-side accumulator's safety net with identical
+ * semantics).
+ */
 export function applySideChatDelta(state: SideChatState | null | undefined, delta: SideChatDelta): SideChatState {
   if (state === null || state === undefined) throw new Error("side chat delta requires state");
   if (state.conversationId !== delta.conversationId || state.runId !== delta.runId) throw new Error("stale side chat identity");
   if (state.revision !== delta.previousRevision || delta.revision <= delta.previousRevision) throw new Error("stale side chat revision");
-
-  const current = delta.kind === "text" ? state.stream.text : state.stream.thinking;
-  const combined = current + delta.delta;
-  const updatedStream = delta.kind === "text"
-    ? { ...state.stream, text: combined, textTruncated: state.stream.textTruncated || combined.length > MAX_SIDE_CHAT_STREAM_CHARS }
-    : { ...state.stream, thinking: combined, thinkingTruncated: state.stream.thinkingTruncated || combined.length > MAX_SIDE_CHAT_STREAM_CHARS };
-
-  let remaining = MAX_SIDE_CHAT_TOTAL_DISPLAY_CHARS;
+  let messages = state.messages;
+  let messagesTruncated = state.messagesTruncated;
   let totalCharsTruncated = state.totalCharsTruncated;
-  const text = bounded(updatedStream.text, Math.min(MAX_SIDE_CHAT_STREAM_CHARS, remaining));
-  remaining -= text.value.length;
-  const thinking = bounded(updatedStream.thinking, Math.min(MAX_SIDE_CHAT_STREAM_CHARS, remaining));
-  remaining -= thinking.value.length;
-  if (text.truncated || thinking.truncated) totalCharsTruncated = true;
-
-  const reverseMessages: SideChatState["messages"][number][] = [];
-  let omittedMessages = false;
-  const sourceMessages = state.messages.slice(-MAX_SIDE_CHAT_MESSAGES);
-  for (let index = sourceMessages.length - 1; index >= 0; index -= 1) {
-    const message = sourceMessages[index]!;
-    const sourceThinking = message.thinking ?? "";
-    if (remaining === 0 && (message.text.length > 0 || sourceThinking.length > 0)) {
-      totalCharsTruncated = true;
-      omittedMessages = true;
-      continue;
-    }
-    const messageText = bounded(message.text, Math.min(MAX_SIDE_CHAT_MESSAGE_CHARS, remaining));
-    remaining -= messageText.value.length;
-    const messageThinking = bounded(sourceThinking, Math.min(MAX_SIDE_CHAT_MESSAGE_CHARS, remaining));
-    remaining -= messageThinking.value.length;
-    if (messageText.truncated || messageThinking.truncated) totalCharsTruncated = true;
-    reverseMessages.push({
-      ...message,
-      text: messageText.value,
-      ...(message.thinking === undefined ? {} : { thinking: messageThinking.value }),
-      textTruncated: message.textTruncated || messageText.truncated,
-      thinkingTruncated: message.thinkingTruncated || messageThinking.truncated,
-    });
+  let total = messages.reduce((sum, message) => sum + messageDisplayChars(message), 0) + partialDisplayChars(delta.partial);
+  while (total > MAX_SIDE_CHAT_TOTAL_DISPLAY_CHARS && messages.length > 0) {
+    total -= messageDisplayChars(messages[0]!);
+    messages = messages.slice(1);
+    messagesTruncated = true;
+    totalCharsTruncated = true;
   }
-
-  return {
-    ...state,
-    revision: delta.revision,
-    messages: reverseMessages.reverse(),
-    messagesTruncated: state.messagesTruncated || omittedMessages,
-    totalCharsTruncated,
-    stream: {
-      text: text.value,
-      thinking: thinking.value,
-      textTruncated: updatedStream.textTruncated || text.truncated,
-      thinkingTruncated: updatedStream.thinkingTruncated || thinking.truncated,
-    },
-  };
+  return { ...state, revision: delta.revision, messages, messagesTruncated, totalCharsTruncated, partialMessage: delta.partial };
 }

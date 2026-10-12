@@ -21,6 +21,7 @@ import {
   type RegisteredTool,
 } from "@earendil-works/pi-coding-agent";
 import { CanonicalAgentRuntimeAdapter } from "../src/internal/adapter.js";
+import type { SideChatState as RuntimeSideChatState } from "@fffattiger/pix-runtime-core";
 import type { PiRuntimeDriver } from "../src/internal/types.js";
 import {
   SideChatControllerError,
@@ -238,6 +239,43 @@ function textOf(messages: readonly AgentMessage[]): string {
   }).join("\n");
 }
 
+/** Display text of a Core side-chat message (committed or partial blocks). */
+function sideAgentText(message: RuntimeSideChatState["messages"][number]): string {
+  if (message.role === "user") {
+    if (typeof message.content === "string") return message.content;
+    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+  }
+  if (message.role === "assistant" || message.role === "toolResult") {
+    const textBlocks = message.content.filter((block) => block.type === "text") as Array<{ type: "text"; text: string }>;
+    return textBlocks.map((block) => block.text).join("");
+  }
+  return "";
+}
+
+function sideMessagesText(state: RuntimeSideChatState): string {
+  return state.messages.map(sideAgentText).join("\n");
+}
+
+function sidePartialText(partial: RuntimeSideChatState["partialMessage"]): string {
+  if (partial === null || partial.role !== "assistant" || partial.content === undefined) return "";
+  const textBlocks = partial.content.filter((block) => block.type === "text") as Array<{ type: "text"; text: string }>;
+  return textBlocks.map((block) => block.text).join("");
+}
+
+function controllerPartialText(state: SideChatState): string {
+  const partial = state.streamingPartial;
+  if (partial === null || partial.role !== "assistant") return "";
+  const textBlocks = partial.content.filter((block) => block.type === "text") as Array<{ type: "text"; text: string }>;
+  return textBlocks.map((block) => block.text).join("");
+}
+
+function controllerPartialThinking(state: SideChatState): string {
+  const partial = state.streamingPartial;
+  if (partial === null || partial.role !== "assistant") return "";
+  const thinkingBlocks = partial.content.filter((block) => block.type === "thinking") as Array<{ type: "thinking"; thinking: string }>;
+  return thinkingBlocks.map((block) => block.thinking).join("");
+}
+
 function activeToolNames(context: TranscriptContext): string[] {
   const active = new Map<string, boolean>();
   for (const message of context.messages) {
@@ -410,7 +448,7 @@ describe("vendored pi-side-chat characterization", () => {
     const admissionA = sideA.submit("side A question");
     assert.equal(sideA.getState().runId, admissionA.runId, "submit admission is synchronous");
     const streaming = await waitForState(sideA, (state) =>
-      state.streamingAssistant.text === "side A answer" && state.streamingAssistant.thinking === "side A thought"
+      controllerPartialText(state) === "side A answer" && controllerPartialThinking(state) === "side A thought"
     );
     assert.equal(streaming.conversationId, admissionA.conversationId);
     assert.equal(streaming.messages.some((message) => textOf([message]).includes("parent context")), false);
@@ -527,25 +565,25 @@ describe("vendored pi-side-chat characterization", () => {
 
     const first = await adapter.execute({ type: "side_chat_send", conversationId, message: "first question" });
     assert.equal(first.ok, true);
-    await waitForAdapterState(adapter, (state) => state.status === "idle" && state.messages.some((message) => message.text.includes("first answer")));
+    await waitForAdapterState(adapter, (state) => state.status === "idle" && sideMessagesText(state).includes("first answer"));
 
     const applied = await adapter.execute({ type: "side_chat_set_model", conversationId, provider: MODEL_ALT.provider, modelId: MODEL_ALT.id, thinkingLevel: "low" });
     assert.equal(applied.ok, true);
     const projected = await waitForAdapterState(adapter, (state) => state.model?.id === MODEL_ALT.id && state.thinkingLevel === "low");
-    assert.ok(projected.messages.some((message) => message.text.includes("first answer")), "set_model preserves conversation history");
+    assert.ok(sideMessagesText(projected).includes("first answer"), "set_model preserves conversation history");
 
     const held = await adapter.execute({ type: "side_chat_send", conversationId, message: "held question" });
     assert.equal(held.ok, true);
-    await waitForAdapterState(adapter, (state) => state.stream.text === "held answer");
+    await waitForAdapterState(adapter, (state) => sidePartialText(state.partialMessage) === "held answer");
     const busy = await adapter.execute({ type: "side_chat_set_model", conversationId, provider: MODEL.provider, modelId: MODEL.id, thinkingLevel: "high" });
     assert.equal(busy.ok, false);
     if (!busy.ok) assert.equal(busy.error.code, "session_busy");
 
     gate.release();
-    await waitForAdapterState(adapter, (state) => state.status === "idle" && state.messages.some((message) => message.text.includes("held answer")));
+    await waitForAdapterState(adapter, (state) => state.status === "idle" && sideMessagesText(state).includes("held answer"));
     const alt = await adapter.execute({ type: "side_chat_send", conversationId, message: "alt question" });
     assert.equal(alt.ok, true);
-    await waitForAdapterState(adapter, (state) => state.messages.some((message) => message.text.includes("alt answer")));
+    await waitForAdapterState(adapter, (state) => sideMessagesText(state).includes("alt answer"));
     // The side conversation's model projection keeps the applied selector.
     const lastSnapshot = await adapter.getSnapshot();
     assert.equal(lastSnapshot.state.sideChat?.model?.id, MODEL_ALT.id);
@@ -617,7 +655,7 @@ describe("vendored pi-side-chat characterization", () => {
     const revisions: number[] = [];
     side.subscribe((event) => revisions.push(event.revision));
     const run = side.submit("ignore abort");
-    await waitForState(side, (state) => state.streamingAssistant.text === "late abort text");
+    await waitForState(side, (state) => controllerPartialText(state) === "late abort text");
 
     await side.abort();
     const completion = await Promise.race([
@@ -633,6 +671,51 @@ describe("vendored pi-side-chat characterization", () => {
     late.release();
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(revisions.length, count, "late provider callbacks are generation-fenced");
+  });
+
+  it("emits revision-fenced partial-replacement deltas while streaming and replacements when messages commit", async (t) => {
+    const manager = SessionManager.inMemory("/workspace", { id: "delta-parent" });
+    const gate = new Gate();
+    const adapter = new CanonicalAgentRuntimeAdapter(adapterDriver(manager, [
+      new ScriptedModelRuntime([textStream("streamed answer", { gate })]),
+    ]));
+    t.after(async () => {
+      gate.release();
+      await adapter.close("user");
+    });
+    await adapter.ready();
+    const events: Array<{ type: string; delta?: { revision: number; previousRevision: number; partial: unknown } }> = [];
+    adapter.subscribe((event) => {
+      if (event.type === "side_chat_delta" || event.type === "side_chat_changed") {
+        events.push(event.type === "side_chat_delta"
+          ? { type: event.type, delta: { revision: event.delta.revision, previousRevision: event.delta.previousRevision, partial: event.delta.partial } }
+          : { type: event.type });
+      }
+    });
+    const started = await adapter.execute({ type: "side_chat_start" });
+    if (!started.ok || started.type !== "side_chat_start") throw new Error("side chat did not start");
+    const sent = await adapter.execute({ type: "side_chat_send", conversationId: started.conversationId, message: "stream question" });
+    assert.equal(sent.ok, true);
+
+    // While the run streams, only cheap partial-replacement deltas flow…
+    await waitForAdapterState(adapter, (state) => sidePartialText(state.partialMessage) === "streamed answer");
+    gate.release();
+    await waitForAdapterState(adapter, (state) => state.status === "idle" && sideMessagesText(state).includes("streamed answer"));
+
+    const deltas = events.filter((event) => event.type === "side_chat_delta");
+    assert.ok(deltas.length > 0, "streaming chunks must emit side_chat_delta");
+    for (const event of deltas) {
+      const delta = event.delta!;
+      assert.ok(delta.revision > delta.previousRevision, "delta revisions must advance");
+      const partial = delta.partial as { role: string; content?: Array<{ type: string }> };
+      assert.equal(partial.role, "assistant", "delta partial reuses the main streaming shape");
+      assert.ok(partial.content !== undefined);
+    }
+    // …and the committed turn lands as an authoritative full replacement.
+    assert.ok(events.at(-1)?.type === "side_chat_changed", "turn completion publishes a full replacement");
+    const finalState = await adapter.getSnapshot();
+    assert.equal(finalState.state.sideChat?.partialMessage, null, "partial clears once the turn commits");
+    assert.ok(sideMessagesText(finalState.state.sideChat!).includes("streamed answer"));
   });
 
   it("serializes reload with side lifecycle commands and withdraws side capability without a live controller", async (t) => {
@@ -662,7 +745,7 @@ describe("vendored pi-side-chat characterization", () => {
     const conversationId = started.conversationId;
     const sent = await adapter.execute({ type: "side_chat_send", conversationId, message: "hold old controller" });
     assert.equal(sent.ok, true);
-    await waitForAdapterState(adapter, (state) => state.status === "running" && state.stream.text === "old stream");
+    await waitForAdapterState(adapter, (state) => state.status === "running" && sidePartialText(state.partialMessage) === "old stream");
 
     const reloading = adapter.execute({ type: "reload" });
     for (const command of [
@@ -740,17 +823,17 @@ describe("vendored pi-side-chat characterization", () => {
     const oldConversationId = started.conversationId;
     const committed = await adapter.execute({ type: "side_chat_send", conversationId: oldConversationId, message: "committed question" });
     assert.equal(committed.ok, true);
-    await waitForAdapterState(adapter, (state) => state.status === "idle" && state.messages.some((message) => message.text.includes("committed answer")));
+    await waitForAdapterState(adapter, (state) => state.status === "idle" && sideMessagesText(state).includes("committed answer"));
     const sent = await adapter.execute({ type: "side_chat_send", conversationId: oldConversationId, message: "stuck question" });
     assert.equal(sent.ok, true);
-    await waitForAdapterState(adapter, (state) => state.stream.text === "stuck partial");
+    await waitForAdapterState(adapter, (state) => sidePartialText(state.partialMessage) === "stuck partial");
 
     const aborted = await adapter.interrupt({ type: "abort_side_chat", conversationId: oldConversationId });
     assert.equal(aborted.ok, true, "logical abort succeeds by quarantining the failed controller");
     const quarantined = await waitForAdapterState(adapter, (state) => state.status === "idle" && state.error !== undefined);
     assert.equal(quarantined.conversationId, oldConversationId);
     assert.deepEqual(quarantined.error, { code: "run_failed", message: "Side chat request failed" });
-    const retainedText = quarantined.messages.map((message) => message.text).join("\n");
+    const retainedText = sideMessagesText(quarantined);
     assert.match(retainedText, /committed question/);
     assert.match(retainedText, /committed answer/);
     assert.match(retainedText, /stuck question/, "committed side history is retained");
@@ -768,7 +851,7 @@ describe("vendored pi-side-chat characterization", () => {
     if (!stale.ok) assert.equal(stale.error.code, "not_found");
     const recovered = await adapter.execute({ type: "side_chat_send", conversationId: reset.conversationId, message: "fresh question" });
     assert.equal(recovered.ok, true);
-    const recoveredState = await waitForAdapterState(adapter, (state) => state.conversationId === reset.conversationId && state.status === "idle" && state.messages.some((message) => message.text.includes("recovered answer")));
+    const recoveredState = await waitForAdapterState(adapter, (state) => state.conversationId === reset.conversationId && state.status === "idle" && sideMessagesText(state).includes("recovered answer"));
     assert.equal(recoveredState.error, undefined);
 
     late.release();
@@ -784,7 +867,7 @@ describe("vendored pi-side-chat characterization", () => {
     const events: number[] = [];
     side.subscribe((event) => events.push(event.revision));
     const run = side.submit("wait forever");
-    await waitForState(side, (state) => state.streamingAssistant.text === "late text");
+    await waitForState(side, (state) => controllerPartialText(state) === "late text");
 
     const disposing = side.dispose();
     assert.strictEqual(side.dispose(), disposing, "dispose returns the same bounded promise");

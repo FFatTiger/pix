@@ -18,6 +18,13 @@ import {
   reduceRuntimeEventData,
 } from "../dist/index.js";
 
+const PARTIAL = {
+  role: "assistant",
+  content: [{ type: "text", text: "" }],
+  model: "model",
+  provider: "test",
+};
+
 function sideChat(patch = {}) {
   return {
     conversationId: "conversation-1",
@@ -29,8 +36,7 @@ function sideChat(patch = {}) {
     messages: [],
     messagesTruncated: false,
     totalCharsTruncated: false,
-    stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false },
-    tools: [],
+    partialMessage: PARTIAL,
     ...patch,
   };
 }
@@ -133,39 +139,68 @@ describe("side chat wire contract", () => {
     assert.equal(RuntimeSnapshotSchema.safeParse(legacy).success, true);
   });
 
-  it("reduces replacement and append-only deltas with exact fences", () => {
+  it("reduces replacement and partial-replacement deltas with exact fences", () => {
     const initial = snapshot(null);
     const replaced = reduceRuntimeEventData(initial, { type: "side_chat_changed", sessionId: "parent", sideChat: sideChat() });
     const next = reduceRuntimeEventData(replaced, {
       type: "side_chat_delta",
       sessionId: "parent",
-      delta: { conversationId: "conversation-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: "hello" },
+      delta: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        previousRevision: 1,
+        revision: 2,
+        partial: { role: "assistant", content: [{ type: "text", text: "hello" }], model: "model", provider: "test" },
+      },
     });
-    assert.equal(next.state.sideChat?.stream.text, "hello");
+    assert.deepEqual(next.state.sideChat?.partialMessage?.content, [{ type: "text", text: "hello" }]);
     assert.throws(() => reduceRuntimeEventData(next, {
       type: "side_chat_delta",
       sessionId: "parent",
-      delta: { conversationId: "old", runId: "run-1", previousRevision: 2, revision: 3, kind: "text", delta: "late" },
+      delta: {
+        conversationId: "old",
+        runId: "run-1",
+        previousRevision: 2,
+        revision: 3,
+        partial: { role: "assistant", content: [{ type: "text", text: "late" }], model: "model", provider: "test" },
+      },
     }), /stale side chat identity/);
+    // A non-advancing revision is fenced too.
+    assert.throws(() => reduceRuntimeEventData(next, {
+      type: "side_chat_delta",
+      sessionId: "parent",
+      delta: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        previousRevision: 1,
+        revision: 2,
+        partial: { role: "assistant", content: [], model: "model", provider: "test" },
+      },
+    }), /stale side chat revision/);
   });
 
-  it("keeps current stream visible when aggregate history is at the display budget", () => {
+  it("keeps the live partial visible when aggregate history is at the display budget", () => {
     const messages = Array.from({ length: 16 }, (_, index) => ({
-      id: `history-${index}`,
       role: "assistant",
-      text: "h".repeat(MAX_SIDE_CHAT_MESSAGE_CHARS),
-      textTruncated: false,
-      thinkingTruncated: false,
+      content: [{ type: "text", text: "h".repeat(MAX_SIDE_CHAT_MESSAGE_CHARS) }],
+      model: "model",
+      provider: "test",
     }));
-    const initial = snapshot(sideChat({ messages }));
+    const initial = snapshot(sideChat({ messages, partialMessage: null }));
     const next = reduceRuntimeEventData(initial, {
       type: "side_chat_delta",
       sessionId: "parent",
-      delta: { conversationId: "conversation-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: "live" },
+      delta: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        previousRevision: 1,
+        revision: 2,
+        partial: { role: "assistant", content: [{ type: "text", text: "live" }], model: "model", provider: "test" },
+      },
     });
-    assert.equal(next.state.sideChat?.stream.text, "live");
-    assert.equal(next.state.sideChat?.messages[0]?.text.length, MAX_SIDE_CHAT_MESSAGE_CHARS - 4);
-    assert.equal(next.state.sideChat?.messages[0]?.textTruncated, true);
+    const partialText = next.state.sideChat?.partialMessage?.content?.[0]?.text;
+    assert.equal(partialText, "live");
+    assert.ok(next.state.sideChat?.messagesTruncated, "oldest messages are dropped first");
     assert.equal(next.state.sideChat?.totalCharsTruncated, true);
     assert.equal(SideChatStateSchema.safeParse(next.state.sideChat).success, true);
   });
@@ -174,6 +209,9 @@ describe("side chat wire contract", () => {
     assert.equal(SideChatStateSchema.safeParse(sideChat({ status: "running", runId: undefined })).success, false);
     assert.equal(SideChatStateSchema.safeParse(sideChat({ mode: "edit" })).success, false, "edit mode is gone");
     assert.equal(SideChatStateSchema.safeParse(sideChat({ pendingOverlap: { id: "o1", runId: "r1", path: "a.ts", pathTruncated: false } })).success, false, "overlap approval is gone");
-    assert.equal(SideChatStateSchema.safeParse(sideChat({ stream: { text: "x".repeat(MAX_SIDE_CHAT_STREAM_CHARS + 1), thinking: "", textTruncated: false, thinkingTruncated: false } })).success, false);
+    const oversized = sideChat({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "x".repeat(MAX_SIDE_CHAT_MESSAGE_CHARS + 1) }], model: "model", provider: "test" }],
+    });
+    assert.equal(SideChatStateSchema.safeParse(oversized).success, false, "a single message block above the per-message cap is rejected");
   });
 });

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type, type Api, type Model } from "@earendil-works/pi-ai";
 import {
   buildSessionContext,
@@ -39,12 +40,6 @@ export interface SideChatForkContext {
   extensionTools: readonly RegisteredTool[];
 }
 
-export interface SideChatToolStatus {
-  toolCallId: string;
-  name: string;
-  status: "running" | "completed" | "failed";
-}
-
 export interface SideChatState {
   conversationId: string;
   generation: number;
@@ -54,11 +49,10 @@ export interface SideChatState {
   status: SideChatStatus;
   runId?: string;
   messages: AgentMessage[];
-  streamingAssistant: {
-    text: string;
-    thinking: string;
-  };
-  tools: SideChatToolStatus[];
+  /** Live partial assistant message for the in-flight turn (null when idle). */
+  streamingPartial: AssistantMessage | null;
+  /** Bumped whenever the committed message list changes (adapter delta fence). */
+  messagesRevision: number;
   error?: {
     code: "run_failed";
     message: string;
@@ -145,9 +139,8 @@ class HeadlessSideChatController implements SideChatController {
   private status: SideChatStatus = "idle";
   private activeRun: ActiveRun | undefined;
   private lastRunId: string | undefined;
-  private tools: SideChatToolStatus[] = [];
-  private streamingText = "";
-  private streamingThinking = "";
+  private streamingPartial: AssistantMessage | null = null;
+  private messagesRevision = 0;
   private error: SideChatState["error"];
   private disposed = false;
   private disposePromise: Promise<void> | undefined;
@@ -200,8 +193,8 @@ class HeadlessSideChatController implements SideChatController {
       status: this.status,
       ...(runId === undefined ? {} : { runId }),
       messages: structuredClone(this.agent.state.messages.slice(this.baselineMessageCount)),
-      streamingAssistant: { text: this.streamingText, thinking: this.streamingThinking },
-      tools: this.tools.map((tool) => ({ ...tool })),
+      streamingPartial: this.streamingPartial === null ? null : structuredClone(this.streamingPartial),
+      messagesRevision: this.messagesRevision,
       ...(this.error === undefined ? {} : { error: { ...this.error } }),
     };
   }
@@ -234,9 +227,7 @@ class HeadlessSideChatController implements SideChatController {
     this.activeRun = run;
     this.lastRunId = runId;
     this.status = "running";
-    this.streamingText = "";
-    this.streamingThinking = "";
-    this.tools = [];
+    this.streamingPartial = null;
     this.error = undefined;
     this.publish();
     void this.runPrompt(run, prompt);
@@ -278,8 +269,7 @@ class HeadlessSideChatController implements SideChatController {
     this.unsubscribeAgent();
     this.generation++;
     this.status = "disposed";
-    this.streamingText = "";
-    this.streamingThinking = "";
+    this.streamingPartial = null;
     this.publish();
     this.listeners.clear();
     if (run !== undefined) {
@@ -295,9 +285,7 @@ class HeadlessSideChatController implements SideChatController {
     this.generation++;
     this.activeRun = undefined;
     this.status = "disposed";
-    this.streamingText = "";
-    this.streamingThinking = "";
-    this.tools = this.tools.map((tool) => tool.status === "running" ? { ...tool, status: "failed" } : tool);
+    this.streamingPartial = null;
     this.error = { code: "run_failed", message: "Side chat request failed" };
     this.settleRun(run, "aborted");
     this.publish(run.id);
@@ -323,8 +311,7 @@ class HeadlessSideChatController implements SideChatController {
       if (this.accepts(run)) {
         this.activeRun = undefined;
         this.status = "idle";
-        this.streamingText = "";
-        this.streamingThinking = "";
+        this.streamingPartial = null;
         this.publish(run.id);
       }
       this.settleRun(run, status);
@@ -336,28 +323,18 @@ class HeadlessSideChatController implements SideChatController {
     if (run === undefined || !this.accepts(run)) return;
 
     if (event.type === "message_start" && event.message.role === "assistant") {
-      this.streamingText = "";
-      this.streamingThinking = "";
-    } else if (event.type === "message_update") {
-      if (event.assistantMessageEvent.type === "text_delta") {
-        this.streamingText += event.assistantMessageEvent.delta;
-      } else if (event.assistantMessageEvent.type === "thinking_delta") {
-        this.streamingThinking += event.assistantMessageEvent.delta;
-      }
+      this.streamingPartial = event.message;
+    } else if (event.type === "message_update" && event.message.role === "assistant") {
+      // The SDK partial already carries the accumulated content blocks
+      // (thinking / text / toolCall) — publish it verbatim instead of
+      // rebuilding a bespoke text/thinking pair.
+      this.streamingPartial = event.message;
     } else if (event.type === "message_end") {
-      this.streamingText = "";
-      this.streamingThinking = "";
-    } else if (event.type === "tool_execution_start") {
-      this.tools = [
-        ...this.tools.filter((tool) => tool.toolCallId !== event.toolCallId),
-        { toolCallId: event.toolCallId, name: event.toolName, status: "running" },
-      ];
-    } else if (event.type === "tool_execution_end") {
-      this.tools = this.tools.map((tool) =>
-        tool.toolCallId === event.toolCallId
-          ? { ...tool, status: event.isError ? "failed" : "completed" }
-          : tool
-      );
+      // The committed message landed in agent.state.messages (getState slices
+      // it); only the partial needs clearing. Every append bumps the adapter's
+      // delta fence.
+      this.messagesRevision += 1;
+      this.streamingPartial = null;
     }
     this.publish();
   }

@@ -12,5 +12,4 @@ export {
   type SideChatState,
   type SideChatStatus,
   type SideChatSubmission,
-  type SideChatToolStatus,
 } from "./headless-controller.js";

@@ -193,7 +193,7 @@ describe("event vocabulary and cursor ownership", () => {
     subagents_changed: { subagents: { revision: 1, tasks: [{ taskId: "t1", description: "scan", agentType: "explore", status: "running" }] } },
     todo_changed: { todo: { revision: 1, items: [{ id: 1, subject: "write", blockedBy: [], status: "pending" }] } },
     side_chat_changed: { sideChat: null },
-    side_chat_delta: { delta: { conversationId: "side-1", runId: "run-1", previousRevision: 1, revision: 2, kind: "text", delta: "x" } },
+    side_chat_delta: { delta: { conversationId: "side-1", runId: "run-1", previousRevision: 1, revision: 2, partial: { role: "assistant", content: [{ type: "text", text: "x" }] } } },
     subagent_delta: { childSessionId: "child-1", partial: { role: "assistant", content: [{ type: "text", text: "x" }] }, done: false },
     runtime_closed: { reason: "shutdown" }, session_changed: { cwd: "/p", leafId: "entry" },
     worker_crashed: { error: error("internal") }, running_sessions_changed: { sessionIds: ["s-1"], busySessionIds: ["s-1"] },

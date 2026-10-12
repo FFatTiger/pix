@@ -307,8 +307,7 @@ export class FakeWorkerConnection implements WorkerConnection {
               messages: [],
               messagesTruncated: false,
               totalCharsTruncated: false,
-              stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false },
-              tools: [],
+              partialMessage: null,
             };
             this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
             this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
@@ -326,7 +325,7 @@ export class FakeWorkerConnection implements WorkerConnection {
               revision: current.revision + 1,
               runId,
               status: "running" as const,
-              messages: [...current.messages, { id: `side-message-${current.messages.length}`, role: "user" as const, text: command.message, textTruncated: false, thinkingTruncated: false }],
+              messages: [...current.messages, { role: "user" as const, content: command.message }],
             };
             this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
             this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
@@ -340,7 +339,7 @@ export class FakeWorkerConnection implements WorkerConnection {
           } else {
             const conversationId = `side-conversation-${++this.sideChatSequence}`;
             const { runId: _runId, ...base } = current;
-            const sideChat = { ...base, conversationId, revision: 0, status: "idle" as const, messages: [], stream: { text: "", thinking: "", textTruncated: false, thinkingTruncated: false }, tools: [] };
+            const sideChat = { ...base, conversationId, revision: 0, status: "idle" as const, messages: [], partialMessage: null };
             this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
             this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
             commandOutcome = { ok: true, type: "side_chat_reset", conversationId };
