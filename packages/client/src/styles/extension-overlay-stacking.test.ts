@@ -26,10 +26,7 @@ describe("extension overlay stacking", () => {
     expect(Number(overlay.match(/z-index:\s*(\d+)/)?.[1])).toBeGreaterThan(130);
     expect(Number(overlay.match(/z-index:\s*(\d+)/)?.[1])).toBeLessThan(199);
     expect(dialog).toContain('zIndex: 140');
-    // Steer/queue and maximize live in the composer toolbar now; nothing
-    // floats above the input box for Ask to compete with.
-    expect(chatInput).not.toContain("top: -22");
-    expect(chatInput).toContain("chat-input-queue-group");
+    expect(chatInput).toContain("zIndex: 130");
   });
 
   it("keeps preview changes from resizing the centered dialog", () => {

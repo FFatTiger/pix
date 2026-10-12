@@ -93,19 +93,23 @@ describe("status card composer-strip layout", () => {
     expect(shell).toContain("key={`status:${activeSessionId}`}");
   });
 
-  it("keeps the area above the composer free for the status tab", () => {
+  it("reserves the composer's top-right floating controls so the pill never overlaps them", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const css = readFileSync(join(root, "styles/globals.css"), "utf8");
     const chatInput = readFileSync(join(root, "components/chat/ChatInput.tsx"), "utf8");
 
-    // No floating controls above the input box: steer/queue, maximize, notices
-    // and attachments all render inside it, so no reserve is needed.
-    expect(chatInput).not.toContain("top: -22");
-    expect(css).toContain("--composer-floating-controls-reserve: 0px");
-    const shellAt = chatInput.indexOf("ref={inputShellRef}");
-    expect(chatInput.indexOf('className="chat-input-attachments"')).toBeGreaterThan(shellAt);
-    expect(chatInput.indexOf('className="chat-input-notices"')).toBeGreaterThan(shellAt);
-    expect(chatInput.indexOf('className="chat-input-queue-group"')).toBeGreaterThan(chatInput.indexOf('className="chat-input-toolbar"'));
+    // One shared variable sizes the reserve (footprint derivation lives next
+    // to its definition); the pill row consumes exactly that variable.
+    expect(css).toContain("--composer-floating-controls-reserve: 160px");
+    expect(rule(css, ".status-card-shell")).toContain("padding-right: var(--composer-floating-controls-reserve)");
+    // The floating group really sits at the composer's top-right (ChatInput),
+    // so the reserve is the single knob keeping the two apart.
+    expect(chatInput).toContain("top: -22");
+    expect(chatInput).toContain("right: isMobile ? 12 : 20");
+    // Attachment previews render inside the input box, so nothing can sit
+    // between the status tab and the composer top edge.
+    expect(chatInput.indexOf('className="chat-input-attachments"')).toBeGreaterThan(chatInput.indexOf("ref={inputShellRef}"));
+    // The pill itself can only shrink within the reserved row.
     expect(rule(css, ".subagent-activity-capsule")).toContain("max-width: 100%");
   });
 
