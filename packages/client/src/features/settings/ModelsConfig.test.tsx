@@ -102,7 +102,7 @@ describe("ModelsConfig", () => {
     expect(fetchMock.mock.calls.every((call) => String(call[0]) !== "/v1/models/discover")).toBe(true);
   });
 
-  it("can explicitly remove a stored API key without exposing it", async () => {
+  it("removes a stored API key only after an inline danger confirmation, without exposing it", async () => {
     let putBody: unknown;
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "PUT") {
@@ -113,13 +113,30 @@ describe("ModelsConfig", () => {
     });
     mount(fetchMock);
 
-    await screen.findByRole("button", { name: "Remove stored key" });
-    fireEvent.click(screen.getByRole("button", { name: "Remove stored key" }));
+    const remove = await screen.findByRole("button", { name: "Remove stored key" });
+    // Two-step confirm: arming alone changes nothing.
+    fireEvent.click(remove);
+    expect(screen.getByText("Delete?")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     expect(screen.getByRole("button", { name: "Keep stored key" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(putBody).toBeTruthy());
     expect(putBody).toMatchObject({ providers: [{ apiKey: { mode: "remove" } }] });
+  });
+
+  it("keeps Save disabled while a client-side validation error is showing", async () => {
+    const fetchMock = vi.fn(async () => json(snapshot));
+    mount(fetchMock);
+    await screen.findAllByText("acme-deepseek");
+    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
+    // The new model has an empty id → validation error; Save must stay disabled.
+    expect(await screen.findByText("Every model needs an ID.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+    // Fixing the draft re-enables Save.
+    const id = screen.getByText("ID *").parentElement!.querySelector("input")!;
+    fireEvent.change(id, { target: { value: "fixed-model" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
   });
 
   it("shows model-specific conflict copy instead of a catalog or project-path error", async () => {

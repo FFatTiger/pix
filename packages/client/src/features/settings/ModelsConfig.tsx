@@ -512,16 +512,19 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
                     <div className="models-secret-meta">
                       <span className="models-field-hint">{t("desktop.modelsApiKeyHelp")}</span>
                       {selectedProvider.apiKeyConfigured ? (
-                        <SettingsButton
-                          size="sm"
-                          variant={selectedProvider.apiKeyMutation === "remove" ? "default" : "danger"}
-                          onClick={() => updateProvider(selectedProvider.key, {
-                            apiKeyValue: "",
-                            apiKeyMutation: selectedProvider.apiKeyMutation === "remove" ? "preserve" : "remove",
-                          })}
-                        >
-                          {selectedProvider.apiKeyMutation === "remove" ? t("desktop.modelsKeepStoredKey") : t("desktop.modelsRemoveStoredKey")}
-                        </SettingsButton>
+                        selectedProvider.apiKeyMutation === "remove" ? (
+                          <SettingsButton
+                            size="sm"
+                            onClick={() => updateProvider(selectedProvider.key, { apiKeyMutation: "preserve" })}
+                          >
+                            {t("desktop.modelsKeepStoredKey")}
+                          </SettingsButton>
+                        ) : (
+                          <SettingsDangerButton
+                            label={t("desktop.modelsRemoveStoredKey")}
+                            onConfirm={() => updateProvider(selectedProvider.key, { apiKeyValue: "", apiKeyMutation: "remove" })}
+                          />
+                        )
                       ) : null}
                     </div>
                   </SettingsField>
@@ -569,6 +572,7 @@ function ModelsEditor({ snapshot }: { snapshot: ModelsConfigResponse }) {
         saving={save.isPending}
         error={errorText}
         saved={save.isSuccess && !dirty && !errorText}
+        saveDisabled={!dirty || save.isPending || Boolean(validationError)}
         onSave={() => save.mutate(mutationFromDraft(revision, providers), { onSuccess: reset })}
         onDiscard={() => reset(snapshot)}
       />

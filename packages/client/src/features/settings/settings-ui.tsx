@@ -447,6 +447,7 @@ export function SettingsSaveBar({
   saving = false,
   error,
   saved,
+  saveDisabled,
   onSave,
   onDiscard,
   "data-testid": testId,
@@ -460,6 +461,8 @@ export function SettingsSaveBar({
   error: string | null;
   /** True right after a successful save (shows the fixed confirmation). */
   saved: boolean;
+  /** Overrides the Save button's disabled computation (e.g. client-side validation). */
+  saveDisabled?: boolean;
   onSave: () => void;
   onDiscard: () => void;
   "data-testid"?: string;
@@ -476,7 +479,7 @@ export function SettingsSaveBar({
       </span>
       <div className="settings-savebar-actions">
         <SettingsButton disabled={busy} onClick={onDiscard}>{t("desktop.settingsDiscard")}</SettingsButton>
-        <SettingsButton variant="primary" disabled={!dirty || busy} onClick={onSave}>
+        <SettingsButton variant="primary" disabled={saveDisabled ?? (!dirty || busy)} onClick={onSave}>
           {saving ? t("desktop.modelsSaving") : t("desktop.modelsSave")}
         </SettingsButton>
       </div>
