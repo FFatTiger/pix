@@ -329,7 +329,7 @@ const INITIAL_VIEW: ControllerView = {
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type RuntimeCommandWithoutId = DistributiveOmit<RuntimeCommand, "commandId">;
 type SideChatCommandWithoutId = Extract<RuntimeCommandWithoutId, {
-  type: "side_chat_start" | "side_chat_send" | "side_chat_reset" | "side_chat_set_mode" | "side_chat_overlap_response";
+  type: "side_chat_start" | "side_chat_send" | "side_chat_reset" | "side_chat_set_model";
 }>;
 
 /** Interactive extension request methods — the only ones that produce a response. */
@@ -442,13 +442,13 @@ interface CommandPending {
   reject(error: unknown): void;
 }
 
-/** Independent bounded command lane for the five side-chat mutations. */
+/** Independent bounded command lane for the side-chat mutations. */
 interface SideChatCommandPending {
   readonly commandId: string;
   attempt: RuntimeAttemptHandle | null;
   readonly sessionId: string;
   readonly command: WsClientMessage;
-  readonly type: "side_chat_start" | "side_chat_send" | "side_chat_reset";
+  readonly type: "side_chat_start" | "side_chat_send" | "side_chat_reset" | "side_chat_set_model";
   readonly promise: Promise<unknown>;
   timer: unknown | null;
   resolve(value: unknown): void;
@@ -2463,6 +2463,13 @@ export class SessionController implements RuntimeControllerPort {
     return this.runSideChatCommand({ type: "side_chat_reset", conversationId, mode }, (outcome) => {
       if (outcome.type !== "side_chat_reset") throw new Error("unexpected side_chat_reset result");
       return outcome.conversationId;
+    });
+  }
+
+  /** Apply model + thinking level to subsequent side-chat turns (idle only). */
+  sideChatSetModel(conversationId: string, provider: string, modelId: string, thinkingLevel: ThinkingLevel): Promise<void> {
+    return this.runSideChatCommand({ type: "side_chat_set_model", conversationId, provider, modelId, thinkingLevel }, (outcome) => {
+      if (outcome.type !== "side_chat_set_model") throw new Error("unexpected side_chat_set_model result");
     });
   }
 

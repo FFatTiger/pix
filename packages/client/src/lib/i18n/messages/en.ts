@@ -223,6 +223,7 @@ export const enLocale = {
     "desktop.sideChatMessage": "Side chat message",
     "desktop.sideChatSend": "Send to side chat",
     "desktop.sideChatStop": "Stop side chat",
+    "desktop.sideChatModelLocked": "The model is locked while the side chat is running.",
     "desktop.sideChatToolStatus.running": "Running",
     "desktop.sideChatToolStatus.completed": "Completed",
     "desktop.sideChatToolStatus.failed": "Failed",

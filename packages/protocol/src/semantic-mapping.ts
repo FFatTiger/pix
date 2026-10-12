@@ -37,6 +37,7 @@ export const RUNTIME_COMMAND_CAPABILITY_MATRIX = {
   side_chat_start: "runtime.side_chat",
   side_chat_send: "runtime.side_chat",
   side_chat_reset: "runtime.side_chat",
+  side_chat_set_model: "runtime.side_chat",
 } as const satisfies Readonly<Record<RuntimeCommandType, RuntimeCapability | null>>;
 
 export const RUNTIME_INTERRUPT_CAPABILITY_MATRIX = {

@@ -301,9 +301,8 @@ export class FakeWorkerConnection implements WorkerConnection {
             const sideChat = {
               conversationId,
               revision: 0,
-              capturedModel: this.liveSnapshot.state.model ?? { provider: "fake", id: "fake-model" },
-              capturedThinkingLevel: this.liveSnapshot.state.thinkingLevel ?? "off" as const,
-              mode: "read_only" as const,
+              model: this.liveSnapshot.state.model ?? { provider: "fake", id: "fake-model" },
+              thinkingLevel: this.liveSnapshot.state.thinkingLevel ?? "off" as const,
               status: "idle" as const,
               messages: [],
               messagesTruncated: false,
@@ -345,6 +344,24 @@ export class FakeWorkerConnection implements WorkerConnection {
             this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
             this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
             commandOutcome = { ok: true, type: "side_chat_reset", conversationId };
+          }
+        }
+        if (command.type === "side_chat_set_model") {
+          const current = this.liveSnapshot.state.sideChat;
+          if (current === null || current === undefined || current.conversationId !== command.conversationId) {
+            commandOutcome = { ok: false, type: "side_chat_set_model", error: { code: "not_found", message: "side chat target not found", retryable: false } };
+          } else if (current.status !== "idle") {
+            commandOutcome = { ok: false, type: "side_chat_set_model", error: { code: "session_busy", message: "side chat is busy", retryable: true } };
+          } else {
+            const sideChat = {
+              ...current,
+              revision: current.revision + 1,
+              model: { provider: command.provider, id: command.modelId },
+              thinkingLevel: command.thinkingLevel,
+            };
+            this.liveSnapshot = { ...this.liveSnapshot, state: { ...this.liveSnapshot.state, sideChat } };
+            this.emitEvent({ type: "side_chat_changed", sessionId: message.payload.sessionId, sideChat });
+            commandOutcome = { ok: true, type: "side_chat_set_model" };
           }
         }
         if (command.type === "reload") {

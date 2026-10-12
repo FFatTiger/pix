@@ -1,5 +1,4 @@
 
-import { reportPreferenceWrite } from "@/lib/preferences/preference-sync";
 import { getStreamingSendMode, type StreamingSendMode } from "@/lib/chat-input-preferences";
 import React, { useMemo, useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, type KeyboardEvent } from "react";
 import type { BuiltinSlashCommandResult, ChatFileIndexSnapshot, CompactResultInfo, QueuedMessages, SkillDormancyResponse, SlashCommandInfo } from "@/lib/chat-view-model";
@@ -25,12 +24,12 @@ import { tokenizeMentions } from "@/lib/mention-tokens";
 // the future integration (react-query), not the component.
 import { cssPx, getUiScale } from "@/lib/ui-scale";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
-import { filterThinkingLevelOptions } from "@/lib/thinking-levels";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useResizableHeight } from "@/hooks/useResizableHeight";
 import { getCurrentVisualViewportHeight } from "@/hooks/useVisualViewportHeight";
 import { useI18n } from "@/hooks/useI18n";
+import { ModelSelector, ThinkingLevelSelector } from "./composer-selectors";
 import { ArrowBendUpLeftIcon } from "@phosphor-icons/react/ArrowBendUpLeft";
 import { ArrowClockwiseIcon } from "@phosphor-icons/react/ArrowClockwise";
 import { ArrowElbowUpLeftIcon } from "@phosphor-icons/react/ArrowElbowUpLeft";
@@ -42,17 +41,11 @@ import { UploadSimpleIcon } from "@phosphor-icons/react/UploadSimple";
 import { SortDescendingIcon } from "@phosphor-icons/react/SortDescending";
 
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
-import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CheckIcon } from "@phosphor-icons/react/Check";
-import { LightbulbIcon } from "@phosphor-icons/react/Lightbulb";
-import { LightningIcon } from "@phosphor-icons/react/Lightning";
-import { MagnifyingGlassIcon } from "@phosphor-icons/react/MagnifyingGlass";
 import { PaperPlaneRightIcon } from "@phosphor-icons/react/PaperPlaneRight";
 import { PlusIcon } from "@phosphor-icons/react/Plus";
 import { SquareIcon } from "@phosphor-icons/react/Square";
-import { StarIcon } from "@phosphor-icons/react/Star";
 import { StarFourIcon } from "@phosphor-icons/react/StarFour";
-import { ProviderIcon } from "./ProviderIcon";
 import { XIcon } from "@phosphor-icons/react/X";
 
 export interface AttachedImage {
@@ -66,13 +59,6 @@ type PendingFile = ChatDraftFile;
 interface FileSubmissionToken {
   id: number;
   identityRevision: number;
-}
-
-interface ModelOption {
-  provider: string;
-  modelId: string;
-  name: string;
-  api?: string | undefined; // strictness: modelList entries carry `api?: string`
 }
 
 interface Props {
@@ -172,7 +158,7 @@ export interface ChatInputHandle {
 }
 
 const COMPOSITION_END_ENTER_GRACE_MS = 100;
-const MODEL_OPTION_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const SLASH_COMMAND_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 // Content-driven textarea growth is capped at this (existing behavior). The
 // manual resize ceiling is separate and lives in MANUAL_MAX_HEIGHT_*.
@@ -190,56 +176,6 @@ function nextPendingFileId(): string {
   pendingFileSequence += 1;
   return `file-${pendingFileSequence}`;
 }
-
-function compareModelOptions(a: ModelOption, b: ModelOption): number {
-  return MODEL_OPTION_COLLATOR.compare(a.name || a.modelId, b.name || b.modelId)
-    || MODEL_OPTION_COLLATOR.compare(a.provider, b.provider)
-    || MODEL_OPTION_COLLATOR.compare(a.modelId, b.modelId);
-}
-
-function ThinkingLevelIcon({ level, size = 14 }: { level: ThinkingLevelOption; size?: number }) {
-  if (level === "off") {
-    return <LightbulbIcon size={size} weight="regular" color="var(--text-dim)" />;
-  }
-
-  if (level === "auto") {
-    return <StarFourIcon size={size} weight="regular" color="var(--accent)" />;
-  }
-
-  const useFill = ["medium", "high", "xhigh", "max"].includes(level);
-  const bulbWeight = useFill ? "fill" : "regular";
-  const accentColor = "var(--accent)";
-
-  return (
-    <span style={{ position: "relative", display: "inline-flex" }}>
-      <LightbulbIcon size={size} weight={bulbWeight} color={accentColor} />
-      {level === "high" && (
-        <PlusIcon
-          size={Math.round(size * 0.57)}
-          weight="bold"
-          color={accentColor}
-          style={{ position: "absolute", right: -4, top: -1 }}
-        />
-      )}
-      {level === "xhigh" && (
-        <LightningIcon
-          size={Math.round(size * 0.57)}
-          weight="fill"
-          color={accentColor}
-          style={{ position: "absolute", right: -4, top: -1 }}
-        />
-      )}
-      {level === "max" && (
-        <span style={{ position: "absolute", right: -6, top: -1, display: "inline-flex" }}>
-          <LightningIcon size={Math.round(size * 0.5)} weight="fill" color={accentColor} style={{ marginRight: -3 }} />
-          <LightningIcon size={Math.round(size * 0.5)} weight="fill" color={accentColor} />
-        </span>
-      )}
-    </span>
-  );
-}
-
-
 
 function formatTokenCount(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
@@ -489,18 +425,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (typeof window === "undefined") return "";
     return draftKey ? getDraft(draftKey)?.value ?? "" : "";
   });
-  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-  const [modelDropdownRect, setModelDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
-  const [modelSearch, setModelSearch] = useState("");
-  const [favorites, setFavorites] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem("pi-favorite-models");
-      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
-    } catch { return new Set<string>(); }
-  });
-  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
-  const [thinkingDropdownOpen, setThinkingDropdownOpen] = useState(false);
-  const [thinkingDropdownRect, setThinkingDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [projectDropdownRect, setProjectDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const [customPathMode, setCustomPathMode] = useState(false);
@@ -563,10 +487,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightLayerRef = useRef<HTMLDivElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const modelDropdownPanelRef = useRef<HTMLDivElement>(null);
-  const modelSearchRef = useRef<HTMLInputElement>(null);
-  const thinkingDropdownRef = useRef<HTMLDivElement>(null);
   const projectDropdownRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -941,25 +861,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     });
   }, [value, applyAutoHeight]);
 
-  const toggleFavorite = useCallback((provider: string, modelId: string) => {
-    setFavorites((prev) => {
-      const key = `${provider}:${modelId}`;
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      localStorage.setItem("pi-favorite-models", JSON.stringify([...next]));
-      reportPreferenceWrite("pi-favorite-models", JSON.stringify([...next]));
-      return next;
-    });
-  }, []);
-
-  const toggleProviderExpand = useCallback((provider: string) => {
-    setExpandedProviders((prev) => {
-      const next = new Set(prev);
-      if (next.has(provider)) next.delete(provider); else next.add(provider);
-      return next;
-    });
-  }, []);
-
   const removeImage = useCallback((index: number) => {
     setAttachedImages((prev) => {
       const next = [...prev];
@@ -1310,7 +1211,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         const rankDelta = slashMatchRank(a, slashQuery) - slashMatchRank(b, slashQuery);
         if (rankDelta !== 0) return rankDelta;
         return SLASH_SOURCE_ORDER[a.source] - SLASH_SOURCE_ORDER[b.source]
-          || MODEL_OPTION_COLLATOR.compare(a.name, b.name);
+          || SLASH_COMMAND_COLLATOR.compare(a.name, b.name);
       });
   })();
 
@@ -1853,33 +1754,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     slashItemRefs.current[slashActiveIndex]?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [slashActiveIndex, slashMenuOpen]);
 
-  // Build model options: prefer modelList (has provider info), fallback to modelNames
-  const modelOptions: ModelOption[] = (() => {
-    if (modelList && modelList.length > 0) {
-      return modelList.map((m) => ({ provider: m.provider, modelId: m.id, name: m.name, api: m.api })).sort(compareModelOptions);
-    }
+  // Model options for the shared selector: prefer modelList (has provider
+  // info), fall back to modelNames keyed under the current provider.
+  const selectorModelList = useMemo(() => {
+    if (modelList && modelList.length > 0) return modelList;
     return Object.entries(modelNames ?? {}).map(([modelId, name]) => ({
-      provider: model?.provider ?? "unknown",
-      modelId,
+      id: modelId,
       name,
-    })).sort(compareModelOptions);
-  })();
-
-  // Group options by provider, preserving insertion order
-  const modelsByProvider: { provider: string; options: ModelOption[] }[] = [];
-  for (const opt of modelOptions) {
-    const group = modelsByProvider.find((g) => g.provider === opt.provider);
-    if (group) group.options.push(opt);
-    else modelsByProvider.push({ provider: opt.provider, options: [opt] });
-  }
-
-  const currentModelOption = model
-    ? modelOptions.find((o) => o.modelId === model.modelId && o.provider === model.provider)
-    : undefined;
-  // A detached session can have no persisted model (for example an empty or
-  // legacy JSONL session). Keep that state honest while still allowing the
-  // user to choose a model; never substitute the catalog default/first item.
-  const currentName = currentModelOption?.name ?? model?.modelId ?? t("desktop.modelsSelectProviderOrModel");
+      provider: model?.provider ?? "unknown",
+    }));
+  }, [modelList, modelNames, model?.provider]);
 
   // Image input is only available for models whose registry entry declares
   // `input` to include "image". Unknown models (not in the visible scope, or
@@ -1900,7 +1784,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const compactResultText = compactResult
     ? `${t("desktop.compacted")} ${formatTokenCount(compactResult.tokensBefore)} -> ${formatTokenCount(compactResult.estimatedTokensAfter)} ${t("desktop.tokens")} (${formatTokenCount(compactSavedTokens)} ${t("desktop.saved")})`
     : null;
-  const thinkingDisplayLabel = (() => {
+  const thinkingTitleLabel = (() => {
     const lvl = thinkingLevel ?? "auto";
     if (lvl === "auto" || !thinkingLevelMap) return lvl;
     return thinkingLevelMap[lvl] ?? lvl;
@@ -1912,15 +1796,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (
-        dropdownRef.current && !dropdownRef.current.contains(e.target as Node) &&
-        modelDropdownPanelRef.current && !modelDropdownPanelRef.current.contains(e.target as Node)
-      ) {
-        setModelDropdownOpen(false);
-      }
-      if (thinkingDropdownRef.current && !thinkingDropdownRef.current.contains(e.target as Node)) {
-        setThinkingDropdownOpen(false);
-      }
       if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
         setAttachMenuOpen(false);
       }
@@ -1942,18 +1817,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     document.addEventListener("keydown", escHandler);
     return () => document.removeEventListener("keydown", escHandler);
   }, []);
-
-  // Opening the picker must not focus the search field: on iOS that both
-  // summons the keyboard and zooms the page. Keep the current model visible
-  // instead, while leaving search available after an explicit tap.
-  useEffect(() => {
-    if (!modelDropdownOpen) return;
-    const frame = window.requestAnimationFrame(() => {
-      const currentRow = modelDropdownPanelRef.current?.querySelector<HTMLElement>('[data-current-model="true"]');
-      currentRow?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [modelDropdownOpen, currentModelOption?.modelId, currentModelOption?.provider]);
 
 
 
@@ -2846,94 +2709,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               );
             })()}
             {onThinkingLevelChange && (
-              <div ref={thinkingDropdownRef} className="chat-input-toolbar-thinking" style={{ position: "relative" }}>
-                <button
-                  onClick={(e) => { const rect = (e.currentTarget as HTMLElement).getBoundingClientRect(); setThinkingDropdownRect({ top: cssPx(rect.top), left: cssPx(rect.left), width: cssPx(rect.width) }); setThinkingDropdownOpen((v) => !v); }}
-                  title={isStreaming ? t("desktop.changeReasoningLevelWhileRunning", { level: thinkingDisplayLabel }) : t("desktop.changeReasoningLevel", { level: thinkingDisplayLabel })}
-                  aria-label={t("desktop.reasoningLevel")}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                    padding: isMobile ? "0 5px" : "3px 7px",
-                    width: isMobile ? "auto" : undefined,
-                    height: 24,
-                    background: thinkingDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: 6,
-                    color: (thinkingLevel ?? "auto") === "off" ? "var(--text-dim)" : "var(--accent)",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = thinkingDropdownOpen ? "var(--bg-hover)" : "none";
-                  }}
-                >
-                  <ThinkingLevelIcon level={thinkingLevel ?? "auto"} />
-                  <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>
-                  <CaretDownIcon
-                    size={11}
-                    weight="bold"
-                    aria-hidden="true"
-                    style={{ transform: thinkingDropdownOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.12s" }}
-                  />
-                </button>
-                {thinkingDropdownOpen && thinkingDropdownRect && (() => {
-                    const vh = cssPx(window.visualViewport?.height ?? window.innerHeight);
-                    const vw = cssPx(window.innerWidth);
-                    const panelMaxW = Math.min(240, vw - 16);
-                    // Anchor the menu's bottom-right to the selector's top-right.
-                    const l = Math.min(thinkingDropdownRect.left, vw - panelMaxW - 8);
-                    const b = vh - thinkingDropdownRect.top + 4;
-                    const maxH = Math.min(360, Math.max(120, Math.min(thinkingDropdownRect.top - 8, vh * 0.6)));
-                    return (
-                  <div className="chat-input-menu-panel" style={{
-                    position: "fixed", bottom: b, left: l,
-                    zIndex: 2001, background: "var(--bg-panel)", border: "1px solid var(--border)",
-                    borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-                    overflow: "hidden", minWidth: 200, maxWidth: panelMaxW, maxHeight: maxH, overflowY: "auto",
-                  }}>
-                    <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
-                    {filterThinkingLevelOptions(availableThinkingLevels).map((lvl) => {
-                      const isActive = (thinkingLevel ?? "auto") === lvl;
-                      const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
-                      const displayLabel = (mappedVal != null && mappedVal !== lvl) ? mappedVal : lvl;
-                      const showOriginal = mappedVal != null && mappedVal !== lvl;
-                      return (
-                        <button
-                          key={lvl}
-                          onClick={() => { setThinkingDropdownOpen(false); if (!isActive) onThinkingLevelChange(lvl); }}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 8,
-                            width: "100%", padding: "4px 10px",
-                            borderRadius: 4,
-                            background: isActive ? "var(--bg-selected)" : "none",
-                            border: "none",
-                            color: isActive ? "var(--accent)" : "var(--text)",
-                            cursor: "pointer", fontSize: 12, textAlign: "left",
-                            fontFamily: "var(--font-mono)",
-                            whiteSpace: "nowrap",
-                            transition: "background 0.1s ease",
-                          }}
-                          onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                          onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                        >
-                          <ThinkingLevelIcon level={lvl} size={14} />
-                          <span style={{ flex: 1 }}>
-                            {displayLabel}
-                            {showOriginal && <span style={{ fontSize: 10, color: "var(--text-dim)", marginLeft: 5 }}>({lvl})</span>}
-                          </span>
-                          {isActive && <CheckIcon size={12} weight="bold" color="var(--accent)" style={{ flexShrink: 0 }} />}
-                        </button>
-                      );
-                    })}
-                    </div>
-                  </div>
-                    );
-                  })()}
-              </div>
+              <ThinkingLevelSelector
+                thinkingLevel={thinkingLevel}
+                onThinkingLevelChange={onThinkingLevelChange}
+                {...(availableThinkingLevels === undefined ? {} : { availableThinkingLevels })}
+                {...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap })}
+                {...(isStreaming ? { title: t("desktop.changeReasoningLevelWhileRunning", { level: thinkingTitleLabel }) } : {})}
+              />
             )}
             {onProjectChange && projectRoots && (
               <div ref={projectDropdownRef} className="chat-input-toolbar-project" style={{ position: "relative" }}>
@@ -3125,322 +2907,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               gap: 2,
             }}>
             {/* Model selector — always interactive; changes apply from the next turn while streaming */}
-            {modelOptions.length > 0 && onModelChange && (
-                <div ref={dropdownRef} className="chat-input-toolbar-model" style={{ position: "relative", flex: "0 1 auto", minWidth: 0, width: "auto", maxWidth: isMobile ? 200 : 220 }}>
-                  <button
-                    onClick={(e) => {
-                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                      setModelDropdownRect({ top: cssPx(rect.top), left: cssPx(rect.left), width: cssPx(rect.width) });
-                      if (!modelDropdownOpen) {
-                        setModelSearch("");
-                        if (currentModelOption) {
-                          setExpandedProviders((current) => {
-                            if (current.has(currentModelOption.provider)) return current;
-                            const next = new Set(current);
-                            next.add(currentModelOption.provider);
-                            return next;
-                          });
-                        }
-                      }
-                      setModelDropdownOpen((v) => !v);
-                    }}
-                    title={isStreaming ? t("desktop.changeModelWhileRunning") : t("desktop.changeModel")}
-                    aria-label={t("desktop.changeModel")}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 6,
-                      justifyContent: isMobile ? "flex-start" : undefined,
-                      padding: isMobile ? "4px 6px" : "3px 7px",
-                      height: 24,
-                      width: "auto",
-                      maxWidth: "100%",
-                      overflow: "hidden",
-                      background: modelDropdownOpen ? "var(--bg-hover)" : "none",
-                      border: "none",
-                      borderRadius: 6,
-                      color: "var(--text-muted)",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      transition: "background 0.12s, color 0.12s",
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = "var(--bg-hover)";
-                      e.currentTarget.style.color = "var(--text)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = modelDropdownOpen ? "var(--bg-hover)" : "none";
-                      e.currentTarget.style.color = "var(--text-muted)";
-                    }}
-                  >
-                    <ProviderIcon id={model?.provider ?? "unknown"} api={currentModelOption?.api ?? null} size={14} />
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: "0 1 auto" }}>{currentName}</span>
-                    <CaretDownIcon
-                      size={11}
-                      weight="bold"
-                      aria-hidden="true"
-                      style={{ flexShrink: 0, transform: modelDropdownOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.12s" }}
-                    />
-                  </button>
-                  {modelDropdownOpen && modelDropdownRect && (() => {
-                    const viewportHeight = cssPx(window.visualViewport?.height ?? window.innerHeight);
-                    const viewportWidth = cssPx(window.innerWidth);
-                    const bottom = viewportHeight - modelDropdownRect.top + 6;
-                    const maxH = Math.min(400, Math.max(120, Math.min(modelDropdownRect.top - 8, viewportHeight * 0.6)));
-                    // On mobile, pin to a small left margin and cap width to the
-                    // viewport so long model names never push the panel off-screen.
-                    // On desktop, clamp left so the panel stays within the viewport.
-                    const panelMinWidth = modelDropdownRect.width;
-                    const panelMaxWidth = Math.min(400, viewportWidth - 16);
-                    const panelPos: React.CSSProperties = isMobile
-                      ? { left: 8, right: 8, maxWidth: "calc(100vw / var(--app-ui-scale, 1) - 16px)" }
-                      : {
-                          // Anchor the content-sized panel to the selector's
-                          // right edge, while preserving an 8px viewport inset.
-                          right: Math.max(8, viewportWidth - (modelDropdownRect.left + modelDropdownRect.width)),
-                          width: "max-content",
-                          minWidth: Math.min(panelMinWidth, panelMaxWidth),
-                          maxWidth: panelMaxWidth,
-                        };
-
-                    // Build favorites list (preserving localStorage insertion order)
-                    const favKeys = [...favorites];
-                    const favModels: ModelOption[] = [];
-                    for (const key of favKeys) {
-                      const [provider, modelId] = key.split(":", 2);
-                      const match = modelOptions.find((o) => o.provider === provider && o.modelId === modelId);
-                      if (match) favModels.push(match);
-                    }
-
-                    // Model search filter — matches name, model id, and provider.
-                    const searchQuery = modelSearch.trim().toLowerCase();
-                    const isSearching = searchQuery.length > 0;
-                    const matchesQuery = (opt: ModelOption) =>
-                      opt.name.toLowerCase().includes(searchQuery) ||
-                      opt.modelId.toLowerCase().includes(searchQuery) ||
-                      opt.provider.toLowerCase().includes(searchQuery);
-                    const favModelsFiltered = isSearching ? favModels.filter(matchesQuery) : favModels;
-                    const hasFavs = favModelsFiltered.length > 0;
-                    const filteredGroups = isSearching
-                      ? modelsByProvider
-                          .map((group) => ({ ...group, options: group.options.filter(matchesQuery) }))
-                          .filter((group) => group.options.length > 0)
-                      : modelsByProvider;
-                    const hasAnyResults = hasFavs || filteredGroups.length > 0;
-
-                    return (
-                      <div ref={modelDropdownPanelRef} className="chat-input-model-dropdown chat-input-menu-panel" style={{
-                      position: "fixed",
-                      bottom,
-                      ...panelPos,
-                      zIndex: 2000, background: "var(--bg-panel)", border: "1px solid var(--border)",
-                      borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-                      overflow: "hidden", maxHeight: maxH,
-                      display: "flex", flexDirection: "column",
-                      }}>
-                      {/* Search area — pinned above the list, separated by a divider */}
-                      <div style={{ borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-                        <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                          <MagnifyingGlassIcon
-                            size={13}
-                            color="var(--text-dim)"
-                            style={{ position: "absolute", left: 12, pointerEvents: "none" }}
-                          />
-                          <input
-                            ref={modelSearchRef}
-                            value={modelSearch}
-                            onChange={(e) => setModelSearch(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Escape") {
-                                if (modelSearch) {
-                                  setModelSearch("");
-                                } else {
-                                  setModelDropdownOpen(false);
-                                }
-                              } else if (e.key === "ArrowDown") {
-                                const firstRow = modelDropdownPanelRef.current?.querySelector<HTMLButtonElement>(".model-row button");
-                                if (firstRow) {
-                                  e.preventDefault();
-                                  firstRow.focus();
-                                }
-                              }
-                            }}
-                            placeholder={t("desktop.searchModels")}
-                            aria-label={t("desktop.searchModels")}
-                            style={{
-                              width: "100%",
-                              padding: "5px 12px 5px 34px",
-                              background: "transparent",
-                              border: "none",
-                              outline: "none",
-                              color: "var(--text)",
-                              // iOS auto-zooms focused form controls below
-                              // 16px. Desktop keeps the compact picker scale.
-                              fontSize: isMobile ? 16 : 12,
-                              fontFamily: "var(--font-mono)",
-                            }}
-                          />
-                        </div>
-                      </div>
-                      {/* Scrollable results */}
-                      <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
-                      {/* Favorites group — at top, always expanded */}
-                      {hasFavs && (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                          <div style={{
-                            padding: "6px 12px 4px",
-                            fontSize: 10, fontWeight: 600, color: "var(--text-dim)",
-                            textTransform: "uppercase", letterSpacing: "0.07em",
-                          }}>
-                            {t("desktop.favorites")}
-                          </div>
-                          {favModelsFiltered.map((opt) => {
-                            const isActive = opt.modelId === model?.modelId && opt.provider === model?.provider;
-                            const isFav = favorites.has(`${opt.provider}:${opt.modelId}`);
-                            return (
-                              <div
-                                key={`fav-${opt.provider}:${opt.modelId}`}
-                                className="model-row"
-                                data-current-model={isActive ? "true" : undefined}
-                                style={{ display: "flex", alignItems: "center", margin: "0 4px" }}
-                              >
-                                <button
-                                  onClick={() => { setModelDropdownOpen(false); if (!isActive || isAutoModelSelection) onModelChange(opt.provider, opt.modelId); }}
-                                  style={{
-                                    display: "flex", alignItems: "center", gap: 8,
-                                    flex: 1, minWidth: 0,
-                                    padding: "4px 8px",
-                                    borderRadius: 4,
-                                    background: isActive ? "var(--bg-selected)" : "none",
-                                    border: "none",
-                                    color: isActive ? "var(--accent)" : "var(--text)",
-                                    cursor: "pointer", fontSize: 12, textAlign: "left",
-                                    fontFamily: "var(--font-mono)",
-                                    whiteSpace: "nowrap", overflow: "hidden",
-                                    transition: "background 0.1s ease",
-                                  }}
-                                  onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                                  onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                                >
-                                  <ProviderIcon id={opt.provider} api={opt.api ?? null} size={14} />
-                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{opt.name}</span>
-                                  {isActive && <CheckIcon size={12} weight="bold" color="var(--accent)" style={{ flexShrink: 0 }} />}
-                                  <span
-                                    onClick={(e) => { e.stopPropagation(); toggleFavorite(opt.provider, opt.modelId); }}
-                                    className="model-star"
-                                    style={{
-                                      display: "inline-flex", alignItems: "center", justifyContent: "center",
-                                      flexShrink: 0,
-                                      cursor: "pointer",
-                                      color: isFav ? "var(--accent)" : "var(--text-dim)",
-                                      opacity: isFav ? 1 : 0,
-                                      transition: "opacity 0.12s, color 0.12s",
-                                    }}
-                                    onMouseEnter={(e) => { e.stopPropagation(); e.currentTarget.style.color = "var(--accent)"; }}
-                                    onMouseLeave={(e) => { e.stopPropagation(); e.currentTarget.style.color = isFav ? "var(--accent)" : "var(--text-dim)"; }}
-                                    title={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
-                                    aria-label={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
-                                  >
-                                    <StarIcon size={12} weight={isFav ? "fill" : "regular"} />
-                                  </span>
-                                </button>
-                              </div>
-                            );
-                          })}
-                          <div style={{ borderTop: "1px solid var(--border)" }} />
-                        </div>
-                      )}
-                      {/* Provider groups — clickable headers, default collapsed */}
-                      {filteredGroups.map((group, gi) => {
-                        const isExpanded = isSearching || expandedProviders.has(group.provider);
-                        const caret = !isExpanded
-                          ? <CaretRightIcon size={10} color="var(--text-dim)" />
-                          : <CaretDownIcon size={10} color="var(--text-dim)" />;
-                        return (
-                        <div key={group.provider} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                          <button
-                            className="chat-input-menu-group-header"
-                            onClick={() => toggleProviderExpand(group.provider)}
-                            style={{
-                              display: "flex", alignItems: "center", gap: 4,
-                              width: "100%", padding: "6px 12px 4px",
-                              background: "none", border: "none",
-                              cursor: "pointer",
-                              fontSize: 10, fontWeight: 600, color: "var(--text-dim)",
-                              textTransform: "uppercase", letterSpacing: "0.07em",
-                              borderTop: gi > 0 ? "1px solid var(--border)" : "none",
-                            }}
-                            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; }}
-                          >
-                            {caret}
-                            {group.provider}
-                          </button>
-                          {isExpanded && group.options.map((opt) => {
-                            const isActive = opt.modelId === model?.modelId && opt.provider === model?.provider;
-                            const isFav = favorites.has(`${opt.provider}:${opt.modelId}`);
-                            return (
-                              <div
-                                key={`${opt.provider}:${opt.modelId}`}
-                                className="model-row"
-                                data-current-model={isActive ? "true" : undefined}
-                                style={{ display: "flex", alignItems: "center", margin: "0 4px" }}
-                              >
-                                <button
-                                  onClick={() => { setModelDropdownOpen(false); if (!isActive || isAutoModelSelection) onModelChange(opt.provider, opt.modelId); }}
-                                  style={{
-                                    display: "flex", alignItems: "center", gap: 8,
-                                    flex: 1, minWidth: 0,
-                                    padding: "4px 8px",
-                                    borderRadius: 4,
-                                    background: isActive ? "var(--bg-selected)" : "none",
-                                    border: "none",
-                                    color: isActive ? "var(--accent)" : "var(--text)",
-                                    cursor: "pointer", fontSize: 12, textAlign: "left",
-                                    fontFamily: "var(--font-mono)",
-                                    whiteSpace: "nowrap", overflow: "hidden",
-                                    transition: "background 0.1s ease",
-                                  }}
-                                  onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                                  onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                                >
-                                  <ProviderIcon id={opt.provider} api={opt.api ?? null} size={14} />
-                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{opt.name}</span>
-                                  {isActive && <CheckIcon size={12} weight="bold" color="var(--accent)" style={{ flexShrink: 0 }} />}
-                                  <span
-                                    onClick={(e) => { e.stopPropagation(); toggleFavorite(opt.provider, opt.modelId); }}
-                                    className="model-star"
-                                    style={{
-                                      display: "inline-flex", alignItems: "center", justifyContent: "center",
-                                      flexShrink: 0,
-                                      cursor: "pointer",
-                                      color: isFav ? "var(--accent)" : "var(--text-dim)",
-                                      opacity: isFav ? 1 : 0,
-                                      transition: "opacity 0.12s, color 0.12s",
-                                    }}
-                                    onMouseEnter={(e) => { e.stopPropagation(); e.currentTarget.style.color = "var(--accent)"; }}
-                                    onMouseLeave={(e) => { e.stopPropagation(); e.currentTarget.style.color = isFav ? "var(--accent)" : "var(--text-dim)"; }}
-                                    title={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
-                                    aria-label={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
-                                  >
-                                    <StarIcon size={12} weight={isFav ? "fill" : "regular"} />
-                                  </span>
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        );
-                      })}
-                      {/* No matches while searching */}
-                      {isSearching && !hasAnyResults && (
-                        <div style={{ padding: "14px 12px", textAlign: "center", fontSize: 12, color: "var(--text-dim)" }}>
-                          {t("desktop.noModelsMatch")}
-                        </div>
-                      )}
-                      </div>
-                    </div>
-                    );
-                  })()}
-                </div>
+            {onModelChange && (
+              <ModelSelector
+                {...(model === undefined ? { model: null } : { model })}
+                modelList={selectorModelList}
+                onModelChange={onModelChange}
+                allowReselect={isAutoModelSelection === true}
+                {...(isStreaming ? { title: t("desktop.changeModelWhileRunning") } : {})}
+              />
             )}
 
             {!isStreaming && !isCompacting && (

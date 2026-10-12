@@ -2917,7 +2917,7 @@ span.linenumber {
 .side-chat-composer {
   display: flex;
   flex: 0 0 auto;
-  align-items: flex-end;
+  flex-direction: column;
   gap: 6px;
   padding: 8px;
   border-top: 1px solid var(--border);
@@ -2930,9 +2930,9 @@ span.linenumber {
   max-height: 112px;
   flex: 1;
   resize: vertical;
-  padding: 7px 8px;
+  padding: 7px 9px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   outline: none;
   background: var(--bg);
   color: var(--text);
@@ -2942,6 +2942,22 @@ span.linenumber {
 }
 
 .side-chat-composer textarea:focus { border-color: var(--accent); }
+
+.side-chat-composer-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.side-chat-composer-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+
 .side-chat-send { background: var(--accent); color: var(--bg); }
 .side-chat-send:hover:not(:disabled) { filter: brightness(1.08); }
 

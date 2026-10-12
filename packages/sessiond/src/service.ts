@@ -455,6 +455,7 @@ const AUTHORITY_COMMAND_TYPES = new Set<RuntimeCommand["type"]>([
   "side_chat_start",
   "side_chat_send",
   "side_chat_reset",
+  "side_chat_set_model",
 ]);
 
 /**

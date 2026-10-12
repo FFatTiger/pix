@@ -223,6 +223,7 @@ export const zhCNLocale = {
     "desktop.sideChatMessage": "侧聊消息",
     "desktop.sideChatSend": "发送到侧聊",
     "desktop.sideChatStop": "停止侧聊",
+    "desktop.sideChatModelLocked": "侧聊运行期间模型已锁定。",
     "desktop.sideChatToolStatus.running": "运行中",
     "desktop.sideChatToolStatus.completed": "已完成",
     "desktop.sideChatToolStatus.failed": "失败",

@@ -52,8 +52,9 @@ export const SideChatStateSchema = z.strictObject({
   conversationId: SideChatIdSchema,
   revision: z.number().int().nonnegative().safe(),
   runId: SideChatIdSchema.optional(),
-  capturedModel: ModelRefSchema,
-  capturedThinkingLevel: ThinkingLevelSchema,
+  /** Effective model for subsequent side-chat turns (captured at start, mutable via side_chat_set_model). */
+  model: ModelRefSchema,
+  thinkingLevel: ThinkingLevelSchema,
   status: SideChatStatusSchema,
   messages: z.array(SideChatMessageSchema).max(MAX_SIDE_CHAT_MESSAGES),
   messagesTruncated: z.boolean(),

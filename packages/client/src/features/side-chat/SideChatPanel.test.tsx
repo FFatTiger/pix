@@ -1,16 +1,22 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SideChatState } from "@fffattiger/pix-protocol";
+import { HttpClientProvider } from "@/app/http-context";
 import { I18nProvider } from "@/hooks/useI18n";
 import type { ExactRuntimeApi } from "@/runtime";
 import { SideChatPanel } from "./SideChatPanel";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function sideState(patch: Partial<SideChatState> = {}): SideChatState {
   return {
     conversationId: "conversation-1",
     revision: 1,
-    capturedModel: { provider: "anthropic", id: "claude-sonnet" },
-    capturedThinkingLevel: "medium",
+    model: { provider: "anthropic", id: "claude-sonnet" },
+    thinkingLevel: "medium",
     status: "idle",
     messages: [],
     messagesTruncated: false,
@@ -30,13 +36,35 @@ function runtime(state: SideChatState | null, methods: Partial<ExactRuntimeApi> 
     sideChatStart: vi.fn(async () => "conversation-1"),
     sideChatSend: vi.fn(async () => "run-1"),
     sideChatReset: vi.fn(async () => "conversation-2"),
-    abortSideChat: vi.fn(async () => ({ ok: true })),
+    abortSideChat: vi.fn(async () => undefined),
+    sideChatSetModel: vi.fn(async () => undefined),
     ...methods,
   } as unknown as ExactRuntimeApi;
 }
 
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+function providers(node: React.ReactNode) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <HttpClientProvider>
+        <I18nProvider>{node}</I18nProvider>
+      </HttpClientProvider>
+    </QueryClientProvider>
+  );
+}
+
+const MODELS_CATALOG = {
+  models: [
+    { id: "claude-sonnet", provider: "anthropic", displayName: "Claude Sonnet" },
+    { id: "gpt-5", provider: "openai", displayName: "GPT-5" },
+  ],
+  defaultModel: null,
+};
+
 function mount(value: ExactRuntimeApi) {
-  return render(<I18nProvider><SideChatPanel runtime={value} cwd="/work" /></I18nProvider>);
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(MODELS_CATALOG), { status: 200, headers: { "Content-Type": "application/json" } })));
+  return render(providers(<SideChatPanel runtime={value} cwd="/work" />));
 }
 
 function deferred<T>() {
@@ -142,7 +170,7 @@ describe("SideChatPanel", () => {
     expect(input.disabled).toBe(true);
 
     const replacement = runtime(sideState(), { epoch: "epoch-2", attachGeneration: 2 });
-    view.rerender(<I18nProvider><SideChatPanel runtime={replacement} cwd="/work" /></I18nProvider>);
+    view.rerender(providers(<SideChatPanel runtime={replacement} cwd="/work" />));
     input = screen.getByRole("textbox", { name: "Side chat message" }) as HTMLTextAreaElement;
     expect(input.value).toBe("draft-before-reattach");
     expect(input.disabled).toBe(false);
@@ -163,7 +191,7 @@ describe("SideChatPanel", () => {
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
     const replacement = runtime(sideState({ conversationId: "conversation-B" }));
-    view.rerender(<I18nProvider><SideChatPanel runtime={replacement} cwd="/work" /></I18nProvider>);
+    view.rerender(providers(<SideChatPanel runtime={replacement} cwd="/work" />));
     input = screen.getByRole("textbox", { name: "Side chat message" }) as HTMLTextAreaElement;
     expect(input.value).toBe("");
     expect(input.disabled).toBe(false);
@@ -182,13 +210,49 @@ describe("SideChatPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear side chat" }));
 
     const replacement = runtime(sideState({ conversationId: "conversation-B" }));
-    view.rerender(<I18nProvider><SideChatPanel runtime={replacement} cwd="/work" /></I18nProvider>);
+    view.rerender(providers(<SideChatPanel runtime={replacement} cwd="/work" />));
     const input = screen.getByRole("textbox", { name: "Side chat message" }) as HTMLTextAreaElement;
     expect(input.disabled).toBe(false);
     fireEvent.change(input, { target: { value: "new conversation draft" } });
     await act(async () => { reset.resolve("conversation-B"); });
     expect(input.value).toBe("new conversation draft");
     expect(input.disabled).toBe(false);
+  });
+
+  it("selects the side-chat model and thinking level from the composer toolbar", async () => {
+    const setModel = vi.fn(async () => undefined);
+    const value = runtime(sideState({ thinkingLevel: "medium" }), { sideChatSetModel: setModel });
+    mount(value);
+
+    // Both selectors render beside the send button with the effective values.
+    const modelButton = await screen.findByRole("button", { name: "Change model" });
+    expect(modelButton.textContent).toContain("Claude Sonnet");
+    const thinkingButton = screen.getByRole("button", { name: "Change reasoning level" });
+    expect(thinkingButton.textContent).toContain("medium");
+
+    // Model change carries the CURRENT thinking level; no "auto" level exists.
+    fireEvent.click(modelButton);
+    fireEvent.click(screen.getByRole("button", { name: "openai" }));
+    fireEvent.click(screen.getByRole("button", { name: /GPT-5/ }));
+    await waitFor(() => expect(setModel).toHaveBeenCalledWith("conversation-1", "openai", "gpt-5", "medium"));
+
+    // Thinking change carries the CURRENT model.
+    fireEvent.click(thinkingButton);
+    fireEvent.click(screen.getByRole("button", { name: "high" }));
+    await waitFor(() => expect(setModel).toHaveBeenCalledWith("conversation-1", "anthropic", "claude-sonnet", "high"));
+    expect(screen.queryByRole("button", { name: "auto" })).toBeNull();
+  });
+
+  it("locks the selectors while the side chat is running", async () => {
+    const setModel = vi.fn(async () => undefined);
+    mount(runtime(sideState({ status: "running", runId: "run-1" }), { sideChatSetModel: setModel }));
+
+    const modelButton = await screen.findByRole("button", { name: "Change model" });
+    expect((modelButton as HTMLButtonElement).disabled).toBe(true);
+    expect(modelButton.getAttribute("title")).toBe("The model is locked while the side chat is running.");
+    const thinkingButton = screen.getByRole("button", { name: "Change reasoning level" });
+    expect((thinkingButton as HTMLButtonElement).disabled).toBe(true);
+    expect(setModel).not.toHaveBeenCalled();
   });
 
   it("starts once for an uninitialized exact parent", async () => {

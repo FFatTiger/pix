@@ -793,6 +793,16 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     this.trace?.record("ready");
   }
 
+  async resolveModel(provider: string, modelId: string): Promise<Model<Api>> {
+    let resolved = this.session.modelRuntime.getModel(provider, modelId);
+    if (!resolved) {
+      await this.session.modelRuntime.refresh({ allowNetwork: false });
+      resolved = this.session.modelRuntime.getModel(provider, modelId);
+    }
+    if (!resolved) throw new Error(`unknown model: ${provider}/${modelId}`);
+    return resolved;
+  }
+
   createSideChatController(): SideChatController {
     if (this.closed) throw makeRuntimeError("unavailable", "runtime is closed");
     const model = this.session.model;

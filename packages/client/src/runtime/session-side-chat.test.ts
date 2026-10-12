@@ -55,8 +55,8 @@ function snapshotWithSideChat(overrides: Parameters<typeof snapshotPayload>[0] =
   snapshot.state.sideChat = {
     conversationId: "conversation-1",
     revision: 1,
-    capturedModel: { provider: "anthropic", id: "claude-sonnet" },
-    capturedThinkingLevel: "medium",
+    model: { provider: "anthropic", id: "claude-sonnet" },
+    thinkingLevel: "medium",
     status: "idle",
     messages: [],
     messagesTruncated: false,
@@ -141,6 +141,43 @@ describe("SessionController side-chat lane", () => {
     ws.serverSend({ type: "snapshot", id: changed.id, payload: snapshotPayload({ sessionId: "s1", epoch: "e2", resumeStatus: "epoch_changed", capabilities: ["runtime.side_chat"] }) });
     await expect(pending).rejects.toMatchObject({ code: "epoch_changed" });
     expect(commandFrames(ws)).toHaveLength(0);
+    h.dispose();
+  });
+
+  it("sends side_chat_set_model on the side lane with exact typed correlation", async () => {
+    const h = createHarness();
+    const ws = await attach(h);
+    const controller = h.controller("s1")!;
+
+    const applied = controller.sideChatSetModel("conversation-1", "openai", "gpt-5", "high");
+    await flush();
+    const frame = sideCommandFrames(ws).at(-1)!;
+    expect(frame.payload.command).toMatchObject({
+      type: "side_chat_set_model",
+      conversationId: "conversation-1",
+      provider: "openai",
+      modelId: "gpt-5",
+      thinkingLevel: "high",
+    });
+    respond(ws, frame, { type: "side_chat_set_model" });
+    await expect(applied).resolves.toBeUndefined();
+
+    // A rejected switch surfaces the typed error (busy side chat, no retry loop).
+    const busy = controller.sideChatSetModel("conversation-1", "openai", "gpt-5", "high");
+    await flush();
+    const busyFrame = sideCommandFrames(ws).at(-1)!;
+    ws.serverSend({
+      type: "response",
+      id: busyFrame.id,
+      payload: {
+        ok: true,
+        result: {
+          commandId: busyFrame.payload.command.commandId,
+          result: { ok: false, type: "side_chat_set_model", error: { code: "session_busy", message: "side chat is busy", retryable: true } },
+        },
+      },
+    });
+    await expect(busy).rejects.toMatchObject({ code: "session_busy" });
     h.dispose();
   });
 

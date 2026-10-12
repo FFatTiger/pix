@@ -56,6 +56,7 @@ describe("command-mapper (protocol → core, commandId stripped)", () => {
       [{ type: "side_chat_start" }, { type: "side_chat_start" }],
       [{ type: "side_chat_send", conversationId: "side-1", message: "question" }, { type: "side_chat_send", conversationId: "side-1", message: "question" }],
       [{ type: "side_chat_reset", conversationId: "side-1", mode: "refork" }, { type: "side_chat_reset", conversationId: "side-1", mode: "refork" }],
+      [{ type: "side_chat_set_model", conversationId: "side-1", provider: "test", modelId: "model", thinkingLevel: "medium" }, { type: "side_chat_set_model", conversationId: "side-1", provider: "test", modelId: "model", thinkingLevel: "medium" }],
     ];
     for (const [protocol, expected] of cases) {
       const mapped = coreFor(protocol);

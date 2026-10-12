@@ -160,6 +160,7 @@ export interface ExactRuntimeApi extends ExactRuntimeView {
   readonly sideChatStart: () => Promise<string>;
   readonly sideChatSend: (conversationId: string, message: string) => Promise<string>;
   readonly sideChatReset: (conversationId: string, mode: "refork" | "clear") => Promise<string>;
+  readonly sideChatSetModel: (conversationId: string, provider: string, modelId: string, thinkingLevel: ThinkingLevel) => Promise<void>;
   readonly abortSideChat: (conversationId: string) => Promise<unknown>;
   readonly compact: (customInstructions?: string) => Promise<void>;
   readonly abortCompaction: () => Promise<unknown>;
@@ -299,6 +300,7 @@ export function createExactActions(
     sideChatStart: () => withController((controller) => controller.sideChatStart()),
     sideChatSend: (conversationId, message) => withController((controller) => controller.sideChatSend(conversationId, message)),
     sideChatReset: (conversationId, mode) => withController((controller) => controller.sideChatReset(conversationId, mode)),
+    sideChatSetModel: (conversationId, provider, modelId, thinkingLevel) => withController((controller) => controller.sideChatSetModel(conversationId, provider, modelId, thinkingLevel)),
     abortSideChat: (conversationId) => withController((controller) => controller.abortSideChat(conversationId)),
     compact: (customInstructions) => withController((controller) => controller.compact(customInstructions)),
     abortCompaction: () => withController((controller) => controller.abortCompaction()),

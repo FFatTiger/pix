@@ -117,6 +117,11 @@ export interface SideChatController {
   getState(): SideChatState;
   subscribe(listener: (event: SideChatControllerEvent) => void): () => void;
   submit(text: string): SideChatSubmission;
+  /**
+   * Apply a resolved model + thinking level to subsequent turns. Preserves
+   * the conversation history; rejected while a run is active.
+   */
+  setModel(model: Model<Api>, thinkingLevel: ThinkingLevel): void;
   abort(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -236,6 +241,16 @@ class HeadlessSideChatController implements SideChatController {
     this.publish();
     void this.runPrompt(run, prompt);
     return { conversationId: this.conversationId, runId, completion };
+  }
+
+  setModel(model: Model<Api>, thinkingLevel: ThinkingLevel): void {
+    this.assertAvailable();
+    if (this.activeRun !== undefined || this.agent.state.isStreaming) {
+      throw new SideChatControllerError("session_busy", "side chat is already running");
+    }
+    this.agent.state.model = structuredClone(model);
+    this.agent.state.thinkingLevel = thinkingLevel;
+    this.publish();
   }
 
   async abort(): Promise<void> {

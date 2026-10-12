@@ -23,8 +23,8 @@ function sideChat(patch = {}) {
     conversationId: "conversation-1",
     revision: 1,
     runId: "run-1",
-    capturedModel: { provider: "test", id: "model" },
-    capturedThinkingLevel: "medium",
+    model: { provider: "test", id: "model" },
+    thinkingLevel: "medium",
     status: "running",
     messages: [],
     messagesTruncated: false,
@@ -60,9 +60,11 @@ describe("side chat wire contract", () => {
     assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c1", type: "side_chat_start" }).success, true);
     assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c2", type: "side_chat_send", conversationId: "x", message: "hello" }).success, true);
     assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c3", type: "side_chat_reset", conversationId: "x", mode: "refork" }).success, true);
+    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c4", type: "side_chat_set_model", conversationId: "x", provider: "p", modelId: "m", thinkingLevel: "high" }).success, true);
     // The edit mode and overlap approval are gone: their command types fail closed.
-    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c4", type: "side_chat_set_mode", conversationId: "x", mode: "read_only" }).success, false);
-    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c5", type: "side_chat_overlap_response", conversationId: "x", requestId: "o1", proceed: false }).success, false);
+    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c5", type: "side_chat_set_mode", conversationId: "x", mode: "read_only" }).success, false);
+    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c6", type: "side_chat_overlap_response", conversationId: "x", requestId: "o1", proceed: false }).success, false);
+    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "c7", type: "side_chat_set_model", conversationId: "x", provider: "p", modelId: "m", thinkingLevel: "ultra" }).success, false);
     assert.equal(RuntimeInterruptSchema.safeParse({ type: "abort_side_chat", conversationId: "x" }).success, true);
     assert.equal(RuntimeCommandOutcomeSchema.safeParse({ ok: true, type: "side_chat_start", conversationId: "x" }).success, true);
     assert.equal(RuntimeCommandOutcomeSchema.safeParse({ ok: true, type: "side_chat_send", runId: "r1" }).success, true);

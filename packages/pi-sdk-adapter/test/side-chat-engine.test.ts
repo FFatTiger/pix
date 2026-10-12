@@ -45,6 +45,8 @@ const MODEL: Model<Api> = {
   maxTokens: 1_000,
 };
 
+const MODEL_ALT: Model<Api> = { ...MODEL, id: "side-chat-fake-alt", name: "Side Chat Fake Alt" };
+
 const USAGE = {
   input: 1,
   output: 1,
@@ -298,6 +300,11 @@ function adapterDriver(
     fork: async () => ({ sessionId: "fork", sessionFile: "/fork.jsonl" }),
     generateSessionTitle: async () => "title",
     bindUi: async () => {},
+    resolveModel: async (provider, modelId) => {
+      if (provider === MODEL.provider && modelId === MODEL.id) return { ...MODEL };
+      if (provider === MODEL_ALT.provider && modelId === MODEL_ALT.id) return { ...MODEL_ALT };
+      throw new Error(`unknown model: ${provider}/${modelId}`);
+    },
     createSideChatController: () => {
       const runtime = runtimes.shift();
       assert.ok(runtime, "unexpected side-chat controller creation");
@@ -483,6 +490,65 @@ describe("vendored pi-side-chat characterization", () => {
     assert.equal(tools.includes("edit"), false);
     assert.equal(tools.includes("write"), false);
     await side.dispose();
+  });
+
+  it("applies side_chat_set_model to later turns while preserving history, and rejects busy or unknown selectors", async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "pix-side-chat-set-model-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const manager = SessionManager.create(root, join(root, "sessions"), { id: "set-model-parent" });
+    const gate = new Gate();
+    const adapter = new CanonicalAgentRuntimeAdapter(adapterDriver(manager, [
+      new ScriptedModelRuntime([
+        textStream("first answer"),
+        textStream("held answer", { gate }),
+        textStream("alt answer"),
+      ]),
+    ]));
+    t.after(async () => {
+      gate.release();
+      await adapter.close("user");
+    });
+    await adapter.ready();
+    const started = await adapter.execute({ type: "side_chat_start" });
+    if (!started.ok || started.type !== "side_chat_start") throw new Error("side chat did not start");
+    const conversationId = started.conversationId;
+
+    const unknown = await adapter.execute({ type: "side_chat_set_model", conversationId, provider: MODEL.provider, modelId: "missing", thinkingLevel: "low" });
+    assert.equal(unknown.ok, false);
+    if (!unknown.ok) assert.equal(unknown.error.code, "invalid_input", "unknown model fails closed");
+
+    const badLevel = await adapter.execute({ type: "side_chat_set_model", conversationId, provider: MODEL_ALT.provider, modelId: MODEL_ALT.id, thinkingLevel: "ultra" as never });
+    assert.equal(badLevel.ok, false);
+    if (!badLevel.ok) assert.equal(badLevel.error.code, "invalid_input");
+
+    const stale = await adapter.execute({ type: "side_chat_set_model", conversationId: "stale", provider: MODEL_ALT.provider, modelId: MODEL_ALT.id, thinkingLevel: "low" });
+    assert.equal(stale.ok, false);
+    if (!stale.ok) assert.equal(stale.error.code, "not_found");
+
+    const first = await adapter.execute({ type: "side_chat_send", conversationId, message: "first question" });
+    assert.equal(first.ok, true);
+    await waitForAdapterState(adapter, (state) => state.status === "idle" && state.messages.some((message) => message.text.includes("first answer")));
+
+    const applied = await adapter.execute({ type: "side_chat_set_model", conversationId, provider: MODEL_ALT.provider, modelId: MODEL_ALT.id, thinkingLevel: "low" });
+    assert.equal(applied.ok, true);
+    const projected = await waitForAdapterState(adapter, (state) => state.model?.id === MODEL_ALT.id && state.thinkingLevel === "low");
+    assert.ok(projected.messages.some((message) => message.text.includes("first answer")), "set_model preserves conversation history");
+
+    const held = await adapter.execute({ type: "side_chat_send", conversationId, message: "held question" });
+    assert.equal(held.ok, true);
+    await waitForAdapterState(adapter, (state) => state.stream.text === "held answer");
+    const busy = await adapter.execute({ type: "side_chat_set_model", conversationId, provider: MODEL.provider, modelId: MODEL.id, thinkingLevel: "high" });
+    assert.equal(busy.ok, false);
+    if (!busy.ok) assert.equal(busy.error.code, "session_busy");
+
+    gate.release();
+    await waitForAdapterState(adapter, (state) => state.status === "idle" && state.messages.some((message) => message.text.includes("held answer")));
+    const alt = await adapter.execute({ type: "side_chat_send", conversationId, message: "alt question" });
+    assert.equal(alt.ok, true);
+    await waitForAdapterState(adapter, (state) => state.messages.some((message) => message.text.includes("alt answer")));
+    // The side conversation's model projection keeps the applied selector.
+    const lastSnapshot = await adapter.getSnapshot();
+    assert.equal(lastSnapshot.state.sideChat?.model?.id, MODEL_ALT.id);
   });
 
   it("honors Pi 1.0 exposure and MCP read-only declarations in the actual side-chat tool list", async () => {

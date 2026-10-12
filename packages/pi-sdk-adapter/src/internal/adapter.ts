@@ -69,8 +69,8 @@ function sideChatContentText(content: unknown, kind: "text" | "thinking" = "text
 
 function canonicalSideChatState(
   state: ControllerSideChatState,
-  capturedModel: NonNullable<RuntimeState["model"]>,
-  capturedThinkingLevel: NonNullable<RuntimeState["thinkingLevel"]>,
+  model: NonNullable<RuntimeState["model"]>,
+  thinkingLevel: NonNullable<RuntimeState["thinkingLevel"]>,
 ): SideChatState {
   const messages = state.messages.flatMap((message, index) => {
     if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return [];
@@ -91,8 +91,8 @@ function canonicalSideChatState(
     conversationId: state.conversationId,
     revision: state.revision,
     ...(state.runId === undefined ? {} : { runId: state.runId }),
-    capturedModel,
-    capturedThinkingLevel,
+    model,
+    thinkingLevel,
     status: state.status === "disposed" ? "idle" : state.status,
     messages,
     messagesTruncated: false,
@@ -263,8 +263,8 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
   private sideChat: {
     controller: SideChatController;
     unsubscribe: () => void;
-    capturedModel: NonNullable<RuntimeState["model"]>;
-    capturedThinkingLevel: NonNullable<RuntimeState["thinkingLevel"]>;
+    model: NonNullable<RuntimeState["model"]>;
+    thinkingLevel: NonNullable<RuntimeState["thinkingLevel"]>;
   } | undefined;
   private sideChatState: SideChatState | null = null;
   /** Serializes reload with side-chat lifecycle commands; interrupts and close deliberately bypass it. */
@@ -388,7 +388,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     if (capability && !this.capabilities.capabilities.includes(capability)) {
       return this.failure(command.type, unsupportedCapabilityError(capability));
     }
-    const usesSideChatLifecycle = command.type === "reload" || command.type === "side_chat_start" || command.type === "side_chat_send" || command.type === "side_chat_reset";
+    const usesSideChatLifecycle = command.type === "reload" || command.type === "side_chat_start" || command.type === "side_chat_send" || command.type === "side_chat_reset" || command.type === "side_chat_set_model";
     if (usesSideChatLifecycle && this.sideChatLifecycleBusy) {
       return this.failure(command.type, makeRuntimeError("session_busy", "side chat lifecycle is busy", { retryable: true }));
     }
@@ -409,6 +409,27 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
           await this.disposeSideChat(true);
           const conversationId = this.startSideChat();
           return { ok: true, type: "side_chat_reset", conversationId };
+        }
+        case "side_chat_set_model": {
+          const side = this.requireSideChat(command.conversationId);
+          if (side.controller.getState().status !== "idle") {
+            return this.failure("side_chat_set_model", makeRuntimeError("session_busy", "side chat is running", { retryable: true }));
+          }
+          const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+          if (!levels.includes(command.thinkingLevel)) {
+            return this.failure("side_chat_set_model", makeRuntimeError("invalid_input", `unknown thinking level: ${command.thinkingLevel}`));
+          }
+          if (this.driver.resolveModel === undefined) {
+            return this.failure("side_chat_set_model", makeRuntimeError("unavailable", "model resolution is unavailable"));
+          }
+          // Same registry/auth the main session's set_model uses; an unknown
+          // selector fails closed via mapDriverError (invalid_input).
+          const resolved = await this.driver.resolveModel(command.provider, command.modelId);
+          side.model = { provider: resolved.provider, id: resolved.id };
+          side.thinkingLevel = command.thinkingLevel;
+          side.controller.setModel(resolved, command.thinkingLevel);
+          this.publishSideChatState(canonicalSideChatState(side.controller.getState(), side.model, side.thinkingLevel), true);
+          return { ok: true, type: "side_chat_set_model" };
         }
         case "prompt": {
           // Protocol-v2 compatibility path: reuse the SAME atomic turn-start
@@ -1088,21 +1109,19 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     }
     const driverState = this.driver.getState();
     if (driverState.model === null) throw makeRuntimeError("unavailable", "side chat requires an active model");
-    const capturedModel = { ...driverState.model };
-    const capturedThinkingLevel = driverState.thinkingLevel;
     const controller = this.driver.createSideChatController();
     const record = {
       controller,
       unsubscribe: () => {},
-      capturedModel,
-      capturedThinkingLevel,
+      model: { ...driverState.model },
+      thinkingLevel: driverState.thinkingLevel,
     };
     record.unsubscribe = controller.subscribe((event) => {
       if (this.closed || this.sideChat?.controller !== controller) return;
-      this.publishSideChatState(canonicalSideChatState(event.state, capturedModel, capturedThinkingLevel));
+      this.publishSideChatState(canonicalSideChatState(event.state, record.model, record.thinkingLevel));
     });
     this.sideChat = record;
-    this.publishSideChatState(canonicalSideChatState(controller.getState(), capturedModel, capturedThinkingLevel), true);
+    this.publishSideChatState(canonicalSideChatState(controller.getState(), record.model, record.thinkingLevel), true);
     return controller.getState().conversationId;
   }
 

@@ -1,3 +1,4 @@
+import type { Model, Api } from "@earendil-works/pi-ai";
 import type { SideChatController } from "./vendor/pi-side-chat/index.js";
 import type { PromptDisposition, QueuedInputDisposition } from "@fffattiger/pix-runtime-core";
 export type { PromptDisposition, QueuedInputDisposition };
@@ -161,6 +162,12 @@ export interface PiRuntimeDriver {
   bindUi(onRequest: (request: DriverUiRequest) => void, emit: (event: RuntimeEvent) => void): Promise<void>;
   /** Create the real pinned headless side-chat controller from current parent authority. */
   createSideChatController?(): SideChatController;
+  /**
+   * Resolve a model selector against the SAME registry/auth the main session
+   * uses for set_model (no main-session mutation). Throws "unknown model:
+   * provider/id" for unregistered selectors.
+   */
+  resolveModel?(provider: string, modelId: string): Promise<Model<Api>>;
   close(reason: RuntimeCloseReason): Promise<void>;
 }
 

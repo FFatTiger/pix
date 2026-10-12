@@ -185,6 +185,8 @@ function fixtureFor(type: RuntimeCommandType): RuntimeCommand {
       return { type, conversationId: "side-1", message: "hi" };
     case "side_chat_reset":
       return { type, conversationId: "side-1", mode: "clear" };
+    case "side_chat_set_model":
+      return { type, conversationId: "side-1", provider: "test", modelId: "model", thinkingLevel: "medium" };
   }
 }
 
@@ -292,7 +294,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const types = RUNTIME_COMMAND_TYPES.filter(
           (type) => type !== "extension_ui_response" && type !== "extension_ui_input",
         );
-        assert.equal(types.length, 27, "29 commands minus 2 extension-response types");
+        assert.equal(types.length, 28, "30 commands minus 2 extension-response types");
         for (const type of types) {
           const factory = await harness.createFactory();
           const port = await factory.create({ cwd: "/workspace" });
@@ -308,7 +310,7 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
             await port.execute({ type: "prompt", message: "hi" });
           }
           let fixture = fixtureFor(type);
-          if (type === "side_chat_send" || type === "side_chat_reset") {
+          if (type === "side_chat_send" || type === "side_chat_reset" || type === "side_chat_set_model") {
             const started = await port.execute({ type: "side_chat_start" });
             assert.equal(started.ok, true);
             if (!started.ok || started.type !== "side_chat_start") throw new Error("side chat setup failed");
@@ -1913,8 +1915,8 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         const conversationId = started.conversationId;
         const initial = await port.getSnapshot();
         assert.equal(initial.state.sideChat?.conversationId, conversationId);
-        assert.deepEqual(initial.state.sideChat?.capturedModel, initial.state.model);
-        assert.equal(initial.state.sideChat?.capturedThinkingLevel, initial.state.thinkingLevel);
+        assert.deepEqual(initial.state.sideChat?.model, initial.state.model);
+        assert.equal(initial.state.sideChat?.thinkingLevel, initial.state.thinkingLevel);
         assert.ok(collector.ofType("side_chat_changed").length >= 1, "state publishes before start acknowledgement");
 
         assertErrorCode(await port.execute({ type: "side_chat_send", conversationId: "stale", message: "no" }), "not_found");
@@ -1924,10 +1926,25 @@ export function createRuntimeAdapterSuite(harness: AdapterContractHarness): void
         assert.equal((await port.getSnapshot()).state.sideChat?.runId, sent.runId);
         assert.equal((await port.getSnapshot()).state.messageCount, before.state.messageCount, "side messages never enter the parent transcript");
 
+        // Model selection: rejected while the run is active, effective for the
+        // state projection afterwards, and preserves conversation history.
+        const busyModel = await port.execute({ type: "side_chat_set_model", conversationId, provider: "test", modelId: "other", thinkingLevel: "high" });
+        assertErrorCode(busyModel, "session_busy");
+
         const aborted = await port.interrupt({ type: "abort_side_chat", conversationId });
         assert.equal(aborted.ok, true);
         assert.equal((await port.getSnapshot()).state.isPromptRunning, false, "side abort does not alter the parent lane");
         assertInterruptErrorCode(await port.interrupt({ type: "abort_side_chat", conversationId: "stale" }), "not_found");
+
+        const idleSnapshot = await port.getSnapshot();
+        const historyCount = idleSnapshot.state.sideChat?.messages.length ?? 0;
+        const appliedModel = await port.execute({ type: "side_chat_set_model", conversationId, provider: "test", modelId: "other", thinkingLevel: "high" });
+        assert.equal(appliedModel.ok, true, "set_model applies while idle");
+        const afterModel = await port.getSnapshot();
+        assert.deepEqual(afterModel.state.sideChat?.model, { provider: "test", id: "other" });
+        assert.equal(afterModel.state.sideChat?.thinkingLevel, "high");
+        assert.equal(afterModel.state.sideChat?.messages.length, historyCount, "set_model preserves side history");
+        assert.notDeepEqual(afterModel.state.sideChat?.model, afterModel.state.model, "side model is independent of the parent model");
 
         const reset = await port.execute({ type: "side_chat_reset", conversationId, mode: "clear" });
         assert.equal(reset.ok, true);

@@ -187,6 +187,14 @@ export const SideChatResetCommandSchema = z.strictObject({
   conversationId: SideChatIdSchema,
   mode: z.enum(["refork", "clear"]),
 });
+export const SideChatSetModelCommandSchema = z.strictObject({
+  ...commandBase,
+  type: z.literal("side_chat_set_model"),
+  conversationId: SideChatIdSchema,
+  provider: NonEmptyStringSchema,
+  modelId: NonEmptyStringSchema,
+  thinkingLevel: ThinkingLevelSchema,
+});
 
 /**
  * All RuntimeCommand variants.
@@ -221,6 +229,7 @@ export const RuntimeCommandSchema = z.union([
     SideChatStartCommandSchema,
     SideChatSendCommandSchema,
     SideChatResetCommandSchema,
+    SideChatSetModelCommandSchema,
   ]),
   ExtensionUiResponseCommandSchema,
   ExtensionUiInputCommandSchema,
@@ -258,6 +267,7 @@ export const RUNTIME_COMMAND_TYPES = [
   "side_chat_start",
   "side_chat_send",
   "side_chat_reset",
+  "side_chat_set_model",
 ] as const;
 
 export type RuntimeCommandType = (typeof RUNTIME_COMMAND_TYPES)[number];

@@ -54,8 +54,9 @@ export interface SideChatState {
   conversationId: string;
   revision: number;
   runId?: string;
-  capturedModel: ModelRef;
-  capturedThinkingLevel: ThinkingLevel;
+  /** Effective model for subsequent side-chat turns (captured at start, mutable via side_chat_set_model). */
+  model: ModelRef;
+  thinkingLevel: ThinkingLevel;
   status: SideChatStatus;
   messages: readonly SideChatMessage[];
   messagesTruncated: boolean;
@@ -138,8 +139,8 @@ export function boundSideChatState(input: Omit<SideChatState, "messagesTruncated
     conversationId: sideChatId(input.conversationId, "side chat conversation id"),
     revision: input.revision,
     ...(input.runId === undefined ? {} : { runId: sideChatId(input.runId, "side chat run id") }),
-    capturedModel: { ...input.capturedModel },
-    capturedThinkingLevel: input.capturedThinkingLevel,
+    model: { ...input.model },
+    thinkingLevel: input.thinkingLevel,
     status: input.status,
     messages,
     messagesTruncated: input.messagesTruncated === true || input.messages.length > MAX_SIDE_CHAT_MESSAGES || omittedMessages,

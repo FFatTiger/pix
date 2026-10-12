@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowsClockwiseIcon,
   CheckIcon,
@@ -10,8 +11,12 @@ import {
   XIcon,
 } from "@phosphor-icons/react";
 import { MAX_SIDE_CHAT_MESSAGE_CHARS, type ProtocolError } from "@fffattiger/pix-protocol";
+import { createQueryOptions } from "@/api/query-keys";
 import { MarkdownBody } from "@/components/chat/MarkdownBody";
+import { ModelSelector, ThinkingLevelSelector } from "@/components/chat/composer-selectors";
+import { useHttpClient } from "@/app/http-context";
 import { useI18n } from "@/hooks/useI18n";
+import type { ThinkingLevelOption } from "@/lib/thinking-levels";
 import type { ExactRuntimeApi } from "@/runtime";
 
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -125,6 +130,24 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
     send();
   };
 
+  // Model catalog for the selector — the same Host models query the main
+  // composer uses (never a forked list source).
+  const http = useHttpClient();
+  const modelsQuery = useQuery({ ...createQueryOptions(http).models.list() });
+  const modelList = useMemo(
+    () => (modelsQuery.data?.models ?? []).map((model) => ({
+      id: model.id,
+      provider: model.provider,
+      name: model.displayName ?? model.id,
+    })),
+    [modelsQuery.data],
+  );
+  const selectorsIdle = state !== null && state.status === "idle" && pending === null;
+  const applyModel = (provider: string, modelId: string, thinkingLevel: ThinkingLevelOption): void => {
+    if (state === null || thinkingLevel === "auto") return;
+    void run("model", () => runtime.sideChatSetModel(state.conversationId, provider, modelId, thinkingLevel));
+  };
+
   if (state === null) {
     return (
       <section className="side-chat-panel" aria-label={t("desktop.sideChat")} data-testid="side-chat-panel">
@@ -226,15 +249,33 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
           onCompositionEnd={() => { composingRef.current = false; }}
           onKeyDown={handleKeyDown}
         />
-        {state.status === "running" ? (
-          <button type="button" className="side-chat-send" aria-label={t("desktop.sideChatStop")} title={t("desktop.sideChatStop")} disabled={pending !== null} onClick={() => void run("abort", () => runtime.abortSideChat(state.conversationId))}>
-            <StopIcon size={15} weight="fill" aria-hidden="true" />
-          </button>
-        ) : (
-          <button type="submit" className="side-chat-send" aria-label={t("desktop.sideChatSend")} title={t("desktop.sideChatSend")} disabled={pending !== null || draft.trim().length === 0}>
-            <PaperPlaneTiltIcon size={16} weight="fill" aria-hidden="true" />
-          </button>
-        )}
+        <div className="side-chat-composer-toolbar">
+          <ThinkingLevelSelector
+            thinkingLevel={state.thinkingLevel}
+            onThinkingLevelChange={(level) => applyModel(state.model.provider, state.model.id, level)}
+            disabled={!selectorsIdle}
+            includeAuto={false}
+            {...(selectorsIdle ? {} : { title: t("desktop.sideChatModelLocked") })}
+          />
+          <span className="side-chat-composer-actions">
+            <ModelSelector
+              model={{ provider: state.model.provider, modelId: state.model.id }}
+              modelList={modelList}
+              onModelChange={(provider, modelId) => applyModel(provider, modelId, state.thinkingLevel)}
+              disabled={!selectorsIdle}
+              {...(selectorsIdle ? {} : { title: t("desktop.sideChatModelLocked") })}
+            />
+            {state.status === "running" ? (
+              <button type="button" className="side-chat-send" aria-label={t("desktop.sideChatStop")} title={t("desktop.sideChatStop")} disabled={pending !== null} onClick={() => void run("abort", () => runtime.abortSideChat(state.conversationId))}>
+                <StopIcon size={15} weight="fill" aria-hidden="true" />
+              </button>
+            ) : (
+              <button type="submit" className="side-chat-send" aria-label={t("desktop.sideChatSend")} title={t("desktop.sideChatSend")} disabled={pending !== null || draft.trim().length === 0}>
+                <PaperPlaneTiltIcon size={16} weight="fill" aria-hidden="true" />
+              </button>
+            )}
+          </span>
+        </div>
       </form>
     </section>
   );

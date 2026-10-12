@@ -169,6 +169,14 @@ export interface SideChatResetCommand {
   mode: "refork" | "clear";
 }
 
+export interface SideChatSetModelCommand {
+  type: "side_chat_set_model";
+  conversationId: string;
+  provider: string;
+  modelId: string;
+  thinkingLevel: ThinkingLevel;
+}
+
 export type RuntimeCommand =
   | PromptCommand
   | AbortCommand
@@ -198,7 +206,8 @@ export type RuntimeCommand =
   | GenerateSessionTitleCommand
   | SideChatStartCommand
   | SideChatSendCommand
-  | SideChatResetCommand;
+  | SideChatResetCommand
+  | SideChatSetModelCommand;
 
 /** All canonical command types, in stable order. */
 export const RUNTIME_COMMAND_TYPES = [
@@ -231,6 +240,7 @@ export const RUNTIME_COMMAND_TYPES = [
   "side_chat_start",
   "side_chat_send",
   "side_chat_reset",
+  "side_chat_set_model",
 ] as const;
 
 export type RuntimeCommandType = (typeof RUNTIME_COMMAND_TYPES)[number];

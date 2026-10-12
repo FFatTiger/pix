@@ -147,8 +147,8 @@ export function mapSideChatState(value: SideChatState): ProtocolSideChatState {
     conversationId: value.conversationId,
     revision: value.revision,
     ...(value.runId === undefined ? {} : { runId: value.runId }),
-    capturedModel: { ...value.capturedModel },
-    capturedThinkingLevel: value.capturedThinkingLevel,
+    model: { ...value.model },
+    thinkingLevel: value.thinkingLevel,
     status: value.status,
     messages: value.messages.map((message) => ({
       id: message.id,

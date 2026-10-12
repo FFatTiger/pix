@@ -305,6 +305,21 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
         this.createSideChat();
         return { ok: true, type: "side_chat_reset", conversationId: this.sideChat!.conversationId };
       }
+      case "side_chat_set_model": {
+        if (this.sideChat?.conversationId !== command.conversationId) return this.sideChatNotFound("side_chat_set_model");
+        if (this.sideChat.status !== "idle") return { ok: false, type: "side_chat_set_model", error: makeRuntimeError("session_busy", "side chat is busy") };
+        if (!THINKING_LEVELS.includes(command.thinkingLevel)) {
+          return { ok: false, type: "side_chat_set_model", error: makeRuntimeError("invalid_input", `unknown thinking level: ${command.thinkingLevel}`) };
+        }
+        this.sideChat = {
+          ...this.sideChat,
+          revision: this.sideChat.revision + 1,
+          model: { provider: command.provider, id: command.modelId },
+          thinkingLevel: command.thinkingLevel,
+        };
+        this.emitSideChat();
+        return { ok: true, type: "side_chat_set_model" };
+      }
       case "prompt":
         return this.executePrompt(command);
       case "steer":
@@ -569,8 +584,8 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
     this.sideChat = {
       conversationId: `side-conversation-${++this.sideChatSeq}`,
       revision: 0,
-      capturedModel: { ...this.model },
-      capturedThinkingLevel: this.thinkingLevel,
+      model: { ...this.model },
+      thinkingLevel: this.thinkingLevel,
       status: "idle",
       messages: [],
       messagesTruncated: false,
@@ -589,7 +604,7 @@ export class ReferenceAgentRuntime implements AgentRuntimePort {
     });
   }
 
-  private sideChatNotFound(type: "side_chat_send" | "side_chat_reset"): RuntimeCommandResult {
+  private sideChatNotFound(type: "side_chat_send" | "side_chat_reset" | "side_chat_set_model"): RuntimeCommandResult {
     return { ok: false, type, error: makeRuntimeError("not_found", "side chat target not found") } as RuntimeCommandResult;
   }
 

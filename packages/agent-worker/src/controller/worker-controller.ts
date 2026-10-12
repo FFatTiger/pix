@@ -57,6 +57,7 @@ const SIDE_CHAT_MUTATION_TYPES = new Set<RuntimeCommand["type"]>([
   "side_chat_start",
   "side_chat_send",
   "side_chat_reset",
+  "side_chat_set_model",
 ]);
 
 /** Type guard: narrow a Protocol command type onto the read-only vocabulary. */
