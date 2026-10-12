@@ -106,6 +106,9 @@ describe("status card composer-strip layout", () => {
     // so the reserve is the single knob keeping the two apart.
     expect(chatInput).toContain("top: -22");
     expect(chatInput).toContain("right: isMobile ? 12 : 20");
+    // Attachment previews render inside the input box, so nothing can sit
+    // between the status tab and the composer top edge.
+    expect(chatInput.indexOf('className="chat-input-attachments"')).toBeGreaterThan(chatInput.indexOf("ref={inputShellRef}"));
     // The pill itself can only shrink within the reserved row.
     expect(rule(css, ".subagent-activity-capsule")).toContain("max-width: 100%");
   });

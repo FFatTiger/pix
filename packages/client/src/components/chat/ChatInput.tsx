@@ -1967,78 +1967,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {fileAttachmentError ?? imageAttachmentError}
           </div>
         )}
-        {/* Image previews + pending ordinary-file chips */}
-        {(attachedImages.length > 0 || pendingFiles.length > 0) && (
-          <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap", alignItems: "center" }}>
-            {attachedImages.map((img, i) => (
-              <div key={i} style={{ position: "relative", flexShrink: 0 }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={img.previewUrl}
-                  alt=""
-                  style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)", display: "block" }}
-                />
-                <button
-                  onClick={() => removeImage(i)}
-                  title={t("desktop.removeImage")}
-                  aria-label={t("desktop.removeImage")}
-                  style={{
-                    position: "absolute", top: -4, right: -4,
-                    width: 16, height: 16, borderRadius: "50%",
-                    background: "var(--bg-panel)", border: "1px solid var(--border)",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    cursor: "pointer", padding: 0, color: "var(--text-muted)",
-                  }}
-                >
-                  <XIcon size={8} />
-                </button>
-              </div>
-            ))}
-            {pendingFiles.map((file) => (
-              <div
-                key={file.id}
-                style={{
-                  position: "relative",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  maxWidth: 180,
-                  height: 28,
-                  padding: "0 8px 0 6px",
-                  borderRadius: 6,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-panel)",
-                  color: "var(--text)",
-                  fontSize: 12,
-                }}
-              >
-                <span style={{ flexShrink: 0, display: "flex" }}>{getFileIcon(file.name, 14)}</span>
-                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {file.name}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => removePendingFile(file.id)}
-                  disabled={submittingFileIds.has(file.id)}
-                  title={t("desktop.removeFile")}
-                  aria-label={t("desktop.removeFile")}
-                  style={{
-                    position: "absolute", top: -4, right: -4,
-                    width: 16, height: 16, borderRadius: "50%",
-                    background: "var(--bg-panel)", border: "1px solid var(--border)",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    cursor: submittingFileIds.has(file.id) ? "wait" : "pointer",
-                    opacity: submittingFileIds.has(file.id) ? 0.6 : 1,
-                    padding: 0, color: "var(--text-muted)",
-                  }}
-                >
-                  <XIcon size={8} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
         {/* Main input */}
         <div ref={inputAreaRef} style={{ position: "relative" }}>
           {historyMenuOpen && inputHistory.length > 0 && (
@@ -2477,6 +2405,78 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             </div>
             )}
           </div>
+          {/* Image previews + pending ordinary-file chips live inside the input box,
+              so nothing sits between the status tab and the composer. */}
+          {(attachedImages.length > 0 || pendingFiles.length > 0) && (
+            <div className="chat-input-attachments" style={{ display: "flex", gap: 6, padding: "10px 12px 2px", flexWrap: "wrap", alignItems: "center" }}>
+              {attachedImages.map((img, i) => (
+                <div key={i} style={{ position: "relative", flexShrink: 0 }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={img.previewUrl}
+                    alt=""
+                    style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)", display: "block" }}
+                  />
+                  <button
+                    onClick={() => removeImage(i)}
+                    title={t("desktop.removeImage")}
+                    aria-label={t("desktop.removeImage")}
+                    style={{
+                      position: "absolute", top: -4, right: -4,
+                      width: 16, height: 16, borderRadius: "50%",
+                      background: "var(--bg-panel)", border: "1px solid var(--border)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      cursor: "pointer", padding: 0, color: "var(--text-muted)",
+                    }}
+                  >
+                    <XIcon size={8} />
+                  </button>
+                </div>
+              ))}
+              {pendingFiles.map((file) => (
+                <div
+                  key={file.id}
+                  style={{
+                    position: "relative",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    maxWidth: 180,
+                    height: 28,
+                    padding: "0 8px 0 6px",
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-panel)",
+                    color: "var(--text)",
+                    fontSize: 12,
+                  }}
+                >
+                  <span style={{ flexShrink: 0, display: "flex" }}>{getFileIcon(file.name, 14)}</span>
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {file.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removePendingFile(file.id)}
+                    disabled={submittingFileIds.has(file.id)}
+                    title={t("desktop.removeFile")}
+                    aria-label={t("desktop.removeFile")}
+                    style={{
+                      position: "absolute", top: -4, right: -4,
+                      width: 16, height: 16, borderRadius: "50%",
+                      background: "var(--bg-panel)", border: "1px solid var(--border)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      cursor: submittingFileIds.has(file.id) ? "wait" : "pointer",
+                      opacity: submittingFileIds.has(file.id) ? 0.6 : 1,
+                      padding: 0, color: "var(--text-muted)",
+                    }}
+                  >
+                    <XIcon size={8} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="chat-input-editor-row" style={{ borderColor: bashMode ? "var(--tool-bg)" : undefined }}>
           {/* Highlight layer: same text, same metrics, positioned exactly over
               the textarea content box (editor row padding is 6px 12px). The
