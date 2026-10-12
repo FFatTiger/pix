@@ -72,7 +72,7 @@ const tools: [string, string][] = [
   ["SendMessage", "Message an agent"], ["TaskOutput", "Read agent output"],
   ["TaskStop", "Stop an agent"], ["todo", "Task list"], ["ask_user_question", "Ask a question"],
 ];
-const reloadLabel = "Discard edits and reload saved selection";
+const reloadLabel = "Discard";
 
 // Switch interactions replace textarea edits: the same persistence, revision,
 // failure and runtime-isolation checks now also verify membership and unknown rows.
@@ -99,7 +99,7 @@ describe("ToolsConfig", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
     for (const [name, label] of tools) {
       expectChecked(label, true);
-      expect(screen.getByText(`Tool identifier: ${name}`)).toBeTruthy();
+      expect(screen.getByText(name)).toBeTruthy();
     }
     expect(screen.getByTestId("tools-selection-mode").textContent).toContain("including tools added in the future");
     fireEvent.click(toolSwitch("Run commands"));
@@ -203,7 +203,7 @@ describe("ToolsConfig", () => {
     expectChecked("Saved tool: agent", true);
     // Restart the draft to assert deduplication preserves the original saved order.
     fireEvent.click(screen.getByRole("button", { name: reloadLabel }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save" })).toBeNull());
     fireEvent.click(toolSwitch("Run code"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(putBody).toEqual({ expectedRevision: revision, toolNames: ["legacy-tool", "read", "agent", "Agent", "codemode"] }));
@@ -268,7 +268,7 @@ describe("ToolsConfig", () => {
     expect(screen.queryByRole("switch", { name: "Saved tool: legacy-tool" })).toBeNull();
     expectChecked("Write files", false);
     expect(screen.queryByText("The tool selection changed elsewhere. Review the latest values.")).toBeNull();
-    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     fireEvent.click(toolSwitch("Read files"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(putBody).toEqual({ expectedRevision: "b".repeat(64), toolNames: ["server-overwrite", "read"] }));
@@ -308,7 +308,7 @@ describe("ToolsConfig", () => {
     await waitFor(() => expectChecked("Read files", false));
     expectChecked("Saved tool: saved", true);
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 
   it("shows no picker and no fetch without settings.configure", async () => {

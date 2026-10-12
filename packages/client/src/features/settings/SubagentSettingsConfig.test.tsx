@@ -6,7 +6,7 @@ import { HttpClientProvider } from "@/app/http-context";
 import { queryKeys } from "@/api/query-keys";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
-import { BuiltInCapabilitiesConfig } from "./BuiltInCapabilitiesConfig";
+import { CapabilitiesConfig } from "./CapabilitiesConfig";
 import { SubagentSettingsConfig } from "./SubagentSettingsConfig";
 
 const useSelectedRuntime = vi.hoisted(() => vi.fn(() => { throw new Error("Settings must never consult runtime"); }));
@@ -30,11 +30,11 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
-function mount(fetchImpl: ReturnType<typeof vi.fn>, capabilities: HostCapability[] = ["settings.configure", "models"], builtIns = false) {
+function mount(fetchImpl: ReturnType<typeof vi.fn>, capabilities: HostCapability[] = ["settings.configure", "models"], component: "subagents" | "capabilities" = "subagents") {
   vi.stubGlobal("fetch", fetchImpl);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={queryClient}><HttpClientProvider><CapabilityProvider host={{ mode: "local", capabilities }}><I18nProvider>
-    {builtIns ? <BuiltInCapabilitiesConfig /> : <SubagentSettingsConfig />}
+    {component === "capabilities" ? <CapabilitiesConfig /> : <SubagentSettingsConfig />}
   </I18nProvider></CapabilityProvider></HttpClientProvider></QueryClientProvider>);
   return queryClient;
 }
@@ -61,7 +61,7 @@ function select(label: string, value: string) { fireEvent.change(screen.getByRol
 function value(label: string) { return (screen.getByRole("combobox", { name: label }) as HTMLSelectElement).value; }
 async function ready() { await screen.findByRole("combobox", { name: "Default model" }); }
 function save() { fireEvent.click(screen.getByRole("button", { name: "Save" })); }
-function reload() { fireEvent.click(screen.getByRole("button", { name: "Discard and reload" })); }
+function reload() { fireEvent.click(screen.getByRole("button", { name: "Discard" })); }
 
 afterEach(() => {
   cleanup();
@@ -77,14 +77,14 @@ describe("SubagentSettingsConfig", () => {
     const primary = screen.getByRole("combobox", { name: "Default model" });
     expect(within(primary).getByRole("option", { name: "provider/Friendly model" }).getAttribute("value")).toBe("provider/model/id");
     expect(value("Default model")).toBe("legacy/primary");
-    expect(screen.getByRole("heading", { name: "Agent: Custom CASE role" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Custom CASE role" })).toBeTruthy();
     expect(value("Custom CASE role model")).toBe("private/unknown");
-    expect(within(screen.getByRole("combobox", { name: "Explore thinking" })).getAllByRole("option").map((option) => (option as HTMLOptionElement).value)).toEqual(["", ...ThinkingLevelSchema.options]);
+    expect(within(screen.getByRole("combobox", { name: "Explorer thinking effort" })).getAllByRole("option").map((option) => (option as HTMLOptionElement).value)).toEqual(["", ...ThinkingLevelSchema.options]);
     select("Default model", "provider/model/id");
-    select("Global fallback model", "other/backup");
-    select("Explore model", "other/backup");
-    select("Explore fallback model", "provider/model/id");
-    select("Explore thinking", "high");
+    select("Fallback model", "other/backup");
+    select("Explorer model", "other/backup");
+    select("Explorer fallback model", "provider/model/id");
+    select("Explorer thinking effort", "high");
     save();
     await screen.findByText("Saved");
     expect(writes).toEqual([{ expectedRevision: revision, settings: {
@@ -96,6 +96,17 @@ describe("SubagentSettingsConfig", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
+  it("shows known types with a friendly name plus the raw id and a follow-default empty option", async () => {
+    const { fetchMock } = server();
+    mount(fetchMock);
+    await ready();
+    expect(screen.getByRole("heading", { name: "General purpose (general-purpose)" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Explorer (Explore)" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Planner (Plan)" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Verifier (verification)" })).toBeTruthy();
+    expect(within(screen.getByRole("combobox", { name: "Explorer model" })).getAllByRole("option")[0]?.textContent).toBe("Follow default");
+  });
+
   it("edits exact role identities and preserves metadata-only and differently cased saved roles", async () => {
     const settings = { ...saved.settings, agentOverrides: [
       { name: "Explore", model: "saved/explorer", fallbackModel: "saved/backup", thinking: "minimal" as const },
@@ -105,7 +116,7 @@ describe("SubagentSettingsConfig", () => {
     const { fetchMock, writes } = server({ revision, settings });
     mount(fetchMock);
     await ready();
-    select("Explore model", "provider/model/id");
+    select("Explorer model", "provider/model/id");
     save();
     await screen.findByText("Saved");
     expect(writes[0]?.settings.agentOverrides).toEqual([
@@ -113,7 +124,7 @@ describe("SubagentSettingsConfig", () => {
       ...settings.agentOverrides.slice(1),
     ]);
     expect(value("explore model")).toBe("custom/explorer");
-    expect(value("Metadata only thinking")).toBe("");
+    expect(value("Metadata only thinking effort")).toBe("");
   });
 
   it("clears nullable values without fabricating untouched fixed-role entries", async () => {
@@ -121,14 +132,14 @@ describe("SubagentSettingsConfig", () => {
     mount(fetchMock);
     await ready();
     select("Default model", "");
-    select("Global fallback model", "");
+    select("Fallback model", "");
     select("Custom CASE role model", "");
     select("Custom CASE role fallback model", "");
-    select("Custom CASE role thinking", "");
+    select("Custom CASE role thinking effort", "");
     save();
     await screen.findByText("Saved");
     expect(writes[0]?.settings).toEqual({ defaultModel: null, fallbackModel: null, agentOverrides: [{ name: "Custom CASE role", model: null, fallbackModel: null, thinking: null }] });
-    expect(screen.getByText("Agent definitions or project settings may still provide a fallback.")).toBeTruthy();
+    expect(screen.getByText("Subagent definitions or project settings may still provide a fallback.")).toBeTruthy();
   });
 
   it("editing only a global default keeps the saved role array empty", async () => {
@@ -149,26 +160,30 @@ describe("SubagentSettingsConfig", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("configures defaults independently of built-ins capability or session activity", async () => {
+  it("configures defaults without the built-ins capability and never renders feature switches", async () => {
     const { fetchMock, writes } = server();
-    mount(fetchMock, ["settings.configure", "models"], true);
+    mount(fetchMock, ["settings.configure", "models"]);
     await ready();
     expect(screen.queryByRole("switch")).toBeNull();
-    expect(screen.getByText("Applies to subsequent subagent launches.")).toBeTruthy();
     select("Default model", "provider/model/id");
     save();
     await screen.findByText("Saved");
     expect(writes).toHaveLength(1);
   });
 
-  it("permits model settings while the Subagents feature toggle is off", async () => {
+  it("permits subagent model settings while the Subagents feature toggle is off", async () => {
+    // The capabilities page shows the saved toggle honestly…
+    const builtInsMock = vi.fn(async () => json({ revision, capabilities: [{ id: "subagents", enabled: false }, { id: "todo", enabled: true }, { id: "ask_user_question", enabled: true }, { id: "side_chat", enabled: false }] }));
+    mount(builtInsMock, ["settings.configure", "builtins.configure", "models"], "capabilities");
+    expect((await screen.findByRole("switch", { name: "Subagents" })).getAttribute("aria-checked")).toBe("false");
+    cleanup();
+    // …and the subagents page saves without ever consulting built-ins.
     const base = server();
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input) === "/v1/settings/built-ins"
-      ? Promise.resolve(json({ revision, capabilities: [{ id: "subagents", enabled: false }, { id: "todo", enabled: true }, { id: "ask_user_question", enabled: true }, { id: "side_chat", enabled: false }] }))
+      ? Promise.reject(new Error("must not fetch built-ins"))
       : base.fetchMock(input, init));
-    mount(fetchMock, ["settings.configure", "builtins.configure", "models"], true);
+    mount(fetchMock, ["settings.configure", "models"]);
     await ready();
-    expect(screen.getByRole("switch", { name: "Subagents" }).getAttribute("aria-checked")).toBe("false");
     select("Default model", "provider/model/id");
     save();
     await screen.findByText("Saved");
@@ -185,7 +200,7 @@ describe("SubagentSettingsConfig", () => {
     await screen.findByText("Model catalog unavailable. You can keep or clear saved references.");
     expect(value("Default model")).toBe("legacy/primary");
     expect(value("Custom CASE role model")).toBe("private/unknown");
-    select("Global fallback model", "");
+    select("Fallback model", "");
     save();
     await screen.findByText("Saved");
     expect(base.writes[0]?.settings).toEqual({ ...saved.settings, fallbackModel: null });
@@ -233,12 +248,12 @@ describe("SubagentSettingsConfig", () => {
     act(() => { refetch = queryClient.refetchQueries({ queryKey: queryKeys.settingsConfig.subagents() }); });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true));
     expect(screen.getAllByRole("combobox").every((control) => control.hasAttribute("disabled"))).toBe(true);
-    expect(screen.getByRole("button", { name: "Discard and reload" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Discard" }).hasAttribute("disabled")).toBe(true);
     await act(async () => { refresh.resolve(json({ revision: "c".repeat(64), settings: { defaultModel: "changed/elsewhere", fallbackModel: null, agentOverrides: [] } })); await refetch; });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
     expect(value("Default model")).toBe("provider/model/id");
     expect(value("Custom CASE role model")).toBe("private/unknown");
-    select("Explore thinking", "low");
+    select("Explorer thinking effort", "low");
     save();
     await screen.findByText("Saved");
     expect(base.writes[0]?.expectedRevision).toBe(revision);
@@ -282,18 +297,18 @@ describe("SubagentSettingsConfig", () => {
     mount(fetchMock);
     await ready();
     select("Default model", "provider/model/id");
-    select("Global fallback model", "other/backup");
-    select("Explore thinking", "xhigh");
+    select("Fallback model", "other/backup");
+    select("Explorer thinking effort", "xhigh");
     save();
     await screen.findByText(/Subagent settings changed elsewhere/);
     await waitFor(() => expect(reads).toBe(2));
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
     expect(value("Default model")).toBe("provider/model/id");
-    expect(value("Explore thinking")).toBe("xhigh");
+    expect(value("Explorer thinking effort")).toBe("xhigh");
     failReload = true;
     reload();
     await screen.findByText("Subagent settings are unavailable.");
-    expect(value("Global fallback model")).toBe("other/backup");
+    expect(value("Fallback model")).toBe("other/backup");
     expect(value("Custom CASE role model")).toBe("private/unknown");
     expect(screen.queryByText("private backend text")).toBeNull();
     failReload = false;
@@ -301,11 +316,11 @@ describe("SubagentSettingsConfig", () => {
     await waitFor(() => expect(writes).toHaveLength(2));
     expect(writes[1]).toEqual(writes[0]);
     expect(writes[1]?.expectedRevision).toBe(revision);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Discard and reload" }).hasAttribute("disabled")).toBe(false));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Discard" }).hasAttribute("disabled")).toBe(false));
     reload();
     await waitFor(() => expect(value("Default model")).toBe("latest/model"));
-    expect(screen.queryByRole("heading", { name: "Agent: Custom CASE role" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("heading", { name: "Custom CASE role" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 
   it.each(["network", "invalid", "malformed response"])("preserves the draft after %s save failure and allows retry", async (failure) => {
@@ -323,11 +338,11 @@ describe("SubagentSettingsConfig", () => {
     }));
     await ready();
     select("Default model", "provider/model/id");
-    select("Plan thinking", "max");
+    select("Planner thinking effort", "max");
     save();
     await screen.findByRole("alert");
     expect(value("Default model")).toBe("provider/model/id");
-    expect(value("Plan thinking")).toBe("max");
+    expect(value("Planner thinking effort")).toBe("max");
     expect(screen.queryByText("secret host detail")).toBeNull();
     fail = false;
     save();

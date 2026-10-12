@@ -169,6 +169,8 @@ export function SettingsSecretInput({
   style,
   showLabel = "Show",
   hideLabel = "Hide",
+  id,
+  disabled,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -180,6 +182,8 @@ export function SettingsSecretInput({
   style?: CSSProperties;
   showLabel?: string;
   hideLabel?: string;
+  id?: string;
+  disabled?: boolean;
 }) {
   const [visible, setVisible] = useState(false);
 
@@ -191,12 +195,14 @@ export function SettingsSecretInput({
   return (
     <div style={{ position: "relative", width: "100%", ...style }}>
       <input
+        id={id}
         type={visible ? "text" : "password"}
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder={placeholder}
-        style={{ ...inputStyle, paddingRight: 34, fontFamily: mono ? "var(--font-mono)" : "inherit" }}
+        style={{ ...inputStyle, paddingRight: 34, fontFamily: mono ? "var(--font-mono)" : "inherit", opacity: disabled ? 0.55 : 1 }}
         autoComplete={autoComplete}
         spellCheck={spellCheck}
       />
@@ -356,6 +362,7 @@ export function SettingsButton({
   title,
   children,
   style,
+  testId,
 }: {
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -365,6 +372,7 @@ export function SettingsButton({
   title?: string;
   children: ReactNode;
   style?: CSSProperties;
+  testId?: string;
 }) {
   return (
     <button
@@ -372,6 +380,7 @@ export function SettingsButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
+      data-testid={testId}
       style={{
         ...buttonBase,
         ...buttonVariantStyle(variant),
@@ -388,7 +397,7 @@ export function SettingsButton({
 
 type BadgeTone = "default" | "project" | "warning" | "muted" | "success";
 
-export function SettingsBadge({ tone = "default", children }: { tone?: BadgeTone; children: ReactNode }) {
+export function SettingsBadge({ tone = "default", title, children }: { tone?: BadgeTone; title?: string; children: ReactNode }) {
   const styles: Record<BadgeTone, CSSProperties> = {
     default: {
       background: "color-mix(in srgb, var(--text-dim) 12%, transparent)",
@@ -413,6 +422,7 @@ export function SettingsBadge({ tone = "default", children }: { tone?: BadgeTone
   };
   return (
     <span
+      title={title}
       style={{
         fontSize: 10,
         padding: "1px 5px",
@@ -434,6 +444,7 @@ export function SettingsBadge({ tone = "default", children }: { tone?: BadgeTone
 export function SettingsSaveBar({
   dirty,
   busy,
+  saving = false,
   error,
   saved,
   onSave,
@@ -441,7 +452,10 @@ export function SettingsSaveBar({
   "data-testid": testId,
 }: {
   dirty: boolean;
+  /** Any in-flight exchange (save or authoritative refetch) disables controls. */
   busy: boolean;
+  /** A save is in flight — swaps the Save label to its saving state. */
+  saving?: boolean;
   /** Fixed, already-localized error copy (empty/null hides it). */
   error: string | null;
   /** True right after a successful save (shows the fixed confirmation). */
@@ -463,7 +477,7 @@ export function SettingsSaveBar({
       <div className="settings-savebar-actions">
         <SettingsButton disabled={busy} onClick={onDiscard}>{t("desktop.settingsDiscard")}</SettingsButton>
         <SettingsButton variant="primary" disabled={!dirty || busy} onClick={onSave}>
-          {busy ? t("desktop.modelsSaving") : t("desktop.modelsSave")}
+          {saving ? t("desktop.modelsSaving") : t("desktop.modelsSave")}
         </SettingsButton>
       </div>
     </footer>

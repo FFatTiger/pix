@@ -7,9 +7,41 @@ import { useHttpClient } from "@/app/http-context";
 import { SettingToggle } from "@/components/SettingToggle";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
-import { SettingsButton, SettingsSection } from "./settings-ui";
+import { useSettingsDraft } from "./settings-draft";
+import { SettingsButton, SettingsSaveBar, SettingsSection } from "./settings-ui";
 
-// Presentation choices only; saved names outside this palette remain editable.
+/**
+ * Tool palette: presentation choices only; saved names outside this palette
+ * remain editable switches. Grouped by what the tools do — the raw tool id
+ * is secondary information on each row.
+ */
+const TOOL_CATEGORIES: readonly { readonly labelKey: string; readonly names: readonly string[] }[] = [
+  {
+    labelKey: "desktop.toolCategory.files",
+    names: ["read", "write", "edit", "ls"],
+  },
+  {
+    labelKey: "desktop.toolCategory.search",
+    names: ["grep", "find", "tool_search"],
+  },
+  {
+    labelKey: "desktop.toolCategory.commands",
+    names: ["bash", "powershell"],
+  },
+  {
+    labelKey: "desktop.toolCategory.code",
+    names: ["codemode"],
+  },
+  {
+    labelKey: "desktop.toolCategory.subagents",
+    names: ["Agent", "SendMessage", "TaskOutput", "TaskStop"],
+  },
+  {
+    labelKey: "desktop.toolCategory.interaction",
+    names: ["todo", "ask_user_question"],
+  },
+];
+
 const VISIBLE_TOOLS = [
   { name: "read", labelKey: "desktop.tool.read" },
   { name: "write", labelKey: "desktop.tool.write" },
@@ -30,7 +62,7 @@ const VISIBLE_TOOLS = [
 ];
 
 /**
- * Global "Tools" settings tab.
+ * Global "Tools" settings page.
  *
  * The SAVED truth is the global `pixDefaultTools` selection (all / custom
  * allowlist / native Pi `defaultTools`). The switches edit a persisted name list
@@ -56,6 +88,7 @@ export function ToolsConfig() {
   const editing = draft !== null;
   const selectedNames = draft?.toolNames ?? (selection?.mode === "all" ? VISIBLE_TOOLS.map(({ name }) => name) : savedNames);
   const visibleNames = [...new Set([...VISIBLE_TOOLS.map(({ name }) => name), ...savedNames, ...(draft?.toolNames ?? [])])];
+  const unknownNames = visibleNames.filter((name) => !VISIBLE_TOOLS.some((tool) => tool.name === name));
 
   const busy = save.isPending || query.isFetching;
 
@@ -81,16 +114,32 @@ export function ToolsConfig() {
     });
   };
 
-  const saveCustom = () => {
-    if (draft) void persist(draft.toolNames, draft.expectedRevision);
-  };
-
   const reloadSaved = async () => {
     const result = await query.refetch();
     if (result.isSuccess) {
       setDraft(null);
       setErrorKey(null);
     }
+  };
+
+  useSettingsDraft("tools", {
+    isDirty: () => draft !== null,
+    discard: () => void reloadSaved(),
+  });
+
+  const renderToolRow = (name: string) => {
+    const tool = VISIBLE_TOOLS.find((candidate) => candidate.name === name);
+    return (
+      <SettingToggle
+        key={name}
+        label={tool ? t(tool.labelKey) : t("desktop.toolsSettingsUnknownTool", { name })}
+        description={name}
+        monoDescription
+        checked={selectedNames.includes(name)}
+        onChange={(enabled) => toggleTool(name, enabled)}
+        disabled={busy}
+      />
+    );
   };
 
   let content;
@@ -118,38 +167,45 @@ export function ToolsConfig() {
             {t("desktop.toolsSettingsDisableAll")}
           </SettingsButton>
         </div>
-        {visibleNames.map((name) => {
-          const tool = VISIBLE_TOOLS.find((candidate) => candidate.name === name);
+        {TOOL_CATEGORIES.map(({ labelKey, names }) => {
+          const categoryNames = names.filter((name) => visibleNames.includes(name));
+          if (categoryNames.length === 0) return null;
           return (
-            <SettingToggle
-              key={name}
-              label={tool ? t(tool.labelKey) : t("desktop.toolsSettingsUnknownTool", { name })}
-              description={t("desktop.toolsSettingsToolName", { name })}
-              checked={selectedNames.includes(name)}
-              onChange={(enabled) => toggleTool(name, enabled)}
-              disabled={busy}
-            />
+            <div key={labelKey} className="settings-tool-category">
+              <div className="settings-tool-category-title">{t(labelKey)}</div>
+              {categoryNames.map(renderToolRow)}
+            </div>
           );
         })}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
-          <SettingsButton size="sm" disabled={busy || !editing} onClick={() => { void reloadSaved(); }}>
-            {t("desktop.toolsSettingsReloadSaved")}
-          </SettingsButton>
-          <SettingsButton size="sm" variant="primary" disabled={busy || !editing} onClick={saveCustom}>
-            {t("desktop.modelsSave")}
-          </SettingsButton>
-        </div>
+        {unknownNames.length > 0 ? (
+          <div className="settings-tool-category">
+            <div className="settings-tool-category-title">{t("desktop.toolCategory.saved")}</div>
+            {unknownNames.map(renderToolRow)}
+          </div>
+        ) : null}
       </>
     );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-      <SettingsSection title={t("desktop.toolsSettings")} description={t("desktop.toolsSettingsDescription")}>
-        {content}
-        {query.isError && query.data ? <div className="workspace-hint workspace-hint--error" role="alert">{t("desktop.toolsSettingsUnavailable")}</div> : null}
-        {errorKey ? <div className="workspace-hint workspace-hint--error" role="alert">{t(errorKey)}</div> : null}
-      </SettingsSection>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0 }}>
+      <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
+        <SettingsSection title={t("desktop.toolsSettings")} description={t("desktop.toolsSettingsDescription")}>
+          {content}
+          {query.isError && query.data ? <div className="workspace-hint workspace-hint--error" role="alert">{t("desktop.toolsSettingsUnavailable")}</div> : null}
+        </SettingsSection>
+      </div>
+      <SettingsSaveBar
+        dirty={editing}
+        busy={busy}
+        saving={save.isPending}
+        error={errorKey ? t(errorKey) : null}
+        saved={save.isSuccess && !editing && !errorKey}
+        onSave={() => {
+          if (draft) void persist(draft.toolNames, draft.expectedRevision);
+        }}
+        onDiscard={() => void reloadSaved()}
+      />
     </div>
   );
 }

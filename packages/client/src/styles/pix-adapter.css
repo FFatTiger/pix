@@ -1849,28 +1849,25 @@ html.dark .catalog-meta-item--error {
 /* Global model configuration, using the same flat sections and controls as the rest of Settings. */
 .models-config-shell { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; }
 .models-config-body { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
-.models-tree { width: 190px; flex: none; display: flex; min-height: 0; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg-card); }
-.models-tree-heading { flex: none; padding: 12px 12px 8px; color: var(--text-dim); font-size: 10px; font-weight: var(--text-weight-strong); letter-spacing: .06em; text-transform: uppercase; }
-.models-tree-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 8px; }
-.models-tree-group {
-  margin-bottom: 6px;
-  padding: 2px 2px 3px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--text) 3.5%, transparent);
-}
-.models-tree-group:last-child { margin-bottom: 0; }
-.models-tree-provider, .models-tree-model, .models-tree-add-model { width: 100%; border: 0; color: var(--text-muted); background: transparent; cursor: pointer; text-align: left; }
-.models-tree-provider { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 6px 8px; border-radius: var(--control-radius); font: var(--text-weight-strong) 12px/1 var(--font-mono); }
+.models-provider-list { width: 190px; flex: none; display: flex; min-height: 0; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg-card); }
+.models-provider-list-heading { flex: none; padding: 12px 12px 8px; color: var(--text-dim); font-size: 10px; font-weight: var(--text-weight-strong); letter-spacing: .06em; text-transform: uppercase; }
+.models-provider-list-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+.models-provider-item { width: 100%; display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 6px 8px; border: 0; border-radius: var(--control-radius); color: var(--text-muted); background: transparent; cursor: pointer; text-align: left; font: var(--text-weight-strong) 12px/1 var(--font-mono); transition: background .12s, color .12s; }
 /* Label-only class: never target bare spans here — ProviderIcon renders spans
    (wrapper + absolute API-type corner badge) that must not be stretched by
    flex:1 or the badge flies off the icon corner. */
-.models-tree-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.models-tree-model { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 5px 8px 5px 29px; border-radius: var(--control-radius); font: 11px/1.2 var(--font-mono); }
-.models-tree-model small { flex: none; padding: 1px 4px; border-radius: 3px; color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); font: var(--text-weight-strong) 9px/1 var(--font-mono); }
-.models-tree-add-model { min-height: 27px; padding: 4px 8px 4px 29px; border-radius: var(--control-radius); font-size: 11px; color: var(--text-dim); }
-.models-tree-provider:hover, .models-tree-model:hover, .models-tree-add-model:hover { color: var(--text); background: var(--bg-hover); }
-.models-tree-provider.is-selected, .models-tree-model.is-selected { color: var(--text); background: var(--bg-selected); }
-.models-tree-footer { flex: none; border-top: 1px solid var(--border); padding: 8px; }
+.models-provider-item-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models-provider-item:hover { color: var(--text); background: var(--bg-hover); }
+.models-provider-item.is-selected { color: var(--text); background: var(--bg-selected); }
+.models-provider-item-count { flex: none; min-width: 16px; padding: 1px 5px; border-radius: 8px; text-align: center; color: var(--text-dim); background: color-mix(in srgb, var(--text-dim) 10%, transparent); font: 10px/1.4 var(--font-sans); }
+.models-provider-list-footer { flex: none; border-top: 1px solid var(--border); padding: 8px; }
+.models-back-link { display: inline-flex; align-items: center; gap: 5px; margin: 12px var(--settings-pad-x) 0; padding: 3px 6px 3px 4px; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
+.models-back-link:hover { color: var(--text); background: var(--bg-hover); }
+.models-model-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-width: 620px; }
+.models-model-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-card); color: var(--text); cursor: pointer; text-align: left; transition: border-color .12s, background .12s; }
+.models-model-row:hover { border-color: var(--border-hover); background: var(--bg-hover); }
+.models-model-row-id { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.models-model-row-badges { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .models-detail { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; }
 .models-detail-page { min-height: 100%; }
 .models-empty-detail { height: 100%; display: grid; place-items: center; color: var(--text-dim); font-size: 13px; }
@@ -1938,6 +1935,10 @@ html.dark .catalog-meta-item--error {
 .settings-danger-confirm { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .settings-danger-confirm-text { font-size: 11px; color: var(--status-danger); }
 
+/* Tool category groups. */
+.settings-tool-category { margin-bottom: 14px; }
+.settings-tool-category-title { margin-bottom: 2px; padding: 0 14px; font-size: 11px; font-weight: var(--text-weight-strong); letter-spacing: .05em; text-transform: uppercase; color: var(--text-dim); }
+
 /* Grouped settings navigation. */
 .settings-nav { display: flex; flex-direction: column; width: 172px; flex-shrink: 0; padding: 10px 8px; gap: 2px; background: var(--bg-panel); border-right: 1px solid var(--border); overflow-y: auto; }
 .settings-nav-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
@@ -1945,12 +1946,12 @@ html.dark .catalog-meta-item--error {
 .settings-nav-group-hint { padding: 0 10px 6px; font-size: 10px; line-height: 1.45; color: var(--text-dim); }
 .settings-nav-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: none; border-radius: 6px; background: none; color: var(--text-muted); cursor: pointer; font-size: 12px; text-align: left; transition: background .12s, color .12s; }
 .settings-nav-item:hover { background: var(--bg-hover); color: var(--text); }
-.settings-nav-item.is-active { background: var(--bg-selected); color: var(--text); font-weight: 600; }
+.settings-nav-item.is-active { background: var(--bg-selected); color: var(--text); font-weight: var(--text-weight-strong); }
 
 /* Content column: page header + scrolling body. */
 .settings-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .settings-page-header { flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px var(--settings-pad-x) 12px; border-bottom: 1px solid var(--border); }
-.settings-page-title { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); }
+.settings-page-title { margin: 0; font-size: 15px; font-weight: var(--text-weight-strong); color: var(--text); }
 .settings-page-desc { margin: 3px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
 .settings-page-back { display: none; }
 .settings-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
@@ -1986,9 +1987,9 @@ html.dark .catalog-meta-item--error {
 
 @media (max-width: 720px) {
   .models-config-body { flex-direction: column; }
-  .models-tree { width: 100%; max-height: 30dvh; border-right: 0; border-bottom: 1px solid var(--border); }
-  .models-tree-heading { display: none; }
-  .models-tree-scroll { padding-top: 6px; }
+  .models-provider-list { width: 100%; max-height: 30dvh; border-right: 0; border-bottom: 1px solid var(--border); }
+  .models-provider-list-heading { display: none; }
+  .models-provider-list-scroll { padding-top: 6px; }
   .models-provider-grid { grid-template-columns: 1fr; }
   .models-cost-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

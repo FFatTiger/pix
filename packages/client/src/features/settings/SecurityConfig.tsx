@@ -2,7 +2,12 @@ import { useState, type FormEvent } from "react";
 import { useGatePasswordChange, useGateStatus } from "@/features/gate/useGate";
 import { useI18n } from "@/hooks/useI18n";
 import { HttpError } from "@/api/http-client";
-import { inputStyle, SettingsSection } from "@/features/settings/settings-ui";
+import {
+  SettingsButton,
+  SettingsField,
+  SettingsSection,
+  SettingsSecretInput,
+} from "@/features/settings/settings-ui";
 
 const MAX_KEY_LENGTH = 128;
 
@@ -29,7 +34,7 @@ export function describeGatePasswordError(error: unknown, t: (key: string, param
 }
 
 /**
- * Settings → Security: change the pix access key.
+ * Access key page: change the pix access key.
  *
  * The key lives in ~/.pi/pix.json (`auth.password`) and every session cookie
  * is derived from it, so a successful change keeps THIS browser logged in
@@ -75,86 +80,58 @@ export function SecurityConfig() {
     );
   };
 
-  const fieldStyle = { ...inputStyle, marginBottom: 8 };
-
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
       <SettingsSection title={t("desktop.securityKey")} description={t("desktop.securityKeyDescription")}>
         {gateStatus === "enabled" ? (
-          <form onSubmit={handleSubmit} data-testid="security-key-form">
-            <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--text-muted)" }} htmlFor="security-current-key">
-              {t("desktop.securityKeyCurrent")}
-            </label>
-            <input
-              id="security-current-key"
-              type="password"
-              autoComplete="current-password"
-              className="settings-input"
-              style={fieldStyle}
-              value={currentKey}
-              onChange={(event) => { setCurrentKey(event.target.value); setSaved(false); }}
-              disabled={changePassword.isPending}
-            />
-            <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--text-muted)" }} htmlFor="security-new-key">
-              {t("desktop.securityKeyNew")}
-            </label>
-            <input
-              id="security-new-key"
-              type="password"
-              autoComplete="new-password"
-              className="settings-input"
-              style={fieldStyle}
-              value={newKey}
-              onChange={(event) => { setNewKey(event.target.value); setSaved(false); }}
-              disabled={changePassword.isPending}
-            />
-            <label style={{ display: "block", marginBottom: 4, fontSize: 12, color: "var(--text-muted)" }} htmlFor="security-confirm-key">
-              {t("desktop.securityKeyConfirm")}
-            </label>
-            <input
-              id="security-confirm-key"
-              type="password"
-              autoComplete="new-password"
-              className="settings-input"
-              style={fieldStyle}
-              value={confirmKey}
-              onChange={(event) => { setConfirmKey(event.target.value); setSaved(false); }}
-              disabled={changePassword.isPending}
-            />
-            {localError !== null ? (
-              <p role="alert" data-testid="security-key-local-error" style={{ margin: "0 0 8px", fontSize: 12, color: "var(--danger)" }}>
-                {localError}
-              </p>
-            ) : null}
-            {changePassword.error !== null ? (
-              <p role="alert" data-testid="security-key-error" style={{ margin: "0 0 8px", fontSize: 12, color: "var(--danger)" }}>
-                {describeGatePasswordError(changePassword.error, t)}
-              </p>
-            ) : null}
-            {saved ? (
-              <p data-testid="security-key-saved" style={{ margin: "0 0 8px", fontSize: 12, color: "var(--status-success, var(--accent))" }}>
-                {t("desktop.securityKeySaved")}
-              </p>
-            ) : null}
-            <button
-              type="submit"
-              className="settings-save-btn"
-              disabled={!canSubmit}
-              data-testid="security-key-save"
-              style={{
-                height: "var(--control-height)",
-                padding: "0 14px",
-                background: "var(--accent)",
-                color: "#fff",
-                border: "none",
-                borderRadius: "var(--control-radius)",
-                fontSize: 13,
-                cursor: canSubmit ? "pointer" : "not-allowed",
-                opacity: canSubmit ? 1 : 0.5,
-              }}
-            >
-              {changePassword.isPending ? t("desktop.saving") : t("desktop.securityKeySave")}
-            </button>
+          <form onSubmit={handleSubmit} data-testid="security-key-form" style={{ maxWidth: 480 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <SettingsField label={t("desktop.securityKeyCurrent")} htmlFor="security-current-key">
+                <SettingsSecretInput
+                  id="security-current-key"
+                  value={currentKey}
+                  onChange={(value) => { setCurrentKey(value); setSaved(false); }}
+                  autoComplete="current-password"
+                  disabled={changePassword.isPending}
+                />
+              </SettingsField>
+              <SettingsField label={t("desktop.securityKeyNew")} htmlFor="security-new-key">
+                <SettingsSecretInput
+                  id="security-new-key"
+                  value={newKey}
+                  onChange={(value) => { setNewKey(value); setSaved(false); }}
+                  autoComplete="new-password"
+                />
+              </SettingsField>
+              <SettingsField label={t("desktop.securityKeyConfirm")} htmlFor="security-confirm-key">
+                <SettingsSecretInput
+                  id="security-confirm-key"
+                  value={confirmKey}
+                  onChange={(value) => { setConfirmKey(value); setSaved(false); }}
+                  autoComplete="new-password"
+                />
+              </SettingsField>
+              {localError !== null ? (
+                <p role="alert" data-testid="security-key-local-error" style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}>
+                  {localError}
+                </p>
+              ) : null}
+              {changePassword.error !== null ? (
+                <p role="alert" data-testid="security-key-error" style={{ margin: 0, fontSize: 12, color: "var(--danger)" }}>
+                  {describeGatePasswordError(changePassword.error, t)}
+                </p>
+              ) : null}
+              {saved ? (
+                <p data-testid="security-key-saved" style={{ margin: 0, fontSize: 12, color: "var(--status-success, var(--accent))" }}>
+                  {t("desktop.securityKeySaved")}
+                </p>
+              ) : null}
+              <div>
+                <SettingsButton variant="primary" type="submit" disabled={!canSubmit} testId="security-key-save">
+                  {changePassword.isPending ? t("desktop.saving") : t("desktop.securityKeySave")}
+                </SettingsButton>
+              </div>
+            </div>
           </form>
         ) : gateStatus === "unconfigured" ? (
           <p data-testid="security-key-unconfigured" style={{ margin: 0, fontSize: 13, color: "var(--text-muted)" }}>

@@ -48,7 +48,9 @@ describe("SettingsFileConfig", () => {
 
     const editor = await screen.findByRole("textbox", { name: "settings.json" });
     expect(editor).toHaveProperty("value", original);
-    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+    // Sticky save bar: no Save control until there is something unsaved.
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.getByRole("note").textContent).toContain("raw configuration file");
 
     fireEvent.change(editor, { target: { value: '{\n  "defaultProvider": "acme-grok",\n}\n' } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));

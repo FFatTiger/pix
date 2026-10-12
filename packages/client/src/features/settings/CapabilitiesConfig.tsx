@@ -8,17 +8,21 @@ import { useHttpClient } from "@/app/http-context";
 import { SettingToggle } from "@/components/SettingToggle";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
-import { SubagentSettingsConfig } from "./SubagentSettingsConfig";
 import { SettingsSection } from "./settings-ui";
 
-const VISIBLE_FEATURES: readonly { readonly id: BuiltInCapabilityId; readonly labelKey: string }[] = [
-  { id: "subagents", labelKey: "desktop.agentFeature.subagents" },
-  { id: "todo", labelKey: "desktop.agentFeature.todo" },
-  { id: "ask_user_question", labelKey: "desktop.agentFeature.askUserQuestion" },
-  { id: "side_chat", labelKey: "desktop.agentFeature.sideChat" },
+const VISIBLE_FEATURES: readonly { readonly id: BuiltInCapabilityId; readonly labelKey: string; readonly descriptionKey: string }[] = [
+  { id: "subagents", labelKey: "desktop.agentFeature.subagents", descriptionKey: "desktop.capability.subagents.description" },
+  { id: "todo", labelKey: "desktop.agentFeature.todo", descriptionKey: "desktop.capability.todo.description" },
+  { id: "ask_user_question", labelKey: "desktop.agentFeature.askUserQuestion", descriptionKey: "desktop.capability.askUserQuestion.description" },
+  { id: "side_chat", labelKey: "desktop.agentFeature.sideChat", descriptionKey: "desktop.capability.sideChat.description" },
 ];
 
-export function BuiltInCapabilitiesConfig() {
+/**
+ * Capabilities page: the built-in feature switches. Each toggle states what
+ * actually breaks when it is off. Saves are instant CAS full replacements;
+ * running sessions keep their own feature set.
+ */
+export function CapabilitiesConfig() {
   const { t } = useI18n();
   const { can } = useCapabilities();
   const http = useHttpClient();
@@ -43,21 +47,21 @@ export function BuiltInCapabilitiesConfig() {
         const conflict = error instanceof HttpError && error.code === "CONFLICT";
         if (conflict) void query.refetch();
         setErrorKey(conflict
-          ? "desktop.agentFeaturesChanged"
-          : "desktop.agentFeaturesSaveFailed");
+          ? "desktop.capabilitiesChanged"
+          : "desktop.capabilitiesSaveFailed");
       },
     });
   };
 
   let content;
   if (!configurable) {
-    content = <div className="workspace-hint">{t("desktop.agentFeaturesUnavailable")}</div>;
+    content = <div className="workspace-hint">{t("desktop.capabilitiesUnavailable")}</div>;
   } else if (query.isPending) {
     content = <div className="workspace-hint" aria-busy="true">{t("desktop.loading")}</div>;
   } else if (query.isError || !query.data) {
-    content = <div className="workspace-hint workspace-hint--error" role="alert">{t("desktop.agentFeaturesUnavailable")}</div>;
+    content = <div className="workspace-hint workspace-hint--error" role="alert">{t("desktop.capabilitiesUnavailable")}</div>;
   } else {
-    content = VISIBLE_FEATURES.map(({ id, labelKey }) => {
+    content = VISIBLE_FEATURES.map(({ id, labelKey, descriptionKey }) => {
       const row = query.data.capabilities.find((candidate) => candidate.id === id);
       if (row === undefined) return null;
       return (
@@ -66,6 +70,7 @@ export function BuiltInCapabilitiesConfig() {
           checked={row.enabled}
           onChange={(enabled) => setEnabled(row.id, enabled)}
           label={t(labelKey)}
+          description={t(descriptionKey)}
           disabled={save.isPending}
           loading={save.isPending && save.variables?.capabilities.some((candidate) => (
             candidate.id === row.id && candidate.enabled !== row.enabled
@@ -77,11 +82,10 @@ export function BuiltInCapabilitiesConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-      <SettingsSection title={t("desktop.agentFeatures")} description={t("desktop.agentFeaturesDescription")}>
+      <SettingsSection title={t("desktop.capabilitiesSection")} description={t("desktop.capabilitiesSectionDescription")}>
         {content}
         {errorKey ? <div className="workspace-hint workspace-hint--error" role="alert">{t(errorKey)}</div> : null}
       </SettingsSection>
-      <SubagentSettingsConfig />
     </div>
   );
 }

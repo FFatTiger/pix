@@ -5,7 +5,7 @@ import type { HostCapability } from "@fffattiger/pix-protocol";
 import { HttpClientProvider } from "@/app/http-context";
 import { CapabilityProvider } from "@/features/capability/CapabilityProvider";
 import { I18nProvider } from "@/hooks/useI18n";
-import { BuiltInCapabilitiesConfig } from "./BuiltInCapabilitiesConfig";
+import { CapabilitiesConfig } from "./CapabilitiesConfig";
 
 const revision = "a".repeat(64);
 const capabilities = [
@@ -37,7 +37,7 @@ function mount(fetchImpl: ReturnType<typeof vi.fn>, hostCapabilities: HostCapabi
     <QueryClientProvider client={queryClient}>
       <HttpClientProvider>
         <CapabilityProvider host={{ mode: "local", capabilities: hostCapabilities }}>
-          <I18nProvider><BuiltInCapabilitiesConfig /></I18nProvider>
+          <I18nProvider><CapabilitiesConfig /></I18nProvider>
         </CapabilityProvider>
       </HttpClientProvider>
     </QueryClientProvider>,
@@ -50,11 +50,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("BuiltInCapabilitiesConfig", () => {
-  it("shows all loadable features and saves a four-entry CAS full replacement", async () => {
+describe("CapabilitiesConfig", () => {
+  it("shows every feature with its off-consequence description and saves a four-entry CAS full replacement", async () => {
     let putBody: unknown;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "/v1/settings/subagents") return json({ revision, settings: { defaultModel: null, fallbackModel: null, agentOverrides: [] } });
       expect(String(input)).toBe("/v1/settings/built-ins");
       if (init?.method === "PUT") {
         putBody = JSON.parse(String(init.body));
@@ -69,6 +68,12 @@ describe("BuiltInCapabilitiesConfig", () => {
 
     expect((await screen.findByRole("switch", { name: "Subagents" })).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByRole("switch", { name: "Side chat" }).getAttribute("aria-checked")).toBe("false");
+    // Each switch states what actually breaks when it is off.
+    expect(screen.getByText("When off, the model cannot delegate work to subagents.")).toBeTruthy();
+    expect(screen.getByText("When off, the model cannot create or update the task list.")).toBeTruthy();
+    expect(screen.getByText("When off, the model cannot ask you questions while running.")).toBeTruthy();
+    expect(screen.getByText("When off, the side chat panel is unavailable.")).toBeTruthy();
+
     fireEvent.click(screen.getByRole("switch", { name: "Task list" }));
 
     await waitFor(() => expect(putBody).toBeTruthy());
@@ -82,16 +87,19 @@ describe("BuiltInCapabilitiesConfig", () => {
   it("does not fetch or fabricate controls without builtins.configure", async () => {
     const fetchMock = vi.fn(async () => { throw new Error("must not fetch"); });
     mount(fetchMock, []);
-    expect(await screen.findByText("Agent feature settings are unavailable.")).toBeTruthy();
+    expect(await screen.findByText("Capability settings are unavailable.")).toBeTruthy();
     expect(screen.queryByRole("switch")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("does not consult the selected runtime hook", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/v1/settings/subagents"
-      ? json({ revision, settings: { defaultModel: null, fallbackModel: null, agentOverrides: [] } })
-      : json({ revision, capabilities }));
+  it("renders only the feature switches — no subagent model form on this page", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe("/v1/settings/built-ins");
+      return json({ revision, capabilities });
+    });
     mount(fetchMock);
     expect(await screen.findByRole("switch", { name: "Subagents" })).toBeTruthy();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(fetchMock.mock.calls.every((call) => !String(call[0]).includes("/v1/settings/subagents"))).toBe(true);
   });
 });

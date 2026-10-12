@@ -36,7 +36,7 @@ function mount(fetchImpl: ReturnType<typeof vi.fn>) {
     <QueryClientProvider client={queryClient}>
       <HttpClientProvider>
         <CapabilityProvider host={{ mode: "local", capabilities: ["models", "models.configure"] }}>
-          <I18nProvider><ModelsConfig onCloseAction={() => {}} /></I18nProvider>
+          <I18nProvider><ModelsConfig /></I18nProvider>
         </CapabilityProvider>
       </HttpClientProvider>
     </QueryClientProvider>,
@@ -49,7 +49,7 @@ afterEach(() => {
 });
 
 describe("ModelsConfig", () => {
-  it("renders the provider/model tree and provider picker without exposing API-key material", async () => {
+  it("renders the provider list with model sub-list detail and provider picker without exposing API-key material", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe("/v1/models/config");
       return json(snapshot);
@@ -57,7 +57,11 @@ describe("ModelsConfig", () => {
     mount(fetchMock);
 
     expect((await screen.findAllByText("acme-deepseek")).length).toBeGreaterThan(0);
-    expect(screen.getByText("deepseek-v4-flash")).toBeTruthy();
+    // The model is a sub-list row inside the provider detail, with a
+    // readable reasoning badge (replacing the unexplained "T").
+    const modelRow = screen.getByText("deepseek-v4-flash").closest("button")!;
+    expect(modelRow).toBeTruthy();
+    expect(screen.getByTitle("This model supports reasoning").textContent).toBe("Reasoning");
     expect(screen.queryByDisplayValue(/sk-/i)).toBeNull();
     expect(screen.getByPlaceholderText("••••••••••••••••••••••••••••••••").getAttribute("type")).toBe("password");
 
@@ -84,9 +88,11 @@ describe("ModelsConfig", () => {
     mount(fetchMock);
     await screen.findAllByText("acme-deepseek");
     expect(screen.queryByRole("button", { name: /Import models/i })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "+ model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
     const id = screen.getByText("ID *").parentElement!.querySelector("input")!;
     fireEvent.change(id, { target: { value: "manual-model" } });
+    // Model edits open the model detail; go back to the provider and save.
+    fireEvent.click(screen.getByRole("button", { name: "Back to acme-deepseek" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(putBody).toBeTruthy());
     expect(putBody).toMatchObject({
@@ -122,7 +128,8 @@ describe("ModelsConfig", () => {
       return json(snapshot);
     });
     mount(fetchMock);
-    await screen.findByRole("button", { name: "Save" });
+    const name = await screen.findByDisplayValue("acme-deepseek");
+    fireEvent.change(name, { target: { value: "renamed" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Model configuration changed elsewhere");
     expect(screen.queryByText(/raw host detail|Invalid project path|Catalog unavailable/i)).toBeNull();

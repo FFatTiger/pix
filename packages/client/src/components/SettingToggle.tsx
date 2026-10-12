@@ -8,11 +8,14 @@ export function SettingToggle({
   description,
   disabled,
   loading,
+  monoDescription,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
-  description?: string;
+  description?: React.ReactNode;
+  /** Render the description in the mono font (e.g. raw tool ids). */
+  monoDescription?: boolean;
   disabled?: boolean;
   loading?: boolean;
 }) {
@@ -59,6 +62,7 @@ export function SettingToggle({
               color: "var(--text-muted)",
               marginTop: 2,
               opacity: disabled ? 0.55 : 1,
+              fontFamily: monoDescription ? "var(--font-mono)" : undefined,
             }}
           >
             {description}

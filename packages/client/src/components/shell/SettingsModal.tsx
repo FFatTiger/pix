@@ -18,12 +18,14 @@ import {
 } from "@phosphor-icons/react";
 import { ArchiveConfig } from "@/features/settings/ArchiveConfig";
 import { AppearanceConfig } from "@/features/settings/AppearanceConfig";
-import { BuiltInCapabilitiesConfig } from "@/features/settings/BuiltInCapabilitiesConfig";
+import { CapabilitiesConfig } from "@/features/settings/CapabilitiesConfig";
 import { InputConfig } from "@/features/settings/InputConfig";
+import { ModelsSettingsTab } from "@/features/settings/ModelsConfig";
+import { PluginsConfig } from "@/features/settings/PluginsConfig";
 import { SessionConfig } from "@/features/settings/SessionConfig";
 import { SettingsFileConfig } from "@/features/settings/SettingsFileConfig";
-import { ModelsSettingsTab, PluginsSettingsTab, SkillsSettingsTab } from "@/features/settings/CatalogTabs";
 import { SecurityConfig } from "@/features/settings/SecurityConfig";
+import { SkillsConfig } from "@/features/settings/SkillsConfig";
 import { SubagentSettingsConfig } from "@/features/settings/SubagentSettingsConfig";
 import { ToolsConfig } from "@/features/settings/ToolsConfig";
 import { SettingsDraftContext, type SettingsDraftApi, type SettingsDraftHandle } from "@/features/settings/settings-draft";
@@ -145,8 +147,8 @@ export function SettingsModal({
       labelKey: "desktop.settingsNav.agent",
       hintKey: "desktop.settingsNav.agentHint",
       pages: [
-        { id: "providers", labelKey: "desktop.settingsPage.providers", descKey: "desktop.settingsPage.providersDesc", Icon: Cpu, render: () => <ModelsSettingsTab onCloseAction={requestClose} /> },
-        { id: "capabilities", labelKey: "desktop.settingsPage.capabilities", descKey: "desktop.settingsPage.capabilitiesDesc", Icon: SlidersHorizontal, render: () => <BuiltInCapabilitiesConfig /> },
+        { id: "providers", labelKey: "desktop.settingsPage.providers", descKey: "desktop.settingsPage.providersDesc", Icon: Cpu, render: () => <ModelsSettingsTab /> },
+        { id: "capabilities", labelKey: "desktop.settingsPage.capabilities", descKey: "desktop.settingsPage.capabilitiesDesc", Icon: SlidersHorizontal, render: () => <CapabilitiesConfig /> },
         { id: "subagents", labelKey: "desktop.settingsPage.subagents", descKey: "desktop.settingsPage.subagentsDesc", Icon: UsersThree, render: () => <SubagentSettingsConfig /> },
         { id: "tools", labelKey: "desktop.settingsPage.tools", descKey: "desktop.settingsPage.toolsDesc", Icon: Wrench, render: () => <ToolsConfig /> },
         { id: "session", labelKey: "desktop.settingsPage.session", descKey: "desktop.settingsPage.sessionDesc", Icon: ChatCircleText, render: () => <SessionConfig /> },
@@ -156,8 +158,8 @@ export function SettingsModal({
       id: "extensions",
       labelKey: "desktop.settingsNav.extensions",
       pages: [
-        { id: "skills", labelKey: "desktop.settingsPage.skills", descKey: "desktop.settingsPage.skillsDesc", Icon: Stack, render: () => <SkillsSettingsTab /> },
-        { id: "plugins", labelKey: "desktop.settingsPage.plugins", descKey: "desktop.settingsPage.pluginsDesc", Icon: Plug, render: () => <PluginsSettingsTab /> },
+        { id: "skills", labelKey: "desktop.settingsPage.skills", descKey: "desktop.settingsPage.skillsDesc", Icon: Stack, render: () => <SkillsConfig /> },
+        { id: "plugins", labelKey: "desktop.settingsPage.plugins", descKey: "desktop.settingsPage.pluginsDesc", Icon: Plug, render: () => <PluginsConfig /> },
       ],
     },
     {
