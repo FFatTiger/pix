@@ -19,7 +19,7 @@ Status: implementation and all four independent reviews passed. Final root gates
 
 Pinned upstream: npm `pi-side-chat@0.4.0`, git `9d59cc042634111c1ed633b7bacb9f74611aebbd`, npm shasum `6e61267ad1473bd051b7d89b73c6fbd566323da9`.
 
-Vendor the reusable headless controller extracted from the actual upstream overlay plus `fork-surgery`, `file-activity-tracker`, and `tool-wrapper`, retaining MIT license and precise source hashes/provenance. Retarget SDK imports to the repository's exact `@earendil-works/pi-*` and `typebox`. Do not vendor terminal rendering or globally patch `ExtensionRunner.prototype`; inject the parent's public extension runner/context/tool surfaces.
+Vendor the reusable headless controller extracted from the actual upstream overlay plus `fork-surgery` (the upstream `file-activity-tracker` and `tool-wrapper` overlap path was removed with edit mode), retaining MIT license and precise source hashes/provenance. Retarget SDK imports to the repository's exact `@earendil-works/pi-*` and `typebox`. Do not vendor terminal rendering or globally patch `ExtensionRunner.prototype`; inject the parent's public extension runner/context/tool surfaces.
 
 The first Pix upgrade away from this pinned upstream 0.4.0 port must remove this vendor and adopt a compatible public controller, or explicitly replace the versioned port with newly characterized code. It must not survive an upstream version change implicitly.
 

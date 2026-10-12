@@ -173,11 +173,6 @@ async function setMainComposer(chrome, text) {
   assert.equal(await chrome.evaluate(`(${PAGE.clickSend})()`), true, "main send click must land");
 }
 
-function sideRailButton() {
-  return `Array.from(document.querySelectorAll('.right-pane-rail button'))
-    .find((node) => (node.getAttribute('aria-label') ?? '') === 'Side chat')`;
-}
-
 async function openRightPane(chrome) {
   const open = await chrome.evaluate(`(() => {
     const toggle = document.querySelector('[data-testid="right-pane-toggle"]') ?? document.querySelector('.right-pane-rail button');
