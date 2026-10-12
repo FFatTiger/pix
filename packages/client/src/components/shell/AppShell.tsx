@@ -370,7 +370,7 @@ export function AppShell({ search }: AppShellProps) {
     return () => window.clearTimeout(timeout);
   }, [isMobile, mobileSidebarMounted, sidebarOpen]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("models");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
   const openSettings = useCallback((tab: SettingsTab) => {
     setSettingsTab(tab);
     setSettingsOpen(true);

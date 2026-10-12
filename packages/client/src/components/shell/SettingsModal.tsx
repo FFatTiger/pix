@@ -1,50 +1,89 @@
-import { useEffect, useRef, useState } from "react";
-import { Archive, ChatCenteredText, Cpu, FileJs, Monitor, Plug, Robot, ShieldCheck, Stack, Wrench, X } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Archive,
+  ArrowLeft,
+  ChatCircleText,
+  Cpu,
+  FileJs,
+  Keyboard,
+  Monitor,
+  Plug,
+  ShieldCheck,
+  SlidersHorizontal,
+  Stack,
+  UsersThree,
+  Wrench,
+  X,
+
+} from "@phosphor-icons/react";
 import { ArchiveConfig } from "@/features/settings/ArchiveConfig";
+import { AppearanceConfig } from "@/features/settings/AppearanceConfig";
 import { BuiltInCapabilitiesConfig } from "@/features/settings/BuiltInCapabilitiesConfig";
-import { ChatConfig } from "@/features/settings/ChatConfig";
-import { DisplayConfig } from "@/features/settings/DisplayConfig";
+import { InputConfig } from "@/features/settings/InputConfig";
+import { SessionConfig } from "@/features/settings/SessionConfig";
 import { SettingsFileConfig } from "@/features/settings/SettingsFileConfig";
 import { ModelsSettingsTab, PluginsSettingsTab, SkillsSettingsTab } from "@/features/settings/CatalogTabs";
 import { SecurityConfig } from "@/features/settings/SecurityConfig";
+import { SubagentSettingsConfig } from "@/features/settings/SubagentSettingsConfig";
 import { ToolsConfig } from "@/features/settings/ToolsConfig";
+import { SettingsDraftContext, type SettingsDraftApi, type SettingsDraftHandle } from "@/features/settings/settings-draft";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 
-export type SettingsTab = "display" | "chat" | "agents" | "tools" | "models" | "config" | "skills" | "plugins" | "security" | "archive";
+/**
+ * Pages of the Settings dialog, grouped by scope. The group itself expresses
+ * the effect range (this device / every session / extensions / system) — no
+ * per-page scope chip. Every page keeps exactly one responsibility.
+ */
+export type SettingsPageId =
+  | "appearance"
+  | "input"
+  | "archive"
+  | "providers"
+  | "capabilities"
+  | "subagents"
+  | "tools"
+  | "session"
+  | "skills"
+  | "plugins"
+  | "access"
+  | "advanced";
 
-interface SettingsModalProps {
-  initialTab?: SettingsTab;
-  onCloseAction: () => void;
+/** @deprecated Renamed to {@link SettingsPageId}; kept for call-site migration. */
+export type SettingsTab = SettingsPageId;
+
+interface PageMeta {
+  id: SettingsPageId;
+  labelKey: string;
+  descKey?: string;
+  Icon: typeof Cpu;
+  render: () => ReactNode;
 }
 
-const GLOBAL_TABS = new Set<SettingsTab>(["models", "agents", "tools", "config", "skills", "plugins", "security"]);
-const LOCAL_TABS = new Set<SettingsTab>(["display", "archive"]);
-
-const tabs: { id: SettingsTab; labelKey: string; Icon: typeof Cpu }[] = [
-  { id: "display", labelKey: "desktop.display", Icon: Monitor },
-  { id: "chat", labelKey: "desktop.chat", Icon: ChatCenteredText },
-  { id: "agents", labelKey: "desktop.agentFeatures", Icon: Robot },
-  { id: "tools", labelKey: "desktop.toolsSettingsTab", Icon: Wrench },
-  { id: "models", labelKey: "desktop.models", Icon: Cpu },
-  { id: "config", labelKey: "desktop.settingsFileTab", Icon: FileJs },
-  { id: "skills", labelKey: "desktop.skills", Icon: Stack },
-  { id: "plugins", labelKey: "desktop.plugins", Icon: Plug },
-  { id: "security", labelKey: "desktop.security", Icon: ShieldCheck },
-  { id: "archive", labelKey: "desktop.archiveSettings", Icon: Archive },
-];
+interface NavGroup {
+  id: string;
+  labelKey: string;
+  hintKey?: string;
+  pages: PageMeta[];
+}
 
 /**
- * Settings modal. Every tab is always available: catalogs are the global
+ * Settings modal. Every page is always available: catalogs are the global
  * on-disk agent-dir sources, never a selected folder or live session.
+ * Desktop shows the grouped nav beside the page; mobile shows a list →
+ * detail flow with a back button.
  */
 export function SettingsModal({
-  initialTab = "models",
+  initialTab = "providers",
   onCloseAction,
-}: SettingsModalProps) {
+}: {
+  initialTab?: SettingsPageId;
+  onCloseAction: () => void;
+}) {
   const isMobile = useIsMobile();
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+  const [activePage, setActivePage] = useState<SettingsPageId>(initialTab);
+  const [mobileNavOpen, setMobileNavOpen] = useState(true);
   const dialogRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -52,14 +91,87 @@ export function SettingsModal({
   }, []);
 
   useEffect(() => {
-    setActiveTab(initialTab);
+    setActivePage(initialTab);
   }, [initialTab]);
 
-  const scopeLabel = GLOBAL_TABS.has(activeTab)
-    ? t("desktop.global")
-    : LOCAL_TABS.has(activeTab)
-      ? t("desktop.localPreferences")
-      : null;
+  // ── Dirty-draft guard ────────────────────────────────────────────────
+  const draftHandles = useRef(new Map<string, SettingsDraftHandle>());
+  const register = useCallback<SettingsDraftApi["register"]>((id, handle) => {
+    draftHandles.current.set(id, handle);
+    return () => {
+      draftHandles.current.delete(id);
+    };
+  }, []);
+  const draftApi = useMemo<SettingsDraftApi>(() => ({ register }), [register]);
+
+  const [pendingAction, setPendingAction] = useState<null | (() => void)>(null);
+  /** Runs the action, or opens the discard guard when a draft is dirty. */
+  const runOrGuard = useCallback((action: () => void) => {
+    const dirty = [...draftHandles.current.values()].filter((handle) => handle.isDirty());
+    if (dirty.length === 0) {
+      action();
+      return;
+    }
+    setPendingAction(() => () => {
+      for (const handle of dirty) handle.discard();
+      action();
+    });
+  }, []);
+
+  const selectPage = useCallback((id: SettingsPageId) => {
+    if (id === activePage && !isMobile) return;
+    runOrGuard(() => {
+      setActivePage(id);
+      if (isMobile) setMobileNavOpen(false);
+    });
+  }, [activePage, isMobile, runOrGuard]);
+
+  const requestClose = useCallback(() => {
+    runOrGuard(onCloseAction);
+  }, [onCloseAction, runOrGuard]);
+
+  const groups = useMemo<NavGroup[]>(() => [
+    {
+      id: "device",
+      labelKey: "desktop.settingsNav.device",
+      pages: [
+        { id: "appearance", labelKey: "desktop.settingsPage.appearance", descKey: "desktop.settingsPage.appearanceDesc", Icon: Monitor, render: () => <AppearanceConfig /> },
+        { id: "input", labelKey: "desktop.settingsPage.input", descKey: "desktop.settingsPage.inputDesc", Icon: Keyboard, render: () => <InputConfig /> },
+        { id: "archive", labelKey: "desktop.settingsPage.archive", descKey: "desktop.settingsPage.archiveDesc", Icon: Archive, render: () => <ArchiveConfig /> },
+      ],
+    },
+    {
+      id: "agent",
+      labelKey: "desktop.settingsNav.agent",
+      hintKey: "desktop.settingsNav.agentHint",
+      pages: [
+        { id: "providers", labelKey: "desktop.settingsPage.providers", descKey: "desktop.settingsPage.providersDesc", Icon: Cpu, render: () => <ModelsSettingsTab onCloseAction={requestClose} /> },
+        { id: "capabilities", labelKey: "desktop.settingsPage.capabilities", descKey: "desktop.settingsPage.capabilitiesDesc", Icon: SlidersHorizontal, render: () => <BuiltInCapabilitiesConfig /> },
+        { id: "subagents", labelKey: "desktop.settingsPage.subagents", descKey: "desktop.settingsPage.subagentsDesc", Icon: UsersThree, render: () => <SubagentSettingsConfig /> },
+        { id: "tools", labelKey: "desktop.settingsPage.tools", descKey: "desktop.settingsPage.toolsDesc", Icon: Wrench, render: () => <ToolsConfig /> },
+        { id: "session", labelKey: "desktop.settingsPage.session", descKey: "desktop.settingsPage.sessionDesc", Icon: ChatCircleText, render: () => <SessionConfig /> },
+      ],
+    },
+    {
+      id: "extensions",
+      labelKey: "desktop.settingsNav.extensions",
+      pages: [
+        { id: "skills", labelKey: "desktop.settingsPage.skills", descKey: "desktop.settingsPage.skillsDesc", Icon: Stack, render: () => <SkillsSettingsTab /> },
+        { id: "plugins", labelKey: "desktop.settingsPage.plugins", descKey: "desktop.settingsPage.pluginsDesc", Icon: Plug, render: () => <PluginsSettingsTab /> },
+      ],
+    },
+    {
+      id: "system",
+      labelKey: "desktop.settingsNav.system",
+      pages: [
+        { id: "access", labelKey: "desktop.settingsPage.access", descKey: "desktop.settingsPage.accessDesc", Icon: ShieldCheck, render: () => <SecurityConfig /> },
+        { id: "advanced", labelKey: "desktop.settingsPage.advanced", descKey: "desktop.settingsPage.advancedDesc", Icon: FileJs, render: () => <SettingsFileConfig /> },
+      ],
+    },
+  ], [requestClose]);
+
+  const allPages = useMemo(() => groups.flatMap((group) => group.pages), [groups]);
+  const activeMeta = allPages.find((page) => page.id === activePage) ?? allPages[0]!;
 
   return (
     <div
@@ -73,10 +185,10 @@ export function SettingsModal({
         justifyContent: "center",
       }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) onCloseAction();
+        if (event.target === event.currentTarget) requestClose();
       }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") onCloseAction();
+        if (event.key === "Escape") requestClose();
       }}
     >
       <section
@@ -87,6 +199,7 @@ export function SettingsModal({
         aria-modal="true"
         aria-label={t("desktop.settings")}
         style={{
+          position: "relative",
           width: isMobile ? "calc(100vw / var(--app-ui-scale, 1) - 16px)" : 1000,
           maxWidth: "calc(100vw / var(--app-ui-scale, 1) - 16px)",
           height: isMobile ? "calc(100dvh / var(--app-ui-scale, 1) - 16px)" : "calc(80vh / var(--app-ui-scale, 1))",
@@ -100,129 +213,109 @@ export function SettingsModal({
           overflow: "hidden",
         }}
       >
-        <header
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "12px 18px",
-            borderBottom: "1px solid var(--border)",
-            flexShrink: 0,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0 }}>
-            <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>
-              {t(tabs.find((tab) => tab.id === activeTab)?.labelKey ?? "desktop.settings")}
-            </span>
-            {scopeLabel ? (
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {scopeLabel}
-              </span>
-            ) : null}
-          </div>
-          <button
-            type="button"
-            onClick={onCloseAction}
-            title={t("desktop.closeSettings")}
-            aria-label={t("desktop.closeSettings")}
-            style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, display: "flex" }}
-          >
-            <X size={18} aria-hidden="true" />
-          </button>
-        </header>
+        <SettingsDraftContext.Provider value={draftApi}>
+          <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
+            <nav
+              aria-label={t("desktop.settingsSections")}
+              className="settings-nav"
+              style={isMobile ? { display: mobileNavOpen ? "flex" : "none" } : undefined}
+            >
+              {groups.map((group) => (
+                <div key={group.id} className="settings-nav-group">
+                  <div className="settings-nav-group-label">{t(group.labelKey)}</div>
+                  {group.hintKey ? <div className="settings-nav-group-hint">{t(group.hintKey)}</div> : null}
+                  {group.pages.map(({ id, labelKey, Icon }) => {
+                    const active = activePage === id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => selectPage(id)}
+                        data-testid={`settings-tab-${id}`}
+                        aria-current={active ? "page" : undefined}
+                        className={active ? "settings-nav-item is-active" : "settings-nav-item"}
+                      >
+                        <Icon size={15} aria-hidden="true" />
+                        <span>{t(labelKey)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </nav>
 
-        <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", minHeight: 0, overflow: "hidden" }}>
-          <nav
-            aria-label={t("desktop.settingsSections")}
-            style={{
-              display: "flex",
-              flexDirection: isMobile ? "row" : "column",
-              gap: 4,
-              width: isMobile ? "100%" : 150,
-              padding: 8,
-              flexShrink: 0,
-              background: "var(--bg-panel)",
-              borderRight: isMobile ? "none" : "1px solid var(--border)",
-              borderBottom: isMobile ? "1px solid var(--border)" : "none",
-            }}
-          >
-            {tabs.map(({ id, labelKey, Icon }) => {
-              const active = activeTab === id;
-              return (
+            <div
+              className="settings-content"
+              style={isMobile ? { display: mobileNavOpen ? "none" : "flex" } : undefined}
+            >
+              <header className="settings-page-header">
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {isMobile ? (
+                      <button
+                        type="button"
+                        className="settings-nav-item settings-page-back"
+                        onClick={() => runOrGuard(() => setMobileNavOpen(true))}
+                        aria-label={t("desktop.settingsBack")}
+                        style={{ padding: 4, flexShrink: 0 }}
+                      >
+                        <ArrowLeft size={16} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    <h2 className="settings-page-title">{t(activeMeta.labelKey)}</h2>
+                  </div>
+                  {activeMeta.descKey ? <p className="settings-page-desc">{t(activeMeta.descKey)}</p> : null}
+                </div>
                 <button
-                  key={id}
                   type="button"
-                  onClick={() => setActiveTab(id)}
-                  data-testid={`settings-tab-${id}`}
-                  aria-current={active ? "page" : undefined}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    flex: isMobile ? 1 : undefined,
-                    width: isMobile ? undefined : "100%",
-                    padding: "8px 10px",
-                    border: "none",
-                    borderRadius: 6,
-                    background: active ? "var(--bg-selected)" : "none",
-                    color: active ? "var(--text)" : "var(--text-muted)",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    fontWeight: active ? 600 : 400,
-                    textAlign: "left",
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(event) => {
-                    if (!active) {
-                      event.currentTarget.style.background = "var(--bg-hover)";
-                      event.currentTarget.style.color = "var(--text)";
-                    }
-                  }}
-                  onMouseLeave={(event) => {
-                    if (!active) {
-                      event.currentTarget.style.background = "none";
-                      event.currentTarget.style.color = "var(--text-muted)";
-                    }
-                  }}
+                  onClick={requestClose}
+                  title={t("desktop.closeSettings")}
+                  aria-label={t("desktop.closeSettings")}
+                  style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, display: "flex", flexShrink: 0 }}
                 >
-                  <Icon size={16} aria-hidden="true" />
-                  <span>{t(labelKey)}</span>
+                  <X size={18} aria-hidden="true" />
                 </button>
-              );
-            })}
-          </nav>
+              </header>
 
-          <div style={{ display: activeTab === "display" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <DisplayConfig />
+              <div style={{ flex: 1, display: "flex", minWidth: 0, minHeight: 0 }}>
+                {allPages.map((page) => (
+                  <div
+                    key={page.id}
+                    style={{ display: activePage === page.id ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}
+                  >
+                    {page.render()}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-          <div style={{ display: activeTab === "chat" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <ChatConfig />
-          </div>
-          <div style={{ display: activeTab === "agents" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <BuiltInCapabilitiesConfig />
-          </div>
-          <div style={{ display: activeTab === "tools" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <ToolsConfig />
-          </div>
-          <div style={{ display: activeTab === "models" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <ModelsSettingsTab onCloseAction={onCloseAction} />
-          </div>
-          <div style={{ display: activeTab === "config" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <SettingsFileConfig />
-          </div>
-          <div style={{ display: activeTab === "skills" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <SkillsSettingsTab />
-          </div>
-          <div style={{ display: activeTab === "plugins" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <PluginsSettingsTab />
-          </div>
-          <div style={{ display: activeTab === "security" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <SecurityConfig />
-          </div>
-          <div style={{ display: activeTab === "archive" ? "flex" : "none", flex: 1, minWidth: 0, minHeight: 0 }}>
-            <ArchiveConfig />
-          </div>
-        </div>
+
+          {pendingAction ? (
+            <div className="settings-guard-backdrop" role="dialog" aria-modal="true" aria-label={t("desktop.settingsGuardTitle")}>
+              <div className="settings-guard-card">
+                <h3 className="settings-guard-title">{t("desktop.settingsGuardTitle")}</h3>
+                <p className="settings-guard-body">{t("desktop.settingsGuardBody")}</p>
+                <div className="settings-guard-actions">
+                  <button type="button" className="settings-nav-item" onClick={() => setPendingAction(null)} style={{ border: "1px solid var(--border)", borderRadius: "var(--control-radius)" }}>
+                    {t("desktop.settingsGuardKeep")}
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-nav-item"
+                    style={{ border: "1px solid color-mix(in srgb, var(--status-danger) 30%, transparent)", borderRadius: "var(--control-radius)", color: "var(--status-danger)" }}
+                    onClick={() => {
+                      const action = pendingAction;
+                      setPendingAction(null);
+                      action?.();
+                    }}
+                  >
+                    {t("desktop.settingsGuardDiscard")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </SettingsDraftContext.Provider>
       </section>
     </div>
   );

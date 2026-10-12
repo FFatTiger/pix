@@ -3011,7 +3011,7 @@ describe("AppShell — source-like sidebar rail", () => {
     fireEvent.click(screen.getByTestId("sidebar-nav-settings"));
     const dialog = screen.getByRole("dialog", { name: "Settings" });
     expect(dialog).toBeTruthy();
-    expect(dialog.querySelector('[aria-current="page"]')?.textContent).toBe("Display");
+    expect(dialog.querySelector('[aria-current="page"]')?.textContent).toBe("Appearance");
     expect(screen.getByTestId("settings-tab-archive")).toBeTruthy();
   });
 
@@ -3025,7 +3025,7 @@ describe("AppShell — source-like sidebar rail", () => {
     mountApp({}, { capabilities: ["models"] });
     await settle();
     fireEvent.click(screen.getByTestId("sidebar-nav-settings"));
-    fireEvent.click(screen.getByTestId("settings-tab-models"));
+    fireEvent.click(screen.getByTestId("settings-tab-providers"));
     await settle();
     expect(screen.getByText("Global Model")).toBeTruthy();
     expect(screen.getByTestId("settings-tab-skills").hasAttribute("disabled")).toBe(false);

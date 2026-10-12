@@ -919,7 +919,7 @@ export function Sidebar({
           data-testid="sidebar-nav-settings"
           title={t("desktop.settings")}
           aria-label={t("desktop.settings")}
-          onClick={() => onOpenSettings?.("display")}
+          onClick={() => onOpenSettings?.("appearance")}
         >
           <GearSix size={16} weight="regular" aria-hidden="true" />
           <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.settings")}</span>
