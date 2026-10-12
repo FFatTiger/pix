@@ -105,7 +105,14 @@ describe("SideChatPanel", () => {
     expect(screen.getByText("search")).toBeTruthy();
     expect(screen.getByText("The side chat request failed.")).toBeTruthy();
     expect(screen.getAllByText("Some side chat content was truncated.").length).toBeGreaterThan(1);
-    expect(document.querySelector(".chat-input-textarea")).toBeNull();
+    // The side chat shares the main composer's chat-input-* classes by design
+    // (one shell/textarea/toolbar styling); what it must NOT own is the main
+    // composer machinery: no drag-resize handle, no highlight layer, and
+    // exactly one textarea — the side-chat one.
+    expect(document.querySelector(".chat-input-resize-handle")).toBeNull();
+    expect(document.querySelector(".chat-input-highlight")).toBeNull();
+    expect(document.querySelectorAll(".chat-input-textarea")).toHaveLength(1);
+    expect(document.querySelector(".chat-input-textarea")?.getAttribute("aria-label")).toBe("Side chat message");
     expect(screen.getByRole("button", { name: "Stop side chat" })).toBeTruthy();
   });
 

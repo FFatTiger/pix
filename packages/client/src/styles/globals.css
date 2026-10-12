@@ -2820,8 +2820,17 @@ span.linenumber {
   flex: 1;
 }
 
-.side-chat-icon-button,
-.side-chat-send {
+.side-chat-heading {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: var(--text-weight-strong);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.side-chat-icon-button {
   display: inline-flex;
   width: 28px;
   height: 28px;
@@ -2837,8 +2846,7 @@ span.linenumber {
 }
 
 .side-chat-icon-button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
-.side-chat-icon-button:disabled,
-.side-chat-send:disabled { cursor: not-allowed; opacity: 0.45; }
+.side-chat-icon-button:disabled { cursor: not-allowed; opacity: 0.45; }
 
 .side-chat-messages {
   min-width: 0;
@@ -2914,52 +2922,31 @@ span.linenumber {
   font-size: 11px;
 }
 
+/* Side-chat composer reuses the main composer's chat-input-shell /
+   editor-row / toolbar / send classes; only the panel-context sizing of the
+   shell (the main shell bleeds 10px past its column) is re-scoped here. */
 .side-chat-composer {
-  display: flex;
   flex: 0 0 auto;
-  flex-direction: column;
-  gap: 6px;
   padding: 8px;
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
 }
 
-.side-chat-composer textarea {
-  min-width: 0;
-  min-height: 34px;
-  max-height: 112px;
-  flex: 1;
-  resize: vertical;
-  padding: 7px 9px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  outline: none;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  line-height: 18px;
+.side-chat-composer .chat-input-shell {
+  width: 100%;
+  margin-left: 0;
 }
 
-.side-chat-composer textarea:focus { border-color: var(--accent); }
-
-.side-chat-composer-toolbar {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+/* Running state of the shared composer send slot: the same red tint the
+   main composer's inline stop button uses. */
+.chat-input-send.is-stop:not(:disabled) {
+  color: var(--accent-red) !important;
+  background: color-mix(in srgb, var(--accent-red) 12%, var(--bg-panel)) !important;
 }
-
-.side-chat-composer-actions {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 2px;
+.chat-input-send.is-stop:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent-red) 20%, var(--bg-panel)) !important;
+  color: var(--accent-red) !important;
 }
-
-.side-chat-send { background: var(--accent); color: var(--bg); }
-.side-chat-send:hover:not(:disabled) { filter: brightness(1.08); }
 
 @media (prefers-reduced-motion: reduce) {
   .side-chat-spin { animation: none; }

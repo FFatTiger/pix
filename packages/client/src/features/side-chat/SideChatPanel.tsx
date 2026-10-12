@@ -4,14 +4,15 @@ import {
   ArrowsClockwiseIcon,
   CheckIcon,
   CircleNotchIcon,
-  PaperPlaneTiltIcon,
-  StopIcon,
+  PaperPlaneRightIcon,
+  SquareIcon,
   TrashIcon,
   WarningCircleIcon,
   XIcon,
 } from "@phosphor-icons/react";
 import { MAX_SIDE_CHAT_MESSAGE_CHARS, type ProtocolError } from "@fffattiger/pix-protocol";
 import { createQueryOptions } from "@/api/query-keys";
+import { AUTO_MAX_HEIGHT } from "@/components/chat/ChatInput";
 import { MarkdownBody } from "@/components/chat/MarkdownBody";
 import { ModelSelector, ThinkingLevelSelector } from "@/components/chat/composer-selectors";
 import { useHttpClient } from "@/app/http-context";
@@ -130,6 +131,16 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
     send();
   };
 
+  // Same content-driven auto-grow as the main composer: one line minimum,
+  // capped at the shared AUTO_MAX_HEIGHT, no manual resize handle.
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const node = composerTextareaRef.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(node.scrollHeight, AUTO_MAX_HEIGHT)}px`;
+  }, [draft]);
+
   // Model catalog for the selector — the same Host models query the main
   // composer uses (never a forked list source).
   const http = useHttpClient();
@@ -161,6 +172,7 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
   return (
     <section className="side-chat-panel" aria-label={t("desktop.sideChat")} data-testid="side-chat-panel">
       <div className="side-chat-toolbar">
+        <span className="side-chat-heading">{t("desktop.sideChat")}</span>
         <span className="side-chat-toolbar-spacer" />
         <button
           type="button"
@@ -238,43 +250,88 @@ export function SideChatPanel({ runtime, cwd, onOpenFile }: SideChatPanelProps) 
       </div>
 
       <form className="side-chat-composer" onSubmit={send}>
-        <textarea
-          value={draft}
-          maxLength={MAX_SIDE_CHAT_MESSAGE_CHARS}
-          placeholder={t("desktop.sideChatPlaceholder")}
-          aria-label={t("desktop.sideChatMessage")}
-          disabled={pending !== null || state.status !== "idle"}
-          onChange={(event) => setDraftState({ owner: draftOwner, value: event.target.value })}
-          onCompositionStart={() => { composingRef.current = true; }}
-          onCompositionEnd={() => { composingRef.current = false; }}
-          onKeyDown={handleKeyDown}
-        />
-        <div className="side-chat-composer-toolbar">
-          <ThinkingLevelSelector
-            thinkingLevel={state.thinkingLevel}
-            onThinkingLevelChange={(level) => applyModel(state.model.provider, state.model.id, level)}
-            disabled={!selectorsIdle}
-            includeAuto={false}
-            {...(selectorsIdle ? {} : { title: t("desktop.sideChatModelLocked") })}
-          />
-          <span className="side-chat-composer-actions">
-            <ModelSelector
-              model={{ provider: state.model.provider, modelId: state.model.id }}
-              modelList={modelList}
-              onModelChange={(provider, modelId) => applyModel(provider, modelId, state.thinkingLevel)}
-              disabled={!selectorsIdle}
-              {...(selectorsIdle ? {} : { title: t("desktop.sideChatModelLocked") })}
+        {/* Main-composer container classes (chat-input-shell / editor row /
+        toolbar / send) reused as-is: one bordered rounded shell holding the
+        textarea and the toolbar row, identical styling, no fork. */}
+        <div className="chat-input-shell side-chat-input-shell">
+          <div className="chat-input-editor-row">
+            <textarea
+              ref={composerTextareaRef}
+              value={draft}
+              maxLength={MAX_SIDE_CHAT_MESSAGE_CHARS}
+              placeholder={t("desktop.sideChatPlaceholder")}
+              aria-label={t("desktop.sideChatMessage")}
+              disabled={pending !== null || state.status !== "idle"}
+              onChange={(event) => setDraftState({ owner: draftOwner, value: event.target.value })}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => { composingRef.current = false; }}
+              onKeyDown={handleKeyDown}
+              className="chat-input-textarea"
+              style={{
+                flex: 1,
+                minWidth: 0,
+                resize: "none",
+                border: 0,
+                outline: "none",
+                background: "transparent",
+                color: "var(--text)",
+                maxHeight: AUTO_MAX_HEIGHT,
+                overflow: "hidden auto",
+                padding: 0,
+              }}
             />
-            {state.status === "running" ? (
-              <button type="button" className="side-chat-send" aria-label={t("desktop.sideChatStop")} title={t("desktop.sideChatStop")} disabled={pending !== null} onClick={() => void run("abort", () => runtime.abortSideChat(state.conversationId))}>
-                <StopIcon size={15} weight="fill" aria-hidden="true" />
-              </button>
-            ) : (
-              <button type="submit" className="side-chat-send" aria-label={t("desktop.sideChatSend")} title={t("desktop.sideChatSend")} disabled={pending !== null || draft.trim().length === 0}>
-                <PaperPlaneTiltIcon size={16} weight="fill" aria-hidden="true" />
-              </button>
-            )}
-          </span>
+          </div>
+          <div
+            className="chat-input-toolbar"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            <div className="chat-input-toolbar-left" style={{ flex: "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
+              <ThinkingLevelSelector
+                thinkingLevel={state.thinkingLevel}
+                onThinkingLevelChange={(level) => applyModel(state.model.provider, state.model.id, level)}
+                disabled={!selectorsIdle}
+                includeAuto={false}
+                {...(selectorsIdle ? {} : { title: t("desktop.sideChatModelLocked") })}
+              />
+            </div>
+            <div style={{ marginLeft: "auto" }}>
+              <div className="chat-input-toolbar-actions" style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                <ModelSelector
+                  model={{ provider: state.model.provider, modelId: state.model.id }}
+                  modelList={modelList}
+                  onModelChange={(provider, modelId) => applyModel(provider, modelId, state.thinkingLevel)}
+                  disabled={!selectorsIdle}
+                  {...(selectorsIdle ? {} : { title: t("desktop.sideChatModelLocked") })}
+                />
+                {state.status === "running" ? (
+                  <button
+                    type="button"
+                    className="chat-input-send is-stop"
+                    aria-label={t("desktop.sideChatStop")}
+                    title={t("desktop.sideChatStop")}
+                    disabled={pending !== null}
+                    onClick={() => void run("abort", () => runtime.abortSideChat(state.conversationId))}
+                  >
+                    <SquareIcon size={14} aria-hidden="true" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    className="chat-input-send"
+                    aria-label={t("desktop.sideChatSend")}
+                    title={t("desktop.sideChatSend")}
+                    disabled={pending !== null || draft.trim().length === 0}
+                  >
+                    <PaperPlaneRightIcon size={14} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </form>
     </section>

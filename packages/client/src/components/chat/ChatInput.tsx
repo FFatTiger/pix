@@ -162,7 +162,8 @@ const SLASH_COMMAND_COLLATOR = new Intl.Collator(undefined, { numeric: true, sen
 
 // Content-driven textarea growth is capped at this (existing behavior). The
 // manual resize ceiling is separate and lives in MANUAL_MAX_HEIGHT_*.
-const AUTO_MAX_HEIGHT = 200;
+// Exported: the side-chat composer shares the same auto-grow ceiling.
+export const AUTO_MAX_HEIGHT = 200;
 // Manual resize floor: the composer's natural single-line height.
 const MIN_MANUAL_HEIGHT_DESKTOP = 104;
 const MIN_MANUAL_HEIGHT_MOBILE = 80;
