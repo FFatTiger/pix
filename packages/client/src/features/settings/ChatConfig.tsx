@@ -1,4 +1,5 @@
 import { reportPreferenceWrite } from "@/lib/preferences/preference-sync";
+import { getStreamingSendMode, setStreamingSendMode, type StreamingSendMode } from "@/lib/chat-input-preferences";
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useHttpClient } from "@/app/http-context";
@@ -70,6 +71,7 @@ interface ModelOption {
 export function ChatConfig() {
   const { t } = useI18n();
   const [shortcut, setShortcut] = useState<InputShortcut>(getStoredShortcut);
+  const [streamingSendMode, setStreamingSendModeState] = useState<StreamingSendMode>(getStreamingSendMode);
   const [markdownList, setMarkdownList] = useState<boolean>(getStoredMarkdownList);
   const [titleAuto, setTitleAuto] = useState<boolean>(getTitleAutoEnabled);
   const [titleModel, setTitleModelState] = useState<{ provider: string; modelId: string } | null>(getTitleModel);
@@ -109,6 +111,7 @@ export function ChatConfig() {
   useEffect(() => {
     const handler = () => {
       setShortcut(getStoredShortcut());
+      setStreamingSendModeState(getStreamingSendMode());
       setMarkdownList(getStoredMarkdownList());
       setTitleAuto(getTitleAutoEnabled());
       setTitleModelState(getTitleModel());
@@ -120,6 +123,11 @@ export function ChatConfig() {
   const setShortcutAndPersist = useCallback((value: InputShortcut) => {
     setShortcut(value);
     persistSetting(STORAGE_KEY, value);
+  }, []);
+
+  const setStreamingSendModeAndPersist = useCallback((value: StreamingSendMode) => {
+    setStreamingSendModeState(value);
+    setStreamingSendMode(value);
   }, []);
 
   const setMarkdownListAndPersist = useCallback((checked: boolean) => {
@@ -176,6 +184,20 @@ export function ChatConfig() {
           label={t("desktop.useCtrlEnter")}
           description={t("desktop.useCtrlEnterDescription")}
         />
+      </SettingsSection>
+      <SettingsSection title={t("desktop.streamingSendMode")} description={t("desktop.streamingSendModeDescription")}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", margin: "0 -14px" }}>
+          <span style={{ flex: 1, fontSize: 13, color: "var(--text)" }}>{t("desktop.streamingSendModeLabel")}</span>
+          <SettingsSelect
+            value={streamingSendMode}
+            onChange={(value) => setStreamingSendModeAndPersist(value === "steer" ? "steer" : "follow-up")}
+            options={[
+              { value: "follow-up", label: t("desktop.streamingSendModeFollowUp") },
+              { value: "steer", label: t("desktop.streamingSendModeSteer") },
+            ]}
+            style={{ width: "auto" }}
+          />
+        </div>
       </SettingsSection>
       <SettingsSection title={t("desktop.markdownListContinue")} description={t("desktop.markdownListContinueDescription")}>
         <SettingToggle

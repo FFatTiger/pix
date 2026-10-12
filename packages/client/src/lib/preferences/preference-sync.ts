@@ -30,6 +30,7 @@ export const PREFERENCE_KEYS: readonly string[] = [
   "pi-title-auto",
   "pi-title-model",
   "pi-input-shortcut",
+  "pi-streaming-send-mode",
   "pi-markdown-list-continue",
   "pi-sound-enabled",
   "pi-favorite-models",

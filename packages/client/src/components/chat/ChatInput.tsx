@@ -1,5 +1,6 @@
 
 import { reportPreferenceWrite } from "@/lib/preferences/preference-sync";
+import { getStreamingSendMode, type StreamingSendMode } from "@/lib/chat-input-preferences";
 import React, { useMemo, useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, type KeyboardEvent } from "react";
 import type { BuiltinSlashCommandResult, ChatFileIndexSnapshot, CompactResultInfo, QueuedMessages, SkillDormancyResponse, SlashCommandInfo } from "@/lib/chat-view-model";
 import { clearDraft, getDraft, getDraftFiles, setDraft, setDraftFiles, type ChatDraftFile, type ChatDraftImage } from "@/lib/draft-store";
@@ -532,6 +533,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       return localStorage.getItem("pi-input-shortcut") === "ctrl-enter" ? "ctrl-enter" : "enter";
     } catch { return "enter"; }
   });
+  const [streamingSendMode, setStreamingSendMode] = useState<StreamingSendMode>(getStreamingSendMode);
   // Markdown list continuation on new lines (Settings → Chat toggle). Stored as
   // "on"/"off"; absent means enabled.
   const [markdownListContinue, setMarkdownListContinue] = useState(() => {
@@ -1105,6 +1107,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const handler = () => {
       try {
         setInputShortcut(localStorage.getItem("pi-input-shortcut") === "ctrl-enter" ? "ctrl-enter" : "enter");
+        setStreamingSendMode(getStreamingSendMode());
       } catch { setInputShortcut("enter"); }
     };
     window.addEventListener("storage", handler);
@@ -1733,13 +1736,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           // only shows in the queued-preview strip above the composer and is
           // delivered after the current turn finishes. Immediate steering
           // stays an explicit action (the inject-now button).
-          sendQueued(onFollowUp ? "followup" : "steer");
+          const mode = streamingSendMode === "steer" && onSteer
+            ? "steer"
+            : onFollowUp
+              ? "followup"
+              : "steer";
+          sendQueued(mode);
         } else {
           handleSend();
         }
       }
     },
-    [isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, inputShortcut, markdownListContinue, cwd, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, openAtCompletion, applyAutoHeight]
+    [isStreaming, onSteer, onFollowUp, streamingSendMode, onAbort, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, inputShortcut, markdownListContinue, cwd, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, openAtCompletion, applyAutoHeight]
   );
 
   const handleInput = useCallback(() => {

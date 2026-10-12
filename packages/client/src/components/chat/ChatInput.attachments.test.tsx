@@ -396,6 +396,20 @@ describe("ChatInput pending file attachments", () => {
     expect(screen.queryByText("notes.txt")).toBeNull();
   });
 
+  it.each([
+    ["steer", "steer"],
+    ["follow-up", "followup"],
+  ] as const)("sends Enter while streaming as %s", (preference, expected) => {
+    window.localStorage.setItem("pi-streaming-send-mode", preference);
+    const onSteer = vi.fn();
+    const onFollowUp = vi.fn();
+    renderInput({ isStreaming: true, onSteer, onFollowUp });
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "during run" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(expected === "steer" ? onSteer : onFollowUp).toHaveBeenCalledWith("during run", undefined);
+  });
+
   it("keeps existing images when overlapping picker batches would exceed the count", async () => {
     const png = (name: string) => new File(["fake"], name, { type: "image/png" });
     const handle = createRef<ChatInputHandle>();
