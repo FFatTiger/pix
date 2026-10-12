@@ -309,7 +309,6 @@ async function assertResponsivePanel(chrome, expectedMaxWidth, label) {
   const geometry = await chrome.evaluate(`(() => {
     const selectors = [
       '[data-testid="side-chat-panel"]',
-      '.side-chat-context',
       '.side-chat-toolbar',
       '.side-chat-composer',
       '.side-chat-icon-button',
@@ -647,12 +646,13 @@ async function main() {
     assert.equal(staleSend.ok, false, "prior conversation must reject side_chat_send");
     assert.equal(staleSend.error.code, "not_found", "prior conversation rejection must be not_found");
 
-    const unknownMode = await command(control, parent.sessionId, {
-      type: "side_chat_set_mode",
-      conversationId: conversation2,
-      mode: "edit",
-    }, "removed-side-set-mode");
-    assert.equal(unknownMode.ok, false, "removed side mode command must fail closed");
+    // The edit mode and overlap approval were removed: their command types are
+    // gone from the wire vocabulary (sending one would fail the WS frame schema
+    // and close the control socket, so assert at the schema boundary instead).
+    const { RuntimeCommandSchema, RUNTIME_COMMAND_TYPES } = await import("@fffattiger/pix-protocol");
+    assert.equal(RUNTIME_COMMAND_TYPES.includes("side_chat_set_mode"), false, "side_chat_set_mode must not exist");
+    assert.equal(RUNTIME_COMMAND_TYPES.includes("side_chat_overlap_response"), false, "side_chat_overlap_response must not exist");
+    assert.equal(RuntimeCommandSchema.safeParse({ commandId: "removed-probe", type: "side_chat_set_mode", conversationId: conversation2, mode: "edit" }).success, false);
 
     const bytesAfterSide = await readFile(sessionFile);
     assert.deepEqual(bytesAfterSide, bytesBeforeSideControl, "side-chat abort/reset commands must not append parent JSONL");
