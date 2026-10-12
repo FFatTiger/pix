@@ -27,7 +27,7 @@ Controller surface: create from fork context/services; getState/subscribe; synch
 
 ## Ownership and wire behavior
 
-- Runtime Core owns bounded side state/message/stream/model/thinking/tool/error models and constants; Protocol owns wire schemas and the shared state accumulator. No parallel independent vocabulary arrays.
+- Runtime Core owns bounded side state plus the main-session message/partial models reused verbatim (AgentMessage / StreamingAgentMessage); Protocol owns wire schemas and the shared state accumulator. No parallel independent vocabulary arrays.
 - Stable conversationId/runId and monotonic revision identify replacement state and deltas. Reset starts a new conversation identity. Invalid/stale identities never append to another run.
 - Project only bounded display data with explicit truncation. Start with 64 messages, 16,384 characters per message/stream and 262,144 total display characters; keep limits canonical in Runtime Core and prove Protocol parity. Never silently truncate model input or claim truncated display is complete.
 - Commands: side_chat_start, side_chat_send, side_chat_reset(refork|clear), side_chat_set_model(provider/modelId/thinkingLevel). Non-start commands target the exact conversationId.

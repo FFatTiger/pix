@@ -81,7 +81,7 @@ async function settleDeferred<T>(pending: ReturnType<typeof deferred<T>>, outcom
 }
 
 describe("SideChatPanel", () => {
-  it("renders through the main transcript components: user bubble, process tools, model label", () => {
+  it("renders through the main transcript components: user bubble, process tools, model label", async () => {
     const value = runtime(sideState({
       revision: 4,
       messages: [
@@ -115,7 +115,7 @@ describe("SideChatPanel", () => {
     // The committed answer renders with the model label resolved from the
     // shared models catalog query.
     expect(scroll.textContent).toContain("Committed answer");
-    waitFor(() => expect(scroll.textContent).toContain("Claude Sonnet"));
+    await waitFor(() => expect(scroll.textContent).toContain("Claude Sonnet"));
     expect(screen.getByText("The side chat request failed.")).toBeTruthy();
     expect(screen.getAllByText("Some side chat content was truncated.").length).toBeGreaterThan(0);
     // The side chat shares the main composer's chat-input-* classes by design
@@ -128,7 +128,7 @@ describe("SideChatPanel", () => {
     expect(document.querySelector(".chat-input-textarea")?.getAttribute("aria-label")).toBe("Side chat message");
   });
 
-  it("renders the live turn through the shared streaming tail", () => {
+  it("renders the live turn through the shared streaming tail", async () => {
     const value = runtime(sideState({
       status: "running",
       runId: "run-1",
@@ -154,6 +154,10 @@ describe("SideChatPanel", () => {
     expect(scroll.querySelector(".process-group-shell")).toBeTruthy();
     expect(scroll.textContent).toContain("Read");
     expect(scroll.textContent).toContain("live.ts");
+    await waitFor(() => {
+      const streaming = scroll.querySelector(".chat-assistant-message.is-streaming");
+      expect(streaming?.textContent).toContain("Streaming reply");
+    });
     expect(screen.getByRole("button", { name: "Stop side chat" })).toBeTruthy();
   });
 

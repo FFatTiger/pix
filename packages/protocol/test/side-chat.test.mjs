@@ -165,6 +165,22 @@ describe("side chat wire contract", () => {
         partial: { role: "assistant", content: [{ type: "text", text: "late" }], model: "model", provider: "test" },
       },
     }), /stale side chat identity/);
+    // An over-cap partial is clamped by the reducer — the accumulator never
+    // produces a state its own schema rejects.
+    const overCapped = reduceRuntimeEventData(replaced, {
+      type: "side_chat_delta",
+      sessionId: "parent",
+      delta: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        previousRevision: 1,
+        revision: 2,
+        partial: { role: "assistant", content: [{ type: "text", text: "z".repeat(MAX_SIDE_CHAT_STREAM_CHARS + 50) }], model: "model", provider: "test" },
+      },
+    });
+    assert.equal(overCapped.state.sideChat?.partialMessage?.content?.[0]?.text.length, MAX_SIDE_CHAT_STREAM_CHARS);
+    assert.equal(overCapped.state.sideChat?.totalCharsTruncated, true);
+    assert.equal(SideChatStateSchema.safeParse(overCapped.state.sideChat).success, true);
     // A non-advancing revision is fenced too.
     assert.throws(() => reduceRuntimeEventData(next, {
       type: "side_chat_delta",
@@ -200,7 +216,9 @@ describe("side chat wire contract", () => {
     });
     const partialText = next.state.sideChat?.partialMessage?.content?.[0]?.text;
     assert.equal(partialText, "live");
-    assert.ok(next.state.sideChat?.messagesTruncated, "oldest messages are dropped first");
+    assert.equal(next.state.sideChat?.messages.length, 16, "history is kept and only the oldest message is trimmed");
+    assert.equal(next.state.sideChat?.messages[0]?.content?.[0]?.text.length, MAX_SIDE_CHAT_MESSAGE_CHARS - 4, "the live partial's cost is taken from the oldest message");
+    assert.equal(next.state.sideChat?.messagesTruncated, false);
     assert.equal(next.state.sideChat?.totalCharsTruncated, true);
     assert.equal(SideChatStateSchema.safeParse(next.state.sideChat).success, true);
   });

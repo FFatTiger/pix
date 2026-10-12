@@ -47,6 +47,84 @@ function partialDisplayChars(partial: StreamingAgentMessage | null): number {
   return total;
 }
 
+function boundedText(value: string, max: number): { value: string; truncated: boolean } {
+  return value.length <= max
+    ? { value, truncated: false }
+    : { value: value.slice(0, max), truncated: true };
+}
+
+/** Clamp a partial's prose within the stream cap (mirrors runtime-core boundPartial). */
+function clampPartial(partial: StreamingAgentMessage): { partial: StreamingAgentMessage; chars: number; truncated: boolean } {
+  if (partial.role !== "assistant" || partial.content === undefined) {
+    return { partial, chars: 0, truncated: false };
+  }
+  let left = MAX_SIDE_CHAT_STREAM_CHARS;
+  let truncated = false;
+  let changed = false;
+  const content = partial.content.map((block) => {
+    if (block.type === "text") {
+      const clamped = boundedText(block.text, left);
+      left -= clamped.value.length;
+      truncated = truncated || clamped.truncated;
+      changed = changed || clamped.value !== block.text;
+      return { ...block, text: clamped.value };
+    }
+    if (block.type === "thinking") {
+      const clamped = boundedText(block.thinking, left);
+      left -= clamped.value.length;
+      truncated = truncated || clamped.truncated;
+      changed = changed || clamped.value !== block.thinking;
+      return { ...block, thinking: clamped.value };
+    }
+    return block;
+  });
+  return {
+    partial: changed ? { ...partial, content } : partial,
+    chars: MAX_SIDE_CHAT_STREAM_CHARS - left,
+    truncated,
+  };
+}
+
+/** Clamp one message's prose to the remaining budget (mirrors runtime-core boundMessage). */
+function clampMessage(message: AgentMessage, remaining: number): { message: AgentMessage; chars: number; truncated: boolean } {
+  if (message.role !== "assistant") {
+    if (message.role === "user" && typeof message.content === "string") {
+      const clamped = boundedText(message.content, Math.min(MAX_SIDE_CHAT_MESSAGE_CHARS, remaining));
+      return {
+        message: clamped.value === message.content ? message : { ...message, content: clamped.value },
+        chars: clamped.value.length,
+        truncated: clamped.truncated,
+      };
+    }
+    return { message, chars: 0, truncated: false };
+  }
+  let left = remaining;
+  let truncated = false;
+  let changed = false;
+  const content = message.content.map((block) => {
+    if (block.type === "text") {
+      const clamped = boundedText(block.text, Math.min(MAX_SIDE_CHAT_MESSAGE_CHARS, left));
+      left -= clamped.value.length;
+      truncated = truncated || clamped.truncated;
+      changed = changed || clamped.value !== block.text;
+      return { ...block, text: clamped.value };
+    }
+    if (block.type === "thinking") {
+      const clamped = boundedText(block.thinking, Math.min(MAX_SIDE_CHAT_MESSAGE_CHARS, left));
+      left -= clamped.value.length;
+      truncated = truncated || clamped.truncated;
+      changed = changed || clamped.value !== block.thinking;
+      return { ...block, thinking: clamped.value };
+    }
+    return block;
+  });
+  return {
+    message: changed ? { ...message, content } : message,
+    chars: remaining - left,
+    truncated,
+  };
+}
+
 export const SideChatStateSchema = z.strictObject({
   conversationId: SideChatIdSchema,
   revision: z.number().int().nonnegative().safe(),
@@ -115,25 +193,44 @@ export type SideChatDelta = z.infer<typeof SideChatDeltaSchema>;
 
 /**
  * Apply a streaming-partial replacement while preserving the fences. The
- * display budget is enforced exactly like the authority: the live partial is
- * kept intact and the OLDEST whole messages are dropped when history fills
- * the aggregate budget (the adapter already published fine-clamped state;
- * this is the client-side accumulator's safety net with identical
- * semantics).
+ * display budget is enforced EXACTLY like the authority's boundSideChatState:
+ * the live partial is clamped to the stream cap and budgeted first, then
+ * history is allocated newest-first with per-block prose clamping — the
+ * oldest message is trimmed, and whole messages are dropped only once the
+ * remaining budget hits zero. (runtime-core cannot be imported here; the
+ * cross-package contract test proves the two implementations agree.)
  */
 export function applySideChatDelta(state: SideChatState | null | undefined, delta: SideChatDelta): SideChatState {
   if (state === null || state === undefined) throw new Error("side chat delta requires state");
   if (state.conversationId !== delta.conversationId || state.runId !== delta.runId) throw new Error("stale side chat identity");
   if (state.revision !== delta.previousRevision || delta.revision <= delta.previousRevision) throw new Error("stale side chat revision");
-  let messages = state.messages;
-  let messagesTruncated = state.messagesTruncated;
   let totalCharsTruncated = state.totalCharsTruncated;
-  let total = messages.reduce((sum, message) => sum + messageDisplayChars(message), 0) + partialDisplayChars(delta.partial);
-  while (total > MAX_SIDE_CHAT_TOTAL_DISPLAY_CHARS && messages.length > 0) {
-    total -= messageDisplayChars(messages[0]!);
-    messages = messages.slice(1);
-    messagesTruncated = true;
-    totalCharsTruncated = true;
+  const clampedPartial = clampPartial(delta.partial);
+  if (clampedPartial.truncated) totalCharsTruncated = true;
+  let remaining = MAX_SIDE_CHAT_TOTAL_DISPLAY_CHARS - clampedPartial.chars;
+
+  const reverseMessages: AgentMessage[] = [];
+  let omittedMessages = false;
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    const message = state.messages[index]!;
+    const cost = messageDisplayChars(message);
+    if (remaining === 0 && cost > 0) {
+      totalCharsTruncated = true;
+      omittedMessages = true;
+      continue;
+    }
+    const clamped = clampMessage(message, remaining);
+    remaining -= clamped.chars;
+    if (clamped.truncated) totalCharsTruncated = true;
+    reverseMessages.push(clamped.message);
   }
-  return { ...state, revision: delta.revision, messages, messagesTruncated, totalCharsTruncated, partialMessage: delta.partial };
+  const messages = reverseMessages.reverse();
+  return {
+    ...state,
+    revision: delta.revision,
+    messages,
+    messagesTruncated: state.messagesTruncated || omittedMessages,
+    totalCharsTruncated,
+    partialMessage: clampedPartial.partial,
+  };
 }
