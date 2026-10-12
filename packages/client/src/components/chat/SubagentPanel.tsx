@@ -12,6 +12,7 @@ import { XIcon } from "@phosphor-icons/react/X";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { refreshReadonlySessionHistory } from "@/api/session-history";
 import { useI18n } from "@/hooks/useI18n";
+import { shortModelName } from "@/lib/model-display";
 import type { SubagentActivity, SubagentActivityStatus } from "@/lib/subagent-activity";
 import type { StreamingAgentMessage } from "@fffattiger/pix-protocol";
 
@@ -28,6 +29,8 @@ export interface SubagentPanelProps {
   onBack: () => void;
   onClose: () => void;
   onRefresh: () => void;
+  /** Show the header close button (mobile only — the desktop icon rail owns closing). */
+  closable?: boolean;
   /** Live child partial from the parent snapshot; ignored unless the child is running. */
   childStream?: StreamingAgentMessage | null;
 }
@@ -59,6 +62,7 @@ export function SubagentPanel({
   onBack,
   onClose,
   onRefresh,
+  closable = false,
   childStream = null,
 }: SubagentPanelProps) {
   const { t } = useI18n();
@@ -141,15 +145,17 @@ export function SubagentPanel({
             <ArrowClockwiseIcon className={refreshing ? "subagent-refreshing-icon" : undefined} size={15} aria-hidden="true" />
           </button>
         ) : null}
-        <button
-          type="button"
-          className="subagent-icon-button"
-          onClick={onClose}
-          title={t("desktop.close")}
-          aria-label={t("desktop.close")}
-        >
-          <XIcon size={15} aria-hidden="true" />
-        </button>
+        {closable ? (
+          <button
+            type="button"
+            className="subagent-icon-button"
+            onClick={onClose}
+            title={t("desktop.close")}
+            aria-label={t("desktop.close")}
+          >
+            <XIcon size={15} aria-hidden="true" />
+          </button>
+        ) : null}
       </header>
 
       {selectedChildSessionId !== null ? (
@@ -178,13 +184,16 @@ export function SubagentPanel({
                 <span className={`subagent-directory-status is-${activity.status}`}>{statusIcon(activity.status)}</span>
                 <span className="subagent-directory-copy">
                   <span className="subagent-directory-title">{activity.title}</span>
-                  <span className="subagent-directory-meta">
+                  <span
+                    className="subagent-directory-meta"
+                    title={[activity.model, activity.agentType].filter(Boolean).join(" · ")}
+                  >
+                    {activity.model === undefined ? null : (
+                      <span className="subagent-directory-model">{shortModelName(activity.model)}</span>
+                    )}
                     {activity.agentType ? <span>{activity.agentType}</span> : null}
                     <span>{statusLabel(activity.status, t)}</span>
                   </span>
-                  {activity.model === undefined ? null : (
-                    <span className="subagent-directory-model" title={activity.model}>{activity.model}</span>
-                  )}
                 </span>
                 {canOpen ? <CaretRightIcon size={14} aria-hidden="true" /> : null}
               </>

@@ -11,7 +11,6 @@ import { getFileName } from "@/lib/file-paths";
 import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
 import { SubagentActivityCard } from "@/components/chat/SubagentActivityCard";
-import { loadStatusCardDisplayMode, saveStatusCardDisplayMode, type StatusCardDisplayMode } from "@/lib/status-card-display";
 import { SubagentPanel } from "@/components/chat/SubagentPanel";
 import { Composer } from "@/components/shell/Composer";
 import { Sidebar } from "@/components/shell/Sidebar";
@@ -380,11 +379,6 @@ export function AppShell({ search }: AppShellProps) {
   // ── Shared right panel (Files, Agents, or Side chat) ─────────────────────
   const [rightPane, setRightPane] = useState<RightPane>(null);
   const [selectedChildSessionId, setSelectedChildSessionId] = useState<string | null>(null);
-  const [statusCardDisplayMode, setStatusCardDisplayModeState] = useState<StatusCardDisplayMode>(loadStatusCardDisplayMode);
-  const setStatusCardDisplayMode = useCallback((mode: StatusCardDisplayMode) => {
-    setStatusCardDisplayModeState(mode);
-    saveStatusCardDisplayMode(mode);
-  }, []);
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
@@ -604,6 +598,10 @@ export function AppShell({ search }: AppShellProps) {
     enabled: canBrowseSessions && activeSessionId !== null,
     live: selectionMatchesLive,
   });
+  const runningAgentCount = useMemo(
+    () => subagentActivity.activities.filter((activity) => activity.status === "running").length,
+    [subagentActivity.activities],
+  );
   // A child pane belongs to its selected parent session. Switching the URL
   // closes it instead of showing A's child conversation beside B.
   useEffect(() => {
@@ -984,6 +982,18 @@ export function AppShell({ search }: AppShellProps) {
     dismissMobileSidebar();
   }, [canAgents, canFiles, canSideChat, dismissMobileSidebar]);
 
+  // Desktop rail: clicking the open pane's icon closes the panel; clicking
+  // another icon switches panes. Mobile has no rail — it keeps the
+  // RightPaneToggle plus the in-panel tab selector.
+  const handleRailSelect = useCallback((pane: Exclude<RightPane, null>) => {
+    if (rightPane === pane) {
+      setRightPane(null);
+      setSelectedChildSessionId(null);
+      return;
+    }
+    selectRightPane(pane);
+  }, [rightPane, selectRightPane]);
+
   const handleToggleRightPane = useCallback(() => {
     if (rightPane !== null) {
       setRightPane(null);
@@ -1197,17 +1207,6 @@ export function AppShell({ search }: AppShellProps) {
           runningSessionIds={runningSessionIds}
         />
         <div className="conversation-container" style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          {activeSessionId === null ? null : (
-            <SubagentActivityCard
-              key={activeSessionId}
-              activities={subagentActivity.activities}
-              todos={subagentActivity.todos}
-              displayMode={statusCardDisplayMode}
-              onDisplayModeChange={setStatusCardDisplayMode}
-              onOpenActivity={handleOpenSubagentActivity}
-              onOpenDirectory={() => openSubagentPanel(null)}
-            />
-          )}
           <main className={`workspace${isHome ? " workspace--home" : ""}`}>
             {isHome ? (
               <div className="home-stack" data-testid="home-stack">
@@ -1275,6 +1274,15 @@ export function AppShell({ search }: AppShellProps) {
                 {selectionMatchesLive ? (
                   <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
                 ) : null}
+                {activeSessionId === null ? null : (
+                  <SubagentActivityCard
+                    key={`status:${activeSessionId}`}
+                    activities={subagentActivity.activities}
+                    todos={subagentActivity.todos}
+                    onOpenActivity={handleOpenSubagentActivity}
+                    onOpenDirectory={() => openSubagentPanel(null)}
+                  />
+                )}
                 <Composer
                   live={selectionMatchesLive}
                   textareaRef={composerTextareaRef}
@@ -1309,20 +1317,22 @@ export function AppShell({ search }: AppShellProps) {
           background: "var(--bg-panel)",
         }}
       >
-        <div className="right-pane-selector-wrap">
-          <div className="right-pane-selector" role="group" aria-label={t("desktop.rightPane")}>
-            <button type="button" aria-pressed={rightPane === "files"} disabled={!canFiles} onClick={() => selectRightPane("files")}>
-              <FilesIcon size={14} aria-hidden="true" />{t("desktop.files")}
-            </button>
-            <button type="button" aria-pressed={rightPane === "subagents"} disabled={!canAgents} onClick={() => selectRightPane("subagents")}>
-              <RobotIcon size={14} aria-hidden="true" />{t("desktop.agents")}
-            </button>
-            <button type="button" aria-pressed={rightPane === "side_chat"} disabled={!canSideChat} title={!canSideChat ? t("desktop.sideChatUnavailable") : undefined} onClick={() => selectRightPane("side_chat")}>
-              <ChatsCircleIcon size={14} aria-hidden="true" />{t("desktop.sideChat")}
-            </button>
+        {isMobile ? (
+          <div className="right-pane-selector-wrap">
+            <div className="right-pane-selector" role="group" aria-label={t("desktop.rightPane")}>
+              <button type="button" aria-pressed={rightPane === "files"} disabled={!canFiles} onClick={() => selectRightPane("files")}>
+                <FilesIcon size={14} aria-hidden="true" />{t("desktop.files")}
+              </button>
+              <button type="button" aria-pressed={rightPane === "subagents"} disabled={!canAgents} onClick={() => selectRightPane("subagents")}>
+                <RobotIcon size={14} aria-hidden="true" />{t("desktop.agents")}
+              </button>
+              <button type="button" aria-pressed={rightPane === "side_chat"} disabled={!canSideChat} title={!canSideChat ? t("desktop.sideChatUnavailable") : undefined} onClick={() => selectRightPane("side_chat")}>
+                <ChatsCircleIcon size={14} aria-hidden="true" />{t("desktop.sideChat")}
+              </button>
+            </div>
+            {rightPane === "side_chat" && !canSideChat ? <div className="right-pane-selector-hint" role="status">{t("desktop.sideChatUnavailable")}</div> : null}
           </div>
-          {rightPane === "side_chat" && !canSideChat ? <div className="right-pane-selector-hint" role="status">{t("desktop.sideChatUnavailable")}</div> : null}
-        </div>
+        ) : null}
         <div className="right-panel-content">
           <div className="right-panel-surface" hidden={!fileBrowserOpen}>
             <ExplorerPanel
@@ -1347,6 +1357,7 @@ export function AppShell({ search }: AppShellProps) {
               onBack={() => setSelectedChildSessionId(null)}
               onClose={handleCloseSubagentPanel}
               onRefresh={subagentActivity.refresh}
+              closable={isMobile}
               childStream={subagentActivity.childStream(selectedChildSessionId)}
             />
           ) : null}
@@ -1360,24 +1371,63 @@ export function AppShell({ search }: AppShellProps) {
         </div>
       </div>
 
-      {/* Status capsule and right-pane toggle sit above the clipped shell. */}
-      <div
-        style={{
-          position: "absolute",
-          top: "env(safe-area-inset-top, 0px)",
-          right: 0,
-          zIndex: 605,
-          display: "flex",
-          alignItems: "center",
-          height: 36,
-        }}
-      >
-        <RightPaneToggle
-          open={rightPanelOpen}
-          available={rightPanelOpen || rightPaneAvailable}
-          onToggle={handleToggleRightPane}
-        />
-      </div>
+      {/* Desktop: vertical icon rail selects/closes the shared right panel. */}
+      {!isMobile && rightPaneAvailable ? (
+        <nav className="right-pane-rail" aria-label={t("desktop.rightPane")} data-testid="right-pane-rail">
+          <button
+            type="button"
+            aria-pressed={rightPane === "files"}
+            disabled={!canFiles}
+            title={t("desktop.files")}
+            aria-label={t("desktop.files")}
+            onClick={() => handleRailSelect("files")}
+          >
+            <FilesIcon size={18} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            aria-pressed={rightPane === "subagents"}
+            disabled={!canAgents}
+            title={t("desktop.agents")}
+            aria-label={t("desktop.agents")}
+            onClick={() => handleRailSelect("subagents")}
+          >
+            <RobotIcon size={18} aria-hidden="true" />
+            {runningAgentCount > 0 ? <span className="right-pane-rail-badge">{runningAgentCount}</span> : null}
+          </button>
+          <button
+            type="button"
+            aria-pressed={rightPane === "side_chat"}
+            disabled={!canSideChat}
+            title={canSideChat ? t("desktop.sideChat") : t("desktop.sideChatUnavailable")}
+            aria-label={t("desktop.sideChat")}
+            onClick={() => handleRailSelect("side_chat")}
+          >
+            <ChatsCircleIcon size={18} aria-hidden="true" />
+          </button>
+        </nav>
+      ) : null}
+
+      {/* Mobile keeps the corner toggle for the shared right panel. */}
+      {isMobile ? (
+        <div
+          style={{
+            position: "absolute",
+            top: "env(safe-area-inset-top, 0px)",
+            right: 0,
+            zIndex: 605,
+            display: "flex",
+            alignItems: "center",
+            height: 36,
+          }}
+        >
+          <RightPaneToggle
+            open={rightPanelOpen}
+            available={rightPanelOpen || rightPaneAvailable}
+            onToggle={handleToggleRightPane}
+          />
+        </div>
+      ) : null}
     </div>
     {projectTrustDialogOpen && search.cwd ? (
       <ProjectTrustDialog

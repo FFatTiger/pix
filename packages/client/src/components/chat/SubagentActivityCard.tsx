@@ -1,21 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowRightIcon } from "@phosphor-icons/react/ArrowRight";
-import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
 import { CheckCircleIcon } from "@phosphor-icons/react/CheckCircle";
 import { CircleIcon } from "@phosphor-icons/react/Circle";
 import { CircleNotchIcon } from "@phosphor-icons/react/CircleNotch";
 import { RobotIcon } from "@phosphor-icons/react/Robot";
 import { useI18n } from "@/hooks/useI18n";
+import { shortModelName } from "@/lib/model-display";
 import type { StatusTodoItem, SubagentActivity } from "@/lib/subagent-activity";
-
-export type StatusCardDisplayMode = "panel" | "mini";
 
 export interface SubagentActivityCardProps {
   activities: readonly SubagentActivity[];
   todos?: readonly StatusTodoItem[];
-  displayMode?: StatusCardDisplayMode;
-  onDisplayModeChange?: (mode: StatusCardDisplayMode) => void;
   onOpenActivity: (activity: SubagentActivity) => void;
   onOpenDirectory: () => void;
 }
@@ -118,20 +114,23 @@ function TodoStatusIcon({ status }: { status: StatusTodoItem["status"] }) {
   return <CircleIcon className="status-todo-icon is-pending" size={14} aria-hidden="true" />;
 }
 
+/**
+ * Status strip above the composer. The capsule carries the current step, the
+ * todo completion count, and the running-agent count; clicking it expands a
+ * flat card upward (todos, then running agents, then the ended-agents entry).
+ * Expansion is component-local transient state — never persisted.
+ */
 export function SubagentActivityCard({
   activities,
   todos = EMPTY_TODOS,
-  displayMode = "mini",
-  onDisplayModeChange,
   onOpenActivity,
   onOpenDirectory,
 }: SubagentActivityCardProps) {
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   const capsuleRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const [progressOpen, setProgressOpen] = useState(true);
-  const [agentsOpen, setAgentsOpen] = useState(() => activities.some((activity) => activity.status === "running"));
   const [allTodosOpen, setAllTodosOpen] = useState(false);
   const running = useMemo(() => activities.filter((activity) => activity.status === "running"), [activities]);
   const endedCount = activities.length - running.length;
@@ -142,11 +141,6 @@ export function SubagentActivityCard({
   const summary = capsuleSummary(todos, running, endedCount, t);
   const todoWindow = todoFocusWindow(todos);
   const hasRunning = running.length > 0;
-  const panelOpen = displayMode === "panel";
-
-  useEffect(() => {
-    if (hasRunning) setAgentsOpen(true);
-  }, [hasRunning]);
 
   useEffect(() => {
     if (running.length === 0) return;
@@ -155,24 +149,27 @@ export function SubagentActivityCard({
   }, [running.length]);
 
   useEffect(() => {
-    if (!panelOpen) return;
+    if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.key !== "Escape") return;
       event.preventDefault();
       if (rootRef.current?.contains(document.activeElement)) capsuleRef.current?.focus();
-      onDisplayModeChange?.("mini");
+      setOpen(false);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (rootRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [onDisplayModeChange, panelOpen]);
+  }, [open]);
 
   if (todos.length === 0 && activities.length === 0) return null;
 
-  const togglePanel = (): void => {
-    onDisplayModeChange?.(panelOpen ? "mini" : "panel");
-  };
   const endedRow = endedCount > 0 ? (
     <button type="button" className="subagent-ended-row" onClick={onOpenDirectory}>
       <span>{t("desktop.endedAgents")}</span>
@@ -186,7 +183,7 @@ export function SubagentActivityCard({
       ref={rootRef}
       className="subagent-activity-card"
       data-testid="subagent-activity-card"
-      data-display-mode={displayMode}
+      data-open={open || undefined}
     >
       <aside
         className="status-card-shell"
@@ -198,77 +195,64 @@ export function SubagentActivityCard({
             ref={capsuleRef}
             type="button"
             className="subagent-activity-capsule"
-            onClick={togglePanel}
+            onClick={() => setOpen((value) => !value)}
             title={summary.label}
             aria-label={t("desktop.expandStatus")}
-            aria-expanded={panelOpen}
+            aria-expanded={open}
           >
             {summary.icon}
             <span className="status-capsule-label">{summary.label}</span>
+            {todos.length > 0 ? (
+              <span className="status-capsule-count">{completedTodoCount}/{todos.length}</span>
+            ) : null}
+            {hasRunning ? (
+              <span
+                className="status-capsule-agents"
+                title={t("desktop.runningAgentsCount", { count: running.length })}
+              >
+                <CircleNotchIcon className="subagent-running-icon" size={12} aria-hidden="true" />
+                {running.length}
+              </span>
+            ) : null}
           </button>
         ) : null}
-        <div className="status-card-panel" inert={!panelOpen}>
+        <div className="status-card-panel" inert={!open}>
           <div className="status-card-body">
             {todos.length > 0 ? (
               <section className="status-card-section" data-testid="status-progress-section">
-                <button
-                  type="button"
-                  className="status-card-section-toggle"
-                  aria-expanded={progressOpen}
-                  aria-controls="status-progress-body"
-                  id="status-progress-heading"
-                  aria-label={t("desktop.statusProgress")}
-                  onClick={() => setProgressOpen((open) => !open)}
-                >
-                  <span className="status-card-section-title">
-                    {progressOpen
-                      ? <CaretDownIcon size={12} aria-hidden="true" />
-                      : <CaretRightIcon size={12} aria-hidden="true" />}
-                    {t("desktop.statusProgress")}
-                  </span>
-                  <span className="status-card-section-count">
-                    {completedTodoCount}/{todos.length}
-                  </span>
-                </button>
-                {progressOpen ? (
-                  <ul
-                    className="status-todo-list"
-                    id="status-progress-body"
-                    aria-labelledby="status-progress-heading"
-                  >
-                    {!allTodosOpen && todoWindow.preceding > 0 ? (
-                      <li>
-                        <button type="button" className="status-todo-fold" aria-expanded={false} aria-controls="status-progress-body" onClick={() => setAllTodosOpen(true)}>
-                          {t("desktop.statusTodosEarlier", { count: todoWindow.preceding })}
-                        </button>
-                      </li>
-                    ) : null}
-                    {(allTodosOpen ? todos : todoWindow.focus).map((item) => (
-                      <li
-                        key={item.id}
-                        className={`status-todo-row is-${item.status}`}
-                        data-todo-status={item.status}
-                      >
-                        <TodoStatusIcon status={item.status} />
-                        <span className="status-todo-subject" title={item.subject}>{item.subject}</span>
-                      </li>
-                    ))}
-                    {!allTodosOpen && todoWindow.following > 0 ? (
-                      <li>
-                        <button type="button" className="status-todo-fold" aria-expanded={false} aria-controls="status-progress-body" onClick={() => setAllTodosOpen(true)}>
-                          {t("desktop.statusTodosLater", { count: todoWindow.following })}
-                        </button>
-                      </li>
-                    ) : null}
-                    {allTodosOpen && todoWindow.compact ? (
-                      <li>
-                        <button type="button" className="status-todo-fold" aria-expanded={true} aria-controls="status-progress-body" onClick={() => setAllTodosOpen(false)}>
-                          {t("desktop.showLess")}
-                        </button>
-                      </li>
-                    ) : null}
-                  </ul>
-                ) : null}
+                <ul className="status-todo-list">
+                  {!allTodosOpen && todoWindow.preceding > 0 ? (
+                    <li>
+                      <button type="button" className="status-todo-fold" aria-expanded={false} aria-controls="status-progress-body" onClick={() => setAllTodosOpen(true)}>
+                        {t("desktop.statusTodosEarlier", { count: todoWindow.preceding })}
+                      </button>
+                    </li>
+                  ) : null}
+                  {(allTodosOpen ? todos : todoWindow.focus).map((item) => (
+                    <li
+                      key={item.id}
+                      className={`status-todo-row is-${item.status}`}
+                      data-todo-status={item.status}
+                    >
+                      <TodoStatusIcon status={item.status} />
+                      <span className="status-todo-subject" title={item.subject}>{item.subject}</span>
+                    </li>
+                  ))}
+                  {!allTodosOpen && todoWindow.following > 0 ? (
+                    <li>
+                      <button type="button" className="status-todo-fold" aria-expanded={false} aria-controls="status-progress-body" onClick={() => setAllTodosOpen(true)}>
+                        {t("desktop.statusTodosLater", { count: todoWindow.following })}
+                      </button>
+                    </li>
+                  ) : null}
+                  {allTodosOpen && todoWindow.compact ? (
+                    <li>
+                      <button type="button" className="status-todo-fold" aria-expanded={true} aria-controls="status-progress-body" onClick={() => setAllTodosOpen(false)}>
+                        {t("desktop.showLess")}
+                      </button>
+                    </li>
+                  ) : null}
+                </ul>
               </section>
             ) : null}
             {hasRunning ? (
@@ -276,69 +260,49 @@ export function SubagentActivityCard({
                 className={`status-card-section${todos.length > 0 ? " is-separated" : ""}`}
                 data-testid="status-agents-section"
               >
-                <button
-                  type="button"
-                  className="status-card-section-toggle"
-                  aria-expanded={agentsOpen}
-                  aria-controls="status-agents-body"
-                  id="status-agents-heading"
-                  aria-label={t("desktop.subagents")}
-                  onClick={() => setAgentsOpen((open) => !open)}
-                >
-                  <span className="status-card-section-title">
-                    {agentsOpen
-                      ? <CaretDownIcon size={12} aria-hidden="true" />
-                      : <CaretRightIcon size={12} aria-hidden="true" />}
-                    {t("desktop.subagents")}
-                  </span>
-                  {running.length > 0 ? (
-                    <span className="status-card-section-count">
-                      {t("desktop.runningAgentsCount", { count: running.length })}
-                    </span>
-                  ) : null}
-                </button>
-                {agentsOpen ? (
-                  <div className="subagent-activity-body" id="status-agents-body" aria-labelledby="status-agents-heading">
-                    {running.map((activity) => {
-                      const content = (
-                        <>
-                          <CircleNotchIcon className="subagent-running-icon" size={15} aria-hidden="true" />
-                          <span className="subagent-activity-copy">
-                            <span className="subagent-activity-row-title">{activity.title}</span>
-                            <span className="subagent-activity-meta">
-                              {activity.agentType ? <span>{activity.agentType}</span> : null}
-                              {activity.startedAt === undefined ? null : <span>{elapsedLabel(activity.startedAt, now, t)}</span>}
-                            </span>
+                <div className="subagent-activity-body">
+                  {running.map((activity) => {
+                    const content = (
+                      <>
+                        <CircleNotchIcon className="subagent-running-icon" size={15} aria-hidden="true" />
+                        <span className="subagent-activity-copy">
+                          <span className="subagent-activity-row-title">{activity.title}</span>
+                          <span
+                            className="subagent-activity-meta"
+                            title={[activity.model, activity.agentType].filter(Boolean).join(" · ")}
+                          >
                             {activity.model === undefined ? null : (
-                              <span className="subagent-activity-model" title={activity.model}>{activity.model}</span>
+                              <span className="subagent-activity-model">{shortModelName(activity.model)}</span>
                             )}
+                            {activity.agentType ? <span>{activity.agentType}</span> : null}
+                            {activity.startedAt === undefined ? null : <span>{elapsedLabel(activity.startedAt, now, t)}</span>}
                           </span>
-                          {activity.childSessionId === undefined ? null : <CaretRightIcon size={14} aria-hidden="true" />}
-                        </>
-                      );
-                      return activity.childSessionId === undefined ? (
-                        <div
-                          className="subagent-activity-row is-pending"
-                          key={activity.key}
-                          aria-disabled="true"
-                        >
-                          {content}
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          className="subagent-activity-row"
-                          key={activity.key}
-                          onClick={() => onOpenActivity(activity)}
-                          aria-label={t("desktop.openSubagent", { title: activity.title })}
-                        >
-                          {content}
-                        </button>
-                      );
-                    })}
-                    {endedRow}
-                  </div>
-                ) : null}
+                        </span>
+                        {activity.childSessionId === undefined ? null : <CaretRightIcon size={14} aria-hidden="true" />}
+                      </>
+                    );
+                    return activity.childSessionId === undefined ? (
+                      <div
+                        className="subagent-activity-row is-pending"
+                        key={activity.key}
+                        aria-disabled="true"
+                      >
+                        {content}
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="subagent-activity-row"
+                        key={activity.key}
+                        onClick={() => onOpenActivity(activity)}
+                        aria-label={t("desktop.openSubagent", { title: activity.title })}
+                      >
+                        {content}
+                      </button>
+                    );
+                  })}
+                  {endedRow}
+                </div>
               </section>
             ) : endedRow}
           </div>

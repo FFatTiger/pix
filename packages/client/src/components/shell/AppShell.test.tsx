@@ -2967,8 +2967,10 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
     expect(screen.queryByTestId("sidebar-files")).toBeNull();
     expect(screen.getByTestId("sidebar-nav-settings").textContent).toBe("Settings");
-    // The right-pane toggle is pinned to the window's top-right; no rail strip.
-    expect(screen.getByTestId("right-pane-toggle")).toBeTruthy();
+    // Desktop: the right pane is driven by the icon rail; the corner toggle is
+    // mobile-only and no sidebar rail strip exists.
+    expect(screen.getByTestId("right-pane-rail")).toBeTruthy();
+    expect(screen.queryByTestId("right-pane-toggle")).toBeNull();
     expect(screen.queryByTestId("file-browser-rail")).toBeNull();
     expect(railOrder()).toEqual([
       "sidebar-home-header",
@@ -3387,7 +3389,7 @@ describe("AppShell — source-like sidebar rail", () => {
     expect(screen.getByTestId("sidebar-sessions")).toBeTruthy();
     expect(screen.getAllByTestId("session-select-A").length).toBeGreaterThan(0);
     expect(screen.getAllByTestId("session-select-D").length).toBeGreaterThan(1);
-    expect(screen.getByTestId("right-pane-toggle")).toBeTruthy();
+    expect(screen.getByTestId("right-pane-rail")).toBeTruthy();
   });
 
   it("a selected session's auto-revealed project stays collapsed after the user collapses it", async () => {
@@ -4377,7 +4379,7 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(screen.getByTestId("subagent-activity-card").closest(".app-title-bar")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     expect(screen.getByRole("button", { name: "Expand status" }).getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("button", { name: "Agents" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "Open agent Inspect runtime live" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open agent Inspect runtime live" }));
     await settle();
 
@@ -4385,7 +4387,8 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(screen.getByTestId("subagent-activity-card").closest(".app-title-bar")).toBeNull();
     expect(screen.getByTestId("subagent-panel")).toBeTruthy();
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-open");
-    expect(screen.getByRole("button", { name: "Hide right pane" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("right-pane-rail").getAttribute("aria-label")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Agents" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getAllByText("Inspect runtime live").length).toBeGreaterThanOrEqual(1);
     expect(contextCalls).toContain("child");
     expect(transcriptScrollRef.current).toBe(parentTranscriptScroll);
@@ -4430,7 +4433,7 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
 
     fireEvent.click(screen.getByRole("button", { name: "Files" }));
     expect(screen.queryByTestId("subagent-panel")).toBeNull();
-    expect(screen.getByTestId("right-pane-toggle").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Files" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("opens side chat only for the exact live parent, preserves it across pane close, and closes on parent switch", async () => {
@@ -4449,7 +4452,6 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     });
     await settle();
 
-    fireEvent.click(screen.getByTestId("right-pane-toggle"));
     fireEvent.click(screen.getByRole("button", { name: "Side chat" }));
     await act(async () => { await flush(8); });
     const starts = () => ws.sent.filter((frame) => (
@@ -4504,16 +4506,16 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     });
     expect(screen.getByTestId("side-chat-panel").textContent).toContain("Side response continued");
 
-    fireEvent.click(screen.getByTestId("right-pane-toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Side chat" }));
     expect(screen.queryByTestId("side-chat-panel")).toBeNull();
-    fireEvent.click(screen.getByTestId("right-pane-toggle"));
     fireEvent.click(screen.getByRole("button", { name: "Side chat" }));
     expect(screen.getByTestId("side-chat-panel").textContent).toContain("Side response");
     expect(starts()).toHaveLength(1);
 
     rerender({ cwd: "/x", session: "B" });
     await settle();
-    expect(screen.getByTestId("right-pane-toggle").getAttribute("aria-pressed")).toBe("false");
+    expect((screen.getByRole("button", { name: "Side chat" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Side chat" }).getAttribute("aria-pressed")).toBe("false");
     expect(screen.queryByTestId("side-chat-panel")).toBeNull();
     expect(ws.sent.filter((frame) => (frame as { type?: string; payload?: { sessionId?: string } }).type === "attach" && (frame as { payload?: { sessionId?: string } }).payload?.sessionId === "B")).toHaveLength(0);
   });
@@ -4578,30 +4580,26 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
     expect(countMockFetchCalls(fetchImpl, "parentSessionId=parent")).toBe(0);
   });
 
-  it("the pinned right-pane button toggles the Files panel without leaving the window's top-right", async () => {
+  it("the right-pane rail toggles the Files panel without a mobile-only corner toggle", async () => {
     globalThis.fetch = fileFetch();
     mountApp({ cwd: "/x" });
     await settle();
     const panel = document.querySelector(".right-panel-container");
     expect(panel?.className).toContain("right-panel-closed");
-    const toggle = screen.getByTestId("right-pane-toggle");
-    // Pinned: the button's containing block is the shell body (window
-    // top-right), not the chat column whose width the panel animation takes —
-    // otherwise opening the panel drags the button leftwards.
-    expect(toggle.closest(".chat-column")).toBeNull();
-    expect(toggle.closest(".app-shell-body")).toBeTruthy();
-    const pin = toggle.parentElement as HTMLElement;
-    expect(pin.style.position).toBe("absolute");
-    expect(pin.style.right).toBe("0px");
-    // The in-flow title bar keeps the pinned button's column free for "+".
-    expect((document.querySelector(".app-title-bar") as HTMLElement).style.paddingRight).toBe("36px");
-    fireEvent.click(toggle);
+    // Desktop has no corner toggle; the rail owns opening/closing.
+    expect(screen.queryByTestId("right-pane-toggle")).toBeNull();
+    const railFiles = screen.getByRole("button", { name: "Files" });
+    expect(railFiles.closest(".right-pane-rail")).toBeTruthy();
+    expect(railFiles.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(railFiles);
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-open");
+    expect(railFiles.getAttribute("aria-pressed")).toBe("true");
     expect((screen.getByRole("button", { name: "Side chat" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("button", { name: "Side chat" }).getAttribute("title")).toContain("selected live session");
-    expect(screen.getByRole("button", { name: "Hide right pane" })).toBeTruthy();
-    fireEvent.click(screen.getByTestId("right-pane-toggle"));
+    // Clicking the open pane's rail icon closes the panel again.
+    fireEvent.click(railFiles);
     expect(document.querySelector(".right-panel-container")?.className).toContain("right-panel-closed");
+    expect(railFiles.getAttribute("aria-pressed")).toBe("false");
   });
 });
 

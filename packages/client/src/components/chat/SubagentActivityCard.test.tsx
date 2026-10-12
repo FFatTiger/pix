@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/hooks/useI18n";
 import type { StatusTodoItem, SubagentActivity } from "@/lib/subagent-activity";
@@ -35,20 +35,17 @@ function renderCard(
 ) {
   const onOpenActivity = props.onOpenActivity ?? vi.fn();
   const onOpenDirectory = props.onOpenDirectory ?? vi.fn();
-  const onDisplayModeChange = props.onDisplayModeChange ?? vi.fn();
   const view = render(
     <I18nProvider>
       <SubagentActivityCard
         activities={props.activities ?? [RUNNING, COMPLETED]}
         todos={props.todos ?? TODOS}
-        displayMode={props.displayMode ?? "mini"}
-        onDisplayModeChange={onDisplayModeChange}
         onOpenActivity={onOpenActivity}
         onOpenDirectory={onOpenDirectory}
       />
     </I18nProvider>,
   );
-  return { ...view, onOpenActivity, onOpenDirectory, onDisplayModeChange };
+  return { ...view, onOpenActivity, onOpenDirectory };
 }
 
 describe("SubagentActivityCard", () => {
@@ -84,8 +81,6 @@ describe("SubagentActivityCard", () => {
         <SubagentActivityCard
           activities={[RUNNING, COMPLETED]}
           todos={[{ id: 1, subject: "Write the capsule", status: "completed" }]}
-          displayMode="mini"
-          onDisplayModeChange={() => undefined}
           onOpenActivity={() => undefined}
           onOpenDirectory={() => undefined}
         />
@@ -98,8 +93,6 @@ describe("SubagentActivityCard", () => {
         <SubagentActivityCard
           activities={[RUNNING, COMPLETED]}
           todos={[]}
-          displayMode="mini"
-          onDisplayModeChange={() => undefined}
           onOpenActivity={() => undefined}
           onOpenDirectory={() => undefined}
         />
@@ -112,8 +105,6 @@ describe("SubagentActivityCard", () => {
         <SubagentActivityCard
           activities={[COMPLETED]}
           todos={[]}
-          displayMode="mini"
-          onDisplayModeChange={() => undefined}
           onOpenActivity={() => undefined}
           onOpenDirectory={() => undefined}
         />
@@ -122,135 +113,136 @@ describe("SubagentActivityCard", () => {
     expect(screen.getByRole("button", { name: "Expand status" }).textContent).toContain("Ended 1");
   });
 
-  it("keeps the capsule visible and toggles panel from the same control", () => {
-    const { onDisplayModeChange, rerender } = renderCard({ displayMode: "mini" });
+  it("carries the todo completion count and running-agent count on the capsule", () => {
+    renderCard();
     const capsule = screen.getByRole("button", { name: "Expand status" });
-    expect(capsule.getAttribute("aria-expanded")).toBe("false");
-    expect(capsule.getAttribute("title")).toBe("Ship the panel");
-    expect(screen.getByRole("button", { name: "Progress" }).closest(".status-card-panel")?.hasAttribute("inert")).toBe(true);
-    fireEvent.click(capsule);
-    expect(onDisplayModeChange).toHaveBeenCalledWith("panel");
-
-    rerender(
-      <I18nProvider>
-        <SubagentActivityCard
-          activities={[RUNNING, COMPLETED]}
-          todos={TODOS}
-          displayMode="panel"
-          onDisplayModeChange={onDisplayModeChange}
-          onOpenActivity={() => undefined}
-          onOpenDirectory={() => undefined}
-        />
-      </I18nProvider>,
-    );
-    const openCapsule = screen.getByRole("button", { name: "Expand status" });
-    expect(openCapsule.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("button", { name: "Progress" })).toBeTruthy();
-    fireEvent.click(openCapsule);
-    expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
+    expect(within(capsule).getByText("1/3")).toBeTruthy();
+    const agents = within(capsule).getByText("1");
+    expect(agents.className).toBe("status-capsule-agents");
+    expect(agents.getAttribute("title")).toBe("1 running");
   });
 
-  it("keeps the panel open on outside pointer and closes only on Escape or the capsule", () => {
-    const onDisplayModeChange = vi.fn();
-    const { unmount } = renderCard({ displayMode: "panel", onDisplayModeChange });
-    fireEvent.click(screen.getByRole("button", { name: "Progress" }));
+  it("omits the capsule counts when there are no todos and no running agents", () => {
+    renderCard({ todos: [], activities: [COMPLETED] });
+    const capsule = screen.getByRole("button", { name: "Expand status" });
+    expect(capsule.querySelector(".status-capsule-count")).toBeNull();
+    expect(capsule.querySelector(".status-capsule-agents")).toBeNull();
+  });
+
+  it("toggles the expanded card from the capsule as transient internal state", () => {
+    renderCard();
+    const capsule = screen.getByRole("button", { name: "Expand status" });
+    expect(capsule.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("status-card-shell").querySelector(".status-card-panel")?.hasAttribute("inert")).toBe(true);
+
+    fireEvent.click(capsule);
+    expect(capsule.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("status-card-shell").querySelector(".status-card-panel")?.hasAttribute("inert")).toBe(false);
+    expect(screen.getByTestId("status-progress-section")).toBeTruthy();
+
+    fireEvent.click(capsule);
+    expect(capsule.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("status-card-shell").querySelector(".status-card-panel")?.hasAttribute("inert")).toBe(true);
+  });
+
+  it("closes on outside pointer and Escape, but not on an inside pointer", () => {
+    renderCard();
+    const capsule = screen.getByRole("button", { name: "Expand status" });
+    fireEvent.click(capsule);
+    expect(capsule.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.pointerDown(screen.getByTestId("status-progress-section"));
+    expect(capsule.getAttribute("aria-expanded")).toBe("true");
+
     fireEvent.pointerDown(document.body);
-    expect(onDisplayModeChange).not.toHaveBeenCalled();
+    expect(capsule.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(capsule);
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
+    expect(capsule.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("removes its window listeners on unmount (later events change nothing)", () => {
+    const { unmount } = renderCard();
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     unmount();
-    onDisplayModeChange.mockClear();
+    // No throw: listeners were removed with the component.
     fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.pointerDown(document.body);
-    expect(onDisplayModeChange).not.toHaveBeenCalled();
   });
 
   it("does not close when another modal already consumed Escape", () => {
-    const onDisplayModeChange = vi.fn();
-    renderCard({ displayMode: "panel", onDisplayModeChange });
+    renderCard();
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
     event.preventDefault();
     window.dispatchEvent(event);
-    expect(onDisplayModeChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Expand status" }).getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("restores capsule focus when Escape closes a focused panel", () => {
-    const onDisplayModeChange = vi.fn();
-    renderCard({ displayMode: "panel", onDisplayModeChange });
-    const progress = screen.getByRole("button", { name: "Progress" });
-    progress.focus();
+  it("restores capsule focus when Escape closes a focused card", () => {
+    renderCard();
+    const capsule = screen.getByRole("button", { name: "Expand status" });
+    fireEvent.click(capsule);
+    const ended = screen.getByRole("button", { name: /Ended/ });
+    ended.focus();
     const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-    progress.dispatchEvent(event);
+    act(() => {
+      ended.dispatchEvent(event);
+    });
     expect(event.defaultPrevented).toBe(true);
-    expect(onDisplayModeChange).toHaveBeenCalledOnce();
-    expect(onDisplayModeChange).toHaveBeenCalledWith("mini");
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Expand status" }));
+    expect(capsule.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(capsule);
   });
 
-  it("keeps Progress open by default with honest statuses and count, and collapses on the header", () => {
-    renderCard({ displayMode: "panel" });
-    const heading = screen.getByRole("button", { name: "Progress" });
-    expect(heading.getAttribute("aria-expanded")).toBe("true");
-    expect(heading.textContent).toContain("1/3");
+  it("renders the flat todo list with honest statuses and no section headers", () => {
+    renderCard();
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const progress = screen.getByTestId("status-progress-section");
     expect(within(progress).getByText("Write the capsule").closest("[data-todo-status='completed']")).toBeTruthy();
     expect(within(progress).getByText("Ship the panel").closest("[data-todo-status='in_progress']")).toBeTruthy();
     expect(within(progress).getByText("Polish later").closest("[data-todo-status='pending']")).toBeTruthy();
-    expect(within(progress).getByText("Write the capsule").closest("button")).toBeNull();
-
-    fireEvent.click(heading);
-    expect(heading.getAttribute("aria-expanded")).toBe("false");
-    expect(within(progress).queryByText("Ship the panel")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Progress" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Agents" })).toBeNull();
   });
 
-  it("opens running Agents by default and keeps manual collapse until the next running batch", () => {
-    const { onOpenActivity, onOpenDirectory, rerender } = renderCard({ displayMode: "panel" });
-    const heading = screen.getByRole("button", { name: "Agents" });
-    expect(heading.getAttribute("aria-expanded")).toBe("true");
-    expect(heading.textContent).toContain("1 running");
-    expect(screen.getByText("Inspect runtime")).toBeTruthy();
-    expect(screen.getByText("anthropic/claude-sonnet-4")).toBeTruthy();
-    expect(screen.queryByText("Check tests")).toBeNull();
+  it("lists running agents in two-line rows with the short model name and keeps the ended entry", () => {
+    const { onOpenActivity, onOpenDirectory } = renderCard();
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
+    const agents = screen.getByTestId("status-agents-section");
+    expect(within(agents).getByText("Inspect runtime")).toBeTruthy();
+    const meta = within(agents).getByText("claude-sonnet-4").closest(".subagent-activity-meta");
+    expect(meta?.getAttribute("title")).toBe("anthropic/claude-sonnet-4 · Explore");
+    expect(within(meta as HTMLElement).getByText("Explore")).toBeTruthy();
+    expect(within(agents).queryByText("anthropic/claude-sonnet-4")).toBeNull();
+    expect(within(agents).queryByText("Check tests")).toBeNull();
+
     fireEvent.click(screen.getByRole("button", { name: "Open agent Inspect runtime" }));
     expect(onOpenActivity).toHaveBeenCalledWith(RUNNING);
     fireEvent.click(screen.getByRole("button", { name: /Ended/ }));
     expect(onOpenDirectory).toHaveBeenCalledOnce();
-
-    fireEvent.click(heading);
-    expect(heading.getAttribute("aria-expanded")).toBe("false");
-    const card = (activities: readonly SubagentActivity[]) => (
-      <I18nProvider>
-        <SubagentActivityCard activities={activities} todos={TODOS} displayMode="panel" onOpenActivity={onOpenActivity} onOpenDirectory={onOpenDirectory} />
-      </I18nProvider>
-    );
-    rerender(card([{ ...RUNNING, title: "Updated progress" }, COMPLETED]));
-    expect(heading.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("Updated progress")).toBeNull();
-    rerender(card([COMPLETED]));
-    expect(screen.queryByRole("button", { name: "Agents" })).toBeNull();
-    rerender(card([{ ...RUNNING, key: "task:next", taskId: "next" }, COMPLETED]));
-    expect(screen.getByRole("button", { name: "Agents" }).getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Inspect runtime")).toBeTruthy();
   });
 
-  it.each(["completed", "failed", "partial", "stopped"] as const)("hides the Agents section for %s-only activity and preserves the ended entry", (status) => {
-    const { onOpenDirectory } = renderCard({ activities: [{ ...COMPLETED, status }], todos: [], displayMode: "panel" });
+  it.each(["completed", "failed", "partial", "stopped"] as const)("hides the agents section for %s-only activity and preserves the ended entry", (status) => {
+    const { onOpenDirectory } = renderCard({ activities: [{ ...COMPLETED, status }], todos: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     expect(screen.queryByTestId("status-agents-section")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Agents" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Ended/ }));
     expect(onOpenDirectory).toHaveBeenCalledOnce();
   });
 
-  it("omits the actual model line when the running task has none", () => {
+  it("omits the model span when the running task has none", () => {
     const { model: _model, ...withoutModel } = RUNNING;
-    renderCard({ activities: [withoutModel], todos: [], displayMode: "panel" });
+    renderCard({ activities: [withoutModel], todos: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     expect(screen.getByText("Inspect runtime")).toBeTruthy();
     expect(screen.getByText("Explore")).toBeTruthy();
-    expect(screen.queryByText("anthropic/claude-sonnet-4")).toBeNull();
+    expect(screen.queryByText("claude-sonnet-4")).toBeNull();
   });
 
-  it("keeps progress without an empty Agents section when there are no children", () => {
-    renderCard({ activities: [], displayMode: "panel" });
+  it("keeps progress without an empty agents section when there are no children", () => {
+    renderCard({ activities: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     expect(screen.getByTestId("status-progress-section")).toBeTruthy();
     expect(screen.queryByTestId("status-agents-section")).toBeNull();
     expect(screen.queryByRole("button", { name: /Ended/ })).toBeNull();
@@ -258,8 +250,8 @@ describe("SubagentActivityCard", () => {
 
   it("keeps a running task pending until its validated child session arrives", () => {
     const { childSessionId: _childSessionId, ...pending } = RUNNING;
-    const { rerender, onOpenActivity } = renderCard({ activities: [pending], todos: [], displayMode: "panel" });
-    expect(screen.getByRole("button", { name: "Agents" }).getAttribute("aria-expanded")).toBe("true");
+    const { rerender, onOpenActivity } = renderCard({ activities: [pending], todos: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     expect(screen.queryByRole("button", { name: "Open agent Inspect runtime" })).toBeNull();
     expect(screen.getByText("Inspect runtime").closest("[aria-disabled='true']")).toBeTruthy();
 
@@ -268,8 +260,6 @@ describe("SubagentActivityCard", () => {
         <SubagentActivityCard
           activities={[RUNNING]}
           todos={[]}
-          displayMode="panel"
-          onDisplayModeChange={() => undefined}
           onOpenActivity={onOpenActivity}
           onOpenDirectory={() => undefined}
         />
@@ -285,7 +275,8 @@ describe("SubagentActivityCard", () => {
       subject: `Item ${index + 1}`,
       status: index === 4 ? "in_progress" : index < 4 ? "completed" : "pending",
     }));
-    renderCard({ todos, displayMode: "panel" });
+    renderCard({ todos });
+    fireEvent.click(screen.getByRole("button", { name: "Expand status" }));
     const progress = screen.getByTestId("status-progress-section");
     expect(within(progress).getByText("3 earlier")).toBeTruthy();
     expect(within(progress).getByText("Item 4")).toBeTruthy();
@@ -298,7 +289,6 @@ describe("SubagentActivityCard", () => {
 
     const more = within(progress).getByRole("button", { name: "2 later" });
     expect(more.getAttribute("aria-expanded")).toBe("false");
-    expect(more.getAttribute("aria-controls")).toBe("status-progress-body");
     fireEvent.click(more);
     for (let index = 1; index <= 8; index += 1) {
       expect(within(progress).getByText(`Item ${index}`)).toBeTruthy();

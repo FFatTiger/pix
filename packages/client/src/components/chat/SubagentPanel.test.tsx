@@ -183,16 +183,35 @@ describe("SubagentPanel", () => {
       onBack: () => undefined,
       onClose,
       onRefresh,
+      closable: true,
     });
 
     expect(screen.getByText("Inspect runtime").closest("[aria-disabled='true']")).toBeTruthy();
-    expect(screen.getByText("anthropic/claude-sonnet-4")).toBeTruthy();
+    const meta = screen.getByText("claude-sonnet-4").closest(".subagent-directory-meta");
+    expect(meta?.getAttribute("title")).toContain("anthropic/claude-sonnet-4");
+    expect(screen.queryByText("anthropic/claude-sonnet-4")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open agent Check tests" }));
     expect(onSelectActivity).toHaveBeenCalledWith(ACTIVITIES[1]);
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(onRefresh).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("hides the header close button by default (the desktop rail owns closing)", () => {
+    renderPanel({
+      activities: [],
+      error: false,
+      loading: false,
+      refreshing: false,
+      parentSessionId: "parent",
+      parentEpoch: "epoch-1",
+      subagentsRevision: 1,
+      selectedChildSessionId: null,
+      ...idleHandlers,
+    });
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
   });
 
   it("omits the actual model line when the directory row has none", () => {
