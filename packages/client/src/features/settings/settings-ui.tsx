@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { Eye, EyeSlash } from "@phosphor-icons/react";
+import { CaretDown, Eye, EyeSlash } from "@phosphor-icons/react";
+import { useI18n } from "@/hooks/useI18n";
 
 /**
  * Shared control primitives for the settings dialogs and panels.
@@ -24,9 +25,10 @@ export const inputStyle: CSSProperties = {
 };
 
 /**
- * Settings section: title + description + controls as a flat full-width
- * block separated from the next section by a hairline divider. This is the
- * classic settings-page rhythm — sections stack with a `borderBottom` line.
+ * Settings section: title + optional description + controls as a flat
+ * full-width block separated from the next section by a hairline divider.
+ * This is the classic settings-page rhythm — sections stack with a
+ * `borderBottom` line.
  */
 export function SettingsSection({
   title,
@@ -35,7 +37,7 @@ export function SettingsSection({
   children,
 }: {
   title: string;
-  description: string;
+  description?: string;
   action?: ReactNode;
   children: ReactNode;
 }) {
@@ -49,12 +51,42 @@ export function SettingsSection({
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
         <div style={{ minWidth: 0 }}>
           <h2 style={{ margin: 0, fontSize: 14, fontWeight: 650, color: "var(--text)" }}>{title}</h2>
-          <p style={{ margin: "5px 0 14px", fontSize: 12, lineHeight: 1.5, color: "var(--text-muted)" }}>{description}</p>
+          {description ? (
+            <p style={{ margin: "5px 0 14px", fontSize: 12, lineHeight: 1.5, color: "var(--text-muted)" }}>{description}</p>
+          ) : (
+            <div style={{ height: 12 }} />
+          )}
         </div>
         {action ? <div style={{ flexShrink: 0 }}>{action}</div> : null}
       </div>
       <div>{children}</div>
     </section>
+  );
+}
+
+/**
+ * Settings row: label (with optional one-line description) on the left,
+ * the control on the right. The single row rhythm used by every page.
+ */
+export function SettingsRow({
+  label,
+  description,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  description?: string;
+  htmlFor?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-label">
+        <label htmlFor={htmlFor} className="settings-row-title">{label}</label>
+        {description ? <span className="settings-row-desc">{description}</span> : null}
+      </div>
+      <div className="settings-row-control">{children}</div>
+    </div>
   );
 }
 
@@ -218,20 +250,64 @@ export function SettingsSelect({
   "aria-label"?: string;
 }) {
   return (
-    <select
-      id={id}
-      disabled={disabled}
-      aria-label={ariaLabel}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      style={{ ...inputStyle, color: value ? "var(--text)" : "var(--text-dim)", cursor: "pointer", ...style }}
-    >
-      {emptyLabel !== undefined && <option value="">{emptyLabel}</option>}
-      {options.map((o) => {
-        const opt = typeof o === "string" ? { value: o, label: o } : o;
-        return <option key={opt.value} value={opt.value}>{opt.label}</option>;
+    <span className="settings-select-wrap" style={style}>
+      <select
+        id={id}
+        className="settings-select"
+        disabled={disabled}
+        aria-label={ariaLabel}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {emptyLabel !== undefined && <option value="">{emptyLabel}</option>}
+        {options.map((o) => {
+          const opt = typeof o === "string" ? { value: o, label: o } : o;
+          return <option key={opt.value} value={opt.value}>{opt.label}</option>;
+        })}
+      </select>
+      <CaretDown size={12} weight="bold" aria-hidden="true" className="settings-select-caret" />
+    </span>
+  );
+}
+
+/**
+ * Segmented control for 2–4 mutually exclusive short options (the settings
+ * replacement for "toggle + select" or ad-hoc button groups).
+ */
+export function SegmentedControl<T extends string>({
+  value,
+  onChange,
+  options,
+  ariaLabel,
+  disabled,
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  options: readonly { value: T; label: string }[];
+  ariaLabel: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="segmented" role="radiogroup" aria-label={ariaLabel} data-disabled={disabled ? "true" : undefined}>
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            className={active ? "segmented-item is-active" : "segmented-item"}
+            onClick={() => {
+              if (!active) onChange(option.value);
+            }}
+          >
+            {option.label}
+          </button>
+        );
       })}
-    </select>
+    </div>
   );
 }
 
@@ -310,7 +386,7 @@ export function SettingsButton({
   );
 }
 
-type BadgeTone = "default" | "project" | "warning" | "muted";
+type BadgeTone = "default" | "project" | "warning" | "muted" | "success";
 
 export function SettingsBadge({ tone = "default", children }: { tone?: BadgeTone; children: ReactNode }) {
   const styles: Record<BadgeTone, CSSProperties> = {
@@ -330,6 +406,10 @@ export function SettingsBadge({ tone = "default", children }: { tone?: BadgeTone
       background: "color-mix(in srgb, var(--text-dim) 8%, transparent)",
       color: "var(--text-dim)",
     },
+    success: {
+      background: "color-mix(in srgb, var(--status-success, var(--accent)) 14%, transparent)",
+      color: "var(--status-success, var(--accent))",
+    },
   };
   return (
     <span
@@ -342,6 +422,95 @@ export function SettingsBadge({ tone = "default", children }: { tone?: BadgeTone
       }}
     >
       {children}
+    </span>
+  );
+}
+
+/**
+ * Unified bottom save bar for draft-based settings pages. Hidden until there
+ * is something to say: unsaved edits, an in-flight save, a failure worth
+ * retrying, or the just-saved confirmation. Renders nothing otherwise.
+ */
+export function SettingsSaveBar({
+  dirty,
+  busy,
+  error,
+  saved,
+  onSave,
+  onDiscard,
+  "data-testid": testId,
+}: {
+  dirty: boolean;
+  busy: boolean;
+  /** Fixed, already-localized error copy (empty/null hides it). */
+  error: string | null;
+  /** True right after a successful save (shows the fixed confirmation). */
+  saved: boolean;
+  onSave: () => void;
+  onDiscard: () => void;
+  "data-testid"?: string;
+}) {
+  const { t } = useI18n();
+  if (!dirty && !busy && !error && !saved) return null;
+  return (
+    <footer className="settings-savebar" data-testid={testId}>
+      <span
+        role={error ? "alert" : "status"}
+        className={error ? "settings-savebar-status settings-savebar-status--error" : "settings-savebar-status"}
+      >
+        {error ?? (dirty || busy ? t("desktop.settingsUnsavedChanges") : t("desktop.modelsSaved"))}
+      </span>
+      <div className="settings-savebar-actions">
+        <SettingsButton disabled={busy} onClick={onDiscard}>{t("desktop.settingsDiscard")}</SettingsButton>
+        <SettingsButton variant="primary" disabled={!dirty || busy} onClick={onSave}>
+          {busy ? t("desktop.modelsSaving") : t("desktop.modelsSave")}
+        </SettingsButton>
+      </div>
+    </footer>
+  );
+}
+
+/**
+ * Danger action with an inline second-step confirmation (never
+ * window.confirm): the first click arms the row, the second confirms.
+ */
+export function SettingsDangerButton({
+  label,
+  onConfirm,
+  disabled,
+  size = "sm",
+}: {
+  label: string;
+  onConfirm: () => void;
+  disabled?: boolean;
+  size?: ButtonSize;
+}) {
+  const { t } = useI18n();
+  const [armed, setArmed] = useState(false);
+  if (!armed) {
+    return (
+      <SettingsButton variant="danger" size={size} disabled={disabled ?? false} onClick={() => setArmed(true)}>
+        {label}
+      </SettingsButton>
+    );
+  }
+  return (
+    <span className="settings-danger-confirm" role="group" aria-label={label}>
+      <span className="settings-danger-confirm-text">{t("desktop.settingsConfirmDelete")}</span>
+      <SettingsButton size={size} disabled={disabled ?? false} onClick={() => setArmed(false)}>
+        {t("desktop.cancel")}
+      </SettingsButton>
+      <SettingsButton
+        variant="danger"
+        size={size}
+        disabled={disabled ?? false}
+        onClick={() => {
+          setArmed(false);
+          onConfirm();
+        }}
+      >
+        {t("desktop.confirm")}
+      </SettingsButton>
     </span>
   );
 }

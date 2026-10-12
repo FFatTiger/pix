@@ -1903,6 +1903,74 @@ html.dark .catalog-meta-item--error {
 .settings-json-editor { width: 100%; min-height: 340px; resize: vertical; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-panel); color: var(--text); font: 12px/1.6 var(--font-mono); tab-size: 2; outline: none; }
 .settings-json-editor:focus { border-color: var(--border-hover); }
 
+/* ── Settings redesign shared primitives ───────────────────────────── */
+
+/* Label-left / control-right row. */
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 38px; padding: 7px 0; }
+.settings-row-label { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.settings-row-title { font-size: 13px; font-weight: 550; color: var(--text); line-height: 1.4; }
+.settings-row-desc { font-size: 11px; line-height: 1.5; color: var(--text-muted); }
+.settings-row-control { flex-shrink: 0; max-width: 60%; display: flex; align-items: center; justify-content: flex-end; }
+
+/* Segmented control (2–4 exclusive short options). */
+.segmented { display: inline-flex; align-items: stretch; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg-panel); }
+.segmented[data-disabled="true"] { opacity: 0.55; }
+.segmented-item { border: 0; border-radius: calc(var(--control-radius) - 2px); padding: 0 12px; min-height: 24px; background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; white-space: nowrap; transition: background .12s, color .12s; }
+.segmented-item:hover:not(:disabled):not(.is-active) { color: var(--text); background: var(--bg-hover); }
+.segmented-item.is-active { color: var(--text); background: var(--bg-selected); font-weight: var(--text-weight-strong); }
+.segmented-item:disabled { cursor: not-allowed; }
+
+/* Unified dropdown: native select with a shared caret, no UA default chrome. */
+.settings-select-wrap { position: relative; display: inline-flex; min-width: 0; }
+.settings-select { appearance: none; -webkit-appearance: none; height: var(--control-height); padding: 0 26px 0 var(--control-pad-x); background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--control-radius); color: var(--text); font-size: 13px; cursor: pointer; min-width: 0; max-width: 100%; }
+.settings-select:disabled { opacity: 0.55; cursor: not-allowed; }
+.settings-select:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.settings-select-wrap > .settings-select { width: 100%; }
+.settings-select-caret { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-dim); }
+
+/* Sticky bottom save bar for draft pages. */
+.settings-savebar { flex: none; min-height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px var(--settings-pad-x); border-top: 1px solid var(--border); background: var(--bg); }
+.settings-savebar-status { min-width: 0; flex: 1; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-savebar-status--error { color: var(--status-danger); white-space: normal; overflow-wrap: anywhere; }
+.settings-savebar-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* Inline two-step danger confirmation. */
+.settings-danger-confirm { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.settings-danger-confirm-text { font-size: 11px; color: var(--status-danger); }
+
+/* Grouped settings navigation. */
+.settings-nav { display: flex; flex-direction: column; width: 172px; flex-shrink: 0; padding: 10px 8px; gap: 2px; background: var(--bg-panel); border-right: 1px solid var(--border); overflow-y: auto; }
+.settings-nav-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.settings-nav-group-label { padding: 6px 10px 2px; font-size: 10px; font-weight: var(--text-weight-strong); letter-spacing: .07em; text-transform: uppercase; color: var(--text-dim); }
+.settings-nav-group-hint { padding: 0 10px 6px; font-size: 10px; line-height: 1.45; color: var(--text-dim); }
+.settings-nav-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: none; border-radius: 6px; background: none; color: var(--text-muted); cursor: pointer; font-size: 12px; text-align: left; transition: background .12s, color .12s; }
+.settings-nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.settings-nav-item.is-active { background: var(--bg-selected); color: var(--text); font-weight: 600; }
+
+/* Content column: page header + scrolling body. */
+.settings-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.settings-page-header { flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px var(--settings-pad-x) 12px; border-bottom: 1px solid var(--border); }
+.settings-page-title { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); }
+.settings-page-desc { margin: 3px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+.settings-page-back { display: none; }
+.settings-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+
+/* Inline unsaved-changes guard inside the settings dialog. */
+.settings-guard-backdrop { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0, 0, 0, .35); }
+.settings-guard-card { width: min(360px, 100%); padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); box-shadow: 0 8px 32px rgba(0, 0, 0, .22); }
+.settings-guard-title { margin: 0 0 6px; font-size: 14px; font-weight: var(--text-weight-strong); color: var(--text); }
+.settings-guard-body { margin: 0 0 14px; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+.settings-guard-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+@media (max-width: 640px) {
+  .settings-nav { width: 100%; border-right: 0; border-bottom: 1px solid var(--border); }
+  .settings-page-back { display: inline-flex; }
+  .settings-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .settings-row-control { max-width: none; justify-content: flex-start; }
+  .settings-savebar { flex-wrap: wrap; }
+  .settings-savebar-actions { width: 100%; justify-content: flex-end; }
+}
+
 /* Hairline between the process group and the answer/content below. */
 .process-group-shell {
   padding-bottom: 10px;
