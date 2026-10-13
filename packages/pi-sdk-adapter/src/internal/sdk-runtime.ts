@@ -633,6 +633,13 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
           ...(includeExtensionTools ? registrationActivatedToolNames(this.session) : []),
         ];
     this.session.setActiveToolsByName([...new Set(selected)]);
+    // The assistant's session-history tools are the assistant's defining
+    // capability: a NARROW whitelist must never silently remove them. An
+    // explicit all-off ([]) keeps the honest empty contract — nothing active,
+    // empty system prompt — exactly like every other tool.
+    if (normalized.length > 0) {
+      ensureAssistantToolsActive(this.session, this.identity.cwd);
+    }
   }
   async reload(): Promise<readonly RuntimeCapability[]> {
     this.uninstallSubagentStreamBridge();

@@ -348,3 +348,69 @@ describe("assistant tools (search_sessions / read_session)", () => {
     assert.equal(session.active.size, 4);
   });
 });
+
+describe("assistant tools survive explicit set_tools whitelists (driver)", () => {
+  it("setTools keeps search_sessions/read_session active on an assistant session even when unnamed", async () => {
+    // The driver's setTools is exercised through the REAL driver surface with a
+    // scripted composition (same harness family as sdk-smoke): the exact
+    // production selection code path, without network.
+    const { SdkRuntimeDriverFactory } = await import("../src/internal/sdk-runtime.js");
+    const { SessionManager, SettingsManager, ModelRuntime, createAgentSessionFromServices, createAgentSessionServices } = await import("@earendil-works/pi-coding-agent");
+    const { resourceLoaderOptionsForBuiltIns } = await import("../src/internal/curated-plugins.js");
+    const { assistantExtensionFactoriesForCwd } = await import("../src/internal/assistant-tools.js");
+    const root = await mkdtemp(join(tmpdir(), "pix-assistant-settools-"));
+    try {
+      const realAssistantDir = resolveAssistantWorkspaceDir(homedir());
+      const agentDir = join(root, "agent");
+      await mkdir(agentDir, { recursive: true });
+      const manager = SessionManager.inMemory(realAssistantDir);
+      const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false, authPath: join(agentDir, "auth.json"), modelsPath: null });
+      const composition = {
+        async openSession() { return { manager, cwd: realAssistantDir }; },
+        initializeTheme() {},
+        createServices: (cwd: string) => createAgentSessionServices({
+          cwd,
+          agentDir,
+          settingsManager: SettingsManager.inMemory({}, { projectTrusted: true }),
+          modelRuntime,
+          // Mirror the production defaultComposition: the assistant tools
+          // extension rides in the extensionFactories list for assistant cwds.
+          resourceLoaderOptions: {
+            ...resourceLoaderOptionsForBuiltIns(agentDir),
+            extensionFactories: assistantExtensionFactoriesForCwd(cwd),
+          },
+        }),
+        resolveProjectTrust: async () => true,
+        prepareExtensionMode: async () => {},
+        listVisibleModels: (services: { modelRuntime: { getModels(): unknown[] } }) => services.modelRuntime.getModels(),
+        getDefaults: () => ({}),
+        hasContinuation: () => false,
+        createSession: (options: unknown) => createAgentSessionFromServices(options as never),
+      };
+      const factory = new SdkRuntimeDriverFactory(undefined, composition as never);
+      const driver = await factory.create({ cwd: realAssistantDir, toolNames: ["read"], thinkingLevel: "off", thinkingLevelPinned: true }, {});
+      try {
+        // getState() is a per-call projection: re-read after every mutation.
+        const active = () => new Set(driver.getState().tools.filter((tool) => tool.active).map((tool) => tool.name));
+        // Explicit create-time whitelist already unions registration-activated
+        // extension tools — the assistant pair must be present.
+        assert.ok(active().has("search_sessions"), `search_sessions active; tools=${JSON.stringify(driver.getState().tools.map((t) => [t.name, t.active]))}`);
+        assert.ok(active().has("read_session"));
+        // An explicit runtime set_tools WITHOUT the assistant names must not
+        // remove them (the assistant's defining capability).
+        driver.setTools(["read"], true);
+        assert.ok(active().has("search_sessions"));
+        assert.ok(active().has("read_session"));
+        // All-off clears everything including the assistant pair (a genuine
+        // forced-empty is honest, and the empty-list path skips the union) —
+        // the invariant is that a NARROW list never silently drops them.
+        driver.setTools([], false);
+        assert.equal(driver.getState().tools.every((tool) => !tool.active), true);
+      } finally {
+        await driver.close("user");
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
