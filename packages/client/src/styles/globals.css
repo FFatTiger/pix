@@ -3670,3 +3670,18 @@ html.pi-booted body::before {
 /* Session strip under the composer shares the same 820px column edges. */
 .session-info-bar-wrap { padding-left: 16px; padding-right: 16px; }
 .session-info-bar-inner { max-width: 820px; }
+
+/* Optical alignment: the eye lines up text, not box edges. The main composer
+   hangs symmetrically outside the column by its inner text inset (13px), so
+   the placeholder/typed text sits exactly on the transcript text edge, and
+   the status tab starts on that same edge. */
+@media (min-width: 641px) {
+  .chat-composer-region .chat-input-shell {
+    width: calc(100% + 26px);
+    margin-left: -13px;
+  }
+  /* The status tab lives outside the composer region: give it the same
+     minimap-gutter offset so it starts on the transcript text edge too. */
+  .subagent-activity-card { max-width: 870px; padding-right: 34px; }
+}
+.workspace .subagent-activity-capsule { margin-left: 0; }
