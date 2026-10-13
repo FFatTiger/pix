@@ -3323,8 +3323,7 @@ export class SessiondService {
    */
   private handleStatusQuery(record: RecordState, id: string): void {
     if (!isAssistantWorkspacePath(record.cwd, homedir())) {
-      // Refused silently on the wire; the worker's pending slot fails on its
-      // own timeout (no error path that could be used to probe).
+      console.error(`[statusQuery-debug] REFUSED ${record.sessionId}`);
       return;
     }
     const sessions = [...this.records.values()]
@@ -3333,15 +3332,19 @@ export class SessiondService {
       .map((row) => ({
         sessionId: row.sessionId,
         cwd: row.cwd,
-        state: this.isTurnRunning(row) ? "busy" as const
-          : (row.projection.snapshot().state.pendingExtensionUi?.length ?? 0) > 0 ? "waitingUser" as const
+        // A turn blocked on unanswered extension UI (question card / extension
+        // request) is waiting for the USER — that refines "busy" exactly like
+        // the sidebar shows a question card on an active session.
+        state: (row.projection.snapshot().state.pendingExtensionUi?.length ?? 0) > 0 ? "waitingUser" as const
+          : this.isTurnRunning(row) ? "busy" as const
           : "live" as const,
       }));
-    void record.worker.send({
+        void record.worker.send({
       type: "worker.statusQueryResult",
       id,
       payload: { sessionId: record.sessionId, sessions },
-    }).catch(() => {
+    }).catch((debugError) => {
+      console.error(`[statusQuery-debug] send failed ${String(debugError).slice(0, 120)}`);
       // The asking worker went away mid-reply; the pending promise times out
       // on the worker side. Nothing else to do — the query is read-only.
     });

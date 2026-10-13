@@ -501,7 +501,7 @@ export function createAssistantToolsExtension(
       ].join(""),
       promptSnippet: "Read-only live session status (running/waiting-user/recent-error).",
       parameters: Type.Object({
-        project: Type.Optional(Type.String({ description: "只看某个项目（目录名或路径前缀）" })),
+        project: Type.Optional(Type.String({ description: "可选：仅当用户明确要求按某个项目过滤时才传（目录名或路径前缀）。默认不传=返回全部项目" })),
       }),
       execute: async (_toolCallId, params, signal) => {
         if (sessionStatus === undefined) {
@@ -521,9 +521,12 @@ export function createAssistantToolsExtension(
           signal?.throwIfAborted();
           return toolFailure("读取会话目录失败", error);
         }
-        const scoped = params.project !== undefined
-          ? live.filter((item) => item.cwd.includes(params.project!.replace(/^\/*|\/*$/g, "")) || params.project!.includes(item.cwd.split("/").filter(Boolean).at(-1) ?? "\u0000"))
-          : live;
+        const projectFilter = params.project !== undefined && !isAssistantWorkspaceCwd(params.project)
+          ? params.project.replace(/^\/*|\/*$/g, "")
+          : "";
+        const scoped = projectFilter === ""
+          ? live
+          : live.filter((item) => item.cwd.includes(projectFilter) || projectFilter.includes(item.cwd.split("/").filter(Boolean).at(-1) ?? "\u0000"));
         const lines: string[] = [];
         for (const item of scoped.slice(0, LIST_SESSION_BUDGET)) {
           if (isAssistantWorkspaceCwd(item.cwd)) continue;

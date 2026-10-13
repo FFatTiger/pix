@@ -42,7 +42,8 @@ export class PiSdkAgentRuntimeFactory implements AgentRuntimeFactory {
 
   constructor(options: PiSdkAgentRuntimeFactoryOptions) {
     const internal = readFactoryInjection(options);
-    this.driverFactory = internal?.driverFactory ?? new SdkRuntimeDriverFactory(internal?.trace);
+    this.driverFactory = internal?.driverFactory
+      ?? new SdkRuntimeDriverFactory(internal?.trace, undefined, options.sessionStatus);
     this.driverOptions = {
       capabilities: options.capabilities,
       ...(options.reloadCapabilities === undefined ? {} : { reloadCapabilities: options.reloadCapabilities }),
