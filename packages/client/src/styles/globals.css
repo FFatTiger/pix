@@ -3781,7 +3781,7 @@ html.pi-booted body::before {
 .chat-input-menu-panel button[style*="var(--bg-selected)"] {
   background: color-mix(in srgb, var(--text) 7%, transparent) !important;
   color: var(--text) !important;
-  font-weight: 600;
+  font-weight: var(--text-weight-strong);
 }
 .chat-input-menu-panel button:hover:not(:disabled):not(.chat-input-menu-group-header) {
   background: color-mix(in srgb, var(--text) 5%, transparent) !important;
