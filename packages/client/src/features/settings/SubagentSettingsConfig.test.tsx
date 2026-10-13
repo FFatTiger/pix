@@ -184,7 +184,7 @@ describe("SubagentSettingsConfig", () => {
 
   it("permits subagent model settings while the Subagents feature toggle is off", async () => {
     // The capabilities page shows the saved toggle honestly…
-    const builtInsMock = vi.fn(async () => json({ revision, capabilities: [{ id: "subagents", enabled: false }, { id: "todo", enabled: true }, { id: "ask_user_question", enabled: true }, { id: "side_chat", enabled: false }] }));
+    const builtInsMock = vi.fn(async () => json({ revision, capabilities: [{ id: "subagents", enabled: false }, { id: "todo", enabled: true }, { id: "ask_user_question", enabled: true }, { id: "side_chat", enabled: false }, { id: "smart_compact", enabled: true }] }));
     mount(builtInsMock, ["settings.configure", "builtins.configure", "models"], "capabilities");
     expect((await screen.findByRole("switch", { name: "Subagents" })).getAttribute("aria-checked")).toBe("false");
     cleanup();

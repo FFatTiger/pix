@@ -189,6 +189,13 @@ export function createQueryOptions(http: HttpClient) {
           staleTime: 0,
           retry: false,
         }),
+      compaction: () =>
+        queryOptions({
+          queryKey: queryKeys.settingsConfig.compaction(),
+          queryFn: ({ signal }) => configuration.compaction.get(signal),
+          staleTime: 0,
+          retry: false,
+        }),
       tools: () =>
         queryOptions({
           queryKey: queryKeys.settingsConfig.tools(),

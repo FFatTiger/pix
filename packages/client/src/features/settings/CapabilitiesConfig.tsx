@@ -15,6 +15,7 @@ const VISIBLE_FEATURES: readonly { readonly id: BuiltInCapabilityId; readonly la
   { id: "todo", labelKey: "desktop.agentFeature.todo", descriptionKey: "desktop.capability.todo.description" },
   { id: "ask_user_question", labelKey: "desktop.agentFeature.askUserQuestion", descriptionKey: "desktop.capability.askUserQuestion.description" },
   { id: "side_chat", labelKey: "desktop.agentFeature.sideChat", descriptionKey: "desktop.capability.sideChat.description" },
+  { id: "smart_compact", labelKey: "desktop.agentFeature.smartCompact", descriptionKey: "desktop.capability.smartCompact.description" },
 ];
 
 /**

@@ -14,9 +14,11 @@ import {
   UsersThree,
   Wrench,
   X,
+  ArrowsClockwise,
 
 } from "@phosphor-icons/react";
 import { ArchiveConfig } from "@/features/settings/ArchiveConfig";
+import { CompactionConfig } from "@/features/settings/CompactionConfig";
 import { AppearanceConfig } from "@/features/settings/AppearanceConfig";
 import { CapabilitiesConfig } from "@/features/settings/CapabilitiesConfig";
 import { InputConfig } from "@/features/settings/InputConfig";
@@ -45,6 +47,7 @@ export type SettingsPageId =
   | "capabilities"
   | "subagents"
   | "tools"
+  | "compaction"
   | "session"
   | "skills"
   | "plugins"
@@ -149,6 +152,7 @@ export function SettingsModal({
         { id: "capabilities", labelKey: "desktop.settingsPage.capabilities", descKey: "desktop.settingsPage.capabilitiesDesc", Icon: SlidersHorizontal, render: () => <CapabilitiesConfig /> },
         { id: "subagents", labelKey: "desktop.settingsPage.subagents", descKey: "desktop.settingsPage.subagentsDesc", Icon: UsersThree, render: () => <SubagentSettingsConfig /> },
         { id: "tools", labelKey: "desktop.settingsPage.tools", descKey: "desktop.settingsPage.toolsDesc", Icon: Wrench, render: () => <ToolsConfig /> },
+        { id: "compaction", labelKey: "desktop.settingsPage.compaction", descKey: "desktop.settingsPage.compactionDesc", Icon: ArrowsClockwise, render: () => <CompactionConfig /> },
         { id: "session", labelKey: "desktop.settingsPage.session", descKey: "desktop.settingsPage.sessionDesc", Icon: ChatCircleText, render: () => <SessionConfig /> },
       ],
     },

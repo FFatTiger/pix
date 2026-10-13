@@ -142,19 +142,23 @@ export function SettingsInput({
 }
 
 export function SettingsNumInput({
+  id,
   value,
   onChange,
   placeholder,
   min,
   step,
+  disabled,
 }: {
+  id?: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   min?: number;
   step?: number | "any";
+  disabled?: boolean;
 }) {
-  return <input type="number" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} min={min} step={step} style={inputStyle} />;
+  return <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} min={min} step={step} disabled={disabled} style={inputStyle} />;
 }
 
 /** Secret input with a show/hide toggle inside the field. */

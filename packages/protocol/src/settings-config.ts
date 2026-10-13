@@ -89,8 +89,12 @@ export type SubagentSettingsMutation = z.infer<typeof SubagentSettingsMutationSc
 // Context compaction (settings.json `compaction` + `smartCompact`)
 // ---------------------------------------------------------------------------
 
-const SmartCompactProfileSchema = z.enum(["light", "balanced", "aggressive"]);
-const SmartCompactThinkingLevelSchema = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
+export const SmartCompactProfileSchema = z.enum(["light", "balanced", "aggressive"]);
+export type SmartCompactProfileWire = z.infer<typeof SmartCompactProfileSchema>;
+export const SMART_COMPACT_PROFILES = SmartCompactProfileSchema.options;
+export const SmartCompactThinkingLevelSchema = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
+export type SmartCompactThinkingLevelWire = z.infer<typeof SmartCompactThinkingLevelSchema>;
+export const SMART_COMPACT_THINKING_LEVELS = SmartCompactThinkingLevelSchema.options;
 const CompactionModelSchema = z.string().trim().min(1).nullable();
 const CompactionTokensSchema = z.number().int().nonnegative().safe().nullable();
 
