@@ -60,7 +60,8 @@ export type HostCapability =
   | "skills"
   | "plugins"
   | "themes"
-  | "project.trust";
+  | "project.trust"
+  | "assistant";
 
 export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "agent",
@@ -84,6 +85,7 @@ export const ALL_HOST_CAPABILITIES: readonly HostCapability[] = [
   "plugins",
   "themes",
   "project.trust",
+  "assistant",
 ] as const;
 
 /**
@@ -224,6 +226,9 @@ export interface GateDeps {
 
 import type { MutationGuard, ResourceDeps } from "./resources/types.js";
 import type { AllowedRootService } from "./resources/allowed-roots.js";
+import type { AssistantLatestClient } from "./routes/assistant.js";
+
+export type { AssistantLatestClient } from "./routes/assistant.js";
 
 /** sessiond availability probe for capability downgrade (protocol-independent). */
 export interface SessiondProbe {
@@ -577,6 +582,20 @@ export interface HostDeps {
    * actually mounted.
    */
   catalogs?: CatalogDeps;
+  /**
+   * Assistant workspace seam (GET /v1/assistant + the `assistant` capability
+   * token). Mounted ONLY when composition resolved and authorized the fixed
+   * assistant directory within AllowedRoots (`createAssistantWorkspaceResource`);
+   * the token is additionally sessiond-up-only (the route's latest-session
+   * lookup needs the sessiond catalog). Omitted ⇒ no route, no token — the
+   * client hides the assistant entry entirely.
+   */
+  assistant?: {
+    /** Canonical assistant working directory. */
+    cwd: string;
+    /** Narrow sessiond-backed latest-session lookup. */
+    client: AssistantLatestClient;
+  };
   /** H0B seam: injected runtime protocol WS handler. */
   runtimeWs?: RuntimeWsSeam;
   /** Hello-frame timeout in ms for the WS upgrade seam (default 10_000). */

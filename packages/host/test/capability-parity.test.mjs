@@ -58,7 +58,7 @@ class NoopClient {
  * list is the production surface (includes session-mutation + catalog tokens),
  * but ONLY the seams explicitly passed are actually mounted.
  */
-function makeParityApp({ withMutationSeams = false, withCatalogs = false }) {
+function makeParityApp({ withMutationSeams = false, withCatalogs = false, withAssistant = false }) {
   const deps = {
     logger: {},
     gate: { config: DISABLED_GATE },
@@ -92,6 +92,12 @@ function makeParityApp({ withMutationSeams = false, withCatalogs = false }) {
         },
         mutationGuard: { async assertAvailable() {} },
       },
+    };
+  }
+  if (withAssistant) {
+    deps.assistant = {
+      cwd: "/home/x/.pi/pix/assistant",
+      client: { async findLatest(cwd) { return { cwd, sessionId: null }; } },
     };
   }
   if (withCatalogs) {
@@ -160,7 +166,7 @@ test("missing-seam parity: no mutation/catalog seams ⇒ HTTP and WS BOTH strip 
   const wsList = ws;
   assert.deepEqual(wsList, httpList, "WS handshake must mirror HTTP capabilities");
   assert.deepEqual(httpList, ["agent", "sessions", "files", "files.write", "files.watch", "files.upload", "git", "worktree", "worktree.write"]);
-  for (const forbidden of ["session.delete", "session.write", "session.settings", "models", "models.configure", "settings.configure", "builtins.configure", "auth.providers", "skills", "plugins", "themes", "project.trust"]) {
+  for (const forbidden of ["session.delete", "session.write", "session.settings", "models", "models.configure", "settings.configure", "builtins.configure", "auth.providers", "skills", "plugins", "themes", "project.trust", "assistant"]) {
     assert.ok(!httpList.includes(forbidden), `HTTP must not advertise unmounted token ${forbidden}`);
     assert.ok(!wsList.includes(forbidden), `WS must not advertise unmounted token ${forbidden}`);
   }
@@ -202,7 +208,7 @@ test("missing-seam parity: only the delete seam mounted ⇒ session.delete on BO
 });
 
 test("all seams mounted ⇒ HTTP and WS both advertise the full production surface (no drift)", async () => {
-  const { host, capabilityResolver } = makeParityApp({ withMutationSeams: true, withCatalogs: true });
+  const { host, capabilityResolver } = makeParityApp({ withMutationSeams: true, withCatalogs: true, withAssistant: true });
   const http = await httpCapabilities(host);
   const ws = await wsHandshakeCapabilities(capabilityResolver);
   assert.deepEqual(ws, http.capabilities, "WS handshake must mirror HTTP capabilities");

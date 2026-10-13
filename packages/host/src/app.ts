@@ -11,6 +11,7 @@ import { compressionMiddleware } from "./middleware/compression.js";
 import { gateMiddleware } from "./gate/middleware.js";
 import { registerGateRoutes } from "./gate/routes.js";
 import { registerHealthRoutes, registerBootstrapRoutes } from "./routes/health.js";
+import { registerAssistantRoutes } from "./routes/assistant.js";
 import { createEnvGateConfigSource, createFileGatePasswordStore, createFileGatePreferencesStore, createNormalizedGateConfigSource } from "./gate/config.js";
 import { createInMemoryRevocationStore } from "./gate/revocation.js";
 import { staticAssetsMiddleware } from "./static/static-assets.js";
@@ -127,6 +128,12 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
         mutationGuard: deps.sessions.settings.mutationGuard,
       });
     }
+  }
+  if (deps.assistant) {
+    registerAssistantRoutes(app, {
+      cwd: deps.assistant.cwd,
+      client: deps.assistant.client,
+    });
   }
   if (deps.catalogs) {
     registerCatalogRoutes(app, deps.catalogs);

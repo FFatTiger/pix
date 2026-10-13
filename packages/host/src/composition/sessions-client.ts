@@ -1,5 +1,5 @@
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
-import type { SessionDeleteClient, SessionHistoryReadClient, SessionRenameClient, SessionSettingsClient } from "../types.js";
+import type { AssistantLatestClient, SessionDeleteClient, SessionHistoryReadClient, SessionRenameClient, SessionSettingsClient } from "../types.js";
 
 /**
  * Narrow read-only session history client backed by the fixed sessiond RPC
@@ -62,6 +62,26 @@ export function createSessiondSessionsClient(
       // Read-only branch-tree RPC: the sessiond catalog handler projects the
       // persisted JSONL with zero runtime involvement.
       return client.call("sessions.tree", { sessionId });
+    },
+  };
+}
+
+/**
+ * Narrow assistant-latest client backed by the fixed sessiond RPC
+ * endpoint+secret. It wraps exactly the read-only `sessions.findLatest`
+ * catalog RPC (zero workers) and never the runtime lifecycle.
+ */
+export function createSessiondAssistantClient(
+  options: SessiondSessionsClientOptions,
+): AssistantLatestClient {
+  const client = new SessiondRpcClient({
+    endpoint: options.endpoint,
+    secret: options.secret,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  });
+  return {
+    async findLatest(cwd) {
+      return client.call("sessions.findLatest", { cwd });
     },
   };
 }

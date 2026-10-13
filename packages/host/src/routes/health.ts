@@ -144,10 +144,28 @@ export function normalizeSessionMutationCapabilities(
 }
 
 /**
+ * Honest assistant-token filter. The `assistant` capability (the project-less
+ * assistant entry + GET /v1/assistant) is only advertisable when the
+ * assistant workspace seam is actually mounted (composition resolved AND
+ * authorized the fixed assistant directory within AllowedRoots) — the SAME
+ * source of truth as the route mount. Tokens are only ever removed: a token
+ * absent from the input list is never invented.
+ */
+export function normalizeAssistantCapabilities(
+  listed: readonly HostCapability[],
+  deps: HostDeps,
+): readonly HostCapability[] {
+  if (deps.assistant !== undefined) return listed;
+  return listed.filter((token) => token !== "assistant");
+}
+
+/**
  * Strip session-mutation tokens from a list. Applied to the readonly/
  * degraded projection: `session.write` / `session.delete` / `session.settings`
  * are only advertisable while sessiond is up, so the down/unknown projection
- * never includes them regardless of mounted seams.
+ * never includes them regardless of mounted seams. The `assistant` token is
+ * stripped for the same reason: the route's latest-session lookup needs the
+ * sessiond catalog.
  */
 function withoutSessionMutationTokens(
   listed: readonly HostCapability[],
@@ -156,7 +174,8 @@ function withoutSessionMutationTokens(
     (token) =>
       token !== "session.write" &&
       token !== "session.delete" &&
-      token !== "session.settings",
+      token !== "session.settings" &&
+      token !== "assistant",
   );
 }
 
@@ -167,10 +186,13 @@ export async function resolveCapabilities(
   // Explicit overrides still have catalog tokens rewritten from mounted seams.
   // Session mutation tokens are seam-honest: only the mutation tokens whose
   // seams are actually mounted survive in the full projection.
-  const full = normalizeSessionMutationCapabilities(
-    normalizeCatalogCapabilities(
-      deps.capabilities?.full ?? mounted,
-      deps.catalogs,
+  const full = normalizeAssistantCapabilities(
+    normalizeSessionMutationCapabilities(
+      normalizeCatalogCapabilities(
+        deps.capabilities?.full ?? mounted,
+        deps.catalogs,
+      ),
+      deps,
     ),
     deps,
   );
