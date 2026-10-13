@@ -6,6 +6,7 @@ import type {
   RuntimeStartInput,
 } from "@fffattiger/pix-runtime-core";
 import { isRuntimeError, makeRuntimeError } from "@fffattiger/pix-runtime-core";
+import type { WorkerSessionStatusItem } from "@fffattiger/pix-protocol";
 import type { PiRuntimeDriverFactory } from "../internal/types.js";
 import { SdkRuntimeDriverFactory } from "../internal/sdk-runtime.js";
 import { readFactoryInjection } from "../internal/factory-options.js";
@@ -22,6 +23,13 @@ export interface PiSdkAgentRuntimeFactoryOptions {
   readonly capabilities: readonly RuntimeCapability[];
   /** Capability projection reported after a `reload` command (test/composition seam). */
   readonly reloadCapabilities?: readonly RuntimeCapability[];
+  /**
+   * READ-ONLY authoritative session-status channel supplied by the worker
+   * process (supervisor IPC; sessiond answers assistant workers only).
+   * Absent in tests/embeddings → the assistant session_status tool reports
+   * the channel as unavailable instead of guessing.
+   */
+  readonly sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>;
 }
 
 export class PiSdkAgentRuntimeFactory implements AgentRuntimeFactory {
@@ -29,6 +37,7 @@ export class PiSdkAgentRuntimeFactory implements AgentRuntimeFactory {
   private readonly driverOptions: {
     capabilities: readonly RuntimeCapability[];
     reloadCapabilities?: readonly RuntimeCapability[];
+    sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>;
   };
 
   constructor(options: PiSdkAgentRuntimeFactoryOptions) {
@@ -37,6 +46,7 @@ export class PiSdkAgentRuntimeFactory implements AgentRuntimeFactory {
     this.driverOptions = {
       capabilities: options.capabilities,
       ...(options.reloadCapabilities === undefined ? {} : { reloadCapabilities: options.reloadCapabilities }),
+      ...(options.sessionStatus === undefined ? {} : { sessionStatus: options.sessionStatus }),
     };
   }
 

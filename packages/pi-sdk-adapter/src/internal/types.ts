@@ -1,4 +1,5 @@
 import type { Model, Api } from "@earendil-works/pi-ai";
+import type { WorkerSessionStatusItem } from "@fffattiger/pix-protocol";
 import type { SideChatController } from "./vendor/pi-side-chat/index.js";
 import type { PromptDisposition, QueuedInputDisposition } from "@fffattiger/pix-runtime-core";
 export type { PromptDisposition, QueuedInputDisposition };
@@ -174,6 +175,12 @@ export interface PiRuntimeDriver {
 export interface DriverFactoryOptions {
   capabilities?: readonly RuntimeCapability[];
   reloadCapabilities?: readonly RuntimeCapability[];
+  /**
+   * Read-only authoritative session-status channel (worker supervisor IPC;
+   * only assistant workers get answers). Threading it through driver options
+   * keeps the frozen AgentRuntimeFactory create/open signatures unchanged.
+   */
+  sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>;
 }
 
 export interface PiRuntimeDriverFactory {

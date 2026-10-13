@@ -680,4 +680,66 @@ describe("WorkerController", () => {
     assert.equal(f.created[0]?.closeReasons[0], "user");
     assert.deepEqual(exitCodes, [0]);
   });
+
+  it("queryStatus: no session identity yet → unsupported_capability, nothing sent", async () => {
+    const harness = createHarness(new FakeAgentRuntimeFactory());
+    await assert.rejects(
+      harness.controller.queryStatus(),
+      (error: { code?: string }) => error.code === "unsupported_capability",
+    );
+    assert.equal(harness.recorder.messages.length, 0);
+  });
+
+  it("queryStatus: correlates the sessiond reply with the exact allocated id", async () => {
+    const factory = new FakeAgentRuntimeFactory();
+    factory.script = () => ({ sessionId: "sess-real", sessionFile: "/sessions/sess-real.jsonl" });
+    const harness = createHarness(factory);
+    await harness.controller.handleMessage(initMessage({ mode: "create" }));
+    harness.recorder.messages.length = 0;
+
+    const pending = harness.controller.queryStatus();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const query = harness.recorder.messages.find((message) => message.type === "worker.statusQuery") as { id: string; payload: { sessionId: string } };
+    assert.ok(query, "worker.statusQuery sent");
+    assert.equal(query.payload.sessionId, "sess-real");
+
+    await harness.controller.handleMessage({
+      type: "worker.statusQueryResult",
+      id: query.id,
+      protocolVersion: 2,
+      payload: {
+        sessionId: "sess-real",
+        sessions: [{ sessionId: "other", cwd: "/repos/x", state: "busy" }],
+      },
+    } as never);
+    const items = await pending;
+    assert.deepEqual(items, [{ sessionId: "other", cwd: "/repos/x", state: "busy" }]);
+  });
+
+  it("queryStatus: a late/duplicate reply can never settle a newer query (single settle)", async () => {
+    const factory = new FakeAgentRuntimeFactory();
+    factory.script = () => ({ sessionId: "sess-real", sessionFile: "/sessions/sess-real.jsonl" });
+    const harness = createHarness(factory);
+    await harness.controller.handleMessage(initMessage({ mode: "create" }));
+    harness.recorder.messages.length = 0;
+
+    const first = harness.controller.queryStatus().catch(() => "failed" as const);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const query = harness.recorder.messages.find((message) => message.type === "worker.statusQuery") as { id: string };
+    // Stale reply with a WRONG id must be dropped silently.
+    await harness.controller.handleMessage({
+      type: "worker.statusQueryResult",
+      id: "not-the-id",
+      protocolVersion: 2,
+      payload: { sessionId: "sess-real", sessions: [] },
+    } as never);
+    // The real reply settles exactly once.
+    await harness.controller.handleMessage({
+      type: "worker.statusQueryResult",
+      id: query.id,
+      protocolVersion: 2,
+      payload: { sessionId: "sess-real", sessions: [{ sessionId: "a", cwd: "/a", state: "live" }] },
+    } as never);
+    assert.deepEqual(await first, [{ sessionId: "a", cwd: "/a", state: "live" }]);
+  });
 });

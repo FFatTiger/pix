@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AssistantActionCard, isAssistantActionTool } from "./AssistantActionCard";
 import { queryKeys } from "@/api/query-keys";
 import { getDraft, clearDraft } from "@/lib/draft-store";
-import { loadSidebarItemState } from "@/lib/sidebar-item-state";
 import { HttpClientProvider } from "@/app/http-context";
 import { I18nProvider } from "@/hooks/useI18n";
 import type { SessionHeader } from "@fffattiger/pix-protocol";
@@ -42,7 +41,6 @@ function mount(card: React.ReactElement, sessions: SessionHeader[] = [header()])
 afterEach(() => {
   navigate.mockClear();
   clearDraft("s-1");
-  window.localStorage.removeItem("pi-sidebar-item-state");
   vi.unstubAllGlobals();
 });
 
@@ -70,20 +68,6 @@ describe("AssistantActionCard", () => {
     expect(getDraft("s-1")).toEqual({ value: "接着修 bug", images: [] });
     expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ search: { session: "s-1", cwd: "/repos/pix" } }));
     // No fetch happened: nothing was sent anywhere.
-  });
-
-  it("organize_sessions pin: applies the local sidebar preference and shows the local-only hint", () => {
-    mount(<AssistantActionCard toolName="organize_sessions" input={{ action: "pin", sessions: [{ session: "s-1" }] }} />);
-    fireEvent.click(screen.getByTestId("assistant-action-button"));
-    expect(loadSidebarItemState().pinnedSessions).toContain("s-1");
-    expect(screen.getByText("Pinned/archived on this device only")).toBeTruthy();
-    expect(navigate).not.toHaveBeenCalled();
-  });
-
-  it("organize_sessions archive: local archive preference", () => {
-    mount(<AssistantActionCard toolName="organize_sessions" input={{ action: "archive", sessions: [{ session: "修 bug" }] }} />);
-    fireEvent.click(screen.getByTestId("assistant-action-button"));
-    expect(loadSidebarItemState().archivedSessions).toContain("s-1");
   });
 
   it("organize_sessions delete: two-step in-card confirmation before the API call", async () => {
@@ -121,6 +105,19 @@ describe("AssistantActionCard", () => {
   it("organize_sessions rename without a title stays disabled", () => {
     mount(<AssistantActionCard toolName="organize_sessions" input={{ action: "rename", sessions: [{ session: "s-1" }] }} />);
     expect((screen.getByTestId("assistant-action-button") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("organize_sessions removed actions (pin/archive) render a disabled execute button and never call APIs", () => {
+    const fetchMock = vi.fn(async () => { throw new Error("must not fetch"); });
+    vi.stubGlobal("fetch", fetchMock);
+    for (const removed of ["pin", "unpin", "archive", "unarchive"]) {
+      const { unmount } = mount(<AssistantActionCard toolName="organize_sessions" input={{ action: removed, sessions: [{ session: "s-1" }] }} />);
+      const button = screen.getByTestId("assistant-action-button") as HTMLButtonElement;
+      expect(button.disabled, removed).toBe(true);
+      fireEvent.click(button);
+      expect(fetchMock).not.toHaveBeenCalled();
+      unmount();
+    }
   });
 
   it("isAssistantActionTool gates exactly the three action tools", () => {

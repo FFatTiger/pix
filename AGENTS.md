@@ -38,6 +38,7 @@ fork the logic.
 | Runtime Ports / canonical models / app errors | `packages/runtime-core` | depend on Protocol/Pi SDK/Hono/React |
 | Pi SDK translation & capability projection | `packages/pi-sdk-adapter` | touch Pi SDK types anywhere else |
 | Session lifecycle authority | `packages/sessiond` | be held by Web/Client state |
+| Worker status query (read-only `worker.statusQuery` IPC) | `packages/protocol` (frames) + `packages/sessiond` (authoritative answers, assistant-only guard) + `packages/agent-worker` (correlation) | leak sessiond secrets to workers, let workers read sessiond internals, or answer non-assistant workers |
 | Single-session runtime mapping | `packages/agent-worker` | import Pi SDK directly |
 | HTTP/WS gateway, static, gate, files/git routes | `packages/host` | own session authority or runtime models |
 | Client UI + typed transports + runtime view | `packages/client` | reach into backend/daemon/Worker internals |

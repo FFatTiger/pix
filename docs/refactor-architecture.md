@@ -498,6 +498,15 @@ packages/
   尾部 isError=最近报错）；实时 running/busy 仍是客户端权威显示——不建 Worker→sessiond
   通道（会把 sessiond secret 塞进每个 worker 并反转 owner 方向）。todo = 各会话最后一次
   todo toolResult 快照重放；文件改动 = write/edit 系 toolCall 的 path 参数 + 成功结果。
+- **session_status 实时化（第 4 轮）**：worker↔sessiond IPC 新增只读 `worker.statusQuery`/
+  `worker.statusQueryResult` 帧对（protocol owner；build fingerprint v11）。sessiond 是唯一答者：
+  仅当请求 worker 自己的 record cwd 是助手工作区才应答，其余静默拒绝；每会话一条
+  {busy|waitingUser|live}，与 running watch 同源（isTurnRunning）+ projection 的 pendingExtensionUi。
+  通道经 worker-main（late-bound holder）→ factory options → driver composition →
+  assistantExtensionFactoriesForCwd 注入；通道缺失时工具明确报错，绝不退回 JSONL 推断。
+  「最近报错」仍从会话记录读。organize_sessions 只保留 rename/delete（pin/归档等本设备
+  偏好动作已删除）。
+
 - **动作类**（open_session / organize_sessions / draft_to_session）工具只解析目标并返回
   确认文本；客户端从 toolCall input 渲染 AssistantActionCard 按钮（打开 / 执行 / 填入
   输入框），用户点击才执行——无 Worker→浏览器推送通道。organize 复用现有流程：

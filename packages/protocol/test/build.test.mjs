@@ -110,10 +110,10 @@ describe("build fingerprint", () => {
 
 describe("canonical identities", () => {
   it("does not fingerprint Browser-Host lifecycle features", () => {
-    // Frozen digest: v5 runtime capability vocabulary adds availability-only
-    // subagent/todo/user_question/side_chat tokens. Recompute from source
-    // constants; do not retarget for unrelated Adapter policy.
-    assert.equal(SESSIOND_BUILD_IDENTITY.fingerprint, "65ce3af0104c8d69561034dc4618cbead77b057241df9734e51f9590896dfe00");
+    // Frozen digest: the v11 IPC vocabulary adds the read-only assistant
+    // worker.statusQuery pair (running/waiting/live authoritative snapshot).
+    // Recompute from source constants; do not retarget for unrelated Adapter policy.
+    assert.equal(SESSIOND_BUILD_IDENTITY.fingerprint, "8e0926c540fd86a9dc07955de3ae950d0bc2bdbb407be9e85b01af2934601395");
     assert.equal(SESSIOND_BUILD_CAPABILITIES.includes(RUNTIME_OBSERVE_EXISTING_FEATURE), false);
     assert.equal(SESSIOND_BUILD_CAPABILITIES.includes(RUNTIME_EXPLICIT_ACTIVATE_FEATURE), false);
     assert.equal(RUNTIME_CAPABILITY_VOCABULARY.includes(RUNTIME_OBSERVE_EXISTING_FEATURE), false);

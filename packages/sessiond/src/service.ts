@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
   CorrelatedRuntimeCommandResult,
@@ -47,7 +48,7 @@ import {
   type WorkerBuild,
 } from "@fffattiger/pix-protocol";
 import type { RuntimeCloseReason } from "@fffattiger/pix-protocol";
-import { READ_ONLY_RUNTIME_COMMAND_TYPES, isRuntimeError, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
+import { READ_ONLY_RUNTIME_COMMAND_TYPES, isRuntimeError, isAssistantWorkspacePath, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
 import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailable, epochChangedCommand, epochChangedInterrupt, rejectedCommand, rejectedInterrupt, unavailableCommand, unavailableInterrupt } from "./errors.js";
 import { EventJournal, type EventJournalOptions } from "./journal.js";
 import { AsyncMutex } from "./internal/mutex.js";
@@ -1139,6 +1140,9 @@ export class SessiondService {
         this.settleRead(record, message.id, message.payload.result);
         break;
       }
+      case "worker.statusQuery":
+        this.handleStatusQuery(record, message.id);
+        break;
       case "worker.status":
         record.status = message.payload.status;
         this.broadcastRunningChanged(record.sessionId);
@@ -3305,6 +3309,42 @@ export class SessiondService {
         };
       })
       .sort((left, right) => left.sessionId < right.sessionId ? -1 : left.sessionId > right.sessionId ? 1 : 0);
+  }
+
+  /**
+   * READ-ONLY assistant status query over the supervisor IPC pipe. Only the
+   * worker whose OWN record lives in the assistant workspace may ask; every
+   * other requester is refused without a reply (its worker fails the pending
+   * promise with unsupported_capability). The reply is one bounded item per
+   * LIVE session derived from the same authoritative inputs as the running
+   * watch (isTurnRunning) plus the projection's pending extension UI — the
+   * exact state the sidebar badge shows. No secret is exchanged and nothing
+   * in sessiond mutates.
+   */
+  private handleStatusQuery(record: RecordState, id: string): void {
+    if (!isAssistantWorkspacePath(record.cwd, homedir())) {
+      // Refused silently on the wire; the worker's pending slot fails on its
+      // own timeout (no error path that could be used to probe).
+      return;
+    }
+    const sessions = [...this.records.values()]
+      .filter((row) => !["stopped", "crashed", "stopping"].includes(row.status))
+      .slice(0, 64)
+      .map((row) => ({
+        sessionId: row.sessionId,
+        cwd: row.cwd,
+        state: this.isTurnRunning(row) ? "busy" as const
+          : (row.projection.snapshot().state.pendingExtensionUi?.length ?? 0) > 0 ? "waitingUser" as const
+          : "live" as const,
+      }));
+    void record.worker.send({
+      type: "worker.statusQueryResult",
+      id,
+      payload: { sessionId: record.sessionId, sessions },
+    }).catch(() => {
+      // The asking worker went away mid-reply; the pending promise times out
+      // on the worker side. Nothing else to do — the query is read-only.
+    });
   }
 
   private deriveRunningSets(): { sessionIds: string[]; busySessionIds: string[] } {

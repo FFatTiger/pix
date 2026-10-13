@@ -218,6 +218,22 @@ export const WorkerPingMessageSchema = z.strictObject({
   payload: EmptyObjectSchema.default({}),
 });
 
+export const WorkerSessionStatusItemSchema = z.strictObject({
+  sessionId: NonEmptyStringSchema,
+  cwd: NonEmptyStringSchema,
+  state: z.enum(["busy", "waitingUser", "live"]),
+});
+export type WorkerSessionStatusItem = z.infer<typeof WorkerSessionStatusItemSchema>;
+
+export const WorkerStatusQueryResultMessageSchema = z.strictObject({
+  type: z.literal("worker.statusQueryResult"),
+  id: NonEmptyStringSchema,
+  payload: z.strictObject({
+    sessionId: NonEmptyStringSchema,
+    sessions: z.array(WorkerSessionStatusItemSchema).max(64),
+  }),
+});
+
 /** sessiond → worker messages */
 export const SessiondToWorkerMessageSchema = z.discriminatedUnion("type", [
   WorkerInitMessageSchema,
@@ -229,6 +245,7 @@ export const SessiondToWorkerMessageSchema = z.discriminatedUnion("type", [
   WorkerRotateEpochMessageSchema,
   WorkerShutdownMessageSchema,
   WorkerHostResponseMessageSchema,
+  WorkerStatusQueryResultMessageSchema,
   WorkerPingMessageSchema,
 ]);
 
@@ -353,6 +370,28 @@ export const WorkerCacheInvalidatedMessageSchema = z.strictObject({
   }),
 });
 
+/**
+ * Authoritative per-session status item a worker may query (read-only).
+ * `busy` mirrors sessiond's running-watch busy (prompt/stream/bash/compact in
+ * flight); `waitingUser` = the session has unanswered extension UI (question
+ * cards / extension requests); `live` = worker attached but idle.
+ */
+/**
+ * READ-ONLY worker→sessiond status query. Only the ASSISTANT worker may ask
+ * (sessiond guards by the requester record's cwd being the assistant
+ * workspace); the reply carries one bounded item per live session. This is
+ * the only worker-originated correlated request: it rides the existing
+ * supervisor IPC pipe (no secret ever reaches the worker) and never mutates
+ * sessiond state.
+ */
+export const WorkerStatusQueryMessageSchema = z.strictObject({
+  type: z.literal("worker.statusQuery"),
+  id: NonEmptyStringSchema,
+  payload: z.strictObject({
+    sessionId: NonEmptyStringSchema,
+  }),
+});
+
 export const WorkerHostRequestMessageSchema = z.strictObject({
   type: z.literal("worker.hostRequest"),
   id: NonEmptyStringSchema,
@@ -393,6 +432,7 @@ export const WorkerToSessiondPushSchema = z.discriminatedUnion("type", [
   WorkerSessionDiscoveredMessageSchema,
   WorkerCacheInvalidatedMessageSchema,
   WorkerHostRequestMessageSchema,
+  WorkerStatusQueryMessageSchema,
   WorkerFatalMessageSchema,
   WorkerStatusMessageSchema,
   WorkerTurnStatusMessageSchema,

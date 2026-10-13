@@ -20,6 +20,7 @@
  * result can never blow up the assistant's own context.
  */
 import { homedir } from "node:os";
+import type { WorkerSessionStatusItem } from "@fffattiger/pix-protocol";
 import { basename, sep as pathSep } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
@@ -51,8 +52,11 @@ export function isAssistantWorkspaceCwd(cwd: string): boolean {
  * composes this into `createServices` so ordinary project sessions never
  * register the assistant tools.
  */
-export function assistantExtensionFactoriesForCwd(cwd: string): InlineExtension[] {
-  return isAssistantWorkspaceCwd(cwd) ? [createAssistantToolsExtension()] : [];
+export function assistantExtensionFactoriesForCwd(
+  cwd: string,
+  sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>,
+): InlineExtension[] {
+  return isAssistantWorkspaceCwd(cwd) ? [createAssistantToolsExtension(sessionStatus)] : [];
 }
 
 /**
@@ -426,7 +430,9 @@ async function resolveTarget(selector: string, signal?: AbortSignal): Promise<{ 
  * only; every execute is read-only JSONL access with bounded output and
  * honest `isError` results (never a thrown rejection, never fake success).
  */
-export function createAssistantToolsExtension(): InlineExtension {
+export function createAssistantToolsExtension(
+  sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>,
+): InlineExtension {
   return (pi: ExtensionAPI): void => {
     pi.registerTool({
       name: "search_sessions",
@@ -489,15 +495,25 @@ export function createAssistantToolsExtension(): InlineExtension {
       name: "session_status",
       label: "查看会话动态",
       description: [
-        "查看所有项目的会话当前状态（只读，基于会话记录推断，不会打扰任何会话）。",
-        "列出：等待用户回答的会话、疑似进行中（有未完成的工具调用）的会话、最近一轮报错的会话。",
-        "注意：这是基于持久化记录的推断；正在运行的真实时状态以应用界面为准。空闲会话默认不列出。",
+        "查看所有项目的会话当前状态（只读，与界面侧边栏同一权威数据源）。",
+        "列出：正在运行的会话、等待用户回答的会话（未回答的提问卡片/扩展请求）、最近一轮报错的会话。",
+        "状态实时来自会话管理器；「最近报错」来自各会话记录的最后错误。",
       ].join(""),
-      promptSnippet: "Read-only session status digest (waiting/running-suspected/recent-error).",
+      promptSnippet: "Read-only live session status (running/waiting-user/recent-error).",
       parameters: Type.Object({
         project: Type.Optional(Type.String({ description: "只看某个项目（目录名或路径前缀）" })),
       }),
       execute: async (_toolCallId, params, signal) => {
+        if (sessionStatus === undefined) {
+          return toolError("实时会话状态通道不可用（此 Worker 未接入会话管理器状态源）。");
+        }
+        let live: readonly WorkerSessionStatusItem[];
+        try {
+          live = await sessionStatus();
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("查询实时会话状态失败", error);
+        }
         let sessions: AssistantSessionInfo[];
         try {
           sessions = await listSessionsForAssistant(signal);
@@ -506,27 +522,29 @@ export function createAssistantToolsExtension(): InlineExtension {
           return toolFailure("读取会话目录失败", error);
         }
         const scoped = params.project !== undefined
-          ? sessions.filter((info) => projectMatches(info, params.project!))
-          : sessions;
-        const interesting: Array<{ info: AssistantSessionInfo; state: string; detail: string }> = [];
-        for (const info of scoped) {
-          if (interesting.length >= LIST_SESSION_BUDGET) break;
-          const entries = SessionManager.open(info.path).getEntries() as unknown as SdkMessageEntry[];
-          const analysis = analyzeTail(entries);
-          if (analysis.state !== "idle") interesting.push({ info, state: analysis.state, detail: analysis.detail });
+          ? live.filter((item) => item.cwd.includes(params.project!.replace(/^\/*|\/*$/g, "")) || params.project!.includes(item.cwd.split("/").filter(Boolean).at(-1) ?? "\u0000"))
+          : live;
+        const lines: string[] = [];
+        for (const item of scoped.slice(0, LIST_SESSION_BUDGET)) {
+          if (isAssistantWorkspaceCwd(item.cwd)) continue;
+          const stateLabel = item.state === "busy" ? "运行中" : item.state === "waitingUser" ? "等待用户" : "在线空闲";
+          const info = sessions.find((candidate) => candidate.id === item.sessionId);
+          const line = info !== undefined ? targetLine(info) : `${item.sessionId}｜项目:${projectLabel(item.cwd)}｜id:${item.sessionId}`;
+          lines.push(`- [${stateLabel}] ${line}`);
+          // Recent errors ride along from the persisted record (authoritative
+          // for "the last turn failed"), only for non-running sessions.
+          if (item.state !== "busy" && info !== undefined) {
+            const entries = SessionManager.open(info.path).getEntries() as unknown as SdkMessageEntry[];
+            const analysis = analyzeTail(entries);
+            if (analysis.state === "recent_error" && analysis.detail !== "") lines.push(`  ${analysis.detail}`);
+          }
         }
-        if (interesting.length === 0) {
-          return toolText("没有发现等待用户、疑似进行中或最近报错的会话。");
+        if (lines.length === 0) {
+          return toolText(scoped.length === 0 && params.project !== undefined
+            ? "该项目下没有活跃会话。"
+            : "没有正在运行或等待用户的会话；也没有需要留意的最近报错。");
         }
-        const stateLabel: Record<string, string> = {
-          waiting_user: "等待用户",
-          running_suspected: "疑似进行中",
-          recent_error: "最近报错",
-        };
-        const lines = interesting
-          .sort((a, b) => b.info.modified.getTime() - a.info.modified.getTime())
-          .map((row) => `- [${stateLabel[row.state]}] ${targetLine(row.info)}｜${relativeDate(row.info.modified.getTime())}${row.detail === "" ? "" : `｜${row.detail}`}`);
-        return toolText(`发现 ${interesting.length} 个需要留意的会话：\n${lines.join("\n")}`);
+        return toolText(`当前活跃会话状态（与界面一致）：\n${lines.join("\n")}`);
       },
     });
 
@@ -734,13 +752,13 @@ export function createAssistantToolsExtension(): InlineExtension {
       name: "organize_sessions",
       label: "建议整理会话",
       description: [
-        "建议用户批量整理会话（不直接执行）：重命名/置顶/取消置顶/归档/取消归档/删除。",
+        "建议用户批量整理会话（不直接执行）：重命名或删除。",
         "界面会渲染「执行」按钮，用户点击后才会真正整理；删除还需要二次确认。",
-        "注意：置顶/归档是本设备侧栏偏好；重命名/删除是服务端会话操作。",
+        "重命名/删除是服务端会话操作。",
       ].join(""),
       promptSnippet: "Suggest a batch organize action (user confirms via button).",
       parameters: Type.Object({
-        action: Type.String({ enum: ["rename", "pin", "unpin", "archive", "unarchive", "delete"] }),
+        action: Type.String({ enum: ["rename", "delete"] }),
         sessions: Type.Array(Type.Object({ session: Type.String({ description: "会话 id 或标题" }) }), { minItems: 1, maxItems: 20, description: "目标会话列表" }),
         title: Type.Optional(Type.String({ description: "rename 时的会话新标题（必填）", maxLength: 200 })),
       }),
@@ -769,10 +787,6 @@ export function createAssistantToolsExtension(): InlineExtension {
         }
         const actionLabel: Record<string, string> = {
           rename: "重命名",
-          pin: "置顶",
-          unpin: "取消置顶",
-          archive: "归档",
-          unarchive: "取消归档",
           delete: "删除",
         };
         const suffix = params.action === "rename" ? ` 为「${concise(params.title!.trim(), 60)}」` : "";

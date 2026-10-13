@@ -1080,7 +1080,7 @@ export function sideChatExtensionSurface(session: AgentSession) {
   });
 }
 
-function defaultComposition(): SdkRuntimeComposition {
+function defaultComposition(sessionStatus?: DriverFactoryOptions["sessionStatus"]): SdkRuntimeComposition {
   // Reuse the catalog owner's disposable index and exact identity validation.
   // A runtime open must not parse every historical JSONL through SDK listAll
   // before it can start the one selected session.
@@ -1110,7 +1110,7 @@ function defaultComposition(): SdkRuntimeComposition {
       // Assistant-workspace sessions additionally get the read-only
       // session-history tools (search_sessions / read_session). Ordinary
       // project sessions never register them.
-      const assistantExtensions = assistantExtensionFactoriesForCwd(cwd);
+      const assistantExtensions = assistantExtensionFactoriesForCwd(cwd, sessionStatus);
       return createAgentSessionServices({
         cwd,
         agentDir,
@@ -1150,8 +1150,12 @@ function defaultComposition(): SdkRuntimeComposition {
 
 export class SdkRuntimeDriverFactory implements PiRuntimeDriverFactory {
   private readonly composition: SdkRuntimeComposition;
-  constructor(private readonly trace?: InitializationTraceSink, composition?: SdkRuntimeComposition) {
-    this.composition = composition ?? defaultComposition();
+  constructor(
+    private readonly trace?: InitializationTraceSink,
+    composition?: SdkRuntimeComposition,
+    private readonly sessionStatus?: DriverFactoryOptions["sessionStatus"],
+  ) {
+    this.composition = composition ?? defaultComposition(sessionStatus);
   }
 
   async create(input: RuntimeStartInput, options: DriverFactoryOptions): Promise<PiRuntimeDriver> {

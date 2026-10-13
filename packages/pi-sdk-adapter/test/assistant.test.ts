@@ -152,18 +152,25 @@ describe("assistant workspace catalog hiding", () => {
 
 interface RegisteredTool {
   name: string;
+  parameters?: unknown;
   execute: (id: string, params: Record<string, never>, signal?: AbortSignal) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }>;
 }
 
 /** Register the extension against a capturing ExtensionAPI. */
-function collectTools(): Map<string, RegisteredTool> {
+type StatusItem = { sessionId: string; cwd: string; state: "busy" | "waitingUser" | "live" };
+
+function realAssistantDirForTest(): string {
+  return resolveAssistantWorkspaceDir(homedir());
+}
+
+function collectTools(sessionStatus?: () => Promise<readonly StatusItem[]>): Map<string, RegisteredTool> {
   const tools = new Map<string, RegisteredTool>();
   const api = {
     registerTool(tool: RegisteredTool) {
       tools.set(tool.name, tool);
     },
   };
-  (createAssistantToolsExtension() as (pi: unknown) => void)(api);
+  (createAssistantToolsExtension(sessionStatus as () => Promise<readonly never[]>) as (pi: unknown) => void)(api);
   return tools;
 }
 
@@ -425,9 +432,9 @@ describe("assistant session capabilities (round 3 tools)", () => {
   let previousAgentDir: string | undefined;
   let tools: Map<string, RegisteredTool>;
 
-  const seedWithEntries = (cwd: string, append: (manager: ReturnType<typeof SessionManager.create>) => void, sessionDir?: string) => {
-    const manager = SessionManager.create(cwd, sessionDir);
-    if (sessionDir === undefined) mkdirSync(manager.getSessionDir(), { recursive: true });
+  const seedWithEntries = (cwd: string, append: (manager: ReturnType<typeof SessionManager.create>) => void): string => {
+    const manager = SessionManager.create(cwd);
+    mkdirSync(manager.getSessionDir(), { recursive: true });
     append(manager);
     return manager.getSessionId();
   };
@@ -450,53 +457,75 @@ describe("assistant session capabilities (round 3 tools)", () => {
     assert.deepEqual([...tools.keys()].sort(), [...ASSISTANT_TOOL_NAMES].sort());
   });
 
-  it("session_status flags waiting-user, suspected-running and recent-error tails", async () => {
-    const usage = () => ({
-      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
-      cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
+  it("session_status without the live channel reports unavailable instead of guessing", async () => {
+    const result = await runTool(collectTools(), "session_status", {});
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]!.text!, /实时会话状态通道不可用/);
+  });
+
+  it("session_status reports the AUTHORITATIVE channel states (busy/waitingUser/live), never JSONL inference", async () => {
+    const deadIdRef = seedWithEntries("/repos/dead-worker", (m) => {
+      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 900 });
+      m.appendMessage({
+        role: "assistant", content: [{ type: "toolCall", id: "stuck", name: "bash", arguments: { cmd: "sleep 999" } }],
+        api: "anthropic", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } }, stopReason: "toolUse", timestamp: NOW - 800,
+      });
+      // NO toolResult: the JSONL tail looks "in flight", but sessiond says the
+      // worker is gone. The tool must report the AUTHORITY, not the tail.
     });
-    seedWithEntries("/repos/waiting", (m) => {
-      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 5000 });
+    const erroredIdRef = seedWithEntries("/repos/errored", (m) => {
+      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 700 });
       m.appendMessage({
-        role: "assistant", content: [{ type: "toolCall", id: "ask1", name: "ask_user_question", arguments: { questions: [] } }],
-        api: "anthropic", provider: "anthropic", model: "m", usage: usage(), stopReason: "toolUse", timestamp: NOW - 4000,
+        role: "assistant", content: [{ type: "toolCall", id: "e2", name: "bash", arguments: { cmd: "x" } }],
+        api: "anthropic", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } }, stopReason: "toolUse", timestamp: NOW - 600,
       });
-    }, undefined);
-    seedWithEntries("/repos/running", (m) => {
-      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 3000 });
-      m.appendMessage({
-        role: "assistant", content: [{ type: "toolCall", id: "b1", name: "bash", arguments: { cmd: "sleep 90" } }],
-        api: "anthropic", provider: "anthropic", model: "m", usage: usage(), stopReason: "toolUse", timestamp: NOW - 2000,
-      });
-    }, undefined);
-    seedWithEntries("/repos/errored", (m) => {
-      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 1500 });
-      m.appendMessage({
-        role: "assistant", content: [{ type: "toolCall", id: "e1", name: "bash", arguments: { cmd: "x" } }],
-        api: "anthropic", provider: "anthropic", model: "m", usage: usage(), stopReason: "toolUse", timestamp: NOW - 1400,
-      });
-      m.appendMessage({ role: "toolResult", toolCallId: "e1", toolName: "bash", content: [{ type: "text", text: "boom: ENOENT" }], isError: true, timestamp: NOW - 1300 });
-    }, undefined);
-    seedWithEntries("/repos/idle", (m) => {
-      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 800 });
-      m.appendMessage({
-        role: "assistant", content: [{ type: "text", text: "done" }],
-        api: "anthropic", provider: "anthropic", model: "m", usage: usage(), stopReason: "stop", timestamp: NOW - 700,
-      });
-    }, undefined);
+      m.appendMessage({ role: "toolResult", toolCallId: "e2", toolName: "bash", content: [{ type: "text", text: "EPERM denied" }], isError: true, timestamp: NOW - 500 });
+    });
     resetAssistantToolsListCacheForTests();
-    const result = await runTool(tools, "session_status", {});
+    const deadId = deadIdRef;
+    const erroredId = erroredIdRef;
+    const channel = async () => [
+      { sessionId: "fresh-not-yet-flushed", cwd: "/repos/fresh", state: "busy" as const },
+      { sessionId: "waiting-card", cwd: "/repos/waiting", state: "waitingUser" as const },
+      { sessionId: "idle-live", cwd: "/repos/idle", state: "live" as const },
+      { sessionId: deadId, cwd: "/repos/dead-worker", state: "live" as const },
+      { sessionId: erroredId, cwd: "/repos/errored", state: "live" as const },
+    ];
+    const result = await runTool(collectTools(channel), "session_status", {});
     assert.equal(result.isError, undefined);
     const text = result.content[0]!.text!;
+    assert.match(text, /运行中/);
     assert.match(text, /等待用户/);
-    assert.match(text, /疑似进行中/);
-    assert.match(text, /最近报错/);
-    assert.match(text, /ENOENT/);
-    assert.doesNotMatch(text, /idle/); // idle sessions are not listed
-    // Project scoping filters.
-    const scoped = await runTool(tools, "session_status", { project: "repos/waiting" });
-    assert.match(scoped.content[0]!.text!, /等待用户/);
-    assert.doesNotMatch(scoped.content[0]!.text!, /疑似进行中/);
+    assert.match(text, /在线空闲/);
+    // Just-started session (not yet on disk) is reported running — from the channel.
+    assert.match(text, /fresh-not-yet-flushed/);
+    // Crashed/interrupted session whose JSONL tail looks in-flight is NOT "running".
+    assert.doesNotMatch(text, /疑似进行中/);
+    // The dead-worker session still shows (live per authority) but with no
+    // inference labels; recent error from the record rides along.
+    assert.match(text, /EPERM denied/);
+  });
+
+  it("session_status channel failure is an honest error, never a fallback to guessing", async () => {
+    const failing = async () => { throw new Error("pipe closed"); };
+    const result = await runTool(collectTools(failing), "session_status", {});
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]!.text!, /查询实时会话状态失败/);
+  });
+
+  it("session_status hides the assistant's own sessions and honors the project filter", async () => {
+    resetAssistantToolsListCacheForTests();
+    const channel = async () => [
+      { sessionId: "a1", cwd: "/repos/alpha", state: "busy" as const },
+      { sessionId: "self", cwd: realAssistantDirForTest(), state: "live" as const },
+    ];
+    const all = await runTool(collectTools(channel), "session_status", {});
+    assert.match(all.content[0]!.text!, /a1/);
+    assert.doesNotMatch(all.content[0]!.text!, /self/);
+    const scoped = await runTool(collectTools(channel), "session_status", { project: "alpha" });
+    assert.match(scoped.content[0]!.text!, /a1/);
+    const none = await runTool(collectTools(channel), "session_status", { project: "beta" });
+    assert.match(none.content[0]!.text!, /没有活跃会话/);
   });
 
   it("list_open_todos groups open items by session and honors project filter", async () => {
@@ -515,7 +544,7 @@ describe("assistant session capabilities (round 3 tools)", () => {
           { id: 3, subject: "完成的", status: "completed" },
         ], nextId: 4 },
       });
-    }, undefined);
+    });
     resetAssistantToolsListCacheForTests();
     const result = await runTool(tools, "list_open_todos", {});
     const text = result.content[0]!.text!;
@@ -542,7 +571,7 @@ describe("assistant session capabilities (round 3 tools)", () => {
         role: "assistant", content: [{ type: "text", text: "已把 worker_processes 改成 4" }],
         api: "anthropic", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } }, stopReason: "stop", timestamp: NOW - 900,
       });
-    }, undefined);
+    });
     resetAssistantToolsListCacheForTests();
     const result = await runTool(tools, "summarize_activity", { range: "week" });
     const text = result.content[0]!.text!;
@@ -568,7 +597,7 @@ describe("assistant session capabilities (round 3 tools)", () => {
       });
       m.appendMessage({ role: "toolResult", toolCallId: "ok1", toolName: "write", content: [{ type: "text", text: "written" }], isError: false, timestamp: NOW - 1500 });
       m.appendMessage({ role: "toolResult", toolCallId: "fail1", toolName: "edit", content: [{ type: "text", text: "conflict" }], isError: true, timestamp: NOW - 1400 });
-    }, undefined);
+    });
     resetAssistantToolsListCacheForTests();
     const hit = await runTool(tools, "find_file_changes", { path: "app.conf" });
     const text = hit.content[0]!.text!;
@@ -586,7 +615,7 @@ describe("assistant session capabilities (round 3 tools)", () => {
         role: "assistant", content: [{ type: "text", text: "好的" }],
         api: "anthropic", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } }, stopReason: "stop", timestamp: NOW - 800,
       });
-    }, undefined);
+    });
     resetAssistantToolsListCacheForTests();
     const ok = await runTool(tools, "open_session", { session: "目标会话" });
     assert.equal(ok.isError, undefined);
@@ -608,10 +637,21 @@ describe("assistant session capabilities (round 3 tools)", () => {
     const renameTwo = await runTool(tools, "organize_sessions", { action: "rename", sessions: [{ session: "批量会话一" }, { session: "x" }], title: "新标题" });
     assert.equal(renameTwo.isError, true);
     assert.match(renameTwo.content[0]!.text!, /一次只支持一个/);
-    const archive = await runTool(tools, "organize_sessions", { action: "archive", sessions: [{ session: "批量会话一" }, { session: "批量会话一" }] });
-    assert.equal(archive.isError, undefined);
-    assert.match(archive.content[0]!.text!, /已建议归档 1 个会话/); // deduped
-    const miss = await runTool(tools, "organize_sessions", { action: "pin", sessions: [{ session: "ghost" }] });
+    const dedupe = await runTool(tools, "organize_sessions", { action: "delete", sessions: [{ session: "批量会话一" }, { session: "批量会话一" }] });
+    assert.equal(dedupe.isError, undefined);
+    assert.match(dedupe.content[0]!.text!, /已建议删除 1 个会话/); // deduped
+    // pin/archive are no longer part of the tool's vocabulary: the parameter
+    // schema itself rejects them before any execute.
+    const organizeParameters = tools.get("organize_sessions")!.parameters;
+    assert.ok(organizeParameters, "organize tool declares a schema");
+    const { Check } = await import("typebox/value");
+    const valid = (input: unknown) => Check(organizeParameters as never, input);
+    for (const removed of ["pin", "unpin", "archive", "unarchive"]) {
+      assert.equal(valid({ action: removed, sessions: [{ session: "x" }] }), false, removed);
+    }
+    assert.equal(valid({ action: "delete", sessions: [{ session: "x" }] }), true);
+    assert.equal(valid({ action: "rename", sessions: [{ session: "x" }], title: "t" }), true);
+    const miss = await runTool(tools, "organize_sessions", { action: "delete", sessions: [{ session: "ghost" }] });
     assert.equal(miss.isError, true);
     assert.match(miss.content[0]!.text!, /没有找到：ghost/);
   });
@@ -619,7 +659,7 @@ describe("assistant session capabilities (round 3 tools)", () => {
   it("draft_to_session resolves the target and echoes a bounded draft preview", async () => {
     seedWithEntries("/repos/dst", (m) => {
       m.appendMessage({ role: "user", content: "继续修 bug", timestamp: NOW - 900 });
-    }, undefined);
+    });
     resetAssistantToolsListCacheForTests();
     const ok = await runTool(tools, "draft_to_session", { session: "继续修", text: "接着修 bug：先跑 npm test，把失败的三个用例修好。" });
     assert.equal(ok.isError, undefined);

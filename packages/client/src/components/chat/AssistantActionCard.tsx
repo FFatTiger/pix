@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "@/hooks/useI18n";
-import { useSidebarItemState } from "@/lib/sidebar-item-state";
 import { setDraft } from "@/lib/draft-store";
 import { createMutationOptions } from "@/api/mutations";
 import { queryKeys } from "@/api/query-keys";
@@ -69,7 +68,6 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
   const http = useHttpClient();
   const queryClient = useQueryClient();
   const resolve = useTargetResolver();
-  const { pinSession, archiveSession } = useSidebarItemState();
   const [status, setStatus] = useState<CardStatus>("idle");
   const rename = useMutation(createMutationOptions(http, queryClient).sessions.rename());
   const remove = useMutation(createMutationOptions(http, queryClient).sessions.remove());
@@ -135,6 +133,7 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
     .filter((target): target is ResolvedTarget => target !== null);
   const isDelete = action === "delete";
   const busy = rename.isPending || remove.isPending;
+  const supported = action === "rename" || action === "delete";
   const finished = status === "done";
   const runAction = async () => {
     if (targets.length === 0) return;
@@ -144,10 +143,6 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
         await rename.mutateAsync({ id: targets[0]!.sessionId, name: title });
       } else if (action === "delete") {
         for (const target of targets) await remove.mutateAsync(target.sessionId);
-      } else if (action === "pin" || action === "unpin") {
-        for (const target of targets) pinSession(target.sessionId, action === "pin");
-      } else if (action === "archive" || action === "unarchive") {
-        for (const target of targets) archiveSession(target.sessionId, action === "archive");
       } else {
         setStatus({ error: t("desktop.assistantActionUnsupported") });
         return;
@@ -182,7 +177,7 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
           label={isDelete ? t("desktop.assistantActionExecuteDelete") : t("desktop.assistantActionExecute")}
           done={finished}
           tone={isDelete ? "danger" : "default"}
-          disabled={targets.length === 0 || busy || action === "" || (action === "rename" && title === "")}
+          disabled={targets.length === 0 || busy || !supported || (action === "rename" && title === "")}
           onClick={() => {
             if (isDelete) {
               setStatus("confirm-delete");
@@ -193,9 +188,6 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
         />
       )}
       {typeof status === "object" ? <div className="assistant-action-card-note" role="alert">{status.error}</div> : null}
-      {status === "done" && targets.length > 0 && action === "pin" ? (
-        <div className="assistant-action-card-note">{t("desktop.assistantActionLocalOnlyHint")}</div>
-      ) : null}
     </div>
   );
 }

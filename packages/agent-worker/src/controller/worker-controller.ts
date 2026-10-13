@@ -43,6 +43,7 @@ import {
   type RuntimeInterrupt,
   type RuntimeInterruptResult,
   type SessiondToWorkerMessage,
+  type WorkerSessionStatusItem,
   type WorkerToSessiondMessage,
   type SubmitTurnAdmission,
   type TurnStatus,
@@ -102,6 +103,11 @@ export class WorkerController {
 
   private phaseValue: WorkerControllerPhase = "uninitialized";
   private port: AgentRuntimePort | null = null;
+  /** Correlated worker.statusQuery slots (bounded wait, single settle). */
+  private readonly statusQueries = new Map<string, {
+    resolve: (items: readonly WorkerSessionStatusItem[]) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   private unsubscribe: (() => void) | null = null;
   private realSessionId: string | null = null;
   private cwdValue = "";
@@ -185,6 +191,15 @@ export class WorkerController {
         // benign no-op (logged, never answered).
         this.logger("[controller] worker.ping ignored (no pong defined)");
         return;
+      case "worker.statusQueryResult": {
+        const pending = this.statusQueries.get(message.id);
+        if (pending !== undefined) {
+          this.statusQueries.delete(message.id);
+          clearTimeout(pending.timer);
+          pending.resolve(message.payload.sessions);
+        }
+        return;
+      }
       case "worker.hostResponse":
         // The worker never issues hostRequests in M2; a stray response is a
         // protocol violation → fail closed.
@@ -193,6 +208,47 @@ export class WorkerController {
           1,
         );
         return;
+    }
+  }
+
+  /**
+   * Ask sessiond for the authoritative live-session status snapshot. The
+   * promise settles exactly once: reply, 5s bounded timeout, or send failure —
+   * a late reply after a timeout can never settle a newer query.
+   */
+  queryStatus(): Promise<readonly WorkerSessionStatusItem[]> {
+    const sessionId = this.realSessionId;
+    if (sessionId === null) {
+      return Promise.reject(protocolError("unsupported_capability", "session status query is unavailable in this worker"));
+    }
+    const id = `statusQuery-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.statusQueries.delete(id);
+        reject(protocolError("unavailable", "session status query timed out"));
+      }, 5_000);
+      this.statusQueries.set(id, {
+        resolve: (items) => resolve([...items]),
+        timer,
+      });
+      void this.outbound.send({ type: "worker.statusQuery", id, payload: { sessionId } }).catch((error) => {
+        const pending = this.statusQueries.get(id);
+        if (pending !== undefined) {
+          this.statusQueries.delete(id);
+          clearTimeout(pending.timer);
+        }
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : protocolError("unavailable", "session status query could not be sent"));
+      });
+    });
+  }
+
+  /** Settle every pending status query on shutdown — never a hanging promise. */
+  private failStatusQueries(): void {
+    for (const [id, pending] of this.statusQueries) {
+      this.statusQueries.delete(id);
+      clearTimeout(pending.timer);
+      pending.resolve([]);
     }
   }
 

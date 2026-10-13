@@ -95,6 +95,10 @@ export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<Wo
     rawExit(code);
   };
   watchdogHolder.current = createExitWatchdog(exit);
+  // Late-bound read-only status channel: the controller exists only after the
+  // transport is built, but the adapter composition (assistant tools) is
+  // created even later during factory.create — the holder bridges the two.
+  const statusChannelController: { current: WorkerController | null } = { current: null };
   const armEofWatchdog = (): void => {
     const broken = isProcessStdioBroken();
     const budget = broken
@@ -106,7 +110,15 @@ export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<Wo
   let factory = options.factory;
   let fatalOnStart: ProtocolError | undefined;
   if (factory === undefined) {
-    const resolved = await resolveFactoryFromEnvironment();
+    const resolved = await resolveFactoryFromEnvironment({
+      sessionStatus: () => {
+        const controller = statusChannelController.current;
+        if (controller === null) {
+          return Promise.reject(new Error("session status channel is not ready yet"));
+        }
+        return controller.queryStatus();
+      },
+    });
     if (!resolved.ok) fatalOnStart = resolved.error;
     else factory = resolved.factory;
   }
@@ -169,11 +181,14 @@ export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<Wo
     requestExit: (code) => transport.requestExit(code),
     logger: stderr,
   });
+  statusChannelController.current = controller;
   transport.start();
   return { controller, transport, closed: closed.promise };
 }
 
-async function resolveFactoryFromEnvironment(): Promise<
+async function resolveFactoryFromEnvironment(options: {
+  sessionStatus?: () => Promise<readonly import("@fffattiger/pix-protocol").WorkerSessionStatusItem[]>;
+} = {}): Promise<
   | { ok: true; factory: AgentRuntimeFactory }
   | { ok: false; error: ProtocolError }
 > {
@@ -207,7 +222,10 @@ async function resolveFactoryFromEnvironment(): Promise<
   }
   return {
     ok: true,
-    factory: createPiSdkAgentRuntimeFactory({ capabilities: PRODUCTION_AGENT_CAPABILITIES }),
+    factory: createPiSdkAgentRuntimeFactory({
+      capabilities: PRODUCTION_AGENT_CAPABILITIES,
+      ...(options.sessionStatus === undefined ? {} : { sessionStatus: options.sessionStatus }),
+    }),
   };
 }
 
