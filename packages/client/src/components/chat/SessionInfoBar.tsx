@@ -42,6 +42,8 @@ export interface SessionInfoBarProps {
   onBranchLeafChange?: ((leafId: string | null) => void) | undefined;
   /** Show text label alongside the sound icon (e.g. "提示音：开启") */
   showSoundLabel?: boolean;
+  /** Render only the context ring (inside the composer); actions move into its popover. */
+  compact?: boolean;
 }
 
 function formatTokenCount(n: number): string {
@@ -82,6 +84,7 @@ export function SessionInfoBar({
   branchActiveLeafId,
   onBranchLeafChange,
   showSoundLabel,
+  compact = false,
 }: SessionInfoBarProps) {
   const { t: translate } = useI18n();
   const [activePanel, setActivePanel] = useState<"system" | "session" | "branches" | null>(null);
@@ -191,67 +194,7 @@ export function SessionInfoBar({
   }
   const tooltip = tooltipParts.join("  |  ");
 
-  return (
-    <div className="session-info-bar">
-      {/* Left: sound / history / branches / system prompt */}
-      {onSoundToggle && (
-        <button
-          type="button"
-          className="session-info-bar-button"
-          onClick={onSoundToggle}
-          title={soundEnabled ? translate("desktop.disableCompletionSound") : translate("desktop.enableCompletionSound")}
-          aria-label={soundEnabled ? translate("desktop.disableCompletionSound") : translate("desktop.enableCompletionSound")}
-        >
-          {soundEnabled ? <BellRinging size={13} /> : <BellSlash size={13} />}
-          {showSoundLabel && (
-            <span style={{ marginLeft: 4 }}>
-              {soundEnabled ? translate("desktop.soundLabelOn") : translate("desktop.soundLabelOff")}
-            </span>
-          )}
-        </button>
-      )}
-      {onNotificationsToggle && (
-        <button
-          type="button"
-          className="session-info-bar-button"
-          onClick={onNotificationsToggle}
-          title={notificationsEnabled ? translate("desktop.disableCompletionNotification") : translate("desktop.enableCompletionNotification")}
-          aria-label={notificationsEnabled ? translate("desktop.disableCompletionNotification") : translate("desktop.enableCompletionNotification")}
-        >
-          {notificationsEnabled ? <ChatCentered size={13} /> : <ChatCenteredSlash size={13} />}
-          {showSoundLabel && (
-            <span style={{ marginLeft: 4 }}>
-              {notificationsEnabled ? translate("desktop.notificationLabelOn") : translate("desktop.notificationLabelOff")}
-            </span>
-          )}
-        </button>
-      )}
-      {hasSession && onViewFullHistory && (
-        <button
-          type="button"
-          className="session-info-bar-button"
-          onClick={onViewFullHistory}
-          title={translate("desktop.viewFullHistory")}
-          aria-label={translate("desktop.viewFullHistory")}
-        >
-          <ClockCounterClockwise size={13} aria-hidden="true" />
-        </button>
-      )}
-
-      {/* Branch button + popover (left side) */}
-      {hasBranching && (
-        <div className="session-info-bar-popover-host">
-          <button
-            type="button"
-            className={`session-info-bar-button${activePanel === "branches" ? " is-active" : ""}`}
-            onClick={() => setActivePanel((cur) => (cur === "branches" ? null : "branches"))}
-            title={translate("desktop.branches")}
-            aria-label={translate("desktop.branches")}
-            aria-pressed={activePanel === "branches"}
-          >
-            <ArrowsSplit size={13} aria-hidden="true" style={{ transform: "rotate(-90deg)" }} />
-          </button>
-          {activePanel === "branches" && (
+  const branchPopover = (
             <>
               <div className="session-info-bar-popover-cover" onClick={closePanel} />
               <div className="session-info-bar-popover is-branches">
@@ -281,24 +224,8 @@ export function SessionInfoBar({
                 </div>
               </div>
             </>
-          )}
-        </div>
-      )}
-
-      {/* System prompt button + popover (left side) */}
-      {hasSystemPrompt && (
-        <div className="session-info-bar-popover-host">
-          <button
-            type="button"
-            className={`session-info-bar-button${activePanel === "system" ? " is-active" : ""}`}
-            onClick={() => setActivePanel((cur) => (cur === "system" ? null : "system"))}
-            title={translate("desktop.systemPrompt")}
-            aria-label={translate("desktop.systemPrompt")}
-            aria-pressed={activePanel === "system"}
-          >
-            <FileText size={13} aria-hidden="true" />
-          </button>
-          {activePanel === "system" && (
+  );
+  const systemPopover = (
             <>
               <div className="session-info-bar-popover-cover" onClick={closePanel} />
               <div className="session-info-bar-popover is-system">
@@ -331,73 +258,8 @@ export function SessionInfoBar({
                 </div>
               </div>
             </>
-          )}
-        </div>
-      )}
-
-      {/* Spacer */}
-      <div className="session-info-bar-spacer" />
-
-      {/* Compact button */}
-      {onCompact && (
-        <div className="session-info-bar-compact-wrap">
-          {compactError && (
-            <div className="session-info-bar-compact-error">{compactError}</div>
-          )}
-          <button
-            type="button"
-            className={`session-info-bar-button${isCompacting ? " is-compacting" : ""}`}
-            onClick={onCompact}
-            disabled={isCompacting}
-            title={isCompacting ? translate("desktop.compacting") : translate("desktop.compactContext")}
-            aria-label={isCompacting ? translate("desktop.compacting") : translate("desktop.compactContext")}
-          >
-            <ArrowsInLineVertical size={13} />
-            <span>{translate("desktop.compact")}</span>
-          </button>
-        </div>
-      )}
-
-      {/* Token stats button + popover (right side) */}
-      {hasStats && (
-        <div className="session-info-bar-popover-host">
-          <button
-            type="button"
-            className={`session-info-bar-button is-stats${activePanel === "session" ? " is-active" : ""}`}
-            onClick={() => setActivePanel((cur) => (cur === "session" ? null : "session"))}
-            title={tooltip || translate("desktop.sessionInfo")}
-            aria-label={translate("desktop.sessionInfo")}
-            aria-pressed={activePanel === "session"}
-          >
-            {t && t.input > 0 && (
-              <span className="session-info-bar-token-chip">
-                <ArrowUp size={10} aria-hidden="true" />
-                {formatTokenCount(t.input)}
-              </span>
-            )}
-            {t && t.output > 0 && (
-              <span className="session-info-bar-token-chip">
-                <ArrowDown size={10} aria-hidden="true" />
-                {formatTokenCount(t.output)}
-              </span>
-            )}
-            {cacheTokens > 0 && (
-              <span className="session-info-bar-token-chip">
-                <Database size={10} aria-hidden="true" />
-                {formatTokenCount(cacheTokens)}
-              </span>
-            )}
-            {contextUsage && contextUsage.percent !== null && (
-              <span className="session-info-bar-token-chip" style={{ color: ctxColor }}>
-                <span>{Math.round(contextUsage.percent)}%</span>
-                {usageRing(contextUsage.percent)}
-              </span>
-            )}
-          </button>
-          {activePanel === "session" && sessionStats && (
-            <>
-              <div className="session-info-bar-popover-cover" onClick={closePanel} />
-              <div className="session-info-bar-popover is-session">
+  );
+  const statsBody = sessionStats ? (
                 <div className="session-stats-body">
                   {(() => {
                     const tok = sessionStats.tokens;
@@ -502,6 +364,236 @@ export function SessionInfoBar({
                     );
                   })()}
                 </div>
+  ) : null;
+
+  // Compact mode: only the context ring lives in the composer; everything the
+  // old footer row offered (sound, notifications, history, branches, system
+  // prompt, compact, stats) moves into the ring's popover.
+  if (compact) {
+    const pct = contextUsage?.percent ?? null;
+    const actionButton = (key: string, label: string, icon: React.ReactNode, onClick: () => void, opts: { disabled?: boolean; active?: boolean } = {}) => (
+      <button
+        key={key}
+        type="button"
+        className={`session-info-action${opts.active ? " is-active" : ""}`}
+        onClick={onClick}
+        disabled={opts.disabled}
+        title={label}
+      >
+        {icon}
+        <span>{label}</span>
+      </button>
+    );
+    const actions: React.ReactNode[] = [];
+    if (onCompact) {
+      actions.push(actionButton("compact", isCompacting ? translate("desktop.compacting") : translate("desktop.compactContext"), <ArrowsInLineVertical size={14} aria-hidden="true" />, onCompact, { disabled: Boolean(isCompacting) }));
+    }
+    if (hasSystemPrompt) {
+      actions.push(actionButton("system", translate("desktop.systemPrompt"), <FileText size={14} aria-hidden="true" />, () => setActivePanel("system")));
+    }
+    if (hasBranching) {
+      actions.push(actionButton("branches", translate("desktop.branches"), <ArrowsSplit size={14} aria-hidden="true" style={{ transform: "rotate(-90deg)" }} />, () => setActivePanel("branches")));
+    }
+    if (hasSession && onViewFullHistory) {
+      actions.push(actionButton("history", translate("desktop.viewFullHistory"), <ClockCounterClockwise size={14} aria-hidden="true" />, () => { closePanel(); onViewFullHistory(); }));
+    }
+    if (onSoundToggle) {
+      actions.push(actionButton("sound", soundEnabled ? translate("desktop.disableCompletionSound") : translate("desktop.enableCompletionSound"), soundEnabled ? <BellRinging size={14} aria-hidden="true" /> : <BellSlash size={14} aria-hidden="true" />, onSoundToggle, { active: Boolean(soundEnabled) }));
+    }
+    if (onNotificationsToggle) {
+      actions.push(actionButton("notify", notificationsEnabled ? translate("desktop.disableCompletionNotification") : translate("desktop.enableCompletionNotification"), notificationsEnabled ? <ChatCentered size={14} aria-hidden="true" /> : <ChatCenteredSlash size={14} aria-hidden="true" />, onNotificationsToggle, { active: Boolean(notificationsEnabled) }));
+    }
+    return (
+      <div className="session-info-bar is-compact">
+        <div className="session-info-bar-popover-host">
+          <button
+            type="button"
+            className={`session-info-ring${activePanel === "session" ? " is-active" : ""}`}
+            style={{ color: ctxColor }}
+            onClick={() => setActivePanel((cur) => (cur === null ? "session" : null))}
+            title={tooltip || translate("desktop.sessionInfo")}
+            aria-label={translate("desktop.sessionInfo")}
+            aria-pressed={activePanel !== null}
+          >
+            {pct !== null ? (
+              <>
+                {usageRing(pct)}
+                <span className="session-info-ring-label">{Math.round(pct)}%</span>
+              </>
+            ) : (
+              <svg className="session-info-ring-empty" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="8" cy="8" r="6.75" fill="none" stroke="var(--border)" strokeWidth="2.5" />
+              </svg>
+            )}
+          </button>
+          {activePanel === "session" && (
+            <>
+              <div className="session-info-bar-popover-cover" onClick={closePanel} />
+              <div className="session-info-bar-popover is-session is-compact-panel">
+                {pct !== null ? (
+                  <div className="session-info-compact-head">
+                    <span>{contextLabel}</span>
+                    <strong style={{ color: ctxColor }}>{Math.round(pct)}%</strong>
+                  </div>
+                ) : null}
+                {compactError ? <div className="session-info-bar-compact-error">{compactError}</div> : null}
+                {actions.length > 0 ? <div className="session-info-actions">{actions}</div> : null}
+                {statsBody}
+              </div>
+            </>
+          )}
+          {activePanel === "branches" && branchPopover}
+          {activePanel === "system" && systemPopover}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="session-info-bar">
+      {/* Left: sound / history / branches / system prompt */}
+      {onSoundToggle && (
+        <button
+          type="button"
+          className="session-info-bar-button"
+          onClick={onSoundToggle}
+          title={soundEnabled ? translate("desktop.disableCompletionSound") : translate("desktop.enableCompletionSound")}
+          aria-label={soundEnabled ? translate("desktop.disableCompletionSound") : translate("desktop.enableCompletionSound")}
+        >
+          {soundEnabled ? <BellRinging size={13} /> : <BellSlash size={13} />}
+          {showSoundLabel && (
+            <span style={{ marginLeft: 4 }}>
+              {soundEnabled ? translate("desktop.soundLabelOn") : translate("desktop.soundLabelOff")}
+            </span>
+          )}
+        </button>
+      )}
+      {onNotificationsToggle && (
+        <button
+          type="button"
+          className="session-info-bar-button"
+          onClick={onNotificationsToggle}
+          title={notificationsEnabled ? translate("desktop.disableCompletionNotification") : translate("desktop.enableCompletionNotification")}
+          aria-label={notificationsEnabled ? translate("desktop.disableCompletionNotification") : translate("desktop.enableCompletionNotification")}
+        >
+          {notificationsEnabled ? <ChatCentered size={13} /> : <ChatCenteredSlash size={13} />}
+          {showSoundLabel && (
+            <span style={{ marginLeft: 4 }}>
+              {notificationsEnabled ? translate("desktop.notificationLabelOn") : translate("desktop.notificationLabelOff")}
+            </span>
+          )}
+        </button>
+      )}
+      {hasSession && onViewFullHistory && (
+        <button
+          type="button"
+          className="session-info-bar-button"
+          onClick={onViewFullHistory}
+          title={translate("desktop.viewFullHistory")}
+          aria-label={translate("desktop.viewFullHistory")}
+        >
+          <ClockCounterClockwise size={13} aria-hidden="true" />
+        </button>
+      )}
+
+      {/* Branch button + popover (left side) */}
+      {hasBranching && (
+        <div className="session-info-bar-popover-host">
+          <button
+            type="button"
+            className={`session-info-bar-button${activePanel === "branches" ? " is-active" : ""}`}
+            onClick={() => setActivePanel((cur) => (cur === "branches" ? null : "branches"))}
+            title={translate("desktop.branches")}
+            aria-label={translate("desktop.branches")}
+            aria-pressed={activePanel === "branches"}
+          >
+            <ArrowsSplit size={13} aria-hidden="true" style={{ transform: "rotate(-90deg)" }} />
+          </button>
+          {activePanel === "branches" && branchPopover}
+        </div>
+      )}
+
+      {/* System prompt button + popover (left side) */}
+      {hasSystemPrompt && (
+        <div className="session-info-bar-popover-host">
+          <button
+            type="button"
+            className={`session-info-bar-button${activePanel === "system" ? " is-active" : ""}`}
+            onClick={() => setActivePanel((cur) => (cur === "system" ? null : "system"))}
+            title={translate("desktop.systemPrompt")}
+            aria-label={translate("desktop.systemPrompt")}
+            aria-pressed={activePanel === "system"}
+          >
+            <FileText size={13} aria-hidden="true" />
+          </button>
+          {activePanel === "system" && systemPopover}
+        </div>
+      )}
+
+      {/* Spacer */}
+      <div className="session-info-bar-spacer" />
+
+      {/* Compact button */}
+      {onCompact && (
+        <div className="session-info-bar-compact-wrap">
+          {compactError && (
+            <div className="session-info-bar-compact-error">{compactError}</div>
+          )}
+          <button
+            type="button"
+            className={`session-info-bar-button${isCompacting ? " is-compacting" : ""}`}
+            onClick={onCompact}
+            disabled={isCompacting}
+            title={isCompacting ? translate("desktop.compacting") : translate("desktop.compactContext")}
+            aria-label={isCompacting ? translate("desktop.compacting") : translate("desktop.compactContext")}
+          >
+            <ArrowsInLineVertical size={13} />
+            <span>{translate("desktop.compact")}</span>
+          </button>
+        </div>
+      )}
+
+      {/* Token stats button + popover (right side) */}
+      {hasStats && (
+        <div className="session-info-bar-popover-host">
+          <button
+            type="button"
+            className={`session-info-bar-button is-stats${activePanel === "session" ? " is-active" : ""}`}
+            onClick={() => setActivePanel((cur) => (cur === "session" ? null : "session"))}
+            title={tooltip || translate("desktop.sessionInfo")}
+            aria-label={translate("desktop.sessionInfo")}
+            aria-pressed={activePanel === "session"}
+          >
+            {t && t.input > 0 && (
+              <span className="session-info-bar-token-chip">
+                <ArrowUp size={10} aria-hidden="true" />
+                {formatTokenCount(t.input)}
+              </span>
+            )}
+            {t && t.output > 0 && (
+              <span className="session-info-bar-token-chip">
+                <ArrowDown size={10} aria-hidden="true" />
+                {formatTokenCount(t.output)}
+              </span>
+            )}
+            {cacheTokens > 0 && (
+              <span className="session-info-bar-token-chip">
+                <Database size={10} aria-hidden="true" />
+                {formatTokenCount(cacheTokens)}
+              </span>
+            )}
+            {contextUsage && contextUsage.percent !== null && (
+              <span className="session-info-bar-token-chip" style={{ color: ctxColor }}>
+                <span>{Math.round(contextUsage.percent)}%</span>
+                {usageRing(contextUsage.percent)}
+              </span>
+            )}
+          </button>
+          {activePanel === "session" && sessionStats && (
+            <>
+              <div className="session-info-bar-popover-cover" onClick={closePanel} />
+              <div className="session-info-bar-popover is-session">
+                {statsBody}
               </div>
             </>
           )}

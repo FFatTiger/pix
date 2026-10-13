@@ -3685,3 +3685,70 @@ html.pi-booted body::before {
   .subagent-activity-card { max-width: 870px; padding-right: 34px; }
 }
 .workspace .subagent-activity-capsule { margin-left: 0; }
+
+/* Context ring inside the composer toolbar (replaces the footer row). */
+.session-info-bar.is-compact {
+  height: auto;
+  padding: 0;
+  opacity: 1;
+}
+.session-info-ring {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+.session-info-ring .session-info-bar-donut { width: 16px; height: 16px; }
+.session-info-ring:hover,
+.session-info-ring.is-active { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.session-info-bar.is-compact .session-info-bar-popover { right: 0; left: auto; margin-bottom: 8px; }
+.session-info-bar-popover.is-compact-panel { min-width: 300px; }
+.session-info-compact-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 12px 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.session-info-compact-head strong { font-size: 15px; font-variant-numeric: tabular-nums; }
+.session-info-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 4px 6px 8px;
+  border-bottom: 1px solid var(--surface-hairline);
+}
+.session-info-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.session-info-action span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.session-info-action:hover:not(:disabled) { background: var(--bg-hover); }
+.session-info-action:disabled { opacity: 0.5; cursor: default; }
+.session-info-action.is-active svg { color: var(--accent-blue); }
+.session-info-ring-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

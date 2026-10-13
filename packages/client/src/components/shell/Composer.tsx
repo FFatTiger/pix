@@ -1192,15 +1192,9 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         {...(liveWorkspaceEnabled && canUpload ? { uploadFiles } : {})}
         fileIndexSnapshot={fileIndexSnapshot}
         skillNames={skillNames}
-      />
-      {workspaceAccessCopy || sendError ? (
-        <div role="alert" aria-live="polite" style={{ padding: "6px 16px 0", color: "var(--status-danger)", fontSize: 12 }}>
-          {sendError ?? workspaceAccessCopy}
-        </div>
-      ) : null}
-      <div className="session-info-bar-wrap">
-        <div className="session-info-bar-inner">
+        toolbarAccessory={
           <SessionInfoBar
+            compact
             systemPrompt={state?.systemPrompt ?? null}
             sessionStats={sessionStats}
             contextUsage={contextUsage}
@@ -1215,8 +1209,13 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
             branchActiveLeafId={branchActiveLeafId}
             {...(hasNavigate ? { onBranchLeafChange: handleBranchLeafChange } : {})}
           />
+        }
+      />
+      {workspaceAccessCopy || sendError ? (
+        <div role="alert" aria-live="polite" style={{ padding: "6px 16px 0", color: "var(--status-danger)", fontSize: 12 }}>
+          {sendError ?? workspaceAccessCopy}
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }

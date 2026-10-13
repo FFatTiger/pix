@@ -72,6 +72,8 @@ interface Props {
   isStreaming: boolean;
   /** Compaction is running outside a prompt — the send slot becomes a Stop button */
   isCompacting?: boolean;
+  /** Extra control rendered in the toolbar, left of the model selector (e.g. the context ring). */
+  toolbarAccessory?: React.ReactNode;
   /** Abort an in-progress compaction (used by the Stop button while compacting) */
   onAbortCompaction?: () => void;
   model?: { provider: string; modelId: string } | null;
@@ -378,7 +380,7 @@ function QueuedMessageRow({ kind, text, label }: { kind: "steer" | "follow-up"; 
 
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange,
+  onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, toolbarAccessory, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange,
   compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
@@ -2908,6 +2910,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               gap: 2,
             }}>
             {/* Model selector — always interactive; changes apply from the next turn while streaming */}
+            {toolbarAccessory}
             {onModelChange && (
               <ModelSelector
                 {...(model === undefined ? { model: null } : { model })}
