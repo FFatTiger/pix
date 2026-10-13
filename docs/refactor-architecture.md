@@ -447,6 +447,29 @@ packages/
 | Web UI | `client` 构建的静态资源，由 host 托管 |
 | PWA | manifest + service worker，挂在 host 静态资源上 |
 
+## 8b. 助手（assistant，不绑项目的常青对话）
+
+不变式（feat/assistant 落地）：
+
+- **身份 = 一个固定工作目录**：`<home>/.pi/pix/assistant`，由 runtime-core
+  `assistant-workspace` 单点推导（Host 组合、sessiond 目录隐藏、Worker 工具注册
+  三方共用，禁止各自复制）。Host 启动时创建该目录（0700）、经 AllowedRoots
+  授权并按 POST /v1/trust 同一 seam 一次性标记 trusted（永不弹信任打断）。
+  目录不在 AllowedRoots 内 ⇒ 不挂 `assistant` 能力、不挂路由、入口隐藏（fail-closed）。
+- **无会话概念的实现**：URL 只有 `/?assistant=1` 选择符，不带 session id；
+  `GET /v1/assistant` 返回 `{cwd, sessionId|null}`（sessiond `sessions.findLatest`
+  精确 cwd 查询，0 Worker）。助手会话 = 该目录下最新的会话；首条消息才创建。
+- **隐藏**：该目录按 browse-kind `hidden` 从 sessions/projects 页消失（projection
+  schema v7 强制重建；内存 fallback 同样排除），但按 id 的 detail/context 照常。
+  客户端永不为其物化标签、不持久化标签。
+- **两个助手专属工具**：`search_sessions` / `read_session` 只在 cwd 为助手目录的
+  会话注册（pi-sdk-adapter InlineExtension；全局工具选择收窄后仍保持 active）。
+  只读 JSONL、有界输出、排除 hidden 工作区/子会话/助手自身会话；不激活任何 Worker。
+- **无限上下文**：不新造机制 —— 复用 SDK 自动压缩（助手会话 autoCompaction 照常）
+  与全局 Lore 扩展（lore_* 工具照常）。压缩条目在对话内渲染为提示行，无"新会话"感。
+- **能力令牌**：Host `assistant` token 仅在 seam 已挂载且 sessiond up 时通告
+  （degraded 恒剔除）；客户端按能力隐藏入口，绝不出现破损视图。
+
 ## 9. 跨端策略（当前主线：PWA）
 
 | 端 | 连接 | 能力 |
