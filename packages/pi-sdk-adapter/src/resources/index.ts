@@ -90,9 +90,10 @@ export function createPiSdkResourceCatalog(
   return new PiSdkResourceCatalog(store);
 }
 
-/** Global persisted skills and package manifests, independent of project trust. */
+/** Global persisted skills and package manifests, independent of project trust.
+ * `homeDir` overrides the HOME base for ~/.agents/skills discovery (tests). */
 export function createPiSdkGlobalResourceCatalog(
-  options: { readonly agentDir?: string } = {},
+  options: { readonly agentDir?: string; readonly homeDir?: string } = {},
 ): ResourceCatalogPort {
   return new PiSdkResourceCatalog(createPiSdkGlobalResourceStore(options));
 }

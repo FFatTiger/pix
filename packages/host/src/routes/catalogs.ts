@@ -242,6 +242,7 @@ export function projectSkillInfo(raw: unknown): {
   description?: string;
   version?: string;
   updateAvailable?: boolean;
+  source?: { kind: "user" } | { kind: "settings" } | { kind: "plugin"; packageName: string };
 } {
   if (!isPlainObject(raw)) throw catalogUnavailable();
   const enabled = readField(raw, "enabled");
@@ -252,6 +253,7 @@ export function projectSkillInfo(raw: unknown): {
     description?: string;
     version?: string;
     updateAvailable?: boolean;
+    source?: { kind: "user" } | { kind: "settings" } | { kind: "plugin"; packageName: string };
   } = {
     name: requireNonEmptyString(readField(raw, "name")),
     enabled,
@@ -270,6 +272,23 @@ export function projectSkillInfo(raw: unknown): {
   if (updateAvailable !== undefined) {
     if (typeof updateAvailable !== "boolean") throw catalogUnavailable();
     out.updateAvailable = updateAvailable;
+  }
+  const source = readField(raw, "source");
+  if (source !== undefined) {
+    if (!isPlainObject(source)) throw catalogUnavailable();
+    const kind = readField(source, "kind");
+    // Bounded union: exact key sets only — extra fields fail closed like the
+    // protocol's strictObject.
+    const keys = Object.keys(source).sort();
+    if (kind === "user" || kind === "settings") {
+      if (keys.length !== 1) throw catalogUnavailable();
+      out.source = { kind };
+    } else if (kind === "plugin") {
+      if (keys.length !== 2 || keys.join(",") !== "kind,packageName") throw catalogUnavailable();
+      out.source = { kind, packageName: requireNonEmptyString(readField(source, "packageName")) };
+    } else {
+      throw catalogUnavailable();
+    }
   }
   return out;
 }

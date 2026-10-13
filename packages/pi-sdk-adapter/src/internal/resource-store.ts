@@ -20,20 +20,27 @@
 //    withheld (loadSkills tags cwd/.pi/skills as scope "project"; the package
 //    manager tags settings-configured project sources as scope "project"). This
 //    mirrors the SDK's project-trust gate for project-local resources.
-//  - The GLOBAL catalog is a separate factory: agentDir/skills + global
-//    settings.json packages only. It never invents a cwd, never reads
-//    agentDir/.pi project resources, and never uses SettingsManager.create.
+//  - The GLOBAL catalog is a separate factory. It never invents a cwd, never
+//    reads project (.pi) resources, and never uses SettingsManager.create.
+//    Its skill set matches what the SDK runtime loads in the user scope:
+//    configured plugin packages (installed paths only), settings.json `skills`
+//    explicit paths, agentDir/skills, and ~/.agents/skills — symlink-following
+//    and dedup precedence included (see readGlobalSkills). Only skill files
+//    (SKILL.md and in-tree .md) under those roots are read, like the SDK.
 //  - Settings semantics preserved: package enabled state comes from the
 //    configured/filtered flag in settings (enabled = !filtered); skill enabled
-//    comes from the SKILL.md disableModelInvocation flag.
+//    comes from the SKILL.md disableModelInvocation flag; settings `skills`
+//    override patterns (+/-/!) disable entries without deleting them.
 //  - No install/update/toggle/reload/package-manager write; no network.
 //  - Per-store lazy cache (not an unsafe global cache).
 //
 // The canonical cwd is captured once and threaded into the project loaders +
 // settings; catalog inputs never fall back to process.cwd.
-import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, globSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DefaultPackageManager,
   getAgentDir,
@@ -75,6 +82,8 @@ export interface PiSdkResourceStoreOptions {
 export interface PiSdkGlobalResourceStoreOptions {
   /** Agent config directory; defaults to the SDK agent dir. */
   agentDir?: string;
+  /** Home dir for ~/.agents/skills auto-discovery; defaults like the SDK (env HOME). */
+  homeDir?: string;
 }
 
 interface LoadedResources {
@@ -98,6 +107,22 @@ function skillToCommand(skill: Pick<SkillInfo, "name" | "description">): SlashCo
     source: "skill",
   };
 }
+
+/** Bounded skill origin (mirrors the SDK's user/settings/package sources). */
+type SkillOrigin =
+  | { readonly kind: "user" }
+  | { readonly kind: "settings" }
+  | { readonly kind: "plugin"; readonly packageName: string };
+
+interface SkillEntry {
+  readonly path: string;
+  readonly origin: SkillOrigin;
+  readonly enabled: boolean;
+}
+
+/** Directory modes for loose .md collection, mirroring the SDK collectors:
+ * "pi" collects loose .md only at the collection root, "agents" only below it. */
+type SkillDirMode = "pi" | "agents";
 
 interface SkillContainmentRoot {
   /** Canonical caller-owned base (agentDir or project cwd). */
@@ -315,6 +340,11 @@ function readGlobalSettings(agentDir: string): SettingsManager {
           }))) {
             throw new Error("invalid global resource packages");
           }
+          const skills = (parsed as { skills?: unknown }).skills;
+          if (skills !== undefined && (!Array.isArray(skills) || skills.some((entry) =>
+            typeof entry !== "string" || entry.trim().length === 0))) {
+            throw new Error("invalid global resource skills");
+          }
         }
       }
       if (read(current) !== undefined) {
@@ -333,110 +363,543 @@ function readGlobalSettings(agentDir: string): SettingsManager {
   return manager;
 }
 
+/** Minimal construction surface for StaticCatalogPackageManager (the SDK does
+ * not export PackageManagerOptions from its main entry). */
+interface StaticCatalogOptions {
+  cwd: string;
+  agentDir: string;
+  settingsManager: SettingsManager;
+}
+
 /** Static catalogs describe persisted npm references without running a package CLI.
  * Local/git sources retain the SDK's filesystem manifest lookup policy.
  */
 class StaticCatalogPackageManager extends DefaultPackageManager {
+  private readonly catalogAgentDir: string;
+
+  constructor(options: StaticCatalogOptions) {
+    super(options);
+    this.catalogAgentDir = options.agentDir;
+  }
+
   override getInstalledPath(source: string, scope: "user" | "project"): string | undefined {
-    return source.startsWith("npm:") ? undefined : super.getInstalledPath(source, scope);
+    // npm: never reaches super — the SDK's fallback probes the legacy global
+    // npm root by executing a package-manager command. The managed install
+    // dir is checked directly instead (pure existsSync, see npmManagedInstallPath).
+    if (source.startsWith("npm:")) {
+      return npmManagedInstallPath(this.catalogAgentDir, source);
+    }
+    return super.getInstalledPath(source, scope);
   }
 }
 
+/** Pure managed-install lookup for npm sources: `agentDir/npm/node_modules/<name>`.
+ * Returns undefined when the package is not installed there; NEVER probes the
+ * legacy global npm root (which would execute an npm command). */
+function npmManagedInstallPath(agentDir: string, source: string): string | undefined {
+  const spec = source.slice("npm:".length).trim();
+  if (!spec) return undefined;
+  let name: string;
+  if (spec.startsWith("@")) {
+    const at = spec.indexOf("@", 1);
+    name = at === -1 ? spec : spec.slice(0, at);
+  } else {
+    const at = spec.indexOf("@");
+    name = at === -1 ? spec : spec.slice(0, at);
+  }
+  if (!name || name.includes("/") && !name.startsWith("@")) return undefined;
+  const path = join(agentDir, "npm", "node_modules", name);
+  return existsSync(path) ? path : undefined;
+}
+
+/** Read the `pi.skills` manifest field like the SDK readPiManifest: a present
+ * `pi` object means "manifest package" (no convention-dir fallback), with the
+ * skills entries validated like the SDK (non-string entries drop the field).
+ * Any parse failure means "no manifest". */
+function readPiSkillsManifest(packageJsonPath: string): { exists: boolean; entries: string[] } | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(packageJsonPath, "utf8").replace(/^\uFEFF/, "");
+  } catch {
+    return undefined;
+  }
+  let pkg: unknown;
+  try {
+    pkg = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (typeof pkg !== "object" || pkg === null || Array.isArray(pkg)) return undefined;
+  const pi = (pkg as { pi?: unknown }).pi;
+  if (typeof pi !== "object" || pi === null || Array.isArray(pi)) return undefined;
+  const skills = (pi as { skills?: unknown }).skills;
+  if (!Array.isArray(skills) || !skills.every((entry) => typeof entry === "string")) {
+    return { exists: true, entries: [] };
+  }
+  return { exists: true, entries: skills };
+}
+
+function isOverridePattern(entry: string): boolean {
+  return entry.startsWith("!") || entry.startsWith("+") || entry.startsWith("-");
+}
+
+function hasGlobWildcard(entry: string): boolean {
+  return entry.includes("*") || entry.includes("?");
+}
+
+/** Mini glob→regex for override patterns and manifest globs (no new dependency;
+ * covers the realistic `*`, `**`, `?` forms the SDK passes to minimatch/glob). */
+function globToRegExp(pattern: string): RegExp {
+  let source = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!;
+    if (ch === "*") {
+      if (pattern[i + 1] === "*") {
+        i++;
+        if (pattern[i + 1] === "/") i++;
+        source += ".*";
+      } else {
+        source += "[^/]*";
+      }
+    } else if (ch === "?") {
+      source += "[^/]";
+    } else {
+      source += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${source}$`);
+}
+
+function matchesGlob(subject: string, pattern: string): boolean {
+  return globToRegExp(pattern).test(subject);
+}
+
+const toPosix = (path: string): string => path.split(sep).join("/");
+
+/** matchesAnyPattern equivalent: rel path, basename, or full posix path. */
+function matchesAnySkillPattern(
+  filePath: string,
+  patterns: readonly string[],
+  baseDir: string,
+): boolean {
+  const rel = toPosix(relative(baseDir, filePath));
+  const name = basename(filePath);
+  const filePathPosix = toPosix(filePath);
+  return patterns.some((pattern) =>
+    matchesGlob(rel, pattern) || matchesGlob(name, pattern) || matchesGlob(filePathPosix, pattern));
+}
+
+/** matchesAnyExactPattern equivalent, including the SKILL.md parent-dir
+ * matching the SDK uses so `-<skill-dir-name>` disables a declared skill. */
+function matchesAnyExactSkillPattern(
+  filePath: string,
+  patterns: readonly string[],
+  baseDir: string,
+): boolean {
+  if (patterns.length === 0) return false;
+  const rel = toPosix(relative(baseDir, filePath));
+  const filePathPosix = toPosix(filePath);
+  if (basename(filePath) !== "SKILL.md") {
+    return patterns.some((pattern) => pattern === rel || pattern === filePathPosix);
+  }
+  const parentDir = dirname(filePath);
+  const parentRel = toPosix(relative(baseDir, parentDir));
+  const parentDirPosix = toPosix(parentDir);
+  return patterns.some((pattern) =>
+    pattern === rel || pattern === filePathPosix || pattern === parentRel || pattern === parentDirPosix);
+}
+
+/** applyPatterns equivalent over collected skill files. */
+function applySkillOverridePatterns(
+  allPaths: readonly string[],
+  patterns: readonly string[],
+  baseDir: string,
+): Set<string> {
+  const includes: string[] = [];
+  const excludes: string[] = [];
+  const forceIncludes: string[] = [];
+  const forceExcludes: string[] = [];
+  for (const pattern of patterns) {
+    if (pattern.startsWith("+")) forceIncludes.push(pattern.slice(1));
+    else if (pattern.startsWith("-")) forceExcludes.push(pattern.slice(1));
+    else if (pattern.startsWith("!")) excludes.push(pattern.slice(1));
+    else includes.push(pattern);
+  }
+  let result = includes.length === 0
+    ? [...allPaths]
+    : allPaths.filter((filePath) => matchesAnySkillPattern(filePath, includes, baseDir));
+  if (excludes.length > 0) {
+    result = result.filter((filePath) => !matchesAnySkillPattern(filePath, excludes, baseDir));
+  }
+  if (forceIncludes.length > 0) {
+    for (const filePath of allPaths) {
+      if (!result.includes(filePath) && matchesAnyExactSkillPattern(filePath, forceIncludes, baseDir)) {
+        result.push(filePath);
+      }
+    }
+  }
+  if (forceExcludes.length > 0) {
+    result = result.filter((filePath) => !matchesAnyExactSkillPattern(filePath, forceExcludes, baseDir));
+  }
+  return new Set(result);
+}
+
+/** isEnabledByOverrides equivalent for auto-discovered skill files. */
+function isEnabledBySkillOverrides(
+  filePath: string,
+  patterns: readonly string[],
+  baseDir: string,
+): boolean {
+  const overrides = patterns.filter((pattern) => isOverridePattern(pattern));
+  const excludes = overrides.filter((p) => p.startsWith("!")).map((p) => p.slice(1));
+  const forceIncludes = overrides.filter((p) => p.startsWith("+")).map((p) => p.slice(1));
+  const forceExcludes = overrides.filter((p) => p.startsWith("-")).map((p) => p.slice(1));
+  let enabled = true;
+  if (excludes.length > 0 && matchesAnySkillPattern(filePath, excludes, baseDir)) enabled = false;
+  if (forceIncludes.length > 0 && matchesAnyExactSkillPattern(filePath, forceIncludes, baseDir)) enabled = true;
+  if (forceExcludes.length > 0 && matchesAnyExactSkillPattern(filePath, forceExcludes, baseDir)) enabled = false;
+  return enabled;
+}
+
+/** resolvePathFromBase equivalent for settings skill paths: trim, `~`,
+ * file:// URLs, absolute, else relative to baseDir (never process.cwd). */
+function resolveSettingsSkillPath(input: string, baseDir: string, homeDir: string): string {
+  const normalized = input.trim();
+  if (normalized === "~") return homeDir;
+  if (normalized.startsWith("~/") || normalized.startsWith("~\\")) {
+    return join(homeDir, normalized.slice(2));
+  }
+  if (/^file:\/\//.test(normalized)) return fileURLToPath(normalized);
+  return isAbsolute(normalized) ? resolve(normalized) : resolve(baseDir, normalized);
+}
+
 /**
- * Own filesystem discovery so every candidate read either succeeds or reports
- * an error. The SDK supplies only pure frontmatter parsing; ignore handles its
- * native gitignore syntax, with nested patterns rooted at the skills directory.
+ * Strict two-phase skill collector aligned with the SDK loaders
+ * (skills.js collectSkillEntries / loadSkillsFromDirInternal):
+ *  - follows symlinks (files AND directories), including links pointing
+ *    outside the collection root — exactly like the runtime;
+ *  - a directory containing SKILL.md is a skill root (no deeper recursion);
+ *  - loose .md files per {@link SkillDirMode};
+ *  - skips dot entries and node_modules, honors .gitignore/.ignore/.fdignore
+ *    with patterns rooted at the collection root;
+ *  - directory cycles (realpath ancestor set) fail as invalid_input.
  */
-function readGlobalSkills(agentDir: string): SkillInfo[] {
-  const skillsDir = join(agentDir, "skills");
+class StrictSkillCollector {
+  private readonly ancestors = new Set<string>();
+  constructor(private readonly invalid: unknown) {}
+
+  /** Missing directories are a legal empty collection, like the SDK. */
+  collect(dir: string, mode: SkillDirMode): string[] {
+    let stats;
+    try {
+      stats = statSync(dir);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return [];
+      if (code === "ELOOP") throw this.invalid;
+      throw makeRuntimeError("unavailable", "skill directory could not be read");
+    }
+    if (!stats.isDirectory()) return [];
+    return this.visit(dir, dir, mode, ignore());
+  }
+
+  private visit(dir: string, root: string, mode: SkillDirMode, matcher: ReturnType<typeof ignore>): string[] {
+    let real: string;
+    try {
+      real = realpathSync(dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") throw this.invalid;
+      throw makeRuntimeError("unavailable", "skill directory could not be read");
+    }
+    if (this.ancestors.has(real)) throw this.invalid;
+    this.ancestors.add(real);
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true });
+      const relativeToRoot = (path: string): string => toPosix(relative(root, path));
+      const prefix = relativeToRoot(dir) ? `${relativeToRoot(dir)}/` : "";
+      for (const name of [".gitignore", ".ignore", ".fdignore"]) {
+        if (!entries.some((entry) => entry.name === name)) continue;
+        const patterns = readFileSync(join(dir, name), "utf8")
+          .split(/\r?\n/)
+          .flatMap((line) => {
+            const trimmed = line.trim();
+            if (!trimmed || (trimmed.startsWith("#") && !trimmed.startsWith("\\#"))) return [];
+            let pattern = line;
+            let negated = false;
+            if (pattern.startsWith("!")) {
+              negated = true;
+              pattern = pattern.slice(1);
+            } else if (pattern.startsWith("\\!")) {
+              pattern = pattern.slice(1);
+            }
+            if (pattern.startsWith("/")) pattern = pattern.slice(1);
+            return [`${negated ? "!" : ""}${prefix}${pattern}`];
+          });
+        if (patterns.length > 0) matcher.add(patterns);
+      }
+      // SKILL.md at this directory marks a skill root; collect nothing deeper.
+      const declared = entries.find((entry) => entry.name === "SKILL.md");
+      if (declared) {
+        const path = join(dir, declared.name);
+        let isFile = declared.isFile();
+        if (declared.isSymbolicLink()) {
+          try {
+            isFile = statSync(path).isFile();
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === "ENOENT") isFile = false; // broken symlink: skipped like the SDK
+            else if (code === "ELOOP") throw this.invalid;
+            else throw makeRuntimeError("unavailable", "skill candidate could not be read");
+          }
+        }
+        if (isFile && !matcher.ignores(relativeToRoot(path))) return [path];
+      }
+      const files: string[] = [];
+      for (const entry of entries) {
+        if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+        const path = join(dir, entry.name);
+        const rel = relativeToRoot(path);
+        let isDirectory = entry.isDirectory();
+        let isFile = entry.isFile();
+        if (entry.isSymbolicLink()) {
+          try {
+            const stats = statSync(path);
+            isDirectory = stats.isDirectory();
+            isFile = stats.isFile();
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === "ENOENT") continue; // broken symlink: skipped like the SDK
+            if (code === "ELOOP") throw this.invalid;
+            throw makeRuntimeError("unavailable", "skill candidate could not be read");
+          }
+        }
+        const looseFileAllowed =
+          isFile && entry.name.endsWith(".md") &&
+          ((mode === "pi" && dir === root) || (mode === "agents" && dir !== root));
+        if (looseFileAllowed && !matcher.ignores(rel)) {
+          files.push(path);
+          continue;
+        }
+        if (!isDirectory) continue;
+        if (matcher.ignores(`${rel}/`)) continue;
+        files.push(...this.visit(path, root, mode, matcher));
+      }
+      return files;
+    } finally {
+      this.ancestors.delete(real);
+    }
+  }
+}
+
+/** collectFilesFromPaths equivalent: files pass through, directories collect. */
+function collectSkillFilesFromPaths(
+  paths: readonly string[],
+  collector: StrictSkillCollector,
+): string[] {
+  const files: string[] = [];
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    try {
+      const stats = statSync(path);
+      if (stats.isFile()) files.push(path);
+      else if (stats.isDirectory()) files.push(...collector.collect(path, "pi"));
+    } catch {
+      // Skip unreadable candidates like the SDK collector.
+      continue;
+    }
+  }
+  return files;
+}
+
+/** Package skill files per the SDK collectPackageResources rules: `pi.skills`
+ * manifest entries (globs + override patterns) or the `skills/` convention
+ * directory, then the package-level filter patterns from settings (regular
+ * filter, or delta filter when the package is configured with autoload:false). */
+function collectPackageSkillFiles(
+  packageRoot: string,
+  filter: { readonly skills?: readonly string[]; readonly autoload?: boolean } | undefined,
+  collector: StrictSkillCollector,
+): string[] {
+  const manifest = readPiSkillsManifest(join(packageRoot, "package.json"));
+  let files: string[];
+  if (manifest !== undefined) {
+    const sourceEntries = manifest.entries.filter((entry) => !isOverridePattern(entry));
+    const resolved: string[] = [];
+    for (const entry of sourceEntries) {
+      if (hasGlobWildcard(entry)) {
+        resolved.push(
+          ...globSync(entry, { cwd: packageRoot })
+            .map((match) => resolve(packageRoot, match))
+            .filter((path) =>
+              relative(packageRoot, path).split(sep).every((segment) => segment === ".." || !segment.startsWith("."))),
+        );
+      } else {
+        resolved.push(resolve(packageRoot, entry));
+      }
+    }
+    files = collectSkillFilesFromPaths(resolved, collector);
+    const manifestPatterns = manifest.entries.filter((entry) => isOverridePattern(entry));
+    if (manifestPatterns.length > 0) {
+      files = [...applySkillOverridePatterns(files, manifestPatterns, packageRoot)];
+    }
+  } else {
+    const conventionDir = join(packageRoot, "skills");
+    files = existsSync(conventionDir) ? collector.collect(conventionDir, "pi") : [];
+  }
+  const filterPatterns = filter !== undefined && Array.isArray(filter.skills) ? filter.skills : undefined;
+  if (filterPatterns !== undefined) {
+    if (filter?.autoload === false) {
+      // Delta filter: patterns only DISABLE; everything else stays enabled.
+      const disabled = new Set<string>();
+      for (const pattern of filterPatterns) {
+        const target = pattern.slice(isOverridePattern(pattern) ? 1 : 0);
+        const exact = pattern.startsWith("+") || pattern.startsWith("-");
+        const enabled = !pattern.startsWith("-") && !pattern.startsWith("!");
+        if (!enabled) {
+          for (const file of files) {
+            if (exact ? matchesAnyExactSkillPattern(file, [target], packageRoot) : matchesAnySkillPattern(file, [target], packageRoot)) {
+              disabled.add(file);
+            }
+          }
+        }
+      }
+      files = files.filter((file) => !disabled.has(file));
+    } else {
+      files = [...applySkillOverridePatterns(files, filterPatterns, packageRoot)];
+    }
+  }
+  return files;
+}
+
+/** Read one skill file with the strict metadata contract: declared SKILL.md
+ * must parse and carry a description (invalid_input otherwise); loose .md
+ * without a description is silently skipped, like the SDK. */
+function readSkillFile(
+  path: string,
+  invalid: unknown,
+): { name: string; description: string; enabled: boolean } | undefined {
+  const declared = basename(path) === "SKILL.md";
+  const content = readFileSync(path, "utf8");
+  let frontmatter: Record<string, unknown>;
+  try {
+    frontmatter = parseFrontmatter(content).frontmatter;
+  } catch {
+    throw invalid;
+  }
+  const description = frontmatter.description;
+  const hasDescription = typeof description === "string" && description.trim() !== "";
+  if (!hasDescription) {
+    if (declared) throw invalid;
+    return undefined;
+  }
+  return {
+    name: typeof frontmatter.name === "string" && frontmatter.name
+      ? frontmatter.name
+      : basename(dirname(path)),
+    description,
+    enabled: frontmatter["disable-model-invocation"] !== true,
+  };
+}
+
+/**
+ * Global (user-scope) skill catalog aligned with the set the SDK runtime
+ * actually loads, in the SDK's precedence order:
+ *  1. configured plugin packages (installed paths only, read-only);
+ *  2. settings.json `skills` explicit paths (patterns included);
+ *  3. `agentDir/skills` auto-discovery ("pi" mode);
+ *  4. `~/.agents/skills` auto-discovery ("agents" mode).
+ * Dedup mirrors loadSkills: the same file reached twice (e.g. via the
+ * `agentDir/skills` symlinks and `~/.agents/skills`) is skipped silently, and
+ * for a name collision the earlier entry wins. Strictness stays pix's: cycles
+ * and bad metadata fail closed as invalid_input, IO errors as unavailable.
+ */
+function readGlobalSkills(
+  agentDir: string,
+  homeDir: string,
+  settings: SettingsManager,
+  packageManager: StaticCatalogPackageManager,
+): SkillInfo[] {
   const invalid = makeRuntimeError("invalid_input", "global skills contain invalid metadata or a directory cycle");
   try {
-    try {
-      lstatSync(skillsDir);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-    const realBase = realpathSync(agentDir);
-    const realRoot = realpathSync(skillsDir);
-    if (!isPathWithin(realRoot, realBase)) return [];
-    const ancestors = new Set<string>();
-    const matcher = ignore();
-    const skills: SkillInfo[] = [];
-    const relativePath = (path: string): string => relative(skillsDir, path).split(sep).join("/");
-    const contained = (path: string): boolean => {
-      const real = realpathSync(path);
-      return isPathWithin(real, realRoot) && isPathWithin(real, realBase);
-    };
-    const readSkill = (path: string, declared: boolean): void => {
-      const content = readFileSync(path, "utf8");
-      let frontmatter: Record<string, unknown>;
+    const globalSettings = settings.getGlobalSettings();
+    const skillsSetting: readonly string[] = globalSettings.skills ?? [];
+    const entries: SkillEntry[] = [];
+    const collector = new StrictSkillCollector(invalid);
+
+    // 1. Configured plugin packages (user scope): installed paths only.
+    for (const pkg of globalSettings.packages ?? []) {
+      const source = typeof pkg === "string" ? pkg : pkg.source;
+      const installedPath = packageManager.getInstalledPath(source, "user");
+      if (installedPath === undefined) continue;
+      const filter = typeof pkg === "object"
+        ? {
+            ...(Array.isArray(pkg.skills) ? { skills: pkg.skills } : {}),
+            ...(pkg.autoload === undefined ? {} : { autoload: pkg.autoload }),
+          }
+        : undefined;
+      const files = collectPackageSkillFiles(installedPath, filter, collector);
+      let packageName: string | undefined;
       try {
-        frontmatter = parseFrontmatter(content).frontmatter;
+        const raw = JSON.parse(readFileSync(join(installedPath, "package.json"), "utf8").replace(/^\uFEFF/, "")) as {
+          name?: unknown;
+        };
+        if (typeof raw.name === "string" && raw.name.trim() !== "") packageName = raw.name;
       } catch {
-        throw invalid;
+        // Static metadata unavailable — fall back to the configured source.
       }
-      const description = frontmatter.description;
-      if (typeof description !== "string" || description.trim().length === 0) {
-        if (declared) throw invalid;
-        return;
+      const origin: SkillOrigin = { kind: "plugin", packageName: packageName ?? source };
+      for (const file of files) {
+        entries.push({ path: file, origin, enabled: true });
       }
-      skills.push({
-        name: typeof frontmatter.name === "string" && frontmatter.name
-          ? frontmatter.name : basename(dirname(path)),
-        description,
-        enabled: frontmatter["disable-model-invocation"] !== true,
+    }
+
+    // 2. settings.json explicit skill paths (plain entries + patterns).
+    const plainEntries = skillsSetting.filter((entry) => !isOverridePattern(entry));
+    const overridePatterns = skillsSetting.filter((entry) => isOverridePattern(entry));
+    const resolvedPlain = plainEntries.map((entry) => resolveSettingsSkillPath(entry, agentDir, homeDir));
+    const settingsFiles = collectSkillFilesFromPaths(resolvedPlain, collector);
+    const enabledFiles = applySkillOverridePatterns(settingsFiles, overridePatterns, agentDir);
+    for (const file of settingsFiles) {
+      entries.push({ path: file, origin: { kind: "settings" }, enabled: enabledFiles.has(file) });
+    }
+
+    // 3. User skills dir (~agentDir/skills, "pi" mode).
+    const userSkillsDir = join(agentDir, "skills");
+    for (const file of collector.collect(userSkillsDir, "pi")) {
+      entries.push({ path: file, origin: { kind: "user" }, enabled: isEnabledBySkillOverrides(file, skillsSetting, agentDir) });
+    }
+
+    // 4. ~/.agents/skills auto-discovery ("agents" mode).
+    const agentsSkillsDir = join(homeDir, ".agents", "skills");
+    for (const file of collector.collect(agentsSkillsDir, "agents")) {
+      entries.push({
+        path: file,
+        origin: { kind: "user" },
+        enabled: isEnabledBySkillOverrides(file, skillsSetting, join(homeDir, ".agents")),
       });
-    };
-    const visit = (dir: string, includeLooseFiles: boolean): void => {
-      const real = realpathSync(dir);
-      if (ancestors.has(real)) throw invalid;
-      ancestors.add(real);
+    }
+
+    // Load + dedup: realpath identity silently, name first-wins (SDK order).
+    const skills: SkillInfo[] = [];
+    const seenNames = new Set<string>();
+    const seenRealPaths = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.enabled) continue;
+      const parsed = readSkillFile(entry.path, invalid);
+      if (parsed === undefined) continue;
+      let real: string;
       try {
-        const entries = readdirSync(dir, { withFileTypes: true });
-        const prefix = relativePath(dir) ? `${relativePath(dir)}/` : "";
-        for (const name of [".gitignore", ".ignore", ".fdignore"]) {
-          if (!entries.some((entry) => entry.name === name)) continue;
-          const path = join(dir, name);
-          if (!contained(path)) continue;
-          for (let pattern of readFileSync(path, "utf8").split(/\r?\n/)) {
-            if (!pattern.trim() || pattern.trim().startsWith("#")) continue;
-            const negated = pattern.startsWith("!");
-            if (negated || pattern.startsWith("\\!")) pattern = pattern.slice(1);
-            if (pattern.startsWith("/")) pattern = pattern.slice(1);
-            matcher.add(`${negated ? "!" : ""}${prefix}${pattern}`);
-          }
-        }
-        const declared = entries.find((entry) => entry.name === "SKILL.md");
-        if (declared) {
-          const path = join(dir, declared.name);
-          if (!matcher.ignores(relativePath(path)) && contained(path) && statSync(path).isFile()) {
-            readSkill(path, true);
-            return;
-          }
-        }
-        for (const entry of entries) {
-          if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-          if (!entry.isDirectory() && !entry.isSymbolicLink() &&
-              !(includeLooseFiles && entry.name.endsWith(".md"))) continue;
-          const path = join(dir, entry.name);
-          const rel = relativePath(path);
-          // Exclude known ignored directories before any metadata or content
-          // read, including unreadable ignored subtrees.
-          if (matcher.ignores(entry.isDirectory() ? `${rel}/` : rel)) continue;
-          if (!contained(path)) continue;
-          const stats = statSync(path);
-          if (matcher.ignores(stats.isDirectory() ? `${rel}/` : rel)) continue;
-          if (stats.isDirectory()) visit(path, false);
-          else if (stats.isFile() && includeLooseFiles && entry.name.endsWith(".md")) {
-            readSkill(path, false);
-          }
-        }
-      } finally {
-        ancestors.delete(real);
+        real = realpathSync(entry.path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ELOOP") throw invalid;
+        throw makeRuntimeError("unavailable", "global skills could not be read");
       }
-    };
-    visit(skillsDir, true);
+      if (seenRealPaths.has(real)) continue;
+      if (seenNames.has(parsed.name)) continue;
+      seenNames.add(parsed.name);
+      seenRealPaths.add(real);
+      skills.push({ ...parsed, source: entry.origin });
+    }
     return skills;
   } catch (error) {
     if (error === invalid) throw error;
@@ -453,17 +916,19 @@ export function createPiSdkGlobalResourceStore(
   if (!isAbsolute(agentDir) || agentDir.includes("\0")) {
     throw makeRuntimeError("invalid_input", "global resource catalog requires an absolute agent dir");
   }
+  const homeDir = options.homeDir ?? process.env.HOME ?? homedir();
   let cached: LoadedResources | undefined;
   const discover = async (): Promise<LoadedResources> => {
     if (cached) return cached;
     const settingsManager = readGlobalSettings(agentDir);
-    const skills = readGlobalSkills(agentDir);
-    const packages = new StaticCatalogPackageManager({
+    const packageManager = new StaticCatalogPackageManager({
       // SDK path anchor only: the injected storage exposes no project scope.
       cwd: agentDir,
       agentDir,
       settingsManager,
-    }).listConfiguredPackages();
+    });
+    const skills = readGlobalSkills(agentDir, homeDir, settingsManager, packageManager);
+    const packages = packageManager.listConfiguredPackages();
     cached = {
       skills,
       commands: skills.map(skillToCommand),

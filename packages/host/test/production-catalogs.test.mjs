@@ -149,7 +149,7 @@ async function productionFixture() {
     allowLocalExpansion: false,
     allowLanExpansion: false,
   });
-  const catalogs = createProductionCatalogs({ agentDir, roots });
+  const catalogs = createProductionCatalogs({ agentDir, roots, homeDir: join(root, "home") });
   const app = createHostApp({
     logger: {},
     gate: { config: DISABLED_GATE },
@@ -400,7 +400,7 @@ test("production global resources reread persisted metadata without roots, trust
       "./static-plugin", { source: "npm:@fake/not-installed" },
     ] }));
     assert.deepEqual((await (await call(app, "/v1/skills")).json()).skills, [
-      { name: "revised-skill", description: "Revised skill", enabled: false },
+      { name: "revised-skill", description: "Revised skill", enabled: false, source: { kind: "user" } },
     ]);
     assert.deepEqual((await (await call(app, "/v1/commands")).json()).commands, [
       { name: "skill:revised-skill", description: "Revised skill", source: "skill" },

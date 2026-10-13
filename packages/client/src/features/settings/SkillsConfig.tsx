@@ -6,7 +6,19 @@ import { useHttpClient } from "@/app/http-context";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { describeCatalogError } from "@/features/catalog/catalog-errors";
 import { useI18n } from "@/hooks/useI18n";
-import { SettingsSection } from "./settings-ui";
+import { SettingsBadge, SettingsSection } from "./settings-ui";
+
+/** Source badge on the skill row, reusing the plugin page's badge style. */
+function SkillSourceBadge({ source }: { source: SkillInfo["source"] }) {
+  const { t } = useI18n();
+  if (!source) return null;
+  const label = source.kind === "plugin"
+    ? t("desktop.skillSourcePlugin", { name: source.packageName })
+    : source.kind === "settings"
+      ? t("desktop.skillSourceSettings")
+      : t("desktop.skillSourceUser");
+  return <SettingsBadge>{label}</SettingsBadge>;
+}
 
 /** Commands owned by a skill, shown as small chips on the skill row itself. */
 function skillCommandNames(skill: SkillInfo, commands: readonly SlashCommandInfo[]): string[] {
@@ -90,6 +102,7 @@ export function SkillsConfig() {
               {skill.updateAvailable ? <span className="catalog-chip catalog-chip--accent">{t("desktop.catalog.updateAvailable")}</span> : null}
             </div>
             <div className="catalog-row-meta">
+              {skill.source ? <SkillSourceBadge source={skill.source} /> : null}
               {skill.version ? <span className="catalog-meta-item">{t("desktop.catalog.version", { version: skill.version })}</span> : null}
               {chips.map((chip) => <code key={chip} className="settings-command-chip">{chip}</code>)}
             </div>

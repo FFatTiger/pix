@@ -314,12 +314,20 @@ export const AuthProviderStatusSchema = z.strictObject({
 });
 export type AuthProviderStatus = z.infer<typeof AuthProviderStatusSchema>;
 
+export const SkillSourceInfoSchema = z.union([
+  z.strictObject({ kind: z.literal("user") }),
+  z.strictObject({ kind: z.literal("settings") }),
+  z.strictObject({ kind: z.literal("plugin"), packageName: NonEmptyStringSchema }),
+]);
+export type SkillSourceInfo = z.infer<typeof SkillSourceInfoSchema>;
+
 export const SkillInfoSchema = z.strictObject({
   name: NonEmptyStringSchema,
   description: z.string().optional(),
   enabled: z.boolean(),
   version: z.string().optional(),
   updateAvailable: z.boolean().optional(),
+  source: SkillSourceInfoSchema.optional(),
 });
 export type SkillInfo = z.infer<typeof SkillInfoSchema>;
 

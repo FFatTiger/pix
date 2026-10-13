@@ -69,6 +69,11 @@ export interface ProductionCatalogsOptions {
   agentDir: string;
   /** Shared allowed-roots service (must be the production resources roots). */
   roots: AllowedRootService;
+  /**
+   * Home dir base for the global skill catalog's ~/.agents/skills discovery.
+   * Defaults to the SDK's HOME resolution; tests inject an isolated dir.
+   */
+  homeDir?: string;
 }
 
 /**
@@ -140,7 +145,10 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
   const resources: CatalogResourcesSeam = {
     global() {
       // Fresh persisted metadata on every request, independent of roots/trust.
-      return createPiSdkGlobalResourceCatalog({ agentDir });
+      return createPiSdkGlobalResourceCatalog({
+        agentDir,
+        ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }),
+      });
     },
     forCwd(cwd: string, trusted: boolean) {
       // Fresh catalog per request cwd+trusted so a trust flip is not masked by

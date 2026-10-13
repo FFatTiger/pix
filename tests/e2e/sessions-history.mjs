@@ -341,6 +341,11 @@ async function bootStack({ agentDir, sessiondDir, projectCwd, hostDir, exposureM
 
 async function main() {
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousHome = process.env.HOME;
+  // Isolated HOME: the global skill catalog auto-discovers ~/.agents/skills
+  // (SDK parity), so the E2E must never read the operator's real home.
+  const isolatedHome = await mkdtemp(join(tmpdir(), "pix-e2e-home-"));
+  process.env.HOME = isolatedHome;
   const agentDir = await mkdtemp(join(tmpdir(), "pix-e2e-agentdir-"));
   const sessiondDir = await mkdtemp(join(tmpdir(), "pix-e2e-sessiond-"));
   const projectCwd = await mkdtemp(join(tmpdir(), "pix-e2e-project-"));
@@ -919,6 +924,7 @@ async function main() {
     log("FAIL", error?.stack ?? error);
   } finally {
     process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    process.env.HOME = previousHome;
     // Best-effort cleanup of any worker children spawned by the fixture: the
     // in-process daemon handle is authoritative, so capture the live worker
     // PIDs BEFORE shutdown (after shutdown the records are gone) and SIGKILL

@@ -102,6 +102,28 @@ describe("SkillsConfig global disk catalogs", () => {
     expect(screen.queryByText("No Commands.")).toBeNull();
   });
 
+  it("shows a source badge on each skill row (plugin page badge style)", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/v1/skills") return json({ skills: [
+        { name: "user-skill", enabled: true, source: { kind: "user" } },
+        { name: "settings-skill", enabled: true, source: { kind: "settings" } },
+        { name: "plugin-skill", enabled: true, source: { kind: "plugin", packageName: "demo-pkg" } },
+        { name: "legacy-skill", enabled: true },
+      ] });
+      if (url === "/v1/commands") return json({ commands: [] });
+      throw new Error(`unexpected ${url}`);
+    });
+    mount(fetchMock, ["skills"]);
+    expect(await screen.findByText("user-skill"));
+    expect(screen.getByText("User directory")).toBeTruthy();
+    expect(screen.getByText("Settings path")).toBeTruthy();
+    expect(screen.getByText("Plugin demo-pkg")).toBeTruthy();
+    // Legacy payloads without a source render no badge.
+    const legacyRow = screen.getByText("legacy-skill").closest("li")!;
+    expect(legacyRow.querySelectorAll(".settings-badge").length).toBe(0);
+  });
+
   it("does not fetch without the matching capability", async () => {
     const fetchMock = vi.fn(async () => { throw new Error("must not fetch"); });
     mount(fetchMock, []);

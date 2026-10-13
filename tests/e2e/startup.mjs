@@ -327,6 +327,9 @@ async function main() {
     PIX_HOST_DIR: hostDir,
     // Isolate gate/catalog agent dir away from operator ~/.pi.
     PI_CODING_AGENT_DIR: agentDir,
+    // Isolate HOME: the global skill catalog auto-discovers ~/.agents/skills
+    // (SDK parity), so E2E must never read the operator's real home.
+    HOME: join(temp, "e2e-home"),
   };
   delete env.PIX_PASSWORD;
   delete env.PIX_GATE_DISABLED;

@@ -30,11 +30,15 @@ async function fixture(): Promise<{
   agentDir: string;
   projectCwd: string;
   markerPath: string;
+  homeDir: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), "pix-resources-catalog-"));
   const agentDir = join(root, "agent");
   const projectCwd = join(root, "project");
   const markerPath = join(root, "pwned.marker");
+  // Isolated HOME: the global catalog auto-discovers ~/.agents/skills, so
+  // tests must never touch the real user home.
+  const homeDir = join(root, "home");
   await mkdir(join(agentDir, "skills", "global-skill"), { recursive: true });
   await writeFile(
     join(agentDir, "skills", "global-skill", "SKILL.md"),
@@ -65,7 +69,7 @@ async function fixture(): Promise<{
       `export default function () {}\n`,
     "utf8",
   );
-  return { root, agentDir, projectCwd, markerPath };
+  return { root, agentDir, projectCwd, markerPath, homeDir };
 }
 
 /** Network guard: throws if any outbound fetch happens during the probe. */
@@ -84,7 +88,7 @@ function installNetworkGuard(): () => boolean {
 
 describe("read-only resource catalog (D3B-R1A)", () => {
   it("trusted project exposes global + project skills; malicious extension never executes", async () => {
-    const { root, agentDir, projectCwd, markerPath } = await fixture();
+    const { root, agentDir, projectCwd, markerPath, homeDir } = await fixture();
     try {
       const release = installNetworkGuard();
       const catalog = createPiSdkResourceCatalog({
@@ -142,7 +146,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
       t.skip("directory symlinks require platform-specific privileges on Windows");
       return;
     }
-    const { root, agentDir, projectCwd } = await fixture();
+    const { root, agentDir, projectCwd, homeDir } = await fixture();
     try {
       const outside = join(root, "outside", "escaped-skill");
       await mkdir(outside, { recursive: true });
@@ -253,7 +257,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
   });
 
   it("untrusted project withholds project-local skills but keeps global ones", async () => {
-    const { root, agentDir, projectCwd, markerPath } = await fixture();
+    const { root, agentDir, projectCwd, markerPath, homeDir } = await fixture();
     try {
       const catalog = createPiSdkResourceCatalog({
         cwd: projectCwd,
@@ -271,7 +275,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
   });
 
   it("denied trust also withholds project skills", async () => {
-    const { root, agentDir, projectCwd } = await fixture();
+    const { root, agentDir, projectCwd, homeDir } = await fixture();
     try {
       const catalog = createPiSdkResourceCatalog({
         cwd: projectCwd,
@@ -286,7 +290,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
   });
 
   it("commands surface skill commands; no extension commands", async () => {
-    const { root, agentDir, projectCwd, markerPath } = await fixture();
+    const { root, agentDir, projectCwd, markerPath, homeDir } = await fixture();
     try {
       const catalog = createPiSdkResourceCatalog({
         cwd: projectCwd,
@@ -316,7 +320,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
   });
 
   it("skill metadata is canonical and backend-neutral", async () => {
-    const { root, agentDir, projectCwd } = await fixture();
+    const { root, agentDir, projectCwd, homeDir } = await fixture();
     try {
       const catalog = createPiSdkResourceCatalog({
         cwd: projectCwd,
@@ -342,7 +346,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
   });
 
   it("plugins list is canonical metadata (no execution)", async () => {
-    const { root, agentDir, projectCwd, markerPath } = await fixture();
+    const { root, agentDir, projectCwd, markerPath, homeDir } = await fixture();
     try {
       const catalog = createPiSdkResourceCatalog({
         cwd: projectCwd,
@@ -386,7 +390,7 @@ describe("read-only resource catalog (D3B-R1A)", () => {
   });
 
   it("no network access occurs during resource discovery", async () => {
-    const { root, agentDir, projectCwd } = await fixture();
+    const { root, agentDir, projectCwd, homeDir } = await fixture();
     try {
       const release = installNetworkGuard();
       const catalog = createPiSdkResourceCatalog({
@@ -599,7 +603,7 @@ describe("resource catalog default trust: malformed trust.json fails closed (D3B
 
 describe("global resource catalog", () => {
   it("reads only agent-dir static metadata independent of cwd, execution, workers, installation, or network", async (t) => {
-    const { root, agentDir, projectCwd, markerPath } = await fixture();
+    const { root, agentDir, projectCwd, markerPath, homeDir } = await fixture();
     const packageDir = join(agentDir, "local-package");
     await mkdir(packageDir);
     await writeFile(join(packageDir, "package.json"), JSON.stringify({
@@ -632,11 +636,15 @@ describe("global resource catalog", () => {
     ];
     syncBuiltinESMExports();
     try {
-      const catalog = createPiSdkGlobalResourceCatalog({ agentDir });
+      const catalog = createPiSdkGlobalResourceCatalog({ agentDir, homeDir });
+      // Settings-configured skill paths load (SDK parity) before the user
+      // skills dir; each entry carries its bounded source.
       assert.deepEqual(await catalog.listSkills(), [
-        { name: "global-skill", description: "A global skill", enabled: true },
+        { name: "proj-skill", description: "A project skill", enabled: true, source: { kind: "settings" } },
+        { name: "global-skill", description: "A global skill", enabled: true, source: { kind: "user" } },
       ]);
       assert.deepEqual(await catalog.listCommands(), [
+        { name: "skill:proj-skill", description: "A project skill", source: "skill" },
         { name: "skill:global-skill", description: "A global skill", source: "skill" },
       ]);
       assert.deepEqual(await catalog.listPlugins(), [
@@ -644,7 +652,7 @@ describe("global resource catalog", () => {
         { name: "npm:@fake/never-install", enabled: false },
       ]);
       ambientCwd.mock.mockImplementation(() => join(root, "deleted-ambient-cwd"));
-      const second = createPiSdkGlobalResourceCatalog({ agentDir });
+      const second = createPiSdkGlobalResourceCatalog({ agentDir, homeDir });
       assert.deepEqual(await second.listSkills(), await catalog.listSkills());
       assert.deepEqual(await second.listPlugins(), await catalog.listPlugins());
       assert.deepEqual(await second.listCommands(), await catalog.listCommands());
@@ -659,7 +667,7 @@ describe("global resource catalog", () => {
   });
 
   it("reads commented settings with trailing commas without rewriting the file", async () => {
-    const { root, agentDir } = await fixture();
+    const { root, agentDir, homeDir } = await fixture();
     const packageDir = join(agentDir, "jsonc-package");
     const settingsPath = join(agentDir, "settings.json");
     try {
@@ -667,7 +675,7 @@ describe("global resource catalog", () => {
       await writeFile(join(packageDir, "package.json"), JSON.stringify({ name: "jsonc-package", version: "1.0.0" }));
       const content = `// saved global configuration\n{\n  "packages": [${JSON.stringify(packageDir)},],\n  "unknownUrl": "https://example.invalid//keep",\n}\n`;
       await writeFile(settingsPath, content);
-      const catalog = createPiSdkGlobalResourceCatalog({ agentDir });
+      const catalog = createPiSdkGlobalResourceCatalog({ agentDir, homeDir });
       assert.deepEqual(await catalog.listPlugins(), [{ name: "jsonc-package", version: "1.0.0", enabled: true }]);
       assert.deepEqual((await catalog.listSkills()).map((skill) => skill.name), ["global-skill"]);
       assert.deepEqual((await catalog.listCommands()).map((command) => command.name), ["skill:global-skill"]);
@@ -678,14 +686,15 @@ describe("global resource catalog", () => {
   });
 
   it("missing global settings are empty; malformed or unreadable real settings fail safely", async () => {
-    const { root, agentDir } = await fixture();
+    const { root, agentDir, homeDir } = await fixture();
     try {
-      assert.deepEqual(await createPiSdkGlobalResourceCatalog({ agentDir }).listPlugins(), []);
+      assert.deepEqual(await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listPlugins(), []);
       for (const content of ["", "{ SECRET broken", "[]", "null", '{"packages":null}',
-        '{"packages":"bad"}', '{"packages":[{}]}', '{"packages":[null]}']) {
+        '{"packages":"bad"}', '{"packages":[{}]}', '{"packages":[null]}',
+        '{"skills":null}', '{"skills":"bad"}', '{"skills":[1]}', '{"skills":[""]}']) {
         await writeFile(join(agentDir, "settings.json"), content);
         for (const method of ["listSkills", "listPlugins", "listCommands"] as const) {
-          await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir })[method](),
+          await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir, homeDir })[method](),
             (error: unknown) => {
               assert.equal((error as { code: string }).code, "invalid_input");
               assert.ok(!JSON.stringify(error).includes("SECRET"));
@@ -696,28 +705,34 @@ describe("global resource catalog", () => {
       }
       await rm(join(agentDir, "settings.json"));
       await mkdir(join(agentDir, "settings.json"));
-      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir }).listPlugins(),
+      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listPlugins(),
         (error: unknown) => (error as { code: string }).code === "unavailable");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("filters escaped skill files, directories, and the whole global skills root", async (t) => {
+  it("follows symlinked skills pointing outside the skills dir (SDK parity), deduped by realpath", async (t) => {
     if (process.platform === "win32") return t.skip("symlink privileges required");
-    const { root, agentDir, projectCwd } = await fixture();
+    const { root, agentDir, projectCwd, homeDir } = await fixture();
     const outside = join(projectCwd, ".pi", "skills", "proj-skill");
     try {
+      // A skill directory symlinked OUTSIDE agentDir is followed exactly like
+      // the SDK runtime follows it (the ~/.agents/skills layout relies on it).
       await symlink(outside, join(agentDir, "skills", "escape"), "dir");
+      // A file symlink to the SAME SKILL.md is realpath-deduped: one entry.
       await symlink(join(outside, "SKILL.md"), join(agentDir, "skills", "escape.md"), "file");
-      let catalog = createPiSdkGlobalResourceCatalog({ agentDir });
-      assert.deepEqual((await catalog.listSkills()).map((s) => s.name), ["global-skill"]);
-      assert.deepEqual((await catalog.listCommands()).map((s) => s.name), ["skill:global-skill"]);
+      let catalog = createPiSdkGlobalResourceCatalog({ agentDir, homeDir });
+      assert.deepEqual((await catalog.listSkills()).map((s) => s.name), ["proj-skill", "global-skill"]);
+      assert.ok((await catalog.listSkills()).every((s) => s.source?.kind === "user"));
+      assert.deepEqual((await catalog.listCommands()).map((s) => s.name), ["skill:proj-skill", "skill:global-skill"]);
+      // The whole skills ROOT symlinked outside is followed too (the SDK
+      // collects from agentDir/skills regardless of where it resolves).
       await rm(join(agentDir, "skills"), { recursive: true });
       await symlink(join(projectCwd, ".pi", "skills"), join(agentDir, "skills"), "dir");
-      catalog = createPiSdkGlobalResourceCatalog({ agentDir });
-      assert.deepEqual(await catalog.listSkills(), []);
-      assert.deepEqual(await catalog.listCommands(), []);
+      catalog = createPiSdkGlobalResourceCatalog({ agentDir, homeDir });
+      assert.deepEqual((await catalog.listSkills()).map((s) => s.name), ["proj-skill"]);
+      assert.deepEqual((await catalog.listCommands()).map((s) => s.name), ["skill:proj-skill"]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -732,7 +747,7 @@ describe("global resource catalog", () => {
 
 for (const scope of ["global", "project", "untrusted project"] as const) {
   it(`${scope} static catalog never runs a configured npmCommand for missing npm references`, async (t) => {
-    const { root, agentDir, projectCwd } = await fixture();
+    const { root, agentDir, projectCwd, homeDir } = await fixture();
     try {
       await writeFile(join(agentDir, "settings.json"), JSON.stringify({
         npmCommand: [process.execPath, join(root, "custom-npm-cli.js")],
@@ -747,7 +762,7 @@ for (const scope of ["global", "project", "untrusted project"] as const) {
         }));
       syncBuiltinESMExports();
       const catalog = scope === "global"
-        ? createPiSdkGlobalResourceCatalog({ agentDir })
+        ? createPiSdkGlobalResourceCatalog({ agentDir, homeDir })
         : createPiSdkResourceCatalog({ agentDir, cwd: projectCwd, trusted: scope === "project" });
       await catalog.listSkills();
       await catalog.listCommands();
@@ -767,18 +782,173 @@ for (const scope of ["global", "project", "untrusted project"] as const) {
   });
 }
 
+describe("global skill catalog sources (SDK parity)", () => {
+  it("loads settings.json skill paths: dirs, loose files, relative entries, pattern disables", async () => {
+    const { root, agentDir, homeDir } = await fixture();
+    try {
+      const settingsSkillsDir = join(root, "settings-skills");
+      await mkdir(join(settingsSkillsDir, "from-dir"), { recursive: true });
+      await writeFile(join(settingsSkillsDir, "from-dir", "SKILL.md"), "---\nname: from-dir\ndescription: Dir entry\n---");
+      await writeFile(join(settingsSkillsDir, "loose-entry.md"), "---\nname: loose-entry\ndescription: Loose entry\n---");
+      await mkdir(join(agentDir, "rel-skills", "from-rel"), { recursive: true });
+      await writeFile(join(agentDir, "rel-skills", "from-rel", "SKILL.md"), "---\nname: from-rel\ndescription: Relative entry\n---");
+      await mkdir(join(root, "disabled-dir", "off-skill"), { recursive: true });
+      await writeFile(join(root, "disabled-dir", "off-skill", "SKILL.md"), "---\nname: off-skill\ndescription: Must stay off\n---");
+      // A missing configured path is skipped like the SDK collector.
+      await writeFile(join(agentDir, "settings.json"), JSON.stringify({
+        skills: [
+          settingsSkillsDir,
+          join(settingsSkillsDir, "loose-entry.md"),
+          "./rel-skills",
+          join(root, "missing-path"),
+          "-off-skill",
+        ],
+      }));
+      const skills = await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills();
+      assert.deepEqual(skills.map((s) => [s.name, s.source?.kind]), [
+        ["from-dir", "settings"],
+        ["loose-entry", "settings"],
+        ["from-rel", "settings"],
+        ["global-skill", "user"],
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("loads plugin-package skills: convention dir, pi manifest globs, no fallback when pi exists", async () => {
+    const { root, agentDir, homeDir } = await fixture();
+    try {
+      // Convention-dir package (no pi manifest).
+      const conventionPkg = join(agentDir, "pkg-convention");
+      await mkdir(join(conventionPkg, "skills", "conv-skill"), { recursive: true });
+      await writeFile(join(conventionPkg, "skills", "conv-skill", "SKILL.md"), "---\nname: conv-skill\ndescription: Convention\n---");
+      await writeFile(join(conventionPkg, "package.json"), JSON.stringify({ name: "pkg-convention", version: "1.0.0" }));
+      // Manifest package: glob entry under a custom dir.
+      const manifestPkg = join(agentDir, "pkg-manifest");
+      await mkdir(join(manifestPkg, "assets", "man-skill"), { recursive: true });
+      await writeFile(join(manifestPkg, "assets", "man-skill", "SKILL.md"), "---\nname: man-skill\ndescription: Manifest\n---");
+      await writeFile(join(manifestPkg, "package.json"), JSON.stringify({ name: "pkg-manifest", pi: { skills: ["assets/**/SKILL.md"] } }));
+      // pi manifest WITHOUT a skills field: no convention-dir fallback (SDK rule).
+      const noSkillsPkg = join(agentDir, "pkg-noskills");
+      await mkdir(join(noSkillsPkg, "skills", "shadowed"), { recursive: true });
+      await writeFile(join(noSkillsPkg, "skills", "shadowed", "SKILL.md"), "---\nname: shadowed\ndescription: Must not load\n---");
+      await writeFile(join(noSkillsPkg, "package.json"), JSON.stringify({ name: "pkg-noskills", pi: { extensions: ["index.js"] } }));
+      // Not installed: honestly skipped.
+      await writeFile(join(agentDir, "settings.json"), JSON.stringify({
+        packages: ["./pkg-convention", "./pkg-manifest", "./pkg-noskills", "./pkg-absent"],
+      }));
+      const skills = await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills();
+      assert.deepEqual(skills.map((s) => [s.name, s.source]), [
+        ["conv-skill", { kind: "plugin", packageName: "pkg-convention" }],
+        ["man-skill", { kind: "plugin", packageName: "pkg-manifest" }],
+        ["global-skill", { kind: "user" }],
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("loads npm package skills from the managed install dir only; missing installs are skipped", async (t) => {
+    const { root, agentDir, homeDir } = await fixture();
+    try {
+      const managedPkg = join(agentDir, "npm", "node_modules", "@fake", "managed-skill-pkg");
+      await mkdir(join(managedPkg, "skills", "managed-skill"), { recursive: true });
+      await writeFile(join(managedPkg, "skills", "managed-skill", "SKILL.md"), "---\nname: managed-skill\ndescription: Managed npm\n---");
+      await writeFile(join(managedPkg, "package.json"), JSON.stringify({ name: "@fake/managed-skill-pkg", version: "2.0.0" }));
+      await writeFile(join(agentDir, "settings.json"), JSON.stringify({
+        packages: ["npm:@fake/managed-skill-pkg", "npm:@fake/not-installed"],
+      }));
+      const guards = ["spawnSync", "execSync", "execFileSync", "spawn", "exec", "execFile", "fork"]
+        .map((method) => t.mock.method(childProcess, method as keyof typeof childProcess, () => {
+          throw new Error("subprocess must never be attempted");
+        }));
+      syncBuiltinESMExports();
+      const skills = await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills();
+      assert.deepEqual(skills.map((s) => [s.name, s.source]), [
+        ["managed-skill", { kind: "plugin", packageName: "@fake/managed-skill-pkg" }],
+        ["global-skill", { kind: "user" }],
+      ]);
+      for (const guard of guards) assert.equal(guard.mock.callCount(), 0);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers ~/.agents/skills and dedupes files already reached via agentDir/skills symlinks", async (t) => {
+    if (process.platform === "win32") return t.skip("symlink privileges required");
+    const { root, agentDir, homeDir } = await fixture();
+    const agentsSkills = join(homeDir, ".agents", "skills");
+    try {
+      await mkdir(join(agentsSkills, "agents-only"), { recursive: true });
+      await writeFile(join(agentsSkills, "agents-only", "SKILL.md"), "---\nname: agents-only\ndescription: Agents-only\n---");
+      // The real-world layout: agentDir/skills/<name> -> ~/.agents/skills/<name>.
+      await mkdir(join(agentsSkills, "linked"), { recursive: true });
+      await writeFile(join(agentsSkills, "linked", "SKILL.md"), "---\nname: linked\ndescription: Linked\n---");
+      // Root-level loose .md files are NOT collected in agents mode.
+      await writeFile(join(agentsSkills, "root-loose.md"), "---\nname: root-loose\ndescription: Root loose\n---");
+      await symlink(join(agentsSkills, "linked"), join(agentDir, "skills", "linked"), "dir");
+      const skills = await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills();
+      assert.deepEqual(skills.map((s) => s.name), ["global-skill", "linked", "agents-only"]);
+      assert.ok(skills.every((s) => s.source?.kind === "user"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("name collisions resolve first-wins in SDK precedence order (packages > settings > user dirs)", async () => {
+    const { root, agentDir, homeDir } = await fixture();
+    try {
+      await mkdir(join(agentDir, "skills", "dup"), { recursive: true });
+      await writeFile(join(agentDir, "skills", "dup", "SKILL.md"), "---\nname: dup\ndescription: User dir copy\n---");
+      const settingsDir = join(root, "dup-source");
+      await mkdir(settingsDir, { recursive: true });
+      await writeFile(join(settingsDir, "SKILL.md"), "---\nname: dup\ndescription: Settings copy\n---");
+      await writeFile(join(agentDir, "settings.json"), JSON.stringify({ skills: [settingsDir] }));
+      const skills = await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills();
+      const dup = skills.find((s) => s.name === "dup");
+      assert.equal(dup?.description, "Settings copy");
+      assert.equal(dup?.source?.kind, "settings");
+      assert.equal(skills.filter((s) => s.name === "dup").length, 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("symlink cycles still fail as invalid input", async (t) => {
+    if (process.platform === "win32") return t.skip("symlink privileges required");
+    const { root, agentDir, homeDir } = await fixture();
+    try {
+      // Directory cycle through a symlink pointing outside the skills dir.
+      await symlink(join(agentDir, "skills"), join(agentDir, "skills", "cycle-out"), "dir");
+      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills(),
+        (error: unknown) => (error as { code: string }).code === "invalid_input");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("strict global skill reads", () => {
-  for (const failure of ["root readdir", "nested readdir", "skill read", "loose skill read", "ignore read", "skill stat"] as const) {
+  for (const failure of ["root readdir", "nested readdir", "skill read", "loose skill read", "ignore read", "symlink stat"] as const) {
     it(`${failure} EACCES is unavailable, never fake empty metadata`, async (t) => {
-      const { root, agentDir } = await fixture();
+      const { root, agentDir, homeDir } = await fixture();
       const skillsDir = join(agentDir, "skills");
       const skillDir = join(skillsDir, "global-skill");
       await writeFile(join(skillsDir, "loose.md"), "---\nname: loose\ndescription: Loose\n---");
       await writeFile(join(skillsDir, ".ignore"), "unrelated/\n");
+      // The stat surface for skill candidates is symlink resolution (dirents
+      // are classified without stat, like the SDK); probe a linked skill dir.
+      if (failure === "symlink stat") {
+        await symlink(skillDir, join(skillsDir, "linked"), "dir");
+      }
       const target = failure === "root readdir" ? skillsDir
         : failure === "nested readdir" ? skillDir
         : failure === "loose skill read" ? join(skillsDir, "loose.md")
         : failure === "ignore read" ? join(skillsDir, ".ignore")
+        : failure === "symlink stat" ? join(skillsDir, "linked")
         : join(skillDir, "SKILL.md");
       const denied = () => Object.assign(new Error(`EACCES: SECRET ${target}`), { code: "EACCES" });
       const originalReaddir = fs.readdirSync;
@@ -794,14 +964,14 @@ describe("strict global skill reads", () => {
           return originalRead(...args);
         }),
         t.mock.method(fs, "statSync", (...args: Parameters<typeof fs.statSync>) => {
-          if (failure === "skill stat" && String(args[0]) === target) throw denied();
+          if (failure === "symlink stat" && String(args[0]) === target) throw denied();
           return originalStat(...args);
         }),
       ];
       syncBuiltinESMExports();
       try {
         for (const method of ["listSkills", "listCommands", "listPlugins"] as const) {
-          await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir })[method](), (error: unknown) => {
+          await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir, homeDir })[method](), (error: unknown) => {
             assert.equal((error as { code: string }).code, "unavailable");
             assert.ok(!JSON.stringify(error).includes("SECRET"));
             assert.ok(!JSON.stringify(error).includes(agentDir));
@@ -818,11 +988,11 @@ describe("strict global skill reads", () => {
   }
 
   it("keeps missing roots empty, readable ignored skills hidden, and declared roots terminal", async (t) => {
-    const { root, agentDir } = await fixture();
+    const { root, agentDir, homeDir } = await fixture();
     const skillsDir = join(agentDir, "skills");
     try {
       await rm(skillsDir, { recursive: true });
-      assert.deepEqual(await createPiSdkGlobalResourceCatalog({ agentDir }).listSkills(), []);
+      assert.deepEqual(await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills(), []);
       await mkdir(join(skillsDir, "declared", "not-discovered"), { recursive: true });
       await writeFile(join(skillsDir, "declared", "SKILL.md"), "---\nname: declared\ndescription: Declared\n---");
       const original = fs.readdirSync;
@@ -831,13 +1001,13 @@ describe("strict global skill reads", () => {
         return original(...args);
       });
       syncBuiltinESMExports();
-      assert.deepEqual((await createPiSdkGlobalResourceCatalog({ agentDir }).listSkills()).map((s) => s.name), ["declared"]);
+      assert.deepEqual((await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills()).map((s) => s.name), ["declared"]);
       guard.mock.restore();
       syncBuiltinESMExports();
       await writeFile(join(skillsDir, ".ignore"), "declared/\nloose.md\n");
       await writeFile(join(skillsDir, "loose.md"), "---\nname: loose\ndescription: Loose\n---");
-      assert.deepEqual(await createPiSdkGlobalResourceCatalog({ agentDir }).listSkills(), []);
-      assert.deepEqual(await createPiSdkGlobalResourceCatalog({ agentDir }).listCommands(), []);
+      assert.deepEqual(await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills(), []);
+      assert.deepEqual(await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listCommands(), []);
     } finally {
       t.mock.restoreAll();
       syncBuiltinESMExports();
@@ -846,7 +1016,7 @@ describe("strict global skill reads", () => {
   });
 
   it("validates descendants when an ignored SKILL.md allows SDK recursion", async (t) => {
-    const { root, agentDir } = await fixture();
+    const { root, agentDir, homeDir } = await fixture();
     const skillDir = join(agentDir, "skills", "global-skill");
     const nested = join(skillDir, "nested");
     await mkdir(nested);
@@ -858,7 +1028,7 @@ describe("strict global skill reads", () => {
     });
     syncBuiltinESMExports();
     try {
-      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir }).listSkills(),
+      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills(),
         (error: unknown) => (error as { code: string }).code === "unavailable");
     } finally {
       t.mock.restoreAll();
@@ -869,14 +1039,14 @@ describe("strict global skill reads", () => {
 
   it("rejects contained directory cycles as invalid input", async (t) => {
     if (process.platform === "win32") return t.skip("symlink privileges required");
-    const { root, agentDir } = await fixture();
+    const { root, agentDir, homeDir } = await fixture();
     try {
       await symlink(join(agentDir, "skills"), join(agentDir, "skills", "cycle"), "dir");
-      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir }).listSkills(),
+      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills(),
         (error: unknown) => (error as { code: string }).code === "invalid_input");
       await rm(join(agentDir, "skills", "cycle"));
       await symlink("cycle", join(agentDir, "skills", "cycle"));
-      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir }).listSkills(),
+      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills(),
         (error: unknown) => (error as { code: string }).code === "invalid_input");
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -884,7 +1054,7 @@ describe("strict global skill reads", () => {
   });
 
   it("reads each directory and candidate file once; a former second-pass EACCES is never reached", async (t) => {
-    const { root, agentDir } = await fixture();
+    const { root, agentDir, homeDir } = await fixture();
     const skillsDir = join(agentDir, "skills");
     const skillDir = join(skillsDir, "global-skill");
     const target = join(skillDir, "SKILL.md");
@@ -907,8 +1077,8 @@ describe("strict global skill reads", () => {
     });
     syncBuiltinESMExports();
     try {
-      const catalog = createPiSdkGlobalResourceCatalog({ agentDir });
-      assert.deepEqual(await catalog.listSkills(), [{ name: "global-skill", description: "A global skill", enabled: true }]);
+      const catalog = createPiSdkGlobalResourceCatalog({ agentDir, homeDir });
+      assert.deepEqual(await catalog.listSkills(), [{ name: "global-skill", description: "A global skill", enabled: true, source: { kind: "user" } }]);
       assert.deepEqual(await catalog.listCommands(), [{ name: "skill:global-skill", description: "A global skill", source: "skill" }]);
       await catalog.listPlugins();
       assert.deepEqual([...attempts].sort(), [[skillsDir, 1], [skillDir, 1], [target, 1]].sort());
@@ -920,7 +1090,7 @@ describe("strict global skill reads", () => {
   });
 
   it("malformed declared metadata and YAML parse failures are sanitized invalid input", async () => {
-    const { root, agentDir } = await fixture();
+    const { root, agentDir, homeDir } = await fixture();
     const target = join(agentDir, "skills", "global-skill", "SKILL.md");
     try {
       for (const content of [
@@ -929,7 +1099,7 @@ describe("strict global skill reads", () => {
       ]) {
         await writeFile(target, content);
         for (const method of ["listSkills", "listCommands"] as const) {
-          await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir })[method](), (error: unknown) => {
+          await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir, homeDir })[method](), (error: unknown) => {
             assert.equal((error as { code: string }).code, "invalid_input");
             assert.ok(!JSON.stringify(error).includes("SECRET"));
             assert.ok(!JSON.stringify(error).includes(agentDir));
@@ -939,41 +1109,29 @@ describe("strict global skill reads", () => {
       }
       await rm(target);
       await writeFile(join(agentDir, "skills", "loose.md"), "---\ndescription: [SECRET broken\n---");
-      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir }).listSkills(),
+      await assert.rejects(createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills(),
         (error: unknown) => (error as { code: string }).code === "invalid_input");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("does not read ignored directories or escaped skill/ignore-file symlinks", async (t) => {
+  it("does not read ignored directories; ignore files are honored where found", async (t) => {
     if (process.platform === "win32") return t.skip("symlink privileges required");
-    const { root, agentDir, projectCwd } = await fixture();
+    const { root, agentDir, homeDir } = await fixture();
     const skillsDir = join(agentDir, "skills");
     const ignored = join(skillsDir, "ignored");
-    const escape = join(skillsDir, "escape");
-    const outsideSkill = join(projectCwd, ".pi", "skills", "proj-skill");
     await mkdir(ignored);
     await writeFile(join(skillsDir, ".ignore"), "ignored/\n");
-    await symlink(outsideSkill, escape, "dir");
-    await symlink(join(outsideSkill, "SKILL.md"), join(skillsDir, "escape.md"));
-    await symlink(join(outsideSkill, "SKILL.md"), join(skillsDir, ".fdignore"));
-    const originalRead = fs.readFileSync;
     const originalReaddir = fs.readdirSync;
-    t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
-      assert.ok(![join(skillsDir, "escape.md"), join(skillsDir, ".fdignore")].includes(String(args[0])));
-      assert.ok(!String(args[0]).startsWith(projectCwd));
-      return originalRead(...args);
-    });
     t.mock.method(fs, "readdirSync", (...args: Parameters<typeof fs.readdirSync>) => {
       const path = String(args[0]);
       if (path === ignored) throw Object.assign(new Error("EACCES: ignored subtree"), { code: "EACCES" });
-      assert.notEqual(path, escape);
       return originalReaddir(...args);
     });
     syncBuiltinESMExports();
     try {
-      assert.deepEqual((await createPiSdkGlobalResourceCatalog({ agentDir }).listSkills()).map((s) => s.name), ["global-skill"]);
+      assert.deepEqual((await createPiSdkGlobalResourceCatalog({ agentDir, homeDir }).listSkills()).map((s) => s.name), ["global-skill"]);
     } finally {
       t.mock.restoreAll();
       syncBuiltinESMExports();
@@ -983,7 +1141,7 @@ describe("strict global skill reads", () => {
 
   it("matches native readable discovery, nested ignores, aliases, metadata and commands", async (t) => {
     if (process.platform === "win32") return t.skip("symlink privileges required");
-    const { root, agentDir } = await fixture();
+    const { root, agentDir, homeDir } = await fixture();
     const skillsDir = join(agentDir, "skills");
     const write = async (path: string, content: string) => {
       await mkdir(join(skillsDir, path, ".."), { recursive: true });
@@ -1014,11 +1172,30 @@ describe("strict global skill reads", () => {
       await symlink(join(skillsDir, "global-skill"), join(skillsDir, "alias"), "dir");
       await symlink(join(skillsDir, "loose.md"), join(skillsDir, "loose-alias.md"));
       const native = loadSkillsFromDir({ dir: skillsDir, source: "user" }).skills;
-      const catalog = createPiSdkGlobalResourceCatalog({ agentDir });
-      assert.deepEqual(await catalog.listSkills(), native.map((s) => ({
-        name: s.name, description: s.description, enabled: !s.disableModelInvocation,
-      })));
-      assert.deepEqual(await catalog.listCommands(), native.map((s) => ({
+      // The runtime pipeline (loadSkills) dedupes the standalone loader's
+      // result by realpath then by name (first wins) — mirror that here.
+      const expected = new Map<string, { name: string; description: string; enabled: boolean; source: { kind: "user" } }>();
+      const seenReal = new Set<string>();
+      for (const s of native) {
+        let real: string;
+        try {
+          real = fs.realpathSync(s.filePath);
+        } catch {
+          real = s.filePath;
+        }
+        if (seenReal.has(real)) continue;
+        if (expected.has(s.name)) continue;
+        seenReal.add(real);
+        expected.set(s.name, {
+          name: s.name,
+          description: s.description!,
+          enabled: !s.disableModelInvocation,
+          source: { kind: "user" },
+        });
+      }
+      const catalog = createPiSdkGlobalResourceCatalog({ agentDir, homeDir });
+      assert.deepEqual(await catalog.listSkills(), [...expected.values()]);
+      assert.deepEqual(await catalog.listCommands(), [...expected.values()].map((s) => ({
         name: `skill:${s.name}`, description: s.description, source: "skill",
       })));
       const names = (await catalog.listSkills()).map((s) => s.name);

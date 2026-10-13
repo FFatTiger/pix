@@ -624,6 +624,51 @@ test("GET /v1/skills|plugins|commands pass trusted from trust seam", async () =>
   }
 });
 
+test("GET /v1/skills passes the bounded source field through; unknown shapes fail closed", async () => {
+  const root = temp("pix-cat-skill-src-");
+  const roots = await rootsFor(root);
+  const ok = appWithCatalogs({
+    roots,
+    resources: fakeResources({
+      listSkills: async () => [
+        { name: "user-skill", enabled: true, source: { kind: "user" } },
+        { name: "settings-skill", enabled: true, source: { kind: "settings" } },
+        { name: "plugin-skill", enabled: false, source: { kind: "plugin", packageName: "pkg-a" } },
+        { name: "legacy-skill", enabled: true },
+      ],
+    }),
+    trust: fakeTrust({ isTrusted: async () => true }),
+  });
+  const res = await call(ok, `/v1/skills?cwd=${encodeURIComponent(root)}`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    skills: [
+      { name: "user-skill", enabled: true, source: { kind: "user" } },
+      { name: "settings-skill", enabled: true, source: { kind: "settings" } },
+      { name: "plugin-skill", enabled: false, source: { kind: "plugin", packageName: "pkg-a" } },
+      { name: "legacy-skill", enabled: true },
+    ],
+  });
+
+  for (const source of [
+    { kind: "weird" },
+    { kind: "plugin" },
+    { kind: "plugin", packageName: "" },
+    { kind: "user", extra: 1 },
+    "user",
+    null,
+  ]) {
+    const app = appWithCatalogs({
+      roots,
+      resources: fakeResources({ listSkills: async () => [{ name: "s", enabled: true, source }] }),
+      trust: fakeTrust({ isTrusted: async () => true }),
+    });
+    const bad = await call(app, `/v1/skills?cwd=${encodeURIComponent(root)}`);
+    assert.equal(bad.status, 503, JSON.stringify(source));
+    assert.equal((await bad.json()).code, "CATALOG_UNAVAILABLE");
+  }
+});
+
 test("GET /v1/trust returns canonical cwd, level, trusted, canReloadResources", async () => {
   const root = temp("pix-cat-trust-");
   const roots = await rootsFor(root);

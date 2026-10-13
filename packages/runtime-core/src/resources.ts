@@ -20,12 +20,20 @@ export interface SlashCommandInfo {
   sourceInfo?: unknown;
 }
 
+/** Where a catalog skill was loaded from (bounded union, mirrors SDK sources). */
+export type SkillSourceInfo =
+  | { readonly kind: "user" }
+  | { readonly kind: "settings" }
+  | { readonly kind: "plugin"; readonly packageName: string };
+
 export interface SkillInfo {
   name: string;
   description?: string;
   enabled: boolean;
   version?: string;
   updateAvailable?: boolean;
+  /** Origin of the skill (user skills dir / settings path / plugin package). */
+  source?: SkillSourceInfo;
 }
 
 export interface PluginInfo {

@@ -350,7 +350,9 @@ Client 按 `capabilities` 显隐功能：
 
 设置只读取和编辑持久化配置、磁盘上的静态元数据及设备偏好，不以当前文件夹或已连接会话作为全局配置的加载条件。`settings.json`、`models.json`、`pix-builtins.json` 与 gate 配置沿用各自既有 owner；空闲回收时长仍由 sessiond 的持久化配置 owner 管理，归档详情仍是 0 Worker 的 JSONL 只读目录。设置组件不得读取 runtime snapshot、列举运行中扩展工具、发送 `setTools`/`reload` 或执行模型网络发现；保存只提交对应 owner 的持久化变更。
 
-Settings 中的 Skills / Plugins / Commands 只展示全局磁盘目录。Host `GET /v1/skills|plugins|commands` 缺省 `cwd` 时调用明确的全局资源读取入口，不读取项目 `.pi`，也不查询项目授权或信任；显式传入 `cwd` 的其他调用方仍先经过 AllowedRoots 校验，再按信任状态读取项目有效目录。空或非法 `cwd` 必须失败，不能降级为全局成功。全局与项目 Query key 分别按 `null` 和 canonical cwd 隔离；只有成功读到空数组才能显示空目录，读取失败必须诚实报错。读取不执行扩展、包管理器命令或旧版全局安装目录探测，不安装、不访问网络、不创建 Worker。npm 包引用直接按保存的 source 展示，不探测运行时安装状态；本地/git 包可读取静态 manifest。已存在资源目录或候选技能文件读取失败必须报错，不能返回空目录冒充成功。
+Settings 中的 Skills / Plugins / Commands 只展示全局磁盘目录。Host `GET /v1/skills|plugins|commands` 缺省 `cwd` 时调用明确的全局资源读取入口，不读取项目 `.pi`，也不查询项目授权或信任；显式传入 `cwd` 的其他调用方仍先经过 AllowedRoots 校验，再按信任状态读取项目有效目录。空或非法 `cwd` 必须失败，不能降级为全局成功。全局与项目 Query key 分别按 `null` 和 canonical cwd 隔离；只有成功读到空数组才能显示空目录，读取失败必须诚实报错。读取不执行扩展、包管理器命令或旧版全局安装目录探测，不安装、不访问网络、不创建 Worker。
+
+全局技能目录与 SDK 运行时在 user 范围实际加载的集合对齐：已配置插件包（仅读已安装路径；npm 只查 `agentDir/npm/node_modules/<name>` 的受管安装，拿不到就如实跳过）、`settings.json` 的 `skills` 显式路径（含 `+/-/!` 开关模式）、`agentDir/skills` 与 `~/.agents/skills` 自动发现。技能目录扫描与 SDK 一致地跟随符号链接（含指向目录外的链接，即 `~/.agents/skills` 布局）、识别 SKILL.md 根、按目录模式收集松散 .md、尊重 ignore 文件；去重与 SDK `loadSkills` 一致（realpath 相同静默跳过，同名先到者赢，顺序为包 → settings 路径 → 用户目录）。每条 SkillInfo 携带有界 `source`（user / settings / plugin 包名），Host 投影严格校验键集。严格性保留：目录环与坏元数据 fail-closed 为 `invalid_input`，IO 错误为 `unavailable`，缺目录才是合法空；已存在资源目录或候选技能文件读取失败必须报错，不能返回空目录冒充成功。npm 包在插件页仍按保存的 source 展示，不探测运行时安装状态；本地/git 包可读取静态 manifest。
 
 ### Pix 内置能力期望配置
 
