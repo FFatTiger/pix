@@ -89,6 +89,24 @@
   --control-pad-x: 10px;
   --settings-pad-x: 22px;
   --settings-section-gap: 20px;
+  /* UI kit (2026-10 restyle): one family of toolbar controls, menus and
+     hover tints. Toolbar controls are 28px rounded-8 targets with 12.5px
+     labels, 15px icons and 10px carets; menus are content-surface panels
+     with a 12px radius, soft shadow and 30px rows. Settings form controls
+     keep their own --control-* family (30px / 6px). */
+  --menu-radius: 12px;
+  --menu-shadow: 0 14px 36px -14px rgba(0, 0, 0, 0.28);
+  --menu-row-h: 30px;
+  --menu-row-radius: 8px;
+  --menu-font-size: 12.5px;
+  --toolbar-control-h: 28px;
+  --toolbar-control-radius: 8px;
+  --icon-size: 15px;
+  --caret-size: 10px;
+  --ui-hover-soft: color-mix(in srgb, var(--text) 5%, transparent);
+  --ui-hover: color-mix(in srgb, var(--text) 7%, transparent);
+  --ui-open: color-mix(in srgb, var(--text) 9%, transparent);
+  --ui-focus-ring: color-mix(in srgb, var(--accent-blue) 55%, transparent);
   /* Semantic status colors — alias the theme accents so danger /
      success / warning states follow the active theme. */
   --status-success: var(--accent-green);
@@ -3556,6 +3574,234 @@ html.pi-booted body::before {
   height: 20px;
   align-self: center;
 }
+
+/* ───────── UI kit (components/ui) ─────────
+   The 2026-10 tuned control language, extracted from the composer restyle
+   so every surface (composer toolbars, settings, explorer menus) shares it.
+   Values come only from the tokens above; nothing here uses !important. */
+
+/* Menu / popover panel: content surface, hairline, 12px radius, soft shadow. */
+.ui-menu {
+  background: var(--surface-content);
+  border: 1px solid var(--surface-hairline);
+  border-radius: var(--menu-radius);
+  box-shadow: var(--menu-shadow);
+  overflow: hidden;
+  font-family: inherit;
+}
+
+/* Menu rows: 30px min height, 8px radius, UI font. Hover = soft tint;
+   selected = quiet tint + strong weight + check; highlighted = the
+   keyboard-active row of a caret-driven list (slash / @ / history). */
+.ui-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--menu-row-h);
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--menu-row-radius);
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--menu-font-size);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ui-menu-item:hover:not(:disabled):not(.is-selected):not(.is-highlighted) {
+  background: var(--ui-hover-soft);
+}
+.ui-menu-item.is-selected {
+  background: var(--ui-hover);
+  color: var(--text);
+  font-weight: var(--text-weight-strong);
+}
+.ui-menu-item.is-highlighted { background: var(--bg-selected); }
+.ui-menu-item:disabled {
+  color: var(--text-dim);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.ui-menu-item:focus { outline: none; }
+.ui-menu-item:focus-visible {
+  outline: 2px solid var(--ui-focus-ring);
+  outline-offset: 1px;
+}
+.ui-menu-item .ui-menu-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Group label row: 11px, wide-but-subtle tracking, never uppercased. */
+.ui-menu-group-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 6px 12px 4px;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-align: left;
+  cursor: pointer;
+}
+.ui-menu-group-label:hover { color: var(--text); }
+
+/* Search field pinned above a menu list (model picker language). */
+.ui-menu-search { border-bottom: 1px solid var(--surface-hairline); }
+.ui-menu-search-inner { position: relative; display: flex; align-items: center; }
+.ui-menu-search .ui-menu-search-icon {
+  position: absolute;
+  left: 12px;
+  pointer-events: none;
+  color: var(--text-dim);
+}
+.ui-menu-search input {
+  width: 100%;
+  padding: 5px 12px 5px 34px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+/* Toolbar triggers: 28px rounded-8 targets. Hover and open states are the
+   quiet text tints; focus ring only for keyboard; press scales down. */
+.ui-trigger {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: var(--toolbar-control-h);
+  min-height: var(--toolbar-control-h);
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--toolbar-control-radius);
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--menu-font-size);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, transform 80ms ease;
+}
+.ui-trigger:hover:not(:disabled),
+.ui-trigger[aria-expanded="true"],
+.ui-trigger.is-open {
+  background: var(--ui-hover);
+  color: var(--text);
+}
+.ui-trigger[aria-expanded="true"],
+.ui-trigger.is-open { background: var(--ui-open); }
+.ui-trigger:active:not(:disabled) { transform: scale(0.96); }
+.ui-trigger:disabled { opacity: 0.55; cursor: not-allowed; }
+.ui-trigger:focus { outline: none; }
+.ui-trigger:focus-visible {
+  outline: 2px solid var(--ui-focus-ring);
+  outline-offset: 1px;
+}
+.ui-trigger > svg { width: var(--icon-size); height: var(--icon-size); }
+
+/* Square icon-only trigger (+, context ring). */
+.ui-icon-btn {
+  justify-content: center;
+  width: var(--toolbar-control-h);
+  min-width: var(--toolbar-control-h);
+  padding: 0;
+}
+
+/* Caret: 10px, dimmed, flips while open. */
+.ui-caret {
+  width: var(--caret-size);
+  height: var(--caret-size);
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: transform 0.12s;
+}
+[aria-expanded="true"] .ui-caret,
+.is-open .ui-caret { transform: rotate(180deg); }
+
+/* Form-variant select trigger (settings): the old native-select metrics. */
+.ui-trigger.ui-select-form {
+  height: var(--control-height);
+  min-height: var(--control-height);
+  padding: 0 26px 0 var(--control-pad-x);
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 13px;
+  justify-content: flex-start;
+}
+.ui-select-form:hover:not(:disabled) { color: var(--text); }
+.ui-select-form:active:not(:disabled) { transform: none; }
+.ui-select-form .ui-select-form-caret {
+  position: absolute;
+  right: 8px;
+  color: var(--text-dim);
+  opacity: 1;
+  transition: transform 0.12s;
+}
+
+/* Buttons (settings forms): the SettingsButton metrics as classes. */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: var(--control-radius);
+  cursor: pointer;
+  font-size: 12px;
+  box-sizing: border-box;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.ui-btn--primary { background: var(--accent); border: none; color: #fff; font-weight: 600; }
+.ui-btn--danger {
+  background: color-mix(in srgb, var(--status-danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-danger) 30%, transparent);
+  color: var(--status-danger);
+}
+.ui-btn--sm { height: 24px; padding: 0 8px; font-size: 11px; }
+.ui-btn--md { height: var(--control-height); padding: 0 12px; }
+.ui-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Switch: 40×22 pill, 16px thumb, accent when on. */
+.ui-switch {
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border: none;
+  padding: 0;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--border) 70%, var(--bg));
+  position: relative;
+  transition: background 0.18s ease;
+}
+.ui-switch[aria-checked="true"] { background: var(--accent); }
+.ui-switch:disabled { cursor: not-allowed; }
+.ui-switch.is-busy { opacity: 0.65; }
+.ui-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: left 0.18s ease, transform 0.18s ease;
+}
+.ui-switch[aria-checked="true"] .ui-switch-thumb { left: 21px; }
 
 /* ───────── Composer surface (2026-10 restyle) ─────────
    The composer belongs to the frame: at rest it is a frame-gray well with no
