@@ -144,6 +144,8 @@ export interface MenuItemProps {
   fontSize?: number;
   /** Render the row in the mono font (@ file paths, model ids). */
   mono?: boolean;
+  /** Start one step quieter (project rows); selected still wins. */
+  muted?: boolean;
   className?: string;
   style?: CSSProperties;
   onMouseDown?: (event: React.MouseEvent<HTMLButtonElement>) => void;
@@ -167,6 +169,7 @@ export function MenuItem({
   borderRadius,
   fontSize,
   mono = false,
+  muted = false,
   className,
   style,
   onMouseDown,
@@ -176,6 +179,7 @@ export function MenuItem({
 }: MenuItemProps) {
   const classes = [
     "ui-menu-item",
+    muted ? "is-muted" : "",
     selected ? "is-selected" : "",
     highlighted ? "is-highlighted" : "",
     className ?? "",

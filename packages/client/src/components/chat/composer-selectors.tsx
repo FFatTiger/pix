@@ -284,6 +284,7 @@ export function ModelSelector({
           selected={isActive}
           disabled={disabled}
           showCheck={false}
+          padding="4px 8px"
           icon={<ProviderIcon id={opt.provider} api={opt.api ?? null} size={14} />}
           onClick={() => select(opt)}
           trailing={(

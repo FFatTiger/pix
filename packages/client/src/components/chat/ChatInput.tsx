@@ -2685,7 +2685,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                           ) : (
                             <MenuItem
                               icon={<PlusIcon size={13} weight="regular" />}
-                              style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}
+                              muted
+                              style={{ whiteSpace: "nowrap" }}
                               onClick={() => { setCustomProjectPath(""); setCustomPathMode(true); }}
                             >
                               {t("desktop.customPath")}
@@ -2702,6 +2703,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                             <MenuItem
                               key={root}
                               selected={isActive}
+                              muted
                               title={root}
                               icon={<FolderIcon size={14} />}
                               onClick={() => { setProjectDropdownOpen(false); onProjectChange(root); }}
