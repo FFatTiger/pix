@@ -326,7 +326,7 @@ describe("table-driven mutation invalidation", () => {
     const settings = {
       native: { enabled: true, reserveTokens: null, keepRecentTokens: null },
       smart: {
-        autoTrigger: true, minContextPercent: 80, profile: "balanced",
+        autoTrigger: true, minContextPercent: 80, profile: "balanced" as const,
         summaryModel: null, segmentationModel: null,
         summaryThinkingLevel: null, segmentationThinkingLevel: null,
         autoTriggerTimeoutMs: 300000, backupEnabled: true, scrubSecrets: true,

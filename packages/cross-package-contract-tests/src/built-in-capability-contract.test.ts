@@ -43,6 +43,7 @@ test("protocol snapshot/write DTOs accept the canonical semantic shapes", () => 
     { id: "todo", enabled: true },
     { id: "subagents", enabled: false },
     { id: "ask_user_question", enabled: true },
+    { id: "smart_compact", enabled: true },
   ];
   assert.equal(BuiltInCapabilityConfigMutationSchema.safeParse({
     expectedRevision: revision,
