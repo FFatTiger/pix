@@ -16,6 +16,23 @@ describe("assistantToolLabel", () => {
     }
   });
 
+  it("maps the round-3 session-capability tools", () => {
+    expect(assistantToolLabel("session_status")?.labelKey).toBe("desktop.codexAssistantSessionStatus");
+    expect(assistantToolLabel("list_open_todos")?.labelKey).toBe("desktop.codexAssistantOpenTodos");
+    expect(assistantToolLabel("summarize_activity")?.labelKey).toBe("desktop.codexAssistantActivity");
+    expect(assistantToolLabel("find_file_changes")?.labelKey).toBe("desktop.codexAssistantFileChanges");
+    expect(assistantToolLabel("open_session")?.labelKey).toBe("desktop.codexAssistantOpenSession");
+    expect(assistantToolLabel("organize_sessions")?.labelKey).toBe("desktop.codexAssistantOrganize");
+    expect(assistantToolLabel("draft_to_session")?.labelKey).toBe("desktop.codexAssistantDraft");
+  });
+
+  it("detail values prefer session/action/path keys for the new tools", () => {
+    expect(assistantToolDetailValue("open_session", { session: "修 bug" })).toBe("修 bug");
+    expect(assistantToolDetailValue("organize_sessions", { action: "archive" })).toBe("archive");
+    expect(assistantToolDetailValue("find_file_changes", { path: "nginx.conf" })).toBe("nginx.conf");
+    expect(assistantToolDetailValue("summarize_activity", { range: "week" })).toBe("week");
+  });
+
   it("returns null for ordinary tools", () => {
     expect(assistantToolLabel("read")).toBeNull();
     expect(assistantToolLabel("grep")).toBeNull();

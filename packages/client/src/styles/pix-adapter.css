@@ -2011,3 +2011,84 @@ html.dark .catalog-meta-item--error {
   .models-provider-grid { grid-template-columns: 1fr; }
   .models-cost-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Assistant suggested-action card (open_session / organize_sessions /
+   draft_to_session tool details) — reuses surface/border tokens, no new
+   component library (feat/ui-kit owns that migration). */
+.assistant-action-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+}
+
+.assistant-action-card-title {
+  font-size: 12px;
+  font-weight: var(--text-weight-strong);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-action-card-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.assistant-action-card-note[role="alert"] {
+  color: var(--status-danger, #e5484d);
+}
+
+.assistant-action-card-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.assistant-action-card-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--status-danger, #e5484d);
+}
+
+.assistant-action-button {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface, var(--bg-panel));
+  color: var(--text);
+  font-size: 12px;
+  font-weight: var(--text-weight-strong);
+  cursor: pointer;
+}
+
+.assistant-action-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.assistant-action-button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.assistant-action-button.is-danger {
+  color: var(--status-danger, #e5484d);
+  border-color: color-mix(in srgb, var(--status-danger, #e5484d) 45%, var(--border));
+}

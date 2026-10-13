@@ -34,6 +34,9 @@ import { TerminalIcon } from "@phosphor-icons/react/Terminal";
 import { ToolboxIcon } from "@phosphor-icons/react/Toolbox";
 import { TrashIcon } from "@phosphor-icons/react/Trash";
 import { WarningCircleIcon } from "@phosphor-icons/react/WarningCircle";
+import { ArrowRightIcon } from "@phosphor-icons/react/ArrowRight";
+import { StackIcon } from "@phosphor-icons/react/Stack";
+import { PenNibIcon } from "@phosphor-icons/react/PenNib";
 import { getFileIcon } from "./FileIcons";
 import { cssPx } from "@/lib/ui-scale";
 
@@ -549,6 +552,9 @@ function stepIconElement(iconName: StepIconName, size: number = 14) {
     case "checklist": return <ListBulletsIcon size={size} />;
     case "warning":
     case "circleX": return <WarningCircleIcon size={size} />;
+    case "arrowRight": return <ArrowRightIcon size={size} />;
+    case "stacks": return <StackIcon size={size} />;
+    case "penNib": return <PenNibIcon size={size} />;
     default: return <ToolboxIcon size={size} />;
   }
 }

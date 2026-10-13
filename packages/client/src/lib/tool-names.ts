@@ -15,7 +15,7 @@
 export type AssistantToolLabel = {
   labelKey: string;
   detailKey: string;
-  iconName: "bookOpen" | "magnifyingGlass" | "brain";
+  iconName: "bookOpen" | "magnifyingGlass" | "brain" | "listBullets" | "checklist" | "folder" | "arrowRight" | "stacks" | "penNib";
 };
 
 const ASSISTANT_TOOL_LABELS: Record<string, AssistantToolLabel> = {
@@ -28,6 +28,14 @@ const ASSISTANT_TOOL_LABELS: Record<string, AssistantToolLabel> = {
   lore_create_node: { labelKey: "desktop.codexAssistantMemorySaved", detailKey: "desktop.codexAssistantMemorySavedDetail", iconName: "brain" },
   lore_update_node: { labelKey: "desktop.codexAssistantMemorySaved", detailKey: "desktop.codexAssistantMemorySavedDetail", iconName: "brain" },
   lore_delete_node: { labelKey: "desktop.codexAssistantMemorySaved", detailKey: "desktop.codexAssistantMemorySavedDetail", iconName: "brain" },
+  // Assistant session capabilities (round 3).
+  session_status: { labelKey: "desktop.codexAssistantSessionStatus", detailKey: "desktop.codexAssistantSessionStatusDetail", iconName: "listBullets" },
+  list_open_todos: { labelKey: "desktop.codexAssistantOpenTodos", detailKey: "desktop.codexAssistantOpenTodosDetail", iconName: "checklist" },
+  summarize_activity: { labelKey: "desktop.codexAssistantActivity", detailKey: "desktop.codexAssistantActivityDetail", iconName: "listBullets" },
+  find_file_changes: { labelKey: "desktop.codexAssistantFileChanges", detailKey: "desktop.codexAssistantFileChangesDetail", iconName: "folder" },
+  open_session: { labelKey: "desktop.codexAssistantOpenSession", detailKey: "desktop.codexAssistantOpenSessionDetail", iconName: "arrowRight" },
+  organize_sessions: { labelKey: "desktop.codexAssistantOrganize", detailKey: "desktop.codexAssistantOrganizeDetail", iconName: "stacks" },
+  draft_to_session: { labelKey: "desktop.codexAssistantDraft", detailKey: "desktop.codexAssistantDraftDetail", iconName: "penNib" },
 };
 
 export function assistantToolLabel(toolName: string): AssistantToolLabel | null {
@@ -36,9 +44,11 @@ export function assistantToolLabel(toolName: string): AssistantToolLabel | null 
 
 /** First meaningful string argument for a tool-call detail line (bounded). */
 export function assistantToolDetailValue(toolName: string, input: Record<string, unknown> | undefined): string {
-  const keys = toolName === "read_session"
+  const keys = toolName === "read_session" || toolName === "open_session" || toolName === "draft_to_session"
     ? ["session"]
-    : ["query", "project", "uri"];
+    : toolName === "organize_sessions"
+      ? ["action"]
+      : ["query", "project", "path", "range", "uri"];
   for (const key of keys) {
     const value = input?.[key];
     if (typeof value === "string" && value.trim() !== "") {

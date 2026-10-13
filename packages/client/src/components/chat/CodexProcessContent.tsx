@@ -30,6 +30,7 @@ import {
 } from "@/lib/step-categorizer";
 import type { StepIconName } from "@/lib/step-visuals";
 import { assistantToolDetailValue, assistantToolLabel } from "@/lib/tool-names";
+import { AssistantActionCard, isAssistantActionTool } from "./AssistantActionCard";
 import { countPatchStats } from "@/lib/turn-written-files";
 
 type ToolBlock = Extract<ProcessContentBlock, { type: "toolCall" }>;
@@ -585,6 +586,7 @@ function CodexToolDetails({ block }: { block: ToolBlock }) {
 
   return (
     <div className={`codex-tool-details${isPresentationFailure(block) ? " is-error" : ""}`}>
+      {isAssistantActionTool(block.toolName) ? <AssistantActionCard toolName={block.toolName} input={block.input} /> : null}
       {hasInput && (
         <div className="codex-tool-detail-section">
           <div className="codex-tool-detail-label">{t("desktop.codexProcessInput")}</div>
