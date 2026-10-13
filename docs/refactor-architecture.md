@@ -470,6 +470,25 @@ packages/
 - **能力令牌**：Host `assistant` token 仅在 seam 已挂载且 sessiond up 时通告
   （degraded 恒剔除）；客户端按能力隐藏入口，绝不出现破损视图。
 
+### 智能压缩（smart_compact，第 2 轮内置）
+
+- pi-smart-compact@10.3.0 以 vendored tarball（`vendor/`，adapter file: 依赖）成为
+  第五个 curated built-in（`CURATED_PLUGIN_IDS` + `BUILT_IN_CAPABILITY_IDS` 五元，
+  protocol 镜像同步；smart_compact 无 runtime token——无命令/UI 消费方，可用性经
+  snapshot builtIns 投影）。optional peers（mnemopi/resvg/bun）不分发，插件按本地
+  回退运行。legacy 4 键 pix-builtins.json 读取时 smart_compact 默认开启（有限
+  back-compat：首次写入即序列化全五键）。
+- 防重复加载：curated 身份识别新增"安装路径在 node_modules/<curated 包名>/ 下"规则，
+  用户全局 npm:pi-smart-compact 与内置副本互斥（开启留内置、关闭两者都不加载、
+  其他名字的 fork 不受影响），用户的 settings.json packages 列表永不改写。
+- 上下文压缩设置（`compaction` + `smartCompact` 两个 settings.json 对象）走
+  subagents 同款结构化链路：runtime-core DTO → protocol wire → adapter store
+  （默认值投影、无效枚举回退插件默认、未知键保留、null 删除键、类型错误 fail-closed）
+  → host GET/PUT `/v1/settings/compaction`（settings.configure 令牌）→ 客户端
+  「上下文压缩」页（草稿+保存条；能力关闭时智能区置灰并提示回退 Pi 自带压缩）。
+- 助手工具对显式 set_tools 白名单保持可用（非空白名单后 union；全关 [] 保持诚实的
+  空契约）。
+
 ## 9. 跨端策略（当前主线：PWA）
 
 | 端 | 连接 | 能力 |
