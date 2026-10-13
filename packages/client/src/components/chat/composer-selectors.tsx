@@ -292,13 +292,6 @@ export function ModelSelector({
               <span
                 onClick={(e) => { e.stopPropagation(); toggleFavorite(opt.provider, opt.modelId); }}
                 className={`model-star${isFav ? " is-fav" : ""}`}
-                style={{
-                  display: "inline-flex", alignItems: "center", justifyContent: "center",
-                  flexShrink: 0,
-                  cursor: "pointer",
-                  opacity: isFav ? 1 : 0,
-                  transition: "opacity 0.12s, color 0.12s",
-                }}
                 title={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
                 aria-label={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
               >

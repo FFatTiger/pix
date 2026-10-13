@@ -880,10 +880,6 @@ pre, code {
   }
 }
 
-.model-row:hover .model-star {
-  opacity: 1 !important;
-}
-
 @media (max-width: 640px) {
   .chat-input-editor-row {
     padding-left: 12px;
@@ -3793,8 +3789,18 @@ html.pi-booted body::before {
 
 /* Favorite star in the model picker: dim until the row is hovered, then
    accent on its own hover. Favoured stars stay filled/visible. */
-.ui-menu-item .model-star { color: var(--text-dim); }
-.ui-menu-item .model-star.is-fav { color: var(--accent); }
+.ui-menu-item .model-star {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+}
+.ui-menu-item .model-star.is-fav { color: var(--accent); opacity: 1; }
+.ui-menu-item:hover .model-star { opacity: 1; }
 .ui-menu-item .model-star:hover { color: var(--accent); }
 
 /* Composer floating pills (steer / follow-up / maximize) above the shell. */
@@ -4035,11 +4041,11 @@ html.pi-booted body::before {
 .right-panel-container .explorer-panel .sidebar-section-head,
 .right-panel-container .subagent-panel-head,
 .right-panel-container .side-chat-toolbar {
-  flex: 0 0 36px !important;
-  height: 36px !important;
-  padding: 0 10px 0 14px !important;
-  border-bottom: 0 !important;
-  background: var(--surface-frame) !important;
+  flex: 0 0 36px;
+  height: 36px;
+  padding: 0 10px 0 14px;
+  border-bottom: 0;
+  background: var(--surface-frame);
 }
 .right-panel-container .subagent-panel-heading,
 .right-panel-container .side-chat-heading,
@@ -4055,7 +4061,7 @@ html.pi-booted body::before {
 .right-panel-container .subagent-directory,
 .right-panel-container .subagent-transcript,
 .right-panel-container .side-chat-messages {
-  background: var(--surface-content) !important;
+  background: var(--surface-content);
 }
 /* Side chat composer is the main ChatInput; no hanging overhang in the pane. */
 .right-panel-container .side-chat-composer .chat-input-shell { width: 100%; margin-left: 0; }
