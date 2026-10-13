@@ -3655,3 +3655,18 @@ html.pi-booted body::before {
   color: var(--accent-orange) !important;
   background: color-mix(in srgb, var(--accent-orange) 14%, transparent) !important;
 }
+
+/* Composer column = transcript column. The transcript reserves a 34px right
+   gutter for the minimap on desktop (16px left); give the composer region the
+   same extra 18px so both centre on identical edges, and stop the shell from
+   bleeding past the text column. */
+@media (min-width: 641px) {
+  .chat-composer-region { padding-right: 18px; }
+}
+.chat-input-shell {
+  width: 100%;
+  margin-left: 0;
+}
+/* Session strip under the composer shares the same 820px column edges. */
+.session-info-bar-wrap { padding-left: 16px; padding-right: 16px; }
+.session-info-bar-inner { max-width: 820px; }
