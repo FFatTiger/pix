@@ -213,6 +213,10 @@ export function mapMessage(value: unknown, partial = false): AgentMessage | Stre
         ...(typeof message.fullOutputPath === "string" ? { fullOutputPath: message.fullOutputPath } : {}),
         ...(typeof message.excludeFromContext === "boolean" ? { excludeFromContext: message.excludeFromContext } : {}),
       } as AgentMessage | StreamingAgentMessage;
+    case "system":
+      // Pi persists a system-prompt snapshot (empty content + sections) as a
+      // session entry; it is model context, never a transcript row.
+      return { role: "custom", customType: "system-prompt", content: [], display: false } as AgentMessage;
     default:
       return {
         role: "custom",
