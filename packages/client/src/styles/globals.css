@@ -860,7 +860,7 @@ pre, code {
    scrolls inside it instead of auto-growing. */
 .chat-input-shell.is-manual-height .chat-input-editor-row {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 44px;
 }
 .chat-input-shell.is-manual-height .chat-input-textarea {
   min-height: 0 !important; /* override the desktop 50px floor so it shrinks */

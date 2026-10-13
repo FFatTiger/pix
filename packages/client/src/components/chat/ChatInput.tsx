@@ -2210,7 +2210,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               alignItems: "stretch",
               gap: 0,
               padding: 0,
-              height: manualMode ? `${manualHeight}px` : undefined,
+              // Manual height sizes the typing area; attachments/notices add on top
+              // instead of squeezing the editor to zero.
+              minHeight: manualMode ? `${manualHeight}px` : undefined,
             } as React.CSSProperties}
           >
           {/* Drag handle on the top border — resize the composer vertically */}
