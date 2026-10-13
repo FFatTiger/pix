@@ -214,8 +214,8 @@ export function SettingsModal({
         }}
       >
         <SettingsDraftContext.Provider value={draftApi}>
+          {isMobile ? (
           <div className="settings-topbar">
-            {isMobile ? null : <div className="settings-nav-title">{t("desktop.settings")}</div>}
             <div className="settings-page-header">
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="settings-page-header-heading">
@@ -248,12 +248,14 @@ export function SettingsModal({
               </button>
             </div>
           </div>
+          ) : null}
           <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
             <nav
               aria-label={t("desktop.settingsSections")}
               className="settings-nav"
               style={isMobile ? { display: mobileNavOpen ? "flex" : "none" } : undefined}
             >
+              {isMobile ? null : <div className="settings-nav-title">{t("desktop.settings")}</div>}
               {groups.map((group) => (
                 <div key={group.id} className="settings-nav-group">
                   <div className="settings-nav-group-label">{t(group.labelKey)}</div>
@@ -281,6 +283,23 @@ export function SettingsModal({
               className="settings-content"
               style={isMobile ? { display: mobileNavOpen ? "none" : "flex" } : undefined}
             >
+              {isMobile ? null : (
+                <header className="settings-page-hero">
+                  <div style={{ minWidth: 0 }}>
+                    <h2 className="settings-page-title">{t(activeMeta.labelKey)}</h2>
+                    {activeMeta.descKey ? <p className="settings-page-desc">{t(activeMeta.descKey)}</p> : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-close"
+                    onClick={requestClose}
+                    title={t("desktop.closeSettings")}
+                    aria-label={t("desktop.closeSettings")}
+                  >
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                </header>
+              )}
               <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
                 {allPages.map((page) => (
                   <div

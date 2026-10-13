@@ -3902,3 +3902,69 @@ html.pi-booted body::before {
 .chat-input-toolbar .chat-input-control > svg:last-child,
 .chat-input-toolbar .chat-input-toolbar-project > button > svg:last-child { width: 10px; height: 10px; opacity: 0.7; }
 .chat-input-toolbar .session-info-ring svg { width: 15px; height: 15px; }
+
+/* ───── Settings dialog: same two layers as the app ─────
+   Left column on the frame surface (no divider); right column on the content
+   surface. "设置" sits in the nav column aligned with the item text; the page
+   title opens the content column at reading size with its description below,
+   no header bar, no rules. */
+.settings-dialog { background: var(--surface-content) !important; border-color: var(--surface-hairline) !important; border-radius: 14px !important; }
+.settings-dialog .settings-nav {
+  width: 200px;
+  padding: 18px 10px 14px;
+  border-right: 0;
+  background: var(--surface-frame);
+  gap: 1px;
+}
+.settings-dialog .settings-nav-title {
+  width: auto;
+  padding: 0 10px 14px;
+  border: 0;
+  font-size: 15px;
+  font-weight: var(--text-weight-strong);
+  color: var(--text);
+}
+.settings-dialog .settings-nav-group + .settings-nav-group { margin-top: 10px; }
+.settings-dialog .settings-nav-group-label { padding: 6px 10px 4px; letter-spacing: 0; font-size: 11px; }
+.settings-dialog .settings-nav-item { height: 30px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; }
+.settings-dialog .settings-nav-item:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.settings-dialog .settings-nav-item.is-active { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.settings-page-hero {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px var(--settings-pad-x) 6px;
+}
+.settings-page-hero .settings-page-title { font-size: 18px; line-height: 1.3; }
+.settings-page-hero .settings-page-desc { margin-top: 4px; font-size: 12.5px; color: var(--text-muted); }
+.settings-close {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  margin: -2px -6px 0 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.settings-close:hover { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
+/* Sections: hairline rules inset to the text column, none after the last. */
+.settings-content section[style*="border-bottom"] {
+  margin: 0 var(--settings-pad-x);
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  border-bottom-color: var(--surface-hairline) !important;
+}
+.settings-content section[style*="border-bottom"]:last-of-type { border-bottom: 0 !important; }
+@media (max-width: 640px) {
+  .settings-dialog .settings-nav { width: 100%; padding-top: 10px; }
+  .settings-dialog .settings-topbar { border-bottom: 0; background: var(--surface-frame); }
+  .settings-dialog .settings-topbar:has(.settings-page-back) { background: var(--surface-content); }
+}
