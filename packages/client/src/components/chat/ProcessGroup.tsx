@@ -18,6 +18,7 @@ import {
   basenameResourcePath,
 } from "@/lib/step-categorizer";
 import type { StepIconName } from "@/lib/step-visuals";
+import { assistantToolDetailValue, assistantToolLabel } from "@/lib/tool-names";
 import { ChatTeardropDotsIcon } from "@phosphor-icons/react/ChatTeardropDots";
 import { BookOpenIcon } from "@phosphor-icons/react/BookOpen";
 import { CaretRightIcon } from "@phosphor-icons/react/CaretRight";
@@ -65,7 +66,7 @@ function toolFallbackLabel(block: Extract<ProcessContentBlock, { type: "toolCall
   return typeof label === "string" && label.trim() ? label : block.toolName;
 }
 
-type BuildLabelFn = (key: string) => string;
+type BuildLabelFn = (key: string, params?: Record<string, string>) => string;
 
 function enrichedToolLabel(
   block: Extract<ProcessContentBlock, { type: "toolCall" }>,
@@ -75,6 +76,18 @@ function enrichedToolLabel(
   const isError = block.status === "error" || Boolean(block.sharedBatch?.result.isError);
   if (block.status === "unfinished") return { displayLabel: `${fallback} · ${ts("desktop.nestedToolCallUnfinished")}`, iconName: "toolbox" };
   if (block.nested && block.nested.call.arguments === undefined && !isError) return { displayLabel: fallback, iconName: "toolbox" };
+
+  // Assistant / memory tools carry their own human identity (查找了会话 /
+  // 读取了会话 / 想起了记忆 / 记住了) in BOTH display modes — resolved from
+  // the one shared table in lib/tool-names, never the raw tool id.
+  const assistantLabel = assistantToolLabel(block.toolName);
+  if (assistantLabel) {
+    const detailValue = assistantToolDetailValue(block.toolName, block.input);
+    return {
+      displayLabel: detailValue === "" ? ts(assistantLabel.labelKey) : ts(assistantLabel.detailKey, { value: detailValue }),
+      iconName: assistantLabel.iconName,
+    };
+  }
 
   if (isError) {
     return { displayLabel: fallback, iconName: "warning", tone: undefined };
@@ -755,7 +768,7 @@ export function ProcessGroup({
   loadDeferredThinking,
 }: ProcessGroupProps) {
   const { t } = useI18n();
-  const ts: BuildLabelFn = useCallback((key: string) => t(key as Parameters<typeof t>[0]), [t]);
+  const ts: BuildLabelFn = useCallback((key: string, params?: Record<string, string>) => t(key as Parameters<typeof t>[0], params), [t]);
   const { displayMode } = useProcessDisplayMode();
   const steps = useMemo(
     () => displayMode === "codex" ? [] : buildProcessSteps(blocks, ts, isStreaming),

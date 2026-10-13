@@ -109,3 +109,28 @@ describe("formatCwdLabel", () => {
     expect(formatCwdLabel("/tmp/proj")).toBe("/tmp/proj");
   });
 });
+
+describe("assistant selector", () => {
+  it("parses ?assistant=1 (and the verbose forms) as its own selector", () => {
+    expect(parseWorkspaceSearch({ assistant: "1" }).assistant).toBe(true);
+    expect(parseWorkspaceSearch({ assistant: "true" }).assistant).toBe(true);
+    expect(parseWorkspaceSearch({ assistant: true }).assistant).toBe(true);
+  });
+
+  it("drops the assistant flag when a session or file selector wins", () => {
+    expect(parseWorkspaceSearch({ assistant: "1", session: "s1" })).toEqual({ session: "s1" });
+    expect(parseWorkspaceSearch({ assistant: "1", cwd: "/repo", file: "/repo/a.ts" }).session).toBeUndefined();
+    expect(parseWorkspaceSearch({ assistant: "1", cwd: "/repo", file: "/repo/a.ts" }).file).toBe("/repo/a.ts");
+    expect(parseWorkspaceSearch({ assistant: "1", cwd: "/repo", file: "/repo/a.ts" }).assistant).toBeUndefined();
+  });
+
+  it("serializes the assistant selector only when no session/file wins", () => {
+    expect(workspaceSearchToParams({ assistant: true }).get("assistant")).toBe("1");
+    expect(workspaceSearchToParams({ assistant: true, session: "s1" }).get("assistant")).toBeNull();
+    expect(workspaceSearchToParams({}).get("assistant")).toBeNull();
+  });
+
+  it("round-trips through validateWorkspaceSearch", () => {
+    expect(validateWorkspaceSearch({ assistant: "1" })).toEqual({ assistant: true });
+  });
+});

@@ -5,6 +5,7 @@ import { createPreferencesApi } from "./preferences";
 import { createModelsApi } from "./models";
 import { createResourcesApi } from "./resources";
 import { createSessionsApi } from "./sessions";
+import { createAssistantApi } from "./assistant";
 import { createConfigurationApi } from "./configuration";
 import { BootstrapResponseSchema, CapabilitiesResponseSchema, HealthResponseSchema } from "./schemas";
 import { urls } from "./urls";
@@ -14,6 +15,7 @@ const CATALOG_STALE_MS = 15_000;
 
 export const queryKeys = {
   root: ["pix"] as const,
+  assistant: { all: ["pix", "assistant"] as const, info: () => ["pix", "assistant", "info"] as const },
   gate: { all: ["pix", "gate"] as const, status: () => ["pix", "gate", "status"] as const },
   preferences: { all: ["pix", "preferences"] as const, map: () => ["pix", "preferences", "map"] as const },
   capabilities: { all: ["pix", "capabilities"] as const, host: () => ["pix", "capabilities", "host"] as const, health: () => ["pix", "capabilities", "health"] as const, bootstrap: () => ["pix", "bootstrap"] as const },
@@ -98,6 +100,7 @@ export function createQueryOptions(http: HttpClient) {
   const gate = createGateApi(http);
   const preferences = createPreferencesApi(http);
   const sessions = createSessionsApi(http);
+  const assistant = createAssistantApi(http);
   const models = createModelsApi(http);
   const resources = createResourcesApi(http);
   const configuration = createConfigurationApi(http);
@@ -136,6 +139,12 @@ export function createQueryOptions(http: HttpClient) {
       tree: (id: string) => queryOptions({ queryKey: queryKeys.sessions.tree(id), queryFn: ({ signal }) => sessions.tree(id, signal), enabled: Boolean(id) }),
       thinking: (id: string, entryId: string, blockIndex: number) => queryOptions({ queryKey: queryKeys.sessions.thinking(id, entryId, blockIndex), queryFn: ({ signal }) => sessions.thinking(id, entryId, blockIndex, signal), enabled: Boolean(id && entryId) }),
       bash: (id: string, entryId: string) => queryOptions({ queryKey: queryKeys.sessions.bash(id, entryId), queryFn: ({ signal }) => sessions.bashOutput(id, entryId, signal), enabled: Boolean(id && entryId) }),
+    },
+    assistant: {
+      // The assistant binding is server-authoritative (the endpoint resolves
+      // "latest session in the fixed directory"): fresh on mount/focus, no
+      // polling. Only called while the `assistant` capability is advertised.
+      info: () => queryOptions({ queryKey: queryKeys.assistant.info(), queryFn: ({ signal }) => assistant.get(signal), staleTime: 0, retry: false }),
     },
     models: {
       // Global read-only catalog: always enabled at this layer; callers gate

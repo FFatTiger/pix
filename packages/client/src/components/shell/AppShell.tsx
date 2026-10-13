@@ -45,7 +45,7 @@ import type { FileViewerState } from "@/features/workspace/viewer/file-viewer-st
 import { useSelectedWorkspaceAccess } from "@/features/session-history/use-selected-workspace-access";
 import { useSubagentActivity } from "@/features/subagents/use-subagent-activity";
 import type { SubagentActivity } from "@/lib/subagent-activity";
-import { homePresentationKey, useRuntimeConnection, useRuntimeForegroundActivity, useRuntimeOwners, useSelectedRuntime, type PresentationProvenance } from "@/runtime";
+import { homePresentationKey, useRuntime, useRuntimeConnection, useRuntimeForegroundActivity, useRuntimeOwners, useSelectedRuntime, type PresentationProvenance } from "@/runtime";
 import { describeRuntimeObservationError } from "@/runtime/observation-errors";
 import { RUNTIME_OBSERVE_EXISTING_FEATURE } from "@fffattiger/pix-protocol";
 import { ExtensionNotices } from "@/components/shell/ExtensionNotices";
@@ -119,7 +119,31 @@ export function AppShell({ search }: AppShellProps) {
   const options = createQueryOptions(http);
   const sessionsQuery = useQuery(options.sessions.page(1, SESSION_PAGE_SIZE, { enabled: canBrowseSessions }));
   const projectsQuery = useQuery(options.projects.page(1, PROJECT_PICKER_PAGE_SIZE, canBrowseSessions));
-  const selectedWorkspace = useSelectedWorkspaceAccess(search.session ?? null, sessionsQuery.data?.sessions ?? null);
+  // ── Assistant view (project-less evergreen conversation) ────────────────
+  // `/?assistant=1` selects the assistant: the URL carries NO session id —
+  // the binding (fixed Host-managed cwd + the latest session in it) is
+  // server-authoritative via GET /v1/assistant. Capability-gated: without
+  // the `assistant` token the flag degrades to the ordinary home view (the
+  // sidebar entry is hidden, never a broken view). The query is read-only:
+  // it never creates or activates anything; creation rides the normal
+  // first-send transaction with the resolved cwd.
+  const canAssistant = can("assistant");
+  const isAssistantView = search.assistant === true && canAssistant;
+  const assistantQuery = useQuery({ ...options.assistant.info(), enabled: isAssistantView });
+  const assistantInfo = isAssistantView ? assistantQuery.data : undefined;
+  /** Fixed assistant cwd once the binding resolved (undefined while loading/errored). */
+  const assistantCwd = assistantInfo?.cwd;
+  /** The assistant conversation session (null = not started yet). */
+  const assistantSessionId = isAssistantView ? assistantInfo?.sessionId ?? null : null;
+  // Exact runtime for the assistant's server-resolved session (the URL carries
+  // no session id, so the provider-bound selection alone cannot see it). Null
+  // outside the assistant view; `activeRuntime` below is the view-effective one.
+  const assistantRuntime = useRuntime(isAssistantView ? assistantSessionId : null);
+  const activeRuntime = isAssistantView ? assistantRuntime : selectedRuntime;
+  const selectedWorkspace = useSelectedWorkspaceAccess(
+    isAssistantView ? assistantSessionId : search.session ?? null,
+    sessionsQuery.data?.sessions ?? null,
+  );
   const liveWorkspaceEnabled = selectedWorkspace.liveWorkspaceEnabled;
   const foregroundActivity = useRuntimeForegroundActivity();
   const isMobile = useIsMobile();
@@ -135,6 +159,7 @@ export function AppShell({ search }: AppShellProps) {
     const emptyStartupRoute = search.session === undefined
       && search.file === undefined
       && search.cwd === undefined
+      && search.assistant === undefined
       && search.next === undefined;
     coldStartSessionRef.current = emptyStartupRoute ? loadLastWorkspaceSession() : null;
   }
@@ -180,7 +205,7 @@ export function AppShell({ search }: AppShellProps) {
   // invent newer intent); the registry's monotonic presentationRevision — not
   // callback arrival order — decides which late admission/activation may take
   // foreground observation.
-  const selectedSessionId = search.session ?? null;
+  const selectedSessionId = isAssistantView ? assistantSessionId : search.session ?? null;
   const presentationKey = search.file !== undefined && search.cwd !== undefined
     ? fileTabId(search.cwd, search.file)
     : selectedSessionId !== null
@@ -338,7 +363,10 @@ export function AppShell({ search }: AppShellProps) {
   const rightPanelOpen = rightPane !== null;
   const fileBrowserOpen = rightPane === "files";
   const subagentPanelOpen = rightPane === "subagents";
-  const canFiles = can("files") && liveWorkspaceEnabled;
+  // The assistant is project-less: its fixed directory has no meaningful file
+  // panel, so the files pane stays hidden in the assistant view (subagents /
+  // side chat remain available — they are conversation-scoped, not project).
+  const canFiles = can("files") && liveWorkspaceEnabled && !isAssistantView;
 
   // ── Top-level workspace tabs (URL drives ACTIVE; session tabs are durable) ──
   const [tabs, setTabs] = useState<WorkspaceTab[]>(loadWorkspaceSessionTabs);
@@ -359,6 +387,9 @@ export function AppShell({ search }: AppShellProps) {
     return null;
   }, [activeTabId, tabs, search.file, search.cwd, search.session]);
   const activeSessionId = activeTab?.kind === "session" ? activeTab.sessionId : null;
+  // View-effective session: the assistant conversation when the assistant view
+  // is selected (the URL carries no session id), else the URL-selected tab.
+  const viewSessionId = isAssistantView ? assistantSessionId : activeSessionId;
 
   // URL → tab reconciliation: keep the in-memory tab list in sync with the URL
   // and the current cwd. File tabs are cwd-owned (a cwd switch clears them);
@@ -505,7 +536,18 @@ export function AppShell({ search }: AppShellProps) {
     void navigate({ to: "/", search: {} });
   }, [navigate]);
 
-  const isHome = activeTab === null;
+  // Assistant entry: always the SAME evergreen conversation — the URL carries
+  // only the selector; the binding (cwd + latest session) is resolved by the
+  // view. Capability-gated by the Sidebar (canAssistant).
+  const handleOpenAssistant = useCallback(() => {
+    if (isMobile) setSidebarOpen(false);
+    if (liveSearchRef.current.assistant === true) return;
+    void navigate({ to: "/", search: { assistant: true } });
+  }, [isMobile, navigate]);
+
+  // The assistant view renders the conversation branch even with no session
+  // tab (its first-entry empty state lives in that branch, not on home).
+  const isHome = activeTab === null && !isAssistantView;
 
   // ── Project trust ─────────────────────────────────────────────────────────
   // Read and write stay independently capability-gated. The dialog only shows
@@ -543,10 +585,10 @@ export function AppShell({ search }: AppShellProps) {
   // selected frame live — the selected session fails closed to its HISTORY
   // view while the Composer stays editable; sending performs the only
   // activation transition.
-  const selectionMatchesLive = selectedRuntime?.attached === true;
-  const canAgents = canBrowseSessions && activeSessionId !== null;
+  const selectionMatchesLive = activeRuntime?.attached === true;
+  const canAgents = canBrowseSessions && viewSessionId !== null;
   const canSideChat = selectionMatchesLive
-    && selectedRuntime?.capabilities?.capabilities.includes("runtime.side_chat") === true;
+    && activeRuntime?.capabilities?.capabilities.includes("runtime.side_chat") === true;
   const rightPaneAvailable = canFiles || canAgents || canSideChat;
   const subagentActivity = useSubagentActivity({
     sessionId: activeSessionId,
@@ -571,17 +613,17 @@ export function AppShell({ search }: AppShellProps) {
   const runningSessionIds = useMemo<ReadonlySet<string>>(() => {
     const ids = new Set<string>(connection.runningSessionIds);
     if (foregroundActivity.optimisticRunningSessionId) ids.add(foregroundActivity.optimisticRunningSessionId);
-    if (selectedRuntime?.attached === true) {
-      const state = selectedRuntime.snapshot?.state;
-      const authoritativeBusy = selectedRuntime.streaming
+    if (activeRuntime?.attached === true) {
+      const state = activeRuntime.snapshot?.state;
+      const authoritativeBusy = activeRuntime.streaming
         || state?.isPromptRunning === true
         || state?.isStreaming === true
         || state?.isBashRunning === true
         || state?.isCompacting === true;
-      if (selectedRuntime.promptPending || authoritativeBusy) ids.add(selectedRuntime.sessionId);
+      if (activeRuntime.promptPending || authoritativeBusy) ids.add(activeRuntime.sessionId);
     }
     return ids;
-  }, [connection.runningSessionIds, foregroundActivity.optimisticRunningSessionId, selectedRuntime]);
+  }, [connection.runningSessionIds, foregroundActivity.optimisticRunningSessionId, activeRuntime]);
 
   // ── Global liveness for sidebar/tab indicators ──
   // connection.liveSessionIds is the authoritative list of session ids with a
@@ -592,9 +634,9 @@ export function AppShell({ search }: AppShellProps) {
   // snapshot; it never activates inactive history or creates a Worker.
   const liveSessionIds = useMemo<ReadonlySet<string>>(() => {
     const ids = new Set<string>(connection.liveSessionIds);
-    if (selectedRuntime?.attached === true) ids.add(selectedRuntime.sessionId);
+    if (activeRuntime?.attached === true) ids.add(activeRuntime.sessionId);
     return ids;
-  }, [connection.liveSessionIds, selectedRuntime]);
+  }, [connection.liveSessionIds, activeRuntime]);
   // The liveness baseline is KNOWN once the socket received it (connection
   // truth); selection never fabricates knowledge.
   const liveKnown = connection.liveSessionStateKnown;
@@ -607,12 +649,12 @@ export function AppShell({ search }: AppShellProps) {
     for (const tab of tabs) {
       if (tab.kind === "session" && runningSessionIds.has(tab.sessionId) && tab.cwd) roots.add(tab.cwd);
     }
-    if (selectedRuntime?.attached === true && runningSessionIds.has(selectedRuntime.sessionId)) {
-      const root = selectedRuntime.snapshot?.projectRoot ?? selectedRuntime.snapshot?.cwd;
+    if (activeRuntime?.attached === true && runningSessionIds.has(activeRuntime.sessionId)) {
+      const root = activeRuntime.snapshot?.projectRoot ?? activeRuntime.snapshot?.cwd;
       if (root) roots.add(root);
     }
     return roots;
-  }, [runningSessionIds, selectedRuntime, catalogSessions, tabs]);
+  }, [runningSessionIds, activeRuntime, catalogSessions, tabs]);
 
   // D4 session-history delete navigation. AppShell is the single navigation
   // owner: when the deleted session equals the URL-selected session it clears
@@ -652,6 +694,22 @@ export function AppShell({ search }: AppShellProps) {
     return { sessionId: result.sessionId, cwd };
   }, [createSession]);
 
+  // Assistant first-send create: the fixed server-resolved cwd replaces the
+  // draft's project selection (the assistant composer has no project picker).
+  // Fails closed while the binding has not resolved (invalid_input).
+  const handleCreateAssistantSession = useCallback(async (): Promise<{ sessionId: string; cwd: string }> => {
+    if (assistantCwd === undefined) {
+      return Promise.reject({
+        code: "invalid_input",
+        message: "assistant workspace is not resolved",
+        retryable: false,
+        phase: "activation",
+      });
+    }
+    const result = await createSession({ cwd: assistantCwd, projectRoot: assistantCwd });
+    return { sessionId: result.sessionId, cwd: assistantCwd };
+  }, [assistantCwd, createSession]);
+
   const primeMissingSession = useCallback((activity: { sessionId: string; cwd: string; firstMessage: string }): void => {
     const now = Date.now();
     const provisional = {
@@ -688,9 +746,17 @@ export function AppShell({ search }: AppShellProps) {
     // navigation, no lease steal (the turn itself keeps running and settles on
     // its own controller).
     if (registry.promoteCreatedPresentation(created.sessionId)) {
-      void navigate({ to: "/", search: { cwd: created.cwd, session: created.sessionId } });
+      if (isAssistantView) {
+        // The assistant URL carries no session id: publish the binding so the
+        // view switches from the first-entry empty state to the conversation.
+        // (The endpoint stays the authority; this only makes the transition
+        // immediate instead of waiting for the refetch.)
+        queryClient.setQueryData(queryKeys.assistant.info(), { cwd: created.cwd, sessionId: created.sessionId });
+      } else {
+        void navigate({ to: "/", search: { cwd: created.cwd, session: created.sessionId } });
+      }
     }
-  }, [navigate, primeMissingSession, registry]);
+  }, [isAssistantView, navigate, primeMissingSession, queryClient, registry]);
 
   // runtime.create may return before Pi has persisted the JSONL catalog entry.
   // The prompt command settlement is the persistence boundary; refresh the HTTP
@@ -1136,6 +1202,9 @@ export function AppShell({ search }: AppShellProps) {
           canNewSession={canAgent}
           onOpenSettings={openSettings}
           onNewSessionInProject={handleOpenHomeForProject}
+          onOpenAssistant={handleOpenAssistant}
+          assistantActive={isAssistantView}
+          canAssistant={canAssistant}
         />
       </div> : null}
       {sidebarOpen && (
@@ -1202,7 +1271,7 @@ export function AppShell({ search }: AppShellProps) {
                     reset per identity) instead of reconciling A's rows into B. */}
                 <ExtensionNotices
                   notices={selectionMatchesLive
-                    ? selectedRuntime?.snapshot?.state.extensionNotifications ?? []
+                    ? activeRuntime?.snapshot?.state.extensionNotifications ?? []
                     : []}
                 />
                 {observationError ? (
@@ -1220,34 +1289,58 @@ export function AppShell({ search }: AppShellProps) {
                     {observationError}
                   </div>
                 ) : null}
-                <TranscriptList
-                  key={activeSessionId ?? "home"}
-                  live={selectionMatchesLive}
-                  overscan={12}
-                  {...(activeSessionId === null ? {} : { sessionId: activeSessionId })}
-                />
+                {isAssistantView && assistantInfo === undefined ? (
+                  // First entry before the binding resolves: an honest loading
+                  // state, or the fixed degraded copy when the Host cannot
+                  // answer (the capability retracted mid-view / sessiond down).
+                  <div
+                    className="transcript-empty"
+                    role={assistantQuery.isError ? "alert" : "status"}
+                    aria-busy={assistantQuery.isError ? undefined : true}
+                    data-testid="assistant-binding-state"
+                  >
+                    {assistantQuery.isError ? null : <span className="transcript-loading-dot" aria-hidden="true" />}
+                    {assistantQuery.isError ? t("desktop.assistantUnavailable") : t("desktop.loadingSession")}
+                  </div>
+                ) : (
+                  <TranscriptList
+                    key={viewSessionId ?? (isAssistantView ? "assistant" : "home")}
+                    live={selectionMatchesLive}
+                    overscan={12}
+                    {...(isAssistantView ? {
+                      emptyState: {
+                        title: t("desktop.assistantEmptyTitle"),
+                        hint: t("desktop.assistantEmptyHint"),
+                      },
+                    } : {})}
+                    {...(viewSessionId === null ? {} : { sessionId: viewSessionId })}
+                  />
+                )}
                 {selectionMatchesLive ? (
                   <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
                 ) : null}
-                {activeSessionId === null ? null : (
+                {viewSessionId === null ? null : (
                   <SubagentActivityCard
-                    key={`status:${activeSessionId}`}
+                    key={`status:${viewSessionId}`}
                     activities={subagentActivity.activities}
                     todos={subagentActivity.todos}
                     onOpenActivity={handleOpenSubagentActivity}
                     onOpenDirectory={() => openSubagentPanel(null)}
                   />
                 )}
-                <Composer
-                  live={selectionMatchesLive}
-                  textareaRef={composerTextareaRef}
-                  onCreateSession={handleCreateSession}
-                  onCreatedSessionDispatched={handleCreatedSessionDispatched}
-                  onSessionActivitySettled={handleSessionActivitySettled}
-                  selectedSessionHasTitle={selectedSessionHasTitle}
-                  {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
-                  {...(activeSessionId === null ? {} : { sessionId: activeSessionId })}
-                />
+                {isAssistantView && assistantInfo === undefined ? null : (
+                  <Composer
+                    live={selectionMatchesLive}
+                    textareaRef={composerTextareaRef}
+                    onCreateSession={isAssistantView ? handleCreateAssistantSession : handleCreateSession}
+                    onCreatedSessionDispatched={handleCreatedSessionDispatched}
+                    onSessionActivitySettled={handleSessionActivitySettled}
+                    selectedSessionHasTitle={isAssistantView ? false : selectedSessionHasTitle}
+                    {...(isAssistantView ? { placeholder: t("desktop.assistantPlaceholder") } : {})}
+                    {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
+                    {...(viewSessionId === null ? {} : { sessionId: viewSessionId })}
+                  />
+                )}
               </>
             )}
           </main>
@@ -1315,9 +1408,9 @@ export function AppShell({ search }: AppShellProps) {
               childStream={subagentActivity.childStream(selectedChildSessionId)}
             />
           ) : null}
-          {rightPane === "side_chat" && canSideChat && selectedRuntime !== null ? (
+          {rightPane === "side_chat" && canSideChat && activeRuntime !== null ? (
             <SideChatPanel
-              runtime={selectedRuntime}
+              runtime={activeRuntime}
               cwd={search.cwd}
               onOpenFile={(filePath) => handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: activeSessionId })}
             />

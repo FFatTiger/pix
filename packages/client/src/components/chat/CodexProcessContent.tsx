@@ -29,6 +29,7 @@ import {
   type StepTone,
 } from "@/lib/step-categorizer";
 import type { StepIconName } from "@/lib/step-visuals";
+import { assistantToolDetailValue, assistantToolLabel } from "@/lib/tool-names";
 import { countPatchStats } from "@/lib/turn-written-files";
 
 type ToolBlock = Extract<ProcessContentBlock, { type: "toolCall" }>;
@@ -207,6 +208,26 @@ function classifyPresentation(block: ToolBlock, t: Translate): ToolPresentation 
   }
   const target = toolTarget(block);
   const shortTarget = target ? basenameResourcePath(target) : undefined;
+
+  // Assistant / memory tools carry their own human identity (查找了会话 /
+  // 读取了会话 / 想起了记忆 / 记住了) before any tone heuristic fires —
+  // "read_session" would otherwise classify as document_read and
+  // "search_sessions" as document_search. Resolved from the one shared
+  // table in lib/tool-names (also used by the timeline display mode).
+  const assistantLabel = assistantToolLabel(block.toolName);
+  if (assistantLabel) {
+    const detailValue = assistantToolDetailValue(block.toolName, block.input);
+    return {
+      action: t(assistantLabel.labelKey),
+      completedAction: t(assistantLabel.labelKey),
+      continuedAction: t(assistantLabel.labelKey),
+      detail: detailValue === ""
+        ? t(assistantLabel.labelKey)
+        : t(assistantLabel.detailKey, { value: detailValue }),
+      iconName: assistantLabel.iconName,
+      tone: undefined,
+    };
+  }
 
   if (isImageViewTool(block)) {
     const imageCount = Math.max(1, toolResultImages(block.result).length);

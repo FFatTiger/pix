@@ -166,6 +166,10 @@ export const urls = {
     subagents: () => resource("settings/subagents"),
   },
   runtime: { ws: () => resource("runtime") },
+  assistant: {
+    /** GET /v1/assistant — assistant conversation binding (cwd + latest session id). */
+    get: () => resource("assistant"),
+  },
 } as const;
 
 export function assertV1Path(path: string): void {

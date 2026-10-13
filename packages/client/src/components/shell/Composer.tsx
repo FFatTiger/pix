@@ -136,6 +136,8 @@ export interface ComposerProps {
    * rename is never clobbered (AppShell derives it from the sessions list).
    */
   selectedSessionHasTitle?: boolean;
+  /** Overrides the composer's idle placeholder (e.g. the assistant view copy). */
+  placeholder?: string;
 }
 
 /** Fixed safe copy — never surface a raw ProtocolError in the info bar. */
@@ -196,7 +198,7 @@ function getUserInputTexts(messages: readonly { role: string; content?: unknown 
   return history;
 }
 
-export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, projectRoots, onProjectChange, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, selectedSessionHasTitle }: ComposerProps) {
+export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessionProp, cwd: projectCwdProp, projectRoots, onProjectChange, onCreateSession, onCreatedSessionDispatched, onSessionActivitySettled, selectedSessionHasTitle, placeholder }: ComposerProps) {
   // Exact selected runtime: AppShell (and standalone mounts) pass the URL/
   // selected session as a prop. Never a facade "current holder" — a detached
   // selected session stays history-only until a send activates it. Home/
@@ -1185,6 +1187,7 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         onAudioUnlock={unlockAudio}
         {...(draftKey === undefined ? {} : { draftKey })}
         cwd={cwd}
+        {...(placeholder === undefined ? {} : { placeholder })}
         {...(onProjectChange && projectRoots ? { projectRoots, onProjectChange } : {})}
         messagesScrollRef={transcriptScrollRef}
         {...(liveWorkspaceEnabled && canFilesIndex ? { listFiles, searchFiles } : {})}

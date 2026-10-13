@@ -84,6 +84,12 @@ export interface SidebarProps {
   onCollapseSidebar?: () => void;
   /** Open the new-session page scoped to a project root (no immediate create). */
   onNewSessionInProject?: (projectRoot: string) => void;
+  /** Open the project-less assistant conversation (the evergreen view). */
+  onOpenAssistant?: () => void;
+  /** True while the assistant view is the active content (selection state). */
+  assistantActive?: boolean;
+  /** Honest Host `assistant`-capability gate for showing the fixed entry. */
+  canAssistant?: boolean;
 }
 
 /**
@@ -314,6 +320,9 @@ export function Sidebar({
   onOpenSettings,
   onCollapseSidebar,
   onNewSessionInProject,
+  onOpenAssistant,
+  assistantActive,
+  canAssistant,
 }: SidebarProps) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -726,6 +735,21 @@ export function Sidebar({
         </div>
 
         <nav className="sidebar-primary-nav" aria-label={t("desktop.primaryNav")}>
+          {canAssistant && onOpenAssistant ? (
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-testid="sidebar-assistant"
+              data-active={assistantActive === true ? "true" : undefined}
+              title={t("desktop.assistantNav")}
+              aria-label={t("desktop.assistantNav")}
+              aria-current={assistantActive === true ? "page" : undefined}
+              onClick={onOpenAssistant}
+            >
+              <Sparkle size={16} weight="regular" aria-hidden="true" />
+              <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.assistantNav")}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             className="sidebar-nav-item"
