@@ -1,9 +1,11 @@
 import {
   BuiltInCapabilityConfigResponseSchema,
+  CompactionSettingsResponseSchema,
   SubagentSettingsResponseSchema,
   ToolSettingsResponseSchema,
   type BuiltInCapabilityConfigMutation,
   type SettingsConfigMutation,
+  type CompactionSettingsMutation,
   type SubagentSettingsMutation,
   type ToolSettingsMutation,
 } from "@fffattiger/pix-protocol";
@@ -125,6 +127,18 @@ export function createConfigurationApi(http: HttpClient) {
       save: (input: SubagentSettingsMutation, signal?: AbortSignal) =>
         http.put(urls.settings.subagents(), input, {
           schema: SubagentSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+    },
+    compaction: {
+      get: (signal?: AbortSignal) =>
+        http.get(urls.settings.compaction(), {
+          schema: CompactionSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      save: (input: CompactionSettingsMutation, signal?: AbortSignal) =>
+        http.put(urls.settings.compaction(), input, {
+          schema: CompactionSettingsResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
     },

@@ -127,6 +127,8 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     readToolsConfig: () => settingsConfig.readToolsConfig(),
     writeToolsConfig: (input) => settingsConfig.writeToolsConfig(input as never),
     readSubagentConfig: () => settingsConfig.readSubagentConfig(),
+    readCompactionConfig: () => settingsConfig.readCompactionConfig(),
+    writeCompactionConfig: (input) => settingsConfig.writeCompactionConfig(input as never),
     writeSubagentConfig: (input) => settingsConfig.writeSubagentConfig(input as never),
   };
 

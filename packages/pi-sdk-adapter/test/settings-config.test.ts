@@ -462,3 +462,171 @@ describe("structured global subagent settings", () => {
     } finally { await rm(agentDir, { recursive: true, force: true }); }
   });
 });
+
+describe("structured context-compaction settings (compaction + smartCompact)", () => {
+  it("reads documented defaults when settings.json has neither object", async () => {
+    const agentDir = await fixture(`{\n  "defaultProvider": "acme-gpt",\n}\n`);
+    try {
+      const snapshot = await createPiSdkSettingsConfigStore({ agentDir }).readCompactionConfig();
+      assert.equal(snapshot.revision, revision(`{\n  "defaultProvider": "acme-gpt",\n}\n`));
+      assert.deepEqual(snapshot.settings, {
+        native: { enabled: true, reserveTokens: null, keepRecentTokens: null },
+        smart: {
+          autoTrigger: true,
+          minContextPercent: 80,
+          profile: "balanced",
+          summaryModel: null,
+          segmentationModel: null,
+          summaryThinkingLevel: null,
+          segmentationThinkingLevel: null,
+          autoTriggerTimeoutMs: 300000,
+          backupEnabled: true,
+          scrubSecrets: true,
+          focusWeighting: true,
+          onlineDamageMonitor: true,
+          adaptiveDamageFeedback: false,
+        },
+      });
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads persisted values, discarding invalid ones to the plugin defaults", async () => {
+    const source = `${JSON.stringify({
+      compaction: { enabled: false, reserveTokens: 20000, modelOverrides: { "x/y": { reserveTokens: 1 } } },
+      smartCompact: {
+        autoTrigger: false,
+        minContextPercent: 95,
+        profile: "aggressive",
+        summaryModel: "huu-gpt/gpt-5.6-sol",
+        segmentationThinkingLevel: "high",
+        autoTriggerTimeoutMs: 60000,
+        backupEnabled: false,
+        scrubSecrets: true,
+        focusWeighting: false,
+        onlineDamageMonitor: true,
+        adaptiveDamageFeedback: true,
+        // Plugin-only keys the page does not manage round-trip untouched.
+        mode: "fast",
+        telemetryChannel: "canary",
+        profile_INVALID_NAME_JUST_VALUE: 1,
+      },
+    }, null, 2)}\n`;
+    const agentDir = await fixture(source);
+    try {
+      const snapshot = await createPiSdkSettingsConfigStore({ agentDir }).readCompactionConfig();
+      assert.equal(snapshot.settings.native.enabled, false);
+      assert.equal(snapshot.settings.native.reserveTokens, 20000);
+      assert.equal(snapshot.settings.smart.profile, "aggressive");
+      assert.equal(snapshot.settings.smart.summaryModel, "huu-gpt/gpt-5.6-sol");
+      assert.equal(snapshot.settings.smart.segmentationThinkingLevel, "high");
+      assert.equal(snapshot.settings.smart.adaptiveDamageFeedback, true);
+      // An invalid enum the plugin would discard projects as its default.
+      const poisoned = await fixture(`${JSON.stringify({ smartCompact: { profile: "turbo" } })}\n`);
+      try {
+        const bad = await createPiSdkSettingsConfigStore({ agentDir: poisoned }).readCompactionConfig();
+        assert.equal(bad.settings.smart.profile, "balanced");
+      } finally {
+        await rm(poisoned, { recursive: true, force: true });
+      }
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes the edited subset, preserves unknown keys, and deletes on null", async () => {
+    const source = `${JSON.stringify({
+      defaultProvider: "acme-gpt",
+      compaction: { enabled: true, reserveTokens: 4096, modelOverrides: { keep: true } },
+      smartCompact: { autoTrigger: true, mode: "fast", profiles: { light: { maxChunkTokens: 1 } } },
+    }, null, 2)}\n`;
+    const agentDir = await fixture(source);
+    try {
+      const store = createPiSdkSettingsConfigStore({ agentDir });
+      const before = await store.readCompactionConfig();
+      const saved = await store.writeCompactionConfig({
+        expectedRevision: before.revision,
+        settings: {
+          native: { enabled: true, reserveTokens: null, keepRecentTokens: 8192 },
+          smart: {
+            ...before.settings.smart,
+            autoTrigger: false,
+            minContextPercent: 70,
+            profile: "light",
+            summaryThinkingLevel: "low",
+          },
+        },
+      });
+      assert.equal(saved.settings.native.reserveTokens, null);
+      assert.equal(saved.settings.native.keepRecentTokens, 8192);
+      assert.equal(saved.settings.smart.autoTrigger, false);
+      assert.equal(saved.settings.smart.minContextPercent, 70);
+      assert.equal(saved.settings.smart.profile, "light");
+      const persisted = JSON.parse(await readFile(join(agentDir, "settings.json"), "utf8"));
+      // Unknown/plugin-only keys preserved verbatim; null deleted the override.
+      assert.deepEqual(persisted.compaction.modelOverrides, { keep: true });
+      assert.equal("reserveTokens" in persisted.compaction, false);
+      assert.equal(persisted.compaction.keepRecentTokens, 8192);
+      assert.equal(persisted.smartCompact.mode, "fast");
+      assert.deepEqual(persisted.smartCompact.profiles, { light: { maxChunkTokens: 1 } });
+      assert.equal(persisted.defaultProvider, "acme-gpt");
+      assert.equal("summaryModel" in persisted.smartCompact, false);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fences stale revisions and rejects malformed settings without writing", async () => {
+    const agentDir = await fixture(`{\n  "defaultProvider": "acme-gpt",\n}\n`);
+    try {
+      const store = createPiSdkSettingsConfigStore({ agentDir });
+      const before = await store.readCompactionConfig();
+      await assert.rejects(
+        store.writeCompactionConfig({ expectedRevision: before.revision, settings: { native: {} } as never }),
+        (error: unknown) => {
+          assert.equal((error as { code?: string }).code, "invalid_input");
+          return true;
+        },
+      );
+      // Out-of-range numeric input is rejected by the strict DTO.
+      const snapshot2 = await store.readCompactionConfig();
+      await assert.rejects(
+        store.writeCompactionConfig({
+          expectedRevision: snapshot2.revision,
+          settings: { ...snapshot2.settings, smart: { ...snapshot2.settings.smart, minContextPercent: 150 } },
+        }),
+        (error: unknown) => {
+          assert.equal((error as { code?: string }).code, "invalid_input");
+          return true;
+        },
+      );
+      // Stale CAS token conflicts.
+      await assert.rejects(
+        store.writeCompactionConfig({ expectedRevision: "f".repeat(64), settings: snapshot2.settings }),
+        (error: unknown) => {
+          assert.equal((error as { code?: string }).code, "conflict");
+          return true;
+        },
+      );
+      assert.equal(await readFile(join(agentDir, "settings.json"), "utf8"), `{\n  "defaultProvider": "acme-gpt",\n}\n`);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a present-but-wrong-type compaction object fails closed everywhere", async () => {
+    const agentDir = await fixture(`{\n  "compaction": "yes",\n}\n`);
+    try {
+      await assert.rejects(
+        createPiSdkSettingsConfigStore({ agentDir }).readCompactionConfig(),
+        (error: unknown) => {
+          assert.equal((error as { code?: string }).code, "invalid_input");
+          return true;
+        },
+      );
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+});

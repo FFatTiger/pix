@@ -133,4 +133,143 @@ export interface SettingsConfigStorePort {
   readSubagentConfig(): Promise<SubagentSettingsSnapshot>;
   /** Structured CAS write; nullable fields clear native overrides. */
   writeSubagentConfig(input: SubagentSettingsMutation): Promise<SubagentSettingsSnapshot>;
+  /**
+   * Structured read of the context-compaction objects (`compaction` +
+   * `smartCompact`); absent keys read as the documented defaults.
+   */
+  readCompactionConfig(): Promise<CompactionSettingsSnapshot>;
+  /** Structured CAS write; nullable fields clear the persisted overrides. */
+  writeCompactionConfig(input: CompactionSettingsMutation): Promise<CompactionSettingsSnapshot>;
+}
+
+// ---------------------------------------------------------------------------
+// Context compaction (settings.json `compaction` + `smartCompact` objects)
+// ---------------------------------------------------------------------------
+
+/** pi-smart-compact compression styles (plugin VALID_PROFILES, pinned 10.3.0). */
+export type SmartCompactProfile = "light" | "balanced" | "aggressive";
+
+/** Plugin thinking levels (no "off": compaction always reasons at least minimally). */
+export type SmartCompactThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export const SMART_COMPACT_PROFILES: readonly SmartCompactProfile[] = ["light", "balanced", "aggressive"];
+export const SMART_COMPACT_THINKING_LEVELS: readonly SmartCompactThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Pi native auto-compaction (`compaction` object). Null clears the override. */
+export interface NativeCompactionSettings {
+  /** `compaction.enabled` — Pi default true. Off = no native auto-compaction. */
+  enabled: boolean;
+  /** `compaction.reserveTokens` — tokens reserved after native compaction. */
+  reserveTokens: number | null;
+  /** `compaction.keepRecentTokens` — recent tokens kept verbatim. */
+  keepRecentTokens: number | null;
+}
+
+/**
+ * The page-managed subset of the plugin's `smartCompact` object. The plugin's
+ * on/off lives in pix-builtins.json (capability), NOT here. Null model/thinking
+ * clears the override (plugin default: follow the session model / "minimal").
+ */
+export interface SmartCompactSettings {
+  autoTrigger: boolean;
+  minContextPercent: number;
+  profile: SmartCompactProfile;
+  summaryModel: string | null;
+  segmentationModel: string | null;
+  summaryThinkingLevel: SmartCompactThinkingLevel | null;
+  segmentationThinkingLevel: SmartCompactThinkingLevel | null;
+  autoTriggerTimeoutMs: number;
+  backupEnabled: boolean;
+  scrubSecrets: boolean;
+  focusWeighting: boolean;
+  onlineDamageMonitor: boolean;
+  adaptiveDamageFeedback: boolean;
+}
+
+export interface CompactionSettings {
+  native: NativeCompactionSettings;
+  smart: SmartCompactSettings;
+}
+
+export interface CompactionSettingsSnapshot {
+  /** SHA-256 of the exact settings.json bytes; empty-file digest when absent. */
+  revision: string;
+  settings: CompactionSettings;
+}
+
+export interface CompactionSettingsMutation {
+  expectedRevision: string;
+  settings: CompactionSettings;
+}
+
+function normalizeCompactionModel(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function normalizeCompactionThinking(value: unknown): SmartCompactThinkingLevel | null | undefined {
+  if (value === null) return null;
+  return typeof value === "string" && SMART_COMPACT_THINKING_LEVELS.includes(value as SmartCompactThinkingLevel)
+    ? value as SmartCompactThinkingLevel
+    : undefined;
+}
+
+function normalizeCompactionTokens(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * Validate the strict editable compaction DTO. All fields required (missing
+ * keys read as the documented defaults before reaching the UI); nullable
+ * fields clear the persisted override. Returns null on any malformed value.
+ */
+export function normalizeCompactionSettings(value: unknown): CompactionSettings | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as { native?: unknown; smart?: unknown };
+  if (input.native === null || typeof input.native !== "object" || Array.isArray(input.native)) return null;
+  if (input.smart === null || typeof input.smart !== "object" || Array.isArray(input.smart)) return null;
+  const native = input.native as Record<string, unknown>;
+  const smart = input.smart as Record<string, unknown>;
+  if (typeof native.enabled !== "boolean") return null;
+  const reserveTokens = normalizeCompactionTokens(native.reserveTokens);
+  const keepRecentTokens = normalizeCompactionTokens(native.keepRecentTokens);
+  if (reserveTokens === undefined || keepRecentTokens === undefined) return null;
+  if (typeof smart.autoTrigger !== "boolean"
+    || typeof smart.backupEnabled !== "boolean"
+    || typeof smart.scrubSecrets !== "boolean"
+    || typeof smart.focusWeighting !== "boolean"
+    || typeof smart.onlineDamageMonitor !== "boolean"
+    || typeof smart.adaptiveDamageFeedback !== "boolean") return null;
+  if (typeof smart.minContextPercent !== "number"
+    || !Number.isFinite(smart.minContextPercent)
+    || smart.minContextPercent < 0 || smart.minContextPercent > 100) return null;
+  if (typeof smart.autoTriggerTimeoutMs !== "number"
+    || !Number.isSafeInteger(smart.autoTriggerTimeoutMs)
+    || smart.autoTriggerTimeoutMs < 1000 || smart.autoTriggerTimeoutMs > 300000) return null;
+  if (typeof smart.profile !== "string" || !SMART_COMPACT_PROFILES.includes(smart.profile as SmartCompactProfile)) return null;
+  const summaryModel = normalizeCompactionModel(smart.summaryModel);
+  const segmentationModel = normalizeCompactionModel(smart.segmentationModel);
+  const summaryThinkingLevel = normalizeCompactionThinking(smart.summaryThinkingLevel);
+  const segmentationThinkingLevel = normalizeCompactionThinking(smart.segmentationThinkingLevel);
+  if (summaryModel === undefined || segmentationModel === undefined
+    || summaryThinkingLevel === undefined || segmentationThinkingLevel === undefined) return null;
+  return {
+    native: { enabled: native.enabled, reserveTokens, keepRecentTokens },
+    smart: {
+      autoTrigger: smart.autoTrigger,
+      minContextPercent: smart.minContextPercent,
+      profile: smart.profile as SmartCompactProfile,
+      summaryModel,
+      segmentationModel,
+      summaryThinkingLevel,
+      segmentationThinkingLevel,
+      autoTriggerTimeoutMs: smart.autoTriggerTimeoutMs,
+      backupEnabled: smart.backupEnabled,
+      scrubSecrets: smart.scrubSecrets,
+      focusWeighting: smart.focusWeighting,
+      onlineDamageMonitor: smart.onlineDamageMonitor,
+      adaptiveDamageFeedback: smart.adaptiveDamageFeedback,
+    },
+  };
 }

@@ -55,6 +55,7 @@ export const queryKeys = {
     /** Pix-owned curated Agent feature toggles. */
     builtIns: () => ["pix", "settings", "built-ins"] as const,
     subagents: () => ["pix", "settings", "subagents"] as const,
+    compaction: () => ["pix", "settings", "compaction"] as const,
   },
 
   files: {

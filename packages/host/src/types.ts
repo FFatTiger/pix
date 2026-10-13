@@ -384,6 +384,10 @@ export interface CatalogSettingsMutationSeam {
   writeToolsConfig(input: unknown): Promise<unknown>;
   readSubagentConfig(): Promise<unknown>;
   writeSubagentConfig(input: unknown): Promise<unknown>;
+  /** Structured context-compaction read (`compaction` + `smartCompact`). */
+  readCompactionConfig(): Promise<unknown>;
+  /** Structured context-compaction CAS write. */
+  writeCompactionConfig(input: unknown): Promise<unknown>;
 }
 
 /** Pix built-in desired-enablement seam (`pix-builtins.json`, agent-dir scope). */

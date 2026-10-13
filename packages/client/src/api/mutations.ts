@@ -163,6 +163,16 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
           return invalidate(queryClient, queryKeys.settingsConfig.file(), queryKeys.settingsConfig.tools());
         },
       }),
+      /** CAS write of the context-compaction settings. */
+      saveCompaction: () => ({
+        mutationKey: ["pix", "settings", "save-compaction"] as const,
+        mutationFn: (input: Parameters<typeof configuration.compaction.save>[0]) =>
+          configuration.compaction.save(input),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.compaction.save>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.compaction(), data);
+          return invalidate(queryClient, queryKeys.settingsConfig.file());
+        },
+      }),
       /** CAS write of the global settings.json raw text. */
       saveConfigFile: () => ({
         mutationKey: ["pix", "settings", "save-config"] as const,
@@ -176,6 +186,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
             queryKeys.settingsConfig.tools(),
             queryKeys.settingsConfig.builtIns(),
             queryKeys.settingsConfig.subagents(),
+            queryKeys.settingsConfig.compaction(),
             queryKeys.skills.all,
             queryKeys.plugins.all,
             queryKeys.commands.all,
