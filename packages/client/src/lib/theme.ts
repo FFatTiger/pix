@@ -45,7 +45,7 @@ export function applyTheme(mode: ThemeMode): void {
   root.classList.toggle("dark", resolved === "dark");
   root.style.colorScheme = resolved;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", resolved === "dark" ? "#1a1a1a" : "#ffffff");
+  if (meta) meta.setAttribute("content", resolved === "dark" ? "#242424" : "#f5f5f5");
 }
 
 /** Observe mode changes (custom event + cross-tab storage). */
