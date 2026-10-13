@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AssistantActionCard, isAssistantActionTool } from "./AssistantActionCard";
 import { queryKeys } from "@/api/query-keys";
-import { setDraft, getDraft, clearDraft } from "@/lib/draft-store";
+import { getDraft, clearDraft } from "@/lib/draft-store";
 import { loadSidebarItemState } from "@/lib/sidebar-item-state";
 import { HttpClientProvider } from "@/app/http-context";
 import { I18nProvider } from "@/hooks/useI18n";
@@ -29,7 +29,7 @@ function header(over: Partial<SessionHeader> = {}): SessionHeader {
 
 function mount(card: React.ReactElement, sessions: SessionHeader[] = [header()]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  queryClient.setQueryData(queryKeys.sessions.page(1, 5, {}), { sessions, page: 1, pageSize: 5, total: sessions.length, totalPages: 1, catalogRevision: 0 });
+  queryClient.setQueryData(queryKeys.sessions.page(1, 5), { sessions, page: 1, pageSize: 5, total: sessions.length, totalPages: 1, catalogRevision: 0 });
   return render(
     <QueryClientProvider client={queryClient}>
       <HttpClientProvider>
@@ -88,6 +88,7 @@ describe("AssistantActionCard", () => {
 
   it("organize_sessions delete: two-step in-card confirmation before the API call", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input;
       assertDelete(init);
       return new Response(JSON.stringify({ sessionId: "s-1", deleted: true }), { status: 200, headers: { "content-type": "application/json" } });
       function assertDelete(init2: RequestInit | undefined) {
