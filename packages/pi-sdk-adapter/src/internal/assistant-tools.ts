@@ -375,7 +375,17 @@ export function createAssistantToolsExtension(): InlineExtension {
           };
         }
         signal?.throwIfAborted();
-        const entries = SessionManager.open(target.path).getEntries() as unknown as SdkMessageEntry[];
+        const manager = SessionManager.open(target.path);
+        // Fail closed on identity mismatch (AGENTS §6): a stale/cached path must
+        // never summarize a different JSONL as the requested session.
+        if (manager.getSessionId() !== target.id) {
+          return {
+            content: [{ type: "text", text: `会话文件身份校验失败，无法读取「${concise(selector, 60)}」。可重新用 search_sessions 查找。` }],
+            details: undefined,
+            isError: true,
+          };
+        }
+        const entries = manager.getEntries() as unknown as SdkMessageEntry[];
         const messageEntries = entries.filter((entry) => entry.type === "message");
         const recent = messageEntries.slice(-tail);
         const summaries = recent

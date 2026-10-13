@@ -45,7 +45,7 @@ import type { FileViewerState } from "@/features/workspace/viewer/file-viewer-st
 import { useSelectedWorkspaceAccess } from "@/features/session-history/use-selected-workspace-access";
 import { useSubagentActivity } from "@/features/subagents/use-subagent-activity";
 import type { SubagentActivity } from "@/lib/subagent-activity";
-import { homePresentationKey, useRuntime, useRuntimeConnection, useRuntimeForegroundActivity, useRuntimeOwners, useSelectedRuntime, type PresentationProvenance } from "@/runtime";
+import { assistantPresentationKey, homePresentationKey, useRuntime, useRuntimeConnection, useRuntimeForegroundActivity, useRuntimeOwners, useSelectedRuntime, type PresentationProvenance } from "@/runtime";
 import { describeRuntimeObservationError } from "@/runtime/observation-errors";
 import { RUNTIME_OBSERVE_EXISTING_FEATURE } from "@fffattiger/pix-protocol";
 import { ExtensionNotices } from "@/components/shell/ExtensionNotices";
@@ -210,7 +210,9 @@ export function AppShell({ search }: AppShellProps) {
     ? fileTabId(search.cwd, search.file)
     : selectedSessionId !== null
       ? sessionTabId(selectedSessionId)
-      : homePresentationKey(search.cwd);
+      : isAssistantView
+        ? assistantPresentationKey()
+        : homePresentationKey(search.cwd);
   // Exact HTTP workspace authorization for the selected session (home/file is
   // cwd/catalog-route governed — no history-row inference), AND the live
   // gate/agent admission rights. Busy/feature are NOT admission rights: busy
@@ -428,9 +430,11 @@ export function AppShell({ search }: AppShellProps) {
     }
     if (search.session !== undefined) {
       saveLastWorkspaceSession(search.session);
-    } else if (search.file === undefined) {
+    } else if (search.file === undefined && !isAssistantView) {
       // A cwd-scoped new-session page is an intentional home. File tabs are
-      // ephemeral, so viewing one preserves the previous session target.
+      // ephemeral, so viewing one preserves the previous session target; the
+      // assistant view is NOT a home declaration — visiting it must not erase
+      // the cold-start restore target.
       saveLastWorkspaceSession(null);
     }
   }, [search.cwd, search.file, search.session]);
@@ -591,8 +595,8 @@ export function AppShell({ search }: AppShellProps) {
     && activeRuntime?.capabilities?.capabilities.includes("runtime.side_chat") === true;
   const rightPaneAvailable = canFiles || canAgents || canSideChat;
   const subagentActivity = useSubagentActivity({
-    sessionId: activeSessionId,
-    enabled: canBrowseSessions && activeSessionId !== null,
+    sessionId: viewSessionId,
+    enabled: canBrowseSessions && viewSessionId !== null,
     live: selectionMatchesLive,
   });
   const runningAgentCount = useMemo(
@@ -604,7 +608,7 @@ export function AppShell({ search }: AppShellProps) {
   useEffect(() => {
     setRightPane((current) => current === "files" ? current : null);
     setSelectedChildSessionId(null);
-  }, [activeSessionId]);
+  }, [viewSessionId]);
   // Global running authority = connection.runningSessionIds (sessiond busy
   // baseline) UNION the registry foreground optimistic/turn owner (background
   // or mid-transfer send cue) UNION the selected exact session while it is
@@ -1317,7 +1321,7 @@ export function AppShell({ search }: AppShellProps) {
                   />
                 )}
                 {selectionMatchesLive ? (
-                  <ExtensionRequests live composerTextareaRef={composerTextareaRef} />
+                  <ExtensionRequests live runtime={activeRuntime} composerTextareaRef={composerTextareaRef} />
                 ) : null}
                 {viewSessionId === null ? null : (
                   <SubagentActivityCard
@@ -1390,13 +1394,13 @@ export function AppShell({ search }: AppShellProps) {
               onOpenFile={handleOpenFile}
             />
           </div>
-          {subagentPanelOpen && activeSessionId !== null ? (
+          {subagentPanelOpen && viewSessionId !== null ? (
             <SubagentPanel
               activities={subagentActivity.activities}
               error={subagentActivity.error}
               loading={subagentActivity.loading}
               refreshing={subagentActivity.refreshing}
-              parentSessionId={activeSessionId}
+              parentSessionId={viewSessionId}
               parentEpoch={subagentActivity.epoch}
               subagentsRevision={subagentActivity.revision}
               selectedChildSessionId={selectedChildSessionId}
@@ -1411,7 +1415,7 @@ export function AppShell({ search }: AppShellProps) {
           {rightPane === "side_chat" && canSideChat && activeRuntime !== null ? (
             <SideChatPanel
               runtime={activeRuntime}
-              cwd={search.cwd}
+              cwd={search.cwd ?? (isAssistantView ? assistantInfo?.cwd : undefined)}
               onOpenFile={(filePath) => handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: activeSessionId })}
             />
           ) : null}

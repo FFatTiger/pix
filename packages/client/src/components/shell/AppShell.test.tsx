@@ -4901,6 +4901,64 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     expect(screen.queryByLabelText("Send message")).toBeNull();
   });
 
+  it("a late assistant create after switching to home never navigates (distinct draft keys)", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    const qc = authenticatedQueryClient();
+    const app = mountApp({ assistant: true }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
+    const ws = await acceptAutomaticConnection(submitTurnAck());
+    await act(async () => { for (let i = 0; i < 30; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+
+    await typeAndSend("assistant first prompt");
+    const create = lastFrame<{ type: "create"; id: string; payload: { cwd: string } }>(ws, "create")!;
+    expect(create.payload.cwd).toBe(ASSISTANT_CWD);
+
+    // Switch to the ordinary home draft BEFORE the create resolves.
+    await act(async () => { app.rerender({}); await flush(6); });
+    await act(async () => {
+      ws.serverSend({
+        type: "response",
+        id: create.id,
+        payload: { ok: true, result: { sessionId: "assist-late", epoch: "eL", lastEventId: 0, created: true, cwd: ASSISTANT_CWD, projectRoot: ASSISTANT_CWD } },
+      });
+      await flush(8);
+    });
+
+    // The home presentation is a DIFFERENT draft key: no navigation, no
+    // assistant-binding publish from the stale assistant create (the cached
+    // binding stays whatever the endpoint last answered — never assist-late).
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(qc.getQueryData<{ sessionId: string | null }>(queryKeys.assistant.info())?.sessionId ?? null).toBe(null);
+  });
+
+  it("a late HOME create while on the assistant view never poisons the assistant binding", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    const qc = authenticatedQueryClient();
+    const app = mountApp({ cwd: "/x" }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
+    const ws = await acceptAutomaticConnection(submitTurnAck());
+    await act(async () => { for (let i = 0; i < 30; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+
+    await typeAndSend("home first prompt");
+    const create = lastFrame<{ type: "create"; id: string; payload: { cwd: string } }>(ws, "create")!;
+    expect(create.payload.cwd).toBe("/x");
+
+    // Switch to the assistant view BEFORE the home create resolves.
+    await act(async () => { app.rerender({ assistant: true }); await flush(6); });
+    await act(async () => {
+      ws.serverSend({
+        type: "response",
+        id: create.id,
+        payload: { ok: true, result: { sessionId: "home-late", epoch: "eH", lastEventId: 0, created: true, cwd: "/x", projectRoot: "/x" } },
+      });
+      await flush(8);
+    });
+
+    // The assistant draft key is distinct: the project session never becomes
+    // the assistant conversation binding.
+    const binding = qc.getQueryData<{ cwd: string; sessionId: string | null }>(queryKeys.assistant.info());
+    expect(binding?.sessionId ?? null).toBe(null);
+    expect(binding?.cwd).toBe(ASSISTANT_CWD);
+  });
+
   it("switching from the assistant to a normal session clears the selector", async () => {
     globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
     mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });

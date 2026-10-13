@@ -301,6 +301,32 @@ describe("assistant tools (search_sessions / read_session)", () => {
     assert.equal(result.isError, true);
   });
 
+  it("read_session fails closed when the JSONL identity does not match the listed id", async () => {
+    // Two seeded sessions; the tool resolves the requested id but opens the
+    // WRONG file (simulating a stale cached path): the identity fence must
+    // refuse instead of summarizing another session's JSONL (AGENTS §6).
+    const requested = SessionManager.create("/repos/real");
+    mkdirSync(requested.getSessionDir(), { recursive: true });
+    requested.appendMessage({ role: "user", content: "real session content", timestamp: NOW });
+    const other = SessionManager.create("/repos/other");
+    mkdirSync(other.getSessionDir(), { recursive: true });
+    other.appendMessage({ role: "user", content: "other session content", timestamp: NOW });
+    resetAssistantToolsListCacheForTests();
+    await runTool(tools, "search_sessions", { query: "real session content" }); // prime the list cache
+    const realOpen = SessionManager.open.bind(SessionManager);
+    (SessionManager as { open: typeof SessionManager.open }).open = ((path: string) => {
+      void path;
+      return other;
+    }) as typeof SessionManager.open;
+    try {
+      const result = await runTool(tools, "read_session", { session: requested.getSessionId() });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0]!.text!, /身份校验失败/);
+    } finally {
+      (SessionManager as { open: typeof SessionManager.open }).open = realOpen;
+    }
+  });
+
   it("registration is scoped to the assistant workspace and survives narrow tool selections", async () => {
     const realAssistantDir = resolveAssistantWorkspaceDir(homedir());
     assert.equal(isAssistantWorkspaceCwd(realAssistantDir), true);
