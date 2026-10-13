@@ -7,7 +7,7 @@ import { useHttpClient } from "@/app/http-context";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
 import { useSettingsDraft } from "./settings-draft";
-import { SettingsSaveBar, SettingsSection } from "./settings-ui";
+import { SettingsSaveBar, SettingsSection, SettingsWarningBanner } from "./settings-ui";
 
 function describeSettingsConfigError(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
   if (error instanceof HttpError) {
@@ -61,7 +61,7 @@ export function SettingsFileConfig() {
   if (!can("settings.configure")) {
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.settingsFileTitle")} description={t("desktop.settingsFileDescription")}>
+        <SettingsSection>
           <p className="workspace-hint">{t("desktop.settingsFileUnavailable")}</p>
         </SettingsSection>
       </div>
@@ -70,7 +70,7 @@ export function SettingsFileConfig() {
   if (query.isLoading) {
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.settingsFileTitle")} description={t("desktop.settingsFileDescription")}>
+        <SettingsSection>
           <p className="workspace-hint">{t("desktop.modelsLoading")}</p>
         </SettingsSection>
       </div>
@@ -79,7 +79,7 @@ export function SettingsFileConfig() {
   if (query.isError) {
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.settingsFileTitle")} description={t("desktop.settingsFileDescription")}>
+        <SettingsSection>
           <p className="workspace-hint workspace-hint--error" role="alert">{describeSettingsConfigError(query.error, t)}</p>
         </SettingsSection>
       </div>
@@ -96,8 +96,8 @@ export function SettingsFileConfig() {
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0 }}>
       <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <div className="settings-warning-banner" role="note">{t("desktop.settingsFileWarning")}</div>
-        <SettingsSection title={t("desktop.settingsFileTitle")} description={t("desktop.settingsFileDescription")}>
+        <SettingsWarningBanner>{t("desktop.settingsFileWarning")}</SettingsWarningBanner>
+        <SettingsSection>
           <textarea
             className="settings-json-editor"
             value={text}

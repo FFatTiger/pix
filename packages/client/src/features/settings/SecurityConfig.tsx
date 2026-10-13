@@ -82,9 +82,9 @@ export function SecurityConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-      <SettingsSection title={t("desktop.securityKey")} description={t("desktop.securityKeyDescription")}>
+      <SettingsSection>
         {gateStatus === "enabled" ? (
-          <form onSubmit={handleSubmit} data-testid="security-key-form" style={{ maxWidth: 480 }}>
+          <form onSubmit={handleSubmit} data-testid="security-key-form" className="settings-form">
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <SettingsField label={t("desktop.securityKeyCurrent")} htmlFor="security-current-key">
                 <SettingsSecretInput

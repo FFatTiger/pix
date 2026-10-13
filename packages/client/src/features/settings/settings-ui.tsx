@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { CaretDown, Eye, EyeSlash } from "@phosphor-icons/react";
+import { CaretDown, Eye, EyeSlash, WarningCircle } from "@phosphor-icons/react";
 import { useI18n } from "@/hooks/useI18n";
 
 /**
@@ -25,10 +25,10 @@ export const inputStyle: CSSProperties = {
 };
 
 /**
- * Settings section: title + optional description + controls as a flat
- * full-width block separated from the next section by a hairline divider.
- * This is the classic settings-page rhythm — sections stack with a
- * `borderBottom` line.
+ * Settings section: optional title + optional description + controls as a
+ * flat full-width block separated from the next section by a hairline
+ * divider. Single-section pages omit the title (the page header already
+ * names the content) instead of repeating it.
  */
 export function SettingsSection({
   title,
@@ -36,7 +36,7 @@ export function SettingsSection({
   action,
   children,
 }: {
-  title: string;
+  title?: string;
   description?: string;
   action?: ReactNode;
   children: ReactNode;
@@ -48,17 +48,17 @@ export function SettingsSection({
         borderBottom: "1px solid var(--border)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-        <div style={{ minWidth: 0 }}>
-          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 650, color: "var(--text)" }}>{title}</h2>
-          {description ? (
-            <p style={{ margin: "5px 0 14px", fontSize: 12, lineHeight: 1.5, color: "var(--text-muted)" }}>{description}</p>
-          ) : (
-            <div style={{ height: 12 }} />
-          )}
+      {title || description || action ? (
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 14 }}>
+          <div style={{ minWidth: 0 }}>
+            {title ? <h2 style={{ margin: 0, fontSize: 14, fontWeight: 650, color: "var(--text)" }}>{title}</h2> : null}
+            {description ? (
+              <p style={{ margin: title ? "5px 0 0" : 0, fontSize: 12, lineHeight: 1.5, color: "var(--text-muted)" }}>{description}</p>
+            ) : null}
+          </div>
+          {action ? <div style={{ flexShrink: 0 }}>{action}</div> : null}
         </div>
-        {action ? <div style={{ flexShrink: 0 }}>{action}</div> : null}
-      </div>
+      ) : null}
       <div>{children}</div>
     </section>
   );
@@ -529,5 +529,17 @@ export function SettingsDangerButton({
         {t("desktop.confirm")}
       </SettingsButton>
     </span>
+  );
+}
+
+/**
+ * Shared inline warning banner (icon + one line, warning-tinted background).
+ */
+export function SettingsWarningBanner({ children }: { children: ReactNode }) {
+  return (
+    <div className="settings-warning-banner" role="note">
+      <WarningCircle size={14} weight="fill" aria-hidden="true" />
+      <span>{children}</span>
+    </div>
   );
 }

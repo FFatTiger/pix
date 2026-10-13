@@ -57,6 +57,26 @@ describe("PluginsConfig global disk catalog", () => {
     expect(screen.queryByText("No Plugins.")).toBeNull();
   });
 
+  it("shows package names with source badges and only marks disabled entries", async () => {
+    const fetchMock = vi.fn(async () => json({ plugins: [
+      { name: "npm:pi-smart-compact@1.2.3", enabled: true, version: "1.2.3" },
+      { name: "npm:@scope/kit@2.0.0", enabled: true },
+      { name: "https://github.com/user/diagram-design", enabled: false },
+      { name: "/local/plugin", enabled: true },
+    ] }));
+    mount(fetchMock, ["plugins"]);
+    await screen.findByText("pi-smart-compact");
+    expect(screen.getByText("@scope/kit")).toBeTruthy();
+    expect(screen.getByText("diagram-design")).toBeTruthy();
+    expect(screen.getByText("/local/plugin")).toBeTruthy();
+    // Source metadata as small badges.
+    expect(screen.getAllByText("npm").length).toBe(2);
+    expect(screen.getByText("GitHub")).toBeTruthy();
+    // Enabled entries carry no status badge; disabled ones do.
+    expect(screen.getByText("disabled")).toBeTruthy();
+    expect(screen.queryByText("enabled")).toBeNull();
+  });
+
   it("does not fetch plugins without the capability", async () => {
     const fetchMock = vi.fn(async () => { throw new Error("must not fetch"); });
     mount(fetchMock, []);

@@ -107,7 +107,7 @@ export function SessionConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-      <SettingsSection title={t("desktop.sessionTitle")} description={t("desktop.sessionTitleDescription")}>
+      <SettingsSection title={t("desktop.titleGenerationSection")}>
         <SettingToggle
           checked={titleAuto}
           onChange={setTitleAutoAndPersist}
@@ -130,7 +130,7 @@ export function SessionConfig() {
         ) : idleTimeoutQuery.data?.idleTimeoutMs === undefined ? (
           <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{t("desktop.sessionIdleTimeoutLoading")}</div>
         ) : (
-          <SettingsRow label={t("desktop.sessionIdleTimeoutLabel")}>
+          <SettingsRow label={t("desktop.sessionIdleTimeoutLabel")} description={t("desktop.sessionIdleTimeoutNote")}>
             <SettingsSelect
               value={String(idleTimeoutQuery.data.idleTimeoutMs)}
               onChange={(v) => setIdleTimeout.mutate(Number(v))}

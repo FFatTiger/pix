@@ -82,7 +82,7 @@ export function CapabilitiesConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-      <SettingsSection title={t("desktop.capabilitiesSection")} description={t("desktop.capabilitiesSectionDescription")}>
+      <SettingsSection>
         {content}
         {errorKey ? <div className="workspace-hint workspace-hint--error" role="alert">{t(errorKey)}</div> : null}
       </SettingsSection>

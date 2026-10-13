@@ -65,7 +65,6 @@ interface PageMeta {
 interface NavGroup {
   id: string;
   labelKey: string;
-  hintKey?: string;
   pages: PageMeta[];
 }
 
@@ -145,7 +144,6 @@ export function SettingsModal({
     {
       id: "agent",
       labelKey: "desktop.settingsNav.agent",
-      hintKey: "desktop.settingsNav.agentHint",
       pages: [
         { id: "providers", labelKey: "desktop.settingsPage.providers", descKey: "desktop.settingsPage.providersDesc", Icon: Cpu, render: () => <ModelsSettingsTab /> },
         { id: "capabilities", labelKey: "desktop.settingsPage.capabilities", descKey: "desktop.settingsPage.capabilitiesDesc", Icon: SlidersHorizontal, render: () => <CapabilitiesConfig /> },
@@ -216,6 +214,37 @@ export function SettingsModal({
         }}
       >
         <SettingsDraftContext.Provider value={draftApi}>
+          <header className="settings-page-header">
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="settings-page-header-heading">
+                {isMobile && !mobileNavOpen ? (
+                  <button
+                    type="button"
+                    className="settings-page-back"
+                    onClick={() => runOrGuard(() => setMobileNavOpen(true))}
+                    aria-label={t("desktop.settingsBack")}
+                  >
+                    <ArrowLeft size={16} aria-hidden="true" />
+                  </button>
+                ) : null}
+                <h2 className="settings-page-title">
+                  {isMobile && mobileNavOpen ? t("desktop.settings") : t(activeMeta.labelKey)}
+                </h2>
+              </div>
+              {activeMeta.descKey && !(isMobile && mobileNavOpen) ? (
+                <p className="settings-page-desc">{t(activeMeta.descKey)}</p>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={requestClose}
+              title={t("desktop.closeSettings")}
+              aria-label={t("desktop.closeSettings")}
+              style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, display: "flex", flexShrink: 0 }}
+            >
+              <X size={18} aria-hidden="true" />
+            </button>
+          </header>
           <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
             <nav
               aria-label={t("desktop.settingsSections")}
@@ -225,7 +254,6 @@ export function SettingsModal({
               {groups.map((group) => (
                 <div key={group.id} className="settings-nav-group">
                   <div className="settings-nav-group-label">{t(group.labelKey)}</div>
-                  {group.hintKey ? <div className="settings-nav-group-hint">{t(group.hintKey)}</div> : null}
                   {group.pages.map(({ id, labelKey, Icon }) => {
                     const active = activePage === id;
                     return (
@@ -250,36 +278,7 @@ export function SettingsModal({
               className="settings-content"
               style={isMobile ? { display: mobileNavOpen ? "none" : "flex" } : undefined}
             >
-              <header className="settings-page-header">
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    {isMobile ? (
-                      <button
-                        type="button"
-                        className="settings-nav-item settings-page-back"
-                        onClick={() => runOrGuard(() => setMobileNavOpen(true))}
-                        aria-label={t("desktop.settingsBack")}
-                        style={{ padding: 4, flexShrink: 0 }}
-                      >
-                        <ArrowLeft size={16} aria-hidden="true" />
-                      </button>
-                    ) : null}
-                    <h2 className="settings-page-title">{t(activeMeta.labelKey)}</h2>
-                  </div>
-                  {activeMeta.descKey ? <p className="settings-page-desc">{t(activeMeta.descKey)}</p> : null}
-                </div>
-                <button
-                  type="button"
-                  onClick={requestClose}
-                  title={t("desktop.closeSettings")}
-                  aria-label={t("desktop.closeSettings")}
-                  style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, display: "flex", flexShrink: 0 }}
-                >
-                  <X size={18} aria-hidden="true" />
-                </button>
-              </header>
-
-              <div style={{ flex: 1, display: "flex", minWidth: 0, minHeight: 0 }}>
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
                 {allPages.map((page) => (
                   <div
                     key={page.id}

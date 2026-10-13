@@ -32,7 +32,7 @@ function SubagentRoleSection({ name, children }: { name: string; children: React
     ? t("desktop.subagentRoleTitle", { name: displayName, id: name })
     : name;
   return (
-    <SettingsSection title={title} description={t("desktop.subagentSettingsRoleDescription")}>
+    <SettingsSection title={title}>
       {children}
     </SettingsSection>
   );
@@ -123,7 +123,6 @@ export function SubagentSettingsConfig() {
     }
   }
   const modelOptions = [...options.values()];
-  const displayNameOf = (name: string) => roleDisplayName(t, name) ?? name;
   const modelField = (fieldId: string, label: string, value: string | null, emptyLabel: string, onChange: (value: string | null) => void) => (
     <SettingsField label={label} htmlFor={fieldId}>
       <SettingsSelect id={fieldId} value={value ?? ""} onChange={(next) => onChange(next || null)} options={modelOptions} emptyLabel={emptyLabel} disabled={busy} />
@@ -159,9 +158,11 @@ export function SubagentSettingsConfig() {
             : models.isPending ? <p className="workspace-hint" role="status">{t("desktop.subagentModelsLoading")}</p> : null}
           <div style={fieldGrid}>
             {modelField(`${id}-default`, t("desktop.subagentSettingsDefaultModel"), settings.defaultModel, t("desktop.subagentSettingsParentModel"), (defaultModel) => update((current) => ({ ...current, defaultModel })))}
-            {modelField(`${id}-fallback`, t("desktop.subagentSettingsGlobalFallback"), settings.fallbackModel, t("desktop.subagentSettingsNoFallback"), (fallbackModel) => update((current) => ({ ...current, fallbackModel })))}
+            <SettingsField label={t("desktop.subagentFieldFallback")} htmlFor={`${id}-fallback`}>
+              <SettingsSelect id={`${id}-fallback`} value={settings.fallbackModel ?? ""} onChange={(next) => update((current) => ({ ...current, fallbackModel: next || null }))} options={modelOptions} emptyLabel={t("desktop.subagentSettingsNoFallback")} disabled={busy} />
+              <p className="models-field-hint" style={{ margin: "5px 0 0" }}>{t("desktop.subagentSettingsFallbackHint")}</p>
+            </SettingsField>
           </div>
-          <p className="workspace-hint">{t("desktop.subagentSettingsFallbackHint")}</p>
         </SettingsSection>
         {roles.map((name, index) => {
           const row = settings.agentOverrides.find((candidate) => candidate.name === name);
@@ -177,9 +178,9 @@ export function SubagentSettingsConfig() {
           return (
             <SubagentRoleSection key={name} name={name}>
               <div style={fieldGrid}>
-                {modelField(`${id}-${index}-model`, t("desktop.subagentSettingsRoleModel", { name: displayNameOf(name) }), row?.model ?? null, t("desktop.subagentSettingsInherit"), (model) => updateRole({ model }))}
-                {modelField(`${id}-${index}-fallback`, t("desktop.subagentSettingsRoleFallback", { name: displayNameOf(name) }), row?.fallbackModel ?? null, t("desktop.subagentSettingsInherit"), (fallbackModel) => updateRole({ fallbackModel }))}
-                <SettingsField label={t("desktop.subagentSettingsRoleThinking", { name: displayNameOf(name) })} htmlFor={`${id}-${index}-thinking`}>
+                {modelField(`${id}-${index}-model`, t("desktop.subagentFieldModel"), row?.model ?? null, t("desktop.subagentSettingsInherit"), (model) => updateRole({ model }))}
+                {modelField(`${id}-${index}-fallback`, t("desktop.subagentFieldFallback"), row?.fallbackModel ?? null, t("desktop.subagentSettingsInherit"), (fallbackModel) => updateRole({ fallbackModel }))}
+                <SettingsField label={t("desktop.subagentFieldThinking")} htmlFor={`${id}-${index}-thinking`}>
                   <SettingsSelect id={`${id}-${index}-thinking`} value={row?.thinking ?? ""} disabled={busy} emptyLabel={t("desktop.subagentSettingsInherit")}
                     options={ThinkingLevelSchema.options.map((value) => ({ value, label: t(`desktop.thinking${value === "xhigh" ? "ExtraHigh" : value[0]!.toUpperCase() + value.slice(1)}`) }))}
                     onChange={(value) => updateRole({ thinking: value === "" ? null : ThinkingLevelSchema.parse(value) })} />

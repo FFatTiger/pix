@@ -49,10 +49,12 @@ describe("SettingsModal information architecture", () => {
     expect(screen.getByText("Agent")).toBeTruthy();
     expect(screen.getByText("Extensions")).toBeTruthy();
     expect(screen.getByText("System")).toBeTruthy();
-    // The Agent group carries the applies-to hint exactly once.
-    expect(screen.getByText("Shared by all sessions; changes apply to newly started or reloaded sessions.")).toBeTruthy();
-    // Page header shows title + description; the old per-page scope chip is gone.
-    expect(screen.getByRole("heading", { name: "Appearance" })).toBeTruthy();
+    // The nav carries no hint paragraph; the scope sentence lives on each
+    // Agent page description instead.
+    fireEvent.click(screen.getByTestId("settings-tab-providers"));
+    expect(screen.getAllByText(/Shared by all sessions/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Model providers" })).toBeTruthy();
+    // The old per-page scope chip is gone.
     expect(screen.queryByText("this device")).toBeNull();
     expect(screen.queryByText("global")).toBeNull();
     for (const id of ["appearance", "input", "archive", "providers", "capabilities", "subagents", "tools", "session", "skills", "plugins", "access", "advanced"]) {

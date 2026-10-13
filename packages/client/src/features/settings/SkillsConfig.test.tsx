@@ -53,16 +53,36 @@ describe("SkillsConfig global disk catalogs", () => {
     expect(screen.queryByText("No Skills.")).toBeNull();
   });
 
-  it("lists commands once, here, with their source", async () => {
+  it("shows a skill's own commands as chips on its row, never duplicated below", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "/v1/skills") return json({ skills: [] });
-      if (url === "/v1/commands") return json({ commands: [{ name: "ping", source: "skill", description: "hi" }] });
+      if (url === "/v1/skills") return json({ skills: [{ name: "demo-skill", enabled: true }] });
+      if (url === "/v1/commands") return json({ commands: [
+        { name: "skill:demo-skill", source: "skill", description: "hi" },
+        { name: "prompt-cmd", source: "prompt", description: "yo" },
+      ] });
       throw new Error(`unexpected ${url}`);
     });
     mount(fetchMock, ["skills"]);
-    expect(await screen.findByText("/ping")).toBeTruthy();
-    expect(screen.getByText("skill")).toBeTruthy();
+    // The skill's command is a chip on its row…
+    expect(await screen.findByText("/skill:demo-skill")).toBeTruthy();
+    // …and only non-skill commands are listed in the commands section.
+    expect(screen.getByText("/prompt-cmd")).toBeTruthy();
+    expect(screen.getByText("prompt")).toBeTruthy();
+    expect(screen.queryByText("skill")).toBeNull();
+  });
+
+  it("hides the commands section after a successful empty read", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/v1/skills") return json({ skills: [{ name: "demo-skill", enabled: true }] });
+      if (url === "/v1/commands") return json({ commands: [{ name: "skill:demo-skill", source: "skill" }] });
+      throw new Error(`unexpected ${url}`);
+    });
+    mount(fetchMock, ["skills"]);
+    await screen.findByText("/skill:demo-skill");
+    expect(screen.queryByRole("heading", { name: "Commands" })).toBeNull();
+    expect(screen.queryByText("No Commands.")).toBeNull();
   });
 
   it("shows pending and errors for commands without pretending they are empty", async () => {
@@ -91,11 +111,11 @@ describe("SkillsConfig global disk catalogs", () => {
 
   it("loads the commands catalog with only the skills capability", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input) === "/v1/commands") return json({ commands: [] });
+      if (String(input) === "/v1/commands") return json({ commands: [{ name: "prompt-cmd", source: "prompt" }] });
       return json({ skills: [] });
     });
     mount(fetchMock, ["skills"]);
-    expect(await screen.findByText("No Commands.")).toBeTruthy();
+    expect(await screen.findByText("/prompt-cmd")).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/v1/commands")).toHaveLength(1);
   });
 });

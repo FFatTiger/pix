@@ -101,10 +101,10 @@ describe("ToolsConfig", () => {
       expectChecked(label, true);
       expect(screen.getByText(name)).toBeTruthy();
     }
-    expect(screen.getByTestId("tools-selection-mode").textContent).toContain("including tools added in the future");
+    expect(screen.getByTestId("tools-selection-mode").textContent).toContain("Current: all tools enabled");
     fireEvent.click(toolSwitch("Run commands"));
     expectChecked("Run commands", false);
-    expect(screen.getByTestId("tools-selection-mode").textContent).toContain("Custom:");
+    expect(screen.getByTestId("tools-selection-mode").textContent).toContain("Current: custom");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(putBody).toEqual({ expectedRevision: revision, toolNames: tools.map(([name]) => name).filter((name) => name !== "bash") }));
@@ -220,13 +220,13 @@ describe("ToolsConfig", () => {
       return json({ revision, selection: { mode: "native", toolNames: ["read", "bash", "native-extra"] } });
     });
     mount(fetchMock);
-    expect(await screen.findByText(/Inheriting the Pi defaultTools setting/)).toBeTruthy();
+    expect(await screen.findByText(/inheriting the Pi defaultTools setting/)).toBeTruthy();
     expectChecked("Read files", true);
     expectChecked("Run commands", true);
     expectChecked("Write files", false);
     expectChecked("Saved tool: native-extra", true);
     fireEvent.click(toolSwitch("Run commands"));
-    expect(screen.getByTestId("tools-selection-mode").textContent).toContain("Custom:");
+    expect(screen.getByTestId("tools-selection-mode").textContent).toContain("Current: custom");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(putBody).toEqual({ expectedRevision: revision, toolNames: ["read", "native-extra"] }));
   });

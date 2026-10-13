@@ -154,13 +154,13 @@ export function ToolsConfig() {
       <>
         <div className="workspace-hint" data-testid="tools-selection-mode">
           {editing || selection?.mode === "custom"
-            ? t("desktop.toolsSettingsModeCustomNote")
+            ? t("desktop.toolsSettingsModeCustomNote", { count: selectedNames.length })
             : selection?.mode === "native"
-              ? t("desktop.toolsSettingsModeNativeNote")
+              ? t("desktop.toolsSettingsModeNativeNote", { count: selection.toolNames.length })
               : t("desktop.toolsSettingsModeAllNote")}
         </div>
         <div style={{ display: "flex", gap: 8, margin: "8px 0 12px" }}>
-          <SettingsButton size="sm" variant="primary" disabled={busy} onClick={() => { void persist(null); }}>
+          <SettingsButton size="sm" disabled={busy} onClick={() => { void persist(null); }}>
             {t("desktop.toolsSettingsEnableAll")}
           </SettingsButton>
           <SettingsButton size="sm" disabled={busy} onClick={() => { void persist([]); }}>
@@ -190,7 +190,7 @@ export function ToolsConfig() {
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0 }}>
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.toolsSettings")} description={t("desktop.toolsSettingsDescription")}>
+        <SettingsSection>
           {content}
           {query.isError && query.data ? <div className="workspace-hint workspace-hint--error" role="alert">{t("desktop.toolsSettingsUnavailable")}</div> : null}
         </SettingsSection>

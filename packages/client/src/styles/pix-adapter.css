@@ -1931,19 +1931,33 @@ html.dark .catalog-meta-item--error {
 .settings-savebar-status--error { color: var(--status-danger); white-space: normal; overflow-wrap: anywhere; }
 .settings-savebar-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
+/* Settings form column (access key etc.) — same width as other settings forms. */
+.settings-form { max-width: 620px; }
+
+/* Warning banner (e.g. raw settings.json editing). */
+.settings-warning-banner { display: flex; align-items: flex-start; gap: 8px; margin: 14px var(--settings-pad-x) -6px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--status-warning) 30%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--status-warning) 9%, transparent); color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.settings-warning-banner svg { flex: none; margin-top: 1px; color: var(--status-warning); }
+
+/* Two-line clamp for long catalog descriptions, with an expand toggle. */
+.settings-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.settings-clamp-toggle { border: 0; padding: 0; background: none; color: var(--accent); font-size: 11px; cursor: pointer; }
+.settings-clamp-toggle:hover { text-decoration: underline; }
+
+/* Slash-command chip on a skill row. */
+.settings-command-chip { flex: none; padding: 1px 5px; border-radius: 3px; background: color-mix(in srgb, var(--text-dim) 10%, transparent); color: var(--text-muted); font: 10px/1.5 var(--font-mono); }
+
 /* Inline two-step danger confirmation. */
 .settings-danger-confirm { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .settings-danger-confirm-text { font-size: 11px; color: var(--status-danger); }
 
 /* Tool category groups. */
 .settings-tool-category { margin-bottom: 14px; }
-.settings-tool-category-title { margin-bottom: 2px; padding: 0 14px; font-size: 11px; font-weight: var(--text-weight-strong); letter-spacing: .05em; text-transform: uppercase; color: var(--text-dim); }
+.settings-tool-category-title { margin: 0 0 2px; padding: 0; font-size: 11px; font-weight: var(--text-weight-strong); letter-spacing: .05em; text-transform: uppercase; color: var(--text-dim); }
 
 /* Grouped settings navigation. */
 .settings-nav { display: flex; flex-direction: column; width: 172px; flex-shrink: 0; padding: 10px 8px; gap: 2px; background: var(--bg-panel); border-right: 1px solid var(--border); overflow-y: auto; }
 .settings-nav-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
-.settings-nav-group-label { padding: 6px 10px 2px; font-size: 10px; font-weight: var(--text-weight-strong); letter-spacing: .07em; text-transform: uppercase; color: var(--text-dim); }
-.settings-nav-group-hint { padding: 0 10px 6px; font-size: 10px; line-height: 1.45; color: var(--text-dim); }
+.settings-nav-group-label { padding: 6px 10px 2px; font-size: 11px; font-weight: var(--text-weight-strong); letter-spacing: .04em; color: var(--text-dim); }
 .settings-nav-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: none; border-radius: 6px; background: none; color: var(--text-muted); cursor: pointer; font-size: 12px; text-align: left; transition: background .12s, color .12s; }
 .settings-nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .settings-nav-item.is-active { background: var(--bg-selected); color: var(--text); font-weight: var(--text-weight-strong); }
@@ -1951,7 +1965,8 @@ html.dark .catalog-meta-item--error {
 /* Content column: page header + scrolling body. */
 .settings-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .settings-page-header { flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px var(--settings-pad-x) 12px; border-bottom: 1px solid var(--border); }
-.settings-page-title { margin: 0; font-size: 15px; font-weight: var(--text-weight-strong); color: var(--text); }
+.settings-page-header-heading { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.settings-page-title { margin: 0; font-size: 15px; font-weight: var(--text-weight-strong); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-page-desc { margin: 3px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
 .settings-page-back { display: none; }
 .settings-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }

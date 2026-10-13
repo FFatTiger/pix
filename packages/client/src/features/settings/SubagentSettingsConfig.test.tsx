@@ -57,8 +57,19 @@ function server(initial = empty) {
   });
   return { fetchMock, writes };
 }
-function select(label: string, value: string) { fireEvent.change(screen.getByRole("combobox", { name: label }), { target: { value } }); }
-function value(label: string) { return (screen.getByRole("combobox", { name: label }) as HTMLSelectElement).value; }
+/** Scope to the settings section carrying the given heading (role cards share plain field labels). */
+function scope(sectionTitle: string) {
+  const heading = screen.getByRole("heading", { name: sectionTitle });
+  return within(heading.closest("section")!);
+}
+function select(label: string, value: string, sectionTitle?: string) {
+  const control = sectionTitle ? scope(sectionTitle).getByRole("combobox", { name: label }) : screen.getByRole("combobox", { name: label });
+  fireEvent.change(control, { target: { value } });
+}
+function value(label: string, sectionTitle?: string) {
+  const control = sectionTitle ? scope(sectionTitle).getByRole("combobox", { name: label }) : screen.getByRole("combobox", { name: label });
+  return (control as HTMLSelectElement).value;
+}
 async function ready() { await screen.findByRole("combobox", { name: "Default model" }); }
 function save() { fireEvent.click(screen.getByRole("button", { name: "Save" })); }
 function reload() { fireEvent.click(screen.getByRole("button", { name: "Discard" })); }
@@ -78,13 +89,13 @@ describe("SubagentSettingsConfig", () => {
     expect(within(primary).getByRole("option", { name: "provider/Friendly model" }).getAttribute("value")).toBe("provider/model/id");
     expect(value("Default model")).toBe("legacy/primary");
     expect(screen.getByRole("heading", { name: "Custom CASE role" })).toBeTruthy();
-    expect(value("Custom CASE role model")).toBe("private/unknown");
-    expect(within(screen.getByRole("combobox", { name: "Explorer thinking effort" })).getAllByRole("option").map((option) => (option as HTMLOptionElement).value)).toEqual(["", ...ThinkingLevelSchema.options]);
+    expect(value("Model", "Custom CASE role")).toBe("private/unknown");
+    expect(within(scope("Explorer (Explore)").getByRole("combobox", { name: "Thinking effort" })).getAllByRole("option").map((option) => (option as HTMLOptionElement).value)).toEqual(["", ...ThinkingLevelSchema.options]);
     select("Default model", "provider/model/id");
-    select("Fallback model", "other/backup");
-    select("Explorer model", "other/backup");
-    select("Explorer fallback model", "provider/model/id");
-    select("Explorer thinking effort", "high");
+    select("Fallback model", "other/backup", "Defaults");
+    select("Model", "other/backup", "Explorer (Explore)");
+    select("Fallback model", "provider/model/id", "Explorer (Explore)");
+    select("Thinking effort", "high", "Explorer (Explore)");
     save();
     await screen.findByText("Saved");
     expect(writes).toEqual([{ expectedRevision: revision, settings: {
@@ -104,7 +115,7 @@ describe("SubagentSettingsConfig", () => {
     expect(screen.getByRole("heading", { name: "Explorer (Explore)" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Planner (Plan)" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Verifier (verification)" })).toBeTruthy();
-    expect(within(screen.getByRole("combobox", { name: "Explorer model" })).getAllByRole("option")[0]?.textContent).toBe("Follow default");
+    expect(within(scope("Explorer (Explore)").getByRole("combobox", { name: "Model" })).getAllByRole("option")[0]?.textContent).toBe("Follow default");
   });
 
   it("edits exact role identities and preserves metadata-only and differently cased saved roles", async () => {
@@ -116,15 +127,15 @@ describe("SubagentSettingsConfig", () => {
     const { fetchMock, writes } = server({ revision, settings });
     mount(fetchMock);
     await ready();
-    select("Explorer model", "provider/model/id");
+    select("Model", "provider/model/id", "Explorer (Explore)");
     save();
     await screen.findByText("Saved");
     expect(writes[0]?.settings.agentOverrides).toEqual([
       { ...settings.agentOverrides[0], model: "provider/model/id" },
       ...settings.agentOverrides.slice(1),
     ]);
-    expect(value("explore model")).toBe("custom/explorer");
-    expect(value("Metadata only thinking effort")).toBe("");
+    expect(value("Model", "explore")).toBe("custom/explorer");
+    expect(value("Thinking effort", "Metadata only")).toBe("");
   });
 
   it("clears nullable values without fabricating untouched fixed-role entries", async () => {
@@ -132,10 +143,10 @@ describe("SubagentSettingsConfig", () => {
     mount(fetchMock);
     await ready();
     select("Default model", "");
-    select("Fallback model", "");
-    select("Custom CASE role model", "");
-    select("Custom CASE role fallback model", "");
-    select("Custom CASE role thinking effort", "");
+    select("Fallback model", "", "Defaults");
+    select("Model", "", "Custom CASE role");
+    select("Fallback model", "", "Custom CASE role");
+    select("Thinking effort", "", "Custom CASE role");
     save();
     await screen.findByText("Saved");
     expect(writes[0]?.settings).toEqual({ defaultModel: null, fallbackModel: null, agentOverrides: [{ name: "Custom CASE role", model: null, fallbackModel: null, thinking: null }] });
@@ -199,8 +210,8 @@ describe("SubagentSettingsConfig", () => {
     await ready();
     await screen.findByText("Model catalog unavailable. You can keep or clear saved references.");
     expect(value("Default model")).toBe("legacy/primary");
-    expect(value("Custom CASE role model")).toBe("private/unknown");
-    select("Fallback model", "");
+    expect(value("Model", "Custom CASE role")).toBe("private/unknown");
+    select("Fallback model", "", "Defaults");
     save();
     await screen.findByText("Saved");
     expect(base.writes[0]?.settings).toEqual({ ...saved.settings, fallbackModel: null });
@@ -252,8 +263,8 @@ describe("SubagentSettingsConfig", () => {
     await act(async () => { refresh.resolve(json({ revision: "c".repeat(64), settings: { defaultModel: "changed/elsewhere", fallbackModel: null, agentOverrides: [] } })); await refetch; });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
     expect(value("Default model")).toBe("provider/model/id");
-    expect(value("Custom CASE role model")).toBe("private/unknown");
-    select("Explorer thinking effort", "low");
+    expect(value("Model", "Custom CASE role")).toBe("private/unknown");
+    select("Thinking effort", "low", "Explorer (Explore)");
     save();
     await screen.findByText("Saved");
     expect(base.writes[0]?.expectedRevision).toBe(revision);
@@ -297,19 +308,19 @@ describe("SubagentSettingsConfig", () => {
     mount(fetchMock);
     await ready();
     select("Default model", "provider/model/id");
-    select("Fallback model", "other/backup");
-    select("Explorer thinking effort", "xhigh");
+    select("Fallback model", "other/backup", "Defaults");
+    select("Thinking effort", "xhigh", "Explorer (Explore)");
     save();
     await screen.findByText(/Subagent settings changed elsewhere/);
     await waitFor(() => expect(reads).toBe(2));
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
     expect(value("Default model")).toBe("provider/model/id");
-    expect(value("Explorer thinking effort")).toBe("xhigh");
+    expect(value("Thinking effort", "Explorer (Explore)")).toBe("xhigh");
     failReload = true;
     reload();
     await screen.findByText("Subagent settings are unavailable.");
-    expect(value("Fallback model")).toBe("other/backup");
-    expect(value("Custom CASE role model")).toBe("private/unknown");
+    expect(value("Fallback model", "Defaults")).toBe("other/backup");
+    expect(value("Model", "Custom CASE role")).toBe("private/unknown");
     expect(screen.queryByText("private backend text")).toBeNull();
     failReload = false;
     save();
@@ -338,11 +349,11 @@ describe("SubagentSettingsConfig", () => {
     }));
     await ready();
     select("Default model", "provider/model/id");
-    select("Planner thinking effort", "max");
+    select("Thinking effort", "max", "Planner (Plan)");
     save();
     await screen.findByRole("alert");
     expect(value("Default model")).toBe("provider/model/id");
-    expect(value("Planner thinking effort")).toBe("max");
+    expect(value("Thinking effort", "Planner (Plan)")).toBe("max");
     expect(screen.queryByText("secret host detail")).toBeNull();
     fail = false;
     save();

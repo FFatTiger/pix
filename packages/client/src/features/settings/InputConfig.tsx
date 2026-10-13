@@ -76,10 +76,10 @@ export function InputConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-      <SettingsSection title={t("desktop.inputShortcut")} description={t("desktop.inputShortcutDescription")}>
-        <SettingsRow label={t("desktop.sendKeyLabel")} description={shortcut === "enter" ? t("desktop.useEnterDescription") : t("desktop.useCtrlEnterDescription")}>
+      <SettingsSection>
+        <SettingsRow label={t("desktop.sendKeyLabel")} description={t("desktop.sendKeyHint")}>
           <SegmentedControl
-            ariaLabel={t("desktop.inputShortcut")}
+            ariaLabel={t("desktop.sendKeyLabel")}
             value={shortcut}
             onChange={setShortcutAndPersist}
             options={[
@@ -88,11 +88,9 @@ export function InputConfig() {
             ]}
           />
         </SettingsRow>
-      </SettingsSection>
-      <SettingsSection title={t("desktop.streamingSendMode")} description={t("desktop.streamingSendModeDescription")}>
-        <SettingsRow label={t("desktop.streamingSendModeLabel")}>
+        <SettingsRow label={t("desktop.streamingSendModeLabel")} description={t("desktop.streamingSendModeDescription")}>
           <SegmentedControl
-            ariaLabel={t("desktop.streamingSendMode")}
+            ariaLabel={t("desktop.streamingSendModeLabel")}
             value={streamingSendMode}
             onChange={(value) => setStreamingSendModeAndPersist(value === "steer" ? "steer" : "follow-up")}
             options={[
@@ -101,12 +99,11 @@ export function InputConfig() {
             ]}
           />
         </SettingsRow>
-      </SettingsSection>
-      <SettingsSection title={t("desktop.markdownListContinue")} description={t("desktop.markdownListContinueDescription")}>
         <SettingToggle
           checked={markdownList}
           onChange={setMarkdownListAndPersist}
-          label={t("desktop.markdownListContinueLabel")}
+          label={t("desktop.markdownListContinue")}
+          description={t("desktop.markdownListContinueDescription")}
         />
       </SettingsSection>
     </div>

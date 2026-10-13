@@ -8,10 +8,9 @@ import type { ThemeMode } from "@/lib/theme";
 const FONT_SCALES = [0.9, 1, 1.1, 1.2, 1.25, 1.3, 1.35] as const;
 
 /**
- * Appearance settings (this device). Theme is owned by the dedicated
- * `useTheme` hook (pi-theme-mode persistence + html.dark application);
- * Text Size by `useUiScale`; Language by useI18n; the workflow
- * (process-group) layout mode by useProcessDisplayMode.
+ * Appearance settings (this device). One flat list of rows — theme is owned
+ * by `useTheme`, text size by `useUiScale`, language by useI18n, the process
+ * layout mode by useProcessDisplayMode.
  */
 export function AppearanceConfig() {
   const { fontScale, setFontScale } = useUiScale();
@@ -21,8 +20,8 @@ export function AppearanceConfig() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-      <SettingsSection title={t("desktop.theme")}>
-        <SettingsRow label={t("desktop.themeDescription")}>
+      <SettingsSection>
+        <SettingsRow label={t("desktop.theme")} description={t("desktop.themeOptionsHint")}>
           <SegmentedControl
             ariaLabel={t("desktop.theme")}
             value={themeMode}
@@ -34,10 +33,7 @@ export function AppearanceConfig() {
             ]}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("desktop.processDisplay")}>
-        <SettingsRow label={t("desktop.processDisplayDescription")}>
+        <SettingsRow label={t("desktop.processDisplay")} description={t("desktop.processDisplayDescription")}>
           <SegmentedControl
             ariaLabel={t("desktop.processDisplay")}
             value={displayMode}
@@ -49,10 +45,7 @@ export function AppearanceConfig() {
             ]}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("desktop.textSize")}>
-        <SettingsRow label={t("desktop.textSizeDescription")}>
+        <SettingsRow label={t("desktop.textSize")} description={t("desktop.textSizeDescription")}>
           <SettingsSelect
             aria-label={t("desktop.textSize")}
             value={String(fontScale)}
@@ -61,10 +54,7 @@ export function AppearanceConfig() {
             style={{ minWidth: 110 }}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("desktop.language")}>
-        <SettingsRow label={t("desktop.languageDescription")}>
+        <SettingsRow label={t("desktop.language")} description={t("desktop.languageDescription")}>
           <SegmentedControl
             ariaLabel={t("desktop.language")}
             value={language === "zh-CN" ? "zh-CN" : "en"}
