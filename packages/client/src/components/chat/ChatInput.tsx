@@ -488,6 +488,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // input box — it only appears while the user is typing-focused.
   // Maximize only matters once the text no longer fits the auto-sized box.
   const [inputOverflowing, setInputOverflowing] = useState(false);
+  // Set only by the maximize button, so the control stays reachable to restore.
+  const [maximizedByButton, setMaximizedByButton] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightLayerRef = useRef<HTMLDivElement>(null);
@@ -596,6 +598,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ta.style.height = `${Math.min(ta.scrollHeight, AUTO_MAX_HEIGHT)}px`;
     setInputOverflowing(ta.scrollHeight > AUTO_MAX_HEIGHT);
   }, []);
+
+  // Overflow = text taller than what the box shows, in auto and manual height.
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta || !manualModeRef.current) return;
+    setInputOverflowing(ta.scrollHeight > ta.clientHeight + 1);
+  });
 
   const updatePendingFiles = useCallback((update: (current: PendingFile[]) => PendingFile[]): void => {
     setPendingFiles((current) => {
@@ -1975,16 +1984,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         <div ref={inputAreaRef} style={{ position: "relative" }}>
           {historyMenuOpen && inputHistory.length > 0 && (
             <div
+              className="chat-input-popover"
               style={{
                 position: "absolute",
                 left: 0,
                 right: 0,
                 bottom: "calc(100% + 8px)",
                 zIndex: 120,
-                background: "var(--bg)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
+                background: "var(--surface-content)",
+                border: "1px solid var(--surface-hairline)",
+                borderRadius: 12,
+                boxShadow: "0 14px 36px -14px rgba(0,0,0,0.28)",
                 overflow: "hidden",
                 maxHeight: slashMenuHeightCap,
               }}
@@ -2009,16 +2019,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           )}
           {slashMenuOpen && slashQuery !== null && (
             <div
+              className="chat-input-popover"
               style={{
                 position: "absolute",
                 left: 0,
                 right: 0,
                 bottom: "calc(100% + 8px)",
                 zIndex: 120,
-                background: "var(--bg)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
+                background: "var(--surface-content)",
+                border: "1px solid var(--surface-hairline)",
+                borderRadius: 12,
+                boxShadow: "0 14px 36px -14px rgba(0,0,0,0.28)",
                 overflow: "hidden",
                 maxHeight: slashMenuHeightCap,
               }}
@@ -2044,8 +2055,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                           alignItems: "center",
                           justifyContent: "space-between",
                           gap: 8,
-                          padding: "2px 6px 4px",
-                          background: "var(--bg)",
+                          padding: "4px 8px 4px",
+                          background: "var(--surface-content)",
                           color: "var(--text-dim)",
                           fontSize: 10,
                           fontWeight: 600,
@@ -2082,9 +2093,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                 display: "flex",
                                 alignItems: "center",
                                 gap: 8,
-                                padding: "3px 6px",
+                                padding: "6px 8px",
                                 border: "none",
-                                borderRadius: 5,
+                                borderRadius: 8,
                                 background: active ? "var(--bg-selected)" : slashHoverIndex === index ? "var(--bg-hover)" : "none",
                                 color: "var(--text)",
                                 cursor: "pointer",
@@ -2143,16 +2154,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               : null;
             return (
               <div
+                className="chat-input-popover"
                 style={{
                   position: "absolute",
                   left: 0,
                   right: 0,
                   bottom: "calc(100% + 8px)",
                   zIndex: 120,
-                  background: "var(--bg)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
+                  background: "var(--surface-content)",
+                  border: "1px solid var(--surface-hairline)",
+                  borderRadius: 12,
+                  boxShadow: "0 14px 36px -14px rgba(0,0,0,0.28)",
                   overflow: "hidden",
                   maxHeight: atMenuHeightCap,
                 }}
@@ -2359,7 +2371,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 )}
               </div>
             )}
-            {(inputOverflowing || manualHeight !== null) && (
+            {(inputOverflowing || (maximizedByButton && manualHeight !== null)) && (
             <div
               style={{
                 display: "flex",
@@ -2380,8 +2392,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 onClick={() => {
                   if (manualHeight !== null) {
                     inputHeightResizer.resetHeight();
+                    setMaximizedByButton(false);
                   } else {
                     inputHeightResizer.setHeight(getMaxManualHeight());
+                    setMaximizedByButton(true);
                   }
                 }}
                 title={manualHeight !== null ? t("desktop.restoreInputHeight") : t("desktop.maximizeInput")}

@@ -3752,3 +3752,11 @@ html.pi-booted body::before {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* Composer popovers (slash / @ / history): content surface, hairline, soft
+   shadow; on desktop they span the same hanging width as the composer. While
+   one is open the status tab steps aside so the two never overlap. */
+@media (min-width: 641px) {
+  .chat-composer-region .chat-input-popover { left: -13px !important; right: -13px !important; }
+}
+.workspace:has(.chat-input-popover) .subagent-activity-card { visibility: hidden; }
