@@ -20,6 +20,7 @@
  * result can never blow up the assistant's own context.
  */
 import { homedir } from "node:os";
+import { basename, sep as pathSep } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
@@ -27,7 +28,17 @@ import { isAssistantWorkspacePath, matchesAssistantWorkspacePattern, normalizeAs
 import { browseKindForWorkspace } from "./session-projection.js";
 
 /** Fixed tool names (also used by the client's process-line labels). */
-export const ASSISTANT_TOOL_NAMES = ["search_sessions", "read_session"] as const;
+export const ASSISTANT_TOOL_NAMES = [
+  "search_sessions",
+  "read_session",
+  "session_status",
+  "list_open_todos",
+  "summarize_activity",
+  "find_file_changes",
+  "open_session",
+  "organize_sessions",
+  "draft_to_session",
+] as const;
 
 /** True when a session cwd IS the assistant workspace on this machine. */
 export function isAssistantWorkspaceCwd(cwd: string): boolean {
@@ -267,6 +278,146 @@ function readSessionResultText(
 }
 
 // ---------------------------------------------------------------------------
+// Session-analysis helpers (read-only JSONL, bounded tails)
+// ---------------------------------------------------------------------------
+
+/** Bounded number of tail message entries analyzed per session. */
+const TAIL_ENTRY_BUDGET = 40;
+/** Bounded sessions per status/activity listing. */
+const LIST_SESSION_BUDGET = 15;
+
+type SdkMessageContentBlock = {
+  type?: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
+  input?: Record<string, unknown>;
+};
+
+type SdkMessage = {
+  role?: string;
+  content?: string | SdkMessageContentBlock[];
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
+  details?: unknown;
+  timestamp?: number;
+};
+
+/** Latest `todo` toolResult snapshot replayed from a session's entries. */
+function replayTodoSnapshot(entries: readonly SdkMessageEntry[]): { tasks: Array<{ id: number; subject: string; status: string }>; nextId: number } | null {
+  let state: { tasks: Array<{ id: number; subject: string; status: string }>; nextId: number } | null = null;
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const message = entry.message as SdkMessage;
+    if (message?.role !== "toolResult" || message.toolName !== "todo" || message.isError === true) continue;
+    const details = message.details as { tasks?: unknown; nextId?: unknown } | undefined;
+    const tasks = details?.tasks ?? (details as { details?: { tasks?: unknown } } | undefined)?.details?.tasks;
+    if (!Array.isArray(tasks)) continue;
+    const parsed: Array<{ id: number; subject: string; status: string }> = [];
+    for (const raw of tasks) {
+      if (raw === null || typeof raw !== "object") continue;
+      const task = raw as { id?: unknown; subject?: unknown; status?: unknown };
+      if (typeof task.id !== "number" || typeof task.subject !== "string" || typeof task.status !== "string") continue;
+      parsed.push({ id: task.id, subject: task.subject, status: task.status });
+    }
+    state = { tasks: parsed, nextId: typeof details?.nextId === "number" ? details.nextId : 0 };
+  }
+  return state;
+}
+
+/** write/edit-family toolCall path argument (the persisted written-file source). */
+function writtenPathFromCall(block: SdkMessageContentBlock): string | null {
+  const name = typeof block.name === "string" ? block.name.toLowerCase() : "";
+  const isWrite = name === "write" || name.startsWith("write_") || name.endsWith(".write") || name.endsWith("_write");
+  const isEdit = name === "edit" || name.startsWith("edit_") || name.endsWith(".edit") || name.endsWith("_edit")
+    || name.includes("str_replace") || name.includes("replace_editor");
+  if (!isWrite && !isEdit) return null;
+  const args = (block.arguments ?? block.input) as { path?: unknown; file_path?: unknown } | undefined;
+  const raw = args?.path ?? args?.file_path;
+  return typeof raw === "string" && raw.trim() !== "" ? raw.trim() : null;
+}
+
+/** One session's tail analysis for session_status. */
+function analyzeTail(entries: readonly SdkMessageEntry[]): { state: "waiting_user" | "running_suspected" | "recent_error" | "idle"; detail: string } {
+  const tail = entries.filter((entry) => entry.type === "message").slice(-TAIL_ENTRY_BUDGET);
+  if (tail.length === 0) return { state: "idle", detail: "" };
+  const answered = new Set<string>();
+  let lastResultError: string | null = null;
+  for (const entry of tail) {
+    const message = entry.message as SdkMessage;
+    if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
+      answered.add(message.toolCallId);
+      if (message.isError === true) {
+        const blocks = Array.isArray(message.content) ? message.content : [];
+        const text = blocks.filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text as string).join(" ");
+        lastResultError = concise(text, 100);
+      } else {
+        lastResultError = null;
+      }
+    }
+  }
+  // Unclosed toolCalls in the LAST assistant message = in-flight on disk.
+  const lastAssistant = [...tail].reverse().find((entry) => (entry.message as SdkMessage)?.role === "assistant");
+  if (lastAssistant !== undefined) {
+    const message = lastAssistant.message as SdkMessage;
+    const blocks = Array.isArray(message.content) ? message.content : [];
+    const openCalls = blocks.filter((b) => b.type === "toolCall" && typeof b.id === "string" && !answered.has(b.id as string));
+    if (openCalls.length > 0) {
+      const ask = openCalls.find((b) => (b.name ?? "") === "ask_user_question");
+      if (ask !== undefined) return { state: "waiting_user", detail: "有一个待回答的向用户提问" };
+      return { state: "running_suspected", detail: `有 ${openCalls.length} 个未闭合的工具调用（疑似进行中或中断）` };
+    }
+  }
+  if (lastResultError !== null) return { state: "recent_error", detail: lastResultError === "" ? "最近一次工具调用失败" : `最近一次工具调用失败：${lastResultError}` };
+  return { state: "idle", detail: "" };
+}
+
+/** Resolve a session selector (id or title) against the visible catalog. */
+function resolveSessionTarget(selector: string, sessions: readonly AssistantSessionInfo[]): AssistantSessionInfo | undefined {
+  const trimmed = selector.trim();
+  if (trimmed === "") return undefined;
+  const byId = sessions.find((info) => info.id === trimmed);
+  if (byId !== undefined) return byId;
+  const lower = trimmed.toLowerCase();
+  const byTitle = sessions.find((info) => (info.name ?? "").toLowerCase() === lower);
+  if (byTitle !== undefined) return byTitle;
+  return sessions.find((info) =>
+    (info.name ?? "").toLowerCase().includes(lower) || info.firstMessage.toLowerCase().includes(lower));
+}
+
+function targetLine(info: AssistantSessionInfo): string {
+  const title = concise(info.name ?? info.firstMessage ?? "(无标题)", 60);
+  return `${title}｜项目:${projectLabel(info.cwd)}｜id:${info.id}`;
+}
+
+
+function toolText(text: string) {
+  return { content: [{ type: "text" as const, text }], details: undefined };
+}
+function toolError(text: string) {
+  return { content: [{ type: "text" as const, text }], details: undefined, isError: true as const };
+}
+function toolFailure(prefix: string, error: unknown) {
+  return toolError(`${prefix}：${error instanceof Error ? concise(error.message, 120) : "未知错误"}`);
+}
+async function resolveTarget(selector: string, signal?: AbortSignal): Promise<{ target: AssistantSessionInfo } | { error: ReturnType<typeof toolError> }> {
+  let sessions: AssistantSessionInfo[];
+  try {
+    sessions = await listSessionsForAssistant(signal);
+  } catch (error) {
+    signal?.throwIfAborted();
+    return { error: toolFailure("读取会话目录失败", error) };
+  }
+  const target = resolveSessionTarget(selector, sessions);
+  if (target === undefined) {
+    return { error: toolError(`没有找到会话「${concise(selector, 60)}」。可先用 search_sessions 查找。`) };
+  }
+  return { target };
+}
+
+// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
@@ -331,6 +482,321 @@ export function createAssistantToolsExtension(): InlineExtension {
           content: [{ type: "text", text: searchResultText(page, matched.length, query) }],
           details: undefined,
         };
+      },
+    });
+
+    pi.registerTool({
+      name: "session_status",
+      label: "查看会话动态",
+      description: [
+        "查看所有项目的会话当前状态（只读，基于会话记录推断，不会打扰任何会话）。",
+        "列出：等待用户回答的会话、疑似进行中（有未完成的工具调用）的会话、最近一轮报错的会话。",
+        "注意：这是基于持久化记录的推断；正在运行的真实时状态以应用界面为准。空闲会话默认不列出。",
+      ].join(""),
+      promptSnippet: "Read-only session status digest (waiting/running-suspected/recent-error).",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "只看某个项目（目录名或路径前缀）" })),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        let sessions: AssistantSessionInfo[];
+        try {
+          sessions = await listSessionsForAssistant(signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("读取会话目录失败", error);
+        }
+        const scoped = params.project !== undefined
+          ? sessions.filter((info) => projectMatches(info, params.project!))
+          : sessions;
+        const interesting: Array<{ info: AssistantSessionInfo; state: string; detail: string }> = [];
+        for (const info of scoped) {
+          if (interesting.length >= LIST_SESSION_BUDGET) break;
+          const entries = SessionManager.open(info.path).getEntries() as unknown as SdkMessageEntry[];
+          const analysis = analyzeTail(entries);
+          if (analysis.state !== "idle") interesting.push({ info, state: analysis.state, detail: analysis.detail });
+        }
+        if (interesting.length === 0) {
+          return toolText("没有发现等待用户、疑似进行中或最近报错的会话。");
+        }
+        const stateLabel: Record<string, string> = {
+          waiting_user: "等待用户",
+          running_suspected: "疑似进行中",
+          recent_error: "最近报错",
+        };
+        const lines = interesting
+          .sort((a, b) => b.info.modified.getTime() - a.info.modified.getTime())
+          .map((row) => `- [${stateLabel[row.state]}] ${targetLine(row.info)}｜${relativeDate(row.info.modified.getTime())}${row.detail === "" ? "" : `｜${row.detail}`}`);
+        return toolText(`发现 ${interesting.length} 个需要留意的会话：\n${lines.join("\n")}`);
+      },
+    });
+
+    pi.registerTool({
+      name: "list_open_todos",
+      label: "汇总待办",
+      description: [
+        "汇总各会话待办清单里未完成的项（只读，按会话分组；pending 和 in_progress 算未完成）。",
+        "数据来自每个会话记录里最后一次待办快照，不会激活任何会话。",
+      ].join(""),
+      promptSnippet: "Read-only open-todo digest grouped by session.",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "只看某个项目（目录名或路径前缀）" })),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        let sessions: AssistantSessionInfo[];
+        try {
+          sessions = await listSessionsForAssistant(signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("读取会话目录失败", error);
+        }
+        const scoped = params.project !== undefined
+          ? sessions.filter((info) => projectMatches(info, params.project!))
+          : sessions;
+        const groups: string[] = [];
+        let total = 0;
+        for (const info of scoped) {
+          if (groups.length >= LIST_SESSION_BUDGET) break;
+          const entries = SessionManager.open(info.path).getEntries() as unknown as SdkMessageEntry[];
+          const snapshot = replayTodoSnapshot(entries);
+          const open = snapshot?.tasks.filter((task) => task.status === "pending" || task.status === "in_progress") ?? [];
+          if (open.length === 0) continue;
+          total += open.length;
+          const items = open.slice(0, 6).map((task) => `  - [${task.status === "in_progress" ? "进行中" : "待办"}] ${concise(task.subject, 80)}`);
+          if (open.length > 6) items.push(`  - …等 ${open.length - 6} 项`);
+          groups.push(`${targetLine(info)}：\n${items.join("\n")}`);
+        }
+        if (groups.length === 0) {
+          return toolText(params.project === undefined ? "所有会话都没有未完成的待办。" : "该项目下没有未完成的待办。");
+        }
+        return toolText(`共 ${total} 项未完成待办：\n${groups.join("\n")}`);
+      },
+    });
+
+    pi.registerTool({
+      name: "summarize_activity",
+      label: "整理动态",
+      description: [
+        "整理一段时间内各会话的活动（只读）：每个会话的轮数、写入过的文件、最后一条助手消息摘要。",
+        "用于写日报/周报；本身不调用模型。默认今天；range 可为 today/week 或 N（最近 N 天）。",
+      ].join(""),
+      promptSnippet: "Read-only per-session activity digest for a time range.",
+      parameters: Type.Object({
+        range: Type.Optional(Type.String({ description: "today（默认）、week，或最近 N 天（如 3）" })),
+        project: Type.Optional(Type.String({ description: "只看某个项目（目录名或路径前缀）" })),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        const now = Date.now();
+        const range = (params.range ?? "today").trim().toLowerCase();
+        let sinceMs: number;
+        if (range === "today") {
+          const dayStart = new Date(now);
+          dayStart.setHours(0, 0, 0, 0);
+          sinceMs = dayStart.getTime();
+        } else if (range === "week") {
+          sinceMs = now - 7 * 24 * 60 * 60 * 1000;
+        } else if (/^\d+$/.test(range)) {
+          sinceMs = now - Math.min(90, Math.max(1, Number(range))) * 24 * 60 * 60 * 1000;
+        } else {
+          return toolError(`range 无法解析：${concise(range, 40)}。请用 today / week / 数字天数。`);
+        }
+        let sessions: AssistantSessionInfo[];
+        try {
+          sessions = await listSessionsForAssistant(signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("读取会话目录失败", error);
+        }
+        const scoped = (params.project !== undefined
+          ? sessions.filter((info) => projectMatches(info, params.project!))
+          : sessions)
+          .filter((info) => info.modified.getTime() >= sinceMs)
+          .sort((a, b) => b.modified.getTime() - a.modified.getTime())
+          .slice(0, LIST_SESSION_BUDGET);
+        if (scoped.length === 0) {
+          return toolText("这个时间段内没有会话活动。");
+        }
+        const lines: string[] = [];
+        for (const info of scoped) {
+          const entries = SessionManager.open(info.path).getEntries() as unknown as SdkMessageEntry[];
+          const messages = entries.filter((entry) => entry.type === "message").map((entry) => entry.message as SdkMessage);
+          const userTurns = messages.filter((message) => message?.role === "user").length;
+          const written = new Set<string>();
+          let lastAssistantText = "";
+          for (const message of messages) {
+            if (message?.role !== "assistant") continue;
+            const blocks = Array.isArray(message.content) ? message.content : [];
+            for (const block of blocks) {
+              if (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") lastAssistantText = block.text;
+              if (block.type === "toolCall") {
+                const path = writtenPathFromCall(block);
+                if (path !== null && written.size < 8) written.add(path);
+              }
+            }
+          }
+          const files = written.size === 0 ? "" : `｜写入: ${[...written].map((path) => basename(path) || path).slice(0, 5).join(", ")}${written.size > 5 ? ` 等 ${written.size} 个` : ""}`;
+          const summary = lastAssistantText === "" ? "" : `｜${concise(lastAssistantText, 120)}`;
+          lines.push(`- ${targetLine(info)}｜${userTurns} 轮${files}${summary}`);
+        }
+        return toolText(`时间范围内 ${scoped.length} 个会话有活动：\n${lines.join("\n")}`);
+      },
+    });
+
+    pi.registerTool({
+      name: "find_file_changes",
+      label: "查文件改动",
+      description: [
+        "查一个文件最近被哪些会话写过/改过（只读）：返回会话、时间、路径和那一轮的说明。",
+        "数据来自各会话记录里的写入/编辑工具调用（含 write/edit 及常见别名）。",
+      ].join(""),
+      promptSnippet: "Read-only which sessions recently wrote/edited a file.",
+      parameters: Type.Object({
+        path: Type.String({ description: "文件路径或文件名（如 nginx.conf 或 /etc/nginx/nginx.conf）" }),
+        limit: Type.Optional(Type.Integer({ description: "返回条数上限，默认 5，最大 10", minimum: 1, maximum: 10 })),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        const limit = Math.min(Math.max(params.limit ?? 5, 1), 10);
+        const raw = params.path.trim().replace(/\\/g, "/");
+        if (raw === "") return toolError("path 不能为空。");
+        const needle = raw.toLowerCase();
+        const matches = (candidate: string): boolean => {
+          const normalized = candidate.replace(/\\/g, "/").toLowerCase();
+          return normalized === needle || normalized.endsWith(`/${needle}`) || normalized.endsWith(needle);
+        };
+        let sessions: AssistantSessionInfo[];
+        try {
+          sessions = await listSessionsForAssistant(signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("读取会话目录失败", error);
+        }
+        type Hit = { info: AssistantSessionInfo; at: number; path: string; note: string };
+        const hits: Hit[] = [];
+        for (const info of sessions) {
+          if (hits.length >= limit * 3) break;
+          const entries = SessionManager.open(info.path).getEntries() as unknown as SdkMessageEntry[];
+          const messages = entries.filter((entry) => entry.type === "message").map((entry) => entry.message as SdkMessage);
+          const answered = new Map<string, { ok: boolean; at: number }>();
+          for (let index = 0; index < messages.length; index += 1) {
+            const message = messages[index];
+            if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
+              answered.set(message.toolCallId, { ok: message.isError !== true, at: index });
+            }
+          }
+          for (let index = 0; index < messages.length; index += 1) {
+            const message = messages[index];
+            if (message?.role !== "assistant") continue;
+            const blocks = Array.isArray(message.content) ? message.content : [];
+            const note = concise(blocks
+              .filter((block) => block.type === "text" && typeof block.text === "string")
+              .map((block) => block.text as string).join(" "), 100);
+            for (const block of blocks) {
+              if (block.type !== "toolCall" || typeof block.id !== "string") continue;
+              const path = writtenPathFromCall(block);
+              if (path === null || !matches(path)) continue;
+              const result = answered.get(block.id as string);
+              if (result === undefined || !result.ok) continue;
+              hits.push({ info, at: index, path, note: note === "" ? "(无文字说明)" : note });
+              if (hits.length >= limit * 3) break;
+            }
+          }
+        }
+        if (hits.length === 0) {
+          return toolText(`没有会话记录写过「${concise(raw, 60)}」。`);
+        }
+        const lines = hits
+          .sort((a, b) => b.at - a.at || b.info.modified.getTime() - a.info.modified.getTime())
+          .slice(0, limit)
+          .map((hit) => `- ${targetLine(hit.info)}｜${relativeDate(hit.info.modified.getTime())}｜${hit.path}\n  说明: ${hit.note}`);
+        return toolText(`找到 ${Math.min(hits.length, limit)} 条改动记录：\n${lines.join("\n")}`);
+      },
+    });
+
+    pi.registerTool({
+      name: "open_session",
+      label: "建议打开会话",
+      description: [
+        "建议用户打开某个会话（不直接执行）。工具解析目标并返回信息；界面会渲染「打开」按钮，用户点击后才会切换。",
+        "session 用 search_sessions 拿到的 id，或标题。",
+      ].join(""),
+      promptSnippet: "Suggest opening a session (user confirms via button).",
+      parameters: Type.Object({
+        session: Type.String({ description: "会话 id 或标题" }),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        const resolved = await resolveTarget(params.session, signal);
+        if ("error" in resolved) return resolved.error;
+        const target = resolved.target;
+        return toolText(`已建议打开会话（等用户点击「打开」按钮）：\n${targetLine(target)}\n\n如果用户没有点击，请继续在当前对话里帮助他。`);
+      },
+    });
+
+    pi.registerTool({
+      name: "organize_sessions",
+      label: "建议整理会话",
+      description: [
+        "建议用户批量整理会话（不直接执行）：重命名/置顶/取消置顶/归档/取消归档/删除。",
+        "界面会渲染「执行」按钮，用户点击后才会真正整理；删除还需要二次确认。",
+        "注意：置顶/归档是本设备侧栏偏好；重命名/删除是服务端会话操作。",
+      ].join(""),
+      promptSnippet: "Suggest a batch organize action (user confirms via button).",
+      parameters: Type.Object({
+        action: Type.String({ enum: ["rename", "pin", "unpin", "archive", "unarchive", "delete"] }),
+        sessions: Type.Array(Type.Object({ session: Type.String({ description: "会话 id 或标题" }) }), { minItems: 1, maxItems: 20, description: "目标会话列表" }),
+        title: Type.Optional(Type.String({ description: "rename 时的会话新标题（必填）", maxLength: 200 })),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        if (params.action === "rename") {
+          const title = params.title?.trim();
+          if (title === undefined || title === "") return toolError("rename 需要提供 title。");
+          if (params.sessions.length !== 1) return toolError("rename 一次只支持一个会话。");
+        }
+        let sessions: AssistantSessionInfo[];
+        try {
+          sessions = await listSessionsForAssistant(signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("读取会话目录失败", error);
+        }
+        const targets: AssistantSessionInfo[] = [];
+        const missing: string[] = [];
+        for (const row of params.sessions) {
+          const target = resolveSessionTarget(row.session, sessions);
+          if (target === undefined) missing.push(concise(row.session, 40));
+          else if (!targets.some((existing) => existing.id === target.id)) targets.push(target);
+        }
+        if (missing.length > 0) {
+          return toolError(`以下目标没有找到：${missing.join("、")}。可先用 search_sessions 查找。`);
+        }
+        const actionLabel: Record<string, string> = {
+          rename: "重命名",
+          pin: "置顶",
+          unpin: "取消置顶",
+          archive: "归档",
+          unarchive: "取消归档",
+          delete: "删除",
+        };
+        const suffix = params.action === "rename" ? ` 为「${concise(params.title!.trim(), 60)}」` : "";
+        return toolText(`已建议${actionLabel[params.action]} ${targets.length} 个会话${suffix}（等用户点击「执行」按钮${params.action === "delete" ? "并确认删除" : ""}）：\n${targets.map((target) => `- ${targetLine(target)}`).join("\n")}`);
+      },
+    });
+
+    pi.registerTool({
+      name: "draft_to_session",
+      label: "起草续话",
+      description: [
+        "为另一个会话起草一段接续输入（不发送）。界面会渲染「填入输入框」按钮，用户点击后会切到该会话并把文字填进输入框，仍需用户自己发送。",
+        "session 用 search_sessions 拿到的 id，或标题；text 是要填入的完整输入。",
+      ].join(""),
+      promptSnippet: "Draft a follow-up message into another session (fill only, never send).",
+      parameters: Type.Object({
+        session: Type.String({ description: "目标会话 id 或标题" }),
+        text: Type.String({ description: "要填入目标会话输入框的文字（完整可发送的中文输入）", minLength: 1, maxLength: 8000 }),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        const resolved = await resolveTarget(params.session, signal);
+        if ("error" in resolved) return resolved.error;
+        const target = resolved.target;
+        return toolText(`已起草续话（等用户点击「填入输入框」按钮，不会自动发送）：\n目标: ${targetLine(target)}\n草稿: ${concise(params.text, 200)}`);
       },
     });
 

@@ -342,10 +342,10 @@ describe("assistant tools (search_sessions / read_session)", () => {
     ensureAssistantToolsActive(session, PROJECT_DIR);
     assert.deepEqual([...session.active].sort(), ["read", "write"]);
     ensureAssistantToolsActive(session, realAssistantDir);
-    assert.deepEqual([...session.active].sort(), ["read", "read_session", "search_sessions", "write"]);
+    assert.deepEqual([...session.active].sort(), [...new Set([...ASSISTANT_TOOL_NAMES, "read", "write"])].sort());
     // Idempotent: a second application does not duplicate anything.
     ensureAssistantToolsActive(session, realAssistantDir);
-    assert.equal(session.active.size, 4);
+    assert.equal(session.active.size, ASSISTANT_TOOL_NAMES.length + 2);
   });
 });
 
@@ -412,5 +412,220 @@ describe("assistant tools survive explicit set_tools whitelists (driver)", () =>
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 3: session capabilities (status / todos / activity / file changes /
+// suggested actions)
+// ---------------------------------------------------------------------------
+
+describe("assistant session capabilities (round 3 tools)", () => {
+  let fixture: Fixture;
+  let previousAgentDir: string | undefined;
+  let tools: Map<string, RegisteredTool>;
+
+  const seedWithEntries = (cwd: string, append: (manager: ReturnType<typeof SessionManager.create>) => void, sessionDir?: string) => {
+    const manager = SessionManager.create(cwd, sessionDir);
+    if (sessionDir === undefined) mkdirSync(manager.getSessionDir(), { recursive: true });
+    append(manager);
+    return manager.getSessionId();
+  };
+
+  beforeEach(async () => {
+    fixture = await setup();
+    previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = fixture.root;
+    resetAssistantToolsListCacheForTests();
+    tools = collectTools();
+  });
+  afterEach(async () => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    resetAssistantToolsListCacheForTests();
+    await dispose(fixture);
+  });
+
+  it("registers all nine assistant tools", () => {
+    assert.deepEqual([...tools.keys()].sort(), [...ASSISTANT_TOOL_NAMES].sort());
+  });
+
+  it("session_status flags waiting-user, suspected-running and recent-error tails", async () => {
+    const usage = () => ({
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+      cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
+    });
+    seedWithEntries("/repos/waiting", (m) => {
+      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 5000 });
+      m.appendMessage({
+        role: "assistant", content: [{ type: "toolCall", id: "ask1", name: "ask_user_question", arguments: { questions: [] } }],
+        api: "anthropic", provider: "anthropic", model: "m", usage: usage(), stopReason: "toolUse", timestamp: NOW - 4000,
+      });
+    }, undefined);
+    seedWithEntries("/repos/running", (m) => {
+      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 3000 });
+      m.appendMessage({
+        role: "assistant", content: [{ type: "toolCall", id: "b1", name: "bash", arguments: { cmd: "sleep 90" } }],
+        api: "anthropic", provider: "anthropic", model: "m", usage: usage(), stopReason: "toolUse", timestamp: NOW - 2000,
+      });
+    }, undefined);
+    seedWithEntries("/repos/errored", (m) => {
+      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 1500 });
+      m.appendMessage({
+        role: "assistant", content: [{ type: "toolCall", id: "e1", name: "bash", arguments: { cmd: "x" } }],
+        api: "anthropic", provider: "anthropic", model: "m", usage: usage(), stopReason: "toolUse", timestamp: NOW - 1400,
+      });
+      m.appendMessage({ role: "toolResult", toolCallId: "e1", toolName: "bash", content: [{ type: "text", text: "boom: ENOENT" }], isError: true, timestamp: NOW - 1300 });
+    }, undefined);
+    seedWithEntries("/repos/idle", (m) => {
+      m.appendMessage({ role: "user", content: "q", timestamp: NOW - 800 });
+      m.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "done" }],
+        api: "anthropic", provider: "anthropic", model: "m", usage: usage(), stopReason: "stop", timestamp: NOW - 700,
+      });
+    }, undefined);
+    resetAssistantToolsListCacheForTests();
+    const result = await runTool(tools, "session_status", {});
+    assert.equal(result.isError, undefined);
+    const text = result.content[0]!.text!;
+    assert.match(text, /等待用户/);
+    assert.match(text, /疑似进行中/);
+    assert.match(text, /最近报错/);
+    assert.match(text, /ENOENT/);
+    assert.doesNotMatch(text, /idle/); // idle sessions are not listed
+    // Project scoping filters.
+    const scoped = await runTool(tools, "session_status", { project: "repos/waiting" });
+    assert.match(scoped.content[0]!.text!, /等待用户/);
+    assert.doesNotMatch(scoped.content[0]!.text!, /疑似进行中/);
+  });
+
+  it("list_open_todos groups open items by session and honors project filter", async () => {
+    seedWithEntries("/repos/todo-a", (m) => {
+      m.appendMessage({ role: "user", content: "go", timestamp: NOW - 5000 });
+      m.appendMessage({
+        role: "assistant", content: [{ type: "toolCall", id: "t1", name: "todo", arguments: { action: "list" } }],
+        api: "anthropic", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } }, stopReason: "toolUse", timestamp: NOW - 4000,
+      });
+      m.appendMessage({
+        role: "toolResult", toolCallId: "t1", toolName: "todo", isError: false, timestamp: NOW - 3000,
+        content: [{ type: "text", text: "listed" }],
+        details: { action: "list", tasks: [
+          { id: 1, subject: "修登录 bug", status: "in_progress" },
+          { id: 2, subject: "写文档", status: "pending" },
+          { id: 3, subject: "完成的", status: "completed" },
+        ], nextId: 4 },
+      });
+    }, undefined);
+    resetAssistantToolsListCacheForTests();
+    const result = await runTool(tools, "list_open_todos", {});
+    const text = result.content[0]!.text!;
+    assert.match(text, /共 2 项未完成待办/);
+    assert.match(text, /进行中.*修登录 bug/);
+    assert.match(text, /待办.*写文档/);
+    assert.doesNotMatch(text, /完成的/);
+    const scoped = await runTool(tools, "list_open_todos", { project: "other" });
+    assert.match(scoped.content[0]!.text!, /没有未完成的待办/);
+  });
+
+  it("summarize_activity counts turns, written files and last text; rejects bad range", async () => {
+    seedWithEntries("/repos/active", (m) => {
+      m.appendMessage({ role: "user", content: "改一下配置", timestamp: NOW - 3000 });
+      m.appendMessage({
+        role: "assistant", content: [
+          { type: "text", text: "我来改 nginx.conf" },
+          { type: "toolCall", id: "w1", name: "edit", arguments: { path: "/etc/nginx/nginx.conf", edits: [] } },
+        ],
+        api: "anthropic", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } }, stopReason: "toolUse", timestamp: NOW - 2000,
+      });
+      m.appendMessage({ role: "toolResult", toolCallId: "w1", toolName: "edit", content: [{ type: "text", text: "ok" }], isError: false, timestamp: NOW - 1000 });
+      m.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "已把 worker_processes 改成 4" }],
+        api: "anthropic", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } }, stopReason: "stop", timestamp: NOW - 900,
+      });
+    }, undefined);
+    resetAssistantToolsListCacheForTests();
+    const result = await runTool(tools, "summarize_activity", { range: "week" });
+    const text = result.content[0]!.text!;
+    assert.match(text, /1 个会话有活动/);
+    assert.match(text, /1 轮/);
+    assert.match(text, /nginx\.conf/);
+    assert.match(text, /worker_processes 改成 4/);
+    const bad = await runTool(tools, "summarize_activity", { range: "yesterday?" });
+    assert.equal(bad.isError, true);
+    assert.match(bad.content[0]!.text!, /range 无法解析/);
+  });
+
+  it("find_file_changes matches basenames and only successful writes", async () => {
+    seedWithEntries("/repos/writer", (m) => {
+      m.appendMessage({ role: "user", content: "改 nginx", timestamp: NOW - 3000 });
+      m.appendMessage({
+        role: "assistant", content: [
+          { type: "text", text: "调整了反向代理超时" },
+          { type: "toolCall", id: "ok1", name: "write", arguments: { path: "/etc/nginx/sites-enabled/app.conf", content: "x" } },
+          { type: "toolCall", id: "fail1", name: "edit", arguments: { path: "/etc/nginx/nginx.conf", edits: [] } },
+        ],
+        api: "anthropic", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } }, stopReason: "toolUse", timestamp: NOW - 2000,
+      });
+      m.appendMessage({ role: "toolResult", toolCallId: "ok1", toolName: "write", content: [{ type: "text", text: "written" }], isError: false, timestamp: NOW - 1500 });
+      m.appendMessage({ role: "toolResult", toolCallId: "fail1", toolName: "edit", content: [{ type: "text", text: "conflict" }], isError: true, timestamp: NOW - 1400 });
+    }, undefined);
+    resetAssistantToolsListCacheForTests();
+    const hit = await runTool(tools, "find_file_changes", { path: "app.conf" });
+    const text = hit.content[0]!.text!;
+    assert.match(text, /1 条改动记录/);
+    assert.match(text, /反向代理超时/);
+    // The FAILED edit on nginx.conf is not reported as a change.
+    const miss = await runTool(tools, "find_file_changes", { path: "nginx.conf" });
+    assert.match(miss.content[0]!.text!, /没有会话记录写过/);
+  });
+
+  it("open_session resolves by title and fails closed for unknown targets", async () => {
+    seedWithEntries("/repos/dest", (m) => {
+      m.appendMessage({ role: "user", content: "目标会话", timestamp: NOW - 900 });
+      m.appendMessage({
+        role: "assistant", content: [{ type: "text", text: "好的" }],
+        api: "anthropic", provider: "anthropic", model: "m", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 } }, stopReason: "stop", timestamp: NOW - 800,
+      });
+    }, undefined);
+    resetAssistantToolsListCacheForTests();
+    const ok = await runTool(tools, "open_session", { session: "目标会话" });
+    assert.equal(ok.isError, undefined);
+    assert.match(ok.content[0]!.text!, /已建议打开会话/);
+    const miss = await runTool(tools, "open_session", { session: "不存在的" });
+    assert.equal(miss.isError, true);
+    assert.match(miss.content[0]!.text!, /没有找到会话/);
+  });
+
+  it("organize_sessions validates rename requirements and resolves batch targets", async () => {
+    const manager = SessionManager.create("/repos/batch", undefined);
+    mkdirSync(manager.getSessionDir(), { recursive: true });
+    manager.appendMessage({ role: "user", content: "批量会话一", timestamp: NOW - 900 });
+    resetAssistantToolsListCacheForTools();
+    async function resetAssistantToolsListCacheForTools() { resetAssistantToolsListCacheForTests(); }
+    const renameNoTitle = await runTool(tools, "organize_sessions", { action: "rename", sessions: [{ session: "批量会话一" }] });
+    assert.equal(renameNoTitle.isError, true);
+    assert.match(renameNoTitle.content[0]!.text!, /rename 需要提供 title/);
+    const renameTwo = await runTool(tools, "organize_sessions", { action: "rename", sessions: [{ session: "批量会话一" }, { session: "x" }], title: "新标题" });
+    assert.equal(renameTwo.isError, true);
+    assert.match(renameTwo.content[0]!.text!, /一次只支持一个/);
+    const archive = await runTool(tools, "organize_sessions", { action: "archive", sessions: [{ session: "批量会话一" }, { session: "批量会话一" }] });
+    assert.equal(archive.isError, undefined);
+    assert.match(archive.content[0]!.text!, /已建议归档 1 个会话/); // deduped
+    const miss = await runTool(tools, "organize_sessions", { action: "pin", sessions: [{ session: "ghost" }] });
+    assert.equal(miss.isError, true);
+    assert.match(miss.content[0]!.text!, /没有找到：ghost/);
+  });
+
+  it("draft_to_session resolves the target and echoes a bounded draft preview", async () => {
+    seedWithEntries("/repos/dst", (m) => {
+      m.appendMessage({ role: "user", content: "继续修 bug", timestamp: NOW - 900 });
+    }, undefined);
+    resetAssistantToolsListCacheForTests();
+    const ok = await runTool(tools, "draft_to_session", { session: "继续修", text: "接着修 bug：先跑 npm test，把失败的三个用例修好。" });
+    assert.equal(ok.isError, undefined);
+    assert.match(ok.content[0]!.text!, /已起草续话/);
+    assert.match(ok.content[0]!.text!, /不会自动发送/);
+    const miss = await runTool(tools, "draft_to_session", { session: "ghost", text: "hi" });
+    assert.equal(miss.isError, true);
   });
 });
