@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CaretDownIcon } from "@phosphor-icons/react/CaretDown";
 import { MagnifyingGlassIcon } from "@phosphor-icons/react/MagnifyingGlass";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -72,6 +72,7 @@ export function Select({
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [rect, setRect] = useState<AnchorRect | null>(null);
   const [search, setSearch] = useState("");
@@ -115,6 +116,52 @@ export function Select({
     }
   };
 
+  // Opening lands on the current value: the selected row scrolls into view
+  // (it may sit deep in a long, grouped list) and keyboard navigation
+  // starts from it — like the model picker and the native select it replaced.
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      panelRef.current?.querySelector(".ui-menu-item.is-selected")?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
+
+  const enabledRows = (): HTMLButtonElement[] => (
+    [...(panelRef.current?.querySelectorAll<HTMLButtonElement>(".ui-menu-item:not(:disabled)") ?? [])]
+  );
+
+  /** Focus the selected row (fallback first/last) without scrolling it. */
+  const focusFrom = (end: boolean): void => {
+    const rows = enabledRows();
+    if (rows.length === 0) return;
+    const selected = panelRef.current?.querySelector<HTMLButtonElement>(".ui-menu-item.is-selected:not(:disabled)");
+    (selected ?? (end ? rows[rows.length - 1] : rows[0]))?.focus();
+  };
+
+  /** Roving keyboard focus inside the open list (bubbles up from rows). */
+  const onPanelKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Escape") return;
+    const rows = enabledRows();
+    if (rows.length === 0) return;
+    const from = e.target instanceof HTMLButtonElement ? rows.indexOf(e.target) : -1;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (from === -1) focusFrom(false);
+      else rows[Math.min(rows.length - 1, from + 1)]?.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (from === -1) focusFrom(true);
+      else rows[Math.max(0, from - 1)]?.focus();
+    } else if (from >= 0) {
+      // Escape on a row closes and returns focus to the trigger (the search
+      // field handles its own Escape: clear query first, then close).
+      e.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+    }
+  };
+
   const select = (next: string): void => {
     setOpen(false);
     if (next !== value) onChange(next);
@@ -136,6 +183,7 @@ export function Select({
   return (
     <div ref={rootRef} className={`ui-select${variant === "form" ? " ui-select-form-wrap" : ""}`} style={{ position: "relative", display: variant === "form" ? "inline-flex" : "inline-flex", minWidth: 0, ...style }}>
       <button
+        ref={triggerRef}
         id={id}
         type="button"
         className={`ui-trigger ${variant === "form" ? "ui-select-form" : ""}${className ? ` ${className}` : ""}`}
@@ -148,6 +196,14 @@ export function Select({
           if (open) setOpen(false);
           else openMenu(e.currentTarget);
         }}
+        onKeyDown={(e) => {
+          // Without the search field the trigger keeps focus while the list
+          // is open; arrows enter the list at the selected row.
+          if (open && !showSearch && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+            e.preventDefault();
+            focusFrom(e.key === "ArrowUp");
+          }
+        }}
       >
         {variant === "toolbar" && current?.icon}
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: variant === "toolbar" ? "0 1 auto" : "1" }}>
@@ -159,13 +215,14 @@ export function Select({
         <Popover
           rect={rect}
           offset={variant === "form" ? 6 : 4}
-          align={variant === "form" ? "left" : "left"}
+          prefer={variant === "form" ? "bottom" : "top"}
+          align="left"
           minWidth={Math.max(200, rect.width)}
           maxWidth={400}
           maxHeightCap={360}
           style={{ display: "flex", flexDirection: "column" }}
         >
-          <div ref={panelRef} style={{ overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column", gap: 2, padding: 4 }}>
+          <div ref={panelRef} onKeyDown={onPanelKeyDown} style={{ overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column", gap: 2, padding: 4 }}>
             {showSearch && (
               <div className="ui-menu-search" style={{ margin: "-4px -4px 2px" }}>
                 <div className="ui-menu-search-inner">
@@ -179,11 +236,8 @@ export function Select({
                         if (search) setSearch("");
                         else setOpen(false);
                       } else if (e.key === "ArrowDown") {
-                        const first = panelRef.current?.querySelector<HTMLButtonElement>(".ui-menu-item");
-                        if (first) {
-                          e.preventDefault();
-                          first.focus();
-                        }
+                        e.preventDefault();
+                        focusFrom(false);
                       }
                     }}
                     placeholder={t("desktop.searchModels")}

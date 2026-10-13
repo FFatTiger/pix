@@ -3780,6 +3780,7 @@ html.pi-booted body::before {
   color: var(--text);
   font-size: 13px;
   justify-content: flex-start;
+  text-align: left;
 }
 .ui-select-form:hover:not(:disabled) { color: var(--text); }
 .ui-select-form:active:not(:disabled) { transform: none; }

@@ -18,19 +18,23 @@ export interface AnchorRect {
   top: number;
   left: number;
   width: number;
+  /** Bottom edge in CSS px (drives downward placement). */
+  bottom: number;
 }
 
 /** Measure a trigger element into an AnchorRect (CSS px under page zoom). */
 export function anchorRectOf(el: HTMLElement): AnchorRect {
   const box = el.getBoundingClientRect();
-  return { top: cssPx(box.top), left: cssPx(box.left), width: cssPx(box.width) };
+  return { top: cssPx(box.top), left: cssPx(box.left), width: cssPx(box.width), bottom: cssPx(box.bottom) };
 }
 
 export interface PopoverProps {
   /** Trigger rect; the panel stays hidden while null. */
   rect: AnchorRect | null;
-  /** Gap between the panel's bottom edge and the trigger's top edge. */
+  /** Gap between the panel edge and the trigger edge. */
   offset?: number;
+  /** Preferred side; flips when that side cannot hold ~160px. */
+  prefer?: "top" | "bottom";
   /** Edge of the trigger the panel aligns to (default left). */
   align?: "left" | "right";
   minWidth?: number;
@@ -47,6 +51,7 @@ export interface PopoverProps {
 export function Popover({
   rect,
   offset = 4,
+  prefer = "top",
   align = "left",
   minWidth,
   maxWidth,
@@ -61,9 +66,20 @@ export function Popover({
   const vh = cssPx(window.visualViewport?.height ?? window.innerHeight);
   const vw = cssPx(window.innerWidth);
   const maxW = Math.min(maxWidth ?? 400, vw - 16);
-  const maxH = Math.min(maxHeightCap, Math.max(120, Math.min(rect.top - 8, vh * 0.6)));
-  const bottom = vh - rect.top + offset;
-  const position: CSSProperties = mobileFullWidth && isMobile
+  // Pick the side: the preferred one unless it cannot hold a usable menu
+  // (160px) and the other side has more room. The chosen side caps the panel
+  // height so the list scrolls internally instead of clipping at the edge.
+  const spaceAbove = rect.top - offset - 8;
+  const spaceBelow = vh - rect.bottom - offset - 8;
+  const placement: "top" | "bottom" = prefer === "bottom"
+    ? (spaceBelow >= 160 || spaceBelow >= spaceAbove ? "bottom" : "top")
+    : (spaceAbove >= 160 || spaceAbove >= spaceBelow ? "top" : "bottom");
+  const space = placement === "top" ? spaceAbove : spaceBelow;
+  const maxH = Math.min(maxHeightCap, Math.max(120, Math.min(space, vh * 0.6)));
+  const along: CSSProperties = placement === "top"
+    ? { bottom: vh - rect.top + offset }
+    : { top: rect.bottom + offset };
+  const cross: CSSProperties = mobileFullWidth && isMobile
     ? { left: 8, right: 8, maxWidth: "calc(100vw / var(--app-ui-scale, 1) - 16px)" }
     : align === "right"
       ? { right: Math.max(8, vw - (rect.left + rect.width)), width: "max-content", minWidth: Math.min(rect.width, maxW), maxWidth: maxW }
@@ -73,11 +89,11 @@ export function Popover({
       className={`ui-menu${className ? ` ${className}` : ""}`}
       style={{
         position: "fixed",
-        bottom,
+        ...along,
         zIndex: 2001,
         maxHeight: maxH,
         overflowY: "auto",
-        ...position,
+        ...cross,
         ...style,
       }}
     >

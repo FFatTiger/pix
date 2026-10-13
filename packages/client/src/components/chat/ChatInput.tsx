@@ -31,7 +31,7 @@ import { getCurrentVisualViewportHeight } from "@/hooks/useVisualViewportHeight"
 import { useI18n } from "@/hooks/useI18n";
 import { ModelSelector, ThinkingLevelSelector } from "./composer-selectors";
 import { IconButton, ToolbarButton } from "@/components/ui/buttons";
-import { MenuItem, Popover, anchorRectOf } from "@/components/ui/menu";
+import { MenuItem, Popover, anchorRectOf, type AnchorRect } from "@/components/ui/menu";
 import { ArrowBendUpLeftIcon } from "@phosphor-icons/react/ArrowBendUpLeft";
 import { ArrowClockwiseIcon } from "@phosphor-icons/react/ArrowClockwise";
 import { ArrowElbowUpLeftIcon } from "@phosphor-icons/react/ArrowElbowUpLeft";
@@ -439,11 +439,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     return draftKey ? getDraft(draftKey)?.value ?? "" : "";
   });
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
-  const [projectDropdownRect, setProjectDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [projectDropdownRect, setProjectDropdownRect] = useState<AnchorRect | null>(null);
   const [customPathMode, setCustomPathMode] = useState(false);
   const [customProjectPath, setCustomProjectPath] = useState("");
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
-  const [attachMenuRect, setAttachMenuRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [attachMenuRect, setAttachMenuRect] = useState<AnchorRect | null>(null);
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>(() => {
     if (typeof window === "undefined") return [];
     return draftKey ? getDraft(draftKey)?.images.map(draftImageToAttachedImage) ?? [] : [];
