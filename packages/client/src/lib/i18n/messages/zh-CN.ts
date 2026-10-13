@@ -374,6 +374,7 @@ export const zhCNLocale = {
     "desktop.steerOrQueueFollowUp": "立即引导 / 排队后续消息...",
     "desktop.agentRunning": "Agent 正在运行...",
     "desktop.messageWithCommands": "输入消息... 输入 / 查看命令，@ 查看文件",
+    "desktop.messagePlaceholderShort": "输入消息，/ 命令，@ 文件",
     "desktop.changedFiles": "{count} 个变更文件",
     "desktop.injectMessageNow": "中断当前运行并立即注入此消息",
     "desktop.queueMessageAfterFinish": "在 Agent 完成后将此消息加入队列",

@@ -2552,7 +2552,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               isStreaming && (onSteer || onFollowUp)
                 ? t("desktop.steerOrQueueFollowUp")
                 : isStreaming ? t("desktop.agentRunning")
-                : placeholderOverride ?? t("desktop.messageWithCommands")
+                : placeholderOverride ?? (isMobile ? t("desktop.messagePlaceholderShort") : t("desktop.messageWithCommands"))
             }
             rows={1}
             className="chat-input-textarea"
@@ -2596,11 +2596,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           display: "flex",
           alignItems: "center",
           gap: 4,
-          flexWrap: isMobile ? "wrap" : undefined,
+          flexWrap: "nowrap",
+          minWidth: 0,
         }}>
 
           {/* LEFT: attach + model selector (idle) or steer/followup toggle (streaming) */}
-          <div className="chat-input-toolbar-left" style={{ flex: "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
+          <div className="chat-input-toolbar-left" style={{ flex: "0 1 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
             {variant === "main" && (
             <button
               className="chat-input-toolbar-attach"
@@ -2922,7 +2923,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
           {/* RIGHT: thinking + compact + sound (idle) | Stop + sound (streaming) */}
           <div className="chat-input-toolbar-controls" style={{
-            flex: "0 0 auto",
+            flex: "0 1 auto",
+            minWidth: 0,
             display: "flex",
             alignItems: "center",
             justifyContent: "flex-end",

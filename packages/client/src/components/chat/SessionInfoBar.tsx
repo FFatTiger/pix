@@ -370,6 +370,8 @@ export function SessionInfoBar({
   // old footer row offered (sound, notifications, history, branches, system
   // prompt, compact, stats) moves into the ring's popover.
   if (compact) {
+    // No session yet (home): nothing to measure, so no ring.
+    if (!hasSession) return null;
     const pct = contextUsage?.percent ?? null;
     const actionButton = (key: string, label: string, icon: React.ReactNode, onClick: () => void, opts: { disabled?: boolean; active?: boolean } = {}) => (
       <button

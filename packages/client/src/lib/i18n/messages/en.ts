@@ -374,6 +374,7 @@ export const enLocale = {
     "desktop.steerOrQueueFollowUp": "Steer now / queue follow-up...",
     "desktop.agentRunning": "Agent is running...",
     "desktop.messageWithCommands": "Message... Type / for commands, @ for files",
+    "desktop.messagePlaceholderShort": "Message, / commands, @ files",
     "desktop.changedFiles": "{count} changed files",
     "desktop.injectMessageNow": "Interrupt the current run and inject this message now",
     "desktop.queueMessageAfterFinish": "Queue this message after the agent finishes",

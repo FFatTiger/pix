@@ -3847,3 +3847,34 @@ html.pi-booted body::before {
 }
 /* Side chat composer is the main ChatInput; no hanging overhang in the pane. */
 .right-panel-container .side-chat-composer .chat-input-shell { width: 100%; margin-left: 0; }
+
+/* Phone composer toolbar: one row, never wraps. Pickers collapse to their
+   icon (thinking) or a truncated name (project, model); the context ring and
+   send stay fixed at the right edge. */
+@media (max-width: 640px) {
+  .chat-input-toolbar-actions { min-width: 0; flex-wrap: nowrap; }
+  .chat-input-toolbar-thinking > button > span,
+  .chat-input-toolbar-thinking > button > svg:last-child { display: none; }
+  .chat-input-toolbar-thinking > button { padding: 0 6px !important; }
+  .chat-input-toolbar-project { min-width: 0; flex: 0 1 auto; }
+  .chat-input-toolbar-project > button > span:not(:first-child) { max-width: 84px !important; }
+  .chat-input-toolbar-project > button > svg:last-child { display: none; }
+  .chat-input-toolbar-model { min-width: 0; flex: 0 1 auto; max-width: 150px !important; }
+  .chat-input-toolbar-model > button { min-width: 0; }
+  .chat-input-toolbar-model > button > svg:last-child { display: none; }
+  .chat-input-toolbar-project > button > span:not(:first-child) { max-width: 72px !important; }
+  .chat-input-toolbar .chat-input-send,
+  .session-info-ring { flex: 0 0 auto; }
+}
+@media (max-width: 640px) {
+  .chat-input-toolbar-project > button { min-width: 0; max-width: 100%; overflow: hidden; }
+  .chat-input-toolbar-project > button > span:not(:first-child) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+/* Very narrow phones: project picker collapses to its folder icon. */
+@media (max-width: 360px) {
+  .chat-input-toolbar-project > button > span:not(:first-child) { display: none; }
+}
+@media (max-width: 360px) {
+  .chat-input-toolbar-project { flex: 0 0 auto; }
+  .chat-input-toolbar-project > button { width: 28px !important; justify-content: center !important; padding: 0 !important; }
+}
