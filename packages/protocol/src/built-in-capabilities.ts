@@ -14,6 +14,7 @@ export const BUILT_IN_CAPABILITY_IDS = [
   "todo",
   "ask_user_question",
   "side_chat",
+  "smart_compact",
 ] as const;
 
 export const BuiltInCapabilityIdSchema = z.enum(BUILT_IN_CAPABILITY_IDS);
@@ -43,7 +44,7 @@ const BuiltInCapabilityListSchema = z
   .array(BuiltInCapabilityStateSchema)
   .superRefine((capabilities, ctx) => {
     if (exactCanonicalCapabilityList(capabilities)) return;
-    ctx.addIssue({ code: "custom", message: "built-in capabilities must be the four canonical ids exactly once" });
+    ctx.addIssue({ code: "custom", message: "built-in capabilities must be the canonical ids exactly once" });
   });
 
 export const BuiltInCapabilityConfigResponseSchema = z.strictObject({

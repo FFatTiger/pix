@@ -12,6 +12,8 @@ import {
   createSessiondSessionDeleteClient,
   createSessiondSessionRenameClient,
   createSessiondSessionSettingsClient,
+  createSessiondAssistantClient,
+  createAssistantWorkspaceResource,
   createCapabilityResolver,
   InvalidAllowedRootsError,
   InvalidHostDirError,
@@ -214,6 +216,18 @@ export async function runHost(
     return 1;
   }
 
+  // Assistant workspace: materialize the fixed <home>/.pi/pix/assistant
+  // directory (0700, AllowedRoots-authorized, one-time project-trusted via the
+  // same seam POST /v1/trust uses — never a user prompt). Null (assistant
+  // disabled, entry hidden) when the directory sits outside PIX_ALLOWED_ROOTS.
+  const assistantWorkspace = await createAssistantWorkspaceResource({
+    home: homedir(),
+    roots: production.deps.allowedRoots,
+    ...(catalogs.trust === undefined ? {} : { trust: catalogs.trust }),
+    ...(catalogs.trustMutation === undefined ? {} : { trustMutation: catalogs.trustMutation }),
+    logger: consoleLogger,
+  });
+
   // Single seam-normalized capability authority: built from the SAME deps that
   // mount the routes (sessiond probe + raw production lists + mounted catalog
   // and session-mutation seams). BOTH the HTTP projection (via
@@ -269,6 +283,14 @@ export async function runHost(
     },
     gate: { config: createBootGateConfigSource() },
     logger: consoleLogger,
+    ...(assistantWorkspace
+      ? {
+        assistant: {
+          cwd: assistantWorkspace.cwd,
+          client: createSessiondAssistantClient({ endpoint: location.paths.endpoint, secret }),
+        },
+      }
+      : {}),
     // WS transport ceiling matches the advertised maxUpload so a full upload is
     // actually receivable instead of being rejected at the frame layer.
   };

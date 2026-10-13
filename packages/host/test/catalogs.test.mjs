@@ -67,6 +67,8 @@ function fakeSettingsMutation(impl = {}) {
     writeSubagentConfig: async (input) => impl.writeSubagentConfig ? impl.writeSubagentConfig(input) : { revision: "6".repeat(64), settings: input.settings },
     readToolsConfig: async () => impl.readToolsConfig ? impl.readToolsConfig() : toolsSnapshot,
     writeToolsConfig: async (input) => impl.writeToolsConfig ? impl.writeToolsConfig(input) : { revision: "6".repeat(64), selection: { mode: "custom", toolNames: input.toolNames ?? [] } },
+    readCompactionConfig: async () => impl.readCompactionConfig ? impl.readCompactionConfig() : { revision: "5".repeat(64), settings: COMPACTION_SETTINGS },
+    writeCompactionConfig: async (input) => impl.writeCompactionConfig ? impl.writeCompactionConfig(input) : { revision: "6".repeat(64), settings: input.settings },
   };
 }
 
@@ -75,6 +77,7 @@ const ALL_BUILTINS = [
   { id: "todo", enabled: true },
   { id: "ask_user_question", enabled: true },
   { id: "side_chat", enabled: true },
+  { id: "smart_compact", enabled: true },
 ];
 
 function fakeBuiltInsMutation(impl = {}) {
@@ -479,6 +482,7 @@ test("GET/PUT /v1/settings/built-ins round-trip with strict body rules and capab
     { id: "todo", enabled: true },
     { id: "subagents", enabled: false },
     { id: "ask_user_question", enabled: true },
+    { id: "smart_compact", enabled: true },
   ];
   const app = appWithCatalogs({
     roots,
@@ -504,16 +508,17 @@ test("GET/PUT /v1/settings/built-ins round-trip with strict body rules and capab
   assert.deepEqual(written.capabilities, mixed);
 
   for (const bad of [
-    { expectedRevision: body.revision, capabilities: mixed.slice(0, 3) },
+    { expectedRevision: body.revision, capabilities: mixed.slice(0, 4) },
     { expectedRevision: "nothex", capabilities: mixed },
     { expectedRevision: body.revision, capabilities: mixed, extra: 1 },
-    { expectedRevision: body.revision, capabilities: [...mixed.slice(0, 3), { id: "plugins", enabled: true }] },
+    { expectedRevision: body.revision, capabilities: [...mixed.slice(0, 4), { id: "plugins", enabled: true }] },
     {
       expectedRevision: body.revision,
       capabilities: [
         { id: "subagents", enabled: true },
         { id: "todo", enabled: true },
         { id: "ask_user_question", enabled: true },
+        { id: "side_chat", enabled: true },
         { id: "subagents", enabled: false },
       ],
     },
@@ -1301,6 +1306,20 @@ test("present cwd never falls back to global on empty, relative, outside, symlin
 });
 
 const SUBAGENT_SETTINGS = { defaultModel: null, fallbackModel: null, agentOverrides: [] };
+const COMPACTION_SETTINGS = {
+  native: { enabled: true, reserveTokens: null, keepRecentTokens: null },
+  smart: {
+    autoTrigger: true, minContextPercent: 80, profile: "balanced",
+    summaryModel: null, segmentationModel: null,
+    summaryThinkingLevel: null, segmentationThinkingLevel: null,
+    autoTriggerTimeoutMs: 300000, backupEnabled: true, scrubSecrets: true,
+    focusWeighting: true, onlineDamageMonitor: true, adaptiveDamageFeedback: false,
+  },
+};
+const COMPACTION_INPUT = { expectedRevision: "5".repeat(64), settings: COMPACTION_SETTINGS };
+const putCompaction = (app, body = COMPACTION_INPUT, suffix = "") => app.request(`http://localhost/v1/settings/compaction${suffix}`, {
+  method: "PUT", headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(body),
+});
 const SUBAGENT_INPUT = { expectedRevision: "5".repeat(64), settings: SUBAGENT_SETTINGS };
 const putSubagents = (app, body = SUBAGENT_INPUT, suffix = "", headers = {}) => app.request(`http://localhost/v1/settings/subagents${suffix}`, {
   method: "PUT", headers: { host: "localhost", "content-type": "application/json", ...headers }, body: JSON.stringify(body),
@@ -1411,5 +1430,54 @@ test("subagent auth gate and Origin checks run before reads and mutations", asyn
   for (const res of [await call(gated, "/v1/settings/subagents"), await putSubagents(gated)]) assert.equal(res.status, 401);
   const local = appWithCatalogs(catalogs);
   assert.equal((await putSubagents(local, SUBAGENT_INPUT, "", { origin: "https://evil.example" })).status, 403);
+  assert.equal(calls, 0);
+});
+
+
+test("compaction settings use strict Protocol projection, shared capability and no-store", async () => {
+  const roots = await rootsFor(temp("pix-cat-compaction-"));
+  let written;
+  const app = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({
+    writeCompactionConfig: async (input) => { written = input; return { revision: "6".repeat(64), settings: input.settings }; },
+  }) });
+  const get = await call(app, "/v1/settings/compaction");
+  assert.equal(get.status, 200);
+  assert.equal(get.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await get.json(), { revision: "5".repeat(64), settings: COMPACTION_SETTINGS });
+  const put = await putCompaction(app, { ...COMPACTION_INPUT, settings: {
+    native: { ...COMPACTION_SETTINGS.native, enabled: false },
+    smart: { ...COMPACTION_SETTINGS.smart, profile: "aggressive", minContextPercent: 90 },
+  } });
+  assert.equal(put.status, 200);
+  assert.equal(written.settings.smart.profile, "aggressive");
+  assert.equal(written.settings.native.enabled, false);
+  assert.deepEqual(await put.json(), { revision: "6".repeat(64), settings: written.settings });
+  assert.ok((await (await call(app, "/v1/health")).json()).capabilities.includes("settings.configure"));
+  const bare = appWithCatalogs({ roots });
+  assert.equal((await call(bare, "/v1/settings/compaction")).status, 404);
+  assert.equal((await putCompaction(bare)).status, 404);
+});
+
+test("compaction requests reject queries and malformed DTOs before seam calls", async () => {
+  const roots = await rootsFor(temp("pix-cat-compaction-invalid-"));
+  let calls = 0;
+  const forbidden = async () => { calls++; throw new Error("must not call"); };
+  const app = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({ readCompactionConfig: forbidden, writeCompactionConfig: forbidden }) });
+  for (const suffix of ["?", "?cwd=/tmp"]) {
+    for (const res of [await call(app, `/v1/settings/compaction${suffix}`), await putCompaction(app, COMPACTION_INPUT, suffix)]) {
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).code, "INVALID_QUERY");
+    }
+  }
+  // Unknown profile / out-of-range percent / extra field all fail as 400.
+  for (const bad of [
+    { ...COMPACTION_INPUT, settings: { ...COMPACTION_SETTINGS, smart: { ...COMPACTION_SETTINGS.smart, profile: "turbo" } } },
+    { ...COMPACTION_INPUT, settings: { ...COMPACTION_SETTINGS, smart: { ...COMPACTION_SETTINGS.smart, minContextPercent: 150 } } },
+    { ...COMPACTION_INPUT, extra: 1 },
+  ]) {
+    const res = await putCompaction(app, bad);
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, "INVALID_SETTINGS_CONFIG");
+  }
   assert.equal(calls, 0);
 });

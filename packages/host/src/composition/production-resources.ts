@@ -177,6 +177,7 @@ export const PRODUCTION_FULL_CAPABILITIES: readonly HostCapability[] = [
   "session.delete",
   "session.write",
   "session.settings",
+  "assistant",
   "files",
   "files.write",
   "files.watch",

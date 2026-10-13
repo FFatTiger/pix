@@ -4763,3 +4763,209 @@ describe("AppShell / Composer — Phase 6B workspaceAccess fail-closed", () => {
     expect(countMockFetchCalls(fetchImpl, "/v1/models")).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Assistant view (project-less evergreen conversation, `/?assistant=1`)
+// ---------------------------------------------------------------------------
+
+const ASSISTANT_CWD = "/home/x/.pi/pix/assistant";
+
+/** Stub fetch with an /v1/assistant binding layered over the shell stub. */
+function assistantStubFetch(binding: { cwd: string; sessionId: string | null } | { error: true; status: number }): typeof fetch {
+  const base = controllableStubFetch({ sessions: [] });
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? `${input.pathname}${input.search}`
+        : input.url;
+    if (String(path).includes("/v1/assistant")) {
+      if ("error" in binding) return jsonStatus({ error: "unavailable" }, binding.status);
+      return json(binding);
+    }
+    return base(input, init);
+  }) as unknown as typeof fetch;
+}
+
+describe("AppShell — assistant view (fixed entry, evergreen conversation, no tabs)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    SOCKETS.length = 0;
+    capturedStore = null;
+    navigateMock.mockReset();
+    previousFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = previousFetch;
+    window.localStorage.removeItem("pi-title-model");
+    window.localStorage.removeItem(WORKSPACE_SESSION_TABS_STORAGE_KEY);
+    window.localStorage.removeItem(WORKSPACE_LAST_SESSION_STORAGE_KEY);
+    vi.useRealTimers();
+  });
+
+  it("shows the sidebar entry (capability-gated) and navigates to the assistant selector", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    mountApp({}, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { await flush(8); });
+
+    const entry = screen.getByTestId("sidebar-assistant");
+    expect(entry.textContent).toContain("Assistant");
+    expect(entry.getAttribute("data-active")).toBe(null);
+
+    await act(async () => { fireEvent.click(entry); await flush(4); });
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { assistant: true } }));
+  });
+
+  it("hides the entry without the assistant capability and degrades the URL flag to home", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models"] });
+    await act(async () => { await flush(8); });
+    expect(screen.queryByTestId("sidebar-assistant")).toBeNull();
+    // Degrade honestly to the ordinary home draft, never a broken assistant view.
+    expect(screen.getByTestId("home-stack")).toBeTruthy();
+  });
+
+  it("first entry with no session: empty state + assistant composer placeholder, no home stack, no assistant tab", async () => {
+    const fetchImpl = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    globalThis.fetch = fetchImpl;
+    mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { for (let i = 0; i < 30; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+
+    expect(screen.queryByTestId("home-stack")).toBeNull();
+    expect(screen.getByTestId("transcript-home").textContent).toContain("Your assistant");
+    const textarea = composerTextarea();
+    expect(textarea.getAttribute("placeholder")).toContain("Ask me anything");
+    // The binding endpoint was consulted exactly through the typed transport.
+    expect(countMockFetchCalls(fetchImpl, "/v1/assistant")).toBeGreaterThan(0);
+    // No workspace session tab was materialized for the assistant selector.
+    expect(window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "{}").not.toContain("assistant");
+  });
+
+  it("first send creates the session in the FIXED assistant cwd and stays on the assistant (no session URL)", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    const qc = authenticatedQueryClient();
+    mountApp({ assistant: true }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
+    const ws = await acceptAutomaticConnection(submitTurnAck());
+    await act(async () => { await flush(10); });
+
+    await typeAndSend("帮我找一下上次的会话");
+    const create = lastFrame<{ type: "create"; id: string; payload: { cwd: string } }>(ws, "create")!;
+    expect(create.payload.cwd).toBe(ASSISTANT_CWD);
+    await act(async () => {
+      ws.serverSend({
+        type: "response",
+        id: create.id,
+        payload: { ok: true, result: { sessionId: "assist-1", epoch: "eA", lastEventId: 0, created: true, cwd: ASSISTANT_CWD, projectRoot: ASSISTANT_CWD } },
+      });
+      await flush(8);
+    });
+
+    const submit = lastSubmitTurn(ws);
+    expect(submit.payload.sessionId).toBe("assist-1");
+    // The assistant URL carries no session id: the binding is published to the
+    // query cache, never a navigation to /?session=assist-1.
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(qc.getQueryData(queryKeys.assistant.info())).toEqual({ cwd: ASSISTANT_CWD, sessionId: "assist-1" });
+    await acceptSubmitTurn(ws, { sessionId: "assist-1", epoch: "eA" });
+    // No session tab ever materializes for the assistant conversation.
+    expect((window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "{}")).not.toContain("assist-1");
+  });
+
+  it("an existing assistant session binds read-only through the endpoint (no tab, no activation)", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "assist-live" });
+    const qc = authenticatedQueryClient();
+    mountApp({ assistant: true }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
+    const ws = await acceptAutomaticConnection();
+    await act(async () => { await flush(12); });
+
+    // The conversation view renders (not home, not the first-entry empty state).
+    expect(screen.queryByTestId("home-stack")).toBeNull();
+    expect(screen.queryByTestId("transcript-home")).toBeNull();
+    expect(screen.getByLabelText("Send message")).toBeTruthy();
+    // Read-only binding: selection never creates/activates/attaches anything.
+    expect(countType(ws, "create")).toBe(0);
+    expect(countType(ws, "activate")).toBe(0);
+    expect(countType(ws, "attach")).toBe(0);
+    expect(window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "{}").not.toContain("assist-live");
+  });
+
+  it("an endpoint failure surfaces the honest degraded copy, never a fake empty conversation", async () => {
+    globalThis.fetch = assistantStubFetch({ error: true, status: 503 });
+    mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { for (let i = 0; i < 30; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+    const state = screen.getByTestId("assistant-binding-state");
+    expect(state.getAttribute("role")).toBe("alert");
+    expect(state.textContent).toContain("The assistant is unavailable");
+    // No composer is mounted while the binding is unresolved.
+    expect(screen.queryByLabelText("Send message")).toBeNull();
+  });
+
+  it("a late assistant create after switching to home never navigates (distinct draft keys)", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    const qc = authenticatedQueryClient();
+    const app = mountApp({ assistant: true }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
+    const ws = await acceptAutomaticConnection(submitTurnAck());
+    await act(async () => { for (let i = 0; i < 30; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+
+    await typeAndSend("assistant first prompt");
+    const create = lastFrame<{ type: "create"; id: string; payload: { cwd: string } }>(ws, "create")!;
+    expect(create.payload.cwd).toBe(ASSISTANT_CWD);
+
+    // Switch to the ordinary home draft BEFORE the create resolves.
+    await act(async () => { app.rerender({}); await flush(6); });
+    await act(async () => {
+      ws.serverSend({
+        type: "response",
+        id: create.id,
+        payload: { ok: true, result: { sessionId: "assist-late", epoch: "eL", lastEventId: 0, created: true, cwd: ASSISTANT_CWD, projectRoot: ASSISTANT_CWD } },
+      });
+      await flush(8);
+    });
+
+    // The home presentation is a DIFFERENT draft key: no navigation, no
+    // assistant-binding publish from the stale assistant create (the cached
+    // binding stays whatever the endpoint last answered — never assist-late).
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(qc.getQueryData<{ sessionId: string | null }>(queryKeys.assistant.info())?.sessionId ?? null).toBe(null);
+  });
+
+  it("a late HOME create while on the assistant view never poisons the assistant binding", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    const qc = authenticatedQueryClient();
+    const app = mountApp({ cwd: "/x" }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
+    const ws = await acceptAutomaticConnection(submitTurnAck());
+    await act(async () => { for (let i = 0; i < 30; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+
+    await typeAndSend("home first prompt");
+    const create = lastFrame<{ type: "create"; id: string; payload: { cwd: string } }>(ws, "create")!;
+    expect(create.payload.cwd).toBe("/x");
+
+    // Switch to the assistant view BEFORE the home create resolves.
+    await act(async () => { app.rerender({ assistant: true }); await flush(6); });
+    await act(async () => {
+      ws.serverSend({
+        type: "response",
+        id: create.id,
+        payload: { ok: true, result: { sessionId: "home-late", epoch: "eH", lastEventId: 0, created: true, cwd: "/x", projectRoot: "/x" } },
+      });
+      await flush(8);
+    });
+
+    // The assistant draft key is distinct: the project session never becomes
+    // the assistant conversation binding.
+    const binding = qc.getQueryData<{ cwd: string; sessionId: string | null }>(queryKeys.assistant.info());
+    expect(binding?.sessionId ?? null).toBe(null);
+    expect(binding?.cwd).toBe(ASSISTANT_CWD);
+  });
+
+  it("switching from the assistant to a normal session clears the selector", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { await flush(8); });
+    expect(screen.getByTestId("sidebar-assistant").getAttribute("data-active")).toBe("true");
+
+    await act(async () => { fireEvent.click(screen.getByTestId("sidebar-new-session")); await flush(4); });
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: {} }));
+  });
+});

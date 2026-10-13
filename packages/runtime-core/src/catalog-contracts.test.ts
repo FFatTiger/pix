@@ -230,6 +230,7 @@ test("built-in capability IDs are the frozen canonical vocabulary", () => {
     "todo",
     "ask_user_question",
     "side_chat",
+    "smart_compact",
   ]);
 });
 
@@ -429,6 +430,8 @@ test("a read-only session catalog object exposes no renameSession", () => {
 
 // The catalog read surface is exact: true pages + prepare, persisted reads and
 // legacy full-list/delete compatibility. No rename/runtime lifecycle rides along.
+// `findLatestSessionByCwd` is the optional exact-cwd assistant lookup (absent
+// on minimal catalogs; callers fail closed with `unavailable`).
 const _catalogExact: IsExact<
   keyof SessionCatalogPort,
   | "prepare"
@@ -439,6 +442,7 @@ const _catalogExact: IsExact<
   | "readSessionThinking"
   | "readSessionTree"
   | "deleteSession"
+  | "findLatestSessionByCwd"
 > = true;
 
 /* ------------------------------------------------------------------ */

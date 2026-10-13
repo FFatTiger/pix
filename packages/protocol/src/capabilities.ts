@@ -50,6 +50,7 @@ export const HostCapabilitySchema = z.enum([
   "themes",
   "project.trust",
   "export",
+  "assistant",
 ]);
 
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;

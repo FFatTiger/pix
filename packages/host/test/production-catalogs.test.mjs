@@ -292,6 +292,7 @@ test("production catalogs: GET/PUT /v1/settings/built-ins persist pix-builtins.j
     { id: "todo", enabled: true },
     { id: "ask_user_question", enabled: true },
     { id: "side_chat", enabled: true },
+    { id: "smart_compact", enabled: true },
   ]);
   const health = await call(app, "/v1/health");
   assert.ok((await health.json()).capabilities.includes("builtins.configure"));
@@ -301,6 +302,7 @@ test("production catalogs: GET/PUT /v1/settings/built-ins persist pix-builtins.j
     { id: "todo", enabled: true },
     { id: "ask_user_question", enabled: false },
     { id: "side_chat", enabled: true },
+    { id: "smart_compact", enabled: true },
   ];
   const put = await app.request("http://localhost/v1/settings/built-ins", {
     method: "PUT",
@@ -317,6 +319,7 @@ test("production catalogs: GET/PUT /v1/settings/built-ins persist pix-builtins.j
     todo: true,
     ask_user_question: false,
     side_chat: true,
+    smart_compact: true,
   });
   const payload = JSON.stringify(saved);
   assert.ok(!payload.includes(agentDir));

@@ -164,8 +164,14 @@ export const urls = {
     /** Pix-owned curated Agent features desired-enablement document. */
     builtIns: () => resource("settings/built-ins"),
     subagents: () => resource("settings/subagents"),
+    /** Context compaction (`compaction` + `smartCompact` objects). */
+    compaction: () => resource("settings/compaction"),
   },
   runtime: { ws: () => resource("runtime") },
+  assistant: {
+    /** GET /v1/assistant — assistant conversation binding (cwd + latest session id). */
+    get: () => resource("assistant"),
+  },
 } as const;
 
 export function assertV1Path(path: string): void {

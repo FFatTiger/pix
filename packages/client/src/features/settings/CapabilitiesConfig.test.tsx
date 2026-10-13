@@ -13,6 +13,7 @@ const capabilities = [
   { id: "todo", enabled: true },
   { id: "ask_user_question", enabled: true },
   { id: "side_chat", enabled: false },
+  { id: "smart_compact", enabled: true },
 ] as const;
 
 const reload = vi.hoisted(() => vi.fn());
@@ -82,6 +83,17 @@ describe("CapabilitiesConfig", () => {
       capabilities: capabilities.map((row) => row.id === "todo" ? { ...row, enabled: false } : row),
     });
     await waitFor(() => expect(screen.getByRole("switch", { name: "Task list" }).getAttribute("aria-checked")).toBe("false"));
+  });
+
+  it("shows the smart-compaction switch with its fallback description", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe("/v1/settings/built-ins");
+      return json({ revision, capabilities });
+    });
+    mount(fetchMock);
+    expect((await screen.findByRole("switch", { name: "Smart compaction" })).getAttribute("aria-checked")).toBe("true");
+    // The description states the honest consequence: Pi-native compaction carries on.
+    expect(screen.getByText("Verified context summaries with recoverable backups. Off: sessions fall back to Pi's built-in auto-compaction.")).toBeTruthy();
   });
 
   it("does not fetch or fabricate controls without builtins.configure", async () => {

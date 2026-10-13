@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   ASK_TOOL_NAME,
+  SMART_COMPACT_COMMAND_NAME,
+  SMART_COMPACT_TOOL_NAME,
   SUBAGENT_COMMAND_NAMES,
   SUBAGENT_TOOL_NAMES,
   TODO_COMMAND_NAME,
@@ -29,6 +31,22 @@ describe("actual loaded built-in detection", () => {
       ],
     });
     assert.deepEqual([...loaded], ["subagents", "todo", "ask_user_question"]);
+  });
+
+  it("detects smart_compact by its smart_compact tool + smart-compact command pair", () => {
+    const onlyTool = detectLoadedBuiltIns({
+      tools: [{ name: SMART_COMPACT_TOOL_NAME }],
+      commands: [],
+    });
+    assert.deepEqual([...onlyTool], []);
+    const both = detectLoadedBuiltIns({
+      tools: [{ name: SMART_COMPACT_TOOL_NAME }, { name: "smart_recall" }],
+      commands: [{ name: SMART_COMPACT_COMMAND_NAME }],
+    });
+    assert.deepEqual([...both], ["smart_compact"]);
+    // Loaded smart_compact flips NO runtime token (no consumer surface).
+    const caps = capabilitiesWithLoadedTokens(["runtime.prompt"], new Set(["smart_compact"]));
+    assert.deepEqual(caps, ["runtime.prompt"]);
   });
 
   it("treats desired-disabled as neither loaded nor failed and accepts the real side-chat seam", () => {

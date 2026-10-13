@@ -16,6 +16,7 @@ function configBody(overrides: Record<string, boolean>): string {
     todo: overrides.todo ?? true,
     ask_user_question: overrides.ask_user_question ?? true,
     side_chat: overrides.side_chat ?? true,
+    smart_compact: overrides.smart_compact ?? true,
   }, null, 2)}\n`;
 }
 
@@ -50,6 +51,71 @@ describe("curated plugin loader filter", () => {
       { path: "/project/extensions/broken.ts", error: "boom" },
       { path: subagents.entry, error: "curated load error stays visible when enabled" },
     ]);
+  });
+
+  it("dedupes the user's globally installed smart-compact copy by node_modules install path", () => {
+    const roots = bundledPluginRoots();
+    const smart = roots.find((item) => item.id === "smart_compact")!;
+    // The user's own settings.json `packages: ["npm:pi-smart-compact"]` loads
+    // from the agent-dir npm install — a DIFFERENT path than the bundled root.
+    const globalCopy = "/home/x/.pi/agent/npm/node_modules/pi-smart-compact/dist/index.js";
+    const filtered = filterCuratedExtensions({
+      extensions: [
+        { path: smart.entry, resolvedPath: smart.entry },
+        { path: globalCopy, resolvedPath: globalCopy },
+      ],
+      errors: [],
+      runtime: null,
+    }, new Set(["subagents", "todo", "ask_user_question", "side_chat", "smart_compact"]));
+    // Enabled: exactly the adapter-bundled instance survives.
+    assert.deepEqual(filtered.extensions.map((item) => item.resolvedPath), [smart.entry]);
+  });
+
+  it("drops smart-compact entirely when the capability is disabled (global copy removed too)", () => {
+    const roots = bundledPluginRoots();
+    const smart = roots.find((item) => item.id === "smart_compact")!;
+    const globalCopy = "/home/x/.pi/agent/npm/node_modules/pi-smart-compact/dist/index.js";
+    const filtered = filterCuratedExtensions({
+      extensions: [
+        { path: smart.entry, resolvedPath: smart.entry },
+        { path: globalCopy, resolvedPath: globalCopy },
+      ],
+      errors: [],
+      runtime: null,
+    }, new Set(["subagents", "todo", "ask_user_question", "side_chat"]));
+    assert.deepEqual(filtered.extensions, []);
+  });
+
+  it("a fork under a different package name is never treated as the curated plugin", () => {
+    const fork = "/home/x/.pi/agent/npm/node_modules/my-smart-compact-fork/dist/index.js";
+    const filtered = filterCuratedExtensions({
+      extensions: [{ path: fork, resolvedPath: fork }],
+      errors: [],
+      runtime: null,
+    }, new Set());
+    assert.equal(filtered.extensions.length, 1);
+  });
+
+  it("identifies smart-compact by its exact tool/command surface when the path says nothing", () => {
+    const opaqueCopy = "/downloads/pi-smart-compact-10.3.0/dist/index.js";
+    const filtered = filterCuratedExtensions({
+      extensions: [{
+        path: opaqueCopy,
+        resolvedPath: opaqueCopy,
+        tools: new Map([
+          ["smart_compact", {}],
+          ["smart_recall", {}],
+          ["smart_save_memory", {}],
+          ["smart_context", {}],
+          ["smart_navigation", {}],
+          ["smart_tools", {}],
+        ]),
+        commands: new Map([["smart-compact", {}]]),
+      }],
+      errors: [],
+      runtime: null,
+    }, new Set(["subagents"]));
+    assert.deepEqual(filtered.extensions, []);
   });
 
   it("removes foreign-path copies by exact curated signature while preserving partial overlaps", () => {

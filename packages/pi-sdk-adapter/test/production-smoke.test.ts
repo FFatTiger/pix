@@ -5,8 +5,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PRODUCTION_AGENT_CAPABILITIES, PiSdkAgentRuntimeFactory } from "../src/agent/index.js";
 
+// Explicit selections union the registration-activated extension surface: the
+// curated subagents/todo/ask tools PLUS the bundled smart-compact plugin's
+// eager-loaded tools (pinned 10.3.0 surface).
 const EXPECTED_SELECTED_WITH_CURATED = [
   "Agent", "SendMessage", "TaskOutput", "TaskStop", "ask_user_question", "edit", "read", "todo",
+  "smart_recall", "smart_save_memory", "smart_tools", "smart_navigation", "smart_context", "smart_compact",
 ].sort();
 
 async function withAgentDir<T>(fn: (root: string) => Promise<T>): Promise<T> {

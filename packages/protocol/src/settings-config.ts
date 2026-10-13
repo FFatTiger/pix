@@ -84,3 +84,57 @@ export const SubagentSettingsMutationSchema = z.strictObject({
   settings: SubagentSettingsSchema,
 });
 export type SubagentSettingsMutation = z.infer<typeof SubagentSettingsMutationSchema>;
+
+// ---------------------------------------------------------------------------
+// Context compaction (settings.json `compaction` + `smartCompact`)
+// ---------------------------------------------------------------------------
+
+export const SmartCompactProfileSchema = z.enum(["light", "balanced", "aggressive"]);
+export type SmartCompactProfileWire = z.infer<typeof SmartCompactProfileSchema>;
+export const SMART_COMPACT_PROFILES = SmartCompactProfileSchema.options;
+export const SmartCompactThinkingLevelSchema = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
+export type SmartCompactThinkingLevelWire = z.infer<typeof SmartCompactThinkingLevelSchema>;
+export const SMART_COMPACT_THINKING_LEVELS = SmartCompactThinkingLevelSchema.options;
+const CompactionModelSchema = z.string().trim().min(1).nullable();
+const CompactionTokensSchema = z.number().int().nonnegative().safe().nullable();
+
+/**
+ * Mirrors runtime-core CompactionSettings; cross-package tests pin parity.
+ * Null clears the persisted override (native reserve/keep, smart models and
+ * thinking levels fall back to the Pi/plugin defaults).
+ */
+export const CompactionSettingsSchema = z.strictObject({
+  native: z.strictObject({
+    enabled: z.boolean(),
+    reserveTokens: CompactionTokensSchema,
+    keepRecentTokens: CompactionTokensSchema,
+  }),
+  smart: z.strictObject({
+    autoTrigger: z.boolean(),
+    minContextPercent: z.number().min(0).max(100),
+    profile: SmartCompactProfileSchema,
+    summaryModel: CompactionModelSchema,
+    segmentationModel: CompactionModelSchema,
+    summaryThinkingLevel: SmartCompactThinkingLevelSchema.nullable(),
+    segmentationThinkingLevel: SmartCompactThinkingLevelSchema.nullable(),
+    autoTriggerTimeoutMs: z.number().int().min(1000).max(300000).safe(),
+    backupEnabled: z.boolean(),
+    scrubSecrets: z.boolean(),
+    focusWeighting: z.boolean(),
+    onlineDamageMonitor: z.boolean(),
+    adaptiveDamageFeedback: z.boolean(),
+  }),
+});
+export type CompactionSettingsWire = z.infer<typeof CompactionSettingsSchema>;
+
+export const CompactionSettingsResponseSchema = z.strictObject({
+  revision: z.string().regex(/^[0-9a-f]{64}$/),
+  settings: CompactionSettingsSchema,
+});
+export type CompactionSettingsResponse = z.infer<typeof CompactionSettingsResponseSchema>;
+
+export const CompactionSettingsMutationSchema = z.strictObject({
+  expectedRevision: z.string().regex(/^[0-9a-f]{64}$/),
+  settings: CompactionSettingsSchema,
+});
+export type CompactionSettingsMutation = z.infer<typeof CompactionSettingsMutationSchema>;

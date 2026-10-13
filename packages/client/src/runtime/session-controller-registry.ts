@@ -30,6 +30,17 @@ export function homePresentationKey(cwd: string | undefined): string {
   return `home:${cwd ?? ""}`;
 }
 
+/**
+ * Canonical presentation key for the assistant view's first-entry draft (no
+ * session yet). Deliberately DISTINCT from every home key so a late create
+ * promotion can never confuse the assistant draft with a project draft (and
+ * vice versa): the URL carries no session id, so this key is the assistant's
+ * only draft identity.
+ */
+export function assistantPresentationKey(): string {
+  return "assistant:home";
+}
+
 export type AttachmentLeasePhase = "vacant" | "acquiring" | "held" | "releasing" | "suspended";
 
 export interface AttachmentLeaseSnapshot {

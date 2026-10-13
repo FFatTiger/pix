@@ -11,6 +11,7 @@
  */
 
 export * from "./capabilities.js";
+export * from "./assistant-workspace.js";
 export * from "./commands.js";
 export * from "./errors.js";
 export * from "./events.js";

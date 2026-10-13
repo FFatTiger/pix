@@ -211,6 +211,16 @@ export interface SessionCatalogPort {
    */
   readSessionTree(sessionId: string): Promise<SessionTree>;
   deleteSession(sessionId: string): Promise<void>;
+  /**
+   * Find the MOST RECENTLY ACTIVE root session whose recorded cwd is exactly
+   * `cwd`, regardless of browse visibility. This is the assistant-conversation
+   * lookup (the assistant directory is `hidden` from every list page, so the
+   * latest session in it can ONLY be resolved through this exact-cwd read —
+   * the same fail-closed spirit as exact-id `readSession`). Returns null when
+   * the directory has no sessions. Zero workers. Optional: absent ⇒ callers
+   * fail closed with `unavailable` instead of falling back to a list scan.
+   */
+  findLatestSessionByCwd?(cwd: string): Promise<SessionHeader | null>;
 }
 
 /** Independent project catalog over the same materialized session index. */

@@ -300,7 +300,7 @@ describe("table-driven mutation invalidation", () => {
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");
     expect(Object.keys(options.trust)).toEqual(["setTrusted"]);
-    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveSubagents", "saveConfigFile", "saveTools"]);
+    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveSubagents", "saveCompaction", "saveConfigFile", "saveTools"]);
   });
 
   it("raw settings save invalidates tools, catalogs, models, and auth", async () => {
@@ -313,12 +313,37 @@ describe("table-driven mutation invalidation", () => {
       { queryKey: queryKeys.settingsConfig.tools() },
       { queryKey: queryKeys.settingsConfig.builtIns() },
       { queryKey: queryKeys.settingsConfig.subagents() },
+      { queryKey: queryKeys.settingsConfig.compaction() },
       { queryKey: queryKeys.skills.all },
       { queryKey: queryKeys.plugins.all },
       { queryKey: queryKeys.commands.all },
       { queryKey: queryKeys.models.all },
       { queryKey: queryKeys.auth.all },
     ]);
+  });
+
+  it("compaction save primes its response and invalidates the raw settings preview", async () => {
+    const settings = {
+      native: { enabled: true, reserveTokens: null, keepRecentTokens: null },
+      smart: {
+        autoTrigger: true, minContextPercent: 80, profile: "balanced" as const,
+        summaryModel: null, segmentationModel: null,
+        summaryThinkingLevel: null, segmentationThinkingLevel: null,
+        autoTriggerTimeoutMs: 300000, backupEnabled: true, scrubSecrets: true,
+        focusWeighting: true, onlineDamageMonitor: true, adaptiveDamageFeedback: false,
+      },
+    };
+    const body = { revision: "a".repeat(64), settings };
+    const http = createHttpClient({ fetchImpl: vi.fn(async () => json(body)) });
+    const queryClient = new QueryClient();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockImplementation(async () => {
+      expect(queryClient.getQueryData(queryKeys.settingsConfig.compaction())).toEqual(body);
+    });
+    const mutation = createMutationOptions(http, queryClient).settings.saveCompaction();
+    await mutation.mutationFn({ expectedRevision: body.revision, settings });
+    await mutation.onSuccess(body);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.settingsConfig.file() });
+    expect(queryClient.getQueryData(queryKeys.settingsConfig.compaction())).toEqual(body);
   });
 
   it("subagent save primes its response and invalidates only the raw and tool settings previews", async () => {

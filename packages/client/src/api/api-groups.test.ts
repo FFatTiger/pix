@@ -84,9 +84,13 @@ describe("API domain response parsing", () => {
         { id: "todo", enabled: true },
         { id: "ask_user_question", enabled: false },
         { id: "side_chat", enabled: false },
+        { id: "smart_compact", enabled: true },
       ],
     } as const;
     await expect(createConfigurationApi(client(body)).builtIns.get()).resolves.toEqual(body);
+    // The canonical five-ID list is strict: a four-ID body is rejected.
+    await expect(createConfigurationApi(client({ ...body, capabilities: body.capabilities.slice(0, 4) })).builtIns.get())
+      .rejects.toMatchObject({ code: "INVALID_RESPONSE" });
 
     const calls: { url: string; method: string; body?: unknown }[] = [];
     const recording = createHttpClient({

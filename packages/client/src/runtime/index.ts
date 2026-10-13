@@ -54,7 +54,7 @@ export type {
 } from "./exact-runtime.js";
 export { buildRuntimeWsUrl, buildHandshakeRequest, computeBackoffDelay, parseHostFrame, isFatalHandshakeError, isRetryableError } from "./protocol-wire.js";
 export type { RuntimeLocation, BackoffOptions } from "./protocol-wire.js";
-export { homePresentationKey, sessionPresentationKey } from "./session-controller-registry.js";
+export { assistantPresentationKey, homePresentationKey, sessionPresentationKey } from "./session-controller-registry.js";
 export type { PresentationProvenance } from "./session-controller.js";
 export { describeRuntimeObservationError, runtimeObservationMessageKind, RUNTIME_OBSERVATION_MESSAGE_KEYS } from "./observation-errors.js";
 export { FATAL_HANDSHAKE_CODES, isActive, canSend } from "./lifecycle.js";

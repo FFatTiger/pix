@@ -48,7 +48,10 @@ export type StepIconName =
   | "download"
   | "copy"
   | "warning"
-  | "circleX";
+  | "circleX"
+  | "arrowRight"
+  | "stacks"
+  | "penNib";
 
 export interface StepDisplayInfo {
   iconName: StepIconName;

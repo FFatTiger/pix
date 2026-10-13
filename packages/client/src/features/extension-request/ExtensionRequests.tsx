@@ -23,7 +23,7 @@
  * capability — no document queries.
  */
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { useSelectedRuntime } from "@/runtime";
+import { useSelectedRuntime, type ExactRuntimeApi } from "@/runtime";
 import { useI18n } from "@/hooks/useI18n";
 import { ExtensionDialog, type ExtensionDialogRequest, type ExtensionDialogResponse } from "@/components/chat/ExtensionDialog";
 import { ExtensionCustomPanel, type ExtensionCustomRequest } from "@/components/chat/ExtensionCustomPanel";
@@ -41,6 +41,13 @@ export interface ExtensionRequestsProps {
    * IS the attached runtime. The surface never renders for a non-live view.
    */
   live: boolean;
+  /**
+   * Exact runtime override. AppShell passes the VIEW-effective runtime because
+   * the assistant selection is server-resolved (URL carries no session id, so
+   * the SelectedSessionProvider context cannot see it). Omitted ⇒ legacy
+   * context read via useSelectedRuntime (unchanged for every ordinary mount).
+   */
+  runtime?: ExactRuntimeApi | null;
   /**
    * Explicit composer-textarea ref (no document queries). After the final
    * request closes/cancels, focus returns here when still same session/live/
@@ -62,15 +69,17 @@ function toQuestionnaireReply(response: ExtensionQuestionnaireResponse): Extensi
   return { responseKind: "questionnaire", answers: response.answers };
 }
 
-export function ExtensionRequests({ live, composerTextareaRef }: ExtensionRequestsProps) {
+export function ExtensionRequests({ live, runtime, composerTextareaRef }: ExtensionRequestsProps) {
   const { t } = useI18n();
-  // Exact selected-session runtime (4A.3.2b1a): the surface has no sessionId
-  // prop, so it reads the SelectedSessionProvider context via useSelectedRuntime.
-  // Null-safe: with no selection (home/file) the exact surface is null and this
-  // component renders nothing — it never admits/attaches during render and never
-  // invents component transport state. The existing `live` prop + capability
-  // gating and every action/error/DOM behavior are unchanged.
-  const exact = useSelectedRuntime();
+  // Exact selected-session runtime: the explicit `runtime` prop wins (assistant
+  // view); otherwise the surface reads the SelectedSessionProvider context via
+  // useSelectedRuntime. Null-safe: with no selection (home/file) the exact
+  // surface is null and this component renders nothing — it never
+  // admits/attaches during render and never invents component transport state.
+  // The existing `live` prop + capability gating and every action/error/DOM
+  // behavior are unchanged.
+  const contextRuntime = useSelectedRuntime();
+  const exact = runtime !== undefined ? runtime : contextRuntime;
 
   // Race-safe identity refs (SessionActions / D4 Sidebar pattern).
   const mountedRef = useRef(true);

@@ -73,6 +73,12 @@ export interface PiSdkSessionStore {
   renameSession(sessionId: string, name: string): Promise<void>;
   locate(sessionId: string): Promise<SessionLocation>;
   resolveLeafId(sessionId: string, targetId?: string): Promise<string>;
+  /**
+   * Assistant-conversation lookup: most recently active root session with the
+   * exact cwd (browse-visibility bypassing; zero workers). Returns null when
+   * the directory has no sessions.
+   */
+  findLatestSessionByCwd?(cwd: string): Promise<SessionHeader | null>;
 }
 
 class PiSdkSessionCatalog implements SessionCatalogPort {
@@ -120,6 +126,13 @@ class PiSdkSessionCatalog implements SessionCatalogPort {
 
   readSessionTree(sessionId: string): Promise<SessionTree> {
     return this.store.readSessionTree(sessionId);
+  }
+
+  findLatestSessionByCwd(cwd: string): Promise<SessionHeader | null> {
+    if (!this.store.findLatestSessionByCwd) {
+      throw makeRuntimeError("unavailable", "session catalog cannot resolve the latest session for a directory");
+    }
+    return this.store.findLatestSessionByCwd(cwd);
   }
 
   deleteSession(sessionId: string): Promise<void> {

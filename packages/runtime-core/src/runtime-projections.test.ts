@@ -32,7 +32,7 @@ test("built-in runtime state uses canonical IDs and unique canonical order", () 
       { id: "ask_user_question", code: "incompatible" },
     ],
   });
-  assert.deepEqual([...BUILT_IN_CAPABILITY_IDS], ["subagents", "todo", "ask_user_question", "side_chat"]);
+  assert.deepEqual([...BUILT_IN_CAPABILITY_IDS], ["subagents", "todo", "ask_user_question", "side_chat", "smart_compact"]);
   assert.deepEqual([...BUILT_IN_LOAD_FAILURE_CODES], ["load_failed", "incompatible"]);
 });
 

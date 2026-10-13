@@ -28,6 +28,19 @@ export const SessionIdleTimeoutResponseSchema = z.strictObject({
 });
 export type SessionIdleTimeoutResponse = z.infer<typeof SessionIdleTimeoutResponseSchema>;
 
+/**
+ * GET /v1/assistant — the assistant conversation binding: the fixed assistant
+ * working directory (canonical, server-derived) and the id of its MOST
+ * RECENT session. `sessionId` is null until the user's first message creates
+ * one. Only served while the Host mounted the assistant seam AND sessiond is
+ * up (capability `assistant`); any other state is an honest HTTP error.
+ */
+export const AssistantInfoSchema = z.strictObject({
+  cwd: z.string().min(1),
+  sessionId: z.string().min(1).nullable(),
+});
+export type AssistantInfo = z.infer<typeof AssistantInfoSchema>;
+
 export const GateStatusSchema = z.strictObject({
   required: z.boolean(),
   authenticated: z.boolean(),

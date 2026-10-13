@@ -67,6 +67,7 @@ import type {
   SessionPage,
   SessionPageRequest,
 } from "@fffattiger/pix-runtime-core";
+import { matchesAssistantWorkspacePattern } from "@fffattiger/pix-runtime-core";
 
 /**
  * Bump when the persisted schema/checksum layout or browse-kind policy changes
@@ -75,7 +76,7 @@ import type {
  * rebuilds the old policy; a newer adapter treats an older file as unusable and
  * rebuilds. Live mixed sharing will flap classification and totals.
  */
-export const PROJECTION_SCHEMA_VERSION = 6;
+export const PROJECTION_SCHEMA_VERSION = 7;
 const PROJECTION_FORMAT = "pix-scale1-session-projection";
 /** Index file name inside the Pix-owned projection directory. */
 export const PROJECTION_INDEX_FILENAME = "session-index.sqlite";
@@ -135,6 +136,25 @@ function rowChecksum(row: ProjectedSession): string {
     String(row.size),
   ].join("\u0000");
   return createHash("sha256").update(canonical).digest("hex");
+}
+
+/** Map one projection row onto a canonical SessionHeader. */
+function projectionRowToHeader(row: DbRow, parentSessionId: string | null): SessionHeader {
+  const first = row.first_message.replace(/[\r\n\t]+/g, " ").trim();
+  const firstMessage = first.length > 200 ? `${first.slice(0, 200)}…` : first;
+  return {
+    sessionId: row.id,
+    sessionFile: row.path,
+    cwd: row.cwd,
+    projectRoot: row.project_root,
+    ...(row.name === null ? {} : { title: row.name }),
+    ...(firstMessage.length === 0 || firstMessage === "(no messages)" ? {} : { firstMessage }),
+    ...(row.created_ms === null ? {} : { createdAt: row.created_ms }),
+    updatedAt: row.modified_ms,
+    lastMessageAt: row.modified_ms,
+    messageCount: row.message_count,
+    ...(parentSessionId === null ? {} : { parentSessionId }),
+  };
 }
 
 interface DbRow {
@@ -405,23 +425,7 @@ export class SessionProjectionIndex {
         + "FROM session_projection s LEFT JOIN session_projection parent ON parent.path = s.parent_session_path "
         + `WHERE ${where} ORDER BY s.modified_ms DESC, s.id COLLATE BINARY ASC LIMIT ? OFFSET ?`,
       ).all(...parameters, request.pageSize, offset) as unknown as Array<DbRow & { parent_session_id: string | null }>;
-      const sessions: SessionHeader[] = rows.map((row) => {
-        const first = row.first_message.replace(/[\r\n\t]+/g, " ").trim();
-        const firstMessage = first.length > 200 ? `${first.slice(0, 200)}…` : first;
-        return {
-        sessionId: row.id,
-        sessionFile: row.path,
-        cwd: row.cwd,
-        projectRoot: row.project_root,
-        ...(row.name === null ? {} : { title: row.name }),
-        ...(firstMessage.length === 0 || firstMessage === "(no messages)" ? {} : { firstMessage }),
-        ...(row.created_ms === null ? {} : { createdAt: row.created_ms }),
-        updatedAt: row.modified_ms,
-        lastMessageAt: row.modified_ms,
-        messageCount: row.message_count,
-        ...(row.parent_session_id === null ? {} : { parentSessionId: row.parent_session_id }),
-      };
-      });
+      const sessions: SessionHeader[] = rows.map((row) => projectionRowToHeader(row, row.parent_session_id));
       return {
         sessions,
         page: request.page,
@@ -430,6 +434,32 @@ export class SessionProjectionIndex {
         totalPages: total === 0 ? 0 : Math.ceil(total / request.pageSize),
         catalogRevision: catalogRevision(db),
       };
+    } catch {
+      return null;
+    } finally {
+      try { db?.close(); } catch { /* best-effort */ }
+    }
+  }
+
+  /**
+   * Exact-cwd assistant-conversation lookup: the most recently active ROOT
+   * session whose recorded cwd is exactly `cwd`, deliberately ignoring
+   * browse_kind (the assistant workspace is hidden from every list page; this
+   * is an exact-identity read like detail-by-id). No filesystem access.
+   */
+  findLatestSessionByCwd(cwd: string): SessionHeader | null {
+    let db: DatabaseSync | null = null;
+    try {
+      db = new DatabaseSync(this.indexPath);
+      const row = db.prepare(
+        "SELECT path, id, cwd, name, parent_session_path, created_ms, modified_ms, "
+        + "message_count, first_message, project_root, browse_kind, file_mtime_ms, "
+        + "file_size, checksum FROM session_projection "
+        + "WHERE cwd = ? AND (parent_session_path IS NULL OR parent_session_path = '') "
+        + "ORDER BY modified_ms DESC, id COLLATE BINARY ASC LIMIT 1",
+      ).get(cwd) as unknown as (DbRow & { parent_session_id?: string | null }) | undefined;
+      if (row === undefined) return null;
+      return projectionRowToHeader(row, null);
     } catch {
       return null;
     } finally {
@@ -548,6 +578,7 @@ export function browseKindForWorkspace(cwd: string): "regular" | "session_only" 
     || path.includes("/.pi/agent/pi-claude-subagents")
     || path.includes("/.pi/pix/sessiond")
     || /\/pix\/conversations(?:\/|$)/.test(path)
+    || matchesAssistantWorkspacePattern(path)
   ) return "hidden";
   if (
     /\/\.pi$/.test(path)

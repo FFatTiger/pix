@@ -447,6 +447,64 @@ packages/
 | Web UI | `client` 构建的静态资源，由 host 托管 |
 | PWA | manifest + service worker，挂在 host 静态资源上 |
 
+## 8b. 助手（assistant，不绑项目的常青对话）
+
+不变式（feat/assistant 落地）：
+
+- **身份 = 一个固定工作目录**：`<home>/.pi/pix/assistant`，由 runtime-core
+  `assistant-workspace` 单点推导（Host 组合、sessiond 目录隐藏、Worker 工具注册
+  三方共用，禁止各自复制）。Host 启动时创建该目录（0700）、经 AllowedRoots
+  授权并按 POST /v1/trust 同一 seam 一次性标记 trusted（永不弹信任打断）。
+  目录不在 AllowedRoots 内 ⇒ 不挂 `assistant` 能力、不挂路由、入口隐藏（fail-closed）。
+- **无会话概念的实现**：URL 只有 `/?assistant=1` 选择符，不带 session id；
+  `GET /v1/assistant` 返回 `{cwd, sessionId|null}`（sessiond `sessions.findLatest`
+  精确 cwd 查询，0 Worker）。助手会话 = 该目录下最新的会话；首条消息才创建。
+- **隐藏**：该目录按 browse-kind `hidden` 从 sessions/projects 页消失（projection
+  schema v7 强制重建；内存 fallback 同样排除），但按 id 的 detail/context 照常。
+  客户端永不为其物化标签、不持久化标签。
+- **两个助手专属工具**：`search_sessions` / `read_session` 只在 cwd 为助手目录的
+  会话注册（pi-sdk-adapter InlineExtension；全局工具选择收窄后仍保持 active）。
+  只读 JSONL、有界输出、排除 hidden 工作区/子会话/助手自身会话；不激活任何 Worker。
+- **无限上下文**：不新造机制 —— 复用 SDK 自动压缩（助手会话 autoCompaction 照常）
+  与全局 Lore 扩展（lore_* 工具照常）。压缩条目在对话内渲染为提示行，无"新会话"感。
+- **能力令牌**：Host `assistant` token 仅在 seam 已挂载且 sessiond up 时通告
+  （degraded 恒剔除）；客户端按能力隐藏入口，绝不出现破损视图。
+
+### 智能压缩（smart_compact，第 2 轮内置）
+
+- pi-smart-compact@10.3.0 以 vendored tarball（`vendor/`，adapter file: 依赖）成为
+  第五个 curated built-in（`CURATED_PLUGIN_IDS` + `BUILT_IN_CAPABILITY_IDS` 五元，
+  protocol 镜像同步；smart_compact 无 runtime token——无命令/UI 消费方，可用性经
+  snapshot builtIns 投影）。optional peers（mnemopi/resvg/bun）不分发，插件按本地
+  回退运行。legacy 4 键 pix-builtins.json 读取时 smart_compact 默认开启（有限
+  back-compat：首次写入即序列化全五键）。
+- 防重复加载：curated 身份识别新增"安装路径在 node_modules/<curated 包名>/ 下"规则，
+  用户全局 npm:pi-smart-compact 与内置副本互斥（开启留内置、关闭两者都不加载、
+  其他名字的 fork 不受影响），用户的 settings.json packages 列表永不改写。
+- 上下文压缩设置（`compaction` + `smartCompact` 两个 settings.json 对象）走
+  subagents 同款结构化链路：runtime-core DTO → protocol wire → adapter store
+  （默认值投影、无效枚举回退插件默认、未知键保留、null 删除键、类型错误 fail-closed）
+  → host GET/PUT `/v1/settings/compaction`（settings.configure 令牌）→ 客户端
+  「上下文压缩」页（草稿+保存条；能力关闭时智能区置灰并提示回退 Pi 自带压缩）。
+- 助手工具对显式 set_tools 白名单保持可用（非空白名单后 union；全关 [] 保持诚实的
+  空契约）。
+
+### 助手会话能力（第 3 轮：看 / 找 / 管）
+
+- 七个新工具进第 1 轮的同一助手扩展（白名单守卫经 ASSISTANT_TOOL_NAMES 覆盖全部 9 个）。
+- **读类**（session_status / list_open_todos / summarize_activity / find_file_changes）
+  只读 JSONL（listAll + 有界 getEntries 尾部分析，0 Worker）。session_status 的状态是
+  **持久化记录推断**（未闭合 ask_user_question=等待用户、未闭合 toolCall=疑似进行中、
+  尾部 isError=最近报错）；实时 running/busy 仍是客户端权威显示——不建 Worker→sessiond
+  通道（会把 sessiond secret 塞进每个 worker 并反转 owner 方向）。todo = 各会话最后一次
+  todo toolResult 快照重放；文件改动 = write/edit 系 toolCall 的 path 参数 + 成功结果。
+- **动作类**（open_session / organize_sessions / draft_to_session）工具只解析目标并返回
+  确认文本；客户端从 toolCall input 渲染 AssistantActionCard 按钮（打开 / 执行 / 填入
+  输入框），用户点击才执行——无 Worker→浏览器推送通道。organize 复用现有流程：
+  rename=PATCH /v1/sessions/:id、delete=DELETE + 卡内二次确认、pin/archive=本设备侧栏
+  偏好（现状如此，卡片提示"仅对本设备生效"）；draft 写目标会话的 draft-store 键后导航，
+  目标 composer 挂载时水合，永不自动发送。
+
 ## 9. 跨端策略（当前主线：PWA）
 
 | 端 | 连接 | 能力 |

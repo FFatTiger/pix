@@ -5,6 +5,8 @@ import lockfile from "proper-lockfile";
 import { createPosixSecureStateBackend } from "@fffattiger/pix-local-authority";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type {
+  CompactionSettings,
+  CompactionSettingsMutation,
   SettingsConfigMutation,
   SettingsConfigStorePort,
   ToolSettingsMutation,
@@ -12,7 +14,7 @@ import type {
   SubagentSettings,
   SubagentSettingsMutation,
 } from "@fffattiger/pix-runtime-core";
-import { normalizeSubagentSettings } from "@fffattiger/pix-runtime-core";
+import { normalizeCompactionSettings, normalizeSubagentSettings } from "@fffattiger/pix-runtime-core";
 import { stripJsonComments } from "./models-json.js";
 
 const SETTINGS_MAX_BYTES = 256 * 1024;
@@ -103,6 +105,137 @@ function validateKnownFieldTypes(parsed: Record<string, unknown>): void {
   ) {
     throw runtimeError("invalid_input", "settings.json pixDefaultTools must be null or an array of tool names");
   }
+  for (const key of ["compaction", "smartCompact"] as const) {
+    if (parsed[key] !== undefined && !isRecord(parsed[key])) {
+      throw runtimeError("invalid_input", `settings.json ${key} must be an object`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Context compaction projection/patch (compaction + smartCompact objects)
+// ---------------------------------------------------------------------------
+
+/** Plugin/Pi defaults for absent keys (mirrors the plugin's DEFAULT_CONFIG). */
+const COMPACTION_DEFAULTS = {
+  native: { enabled: true, reserveTokens: null as number | null, keepRecentTokens: null as number | null },
+  smart: {
+    autoTrigger: true,
+    minContextPercent: 80,
+    profile: "balanced" as "light" | "balanced" | "aggressive",
+    summaryModel: null as string | null,
+    segmentationModel: null as string | null,
+    summaryThinkingLevel: null as string | null,
+    segmentationThinkingLevel: null as string | null,
+    autoTriggerTimeoutMs: 300_000,
+    backupEnabled: true,
+    scrubSecrets: true,
+    focusWeighting: true,
+    onlineDamageMonitor: true,
+    adaptiveDamageFeedback: false,
+  },
+};
+
+function compactionObject(parsed: Record<string, unknown>, key: "compaction" | "smartCompact"): Record<string, unknown> {
+  const value = parsed[key];
+  if (value === undefined) return {};
+  if (!isRecord(value)) throw runtimeError("invalid_input", "compaction configuration is invalid");
+  return value;
+}
+
+function booleanWithDefault(source: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = source[key];
+  if (value === undefined) return fallback;
+  return value === true;
+}
+
+function numberWithDefault(source: Record<string, unknown>, key: string, fallback: number): number {
+  const value = source[key];
+  if (value === undefined || typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return value;
+}
+
+/**
+ * Project the editable compaction settings from a parsed settings object.
+ * Absent keys read as the documented defaults. Out-of-range/enum-invalid
+ * values read as the same defaults — the plugin itself discards them with a
+ * warning at load ("using default"), so the projection mirrors what actually
+ * runs; the structured write then persists a valid value.
+ */
+function projectCompactionSettings(parsed: Record<string, unknown>): CompactionSettings {
+  const native = compactionObject(parsed, "compaction");
+  const smart = compactionObject(parsed, "smartCompact");
+  const profile = smart.profile;
+  const smartThinking = (value: unknown, fallback: string | null): string | null => {
+    if (typeof value !== "string") return fallback;
+    return ["minimal", "low", "medium", "high", "xhigh", "max"].includes(value) ? value : fallback;
+  };
+  const nullableModel = (value: unknown): string | null => (typeof value === "string" && value.trim() !== "" ? value : null);
+  const nullableTokens = (value: unknown): number | null =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const settings = normalizeCompactionSettings({
+    native: {
+      enabled: booleanWithDefault(native, "enabled", COMPACTION_DEFAULTS.native.enabled),
+      reserveTokens: Object.hasOwn(native, "reserveTokens") ? nullableTokens(native.reserveTokens) : null,
+      keepRecentTokens: Object.hasOwn(native, "keepRecentTokens") ? nullableTokens(native.keepRecentTokens) : null,
+    },
+    smart: {
+      autoTrigger: booleanWithDefault(smart, "autoTrigger", COMPACTION_DEFAULTS.smart.autoTrigger),
+      minContextPercent: Math.min(100, Math.max(0, numberWithDefault(smart, "minContextPercent", COMPACTION_DEFAULTS.smart.minContextPercent))),
+      profile: profile === "light" || profile === "balanced" || profile === "aggressive" ? profile : COMPACTION_DEFAULTS.smart.profile,
+      summaryModel: Object.hasOwn(smart, "summaryModel") ? nullableModel(smart.summaryModel) : null,
+      segmentationModel: Object.hasOwn(smart, "segmentationModel") ? nullableModel(smart.segmentationModel) : null,
+      summaryThinkingLevel: Object.hasOwn(smart, "summaryThinkingLevel")
+        ? smartThinking(smart.summaryThinkingLevel, null)
+        : null,
+      segmentationThinkingLevel: Object.hasOwn(smart, "segmentationThinkingLevel")
+        ? smartThinking(smart.segmentationThinkingLevel, null)
+        : null,
+      autoTriggerTimeoutMs: Math.min(300000, Math.max(1000, Math.round(numberWithDefault(smart, "autoTriggerTimeoutMs", COMPACTION_DEFAULTS.smart.autoTriggerTimeoutMs)))),
+      backupEnabled: booleanWithDefault(smart, "backupEnabled", COMPACTION_DEFAULTS.smart.backupEnabled),
+      scrubSecrets: booleanWithDefault(smart, "scrubSecrets", COMPACTION_DEFAULTS.smart.scrubSecrets),
+      focusWeighting: booleanWithDefault(smart, "focusWeighting", COMPACTION_DEFAULTS.smart.focusWeighting),
+      onlineDamageMonitor: booleanWithDefault(smart, "onlineDamageMonitor", COMPACTION_DEFAULTS.smart.onlineDamageMonitor),
+      adaptiveDamageFeedback: booleanWithDefault(smart, "adaptiveDamageFeedback", COMPACTION_DEFAULTS.smart.adaptiveDamageFeedback),
+    },
+  });
+  if (!settings) throw runtimeError("invalid_input", "compaction configuration is invalid");
+  return settings;
+}
+
+/** Merge the edited subset into the two objects; null deletes the override. */
+function patchCompactionSettings(parsed: Record<string, unknown>, settings: CompactionSettings): void {
+  const native = { ...compactionObject(parsed, "compaction") };
+  native.enabled = settings.native.enabled;
+  for (const key of ["reserveTokens", "keepRecentTokens"] as const) {
+    const value = settings.native[key];
+    if (value === null) delete native[key];
+    else native[key] = value;
+  }
+  const smart = { ...compactionObject(parsed, "smartCompact") };
+  const smartAssignments: Array<[string, unknown]> = [
+    ["autoTrigger", settings.smart.autoTrigger],
+    ["minContextPercent", settings.smart.minContextPercent],
+    ["profile", settings.smart.profile],
+    ["summaryModel", settings.smart.summaryModel],
+    ["segmentationModel", settings.smart.segmentationModel],
+    ["summaryThinkingLevel", settings.smart.summaryThinkingLevel],
+    ["segmentationThinkingLevel", settings.smart.segmentationThinkingLevel],
+    ["autoTriggerTimeoutMs", settings.smart.autoTriggerTimeoutMs],
+    ["backupEnabled", settings.smart.backupEnabled],
+    ["scrubSecrets", settings.smart.scrubSecrets],
+    ["focusWeighting", settings.smart.focusWeighting],
+    ["onlineDamageMonitor", settings.smart.onlineDamageMonitor],
+    ["adaptiveDamageFeedback", settings.smart.adaptiveDamageFeedback],
+  ];
+  for (const [key, value] of smartAssignments) {
+    if (value === null) delete smart[key];
+    else smart[key] = value;
+  }
+  // The two objects exist after any structured write; unknown sibling keys and
+  // unrelated root keys round-trip untouched.
+  parsed.compaction = native;
+  parsed.smartCompact = smart;
 }
 
 /** Native fields are optional, but a present null (or malformed value) is invalid. */
@@ -348,6 +481,48 @@ export function createPiSdkSettingsConfigStore(options: PiSdkSettingsConfigOptio
         if (error && typeof error === "object" && "code" in error
           && ["invalid_input", "conflict", "unavailable"].includes(String(error.code))) throw error;
         throw runtimeError("unavailable", "settings configuration could not be saved");
+      } finally {
+        await release?.().catch(() => {});
+      }
+    }),
+    readCompactionConfig: async () => {
+      const source = await readSource(await canonicalAgentDir());
+      const settings = projectCompactionSettings(source.present ? parseSettingsObject(source.text) : {});
+      return { revision: source.revision, settings };
+    },
+    writeCompactionConfig: (input: CompactionSettingsMutation) => withMutationQueue(configuredAgentDir, async () => {
+      const settings = normalizeCompactionSettings(input?.settings);
+      if (typeof input?.expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(input.expectedRevision) || !settings) {
+        throw runtimeError("invalid_input", "compaction configuration input is invalid");
+      }
+      const agentDir = await canonicalAgentDir();
+      const settingsPath = join(agentDir, "settings.json");
+      try {
+        await secureState.ensurePrivateDirectory(agentDir);
+      } catch {
+        throw runtimeError("unavailable", "compaction configuration is unavailable");
+      }
+      let release: (() => Promise<void>) | undefined;
+      try {
+        release = await lockfile.lock(agentDir, {
+          realpath: false,
+          lockfilePath: `${settingsPath}.lock`,
+          retries: { retries: 9, minTimeout: 20, maxTimeout: 20 },
+        });
+        const current = await readSource(agentDir);
+        if (current.revision !== input.expectedRevision) {
+          throw runtimeError("conflict", "compaction configuration changed");
+        }
+        const parsed = current.present ? parseSettingsObject(current.text) : {};
+        patchCompactionSettings(parsed, settings);
+        const content = `${JSON.stringify(parsed, null, 2)}\n`;
+        validateSettingsText(content);
+        await secureState.writeStateDocument(settingsPath, content, { maxBytes: SETTINGS_MAX_BYTES });
+        return { revision: revisionOf(content), settings: projectCompactionSettings(parseSettingsObject(content)) };
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error
+          && ["invalid_input", "conflict", "unavailable"].includes(String(error.code))) throw error;
+        throw runtimeError("unavailable", "compaction configuration could not be saved");
       } finally {
         await release?.().catch(() => {});
       }

@@ -13,7 +13,7 @@
  */
 import type { Hono } from "hono";
 import { BUILT_IN_CAPABILITY_IDS } from "@fffattiger/pix-protocol/built-in-capabilities";
-import { SubagentSettingsResponseSchema, SubagentSettingsMutationSchema } from "@fffattiger/pix-protocol/settings-config";
+import { CompactionSettingsResponseSchema, CompactionSettingsMutationSchema, SubagentSettingsResponseSchema, SubagentSettingsMutationSchema } from "@fffattiger/pix-protocol/settings-config";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import { hasTrustMutationSeam } from "./health.js";
@@ -572,6 +572,16 @@ function projectSubagentSettingsSnapshot(raw: unknown) {
   throw catalogUnavailable();
 }
 
+function projectCompactionSettingsSnapshot(raw: unknown) {
+  try {
+    const result = CompactionSettingsResponseSchema.safeParse(raw);
+    if (result.success) return result.data;
+  } catch {
+    // Same strict-projection rule as the other settings snapshots.
+  }
+  throw catalogUnavailable();
+}
+
 function parseModelsConfigModel(raw: unknown): Record<string, unknown> {
   if (!isPlainObject(raw)) invalidModelsConfigBody();
   const allowed = ["sourceIndex", "id", "name", "api", "reasoning", "input", "contextWindow", "maxTokens", "cost"];
@@ -930,6 +940,36 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
       if (!input.success) invalidSettingsConfigBody();
       try {
         return c.json(projectSubagentSettingsSnapshot(await deps.settingsMutation!.writeSubagentConfig(input.data)));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+
+    // Context compaction (settings.json `compaction` + `smartCompact`): same
+    // settings.json ownership, CAS fence and HttpError paths as subagents. The
+    // `settings.configure` capability token covers this seam; writes take
+    // effect for NEW sessions / reloads (running sessions keep their config).
+    app.get("/v1/settings/compaction", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      try {
+        return c.json(projectCompactionSettingsSnapshot(await deps.settingsMutation!.readCompactionConfig()));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+
+    app.put("/v1/settings/compaction", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      const input = CompactionSettingsMutationSchema.safeParse(await readJsonObject(c, SETTINGS_CONFIG_BODY_LIMIT));
+      if (!input.success) invalidSettingsConfigBody();
+      try {
+        return c.json(projectCompactionSettingsSnapshot(await deps.settingsMutation!.writeCompactionConfig(input.data)));
       } catch (error) {
         throw mapSettingsConfigError(error);
       }

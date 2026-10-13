@@ -90,7 +90,7 @@ describe("status card composer-strip layout", () => {
     expect(card).toContain("status-capsule-agents");
     // Mounted directly above the composer inside the session column.
     expect(shell.indexOf("<SubagentActivityCard")).toBeGreaterThan(shell.indexOf("<Composer"));
-    expect(shell).toContain("key={`status:${activeSessionId}`}");
+    expect(shell).toContain("key={`status:${viewSessionId}`}");
   });
 
   it("reserves the composer's top-right floating controls so the pill never overlaps them", () => {
