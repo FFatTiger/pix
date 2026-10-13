@@ -178,6 +178,18 @@ export class SessiondApplication implements SessiondRpcHandler {
         await this.service.deleteSession(input.sessionId);
         return { sessionId: input.sessionId, deleted: true };
       }
+      case "sessions.findLatest": {
+        // Assistant-conversation lookup (read-only, zero workers). Fail closed
+        // when the catalog or the exact-cwd lookup is not mounted — never fall
+        // back to a list scan that cannot see hidden assistant sessions.
+        const catalog = this.service.sessionCatalog();
+        if (!catalog?.findLatestSessionByCwd) {
+          throw new SessiondError("unavailable", "session catalog is unavailable");
+        }
+        const input = params as SessiondMethodParams["sessions.findLatest"];
+        const latest = await catalog.findLatestSessionByCwd(input.cwd);
+        return { cwd: input.cwd, sessionId: latest?.sessionId ?? null };
+      }
       case "config.getSessionIdleTimeoutMs": {
         return { idleTimeoutMs: this.service.getIdleTimeoutMs() };
       }
