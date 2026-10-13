@@ -3861,7 +3861,6 @@ html.pi-booted body::before {
   .chat-input-toolbar-project > button > svg:last-child { display: none; }
   .chat-input-toolbar-model { min-width: 0; flex: 0 1 auto; max-width: 150px !important; }
   .chat-input-toolbar-model > button { min-width: 0; }
-  .chat-input-toolbar-model > button > svg:last-child { display: none; }
   .chat-input-toolbar-project > button > span:not(:first-child) { max-width: 72px !important; }
   .chat-input-toolbar .chat-input-send,
   .session-info-ring { flex: 0 0 auto; }
@@ -3878,3 +3877,28 @@ html.pi-booted body::before {
   .chat-input-toolbar-project { flex: 0 0 auto; }
   .chat-input-toolbar-project > button { width: 28px !important; justify-content: center !important; padding: 0 !important; }
 }
+
+/* Toolbar rhythm: every control is a 28px rounded-8 target with 15px icons,
+   10px carets and 12.5px labels, so + / thinking / project / ring / model /
+   send read as one family. */
+.chat-input-toolbar .chat-input-control,
+.chat-input-toolbar .chat-input-toolbar-attach,
+.chat-input-toolbar .chat-input-toolbar-project > button,
+.chat-input-toolbar .session-info-ring,
+.chat-input-toolbar .chat-input-send {
+  height: 28px !important;
+  min-height: 28px !important;
+  border-radius: 8px !important;
+  font-size: 12.5px !important;
+  gap: 5px !important;
+}
+.chat-input-toolbar .chat-input-send,
+.chat-input-toolbar .session-info-ring,
+.chat-input-toolbar .chat-input-toolbar-attach { width: 28px !important; min-width: 28px; padding: 0 !important; }
+.chat-input-toolbar .chat-input-control,
+.chat-input-toolbar .chat-input-toolbar-project > button { padding: 0 8px !important; }
+.chat-input-toolbar button > svg { width: 15px; height: 15px; }
+.chat-input-toolbar button svg[data-caret],
+.chat-input-toolbar .chat-input-control > svg:last-child,
+.chat-input-toolbar .chat-input-toolbar-project > button > svg:last-child { width: 10px; height: 10px; opacity: 0.7; }
+.chat-input-toolbar .session-info-ring svg { width: 15px; height: 15px; }

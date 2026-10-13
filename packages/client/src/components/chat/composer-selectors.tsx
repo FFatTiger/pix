@@ -446,7 +446,6 @@ export function ModelSelector({
           e.currentTarget.style.color = "var(--text-muted)";
         }}
       >
-        <ProviderIcon id={model?.provider ?? "unknown"} api={currentModelOption?.api ?? null} size={14} />
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: "0 1 auto" }}>{currentName}</span>
         <CaretDownIcon
           size={11}
