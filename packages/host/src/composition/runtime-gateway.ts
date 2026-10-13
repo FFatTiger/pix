@@ -8,6 +8,7 @@ import {
   READ_ONLY_RUNTIME_COMMAND_TYPES,
   RUNTIME_EPOCH_ROLLOVER_FEATURE,
   RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
+  RUNTIME_LIVENESS_FEATURE,
   RUNTIME_OBSERVE_EXISTING_FEATURE,
   RUNTIME_QUESTIONNAIRE_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
@@ -396,6 +397,8 @@ interface GatewayConfig {
   readonly observeExistingEnabled: boolean;
   readonly explicitActivateEnabled: boolean;
   readonly questionnaireEnabled: boolean;
+  /** Transport liveness (negotiated `runtime.liveness.v1`): Host-answered pings. */
+  readonly livenessEnabled: boolean;
   readonly runtimeWorkspaceAuthorizer: RuntimeWorkspaceAuthorizer | undefined;
   readonly currentCapabilities: () => Promise<readonly HostCapability[]>;
   readonly lifecycleAuthorizationTimeoutMs: number;
@@ -569,6 +572,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     const requestedObserveExisting = handshake.payload.features.includes(RUNTIME_OBSERVE_EXISTING_FEATURE);
     const requestedExplicitActivate = handshake.payload.features.includes(RUNTIME_EXPLICIT_ACTIVATE_FEATURE);
     const requestedQuestionnaire = handshake.payload.features.includes(RUNTIME_QUESTIONNAIRE_FEATURE);
+    const requestedLiveness = handshake.payload.features.includes(RUNTIME_LIVENESS_FEATURE);
     let runningWatchEnabled = false;
     let readRpcEnabled = false;
     let submitTurnEnabled = false;
@@ -576,6 +580,9 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     let observeExistingEnabled = false;
     let explicitActivateEnabled = false;
     let questionnaireEnabled = false;
+    // Host-answered transport probe: no sessiond/Worker seam, so any build of
+    // this Host can accept it. Not acknowledged → the Client never pings.
+    const livenessEnabled = requestedLiveness;
     const wantsLifecycle = requestedObserveExisting || requestedExplicitActivate;
     if (requestedRunningWatch || requestedReadRpc || requestedSubmitTurn || requestedEpochRollover || wantsLifecycle || requestedQuestionnaire) {
       try {
@@ -612,6 +619,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       ...(observeExistingEnabled ? [RUNTIME_OBSERVE_EXISTING_FEATURE] : []),
       ...(explicitActivateEnabled ? [RUNTIME_EXPLICIT_ACTIVATE_FEATURE] : []),
       ...(questionnaireEnabled ? [RUNTIME_QUESTIONNAIRE_FEATURE] : []),
+      ...(livenessEnabled ? [RUNTIME_LIVENESS_FEATURE] : []),
     ];
     const handshakeResponse = this.buildHandshakeResponse(resolved.capabilities, acceptedFeatures);
     this.write(session, {
@@ -634,6 +642,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       observeExistingEnabled,
       explicitActivateEnabled,
       questionnaireEnabled,
+      livenessEnabled,
       runtimeWorkspaceAuthorizer: this.runtimeWorkspaceAuthorizer,
       currentCapabilities: async () => (await this.resolveConnectionCapabilities()).capabilities,
       lifecycleAuthorizationTimeoutMs: this.lifecycleAuthorizationTimeoutMs,
@@ -861,6 +870,18 @@ class GatewayConnection {
       return;
     }
     const message = parsed.data;
+    if (message.type === "ping") {
+      // Negotiated transport liveness probe: answered synchronously by the
+      // Host itself, ahead of every lane, so a long prompt/command can never
+      // delay the pong (a delayed pong would read as a dead connection).
+      if (!this.config.livenessEnabled) {
+        this.config.logger.warn?.("runtime gateway ping frame without negotiated liveness feature");
+        this.failProtocol("ping frame without negotiated liveness feature");
+        return;
+      }
+      this.send({ type: "pong", ...(message.id !== undefined ? { id: message.id } : {}) });
+      return;
+    }
     if (message.type === "interrupt") {
       // Independent, non-queued control path: an interrupt must never wait
       // behind a long-running command (protocol guarantee). It uses its own

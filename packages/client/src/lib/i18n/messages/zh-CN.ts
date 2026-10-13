@@ -244,6 +244,7 @@ export const zhCNLocale = {
     "desktop.textSize": "字体大小",
     "desktop.textSizeDescription": "调整界面文字与元素的显示大小。",
     "desktop.sendFailed": "消息未发送，草稿已保留。",
+    "desktop.sendReconnecting": "网络连接中断，正在重连。草稿已保留，请稍后重试。",
     "desktop.theme": "主题",
     "desktop.themeOptionsHint": "深色、浅色或跟随系统。",
     "desktop.themeDark": "深色",

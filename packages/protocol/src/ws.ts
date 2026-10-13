@@ -148,6 +148,24 @@ export const WsStopMessageSchema = z.strictObject({
 });
 
 /**
+ * Transport-level liveness probe (negotiated `runtime.liveness.v1`).
+ * Answered by the Host itself — never forwarded to sessiond/Worker — so a
+ * pong proves exactly the WS transport is alive. Only sent on connections
+ * that negotiated the feature (the Host rejects the frame otherwise).
+ */
+export const WsPingMessageSchema = z.strictObject({
+  type: z.literal("ping"),
+  id: NonEmptyStringSchema.optional(),
+});
+export type WsPingMessage = z.infer<typeof WsPingMessageSchema>;
+/** Host echo for a liveness ping; `id` mirrors the ping's when present. */
+export const WsPongMessageSchema = z.strictObject({
+  type: z.literal("pong"),
+  id: NonEmptyStringSchema.optional(),
+});
+export type WsPongMessage = z.infer<typeof WsPongMessageSchema>;
+
+/**
  * Strict success-result union for a correlated WS response. Each member maps
  * to a host verb: command (CorrelatedRuntimeCommandResult), create, detach,
  * getSnapshot (RuntimeSnapshot) and stop. `unknown` is never accepted — the
@@ -221,9 +239,9 @@ export const WsInterruptExchangeSchema = z
   });
 export type WsInterruptExchange = z.infer<typeof WsInterruptExchangeSchema>;
 
-export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsActivateMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema, WsGetSnapshotMessageSchema, WsListRunningMessageSchema, WsStopMessageSchema, WsReadMessageSchema, WsSubmitTurnMessageSchema]);
+export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsActivateMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema, WsGetSnapshotMessageSchema, WsListRunningMessageSchema, WsStopMessageSchema, WsReadMessageSchema, WsSubmitTurnMessageSchema, WsPingMessageSchema]);
 export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
-export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckMessageSchema, WsHandshakeRejectMessageSchema, WsResponseMessageSchema, WsInterruptResultMessageSchema, WsSnapshotMessageSchema, WsEventMessageSchema, WsRunningStateMessageSchema, WsRuntimeUnavailableMessageSchema, WsReadResultMessageSchema, WsSubmitTurnResultMessageSchema, WsTurnStatusMessageSchema]);
+export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckMessageSchema, WsHandshakeRejectMessageSchema, WsResponseMessageSchema, WsInterruptResultMessageSchema, WsSnapshotMessageSchema, WsEventMessageSchema, WsRunningStateMessageSchema, WsRuntimeUnavailableMessageSchema, WsReadResultMessageSchema, WsSubmitTurnResultMessageSchema, WsTurnStatusMessageSchema, WsPongMessageSchema]);
 export type WsHostMessage = z.infer<typeof WsHostMessageSchema>;
 export const WsEnvelopeSchema = z.union([WsClientMessageSchema, WsHostMessageSchema]);
 export type WsEnvelope = z.infer<typeof WsEnvelopeSchema>;

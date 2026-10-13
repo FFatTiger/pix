@@ -244,6 +244,7 @@ export const enLocale = {
     "desktop.textSize": "Text Size",
     "desktop.textSizeDescription": "Adjust the size of text and interface elements.",
     "desktop.sendFailed": "The message was not sent. Your draft has been kept.",
+    "desktop.sendReconnecting": "Connection lost — reconnecting. Your draft is kept; try again shortly.",
     "desktop.theme": "Theme",
     "desktop.themeOptionsHint": "Dark, light, or follow the system.",
     "desktop.themeDark": "Dark",

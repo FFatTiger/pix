@@ -67,3 +67,16 @@ export type RuntimeExplicitActivateFeature = typeof RUNTIME_EXPLICIT_ACTIVATE_FE
  */
 export const RUNTIME_QUESTIONNAIRE_FEATURE = "runtime.questionnaire.v1" as const;
 export type RuntimeQuestionnaireFeature = typeof RUNTIME_QUESTIONNAIRE_FEATURE;
+
+/**
+ * Transport-level liveness heartbeat (idle-send recovery): dedicated `ping`/
+ * `pong` WS envelopes answered by the Host itself (no sessiond/Worker seam).
+ * A negotiated Client keeps the connection observable: it heartbeats while
+ * ready, probes liveness after the page was hidden past a threshold, and
+ * refuses to submit through a connection whose freshness it cannot prove
+ * (waiting for a reconnect instead of writing into a half-open socket).
+ * Old strict v2 peers that never acknowledge this token keep the exact
+ * pre-liveness behavior (no ping is ever sent to them).
+ */
+export const RUNTIME_LIVENESS_FEATURE = "runtime.liveness.v1" as const;
+export type RuntimeLivenessFeature = typeof RUNTIME_LIVENESS_FEATURE;

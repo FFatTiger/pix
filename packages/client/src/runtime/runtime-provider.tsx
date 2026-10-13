@@ -82,6 +82,11 @@ export function createBrowserSocketDeps(overrides: Partial<RuntimeSocketDeps> = 
       globalThis.document.addEventListener("visibilitychange", handler);
       return () => globalThis.document.removeEventListener("visibilitychange", handler);
     }),
+    onVisibility: overrides.onVisibility ?? ((cb) => {
+      const handler = (): void => { cb(globalThis.document.visibilityState === "visible"); };
+      globalThis.document.addEventListener("visibilitychange", handler);
+      return () => globalThis.document.removeEventListener("visibilitychange", handler);
+    }),
     ...(overrides.features === undefined ? {} : { features: overrides.features }),
   };
 }
