@@ -74,6 +74,14 @@ interface Props {
   isCompacting?: boolean;
   /** Extra control rendered in the toolbar, left of the model selector (e.g. the context ring). */
   toolbarAccessory?: React.ReactNode;
+  /** "side": the side-chat composer — same component, no attachments/slash/bash. */
+  variant?: "main" | "side";
+  /** Overrides the idle placeholder text. */
+  placeholder?: string;
+  /** Accessible names for embedders (e.g. side chat). */
+  labels?: { input?: string; send?: string; stop?: string; locked?: string };
+  /** Disable the thinking/model pickers (e.g. while a side chat runs). */
+  controlsLocked?: boolean;
   /** Abort an in-progress compaction (used by the Stop button while compacting) */
   onAbortCompaction?: () => void;
   model?: { provider: string; modelId: string } | null;
@@ -380,7 +388,7 @@ function QueuedMessageRow({ kind, text, label }: { kind: "steer" | "follow-up"; 
 
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, toolbarAccessory, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange,
+  onSend, onBash, onAbort, onSteer, onFollowUp, isStreaming, isCompacting, toolbarAccessory, variant = "main", placeholder: placeholderOverride, labels, controlsLocked = false, onAbortCompaction, model, isAutoModelSelection, modelNames, modelList, sendDisabled = false, imageInputByModel, modelScopeWarnings, onModelChange,
   compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
@@ -445,7 +453,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [imageAttachmentError, setImageAttachmentError] = useState<string | null>(null);
   const [fileAttachmentError, setFileAttachmentError] = useState<string | null>(null);
   const trimmedValue = value.trimStart();
-  const bashMode = attachedImages.length === 0 && pendingFiles.length === 0 && trimmedValue.startsWith("!");
+  const bashMode = Boolean(onBash) && attachedImages.length === 0 && pendingFiles.length === 0 && trimmedValue.startsWith("!");
   const bashExcluded = bashMode && trimmedValue.startsWith("!!");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
@@ -1208,7 +1216,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // Only the text before the caret matters, so pre-existing message text after
   // the caret never blocks the menu — and the caret is never obstructed.
   const { trimmedBefore } = getSlashSlot(value, slashCaretPos);
-  const slashQuery = trimmedBefore.startsWith("/") && !/\s/.test(trimmedBefore.slice(1))
+  const slashQuery = variant === "main" && trimmedBefore.startsWith("/") && !/\s/.test(trimmedBefore.slice(1))
     ? trimmedBefore.slice(1).toLowerCase()
     : null;
 
@@ -2516,6 +2524,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
           <textarea
             ref={textareaRef}
+            {...(labels?.input ? { "aria-label": labels.input } : {})}
             value={value}
             spellCheck={false}
             onChange={(e) => {
@@ -2543,7 +2552,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               isStreaming && (onSteer || onFollowUp)
                 ? t("desktop.steerOrQueueFollowUp")
                 : isStreaming ? t("desktop.agentRunning")
-                : t("desktop.messageWithCommands")
+                : placeholderOverride ?? t("desktop.messageWithCommands")
             }
             rows={1}
             className="chat-input-textarea"
@@ -2592,6 +2601,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
           {/* LEFT: attach + model selector (idle) or steer/followup toggle (streaming) */}
           <div className="chat-input-toolbar-left" style={{ flex: "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
+            {variant === "main" && (
             <button
               className="chat-input-toolbar-attach"
               onClick={(e) => {
@@ -2622,6 +2632,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             >
               <PlusIcon size={14} />
             </button>
+            )}
             {attachMenuOpen && attachMenuRect && (() => {
               const vh = cssPx(window.visualViewport?.height ?? window.innerHeight);
               const vw = cssPx(window.innerWidth);
@@ -2732,6 +2743,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 {...(availableThinkingLevels === undefined ? {} : { availableThinkingLevels })}
                 {...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap })}
                 {...(isStreaming ? { title: t("desktop.changeReasoningLevelWhileRunning", { level: thinkingTitleLabel }) } : {})}
+                {...(controlsLocked ? { disabled: true, ...(labels?.locked ? { title: labels.locked } : {}) } : {})}
               />
             )}
             {onProjectChange && projectRoots && (
@@ -2932,6 +2944,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 onModelChange={onModelChange}
                 allowReselect={isAutoModelSelection === true}
                 {...(isStreaming ? { title: t("desktop.changeModelWhileRunning") } : {})}
+                {...(controlsLocked ? { disabled: true, ...(labels?.locked ? { title: labels.locked } : {}) } : {})}
               />
             )}
 
@@ -2941,8 +2954,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 onClick={handleSend}
                 disabled={sendDisabled || (!value.trim() && !hasAttachments)}
                 className="chat-input-send"
-                title={t("desktop.sendMessage")}
-                aria-label={t("desktop.sendMessage")}
+                title={labels?.send ?? t("desktop.sendMessage")}
+                aria-label={labels?.send ?? t("desktop.sendMessage")}
               >
                 <PaperPlaneRightIcon size={14} />
               </button>
@@ -2953,8 +2966,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 type="button"
                 onClick={isCompacting ? onAbortCompaction : onAbort}
                 className={`chat-input-send is-stop${isCompacting ? " is-compacting" : ""}`}
-                title={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
-                aria-label={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
+                title={isCompacting ? t("desktop.stopCompaction") : labels?.stop ?? t("desktop.stopAgent")}
+                aria-label={isCompacting ? t("desktop.stopCompaction") : labels?.stop ?? t("desktop.stopAgent")}
               >
                 <SquareIcon size={12} weight="fill" />
               </button>

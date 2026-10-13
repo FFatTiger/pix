@@ -2981,14 +2981,7 @@ span.linenumber {
    shell (the main shell bleeds 10px past its column) is re-scoped here. */
 .side-chat-composer {
   flex: 0 0 auto;
-  padding: 8px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
-}
-
-.side-chat-composer .chat-input-shell {
-  width: 100%;
-  margin-left: 0;
+  padding-top: 8px;
 }
 
 /* Running state of the shared composer send slot: the same red tint the
@@ -3569,13 +3562,16 @@ html.pi-booted body::before {
    outline, and it lifts onto the content surface with a soft focus ring while
    you type. The status tab and its card follow the same two variables, so the
    tab keeps growing seamlessly out of the composer in both states. */
-.workspace {
+.workspace,
+.side-chat-panel {
   --composer-bg: var(--surface-frame);
   --composer-line: transparent;
 }
-.workspace:has(.chat-composer-region:hover) {
+.workspace:has(.chat-composer-region:hover),
+.side-chat-panel:has(.side-chat-composer:hover) {
   --composer-line: var(--surface-hairline);
 }
+.side-chat-panel:has(.chat-input-shell:focus-within),
 .workspace:has(.chat-input-shell:focus-within) {
   --composer-bg: var(--surface-content);
   --composer-line: color-mix(in srgb, var(--accent-blue) 55%, var(--border));
@@ -3820,3 +3816,34 @@ html.pi-booted body::before {
 .session-info-bar-popover .session-info-action:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 5%, transparent); }
 .session-info-bar-popover .session-stats-info-text,
 .session-info-bar-popover .session-stats-value { font-variant-numeric: tabular-nums; }
+
+/* Right pane = same two layers as the main page. Header row: 36px on the
+   frame surface with no divider, exactly like the tab strip, so it lines up
+   with the tab bar. Body: the content surface. */
+.right-panel-container .explorer-panel .sidebar-section-head,
+.right-panel-container .subagent-panel-head,
+.right-panel-container .side-chat-toolbar {
+  flex: 0 0 36px !important;
+  height: 36px !important;
+  padding: 0 10px 0 14px !important;
+  border-bottom: 0 !important;
+  background: var(--surface-frame) !important;
+}
+.right-panel-container .subagent-panel-heading,
+.right-panel-container .side-chat-heading,
+.right-panel-container .explorer-project-label {
+  font-size: 12px;
+  font-weight: var(--text-weight-strong);
+  color: var(--text);
+}
+.right-panel-container .right-panel-content,
+.right-panel-container .explorer-panel,
+.right-panel-container .subagent-panel,
+.right-panel-container .side-chat-panel,
+.right-panel-container .subagent-directory,
+.right-panel-container .subagent-transcript,
+.right-panel-container .side-chat-messages {
+  background: var(--surface-content) !important;
+}
+/* Side chat composer is the main ChatInput; no hanging overhang in the pane. */
+.right-panel-container .side-chat-composer .chat-input-shell { width: 100%; margin-left: 0; }

@@ -1,11 +1,24 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SideChatState } from "@fffattiger/pix-protocol";
 import { HttpClientProvider } from "@/app/http-context";
 import { I18nProvider } from "@/hooks/useI18n";
 import type { ExactRuntimeApi } from "@/runtime";
+import { clearDraft } from "@/lib/draft-store";
 import { SideChatPanel } from "./SideChatPanel";
+
+class ResizeObserverStub {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+  // Side chat drafts persist per conversation in the shared draft store.
+  for (const id of ["conversation-1", "conversation-A", "conversation-B"]) clearDraft(`side-chat:parent:${id}`);
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -118,13 +131,11 @@ describe("SideChatPanel", () => {
     await waitFor(() => expect(scroll.textContent).toContain("Claude Sonnet"));
     expect(screen.getByText("The side chat request failed.")).toBeTruthy();
     expect(screen.getAllByText("Some side chat content was truncated.").length).toBeGreaterThan(0);
-    // The side chat shares the main composer's chat-input-* classes by design
-    // (one shell/textarea/toolbar styling); what it must NOT own is the main
-    // composer machinery: no drag-resize handle, no highlight layer, and
-    // exactly one textarea — the side-chat one.
-    expect(document.querySelector(".chat-input-resize-handle")).toBeNull();
-    expect(document.querySelector(".chat-input-highlight")).toBeNull();
+    // The side chat IS the main ChatInput (variant="side"): one shell, one
+    // textarea, no attachment button.
+    expect(document.querySelectorAll(".chat-input-shell")).toHaveLength(1);
     expect(document.querySelectorAll(".chat-input-textarea")).toHaveLength(1);
+    expect(document.querySelector(".chat-input-toolbar-attach")).toBeNull();
     expect(document.querySelector(".chat-input-textarea")?.getAttribute("aria-label")).toBe("Side chat message");
   });
 
@@ -174,8 +185,9 @@ describe("SideChatPanel", () => {
     fireEvent.keyDown(input, { key: "Enter", code: "Enter", isComposing: true });
     expect(send).not.toHaveBeenCalled();
     fireEvent.compositionEnd(input);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-    fireEvent.submit(input.closest("form")!);
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith("conversation-1", "keep this");
 
@@ -219,12 +231,12 @@ describe("SideChatPanel", () => {
     let input = screen.getByRole("textbox", { name: "Side chat message" }) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "draft-before-reattach" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-    expect(input.disabled).toBe(true);
+    // Accepted sends clear the composer like the main session does.
+    expect(input.value).toBe("");
 
     const replacement = runtime(sideState(), { epoch: "epoch-2", attachGeneration: 2 });
     view.rerender(providers(<SideChatPanel runtime={replacement} cwd="/work" />));
     input = screen.getByRole("textbox", { name: "Side chat message" }) as HTMLTextAreaElement;
-    expect(input.value).toBe("draft-before-reattach");
     expect(input.disabled).toBe(false);
     fireEvent.change(input, { target: { value: "new epoch draft" } });
 
