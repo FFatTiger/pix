@@ -125,6 +125,7 @@ export function ThinkingLevelSelector({
     <div ref={rootRef} className="chat-input-toolbar-thinking" style={{ position: "relative" }}>
       <button
         type="button"
+        className="chat-input-control"
         disabled={disabled}
         onClick={(e) => {
           const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -141,7 +142,7 @@ export function ThinkingLevelSelector({
           background: open ? "var(--bg-hover)" : "none",
           border: "none",
           borderRadius: 6,
-          color: (thinkingLevel ?? "auto") === "off" ? "var(--text-dim)" : "var(--accent)",
+          color: (thinkingLevel ?? "auto") === "off" ? "var(--text-dim)" : "var(--text-muted)",
           cursor: disabled ? "not-allowed" : "pointer",
           opacity: disabled ? 0.55 : 1,
           fontSize: 12,
@@ -398,6 +399,7 @@ export function ModelSelector({
     <div ref={rootRef} className="chat-input-toolbar-model" style={{ position: "relative", flex: "0 1 auto", minWidth: 0, width: "auto", maxWidth: isMobile ? 200 : 220 }}>
       <button
         type="button"
+        className="chat-input-control"
         disabled={disabled}
         onClick={(e) => {
           const box = (e.currentTarget as HTMLElement).getBoundingClientRect();

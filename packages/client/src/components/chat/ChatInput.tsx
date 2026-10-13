@@ -2264,10 +2264,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   display: "flex",
                   alignItems: "stretch",
                   overflow: "hidden",
-                  border: "1px solid color-mix(in srgb, var(--border) 62%, transparent)",
+                  border: "1px solid var(--surface-hairline)",
                   borderRadius: 7,
                   background: "var(--bg-panel)",
-                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.07)",
+                  boxShadow: "none",
                 }}
               >
                 {isStreaming && onSteer && (
@@ -2361,10 +2361,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 display: "flex",
                 alignItems: "stretch",
                 overflow: "hidden",
-                border: "1px solid color-mix(in srgb, var(--border) 62%, transparent)",
+                border: "1px solid var(--surface-hairline)",
                 borderRadius: 7,
                 background: "var(--bg-panel)",
-                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.07)",
+                boxShadow: "none",
               }}
             >
               {/* Maximize / restore the composer height to the manual ceiling.
@@ -2933,32 +2933,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
             {(isStreaming || isCompacting) && (
               <button
+                type="button"
                 onClick={isCompacting ? onAbortCompaction : onAbort}
+                className={`chat-input-send is-stop${isCompacting ? " is-compacting" : ""}`}
                 title={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
                 aria-label={isCompacting ? t("desktop.stopCompaction") : t("desktop.stopAgent")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  padding: "3px 6px",
-                  height: 24,
-                  background: isCompacting
-                    ? "color-mix(in srgb, var(--accent-orange) 14%, var(--bg-panel))"
-                    : "color-mix(in srgb, var(--accent-red) 12%, var(--bg-panel))",
-                  border: "none",
-                  borderRadius: 6,
-                  color: isCompacting ? "var(--accent-orange)" : "var(--accent-red)",
-                  cursor: "pointer",
-                  fontSize: 12, fontWeight: 600,
-                  whiteSpace: "nowrap", letterSpacing: "-0.01em",
-                  transition: "background 0.12s",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = isCompacting
-                  ? "color-mix(in srgb, var(--accent-orange) 24%, var(--bg-panel))"
-                  : "color-mix(in srgb, var(--accent-red) 20%, var(--bg-panel))"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = isCompacting
-                  ? "color-mix(in srgb, var(--accent-orange) 14%, var(--bg-panel))"
-                  : "color-mix(in srgb, var(--accent-red) 12%, var(--bg-panel))"; }}
               >
-                <SquareIcon size={14} />
+                <SquareIcon size={12} weight="fill" />
               </button>
             )}
             </div>

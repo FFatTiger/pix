@@ -3563,3 +3563,95 @@ html.pi-booted body::before {
   height: 20px;
   align-self: center;
 }
+
+/* ───────── Composer surface (2026-10 restyle) ─────────
+   The composer belongs to the frame: at rest it is a frame-gray well with no
+   outline, and it lifts onto the content surface with a soft focus ring while
+   you type. The status tab and its card follow the same two variables, so the
+   tab keeps growing seamlessly out of the composer in both states. */
+.workspace {
+  --composer-bg: var(--surface-frame);
+  --composer-line: transparent;
+}
+.workspace:has(.chat-composer-region:hover) {
+  --composer-line: var(--surface-hairline);
+}
+.workspace:has(.chat-input-shell:focus-within) {
+  --composer-bg: var(--surface-content);
+  --composer-line: color-mix(in srgb, var(--accent-blue) 55%, var(--border));
+}
+.chat-input-shell,
+.chat-input-shell.is-streaming {
+  border: 1px solid var(--composer-line);
+  border-radius: 12px;
+  background: var(--composer-bg);
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease !important;
+}
+.chat-input-shell:focus-within,
+.chat-input-shell.is-streaming:focus-within {
+  border-color: var(--composer-line);
+  box-shadow: none;
+}
+.chat-input-streaming-overlay { border-radius: 11px; }
+
+/* Status tab + fillets + card share the composer material. */
+.subagent-activity-capsule,
+.subagent-activity-capsule:hover {
+  border-color: var(--composer-line);
+  background: var(--composer-bg);
+  box-shadow: none;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.workspace:has(.chat-input-shell:focus-within) .subagent-activity-capsule {
+  border-color: var(--composer-line);
+}
+.subagent-activity-capsule::before {
+  background: radial-gradient(circle at 0 0, transparent 7px, var(--composer-line) 7px, var(--composer-line) 8px, var(--composer-bg) 8.5px);
+}
+.subagent-activity-capsule::after {
+  background: radial-gradient(circle at 100% 0, transparent 7px, var(--composer-line) 7px, var(--composer-line) 8px, var(--composer-bg) 8.5px);
+}
+.status-card-panel {
+  border-color: var(--surface-hairline);
+  background: var(--composer-bg);
+}
+
+/* Toolbar controls: one height, radius and hover language (matches settings). */
+.chat-input-toolbar .chat-input-control,
+.chat-input-toolbar .chat-input-toolbar-attach {
+  height: 28px !important;
+  border-radius: 8px !important;
+  padding: 0 8px !important;
+}
+.chat-input-toolbar .chat-input-toolbar-attach { width: 28px !important; padding: 0 !important; }
+.chat-input-toolbar .chat-input-control:hover:not(:disabled),
+.chat-input-toolbar .chat-input-toolbar-attach:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 7%, transparent) !important;
+  color: var(--text) !important;
+}
+
+/* Send / Stop: one 30px rounded square; filled accent only when sendable. */
+.chat-input-send {
+  width: 30px !important;
+  height: 30px !important;
+  border-radius: 10px !important;
+}
+.chat-input-send:not(:disabled) {
+  color: #fff !important;
+  background: var(--accent-blue) !important;
+}
+.chat-input-send:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent-blue) 85%, #000) !important;
+  color: #fff !important;
+}
+.chat-input-send.is-stop:not(:disabled) {
+  color: var(--accent-red) !important;
+  background: color-mix(in srgb, var(--accent-red) 14%, transparent) !important;
+}
+.chat-input-send.is-stop:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent-red) 22%, transparent) !important;
+}
+.chat-input-send.is-stop.is-compacting:not(:disabled) {
+  color: var(--accent-orange) !important;
+  background: color-mix(in srgb, var(--accent-orange) 14%, transparent) !important;
+}
