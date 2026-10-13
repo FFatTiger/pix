@@ -4102,3 +4102,109 @@ html.pi-booted body::before {
   .chat-input-toolbar-project > button { width: 28px; justify-content: center; padding: 0; }
 }
 
+
+/* ───────── Filled controls (2026-10) ─────────
+   No hairline outlines on controls. Fields, selects, segmented tracks and
+   default buttons are soft filled surfaces; hover deepens the fill; focus
+   lifts to the content surface with a soft accent glow instead of a line. */
+:root {
+  --field-bg: color-mix(in srgb, var(--text) 5%, transparent);
+  --field-bg-hover: color-mix(in srgb, var(--text) 8%, transparent);
+  --field-ring: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+  --lift-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 2px 8px -2px rgba(0, 0, 0, 0.10);
+}
+.dark {
+  --field-bg: color-mix(in srgb, var(--text) 7%, transparent);
+  --field-bg-hover: color-mix(in srgb, var(--text) 11%, transparent);
+  --lift-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 2px 8px -2px rgba(0, 0, 0, 0.45);
+}
+
+/* Select (form) */
+.ui-trigger.ui-select-form {
+  border: 0;
+  background: var(--field-bg);
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+.ui-trigger.ui-select-form:hover:not(:disabled) { background: var(--field-bg-hover); }
+.ui-trigger.ui-select-form[aria-expanded="true"],
+.ui-trigger.ui-select-form:focus-visible { background: var(--surface-content); box-shadow: var(--field-ring); outline: none; }
+
+/* Text inputs / textareas inside settings (inline inputStyle) */
+.settings-dialog input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.settings-dialog textarea {
+  border: 0;
+  background: var(--field-bg);
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+.settings-dialog input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):hover,
+.settings-dialog textarea:hover { background: var(--field-bg-hover); }
+.settings-dialog input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+.settings-dialog textarea:focus { background: var(--surface-content); box-shadow: var(--field-ring); outline: none; }
+
+/* Segmented: filled track, lifted active pill */
+.settings-dialog .segmented, .segmented.segmented { border: 0; background: var(--field-bg); padding: 3px; }
+.segmented-item { min-height: 26px; }
+.segmented-item:hover:not(:disabled):not(.is-active) { background: transparent; color: var(--text); }
+.segmented-item.is-active { background: var(--surface-content); box-shadow: var(--lift-shadow); }
+
+/* Buttons */
+.ui-btn:not(.ui-btn--primary):not(.ui-btn--danger) { border: 0; background: var(--field-bg); }
+.ui-btn:not(.ui-btn--primary):not(.ui-btn--danger):hover:not(:disabled) { background: var(--field-bg-hover); }
+.ui-btn--danger { border: 0; background: color-mix(in srgb, var(--status-danger) 12%, transparent); }
+.ui-btn--danger:hover:not(:disabled) { background: color-mix(in srgb, var(--status-danger) 18%, transparent); }
+
+/* Menus: no outline; depth from shadow (dark keeps a faint inner edge). */
+.ui-menu, .session-info-bar-popover, .chat-input-popover, .status-card-panel {
+  border: 0 !important;
+  box-shadow: 0 12px 32px -10px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.06) !important;
+}
+.dark .ui-menu, .dark .session-info-bar-popover, .dark .chat-input-popover, .dark .status-card-panel {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 14px 36px -10px rgba(0, 0, 0, 0.6) !important;
+}
+.ui-menu-search { border-bottom: 0; }
+
+/* Composer: filled at rest, no lines; focus lifts to the content surface
+   with a soft shadow. The status tab and its fillets follow, line-free. */
+.workspace, .side-chat-panel {
+  --composer-line: transparent;
+}
+.workspace:has(.chat-composer-region:hover),
+.side-chat-panel:has(.side-chat-composer:hover) {
+  --composer-line: transparent;
+  --composer-bg: color-mix(in srgb, var(--text) 3%, var(--surface-frame));
+}
+.side-chat-panel:has(.chat-input-shell:focus-within),
+.workspace:has(.chat-input-shell:focus-within) {
+  --composer-line: transparent;
+  --composer-bg: var(--surface-content);
+}
+.chat-input-shell,
+.chat-input-shell.is-streaming,
+.chat-input-shell:focus-within,
+.chat-input-shell.is-streaming:focus-within { border-color: transparent; }
+.chat-input-shell:focus-within,
+.chat-input-shell.is-streaming:focus-within {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 4%, transparent), 0 8px 28px -12px rgba(0, 0, 0, 0.22);
+}
+.dark .chat-input-shell:focus-within,
+.dark .chat-input-shell.is-streaming:focus-within {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+}
+
+/* Settings lists and cards: filled rows instead of outlined boxes. */
+.settings-dialog .models-model-row,
+.settings-dialog .models-provider-card,
+.settings-dialog .catalog-row,
+.settings-dialog .settings-json-editor { border: 0; background: var(--field-bg); }
+.settings-dialog .models-model-row:hover,
+.settings-dialog .models-provider-card:hover { background: var(--field-bg-hover); }
+.settings-dialog .models-provider-add-icon { border: 0; background: var(--field-bg); }
+.settings-dialog .models-provider-list { border-right: 0; background: transparent; }
+.settings-dialog .models-provider-list-footer { border-top: 0; }
+.settings-dialog .models-provider-picker,
+.settings-guard-card { border: 0; }
+/* Chips / badges: tinted fills, no outlines. */
+.catalog-chip { border: 0 !important; background: var(--field-bg); }
+.catalog-chip--ok { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.catalog-chip--accent { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.settings-dialog .ui-btn--danger { border: 0 !important; }

@@ -19,8 +19,8 @@ export { SegmentedControl } from "@/components/ui/segmented";
 export const inputStyle: CSSProperties = {
   height: "var(--control-height)",
   padding: "0 var(--control-pad-x)",
-  background: "var(--bg-panel)",
-  border: "1px solid var(--border)",
+  background: "var(--field-bg)",
+  border: 0,
   borderRadius: "var(--control-radius)",
   color: "var(--text)",
   fontSize: 13,
