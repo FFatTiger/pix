@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 describe("mobile chrome", () => {
   it("uses an opaque flat title bar without a blur or shadow mask", () => {
     const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "globals.css"), "utf8");
-    const marker = "/* Mobile: the header must blend with the page";
+    const marker = "/* Mobile: the header stays an opaque flat frame strip";
     const start = css.indexOf(marker);
     expect(start).toBeGreaterThanOrEqual(0);
     const block = css.slice(start, css.indexOf("@media (min-width: 641px)", start));
@@ -26,7 +26,7 @@ describe("mobile chrome", () => {
     const closedStart = drawerBlock.indexOf(".sidebar-container.sidebar-closed {");
     const closedRule = drawerBlock.slice(closedStart, drawerBlock.indexOf("}", closedStart) + 1);
     const overlayStart = css.indexOf(".sidebar-overlay-backdrop {");
-    const overlayBlock = css.slice(overlayStart, css.indexOf("/* Mobile: the header", overlayStart));
+    const overlayBlock = css.slice(overlayStart, css.indexOf("/* Mobile: the header stays an opaque flat frame strip", overlayStart));
 
     expect(drawerStart).toBeGreaterThanOrEqual(0);
     expect(drawerBlock).toContain("transform: translate3d(-100%, 0, 0)");

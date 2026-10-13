@@ -1695,7 +1695,7 @@ html.dark .catalog-meta-item--error {
   gap: 4px;
   margin-top: auto;
   padding: 8px 10px 10px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--surface-hairline);
 }
 
 .sidebar-search-field {

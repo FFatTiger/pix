@@ -6,7 +6,6 @@ import { createQueryOptions, queryKeys } from "@/api/query-keys";
 import { PROJECT_PICKER_PAGE_SIZE, SESSION_PAGE_SIZE } from "@/api/session-list";
 import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
-import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
 import { useI18n } from "@/hooks/useI18n";
 import { TranscriptList } from "@/components/transcript/TranscriptList";
@@ -48,7 +47,8 @@ import { useSubagentActivity } from "@/features/subagents/use-subagent-activity"
 import type { SubagentActivity } from "@/lib/subagent-activity";
 import { homePresentationKey, useRuntimeConnection, useRuntimeForegroundActivity, useRuntimeOwners, useSelectedRuntime, type PresentationProvenance } from "@/runtime";
 import { describeRuntimeObservationError } from "@/runtime/observation-errors";
-import { RUNTIME_OBSERVE_EXISTING_FEATURE, type ExtensionNotificationItem } from "@fffattiger/pix-protocol";
+import { RUNTIME_OBSERVE_EXISTING_FEATURE } from "@fffattiger/pix-protocol";
+import { ExtensionNotices } from "@/components/shell/ExtensionNotices";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useVisualViewportFrame } from "@/hooks/useVisualViewportHeight";
 import { useGateStatus } from "@/features/gate/useGate";
@@ -96,50 +96,6 @@ function sessionLabelFor(session: { title?: string | undefined; firstMessage?: s
  * trigger. A prior attachment may remain as a background event subscription;
  * every visible runtime surface is active-session identity-gated.
  */
-/** Latest non-error extension notification (`ctx.ui.notify` info/warning):
- * `/mcp` status text and OAuth authorization URLs arrive here. Shows the most
- * recent notice only, with a copy affordance when it carries a URL — the
- * bounded history stays in the runtime projection. */
-function ExtensionNotices({ notices }: { notices: readonly ExtensionNotificationItem[] }) {
-  const { t } = useI18n();
-  const [copied, setCopied] = useState(false);
-  const latest = notices.at(-1);
-  useEffect(() => { setCopied(false); }, [latest?.message, latest?.at]);
-  if (latest === undefined) return null;
-  const url = /https?:\/\/\S+/.exec(latest.message)?.[0];
-  const color = latest.level === "warning" ? "var(--accent-orange)" : "var(--text-secondary)";
-  return (
-    <div
-      data-testid="extension-notices"
-      data-level={latest.level}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "6px 14px",
-        fontSize: 12,
-        color,
-        background: "color-mix(in srgb, var(--bg-panel) 92%, transparent)",
-        borderBottom: "1px solid var(--border)",
-      }}
-    >
-      <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{latest.message}</span>
-      {url ? (
-        <button
-          type="button"
-          className="pix-button"
-          style={{ padding: "2px 8px", fontSize: 11 }}
-          onClick={() => {
-            void copyText(url).then(() => setCopied(true));
-          }}
-        >
-          {copied ? t("desktop.extensionNoticeCopied") : t("desktop.extensionNoticeCopy")}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
 export function AppShell({ search }: AppShellProps) {
   const { canAgent, canBrowseSessions, can } = useCapabilities();
   // Connection-global transport/running/live/create surface (the provider-owned
@@ -1157,7 +1113,7 @@ export function AppShell({ search }: AppShellProps) {
         onTransitionEnd={handleMobileSidebarTransitionEnd}
         style={{
           "--sidebar-width": `${sidebarPanel.width}px`,
-          background: "var(--bg-panel)",
+          background: "var(--surface-frame)",
           display: "flex",
           flexDirection: "column",
           flexShrink: 0,
@@ -1313,7 +1269,7 @@ export function AppShell({ search }: AppShellProps) {
         style={{
           display: "flex",
           flexDirection: "column",
-          background: "var(--bg-panel)",
+          background: "var(--surface-frame)",
         }}
       >
         {isMobile ? (

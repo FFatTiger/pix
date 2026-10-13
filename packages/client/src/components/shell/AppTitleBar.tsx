@@ -65,11 +65,11 @@ export function AppTitleBar({
         style={{
           display: "flex", alignItems: "center", justifyContent: "center",
           width: 36, height: 36, padding: 0,
-          background: sidebarOpen ? "var(--bg-selected)" : "none", border: "none",
+          background: "none", border: "none",
           color: sidebarOpen ? "var(--text)" : "var(--text-muted)", cursor: "pointer", flexShrink: 0, transition: "background 0.12s, color 0.12s",
         }}
         onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = sidebarOpen ? "var(--bg-selected)" : "none"; e.currentTarget.style.color = sidebarOpen ? "var(--text)" : "var(--text-muted)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = sidebarOpen ? "var(--text)" : "var(--text-muted)"; }}
       >
         {sidebarOpen ? <SidebarSimple size={16} aria-hidden="true" /> : <List size={16} aria-hidden="true" />}
       </button>
@@ -115,13 +115,13 @@ export function RightPaneToggle({ open, available, onToggle }: RightPaneTogglePr
       style={{
         display: "flex", alignItems: "center", justifyContent: "center",
         width: 36, height: 36, padding: 0,
-        background: open ? "var(--bg-selected)" : "none", border: "none",
+        background: "none", border: "none",
         color: open ? "var(--text)" : (available ? "var(--text-muted)" : "var(--text-dim)"),
         cursor: available ? "pointer" : "not-allowed", flexShrink: 0, transition: "background 0.12s, color 0.12s",
         opacity: available ? 1 : 0.5,
       }}
       onMouseEnter={(e) => { if (!available) return; e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
-      onMouseLeave={(e) => { if (!available) return; e.currentTarget.style.background = open ? "var(--bg-selected)" : "none"; e.currentTarget.style.color = open ? "var(--text)" : "var(--text-muted)"; }}
+      onMouseLeave={(e) => { if (!available) return; e.currentTarget.style.background = "none"; e.currentTarget.style.color = open ? "var(--text)" : "var(--text-muted)"; }}
     >
       <SidebarSimple size={16} aria-hidden="true" style={{ transform: "scaleX(-1)" }} />
     </button>

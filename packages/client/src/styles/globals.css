@@ -68,6 +68,18 @@
   --git-status-modified-bg: #f5e6bd;
   --git-status-deleted-bg: #f7d8d8;
 
+  /* Two-surface chrome contract: everything that frames the workspace
+     (session sidebar, title bar + tab strip, right icon rail, panel chrome)
+     shares --surface-frame; primary content (transcript, file viewer) sits on
+     --surface-content. The frame reuses the sidebar's panel gray so the
+     existing light hierarchy is preserved; only these two surfaces may frame
+     the app — never a third. */
+  --surface-frame: #f5f5f5;
+  --surface-content: #ffffff;
+  /* The single hairline allowed between the two surfaces (panel splitters
+     and frame-internal separators). Adapts to both themes via --text. */
+  --surface-hairline: color-mix(in srgb, var(--text) 10%, transparent);
+
   /* Shared control tokens for settings dialogs and panels.
      These are static values that reference the themed palette above,
      so they adapt to pi CLI themes automatically and are never
@@ -124,6 +136,10 @@ html.dark {
   --git-status-added-bg: #203a2b;
   --git-status-modified-bg: #3d341e;
   --git-status-deleted-bg: #43272a;
+  /* Dark keeps the same two-surface relationship with the source hierarchy:
+     the frame (panels) sits one step brighter than the content surface. */
+  --surface-frame: #242424;
+  --surface-content: #1a1a1a;
   --minimap-preview-user-bg: color-mix(in srgb, var(--accent) 18%, var(--bg-hover));
   --minimap-preview-tool-bg: color-mix(in srgb, var(--accent-green) 18%, var(--bg-hover));
   --minimap-preview-error-bg: color-mix(in srgb, var(--accent-red) 18%, var(--bg-hover));
@@ -207,8 +223,10 @@ html {
   -webkit-app-region: drag;
   position: relative;
   overflow: visible;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  /* Frame surface: connects with the sidebar and icon rail into one chrome
+     ring. The frame/content color edge replaces the old bottom border — the
+     selected tab (content surface) merges into the transcript below. */
+  background: var(--surface-frame);
 }
 .app-no-drag {
   -webkit-app-region: no-drag;
@@ -218,9 +236,10 @@ html {
   min-width: 0;
 }
 
-/* Unified top-level workspace tab strip (title bar). The strip is a
-   horizontally scrollable 36px row; tabs are sized to the row and the active
-   tab scrolls into view on activation. Scrollbar is the shared thin 4px one. */
+/* Unified top-level workspace tab strip (title bar). Browser-tab language:
+ * unselected tabs are transparent over the frame surface (hover deepens one
+ * step), the active tab carries the content surface and opens downward into
+ * the transcript (rounded top corners, no bottom border, no separators). */
 .workspace-tab-bar {
   -webkit-app-region: no-drag;
   display: flex;
@@ -240,8 +259,7 @@ html {
   height: 36px;
   padding-left: 12px;
   padding-right: 6px;
-  border-right: 1px solid var(--border);
-  background: var(--bg-panel);
+  background: transparent;
   color: var(--text-dim);
   cursor: pointer;
   font-size: 12px;
@@ -260,8 +278,10 @@ html {
 .workspace-tab:focus-visible {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
-.workspace-tab--active {
-  background: var(--bg);
+.workspace-tab--active,
+.workspace-tab--active:hover {
+  background: var(--surface-content);
+  border-radius: 8px 8px 0 0;
   color: var(--text);
 }
 .workspace-tab-icon {
@@ -2753,8 +2773,8 @@ span.linenumber {
 
 .right-pane-selector-wrap {
   flex: 0 0 auto;
-  border-bottom: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
-  background: var(--bg-panel);
+  border-bottom: 1px solid var(--surface-hairline);
+  background: var(--surface-frame);
 }
 
 .right-pane-selector {
@@ -2804,7 +2824,9 @@ span.linenumber {
   line-height: 14px;
 }
 
-/* Desktop icon rail: the rightmost column selects/closes the shared panel. */
+/* Desktop icon rail: the rightmost column selects/closes the shared panel.
+   Frame surface, no separator line — the frame/content color edge separates
+   it from the panel; the selected icon carries the content surface. */
 .right-pane-rail {
   display: flex;
   flex: 0 0 44px;
@@ -2812,8 +2834,7 @@ span.linenumber {
   align-items: center;
   gap: 4px;
   padding: 8px 0;
-  border-left: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
-  background: var(--bg-panel);
+  background: var(--surface-frame);
 }
 
 .right-pane-rail button {
@@ -2836,7 +2857,7 @@ span.linenumber {
 }
 
 .right-pane-rail button[aria-pressed="true"] {
-  background: var(--bg-selected);
+  background: var(--surface-content);
   color: var(--text);
 }
 
@@ -2893,8 +2914,8 @@ span.linenumber {
   align-items: center;
   gap: 4px;
   padding: 0 8px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
+  background: var(--surface-frame);
+  border-bottom: 1px solid var(--surface-hairline);
 }
 
 .side-chat-toolbar-spacer {
@@ -3101,11 +3122,11 @@ span.linenumber {
   transition-delay: 0s;
 }
 
-/* Mobile: the header must blend with the page — a panel-gray strip at the
-   top reads as a frosted “mask”. Keep the same look as content bg. */
+/* Mobile: the header stays an opaque flat frame strip — no blur or shadow
+   mask (a translucent bar reads as a frosted “mask” over the content). */
 @media (max-width: 640px) {
   .app-title-bar {
-    background: var(--bg);
+    background: var(--surface-frame);
     border-bottom: 0;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
@@ -3176,11 +3197,10 @@ span.linenumber {
     bottom: 0;
     left: 4px;
     width: 1px;
-    /* The splitter line is the panel divider: the sidebar/right-panel
-       border was removed (it overlapped this line into a 2px rule), so the
-       line renders in the theme border color by default and the accent on
-       hover/focus as drag feedback. */
-    background: var(--border);
+    /* The splitter line is the panel divider: the frame/content color edge
+       already separates the surfaces, so the resting line is the single
+       shared hairline and the accent on hover/focus is the drag feedback. */
+    background: var(--surface-hairline);
     content: "";
     transition: background 0.12s ease;
   }
@@ -3367,4 +3387,179 @@ html.pi-booted body::before {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0s;
+}
+
+/* ── Extension notices: transient content-area toast + quiet re-entry ─────
+ * The old full-width notice row (gray strip + bottom border between the
+ * title bar and the transcript) is gone. A new notice shows as a floating
+ * pill over the top of the content surface, auto-fades, and leaves a small
+ * bell at the content's top-right corner that reopens the bounded notice
+ * history (the runtime projection ring stays the single data source). */
+.extension-notice-toast {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 24;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, calc(100% - 48px));
+  padding: 5px 6px 5px 12px;
+  border: 1px solid var(--surface-hairline);
+  border-radius: 999px;
+  background: var(--surface-content);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  transform: translateX(-50%);
+  animation: extension-notice-in 0.18s ease;
+  transition: opacity 0.2s ease;
+}
+.extension-notice-toast[data-phase="fading"] {
+  opacity: 0;
+}
+.extension-notice-toast[data-level="warning"] {
+  color: var(--accent-orange);
+  border-color: color-mix(in srgb, var(--accent-orange) 38%, var(--surface-hairline));
+}
+.extension-notice-toast .extension-notice-copy,
+.extension-notice-toast .extension-notice-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.extension-notice-copy {
+  height: 22px;
+  padding: 0 8px;
+}
+.extension-notice-copy:hover,
+.extension-notice-dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.extension-notice-dismiss {
+  width: 22px;
+  height: 22px;
+}
+@keyframes extension-notice-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-4px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .extension-notice-toast {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Quiet re-entry: a small bell appears at the content's top-right corner
+ * only after a notice has faded or was dismissed. */
+.extension-notice-dot {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 24;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0.7;
+}
+.extension-notice-dot:hover,
+.extension-notice-dot:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text);
+  opacity: 1;
+}
+.extension-notice-dot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Bounded notice history (newest first), anchored under the bell. */
+.extension-notice-list {
+  position: absolute;
+  top: 38px;
+  right: 10px;
+  z-index: 24;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(320px, 60dvh);
+  overflow-y: auto;
+  border: 1px solid var(--surface-hairline);
+  border-radius: 10px;
+  background: var(--surface-content);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.16);
+}
+.extension-notice-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--surface-hairline);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: var(--text-weight-medium);
+}
+.extension-notice-list-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.extension-notice-list-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.extension-notice-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.extension-notice-row + .extension-notice-row {
+  border-top: 1px solid var(--surface-hairline);
+}
+.extension-notice-level-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+.extension-notice-row[data-level="warning"] .extension-notice-level-dot {
+  background: var(--accent-orange);
+}
+.extension-notice-row .extension-notice-copy {
+  height: 20px;
+  align-self: center;
 }

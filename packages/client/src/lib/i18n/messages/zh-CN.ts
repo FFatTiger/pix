@@ -340,6 +340,8 @@ export const zhCNLocale = {
     "desktop.questionnaire.incomplete": "提交前请先选择一个选项。",
     "desktop.extensionNoticeCopy": "复制链接",
     "desktop.extensionNoticeCopied": "已复制",
+    "desktop.extensionNoticesLabel": "通知",
+    "desktop.extensionNoticesOpen": "查看通知",
     "desktop.extensionPanel": "扩展面板",
     "desktop.extensionInput": "扩展输入",
     "desktop.cancel": "取消",

@@ -340,6 +340,8 @@ export const enLocale = {
     "desktop.questionnaire.incomplete": "Choose an option before submitting.",
     "desktop.extensionNoticeCopy": "Copy link",
     "desktop.extensionNoticeCopied": "Copied",
+    "desktop.extensionNoticesLabel": "Notifications",
+    "desktop.extensionNoticesOpen": "Show notifications",
     "desktop.extensionPanel": "Extension panel",
     "desktop.extensionInput": "Extension input",
     "desktop.cancel": "Cancel",
