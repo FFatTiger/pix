@@ -4208,3 +4208,17 @@ html.pi-booted body::before {
 .catalog-chip--ok { background: color-mix(in srgb, var(--ok) 14%, transparent); }
 .catalog-chip--accent { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .settings-dialog .ui-btn--danger { border: 0 !important; }
+
+/* Mobile: the ring sits mid-toolbar, so a ring-anchored panel overflows the
+   left edge. Pin it to the viewport just above the composer instead. */
+@media (max-width: 640px) {
+  .session-info-bar.is-compact .session-info-bar-popover.is-compact-panel {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 104px);
+    min-width: 0;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+}
