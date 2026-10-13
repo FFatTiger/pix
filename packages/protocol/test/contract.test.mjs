@@ -125,6 +125,7 @@ describe("capabilities", () => {
       "themes",
       "project.trust",
       "export",
+      "assistant",
     ];
     assert.deepEqual([...ALL_HOST_CAPABILITIES].sort(), [...expected].sort());
     for (const cap of expected) {
@@ -1090,6 +1091,7 @@ describe("sessiond RPC", () => {
       },
       "sessions.rename": { sessionId: "s-1", name: "New" },
       "sessions.delete": { sessionId: "s-1", deleted: true },
+      "sessions.findLatest": { cwd: "/tmp/p", sessionId: "s-1" },
       "config.getSessionIdleTimeoutMs": { idleTimeoutMs: 86_400_000 },
       "config.setSessionIdleTimeoutMs": { idleTimeoutMs: 3_600_000 },
       "system.shutdown": { accepted: true },
