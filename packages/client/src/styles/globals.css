@@ -3760,3 +3760,63 @@ html.pi-booted body::before {
   .chat-composer-region .chat-input-popover { left: -13px !important; right: -13px !important; }
 }
 .workspace:has(.chat-input-popover) .subagent-activity-card { visibility: hidden; }
+
+/* ───── Composer menus & open states (thinking / model / + / project / ring) ─────
+   One language with the slash popover: content surface, hairline, 12px radius,
+   soft shadow, 8px-radius rows in the UI font. Selected = quiet tint + check,
+   not accent-coloured text. The trigger that owns an open menu keeps a tint. */
+.chat-input-menu-panel,
+.session-info-bar-popover {
+  background: var(--surface-content) !important;
+  border: 1px solid var(--surface-hairline) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 14px 36px -14px rgba(0, 0, 0, 0.28) !important;
+}
+.chat-input-menu-panel button:not(.chat-input-menu-group-header) {
+  min-height: 30px;
+  border-radius: 8px !important;
+  font-family: inherit !important;
+  font-size: 12.5px !important;
+}
+.chat-input-menu-panel button[style*="var(--bg-selected)"] {
+  background: color-mix(in srgb, var(--text) 7%, transparent) !important;
+  color: var(--text) !important;
+  font-weight: 600;
+}
+.chat-input-menu-panel button:hover:not(:disabled):not(.chat-input-menu-group-header) {
+  background: color-mix(in srgb, var(--text) 5%, transparent) !important;
+}
+.chat-input-menu-panel input { font-family: inherit !important; }
+.chat-input-menu-group-header {
+  border-top: 0 !important;
+  letter-spacing: 0.02em !important;
+  text-transform: none !important;
+  font-size: 11px !important;
+}
+.chat-input-model-dropdown > div:first-child { border-bottom: 1px solid var(--surface-hairline) !important; }
+
+/* Triggers: open = same tint as hover; focus ring only for keyboard. */
+.chat-input-toolbar .chat-input-control[aria-expanded="true"],
+.chat-input-toolbar-thinking:has(.chat-input-menu-panel) > button,
+.chat-input-toolbar-model:has(.chat-input-menu-panel) > button,
+.chat-input-toolbar-attach[aria-expanded="true"],
+.session-info-ring.is-active {
+  background: color-mix(in srgb, var(--text) 9%, transparent) !important;
+  color: var(--text) !important;
+}
+.chat-input-toolbar button:focus { outline: none; }
+.chat-input-toolbar button:focus-visible,
+.session-info-ring:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 55%, transparent) !important;
+  outline-offset: 1px;
+}
+.chat-input-toolbar button:active:not(:disabled),
+.session-info-ring:active { transform: scale(0.96); }
+.chat-input-toolbar button,
+.session-info-ring { transition: background 120ms ease, color 120ms ease, transform 80ms ease; }
+
+/* Ring popover internals match the menus. */
+.session-info-bar-popover .session-info-action { border-radius: 8px; min-height: 30px; }
+.session-info-bar-popover .session-info-action:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.session-info-bar-popover .session-stats-info-text,
+.session-info-bar-popover .session-stats-value { font-variant-numeric: tabular-nums; }
