@@ -62,15 +62,44 @@ function scope(sectionTitle: string) {
   const heading = screen.getByRole("heading", { name: sectionTitle });
   return within(heading.closest("section")!);
 }
-function select(label: string, value: string, sectionTitle?: string) {
-  const control = sectionTitle ? scope(sectionTitle).getByRole("combobox", { name: label }) : screen.getByRole("combobox", { name: label });
-  fireEvent.change(control, { target: { value } });
+function trigger(label: string, sectionTitle?: string) {
+  return (sectionTitle ? scope(sectionTitle) : screen).getByRole("button", { name: label });
+}
+function listboxTriggers() {
+  return screen.getAllByRole("button").filter((control) => control.getAttribute("aria-haspopup") === "listbox");
+}
+function closeMenus() {
+  fireEvent.mouseDown(document.body);
+}
+function openMenu(label: string, sectionTitle?: string) {
+  closeMenus();
+  fireEvent.click(trigger(label, sectionTitle));
+  const menu = document.querySelector(".ui-menu");
+  if (!menu) throw new Error(`menu for ${label} did not open`);
+  return menu as HTMLElement;
+}
+function optionValue(item: HTMLElement) {
+  const title = item.getAttribute("title");
+  if (title !== null) return title;
+  return item.querySelector(".ui-menu-item-label")?.textContent ?? "";
+}
+function menuItems(menu: HTMLElement) {
+  return within(menu).getAllByRole("button");
+}
+function select(label: string, next: string, sectionTitle?: string) {
+  const menu = openMenu(label, sectionTitle);
+  const item = menuItems(menu).find((candidate) => optionValue(candidate) === next);
+  if (!item) throw new Error(`option ${next} not found for ${label}`);
+  fireEvent.click(item);
 }
 function value(label: string, sectionTitle?: string) {
-  const control = sectionTitle ? scope(sectionTitle).getByRole("combobox", { name: label }) : screen.getByRole("combobox", { name: label });
-  return (control as HTMLSelectElement).value;
+  const menu = openMenu(label, sectionTitle);
+  const selected = menu.querySelector(".ui-menu-item.is-selected") as HTMLElement | null;
+  const current = selected ? optionValue(selected) : "";
+  closeMenus();
+  return current;
 }
-async function ready() { await screen.findByRole("combobox", { name: "Default model" }); }
+async function ready() { await screen.findByRole("button", { name: "Default model" }); }
 function save() { fireEvent.click(screen.getByRole("button", { name: "Save" })); }
 function reload() { fireEvent.click(screen.getByRole("button", { name: "Discard" })); }
 
@@ -85,12 +114,15 @@ describe("SubagentSettingsConfig", () => {
     const { fetchMock, writes } = server(saved);
     mount(fetchMock);
     await ready();
-    const primary = screen.getByRole("combobox", { name: "Default model" });
-    expect(within(primary).getByRole("option", { name: "provider/Friendly model" }).getAttribute("value")).toBe("provider/model/id");
+    const primaryMenu = openMenu("Default model");
+    const friendly = menuItems(primaryMenu).find((item) => item.textContent?.includes("provider/Friendly model"));
+    expect(optionValue(friendly!)).toBe("provider/model/id");
+    closeMenus();
     expect(value("Default model")).toBe("legacy/primary");
     expect(screen.getByRole("heading", { name: "Custom CASE role" })).toBeTruthy();
     expect(value("Model", "Custom CASE role")).toBe("private/unknown");
-    expect(within(scope("Explorer (Explore)").getByRole("combobox", { name: "Thinking effort" })).getAllByRole("option").map((option) => (option as HTMLOptionElement).value)).toEqual(["", ...ThinkingLevelSchema.options]);
+    expect(menuItems(openMenu("Thinking effort", "Explorer (Explore)")).map(optionValue)).toEqual(["", ...ThinkingLevelSchema.options]);
+    closeMenus();
     select("Default model", "provider/model/id");
     select("Fallback model", "other/backup", "Defaults");
     select("Model", "other/backup", "Explorer (Explore)");
@@ -115,7 +147,8 @@ describe("SubagentSettingsConfig", () => {
     expect(screen.getByRole("heading", { name: "Explorer (Explore)" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Planner (Plan)" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Verifier (verification)" })).toBeTruthy();
-    expect(within(scope("Explorer (Explore)").getByRole("combobox", { name: "Model" })).getAllByRole("option")[0]?.textContent).toBe("Follow default");
+    expect(menuItems(openMenu("Model", "Explorer (Explore)"))[0]?.textContent).toContain("Follow default");
+    closeMenus();
   });
 
   it("edits exact role identities and preserves metadata-only and differently cased saved roles", async () => {
@@ -238,7 +271,7 @@ describe("SubagentSettingsConfig", () => {
     mount(fetchMock, ["settings.configure"]);
     await screen.findByRole("alert");
     expect(screen.queryByRole("form")).toBeNull();
-    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(listboxTriggers()).toHaveLength(0);
     valid = true;
     fireEvent.click(screen.getByRole("button", { name: "Retry loading" }));
     await ready();
@@ -258,7 +291,7 @@ describe("SubagentSettingsConfig", () => {
     let refetch!: Promise<unknown>;
     act(() => { refetch = queryClient.refetchQueries({ queryKey: queryKeys.settingsConfig.subagents() }); });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true));
-    expect(screen.getAllByRole("combobox").every((control) => control.hasAttribute("disabled"))).toBe(true);
+    expect(listboxTriggers().every((control) => control.hasAttribute("disabled"))).toBe(true);
     expect(screen.getByRole("button", { name: "Discard" }).hasAttribute("disabled")).toBe(true);
     await act(async () => { refresh.resolve(json({ revision: "c".repeat(64), settings: { defaultModel: "changed/elsewhere", fallbackModel: null, agentOverrides: [] } })); await refetch; });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false));
@@ -280,7 +313,7 @@ describe("SubagentSettingsConfig", () => {
     select("Default model", "provider/model/id");
     save();
     await screen.findByRole("button", { name: "Saving…" });
-    expect(screen.getAllByRole("combobox").every((control) => control.hasAttribute("disabled"))).toBe(true);
+    expect(listboxTriggers().every((control) => control.hasAttribute("disabled"))).toBe(true);
     expect(screen.getAllByRole("button").every((control) => control.hasAttribute("disabled"))).toBe(true);
     const response = { ...empty, revision: "d".repeat(64), settings: { ...empty.settings, defaultModel: "returned/model" } };
     await act(async () => pending.resolve(json(response)));

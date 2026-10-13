@@ -119,7 +119,7 @@ export function SessionConfig() {
             value={selectedTitleModelValue}
             onChange={setTitleModelAndPersist}
             aria-label={t("desktop.titleModel")}
-            options={modelOptions.map((opt) => ({ value: `${opt.provider}:${opt.modelId}`, label: opt.label }))}
+            options={modelOptions.map((opt) => ({ value: `${opt.provider}:${opt.modelId}`, label: opt.label, group: opt.provider, keywords: opt.modelId }))}
             emptyLabel={t("desktop.titleModelNone")}
           />
         </SettingsRow>
@@ -135,6 +135,7 @@ export function SessionConfig() {
               value={String(idleTimeoutQuery.data.idleTimeoutMs)}
               onChange={(v) => setIdleTimeout.mutate(Number(v))}
               aria-label={t("desktop.sessionIdleTimeoutLabel")}
+              searchable={false}
               options={SESSION_IDLE_TIMEOUT_OPTIONS.map((opt) => ({ value: opt.value, label: t(opt.labelKey) }))}
             />
           </SettingsRow>

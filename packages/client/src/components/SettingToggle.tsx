@@ -1,4 +1,4 @@
-import { Toggle } from "./Toggle";
+import { Switch } from "@/components/ui/switch";
 
 /** Row layout: label + description on the left, switch on the right. */
 export function SettingToggle({
@@ -20,26 +20,7 @@ export function SettingToggle({
   loading?: boolean;
 }) {
   return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: description ? "flex-start" : "center",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "12px 14px",
-        borderRadius: 7,
-        cursor: disabled ? "not-allowed" : "pointer",
-        userSelect: "none",
-        transition: "background 0.12s",
-        margin: "0 -14px",
-      }}
-      onMouseEnter={(e) => {
-        if (!disabled) (e.currentTarget as HTMLElement).style.background = "var(--bg-hover)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLElement).style.background = "transparent";
-      }}
-    >
+    <label className={description ? "settings-toggle-row has-description" : "settings-toggle-row"}>
       <span style={{ flex: 1, minWidth: 0 }}>
         <span
           style={{
@@ -69,7 +50,7 @@ export function SettingToggle({
           </span>
         )}
       </span>
-      <Toggle
+      <Switch
         checked={checked}
         onChange={onChange}
         label={label}

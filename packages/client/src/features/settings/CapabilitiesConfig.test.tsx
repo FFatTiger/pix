@@ -99,7 +99,7 @@ describe("CapabilitiesConfig", () => {
     });
     mount(fetchMock);
     expect(await screen.findByRole("switch", { name: "Subagents" })).toBeTruthy();
-    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryAllByRole("button").filter((control) => control.getAttribute("aria-haspopup") === "listbox")).toHaveLength(0);
     expect(fetchMock.mock.calls.every((call) => !String(call[0]).includes("/v1/settings/subagents"))).toBe(true);
   });
 });

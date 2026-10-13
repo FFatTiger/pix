@@ -113,19 +113,31 @@ export function SubagentSettingsConfig() {
 
   const settings = draft?.settings ?? query.data.settings;
   const roles = [...new Set<string>([...ROLES, ...settings.agentOverrides.map((row) => row.name)])];
-  const options = new Map((models.data?.models ?? []).map((model) => [
+  const options = new Map<string, { value: string; label: string; group?: string; keywords?: string }>((models.data?.models ?? []).map((model) => [
     `${model.provider}/${model.id}`,
-    { value: `${model.provider}/${model.id}`, label: `${model.provider}/${model.displayName ?? model.id}` },
+    {
+      value: `${model.provider}/${model.id}`,
+      label: `${model.provider}/${model.displayName ?? model.id}`,
+      group: model.provider,
+      keywords: model.id,
+    },
   ]));
   for (const snapshot of [query.data.settings, settings]) {
     for (const value of [snapshot.defaultModel, snapshot.fallbackModel, ...snapshot.agentOverrides.flatMap((row) => [row.model, row.fallbackModel])]) {
-      if (value !== null && !options.has(value)) options.set(value, { value, label: t("desktop.subagentSettingsSavedModel", { model: value }) });
+      if (value !== null && !options.has(value)) {
+        const slash = value.indexOf("/");
+        options.set(value, {
+          value,
+          label: t("desktop.subagentSettingsSavedModel", { model: value }),
+          ...(slash > 0 ? { group: value.slice(0, slash), keywords: value.slice(slash + 1) } : { keywords: value }),
+        });
+      }
     }
   }
   const modelOptions = [...options.values()];
   const modelField = (fieldId: string, label: string, value: string | null, emptyLabel: string, onChange: (value: string | null) => void) => (
     <SettingsField label={label} htmlFor={fieldId}>
-      <SettingsSelect id={fieldId} value={value ?? ""} onChange={(next) => onChange(next || null)} options={modelOptions} emptyLabel={emptyLabel} disabled={busy} />
+      <SettingsSelect id={fieldId} aria-label={label} value={value ?? ""} onChange={(next) => onChange(next || null)} options={modelOptions} emptyLabel={emptyLabel} disabled={busy} />
     </SettingsField>
   );
   const displayedError = error ?? (query.isError ? query.error : null);
@@ -159,7 +171,7 @@ export function SubagentSettingsConfig() {
           <div style={fieldGrid}>
             {modelField(`${id}-default`, t("desktop.subagentSettingsDefaultModel"), settings.defaultModel, t("desktop.subagentSettingsParentModel"), (defaultModel) => update((current) => ({ ...current, defaultModel })))}
             <SettingsField label={t("desktop.subagentFieldFallback")} htmlFor={`${id}-fallback`}>
-              <SettingsSelect id={`${id}-fallback`} value={settings.fallbackModel ?? ""} onChange={(next) => update((current) => ({ ...current, fallbackModel: next || null }))} options={modelOptions} emptyLabel={t("desktop.subagentSettingsNoFallback")} disabled={busy} />
+              <SettingsSelect id={`${id}-fallback`} aria-label={t("desktop.subagentFieldFallback")} value={settings.fallbackModel ?? ""} onChange={(next) => update((current) => ({ ...current, fallbackModel: next || null }))} options={modelOptions} emptyLabel={t("desktop.subagentSettingsNoFallback")} disabled={busy} />
               <p className="models-field-hint" style={{ margin: "5px 0 0" }}>{t("desktop.subagentSettingsFallbackHint")}</p>
             </SettingsField>
           </div>
@@ -181,7 +193,7 @@ export function SubagentSettingsConfig() {
                 {modelField(`${id}-${index}-model`, t("desktop.subagentFieldModel"), row?.model ?? null, t("desktop.subagentSettingsInherit"), (model) => updateRole({ model }))}
                 {modelField(`${id}-${index}-fallback`, t("desktop.subagentFieldFallback"), row?.fallbackModel ?? null, t("desktop.subagentSettingsInherit"), (fallbackModel) => updateRole({ fallbackModel }))}
                 <SettingsField label={t("desktop.subagentFieldThinking")} htmlFor={`${id}-${index}-thinking`}>
-                  <SettingsSelect id={`${id}-${index}-thinking`} value={row?.thinking ?? ""} disabled={busy} emptyLabel={t("desktop.subagentSettingsInherit")}
+                  <SettingsSelect id={`${id}-${index}-thinking`} aria-label={t("desktop.subagentFieldThinking")} value={row?.thinking ?? ""} disabled={busy} searchable={false} emptyLabel={t("desktop.subagentSettingsInherit")}
                     options={ThinkingLevelSchema.options.map((value) => ({ value, label: t(`desktop.thinking${value === "xhigh" ? "ExtraHigh" : value[0]!.toUpperCase() + value.slice(1)}`) }))}
                     onChange={(value) => updateRole({ thinking: value === "" ? null : ThinkingLevelSchema.parse(value) })} />
                 </SettingsField>

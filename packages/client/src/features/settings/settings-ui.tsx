@@ -1,6 +1,10 @@
 import { useEffect, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { CaretDown, Eye, EyeSlash, WarningCircle } from "@phosphor-icons/react";
+import { Eye, EyeSlash, WarningCircle } from "@phosphor-icons/react";
+import { Button } from "@/components/ui/buttons";
+import { Select } from "@/components/ui/select";
 import { useI18n } from "@/hooks/useI18n";
+
+export { SegmentedControl } from "@/components/ui/segmented";
 
 /**
  * Shared control primitives for the settings dialogs and panels.
@@ -43,9 +47,10 @@ export function SettingsSection({
 }) {
   return (
     <section
+      className="settings-section"
       style={{
-        padding: "var(--settings-section-gap) var(--settings-pad-x)",
-        borderBottom: "1px solid var(--border)",
+        margin: "0 var(--settings-pad-x)",
+        padding: "var(--settings-section-gap) 0",
       }}
     >
       {title || description || action ? (
@@ -242,116 +247,39 @@ export function SettingsSelect({
   style,
   id,
   disabled,
+  searchable,
   "aria-label": ariaLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
-  /** Plain string options, or { value, label } pairs when the label differs from the value. */
-  options: readonly (string | { value: string; label: string })[];
+  /** Plain string options, or { value, label, group?, keywords? } pairs. */
+  options: readonly (string | { value: string; label: string; group?: string; keywords?: string })[];
   /** Label for the empty "inherit / none" option. Only rendered when provided. */
   emptyLabel?: string;
   style?: CSSProperties;
   id?: string;
   disabled?: boolean;
+  searchable?: boolean;
   "aria-label"?: string;
 }) {
   return (
-    <span className="settings-select-wrap" style={style}>
-      <select
-        id={id}
-        className="settings-select"
-        disabled={disabled}
-        aria-label={ariaLabel}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {emptyLabel !== undefined && <option value="">{emptyLabel}</option>}
-        {options.map((o) => {
-          const opt = typeof o === "string" ? { value: o, label: o } : o;
-          return <option key={opt.value} value={opt.value}>{opt.label}</option>;
-        })}
-      </select>
-      <CaretDown size={12} weight="bold" aria-hidden="true" className="settings-select-caret" />
-    </span>
-  );
-}
-
-/**
- * Segmented control for 2–4 mutually exclusive short options (the settings
- * replacement for "toggle + select" or ad-hoc button groups).
- */
-export function SegmentedControl<T extends string>({
-  value,
-  onChange,
-  options,
-  ariaLabel,
-  disabled,
-}: {
-  value: T;
-  onChange: (value: T) => void;
-  options: readonly { value: T; label: string }[];
-  ariaLabel: string;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="segmented" role="radiogroup" aria-label={ariaLabel} data-disabled={disabled ? "true" : undefined}>
-      {options.map((option) => {
-        const active = option.value === value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            disabled={disabled}
-            className={active ? "segmented-item is-active" : "segmented-item"}
-            onClick={() => {
-              if (!active) onChange(option.value);
-            }}
-          >
-            {option.label}
-          </button>
-        );
-      })}
-    </div>
+    <Select
+      variant="form"
+      value={value}
+      onChange={onChange}
+      options={options}
+      {...(emptyLabel !== undefined ? { emptyLabel } : {})}
+      {...(style !== undefined ? { style } : {})}
+      {...(id !== undefined ? { id } : {})}
+      {...(disabled !== undefined ? { disabled } : {})}
+      {...(searchable !== undefined ? { searchable } : {})}
+      {...(ariaLabel !== undefined ? { "aria-label": ariaLabel } : {})}
+    />
   );
 }
 
 type ButtonVariant = "default" | "primary" | "danger";
 type ButtonSize = "md" | "sm";
-
-const buttonBase: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: 5,
-  borderRadius: "var(--control-radius)",
-  cursor: "pointer",
-  fontSize: 12,
-  boxSizing: "border-box",
-  transition: "background 0.12s, border-color 0.12s, color 0.12s",
-  whiteSpace: "nowrap",
-};
-
-function buttonVariantStyle(variant: ButtonVariant): CSSProperties {
-  switch (variant) {
-    case "primary":
-      return { background: "var(--accent)", border: "none", color: "#fff", fontWeight: 600 };
-    case "danger":
-      return {
-        background: "color-mix(in srgb, var(--status-danger) 8%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--status-danger) 30%, transparent)",
-        color: "var(--status-danger)",
-      };
-    default:
-      return { background: "none", border: "1px solid var(--border)", color: "var(--text-muted)" };
-  }
-}
-
-function buttonSizeStyle(size: ButtonSize): CSSProperties {
-  if (size === "sm") return { height: 24, padding: "0 8px", fontSize: 11 };
-  return { height: "var(--control-height)", padding: "0 12px" };
-}
 
 export function SettingsButton({
   variant = "default",
@@ -375,23 +303,18 @@ export function SettingsButton({
   testId?: string;
 }) {
   return (
-    <button
+    <Button
+      variant={variant}
+      size={size}
       type={type}
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      data-testid={testId}
-      style={{
-        ...buttonBase,
-        ...buttonVariantStyle(variant),
-        ...buttonSizeStyle(size),
-        opacity: disabled ? 0.5 : 1,
-        cursor: disabled ? "not-allowed" : "pointer",
-        ...style,
-      }}
+      {...(disabled !== undefined ? { disabled } : {})}
+      {...(onClick !== undefined ? { onClick } : {})}
+      {...(title !== undefined ? { title } : {})}
+      {...(style !== undefined ? { style } : {})}
+      {...(testId !== undefined ? { testId } : {})}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
