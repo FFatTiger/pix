@@ -314,7 +314,7 @@ describe("SCALE1 session projection index module", () => {
       const db = new DatabaseSync(join(root, "idx.sqlite"));
       const version = db.prepare("SELECT value FROM session_projection_meta WHERE key = ?").get("schema_version") as { value: string };
       db.close();
-      assert.equal(version.value, "6");
+      assert.equal(version.value, "7");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

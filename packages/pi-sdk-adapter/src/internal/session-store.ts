@@ -122,7 +122,7 @@ import type {
   TextContent,
   ThinkingLevel,
 } from "@fffattiger/pix-runtime-core";
-import { makeRuntimeError } from "@fffattiger/pix-runtime-core";
+import { makeRuntimeError, matchesAssistantWorkspacePattern, normalizeAssistantWorkspacePath } from "@fffattiger/pix-runtime-core";
 import { mapMessage } from "../mappers/index.js";
 import { projectSessionTree } from "./session-tree.js";
 import type { PiSdkSessionStore } from "../sessions/index.js";
@@ -996,13 +996,41 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
           ? session.parentSessionId === request.parentSessionId
           : session.parentSessionId === undefined)
         && (request.cwd === undefined || session.cwd === request.cwd)
-        && (request.projectRoot === undefined || session.projectRoot === request.projectRoot));
+        && (request.projectRoot === undefined || session.projectRoot === request.projectRoot)
+        // The assistant workspace is hidden from every list page. The
+        // projection path enforces this via browse_kind; this fallback keeps
+        // the same assistant exclusion (minimal, scoped to the assistant dir —
+        // the broader browse-kind policy stays projection-only as before).
+        && !matchesAssistantWorkspacePattern(normalizeAssistantWorkspacePath(session.cwd)));
       const offset = (request.page - 1) * request.pageSize;
       return { sessions: filtered.slice(offset, offset + request.pageSize), page: request.page, pageSize: request.pageSize, total: filtered.length, totalPages: filtered.length === 0 ? 0 : Math.ceil(filtered.length / request.pageSize), catalogRevision: this.lastAppliedRevision };
     }
     const page = (await this.readyProjectionIndex()).querySessionPage(request);
     if (page === null) throw makeRuntimeError("unavailable", "session catalog index is unavailable", { retryable: true });
     return page;
+  }
+
+  /**
+   * Assistant-conversation lookup (exact-cwd, browse-visibility bypassing;
+   * see the projection index method). A non-empty projection answer is
+   * returned directly; an EMPTY answer falls through to the authoritative
+   * scan because a cold index may simply not have seen a brand-new file yet
+   * (one bounded scan per empty answer — after the first session exists the
+   * index answers authoritatively).
+   */
+  async findLatestSessionByCwd(cwd: string): Promise<SessionHeader | null> {
+    if (this.projectionEnabled) {
+      const latest = (await this.readyProjectionIndex()).findLatestSessionByCwd(cwd);
+      if (latest !== null) return latest;
+    }
+    const infos = (await this.listInfos()).filter((info) =>
+      info.cwd === cwd && (info.parentSessionPath === undefined || info.parentSessionPath === ""));
+    if (infos.length === 0) return null;
+    let latest = infos[0]!;
+    for (const info of infos) {
+      if (info.modified.getTime() > latest.modified.getTime()) latest = info;
+    }
+    return toHeader(latest, {});
   }
 
   async listProjectPage(request: CatalogPageRequest): Promise<ProjectPage> {
@@ -1014,6 +1042,9 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       const grouped = new Map<string, { representativeCwd: string; sessionCount: number; latestActivity: number }>();
       for (const session of sessions) {
         if (session.parentSessionId !== undefined) continue;
+        // Assistant-workspace sessions never group into a project row (same
+        // exclusion as the session-page fallback above).
+        if (matchesAssistantWorkspacePattern(normalizeAssistantWorkspacePath(session.cwd))) continue;
         const root = session.projectRoot || session.cwd;
         const latestActivity = session.updatedAt ?? session.lastMessageAt ?? session.createdAt ?? 0;
         const current = grouped.get(root);

@@ -15,6 +15,7 @@ import type {
   ToolInfo,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError, QUESTIONNAIRE_LIMITS, RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
+import { ensureAssistantToolsActive, assistantExtensionFactoriesForCwd } from "./assistant-tools.js";
 import { redactText } from "./sanitize.js";
 import { createPiSdkSessionStore } from "./session-store.js";
 import { readGlobalToolsPreference } from "./settings-config-store.js";
@@ -651,6 +652,7 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
       // re-registered extensions). An explicit runtime override (`setTools`)
       // keeps winning — no reset flag, the override simply stays configured.
       await applyGlobalToolsSelection(this.session, this.toolPolicy, this.agentDir);
+      ensureAssistantToolsActive(this.session, this.identity.cwd);
     }
     this.currentCapabilities = this.recomputeProjections(this.reloadCapabilities ?? this.baseCapabilities);
     this.installSubagentStreamBridge();
@@ -787,6 +789,7 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     // override) re-apply; an explicit override survives binding untouched.
     if (this.configuredTools === undefined) {
       await applyGlobalToolsSelection(this.session, this.toolPolicy, this.agentDir);
+      ensureAssistantToolsActive(this.session, this.identity.cwd);
     }
     this.currentCapabilities = this.recomputeProjections(this.currentCapabilities);
     this.trace?.record("bind_extensions");
@@ -1097,12 +1100,16 @@ function defaultComposition(): SdkRuntimeComposition {
       const trustOptions = hasTrustRequiringProjectResources(cwd)
         ? { resourceLoaderReloadOptions: { resolveProjectTrust: async () => trusted } }
         : {};
+      // Assistant-workspace sessions additionally get the read-only
+      // session-history tools (search_sessions / read_session). Ordinary
+      // project sessions never register them.
+      const assistantExtensions = assistantExtensionFactoriesForCwd(cwd);
       return createAgentSessionServices({
         cwd,
         agentDir,
         resourceLoaderOptions: {
           ...resourceLoaderOptionsForBuiltIns(agentDir),
-          extensionFactories: [createToolPolicyExtension(toolPolicy), ...nativeBuiltinExtensionFactories()],
+          extensionFactories: [createToolPolicyExtension(toolPolicy), ...assistantExtensions, ...nativeBuiltinExtensionFactories()],
         },
         ...trustOptions,
       });
@@ -1211,6 +1218,7 @@ export class SdkRuntimeDriverFactory implements PiRuntimeDriverFactory {
       // anymore: a native `defaultTools` selection (e.g. `-read`) is honored
       // verbatim, and the Pix default enables every selectable tool.
       await applyGlobalToolsSelection(result.session, toolPolicy, services.agentDir);
+      ensureAssistantToolsActive(result.session, cwd);
     } else {
       const selectedTools = input.toolNames.length === 0
         ? []
