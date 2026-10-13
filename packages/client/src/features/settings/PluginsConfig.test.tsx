@@ -69,9 +69,11 @@ describe("PluginsConfig global disk catalog", () => {
     expect(screen.getByText("@scope/kit")).toBeTruthy();
     expect(screen.getByText("diagram-design")).toBeTruthy();
     expect(screen.getByText("/local/plugin")).toBeTruthy();
-    // Source metadata as small badges.
+    // Source metadata as small badges; local installs say so, in a fixed
+    // source-then-version order (entries without a version show only the source).
     expect(screen.getAllByText("npm").length).toBe(2);
     expect(screen.getByText("GitHub")).toBeTruthy();
+    expect(screen.getByText("Local")).toBeTruthy();
     // Enabled entries carry no status badge; disabled ones do.
     expect(screen.getByText("disabled")).toBeTruthy();
     expect(screen.queryByText("enabled")).toBeNull();

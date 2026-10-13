@@ -133,6 +133,7 @@ export const zhCNLocale = {
     "desktop.sendKeyHint": "Enter 或 Ctrl+Enter 发送，其余组合换行。",
     "desktop.sessionIdleTimeoutNote": "只停止后台工作进程，不会删除会话。",
     "desktop.pluginSourceGit": "Git 仓库",
+    "desktop.pluginSourceLocal": "本地",
     "desktop.sendKeyCtrlEnter": "Ctrl+Enter",
     "desktop.streamingSendModeDescription": "选择 Agent 运行时按 Enter 发送的消息类型。",
     "desktop.streamingSendModeLabel": "运行中按 Enter",

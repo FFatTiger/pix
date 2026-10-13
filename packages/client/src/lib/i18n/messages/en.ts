@@ -133,6 +133,7 @@ export const enLocale = {
     "desktop.sendKeyHint": "Send with Enter or Ctrl+Enter; the other combination inserts a newline.",
     "desktop.sessionIdleTimeoutNote": "Only stops the background worker; the session itself is kept.",
     "desktop.pluginSourceGit": "Git",
+    "desktop.pluginSourceLocal": "Local",
     "desktop.sendKeyCtrlEnter": "Ctrl+Enter",
     "desktop.streamingSendModeDescription": "Choose what Enter sends while the agent is running.",
     "desktop.streamingSendModeLabel": "Enter while running",

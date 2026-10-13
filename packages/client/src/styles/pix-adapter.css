@@ -1964,7 +1964,10 @@ html.dark .catalog-meta-item--error {
 
 /* Content column: page header + scrolling body. */
 .settings-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.settings-page-header { flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px var(--settings-pad-x) 12px; border-bottom: 1px solid var(--border); }
+/* Top bar: nav-width "设置" cell + page header cell share one divider (desktop). */
+.settings-topbar { flex: none; display: flex; border-bottom: 1px solid var(--border); }
+.settings-nav-title { width: 172px; flex: none; padding: 14px 10px 12px; border-right: 1px solid var(--border); font-size: 15px; font-weight: var(--text-weight-strong); color: var(--text); }
+.settings-page-header { flex: 1; min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px var(--settings-pad-x) 12px; }
 .settings-page-header-heading { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .settings-page-title { margin: 0; font-size: 15px; font-weight: var(--text-weight-strong); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-page-desc { margin: 3px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-muted); }

@@ -214,37 +214,40 @@ export function SettingsModal({
         }}
       >
         <SettingsDraftContext.Provider value={draftApi}>
-          <header className="settings-page-header">
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="settings-page-header-heading">
-                {isMobile && !mobileNavOpen ? (
-                  <button
-                    type="button"
-                    className="settings-page-back"
-                    onClick={() => runOrGuard(() => setMobileNavOpen(true))}
-                    aria-label={t("desktop.settingsBack")}
-                  >
-                    <ArrowLeft size={16} aria-hidden="true" />
-                  </button>
+          <div className="settings-topbar">
+            {isMobile ? null : <div className="settings-nav-title">{t("desktop.settings")}</div>}
+            <div className="settings-page-header">
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="settings-page-header-heading">
+                  {isMobile && !mobileNavOpen ? (
+                    <button
+                      type="button"
+                      className="settings-page-back"
+                      onClick={() => runOrGuard(() => setMobileNavOpen(true))}
+                      aria-label={t("desktop.settingsBack")}
+                    >
+                      <ArrowLeft size={16} aria-hidden="true" />
+                    </button>
+                  ) : null}
+                  <h2 className="settings-page-title">
+                    {isMobile && mobileNavOpen ? t("desktop.settings") : t(activeMeta.labelKey)}
+                  </h2>
+                </div>
+                {activeMeta.descKey && !(isMobile && mobileNavOpen) ? (
+                  <p className="settings-page-desc">{t(activeMeta.descKey)}</p>
                 ) : null}
-                <h2 className="settings-page-title">
-                  {isMobile && mobileNavOpen ? t("desktop.settings") : t(activeMeta.labelKey)}
-                </h2>
               </div>
-              {activeMeta.descKey && !(isMobile && mobileNavOpen) ? (
-                <p className="settings-page-desc">{t(activeMeta.descKey)}</p>
-              ) : null}
+              <button
+                type="button"
+                onClick={requestClose}
+                title={t("desktop.closeSettings")}
+                aria-label={t("desktop.closeSettings")}
+                style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, display: "flex", flexShrink: 0 }}
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={requestClose}
-              title={t("desktop.closeSettings")}
-              aria-label={t("desktop.closeSettings")}
-              style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, display: "flex", flexShrink: 0 }}
-            >
-              <X size={18} aria-hidden="true" />
-            </button>
-          </header>
+          </div>
           <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
             <nav
               aria-label={t("desktop.settingsSections")}

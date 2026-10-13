@@ -9,6 +9,21 @@ import { SettingsBadge, SettingsSection } from "./settings-ui";
 
 type PluginSource = "npm" | "github" | "git" | "local";
 
+/** Secondary line under every plugin title: source badge, then version. */
+function PluginMeta({ source, version }: { source: PluginSource | null; version: string | undefined }) {
+  const { t } = useI18n();
+  const label = source === "npm" ? "npm"
+    : source === "github" ? "GitHub"
+      : source === "git" ? t("desktop.pluginSourceGit")
+        : t("desktop.pluginSourceLocal");
+  return (
+    <div className="catalog-row-meta">
+      <SettingsBadge>{label}</SettingsBadge>
+      {version ? <span className="catalog-meta-item">{t("desktop.catalog.version", { version })}</span> : null}
+    </div>
+  );
+}
+
 interface PluginDisplay {
   title: string;
   source: PluginSource | null;
@@ -50,14 +65,6 @@ export function PluginsConfig() {
     enabled: canPlugins,
   });
 
-  const sourceLabel = (source: PluginSource | null): string | null => {
-    if (source === "npm") return "npm";
-    if (source === "github") return "GitHub";
-    if (source === "git") return t("desktop.pluginSourceGit");
-    if (source === null) return null;
-    return source;
-  };
-
   const pluginsBody = !canPlugins ? (
     <p className="workspace-hint">{t("desktop.catalog.notAvailable", { what: t("desktop.catalog.plugins") })}</p>
   ) : pluginsQuery.isPending ? (
@@ -71,17 +78,13 @@ export function PluginsConfig() {
       <ul className="catalog-list" aria-label={t("desktop.catalog.plugins")}>
         {plugins.map((plugin) => {
           const display = pluginDisplayName(plugin.name);
-          const source = sourceLabel(display.source);
           return (
             <li key={plugin.name} className="catalog-row">
               <div className="catalog-row-main">
                 <span className="catalog-row-title">{display.title}</span>
                 {plugin.enabled ? null : <SettingsBadge tone="warning">{t("desktop.catalog.disabled")}</SettingsBadge>}
               </div>
-              <div className="catalog-row-meta">
-                {source ? <SettingsBadge>{source}</SettingsBadge> : null}
-                {plugin.version ? <span className="catalog-meta-item">{t("desktop.catalog.version", { version: plugin.version })}</span> : null}
-              </div>
+              <PluginMeta source={display.source} version={plugin.version} />
             </li>
           );
         })}
