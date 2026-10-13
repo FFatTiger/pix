@@ -13,6 +13,7 @@ const capabilities = [
   { id: "todo", enabled: false },
   { id: "ask_user_question", enabled: true },
   { id: "side_chat", enabled: false },
+  { id: "smart_compact", enabled: true },
 ];
 
 test("built-in capability schemas accept exact shapes and reject extras/unknown IDs", () => {
@@ -21,6 +22,7 @@ test("built-in capability schemas accept exact shapes and reject extras/unknown 
     "todo",
     "ask_user_question",
     "side_chat",
+    "smart_compact",
   ]);
   for (const id of BUILT_IN_CAPABILITY_IDS) {
     assert.equal(BuiltInCapabilityIdSchema.parse(id), id);
@@ -47,18 +49,19 @@ test("built-in capability schemas accept exact shapes and reject extras/unknown 
       { id: "todo", enabled: true },
       { id: "subagents", enabled: false },
       { id: "ask_user_question", enabled: false },
+      { id: "smart_compact", enabled: false },
     ],
   });
-  assert.equal(mutation.capabilities.length, 4);
+  assert.equal(mutation.capabilities.length, 5);
 
   assert.equal(
-    BuiltInCapabilityConfigMutationSchema.safeParse({ expectedRevision: revision, capabilities: capabilities.slice(0, 3) }).success,
+    BuiltInCapabilityConfigMutationSchema.safeParse({ expectedRevision: revision, capabilities: capabilities.slice(0, 4) }).success,
     false,
   );
   assert.equal(
     BuiltInCapabilityConfigMutationSchema.safeParse({
       expectedRevision: revision,
-      capabilities: [...capabilities.slice(0, 3), { id: "plugins", enabled: true }],
+      capabilities: [...capabilities.slice(0, 4), { id: "plugins", enabled: true }],
     }).success,
     false,
   );
@@ -69,6 +72,7 @@ test("built-in capability schemas accept exact shapes and reject extras/unknown 
         { id: "subagents", enabled: true },
         { id: "todo", enabled: true },
         { id: "ask_user_question", enabled: true },
+        { id: "side_chat", enabled: true },
         { id: "subagents", enabled: false },
       ],
     }).success,

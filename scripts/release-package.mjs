@@ -16,9 +16,20 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
   }
   const cli = readJson(join(standalone, "package.json"));
   const scope = join(standalone, "node_modules", "@fffattiger");
-  const pluginRoot = join(standalone, "node_modules", "pi-claude-subagents");
-  const plugin = readJson(join(pluginRoot, "package.json"));
-  if (plugin.name !== "pi-claude-subagents") throw new Error("bundled plugin identity mismatch");
+  // Bundled plugins: vendored/pinned trees copied verbatim into the registry
+  // package's node_modules and rewritten to their real versions.
+  const pluginRoots = [
+    join(standalone, "node_modules", "pi-claude-subagents"),
+    join(standalone, "node_modules", "pi-smart-compact"),
+  ];
+  const plugins = pluginRoots.map((root) => {
+    const manifest = readJson(join(root, "package.json"));
+    if (!["pi-claude-subagents", "pi-smart-compact"].includes(manifest.name)) {
+      throw new Error(`bundled plugin identity mismatch: ${manifest.name}`);
+    }
+    return { root, manifest };
+  });
+  const bundledPluginNames = new Set(plugins.map(({ manifest }) => manifest.name));
   // Pi 1.0.0 publishes a workspace shrinkwrap that makes clean global npm
   // installs drop dependencies. Bundle its unchanged code without that file.
   // Remove this bridge before upgrading away from SDK 1.0.0, once a clean
@@ -36,7 +47,7 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
     }
     return { root, manifest };
   });
-  const bundledDependencies = [...runtime.map(({ manifest }) => manifest.name), sdk.name, plugin.name];
+  const bundledDependencies = [...runtime.map(({ manifest }) => manifest.name), sdk.name, ...bundledPluginNames];
   const bundled = new Set(bundledDependencies);
   const dependencies = {};
   const optionalDependencies = {};
@@ -58,9 +69,11 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
     for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
       const internal = {};
       for (let [name, version] of Object.entries(manifest[section] ?? {})) {
-        if (name === plugin.name) {
-          if (typeof version !== "string" || (!version.startsWith("file:") && version !== plugin.version)) throw new Error("bundled plugin does not match the runtime dependency");
-          version = plugin.version;
+        if (bundledPluginNames.has(name)) {
+          const pluginManifest = plugins.find(({ manifest }) => manifest.name === name)?.manifest;
+          if (pluginManifest === undefined) throw new Error(`bundled plugin missing from the stage: ${name}`);
+          if (typeof version !== "string" || (!version.startsWith("file:") && version !== pluginManifest.version)) throw new Error("bundled plugin does not match the runtime dependency");
+          version = pluginManifest.version;
         }
         validate(name, version);
         if (bundled.has(name)) {
@@ -85,7 +98,7 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
     }
     return copy;
   }
-  const copies = [...runtime, { root: sdkRoot, manifest: sdk }, { root: pluginRoot, manifest: plugin }].map(({ root, manifest }) => {
+  const copies = [...runtime, { root: sdkRoot, manifest: sdk }, ...plugins].map(({ root, manifest }) => {
     depend(manifest.name, manifest.version);
     return { root, manifest: normalize(manifest) };
   });

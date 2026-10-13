@@ -15,13 +15,22 @@ export const SUBAGENT_COMMAND_NAMES = ["agents", "pi-subagents-doctor"] as const
 export const TODO_TOOL_NAME = "todo";
 export const TODO_COMMAND_NAME = "todos";
 export const ASK_TOOL_NAME = "ask_user_question";
+export const SMART_COMPACT_TOOL_NAME = "smart_compact";
+export const SMART_COMPACT_COMMAND_NAME = "smart-compact";
 
+/**
+ * Dynamically advertised runtime tokens per loaded built-in. `smart_compact`
+ * deliberately has NO token: the plugin contributes no runtime command or UI
+ * surface (its availability is projected through snapshot `builtIns` exactly
+ * like every other built-in), so inventing a token with no consumer would
+ * violate the "advertise only what is wired" rule.
+ */
 const DYNAMIC_TOKENS = {
   subagents: "runtime.subagents",
   todo: "runtime.todo",
   ask_user_question: "runtime.user_question",
   side_chat: "runtime.side_chat",
-} as const satisfies Record<BuiltInCapabilityId, RuntimeCapability>;
+} as const satisfies Partial<Record<BuiltInCapabilityId, RuntimeCapability>>;
 
 export interface NamedSurface {
   name: string;
@@ -41,6 +50,7 @@ export function detectLoadedBuiltIns(input: {
   if (hasAll(tools, SUBAGENT_TOOL_NAMES) && hasAll(commands, SUBAGENT_COMMAND_NAMES)) loaded.add("subagents");
   if (tools.has(TODO_TOOL_NAME) && commands.has(TODO_COMMAND_NAME)) loaded.add("todo");
   if (tools.has(ASK_TOOL_NAME)) loaded.add("ask_user_question");
+  if (tools.has(SMART_COMPACT_TOOL_NAME) && commands.has(SMART_COMPACT_COMMAND_NAME)) loaded.add("smart_compact");
   return loaded;
 }
 
@@ -70,8 +80,7 @@ export function capabilitiesWithLoadedTokens(
   loaded: ReadonlySet<BuiltInCapabilityId>,
 ): RuntimeCapability[] {
   const next = new Set(base);
-  for (const id of BUILT_IN_CAPABILITY_IDS) {
-    const token = DYNAMIC_TOKENS[id];
+  for (const [id, token] of Object.entries(DYNAMIC_TOKENS) as Array<[BuiltInCapabilityId, RuntimeCapability]>) {
     if (loaded.has(id)) next.add(token);
     else next.delete(token);
   }

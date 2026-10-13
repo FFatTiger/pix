@@ -11,6 +11,7 @@ export const BUILT_IN_CAPABILITY_IDS = [
   "todo",
   "ask_user_question",
   "side_chat",
+  "smart_compact",
 ] as const;
 
 export type BuiltInCapabilityId = (typeof BUILT_IN_CAPABILITY_IDS)[number];
@@ -49,7 +50,7 @@ export function defaultBuiltInCapabilities(): BuiltInCapabilityState[] {
 }
 
 /**
- * Full-replacement write list: exactly the four canonical IDs, no duplicates,
+ * Full-replacement write list: exactly the canonical IDs, no duplicates,
  * no extras, each with a boolean. Returns canonical ID order, or null.
  */
 export function normalizeBuiltInCapabilityList(value: unknown): BuiltInCapabilityState[] | null {

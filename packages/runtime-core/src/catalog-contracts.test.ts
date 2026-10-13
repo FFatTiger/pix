@@ -230,6 +230,7 @@ test("built-in capability IDs are the frozen canonical vocabulary", () => {
     "todo",
     "ask_user_question",
     "side_chat",
+    "smart_compact",
   ]);
 });
 

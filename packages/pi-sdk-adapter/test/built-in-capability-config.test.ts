@@ -14,7 +14,10 @@ const MIXED = [
   { id: "todo" as const, enabled: true },
   { id: "ask_user_question" as const, enabled: false },
   { id: "side_chat" as const, enabled: true },
+  { id: "smart_compact" as const, enabled: true },
 ];
+/** The pre-smart_compact persisted shape: reads with smart_compact default-on. */
+const LEGACY_MIXED = MIXED.filter((row) => row.id !== "smart_compact");
 
 async function fixture(content?: string) {
   const agentDir = await mkdtemp(join(tmpdir(), "pix-builtins-config-"));
@@ -51,12 +54,41 @@ describe("writable pix-builtins.json store", () => {
       todo: true,
       ask_user_question: false,
       side_chat: true,
+      smart_compact: true,
     }, null, 2)}\n`;
     const agentDir = await fixture(source);
     try {
       const snapshot = await createPiSdkBuiltInCapabilityConfigStore({ agentDir }).readConfig();
       assert.deepEqual(snapshot.capabilities, MIXED);
       assert.equal(snapshot.revision, revision(source));
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a legacy pre-smart_compact document with smart_compact default-on (finite back-compat bridge)", async () => {
+    const source = `${JSON.stringify({
+      version: 1,
+      subagents: false,
+      todo: true,
+      ask_user_question: false,
+      side_chat: true,
+    }, null, 2)}\n`;
+    const agentDir = await fixture(source);
+    try {
+      const snapshot = await createPiSdkBuiltInCapabilityConfigStore({ agentDir }).readConfig();
+      // The 4-key legacy document is upgraded in-memory: smart_compact enabled.
+      assert.deepEqual(snapshot.capabilities, [...LEGACY_MIXED, { id: "smart_compact", enabled: true }]);
+      assert.equal(snapshot.revision, revision(source));
+      // The first write serializes the full canonical set — the legacy bytes
+      // disappear with the first toggle (documented removal condition).
+      const written = await createPiSdkBuiltInCapabilityConfigStore({ agentDir }).writeConfig({
+        expectedRevision: snapshot.revision,
+        capabilities: [...LEGACY_MIXED, { id: "smart_compact", enabled: false }],
+      });
+      assert.equal(written.capabilities.find((row) => row.id === "smart_compact")?.enabled, false);
+      const persisted = JSON.parse(await readFile(join(agentDir, "pix-builtins.json"), "utf8"));
+      assert.deepEqual(Object.keys(persisted).sort(), ["ask_user_question", "side_chat", "smart_compact", "subagents", "todo", "version"]);
     } finally {
       await rm(agentDir, { recursive: true, force: true });
     }
@@ -76,6 +108,7 @@ describe("writable pix-builtins.json store", () => {
         todo: true,
         ask_user_question: false,
         side_chat: true,
+        smart_compact: true,
       });
       assert.equal(saved.revision, revision(persisted));
       assert.equal((await lstat(join(agentDir, "pix-builtins.json"))).mode & 0o077, 0);
@@ -126,6 +159,7 @@ describe("writable pix-builtins.json store", () => {
           { id: "todo", enabled: false },
           { id: "subagents", enabled: true },
           { id: "ask_user_question", enabled: true },
+          { id: "smart_compact", enabled: false },
         ],
       });
       assert.deepEqual(saved.capabilities, [
@@ -133,6 +167,7 @@ describe("writable pix-builtins.json store", () => {
         { id: "todo", enabled: false },
         { id: "ask_user_question", enabled: true },
         { id: "side_chat", enabled: false },
+        { id: "smart_compact", enabled: false },
       ]);
     } finally {
       await rm(agentDir, { recursive: true, force: true });
@@ -149,6 +184,7 @@ describe("writable pix-builtins.json store", () => {
         { id: "todo" as const, enabled: false },
         { id: "ask_user_question" as const, enabled: false },
         { id: "side_chat" as const, enabled: false },
+        { id: "smart_compact" as const, enabled: false },
       ];
       const b = ALL_ON;
       const results = await Promise.allSettled([

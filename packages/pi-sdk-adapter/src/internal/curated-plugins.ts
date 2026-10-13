@@ -6,13 +6,14 @@ import type { BuiltInCapabilityId, BuiltInCapabilityState } from "@fffattiger/pi
 import { createAskQuestionnaireExtensionsOverride } from "./ask-questionnaire-bridge.js";
 import { readBuiltInCapabilityConfigSync } from "./built-in-capability-store.js";
 
-export const CURATED_PLUGIN_IDS = ["subagents", "todo", "ask_user_question"] as const;
+export const CURATED_PLUGIN_IDS = ["subagents", "todo", "ask_user_question", "smart_compact"] as const;
 export type CuratedPluginId = (typeof CURATED_PLUGIN_IDS)[number];
 
 const PACKAGE_NAMES = {
   subagents: "pi-claude-subagents",
   todo: "@juicesharp/rpiv-todo",
   ask_user_question: "@juicesharp/rpiv-ask-user-question",
+  smart_compact: "pi-smart-compact",
 } as const satisfies Record<CuratedPluginId, string>;
 
 const requireFromHere = createRequire(import.meta.url);
@@ -96,6 +97,27 @@ function curatedIdForExactPath(value: string): CuratedPluginId | undefined {
   return undefined;
 }
 
+const NODE_MODULES_PATTERN = /(?:^|\/)node_modules\//;
+
+/**
+ * Curated identity by INSTALL PATH: any extension living under a
+ * `node_modules/<curated package name>/` tree is that curated plugin — this is
+ * how the user's separately installed copy (for example the global
+ * `npm:pi-smart-compact` in their own settings.json `packages`) is recognized
+ * even though its path differs from the adapter-bundled root. Forks or renamed
+ * copies under a different package name never match.
+ */
+function curatedIdForPackagePath(value: string): CuratedPluginId | undefined {
+  const resolved = resolve(value);
+  if (!NODE_MODULES_PATTERN.test(resolved)) return undefined;
+  for (const root of bundledPluginRoots()) {
+    const inner = `node_modules/${root.packageName}/`;
+    const index = resolved.indexOf(inner);
+    if (index !== -1) return root.id;
+  }
+  return undefined;
+}
+
 export interface ExtensionLike {
   path: string;
   resolvedPath?: string;
@@ -111,10 +133,14 @@ function exactKeys(value: ReadonlyMap<string, unknown> | undefined, expected: re
 function curatedIdForExtension(extension: ExtensionLike): CuratedPluginId | undefined {
   const exactPathId = curatedIdForExactPath(extension.resolvedPath ?? extension.path);
   if (exactPathId !== undefined) return exactPathId;
+  const packagePathId = curatedIdForPackagePath(extension.resolvedPath ?? extension.path);
+  if (packagePathId !== undefined) return packagePathId;
   if (exactKeys(extension.tools, ["Agent", "SendMessage", "TaskOutput", "TaskStop"])
     && exactKeys(extension.commands, ["agents", "pi-subagents-doctor"])) return "subagents";
   if (exactKeys(extension.tools, ["todo"]) && exactKeys(extension.commands, ["todos"])) return "todo";
   if (exactKeys(extension.tools, ["ask_user_question"]) && exactKeys(extension.commands, [])) return "ask_user_question";
+  if (exactKeys(extension.tools, ["smart_compact", "smart_recall", "smart_save_memory", "smart_context", "smart_navigation", "smart_tools"])
+    && exactKeys(extension.commands, ["smart-compact"])) return "smart_compact";
   return undefined;
 }
 
@@ -127,13 +153,14 @@ export interface LoadExtensionsLike<T extends ExtensionLike, R = unknown> {
 /**
  * Curated-instance filter, by EXACT curated identity only.
  *
- * Curated instances are identified either by their exact bundled path or by
- * their exact complete tool/command registration surface. Enabled features
- * keep exactly the adapter-bundled instance; disabled features keep none.
- * A separately installed copy of the same curated plugin is removed even when
- * it lives at another path, while partial overlaps and unrelated extensions
- * remain untouched. Generic errors and the shared runtime pass through; only
- * load errors tied to a disabled bundled identity are dropped.
+ * Curated instances are identified by their exact bundled path, by any
+ * install path under the curated package name (the user's own global copy),
+ * or by their exact complete tool/command registration surface. Enabled
+ * features keep exactly the adapter-bundled instance; disabled features keep
+ * none. A separately installed copy of the same curated plugin is removed
+ * even when it lives at another path, while partial overlaps and unrelated
+ * extensions remain untouched. Generic errors and the shared runtime pass
+ * through; only load errors tied to a disabled bundled identity are dropped.
  */
 export function filterCuratedExtensions<T extends ExtensionLike, R>(
   base: LoadExtensionsLike<T, R>,

@@ -7,12 +7,13 @@ import {
   normalizeBuiltInCapabilityList,
 } from "./built-in-capabilities.js";
 
-test("built-in vocabulary is exactly the four canonical feature IDs", () => {
+test("built-in vocabulary is exactly the canonical feature IDs", () => {
   assert.deepEqual([...BUILT_IN_CAPABILITY_IDS], [
     "subagents",
     "todo",
     "ask_user_question",
     "side_chat",
+    "smart_compact",
   ]);
   assert.equal(isBuiltInCapabilityId("subagents"), true);
   assert.equal(isBuiltInCapabilityId("todo"), true);
@@ -29,6 +30,7 @@ test("missing durable config means all four enabled in canonical order", () => {
     { id: "todo", enabled: true },
     { id: "ask_user_question", enabled: true },
     { id: "side_chat", enabled: true },
+    { id: "smart_compact", enabled: true },
   ]);
 });
 
@@ -38,12 +40,14 @@ test("normalizeBuiltInCapabilityList accepts a permutation and returns canonical
     { id: "todo", enabled: true },
     { id: "subagents", enabled: false },
     { id: "ask_user_question", enabled: true },
+    { id: "smart_compact", enabled: true },
   ]);
   assert.deepEqual(normalized, [
     { id: "subagents", enabled: false },
     { id: "todo", enabled: true },
     { id: "ask_user_question", enabled: true },
     { id: "side_chat", enabled: false },
+    { id: "smart_compact", enabled: true },
   ]);
 });
 
@@ -61,6 +65,7 @@ test("normalizeBuiltInCapabilityList rejects duplicate, missing, unknown, and ma
       { id: "subagents", enabled: true },
       { id: "todo", enabled: true },
       { id: "ask_user_question", enabled: true },
+      { id: "side_chat", enabled: true },
       { id: "plugins", enabled: true },
     ]),
     null,
@@ -90,6 +95,7 @@ test("normalizeBuiltInCapabilityList rejects duplicate, missing, unknown, and ma
       { id: "todo", enabled: true },
       { id: "ask_user_question", enabled: true },
       { id: "side_chat", enabled: true },
+      { id: "smart_compact", enabled: true },
     ]),
     null,
   );
@@ -99,6 +105,7 @@ test("normalizeBuiltInCapabilityList rejects duplicate, missing, unknown, and ma
       { id: "todo", enabled: true },
       { id: "ask_user_question", enabled: true },
       { id: "side_chat", enabled: true },
+      { id: "smart_compact", enabled: true },
     ]),
     null,
   );

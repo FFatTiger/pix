@@ -56,10 +56,20 @@ function parseDocument(text: string): BuiltInCapabilityState[] | null {
   if (!isRecord(parsed) || parsed.version !== SCHEMA_VERSION) return null;
   const allowed = new Set<string>(["version", ...BUILT_IN_CAPABILITY_IDS]);
   const keys = Object.keys(parsed);
-  if (keys.length !== allowed.size || keys.some((key) => !allowed.has(key))) return null;
+  if (keys.length > allowed.size || keys.some((key) => !allowed.has(key))) return null;
   const rows: BuiltInCapabilityState[] = [];
   for (const id of BUILT_IN_CAPABILITY_IDS) {
     const enabled = parsed[id];
+    // Legacy 4-key documents (pre-smart_compact) read with smart_compact
+    // defaulting to enabled, exactly like a missing document. Finite
+    // back-compat bridge: every write from this version serializes the full
+    // canonical set, so the legacy shape disappears with the first toggle.
+    // Removal condition: the release after every deployed pix writes 5-key
+    // documents (track in the migration ledger).
+    if (enabled === undefined && id === "smart_compact" && keys.length === allowed.size - 1) {
+      rows.push({ id, enabled: true });
+      continue;
+    }
     if (typeof enabled !== "boolean") return null;
     rows.push({ id, enabled });
   }
@@ -144,7 +154,8 @@ function readSourceSync(agentDir: string): SourceSnapshot {
 
 /**
  * Durable Pix built-in desired-enablement store (`pix-builtins.json`).
- * Canonical feature booleans only; missing file means all four enabled.
+ * Canonical feature booleans only; missing file means all built-ins enabled
+ * (and legacy pre-smart_compact documents read with smart_compact enabled).
  * Writes are CAS full replacements with owner-only atomic publication.
  */
 export function createPiSdkBuiltInCapabilityConfigStore(
