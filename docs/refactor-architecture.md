@@ -489,6 +489,22 @@ packages/
 - 助手工具对显式 set_tools 白名单保持可用（非空白名单后 union；全关 [] 保持诚实的
   空契约）。
 
+### 助手会话能力（第 3 轮：看 / 找 / 管）
+
+- 七个新工具进第 1 轮的同一助手扩展（白名单守卫经 ASSISTANT_TOOL_NAMES 覆盖全部 9 个）。
+- **读类**（session_status / list_open_todos / summarize_activity / find_file_changes）
+  只读 JSONL（listAll + 有界 getEntries 尾部分析，0 Worker）。session_status 的状态是
+  **持久化记录推断**（未闭合 ask_user_question=等待用户、未闭合 toolCall=疑似进行中、
+  尾部 isError=最近报错）；实时 running/busy 仍是客户端权威显示——不建 Worker→sessiond
+  通道（会把 sessiond secret 塞进每个 worker 并反转 owner 方向）。todo = 各会话最后一次
+  todo toolResult 快照重放；文件改动 = write/edit 系 toolCall 的 path 参数 + 成功结果。
+- **动作类**（open_session / organize_sessions / draft_to_session）工具只解析目标并返回
+  确认文本；客户端从 toolCall input 渲染 AssistantActionCard 按钮（打开 / 执行 / 填入
+  输入框），用户点击才执行——无 Worker→浏览器推送通道。organize 复用现有流程：
+  rename=PATCH /v1/sessions/:id、delete=DELETE + 卡内二次确认、pin/archive=本设备侧栏
+  偏好（现状如此，卡片提示"仅对本设备生效"）；draft 写目标会话的 draft-store 键后导航，
+  目标 composer 挂载时水合，永不自动发送。
+
 ## 9. 跨端策略（当前主线：PWA）
 
 | 端 | 连接 | 能力 |
