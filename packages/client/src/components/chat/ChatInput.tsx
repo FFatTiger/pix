@@ -486,7 +486,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // Whether the composer textarea currently holds focus. Drives the
   // conditional visibility of the floating maximize/restore button above the
   // input box — it only appears while the user is typing-focused.
-  const [inputFocused, setInputFocused] = useState(false);
+  // Maximize only matters once the text no longer fits the auto-sized box.
+  const [inputOverflowing, setInputOverflowing] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightLayerRef = useRef<HTMLDivElement>(null);
@@ -593,6 +594,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!ta) return;
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, AUTO_MAX_HEIGHT)}px`;
+    setInputOverflowing(ta.scrollHeight > AUTO_MAX_HEIGHT);
   }, []);
 
   const updatePendingFiles = useCallback((update: (current: PendingFile[]) => PendingFile[]): void => {
@@ -2357,7 +2359,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 )}
               </div>
             )}
-            {inputFocused && (
+            {(inputOverflowing || manualHeight !== null) && (
             <div
               style={{
                 display: "flex",
@@ -2523,8 +2525,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             }}
             onInput={handleInput}
             onPaste={handlePaste}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => setInputFocused(false)}
             placeholder={
               isStreaming && (onSteer || onFollowUp)
                 ? t("desktop.steerOrQueueFollowUp")
