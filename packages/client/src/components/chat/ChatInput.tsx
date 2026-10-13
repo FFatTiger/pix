@@ -22,7 +22,7 @@ import { tokenizeMentions } from "@/lib/mention-tokens";
 // hooks/useProjectContext (Next fetch). Here the same snapshots arrive as
 // props (fileIndexSnapshot / skillNames); caching + singleflight belong to
 // the future integration (react-query), not the component.
-import { cssPx, getUiScale } from "@/lib/ui-scale";
+import { getUiScale } from "@/lib/ui-scale";
 import type { ThinkingLevelOption } from "@/lib/thinking-levels";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -30,6 +30,8 @@ import { useResizableHeight } from "@/hooks/useResizableHeight";
 import { getCurrentVisualViewportHeight } from "@/hooks/useVisualViewportHeight";
 import { useI18n } from "@/hooks/useI18n";
 import { ModelSelector, ThinkingLevelSelector } from "./composer-selectors";
+import { IconButton, ToolbarButton } from "@/components/ui/buttons";
+import { MenuItem, Popover, anchorRectOf } from "@/components/ui/menu";
 import { ArrowBendUpLeftIcon } from "@phosphor-icons/react/ArrowBendUpLeft";
 import { ArrowClockwiseIcon } from "@phosphor-icons/react/ArrowClockwise";
 import { ArrowElbowUpLeftIcon } from "@phosphor-icons/react/ArrowElbowUpLeft";
@@ -460,8 +462,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // Caret position used by the caret-based slash-menu trigger. null means the
   // caret is at the end of the value (the default after programmatic edits).
   const [slashCaretPos, setSlashCaretPos] = useState<number | null>(null);
-  // Hover feedback only — never moves the keyboard selection.
-  const [slashHoverIndex, setSlashHoverIndex] = useState<number | null>(null);
   const [skillDormancy, setSkillDormancy] = useState<Record<string, boolean>>({});
   const [inputShortcut, setInputShortcut] = useState<"enter" | "ctrl-enter">(() => {
     try {
@@ -477,10 +477,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [atQuery, setAtQuery] = useState<AtQueryMatch | null>(null);
   const [atMenuOpen, setAtMenuOpen] = useState(false);
   const [atActiveIndex, setAtActiveIndex] = useState(0);
-  const [atHoverIndex, setAtHoverIndex] = useState<number | null>(null);
   const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
   const [historyActiveIndex, setHistoryActiveIndex] = useState(0);
-  const [historyHoverIndex, setHistoryHoverIndex] = useState<number | null>(null);
   // Measured space above the input area; caps the popup menus so they never
   // extend past the window's top edge. null until first measured.
   const [popupMaxHeight, setPopupMaxHeight] = useState<number | null>(null);
@@ -1331,7 +1329,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
     setAtMenuOpen(true);
     setAtActiveIndex(0);
-    setAtHoverIndex(null);
   }, [atTokenKey]);
 
   // Fetch the file index when the menu opens. The server caches per cwd for
@@ -1609,7 +1606,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         setSlashMenuOpen(false);
         setAtMenuOpen(false);
         setHistoryActiveIndex(0);
-        setHistoryHoverIndex(null);
         setHistoryMenuOpen(true);
         return;
       }
@@ -1747,7 +1743,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
     setSlashMenuOpen(true);
     setSlashActiveIndex(0);
-    setSlashHoverIndex(null);
     if (!slashCommandsRequestedRef.current && onLoadSlashCommands) {
       slashCommandsRequestedRef.current = true;
       Promise.resolve(onLoadSlashCommands()).catch(() => {
@@ -1919,6 +1914,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </span>
               {onRecallQueue && (
                 <button
+                  className="chat-input-queue-recall"
                   onClick={onRecallQueue}
                   title={t("desktop.recallQueuedMessages")}
                   style={{
@@ -1934,14 +1930,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     cursor: "pointer",
                     transition: "background 0.12s, border-color 0.12s",
                     whiteSpace: "nowrap",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.borderColor = "color-mix(in srgb, var(--accent) 45%, var(--border))";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "transparent";
-                    e.currentTarget.style.borderColor = "var(--border)";
                   }}
                 >
                   <ArrowBendUpLeftIcon size={13} />
@@ -1992,54 +1980,47 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         <div ref={inputAreaRef} style={{ position: "relative" }}>
           {historyMenuOpen && inputHistory.length > 0 && (
             <div
-              className="chat-input-popover"
+              className="ui-menu chat-input-popover"
               style={{
                 position: "absolute",
                 left: 0,
                 right: 0,
                 bottom: "calc(100% + 8px)",
                 zIndex: 120,
-                background: "var(--surface-content)",
-                border: "1px solid var(--surface-hairline)",
-                borderRadius: 12,
-                boxShadow: "0 14px 36px -14px rgba(0,0,0,0.28)",
-                overflow: "hidden",
                 maxHeight: slashMenuHeightCap,
+                overflow: "hidden",
               }}
             >
               <div style={{ maxHeight: slashMenuHeightCap, overflowY: "auto", padding: 4 }}>
                 {inputHistory.map((item, index) => (
-                  <button
+                  <MenuItem
                     key={`${index}:${item}`}
-                    ref={(node) => { historyItemRefs.current[index] = node; }}
-                    type="button"
+                    className="list-row"
+                    highlighted={index === historyActiveIndex}
+                    padding="5px 6px"
+                    borderRadius={5}
+                    fontSize={12}
                     onMouseDown={(event) => { event.preventDefault(); applyHistoryInput(item); }}
-                    onMouseEnter={() => setHistoryHoverIndex(index)}
-                    onMouseLeave={() => setHistoryHoverIndex(null)}
-                    style={{ width: "100%", display: "flex", alignItems: "flex-start", gap: 8, padding: "5px 6px", border: "none", borderRadius: 5, background: index === historyActiveIndex ? "var(--bg-selected)" : historyHoverIndex === index ? "var(--bg-hover)" : "transparent", color: "var(--text)", cursor: "pointer", textAlign: "left" }}
+                    refCallback={(node) => { historyItemRefs.current[index] = node; }}
+                    icon={<span style={{ flexShrink: 0, color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>{index + 1}</span>}
                   >
-                    <span style={{ flexShrink: 0, color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>{index + 1}</span>
                     <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{item}</span>
-                  </button>
+                  </MenuItem>
                 ))}
               </div>
             </div>
           )}
           {slashMenuOpen && slashQuery !== null && (
             <div
-              className="chat-input-popover"
+              className="ui-menu chat-input-popover"
               style={{
                 position: "absolute",
                 left: 0,
                 right: 0,
                 bottom: "calc(100% + 8px)",
                 zIndex: 120,
-                background: "var(--surface-content)",
-                border: "1px solid var(--surface-hairline)",
-                borderRadius: 12,
-                boxShadow: "0 14px 36px -14px rgba(0,0,0,0.28)",
-                overflow: "hidden",
                 maxHeight: slashMenuHeightCap,
+                overflow: "hidden",
               }}
             >
               <div style={{ maxHeight: slashMenuHeightCap, overflowY: "auto", padding: "6px 6px 8px" }}>
@@ -2083,42 +2064,46 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       >
                         {group.items.map(({ command, index }) => {
                           const active = index === slashActiveIndex;
+                          const dormant = isDormantSkillCommand(command, skillDormancy);
                           return (
-                            <button
+                            <MenuItem
                               key={`${command.source}:${command.name}`}
-                              ref={(node) => {
-                                slashItemRefs.current[index] = node;
-                              }}
-                              type="button"
+                              className="list-row"
+                              highlighted={active}
+                              padding="6px 8px"
                               onMouseDown={(e) => {
                                 e.preventDefault();
                                 applySlashCommand(command);
                               }}
-                              onMouseEnter={() => setSlashHoverIndex(index)}
-                              onMouseLeave={() => setSlashHoverIndex(null)}
-                              style={{
-                                width: "100%",
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 8,
-                                padding: "6px 8px",
-                                border: "none",
-                                borderRadius: 8,
-                                background: active ? "var(--bg-selected)" : slashHoverIndex === index ? "var(--bg-hover)" : "none",
-                                color: "var(--text)",
-                                cursor: "pointer",
-                                textAlign: "left",
+                              refCallback={(node) => {
+                                slashItemRefs.current[index] = node;
                               }}
+                              icon={
+                                <span style={{
+                                  fontSize: 12.5,
+                                  fontFamily: "var(--font-mono)",
+                                  whiteSpace: "nowrap",
+                                  flexShrink: 0,
+                                }}>
+                                  /{command.name}
+                                </span>
+                              }
+                              {...(dormant ? {
+                                trailing: (
+                                  <span style={{
+                                    flexShrink: 0,
+                                    padding: "1px 5px",
+                                    borderRadius: 999,
+                                    border: "1px solid var(--border)",
+                                    color: "var(--text-dim)",
+                                    fontSize: 10,
+                                  }}>
+                                    {t("desktop.dormant")}
+                                  </span>
+                                ),
+                              } : {})}
                             >
-                              <span style={{
-                                fontSize: 12.5,
-                                fontFamily: "var(--font-mono)",
-                                whiteSpace: "nowrap",
-                                flexShrink: 0,
-                              }}>
-                                /{command.name}
-                              </span>
-                              {command.description && (
+                              {command.description ? (
                                 <span style={{
                                   fontSize: 12,
                                   color: "var(--text-dim)",
@@ -2129,21 +2114,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                 }}>
                                   {command.description}
                                 </span>
-                              )}
-                              {isDormantSkillCommand(command, skillDormancy) && (
-                                <span style={{
-                                  marginLeft: "auto",
-                                  flexShrink: 0,
-                                  padding: "1px 5px",
-                                  borderRadius: 999,
-                                  border: "1px solid var(--border)",
-                                  color: "var(--text-dim)",
-                                  fontSize: 10,
-                                }}>
-                                  {t("desktop.dormant")}
-                                </span>
-                              )}
-                            </button>
+                              ) : null}
+                            </MenuItem>
                           );
                         })}
                       </div>
@@ -2162,19 +2134,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               : null;
             return (
               <div
-                className="chat-input-popover"
+                className="ui-menu chat-input-popover"
                 style={{
                   position: "absolute",
                   left: 0,
                   right: 0,
                   bottom: "calc(100% + 8px)",
                   zIndex: 120,
-                  background: "var(--surface-content)",
-                  border: "1px solid var(--surface-hairline)",
-                  borderRadius: 12,
-                  boxShadow: "0 14px 36px -14px rgba(0,0,0,0.28)",
-                  overflow: "hidden",
                   maxHeight: atMenuHeightCap,
+                  overflow: "hidden",
                 }}
               >
                 <div style={{ maxHeight: atMenuHeightCap, overflowY: "auto", padding: "6px 6px 8px" }}>
@@ -2192,43 +2160,31 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       const name = entry.path.split("/").pop() ?? entry.path;
                       const dirPrefix = entry.path.slice(0, entry.path.length - name.length);
                       return (
-                        <button
+                        <MenuItem
                           key={`${entry.isDir ? "d" : "f"}:${entry.path}`}
-                          ref={(node) => {
-                            atItemRefs.current[index] = node;
-                          }}
-                          type="button"
+                          className="list-row"
+                          highlighted={active}
+                          padding="3px 6px"
+                          borderRadius={5}
+                          mono
+                          fontSize={12.5}
                           onMouseDown={(e) => {
                             e.preventDefault();
                             applyAtCompletion(entry);
                           }}
-                          onMouseEnter={() => setAtHoverIndex(index)}
-                          onMouseLeave={() => setAtHoverIndex(null)}
-                          style={{
-                            width: "100%",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 5,
-                            padding: "3px 6px",
-                            border: "none",
-                            borderRadius: 5,
-                            background: active ? "var(--bg-selected)" : atHoverIndex === index ? "var(--bg-hover)" : "none",
-                            color: "var(--text)",
-                            cursor: "pointer",
-                            textAlign: "left",
-                            fontSize: 12.5,
-                            fontFamily: "var(--font-mono)",
+                          refCallback={(node) => {
+                            atItemRefs.current[index] = node;
                           }}
+                          icon={
+                            <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
+                              {entry.isDir ? <FolderIcon size={14} name={name} /> : getFileIcon(name, 14)}
+                            </span>
+                          }
                         >
-                          <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
-                            {entry.isDir ? <FolderIcon size={14} name={name} /> : getFileIcon(name, 14)}
-                          </span>
-                          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {dirPrefix && <span style={{ color: "var(--text-dim)" }}>{dirPrefix}</span>}
-                            {name}
-                            {entry.isDir && <span style={{ color: "var(--text-dim)" }}>/</span>}
-                          </span>
-                        </button>
+                          {dirPrefix && <span style={{ color: "var(--text-dim)" }}>{dirPrefix}</span>}
+                          {name}
+                          {entry.isDir && <span style={{ color: "var(--text-dim)" }}>/</span>}
+                        </MenuItem>
                       );
                     })
                   )}
@@ -2255,7 +2211,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               gap: 0,
               padding: 0,
               height: manualMode ? `${manualHeight}px` : undefined,
-              transition: "border-color 0.15s, background 0.15s, box-shadow 0.15s",
             } as React.CSSProperties}
           >
           {/* Drag handle on the top border — resize the composer vertically */}
@@ -2316,25 +2271,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     tabIndex={canQueueStreamingMessage ? 0 : -1}
                     title={t("desktop.injectMessageNow")}
                     aria-label={t("desktop.steer")}
+                    className="composer-floating-btn"
                     style={{
                       display: "flex", alignItems: "center", justifyContent: "center",
                       width: 36, height: 28, padding: 0,
                       border: 0,
                       background: "transparent",
-                      color: canQueueStreamingMessage ? "var(--accent)" : "var(--text-dim)",
                       cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
                       opacity: canQueueStreamingMessage ? 1 : 0.55,
-                      transition: "background 0.12s, color 0.12s",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!canQueueStreamingMessage) return;
-                      e.currentTarget.style.background = "var(--bg-hover)";
-                      e.currentTarget.style.color = "var(--text)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "transparent";
-                      e.currentTarget.style.color = canQueueStreamingMessage ? "var(--accent)" : "var(--text-dim)";
-                    }}
+                      ["--fbtn-color" as string]: canQueueStreamingMessage ? "var(--accent)" : "var(--text-dim)",
+                      ["--fbtn-hover-color" as string]: canQueueStreamingMessage ? "var(--accent)" : undefined,
+                    } as React.CSSProperties}
                   >
                     <ArrowElbowUpLeftIcon size={15} />
                   </button>
@@ -2353,26 +2300,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     tabIndex={canQueueStreamingMessage ? 0 : -1}
                     title={t("desktop.queueMessageAfterFinish")}
                     aria-label={t("desktop.followUp")}
+                    className="composer-floating-btn"
                     style={{
                       display: "flex", alignItems: "center", justifyContent: "center",
                       width: 36, height: 28, padding: 0,
                       border: 0,
                       borderLeft: "1px solid color-mix(in srgb, var(--border) 62%, transparent)",
                       background: "transparent",
-                      color: canQueueStreamingMessage ? "var(--text-muted)" : "var(--text-dim)",
                       cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
                       opacity: canQueueStreamingMessage ? 1 : 0.55,
-                      transition: "background 0.12s, color 0.12s",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!canQueueStreamingMessage) return;
-                      e.currentTarget.style.background = "var(--bg-hover)";
-                      e.currentTarget.style.color = "var(--text)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "transparent";
-                      e.currentTarget.style.color = canQueueStreamingMessage ? "var(--text-muted)" : "var(--text-dim)";
-                    }}
+                      ["--fbtn-color" as string]: canQueueStreamingMessage ? "var(--text-muted)" : "var(--text-dim)",
+                    } as React.CSSProperties}
                   >
                     <SortDescendingIcon size={15} />
                   </button>
@@ -2408,23 +2346,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 }}
                 title={manualHeight !== null ? t("desktop.restoreInputHeight") : t("desktop.maximizeInput")}
                 aria-label={manualHeight !== null ? t("desktop.restoreInputHeight") : t("desktop.maximizeInput")}
+                className="composer-floating-btn"
                 style={{
                   display: "flex", alignItems: "center", justifyContent: "center",
                   width: 36, height: 28, padding: 0,
                   border: 0,
                   background: "transparent",
-                  color: manualHeight !== null ? "var(--accent)" : "var(--text-muted)",
                   cursor: "pointer",
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = manualHeight !== null ? "var(--accent)" : "var(--text)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                  e.currentTarget.style.color = manualHeight !== null ? "var(--accent)" : "var(--text-muted)";
-                }}
+                  ["--fbtn-color" as string]: manualHeight !== null ? "var(--accent)" : "var(--text-muted)",
+                  ["--fbtn-hover-color" as string]: manualHeight !== null ? "var(--accent)" : undefined,
+                } as React.CSSProperties}
               >
                 {manualHeight !== null ? <ArrowsInIcon size={15} /> : <ArrowsOutIcon size={15} />}
               </button>
@@ -2603,140 +2534,66 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           {/* LEFT: attach + model selector (idle) or steer/followup toggle (streaming) */}
           <div className="chat-input-toolbar-left" style={{ flex: "0 1 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
             {variant === "main" && (
-            <button
-              className="chat-input-toolbar-attach"
-              onClick={(e) => {
-                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                setAttachMenuRect({ top: cssPx(rect.top), left: cssPx(rect.left), width: cssPx(rect.width) });
-                setAttachMenuOpen((v) => !v);
-              }}
+            <IconButton
+              className={`chat-input-toolbar-attach${hasAttachments ? " ui-trigger--accent" : ""}`}
+              open={attachMenuOpen}
+              ariaHasPopup="menu"
               title={t("desktop.attachContext")}
-              aria-label={t("desktop.attachContext")}
-              aria-expanded={attachMenuOpen}
-              style={{
-                flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                width: 24, height: 24, padding: 0,
-                background: attachMenuOpen ? "var(--bg-hover)" : "none", border: "none",
-                borderRadius: 6,
-                color: hasAttachments ? "var(--accent)" : "var(--text-muted)",
-                cursor: "pointer",
-                transition: "background 0.12s, color 0.12s",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "var(--bg-hover)";
-                e.currentTarget.style.color = hasAttachments ? "var(--accent)" : "var(--text)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = attachMenuOpen ? "var(--bg-hover)" : "none";
-                e.currentTarget.style.color = hasAttachments ? "var(--accent)" : "var(--text-muted)";
+              ariaLabel={t("desktop.attachContext")}
+              onClick={(e) => {
+                setAttachMenuRect(anchorRectOf(e.currentTarget));
+                setAttachMenuOpen((v) => !v);
               }}
             >
               <PlusIcon size={14} />
-            </button>
+            </IconButton>
             )}
-            {attachMenuOpen && attachMenuRect && (() => {
-              const vh = cssPx(window.visualViewport?.height ?? window.innerHeight);
-              const vw = cssPx(window.innerWidth);
-              const menuWidth = 200;
-              // Anchor like the other toolbar menus: bottom edge sits above
-              // the button's top edge, left-aligned to the button.
-              const l = Math.min(attachMenuRect.left, vw - menuWidth - 8);
-              const b = vh - attachMenuRect.top + 4;
-              return (
-                <div ref={attachMenuRef} className="chat-input-menu-panel" style={{
-                  position: "fixed", bottom: b, left: l,
-                  zIndex: 2001, background: "var(--bg-panel)", border: "1px solid var(--border)",
-                  borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-                  overflow: "hidden", width: menuWidth,
-                }}>
+            {attachMenuOpen && (
+              <div ref={attachMenuRef} style={{ display: "contents" }}>
+                <Popover
+                  rect={attachMenuRect}
+                  offset={4}
+                  className="chat-input-menu-panel"
+                  style={{ width: 200, minWidth: 200, maxWidth: 200, maxHeight: "none" }}
+                >
                   <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
-                                            <button
-                      type="button"
-                      onClick={() => { setAttachMenuOpen(false); openAtCompletion(); }}
+                    <MenuItem
+                      icon={<AtIcon size={14} weight="regular" aria-hidden="true" />}
                       disabled={!cwd}
-                      title={cwd ? t("desktop.attachFileReference") : undefined}
-                      style={{
-                        width: "100%", display: "flex", alignItems: "center", gap: 8,
-                        padding: "4px 10px", borderRadius: 4,
-                        background: "none", border: "none",
-                        color: cwd ? "var(--text)" : "var(--text-dim)",
-                        cursor: cwd ? "pointer" : "not-allowed",
-                        fontSize: 12, textAlign: "left",
-                        opacity: cwd ? 1 : 0.6,
-                        transition: "background 0.1s ease",
-                      }}
-                      onMouseEnter={(e) => { if (cwd) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
+                      {...(cwd ? { title: t("desktop.attachFileReference") } : {})}
+                      onClick={() => { setAttachMenuOpen(false); openAtCompletion(); }}
                     >
-                      <AtIcon size={14} weight="regular" aria-hidden="true" />
-                      <span style={{ flex: 1 }}>{t("desktop.attachFileReference")}</span>
-                    </button>
+                      {t("desktop.attachFileReference")}
+                    </MenuItem>
                     {uploadFiles && (
-                      <button
-                        type="button"
-                        onClick={() => { setAttachMenuOpen(false); uploadInputRef.current?.click(); }}
+                      <MenuItem
+                        icon={<UploadSimpleIcon size={14} weight="regular" aria-hidden="true" />}
                         disabled={!cwd}
-                        style={{
-                          width: "100%", display: "flex", alignItems: "center", gap: 8,
-                          padding: "4px 10px", borderRadius: 4,
-                          background: "none", border: "none",
-                          color: cwd ? "var(--text)" : "var(--text-dim)",
-                          cursor: cwd ? "pointer" : "not-allowed",
-                          fontSize: 12, textAlign: "left",
-                          opacity: cwd ? 1 : 0.6,
-                          transition: "background 0.1s ease",
-                        }}
-                        onMouseEnter={(e) => { if (cwd) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
+                        onClick={() => { setAttachMenuOpen(false); uploadInputRef.current?.click(); }}
                       >
-                        <UploadSimpleIcon size={14} weight="regular" aria-hidden="true" />
-                        <span style={{ flex: 1 }}>{t("desktop.uploadFiles")}</span>
-                      </button>
+                        {t("desktop.uploadFiles")}
+                      </MenuItem>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => { setAttachMenuOpen(false); imageInputRef.current?.click(); }}
+                    <MenuItem
+                      icon={<ImageIcon size={14} weight="regular" aria-hidden="true" />}
                       disabled={!modelSupportsImages}
-                      title={!modelSupportsImages
-                        ? t("desktop.attachImageModelUnsupported", { model: activeModelName })
-                        : undefined}
-                      style={{
-                        width: "100%", display: "flex", alignItems: "center", gap: 8,
-                        padding: "4px 10px", borderRadius: 4,
-                        background: "none", border: "none",
-                        color: modelSupportsImages ? "var(--text)" : "var(--text-dim)",
-                        cursor: modelSupportsImages ? "pointer" : "not-allowed",
-                        fontSize: 12, textAlign: "left",
-                        opacity: modelSupportsImages ? 1 : 0.6,
-                        transition: "background 0.1s ease",
-                      }}
-                      onMouseEnter={(e) => { if (modelSupportsImages) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
+                      {...(!modelSupportsImages
+                        ? { title: t("desktop.attachImageModelUnsupported", { model: activeModelName }) }
+                        : {})}
+                      onClick={() => { setAttachMenuOpen(false); imageInputRef.current?.click(); }}
                     >
-                      <ImageIcon size={14} weight="regular" aria-hidden="true" />
-                      <span style={{ flex: 1 }}>{t("desktop.attachImage")}</span>
-                    </button>
-                    <button
-                      type="button"
+                      {t("desktop.attachImage")}
+                    </MenuItem>
+                    <MenuItem
+                      icon={<StarFourIcon size={14} weight="regular" aria-hidden="true" />}
                       onClick={() => { setAttachMenuOpen(false); openSlashTrigger(); }}
-                      style={{
-                        width: "100%", display: "flex", alignItems: "center", gap: 8,
-                        padding: "4px 10px", borderRadius: 4,
-                        background: "none", border: "none",
-                        color: "var(--text)", cursor: "pointer",
-                        fontSize: 12, textAlign: "left",
-                        transition: "background 0.1s ease",
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
                     >
-                      <StarFourIcon size={14} weight="regular" aria-hidden="true" />
-                      <span style={{ flex: 1 }}>{t("desktop.attachSkillCommand")}</span>
-                    </button>
+                      {t("desktop.attachSkillCommand")}
+                    </MenuItem>
                   </div>
-                </div>
-              );
-            })()}
+                </Popover>
+              </div>
+            )}
             {onThinkingLevelChange && (
               <ThinkingLevelSelector
                 thinkingLevel={thinkingLevel}
@@ -2749,63 +2606,34 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             )}
             {onProjectChange && projectRoots && (
               <div ref={projectDropdownRef} className="chat-input-toolbar-project" style={{ position: "relative" }}>
-                <button
-                  onClick={(e) => {
-                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setProjectDropdownRect({ top: cssPx(rect.top), left: cssPx(rect.left), width: cssPx(rect.width) });
-                    setProjectDropdownOpen((v) => !v);
-                  }}
+                <ToolbarButton
+                  open={projectDropdownOpen}
+                  tone={currentProject ? "default" : "accent"}
+                  ariaHasPopup="menu"
                   title={currentProject ?? t("desktop.selectProject")}
-                  aria-label={t("desktop.selectProject")}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                    padding: isMobile ? "0 5px" : "3px 7px",
-                    width: isMobile ? "auto" : undefined,
-                    height: 24,
-                    background: projectDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: 6,
-                    color: currentProject ? "var(--text)" : "var(--accent)",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = projectDropdownOpen ? "var(--bg-hover)" : "none";
+                  ariaLabel={t("desktop.selectProject")}
+                  onClick={(e) => {
+                    setProjectDropdownRect(anchorRectOf(e.currentTarget));
+                    setProjectDropdownOpen((v) => !v);
                   }}
                 >
                   <FolderIcon size={14} />
                   <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {currentProject ? currentProject.split("/").filter(Boolean).pop() ?? currentProject : t("desktop.selectProject")}
                   </span>
-                  <CaretDownIcon
-                    size={11}
-                    weight="bold"
-                    aria-hidden="true"
-                    style={{ transform: projectDropdownOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.12s" }}
-                  />
-                </button>
-                {projectDropdownOpen && projectDropdownRect && (() => {
-                  const vh = cssPx(window.visualViewport?.height ?? window.innerHeight);
-                  const vw = cssPx(window.innerWidth);
-                  const panelMaxW = Math.min(340, vw - 16);
-                  // Anchor like the other toolbar menus: bottom edge sits above
-                  // the button's top edge, left-aligned to the button.
-                  const l = Math.min(projectDropdownRect.left, vw - panelMaxW - 8);
-                  const b = vh - projectDropdownRect.top + 4;
-                  const maxH = Math.min(360, Math.max(120, Math.min(projectDropdownRect.top - 8, vh * 0.6)));
-                  return (
-                    <div className="chat-input-menu-panel" style={{
-                      position: "fixed", bottom: b, left: l,
-                      zIndex: 2001, background: "var(--bg-panel)", border: "1px solid var(--border)",
-                      borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-                      overflow: "hidden", minWidth: 220, maxWidth: panelMaxW, maxHeight: maxH, overflowY: "auto",
-                    }}>
-                      <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
-<div style={{ borderBottom: "1px solid var(--border)", marginBottom: 2, paddingBottom: 4 }}>
+                  <CaretDownIcon size={11} weight="bold" className="ui-caret" aria-hidden="true" />
+                </ToolbarButton>
+                {projectDropdownOpen && (
+                  <Popover
+                    rect={projectDropdownRect}
+                    offset={4}
+                    minWidth={220}
+                    maxWidth={340}
+                    maxHeightCap={360}
+                    className="chat-input-menu-panel"
+                  >
+                    <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+                      <div style={{ borderBottom: "1px solid var(--border)", marginBottom: 2, paddingBottom: 4 }}>
                           {customPathMode ? (
                             <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 4px" }}>
                               <input
@@ -2855,24 +2683,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                               </button>
                             </div>
                           ) : (
-                            <button
+                            <MenuItem
+                              icon={<PlusIcon size={13} weight="regular" />}
+                              style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}
                               onClick={() => { setCustomProjectPath(""); setCustomPathMode(true); }}
-                              style={{
-                                display: "flex", alignItems: "center", gap: 8,
-                                width: "100%", padding: "4px 10px",
-                                borderRadius: 4,
-                                background: "none", border: "none",
-                                color: "var(--text-muted)",
-                                cursor: "pointer", fontSize: 12, textAlign: "left",
-                                whiteSpace: "nowrap",
-                                transition: "background 0.1s ease",
-                              }}
-                              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
                             >
-                              <PlusIcon size={13} weight="regular" />
-                              <span style={{ flex: 1 }}>{t("desktop.customPath")}</span>
-                            </button>
+                              {t("desktop.customPath")}
+                            </MenuItem>
                           )}
                         </div>
                         {projectRoots.length === 0 ? (
@@ -2882,38 +2699,23 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                         ) : projectRoots.map((root) => {
                           const isActive = root === currentProject;
                           return (
-                            <button
+                            <MenuItem
                               key={root}
-                              onClick={() => { setProjectDropdownOpen(false); onProjectChange(root); }}
+                              selected={isActive}
                               title={root}
-                              style={{
-                                display: "flex", alignItems: "center", gap: 8,
-                                width: "100%", padding: "4px 10px",
-                                borderRadius: 4,
-                                background: isActive ? "var(--bg-selected)" : "none",
-                                border: "none",
-                                color: isActive ? "var(--text)" : "var(--text-muted)",
-                                cursor: "pointer", fontSize: 12, textAlign: "left",
-                                whiteSpace: "nowrap",
-                                transition: "background 0.1s ease",
-                              }}
-                              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                              icon={<FolderIcon size={14} />}
+                              onClick={() => { setProjectDropdownOpen(false); onProjectChange(root); }}
+                              trailing={
+                                <span style={{ color: "var(--text-dim)", fontSize: 10, flexShrink: 0, maxWidth: "45%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{root}</span>
+                              }
                             >
-                              <FolderIcon size={14} />
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, flex: 1 }}>
-                                {root.split("/").filter(Boolean).pop() ?? root}
-                              </span>
-                              <span style={{ color: "var(--text-dim)", fontSize: 10, flexShrink: 0, maxWidth: "45%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{root}</span>
-                              {isActive && <CheckIcon size={12} weight="bold" color="var(--accent)" style={{ flexShrink: 0 }} />}
-                            </button>
+                              {root.split("/").filter(Boolean).pop() ?? root}
+                            </MenuItem>
                           );
                         })}
-
-                      </div>
                     </div>
-                  );
-                })()}
+                  </Popover>
+                )}
               </div>
             )}
           </div>

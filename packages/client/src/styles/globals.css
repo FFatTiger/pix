@@ -871,46 +871,8 @@ pre, code {
   border: 0;
   font-size: 12px;
 }
-.chat-input-toolbar button {
-  border-radius: 4px !important;
-  font-size: inherit !important;
-}
-/* Dropdown panels inside the toolbar: menu options share the toolbar
-   button radius. */
-.chat-input-menu-panel button {
-  border-radius: 4px !important;
-}
-/* Group header rows in the model picker stay square */
-.chat-input-menu-panel .chat-input-menu-group-header {
-  border-radius: 0 !important;
-}
 .chat-input-toolbar-actions {
   gap: 2px;
-}
-.chat-input-send {
-  display: inline-flex !important;
-  width: 24px !important;
-  height: 24px !important;
-  align-items: center !important;
-  justify-content: center !important;
-  padding: 0 !important;
-  border: 0 !important;
-  border-radius: 4px !important;
-  background: transparent !important;
-  color: var(--text-dim) !important;
-  box-shadow: none !important;
-  cursor: not-allowed !important;
-  transition: color 150ms ease, background 150ms ease !important;
-}
-.chat-input-send:not(:disabled) {
-  color: var(--accent-blue) !important;
-  cursor: pointer !important;
-  background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-panel)) !important;
-}
-.chat-input-send:not(:disabled):hover {
-  background: color-mix(in srgb, var(--accent-blue) 22%, var(--bg-panel)) !important;
-  color: var(--accent-blue) !important;
-  transform: none;
 }
 @media (min-width: 768px) {
   .chat-input-textarea {
@@ -2023,6 +1985,83 @@ span.linenumber {
   gap: 5px;
 }
 
+/* Compact context ring (lives in the composer toolbar, not the footer). */
+.session-info-bar.is-compact {
+  height: auto;
+  padding: 0;
+  opacity: 1;
+}
+.session-info-ring {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, transform 80ms ease;
+}
+.session-info-ring .session-info-bar-donut { width: 16px; height: 16px; }
+.session-info-ring svg { width: 15px; height: 15px; }
+.session-info-ring:hover { background: var(--ui-hover); }
+.session-info-ring.is-active { background: var(--ui-open); }
+.session-info-ring:active { transform: scale(0.96); }
+.session-info-ring:focus { outline: none; }
+.session-info-ring:focus-visible {
+  outline: 2px solid var(--ui-focus-ring);
+  outline-offset: 1px;
+}
+.session-info-bar.is-compact .session-info-bar-popover { right: 0; left: auto; margin-bottom: 8px; }
+.session-info-bar-popover.is-compact-panel { min-width: 300px; }
+.session-info-compact-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 12px 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.session-info-compact-head strong { font-size: 15px; font-variant-numeric: tabular-nums; }
+.session-info-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 4px 6px 8px;
+  border-bottom: 1px solid var(--surface-hairline);
+}
+.session-info-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 30px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.session-info-action span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.session-info-action:hover:not(:disabled) { background: var(--ui-hover-soft); }
+.session-info-action:disabled { opacity: 0.5; cursor: default; }
+.session-info-action.is-active svg { color: var(--accent-blue); }
+.session-info-ring-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .session-info-bar-compact-wrap {
   position: relative;
 }
@@ -2073,10 +2112,10 @@ span.linenumber {
   bottom: 100%;
   margin-bottom: 4px;
   z-index: 500;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  background: var(--surface-content);
+  border: 1px solid var(--surface-hairline);
+  border-radius: 12px;
+  box-shadow: 0 14px 36px -14px rgba(0, 0, 0, 0.28);
   overflow: hidden;
 }
 .session-info-bar-popover.is-system {
@@ -2317,6 +2356,8 @@ span.linenumber {
 .session-stats-copy.is-copied:hover {
   color: var(--accent);
 }
+.session-stats-info-text,
+.session-stats-value { font-variant-numeric: tabular-nums; }
 
 @keyframes saved-check-draw {
   from { stroke-dashoffset: 18; opacity: 0; }
@@ -3002,17 +3043,6 @@ span.linenumber {
   padding-top: 8px;
 }
 
-/* Running state of the shared composer send slot: the same red tint the
-   main composer's inline stop button uses. */
-.chat-input-send.is-stop:not(:disabled) {
-  color: var(--accent-red) !important;
-  background: color-mix(in srgb, var(--accent-red) 12%, var(--bg-panel)) !important;
-}
-.chat-input-send.is-stop:not(:disabled):hover {
-  background: color-mix(in srgb, var(--accent-red) 20%, var(--bg-panel)) !important;
-  color: var(--accent-red) !important;
-}
-
 .subagent-panel-head {
   flex: 0 0 28px;
 }
@@ -3650,7 +3680,7 @@ html.pi-booted body::before {
   background: none;
   color: var(--text-dim);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--text-weight-medium);
   letter-spacing: 0.02em;
   text-align: left;
   cursor: pointer;
@@ -3710,6 +3740,9 @@ html.pi-booted body::before {
   outline-offset: 1px;
 }
 .ui-trigger > svg { width: var(--icon-size); height: var(--icon-size); }
+/* Dim-toned triggers (thinking "off") start one step quieter; hover still
+ * returns to the normal text color. */
+.ui-trigger.ui-trigger--dim { color: var(--text-dim); }
 /* Accent-toned triggers keep the accent color on hover (attach-with-files,
  * unset project picker). */
 .ui-trigger.ui-trigger--accent { color: var(--accent); }
@@ -3758,6 +3791,66 @@ html.pi-booted body::before {
   transition: transform 0.12s;
 }
 
+/* Favorite star in the model picker: dim until the row is hovered, then
+   accent on its own hover. Favoured stars stay filled/visible. */
+.ui-menu-item .model-star { color: var(--text-dim); }
+.ui-menu-item .model-star.is-fav { color: var(--accent); }
+.ui-menu-item .model-star:hover { color: var(--accent); }
+
+/* Composer floating pills (steer / follow-up / maximize) above the shell. */
+.composer-floating-btn { color: var(--fbtn-color, var(--text-muted)); transition: background 0.12s, color 0.12s; }
+.composer-floating-btn:hover { background: var(--bg-hover); color: var(--fbtn-hover-color, var(--text)); }
+.composer-floating-btn[aria-disabled="true"]:hover { background: transparent; color: var(--fbtn-color, var(--text-muted)); }
+
+/* Queue-recall pill: one-off hover (border + fill). */
+.chat-input-queue-recall:hover {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+/* Send / Stop: 28px rounded-10 square. Filled accent only when sendable;
+   stop/compact use a quiet tint. Scoped under the toolbar so leftover
+   generic button rules cannot win. */
+.chat-input-toolbar .chat-input-send {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  box-shadow: none;
+  cursor: not-allowed;
+  transition: color 150ms ease, background 150ms ease;
+}
+.chat-input-toolbar .chat-input-send:not(:disabled) {
+  color: #fff;
+  background: var(--accent-blue);
+  cursor: pointer;
+}
+.chat-input-toolbar .chat-input-send:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent-blue) 85%, #000);
+  color: #fff;
+}
+.chat-input-toolbar .chat-input-send.is-stop:not(:disabled) {
+  color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 14%, transparent);
+}
+.chat-input-toolbar .chat-input-send.is-stop:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent-red) 22%, transparent);
+}
+.chat-input-toolbar .chat-input-send.is-stop.is-compacting:not(:disabled) {
+  color: var(--accent-orange);
+  background: color-mix(in srgb, var(--accent-orange) 14%, transparent);
+}
+.chat-input-toolbar .ui-trigger > svg { width: 15px; height: 15px; }
+.chat-input-toolbar-project > .ui-trigger { color: var(--text); }
+.chat-input-toolbar-project > .ui-trigger.ui-trigger--accent { color: var(--accent); }
+
 /* Buttons (settings forms): the SettingsButton metrics as classes. */
 .ui-btn {
   display: inline-flex;
@@ -3774,7 +3867,7 @@ html.pi-booted body::before {
   border: 1px solid var(--border);
   color: var(--text-muted);
 }
-.ui-btn--primary { background: var(--accent); border: none; color: #fff; font-weight: 600; }
+.ui-btn--primary { background: var(--accent); border: none; color: #fff; font-weight: var(--text-weight-medium); }
 .ui-btn--danger {
   background: color-mix(in srgb, var(--status-danger) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--status-danger) 30%, transparent);
@@ -3836,7 +3929,7 @@ html.pi-booted body::before {
   border: 1px solid var(--composer-line);
   border-radius: 12px;
   background: var(--composer-bg);
-  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease !important;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 .chat-input-shell:focus-within,
 .chat-input-shell.is-streaming:focus-within {
@@ -3865,46 +3958,6 @@ html.pi-booted body::before {
 .status-card-panel {
   border-color: var(--surface-hairline);
   background: var(--composer-bg);
-}
-
-/* Toolbar controls: one height, radius and hover language (matches settings). */
-.chat-input-toolbar .chat-input-control,
-.chat-input-toolbar .chat-input-toolbar-attach {
-  height: 28px !important;
-  border-radius: 8px !important;
-  padding: 0 8px !important;
-}
-.chat-input-toolbar .chat-input-toolbar-attach { width: 28px !important; padding: 0 !important; }
-.chat-input-toolbar .chat-input-control:hover:not(:disabled),
-.chat-input-toolbar .chat-input-toolbar-attach:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 7%, transparent) !important;
-  color: var(--text) !important;
-}
-
-/* Send / Stop: one 30px rounded square; filled accent only when sendable. */
-.chat-input-send {
-  width: 30px !important;
-  height: 30px !important;
-  border-radius: 10px !important;
-}
-.chat-input-send:not(:disabled) {
-  color: #fff !important;
-  background: var(--accent-blue) !important;
-}
-.chat-input-send:not(:disabled):hover {
-  background: color-mix(in srgb, var(--accent-blue) 85%, #000) !important;
-  color: #fff !important;
-}
-.chat-input-send.is-stop:not(:disabled) {
-  color: var(--accent-red) !important;
-  background: color-mix(in srgb, var(--accent-red) 14%, transparent) !important;
-}
-.chat-input-send.is-stop:not(:disabled):hover {
-  background: color-mix(in srgb, var(--accent-red) 22%, transparent) !important;
-}
-.chat-input-send.is-stop.is-compacting:not(:disabled) {
-  color: var(--accent-orange) !important;
-  background: color-mix(in srgb, var(--accent-orange) 14%, transparent) !important;
 }
 
 /* Composer column = transcript column. The transcript reserves a 34px right
@@ -3937,140 +3990,16 @@ html.pi-booted body::before {
 }
 .workspace .subagent-activity-capsule { margin-left: 0; }
 
-/* Context ring inside the composer toolbar (replaces the footer row). */
-.session-info-bar.is-compact {
-  height: auto;
-  padding: 0;
-  opacity: 1;
-}
-.session-info-ring {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  cursor: pointer;
-}
-.session-info-ring .session-info-bar-donut { width: 16px; height: 16px; }
-.session-info-ring:hover,
-.session-info-ring.is-active { background: color-mix(in srgb, var(--text) 7%, transparent); }
-.session-info-bar.is-compact .session-info-bar-popover { right: 0; left: auto; margin-bottom: 8px; }
-.session-info-bar-popover.is-compact-panel { min-width: 300px; }
-.session-info-compact-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 10px 12px 6px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.session-info-compact-head strong { font-size: 15px; font-variant-numeric: tabular-nums; }
-.session-info-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px;
-  padding: 4px 6px 8px;
-  border-bottom: 1px solid var(--surface-hairline);
-}
-.session-info-action {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  height: 30px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  color: var(--text);
-  background: transparent;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-.session-info-action span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.session-info-action:hover:not(:disabled) { background: var(--bg-hover); }
-.session-info-action:disabled { opacity: 0.5; cursor: default; }
-.session-info-action.is-active svg { color: var(--accent-blue); }
-.session-info-ring-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-
 /* Composer popovers (slash / @ / history): content surface, hairline, soft
    shadow; on desktop they span the same hanging width as the composer. While
    one is open the status tab steps aside so the two never overlap. */
 @media (min-width: 641px) {
+  /* Re-anchors the shared popover to the hanging composer width; the
+     component still sets inline left:0 / right:0, so this one !important
+     is required to win over those shared anchors. */
   .chat-composer-region .chat-input-popover { left: -13px !important; right: -13px !important; }
 }
 .workspace:has(.chat-input-popover) .subagent-activity-card { visibility: hidden; }
-
-/* ───── Composer menus & open states (thinking / model / + / project / ring) ─────
-   One language with the slash popover: content surface, hairline, 12px radius,
-   soft shadow, 8px-radius rows in the UI font. Selected = quiet tint + check,
-   not accent-coloured text. The trigger that owns an open menu keeps a tint. */
-.chat-input-menu-panel,
-.session-info-bar-popover {
-  background: var(--surface-content) !important;
-  border: 1px solid var(--surface-hairline) !important;
-  border-radius: 12px !important;
-  box-shadow: 0 14px 36px -14px rgba(0, 0, 0, 0.28) !important;
-}
-.chat-input-menu-panel button:not(.chat-input-menu-group-header) {
-  min-height: 30px;
-  border-radius: 8px !important;
-  font-family: inherit !important;
-  font-size: 12.5px !important;
-}
-.chat-input-menu-panel button[style*="var(--bg-selected)"] {
-  background: color-mix(in srgb, var(--text) 7%, transparent) !important;
-  color: var(--text) !important;
-  font-weight: var(--text-weight-strong);
-}
-.chat-input-menu-panel button:hover:not(:disabled):not(.chat-input-menu-group-header) {
-  background: color-mix(in srgb, var(--text) 5%, transparent) !important;
-}
-.chat-input-menu-panel input { font-family: inherit !important; }
-.chat-input-menu-group-header {
-  border-top: 0 !important;
-  letter-spacing: 0.02em !important;
-  text-transform: none !important;
-  font-size: 11px !important;
-}
-.chat-input-model-dropdown > div:first-child { border-bottom: 1px solid var(--surface-hairline) !important; }
-
-/* Triggers: open = same tint as hover; focus ring only for keyboard. */
-.chat-input-toolbar .chat-input-control[aria-expanded="true"],
-.chat-input-toolbar-thinking:has(.chat-input-menu-panel) > button,
-.chat-input-toolbar-model:has(.chat-input-menu-panel) > button,
-.chat-input-toolbar-attach[aria-expanded="true"],
-.session-info-ring.is-active {
-  background: color-mix(in srgb, var(--text) 9%, transparent) !important;
-  color: var(--text) !important;
-}
-.chat-input-toolbar button:focus { outline: none; }
-.chat-input-toolbar button:focus-visible,
-.session-info-ring:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent-blue) 55%, transparent) !important;
-  outline-offset: 1px;
-}
-.chat-input-toolbar button:active:not(:disabled),
-.session-info-ring:active { transform: scale(0.96); }
-.chat-input-toolbar button,
-.session-info-ring { transition: background 120ms ease, color 120ms ease, transform 80ms ease; }
-
-/* Ring popover internals match the menus. */
-.session-info-bar-popover .session-info-action { border-radius: 8px; min-height: 30px; }
-.session-info-bar-popover .session-info-action:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.session-info-bar-popover .session-stats-info-text,
-.session-info-bar-popover .session-stats-value { font-variant-numeric: tabular-nums; }
 
 /* Right pane = same two layers as the main page. Header row: 36px on the
    frame surface with no divider, exactly like the tab strip, so it lines up
@@ -4110,13 +4039,13 @@ html.pi-booted body::before {
   .chat-input-toolbar-actions { min-width: 0; flex-wrap: nowrap; }
   .chat-input-toolbar-thinking > button > span,
   .chat-input-toolbar-thinking > button > svg:last-child { display: none; }
-  .chat-input-toolbar-thinking > button { padding: 0 6px !important; }
+  .chat-input-toolbar-thinking > button { padding: 0 6px; }
   .chat-input-toolbar-project { min-width: 0; flex: 0 1 auto; }
-  .chat-input-toolbar-project > button > span:not(:first-child) { max-width: 84px !important; }
+  .chat-input-toolbar-project > button > span:not(:first-child) { max-width: 84px; }
   .chat-input-toolbar-project > button > svg:last-child { display: none; }
-  .chat-input-toolbar-model { min-width: 0; flex: 0 1 auto; max-width: 150px !important; }
+  .chat-input-toolbar-model { min-width: 0; flex: 0 1 auto; max-width: 150px; }
   .chat-input-toolbar-model > button { min-width: 0; }
-  .chat-input-toolbar-project > button > span:not(:first-child) { max-width: 72px !important; }
+  .chat-input-toolbar-project > button > span:not(:first-child) { max-width: 72px; }
   .chat-input-toolbar .chat-input-send,
   .session-info-ring { flex: 0 0 auto; }
 }
@@ -4130,33 +4059,8 @@ html.pi-booted body::before {
 }
 @media (max-width: 360px) {
   .chat-input-toolbar-project { flex: 0 0 auto; }
-  .chat-input-toolbar-project > button { width: 28px !important; justify-content: center !important; padding: 0 !important; }
+  .chat-input-toolbar-project > button { width: 28px; justify-content: center; padding: 0; }
 }
-
-/* Toolbar rhythm: every control is a 28px rounded-8 target with 15px icons,
-   10px carets and 12.5px labels, so + / thinking / project / ring / model /
-   send read as one family. */
-.chat-input-toolbar .chat-input-control,
-.chat-input-toolbar .chat-input-toolbar-attach,
-.chat-input-toolbar .chat-input-toolbar-project > button,
-.chat-input-toolbar .session-info-ring,
-.chat-input-toolbar .chat-input-send {
-  height: 28px !important;
-  min-height: 28px !important;
-  border-radius: 8px !important;
-  font-size: 12.5px !important;
-  gap: 5px !important;
-}
-.chat-input-toolbar .chat-input-send,
-.chat-input-toolbar .session-info-ring,
-.chat-input-toolbar .chat-input-toolbar-attach { width: 28px !important; min-width: 28px; padding: 0 !important; }
-.chat-input-toolbar .chat-input-control,
-.chat-input-toolbar .chat-input-toolbar-project > button { padding: 0 8px !important; }
-.chat-input-toolbar button > svg { width: 15px; height: 15px; }
-.chat-input-toolbar button svg[data-caret],
-.chat-input-toolbar .chat-input-control > svg:last-child,
-.chat-input-toolbar .chat-input-toolbar-project > button > svg:last-child { width: 10px; height: 10px; opacity: 0.7; }
-.chat-input-toolbar .session-info-ring svg { width: 15px; height: 15px; }
 
 /* ───── Settings dialog: same two layers as the app ─────
    Left column on the frame surface (no divider); right column on the content

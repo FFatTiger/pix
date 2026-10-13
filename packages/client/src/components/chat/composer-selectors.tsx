@@ -9,11 +9,12 @@ import { PlusIcon } from "@phosphor-icons/react/Plus";
 import { StarFourIcon } from "@phosphor-icons/react/StarFour";
 import { StarIcon } from "@phosphor-icons/react/Star";
 import { ProviderIcon } from "@/components/chat/ProviderIcon";
+import { ToolbarButton } from "@/components/ui/buttons";
+import { MenuGroupLabel, MenuItem, Popover, anchorRectOf, useMenuDismiss, type AnchorRect } from "@/components/ui/menu";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { reportPreferenceWrite } from "@/lib/preferences/preference-sync";
 import { filterThinkingLevelOptions, type ThinkingLevelOption } from "@/lib/thinking-levels";
-import { cssPx } from "@/lib/ui-scale";
 
 /**
  * Shared composer controls: the model picker and the thinking-level picker.
@@ -101,10 +102,9 @@ export function ThinkingLevelSelector({
   includeAuto = true,
 }: ThinkingLevelSelectorProps) {
   const { t } = useI18n();
-  const isMobile = useIsMobile();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [rect, setRect] = useState<AnchorRect | null>(null);
 
   const displayLabel = (() => {
     const lvl = thinkingLevel ?? "auto";
@@ -112,114 +112,50 @@ export function ThinkingLevelSelector({
     return thinkingLevelMap[lvl] ?? lvl;
   })();
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: MouseEvent): void => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [open]);
+  useMenuDismiss(open, () => setOpen(false), (target) => rootRef.current?.contains(target) ?? false);
 
   return (
     <div ref={rootRef} className="chat-input-toolbar-thinking" style={{ position: "relative" }}>
-      <button
-        type="button"
-        className="chat-input-control"
+      <ToolbarButton
+        className={`chat-input-control${(thinkingLevel ?? "auto") === "off" ? " ui-trigger--dim" : ""}`}
         disabled={disabled}
-        onClick={(e) => {
-          const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          setRect({ top: cssPx(box.top), left: cssPx(box.left), width: cssPx(box.width) });
-          setOpen((v) => !v);
-        }}
+        open={open}
+        ariaHasPopup="menu"
+        ariaLabel={t("desktop.reasoningLevel")}
         title={title ?? t("desktop.changeReasoningLevel", { level: displayLabel })}
-        aria-label={t("desktop.reasoningLevel")}
-        style={{
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-          padding: isMobile ? "0 5px" : "3px 7px",
-          width: isMobile ? "auto" : undefined,
-          height: 24,
-          background: open ? "var(--bg-hover)" : "none",
-          border: "none",
-          borderRadius: 6,
-          color: (thinkingLevel ?? "auto") === "off" ? "var(--text-dim)" : "var(--text-muted)",
-          cursor: disabled ? "not-allowed" : "pointer",
-          opacity: disabled ? 0.55 : 1,
-          fontSize: 12,
-          transition: "background 0.12s, color 0.12s",
-        }}
-        onMouseEnter={(e) => {
-          if (disabled) return;
-          e.currentTarget.style.background = "var(--bg-hover)";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = open ? "var(--bg-hover)" : "none";
+        onClick={(e) => {
+          setRect(anchorRectOf(e.currentTarget));
+          setOpen((v) => !v);
         }}
       >
         <ThinkingLevelIcon level={thinkingLevel ?? "auto"} />
         <span style={{ whiteSpace: "nowrap" }}>{displayLabel}</span>
-        <CaretDownIcon
-          size={11}
-          weight="bold"
-          aria-hidden="true"
-          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.12s" }}
-        />
-      </button>
-      {open && rect && (() => {
-        const vh = cssPx(window.visualViewport?.height ?? window.innerHeight);
-        const vw = cssPx(window.innerWidth);
-        const panelMaxW = Math.min(240, vw - 16);
-        // Anchor the menu's bottom-right to the selector's top-right.
-        const l = Math.min(rect.left, vw - panelMaxW - 8);
-        const b = vh - rect.top + 4;
-        const maxH = Math.min(360, Math.max(120, Math.min(rect.top - 8, vh * 0.6)));
-        return (
-          <div className="chat-input-menu-panel" style={{
-            position: "fixed", bottom: b, left: l,
-            zIndex: 2001, background: "var(--bg-panel)", border: "1px solid var(--border)",
-            borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-            overflow: "hidden", minWidth: 200, maxWidth: panelMaxW, maxHeight: maxH, overflowY: "auto",
-          }}>
-            <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
-              {filterThinkingLevelOptions(availableThinkingLevels).filter((lvl) => includeAuto || lvl !== "auto").map((lvl) => {
-                const isActive = (thinkingLevel ?? "auto") === lvl;
-                const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
-                const levelLabel = (mappedVal != null && mappedVal !== lvl) ? mappedVal : lvl;
-                const showOriginal = mappedVal != null && mappedVal !== lvl;
-                return (
-                  <button
-                    key={lvl}
-                    type="button"
-                    disabled={disabled}
-                    onClick={() => { setOpen(false); if (!isActive) onThinkingLevelChange(lvl); }}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 8,
-                      width: "100%", padding: "4px 10px",
-                      borderRadius: 4,
-                      background: isActive ? "var(--bg-selected)" : "none",
-                      border: "none",
-                      color: isActive ? "var(--accent)" : "var(--text)",
-                      cursor: disabled ? "not-allowed" : "pointer", fontSize: 12, textAlign: "left",
-                      fontFamily: "var(--font-mono)",
-                      whiteSpace: "nowrap",
-                      transition: "background 0.1s ease",
-                    }}
-                    onMouseEnter={(e) => { if (!isActive && !disabled) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                    onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                  >
-                    <ThinkingLevelIcon level={lvl} size={14} />
-                    <span style={{ flex: 1 }}>
-                      {levelLabel}
-                      {showOriginal && <span style={{ fontSize: 10, color: "var(--text-dim)", marginLeft: 5 }}>({lvl})</span>}
-                    </span>
-                    {isActive && <CheckIcon size={12} weight="bold" color="var(--accent)" style={{ flexShrink: 0 }} />}
-                  </button>
-                );
-              })}
-            </div>
+        <CaretDownIcon size={11} weight="bold" className="ui-caret" aria-hidden="true" />
+      </ToolbarButton>
+      {open && (
+        <Popover rect={rect} offset={4} minWidth={200} maxWidth={240} maxHeightCap={360} className="chat-input-menu-panel">
+          <div style={{ padding: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+            {filterThinkingLevelOptions(availableThinkingLevels).filter((lvl) => includeAuto || lvl !== "auto").map((lvl) => {
+              const isActive = (thinkingLevel ?? "auto") === lvl;
+              const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
+              const levelLabel = (mappedVal != null && mappedVal !== lvl) ? mappedVal : lvl;
+              const showOriginal = mappedVal != null && mappedVal !== lvl;
+              return (
+                <MenuItem
+                  key={lvl}
+                  selected={isActive}
+                  disabled={disabled}
+                  icon={<ThinkingLevelIcon level={lvl} size={14} />}
+                  onClick={() => { setOpen(false); if (!isActive) onThinkingLevelChange(lvl); }}
+                >
+                  {levelLabel}
+                  {showOriginal && <span style={{ fontSize: 10, color: "var(--text-dim)", marginLeft: 5 }}>({lvl})</span>}
+                </MenuItem>
+              );
+            })}
           </div>
-        );
-      })()}
+        </Popover>
+      )}
     </div>
   );
 }
@@ -252,7 +188,7 @@ export function ModelSelector({
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
-  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [rect, setRect] = useState<AnchorRect | null>(null);
   const [search, setSearch] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(() => {
     try {
@@ -308,16 +244,11 @@ export function ModelSelector({
     });
   };
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: MouseEvent): void => {
-      const insideRoot = rootRef.current?.contains(event.target as Node) ?? false;
-      const insidePanel = panelRef.current?.contains(event.target as Node) ?? false;
-      if (!insideRoot && !insidePanel) setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [open]);
+  useMenuDismiss(
+    open,
+    () => setOpen(false),
+    (target) => (rootRef.current?.contains(target) ?? false) || (panelRef.current?.contains(target) ?? false),
+  );
 
   // Opening the picker must not focus the search field: on iOS that both
   // summons the keyboard and zooms the page. Keep the current model visible
@@ -349,61 +280,75 @@ export function ModelSelector({
         data-current-model={isActive ? "true" : undefined}
         style={{ display: "flex", alignItems: "center", margin: "0 4px" }}
       >
-        <button
-          type="button"
+        <MenuItem
+          selected={isActive}
           disabled={disabled}
+          showCheck={false}
+          icon={<ProviderIcon id={opt.provider} api={opt.api ?? null} size={14} />}
           onClick={() => select(opt)}
-          style={{
-            display: "flex", alignItems: "center", gap: 8,
-            flex: 1, minWidth: 0,
-            padding: "4px 8px",
-            borderRadius: 4,
-            background: isActive ? "var(--bg-selected)" : "none",
-            border: "none",
-            color: isActive ? "var(--accent)" : "var(--text)",
-            cursor: disabled ? "not-allowed" : "pointer", fontSize: 12, textAlign: "left",
-            fontFamily: "var(--font-mono)",
-            whiteSpace: "nowrap", overflow: "hidden",
-            transition: "background 0.1s ease",
-          }}
-          onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-          onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+          trailing={(
+            <>
+              {isActive && <CheckIcon size={12} weight="bold" color="var(--accent)" style={{ flexShrink: 0 }} />}
+              <span
+                onClick={(e) => { e.stopPropagation(); toggleFavorite(opt.provider, opt.modelId); }}
+                className={`model-star${isFav ? " is-fav" : ""}`}
+                style={{
+                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  flexShrink: 0,
+                  cursor: "pointer",
+                  opacity: isFav ? 1 : 0,
+                  transition: "opacity 0.12s, color 0.12s",
+                }}
+                title={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
+                aria-label={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
+              >
+                <StarIcon size={12} weight={isFav ? "fill" : "regular"} />
+              </span>
+            </>
+          )}
         >
-          <ProviderIcon id={opt.provider} api={opt.api ?? null} size={14} />
-          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{opt.name}</span>
-          {isActive && <CheckIcon size={12} weight="bold" color="var(--accent)" style={{ flexShrink: 0 }} />}
-          <span
-            onClick={(e) => { e.stopPropagation(); toggleFavorite(opt.provider, opt.modelId); }}
-            className="model-star"
-            style={{
-              display: "inline-flex", alignItems: "center", justifyContent: "center",
-              flexShrink: 0,
-              cursor: "pointer",
-              color: isFav ? "var(--accent)" : "var(--text-dim)",
-              opacity: isFav ? 1 : 0,
-              transition: "opacity 0.12s, color 0.12s",
-            }}
-            onMouseEnter={(e) => { e.stopPropagation(); e.currentTarget.style.color = "var(--accent)"; }}
-            onMouseLeave={(e) => { e.stopPropagation(); e.currentTarget.style.color = isFav ? "var(--accent)" : "var(--text-dim)"; }}
-            title={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
-            aria-label={isFav ? t("desktop.unfavorite") : t("desktop.favorite")}
-          >
-            <StarIcon size={12} weight={isFav ? "fill" : "regular"} />
-          </span>
-        </button>
+          {opt.name}
+        </MenuItem>
       </div>
     );
   };
 
+  const searchQuery = search.trim().toLowerCase();
+  const isSearching = searchQuery.length > 0;
+  const matchesQuery = (opt: ModelSelectorOption) =>
+    opt.name.toLowerCase().includes(searchQuery) ||
+    opt.modelId.toLowerCase().includes(searchQuery) ||
+    opt.provider.toLowerCase().includes(searchQuery);
+  const favModels = isSearching
+    ? [...favorites].flatMap((key) => {
+        const [provider, modelId] = key.split(":", 2);
+        const match = modelOptions.find((o) => o.provider === provider && o.modelId === modelId);
+        return match && matchesQuery(match) ? [match] : [];
+      })
+    : [...favorites].flatMap((key) => {
+        const [provider, modelId] = key.split(":", 2);
+        const match = modelOptions.find((o) => o.provider === provider && o.modelId === modelId);
+        return match ? [match] : [];
+      });
+  const hasFavs = favModels.length > 0;
+  const filteredGroups = isSearching
+    ? modelsByProvider
+        .map((group) => ({ ...group, options: group.options.filter(matchesQuery) }))
+        .filter((group) => group.options.length > 0)
+    : modelsByProvider;
+  const hasAnyResults = hasFavs || filteredGroups.length > 0;
+
   return (
     <div ref={rootRef} className="chat-input-toolbar-model" style={{ position: "relative", flex: "0 1 auto", minWidth: 0, width: "auto", maxWidth: isMobile ? 200 : 220 }}>
-      <button
-        type="button"
+      <ToolbarButton
         className="chat-input-control"
         disabled={disabled}
+        open={open}
+        ariaHasPopup="menu"
+        ariaLabel={t("desktop.changeModel")}
+        title={title ?? t("desktop.changeModel")}
         onClick={(e) => {
-          const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          setRect({ top: cssPx(box.top), left: cssPx(box.left), width: cssPx(box.width) });
+          setRect(anchorRectOf(e.currentTarget));
           if (!open) {
             setSearch("");
             if (currentModelOption) {
@@ -417,108 +362,25 @@ export function ModelSelector({
           }
           setOpen((v) => !v);
         }}
-        title={title ?? t("desktop.changeModel")}
-        aria-label={t("desktop.changeModel")}
-        style={{
-          display: "flex", alignItems: "center", gap: 6,
-          justifyContent: isMobile ? "flex-start" : undefined,
-          padding: isMobile ? "4px 6px" : "3px 7px",
-          height: 24,
-          width: "auto",
-          maxWidth: "100%",
-          overflow: "hidden",
-          background: open ? "var(--bg-hover)" : "none",
-          border: "none",
-          borderRadius: 6,
-          color: "var(--text-muted)",
-          cursor: disabled ? "not-allowed" : "pointer",
-          opacity: disabled ? 0.55 : 1,
-          fontSize: 12,
-          transition: "background 0.12s, color 0.12s",
-        }}
-        onMouseEnter={(e) => {
-          if (disabled) return;
-          e.currentTarget.style.background = "var(--bg-hover)";
-          e.currentTarget.style.color = "var(--text)";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = open ? "var(--bg-hover)" : "none";
-          e.currentTarget.style.color = "var(--text-muted)";
-        }}
       >
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: "0 1 auto" }}>{currentName}</span>
-        <CaretDownIcon
-          size={11}
-          weight="bold"
-          aria-hidden="true"
-          style={{ flexShrink: 0, transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.12s" }}
-        />
-      </button>
-      {open && rect && (() => {
-        const viewportHeight = cssPx(window.visualViewport?.height ?? window.innerHeight);
-        const viewportWidth = cssPx(window.innerWidth);
-        const bottom = viewportHeight - rect.top + 6;
-        const maxH = Math.min(400, Math.max(120, Math.min(rect.top - 8, viewportHeight * 0.6)));
-        // On mobile, pin to a small left margin and cap width to the
-        // viewport so long model names never push the panel off-screen.
-        // On desktop, clamp left so the panel stays within the viewport.
-        const panelMinWidth = rect.width;
-        const panelMaxWidth = Math.min(400, viewportWidth - 16);
-        const panelPos: React.CSSProperties = isMobile
-          ? { left: 8, right: 8, maxWidth: "calc(100vw / var(--app-ui-scale, 1) - 16px)" }
-          : {
-              // Anchor the content-sized panel to the selector's
-              // right edge, while preserving an 8px viewport inset.
-              right: Math.max(8, viewportWidth - (rect.left + rect.width)),
-              width: "max-content",
-              minWidth: Math.min(panelMinWidth, panelMaxWidth),
-              maxWidth: panelMaxWidth,
-            };
-
-        // Model search filter — matches name, model id, and provider.
-        const searchQuery = search.trim().toLowerCase();
-        const isSearching = searchQuery.length > 0;
-        const matchesQuery = (opt: ModelSelectorOption) =>
-          opt.name.toLowerCase().includes(searchQuery) ||
-          opt.modelId.toLowerCase().includes(searchQuery) ||
-          opt.provider.toLowerCase().includes(searchQuery);
-        const favModels = isSearching
-          ? [...favorites].flatMap((key) => {
-              const [provider, modelId] = key.split(":", 2);
-              const match = modelOptions.find((o) => o.provider === provider && o.modelId === modelId);
-              return match && matchesQuery(match) ? [match] : [];
-            })
-          : [...favorites].flatMap((key) => {
-              const [provider, modelId] = key.split(":", 2);
-              const match = modelOptions.find((o) => o.provider === provider && o.modelId === modelId);
-              return match ? [match] : [];
-            });
-        const hasFavs = favModels.length > 0;
-        const filteredGroups = isSearching
-          ? modelsByProvider
-              .map((group) => ({ ...group, options: group.options.filter(matchesQuery) }))
-              .filter((group) => group.options.length > 0)
-          : modelsByProvider;
-        const hasAnyResults = hasFavs || filteredGroups.length > 0;
-
-        return (
-          <div ref={panelRef} className="chat-input-model-dropdown chat-input-menu-panel" style={{
-            position: "fixed",
-            bottom,
-            ...panelPos,
-            zIndex: 2000, background: "var(--bg-panel)", border: "1px solid var(--border)",
-            borderRadius: 8, boxShadow: "0 4px 24px rgba(0,0,0,0.12)",
-            overflow: "hidden", maxHeight: maxH,
-            display: "flex", flexDirection: "column",
-          }}>
-            {/* Search area — pinned above the list, separated by a divider */}
-            <div style={{ borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-              <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                <MagnifyingGlassIcon
-                  size={13}
-                  color="var(--text-dim)"
-                  style={{ position: "absolute", left: 12, pointerEvents: "none" }}
-                />
+        <CaretDownIcon size={11} weight="bold" className="ui-caret" aria-hidden="true" />
+      </ToolbarButton>
+      {open && (
+        <div ref={panelRef} style={{ display: "contents" }}>
+          <Popover
+            rect={rect}
+            offset={6}
+            align="right"
+            maxWidth={400}
+            maxHeightCap={400}
+            mobileFullWidth
+            className="chat-input-menu-panel chat-input-model-dropdown"
+            style={{ overflowY: "hidden", display: "flex", flexDirection: "column" }}
+          >
+            <div className="ui-menu-search" style={{ flexShrink: 0 }}>
+              <div className="ui-menu-search-inner">
+                <MagnifyingGlassIcon size={13} className="ui-menu-search-icon" />
                 <input
                   ref={searchRef}
                   value={search}
@@ -540,24 +402,11 @@ export function ModelSelector({
                   }}
                   placeholder={t("desktop.searchModels")}
                   aria-label={t("desktop.searchModels")}
-                  style={{
-                    width: "100%",
-                    padding: "5px 12px 5px 34px",
-                    background: "transparent",
-                    border: "none",
-                    outline: "none",
-                    color: "var(--text)",
-                    // iOS auto-zooms focused form controls below
-                    // 16px. Desktop keeps the compact picker scale.
-                    fontSize: isMobile ? 16 : 12,
-                    fontFamily: "var(--font-mono)",
-                  }}
+                  style={{ fontSize: isMobile ? 16 : undefined }}
                 />
               </div>
             </div>
-            {/* Scrollable results */}
             <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
-              {/* Favorites group — at top, always expanded */}
               {hasFavs && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <div style={{
@@ -571,47 +420,30 @@ export function ModelSelector({
                   <div style={{ borderTop: "1px solid var(--border)" }} />
                 </div>
               )}
-              {/* Provider groups — clickable headers, default collapsed */}
-              {filteredGroups.map((group, gi) => {
+              {filteredGroups.map((group) => {
                 const isExpanded = isSearching || expandedProviders.has(group.provider);
                 const caret = !isExpanded
                   ? <CaretRightIcon size={10} color="var(--text-dim)" />
                   : <CaretDownIcon size={10} color="var(--text-dim)" />;
                 return (
                   <div key={group.provider} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                    <button
-                      type="button"
-                      className="chat-input-menu-group-header"
-                      onClick={() => toggleProviderExpand(group.provider)}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 4,
-                        width: "100%", padding: "6px 12px 4px",
-                        background: "none", border: "none",
-                        cursor: "pointer",
-                        fontSize: 10, fontWeight: 600, color: "var(--text-dim)",
-                        textTransform: "uppercase", letterSpacing: "0.07em",
-                        borderTop: gi > 0 ? "1px solid var(--border)" : "none",
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; }}
-                    >
+                    <MenuGroupLabel onClick={() => toggleProviderExpand(group.provider)}>
                       {caret}
                       {group.provider}
-                    </button>
+                    </MenuGroupLabel>
                     {isExpanded && group.options.map(renderRow)}
                   </div>
                 );
               })}
-              {/* No matches while searching */}
               {isSearching && !hasAnyResults && (
                 <div style={{ padding: "14px 12px", textAlign: "center", fontSize: 12, color: "var(--text-dim)" }}>
                   {t("desktop.noModelsMatch")}
                 </div>
               )}
             </div>
-          </div>
-        );
-      })()}
+          </Popover>
+        </div>
+      )}
     </div>
   );
 }
