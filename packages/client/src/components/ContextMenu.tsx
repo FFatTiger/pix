@@ -321,13 +321,13 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
   const api = useMemo<ContextMenuApi>(() => ({ openMenu, closeMenu }), [openMenu, closeMenu]);
 
   // Y-offset of every entry inside the menu body, used to anchor the flyout
-  // submenu next to its parent row (28px rows + 1px separators + 8px margins).
+  // submenu next to its parent row (30px rows + 1px separators + 8px margins).
   const topOffsets = useMemo(() => {
     const offsets: number[] = [];
     let acc = 4; // container padding
     for (const entry of menu?.entries ?? []) {
       offsets.push(acc);
-      acc += entry.type === "separator" ? 9 : 28;
+      acc += entry.type === "separator" ? 9 : 30;
     }
     return offsets;
   }, [menu]);
@@ -351,10 +351,10 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
         minWidth: 200,
         maxWidth: 300,
         padding: 4,
-        background: "var(--bg-panel)",
-        border: "1px solid var(--border)",
-        borderRadius: 8,
-        boxShadow: "0 8px 24px rgba(0, 0, 0, 0.16)",
+        background: "var(--surface-content)",
+        border: "1px solid var(--surface-hairline)",
+        borderRadius: 12,
+        boxShadow: "var(--menu-shadow)",
         opacity: visible ? 1 : 0,
         transform: visible ? "translateY(0) scale(1)" : "translateY(-4px) scale(0.98)",
         transformOrigin: "top left",
@@ -401,13 +401,13 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
               display: "flex",
               alignItems: "center",
               gap: 8,
-              height: 28,
-              padding: "0 8px",
-              borderRadius: 5,
+              minHeight: 30,
+              padding: "0 10px",
+              borderRadius: 8,
               cursor: disabled ? "default" : "pointer",
               background: active ? "var(--bg-hover)" : "transparent",
               color: disabled ? "var(--text-dim)" : item.danger ? "#ef4444" : "var(--text)",
-              fontSize: 12,
+              fontSize: "var(--menu-font-size)",
               whiteSpace: "nowrap",
               opacity: disabled ? 0.55 : 1,
             }}
@@ -477,10 +477,10 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
               minWidth: 160,
               maxWidth: 240,
               padding: 4,
-              background: "var(--bg-panel)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              boxShadow: "0 8px 24px rgba(0, 0, 0, 0.16)",
+              background: "var(--surface-content)",
+              border: "1px solid var(--surface-hairline)",
+              borderRadius: 12,
+              boxShadow: "var(--menu-shadow)",
             }}
           >
             {parentEntry.submenu.map((subItem, subIndex) => {
@@ -499,13 +499,13 @@ export function ContextMenuProvider({ children }: { children: ReactNode }) {
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
-                    height: 28,
-                    padding: "0 8px",
-                    borderRadius: 5,
+                    minHeight: 30,
+                    padding: "0 10px",
+                    borderRadius: 8,
                     cursor: subDisabled ? "default" : "pointer",
                     background: subActive ? "var(--bg-hover)" : "transparent",
                     color: subDisabled ? "var(--text-dim)" : subItem.danger ? "#ef4444" : "var(--text)",
-                    fontSize: 12,
+                    fontSize: "var(--menu-font-size)",
                     whiteSpace: "nowrap",
                     opacity: subDisabled ? 0.55 : 1,
                   }}

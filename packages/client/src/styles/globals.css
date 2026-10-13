@@ -3905,6 +3905,34 @@ html.pi-booted body::before {
 }
 .ui-switch[aria-checked="true"] .ui-switch-thumb { left: 21px; }
 
+/* Worktree switcher trigger (explorer header): flat 36px mono chrome on the
+ * frame surface; hover/open handled in CSS, not JS. */
+.worktree-trigger {
+  height: 36px;
+  max-width: 220px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: var(--text-weight-regular);
+  font-family: var(--font-mono);
+  line-height: 1;
+  letter-spacing: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.worktree-trigger:hover,
+.worktree-trigger[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 /* ───────── Composer surface (2026-10 restyle) ─────────
    The composer belongs to the frame: at rest it is a frame-gray well with no
    outline, and it lifts onto the content surface with a soft focus ring while
