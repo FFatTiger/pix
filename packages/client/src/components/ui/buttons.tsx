@@ -59,6 +59,7 @@ export function ToolbarButton({
   caret = false,
   open = false,
   disabled = false,
+  tone,
   title,
   ariaLabel,
   ariaHasPopup,
@@ -74,6 +75,8 @@ export function ToolbarButton({
   /** Open state: keeps the quiet tint while its menu is open. */
   open?: boolean;
   disabled?: boolean;
+  /** "accent": base and hover color stay the accent (unset state). */
+  tone?: "default" | "accent";
   title?: string;
   ariaLabel?: string;
   ariaHasPopup?: "menu" | "listbox" | "true";
@@ -81,10 +84,15 @@ export function ToolbarButton({
   className?: string;
   style?: CSSProperties;
 }) {
+  const classes = [
+    "ui-trigger",
+    tone === "accent" ? "ui-trigger--accent" : "",
+    className ?? "",
+  ].filter(Boolean).join(" ");
   return (
     <button
       type="button"
-      className={`ui-trigger${className ? ` ${className}` : ""}`}
+      className={classes}
       style={style}
       disabled={disabled}
       title={title}

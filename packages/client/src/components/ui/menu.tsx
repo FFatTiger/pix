@@ -1,5 +1,6 @@
 import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { CheckIcon } from "@phosphor-icons/react/Check";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { cssPx } from "@/lib/ui-scale";
 
 /**
@@ -36,6 +37,8 @@ export interface PopoverProps {
   maxWidth?: number;
   /** Height cap; the panel also never outgrows the space above the trigger. */
   maxHeightCap?: number;
+  /** Pin to the viewport edges on mobile (long model names must fit). */
+  mobileFullWidth?: boolean;
   className?: string;
   style?: CSSProperties;
   children: ReactNode;
@@ -48,19 +51,23 @@ export function Popover({
   minWidth,
   maxWidth,
   maxHeightCap = 360,
+  mobileFullWidth = false,
   className,
   style,
   children,
 }: PopoverProps) {
+  const isMobile = useIsMobile();
   if (!rect) return null;
   const vh = cssPx(window.visualViewport?.height ?? window.innerHeight);
   const vw = cssPx(window.innerWidth);
   const maxW = Math.min(maxWidth ?? 400, vw - 16);
   const maxH = Math.min(maxHeightCap, Math.max(120, Math.min(rect.top - 8, vh * 0.6)));
   const bottom = vh - rect.top + offset;
-  const position: CSSProperties = align === "right"
-    ? { right: Math.max(8, vw - (rect.left + rect.width)), width: "max-content", minWidth: Math.min(rect.width, maxW), maxWidth: maxW }
-    : { left: Math.min(rect.left, vw - maxW - 8), minWidth: Math.min(minWidth ?? 200, maxW), maxWidth: maxW };
+  const position: CSSProperties = mobileFullWidth && isMobile
+    ? { left: 8, right: 8, maxWidth: "calc(100vw / var(--app-ui-scale, 1) - 16px)" }
+    : align === "right"
+      ? { right: Math.max(8, vw - (rect.left + rect.width)), width: "max-content", minWidth: Math.min(rect.width, maxW), maxWidth: maxW }
+      : { left: Math.min(rect.left, vw - maxW - 8), minWidth: Math.min(minWidth ?? 200, maxW), maxWidth: maxW };
   return (
     <div
       className={`ui-menu${className ? ` ${className}` : ""}`}

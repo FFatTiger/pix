@@ -3619,6 +3619,9 @@ html.pi-booted body::before {
   font-weight: var(--text-weight-strong);
 }
 .ui-menu-item.is-highlighted { background: var(--bg-selected); }
+/* Caret-driven list rows (slash / @ / history) keep their original hover
+ * gray instead of the quiet tint. */
+.ui-menu-item.list-row:hover:not(:disabled):not(.is-highlighted) { background: var(--bg-hover); }
 .ui-menu-item:disabled {
   color: var(--text-dim);
   opacity: 0.6;
@@ -3707,6 +3710,12 @@ html.pi-booted body::before {
   outline-offset: 1px;
 }
 .ui-trigger > svg { width: var(--icon-size); height: var(--icon-size); }
+/* Accent-toned triggers keep the accent color on hover (attach-with-files,
+ * unset project picker). */
+.ui-trigger.ui-trigger--accent { color: var(--accent); }
+.ui-trigger.ui-trigger--accent:hover:not(:disabled),
+.ui-trigger.ui-trigger--accent[aria-expanded="true"],
+.ui-trigger.ui-trigger--accent.is-open { color: var(--accent); }
 
 /* Square icon-only trigger (+, context ring). */
 .ui-icon-btn {
