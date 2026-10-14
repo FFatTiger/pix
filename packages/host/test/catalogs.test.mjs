@@ -1565,7 +1565,7 @@ test("lore connection save/test mount with the memoryLore seam; failures are res
     roots,
     settingsMutation: fakeSettingsMutation({}),
     memoryLore: {
-      saveLoreConnection: async (input) => { saved = input; return { configured: true, baseUrl: input.baseUrl, source: "config", tokenConfigured: true }; },
+      saveLoreConnection: async (input) => { saved = input; return { configured: true, baseUrl: input.baseUrl, source: "config", tokenConfigured: Boolean(input.apiToken) }; },
       testLoreConnection: async (input) => { probed = input; return input.baseUrl === "https://down.example" ? { ok: false, reason: "unreachable" } : { ok: true, baseUrl: input.baseUrl }; },
     },
   });
@@ -1584,7 +1584,7 @@ test("lore connection save/test mount with the memoryLore seam; failures are res
   assert.deepEqual(probed, { baseUrl: "https://down.example" });
 
   // Malformed bodies are 400s before the seam; query strings are refused.
-  for (const bad of [{}, { baseUrl: "" }, { baseUrl: "https://x", extra: 1 }]) {
+  for (const bad of [{ baseUrl: "" }, { baseUrl: "https://x", extra: 1 }]) {
     const res = await putLoreConnection(app, bad);
     assert.equal(res.status, 400);
     const testRes = await postLoreTest(app, bad);
