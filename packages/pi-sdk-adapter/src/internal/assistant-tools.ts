@@ -137,16 +137,21 @@ function isVisibleAssistantSession(info: Pick<AssistantSessionInfo, "cwd" | "par
   return browseKindForWorkspace(info.cwd) !== "hidden";
 }
 
-async function listSessionsForAssistant(signal?: AbortSignal): Promise<AssistantSessionInfo[]> {
+async function listAllSessionsForAssistant(signal?: AbortSignal): Promise<AssistantSessionInfo[]> {
   const now = Date.now();
   if (listCache !== null && now - listCache.at < LIST_CACHE_TTL_MS) {
     signal?.throwIfAborted();
     return listCache.sessions;
   }
   const sessions = (await SessionManager.listAll(undefined, signal))
-    .filter((info) => isVisibleAssistantSession(info));
+    .filter((info) => info.parentSessionPath === undefined || info.parentSessionPath === "")
+    .filter((info) => browseKindForWorkspace(info.cwd) !== "hidden" || isAssistantWorkspacePath(info.cwd, homedir()));
   listCache = { at: now, sessions };
   return sessions;
+}
+
+async function listSessionsForAssistant(signal?: AbortSignal): Promise<AssistantSessionInfo[]> {
+  return (await listAllSessionsForAssistant(signal)).filter((info) => isVisibleAssistantSession(info));
 }
 
 /** Test-only: drop the bounded list cache (deterministic re-scan). */
@@ -1024,7 +1029,7 @@ export function createAssistantToolsExtension(
         }
         let sessions: AssistantSessionInfo[];
         try {
-          sessions = await listSessionsForAssistant(signal);
+          sessions = await listAllSessionsForAssistant(signal);
         } catch (error) {
           signal?.throwIfAborted();
           return toolFailure("读取会话目录失败", error);
@@ -1038,6 +1043,9 @@ export function createAssistantToolsExtension(
         }
         if (missing.length > 0) {
           return toolError(`以下目标没有找到：${missing.join("、")}。可先用 search_sessions 查找。`);
+        }
+        if (targets.some((target) => isAssistantWorkspacePath(target.cwd, homedir()))) {
+          return toolError("不能对助手会话发送消息");
         }
         if (params.action === "rename") {
           if (assistantOps === undefined) {
@@ -1076,7 +1084,7 @@ export function createAssistantToolsExtension(
         }
         let sessions: AssistantSessionInfo[];
         try {
-          sessions = await listSessionsForAssistant(signal);
+          sessions = await listAllSessionsForAssistant(signal);
         } catch (error) {
           signal?.throwIfAborted();
           return toolFailure("读取会话目录失败", error);
@@ -1188,7 +1196,7 @@ export function createAssistantToolsExtension(
         }
         let sessions: AssistantSessionInfo[];
         try {
-          sessions = await listSessionsForAssistant(signal);
+          sessions = await listAllSessionsForAssistant(signal);
         } catch (error) {
           signal?.throwIfAborted();
           return toolFailure("读取会话目录失败", error);
@@ -1201,6 +1209,9 @@ export function createAssistantToolsExtension(
           return toolError(`没有找到会话「${concise(params.session, 60)}」。可先用 search_sessions 查找。`);
         }
         const target = resolved.target;
+        if (isAssistantWorkspacePath(target.cwd, homedir())) {
+          return toolError("不能对助手会话发送消息");
+        }
         const res = await assistantOps.stop(target.id);
         if (res.ok === false) return toolError(res.error.message);
         if (res.kind !== "stop") return toolError("会话操作返回了意外结果。");

@@ -1090,6 +1090,8 @@ describe("sessiond RPC", () => {
         entryCount: 2,
       },
       "sessions.rename": { sessionId: "s-1", name: "New" },
+      "workspace.setFlags": { kind: "session", key: "s-1", pinned: true, archived: false, revision: 1 },
+      "workspace.flags.get": { revision: 1, sessions: { "s-1": { pinned: true } }, projects: {} },
       "sessions.delete": { sessionId: "s-1", deleted: true },
       "sessions.findLatest": { cwd: "/tmp/p", sessionId: "s-1" },
       "config.getSessionIdleTimeoutMs": { idleTimeoutMs: 86_400_000 },

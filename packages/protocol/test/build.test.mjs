@@ -110,10 +110,11 @@ describe("build fingerprint", () => {
 
 describe("canonical identities", () => {
   it("does not fingerprint Browser-Host lifecycle features", () => {
-    // Frozen digest: the v11 IPC vocabulary adds the read-only assistant
-    // worker.statusQuery pair (running/waiting/live authoritative snapshot).
+    // Frozen digest: the v12 IPC vocabulary adds the assistant write channel
+    // (worker.assistantOp, assistantWaitCancel, assistantCompletion) on top of
+    // the v11 read-only worker.statusQuery pair.
     // Recompute from source constants; do not retarget for unrelated Adapter policy.
-    assert.equal(SESSIOND_BUILD_IDENTITY.fingerprint, "8e0926c540fd86a9dc07955de3ae950d0bc2bdbb407be9e85b01af2934601395");
+    assert.equal(SESSIOND_BUILD_IDENTITY.fingerprint, "350c2077790ea73739f562a084ebd8ed5a78cf8f51f80684f9624a602130b02a");
     assert.equal(SESSIOND_BUILD_CAPABILITIES.includes(RUNTIME_OBSERVE_EXISTING_FEATURE), false);
     assert.equal(SESSIOND_BUILD_CAPABILITIES.includes(RUNTIME_EXPLICIT_ACTIVATE_FEATURE), false);
     assert.equal(RUNTIME_CAPABILITY_VOCABULARY.includes(RUNTIME_OBSERVE_EXISTING_FEATURE), false);
@@ -243,10 +244,10 @@ describe("worker build matrix", () => {
     }
   });
 
-  it("release fences: pre-v11 Worker and pre-v9 Adapter generations are incompatible both ways", () => {
-    // Workers missing optional actual child-model on subagent tasks must not be reused.
+  it("release fences: pre-v12 Worker and pre-v9 Adapter generations are incompatible both ways", () => {
+    // Workers missing the assistant write channel must not be reused.
     assert.equal(WORKER_BUILD_IDENTITY.adapterContract, 9);
-    assert.equal(WORKER_BUILD_IDENTITY.workerContract, 11);
+    assert.equal(WORKER_BUILD_IDENTITY.workerContract, 12);
     for (let superseded = 1; superseded < WORKER_CONTRACT_VERSION; superseded += 1) {
       const older = { ...WORKER_BUILD_IDENTITY, workerContract: superseded };
       assert.deepEqual(evaluateWorkerBuild(older, WORKER_BUILD_IDENTITY), {

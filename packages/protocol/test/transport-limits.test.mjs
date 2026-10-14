@@ -49,7 +49,7 @@ describe("Protocol runtime transport limits", () => {
     assert.equal(PROTOCOL_VERSION, 2);
     assert.equal(ADAPTER_CONTRACT_VERSION, 9);
     assert.equal(SESSIOND_CONTRACT_VERSION, 12);
-    assert.equal(WORKER_CONTRACT_VERSION, 11);
+    assert.equal(WORKER_CONTRACT_VERSION, 12);
   });
 });
 

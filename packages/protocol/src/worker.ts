@@ -453,7 +453,10 @@ export type AssistantDeliveryPath = z.infer<typeof AssistantDeliveryPathSchema>;
 export const WorkerAssistantOpResultMessageSchema = z.strictObject({
   type: z.literal("worker.assistantOpResult"),
   id: NonEmptyStringSchema,
-  payload: z.discriminatedUnion("ok", [
+  // A plain union, not a discriminated union: success and failure both
+  // carry `kind`, and the four success variants all carry `ok: true`, so
+  // neither field is a unique discriminator (zod v4 rejects duplicates).
+  payload: z.union([
     z.strictObject({
       ok: z.literal(true),
       sessionId: NonEmptyStringSchema,

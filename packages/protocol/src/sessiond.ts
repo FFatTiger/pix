@@ -544,10 +544,15 @@ export type WorkspaceSetFlagsResult = z.infer<typeof WorkspaceSetFlagsResultSche
 export const WorkspaceFlagsGetParamsSchema = z.strictObject({});
 export type WorkspaceFlagsGetParams = z.infer<typeof WorkspaceFlagsGetParamsSchema>;
 
+const WorkspaceFlagEntrySchema = z.strictObject({
+  pinned: z.boolean().optional(),
+  archived: z.boolean().optional(),
+}).refine((entry) => entry.pinned !== undefined || entry.archived !== undefined, { message: "flag entry must set at least one field" });
+
 export const WorkspaceFlagsGetResultSchema = z.strictObject({
   revision: z.number().int().nonnegative(),
-  sessions: z.record(z.string(), z.strictObject({ pinned: z.boolean().optional(), archived: z.boolean().optional() })),
-  projects: z.record(z.string(), z.strictObject({ pinned: z.boolean().optional(), archived: z.boolean().optional() })),
+  sessions: z.record(z.string(), WorkspaceFlagEntrySchema),
+  projects: z.record(z.string(), WorkspaceFlagEntrySchema),
 });
 export type WorkspaceFlagsGetResult = z.infer<typeof WorkspaceFlagsGetResultSchema>;
 
@@ -937,6 +942,8 @@ export const SessiondRpcFailureSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.thinking"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.tree"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.rename"), error: ProtocolErrorSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("workspace.setFlags"), error: ProtocolErrorSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("workspace.flags.get"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.delete"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("sessions.findLatest"), error: ProtocolErrorSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(false), method: z.literal("config.getSessionIdleTimeoutMs"), error: ProtocolErrorSchema }),

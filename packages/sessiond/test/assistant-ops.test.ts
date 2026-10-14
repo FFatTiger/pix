@@ -216,17 +216,25 @@ test("quota rejects the 6th send, 4th create and 6th stop", async () => {
   env.authority.dispose();
 });
 
-test("chain cap rejects the 4th auto op and a user turn resets it", async () => {
+test("chain cap rejects the 4th auto continuation and a user turn resets it", async () => {
   const env = harness();
-  // Stay busy so none of the sends settle into a notification (a delivered
-  // notification would move lastNotifyAt and the user turn would reset early).
+  // A user-originated send is not a continuation. The cap starts only AFTER a
+  // completion notification for this target was delivered.
   const target = makeRecord("target", "/repos/app", { running: true });
   env.surface.records.set("target", target);
   env.surface.exists.add("target");
+  await send(env, "seed", { kind: "send", targetSessionId: "target", message: "seed", delivery: "follow_up", waitMinutes: 0 });
+  env.surface.records.delete("target");
+  env.authority.scheduleSettleCheck();
+  await wait(80);
+  await wait(NOTIFY_MERGE + 100);
+  assert.match(env.surface.submits.at(-1)?.input.prompt ?? "", /id: target/, "the seed settled into a notification");
+
+  env.surface.records.set("target", target);
   for (let index = 0; index < 3; index += 1) {
     env.assistant.operationId = `op-${index}`;
     const frame = payload(await send(env, `c-${index}`, { kind: "send", targetSessionId: "target", message: `m${index}`, delivery: "follow_up", waitMinutes: 0 }));
-    assert.equal(frame.ok, true);
+    assert.equal(frame.ok, true, `continuation ${index} admitted`);
   }
   env.assistant.operationId = "op-3";
   const blocked = payload(await send(env, "c-3", { kind: "send", targetSessionId: "target", message: "nope", delivery: "follow_up", waitMinutes: 0 }));
@@ -444,24 +452,32 @@ test("notifications merge, follow a busy assistant, cold-open a missing assistan
   env.surface.exists.add("b");
   env.surface.headers.set("a", { title: "甲", cwd: "/repos/one" });
   env.surface.headers.set("b", { title: "乙", cwd: "/repos/two" });
+  // Idle during the sends: a busy assistant would settle (and notify) the
+  // moment the first target disappears, before the second send lands.
+  env.assistant.running = false;
   await send(env, "n1", { kind: "send", targetSessionId: "a", message: "one", delivery: "steer", waitMinutes: 0 });
   env.assistant.operationId = "op-b";
   await send(env, "n2", { kind: "send", targetSessionId: "b", message: "two", delivery: "steer", waitMinutes: 0 });
   env.surface.records.delete("a");
   env.surface.records.delete("b");
+  // Busy for the whole merge window: both settlements enqueue, and the single
+  // flush delivers them together as one follow_up. Going idle mid-window would
+  // deliver the first batch as a submitTurn and split the burst.
   env.assistant.running = true;
+  const commandsBefore = env.surface.commands.length;
   env.authority.scheduleSettleCheck();
   await wait(80);
   await wait(NOTIFY_MERGE + 100);
-  assert.equal(env.surface.commands.length, 1, "two items merge into one follow_up");
-  const prompt = env.surface.commands[0]!.command.message;
+  const merged = env.surface.commands.slice(commandsBefore);
+  assert.equal(merged.length, 1, "two items merge into one follow_up");
+  const prompt = merged[0]!.command.message;
   assert.equal(prompt.startsWith(`${ASSISTANT_NOTIFY_MESSAGE_PREFIX}\n`), true);
   assert.equal(prompt.split(ASSISTANT_NOTIFY_MESSAGE_PREFIX).length, 2);
   assert.match(prompt, /会话: 甲｜项目: one｜id: a/);
   assert.match(prompt, /会话: 乙｜项目: two｜id: b/);
   assert.equal(prompt.includes(PREFIX), false);
-  assert.equal(env.surface.commands[0]!.command.type, "follow_up");
-  assert.equal(env.surface.commands[0]!.epoch, env.assistant.epoch);
+  assert.equal(merged[0]!.command.type, "follow_up");
+  assert.equal(merged[0]!.epoch, env.assistant.epoch);
 
   // Assistant record gone → cold open, no fence.
   const third = makeRecord("c", "/repos/three", { running: true });
@@ -505,17 +521,19 @@ test("ledger round-trip re-enqueues a pending notification and degrades a wait t
   env.surface.records.set("target", target);
   env.surface.exists.add("target");
   await send(env, "p1", { kind: "send", targetSessionId: "target", message: "keep", delivery: "steer", waitMinutes: 5 });
-  env.surface.records.delete("target");
-  env.authority.scheduleSettleCheck();
-  await wait(80);
-  // Settled into the queue, not yet flushed.
+  // Restart BEFORE settlement. The worker that was waiting on the completion
+  // frame is gone, so the reloaded authority must degrade the wait to a
+  // notification and deliver it once the target finishes.
   env.authority.dispose();
 
   const reloaded = new AssistantOpsAuthority({ surface: env.surface, store: new FileWorkspaceStateStore(env.dir), homedir: HOME, now: () => env.now });
-  env.surface.records.set("assistant", env.assistant);
+  env.surface.records.delete("target");
+  reloaded.scheduleSettleCheck();
+  await wait(80);
   await wait(NOTIFY_MERGE + 200);
   const resumed = env.surface.submits.at(-1)?.input.prompt ?? "";
   assert.match(resumed, /id: target/);
+  assert.equal(env.assistant.sent.some((frame) => frame.type === "worker.assistantCompletion"), false, "a restarted wait notifies instead of pushing a completion frame");
   reloaded.dispose();
 
   const waiting = new FakeSurface();

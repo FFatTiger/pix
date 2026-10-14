@@ -109,8 +109,12 @@ export const SESSIOND_CONTRACT_VERSION = 12 as const;
  * at the runtime bound after AUTH. A v9 peer's 2 MiB inbound still rejects.
  * v11 (actual child model): Worker snapshot/event subagent tasks may carry
  * optional bounded `model`. A v10 peer's strict schemas reject it.
+ * v12 (assistant write channel): Worker IPC adds the correlated
+ * `worker.assistantOp` request/result, `worker.assistantWaitCancel`, and the
+ * `worker.assistantCompletion` receipt. A v11 peer's strict unions reject the
+ * frames, so mixed sessiond/Worker deployments must fail closed at this fence.
  */
-export const WORKER_CONTRACT_VERSION = 11 as const;
+export const WORKER_CONTRACT_VERSION = 12 as const;
 
 /**
  * Adapter behavior-contract generation (the contract proven by

@@ -253,13 +253,18 @@ export class AssistantOpsAuthority {
     if (this.settleTimer !== undefined) return;
     this.settleTimer = setTimeout(() => {
       this.settleTimer = undefined;
-      void this.settlePass();
+      void this.settlePass().catch((error) => {
+        console.error(`[assistant-ops] settle pass failed: ${error instanceof Error ? error.stack : String(error)}`);
+      });
     }, SETTLE_DEBOUNCE_MS);
     this.settleTimer.unref?.();
   }
 
   /** Drop every armed timer. Tests and shutdown use this; nothing else leaks. */
+  private disposed = false;
+
   dispose(): void {
+    this.disposed = true;
     for (const timer of [this.settleTimer, this.confirmTimer, this.notifyTimer, this.retryTimer]) {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -294,11 +299,15 @@ export class AssistantOpsAuthority {
     if (!located.exists && !target) {
       return fail("send", { code: "not_found", message: "session not found", retryable: false });
     }
-    if (!this.reserveChain(record.sessionId, op.targetSessionId)) return fail("send", chainLimitError());
+    // Only a send that CONTINUES a just-delivered notification spends the
+    // auto-continuation cap. A user-originated send (no notification since the
+    // last user turn) is not a continuation and is not counted here.
+    const continuing = this.pendingContinuation(record.sessionId, op.targetSessionId);
+    if (continuing && !this.reserveChain(record.sessionId, op.targetSessionId)) return fail("send", chainLimitError());
     const message = marked(op.message);
     const routed = await this.routePrompt(target, op.targetSessionId, message, op.delivery);
     if (!routed.ok) {
-      this.releaseChain(record.sessionId, op.targetSessionId);
+      if (continuing) this.releaseChain(record.sessionId, op.targetSessionId);
       return fail("send", routed.error);
     }
     this.takeQuota(record, "send");
@@ -345,10 +354,8 @@ export class AssistantOpsAuthority {
     if (target && isAssistantWorkspacePath(target.cwd, this.homedir)) {
       return fail("create", { code: "invalid_input", message: "不能以助手工作区中的会话为目标", retryable: false });
     }
-    if (!this.reserveChain(record.sessionId, created.sessionId)) return fail("create", chainLimitError());
     const routed = await this.routePrompt(target, created.sessionId, marked(op.message), "follow_up");
     if (!routed.ok) {
-      this.releaseChain(record.sessionId, created.sessionId);
       return fail("create", routed.error);
     }
     this.takeQuota(record, "create");
@@ -474,6 +481,13 @@ export class AssistantOpsAuthority {
     this.quota.set(key, bucket);
   }
 
+  /** True when a notification for this target was delivered after the assistant's last user turn. */
+  private pendingContinuation(assistantId: string, targetId: string): boolean {
+    const chain = this.chains.get(assistantId);
+    const prior = chain?.targets[targetId];
+    return prior !== undefined && prior.lastNotifyAt > (chain?.lastUserTurnAt ?? 0);
+  }
+
   /**
    * Reserve one automatic continuation before the send, so overlapping ops
    * cannot both pass the cap. A user turn newer than the last notification
@@ -546,6 +560,9 @@ export class AssistantOpsAuthority {
       mode: input.mode,
       state: input.mode,
       waitMinutes: input.waitMinutes,
+      // The target may already be mid-turn when the op lands. A later settle
+      // pass that only sees it idle would otherwise report a stop.
+      ...(this.surface.getRecord(input.targetSessionId)?.isTurnRunning() === true ? { busySeen: true } : {}),
     };
     this.delegations.unshift(delegation);
     if (this.delegations.length > LEDGER_CAP) this.delegations.length = LEDGER_CAP;
@@ -731,7 +748,10 @@ export class AssistantOpsAuthority {
   private enqueue(item: NotifyItem): void {
     this.queue.push(item);
     this.persist();
-    this.armNotify();
+    // Arm once per quiet period. Items that arrive while the window is open
+    // join the same batch; re-arming here would split one burst into one
+    // notification per item.
+    if (this.notifyTimer === undefined && !this.flushing) this.armNotify();
   }
 
   private armNotify(): void {
@@ -744,7 +764,7 @@ export class AssistantOpsAuthority {
   }
 
   private async flushNotify(): Promise<void> {
-    if (this.flushing || this.queue.length === 0) return;
+    if (this.disposed || this.flushing || this.queue.length === 0) return;
     this.flushing = true;
     const batch = this.queue.splice(0, this.queue.length);
     const byAssistant = new Map<string, NotifyItem[]>();
@@ -777,6 +797,7 @@ export class AssistantOpsAuthority {
       }
     } finally {
       this.flushing = false;
+      if (this.disposed) return;
       this.persist();
       if (this.queue.length > 0) this.armRetry();
     }
@@ -1019,5 +1040,6 @@ function isNotifyItem(value: unknown): value is NotifyItem {
   if (value === null || typeof value !== "object") return false;
   const row = value as Partial<NotifyItem>;
   return typeof row.delegationId === "string" && typeof row.assistantSessionId === "string"
-    && typeof row.targetSessionId === "string" && typeof row.outcome === "string" && typeof row.attempts === "number";
+    && typeof row.targetSessionId === "string" && typeof row.targetTitle === "string" && typeof row.targetCwd === "string"
+    && typeof row.outcome === "string" && typeof row.attempts === "number";
 }
