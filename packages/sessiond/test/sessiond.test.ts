@@ -242,7 +242,7 @@ test("pending extension UI flips waitingSessionIds in the global running watch",
   await service.activate("s");
   const watch = service.prepareRunningWatch();
   assert.deepEqual(watch.result.waitingSessionIds, []);
-  const states: Array<{ revision: number; busySessionIds: string[]; waitingSessionIds?: string[] }> = [];
+  const states: Array<{ revision: number; busySessionIds: string[]; waitingSessionIds?: string[] | undefined }> = [];
   await watch.flushTo((push) => { if (push.type === "running_state") states.push(push.state); });
   // A question card arrives: the turn stops on unanswered USER input — the
   // authoritative watch projects it as the waiting set (one revisioned push).
