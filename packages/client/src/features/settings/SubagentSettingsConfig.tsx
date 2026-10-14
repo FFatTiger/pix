@@ -7,6 +7,7 @@ import { createQueryOptions } from "@/api/query-keys";
 import { useHttpClient } from "@/app/http-context";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
+import { SettingToggle } from "@/components/SettingToggle";
 import { describeSubagentSettingsError } from "@/lib/subagent-settings-errors";
 import { useSettingsDraft } from "./settings-draft";
 import { SettingsButton, SettingsField, SettingsSaveBar, SettingsSection, SettingsSelect } from "./settings-ui";
@@ -51,12 +52,22 @@ export function SubagentSettingsConfig() {
   const queryClient = useQueryClient();
   const id = useId();
   const configurable = can("settings.configure");
+  const canConfigureBuiltIns = can("builtins.configure");
   const query = useQuery({ ...createQueryOptions(http).settingsFile.subagents(), enabled: configurable });
+  // Same subagents switch the 能力 overview shows — one stored setting, two
+  // places to flip it. Absent data reads as on (the server default for a
+  // missing pix-builtins.json).
+  const builtIns = useQuery({ ...createQueryOptions(http).settingsFile.builtIns(), enabled: configurable && canConfigureBuiltIns });
   const models = useQuery({ ...createQueryOptions(http).models.list(), enabled: configurable && can("models") });
   const save = useMutation(createMutationOptions(http, queryClient).settings.saveSubagents());
+  const saveBuiltIns = useMutation(createMutationOptions(http, queryClient).settings.saveBuiltIns());
   const [draft, setDraft] = useState<SubagentSettingsMutation | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const busy = save.isPending || query.isFetching;
+  const [builtInsErrorKey, setBuiltInsErrorKey] = useState<string | null>(null);
+  const busy = save.isPending || saveBuiltIns.isPending || query.isFetching;
+
+  const subagentsRow = builtIns.data?.capabilities.find((row) => row.id === "subagents");
+  const subagentsEnabled = subagentsRow?.enabled !== false;
 
   const reload = async () => {
     if (busy) return;
@@ -142,6 +153,22 @@ export function SubagentSettingsConfig() {
   );
   const displayedError = error ?? (query.isError ? query.error : null);
   const errorText = displayedError ? t(describeSubagentSettingsError(displayedError)) : null;
+  const setSubagentsEnabled = (enabled: boolean) => {
+    const current = builtIns.data;
+    if (!current || busy) return;
+    setBuiltInsErrorKey(null);
+    saveBuiltIns.mutate({
+      expectedRevision: current.revision,
+      capabilities: current.capabilities.map((row) => row.id === "subagents" ? { ...row, enabled } : row),
+    }, {
+      onError: (failure) => {
+        const conflict = failure instanceof HttpError && failure.code === "CONFLICT";
+        if (conflict) void builtIns.refetch();
+        setBuiltInsErrorKey(conflict ? "desktop.capabilitiesChanged" : "desktop.capabilitiesSaveFailed");
+      },
+    });
+  };
+
   const commit = () => {
     if (!draft || busy) return;
     setError(null);
@@ -165,6 +192,20 @@ export function SubagentSettingsConfig() {
           commit();
         }}
       >
+        {canConfigureBuiltIns ? (
+          <SettingsSection title={t("desktop.agentFeature.subagents")}>
+            <SettingToggle
+              checked={subagentsEnabled}
+              onChange={setSubagentsEnabled}
+              label={t("desktop.agentFeature.subagents")}
+              description={t("desktop.capability.subagents.description")}
+              disabled={busy || !builtIns.data}
+            />
+            {builtInsErrorKey ? <div className="workspace-hint workspace-hint--error" role="alert">{t(builtInsErrorKey)}</div> : null}
+          </SettingsSection>
+        ) : null}
+        {subagentsEnabled ? (
+        <>
         <SettingsSection title={t("desktop.subagentDefaultsSection")} description={t("desktop.subagentSettingsDescription")}>
           {!can("models") || models.isError ? <p className="workspace-hint" role="status">{t("desktop.subagentModelsUnavailable")}</p>
             : models.isPending ? <p className="workspace-hint" role="status">{t("desktop.subagentModelsLoading")}</p> : null}
@@ -201,6 +242,8 @@ export function SubagentSettingsConfig() {
             </SubagentRoleSection>
           );
         })}
+        </>
+        ) : null}
       </form>
       <SettingsSaveBar
         dirty={draft !== null}

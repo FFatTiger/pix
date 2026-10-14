@@ -14,7 +14,7 @@ import type {
   TodoProjection,
   ToolInfo,
 } from "@fffattiger/pix-runtime-core";
-import { makeRuntimeError, QUESTIONNAIRE_LIMITS, RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
+import { makeRuntimeError, QUESTIONNAIRE_LIMITS, RUNTIME_CAPABILITIES, BUILTIN_CAPABILITY_REGISTRY } from "@fffattiger/pix-runtime-core";
 import { effectiveAssistantSystemPromptFor, ensureAssistantToolsActive, assistantExtensionFactoriesForCwd } from "./assistant-tools.js";
 import { renderAssistantPreamble } from "./assistant-system-prompt.js";
 import { redactText } from "./sanitize.js";
@@ -23,18 +23,22 @@ import { readGlobalToolsPreference } from "./settings-config-store.js";
 import { estimateSdkBranchContextTokens, type SdkContextMessage } from "./context-tokens.js";
 import { generateSessionTitle as generateSessionTitleForSession } from "./session-title.js";
 import { readBuiltInCapabilityConfigSync } from "./built-in-capability-store.js";
+import { readMemoryRuntimeStateSync } from "./memory-provider.js";
 import {
   buildBuiltInRuntimeState,
   capabilitiesWithLoadedTokens,
   cloneBuiltIns,
   detectLoadedBuiltIns,
+  SMART_COMPACT_MEMORY_TOOL_NAMES,
 } from "./built-in-detection.js";
+
+export { SMART_COMPACT_MEMORY_TOOL_NAMES };
 import {
   ASK_QUESTIONNAIRE_CUSTOM,
   isAskQuestionnaireCustomOptions,
   mapQuestionnaireAnswersToPackageResult,
 } from "./ask-questionnaire-bridge.js";
-import { resourceLoaderOptionsForBuiltIns } from "./curated-plugins.js";
+import { resourceLoaderOptionsForBuiltIns, memoryCapabilityToolNames } from "./curated-plugins.js";
 import {
   cloneSubagents,
   isSubagentRefreshEvent,
@@ -84,11 +88,12 @@ import type {
 const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"]);
 
 /**
- * pi-smart-compact's own project-memory tools (pinned 10.3.0). Pix memory has
- * exactly one owner — the memory provider (pi-memory / Lore / off) — so these
- * two are never declared to the model. `contextGraphEnabled` stays at the
- * plugin default: turning it off would also stop the plugin indexing verified
- * compaction state, which compaction itself uses. Hiding is done here, at the
+ * pi-smart-compact's own project-memory tools (pinned 10.3.0), from the
+ * capability registry's `hiddenTools`. Pix memory has exactly one owner —
+ * the memory provider (pi-memory / Lore / off) — so these two are never
+ * declared to the model. `contextGraphEnabled` stays at the plugin default:
+ * turning it off would also stop the plugin indexing verified compaction
+ * state, which compaction itself uses. Hiding is done here, at the
  * active-tool boundary, because the plugin registers its tools from its
  * extension factory (not the pre-registration tool map) and then re-applies
  * its own exposure on `session_start`. Pix's tool selection runs AFTER that
@@ -97,7 +102,6 @@ const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "powershell", "edit", "write
  * load a no-op for already-loaded groups, and its memory group refuses to
  * load anything the active set excludes.
  */
-export const SMART_COMPACT_MEMORY_TOOL_NAMES: readonly string[] = ["smart_recall", "smart_save_memory"];
 
 const SMART_COMPACT_MEMORY_TOOLS = new Set<string>(SMART_COMPACT_MEMORY_TOOL_NAMES);
 
@@ -225,9 +229,11 @@ export type RuntimeToolsSelection =
  *
  * - `all`: activate every selectable registered tool (codemode/tool_search
  *   included once their extensions register).
- * - `custom`: activate the intersection with the selectable registry; saved
- *   names that are currently unavailable stay persisted, they just do not
- *   apply. An empty result keeps the registry intact with nothing active.
+ * - `custom`: activate the intersection with the selectable registry, UNION
+ *   the `forcedIn` capability-owned tools (they switch with their capability,
+ *   never with the allowlist). Saved names that are currently unavailable
+ *   stay persisted, they just do not apply. An empty result keeps the
+ *   registry intact with nothing active.
  * - `native`: the SDK's own `defaultTools`-driven active set (including `+`/`-`
  *   modifiers and registration activation) stays authoritative — pix adds
  *   nothing and removes nothing.
@@ -238,17 +244,51 @@ export function applyToolsSelection(
   session: AgentSession,
   selection: RuntimeToolsSelection,
   policy: ToolPolicyState,
+  forcedIn: ReadonlySet<string> = new Set(),
 ): void {
   if (selection.mode === "native") {
     policy.forcedEmpty = session.getActiveToolNames().length === 0;
     return;
   }
   const selectable = new Set(selectableToolNames(session));
+  const forcedSelectable = [...forcedIn].filter((name) => selectable.has(name));
   const names = selection.mode === "all"
     ? [...selectable]
-    : withoutSmartCompactMemoryTools(selection.toolNames.filter((name) => selectable.has(name)));
+    : withoutSmartCompactMemoryTools([
+        ...selection.toolNames.filter((name) => selectable.has(name)),
+        ...forcedSelectable,
+      ]);
   policy.forcedEmpty = names.length === 0;
-  session.setActiveToolsByName(names);
+  session.setActiveToolsByName([...new Set(names)]);
+}
+
+/**
+ * Tool names the capability registry contributes for the CURRENT capability
+ * switches (`pix-builtins.json` toggles + the memory provider choice),
+ * intersected with the live selectable registry: capability-owned tools are
+ * active iff their capability is on — the global allowlist never governs
+ * them ("tools a capability cannot work without switch with the capability").
+ * The memory capability's tools vary by provider, so its contribution is
+ * resolved from the bundled plugin families.
+ */
+export function capabilityOwnedToolNames(
+  session: AgentSession,
+  agentDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Set<string> {
+  const selectable = new Set(selectableToolNames(session));
+  const owned = new Set<string>();
+  const config = readBuiltInCapabilityConfigSync(agentDir);
+  const enabled = new Set(config.capabilities.filter((row) => row.enabled).map((row) => row.id));
+  for (const entry of BUILTIN_CAPABILITY_REGISTRY) {
+    if (!enabled.has(entry.id)) continue;
+    for (const name of entry.tools) {
+      if (selectable.has(name)) owned.add(name);
+    }
+  }
+  const memory = readMemoryRuntimeStateSync(agentDir, env);
+  for (const name of memoryCapabilityToolNames(memory.provider, selectable)) owned.add(name);
+  return owned;
 }
 
 /**
@@ -268,7 +308,7 @@ export async function applyGlobalToolsSelection(
   const selection: RuntimeToolsSelection = preference.mode === "unset"
     ? (session.settingsManager.getDefaultTools() === undefined ? { mode: "all" } : { mode: "native" })
     : preference;
-  applyToolsSelection(session, selection, policy);
+  applyToolsSelection(session, selection, policy, capabilityOwnedToolNames(session, agentDir));
 }
 
 function commandsView(session: AgentSession): SlashCommandInfo[] {

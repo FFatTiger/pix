@@ -216,19 +216,58 @@ describe("SubagentSettingsConfig", () => {
     expect(writes).toHaveLength(1);
   });
 
-  it("permits subagent model settings while the Subagents feature toggle is off", async () => {
-    // The capabilities page shows the saved toggle honestly…
-    const builtInsMock = vi.fn(async () => json({ revision, capabilities: [{ id: "subagents", enabled: false }, { id: "todo", enabled: true }, { id: "ask_user_question", enabled: true }, { id: "side_chat", enabled: false }, { id: "smart_compact", enabled: true }] }));
-    mount(builtInsMock, ["settings.configure", "builtins.configure", "models"], "capabilities");
-    expect((await screen.findByRole("switch", { name: "Subagents" })).getAttribute("aria-checked")).toBe("false");
-    cleanup();
-    // …and the subagents page saves without ever consulting built-ins.
+  it("shows the shared subagents switch on top and collapses the model settings when the capability is off", async () => {
+    const builtInsOff = { revision, capabilities: [{ id: "subagents", enabled: false }, { id: "todo", enabled: true }, { id: "ask_user_question", enabled: true }, { id: "side_chat", enabled: true }, { id: "smart_compact", enabled: true }] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/v1/settings/built-ins") return json(builtInsOff);
+      if (path === "/v1/models") return json(catalog);
+      if (path === "/v1/settings/subagents") return json(empty);
+      return json({});
+    });
+    mount(fetchMock, ["settings.configure", "builtins.configure", "models"]);
+
+    const toggle = await screen.findByRole("switch", { name: "Subagents" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    // Collapsed: no model fields, no explanatory status text.
+    expect(screen.queryByRole("button", { name: "Default model" })).toBeNull();
+    expect(screen.queryByText(/off|disabled/i)).toBeNull();
+    expect(fetchMock.mock.calls.some(([path]) => String(path) === "/v1/settings/subagents")).toBe(true);
+  });
+
+  it("flips the top switch through the same built-ins store the Capabilities page owns", async () => {
+    const builtInsOff = { revision, capabilities: [{ id: "subagents", enabled: false }, { id: "todo", enabled: true }, { id: "ask_user_question", enabled: true }, { id: "side_chat", enabled: true }, { id: "smart_compact", enabled: true }] };
+    let putBody: unknown;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/v1/settings/built-ins" && init?.method === "PUT") {
+        putBody = JSON.parse(String(init.body));
+        return json({ revision: "b".repeat(64), capabilities: (putBody as { capabilities: unknown }).capabilities });
+      }
+      if (path === "/v1/settings/built-ins") return json(builtInsOff);
+      if (path === "/v1/models") return json(catalog);
+      if (path === "/v1/settings/subagents") return json(empty);
+      return json({});
+    });
+    mount(fetchMock, ["settings.configure", "builtins.configure", "models"]);
+
+    fireEvent.click(await screen.findByRole("switch", { name: "Subagents" }));
+    await waitFor(() => expect(putBody).toBeTruthy());
+    const body = putBody as { expectedRevision: string; capabilities: Array<{ id: string; enabled: boolean }> };
+    expect(body.expectedRevision).toBe(revision);
+    expect(body.capabilities.find((row) => row.id === "subagents")?.enabled).toBe(true);
+    // One shared store, not a second switch: the other rows ride along unchanged.
+    expect(body.capabilities.filter((row) => row.id !== "subagents").every((row) => row.enabled)).toBe(true);
+  });
+
+  it("saves subagent model settings without ever consulting built-ins when the token is absent", async () => {
     const base = server();
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input) === "/v1/settings/built-ins"
       ? Promise.reject(new Error("must not fetch built-ins"))
       : base.fetchMock(input, init));
     mount(fetchMock, ["settings.configure", "models"]);
     await ready();
+    expect(screen.queryByRole("switch")).toBeNull();
     select("Default model", "provider/model/id");
     save();
     await screen.findByText("Saved");

@@ -7,7 +7,7 @@ import {
   assistantMemorySectionText,
   renderAssistantSegment,
 } from "../src/internal/assistant-system-prompt.js";
-import { resolveAssistantWorkspaceDir } from "@fffattiger/pix-runtime-core";
+import { resolveAssistantWorkspaceDir, memoryCapabilityRegistryEntry } from "@fffattiger/pix-runtime-core";
 
 const HOME = homedir();
 const WORKSPACE = resolveAssistantWorkspaceDir(HOME);
@@ -62,6 +62,24 @@ describe("assistant memory prompt section", () => {
 
   it("off emits no section at all", () => {
     assert.equal(assistantMemorySectionText("off"), "");
+  });
+
+  it("resolves copy for every registered section id (registry-driven selection)", () => {
+    // The section id comes from the capability registry; a registered id
+    // without adapter copy must fail loudly, and every provider choice must
+    // resolve without throwing.
+    const entry = memoryCapabilityRegistryEntry();
+    const registered = Object.entries(entry.assistantPromptSections);
+    assert.deepEqual(registered.map(([choice]) => choice).sort(), ["local", "lore"]);
+    for (const [, sectionId] of registered) {
+      assert.equal(typeof sectionId, "string");
+      assert.ok(sectionId.length > 0);
+    }
+    for (const provider of ["local", "lore", "off"] as const) {
+      const text = assistantMemorySectionText(provider);
+      if (provider === "off") assert.equal(text, "");
+      else assert.match(text, /^## 记忆\n/);
+    }
   });
 
   it("renderAssistantSegment substitutes the section and keeps uniform section spacing", () => {

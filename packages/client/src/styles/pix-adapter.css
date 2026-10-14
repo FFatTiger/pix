@@ -1956,6 +1956,15 @@ html.dark .catalog-meta-item--error {
 .settings-toggle-row:has(.ui-switch:disabled) { cursor: not-allowed; }
 .settings-toggle-row:has(.ui-switch:disabled):hover { background: transparent; }
 
+/* Capabilities overview: link row (choice-valued capability) and chevron entry. */
+.settings-capability-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; margin: 0 -14px; border: none; border-radius: 7px; background: none; cursor: pointer; user-select: none; transition: background .12s; }
+.settings-capability-row:hover { background: var(--bg-hover); }
+.settings-capability-row-label { display: block; font-size: 13px; font-weight: 550; color: var(--text); line-height: 1.4; }
+.settings-capability-row-desc { display: block; font-size: 11px; line-height: 1.5; color: var(--text-muted); margin-top: 2px; }
+.settings-capability-row-value { flex: none; font-size: 12.5px; color: var(--text-muted); }
+.settings-capability-link { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; border-radius: 6px; background: none; color: var(--text-muted); cursor: pointer; }
+.settings-capability-link:hover { background: var(--bg-hover); color: var(--text); }
+
 /* Settings section: inset hairline, none after the last. */
 .settings-section { border-bottom: 1px solid var(--surface-hairline); }
 .settings-section:last-of-type { border-bottom: 0; }
@@ -1988,6 +1997,7 @@ html.dark .catalog-meta-item--error {
 /* Tool category groups. */
 .settings-tool-category { margin-bottom: 14px; }
 .settings-tool-category-title { margin: 0 0 2px; padding: 0; font-size: 11px; font-weight: var(--text-weight-strong); letter-spacing: .05em; text-transform: uppercase; color: var(--text-dim); }
+.settings-capability-tool { padding: 4px 14px; margin: 0 -14px; font: 11.5px/1.6 var(--font-mono); color: var(--text-muted); }
 
 /* Grouped settings navigation. */
 .settings-nav { display: flex; flex-direction: column; width: 200px; flex-shrink: 0; padding: 18px 10px 14px; gap: 1px; background: var(--surface-frame); border-right: 0; overflow-y: auto; }

@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { BuiltInCapabilityId, BuiltInCapabilityState } from "@fffattiger/pix-runtime-core";
+import { BUILTIN_CAPABILITY_REGISTRY, type BuiltInCapabilityId, type BuiltInCapabilityState } from "@fffattiger/pix-runtime-core";
 import { createAskQuestionnaireExtensionsOverride } from "./ask-questionnaire-bridge.js";
 import { readBuiltInCapabilityConfigSync } from "./built-in-capability-store.js";
 import { dropBundledMemorySearchTools } from "./pi-memory-bridge.js";
@@ -10,10 +10,10 @@ import { readMemoryRuntimeStateSync } from "./memory-provider.js";
 
 /**
  * Curated plugin ids. The first four are BuiltInCapability toggles
- * (pix-builtins.json); the two memory plugins are NOT independent
- * capabilities — they are driven by the settings.json memory provider
- * selection (`pixMemoryProvider`, see memory-provider.ts) and are mutually
- * exclusive by construction.
+ * (pix-builtins.json), derived from the capability registry; the two memory
+ * plugins are NOT independent capabilities — they are driven by the
+ * settings.json memory provider selection (`pixMemoryProvider`, see
+ * memory-provider.ts) and are mutually exclusive by construction.
  */
 export const CURATED_PLUGIN_IDS = [
   "subagents",
@@ -27,8 +27,10 @@ export type CuratedPluginId = (typeof CURATED_PLUGIN_IDS)[number];
 
 export type BuiltInCuratedPluginId = Exclude<CuratedPluginId, "pi_memory" | "lore">;
 
-/** Capability ids that gate a curated plugin (side_chat is not a package). */
-const CURATED_BUILT_IN_IDS: readonly BuiltInCuratedPluginId[] = ["subagents", "todo", "ask_user_question", "smart_compact"];
+/** Registry builtin capabilities that gate a curated plugin (side_chat is not a package). */
+const CURATED_BUILT_IN_IDS: readonly BuiltInCuratedPluginId[] = BUILTIN_CAPABILITY_REGISTRY
+  .map((entry) => entry.id)
+  .filter((id): id is BuiltInCuratedPluginId => (CURATED_PLUGIN_IDS as readonly string[]).includes(id));
 
 const PACKAGE_NAMES = {
   subagents: "pi-claude-subagents",
@@ -173,6 +175,25 @@ function exactKeys(value: ReadonlyMap<string, unknown> | undefined, expected: re
 /** Tool families the two memory plugins register (pinned pi-memory 0.4.2 / lore 1.5.0). */
 const PI_MEMORY_TOOL_FAMILY = /^memory_(?:write|read|forget|restore|search|status)$|^scratchpad$/;
 const LORE_TOOL_FAMILY = /^lore_(?:status|boot|get_node|search|list_domains|create_node|update_node|delete_node|move_node|skill_[a-z]+)$/;
+
+/**
+ * Tool names the memory capability contributes for the chosen provider among
+ * the currently selectable names — the memory capability's registry tools
+ * vary by provider, so its contribution is resolved from the plugin families
+ * instead of a static registry list.
+ */
+export function memoryCapabilityToolNames(
+  provider: "local" | "lore" | "off",
+  selectable: Iterable<string>,
+): string[] {
+  const family = provider === "local" ? PI_MEMORY_TOOL_FAMILY : provider === "lore" ? LORE_TOOL_FAMILY : null;
+  if (family === null) return [];
+  const names: string[] = [];
+  for (const name of selectable) {
+    if (family.test(name)) names.push(name);
+  }
+  return names;
+}
 
 function familySurface(
   extension: ExtensionLike,

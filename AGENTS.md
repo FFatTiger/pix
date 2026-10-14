@@ -49,6 +49,7 @@ fork the logic.
 | Adapter behavior contract | `packages/runtime-contract-tests` | be duplicated in each adapter's own tests |
 | Cross-package semantic parity | `packages/cross-package-contract-tests` | leak into a production package or be parked in an unrelated test suite |
 | Long-term memory provider selection (settings.json `pixMemoryProvider`: local pi-memory / Lore / off) and the two memory plugins' load mutex | `packages/runtime-core` (model + normalization) + `packages/protocol` (wire DTO `/memory-settings`) + `packages/pi-sdk-adapter` (`curated-plugins.ts` mutex + provider resolution, `lore-config-store.ts` connection & probe, `memory-provider.ts`) + `packages/sessiond` (worker env: `PI_MEMORY_EXIT_SUMMARY=0`, `LORE_*`/`PIX_ALLOWED_ROOTS` forwarding) + `packages/host` (settings routes) + `packages/client` (记忆 settings page) | add a second memory toggle elsewhere, load pi-memory and Lore together, store the Lore token anywhere but `~/.lore/config.json`, or silently fall back between providers |
+| Pix 内置能力注册表（capability registry：id、i18n key、开关类型与归属、默认值、详细设置页、贡献/隐藏工具、运行时 token、助手提示词小节） | `packages/runtime-core`（`src/capability-registry.ts`，唯一注册处/canonical）+ `packages/protocol`（`src/capability-catalog.ts` 客户端投影，由 cross-package 合同测试强制同步）+ `packages/pi-sdk-adapter`（`curated-plugins.ts`：注册表能力 id → 捆绑包名绑定，包名不得出 adapter） | 在任何其它地方登记能力、在 client 页面/工具页分组/助手提示词里另存一份能力清单，或把 npm 包名写进 runtime-core/protocol |
 | Bundled agent-capability plugins (vendor tgz pinned + curated loading + duplicate-load exclusion) | root `vendor/` + `packages/pi-sdk-adapter` (`curated-plugins.ts`) + `scripts/release-package.mjs` (bundle list) | install plugins at runtime, invoke external installers, depend on a user-installed copy, or let a user copy load twice inside a Pix session |
 | Repo gates / cross-platform tooling | root `scripts/*` | be bypassed by ad-hoc shell in package scripts |
 
@@ -159,6 +160,19 @@ settings page itself shows none of that copy. pi-smart-compact's own memory
 tools (`smart_recall` / `smart_save_memory`) are not part of the memory
 surface: the active-tool selection excludes them and the inline
 `smart-compact-memory-guard` re-asserts that at every `session_start`.
+
+### 7b. 内置能力统一登记（capability registry）
+
+新增内置能力只需登记一次：`packages/runtime-core/src/capability-registry.ts`
+加一条（id、i18n key、开关类型与归属 store、默认值、详细设置页、贡献与
+隐藏工具、运行时 token、助手提示词小节 id），随后补两件机械同步：
+`packages/protocol/src/capability-catalog.ts` 客户端投影（cross-package
+合同测试会拒绝遗漏）与，若开关存放在 `pix-builtins.json`，store 文档
+词汇表迁移（runtime-core `built-in-capabilities.ts` + adapter 文档解析）；
+捆绑插件另在 adapter `curated-plugins.ts` 绑定包名。加载层（哪些扩展
+加载、工具随能力开关）、设置页（能力总览行 + 各详细页顶部同一开关）、
+工具页（能力工具按能力分组、随能力出现/消失、无单独开关）、助手提示
+词小节全部从注册表/投影读取，不得另存能力清单。
 
 - Protocol version: `packages/protocol/src/version.ts` (`PROTOCOL_VERSION`) —
   negotiated at handshake; never re-declared in Host/Client.

@@ -4,17 +4,21 @@
  * Upper layers speak only these feature IDs. Pi package names stay inside the
  * adapter. Durable desired enablement is a Pix product snapshot, not Pi
  * `settings.json` / Plugins inventory.
+ *
+ * The id vocabulary and its order derive from the capability registry
+ * (`capability-registry.ts`) — register a capability there, not here. A new
+ * builtin toggle changes the `pix-builtins.json` document vocabulary and
+ * needs the store schema migration in this module and the adapter document
+ * parser.
  */
 
-export const BUILT_IN_CAPABILITY_IDS = [
-  "subagents",
-  "todo",
-  "ask_user_question",
-  "side_chat",
-  "smart_compact",
-] as const;
+import { BUILTIN_CAPABILITY_REGISTRY } from "./capability-registry.js";
 
-export type BuiltInCapabilityId = (typeof BUILT_IN_CAPABILITY_IDS)[number];
+const REGISTRY_BUILT_IN_IDS = BUILTIN_CAPABILITY_REGISTRY.map((entry) => entry.id);
+
+export const BUILT_IN_CAPABILITY_IDS: readonly (typeof REGISTRY_BUILT_IN_IDS)[number][] = REGISTRY_BUILT_IN_IDS;
+
+export type BuiltInCapabilityId = (typeof REGISTRY_BUILT_IN_IDS)[number];
 
 export interface BuiltInCapabilityState {
   id: BuiltInCapabilityId;

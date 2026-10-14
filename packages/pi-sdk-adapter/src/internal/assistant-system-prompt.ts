@@ -46,6 +46,8 @@
  * edit the text here only when that copy is deliberately revised.
  */
 
+import { memoryCapabilityRegistryEntry } from "@fffattiger/pix-runtime-core";
+
 /** 【preamble】 — replaces Pi's preamble segment for assistant sessions. */
 export const ASSISTANT_PREAMBLE_TEMPLATE = `你是 Pixie，用户在 Pix 里的随身助手，拥有和普通会话一样的完整能力：读写文件、执行命令、使用技能和子代理。用户来找你，多半是因为手头的事不属于任何一个项目，或者还没想好放在哪个项目里——查点资料、跑个命令、改个配置、整理文件、写段文字、出个主意，或者问问各个项目进展到哪了。直接把事情做完，再简短汇报结果。`;
 
@@ -101,19 +103,38 @@ export interface AssistantPromptOptionsTarget {
 /** Which long-term memory backend the assistant prompt tells the model about. */
 export type AssistantMemoryProvider = "local" | "lore" | "off";
 
+/** Registry section id for a memory provider choice; fails closed if unregistered. */
+function memoryPromptSectionId(provider: "local" | "lore"): string {
+  const id = memoryCapabilityRegistryEntry().assistantPromptSections[provider];
+  if (id === undefined) throw new Error(`memory capability has no assistant prompt section for ${provider}`);
+  return id;
+}
+
 /**
- * The "记忆" prompt section for the current memory provider. Local names the
- * bundled pi-memory 0.4.2 tools (memory_read / memory_write); Lore points at
- * the bundled Lore extension's tools; "off" omits the section entirely.
+ * Assistant prompt-section copy, keyed by the registry's section ids. Which
+ * section applies is decided by the capability registry (the memory
+ * capability's `assistantPromptSections` per provider choice); "off" (no
+ * registered section) omits the section entirely.
+ */
+const ASSISTANT_PROMPT_SECTIONS: Readonly<Record<string, string>> = {
+  [memoryPromptSectionId("local")]:
+    "## 记忆\n你和用户是长期合作。涉及过去的偏好、决定和约定时，先用 memory_read 查看记忆；遇到值得长期记住的新事实，用 memory_write 记下来。记忆要精炼，过时的内容及时更新或删除。",
+  [memoryPromptSectionId("lore")]:
+    "## 记忆\n你和用户是长期合作。涉及过去的偏好、决定和约定时，先在 Lore 里查；遇到值得长期记住的新事实，记进 Lore。",
+};
+
+/**
+ * The "记忆" prompt section for the current memory provider, resolved
+ * through the capability registry. Local names the bundled pi-memory 0.4.2
+ * tools (memory_read / memory_write); Lore points at the bundled Lore
+ * extension's tools; "off" (no registered section) returns "".
  */
 export function assistantMemorySectionText(provider: AssistantMemoryProvider): string {
-  if (provider === "local") {
-    return "## 记忆\n你和用户是长期合作。涉及过去的偏好、决定和约定时，先用 memory_read 查看记忆；遇到值得长期记住的新事实，用 memory_write 记下来。记忆要精炼，过时的内容及时更新或删除。";
-  }
-  if (provider === "lore") {
-    return "## 记忆\n你和用户是长期合作。涉及过去的偏好、决定和约定时，先在 Lore 里查；遇到值得长期记住的新事实，记进 Lore。";
-  }
-  return "";
+  const sectionId = memoryCapabilityRegistryEntry().assistantPromptSections[provider];
+  if (sectionId === undefined) return "";
+  const text = ASSISTANT_PROMPT_SECTIONS[sectionId];
+  if (text === undefined) throw new Error(`assistant prompt section is not registered: ${sectionId}`);
+  return text;
 }
 
 /** Render the fixed copy with runtime paths and the memory section substituted. */

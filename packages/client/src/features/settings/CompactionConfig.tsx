@@ -237,6 +237,7 @@ export function CompactionConfig() {
           ) : null}
         </SettingsSection>
 
+        {smartEnabled ? (
         <SettingsSection
           title={
             <button type="button" className="settings-advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>
@@ -330,6 +331,7 @@ export function CompactionConfig() {
             </>
           ) : null}
         </SettingsSection>
+        ) : null}
       </form>
       <SettingsSaveBar
         dirty={draft !== null}

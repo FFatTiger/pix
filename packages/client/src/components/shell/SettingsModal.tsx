@@ -33,6 +33,7 @@ import { SkillsConfig } from "@/features/settings/SkillsConfig";
 import { SubagentSettingsConfig } from "@/features/settings/SubagentSettingsConfig";
 import { ToolsConfig } from "@/features/settings/ToolsConfig";
 import { SettingsDraftContext, type SettingsDraftApi, type SettingsDraftHandle } from "@/features/settings/settings-draft";
+import type { SettingsPageId } from "@/features/settings/settings-page";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 
@@ -41,21 +42,7 @@ import { useI18n } from "@/hooks/useI18n";
  * the effect range (this device / every session / extensions / system) — no
  * per-page scope chip. Every page keeps exactly one responsibility.
  */
-export type SettingsPageId =
-  | "appearance"
-  | "input"
-  | "archive"
-  | "providers"
-  | "capabilities"
-  | "memory"
-  | "subagents"
-  | "tools"
-  | "compaction"
-  | "session"
-  | "skills"
-  | "plugins"
-  | "access"
-  | "advanced";
+export type { SettingsPageId };
 
 /** @deprecated Renamed to {@link SettingsPageId}; kept for call-site migration. */
 export type SettingsTab = SettingsPageId;
@@ -152,7 +139,7 @@ export function SettingsModal({
       labelKey: "desktop.settingsNav.agent",
       pages: [
         { id: "providers", labelKey: "desktop.settingsPage.providers", descKey: "desktop.settingsPage.providersDesc", Icon: Cpu, render: () => <ModelsSettingsTab /> },
-        { id: "capabilities", labelKey: "desktop.settingsPage.capabilities", descKey: "desktop.settingsPage.capabilitiesDesc", Icon: SlidersHorizontal, render: () => <CapabilitiesConfig /> },
+        { id: "capabilities", labelKey: "desktop.settingsPage.capabilities", descKey: "desktop.settingsPage.capabilitiesDesc", Icon: SlidersHorizontal, render: () => <CapabilitiesConfig onOpenPage={selectPage} /> },
         { id: "memory", labelKey: "desktop.settingsPage.memory", descKey: "desktop.settingsPage.memoryDesc", Icon: Brain, render: () => <MemoryConfig /> },
         { id: "subagents", labelKey: "desktop.settingsPage.subagents", descKey: "desktop.settingsPage.subagentsDesc", Icon: UsersThree, render: () => <SubagentSettingsConfig /> },
         { id: "tools", labelKey: "desktop.settingsPage.tools", descKey: "desktop.settingsPage.toolsDesc", Icon: Wrench, render: () => <ToolsConfig /> },
@@ -176,7 +163,7 @@ export function SettingsModal({
         { id: "advanced", labelKey: "desktop.settingsPage.advanced", descKey: "desktop.settingsPage.advancedDesc", Icon: FileJs, render: () => <SettingsFileConfig /> },
       ],
     },
-  ], [requestClose]);
+  ], [requestClose, selectPage]);
 
   const allPages = useMemo(() => groups.flatMap((group) => group.pages), [groups]);
   const activeMeta = allPages.find((page) => page.id === activePage) ?? allPages[0]!;

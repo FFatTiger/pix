@@ -107,8 +107,9 @@ describe("CompactionConfig", () => {
     mount(defaultFetch({ builtIns: { revision: "c".repeat(64), capabilities: BUILTINS_ON.capabilities.map((row) => row.id === "smart_compact" ? { ...row, enabled: false } : row) } }));
     const toggle = await screen.findByRole("switch", { name: "Smart compaction" });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
-    // Collapsed: no threshold, profile, models, and no explanatory status text.
+    // Collapsed: no threshold, profile, models, advanced section, and no explanatory status text.
     expect(screen.queryByRole("switch", { name: "Trigger automatically" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Advanced" })).toBeNull();
     expect(screen.queryByText("Balanced")).toBeNull();
     expect(screen.queryByText(/built-in|fallback/i)).toBeNull();
   });

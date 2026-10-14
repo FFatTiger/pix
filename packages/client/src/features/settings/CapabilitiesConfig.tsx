@@ -1,29 +1,38 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { BuiltInCapabilityId } from "@fffattiger/pix-protocol";
+import { CaretRight } from "@phosphor-icons/react";
+import {
+  CAPABILITY_CATALOG,
+  memoryProviderLabelKey,
+  type CapabilityCatalogEntry,
+} from "@fffattiger/pix-protocol";
 import { createMutationOptions } from "@/api/mutations";
 import { createQueryOptions } from "@/api/query-keys";
 import { HttpError } from "@/api/http-client";
 import { useHttpClient } from "@/app/http-context";
 import { SettingToggle } from "@/components/SettingToggle";
+import type { SettingsPageId } from "@/features/settings/settings-page";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { useI18n } from "@/hooks/useI18n";
 import { SettingsSection } from "./settings-ui";
 
-const VISIBLE_FEATURES: readonly { readonly id: BuiltInCapabilityId; readonly labelKey: string; readonly descriptionKey: string }[] = [
-  { id: "subagents", labelKey: "desktop.agentFeature.subagents", descriptionKey: "desktop.capability.subagents.description" },
-  { id: "todo", labelKey: "desktop.agentFeature.todo", descriptionKey: "desktop.capability.todo.description" },
-  { id: "ask_user_question", labelKey: "desktop.agentFeature.askUserQuestion", descriptionKey: "desktop.capability.askUserQuestion.description" },
-  { id: "side_chat", labelKey: "desktop.agentFeature.sideChat", descriptionKey: "desktop.capability.sideChat.description" },
-  { id: "smart_compact", labelKey: "desktop.agentFeature.smartCompact", descriptionKey: "desktop.capability.smartCompact.description" },
+/** Pages a catalog entry may link into (the settings nav vocabulary). */
+const OPENABLE_PAGES: readonly string[] = [
+  ...new Set(CAPABILITY_CATALOG.flatMap((entry) => (entry.detailPage === null ? [] : [entry.detailPage]))),
 ];
 
+function isOpenablePage(value: string): value is SettingsPageId {
+  return OPENABLE_PAGES.includes(value);
+}
+
 /**
- * Capabilities page: the built-in feature switches. Each toggle states what
- * actually breaks when it is off. Saves are instant CAS full replacements;
- * running sessions keep their own feature set.
+ * Capabilities overview: one row per registered capability (name,
+ * description, switch or current provider choice, entry into the detail
+ * settings). Rows and groups come from the Protocol capability catalog —
+ * this page keeps no capability list of its own. Saves are instant CAS full
+ * replacements; running sessions keep their own feature set.
  */
-export function CapabilitiesConfig() {
+export function CapabilitiesConfig({ onOpenPage }: { onOpenPage?: (page: SettingsPageId) => void }) {
   const { t } = useI18n();
   const { can } = useCapabilities();
   const http = useHttpClient();
@@ -33,10 +42,16 @@ export function CapabilitiesConfig() {
     ...createQueryOptions(http).settingsFile.builtIns(),
     enabled: configurable,
   });
+  // Current memory provider choice for the memory row — the same stored
+  // setting the memory page edits.
+  const memoryQuery = useQuery({
+    ...createQueryOptions(http).settingsFile.memory(),
+    enabled: can("settings.configure"),
+  });
   const save = useMutation(createMutationOptions(http, queryClient).settings.saveBuiltIns());
   const [errorKey, setErrorKey] = useState<string | null>(null);
 
-  const setEnabled = (id: BuiltInCapabilityId, enabled: boolean) => {
+  const setEnabled = (id: string, enabled: boolean) => {
     const current = query.data;
     if (!current || save.isPending) return;
     setErrorKey(null);
@@ -54,6 +69,69 @@ export function CapabilitiesConfig() {
     });
   };
 
+  const openDetail = (entry: CapabilityCatalogEntry) => {
+    if (entry.detailPage !== null && isOpenablePage(entry.detailPage)) onOpenPage?.(entry.detailPage);
+  };
+
+  const renderDetailLink = (entry: CapabilityCatalogEntry): ReactNode => {
+    if (entry.detailPage === null || onOpenPage === undefined) return null;
+    const pageLabel = t(`desktop.settingsPage.${entry.detailPage}`);
+    return (
+      <button
+        type="button"
+        className="settings-capability-link"
+        onClick={() => openDetail(entry)}
+        aria-label={t("desktop.capabilitiesOpenDetail", { page: pageLabel })}
+      >
+        <CaretRight size={14} aria-hidden="true" />
+      </button>
+    );
+  };
+
+  const renderRow = (entry: CapabilityCatalogEntry): ReactNode => {
+    if (entry.control === "memory_provider") {
+      const provider = memoryQuery.data?.provider;
+      return (
+        <div key={entry.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            className="settings-capability-row"
+            onClick={() => openDetail(entry)}
+            aria-label={t("desktop.capabilitiesOpenDetail", { page: t("desktop.settingsPage.memory") })}
+          >
+            <span style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+              <span className="settings-capability-row-label">{t(entry.labelKey)}</span>
+              <span className="settings-capability-row-desc">{t(entry.descriptionKey)}</span>
+            </span>
+            <span className="settings-capability-row-value">
+              {provider === undefined ? "—" : t(memoryProviderLabelKey(provider))}
+            </span>
+            <CaretRight size={14} aria-hidden="true" style={{ flexShrink: 0, color: "var(--text-muted)" }} />
+          </button>
+        </div>
+      );
+    }
+    const row = query.data?.capabilities.find((candidate) => candidate.id === entry.id);
+    if (row === undefined) return null;
+    return (
+      <div key={entry.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <SettingToggle
+            checked={row.enabled}
+            onChange={(enabled) => setEnabled(entry.id, enabled)}
+            label={t(entry.labelKey)}
+            description={t(entry.descriptionKey)}
+            disabled={save.isPending}
+            loading={save.isPending && save.variables?.capabilities.some((candidate) => (
+              candidate.id === entry.id && candidate.enabled !== row.enabled
+            ))}
+          />
+        </div>
+        {renderDetailLink(entry)}
+      </div>
+    );
+  };
+
   let content;
   if (!configurable) {
     content = <div className="workspace-hint">{t("desktop.capabilitiesUnavailable")}</div>;
@@ -62,23 +140,7 @@ export function CapabilitiesConfig() {
   } else if (query.isError || !query.data) {
     content = <div className="workspace-hint workspace-hint--error" role="alert">{t("desktop.capabilitiesUnavailable")}</div>;
   } else {
-    content = VISIBLE_FEATURES.map(({ id, labelKey, descriptionKey }) => {
-      const row = query.data.capabilities.find((candidate) => candidate.id === id);
-      if (row === undefined) return null;
-      return (
-        <SettingToggle
-          key={row.id}
-          checked={row.enabled}
-          onChange={(enabled) => setEnabled(row.id, enabled)}
-          label={t(labelKey)}
-          description={t(descriptionKey)}
-          disabled={save.isPending}
-          loading={save.isPending && save.variables?.capabilities.some((candidate) => (
-            candidate.id === row.id && candidate.enabled !== row.enabled
-          ))}
-        />
-      );
-    });
+    content = CAPABILITY_CATALOG.map(renderRow);
   }
 
   return (
