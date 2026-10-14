@@ -112,7 +112,7 @@ import {
   type RuntimeControllerBinding,
   type RuntimeControllerPort,
 } from "./runtime-connection.js";
-import { canSend, type ConnectionState } from "./lifecycle.js";
+import { type ConnectionState } from "./lifecycle.js";
 import {
   createDefaultIdFactory,
   decideCommandRetry,
@@ -697,6 +697,8 @@ const DEFAULT_DETACH_ACK_TIMEOUT_MS = 10_000;
 const DEFAULT_SIDE_CHAT_COMMAND_TIMEOUT_MS = 10_000;
 /** Bounded wait for shared transport sendability before a submit-turn envelope. */
 const SUBMIT_SEND_TIMEOUT_MS = 10_000;
+/** Bounded lifecycle/attach send gate (create/open through the shared transport gate). */
+const LIFECYCLE_GATE_TIMEOUT_MS = 30_000;
 /** Browser-side bound below Host/sessiond limits; read floods fail closed locally. */
 const MAX_PENDING_READS = 16;
 export class SessionController implements RuntimeControllerPort {
@@ -3413,7 +3415,10 @@ export class SessionController implements RuntimeControllerPort {
       void (async () => {
         try {
           if (this.runtimeConnection.connectionState === "idle") this.runtimeConnection.connect();
-          if (!canSend(this.runtimeConnection.connectionState)) await this.whenSendable(SUBMIT_SEND_TIMEOUT_MS);
+          // ALWAYS pass the send gate: a ready-but-stale (half-open) connection
+          // probes liveness here and waits through a forced reconnect instead
+          // of letting the submit race into a dead socket.
+          await this.whenSendable(SUBMIT_SEND_TIMEOUT_MS);
           if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
           await Promise.resolve();
           if (!this.isCurrentSubmitDispatch(pending, revision)) { finish(() => resolve()); return; }
@@ -4537,19 +4542,15 @@ export class SessionController implements RuntimeControllerPort {
     if (this.connection === "idle") this.runtimeConnection.connect();
   }
 
-  private whenReady(): Promise<void> {
-    return this.runtimeConnection.whenReady();
-  }
-
   /**
-   * Lifecycle gate for create/open: proceed once the socket is SENDABLE
-   * (ready / attaching / attached), not just strictly `ready`. An in-flight
+   * Lifecycle gate for create/open: proceed once the socket is SENDABLE and
+   * PROVABLY fresh (the shared transport gate — a stale-but-sendable
+   * connection is probed/recovered instead of written into). An in-flight
    * attach must not block a newer selection — startAttach supersedes it
    * identity-scoped (rapid A→B→C switching).
    */
   private whenReadyForLifecycle(): Promise<void> {
-    if (canSend(this.connection)) return Promise.resolve();
-    return this.whenReady();
+    return this.whenSendable(LIFECYCLE_GATE_TIMEOUT_MS);
   }
 
   /** Resolve when the socket is sendable (ready/attaching/attached), bounded. */

@@ -693,6 +693,12 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
         const message = (cause as { message?: unknown }).message;
         if (typeof message === "string" && message.length > 0) return message;
       }
+      // Retryable transport loss is still reconnecting — say so instead of the
+      // generic failure text (the transport owner keeps retrying in the back).
+      if ((code === "timeout" || code === "unavailable")
+        && (cause as { retryable?: unknown }).retryable === true) {
+        return t("desktop.sendReconnecting");
+      }
     }
     return t("desktop.sendFailed");
   }, [t]);

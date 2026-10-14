@@ -454,7 +454,9 @@ describe("Composer — first prompt creates and sends in one transaction", () =>
 
     expect(document.querySelector("textarea.chat-input-textarea")).toBe(textarea);
     expect(textarea.value).toBe("keep this timeout draft");
-    expect(screen.getByRole("alert").textContent).toBe("The message was not sent. Your draft has been kept.");
+    // Retryable transport timeout is still reconnecting — the copy must say so
+    // instead of the generic failure text (draft still kept either way).
+    expect(screen.getByRole("alert").textContent).toBe("Connection lost — reconnecting. Your draft is kept; try again shortly.");
     expect(screen.queryByTestId("promoted-session")).toBeNull();
     expect(prompts()).toHaveLength(0);
     expect(creates()).toHaveLength(1);

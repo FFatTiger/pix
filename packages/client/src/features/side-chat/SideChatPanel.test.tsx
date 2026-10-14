@@ -193,7 +193,9 @@ describe("SideChatPanel", () => {
 
     await act(async () => { rejectSend({ code: "timeout", message: "raw provider text", retryable: true }); });
     expect((input as HTMLTextAreaElement).value).toBe("keep this");
-    expect(screen.getByRole("alert").textContent).toContain("timed out");
+    // Retryable transport timeout is still reconnecting — the dedicated copy
+    // replaces the generic timed-out text; raw provider text never leaks.
+    expect(screen.getByRole("alert").textContent).toBe("Connection lost — reconnecting. Your draft is kept; try again shortly.");
     expect(screen.getByRole("alert").textContent).not.toContain("raw provider text");
   });
 

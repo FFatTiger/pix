@@ -19,13 +19,18 @@ type Translate = ReturnType<typeof useI18n>["t"];
 
 export function describeSideChatError(error: unknown, t: Translate): string {
   const code = error !== null && typeof error === "object" ? (error as Partial<ProtocolError>).code : undefined;
+  const retryable = error !== null && typeof error === "object" && (error as Partial<ProtocolError>).retryable === true;
   switch (code) {
     case "invalid_input": return t("desktop.sideChatErrorInvalid");
     case "session_busy": return t("desktop.sideChatErrorBusy");
-    case "timeout": return t("desktop.sideChatErrorTimeout");
+    case "timeout":
+    case "unavailable":
+      // Retryable transport loss is still reconnecting — say so (same copy
+      // family as the composer's dedicated reconnecting text).
+      if (retryable) return t("desktop.sendReconnecting");
+      return t("desktop.sideChatErrorTransport");
     case "unsupported_capability": return t("desktop.sideChatUnavailable");
     case "interrupted": return t("desktop.sideChatErrorInterrupted");
-    case "unavailable": return t("desktop.sideChatErrorTransport");
     default: return t("desktop.sideChatErrorGeneric");
   }
 }

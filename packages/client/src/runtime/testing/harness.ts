@@ -11,7 +11,7 @@ import { TestRuntimeStore, buildRegistryOptions, type TestStoreOptions } from ".
 import { RuntimeConnection, type RuntimeConnectionOptions } from "../runtime-connection.js";
 import { SessionControllerRegistry } from "../session-controller-registry.js";
 import type { SessionController } from "../session-controller.js";
-import type { RuntimeSocketDeps } from "../socket.js";
+import { type LivenessOptions, type RuntimeSocketDeps } from "../socket.js";
 import type { ClientIdentity, SubagentProjection, TodoProjection, TurnAuthoritySnapshot } from "@fffattiger/pix-protocol";
 
 const CONNECTING = 0;
@@ -75,6 +75,8 @@ export interface HarnessOptions {
   readonly connectionOptions?: RuntimeConnectionOptions;
   /** If true, createWebSocket throws once before succeeding (transient). */
   readonly failFirstConnect?: boolean;
+  /** Transport liveness overrides (heartbeat cadence, probe budgets). */
+  readonly liveness?: Partial<LivenessOptions>;
 }
 
 export interface RuntimeHarness {
@@ -85,10 +87,12 @@ export interface RuntimeHarness {
   readonly sockets: FakeWebSocket[];
   readonly onlineListeners: Set<() => void>;
   readonly visibleListeners: Set<() => void>;
+  readonly visibilityListeners: Set<(visible: boolean) => void>;
   /** Explicit owner cleanup: disposes the registry exactly once (closes the one socket). */
   dispose(): void;
   goOnline(): void;
   goVisible(): void;
+  changeVisibility(visible: boolean): void;
   lastSocket(): FakeWebSocket;
   controller(sessionId: string): SessionController | null;
 }
@@ -97,6 +101,7 @@ export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
   const sockets: FakeWebSocket[] = [];
   const onlineListeners = new Set<() => void>();
   const visibleListeners = new Set<() => void>();
+  const visibilityListeners = new Set<(visible: boolean) => void>();
   let firstAttempt = true;
   const deps: RuntimeSocketDeps = {
     createWebSocket: (url) => {
@@ -122,7 +127,12 @@ export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
       visibleListeners.add(cb);
       return () => { visibleListeners.delete(cb); };
     },
+    onVisibility: (cb) => {
+      visibilityListeners.add(cb);
+      return () => { visibilityListeners.delete(cb); };
+    },
     ...(options.features === undefined ? {} : { features: options.features }),
+    ...(options.liveness === undefined ? {} : { liveness: options.liveness }),
   };
   const connection = new RuntimeConnection(deps, {
     ...(options.id === undefined ? {} : { id: options.id }),
@@ -144,9 +154,11 @@ export function createHarness(options: HarnessOptions = {}): RuntimeHarness {
     sockets,
     onlineListeners,
     visibleListeners,
+    visibilityListeners,
     dispose: () => registry.dispose(),
     goOnline: () => { for (const cb of onlineListeners) cb(); },
     goVisible: () => { for (const cb of visibleListeners) cb(); },
+    changeVisibility: (visible: boolean) => { for (const cb of visibilityListeners) cb(visible); },
     lastSocket: () => sockets[sockets.length - 1]!,
     controller: (sessionId) => registry.lookup(sessionId),
   };

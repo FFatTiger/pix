@@ -7,6 +7,7 @@ import {
   PROTOCOL_VERSION,
   RUNTIME_EPOCH_ROLLOVER_FEATURE,
   RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
+  RUNTIME_LIVENESS_FEATURE,
   RUNTIME_OBSERVE_EXISTING_FEATURE,
   RUNTIME_QUESTIONNAIRE_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
@@ -43,6 +44,10 @@ const attachResponse = (sessionId) => ({
 const hello = JSON.stringify({
   type: "handshake",
   payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [] },
+});
+const livenessHello = JSON.stringify({
+  type: "handshake",
+  payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [RUNTIME_LIVENESS_FEATURE] },
 });
 const watchHello = JSON.stringify({
   type: "handshake",
@@ -255,6 +260,34 @@ test("handshake valid → handshake_ack with the singular PROTOCOL_VERSION and e
   assert.deepEqual(ack.payload.host.capabilities, []);
   assert.equal(ack.payload.sessionSnapshotSupport, true);
   assert.equal(typeof ack.payload.serverTime, "number");
+});
+
+test("negotiated liveness: ping is answered with a pong by the Host itself (no sessiond RPC)", async () => {
+  const client = new FakeClient();
+  const session = await connect(makeGateway(client), livenessHello);
+  await wait();
+  const ack = session.jsonAt(0);
+  assert.equal(ack.type, "handshake_ack");
+  assert.deepEqual(ack.payload.acceptedFeatures, [RUNTIME_LIVENESS_FEATURE]);
+  const before = client.calls.length;
+  session.receive(JSON.stringify({ type: "ping", id: "p1" }));
+  await wait();
+  assert.deepEqual(session.lastJson(), { type: "pong", id: "p1" });
+  // Id-less ping echoes an id-less pong.
+  session.receive(JSON.stringify({ type: "ping" }));
+  await wait();
+  assert.deepEqual(session.lastJson(), { type: "pong" });
+  // The probe never touched sessiond (Host-answered transport frame).
+  assert.equal(client.calls.length, before);
+});
+
+test("ping without the negotiated liveness feature fails closed", async () => {
+  const client = new FakeClient();
+  const session = await connect(makeGateway(client), hello);
+  await wait();
+  session.receive(JSON.stringify({ type: "ping", id: "p1" }));
+  await wait();
+  assert.ok(session.closed, "unnegotiated ping must fail closed");
 });
 
 test("negotiated running watch sends an unattached baseline and remains independent from attach lifecycle", async () => {
