@@ -7,6 +7,7 @@ import {
   readInstanceLockStrict,
   resolveRuntimeDir,
   sessiondPaths,
+  sessiondPidAlive as pidAlive,
   type InstanceLockRead,
   type SessiondPaths,
 } from "@fffattiger/pix-sessiond/control";
@@ -82,18 +83,25 @@ export function locateSessiond(directory?: string): SessiondLocation {
   return { directory: dir, endpoint: paths.endpoint, paths };
 }
 
-function pidAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * True when the endpoint is cleared of any live listener. POSIX checks the
+ * socket file's absence; win32 endpoints are named pipes (no filesystem
+ * presence — stat on a pipe name can even block), so liveness is proven with
+ * the same active-connect probe used everywhere else. Platform injectable
+ * for tests.
+ */
+export async function endpointCleared(
+  paths: SessiondPaths,
+  platform: NodeJS.Platform | string = process.platform,
+): Promise<boolean> {
+  if (platform === "win32") {
+    return (await probeSocket(paths.endpoint)) !== "live";
+  }
+  return !existsSync(paths.endpoint);
 }
 
 /**
@@ -519,7 +527,7 @@ export async function shutdownSessiond(
     // the same condition: lock and socket can disappear while the process is
     // still draining an in-flight activation (the always-on assistant), and
     // reporting terminated then leaves a live daemon behind.
-    if (!(await instanceAlive(paths)) && !existsSync(paths.endpoint) && !pidAlive(status.pid)) {
+    if (!(await instanceAlive(paths)) && (await endpointCleared(paths)) && !pidAlive(status.pid)) {
       return { action: "terminated", pid: status.pid };
     }
     await sleep(50);

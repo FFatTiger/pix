@@ -13,6 +13,7 @@ export {
   instanceAlive,
   sessiondPaths,
   probeSocket,
+  sessiondPidAlive,
   listPrivateSocketAliases,
   makePrivateEndpointPath,
   isPrivateSocketName,

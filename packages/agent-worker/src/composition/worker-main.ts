@@ -320,8 +320,12 @@ function installAutoRunHandlers(handle: WorkerMainHandle, stderr: (line: string)
       }
     }
   };
-  process.on("SIGINT", () => onSignal("SIGINT"));
-  process.on("SIGTERM", () => onSignal("SIGTERM"));
+  // win32: SIGBREAK (Ctrl+Break) and the synthetic SIGHUP (console close)
+  // join SIGINT/SIGTERM so the ordered shutdown runs instead of a raw exit.
+  const shutdownSignals: readonly NodeJS.Signals[] = process.platform === "win32"
+    ? ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]
+    : ["SIGINT", "SIGTERM"];
+  for (const signal of shutdownSignals) process.on(signal, () => onSignal(signal));
   process.on("uncaughtException", onFatal);
   process.on("unhandledRejection", onFatal);
 }

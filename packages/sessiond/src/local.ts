@@ -3,6 +3,7 @@ import { chmod, link, lstat, open, readdir, readFile, rm } from "node:fs/promise
 import { createConnection } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
+import { isPidAlive as sharedIsPidAlive } from "@fffattiger/pix-local-authority/state";
 import { SessiondError } from "./errors.js";
 import {
   ensureSessiondPrivateDirectory,
@@ -127,10 +128,13 @@ async function resolveSessiondPrivateDirectory(
 }
 
 function pidAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+  // Shared liveness semantics, single owner (@fffattiger/pix-local-authority):
+  // EPERM (POSIX) / EACCES (win32) both mean "exists but cannot be signaled";
+  // ESRCH means dead. signal-0 on win32 is libuv's OpenProcess existence probe.
+  return sharedIsPidAlive(pid);
 }
+
+export { pidAlive as sessiondPidAlive };
 
 export async function acquireInstanceLock(
   paths: SessiondPaths,

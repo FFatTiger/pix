@@ -36,14 +36,18 @@
  */
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
 import {
+  canonicalCompareKey,
   canonicalizeAbsolutePath,
   currentPrincipal,
+  decomposeAbsolutePath,
   hasControlChar,
   isOwnedByCurrentUser,
   LocalAuthorityError,
   posixFileIdentity,
+  securePathApi,
+  securePathPlatform,
+  stripWindowsExtendedPrefix,
   type LocalAuthorityCode,
   type PosixFileIdentity,
 } from "@fffattiger/pix-local-authority/state";
@@ -184,35 +188,32 @@ interface OpenedDirectoryHandle {
 export async function ensureSessiondPrivateDirectoryWithFs(
   path: string,
   fs: EnsurePrivateDirectoryFs,
+  platform: NodeJS.Platform | string = process.platform,
 ): Promise<{ path: string; created: boolean; identity: PosixFileIdentity }> {
   const requireOwnedByCurrentUser = currentPrincipal().uid !== undefined;
-  const normalized = resolve(path);
+  const plat = securePathPlatform(platform);
+  const papi = securePathApi(plat);
+  // NTFS carries no POSIX mode bits and no uid; on win32 the frozen 0700/owner
+  // enforcement is skipped (symlink/junction rejection and dev/ino identity
+  // pinning stay), matching the local-authority walk semantics.
+  const enforceUnixPermissions = plat === "posix";
+  const normalized = papi.resolve(plat === "win32" ? stripWindowsExtendedPrefix(path) : path);
   if (
     typeof path !== "string"
     || path.length === 0
     || path.includes("\0")
     || hasControlChar(path)
-    || !isAbsolute(path)
+    || !papi.isAbsolute(plat === "win32" ? stripWindowsExtendedPrefix(path) : path)
   ) {
     throw new LocalAuthorityError("INVALID_PATH", SESSIOND_PRIVATE_DIR_MESSAGES.INVALID_PATH);
   }
-  if (normalized === "/") {
+  const decomposed = decomposeAbsolutePath(normalized, plat);
+  if (decomposed.segments.length === 0) {
     throw new LocalAuthorityError("ROOT_PATH", SESSIOND_PRIVATE_DIR_MESSAGES.ROOT_PATH);
   }
+  const segments = decomposed.segments;
 
-  const segments = normalized === "/"
-    ? []
-    : normalized.slice(1).split("/").filter((segment) => segment.length > 0);
-  for (const segment of segments) {
-    if (segment === "." || segment === "..") {
-      throw new LocalAuthorityError("PARENT_ESCAPE", SESSIOND_PRIVATE_DIR_MESSAGES.PARENT_ESCAPE);
-    }
-    if (segment.includes("\0") || segment.includes("/")) {
-      throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
-    }
-  }
-
-  let current = "/";
+  let current = decomposed.root;
   let creating = false;
   // True ONLY when THIS call's mkdir(recursive:false, 0700) fulfilled the final
   // leaf component. Never derived from pathname equality alone — a raced EEXIST
@@ -227,7 +228,7 @@ export async function ensureSessiondPrivateDirectoryWithFs(
   let racedParent: { path: string; dev: number; ino: number } | null = null;
 
   for (const segment of segments) {
-    current = current === "/" ? `/${segment}` : `${current}/${segment}`;
+    current = papi.join(current, segment);
     const isLeaf = current === normalized;
 
     if (racedParent !== null) {
@@ -309,10 +310,10 @@ export async function ensureSessiondPrivateDirectoryWithFs(
       // only when it is a real non-symlink directory, owned by the current user
       // (where required), and exactly private; otherwise fail closed with zero
       // descendants. Its dev/ino is re-verified before the next descendant.
-      if (requireOwnedByCurrentUser && !fs.isOwnedByCurrentUser(toIdentity(info))) {
+      if (requireOwnedByCurrentUser && enforceUnixPermissions && !fs.isOwnedByCurrentUser(toIdentity(info))) {
         throw new LocalAuthorityError("NOT_OWNED", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_OWNED);
       }
-      if ((info.mode & 0o777) !== SESSIOND_PRIVATE_DIR_MODE) {
+      if (enforceUnixPermissions && (info.mode & 0o777) !== SESSIOND_PRIVATE_DIR_MODE) {
         throw new LocalAuthorityError("NOT_PRIVATE", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_PRIVATE);
       }
       racedParent = { path: current, dev: info.dev, ino: info.ino };
@@ -340,6 +341,11 @@ export async function ensureSessiondPrivateDirectoryWithFs(
     // (O_NOFOLLOW alone is not sufficient — it only refuses a SYMLINK). The
     // created identity must also match the last pre-open lstat. Never
     // path-chmod after a handle close.
+    //
+    // win32: no mode bits to enforce and directory handles are not openable
+    // this way; the created identity stays pinned by the post-mkdir lstat and
+    // the final re-lstat below.
+    if (enforceUnixPermissions) {
     if (
       createdIdentity === null
       || createdIdentity.dev !== finalInfo.dev
@@ -376,12 +382,13 @@ export async function ensureSessiondPrivateDirectoryWithFs(
       if (error instanceof LocalAuthorityError) throw error;
       throw new LocalAuthorityError("NOT_PRIVATE", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_PRIVATE);
     }
+    }
   } else {
     // Existing directory (pre-existing, or raced EEXIST leaf): NEVER chmod.
-    if (requireOwnedByCurrentUser && !fs.isOwnedByCurrentUser(toIdentity(finalInfo))) {
+    if (enforceUnixPermissions && requireOwnedByCurrentUser && !fs.isOwnedByCurrentUser(toIdentity(finalInfo))) {
       throw new LocalAuthorityError("NOT_OWNED", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_OWNED);
     }
-    if ((finalInfo.mode & 0o777) !== SESSIOND_PRIVATE_DIR_MODE) {
+    if (enforceUnixPermissions && (finalInfo.mode & 0o777) !== SESSIOND_PRIVATE_DIR_MODE) {
       throw new LocalAuthorityError("NOT_PRIVATE", SESSIOND_PRIVATE_DIR_MESSAGES.NOT_PRIVATE);
     }
   }
@@ -412,7 +419,7 @@ export async function ensureSessiondPrivateDirectoryWithFs(
   } catch {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
   }
-  if (finalReal !== current) {
+  if (canonicalCompareKey(finalReal, plat) !== canonicalCompareKey(current, plat)) {
     throw new LocalAuthorityError("UNSAFE_COMPONENT", SESSIOND_PRIVATE_DIR_MESSAGES.UNSAFE_COMPONENT);
   }
   return { path: current, created: leafCreated, identity: toIdentity(finalRecheck) };

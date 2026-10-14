@@ -412,7 +412,21 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
  * lock). If startup fails, the handlers are removed and the error propagates.
  * Never calls `process.exit` itself.
  */
-export async function runDaemon(options: DaemonOptions = {}, signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"]): Promise<number> {
+/**
+ * Signals that request shutdown: SIGINT/SIGTERM everywhere; on win32 also
+ * SIGBREAK (Ctrl+Break) and the synthetic SIGHUP Node emits when the console
+ * closes. Without them the default disposition would terminate the daemon
+ * mid-shutdown and leave a stale lock. Pure per-platform (test-injectable).
+ */
+export function shutdownSignalsFor(platform: NodeJS.Platform | string = process.platform): readonly NodeJS.Signals[] {
+  return platform === "win32"
+    ? ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]
+    : ["SIGINT", "SIGTERM"];
+}
+
+export const SHUTDOWN_SIGNALS: readonly NodeJS.Signals[] = shutdownSignalsFor();
+
+export async function runDaemon(options: DaemonOptions = {}, signals: NodeJS.Signals[] = [...SHUTDOWN_SIGNALS]): Promise<number> {
   let pendingSignal: NodeJS.Signals | undefined;
   let handle: DaemonHandle | undefined;
   const onSignal = (signal: NodeJS.Signals): void => {

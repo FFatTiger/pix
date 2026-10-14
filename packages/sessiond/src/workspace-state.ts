@@ -42,7 +42,7 @@
  * Path safety: project keys must be absolute normalized paths; the HOST layer
  * additionally checks AllowedRoots before forwarding a project write.
  */
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 export const WORKSPACE_STATE_KIND = "pix.sessiond.workspace-state" as const;
@@ -286,7 +286,10 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
     return { revision: 0, sessions: {}, projects: {} };
   }
 
-  /** Atomic write: same-dir temp (0600) → fsync → rename. Throws unavailable. */
+  /** Atomic write: same-dir temp (0600) → fsync → rename. Throws unavailable.
+   * win32: a replace-rejected rename (readonly attr / AV lock) gets ONE
+   * bounded unlink+rename retry (single writer under the daemon instance
+   * lock; the tiny absent-target window is documented in docs/windows.md). */
   private persist(next: WorkspaceStateSnapshot): void {
     const document = `${JSON.stringify({
       kind: WORKSPACE_STATE_KIND,
@@ -305,7 +308,14 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
       } finally {
         closeSync(handle);
       }
-      renameSync(tmp, this.filePath);
+      try {
+        renameSync(tmp, this.filePath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (process.platform !== "win32" || code === undefined || !["EPERM", "EEXIST", "EACCES", "EBUSY"].includes(code)) throw error;
+        rmSync(this.filePath, { force: true });
+        renameSync(tmp, this.filePath);
+      }
     } catch {
       throw new WorkspaceStateError("unavailable", "could not persist workspace state", true);
     }
