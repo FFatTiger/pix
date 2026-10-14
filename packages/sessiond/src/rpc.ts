@@ -9,7 +9,7 @@ import {
   SessiondRpcRequestSchema,
   SessiondRpcResponseSchema,
   SessiondPushSchema,
-  SessiondRunningStatePushSchema,
+  SessiondRunningWatchPushSchema,
   SessiondTurnStatusPushSchema,
   utf8ByteLength,
   type ProtocolError,
@@ -345,7 +345,7 @@ export class SessiondRpcServer {
   }
 
   private writeRunningPush(writer: SerialSocketWriter, push: import("@fffattiger/pix-protocol").SessiondRunningWatchPush): Promise<void> {
-    const parsed = SessiondRunningStatePushSchema.parse(push);
+    const parsed = SessiondRunningWatchPushSchema.parse(push);
     return this.enqueueSerialized(writer, `${JSON.stringify(parsed)}\n`);
   }
 
@@ -645,7 +645,7 @@ export class SessiondRpcClient {
             });
             continue;
           }
-          const push = SessiondRunningStatePushSchema.safeParse(value);
+          const push = SessiondRunningWatchPushSchema.safeParse(value);
           if (!push.success) { socket.destroy(); return; }
           if (!deliveryReady) pendingPushes.push(push.data);
           else Promise.resolve().then(() => onPush(push.data)).catch(() => socket.destroy());

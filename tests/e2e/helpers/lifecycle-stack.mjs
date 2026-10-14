@@ -38,6 +38,8 @@ import {
   createProductionCatalogs,
   createProductionCapabilityResolver,
   createSessiondSessionsClient,
+  createSessiondSessionRenameClient,
+  createSessiondWorkspaceFlagsSeam,
   createRuntimeWorkspaceAuthorizer,
   PRODUCTION_FULL_CAPABILITIES,
   RESOURCE_DEGRADED_CAPABILITIES,
@@ -232,6 +234,18 @@ export async function bootLifecycleStack({ sessiondDir, projectCwd, hostDir, cli
     sessions: {
       client: createSessiondSessionsClient({ endpoint: daemon.endpoint, secret: daemon.secret, timeoutMs: 5_000 }),
       roots: production.deps.allowedRoots,
+      // session.write is advertised only while the rename seam is mounted, and
+      // workspace-flag writes are gated on that same token.
+      rename: {
+        client: createSessiondSessionRenameClient({ endpoint: daemon.endpoint, secret: daemon.secret }),
+        mutationGuard: production.adapter,
+      },
+      workspaceFlags: createSessiondWorkspaceFlagsSeam({
+        endpoint: daemon.endpoint,
+        secret: daemon.secret,
+        mutationGuard: production.adapter,
+        allowedRoots: production.deps.allowedRoots,
+      }),
     },
     gate: { config: { read: () => ({ status: "disabled", source: "e2e" }) } },
     logger: { info: () => {}, warn: () => {}, error: () => {} },
