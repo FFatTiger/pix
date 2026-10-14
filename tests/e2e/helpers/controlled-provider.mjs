@@ -80,8 +80,18 @@ function emptyRecord(index, requestBytes, extra = {}) {
 }
 
 function selectScript(scripts, record) {
-  const hashed = scripts.find((candidate) => candidate?.matchPromptHash === record.promptHash);
-  if (hashed) return hashed;
+  // Pi appends fixed trailing user context after the supplied prompt, so the
+  // prompt is a member of userHashes, not necessarily the last user message.
+  // A script is consumed once: a later turn whose context still contains an
+  // earlier prompt must not replay that earlier script (and its gate).
+  const index = scripts.findIndex((candidate) => candidate?.matchPromptHash !== undefined
+    && !candidate.consumed
+    && record.userHashes.includes(candidate.matchPromptHash));
+  if (index >= 0) {
+    const hashed = scripts[index];
+    hashed.consumed = true;
+    return hashed;
+  }
   const generic = scripts.filter((candidate) => candidate?.matchPromptHash === undefined);
   if (generic.length === 0) return {};
   return generic[Math.min(generic.length - 1, record.index)] ?? {};
@@ -122,11 +132,20 @@ export async function startControlledProvider() {
       let lastUserText = "";
       const userTexts = [];
       let hasCompactionSummary = false;
+      // Pi appends a fixed two-message user tail after the supplied prompt
+      // (current date/time, then the working-directory/guidelines block), so
+      // the prompt is the third user message from the end when the tail is
+      // present and the last one when a request is too short to carry it.
+      const TRAILING_USER_COUNT = 2;
+      const userTotal = messages.filter((message) => message?.role === "user").length;
+      const promptOrdinal = userTotal > TRAILING_USER_COUNT ? userTotal - TRAILING_USER_COUNT : userTotal;
+      let usersSeen = 0;
       for (const message of messages) {
         const text = messageText(message?.content);
         if (message?.role === "user") {
           userTexts.push(text);
-          lastUserText = text;
+          usersSeen += 1;
+          if (usersSeen === promptOrdinal) lastUserText = text;
           if (text.includes(COMPACTION_SUMMARY_MARKER)) hasCompactionSummary = true;
         }
       }
@@ -325,7 +344,7 @@ export async function startControlledProvider() {
 export function markExactPrompt(provider, prompt) {
   const hash = createHash("sha256").update(prompt).digest("hex");
   for (const record of provider.requests) {
-    if (record.promptHash === hash) record.exactPrompt = true;
+    if (record.userHashes.includes(hash)) record.exactPrompt = true;
   }
 }
 

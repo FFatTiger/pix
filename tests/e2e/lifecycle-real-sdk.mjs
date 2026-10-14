@@ -33,7 +33,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_OBSERVE_EXISTING_FEATURE, RUNTIME_SUBMIT_TURN_FEATURE } from "@fffattiger/pix-protocol";
 import { seedSessionHistoryForTests, listSeededSessionIdsForTests } from "@fffattiger/pix-pi-sdk-adapter/testing";
-import { startControlledProvider, markExactPrompt, hashPrompt, requestHasUserHash } from "./helpers/controlled-provider.mjs";
+import { startControlledProvider, markExactPrompt, requestHasUserHash } from "./helpers/controlled-provider.mjs";
 import {
   RuntimeWsClient,
   bootLifecycleStack,
@@ -180,8 +180,10 @@ function assertProviderContext(label, shape, history, record, prompt) {
     record.messageCount >= expect.minMessages && record.messageCount <= expect.maxMessages,
     `${label}: provider messageCount ${record.messageCount} outside [${expect.minMessages},${expect.maxMessages}]: ${report}`,
   );
-  assert.equal(record.exactPrompt, true, `${label}: the exact supplied prompt must reach the provider`);
-  assert.equal(record.promptHash, hashPrompt(prompt), `${label}: last user hash must be the exact prompt`);
+  // Pi appends fixed trailing user context, so the supplied prompt is one of
+  // the user messages, not the last one. promptHash/exactPrompt(last-user) is
+  // the stale oracle; membership is the contract.
+  assert.equal(requestHasUserHash(record, prompt), true, `${label}: the exact supplied prompt must reach the provider`);
   if (expect.requireOldest) {
     assert.equal(requestHasUserHash(record, history.firstUserText), true, `${label}: oldest user marker must reach the provider: ${report}`);
   } else {
@@ -394,9 +396,8 @@ async function main() {
         assert.equal(terminal2.payload.turnId, submit2.payload.turnId, `${shape.label}: second terminal turnId must match admission`);
         assert.ok(typeof terminal2.payload.userEntryId === "string" && terminal2.payload.userEntryId.length > 0, `${shape.label}: second terminal must carry userEntryId: ${JSON.stringify(terminal2.payload)}`);
         assert.ok(typeof terminal2.payload.finalLeafId === "string" && terminal2.payload.finalLeafId.length > 0, `${shape.label}: second terminal must carry finalLeafId: ${JSON.stringify(terminal2.payload)}`);
-        markExactPrompt(provider, prompt2);
         assert.equal(provider.requests.length, 2, `${shape.label}: second turn adds exactly one request: ${JSON.stringify(provider.report())}`);
-        assert.equal(provider.requests[1].exactPrompt, true, `${shape.label}: second exact prompt must reach the provider`);
+        assert.equal(requestHasUserHash(provider.requests[1], prompt2), true, `${shape.label}: second exact prompt must reach the provider`);
         const snap2 = await client.getSnapshot(sessionId);
         assert.equal(snap2.streaming?.active ?? false, false, `${shape.label}: post-second-terminal streaming must be idle: ${terminalSnapshotDiag(shape.label, snap2)}`);
         assert.equal(snap2.state?.isPromptRunning ?? false, false, `${shape.label}: post-second-terminal isPromptRunning must be false: ${terminalSnapshotDiag(shape.label, snap2)}`);
