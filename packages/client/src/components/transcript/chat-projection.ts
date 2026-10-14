@@ -85,7 +85,7 @@ function hasDisplayableProcessMessage(message: AgentMessage): boolean {
   if (message.role === "assistant") {
     return getDisplayableAssistantBlocks(message).length > 0;
   }
-  return message.role === "custom";
+  return message.role === "custom" && message.customType !== "system-prompt";
 }
 
 export function isCompactionBoundary(message: AgentMessage): boolean {

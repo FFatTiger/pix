@@ -289,6 +289,8 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     return null;
   }
   if (message.role === "custom") {
+    // Pi persists a system-prompt snapshot as a session entry; it is never a transcript row.
+    if ((message as CustomMessage).customType === "system-prompt") return null;
     if ((message as CustomMessage).customType === "compaction") {
       return <CompactionSummary content={(message as CustomMessage).content} />;
     }
