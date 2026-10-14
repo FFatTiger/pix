@@ -359,7 +359,7 @@ async function main() {
     check("assistant answers in its role (中文随身助手/草稿区)", /助手|草稿/.test(answer1) && !/expert coding assistant/i.test(answer1), concise(answer1, 120));
 
     const prompt1 = (await currentState(ws, assistant.sessionId))?.systemPrompt ?? "";
-    check("system prompt (published state): assistant preamble durable", prompt1.includes("你是用户在 Pix 里的随身助手"), concise(prompt1, 60));
+    check("system prompt (published state): assistant preamble durable", prompt1.includes("你是 Pixie，用户在 Pix 里的随身助手"), concise(prompt1, 60));
     check("system prompt: no Pi default preamble", !prompt1.includes("expert coding assistant"), "");
     check("system prompt: {workspace}/{home} substituted", !prompt1.includes("{workspace}") && !prompt1.includes("{home}"), "");
     // The published state carries the LAST EFFECTIVE turn prompt (not the
@@ -370,7 +370,7 @@ async function main() {
     // and the trailing assistant segment (the forced-prompt projection itself
     // is not persisted — its sections are).
     const jsonl = readAssistantJsonl(agentDir, assistant.sessionId);
-    check("transcript system message: replaced preamble", jsonl.includes("你是用户在 Pix 里的随身助手"), "");
+    check("transcript system message: replaced preamble", jsonl.includes("你是 Pixie，用户在 Pix 里的随身助手"), "");
     check("transcript system message: assistant segment", jsonl.includes("<assistant>") && jsonl.includes("长期对话"), "");
     check("transcript system message: tools/rules/docs preserved", jsonl.includes("<tools>") && jsonl.includes("list_projects") && jsonl.includes("<rules>") && jsonl.includes("<docs>"), "");
 
@@ -408,7 +408,7 @@ async function main() {
       await ws2.waitFor((m) => (m.type === "snapshot" && m.id === attachId) || (m.type === "response" && m.id === attachId), "attach after reload", 40_000);
       await ws2.submitFenced(assistant.sessionId, "再确认一下：你是谁，工作目录是做什么的？一句话。", "e2e-a3");
       const prompt3 = (await currentState(ws2, assistant.sessionId))?.systemPrompt ?? "";
-      check("after reload the role prompt persists", prompt3.includes("你是用户在 Pix 里的随身助手") && !prompt3.includes("expert coding assistant"), concise(prompt3, 60));
+      check("after reload the role prompt persists", prompt3.includes("你是 Pixie，用户在 Pix 里的随身助手") && !prompt3.includes("expert coding assistant"), concise(prompt3, 60));
       ws2.close();
     } finally {
       await stack2.proc.stop();

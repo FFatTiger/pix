@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { PixieIcon } from "@/components/icons/PixieIcon";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -747,7 +748,7 @@ export function Sidebar({
               aria-current={assistantActive === true ? "page" : undefined}
               onClick={onOpenAssistant}
             >
-              <Sparkle size={16} weight="regular" aria-hidden="true" />
+              <PixieIcon size={16} />
               <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.assistantNav")}</span>
             </button>
           ) : null}

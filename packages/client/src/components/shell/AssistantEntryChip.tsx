@@ -1,4 +1,5 @@
-import { ArrowRightIcon, SparkleIcon, XIcon } from "@phosphor-icons/react";
+import { ArrowRightIcon, XIcon } from "@phosphor-icons/react";
+import { PixieIcon } from "@/components/icons/PixieIcon";
 import { useI18n } from "@/hooks/useI18n";
 
 export type AssistantEntryChipState = "idle" | "selected" | "hidden";
@@ -29,7 +30,7 @@ export function AssistantEntryChip({ state, onActivate, onDismiss }: AssistantEn
     <div className="assistant-entry-tab" data-testid="assistant-entry-tab" data-state={state}>
       {state === "selected" ? (
         <div className="assistant-entry-chip assistant-entry-chip--selected" data-testid="assistant-entry-chip-selected">
-          <SparkleIcon size={13} weight="regular" aria-hidden="true" />
+          <PixieIcon size={13} />
           <span className="assistant-entry-chip-label">{t("desktop.assistantNav")}</span>
           <button
             type="button"
@@ -51,7 +52,7 @@ export function AssistantEntryChip({ state, onActivate, onDismiss }: AssistantEn
           data-testid="assistant-entry-chip-activate"
           onClick={onActivate}
         >
-          <SparkleIcon size={13} weight="regular" aria-hidden="true" />
+          <PixieIcon size={13} />
           <span className="assistant-entry-chip-label">{t("desktop.assistantEntryChip")}</span>
           <ArrowRightIcon size={12} weight="regular" aria-hidden="true" />
         </button>

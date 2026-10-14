@@ -45,7 +45,7 @@ afterEach(() => {
 describe("UserMessageView assistant markers", () => {
   it("renders a sent-by-assistant label and copies the text without the marker", async () => {
     mount(user(`${ASSISTANT_SENT_MESSAGE_PREFIX}\n\n接着修登录`));
-    expect(screen.getByText("Sent by assistant")).toBeTruthy();
+    expect(screen.getByText("Sent by Pixie")).toBeTruthy();
     expect(screen.getByText("接着修登录")).toBeTruthy();
     expect(screen.queryByText(ASSISTANT_SENT_MESSAGE_PREFIX)).toBeNull();
     fireEvent.click(screen.getByTitle("Copy message"));
@@ -55,7 +55,7 @@ describe("UserMessageView assistant markers", () => {
   it("leaves an ordinary user message as a bubble with no label", () => {
     mount(user("普通消息"));
     expect(screen.getByText("普通消息")).toBeTruthy();
-    expect(screen.queryByText("Sent by assistant")).toBeNull();
+    expect(screen.queryByText("Sent by Pixie")).toBeNull();
     expect(document.querySelector(".chat-user-bubble")).toBeTruthy();
     expect(document.querySelector(".assistant-notice-card")).toBeNull();
   });

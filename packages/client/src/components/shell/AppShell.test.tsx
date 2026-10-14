@@ -5012,7 +5012,7 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     // Idle chip above the composer, no project selected yet.
     const chip = screen.getByTestId("assistant-entry-tab");
     expect(chip.getAttribute("data-state")).toBe("idle");
-    expect(screen.getByTestId("assistant-entry-chip-activate").textContent).toContain("Ask the assistant");
+    expect(screen.getByTestId("assistant-entry-chip-activate").textContent).toContain("Ask Pixie");
     // The home composer still offers the project picker.
     expect(screen.queryByTitle("Select project")).not.toBeNull();
 

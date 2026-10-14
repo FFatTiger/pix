@@ -22,7 +22,7 @@ describe("AssistantEntryChip", () => {
     const onActivate = vi.fn();
     mountChip({ state: "idle", onActivate });
     expect(screen.getByTestId("assistant-entry-tab").getAttribute("data-state")).toBe("idle");
-    expect(screen.getByTestId("assistant-entry-chip-activate").textContent).toContain("Ask the assistant");
+    expect(screen.getByTestId("assistant-entry-chip-activate").textContent).toContain("Ask Pixie");
     fireEvent.click(screen.getByTestId("assistant-entry-chip-activate"));
     expect(onActivate).toHaveBeenCalledTimes(1);
   });

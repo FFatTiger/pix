@@ -359,7 +359,7 @@ export type TrustLevel = z.infer<typeof TrustLevelSchema>;
  * the exact line and renders a small "sent by assistant" label instead of
  * showing the raw line, and strips it on copy. Single owner: never re-declare.
  */
-export const ASSISTANT_SENT_MESSAGE_PREFIX = "[Pix 助手代用户发送]";
+export const ASSISTANT_SENT_MESSAGE_PREFIX = "[Pixie 代用户发送]";
 
 /**
  * Fixed FIRST LINE of the completion notification message the sessiond
