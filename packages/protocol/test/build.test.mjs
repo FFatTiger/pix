@@ -112,9 +112,10 @@ describe("canonical identities", () => {
   it("does not fingerprint Browser-Host lifecycle features", () => {
     // Frozen digest: the v12 IPC vocabulary adds the assistant write channel
     // (worker.assistantOp, assistantWaitCancel, assistantCompletion) on top of
-    // the v11 read-only worker.statusQuery pair.
+    // the v11 read-only worker.statusQuery pair; the always-on Pixie residency
+    // adds the runtime.assistant-presence.v1 sessiond capability.
     // Recompute from source constants; do not retarget for unrelated Adapter policy.
-    assert.equal(SESSIOND_BUILD_IDENTITY.fingerprint, "350c2077790ea73739f562a084ebd8ed5a78cf8f51f80684f9624a602130b02a");
+    assert.equal(SESSIOND_BUILD_IDENTITY.fingerprint, "1205d8d8b022445c8babbec464b97c1a169230ce54f864f8b6a5efdc6406b8ab");
     assert.equal(SESSIOND_BUILD_CAPABILITIES.includes(RUNTIME_OBSERVE_EXISTING_FEATURE), false);
     assert.equal(SESSIOND_BUILD_CAPABILITIES.includes(RUNTIME_EXPLICIT_ACTIVATE_FEATURE), false);
     assert.equal(RUNTIME_CAPABILITY_VOCABULARY.includes(RUNTIME_OBSERVE_EXISTING_FEATURE), false);

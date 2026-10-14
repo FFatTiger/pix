@@ -13,6 +13,7 @@ import {
   RUNTIME_QUESTIONNAIRE_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
   RUNTIME_RUNNING_WATCH_FEATURE,
+  RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
   SESSIOND_BUILD_IDENTITY,
   evaluateSessiondBuild,
@@ -22,6 +23,7 @@ import {
   type ProtocolError,
   type ProtocolHandshakeResponse,
   type RuntimeAttachParams,
+  type RuntimeRunningState,
   type SessiondMethodParams,
   type SessiondMethodResult,
   type SessiondRpcMethod,
@@ -390,6 +392,8 @@ interface GatewayConfig {
   readonly commandTimeoutMs: number;
   readonly readTimeoutMs: number;
   readonly runningWatchEnabled: boolean;
+  /** Assistant presence push (negotiated `runtime.assistant-presence.v1`). */
+  readonly assistantPresenceEnabled: boolean;
   readonly readRpcEnabled: boolean;
   readonly submitTurnEnabled: boolean;
   /** Phase 5B: the client negotiated `runtime.epoch-rollover.v1` and sessiond advertises it. */
@@ -566,6 +570,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     // projection, so WS and HTTP capability surfaces can never disagree.
     const resolved = await this.resolveConnectionCapabilities();
     const requestedRunningWatch = handshake.payload.features.includes(RUNTIME_RUNNING_WATCH_FEATURE);
+    const requestedAssistantPresence = handshake.payload.features.includes(RUNTIME_ASSISTANT_PRESENCE_FEATURE);
     const requestedReadRpc = handshake.payload.features.includes(RUNTIME_READ_RPC_FEATURE);
     const requestedSubmitTurn = handshake.payload.features.includes(RUNTIME_SUBMIT_TURN_FEATURE);
     const requestedEpochRollover = handshake.payload.features.includes(RUNTIME_EPOCH_ROLLOVER_FEATURE);
@@ -574,6 +579,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     const requestedQuestionnaire = handshake.payload.features.includes(RUNTIME_QUESTIONNAIRE_FEATURE);
     const requestedLiveness = handshake.payload.features.includes(RUNTIME_LIVENESS_FEATURE);
     let runningWatchEnabled = false;
+    let assistantPresenceEnabled = false;
     let readRpcEnabled = false;
     let submitTurnEnabled = false;
     let epochRolloverEnabled = false;
@@ -590,6 +596,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
         // not wired/verified is never negotiated (fail closed to false).
         const hello = await this.client.call("system.hello", {}, 2_000);
         runningWatchEnabled = requestedRunningWatch && this.client.watchRunning !== undefined && hello.capabilities?.includes(RUNTIME_RUNNING_WATCH_FEATURE) === true;
+        assistantPresenceEnabled = requestedAssistantPresence && this.client.watchRunning !== undefined && hello.capabilities?.includes(RUNTIME_ASSISTANT_PRESENCE_FEATURE) === true;
         readRpcEnabled = requestedReadRpc && hello.capabilities?.includes(RUNTIME_READ_RPC_FEATURE) === true;
         submitTurnEnabled = requestedSubmitTurn && this.client.submitTurn !== undefined && hello.capabilities?.includes(RUNTIME_SUBMIT_TURN_FEATURE) === true;
         epochRolloverEnabled = requestedEpochRollover && hello.capabilities?.includes(RUNTIME_EPOCH_ROLLOVER_FEATURE) === true;
@@ -603,6 +610,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
         questionnaireEnabled = requestedQuestionnaire && buildCompatible;
       } catch {
         runningWatchEnabled = false;
+        assistantPresenceEnabled = false;
         readRpcEnabled = false;
         submitTurnEnabled = false;
         epochRolloverEnabled = false;
@@ -613,6 +621,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
     }
     const acceptedFeatures = [
       ...(runningWatchEnabled ? [RUNTIME_RUNNING_WATCH_FEATURE] : []),
+      ...(assistantPresenceEnabled ? [RUNTIME_ASSISTANT_PRESENCE_FEATURE] : []),
       ...(readRpcEnabled ? [RUNTIME_READ_RPC_FEATURE] : []),
       ...(submitTurnEnabled ? [RUNTIME_SUBMIT_TURN_FEATURE] : []),
       ...(epochRolloverEnabled ? [RUNTIME_EPOCH_ROLLOVER_FEATURE] : []),
@@ -636,6 +645,7 @@ export class SessiondRuntimeGateway implements RuntimeWsSeam {
       commandTimeoutMs: this.commandTimeoutMs,
       readTimeoutMs: this.readTimeoutMs,
       runningWatchEnabled,
+      assistantPresenceEnabled,
       readRpcEnabled,
       submitTurnEnabled,
       epochRolloverEnabled,
@@ -823,6 +833,15 @@ class GatewayConnection {
       this.closeBrowser(CLOSE_INTERNAL_ERROR, "running watch unavailable");
       return;
     }
+    // Assistant presence rides the same revisioned watch: each forwarded
+    // running_state additionally becomes an assistant_state frame, but ONLY
+    // for browsers that negotiated the feature (strict v2 peers never see a
+    // frame their schema does not know; a sessiond without the projection
+    // never produces one).
+    const forwardAssistantState = (state: RuntimeRunningState): void => {
+      if (!this.config.assistantPresenceEnabled || state.assistant === undefined) return;
+      this.send({ type: "assistant_state", payload: state.assistant });
+    };
     const onPush = (push: SessiondRunningWatchPush): void => {
       if (this.browserClosed || this.runningWatch === undefined) return;
       if (push.type === "sessions_changed") {
@@ -831,6 +850,7 @@ class GatewayConnection {
         return;
       }
       this.send({ type: "running_state", payload: push.state });
+      forwardAssistantState(push.state);
     };
     try {
       const subscription = await watchRunning.call(this.config.client, onPush);
@@ -843,6 +863,7 @@ class GatewayConnection {
       // Handshake ACK was sent before this connection state machine started;
       // this full authoritative baseline is therefore the first feature frame.
       this.send({ type: "running_state", payload: subscription.response });
+      forwardAssistantState(subscription.response);
       void subscription.closed.then(() => this.onRunningWatchClosed(entry));
     } catch {
       if (!this.browserClosed) this.closeBrowser(CLOSE_INTERNAL_ERROR, "running watch failed");

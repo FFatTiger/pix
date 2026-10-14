@@ -8,9 +8,11 @@
  * admission/registration and attachment ownership live in SessionControllerRegistry.
  */
 import {
+  RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
   RUNTIME_RUNNING_WATCH_FEATURE,
+  type AssistantPresence,
   type CorrelatedRuntimeCommandResult,
   type ProtocolError,
   type ProtocolHandshakeResponse,
@@ -68,6 +70,12 @@ export interface RuntimeConnectionView {
   readonly runningSessionIds: readonly string[];
   readonly liveSessionIds: readonly string[];
   readonly liveSessionStateKnown: boolean;
+  /**
+   * Assistant residency presence (always-on Pixie), projected from the
+   * negotiated running watch. `null` = unknown (not negotiated, no baseline
+   * yet, or transport lost) — the UI hides the indicator, never guesses.
+   */
+  readonly assistantPresence: AssistantPresence | null;
   /** Monotonic bump on every sessions_changed push (catalog invalidation signal). */
   readonly sessionsChangedRevision: number;
 }
@@ -347,6 +355,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   private runningWatchGeneration = -1;
   private runningWatchRevision = -1;
   private sessionsChangedRevision = 0;
+  private assistantPresenceValue: AssistantPresence | null = null;
   private view: RuntimeConnectionView;
 
   constructor(deps: RuntimeSocketDeps, options: RuntimeConnectionOptions = {}) {
@@ -815,6 +824,15 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       this.publish();
       return;
     }
+    if (message.type === "assistant_state") {
+      // Negotiated presence push (always-on Pixie). Outside the negotiated
+      // feature the Host never sends the frame; a stale value from a previous
+      // generation never survives — the flag is cleared per generation.
+      if (generation !== this.currentGeneration || !this.hasFeature(RUNTIME_ASSISTANT_PRESENCE_FEATURE)) return;
+      this.assistantPresenceValue = message.payload;
+      this.publish();
+      return;
+    }
     if (message.type === "running_state") {
       if (this.runningAuthorityMode !== "watch" || generation !== this.runningWatchGeneration) return;
       if (message.payload.revision <= this.runningWatchRevision) return;
@@ -1205,6 +1223,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     this.runningAuthorityMode = "pending";
     this.runningWatchGeneration = -1;
     this.runningWatchRevision = -1;
+    this.assistantPresenceValue = null;
   }
 
   private resolveReadyWaiters(): void {
@@ -1248,6 +1267,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       runningSessionIds: [...this.runningSessionIds],
       liveSessionIds: [...this.liveSessionIds],
       liveSessionStateKnown: this.liveSessionStateKnown,
+      assistantPresence: this.assistantPresenceValue,
       sessionsChangedRevision: this.sessionsChangedRevision,
     };
   }

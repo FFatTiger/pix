@@ -80,3 +80,16 @@ export type RuntimeQuestionnaireFeature = typeof RUNTIME_QUESTIONNAIRE_FEATURE;
  */
 export const RUNTIME_LIVENESS_FEATURE = "runtime.liveness.v1" as const;
 export type RuntimeLivenessFeature = typeof RUNTIME_LIVENESS_FEATURE;
+
+/**
+ * Assistant presence projection (always-on Pixie residency). The sessiond
+ * running watch extends its revisioned state with the assistant-residency
+ * projection (`assistant` on `RuntimeRunningState`), and the Host re-exposes
+ * it to browsers as dedicated `assistant_state` frames. Advertised by a
+ * compatible Client; accepted only while the sessiond hello carries the same
+ * token, so old strict v2 clients never receive frames their schema does not
+ * know and clients of a residency-less sessiond degrade to no presence (the
+ * sidebar dot simply stays hidden).
+ */
+export const RUNTIME_ASSISTANT_PRESENCE_FEATURE = "runtime.assistant-presence.v1" as const;
+export type RuntimeAssistantPresenceFeature = typeof RUNTIME_ASSISTANT_PRESENCE_FEATURE;

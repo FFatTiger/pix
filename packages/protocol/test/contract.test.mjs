@@ -20,6 +20,7 @@ import {
   RUNTIME_OBSERVE_EXISTING_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
   RUNTIME_RUNNING_WATCH_FEATURE,
+  RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   SESSIOND_BUILD_IDENTITY,
   WORKER_BUILD_IDENTITY,
   RuntimeCommandSchema,
@@ -27,6 +28,7 @@ import {
   CorrelatedRuntimeReadResultSchema,
   RuntimeEventSchema,
   RuntimeRunningStateSchema,
+  AssistantPresenceSchema,
   RuntimeSnapshotSchema,
   SESSIOND_RPC_METHODS,
   SessionCreateParamsSchema,
@@ -43,6 +45,7 @@ import {
   WorkerReadMessageSchema,
   WorkerReadResultMessageSchema,
   WsRunningStateMessageSchema,
+  WsAssistantStateMessageSchema,
   WsActivateMessageSchema,
   WsAttachMessageSchema,
   WsResponseMessageSchema,
@@ -1149,6 +1152,53 @@ describe("runtime.submit-turn.v1 rejected authority cursor", () => {
       { ...rejected, revision: "2" },
     ]) {
       assert.equal(SubmitTurnAdmissionSchema.safeParse(malformed).success, false, JSON.stringify(malformed));
+    }
+  });
+});
+
+describe("runtime.assistant-presence.v1 feature (always-on Pixie)", () => {
+  const state = (overrides = {}) => ({ revision: 3, sessionIds: ["a"], busySessionIds: [], ...overrides });
+
+  it("negotiates the additive feature token", () => {
+    assert.equal(RUNTIME_ASSISTANT_PRESENCE_FEATURE, "runtime.assistant-presence.v1");
+    const request = ProtocolHandshakeRequestSchema.parse({
+      protocolVersion: 2,
+      client: { shell: "web", platform: "mac" },
+      features: [RUNTIME_ASSISTANT_PRESENCE_FEATURE],
+    });
+    assert.deepEqual(request.features, [RUNTIME_ASSISTANT_PRESENCE_FEATURE]);
+  });
+
+  it("running state carries the OPTIONAL assistant projection; absent stays valid", () => {
+    // Absent (residency off / older sessiond) parses — consumers degrade by
+    // field presence, never by guessing.
+    assert.equal(RuntimeRunningStateSchema.safeParse(state()).success, true);
+    const withPresence = RuntimeRunningStateSchema.parse(state({ assistant: { sessionId: "pixie", status: "online" } }));
+    assert.deepEqual(withPresence.assistant, { sessionId: "pixie", status: "online" });
+    // Armed = no conversation yet; null sessionId is the explicit “none”.
+    assert.equal(RuntimeRunningStateSchema.safeParse(state({ assistant: { sessionId: null, status: "armed" } })).success, true);
+    // Malformed projections fail closed.
+    assert.equal(RuntimeRunningStateSchema.safeParse(state({ assistant: { sessionId: "", status: "online" } })).success, false, "blank sessionId rejected");
+    assert.equal(RuntimeRunningStateSchema.safeParse(state({ assistant: { sessionId: "pixie", status: "bogus" } })).success, false, "unknown status rejected");
+    assert.equal(RuntimeRunningStateSchema.safeParse(state({ assistant: { status: "online" } })).success, false, "missing sessionId rejected");
+  });
+
+  it("assistant_state is a strict host→client frame derived from the projection", () => {
+    const frame = WsAssistantStateMessageSchema.parse({ type: "assistant_state", payload: { sessionId: "pixie", status: "restarting" } });
+    assert.equal(frame.type, "assistant_state");
+    assert.equal(WsHostMessageSchema.safeParse({ type: "assistant_state", payload: { sessionId: null, status: "armed" } }).success, true);
+    assert.equal(WsHostMessageSchema.safeParse({ type: "assistant_state", payload: { sessionId: "pixie", status: "nope" } }).success, false);
+    assert.equal(WsHostMessageSchema.safeParse({ type: "assistant_state", payload: {} }).success, false);
+    // The CLIENT never sends it.
+    assert.equal(WsClientMessageSchema.safeParse({ type: "assistant_state", id: "x", payload: { sessionId: null, status: "armed" } }).success, false);
+    // The sessiond channel keeps carrying it ONLY inside the revisioned
+    // running state (no separate sessiond push type).
+    assert.equal(SessiondChannelPushSchema.safeParse({ type: "running_state", state: state({ assistant: { sessionId: null, status: "armed" } }) }).success, true);
+  });
+
+  it("AssistantPresenceSchema enumerates the residency vocabulary", () => {
+    for (const status of ["armed", "starting", "online", "restarting"]) {
+      assert.equal(AssistantPresenceSchema.safeParse({ sessionId: null, status }).success, true, status);
     }
   });
 });

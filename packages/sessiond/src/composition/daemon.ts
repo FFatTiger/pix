@@ -80,6 +80,13 @@ export interface DaemonOptions {
   /** Forwarded to {@link SessiondService}. */
   serviceOptions?: SessiondOptions;
   /**
+   * Always-on assistant residency (Pixie): start the supervisor so the
+   * assistant conversation's worker is up (or armed) as soon as the daemon
+   * serves. Explicit opt-in for library/test bootstraps — the production
+   * process entries ({@link runDaemon} / `main`) enable it by default.
+   */
+  assistantResidency?: boolean;
+  /**
    * @internal Test-only: inserts a delay at the very start of startup (after
    * {@link runDaemon} has installed its signal handlers) so a regression test
    * can deliver a signal mid-bootstrap. Has no effect in production.
@@ -367,6 +374,13 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       publication = await publishPublicEndpoint(paths, privatePath!, lock.instanceId, privateDir);
     }
 
+    // Always-on assistant residency (Pixie): once the endpoint is published the
+    // supervisor resolves the latest assistant conversation and keeps exactly
+    // one worker resident on it. Fire-and-forget by design — activation
+    // failures retry inside the supervisor with bounded backoff and never
+    // fail daemon startup.
+    if (options.assistantResidency === true) service.ensureAssistantResident();
+
     return {
       directory,
       paths,
@@ -409,7 +423,10 @@ export async function runDaemon(options: DaemonOptions = {}, signals: NodeJS.Sig
   };
   for (const signal of signals) process.on(signal, onSignal);
   try {
-    handle = await startDaemon(options);
+    // Production process entry: the always-on assistant residency is on
+    // unless the caller explicitly disabled it (library/test bootstraps that
+    // call startDaemon directly stay opt-in).
+    handle = await startDaemon({ ...options, assistantResidency: options.assistantResidency ?? true });
     if (pendingSignal !== undefined) await handle.shutdown();
     await handle.closed;
     return 0;

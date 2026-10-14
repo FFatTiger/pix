@@ -26,6 +26,7 @@ import {
 } from "./results.js";
 import { RuntimeSnapshotSchema } from "./snapshot.js";
 import {
+  AssistantPresenceSchema,
   RuntimeActivateResultSchema,
   RuntimeCreateResultSchema,
   RuntimeDetachResultSchema,
@@ -229,6 +230,15 @@ export const WsEventMessageSchema = z.strictObject({ type: z.literal("event"), i
 export const WsRunningStateMessageSchema = z.strictObject({ type: z.literal("running_state"), id: NonEmptyStringSchema.optional(), payload: RuntimeRunningStateSchema });
 /** Host→client catalog-change notice: session metadata changed; refetch lists. */
 export const WsSessionsChangedMessageSchema = z.strictObject({ type: z.literal("sessions_changed"), id: NonEmptyStringSchema.optional(), payload: z.strictObject({}) });
+/**
+ * Assistant residency presence push (negotiated
+ * `runtime.assistant-presence.v1`). Derived by the Host from the sessiond
+ * running watch's `assistant` projection; only sent to clients that accepted
+ * the feature, so strict peers never see the frame. Same shape as the
+ * sessiond-side projection.
+ */
+export const WsAssistantStateMessageSchema = z.strictObject({ type: z.literal("assistant_state"), id: NonEmptyStringSchema.optional(), payload: AssistantPresenceSchema });
+export type WsAssistantStateMessage = z.infer<typeof WsAssistantStateMessageSchema>;
 export const WsRuntimeUnavailableMessageSchema = z.strictObject({ type: z.literal("runtime_unavailable"), id: NonEmptyStringSchema.optional(), payload: z.strictObject({ sessionId: NonEmptyStringSchema.optional(), error: ProtocolErrorSchema }) });
 
 export const WsInterruptExchangeSchema = z
@@ -243,7 +253,7 @@ export type WsInterruptExchange = z.infer<typeof WsInterruptExchangeSchema>;
 
 export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsActivateMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema, WsGetSnapshotMessageSchema, WsListRunningMessageSchema, WsStopMessageSchema, WsReadMessageSchema, WsSubmitTurnMessageSchema, WsPingMessageSchema]);
 export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
-export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckMessageSchema, WsHandshakeRejectMessageSchema, WsResponseMessageSchema, WsInterruptResultMessageSchema, WsSnapshotMessageSchema, WsEventMessageSchema, WsRunningStateMessageSchema, WsRuntimeUnavailableMessageSchema, WsReadResultMessageSchema, WsSubmitTurnResultMessageSchema, WsTurnStatusMessageSchema, WsPongMessageSchema, WsSessionsChangedMessageSchema]);
+export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckMessageSchema, WsHandshakeRejectMessageSchema, WsResponseMessageSchema, WsInterruptResultMessageSchema, WsSnapshotMessageSchema, WsEventMessageSchema, WsRunningStateMessageSchema, WsRuntimeUnavailableMessageSchema, WsReadResultMessageSchema, WsSubmitTurnResultMessageSchema, WsTurnStatusMessageSchema, WsPongMessageSchema, WsSessionsChangedMessageSchema, WsAssistantStateMessageSchema]);
 export type WsHostMessage = z.infer<typeof WsHostMessageSchema>;
 export const WsEnvelopeSchema = z.union([WsClientMessageSchema, WsHostMessageSchema]);
 export type WsEnvelope = z.infer<typeof WsEnvelopeSchema>;

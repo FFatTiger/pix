@@ -720,6 +720,18 @@ export function AppShell({ search }: AppShellProps) {
   // truth); selection never fabricates knowledge.
   const liveKnown = connection.liveSessionStateKnown;
 
+  // Always-on Pixie presence, from the same negotiated running watch that
+  // owns global liveness: online while the resident worker is live, starting
+  // during (re)activation, error while the restart backoff runs, hidden while
+  // unknown/armed (no conversation yet).
+  const assistantStatus = useMemo<"online" | "starting" | "error" | undefined>(() => {
+    const presence = connection.assistantPresence;
+    if (presence === null || presence.status === "armed") return undefined;
+    if (presence.status === "online") return "online";
+    if (presence.status === "starting") return "starting";
+    return "error";
+  }, [connection.assistantPresence]);
+
   const runningProjectRoots = useMemo<ReadonlySet<string>>(() => {
     const roots = new Set<string>();
     for (const session of catalogSessions) {
@@ -1287,6 +1299,7 @@ export function AppShell({ search }: AppShellProps) {
           onOpenAssistant={handleOpenAssistant}
           assistantActive={isAssistantView}
           canAssistant={canAssistant}
+          assistantStatus={assistantStatus}
         />
       </div> : null}
       {sidebarOpen && (
