@@ -180,6 +180,24 @@ export class SessiondApplication implements SessiondRpcHandler {
         await this.service.deleteSession(input.sessionId);
         return { sessionId: input.sessionId, deleted: true };
       }
+      case "workspace.setFlags": {
+        const input = params as SessiondMethodParams["workspace.setFlags"];
+        if (input.kind === "session") {
+          const result = await this.service.setSessionFlags(input.key, {
+            ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
+            ...(input.archived === undefined ? {} : { archived: input.archived }),
+          });
+          return { kind: "session" as const, key: input.key, pinned: result.pinned, archived: result.archived, revision: result.revision };
+        }
+        const result = await this.service.setProjectFlags(input.key, {
+          ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
+          ...(input.archived === undefined ? {} : { archived: input.archived }),
+        });
+        return { kind: "project" as const, key: input.key, pinned: result.pinned, archived: result.archived, revision: result.revision };
+      }
+      case "workspace.flags.get": {
+        return this.service.getWorkspaceFlags();
+      }
       case "sessions.findLatest": {
         // Assistant-conversation lookup (read-only, zero workers). Fail closed
         // when the catalog or the exact-cwd lookup is not mounted — never fall

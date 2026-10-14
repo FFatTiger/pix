@@ -68,6 +68,8 @@ export interface RuntimeConnectionView {
   readonly runningSessionIds: readonly string[];
   readonly liveSessionIds: readonly string[];
   readonly liveSessionStateKnown: boolean;
+  /** Monotonic bump on every sessions_changed push (catalog invalidation signal). */
+  readonly sessionsChangedRevision: number;
 }
 
 export type RuntimeAttemptDisconnectPolicy = "reject_on_disconnect" | "logical_retry";
@@ -344,6 +346,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   private runningAuthorityMode: "pending" | "watch" | "legacy" = "pending";
   private runningWatchGeneration = -1;
   private runningWatchRevision = -1;
+  private sessionsChangedRevision = 0;
   private view: RuntimeConnectionView;
 
   constructor(deps: RuntimeSocketDeps, options: RuntimeConnectionOptions = {}) {
@@ -805,6 +808,13 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   }
 
   onMessage(message: WsHostMessage, generation: number): void {
+    if (message.type === "sessions_changed") {
+      // Global catalog-change notice (rename / server-side pin-archive flags):
+      // bump the signal; subscribers refetch the session list.
+      this.sessionsChangedRevision += 1;
+      this.publish();
+      return;
+    }
     if (message.type === "running_state") {
       if (this.runningAuthorityMode !== "watch" || generation !== this.runningWatchGeneration) return;
       if (message.payload.revision <= this.runningWatchRevision) return;
@@ -1238,6 +1248,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       runningSessionIds: [...this.runningSessionIds],
       liveSessionIds: [...this.liveSessionIds],
       liveSessionStateKnown: this.liveSessionStateKnown,
+      sessionsChangedRevision: this.sessionsChangedRevision,
     };
   }
 

@@ -182,6 +182,7 @@ export {
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
   createSessiondSessionRenameClient,
+  createSessiondWorkspaceFlagsSeam,
   createSessiondSessionSettingsClient,
   createSessiondAssistantClient,
 } from "./composition/sessions-client.js";

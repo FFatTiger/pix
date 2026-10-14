@@ -3,7 +3,7 @@ import type { HttpClient } from "./http-client";
 import { createGateApi, type GateLoginInput, type GatePasswordChangeInput } from "./gate";
 import { createPreferencesApi, type PreferencesPatchInput } from "./preferences";
 import { createResourcesApi, type UploadInput } from "./resources";
-import { createSessionsApi } from "./sessions";
+import { createSessionsApi, SuccessSchema } from "./sessions";
 import { createConfigurationApi } from "./configuration";
 import { createModelsApi } from "./models";
 import { queryKeys } from "./query-keys";
@@ -79,6 +79,18 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
   const sessions = createSessionsApi(http);
   const configuration = createConfigurationApi(http);
   const models = createModelsApi(http);
+  const workspace = {
+    setFlags: () => ({
+      mutationKey: ["pix", "workspace-flags", "set"] as const,
+      mutationFn: (input: { kind: "session" | "project"; key: string; flags: { pinned?: boolean; archived?: boolean } }) =>
+        http.patch("/v1/workspace-flags", { kind: input.kind, key: input.key, ...input.flags }, { schema: SuccessSchema }),
+      // The optimistic flags-document patch (workspace-flags.ts) carries the
+      // answer locally; the authoritative refetch rides the sessions_changed
+      // push invalidation.
+      onSuccess: () => Promise.resolve(),
+    }),
+  };
+
   return {
     sessions: {
       // D4 rename: prime the cached list/detail titles for the exact session id
@@ -92,6 +104,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
           return invalidate(queryClient, queryKeys.sessions.lists, queryKeys.sessions.byId(input.id));
         },
       }),
+
       remove: () => ({
         mutationKey: ["pix", "sessions", "remove"] as const,
         mutationFn: (id: string) => sessions.remove(id),
@@ -139,6 +152,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
         mutationFn: (input: Parameters<typeof models.discover>[0]) => models.discover(input),
       }),
     },
+    workspace,
     settings: {
       /** Session idle-reclamation timeout (ms; 0 = disabled). */
       sessionIdleTimeout: () => ({

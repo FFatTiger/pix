@@ -89,6 +89,13 @@ export interface SessionHeader {
    * live classification; catalog adapters never invent this field.
    */
   workspaceAccess?: WorkspaceAccess;
+  /**
+   * Organization flags merged by sessiond from its durable workspace state
+   * (round 5 redo). Absence = flag not set (never guessed); old producers
+   * simply omit them. The adapter/JSONL layer never populates these.
+   */
+  pinned?: boolean;
+  archived?: boolean;
 }
 
 export interface SessionDetail extends SessionHeader {

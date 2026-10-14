@@ -866,7 +866,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
    * it can never become an unhandled rejection — the caller owns `run`'s
    * outcome.
    */
-  private enqueueMutation(sessionId: string, task: () => Promise<void>): Promise<void> {
+  private enqueueMutation<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
     const previous = this.mutationQueues.get(sessionId) ?? Promise.resolve();
     const run = previous.then(task, task);
     let tail: Promise<void>;

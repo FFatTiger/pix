@@ -47,7 +47,7 @@ export interface CapabilityContextValue {
   host: HostInfo;
 }
 
-const CapabilityContext = createContext<CapabilityContextValue | null>(null);
+export const CapabilityContext = createContext<CapabilityContextValue | null>(null);
 
 export interface CapabilityProviderProps {
   children: ReactNode;

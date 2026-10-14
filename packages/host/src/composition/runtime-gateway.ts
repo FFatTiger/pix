@@ -26,7 +26,7 @@ import {
   type SessiondMethodResult,
   type SessiondRpcMethod,
   type SessiondPush,
-  type SessiondRunningStatePush,
+  type SessiondRunningWatchPush,
   type SessiondTurnStatusPush,
   type WsClientMessage,
 } from "@fffattiger/pix-protocol";
@@ -63,7 +63,7 @@ export interface SessiondRuntimeClient {
     onPush: (push: SessiondTurnStatusPush) => void | Promise<void>,
   ): Promise<SessiondRpcSubscription<SessiondMethodResult["runtime.submitTurn"]>>;
   watchRunning?(
-    onPush: (push: SessiondRunningStatePush) => void | Promise<void>,
+    onPush: (push: SessiondRunningWatchPush) => void | Promise<void>,
   ): Promise<SessiondRpcSubscription<SessiondMethodResult["runtime.watchRunning"]>>;
 }
 
@@ -823,8 +823,13 @@ class GatewayConnection {
       this.closeBrowser(CLOSE_INTERNAL_ERROR, "running watch unavailable");
       return;
     }
-    const onPush = (push: SessiondRunningStatePush): void => {
+    const onPush = (push: SessiondRunningWatchPush): void => {
       if (this.browserClosed || this.runningWatch === undefined) return;
+      if (push.type === "sessions_changed") {
+        // Pure catalog invalidation notice: every open device refetches lists.
+        this.send({ type: "sessions_changed", payload: {} });
+        return;
+      }
       this.send({ type: "running_state", payload: push.state });
     };
     try {

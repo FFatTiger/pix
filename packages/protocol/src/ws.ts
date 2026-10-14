@@ -227,6 +227,8 @@ export const WsEventMessageSchema = z.strictObject({ type: z.literal("event"), i
  * sent to clients that accepted the feature, so strict v2 clients never see it.
  */
 export const WsRunningStateMessageSchema = z.strictObject({ type: z.literal("running_state"), id: NonEmptyStringSchema.optional(), payload: RuntimeRunningStateSchema });
+/** Host→client catalog-change notice: session metadata changed; refetch lists. */
+export const WsSessionsChangedMessageSchema = z.strictObject({ type: z.literal("sessions_changed"), id: NonEmptyStringSchema.optional(), payload: z.strictObject({}) });
 export const WsRuntimeUnavailableMessageSchema = z.strictObject({ type: z.literal("runtime_unavailable"), id: NonEmptyStringSchema.optional(), payload: z.strictObject({ sessionId: NonEmptyStringSchema.optional(), error: ProtocolErrorSchema }) });
 
 export const WsInterruptExchangeSchema = z
@@ -241,7 +243,7 @@ export type WsInterruptExchange = z.infer<typeof WsInterruptExchangeSchema>;
 
 export const WsClientMessageSchema = z.discriminatedUnion("type", [WsHandshakeMessageSchema, WsCreateMessageSchema, WsAttachMessageSchema, WsActivateMessageSchema, WsDetachMessageSchema, WsCommandMessageSchema, WsInterruptMessageSchema, WsGetSnapshotMessageSchema, WsListRunningMessageSchema, WsStopMessageSchema, WsReadMessageSchema, WsSubmitTurnMessageSchema, WsPingMessageSchema]);
 export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
-export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckMessageSchema, WsHandshakeRejectMessageSchema, WsResponseMessageSchema, WsInterruptResultMessageSchema, WsSnapshotMessageSchema, WsEventMessageSchema, WsRunningStateMessageSchema, WsRuntimeUnavailableMessageSchema, WsReadResultMessageSchema, WsSubmitTurnResultMessageSchema, WsTurnStatusMessageSchema, WsPongMessageSchema]);
+export const WsHostMessageSchema = z.discriminatedUnion("type", [WsHandshakeAckMessageSchema, WsHandshakeRejectMessageSchema, WsResponseMessageSchema, WsInterruptResultMessageSchema, WsSnapshotMessageSchema, WsEventMessageSchema, WsRunningStateMessageSchema, WsRuntimeUnavailableMessageSchema, WsReadResultMessageSchema, WsSubmitTurnResultMessageSchema, WsTurnStatusMessageSchema, WsPongMessageSchema, WsSessionsChangedMessageSchema]);
 export type WsHostMessage = z.infer<typeof WsHostMessageSchema>;
 export const WsEnvelopeSchema = z.union([WsClientMessageSchema, WsHostMessageSchema]);
 export type WsEnvelope = z.infer<typeof WsEnvelopeSchema>;

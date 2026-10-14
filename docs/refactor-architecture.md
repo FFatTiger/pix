@@ -542,6 +542,25 @@ packages/
   偏好（现状如此，卡片提示"仅对本设备生效"）；draft 写目标会话的 draft-store 键后导航，
   目标 composer 挂载时水合，永不自动发送。
 
+### 统一整理状态（第 5 轮重做：会话 + 项目置顶/归档）
+
+- **一个归属**：用户的整理偏好（会话与项目的 pinned/archived）是 sessiond 拥有的
+  workspace state，存 `PIX_SESSIOND_DIR/workspace-state.json`（schema v1 + revision、
+  原子写 0600、唯一写入方是 sessiond、损坏隔离后空启动绝不 brick；投影重建永不触碰它）。
+  绝不写进 Pi 会话 JSONL（那是聊天记录真相，且有 live worker 写方）也不进可丢弃的
+  SQLite 投影（投影版本回退到不含偏好的 v7 形态）。
+- **一条通道**：`workspace.setFlags` / `workspace.flags.get` RPC（统一 kind=session|project）；
+  Host 暴露 `GET/PATCH /v1/workspace-flags`（严格 body；sessiond down 时 guard 先行 503；
+  项目键必须是 AllowedRoots 内的绝对路径）；`PATCH /v1/sessions/:id` 的 pinned/archived
+  分支内部走同一 RPC。写入后复用 `sessions_changed` 全局推送 → 所有客户端失效
+  sessions 列表与 flags 查询重拉（改名的跨设备同步修复保留）。
+- **一个界面入口**：`useWorkspaceFlags`（读 GET 文档 + 乐观 patch + 失败快照回滚 + 错误行）；
+  `useSidebarItemState` 保持组件调用形状，四个集合（会话/项目 × 置顶/归档）全部来自服务器；
+  只有项目展开/折叠留在本地。列表行由 sessiond 合并 flags（SessionHeader 可选字段保留），
+  置顶集合与分页解耦（不再靠排序 hack）。
+- **迁移**：首次加载把 localStorage 里旧的会话+项目置顶/归档一次性 additive 上传
+  （server-wins），成功后剥离本地四个数组（只留 expandedProjects）。
+
 ## 9. 跨端策略（当前主线：PWA）
 
 | 端 | 连接 | 能力 |

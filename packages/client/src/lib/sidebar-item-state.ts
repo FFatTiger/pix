@@ -1,12 +1,15 @@
 import { useCallback, useSyncExternalStore } from "react";
+import { useWorkspaceFlags } from "@/lib/workspace-flags";
 
 /**
- * Client-owned pin / archive lists for the sidebar rail.
+ * Sidebar rail pin / archive state (round 5 split).
  *
- * There is no Host/Protocol pin or archive seam, so this preference lives
- * entirely in the browser. Components never read localStorage directly —
- * this module is the single owner (same pattern as ui-scale / process
- * display mode).
+ * SESSION and PROJECT pin/archive are SERVER state (sessiond-owned workspace
+ * state, written via PATCH /v1/workspace-flags — see lib/workspace-flags.ts).
+ * Only project EXPANSION stays device-local (each device's own view). The
+ * localStorage document now carries only expandedProjects; legacy pin/archive
+ * arrays are migrated to the server once (migrateLocalOrganizationPrefsToServer).
+ * Components keep consuming the SAME hook shape.
  */
 
 const STORAGE_KEY = "pi-sidebar-item-state";
@@ -161,19 +164,33 @@ export function useSidebarItemState(): {
   pinProject: (projectRoot: string, pinned: boolean) => void;
   archiveProject: (projectRoot: string, archived: boolean) => void;
   setProjectExpanded: (projectRoot: string, expanded: boolean) => void;
+  flagError: string | null;
 } {
-  const state = useSyncExternalStore(subscribe, loadSidebarItemState, () => EMPTY_STATE);
+  const local = useSyncExternalStore(subscribe, loadSidebarItemState, () => EMPTY_STATE);
+  const workspace = useWorkspaceFlags();
 
   const commit = useCallback((patch: Parameters<typeof applySidebarItemPatch>[1]) => {
     saveSidebarItemState(applySidebarItemPatch(loadSidebarItemState(), patch));
   }, []);
 
+  // Session AND project pin/archive come from the SERVER workspace state;
+  // only project expansion stays device-local. Pin/archive mutual exclusion
+  // is enforced by the write path (the optimistic patch sets both fields).
+  const state: SidebarItemState = {
+    pinnedSessions: workspace.pinnedSessions,
+    archivedSessions: workspace.archivedSessions,
+    pinnedProjects: workspace.pinnedProjects,
+    archivedProjects: workspace.archivedProjects,
+    expandedProjects: local.expandedProjects,
+  };
+
   return {
     state,
-    pinSession: useCallback((sessionId, pinned) => commit({ sessionId, pinned }), [commit]),
-    archiveSession: useCallback((sessionId, archived) => commit({ sessionId, archived }), [commit]),
-    pinProject: useCallback((projectRoot, pinned) => commit({ projectRoot, pinned }), [commit]),
-    archiveProject: useCallback((projectRoot, archived) => commit({ projectRoot, archived }), [commit]),
+    pinSession: useCallback((sessionId, pinned) => workspace.setSessionFlags(sessionId, { pinned, ...(pinned ? { archived: false } : {}) }), [workspace]),
+    archiveSession: useCallback((sessionId, archived) => workspace.setSessionFlags(sessionId, { archived, ...(archived ? { pinned: false } : {}) }), [workspace]),
+    pinProject: useCallback((projectRoot, pinned) => workspace.setProjectFlags(projectRoot, { pinned, ...(pinned ? { archived: false } : {}) }), [workspace]),
+    archiveProject: useCallback((projectRoot, archived) => workspace.setProjectFlags(projectRoot, { archived, ...(archived ? { pinned: false } : {}) }), [workspace]),
     setProjectExpanded: useCallback((projectRoot, expanded) => commit({ projectRoot, expanded }), [commit]),
+    flagError: workspace.flagError,
   };
 }

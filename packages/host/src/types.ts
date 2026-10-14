@@ -313,6 +313,8 @@ export interface SessionDeleteSeam {
  */
 export interface SessionRenameClient {
   rename(sessionId: string, name: string): Promise<unknown>;
+  /** Server-side sidebar flags (round 5): at least one flag required. */
+  setFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<unknown>;
 }
 
 /**
@@ -572,6 +574,8 @@ export interface HostDeps {
     roots?: AllowedRootService;
     delete?: SessionDeleteSeam;
     rename?: SessionRenameSeam;
+    /** Workspace organization-state seam (session+project pin/archive). */
+    workspaceFlags?: import("./routes/workspace-flags.js").WorkspaceFlagsSeam;
     /**
      * Session lifecycle settings (idle-reclamation timeout). When present,
      * GET/PUT /v1/settings/session-idle-timeout are mounted and the

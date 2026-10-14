@@ -181,6 +181,8 @@ export const zhCNLocale = {
     "desktop.assistantActionRenamed": "已改名：{title}",
     "desktop.assistantSentLabel": "由助手发送",
     "desktop.assistantNoticeTitle": "工作通知",
+    "desktop.workspaceFlagsUnavailable": "置顶/归档暂时不可用",
+    "desktop.workspaceFlagsSaveFailed": "置顶/归档保存失败，已回滚",
     "desktop.agentFeature.smartCompact": "智能压缩",
     "desktop.capability.smartCompact.description": "可验证的上下文摘要，附可恢复备份。关闭后退回 Pi 自带自动压缩。",
     "desktop.agentFeature.subagents": "子代理",

@@ -11,6 +11,7 @@ import {
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
   createSessiondSessionRenameClient,
+  createSessiondWorkspaceFlagsSeam,
   createSessiondSessionSettingsClient,
   createSessiondAssistantClient,
   createAssistantWorkspaceResource,
@@ -276,6 +277,12 @@ export async function runHost(
         client: createSessiondSessionRenameClient({ endpoint: location.paths.endpoint, secret }),
         mutationGuard: production.adapter,
       },
+      workspaceFlags: createSessiondWorkspaceFlagsSeam({
+        endpoint: location.paths.endpoint,
+        secret,
+        mutationGuard: production.adapter,
+        allowedRoots: production.deps.allowedRoots,
+      }),
       settings: {
         client: createSessiondSessionSettingsClient({ endpoint: location.paths.endpoint, secret }),
         mutationGuard: production.adapter,

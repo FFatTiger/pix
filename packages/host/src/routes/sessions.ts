@@ -171,16 +171,35 @@ export function mapSessionRenameError(error: unknown): HttpError {
  * fixed 400 INVALID_SESSION_NAME. The value must already be a string (no
  * coercion); full canonicalization happens in {@link canonicalizeSessionName}.
  */
-function parseRenameBody(body: Record<string, unknown>): string {
-  const keys = Object.keys(body);
-  if (keys.length !== 1 || keys[0] !== "name") {
-    throw new HttpError(400, "INVALID_SESSION_NAME", "Session name is invalid");
+type SessionMetadataBody =
+  | { kind: "name"; name: string }
+  | { kind: "flags"; flags: { pinned?: boolean; archived?: boolean } };
+
+function parseSessionMetadataBody(body: Record<string, unknown>): SessionMetadataBody {
+  const keys = Object.keys(body).sort();
+  const invalidName = () => new HttpError(400, "INVALID_SESSION_NAME", "Session name is invalid");
+  if (keys.length === 1 && keys[0] === "name") {
+    const name = body.name;
+    if (typeof name !== "string") throw invalidName();
+    return { kind: "name", name };
   }
-  const name = body.name;
-  if (typeof name !== "string") {
-    throw new HttpError(400, "INVALID_SESSION_NAME", "Session name is invalid");
+  if (keys.length >= 1 && keys.every((key) => key === "pinned" || key === "archived")) {
+    const pinned = body.pinned;
+    const archived = body.archived;
+    if ((pinned !== undefined && typeof pinned !== "boolean")
+      || (archived !== undefined && typeof archived !== "boolean")
+      || (pinned === undefined && archived === undefined)) {
+      throw new HttpError(400, "INVALID_SESSION_FLAGS", "Session flags are invalid");
+    }
+    return {
+      kind: "flags",
+      flags: {
+        ...(pinned === undefined ? {} : { pinned: pinned as boolean }),
+        ...(archived === undefined ? {} : { archived: archived as boolean }),
+      },
+    };
   }
-  return name;
+  throw invalidName();
 }
 
 /**
@@ -558,13 +577,23 @@ export function registerSessionRoutes(app: Hono<HostEnv>, deps: SessionRouteDeps
       // Content-type must be application/json (existing 415), body bounded to
       // 4 KiB (413), malformed/non-object JSON is the existing fixed 400.
       const body = await readJsonObject(c, RENAME_BODY_LIMIT);
-      // Strict object: exactly one own `name` field, no arrays/prototype/
-      // unknown fields, string value only (no coercion).
-      const name = parseRenameBody(body);
-      // Canonicalize the name exactly once (trim / non-blank / ≤200 / no C0).
-      const canonicalName = canonicalizeSessionName(name);
+      // Strict object: `name` (rename) or `pinned`/`archived` (server-side
+      // sidebar flags, round 5) — never mixed. No arrays/prototype/unknown
+      // fields, no type coercion.
+      const fields = parseSessionMetadataBody(body);
+      // Canonicalize the name exactly once (trim / non-blank / ≤200 / no C0)
+      // BEFORE the seam call so its fixed 400 is never remapped to 503.
+      if (fields.kind === "name") {
+        const canonicalName = canonicalizeSessionName(fields.name);
+        try {
+          await deps.rename!.client.rename(sessionId, canonicalName);
+        } catch (error) {
+          throw mapSessionRenameError(error);
+        }
+        return c.json({ success: true });
+      }
       try {
-        await deps.rename!.client.rename(sessionId, canonicalName);
+        await deps.rename!.client.setFlags(sessionId, fields.flags);
       } catch (error) {
         throw mapSessionRenameError(error);
       }

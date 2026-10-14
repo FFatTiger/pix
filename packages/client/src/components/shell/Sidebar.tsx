@@ -417,6 +417,7 @@ export function Sidebar({
     pinProject,
     archiveProject,
     setProjectExpanded,
+    flagError,
   } = useSidebarItemState();
   const expandedProjects = new Set(itemState.expandedProjects);
   const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
@@ -766,6 +767,9 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-rail-scroll">
+        {flagError !== null ? (
+          <div className="sidebar-status sidebar-status--error" role="alert">{t(flagError)}</div>
+        ) : null}
         {showPinnedSection ? (
           <section className="sidebar-section" data-testid="sidebar-pinned">
             <div className="sidebar-section-head" data-expanded={pinnedOpen ? "true" : "false"}>

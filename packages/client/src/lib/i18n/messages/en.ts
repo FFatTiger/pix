@@ -181,6 +181,8 @@ export const enLocale = {
     "desktop.assistantActionRenamed": "Renamed: {title}",
     "desktop.assistantSentLabel": "Sent by assistant",
     "desktop.assistantNoticeTitle": "Work notice",
+    "desktop.workspaceFlagsUnavailable": "Pinning is unavailable right now",
+    "desktop.workspaceFlagsSaveFailed": "Could not save the pin/archive change; it was rolled back",
     "desktop.agentFeature.smartCompact": "Smart compaction",
     "desktop.capability.smartCompact.description": "Verified context summaries with recoverable backups. Off: sessions fall back to Pi's built-in auto-compaction.",
     "desktop.agentFeature.subagents": "Subagents",
