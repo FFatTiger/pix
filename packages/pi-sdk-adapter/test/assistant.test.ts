@@ -11,7 +11,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -175,7 +175,7 @@ type CapturedBeforeAgentStart = (event: {
     forceSystemPrompt?: string | undefined;
     sections?: Record<string, string>;
   };
-}) => void | Promise<void>;
+}, signal?: AbortSignal) => void | Promise<void>;
 
 function realAssistantDirForTest(): string {
   return resolveAssistantWorkspaceDir(homedir());
@@ -201,18 +201,20 @@ function collectExtension(
   memoryProvider: AssistantMemoryProvider = "lore",
 ) {
   const tools = new Map<string, RegisteredTool>();
-  let beforeAgentStart: CapturedBeforeAgentStart | null = null;
+  // Object field, not a closed-over `let`: assigning the handler inside `on`
+  // otherwise narrows the local to `never` under the callback's control flow.
+  const captured: { beforeAgentStart: CapturedBeforeAgentStart | null } = { beforeAgentStart: null };
   const api = {
     registerTool(tool: RegisteredTool) {
       tools.set(tool.name, tool);
     },
     on(event: string, handler: unknown) {
-      if (event === "before_agent_start") beforeAgentStart = handler as CapturedBeforeAgentStart;
+      if (event === "before_agent_start") captured.beforeAgentStart = handler as CapturedBeforeAgentStart;
       return () => {};
     },
   };
   (createAssistantToolsExtension(sessionStatus as () => Promise<readonly never[]>, undefined, memoryProvider) as (pi: unknown) => void)(api);
-  return { tools, beforeAgentStart };
+  return { tools, beforeAgentStart: captured.beforeAgentStart };
 }
 
 async function runTool(tools: Map<string, RegisteredTool>, name: string, params: Record<string, unknown>) {
@@ -785,7 +787,7 @@ describe("assistant role prompt (system-prompt segments)", () => {
     // given text regardless of mutations.
     const options: PromptOptions = {};
     const { beforeAgentStart } = collectExtension();
-    assert.ok(beforeAgentStart, "extension registers before_agent_start");
+    if (beforeAgentStart === null) assert.fail("extension registers before_agent_start");
     beforeAgentStart({ systemPrompt: rendered, systemPromptOptions: options });
     return options;
   }
@@ -793,7 +795,7 @@ describe("assistant role prompt (system-prompt segments)", () => {
   /** Live-getter application (mirrors the real event: render reflects options). */
   function applyLive(options: PromptOptions) {
     const { beforeAgentStart } = collectExtension();
-    assert.ok(beforeAgentStart, "extension registers before_agent_start");
+    if (beforeAgentStart === null) assert.fail("extension registers before_agent_start");
     const event = {
       get systemPrompt() {
         return makeRender(options)();

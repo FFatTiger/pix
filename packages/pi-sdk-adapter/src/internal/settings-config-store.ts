@@ -574,14 +574,17 @@ export function createPiSdkSettingsConfigStore(options: PiSdkSettingsConfigOptio
       if (!input || !/^[0-9a-f]{64}$/.test(input.expectedRevision ?? "")) {
         throw runtimeError("invalid_input", "memory configuration input is invalid");
       }
-      if (normalizeMemoryProviderValue(input.provider) === null) {
+      // undefined (missing provider) is not a selection either: only the
+      // three canonical providers may be persisted.
+      const provider = normalizeMemoryProviderValue(input.provider);
+      if (provider !== "local" && provider !== "lore" && provider !== "off") {
         throw runtimeError("invalid_input", "memory configuration input is invalid");
       }
       // Selecting Lore requires a usable connection first — fail closed so a
       // half-configured selection can never silently strand the user without
       // any memory backend (the settings UI additionally requires a passing
       // connection test before offering the switch).
-      if (input.provider === "lore" && !detectLoreConnection(loreEnv).configured) {
+      if (provider === "lore" && !detectLoreConnection(loreEnv).configured) {
         throw runtimeError("invalid_input", "Lore is not configured: save a server address and API token first");
       }
       const agentDir = await canonicalAgentDir();
@@ -606,7 +609,7 @@ export function createPiSdkSettingsConfigStore(options: PiSdkSettingsConfigOptio
         // Structured write touches ONLY pixMemoryProvider; unknown keys and
         // the native settings round-trip untouched (same contract as the
         // tools editor).
-        parsed.pixMemoryProvider = input.provider;
+        parsed.pixMemoryProvider = provider;
         const content = `${JSON.stringify(parsed, null, 2)}\n`;
         validateSettingsText(content);
         await secureState.writeStateDocument(settingsPath, content, { maxBytes: SETTINGS_MAX_BYTES });

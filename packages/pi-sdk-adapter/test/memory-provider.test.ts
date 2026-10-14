@@ -75,8 +75,11 @@ describe("readMemoryRuntimeStateSync", () => {
   });
 
   it("env-only lore connection (LORE_BASE_URL + LORE_API_TOKEN) counts as configured", async () => {
-    await withTempAgentDir((agentDir) => {
+    await withTempAgentDir((agentDir, loreHome) => {
+      // LORE_HOME must be the empty temp dir: without it detection falls
+      // through to the machine's own ~/.lore/config.json.
       const state = readMemoryRuntimeStateSync(agentDir, {
+        LORE_HOME: loreHome,
         LORE_BASE_URL: "https://core.example",
         LORE_API_TOKEN: "lm_t",
       });
@@ -103,7 +106,7 @@ describe("readMemoryRuntimeStateSync", () => {
   });
 
   it("an invalid persisted provider value fails closed instead of silently re-defaulting", async () => {
-    await withTempAgentDir(async (agentDir) => {
+    await withTempAgentDir(async (agentDir, loreHome) => {
       await writeFile(join(agentDir, "settings.json"), `${JSON.stringify({ pixMemoryProvider: "both" })}\n`);
       assert.throws(() => readMemoryRuntimeStateSync(agentDir, loreEnv(loreHome)), /pixMemoryProvider/);
     });

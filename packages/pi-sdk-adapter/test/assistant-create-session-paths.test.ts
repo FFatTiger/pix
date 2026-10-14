@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
@@ -58,7 +59,7 @@ describe("resolveAbsoluteProjectTarget", () => {
   it("accepts an existing directory inside the configured roots", () => {
     const result = resolveAbsoluteProjectTarget(inside);
     assert.ok("cwd" in result, `expected a target, got: ${JSON.stringify(result)}`);
-    assert.equal(result.cwd, inside);
+    assert.equal(result.cwd, realpathSync(inside));
   });
 
   it("rejects a directory outside the configured roots", () => {
@@ -99,7 +100,7 @@ describe("resolveAbsoluteProjectTarget", () => {
     store.set(guarded, true);
     const trusted = resolveAbsoluteProjectTarget(guarded);
     assert.ok("cwd" in trusted, `expected a target after trusting, got: ${JSON.stringify(trusted)}`);
-    assert.equal(trusted.cwd, guarded);
+    assert.equal(trusted.cwd, realpathSync(guarded));
   });
 
   it("a plain directory without project resources needs no explicit trust", () => {

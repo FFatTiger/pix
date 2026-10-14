@@ -936,7 +936,10 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
     if (!this.projectionEnabled || this.projectionWatcher !== undefined) return;
     const path = this.sessionDir ?? join(getAgentDir(), "sessions");
     try {
-      this.projectionWatcher = watch(path, { recursive: this.sessionDir === undefined }, (_event, filename) => {
+      // persistent:false — an unref()'d FSWatcher still holds the event loop
+      // on macOS (Node 24), so a daemon that prepared the catalog could not
+      // exit after shutdown. The recursive watch stays armed either way.
+      this.projectionWatcher = watch(path, { recursive: this.sessionDir === undefined, persistent: false }, (_event, filename) => {
         const relative = filename?.toString().replace(/\\/g, "/");
         if (relative && relative.endsWith(".jsonl") && !relative.split("/").includes("..")) {
           const file = join(path, ...relative.split("/"));

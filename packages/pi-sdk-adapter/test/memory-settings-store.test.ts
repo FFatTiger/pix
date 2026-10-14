@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPiSdkSettingsConfigStore } from "../src/internal/settings-config-store.js";
@@ -18,6 +18,9 @@ beforeEach(async () => {
   agentDir = join(base, "agent");
   loreHome = join(base, "lore");
   await mkdir(agentDir, { recursive: true });
+  // mkdir's mode is masked by the process umask, and the secure-state walk
+  // validates an existing directory as exact 0700 without chmod'ing it.
+  await chmod(agentDir, 0o700);
   await mkdir(loreHome, { recursive: true });
 });
 

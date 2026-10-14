@@ -108,13 +108,17 @@ describe("memory curated plugins", () => {
         extension("/project/extensions/partial.ts", ["lore_search", "lore_get_node"]),
         // Signature tools present, but it also registers a foreign tool.
         extension("/project/extensions/mixed.ts", [...LORE_CORE_TOOLS, "bash"]),
-        // A pi-memory-like surface while lore is selected.
+        // A pi-memory-like surface while lore is selected: recognized, then
+        // dropped because that plugin is not the enabled memory provider.
         extension("/project/extensions/mem.ts", PI_MEMORY_TOOLS),
       ],
       errors: [],
       runtime: null,
     }, enabled);
-    assert.equal(filtered.extensions.length, 3);
+    assert.deepEqual(filtered.extensions.map((item) => item.path), [
+      "/project/extensions/partial.ts",
+      "/project/extensions/mixed.ts",
+    ]);
   });
 
   it("load errors of a disabled memory plugin are dropped; unrelated errors stay", () => {
@@ -170,7 +174,7 @@ describe("curated override composition (memory provider wiring)", () => {
     const roots = bundledPluginRoots();
     const piMemory = roots.find((item) => item.id === "pi_memory")!;
     const lore = roots.find((item) => item.id === "lore")!;
-    await withAgentDir({ pixMemoryProvider: "lore" }, (agentDir) => {
+    await withAgentDir({ pixMemoryProvider: "lore" }, (agentDir, loreHome) => {
       const override = createCuratedExtensionsOverride(agentDir, { LORE_HOME: loreHome });
       const result = override({
         extensions: [
@@ -183,7 +187,7 @@ describe("curated override composition (memory provider wiring)", () => {
       assert.equal(result.extensions.length, 1);
       assert.equal(result.extensions[0]!.path, lore.entry);
     });
-    await withAgentDir({ pixMemoryProvider: "off" }, (agentDir) => {
+    await withAgentDir({ pixMemoryProvider: "off" }, (agentDir, loreHome) => {
       const override = createCuratedExtensionsOverride(agentDir, { LORE_HOME: loreHome });
       const result = override({
         extensions: [
@@ -199,7 +203,7 @@ describe("curated override composition (memory provider wiring)", () => {
 
   it("absent provider with no lore connection keeps the bundled pi-memory (default local) with memory_search trimmed", async () => {
     const piMemory = bundledPluginRoots().find((item) => item.id === "pi_memory")!;
-    await withAgentDir(null, (agentDir) => {
+    await withAgentDir(null, (agentDir, loreHome) => {
       const override = createCuratedExtensionsOverride(agentDir, { LORE_HOME: loreHome });
       const result = override({
         extensions: [extension(piMemory.entry, PI_MEMORY_TOOLS)],

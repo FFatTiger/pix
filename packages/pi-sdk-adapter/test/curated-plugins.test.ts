@@ -66,7 +66,7 @@ describe("curated plugin loader filter", () => {
       ],
       errors: [],
       runtime: null,
-    }, new Set(["subagents", "todo", "ask_user_question", "side_chat", "smart_compact"]));
+    }, new Set(["subagents", "todo", "ask_user_question", "smart_compact"]));
     // Enabled: exactly the adapter-bundled instance survives.
     assert.deepEqual(filtered.extensions.map((item) => item.resolvedPath), [smart.entry]);
   });
@@ -82,7 +82,7 @@ describe("curated plugin loader filter", () => {
       ],
       errors: [],
       runtime: null,
-    }, new Set(["subagents", "todo", "ask_user_question", "side_chat"]));
+    }, new Set(["subagents", "todo", "ask_user_question"]));
     assert.deepEqual(filtered.extensions, []);
   });
 

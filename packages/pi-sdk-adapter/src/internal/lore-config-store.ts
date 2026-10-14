@@ -38,14 +38,30 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
-/** Lore state directory (`LORE_HOME`, default `~/.lore`). */
+/**
+ * Lore state directory (`LORE_HOME`, default `~/.lore`).
+ *
+ * Synchronous lexical form for reads. Writes must not feed this straight into
+ * the private-directory walk: on macOS `os.tmpdir()` is `/var/folders/...`
+ * while `/var` is a symlink to `/private/var`, and the walk fail-closes on any
+ * symlinked component. {@link canonicalLoreHomeDir} resolves that alias first.
+ */
 export function resolveLoreHomeDir(env: NodeJS.ProcessEnv = process.env): string {
   const fromEnv = nonEmptyString(env.LORE_HOME);
   return fromEnv !== undefined ? fromEnv : join(homedir(), ".lore");
 }
 
+async function canonicalLoreHomeDir(env: NodeJS.ProcessEnv): Promise<string> {
+  return secureState.canonicalizePath(resolveLoreHomeDir(env));
+}
+
 function loreConfigPath(env: NodeJS.ProcessEnv): string {
   return join(resolveLoreHomeDir(env), "config.json");
+}
+
+/** Same file, addressed through the canonical home so reads match a canonical write. */
+function canonicalLoreConfigPath(home: string): string {
+  return join(home, "config.json");
 }
 
 interface SharedLoreConfig {
@@ -54,10 +70,10 @@ interface SharedLoreConfig {
   raw: Record<string, unknown>;
 }
 
-function readSharedLoreConfig(env: NodeJS.ProcessEnv): SharedLoreConfig {
+function readSharedLoreConfigAt(path: string): SharedLoreConfig {
   let text: string;
   try {
-    text = readFileSync(loreConfigPath(env), "utf8");
+    text = readFileSync(path, "utf8");
   } catch {
     return { raw: {} };
   }
@@ -78,13 +94,16 @@ function readSharedLoreConfig(env: NodeJS.ProcessEnv): SharedLoreConfig {
   };
 }
 
+function readSharedLoreConfig(env: NodeJS.ProcessEnv): SharedLoreConfig {
+  return readSharedLoreConfigAt(loreConfigPath(env));
+}
+
 /**
  * Effective Lore connection facts (no secrets): config file first, then
  * env — the same per-field precedence the Lore extension applies. Mirrors
  * runtime-core `LoreConnectionSnapshot`.
  */
-export function detectLoreConnection(env: NodeJS.ProcessEnv = process.env): LoreConnectionSnapshot {
-  const shared = readSharedLoreConfig(env);
+function projectLoreConnection(shared: SharedLoreConfig, env: NodeJS.ProcessEnv): LoreConnectionSnapshot {
   const envBaseUrl = nonEmptyString(env.LORE_BASE_URL);
   const baseUrl = shared.baseUrl ?? envBaseUrl ?? null;
   const tokenConfigured = shared.apiToken !== undefined || nonEmptyString(env.LORE_API_TOKEN) !== undefined;
@@ -94,6 +113,10 @@ export function detectLoreConnection(env: NodeJS.ProcessEnv = process.env): Lore
     source: shared.baseUrl !== undefined ? "config" : envBaseUrl !== undefined ? "env" : "none",
     tokenConfigured,
   };
+}
+
+export function detectLoreConnection(env: NodeJS.ProcessEnv = process.env): LoreConnectionSnapshot {
+  return projectLoreConnection(readSharedLoreConfig(env), env);
 }
 
 /** Parsed + validated base URL; http allowed only on loopback hosts. */
@@ -141,17 +164,22 @@ export async function saveLoreConnection(
   if (apiToken === undefined) delete document.api_token;
   else document.api_token = apiToken;
 
-  const loreHome = resolveLoreHomeDir(env);
+  const loreHome = await canonicalLoreHomeDir(env);
   try {
     await secureState.ensurePrivateDirectory(loreHome);
-    await secureState.writeStateDocument(join(loreHome, "config.json"), `${JSON.stringify(document, null, 2)}\n`, {
+    await secureState.writeStateDocument(canonicalLoreConfigPath(loreHome), `${JSON.stringify(document, null, 2)}\n`, {
       maxBytes: LORE_CONFIG_MAX_BYTES,
     });
   } catch (error) {
     if (error && typeof error === "object" && "code" in error) throw error;
     throw runtimeError("unavailable", "Lore connection could not be saved");
   }
-  return detectLoreConnection(env);
+  return detectLoreConnectionAt(loreHome, env);
+}
+
+/** Connection facts read from one already-canonical home (post-save read-back). */
+function detectLoreConnectionAt(loreHome: string, env: NodeJS.ProcessEnv): LoreConnectionSnapshot {
+  return projectLoreConnection(readSharedLoreConfigAt(canonicalLoreConfigPath(loreHome)), env);
 }
 
 type FetchLike = typeof fetch;

@@ -533,7 +533,12 @@ export function resolveAbsoluteProjectTarget(raw: string): { cwd: string } | { e
     return { error: `目录无法解析：${trimmed}` };
   }
   const roots = parseWorkspaceRootsEnv();
-  const boundaries = roots ?? [homedir()];
+  // realpath the boundaries too: on macOS `os.tmpdir()` is `/var/folders/...`
+  // while the target realpath resolves through the `/var` → `/private/var`
+  // symlink, and a lexical comparison would reject every temp root.
+  const boundaries = (roots ?? [homedir()]).flatMap((root) => {
+    try { return [realpathSync(root)]; } catch { return []; }
+  });
   if (!boundaries.some((root) => isWithinRoot(real, root))) {
     return {
       error: roots === null

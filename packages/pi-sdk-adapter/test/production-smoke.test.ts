@@ -13,6 +13,9 @@ import { PRODUCTION_AGENT_CAPABILITIES, PiSdkAgentRuntimeFactory } from "../src/
 const EXPECTED_SELECTED_WITH_CURATED = [
   "Agent", "SendMessage", "TaskOutput", "TaskStop", "ask_user_question", "edit", "read", "todo",
   "smart_tools", "smart_navigation", "smart_context", "smart_compact",
+  // These tests pin pixMemoryProvider to "local", so the bundled pi-memory
+  // surface (minus the filtered memory_search) is part of the active set.
+  "memory_write", "scratchpad", "memory_read", "memory_forget", "memory_restore", "memory_status",
 ].sort();
 
 async function withAgentDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
