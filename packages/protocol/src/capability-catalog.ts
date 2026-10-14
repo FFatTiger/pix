@@ -93,7 +93,7 @@ export type CapabilityCatalogEntryLiteral = (typeof CAPABILITY_CATALOG)[number];
 export type CapabilityCatalogId = CapabilityCatalogEntryLiteral["id"];
 
 /** Catalog entries for builtin toggles, in persisted document order. */
-export const BUILTIN_CAPABILITY_CATALOG: readonly Extract<CapabilityCatalogEntryLiteral, { control: "builtin" }>[]> =
+export const BUILTIN_CAPABILITY_CATALOG: readonly Extract<CapabilityCatalogEntryLiteral, { control: "builtin" }>[] =
   CAPABILITY_CATALOG.filter((entry): entry is Extract<CapabilityCatalogEntryLiteral, { control: "builtin" }> =>
     entry.control === "builtin"
   );
