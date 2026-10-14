@@ -234,24 +234,6 @@ export const WorkerStatusQueryResultMessageSchema = z.strictObject({
   }),
 });
 
-/** sessiond → worker messages */
-export const SessiondToWorkerMessageSchema = z.discriminatedUnion("type", [
-  WorkerInitMessageSchema,
-  WorkerCommandMessageSchema,
-  WorkerSubmitTurnMessageSchema,
-  WorkerReadMessageSchema,
-  WorkerInterruptMessageSchema,
-  WorkerGetSnapshotMessageSchema,
-  WorkerRotateEpochMessageSchema,
-  WorkerShutdownMessageSchema,
-  WorkerHostResponseMessageSchema,
-  WorkerStatusQueryResultMessageSchema,
-  WorkerPingMessageSchema,
-]);
-
-export type SessiondToWorkerMessage = z.infer<
-  typeof SessiondToWorkerMessageSchema
->;
 export type WorkerSubmitTurnMessage = z.infer<typeof WorkerSubmitTurnMessageSchema>;
 export type WorkerSubmitTurnResultMessage = z.infer<typeof WorkerSubmitTurnResultMessageSchema>;
 export type WorkerTurnStatusMessage = z.infer<typeof WorkerTurnStatusMessageSchema>;
@@ -392,6 +374,170 @@ export const WorkerStatusQueryMessageSchema = z.strictObject({
   }),
 });
 
+// --- Assistant write channel (round 7) ----------------------------------
+
+/**
+ * Assistant op kinds the sessiond authority may execute on the worker's
+ * behalf. `message` is the RAW task text; the sessiond authority prepends
+ * `ASSISTANT_SENT_MESSAGE_PREFIX` (single owner of that convention) before
+ * the message enters any authoritative send path, so every producer gets the
+ * same persisted marker line for free.
+ */
+export const WorkerAssistantOpPayloadSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("send"),
+    targetSessionId: NonEmptyStringSchema,
+    message: z.string().min(1),
+    /** Same semantics as the UI's two send options. When the target is idle
+     * both deliveries start a new turn exactly like the composer does. */
+    delivery: z.enum(["steer", "follow_up"]),
+    waitMinutes: z.number().int().min(0).max(15),
+  }),
+  z.strictObject({
+    kind: z.literal("create"),
+    cwd: NonEmptyStringSchema,
+    message: z.string().min(1),
+    title: z.string().max(200).optional(),
+    model: ModelSelectorSchema.optional(),
+    thinkingLevel: ThinkingLevelSchema.optional(),
+    waitMinutes: z.number().int().min(0).max(15),
+  }),
+  z.strictObject({
+    kind: z.literal("stop"),
+    targetSessionId: NonEmptyStringSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("rename"),
+    targetSessionId: NonEmptyStringSchema,
+    name: z.string().min(1).max(200),
+  }),
+]);
+export type WorkerAssistantOpPayload = z.infer<typeof WorkerAssistantOpPayloadSchema>;
+
+/**
+ * WRITE assistant op request (worker → sessiond, correlated like
+ * worker.statusQuery). Only the ASSISTANT worker may ask (sessiond guards by
+ * the requester record's cwd being the assistant workspace); every other
+ * requester is refused without a reply. Execution rides the SAME
+ * authoritative paths as the UI (submitTurn / steer / follow_up command /
+ * create / stop / rename) so other attached clients observe the effects
+ * live; the worker never receives sessiond internals or secrets.
+ */
+export const WorkerAssistantOpMessageSchema = z.strictObject({
+  type: z.literal("worker.assistantOp"),
+  id: NonEmptyStringSchema,
+  payload: z.strictObject({
+    sessionId: NonEmptyStringSchema,
+    op: WorkerAssistantOpPayloadSchema,
+  }),
+});
+
+/**
+ * Worker-side cancellation of a pending `wait` (timeout or the assistant's
+ * own turn was aborted). The delegated work itself is NOT affected: the
+ * ledger entry flips to notify mode so the completion still reaches the
+ * assistant session as a notification later.
+ */
+export const WorkerAssistantWaitCancelMessageSchema = z.strictObject({
+  type: z.literal("worker.assistantWaitCancel"),
+  payload: z.strictObject({
+    sessionId: NonEmptyStringSchema,
+    delegationId: NonEmptyStringSchema,
+  }),
+});
+
+/** How the send actually entered the authoritative path. */
+export const AssistantDeliveryPathSchema = z.enum(["steer", "follow_up", "new_turn"]);
+export type AssistantDeliveryPath = z.infer<typeof AssistantDeliveryPathSchema>;
+
+export const WorkerAssistantOpResultMessageSchema = z.strictObject({
+  type: z.literal("worker.assistantOpResult"),
+  id: NonEmptyStringSchema,
+  payload: z.discriminatedUnion("ok", [
+    z.strictObject({
+      ok: z.literal(true),
+      sessionId: NonEmptyStringSchema,
+      kind: z.literal("send"),
+      targetSessionId: NonEmptyStringSchema,
+      delivery: AssistantDeliveryPathSchema,
+      delegationId: NonEmptyStringSchema.optional(),
+      note: z.string(),
+    }),
+    z.strictObject({
+      ok: z.literal(true),
+      sessionId: NonEmptyStringSchema,
+      kind: z.literal("create"),
+      targetSessionId: NonEmptyStringSchema,
+      delegationId: NonEmptyStringSchema.optional(),
+      note: z.string(),
+    }),
+    z.strictObject({
+      ok: z.literal(true),
+      sessionId: NonEmptyStringSchema,
+      kind: z.literal("stop"),
+      stopped: z.boolean(),
+      note: z.string(),
+    }),
+    z.strictObject({
+      ok: z.literal(true),
+      sessionId: NonEmptyStringSchema,
+      kind: z.literal("rename"),
+      targetSessionId: NonEmptyStringSchema,
+      note: z.string(),
+    }),
+    z.strictObject({
+      ok: z.literal(false),
+      sessionId: NonEmptyStringSchema,
+      kind: z.enum(["send", "create", "stop", "rename"]),
+      error: ProtocolErrorSchema,
+    }),
+  ]),
+});
+export type WorkerAssistantOpResultPayload = z.infer<typeof WorkerAssistantOpResultMessageSchema>["payload"];
+
+/** Result kinds for a delegated piece of work. */
+export const AssistantWorkOutcomeSchema = z.enum(["completed", "failed", "stopped", "waiting_user"]);
+export type AssistantWorkOutcome = z.infer<typeof AssistantWorkOutcomeSchema>;
+
+/**
+ * Completion receipt pushed to the assistant worker when delegated work
+ * settles while its `wait` is still pending. `id` equals the delegationId.
+ */
+export const WorkerAssistantCompletionMessageSchema = z.strictObject({
+  type: z.literal("worker.assistantCompletion"),
+  id: NonEmptyStringSchema,
+  payload: z.strictObject({
+    sessionId: NonEmptyStringSchema,
+    delegationId: NonEmptyStringSchema,
+    targetSessionId: NonEmptyStringSchema,
+    targetTitle: z.string().optional(),
+    outcome: AssistantWorkOutcomeSchema,
+    lastText: z.string().optional(),
+    writtenFiles: z.array(NonEmptyStringSchema).max(8).optional(),
+    error: z.string().optional(),
+  }),
+});
+export type WorkerAssistantCompletionPayload = z.infer<typeof WorkerAssistantCompletionMessageSchema>["payload"];
+
+/** sessiond → worker messages. Declared after the assistant frames it includes. */
+export const SessiondToWorkerMessageSchema = z.discriminatedUnion("type", [
+  WorkerInitMessageSchema,
+  WorkerCommandMessageSchema,
+  WorkerSubmitTurnMessageSchema,
+  WorkerReadMessageSchema,
+  WorkerInterruptMessageSchema,
+  WorkerGetSnapshotMessageSchema,
+  WorkerRotateEpochMessageSchema,
+  WorkerShutdownMessageSchema,
+  WorkerHostResponseMessageSchema,
+  WorkerStatusQueryResultMessageSchema,
+  WorkerAssistantOpResultMessageSchema,
+  WorkerAssistantCompletionMessageSchema,
+  WorkerPingMessageSchema,
+]);
+
+export type SessiondToWorkerMessage = z.infer<typeof SessiondToWorkerMessageSchema>;
+
 export const WorkerHostRequestMessageSchema = z.strictObject({
   type: z.literal("worker.hostRequest"),
   id: NonEmptyStringSchema,
@@ -433,6 +579,8 @@ export const WorkerToSessiondPushSchema = z.discriminatedUnion("type", [
   WorkerCacheInvalidatedMessageSchema,
   WorkerHostRequestMessageSchema,
   WorkerStatusQueryMessageSchema,
+  WorkerAssistantOpMessageSchema,
+  WorkerAssistantWaitCancelMessageSchema,
   WorkerFatalMessageSchema,
   WorkerStatusMessageSchema,
   WorkerTurnStatusMessageSchema,
@@ -526,6 +674,40 @@ export function safeParseWorkerToSessiondMessage(input: unknown) {
 /** @deprecated use parseSessiondToWorkerMessage */
 export function parseWorkerIpcRequest(input: unknown): SessiondToWorkerMessage {
   return parseSessiondToWorkerMessage(input);
+}
+
+// --- Assistant ops channel (worker-internal injection surface) ----------
+
+/**
+ * The narrow surface the agent worker exposes to the pi-sdk-adapter's
+ * assistant tools (injected exactly like the round-4 read-only status
+ * channel: worker-main late-bound holder → factory options → driver
+ * composition → `assistantExtensionFactoriesForCwd`). One worker process
+ * hosts one session, and the sessiond authority independently re-validates
+ * the requester's cwd, so this surface carries no identity of its own.
+ */
+export interface AssistantOpsChannel {
+  send(input: {
+    targetSessionId: string;
+    message: string;
+    delivery: "steer" | "follow_up";
+    waitMinutes: number;
+  }): Promise<WorkerAssistantOpResultPayload>;
+  create(input: {
+    cwd: string;
+    message: string;
+    title?: string;
+    model?: { provider: string; id: string };
+    thinkingLevel?: string;
+    waitMinutes: number;
+  }): Promise<WorkerAssistantOpResultPayload>;
+  stop(targetSessionId: string): Promise<WorkerAssistantOpResultPayload>;
+  rename(targetSessionId: string, name: string): Promise<WorkerAssistantOpResultPayload>;
+  /** Resolves with the completion receipt, or null on timeout. */
+  waitForCompletion(delegationId: string, timeoutMs: number): Promise<WorkerAssistantCompletionPayload | null>;
+  /** Stop waiting (worker-side timeout / assistant turn aborted); the
+   * delegated work continues and settles via notification later. */
+  cancelWait(delegationId: string): void;
 }
 
 /** @deprecated use safeParseWorkerToSessiondMessage / SessiondRpcResponse */

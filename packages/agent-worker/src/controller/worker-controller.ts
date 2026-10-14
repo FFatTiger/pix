@@ -37,12 +37,16 @@ import {
   evaluateSessiondBuild,
   type CorrelatedRuntimeCommandResult,
   type CorrelatedRuntimeInterruptResult,
+  type AssistantOpsChannel,
   type ProtocolError,
   type RuntimeCommand,
   type RuntimeEventData,
   type RuntimeInterrupt,
   type RuntimeInterruptResult,
   type SessiondToWorkerMessage,
+  type WorkerAssistantCompletionPayload,
+  type WorkerAssistantOpPayload,
+  type WorkerAssistantOpResultPayload,
   type WorkerSessionStatusItem,
   type WorkerToSessiondMessage,
   type SubmitTurnAdmission,
@@ -88,6 +92,8 @@ export interface WorkerControllerOptions {
   readonly logger?: (line: string) => void;
   /** Bounded runtime close during shutdown; exceeds → failure exit. */
   readonly shutdownTimeoutMs?: number;
+  /** Bounded wait for a correlated assistant op result. Tests only. */
+  readonly assistantOpTimeoutMs?: number;
 }
 
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -98,6 +104,7 @@ export class WorkerController {
   private readonly requestExit: (code: number) => void;
   private readonly logger: (line: string) => void;
   private readonly shutdownTimeoutMs: number;
+  private readonly assistantOpTimeoutMs: number;
   private readonly runtimeMapper: StatefulRuntimeMapper;
   private readonly snapshotMapper: SnapshotMapper;
 
@@ -108,6 +115,18 @@ export class WorkerController {
     resolve: (items: readonly WorkerSessionStatusItem[]) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
+  /** Correlated worker.assistantOp slots (bounded wait, single settle). */
+  private readonly assistantOps = new Map<string, {
+    kind: WorkerAssistantOpPayload["kind"];
+    resolve: (result: WorkerAssistantOpResultPayload) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  /** Pending wait-for-completion slots keyed by delegationId. */
+  private readonly assistantWaits = new Map<string, {
+    resolve: (completion: WorkerAssistantCompletionPayload | null) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private assistantOpsChannelValue: AssistantOpsChannel | null = null;
   private unsubscribe: (() => void) | null = null;
   private realSessionId: string | null = null;
   private cwdValue = "";
@@ -143,6 +162,7 @@ export class WorkerController {
     this.requestExit = options.requestExit;
     this.logger = options.logger ?? (() => {});
     this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+    this.assistantOpTimeoutMs = options.assistantOpTimeoutMs ?? 10_000;
     this.runtimeMapper = new StatefulRuntimeMapper((line) => this.logger(`[mapper] ${line}`));
     this.snapshotMapper = new SnapshotMapper(this.runtimeMapper);
   }
@@ -200,6 +220,24 @@ export class WorkerController {
         }
         return;
       }
+      case "worker.assistantOpResult": {
+        const pending = this.assistantOps.get(message.id);
+        if (pending !== undefined) {
+          this.assistantOps.delete(message.id);
+          clearTimeout(pending.timer);
+          pending.resolve(message.payload);
+        }
+        return;
+      }
+      case "worker.assistantCompletion": {
+        const pending = this.assistantWaits.get(message.payload.delegationId);
+        if (pending !== undefined) {
+          this.assistantWaits.delete(message.payload.delegationId);
+          clearTimeout(pending.timer);
+          pending.resolve(message.payload);
+        }
+        return;
+      }
       case "worker.hostResponse":
         // The worker never issues hostRequests in M2; a stray response is a
         // protocol violation → fail closed.
@@ -249,6 +287,128 @@ export class WorkerController {
       this.statusQueries.delete(id);
       clearTimeout(pending.timer);
       pending.resolve([]);
+    }
+  }
+
+  /**
+   * Ask sessiond to execute one assistant write op. Settles exactly once:
+   * matching reply, ~10s timeout, send failure, or shutdown/fatal.
+   * A late or mismatched id never settles a newer slot.
+   */
+  performAssistantOp(op: WorkerAssistantOpPayload): Promise<WorkerAssistantOpResultPayload> {
+    const sessionId = this.realSessionId ?? "";
+    const fail = (code: "timeout" | "worker_unavailable", message: string): WorkerAssistantOpResultPayload => ({
+      ok: false,
+      sessionId,
+      kind: op.kind,
+      error: protocolError(code, message, true),
+    });
+    const id = `assistantOp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (!this.assistantOps.has(id)) return;
+        this.assistantOps.delete(id);
+        resolve(fail("timeout", "会话管理器未响应助手操作"));
+      }, this.assistantOpTimeoutMs);
+      this.assistantOps.set(id, { kind: op.kind, resolve, timer });
+      void this.outbound.send({
+        type: "worker.assistantOp",
+        id,
+        payload: { sessionId, op },
+      }).catch(() => {
+        const pending = this.assistantOps.get(id);
+        if (pending === undefined) return;
+        this.assistantOps.delete(id);
+        clearTimeout(pending.timer);
+        resolve(fail("worker_unavailable", "会话管理器写通道不可用"));
+      });
+    });
+  }
+
+  /**
+   * Wait for a delegated turn to settle. Resolves the completion receipt, or
+   * null on timeout / shutdown. A late frame after the slot is gone is dropped.
+   */
+  waitForAssistantCompletion(delegationId: string, timeoutMs: number): Promise<WorkerAssistantCompletionPayload | null> {
+    const bounded = Math.max(0, timeoutMs);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (!this.assistantWaits.has(delegationId)) return;
+        this.assistantWaits.delete(delegationId);
+        resolve(null);
+      }, bounded);
+      const previous = this.assistantWaits.get(delegationId);
+      if (previous !== undefined) {
+        this.assistantWaits.delete(delegationId);
+        clearTimeout(previous.timer);
+        previous.resolve(null);
+      }
+      this.assistantWaits.set(delegationId, { resolve, timer });
+    });
+  }
+
+  /** Drop a pending wait and tell sessiond to flip the ledger to notify mode. */
+  cancelAssistantWait(delegationId: string): void {
+    const pending = this.assistantWaits.get(delegationId);
+    if (pending !== undefined) {
+      this.assistantWaits.delete(delegationId);
+      clearTimeout(pending.timer);
+      pending.resolve(null);
+    }
+    const sessionId = this.realSessionId ?? "";
+    void this.outbound.send({
+      type: "worker.assistantWaitCancel",
+      payload: { sessionId, delegationId },
+    }).catch(() => {});
+  }
+
+  /** Stable channel the assistant tools call. Cached for the controller lifetime. */
+  assistantOpsChannel(): AssistantOpsChannel {
+    if (this.assistantOpsChannelValue !== null) return this.assistantOpsChannelValue;
+    const channel: AssistantOpsChannel = {
+      send: (input) => this.performAssistantOp({
+        kind: "send",
+        targetSessionId: input.targetSessionId,
+        message: input.message,
+        delivery: input.delivery,
+        waitMinutes: input.waitMinutes,
+      }),
+      create: (input) => this.performAssistantOp({
+        kind: "create",
+        cwd: input.cwd,
+        message: input.message,
+        ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.model === undefined ? {} : { model: { provider: input.model.provider, modelId: input.model.id } }),
+        ...(input.thinkingLevel === undefined
+          ? {}
+          : { thinkingLevel: input.thinkingLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }),
+        waitMinutes: input.waitMinutes,
+      }),
+      stop: (targetSessionId) => this.performAssistantOp({ kind: "stop", targetSessionId }),
+      rename: (targetSessionId, name) => this.performAssistantOp({ kind: "rename", targetSessionId, name }),
+      waitForCompletion: (delegationId, timeoutMs) => this.waitForAssistantCompletion(delegationId, timeoutMs),
+      cancelWait: (delegationId) => this.cancelAssistantWait(delegationId),
+    };
+    this.assistantOpsChannelValue = channel;
+    return channel;
+  }
+
+  /** Settle every pending assistant op and wait — never a hanging promise. */
+  private failAssistantSlots(): void {
+    for (const [id, pending] of this.assistantOps) {
+      this.assistantOps.delete(id);
+      clearTimeout(pending.timer);
+      pending.resolve({
+        ok: false,
+        sessionId: this.realSessionId ?? "",
+        kind: pending.kind,
+        error: protocolError("worker_unavailable", "worker is shutting down", true),
+      });
+    }
+    for (const [delegationId, pending] of this.assistantWaits) {
+      this.assistantWaits.delete(delegationId);
+      clearTimeout(pending.timer);
+      pending.resolve(null);
     }
   }
 
@@ -825,6 +985,8 @@ export class WorkerController {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     this.phaseValue = "stopping";
+    this.failStatusQueries();
+    this.failAssistantSlots();
     this.logger(`[controller] shutdown (${reason})`);
 
     const port = this.port;
@@ -865,6 +1027,8 @@ export class WorkerController {
   }
 
   private async failFatal(error: ProtocolError, exitCode: number): Promise<void> {
+    this.failStatusQueries();
+    this.failAssistantSlots();
     this.logger(`[controller] fatal: ${error.code} ${error.message}`);
     try {
       await this.outbound.send({

@@ -1564,6 +1564,172 @@ describe("worker IPC", () => {
       true,
     );
   });
+
+  it("parses assistant op frames in both directions", () => {
+    const send = roundTrip(WorkerToSessiondPushSchema, {
+      type: "worker.assistantOp",
+      id: "ao-1",
+      payload: {
+        sessionId: "assistant-1",
+        op: {
+          kind: "send",
+          targetSessionId: "target-1",
+          message: "把测试跑绿",
+          delivery: "follow_up",
+          waitMinutes: 10,
+        },
+      },
+    });
+    assert.equal(send.type, "worker.assistantOp");
+    assert.equal(send.payload.op.kind, "send");
+
+    const create = roundTrip(WorkerToSessiondPushSchema, {
+      type: "worker.assistantOp",
+      id: "ao-2",
+      payload: {
+        sessionId: "assistant-1",
+        op: {
+          kind: "create",
+          cwd: "/home/u/proj",
+          message: "首条消息",
+          title: "小任务",
+          waitMinutes: 0,
+        },
+      },
+    });
+    assert.equal(create.payload.op.kind, "create");
+
+    const stopOp = roundTrip(WorkerToSessiondPushSchema, {
+      type: "worker.assistantOp",
+      id: "ao-3",
+      payload: { sessionId: "assistant-1", op: { kind: "stop", targetSessionId: "target-1" } },
+    });
+    assert.equal(stopOp.payload.op.kind, "stop");
+
+    const renameOp = roundTrip(WorkerToSessiondPushSchema, {
+      type: "worker.assistantOp",
+      id: "ao-4",
+      payload: { sessionId: "assistant-1", op: { kind: "rename", targetSessionId: "target-1", name: "新名字" } },
+    });
+    assert.equal(renameOp.payload.op.kind, "rename");
+
+    assert.equal(
+      safeParseWorkerToSessiondMessage({
+        type: "worker.assistantOp",
+        id: "ao-bad",
+        payload: {
+          sessionId: "assistant-1",
+          op: { kind: "send", targetSessionId: "target-1", message: "x", delivery: "urgent", waitMinutes: 1 },
+        },
+      }).success,
+      false,
+      "assistantOp rejects an unknown delivery",
+    );
+    assert.equal(
+      safeParseWorkerToSessiondMessage({
+        type: "worker.assistantOp",
+        id: "ao-bad",
+        payload: {
+          sessionId: "assistant-1",
+          op: { kind: "send", targetSessionId: "target-1", message: "x", delivery: "steer", waitMinutes: 16 },
+        },
+      }).success,
+      false,
+      "assistantOp rejects waitMinutes above the 15-minute cap",
+    );
+    assert.equal(
+      safeParseWorkerToSessiondMessage({
+        type: "worker.assistantOp",
+        id: "ao-bad",
+        payload: { sessionId: "assistant-1", op: { kind: "rename", targetSessionId: "t", name: "" } },
+      }).success,
+      false,
+      "assistantOp rejects an empty rename name",
+    );
+
+    assert.equal(
+      safeParseWorkerToSessiondMessage({
+        type: "worker.assistantWaitCancel",
+        payload: { sessionId: "assistant-1", delegationId: "d-1" },
+      }).success,
+      true,
+    );
+
+    const okSend = roundTrip(SessiondToWorkerMessageSchema, {
+      type: "worker.assistantOpResult",
+      id: "ao-1",
+      payload: {
+        ok: true,
+        sessionId: "assistant-1",
+        kind: "send",
+        targetSessionId: "target-1",
+        delivery: "new_turn",
+        delegationId: "d-1",
+        note: "已发送",
+      },
+    });
+    assert.equal(okSend.payload.ok, true);
+
+    const failed = roundTrip(SessiondToWorkerMessageSchema, {
+      type: "worker.assistantOpResult",
+      id: "ao-2",
+      payload: {
+        ok: false,
+        sessionId: "assistant-1",
+        kind: "create",
+        error: { code: "not_found", message: "project not found", retryable: false },
+      },
+    });
+    assert.equal(failed.payload.ok, false);
+
+    assert.equal(
+      safeParseSessiondToWorkerMessage({
+        type: "worker.assistantOpResult",
+        id: "ao-bad",
+        payload: { ok: false, sessionId: "a", kind: "send" },
+      }).success,
+      false,
+      "assistantOpResult failure requires an error",
+    );
+    assert.equal(
+      safeParseSessiondToWorkerMessage({
+        type: "worker.assistantOpResult",
+        id: "ao-bad",
+        payload: { ok: true, sessionId: "a", kind: "stop", note: "x" },
+      }).success,
+      false,
+      "assistantOpResult stop success requires stopped",
+    );
+
+    const completion = roundTrip(SessiondToWorkerMessageSchema, {
+      type: "worker.assistantCompletion",
+      id: "d-1",
+      payload: {
+        sessionId: "assistant-1",
+        delegationId: "d-1",
+        targetSessionId: "target-1",
+        targetTitle: "任务会话",
+        outcome: "completed",
+        lastText: "已完成并跑绿",
+        writtenFiles: ["/p/a.ts"],
+      },
+    });
+    assert.equal(completion.payload.outcome, "completed");
+    assert.equal(
+      safeParseSessiondToWorkerMessage({
+        type: "worker.assistantCompletion",
+        id: "d-1",
+        payload: {
+          sessionId: "assistant-1",
+          delegationId: "d-1",
+          targetSessionId: "target-1",
+          outcome: "vanished",
+        },
+      }).success,
+      false,
+      "assistantCompletion rejects an unknown outcome",
+    );
+  });
 });
 
 describe("DTO guards", () => {

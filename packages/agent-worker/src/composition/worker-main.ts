@@ -32,7 +32,7 @@ import {
   createPiSdkAgentRuntimeFactory,
   PRODUCTION_AGENT_CAPABILITIES,
 } from "@fffattiger/pix-pi-sdk-adapter/agent";
-import type { ProtocolError } from "@fffattiger/pix-protocol";
+import type { AssistantOpsChannel, ProtocolError } from "@fffattiger/pix-protocol";
 import { WorkerController } from "../controller/worker-controller.js";
 import { NdjsonStdioTransport } from "../transport/ndjson-transport.js";
 import { protocolError, toProtocolError } from "../mapper/protocol-error.js";
@@ -110,6 +110,18 @@ export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<Wo
   let factory = options.factory;
   let fatalOnStart: ProtocolError | undefined;
   if (factory === undefined) {
+    const notReady = () => Promise.reject(new Error("assistant ops channel is not ready yet"));
+    const assistantOps: AssistantOpsChannel = {
+      send: (input) => statusChannelController.current?.assistantOpsChannel().send(input) ?? notReady(),
+      create: (input) => statusChannelController.current?.assistantOpsChannel().create(input) ?? notReady(),
+      stop: (targetSessionId) => statusChannelController.current?.assistantOpsChannel().stop(targetSessionId) ?? notReady(),
+      rename: (targetSessionId, name) => statusChannelController.current?.assistantOpsChannel().rename(targetSessionId, name) ?? notReady(),
+      waitForCompletion: (delegationId, timeoutMs) =>
+        statusChannelController.current?.assistantOpsChannel().waitForCompletion(delegationId, timeoutMs) ?? notReady(),
+      cancelWait: (delegationId) => {
+        statusChannelController.current?.assistantOpsChannel().cancelWait(delegationId);
+      },
+    };
     const resolved = await resolveFactoryFromEnvironment({
       sessionStatus: () => {
         const controller = statusChannelController.current;
@@ -118,6 +130,7 @@ export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<Wo
         }
         return controller.queryStatus();
       },
+      assistantOps,
     });
     if (!resolved.ok) fatalOnStart = resolved.error;
     else factory = resolved.factory;
@@ -188,6 +201,7 @@ export async function runWorkerMain(options: WorkerMainOptions = {}): Promise<Wo
 
 async function resolveFactoryFromEnvironment(options: {
   sessionStatus?: () => Promise<readonly import("@fffattiger/pix-protocol").WorkerSessionStatusItem[]>;
+  assistantOps?: AssistantOpsChannel;
 } = {}): Promise<
   | { ok: true; factory: AgentRuntimeFactory }
   | { ok: false; error: ProtocolError }
@@ -225,6 +239,7 @@ async function resolveFactoryFromEnvironment(options: {
     factory: createPiSdkAgentRuntimeFactory({
       capabilities: PRODUCTION_AGENT_CAPABILITIES,
       ...(options.sessionStatus === undefined ? {} : { sessionStatus: options.sessionStatus }),
+      ...(options.assistantOps === undefined ? {} : { assistantOps: options.assistantOps }),
     }),
   };
 }

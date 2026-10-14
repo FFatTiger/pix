@@ -341,6 +341,30 @@ export type PluginInfo = z.infer<typeof PluginInfoSchema>;
 export const TrustLevelSchema = z.enum(["unknown", "trusted", "denied"]);
 export type TrustLevel = z.infer<typeof TrustLevelSchema>;
 
+// --- Assistant message-line conventions -------------------------------
+
+/**
+ * Fixed FIRST LINE the sessiond authority prepends to every user message the
+ * Assistant sends into another session on the user's behalf (send_to_session
+ * / create_session first message). It is part of the persisted message text
+ * (the Pi session JSONL has no LLM-visible metadata field on user messages),
+ * so the target session's model treats the rest as a user-issued instruction
+ * and every Pi client (CLI included) can read it. The pix client recognizes
+ * the exact line and renders a small "sent by assistant" label instead of
+ * showing the raw line, and strips it on copy. Single owner: never re-declare.
+ */
+export const ASSISTANT_SENT_MESSAGE_PREFIX = "[Pix 助手代用户发送]";
+
+/**
+ * Fixed FIRST LINE of the completion notification message the sessiond
+ * authority delivers INTO the assistant session when delegated work finishes
+ * (completed / failed / stopped / waiting for the user). Blocks below follow
+ * the `会话: …｜项目: …｜id: <sessionId>` line shape so the client can offer an
+ * "open" action. The pix client renders these as notification cards.
+ */
+export const ASSISTANT_NOTIFY_MESSAGE_PREFIX = "[Pix 助手工作通知]";
+
+
 export const ProjectTrustStatusSchema = z.strictObject({
   cwd: NonEmptyStringSchema,
   level: TrustLevelSchema,

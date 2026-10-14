@@ -2135,3 +2135,68 @@ html.dark .catalog-meta-item--error {
   color: var(--status-danger, #e5484d);
   border-color: color-mix(in srgb, var(--status-danger, #e5484d) 45%, var(--border));
 }
+
+/* Small label above a user bubble the assistant sent into this session. */
+.chat-user-sent-label {
+  align-self: flex-end;
+  margin-bottom: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+
+.assistant-notice-card {
+  border: 0;
+}
+
+.assistant-notice-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.assistant-notice-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.assistant-notice-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: var(--text-weight-strong);
+  color: var(--text);
+}
+
+.assistant-notice-badge {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.assistant-notice-badge.is-positive {
+  background: color-mix(in srgb, var(--status-success, var(--accent-green)) 16%, transparent);
+  color: var(--status-success, var(--accent-green));
+}
+
+.assistant-notice-badge.is-error {
+  background: color-mix(in srgb, var(--status-danger, #e5484d) 16%, transparent);
+  color: var(--status-danger, #e5484d);
+}
+
+.assistant-notice-badge.is-warn {
+  background: color-mix(in srgb, var(--status-warning) 16%, transparent);
+  color: var(--status-warning);
+}
+
+.assistant-notice-badge.is-accent {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}

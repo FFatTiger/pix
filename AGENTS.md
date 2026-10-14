@@ -39,6 +39,7 @@ fork the logic.
 | Pi SDK translation & capability projection | `packages/pi-sdk-adapter` | touch Pi SDK types anywhere else |
 | Session lifecycle authority | `packages/sessiond` | be held by Web/Client state |
 | Worker status query (read-only `worker.statusQuery` IPC) | `packages/protocol` (frames) + `packages/sessiond` (authoritative answers, assistant-only guard) + `packages/agent-worker` (correlation) | leak sessiond secrets to workers, let workers read sessiond internals, or answer non-assistant workers |
+| Assistant session operations & completion notifications (`worker.assistantOp` write channel, delegation ledger, notification delivery) | `packages/protocol` (frames + marker-line constants) + `packages/sessiond` (`src/assistant-ops.ts`: authority, assistant-cwd guard, quotas, chains, ledger) + `packages/agent-worker` (correlation) + `packages/pi-sdk-adapter` (tools) | execute assistant writes from any other package, bypass the authoritative submitTurn/steer/follow_up/create/stop/rename paths, or fork the delegation/notification semantics |
 | Single-session runtime mapping | `packages/agent-worker` | import Pi SDK directly |
 | HTTP/WS gateway, static, gate, files/git routes | `packages/host` | own session authority or runtime models |
 | Client UI + typed transports + runtime view | `packages/client` | reach into backend/daemon/Worker internals |

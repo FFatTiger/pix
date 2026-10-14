@@ -1019,6 +1019,10 @@ export interface SdkRuntimeComposition {
     cwd: string,
     trusted: boolean,
     toolPolicy?: ToolPolicyState,
+    channels?: {
+      sessionStatus?: DriverFactoryOptions["sessionStatus"];
+      assistantOps?: DriverFactoryOptions["assistantOps"];
+    },
   ): Promise<Awaited<ReturnType<typeof createAgentSessionServices>>>;
   resolveProjectTrust(cwd: string): Promise<boolean>;
   prepareExtensionMode(cwd: string, trusted: boolean): Promise<void>;
@@ -1088,7 +1092,10 @@ export function sideChatExtensionSurface(session: AgentSession) {
   });
 }
 
-function defaultComposition(sessionStatus?: DriverFactoryOptions["sessionStatus"]): SdkRuntimeComposition {
+function defaultComposition(
+  sessionStatus?: DriverFactoryOptions["sessionStatus"],
+  assistantOps?: DriverFactoryOptions["assistantOps"],
+): SdkRuntimeComposition {
   // Reuse the catalog owner's disposable index and exact identity validation.
   // A runtime open must not parse every historical JSONL through SDK listAll
   // before it can start the one selected session.
@@ -1110,7 +1117,9 @@ function defaultComposition(sessionStatus?: DriverFactoryOptions["sessionStatus"
       return { manager, cwd: manager.getCwd() };
     },
     initializeTheme: () => initTheme(),
-    createServices: (cwd, trusted, toolPolicy = { forcedEmpty: false }) => {
+    createServices: (cwd, trusted, toolPolicy = { forcedEmpty: false }, channels) => {
+      const effectiveStatus = channels?.sessionStatus ?? sessionStatus;
+      const effectiveOps = channels?.assistantOps ?? assistantOps;
       const agentDir = getAgentDir();
       const trustOptions = hasTrustRequiringProjectResources(cwd)
         ? { resourceLoaderReloadOptions: { resolveProjectTrust: async () => trusted } }
@@ -1122,7 +1131,7 @@ function defaultComposition(sessionStatus?: DriverFactoryOptions["sessionStatus"
       // durable BETWEEN turns (worker snapshots / reloads rebuild the base
       // from the loader); the per-turn segment surgery lives in the
       // extension's before_agent_start handler (see assistant-system-prompt).
-      const assistantExtensions = assistantExtensionFactoriesForCwd(cwd, sessionStatus);
+      const assistantExtensions = assistantExtensionFactoriesForCwd(cwd, effectiveStatus, effectiveOps);
       return createAgentSessionServices({
         cwd,
         agentDir,
@@ -1172,8 +1181,9 @@ export class SdkRuntimeDriverFactory implements PiRuntimeDriverFactory {
     private readonly trace?: InitializationTraceSink,
     composition?: SdkRuntimeComposition,
     private readonly sessionStatus?: DriverFactoryOptions["sessionStatus"],
+    private readonly assistantOps?: DriverFactoryOptions["assistantOps"],
   ) {
-    this.composition = composition ?? defaultComposition(sessionStatus);
+    this.composition = composition ?? defaultComposition(sessionStatus, assistantOps);
   }
 
   async create(input: RuntimeStartInput, options: DriverFactoryOptions): Promise<PiRuntimeDriver> {
@@ -1196,7 +1206,10 @@ export class SdkRuntimeDriverFactory implements PiRuntimeDriverFactory {
     await this.composition.prepareExtensionMode(cwd, trusted);
     this.trace?.record("extension_mode");
     const toolPolicy: ToolPolicyState = { forcedEmpty: input.toolNames?.length === 0 };
-    const services = await this.composition.createServices(cwd, trusted, toolPolicy);
+    const services = await this.composition.createServices(cwd, trusted, toolPolicy, {
+      ...(options.sessionStatus === undefined ? {} : { sessionStatus: options.sessionStatus }),
+      ...(options.assistantOps === undefined ? {} : { assistantOps: options.assistantOps }),
+    });
     this.trace?.record("services");
     const models = await this.composition.listVisibleModels(services);
     this.trace?.record("visible_models");

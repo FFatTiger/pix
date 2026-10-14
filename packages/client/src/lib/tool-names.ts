@@ -15,7 +15,7 @@
 export type AssistantToolLabel = {
   labelKey: string;
   detailKey: string;
-  iconName: "bookOpen" | "magnifyingGlass" | "brain" | "listBullets" | "checklist" | "folder" | "arrowRight" | "stacks" | "penNib";
+  iconName: "bookOpen" | "magnifyingGlass" | "brain" | "listBullets" | "checklist" | "folder" | "arrowRight" | "stacks" | "penNib" | "filePlus" | "circleX";
 };
 
 const ASSISTANT_TOOL_LABELS: Record<string, AssistantToolLabel> = {
@@ -37,6 +37,10 @@ const ASSISTANT_TOOL_LABELS: Record<string, AssistantToolLabel> = {
   open_session: { labelKey: "desktop.codexAssistantOpenSession", detailKey: "desktop.codexAssistantOpenSessionDetail", iconName: "arrowRight" },
   organize_sessions: { labelKey: "desktop.codexAssistantOrganize", detailKey: "desktop.codexAssistantOrganizeDetail", iconName: "stacks" },
   draft_to_session: { labelKey: "desktop.codexAssistantDraft", detailKey: "desktop.codexAssistantDraftDetail", iconName: "penNib" },
+  // Assistant directly operates sessions (round 7).
+  send_to_session: { labelKey: "desktop.codexAssistantSendToSession", detailKey: "desktop.codexAssistantSendToSessionDetail", iconName: "arrowRight" },
+  create_session: { labelKey: "desktop.codexAssistantCreateSession", detailKey: "desktop.codexAssistantCreateSessionDetail", iconName: "filePlus" },
+  stop_session: { labelKey: "desktop.codexAssistantStopSession", detailKey: "desktop.codexAssistantStopSessionDetail", iconName: "circleX" },
 };
 
 export function assistantToolLabel(toolName: string): AssistantToolLabel | null {
@@ -46,10 +50,13 @@ export function assistantToolLabel(toolName: string): AssistantToolLabel | null 
 /** First meaningful string argument for a tool-call detail line (bounded). */
 export function assistantToolDetailValue(toolName: string, input: Record<string, unknown> | undefined): string {
   const keys = toolName === "read_session" || toolName === "open_session" || toolName === "draft_to_session"
+    || toolName === "send_to_session" || toolName === "stop_session"
     ? ["session"]
-    : toolName === "organize_sessions"
-      ? ["action"]
-      : ["query", "project", "path", "range", "uri"];
+    : toolName === "create_session"
+      ? ["project"]
+      : toolName === "organize_sessions"
+        ? ["action"]
+        : ["query", "project", "path", "range", "uri"];
   for (const key of keys) {
     const value = input?.[key];
     if (typeof value === "string" && value.trim() !== "") {

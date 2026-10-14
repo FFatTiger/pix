@@ -9,23 +9,25 @@ import { useHttpClient } from "@/app/http-context";
 import type { SessionHeader } from "@fffattiger/pix-protocol";
 
 /**
- * Suggested-action card for the assistant's action tools (open_session /
- * organize_sessions / draft_to_session).
+ * Action card for the assistant's action tools (open_session /
+ * organize_sessions / draft_to_session / send_to_session / create_session).
  *
- * The tool NEVER performs the action: it resolved targets and returned a
- * confirmation, and this card renders the user-facing buttons from the
- * toolCall INPUT (the model's parameters — exactly what the tool validated).
- * Nothing executes until the user clicks; delete takes a second in-card
- * confirmation. Execution reuses the client's existing flows: normal session
- * navigation, the rename/remove mutations (PATCH/DELETE /v1/sessions/:id) and
- * the local sidebar pin/archive preferences; drafts are parked in the draft
- * store so the TARGET session's composer hydrates on mount — never sent.
+ * open / draft still wait for a click. organize delete still takes a second
+ * in-card confirmation. organize rename and send/create already executed
+ * server-side — the card only reports what happened and offers navigation.
+ * Execution reuses the client's existing flows: normal session navigation and
+ * the remove mutation (DELETE /v1/sessions/:id); drafts are parked in the
+ * draft store so the TARGET session's composer hydrates on mount — never sent.
  */
 
-type ActionToolName = "open_session" | "organize_sessions" | "draft_to_session";
+type ActionToolName = "open_session" | "organize_sessions" | "draft_to_session" | "send_to_session" | "create_session";
 
 export function isAssistantActionTool(toolName: string): toolName is ActionToolName {
-  return toolName === "open_session" || toolName === "organize_sessions" || toolName === "draft_to_session";
+  return toolName === "open_session"
+    || toolName === "organize_sessions"
+    || toolName === "draft_to_session"
+    || toolName === "send_to_session"
+    || toolName === "create_session";
 }
 
 interface ResolvedTarget {
@@ -34,14 +36,19 @@ interface ResolvedTarget {
   title: string;
 }
 
+function cachedSessions(queryClient: ReturnType<typeof useQueryClient>): SessionHeader[] {
+  const sessions: SessionHeader[] = [];
+  for (const [, page] of queryClient.getQueriesData<{ sessions?: SessionHeader[] }>({ queryKey: queryKeys.sessions.lists })) {
+    if (page?.sessions) sessions.push(...page.sessions);
+  }
+  return sessions;
+}
+
 /** Resolve id-or-title selectors against the cached session pages (read-only). */
 function useTargetResolver() {
   const queryClient = useQueryClient();
   return useMemo(() => {
-    const sessions: SessionHeader[] = [];
-    for (const [, page] of queryClient.getQueriesData<{ sessions?: SessionHeader[] }>({ queryKey: queryKeys.sessions.lists })) {
-      if (page?.sessions) sessions.push(...page.sessions);
-    }
+    const sessions = cachedSessions(queryClient);
     return (selector: string): ResolvedTarget | null => {
       const trimmed = selector.trim();
       if (trimmed === "") return null;
@@ -53,6 +60,27 @@ function useTargetResolver() {
       return byTitle === undefined ? null : toTarget(byTitle);
     };
   }, [queryClient]);
+}
+
+/** Newest cached session whose cwd basename matches the project name. */
+function useProjectSession(project: string): ResolvedTarget | null {
+  const queryClient = useQueryClient();
+  return useMemo(() => {
+    const wanted = project.trim().toLowerCase();
+    if (wanted === "") return null;
+    let best: SessionHeader | null = null;
+    for (const row of cachedSessions(queryClient)) {
+      const base = row.cwd.replace(/\\/g, "/").split("/").filter(Boolean).pop()?.toLowerCase() ?? "";
+      if (base !== wanted) continue;
+      if (best === null || (row.updatedAt ?? 0) > (best.updatedAt ?? 0)) best = row;
+    }
+    return best === null ? null : toTarget(best);
+  }, [project, queryClient]);
+}
+
+function concise(value: string, limit: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
 }
 
 function toTarget(header: SessionHeader): ResolvedTarget {
@@ -69,7 +97,6 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
   const queryClient = useQueryClient();
   const resolve = useTargetResolver();
   const [status, setStatus] = useState<CardStatus>("idle");
-  const rename = useMutation(createMutationOptions(http, queryClient).sessions.rename());
   const remove = useMutation(createMutationOptions(http, queryClient).sessions.remove());
 
   if (toolName === "open_session") {
@@ -92,6 +119,37 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
         />
       </div>
     );
+  }
+
+  if (toolName === "send_to_session") {
+    const selector = typeof input.session === "string" ? input.session : "";
+    const message = typeof input.message === "string" ? input.message : "";
+    const delivery = input.delivery === "steer" || input.delivery === "follow_up" ? input.delivery : "new";
+    const target = resolve(selector);
+    return (
+      <div className="assistant-action-card" data-testid="assistant-action-card">
+        <div className="assistant-action-card-title">{t("desktop.assistantActionSentTitle")}</div>
+        <div className="assistant-action-card-note">
+          {t("desktop.assistantActionSentTarget", { session: target ? target.title : selector })}
+        </div>
+        <div className="assistant-action-card-note">{t(`desktop.assistantActionDelivery_${delivery}`)}</div>
+        {message !== "" ? <div className="assistant-action-card-note">{concise(message, 120)}</div> : null}
+        <AssistantActionButton
+          label={t("desktop.assistantActionOpen")}
+          done={status === "done"}
+          disabled={target === null}
+          onClick={() => {
+            if (target === null) return;
+            void navigate({ to: "/", search: { session: target.sessionId, cwd: target.cwd } });
+            setStatus("done");
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (toolName === "create_session") {
+    return <CreateSessionCard input={input} />;
   }
 
   if (toolName === "draft_to_session") {
@@ -131,17 +189,23 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
   const targets = rows
     .map((row) => resolve(row.session))
     .filter((target): target is ResolvedTarget => target !== null);
+  // Rename already ran server-side; the card only reports the new title.
+  if (action === "rename") {
+    return (
+      <div className="assistant-action-card" data-testid="assistant-action-card">
+        <div className="assistant-action-card-title">{t("desktop.assistantActionRenamed", { title })}</div>
+      </div>
+    );
+  }
   const isDelete = action === "delete";
-  const busy = rename.isPending || remove.isPending;
-  const supported = action === "rename" || action === "delete";
+  const busy = remove.isPending;
+  const supported = isDelete;
   const finished = status === "done";
   const runAction = async () => {
     if (targets.length === 0) return;
     setStatus("idle");
     try {
-      if (action === "rename" && title !== "") {
-        await rename.mutateAsync({ id: targets[0]!.sessionId, name: title });
-      } else if (action === "delete") {
+      if (action === "delete") {
         for (const target of targets) await remove.mutateAsync(target.sessionId);
       } else {
         setStatus({ error: t("desktop.assistantActionUnsupported") });
@@ -177,7 +241,7 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
           label={isDelete ? t("desktop.assistantActionExecuteDelete") : t("desktop.assistantActionExecute")}
           done={finished}
           tone={isDelete ? "danger" : "default"}
-          disabled={targets.length === 0 || busy || !supported || (action === "rename" && title === "")}
+          disabled={targets.length === 0 || busy || !supported}
           onClick={() => {
             if (isDelete) {
               setStatus("confirm-delete");
@@ -188,6 +252,34 @@ export function AssistantActionCard({ toolName, input }: { toolName: ActionToolN
         />
       )}
       {typeof status === "object" ? <div className="assistant-action-card-note" role="alert">{status.error}</div> : null}
+    </div>
+  );
+}
+
+function CreateSessionCard({ input }: { input: Record<string, unknown> }) {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const [opened, setOpened] = useState(false);
+  const project = typeof input.project === "string" ? input.project : "";
+  const message = typeof input.message === "string" ? input.message : "";
+  const target = useProjectSession(project);
+  return (
+    <div className="assistant-action-card" data-testid="assistant-action-card">
+      <div className="assistant-action-card-title">{t("desktop.assistantActionCreatedTitle")}</div>
+      <div className="assistant-action-card-note">{t("desktop.assistantActionCreatedProject", { project })}</div>
+      {message !== "" ? <div className="assistant-action-card-note">{concise(message, 120)}</div> : null}
+      {target === null ? (
+        <div className="assistant-action-card-note">{t("desktop.assistantActionCreatedUnresolved")}</div>
+      ) : (
+        <AssistantActionButton
+          label={t("desktop.assistantActionOpen")}
+          done={opened}
+          onClick={() => {
+            void navigate({ to: "/", search: { session: target.sessionId, cwd: target.cwd } });
+            setOpened(true);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -20,7 +20,12 @@
  * result can never blow up the assistant's own context.
  */
 import { homedir } from "node:os";
-import type { WorkerSessionStatusItem } from "@fffattiger/pix-protocol";
+import type {
+  AssistantOpsChannel,
+  WorkerAssistantCompletionPayload,
+  WorkerAssistantOpResultPayload,
+  WorkerSessionStatusItem,
+} from "@fffattiger/pix-protocol";
 import { basename, sep as pathSep } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
@@ -41,6 +46,9 @@ export const ASSISTANT_TOOL_NAMES = [
   "open_session",
   "organize_sessions",
   "draft_to_session",
+  "create_session",
+  "send_to_session",
+  "stop_session",
 ] as const;
 
 /** True when a session cwd IS the assistant workspace on this machine. */
@@ -83,8 +91,9 @@ export function effectiveAssistantSystemPromptFor(cwd: string): string | null {
 export function assistantExtensionFactoriesForCwd(
   cwd: string,
   sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>,
+  assistantOps?: AssistantOpsChannel,
 ): InlineExtension[] {
-  return isAssistantWorkspaceCwd(cwd) ? [createAssistantToolsExtension(sessionStatus)] : [];
+  return isAssistantWorkspaceCwd(cwd) ? [createAssistantToolsExtension(sessionStatus, assistantOps)] : [];
 }
 
 /**
@@ -410,15 +419,62 @@ function analyzeTail(entries: readonly SdkMessageEntry[]): { state: "waiting_use
 
 /** Resolve a session selector (id or title) against the visible catalog. */
 function resolveSessionTarget(selector: string, sessions: readonly AssistantSessionInfo[]): AssistantSessionInfo | undefined {
+  const resolved = resolveSessionTargetStrict(selector, sessions);
+  return "target" in resolved ? resolved.target : undefined;
+}
+
+/**
+ * Exact id, then exact title (case-insensitive), then a unique substring over
+ * name/firstMessage. Multiple substring hits are returned as candidates so a
+ * write never lands on the wrong session.
+ */
+export function resolveSessionTargetStrict(
+  selector: string,
+  sessions: readonly AssistantSessionInfo[],
+): { target: AssistantSessionInfo } | { candidates: AssistantSessionInfo[] } | { notFound: true } {
   const trimmed = selector.trim();
-  if (trimmed === "") return undefined;
+  if (trimmed === "") return { notFound: true };
   const byId = sessions.find((info) => info.id === trimmed);
-  if (byId !== undefined) return byId;
+  if (byId !== undefined) return { target: byId };
   const lower = trimmed.toLowerCase();
   const byTitle = sessions.find((info) => (info.name ?? "").toLowerCase() === lower);
-  if (byTitle !== undefined) return byTitle;
-  return sessions.find((info) =>
+  if (byTitle !== undefined) return { target: byTitle };
+  const candidates = sessions.filter((info) =>
     (info.name ?? "").toLowerCase().includes(lower) || info.firstMessage.toLowerCase().includes(lower));
+  if (candidates.length === 1) return { target: candidates[0]! };
+  if (candidates.length > 1) return { candidates };
+  return { notFound: true };
+}
+
+function candidateLines(candidates: readonly AssistantSessionInfo[]): string {
+  return candidates.slice(0, 5).map((info) => `- ${targetLine(info)}`).join("\n");
+}
+
+/**
+ * Regular-project cwds only (same source as list_projects). Exact cwd, then a
+ * cwd ending in `/name`, then basename equality — all case-insensitive.
+ */
+function resolveProjectTarget(
+  selector: string,
+  sessions: readonly AssistantSessionInfo[],
+): { cwd: string } | { candidates: string[] } | { notFound: true } {
+  const raw = selector.trim();
+  if (raw === "") return { notFound: true };
+  const cwds = [...new Set(
+    sessions.filter((info) => browseKindForWorkspace(info.cwd) === "regular").map((info) => info.cwd),
+  )];
+  const normalized = normalizeAssistantWorkspacePath(raw);
+  const exact = cwds.filter((cwd) => normalizeAssistantWorkspacePath(cwd) === normalized);
+  if (exact.length === 1) return { cwd: exact[0]! };
+  if (exact.length > 1) return { candidates: exact };
+  const lower = raw.toLowerCase();
+  const bySuffix = cwds.filter((cwd) => {
+    const normalizedCwd = normalizeAssistantWorkspacePath(cwd);
+    return normalizedCwd.endsWith(`/${normalized.toLowerCase()}`) || projectLabel(cwd).toLowerCase() === lower;
+  });
+  if (bySuffix.length === 1) return { cwd: bySuffix[0]! };
+  if (bySuffix.length > 1) return { candidates: bySuffix };
+  return { notFound: true };
 }
 
 function targetLine(info: AssistantSessionInfo): string {
@@ -460,8 +516,85 @@ async function resolveTarget(selector: string, signal?: AbortSignal): Promise<{ 
  * only; every execute is read-only JSONL access with bounded output and
  * honest `isError` results (never a thrown rejection, never fake success).
  */
+const WAIT_MINUTES_MAX = 15;
+const MESSAGE_MAX_CHARS = 16_000;
+
+function clampWaitMinutes(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 10;
+  return Math.min(WAIT_MINUTES_MAX, Math.max(0, Math.trunc(value)));
+}
+
+function outcomeLabel(outcome: WorkerAssistantCompletionPayload["outcome"]): string {
+  switch (outcome) {
+    case "completed": return "完成";
+    case "failed": return "出错";
+    case "stopped": return "已停止";
+    case "waiting_user": return "停下等用户";
+  }
+}
+
+function formatCompletion(note: string, completion: WorkerAssistantCompletionPayload): string {
+  const lines = [`已发送并完成：`, note, `结果: ${outcomeLabel(completion.outcome)}`];
+  if (completion.lastText !== undefined && completion.lastText !== "") {
+    lines.push(`最后回复: ${concise(completion.lastText, 300)}`);
+  }
+  if (completion.writtenFiles !== undefined && completion.writtenFiles.length > 0) {
+    lines.push(`写过的文件: ${completion.writtenFiles.join(", ")}`);
+  }
+  if (completion.error !== undefined && completion.error !== "") {
+    lines.push(`错误: ${completion.error}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Race the channel wait against the tool's own timeout and the Pi abort
+ * signal. Timeout and abort both cancel the wait (the delegated work itself
+ * continues); abort is rethrown so Pi marks the tool aborted.
+ */
+async function waitWithAbort(
+  assistantOps: AssistantOpsChannel,
+  signal: AbortSignal | undefined,
+  delegationId: string,
+  waitMinutes: number,
+): Promise<WorkerAssistantCompletionPayload | null | "aborted"> {
+  const timeoutMs = waitMinutes * 60_000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+  const abort = new Promise<"aborted">((resolve) => {
+    if (signal === undefined) return;
+    if (signal.aborted) {
+      resolve("aborted");
+      return;
+    }
+    onAbort = () => resolve("aborted");
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    const winner = await Promise.race([
+      assistantOps.waitForCompletion(delegationId, timeoutMs).then((value) => ({ kind: "done" as const, value })),
+      timeout.then(() => ({ kind: "timeout" as const })),
+      abort.then(() => ({ kind: "aborted" as const })),
+    ]);
+    if (winner.kind === "done") return winner.value;
+    assistantOps.cancelWait(delegationId);
+    return winner.kind === "timeout" ? null : "aborted";
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort !== undefined && signal !== undefined) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function opErrorText(res: Extract<WorkerAssistantOpResultPayload, { ok: false }>): string {
+  return res.error.message;
+}
+
 export function createAssistantToolsExtension(
   sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>,
+  assistantOps?: AssistantOpsChannel,
 ): InlineExtension {
   return (pi: ExtensionAPI): void => {
     // Assistant role prompt (see assistant-system-prompt.ts): replace Pi's
@@ -873,11 +1006,11 @@ export function createAssistantToolsExtension(
       name: "organize_sessions",
       label: "建议整理会话",
       description: [
-        "建议用户批量整理会话（不直接执行）：重命名或删除。",
-        "界面会渲染「执行」按钮，用户点击后才会真正整理；删除还需要二次确认。",
+        "整理会话：改名直接生效；删除仍需用户在卡片上确认。",
+        "删除会渲染确认卡片，用户点击后才执行。",
         "重命名/删除是服务端会话操作。",
       ].join(""),
-      promptSnippet: "生成「改名 / 删除会话」按钮，用户点击后执行。",
+      promptSnippet: "给会话改名（直接生效），或生成删除确认卡片。",
       parameters: Type.Object({
         action: Type.String({ enum: ["rename", "delete"] }),
         sessions: Type.Array(Type.Object({ session: Type.String({ description: "会话 id 或标题" }) }), { minItems: 1, maxItems: 20, description: "目标会话列表" }),
@@ -906,12 +1039,172 @@ export function createAssistantToolsExtension(
         if (missing.length > 0) {
           return toolError(`以下目标没有找到：${missing.join("、")}。可先用 search_sessions 查找。`);
         }
-        const actionLabel: Record<string, string> = {
-          rename: "重命名",
-          delete: "删除",
-        };
-        const suffix = params.action === "rename" ? ` 为「${concise(params.title!.trim(), 60)}」` : "";
-        return toolText(`已建议${actionLabel[params.action]} ${targets.length} 个会话${suffix}（等用户点击「执行」按钮${params.action === "delete" ? "并确认删除" : ""}）：\n${targets.map((target) => `- ${targetLine(target)}`).join("\n")}`);
+        if (params.action === "rename") {
+          if (assistantOps === undefined) {
+            return toolError("会话操作通道不可用（此 Worker 未接入会话管理器写通道）。");
+          }
+          const title = params.title!.trim();
+          const res = await assistantOps.rename(targets[0]!.id, title);
+          if (res.ok === false) return toolError(opErrorText(res));
+          return toolText(`已改名：\n- ${targetLine(targets[0]!)} → 「${title}」`);
+        }
+        return toolText(`已建议删除 ${targets.length} 个会话（等用户点击「执行」按钮并确认删除）：\n${targets.map((target) => `- ${targetLine(target)}`).join("\n")}`);
+      },
+    });
+
+    pi.registerTool({
+      name: "send_to_session",
+      label: "给会话发消息",
+      description: [
+        "给某个会话发消息、交代任务。",
+        "对方正在运行时：引导（steer）会在下一次工具调用后插入；后续消息（follow_up）排在当前这一轮结束后。",
+        "对方空闲时两种投递都直接开始新一轮。",
+        "wait 为真时等到这一轮结束再拿结果。",
+      ].join(""),
+      promptSnippet: "给某个会话发消息、交代任务；对方运行中可选引导（steer）或后续消息（follow_up）。",
+      parameters: Type.Object({
+        session: Type.String({ description: "目标会话 id 或标题" }),
+        message: Type.String({ description: "要发送的完整任务说明", minLength: 1, maxLength: MESSAGE_MAX_CHARS }),
+        delivery: Type.Optional(Type.String({ enum: ["steer", "follow_up"], description: "运行中时的投递方式，默认 follow_up" })),
+        wait: Type.Optional(Type.Boolean({ description: "是否等到这一轮结束再返回结果，默认否" })),
+        wait_minutes: Type.Optional(Type.Integer({ description: "等待分钟数，0 到 15，默认 10", minimum: 0, maximum: WAIT_MINUTES_MAX })),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        signal?.throwIfAborted();
+        if (assistantOps === undefined) {
+          return toolError("会话操作通道不可用（此 Worker 未接入会话管理器写通道）。");
+        }
+        let sessions: AssistantSessionInfo[];
+        try {
+          sessions = await listSessionsForAssistant(signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("读取会话目录失败", error);
+        }
+        const resolved = resolveSessionTargetStrict(params.session, sessions);
+        if ("candidates" in resolved) {
+          return toolError(`「${concise(params.session, 60)}」匹配到多个会话，请用更精确的标题或 id：\n${candidateLines(resolved.candidates)}`);
+        }
+        if (!("target" in resolved)) {
+          return toolError(`没有找到会话「${concise(params.session, 60)}」。可先用 search_sessions 查找。`);
+        }
+        const target = resolved.target;
+        if (isAssistantWorkspacePath(target.cwd, homedir())) {
+          return toolError("不能对助手会话发送消息");
+        }
+        const wait = params.wait === true;
+        const waitMinutes = clampWaitMinutes(params.wait_minutes);
+        const delivery = params.delivery === "steer" ? "steer" : "follow_up";
+        const res = await assistantOps.send({
+          targetSessionId: target.id,
+          message: params.message,
+          delivery,
+          waitMinutes: wait ? waitMinutes : 0,
+        });
+        if (res.ok === false) return toolError(res.error.message);
+        if (res.kind !== "send") return toolError("会话操作返回了意外结果。");
+        if (wait && res.delegationId !== undefined) {
+          const completion = await waitWithAbort(assistantOps, signal, res.delegationId, waitMinutes);
+          if (completion === "aborted") throw signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
+          if (completion === null) {
+            return toolText(`已发送并等待超时：目标仍在处理这条消息。它结束时你会收到通知，届时请查看并汇报。\n${res.note}`);
+          }
+          return toolText(formatCompletion(res.note, completion));
+        }
+        return toolText(`已发送：\n${res.note}\n目标会话: ${targetLine(target)}\n\n它结束时你会收到通知。`);
+      },
+    });
+
+    pi.registerTool({
+      name: "create_session",
+      label: "新建会话",
+      description: [
+        "在某个项目里新建会话并交代任务。",
+        "项目按路径、路径后缀或目录名匹配；说不清时先用 list_projects。",
+        "wait 为真时等到这一轮结束再拿结果。",
+      ].join(""),
+      promptSnippet: "在某个项目里新建会话并交代任务。",
+      parameters: Type.Object({
+        project: Type.String({ description: "项目目录名或路径" }),
+        message: Type.String({ description: "新会话的第一条任务说明", minLength: 1, maxLength: MESSAGE_MAX_CHARS }),
+        title: Type.Optional(Type.String({ description: "可选会话标题", minLength: 1, maxLength: 200 })),
+        wait: Type.Optional(Type.Boolean({ description: "是否等到这一轮结束再返回结果，默认否" })),
+        wait_minutes: Type.Optional(Type.Integer({ description: "等待分钟数，0 到 15，默认 10", minimum: 0, maximum: WAIT_MINUTES_MAX })),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        signal?.throwIfAborted();
+        if (assistantOps === undefined) {
+          return toolError("会话操作通道不可用（此 Worker 未接入会话管理器写通道）。");
+        }
+        let sessions: AssistantSessionInfo[];
+        try {
+          sessions = await listSessionsForAssistant(signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("读取会话目录失败", error);
+        }
+        const project = resolveProjectTarget(params.project, sessions);
+        if ("candidates" in project) {
+          return toolError(`「${concise(params.project, 60)}」匹配到多个项目，请用更精确的路径：\n${project.candidates.slice(0, 5).map((cwd) => `- ${projectLabel(cwd)}｜${cwd}`).join("\n")}`);
+        }
+        if (!("cwd" in project)) {
+          return toolError(`没有找到项目「${concise(params.project, 60)}」。可用 list_projects 查看。`);
+        }
+        const wait = params.wait === true;
+        const waitMinutes = clampWaitMinutes(params.wait_minutes);
+        const title = params.title?.trim();
+        const res = await assistantOps.create({
+          cwd: project.cwd,
+          message: params.message,
+          ...(title === undefined || title === "" ? {} : { title }),
+          waitMinutes: wait ? waitMinutes : 0,
+        });
+        if (res.ok === false) return toolError(res.error.message);
+        if (res.kind !== "create") return toolError("会话操作返回了意外结果。");
+        if (wait && res.delegationId !== undefined) {
+          const completion = await waitWithAbort(assistantOps, signal, res.delegationId, waitMinutes);
+          if (completion === "aborted") throw signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
+          if (completion === null) {
+            return toolText(`已新建并等待超时：目标仍在处理这条消息。它结束时你会收到通知，届时请查看并汇报。\n新会话: ${res.targetSessionId}\n${res.note}`);
+          }
+          return toolText(`已新建并完成：\n新会话: ${res.targetSessionId}\n${formatCompletion(res.note, completion)}`);
+        }
+        return toolText(`已新建：\n新会话: ${res.targetSessionId}\n${res.note}\n\n它结束时你会收到通知。`);
+      },
+    });
+
+    pi.registerTool({
+      name: "stop_session",
+      label: "停止会话",
+      description: ["停止某个会话当前这一轮。"].join(""),
+      promptSnippet: "停止某个会话当前这一轮。",
+      parameters: Type.Object({
+        session: Type.String({ description: "会话 id 或标题" }),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        signal?.throwIfAborted();
+        if (assistantOps === undefined) {
+          return toolError("会话操作通道不可用（此 Worker 未接入会话管理器写通道）。");
+        }
+        let sessions: AssistantSessionInfo[];
+        try {
+          sessions = await listSessionsForAssistant(signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("读取会话目录失败", error);
+        }
+        const resolved = resolveSessionTargetStrict(params.session, sessions);
+        if ("candidates" in resolved) {
+          return toolError(`「${concise(params.session, 60)}」匹配到多个会话，请用更精确的标题或 id：\n${candidateLines(resolved.candidates)}`);
+        }
+        if (!("target" in resolved)) {
+          return toolError(`没有找到会话「${concise(params.session, 60)}」。可先用 search_sessions 查找。`);
+        }
+        const target = resolved.target;
+        const res = await assistantOps.stop(target.id);
+        if (res.ok === false) return toolError(res.error.message);
+        if (res.kind !== "stop") return toolError("会话操作返回了意外结果。");
+        return toolText(`已停止：\n- ${targetLine(target)}\n${res.note}`);
       },
     });
 

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type {
   CorrelatedRuntimeCommandResult,
   CorrelatedRuntimeInterruptResult,
@@ -49,6 +49,7 @@ import {
 } from "@fffattiger/pix-protocol";
 import type { RuntimeCloseReason } from "@fffattiger/pix-protocol";
 import { READ_ONLY_RUNTIME_COMMAND_TYPES, isRuntimeError, isAssistantWorkspacePath, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
+import { AssistantOpsAuthority, type AssistantOpsRecordView } from "./assistant-ops.js";
 import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailable, epochChangedCommand, epochChangedInterrupt, rejectedCommand, rejectedInterrupt, unavailableCommand, unavailableInterrupt } from "./errors.js";
 import { EventJournal, type EventJournalOptions } from "./journal.js";
 import { AsyncMutex } from "./internal/mutex.js";
@@ -142,6 +143,12 @@ export interface SessiondDependencies {
    * default (never crash, never a fabricated value).
    */
   settingsFile?: string;
+  /**
+   * Private sessiond directory for the assistant-delegation ledger. Defaults
+   * to the directory of {@link settingsFile} when that is set, so the daemon
+   * composition needs no extra wiring. Absent → the write channel is off.
+   */
+  assistantDirectory?: string;
 }
 
 export interface PreparedAttachment {
@@ -611,6 +618,8 @@ export class SessiondService {
   private readonly runningSubscribers = new Set<RunningSubscriber>();
   private runningState: RuntimeRunningState = { revision: 0, sessionIds: [], busySessionIds: [] };
   private shuttingDown = false;
+  /** Assistant write channel. Absent when no sessiond directory is configured. */
+  private readonly assistantOps?: AssistantOpsAuthority;
 
   constructor(private readonly deps: SessiondDependencies, options: SessiondOptions = {}) {
     this.now = options.now ?? Date.now;
@@ -633,6 +642,8 @@ export class SessiondService {
     this.turnOperationLimit = options.turnOperationLimit ?? 1_000;
     this.epochRolloverTimeoutMs = options.epochRolloverTimeoutMs ?? 10_000;
     this.expectedWorkerBuild = options.expectedWorkerBuild ?? WORKER_BUILD_IDENTITY;
+    const assistantDirectory = deps.assistantDirectory ?? (deps.settingsFile === undefined ? undefined : dirname(deps.settingsFile));
+    if (assistantDirectory !== undefined) this.assistantOps = new AssistantOpsAuthority({ surface: this.assistantOpsSurface(), directory: assistantDirectory, homedir: homedir() });
     if (!Number.isSafeInteger(this.subscriberQueueLimit) || this.subscriberQueueLimit < 1) throw new RangeError("subscriberQueueLimit must be positive");
     if (!Number.isSafeInteger(this.subscriberQueueByteLimit) || this.subscriberQueueByteLimit < 1) throw new RangeError("subscriberQueueByteLimit must be positive");
     if (!Number.isSafeInteger(this.commandResultLimit) || this.commandResultLimit < 1) throw new RangeError("commandResultLimit must be positive");
@@ -1143,6 +1154,12 @@ export class SessiondService {
       case "worker.statusQuery":
         this.handleStatusQuery(record, message.id);
         break;
+      case "worker.assistantOp":
+        void this.assistantOps?.handleWorkerOp(this.assistantRecordView(record), message.id, message.payload);
+        break;
+      case "worker.assistantWaitCancel":
+        this.assistantOps?.handleWaitCancel(message.payload);
+        break;
       case "worker.status":
         record.status = message.payload.status;
         this.broadcastRunningChanged(record.sessionId);
@@ -1360,6 +1377,7 @@ export class SessiondService {
         record.journalBaseEventId = appended.evicted.at(-1)!.eventId;
       }
       this.push(record, { type: "event", event: appended.event });
+      if (data.type === "extension_ui_request") this.assistantOps?.scheduleSettleCheck();
       if (data.type !== "running_sessions_changed" && wasTurnRunning !== this.isTurnRunning(record)) {
         this.broadcastRunningChanged(record.sessionId);
       }
@@ -2918,6 +2936,7 @@ export class SessiondService {
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    this.assistantOps?.dispose();
     const ids = [...this.records.keys()];
     // Bulk drain uses the lane-free internal bypass: it never recursively
     // acquires a per-session lane (a queued lane operation may be blocked on a
@@ -3383,18 +3402,90 @@ export class SessiondService {
 
   private broadcastRunningChanged(changedSessionId: string): void {
     const state = this.updateRunningState();
-    if (state === null) return;
-    this.pushRunningState({ type: "running_state", state });
-    // Protocol v2 compatibility shim. Removal condition: Protocol v3 deletes
-    // this per-session event together with browser listRunning legacy mode.
-    for (const record of this.records.values()) {
-      this.acceptEvent(record, {
-        type: "running_sessions_changed",
-        sessionId: record.sessionId || changedSessionId,
-        sessionIds: state.sessionIds,
-        busySessionIds: state.busySessionIds,
-      });
+    if (state !== null) {
+      this.pushRunningState({ type: "running_state", state });
+      // Protocol v2 compatibility shim. Removal condition: Protocol v3 deletes
+      // this per-session event together with browser listRunning legacy mode.
+      for (const record of this.records.values()) {
+        this.acceptEvent(record, {
+          type: "running_sessions_changed",
+          sessionId: record.sessionId || changedSessionId,
+          sessionIds: state.sessionIds,
+          busySessionIds: state.busySessionIds,
+        });
+      }
     }
+    this.assistantOps?.scheduleSettleCheck();
+  }
+
+  /** User-originated submitTurn. Clears the assistant auto-continuation chain when this session is the assistant's. */
+  noteRpcSubmitTurn(sessionId: string): void {
+    this.assistantOps?.noteRpcSubmitTurn(sessionId);
+  }
+
+  /** Narrow live-record view for the assistant write channel. */
+  private assistantRecordView(record: RecordState): AssistantOpsRecordView {
+    return {
+      sessionId: record.sessionId,
+      cwd: record.cwd,
+      epoch: record.epoch,
+      status: record.status,
+      isTurnRunning: () => this.isTurnRunning(record),
+      pendingExtensionUi: () => record.projection.snapshot().state.pendingExtensionUi?.length ?? 0,
+      get lastEventId() { return record.journal.lastEventId; },
+      capabilities: () => record.projection.snapshot().capabilities.capabilities,
+      runningOperationId: () => {
+        for (const operation of record.turnOperations.values()) {
+          if (operation.epoch !== record.epoch) continue;
+          if (operation.status.state === "completed" || operation.status.state === "failed") continue;
+          return operation.operationId;
+        }
+        return null;
+      },
+      writtenFiles: () => record.projection.snapshot().state.writtenFiles ?? [],
+      workerSend: (message) => record.worker.send(message),
+    };
+  }
+
+  private assistantOpsSurface() {
+    return {
+      getRecord: (sessionId: string) => {
+        const record = this.records.get(sessionId);
+        return record === undefined ? undefined : this.assistantRecordView(record);
+      },
+      submitTurn: (input: RuntimeSubmitTurnParams) => this.submitTurn(input),
+      command: (sessionId: string, command: RuntimeCommand, epoch?: string) => this.command(sessionId, command, epoch),
+      create: (input: RuntimeCreateParams) => this.create(input),
+      stop: (sessionId: string, reason?: string) => this.stop(sessionId, reason),
+      renameSession: (sessionId: string, name: string) => this.renameSession(sessionId, name),
+      locate: async (sessionId: string) => ({ exists: (await this.locate(sessionId)).exists }),
+      readSessionHeader: async (sessionId: string) => {
+        if (!this.deps.sessionCatalog) return null;
+        try {
+          const header = await this.readSession(sessionId);
+          return { ...(header.title === undefined ? {} : { title: header.title }), cwd: header.cwd };
+        } catch { return null; }
+      },
+      readSessionContext: async (sessionId: string, opts: { limit: number }) => {
+        if (!this.deps.sessionCatalog) return null;
+        try {
+          const context = await this.deps.sessionCatalog.readSessionContext(sessionId, { limit: opts.limit });
+          return {
+            entries: context.entries.flatMap((entry) => {
+              if (entry.message.role !== "assistant") return [];
+              const text = entry.message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+              return [{
+                message: {
+                  role: "assistant" as const,
+                  ...(text.length > 0 ? { content: text } : {}),
+                  ...(entry.message.errorMessage === undefined ? {} : { errorMessage: entry.message.errorMessage }),
+                },
+              }];
+            }),
+          };
+        } catch { return null; }
+      },
+    };
   }
 
   sessionCatalog(): SessionCatalogPort | undefined { return this.deps.sessionCatalog; }

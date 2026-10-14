@@ -1,5 +1,5 @@
 import type { Model, Api } from "@earendil-works/pi-ai";
-import type { WorkerSessionStatusItem } from "@fffattiger/pix-protocol";
+import type { AssistantOpsChannel, WorkerSessionStatusItem } from "@fffattiger/pix-protocol";
 import type { SideChatController } from "./vendor/pi-side-chat/index.js";
 import type { PromptDisposition, QueuedInputDisposition } from "@fffattiger/pix-runtime-core";
 export type { PromptDisposition, QueuedInputDisposition };
@@ -181,6 +181,12 @@ export interface DriverFactoryOptions {
    * keeps the frozen AgentRuntimeFactory create/open signatures unchanged.
    */
   sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>;
+  /**
+   * Write channel the assistant tools use to send/create/stop/rename other
+   * sessions. Threaded through driver options so a per-open injection can
+   * override the factory-captured channel without changing create/open.
+   */
+  assistantOps?: AssistantOpsChannel;
 }
 
 export interface PiRuntimeDriverFactory {

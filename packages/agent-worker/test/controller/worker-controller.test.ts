@@ -32,7 +32,7 @@ interface Harness {
   exitCodes: number[];
 }
 
-function createHarness(factory: FakeAgentRuntimeFactory): Harness {
+function createHarness(factory: FakeAgentRuntimeFactory, assistantOpTimeoutMs?: number): Harness {
   const recorder = new OutboundRecorder();
   const exitCodes: number[] = [];
   const controller = new WorkerController({
@@ -41,6 +41,7 @@ function createHarness(factory: FakeAgentRuntimeFactory): Harness {
     requestExit: (code) => exitCodes.push(code),
     logger: () => {},
     shutdownTimeoutMs: 60,
+    ...(assistantOpTimeoutMs === undefined ? {} : { assistantOpTimeoutMs }),
   });
   return { controller, recorder, factory, exitCodes };
 }
@@ -741,5 +742,129 @@ describe("WorkerController", () => {
       payload: { sessionId: "sess-real", sessions: [{ sessionId: "a", cwd: "/a", state: "live" }] },
     } as never);
     assert.deepEqual(await first, [{ sessionId: "a", cwd: "/a", state: "live" }]);
+  });
+
+  it("assistant op result settles only the matching pending slot", async () => {
+    const factory = new FakeAgentRuntimeFactory();
+    factory.script = () => ({ sessionId: "sess-real", sessionFile: "/sessions/sess-real.jsonl" });
+    const harness = createHarness(factory);
+    await harness.controller.handleMessage(initMessage({ mode: "create" }));
+    harness.recorder.messages.length = 0;
+
+    const pending = harness.controller.performAssistantOp({
+      kind: "stop",
+      targetSessionId: "other",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const sent = harness.recorder.messages.find((message) => message.type === "worker.assistantOp") as {
+      id: string;
+      payload: { sessionId: string; op: { kind: string } };
+    };
+    assert.equal(sent.payload.sessionId, "sess-real");
+    assert.equal(sent.payload.op.kind, "stop");
+    await harness.controller.handleMessage({
+      type: "worker.assistantOpResult",
+      id: "not-the-id",
+      protocolVersion: 2,
+      payload: {
+        ok: false,
+        sessionId: "sess-real",
+        kind: "stop",
+        error: { code: "not_found", message: "late" },
+      },
+    } as never);
+    await harness.controller.handleMessage({
+      type: "worker.assistantOpResult",
+      id: sent.id,
+      protocolVersion: 2,
+      payload: { ok: true, sessionId: "sess-real", kind: "stop", stopped: true, note: "已停止" },
+    } as never);
+    assert.deepEqual(await pending, { ok: true, sessionId: "sess-real", kind: "stop", stopped: true, note: "已停止" });
+    // A duplicate of the settled id is dropped.
+    await harness.controller.handleMessage({
+      type: "worker.assistantOpResult",
+      id: sent.id,
+      protocolVersion: 2,
+      payload: { ok: true, sessionId: "sess-real", kind: "stop", stopped: false, note: "迟到" },
+    } as never);
+  });
+
+  it("assistant op timeout resolves an honest error and a late reply cannot settle it", async () => {
+    const factory = new FakeAgentRuntimeFactory();
+    factory.script = () => ({ sessionId: "sess-real" });
+    const harness = createHarness(factory, 20);
+    await harness.controller.handleMessage(initMessage({ mode: "create" }));
+    const pending = harness.controller.performAssistantOp({ kind: "rename", targetSessionId: "t", name: "n" });
+    const sent = harness.recorder.messages.find((message) => message.type === "worker.assistantOp") as { id: string };
+    const result = await pending;
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.error.code, "timeout");
+    assert.equal(result.kind, "rename");
+    await harness.controller.handleMessage({
+      type: "worker.assistantOpResult",
+      id: sent.id,
+      protocolVersion: 2,
+      payload: { ok: true, sessionId: "sess-real", kind: "rename", targetSessionId: "t", note: "迟到" },
+    } as never);
+  });
+
+  it("assistant completion settles the matching wait; cancel sends waitCancel and clears the slot", async () => {
+    const factory = new FakeAgentRuntimeFactory();
+    factory.script = () => ({ sessionId: "sess-real" });
+    const harness = createHarness(factory);
+    await harness.controller.handleMessage(initMessage({ mode: "create" }));
+    harness.recorder.messages.length = 0;
+
+    const waiting = harness.controller.waitForAssistantCompletion("deleg-1", 5_000);
+    await harness.controller.handleMessage({
+      type: "worker.assistantCompletion",
+      id: "deleg-1",
+      protocolVersion: 2,
+      payload: {
+        sessionId: "sess-real",
+        delegationId: "deleg-1",
+        targetSessionId: "other",
+        outcome: "completed",
+      },
+    } as never);
+    const completion = await waiting;
+    assert.equal(completion?.outcome, "completed");
+
+    const cancelled = harness.controller.waitForAssistantCompletion("deleg-2", 5_000);
+    harness.controller.cancelAssistantWait("deleg-2");
+    assert.equal(await cancelled, null);
+    const cancel = harness.recorder.messages.find((message) => message.type === "worker.assistantWaitCancel") as {
+      payload: { sessionId: string; delegationId: string };
+    };
+    assert.equal(cancel.payload.delegationId, "deleg-2");
+    assert.equal(cancel.payload.sessionId, "sess-real");
+    // The cleared slot ignores a late completion.
+    await harness.controller.handleMessage({
+      type: "worker.assistantCompletion",
+      id: "deleg-2",
+      protocolVersion: 2,
+      payload: {
+        sessionId: "sess-real",
+        delegationId: "deleg-2",
+        targetSessionId: "other",
+        outcome: "failed",
+      },
+    } as never);
+  });
+
+  it("shutdown settles pending assistant ops and waits", async () => {
+    const factory = new FakeAgentRuntimeFactory();
+    factory.script = () => ({ sessionId: "sess-real" });
+    const harness = createHarness(factory);
+    await harness.controller.handleMessage(initMessage({ mode: "create" }));
+    const op = harness.controller.performAssistantOp({ kind: "send", targetSessionId: "t", message: "hi", delivery: "follow_up", waitMinutes: 0 });
+    const wait = harness.controller.waitForAssistantCompletion("deleg-x", 30_000);
+    await harness.controller.handleMessage({ type: "worker.shutdown", id: "sh-1", protocolVersion: 2, payload: { reason: "user" } });
+    const settled = await op;
+    assert.equal(settled.ok, false);
+    if (!settled.ok) assert.equal(settled.error.code, "worker_unavailable");
+    assert.equal(await wait, null);
+    assert.equal(harness.controller.phase, "stopped");
   });
 });

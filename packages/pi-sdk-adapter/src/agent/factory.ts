@@ -6,7 +6,7 @@ import type {
   RuntimeStartInput,
 } from "@fffattiger/pix-runtime-core";
 import { isRuntimeError, makeRuntimeError } from "@fffattiger/pix-runtime-core";
-import type { WorkerSessionStatusItem } from "@fffattiger/pix-protocol";
+import type { AssistantOpsChannel, WorkerSessionStatusItem } from "@fffattiger/pix-protocol";
 import type { PiRuntimeDriverFactory } from "../internal/types.js";
 import { SdkRuntimeDriverFactory } from "../internal/sdk-runtime.js";
 import { readFactoryInjection } from "../internal/factory-options.js";
@@ -30,6 +30,12 @@ export interface PiSdkAgentRuntimeFactoryOptions {
    * the channel as unavailable instead of guessing.
    */
   readonly sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>;
+  /**
+   * WRITE assistant-ops channel supplied by the worker process (supervisor
+   * IPC; sessiond answers assistant workers only). Absent in tests/embeddings
+   * → the write tools report the channel as unavailable instead of guessing.
+   */
+  readonly assistantOps?: AssistantOpsChannel;
 }
 
 export class PiSdkAgentRuntimeFactory implements AgentRuntimeFactory {
@@ -38,16 +44,18 @@ export class PiSdkAgentRuntimeFactory implements AgentRuntimeFactory {
     capabilities: readonly RuntimeCapability[];
     reloadCapabilities?: readonly RuntimeCapability[];
     sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>;
+    assistantOps?: AssistantOpsChannel;
   };
 
   constructor(options: PiSdkAgentRuntimeFactoryOptions) {
     const internal = readFactoryInjection(options);
     this.driverFactory = internal?.driverFactory
-      ?? new SdkRuntimeDriverFactory(internal?.trace, undefined, options.sessionStatus);
+      ?? new SdkRuntimeDriverFactory(internal?.trace, undefined, options.sessionStatus, options.assistantOps);
     this.driverOptions = {
       capabilities: options.capabilities,
       ...(options.reloadCapabilities === undefined ? {} : { reloadCapabilities: options.reloadCapabilities }),
       ...(options.sessionStatus === undefined ? {} : { sessionStatus: options.sessionStatus }),
+      ...(options.assistantOps === undefined ? {} : { assistantOps: options.assistantOps }),
     };
   }
 

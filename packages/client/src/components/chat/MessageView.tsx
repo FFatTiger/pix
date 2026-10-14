@@ -16,6 +16,8 @@ import { CompactionSummary } from "./CompactionSummary";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { isEditToolName } from "@/lib/tool-names";
+import { AssistantNoticeCard } from "./AssistantNoticeCard";
+import { assistantUserMessageKind, stripAssistantMarker } from "@/lib/assistant-message";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { ArrowBendDownRightIcon } from "@phosphor-icons/react/ArrowBendDownRight";
 import { CloudArrowDownIcon } from "@phosphor-icons/react/CloudArrowDown";
@@ -457,13 +459,17 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
     };
   }, [repositionSkillTip]);
 
-  const content =
+  const rawContent =
     typeof message.content === "string"
       ? message.content
       : message.content
           .filter((b): b is TextContent => b.type === "text")
           .map((b) => b.text)
           .join("\n");
+  const assistantKind = assistantUserMessageKind(rawContent);
+  // Sent-by-assistant messages drop the marker line (and the blank line
+  // after it) for both display and copy. Notices keep the raw text for copy.
+  const content = assistantKind === "sent" ? stripAssistantMarker(rawContent) : rawContent;
 
   // The SDK expands /skill:name into a <skill> block before storing the
   // message; render that as a styled token instead of dumping the raw skill
@@ -493,7 +499,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   const canNavigate = !!prevAssistantEntryId && !!onNavigate;
 
   const copyContent = () => {
-    copyText(content).then(() => {
+    copyText(assistantKind === "notice" ? rawContent : content).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
@@ -501,6 +507,13 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
 
   return (
     <div className={`chat-user-message${forking ? " is-forking" : ""}`}>
+      {assistantKind === "sent" ? (
+        <div className="chat-user-sent-label">{t("desktop.assistantSentLabel")}</div>
+      ) : null}
+      {assistantKind === "notice" ? (
+        <AssistantNoticeCard body={stripAssistantMarker(rawContent)} />
+      ) : (
+        <>
       <div className="chat-user-bubble-wrap">
         <div className="chat-user-bubble">
           {imageBlocks.length > 0 && (
@@ -567,6 +580,8 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
           <span className="chat-user-skill-tip-path">{skillMeta?.filePath ?? skillBlock?.location}</span>
         </div>,
         document.body,
+      )}
+        </>
       )}
 
       {/* Bottom row: action buttons + timestamp */}

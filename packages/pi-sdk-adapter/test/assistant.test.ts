@@ -492,8 +492,9 @@ describe("assistant session capabilities (round 3 tools)", () => {
     await dispose(fixture);
   });
 
-  it("registers all ten assistant tools", () => {
+  it("registers every assistant tool, including the write tools", () => {
     assert.deepEqual([...tools.keys()].sort(), [...ASSISTANT_TOOL_NAMES].sort());
+    assert.equal(ASSISTANT_TOOL_NAMES.length, 13);
   });
 
   it("session_status without the live channel reports unavailable instead of guessing", async () => {
@@ -944,6 +945,17 @@ describe("assistant role prompt (system-prompt segments)", () => {
     assert.equal(effectiveAssistantSystemPromptFor(PROJECT_DIR), null);
     resetAssistantPromptViewForTests();
     assert.equal(effectiveAssistantSystemPromptFor(realAssistantDirForTest()), null);
+  });
+
+  it("the role prompt includes the operate-sessions sections and drops the old follow-up section", () => {
+    const text = ASSISTANT_SEGMENT_TEMPLATE;
+    assert.match(text, /## 在项目里做事/);
+    assert.match(text, /## 会话动态与整理/);
+    assert.match(text, /send_to_session/);
+    assert.match(text, /create_session/);
+    assert.match(text, /stop_session/);
+    assert.doesNotMatch(text, /## 跟进项目/);
+    assert.match(text, /其他会话里等待用户回答的提问，由用户本人回答。/);
   });
 
   it("the role prompt rides ONLY the assistant extension (ordinary cwd sessions never register it)", () => {

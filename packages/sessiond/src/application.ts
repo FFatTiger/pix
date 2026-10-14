@@ -32,6 +32,7 @@ export class SessiondApplication implements SessiondRpcHandler {
   }
 
   submitTurn(params: SessiondMethodParams["runtime.submitTurn"]): Promise<import("./service.js").PreparedTurnSubmission> {
+    this.service.noteRpcSubmitTurn(params.sessionId);
     return this.service.prepareSubmitTurn(params);
   }
 
@@ -83,6 +84,7 @@ export class SessiondApplication implements SessiondRpcHandler {
       }
       case "runtime.submitTurn": {
         const input = params as SessiondMethodParams["runtime.submitTurn"];
+        this.service.noteRpcSubmitTurn(input.sessionId);
         return this.service.submitTurn(input);
       }
       case "runtime.interrupt": {

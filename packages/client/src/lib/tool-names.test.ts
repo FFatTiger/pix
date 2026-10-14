@@ -28,9 +28,19 @@ describe("assistantToolLabel", () => {
     expect(assistantToolLabel("draft_to_session")?.labelKey).toBe("desktop.codexAssistantDraft");
   });
 
+  it("maps the round-7 session-operation tools", () => {
+    expect(assistantToolLabel("send_to_session")?.labelKey).toBe("desktop.codexAssistantSendToSession");
+    expect(assistantToolLabel("create_session")?.labelKey).toBe("desktop.codexAssistantCreateSession");
+    expect(assistantToolLabel("stop_session")?.labelKey).toBe("desktop.codexAssistantStopSession");
+    expect(assistantToolDetailValue("send_to_session", { session: "修 bug" })).toBe("修 bug");
+    expect(assistantToolDetailValue("create_session", { project: "pix-next" })).toBe("pix-next");
+    expect(assistantToolDetailValue("stop_session", { session: "s-9" })).toBe("s-9");
+    expect(assistantToolDetailValue("send_to_session", { session: "x".repeat(80) }).length).toBeLessThanOrEqual(61);
+  });
+
   it("detail values prefer session/action/path keys for the new tools", () => {
     expect(assistantToolDetailValue("open_session", { session: "修 bug" })).toBe("修 bug");
-    expect(assistantToolDetailValue("organize_sessions", { action: "archive" })).toBe("archive");
+    expect(assistantToolDetailValue("organize_sessions", { action: "rename" })).toBe("rename");
     expect(assistantToolDetailValue("find_file_changes", { path: "nginx.conf" })).toBe("nginx.conf");
     expect(assistantToolDetailValue("summarize_activity", { range: "week" })).toBe("week");
   });
