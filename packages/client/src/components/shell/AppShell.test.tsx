@@ -115,6 +115,9 @@ const SESSION_HEADERS: readonly SessionHeader[] = [
  */
 function controllableStubFetch(opts: {
   sessions?: readonly SessionHeader[];
+  /** Server-owned pin/archive document. Tests that still stage the legacy
+   * localStorage shape pass it here so the sidebar reads the same intent. */
+  workspaceFlags?: { sessions?: Record<string, { pinned?: boolean; archived?: boolean }>; projects?: Record<string, { pinned?: boolean; archived?: boolean }> };
   contextDeferreds?: Map<string, Deferred>;
   contextEntries?: Map<string, SessionEntry[]>;
   contextCalls?: string[];
@@ -131,6 +134,7 @@ function controllableStubFetch(opts: {
         : input.url;
     const p = String(path);
     if (p.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
+    if (p.includes("/v1/workspace-flags")) return json({ revision: 1, sessions: {}, projects: {}, ...opts.workspaceFlags });
     if (p.includes("/v1/sessions/") && p.includes("/context")) {
       const id = decodeURIComponent(p.split("/v1/sessions/")[1]!.split("/")[0]!);
       opts.contextCalls?.push(id);
@@ -242,6 +246,7 @@ function stubFetch(): typeof fetch {
         : input.url;
     const p = String(path);
     if (p.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
+    if (p.includes("/v1/workspace-flags")) return json({ revision: 0, sessions: {}, projects: {} });
     if (p.includes("/v1/sessions/") && p.includes("/context")) {
       const id = decodeURIComponent(p.split("/v1/sessions/")[1]!.split("/")[0]!);
       return json({
@@ -1020,6 +1025,7 @@ describe("AppShell — read-only session selection (0-Worker history; send is th
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
+      if (path.includes("/v1/workspace-flags")) return json({ revision: 0, sessions: {}, projects: {} });
       if (path.includes("/v1/sessions/A") && path.includes("/context")) {
         return json({ context: { sessionId: "A", entries: [], pageInfo: { hasMore: false } } });
       }
@@ -2186,6 +2192,7 @@ describe("Composer — staged activation controls across A→B (stable toolbar, 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
+      if (path.includes("/v1/workspace-flags")) return json({ revision: 0, sessions: {}, projects: {} });
       if (path.includes("/v1/sessions/A") && path.includes("/context")) {
         return json({ context: { sessionId: "A", entries: [], pageInfo: { hasMore: false } } });
       }
@@ -3047,14 +3054,14 @@ describe("AppShell — source-like sidebar rail", () => {
 
   it("restores an archived session from the settings archive tab", async () => {
     const serverSessions = PROJECT_SESSIONS.map((row) => ({ ...row }));
-    const base = controllableStubFetch({ sessions: serverSessions });
+    const flags: { sessions: Record<string, { pinned?: boolean; archived?: boolean }>; projects: Record<string, { pinned?: boolean; archived?: boolean }> } = { sessions: {}, projects: {} };
+    const base = controllableStubFetch({ sessions: serverSessions, workspaceFlags: flags });
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      const patchMatch = path.match(/\/v1\/sessions\/([^/?]+)$/);
-      if (init?.method === "PATCH" && patchMatch) {
-        const body = JSON.parse(String(init.body)) as { pinned?: boolean; archived?: boolean };
-        const target = serverSessions.find((row) => row.sessionId === patchMatch[1]);
-        if (target) Object.assign(target, body);
+      if (path.includes("/v1/workspace-flags") && init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body)) as { kind: "session" | "project"; key: string; pinned?: boolean; archived?: boolean };
+        const map = body.kind === "session" ? flags.sessions : flags.projects;
+        map[body.key] = { ...map[body.key], ...(body.pinned === undefined ? {} : { pinned: body.pinned }), ...(body.archived === undefined ? {} : { archived: body.archived }) };
         return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "content-type": "application/json" } });
       }
       return base(input, init);
@@ -3069,6 +3076,7 @@ describe("AppShell — source-like sidebar rail", () => {
     await settle();
     expect(screen.getByTestId("archive-row")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await settle();
     expect(screen.getByTestId("session-select-A")).toBeTruthy();
   });
 
@@ -3749,13 +3757,9 @@ describe("AppShell — source-like sidebar rail", () => {
       workspaceAccess: AUTHORIZED,
     }));
     window.localStorage.setItem("pi-sidebar-item-state", JSON.stringify({
-      pinnedSessions: [],
-      pinnedProjects: ["/persisted-project-12"],
-      archivedSessions: [],
-      archivedProjects: [],
       expandedProjects: ["/persisted-project-12"],
     }));
-    const fetchImpl = controllableStubFetch({ sessions: many });
+    const fetchImpl = controllableStubFetch({ sessions: many, workspaceFlags: { projects: { "/persisted-project-12": { pinned: true } } } });
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();
@@ -3780,9 +3784,7 @@ describe("AppShell — source-like sidebar rail", () => {
       messageCount: 1,
       workspaceAccess: AUTHORIZED,
     }));
-    // Round 5: the pin is server state on the row (not localStorage).
-    many[11] = { ...many[11]!, pinned: true };
-    globalThis.fetch = controllableStubFetch({ sessions: many });
+    globalThis.fetch = controllableStubFetch({ sessions: many, workspaceFlags: { sessions: { PS12: { pinned: true } } } });
     mountApp({ cwd: "/x" });
     await settle();
 
@@ -3802,13 +3804,10 @@ describe("AppShell — source-like sidebar rail", () => {
       messageCount: 1,
       workspaceAccess: AUTHORIZED,
     }));
-    window.localStorage.setItem("pi-sidebar-item-state", JSON.stringify({
-      pinnedSessions: [],
-      pinnedProjects: [],
-      archivedSessions: [],
-      archivedProjects: many.slice(0, 10).map((session) => session.projectRoot),
-    }));
-    const fetchImpl = controllableStubFetch({ sessions: many });
+    const fetchImpl = controllableStubFetch({
+      sessions: many,
+      workspaceFlags: { projects: Object.fromEntries(many.slice(0, 10).map((session) => [session.projectRoot, { archived: true }])) },
+    });
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();
@@ -3898,10 +3897,11 @@ describe("AppShell — source-like sidebar rail", () => {
       messageCount: 1,
       workspaceAccess: AUTHORIZED,
     }));
-    // Round 5: archive flags live on the server rows.
-    const archivedIds = new Set(grouped.slice(0, 5).map((session) => session.sessionId));
-    const flagged = grouped.map((session) => archivedIds.has(session.sessionId) ? { ...session, archived: true } : session);
-    const fetchImpl = controllableStubFetch({ sessions: flagged });
+    const archivedIds = grouped.slice(0, 5).map((session) => session.sessionId);
+    const fetchImpl = controllableStubFetch({
+      sessions: grouped,
+      workspaceFlags: { sessions: Object.fromEntries(archivedIds.map((id) => [id, { archived: true }])) },
+    });
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();
@@ -4030,6 +4030,7 @@ describe("AppShell — unified top-level workspace tabs + right file browser", (
       const path = typeof input === "string" ? input : input instanceof URL ? `${input.pathname}${input.search}` : input.url;
       const p = String(path);
       if (p.includes("/v1/gate/status")) return json({ status: "enabled", required: false, authenticated: false, mode: "local" });
+      if (p.includes("/v1/workspace-flags")) return json({ revision: 0, sessions: {}, projects: {} });
       if (p.includes("op=read")) return json({ content: "AAAA", language: "text", size: 4 });
       if (p.includes("/v1/git/diff")) return json({ supported: false });
       if (p.includes("/v1/projects")) return json({ projects: [], page: 1, pageSize: 10, total: 0, totalPages: 0, catalogRevision: 0 });

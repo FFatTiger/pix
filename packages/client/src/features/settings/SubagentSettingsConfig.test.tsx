@@ -43,6 +43,7 @@ function server(initial = empty) {
   const writes: SubagentSettingsMutation[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
+    if (path.includes("/v1/workspace-flags")) return json({ revision: 0, sessions: {}, projects: {} });
     if (path === "/v1/models") {
       expect(init?.method).toBe("GET");
       return json(catalog);

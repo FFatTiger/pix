@@ -96,7 +96,8 @@ describe("SettingsModal information architecture", () => {
 describe("SettingsModal unsaved-changes guard", () => {
   async function makeToolsDirty() {
     let revision = "a".repeat(64);
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/v1/workspace-flags")) return json({ revision: 0, sessions: {}, projects: {} });
       if (init?.method === "PUT") {
         revision = "b".repeat(64);
         return json({ revision, selection: { mode: "custom", toolNames: ["read"] } });
