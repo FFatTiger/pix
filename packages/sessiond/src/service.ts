@@ -643,6 +643,9 @@ export class SessiondService {
   private runningState: RuntimeRunningState = { revision: 0, sessionIds: [], busySessionIds: [] };
   private get assistantPresence(): AssistantPresence | undefined { return this.assistantResidency.presence(); }
   private shuttingDown = false;
+  /** In-flight worker-start waits. Shutdown rejects them immediately so a
+   * signal during startup cannot sit out the full start timeout. */
+  private readonly shutdownWaits = new Set<() => void>();
   /** Assistant write channel. Absent when the workspace-state store is
    * disabled (null) or not provided — persistence and the channel go together. */
   private readonly assistantOps?: AssistantOpsAuthority;
@@ -871,6 +874,13 @@ export class SessiondService {
       record.unsubscribeWorker = worker.subscribe((message) => this.handleWorkerMessage(record, input.activationId, message, ready.resolve));
       record.unsubscribeExit = worker.onExit((exit) => this.handleWorkerExit(record, input.activationId, exit));
       const timer = setTimeout(() => ready.reject(new SessiondError("timeout", "worker start timed out", true)), this.workerStartTimeoutMs);
+      // A signal can land after the worker is spawned but before it is ready.
+      // Shutdown drains records that already exist; this wait must not outlive
+      // it, or the daemon process stays up until the start timeout (the
+      // always-on assistant activation is exactly that window).
+      const stopWaitingForReady = () => ready.reject(new SessiondError("unavailable", "sessiond is shutting down", true));
+      if (this.shuttingDown) stopWaitingForReady();
+      else this.shutdownWaits.add(stopWaitingForReady);
       try {
         await worker.send({
           type: "worker.init",
@@ -917,6 +927,7 @@ export class SessiondService {
         throw error;
     } finally {
       clearTimeout(timer);
+      this.shutdownWaits.delete(stopWaitingForReady);
     }
   }
 
@@ -2993,6 +3004,8 @@ export class SessiondService {
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    for (const stopWaiting of this.shutdownWaits) stopWaiting();
+    this.shutdownWaits.clear();
     this.assistantOps?.dispose();
     // Residency stops restarting during the drain (sessiond restart brings it
     // back via ensureAssistantResident at the next boot).

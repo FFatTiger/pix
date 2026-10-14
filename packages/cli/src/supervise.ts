@@ -515,8 +515,11 @@ export async function shutdownSessiond(
   const deadline = Date.now() + (options.timeoutMs ?? SHUTDOWN_TIMEOUT_MS);
   while (Date.now() < deadline) {
     // instanceAlive reads the lock each poll; once the daemon releases it the
-    // lock file is gone and instanceAlive returns false.
-    if (!(await instanceAlive(paths)) && !existsSync(paths.endpoint)) {
+    // lock file is gone and instanceAlive returns false. The pid is part of
+    // the same condition: lock and socket can disappear while the process is
+    // still draining an in-flight activation (the always-on assistant), and
+    // reporting terminated then leaves a live daemon behind.
+    if (!(await instanceAlive(paths)) && !existsSync(paths.endpoint) && !pidAlive(status.pid)) {
       return { action: "terminated", pid: status.pid };
     }
     await sleep(50);

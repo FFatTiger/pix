@@ -424,6 +424,16 @@ export class WorkerController {
 
   /** stdin EOF/close: perform an ordered shutdown and request a clean exit. */
   async onInputClosed(): Promise<void> {
+    // No runtime exists yet (sessiond shut down before worker.init, which is
+    // exactly the always-on assistant activation racing a startup signal).
+    // Waiting out the runtime-close timeout here keeps the worker — and the
+    // daemon waiting on it — alive for the full shutdown bound.
+    if (this.port === null) {
+      this.shuttingDown = true;
+      this.phaseValue = "stopped";
+      this.requestExit(0);
+      return;
+    }
     await this.shutdown("input-closed");
   }
 
