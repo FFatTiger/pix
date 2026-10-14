@@ -100,8 +100,22 @@ export type RuntimeWatchRunningParams = z.infer<
 >;
 
 /**
+ * Assistant residency projection carried on the revisioned running state
+ * (always-on Pixie). `sessionId` is the tracked assistant conversation (null
+ * while residency is armed with no conversation yet); `status` is the
+ * supervisor state. Optional: absent when the sessiond build/instance does
+ * not run residency, so consumers degrade by field presence.
+ */
+export const AssistantPresenceSchema = z.strictObject({
+  sessionId: NonEmptyStringSchema.nullable(),
+  status: z.enum(["armed", "starting", "online", "restarting"]),
+});
+export type AssistantPresence = z.infer<typeof AssistantPresenceSchema>;
+
+/**
  * Revisioned global running projection. `revision` is a safe non-negative
- * integer that increments ONLY on an actual live/busy set change; `sessionIds`
+ * integer that increments ONLY on an actual live/busy set change (or an
+ * assistant-residency projection change); `sessionIds`
  * are unique live-worker ids; `busySessionIds` are the live subset whose
  * current turn is authoritatively busy (prompt/bash/compact). Sets are
  * normalized (sorted, deduped) for deterministic comparison.
@@ -110,6 +124,7 @@ export const RuntimeRunningStateSchema = z.strictObject({
   revision: z.number().int().nonnegative().safe(),
   sessionIds: z.array(NonEmptyStringSchema),
   busySessionIds: z.array(NonEmptyStringSchema),
+  assistant: AssistantPresenceSchema.optional(),
 }).superRefine((value, ctx) => {
   if (new Set(value.sessionIds).size !== value.sessionIds.length) {
     ctx.addIssue({ code: "custom", path: ["sessionIds"], message: "sessionIds must be unique" });

@@ -1180,6 +1180,27 @@ html.dark .catalog-meta-item--error {
   opacity: 0.55;
 }
 
+/* Always-on Pixie presence dot on the fixed sidebar entry. Small and quiet:
+   same geometry as the tab running dot, existing status colors, no motion of
+   its own (busy pulse stays a session-tab affordance). Hidden entirely while
+   presence is unknown/armed — the component renders nothing then. */
+.sidebar-assistant-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.sidebar-assistant-dot[data-status="online"] {
+  background: var(--accent-green);
+}
+.sidebar-assistant-dot[data-status="starting"] {
+  background: var(--accent-orange);
+}
+.sidebar-assistant-dot[data-status="error"] {
+  background: var(--accent-red);
+}
+
 .sidebar-nav-item-label,
 .sidebar-row-title {
   min-width: 0;

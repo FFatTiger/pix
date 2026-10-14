@@ -611,3 +611,30 @@ describe("RuntimeConnection — explicit activate identity", () => {
     expect(ws.sent.filter((frame) => (frame as { type?: string }).type === "attach")).toHaveLength(0);
   });
 });
+
+describe("RuntimeConnection — assistant presence (always-on Pixie)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("projects negotiated assistant_state frames and clears presence on transport loss", () => {
+    const { connection, sockets } = makeConnection();
+    const ws = ready(connection, sockets, ["runtime.running-watch.v1", "runtime.assistant-presence.v1"]);
+    expect(connection.getSnapshot().assistantPresence).toBeNull();
+    ws.serverSend({ type: "assistant_state", payload: { sessionId: "pixie", status: "starting" } });
+    expect(connection.getSnapshot().assistantPresence).toEqual({ sessionId: "pixie", status: "starting" });
+    ws.serverSend({ type: "assistant_state", payload: { sessionId: "pixie", status: "online" } });
+    expect(connection.getSnapshot().assistantPresence).toEqual({ sessionId: "pixie", status: "online" });
+
+    // Transport loss makes the projection UNKNOWN (never a stale dot).
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    expect(connection.getSnapshot().assistantPresence).toBeNull();
+  });
+
+  it("ignores assistant_state frames when the feature was not negotiated", () => {
+    const { connection, sockets } = makeConnection();
+    const ws = ready(connection, sockets, ["runtime.running-watch.v1"]);
+    ws.serverSend({ type: "assistant_state", payload: { sessionId: "pixie", status: "online" } });
+    expect(connection.getSnapshot().assistantPresence).toBeNull();
+  });
+});

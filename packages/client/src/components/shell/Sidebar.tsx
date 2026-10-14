@@ -91,6 +91,13 @@ export interface SidebarProps {
   assistantActive?: boolean;
   /** Honest Host `assistant`-capability gate for showing the fixed entry. */
   canAssistant?: boolean;
+  /**
+   * Always-on Pixie presence from the negotiated running watch. `undefined`
+   * (unknown: not negotiated / no baseline / transport lost) or `"armed"`
+   * (no conversation yet) render no dot; `online`/`starting`/`error` render
+   * the small status dot on the entry, reusing the existing status colors.
+   */
+  assistantStatus?: "online" | "starting" | "error";
 }
 
 /**
@@ -324,6 +331,7 @@ export function Sidebar({
   onOpenAssistant,
   assistantActive,
   canAssistant,
+  assistantStatus,
 }: SidebarProps) {
   const { t } = useI18n();
   const http = useHttpClient();
@@ -750,6 +758,15 @@ export function Sidebar({
             >
               <PixieIcon size={16} />
               <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.assistantNav")}</span>
+              {assistantStatus === undefined ? null : (
+                <span
+                  className="sidebar-assistant-dot"
+                  data-testid="sidebar-assistant-dot"
+                  data-status={assistantStatus}
+                  title={t(`desktop.assistantPresence.${assistantStatus}`)}
+                  aria-label={t(`desktop.assistantPresence.${assistantStatus}`)}
+                />
+              )}
             </button>
           ) : null}
           <button

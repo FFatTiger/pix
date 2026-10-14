@@ -498,6 +498,34 @@ packages/
 - **能力令牌**：Host `assistant` token 仅在 seam 已挂载且 sessiond up 时通告
   （degraded 恒剔除）；客户端按能力隐藏入口，绝不出现破损视图。
 
+### 助手常驻（Pixie always-on）
+
+不变式（feat/pixie-always-on）：
+
+- **归属 sessiond**：常驻策略由 sessiond 独占（它拥有 worker 生命周期）；
+  Host 不保活、Client 不保活。判定助手会话沿用现有身份（cwd =
+  runtime-core 单点推导的助手目录），无第二套判定。
+- **启动即常驻**：生产入口（`runDaemon`/`main`，CLI 走到它们）默认开启
+  `assistantResidency`；`startDaemon` 保持显式 opt-in（库/测试引导不禁用）。
+  sessiond 启动后用与 `GET /v1/assistant` 同源的 `findLatestSessionByCwd`
+  只读查找最新助手会话并 activate；还没有会话则保持 **armed**（Pi SDK 在
+  Agent 创建时即落盘，预拉 worker 会制造空会话文件——禁止），首条消息走
+  现有 create 路径，就绪后由 residency 收养（adopt）。
+- **豁免与重启**：只有被追踪的那一个记录豁免 idleTimeoutMs 回收；其他
+  （含助手目录下的历史会话）照常回收。worker 意外退出或被显式停止时，
+  指数退避（1s 起、60s 封顶）重启并记录诊断；sessiond 关闭时不重启，
+  下次启动自动回来。重载（设置/插件/记忆提供者）走现有 reload 权威刷新，
+  不得杀掉不拉起。
+- **常驻 ≠ 自己干活**：只保持进程就绪，不主动调模型、不定时任务；
+  完成通知等 assistant-ops 逻辑不变（助手在线时直接投递，冷启动路径保留）。
+- **在线状态投影**：residency 状态（armed/starting/online/restarting +
+  追踪的 sessionId）作为 optional `assistant` 字段挂在 revisioned running
+  watch（`RuntimeRunningState`）上；Host 经协商令牌
+  `runtime.assistant-presence.v1` 转发为专用 `assistant_state` 帧（sessiond
+  `system.hello` 能力同名；未协商/无投影则永不发帧，旧严格客户端不受影响）。
+  客户端侧栏 Pixie 入口按此渲染小状态点（在线/启动中/异常，复用现有状态色；
+  未知或 armed 不显示），未知时绝不猜测。
+
 ### 智能压缩（smart_compact，第 2 轮内置）
 
 - pi-smart-compact@10.3.0 以 vendored tarball（`vendor/`，adapter file: 依赖）成为

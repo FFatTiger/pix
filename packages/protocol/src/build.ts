@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { NonEmptyStringSchema } from "./common.js";
 import { RuntimeCapabilitySchema } from "./domain.js";
-import { RUNTIME_EPOCH_ROLLOVER_FEATURE, RUNTIME_READ_RPC_FEATURE, RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_SUBMIT_TURN_FEATURE } from "./features.js";
+import { RUNTIME_ASSISTANT_PRESENCE_FEATURE, RUNTIME_EPOCH_ROLLOVER_FEATURE, RUNTIME_READ_RPC_FEATURE, RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_SUBMIT_TURN_FEATURE } from "./features.js";
 import { ProtocolVersionSchema, PROTOCOL_VERSION } from "./version.js";
 
 /**
@@ -176,6 +176,7 @@ export const SESSIOND_BUILD_CAPABILITIES: readonly string[] = Object.freeze([
     RUNTIME_READ_RPC_FEATURE,
     RUNTIME_SUBMIT_TURN_FEATURE,
     RUNTIME_EPOCH_ROLLOVER_FEATURE,
+    RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   ]),
 ]);
 

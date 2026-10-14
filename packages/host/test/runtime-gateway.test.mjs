@@ -12,6 +12,7 @@ import {
   RUNTIME_QUESTIONNAIRE_FEATURE,
   RUNTIME_READ_RPC_FEATURE,
   RUNTIME_RUNNING_WATCH_FEATURE,
+  RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   RUNTIME_SUBMIT_TURN_FEATURE,
   SESSIOND_BUILD_CAPABILITIES,
   SESSIOND_BUILD_IDENTITY,
@@ -52,6 +53,10 @@ const livenessHello = JSON.stringify({
 const watchHello = JSON.stringify({
   type: "handshake",
   payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [RUNTIME_RUNNING_WATCH_FEATURE] },
+});
+const presenceHello = JSON.stringify({
+  type: "handshake",
+  payload: { protocolVersion: 2, client: { shell: "web", platform: "mac" }, features: [RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_ASSISTANT_PRESENCE_FEATURE] },
 });
 const readHello = JSON.stringify({
   type: "handshake",
@@ -245,6 +250,55 @@ async function connect(gateway, handshake = hello) {
   await gateway.attach(session, handshake);
   return session;
 }
+
+test("negotiated assistant presence: baseline and pushes become assistant_state frames only for negotiating clients", async () => {
+  const client = new FakeClient();
+  client.handlers["system.hello"] = { protocolVersion: 2, capabilities: [RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_ASSISTANT_PRESENCE_FEATURE] };
+  const runningSub = new FakeSubscription({ revision: 1, sessionIds: [], busySessionIds: [], assistant: { sessionId: "pixie", status: "online" } });
+  client.watchFn = (onPush) => { runningSub.onPush = onPush; return runningSub; };
+  const session = await connect(makeGateway(client), presenceHello);
+  await wait();
+  const ack = session.jsonAt(0);
+  assert.deepEqual(ack.payload.acceptedFeatures, [RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_ASSISTANT_PRESENCE_FEATURE]);
+  // The running_state baseline keeps the full projection …
+  assert.deepEqual(session.jsonAt(1), { type: "running_state", payload: { revision: 1, sessionIds: [], busySessionIds: [], assistant: { sessionId: "pixie", status: "online" } } });
+  // … and the derived assistant_state baseline follows it.
+  assert.deepEqual(session.jsonAt(2), { type: "assistant_state", payload: { sessionId: "pixie", status: "online" } });
+
+  await runningSub.deliver({ type: "running_state", state: { revision: 2, sessionIds: ["pixie"], busySessionIds: [], assistant: { sessionId: "pixie", status: "online" } } });
+  assert.deepEqual(session.jsonAt(3), { type: "running_state", payload: { revision: 2, sessionIds: ["pixie"], busySessionIds: [], assistant: { sessionId: "pixie", status: "online" } } });
+  assert.deepEqual(session.lastJson(), { type: "assistant_state", payload: { sessionId: "pixie", status: "online" } });
+  session.close(1000, "done");
+});
+
+test("assistant presence degrades honestly: unrequested/unadvertised presence never frames, and pushes without the projection stay silent", async () => {
+  // Client negotiated the watch but NOT presence; sessiond HAS the capability.
+  const client = new FakeClient();
+  client.handlers["system.hello"] = { protocolVersion: 2, capabilities: [RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_ASSISTANT_PRESENCE_FEATURE] };
+  const runningSub = new FakeSubscription({ revision: 1, sessionIds: [], busySessionIds: [], assistant: { sessionId: "pixie", status: "online" } });
+  client.watchFn = (onPush) => { runningSub.onPush = onPush; return runningSub; };
+  const session = await connect(makeGateway(client), watchHello);
+  await wait();
+  assert.deepEqual(session.jsonAt(0).payload.acceptedFeatures, [RUNTIME_RUNNING_WATCH_FEATURE]);
+  assert.deepEqual(session.jsonAt(1), { type: "running_state", payload: { revision: 1, sessionIds: [], busySessionIds: [], assistant: { sessionId: "pixie", status: "online" } } });
+  assert.equal(session.sent.length, 2, "no assistant_state frame without the negotiated feature");
+  session.close(1000, "done");
+
+  // Client negotiated presence but this sessiond does not run residency: the
+  // projection is absent and no assistant_state frame is invented.
+  const legacyClient = new FakeClient();
+  legacyClient.handlers["system.hello"] = { protocolVersion: 2, capabilities: [RUNTIME_RUNNING_WATCH_FEATURE] };
+  const legacySub = new FakeSubscription({ revision: 1, sessionIds: [], busySessionIds: [] });
+  legacyClient.watchFn = (onPush) => { legacySub.onPush = onPush; return legacySub; };
+  const legacySession = await connect(makeGateway(legacyClient), presenceHello);
+  await wait();
+  assert.deepEqual(legacySession.jsonAt(0).payload.acceptedFeatures, [RUNTIME_RUNNING_WATCH_FEATURE]);
+  assert.equal(legacySession.sent.length, 2, "ack + running_state baseline only");
+  await legacySub.deliver({ type: "running_state", state: { revision: 2, sessionIds: [], busySessionIds: [] } });
+  const frames = legacySession.sent.map((raw) => JSON.parse(raw).type);
+  assert.equal(frames.includes("assistant_state"), false);
+  legacySession.close(1000, "done");
+});
 
 // --- tests ----------------------------------------------------------------
 

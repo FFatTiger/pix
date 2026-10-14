@@ -28,6 +28,7 @@ import {
   PromptCommandSchema,
   RUNTIME_EPOCH_ROLLOVER_FEATURE,
   RUNTIME_EXPLICIT_ACTIVATE_FEATURE,
+  RUNTIME_ASSISTANT_PRESENCE_FEATURE,
   RUNTIME_LIVENESS_FEATURE,
   RUNTIME_OBSERVE_EXISTING_FEATURE,
   RUNTIME_QUESTIONNAIRE_FEATURE,
@@ -380,7 +381,7 @@ export class RuntimeSocket {
     // never enter the sessiond/Worker fingerprint. A Host that cannot support
     // them simply does not acknowledge them and the Client degrades honestly
     // (no activating fallback).
-    const features = [...new Set([RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_READ_RPC_FEATURE, RUNTIME_SUBMIT_TURN_FEATURE, RUNTIME_EPOCH_ROLLOVER_FEATURE, RUNTIME_OBSERVE_EXISTING_FEATURE, RUNTIME_EXPLICIT_ACTIVATE_FEATURE, RUNTIME_QUESTIONNAIRE_FEATURE, RUNTIME_LIVENESS_FEATURE, ...(this.deps.features ?? [])])];
+    const features = [...new Set([RUNTIME_RUNNING_WATCH_FEATURE, RUNTIME_READ_RPC_FEATURE, RUNTIME_SUBMIT_TURN_FEATURE, RUNTIME_EPOCH_ROLLOVER_FEATURE, RUNTIME_OBSERVE_EXISTING_FEATURE, RUNTIME_EXPLICIT_ACTIVATE_FEATURE, RUNTIME_QUESTIONNAIRE_FEATURE, RUNTIME_LIVENESS_FEATURE, RUNTIME_ASSISTANT_PRESENCE_FEATURE, ...(this.deps.features ?? [])])];
     const handshake = buildHandshakeRequest(this.deps.identity, features);
     const frame = JSON.stringify({ type: "handshake", id: this.id(), payload: handshake });
     this.ws.send(frame);

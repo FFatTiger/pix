@@ -48,8 +48,10 @@ import {
   type WorkerBuild,
 } from "@fffattiger/pix-protocol";
 import type { RuntimeCloseReason, SessiondRunningWatchPush } from "@fffattiger/pix-protocol";
-import { READ_ONLY_RUNTIME_COMMAND_TYPES, isRuntimeError, isAssistantWorkspacePath, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
+import type { AssistantPresence } from "@fffattiger/pix-protocol";
+import { READ_ONLY_RUNTIME_COMMAND_TYPES, isRuntimeError, isAssistantWorkspacePath, resolveAssistantWorkspaceDir, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
 import { AssistantOpsAuthority, type AssistantOpsRecordView } from "./assistant-ops.js";
+import { AssistantResidencySupervisor, type AssistantResidencySurface } from "./assistant-residency.js";
 import { WorkspaceStateError } from "./workspace-state.js";
 import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailable, epochChangedCommand, epochChangedInterrupt, rejectedCommand, rejectedInterrupt, unavailableCommand, unavailableInterrupt } from "./errors.js";
 import { EventJournal, type EventJournalOptions } from "./journal.js";
@@ -102,6 +104,10 @@ export interface SessiondOptions {
    * Worker closed — there is no permissive fallback.
    */
   expectedWorkerBuild?: WorkerBuild;
+  /** Assistant-residency restart ladder: first retry delay (default 1 s). */
+  assistantResidencyRetryBaseMs?: number;
+  /** Assistant-residency restart ladder: retry delay ceiling (default 60 s). */
+  assistantResidencyRetryCapMs?: number;
   now?: () => number;
   makeEpoch?: () => string;
 }
@@ -626,8 +632,16 @@ export class SessiondService {
   private readonly epochRolloverTimeoutMs: number;
   /** Phase 7A build fence: exact expected Worker build contract. */
   private readonly expectedWorkerBuild: WorkerBuild;
+  /**
+   * Always-on assistant residency (Pixie). Constructed inert; the daemon
+   * boots it via {@link ensureAssistantResident} after the RPC endpoint is
+   * listening. Owns the ONE tracked assistant record's idle exemption and
+   * restart ladder; never prompts the model.
+   */
+  private readonly assistantResidency: AssistantResidencySupervisor;
   private readonly runningSubscribers = new Set<RunningSubscriber>();
   private runningState: RuntimeRunningState = { revision: 0, sessionIds: [], busySessionIds: [] };
+  private get assistantPresence(): AssistantPresence | undefined { return this.assistantResidency.presence(); }
   private shuttingDown = false;
   /** Assistant write channel. Absent when the workspace-state store is
    * disabled (null) or not provided — persistence and the channel go together. */
@@ -667,6 +681,15 @@ export class SessiondService {
         homedir: homedir(),
       });
     }
+    // Always-on assistant residency (Pixie): inert until the daemon calls
+    // ensureAssistantResident(). The surface drives ONLY existing service
+    // paths (catalog latest-cwd lookup + activate + running-watch publish);
+    // identity is the shared assistant-workspace derivation from runtime-core.
+    this.assistantResidency = new AssistantResidencySupervisor(this.assistantResidencySurface(), {
+      homedir: homedir(),
+      ...(options.assistantResidencyRetryBaseMs === undefined ? {} : { retryBaseMs: options.assistantResidencyRetryBaseMs }),
+      ...(options.assistantResidencyRetryCapMs === undefined ? {} : { retryCapMs: options.assistantResidencyRetryCapMs }),
+    });
     if (!Number.isSafeInteger(this.subscriberQueueLimit) || this.subscriberQueueLimit < 1) throw new RangeError("subscriberQueueLimit must be positive");
     if (!Number.isSafeInteger(this.subscriberQueueByteLimit) || this.subscriberQueueByteLimit < 1) throw new RangeError("subscriberQueueByteLimit must be positive");
     if (!Number.isSafeInteger(this.commandResultLimit) || this.commandResultLimit < 1) throw new RangeError("commandResultLimit must be positive");
@@ -880,6 +903,9 @@ export class SessiondService {
         record.status = "ready";
         this.touch(record);
         this.broadcastRunningChanged(record.sessionId);
+        // Always-on residency: adopt/online the assistant record (this is also
+        // the armed → online transition when the first message created it).
+        this.assistantResidency.onRecordReady(record.sessionId, record.cwd);
         return record;
       } catch (error) {
         this.records.delete(record.sessionId);
@@ -1310,7 +1336,10 @@ export class SessiondService {
       }
       this.titleOverlay.move(oldId, realId);
     });
-    if (!conflicted && oldId !== record.sessionId) this.broadcastRunningChanged(record.sessionId);
+    if (!conflicted && oldId !== record.sessionId) {
+      this.assistantResidency.onRekeyed(oldId, record.sessionId);
+      this.broadcastRunningChanged(record.sessionId);
+    }
     // Phase 5B: a rekey changes the record epoch; re-sync the Worker's
     // authorityEpoch via worker.rotateEpoch BEFORE the record is exposed as
     // ready (startup: idle, zero business handlers). A failed sync fails the
@@ -1458,6 +1487,7 @@ export class SessiondService {
     record.status = "crashed";
     this.rejectPending(record, "worker crashed");
     this.broadcastRunningChanged(record.sessionId);
+    this.assistantResidency.onRecordCrashed(record.sessionId);
   }
 
   private rejectPending(record: RecordState, message: string): void {
@@ -2953,6 +2983,10 @@ export class SessiondService {
     record.status = "stopped";
     this.records.delete(record.sessionId);
     this.broadcastRunningChanged(record.sessionId);
+    // Always-on residency: a stopped assistant record comes back after a
+    // bounded backoff (shutdown drains first and stays silent — the
+    // supervisor checks the shuttingDown flag itself).
+    this.assistantResidency.onRecordStopped(record.sessionId);
     return true;
   }
 
@@ -2960,6 +2994,9 @@ export class SessiondService {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     this.assistantOps?.dispose();
+    // Residency stops restarting during the drain (sessiond restart brings it
+    // back via ensureAssistantResident at the next boot).
+    this.assistantResidency.dispose();
     const ids = [...this.records.keys()];
     // Bulk drain uses the lane-free internal bypass: it never recursively
     // acquires a per-session lane (a queued lane operation may be blocked on a
@@ -3138,7 +3175,11 @@ export class SessiondService {
     record.idleTimer = setTimeout(() => {
       void record.lifecycle.runExclusive(async () => {
         if (this.records.get(record.sessionId) !== record || generation !== record.idleGeneration) return;
-        if (record.subscribers.size === 0 && !this.isBusy(record) && this.now() - record.lastActivity >= this.idleTimeoutMs) await this.stopRecord(record, "idle");
+        // The ONE resident assistant record is exempt (always-on Pixie);
+        // every other record — assistant cwd or not — reclaims as before.
+        if (record.subscribers.size === 0 && !this.isBusy(record)
+          && !this.assistantResidency.isResident(record.sessionId)
+          && this.now() - record.lastActivity >= this.idleTimeoutMs) await this.stopRecord(record, "idle");
         else this.touch(record);
       });
     }, this.idleTimeoutMs);
@@ -3421,6 +3462,7 @@ export class SessiondService {
       revision: this.runningState.revision,
       sessionIds: [...this.runningState.sessionIds],
       busySessionIds: [...this.runningState.busySessionIds],
+      ...(this.runningState.assistant === undefined ? {} : { assistant: this.runningState.assistant }),
     };
   }
 
@@ -3430,11 +3472,15 @@ export class SessiondService {
       && derived.sessionIds.every((id, index) => id === this.runningState.sessionIds[index]);
     const sameBusy = derived.busySessionIds.length === this.runningState.busySessionIds.length
       && derived.busySessionIds.every((id, index) => id === this.runningState.busySessionIds[index]);
-    if (sameLive && sameBusy) return null;
+    const assistant = this.assistantPresence;
+    const sameAssistant = (this.runningState.assistant?.sessionId ?? null) === (assistant?.sessionId ?? null)
+      && this.runningState.assistant?.status === assistant?.status;
+    if (sameLive && sameBusy && sameAssistant) return null;
     this.runningState = {
       revision: this.runningState.revision + 1,
       sessionIds: derived.sessionIds,
       busySessionIds: derived.busySessionIds,
+      ...(assistant === undefined ? {} : { assistant }),
     };
     return this.currentRunningState();
   }
@@ -3455,6 +3501,18 @@ export class SessiondService {
       }
     }
     this.assistantOps?.scheduleSettleCheck();
+  }
+
+  /**
+   * Daemon bootstrap for the always-on assistant residency (Pixie): resolve
+   * the latest assistant conversation and keep exactly one worker resident on
+   * it (armed with none yet — the first message creates it through the normal
+   * create path and the ready record is adopted). Idempotent; never throws —
+   * activation failures retry with bounded backoff inside the supervisor.
+   */
+  ensureAssistantResident(): void {
+    if (this.shuttingDown) return;
+    this.assistantResidency.start();
   }
 
   /** User-originated submitTurn. Clears the assistant auto-continuation chain when this session is the assistant's. */
@@ -3483,6 +3541,37 @@ export class SessiondService {
       },
       writtenFiles: () => record.projection.snapshot().state.writtenFiles ?? [],
       workerSend: (message) => record.worker.send(message),
+    };
+  }
+
+  /** Narrow surface for the always-on assistant residency supervisor. */
+  private assistantResidencySurface(): AssistantResidencySurface {
+    return {
+      findLatestAssistantSession: async () => {
+        // Same read-only lookup `GET /v1/assistant` rides; never a fallback
+        // list scan that cannot see hidden assistant sessions.
+        const catalog = this.deps.sessionCatalog;
+        if (!catalog?.findLatestSessionByCwd) {
+          throw new SessiondError("unavailable", "assistant session lookup is unavailable", false);
+        }
+        const latest = await catalog.findLatestSessionByCwd(resolveAssistantWorkspaceDir(homedir()));
+        return latest === null ? null : { sessionId: latest.sessionId };
+      },
+      activate: async (sessionId) => {
+        await this.activate(sessionId);
+      },
+      isLiveSession: (sessionId) => {
+        const record = this.records.get(sessionId);
+        return record !== undefined && !["crashed", "stopped", "stopping"].includes(record.status);
+      },
+      isShuttingDown: () => this.shuttingDown,
+      publishPresenceChanged: () => {
+        // Slim republish: presence-only changes carry no new live/busy sets,
+        // so the legacy per-record shim event and the settle check stay quiet.
+        const state = this.updateRunningState();
+        if (state !== null) this.pushRunningState({ type: "running_state", state });
+      },
+      log: (line) => console.error(line),
     };
   }
 

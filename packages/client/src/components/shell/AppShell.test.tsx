@@ -4861,6 +4861,39 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     expect(screen.queryByTestId("assistant-entry-tab")).toBeNull();
   });
 
+  it("Pixie entry shows the always-on presence dot from the negotiated running watch", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "assist-live" });
+    mountApp({}, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    const presenceAck = (() => {
+      const frame = ack() as { type: string; payload: Record<string, unknown> };
+      return { ...frame, payload: { ...frame.payload, acceptedFeatures: ["runtime.running-watch.v1", "runtime.assistant-presence.v1"] } };
+    })();
+    const ws = await acceptAutomaticConnection(presenceAck);
+    // Unknown presence (no baseline yet): no dot, no guess.
+    expect(screen.queryByTestId("sidebar-assistant-dot")).toBeNull();
+    await act(async () => {
+      ws.serverSend({ type: "assistant_state", payload: { sessionId: "assist-live", status: "online" } });
+      await flush(4);
+    });
+    expect(screen.getByTestId("sidebar-assistant-dot").getAttribute("data-status")).toBe("online");
+    await act(async () => {
+      ws.serverSend({ type: "assistant_state", payload: { sessionId: "assist-live", status: "starting" } });
+      await flush(4);
+    });
+    expect(screen.getByTestId("sidebar-assistant-dot").getAttribute("data-status")).toBe("starting");
+    await act(async () => {
+      ws.serverSend({ type: "assistant_state", payload: { sessionId: "assist-live", status: "restarting" } });
+      await flush(4);
+    });
+    expect(screen.getByTestId("sidebar-assistant-dot").getAttribute("data-status")).toBe("error");
+    // Armed (no conversation yet) hides the dot again.
+    await act(async () => {
+      ws.serverSend({ type: "assistant_state", payload: { sessionId: null, status: "armed" } });
+      await flush(4);
+    });
+    expect(screen.queryByTestId("sidebar-assistant-dot")).toBeNull();
+  });
+
   it("?assistant=1 with no session yet redirects to the draft entry (the landing page is gone)", async () => {
     const fetchImpl = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
     globalThis.fetch = fetchImpl;
