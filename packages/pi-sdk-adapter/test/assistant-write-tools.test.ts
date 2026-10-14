@@ -7,7 +7,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantOpsChannel, WorkerAssistantCompletionPayload, WorkerAssistantOpResultPayload } from "@fffattiger/pix-protocol";
@@ -120,7 +120,9 @@ describe("assistant write tools", () => {
     root = await mkdtemp(join(tmpdir(), "pix-assistant-write-"));
     previousAgentDir = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = root;
-    assistantDir = join(root, "home", ".pi", "pix", "assistant");
+    // The tool refuses the assistant workspace by the REAL home directory, so
+    // the self-target session has to live there (the temp root cannot match).
+    assistantDir = join(homedir(), ".pi", "pix", "assistant");
     await mkdir(assistantDir, { recursive: true });
     resetAssistantToolsListCacheForTests();
   });
