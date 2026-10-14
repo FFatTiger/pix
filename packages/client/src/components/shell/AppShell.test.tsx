@@ -4832,7 +4832,7 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     await act(async () => { for (let i = 0; i < 12; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
 
     const entry = screen.getByTestId("sidebar-assistant");
-    expect(entry.textContent).toContain("Assistant");
+    expect(entry.textContent).toContain("Pixie");
     expect(entry.getAttribute("data-active")).toBe(null);
 
     await act(async () => { fireEvent.click(entry); await flush(4); });
@@ -4937,7 +4937,7 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     await act(async () => { for (let i = 0; i < 30; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
     const state = screen.getByTestId("assistant-binding-state");
     expect(state.getAttribute("role")).toBe("alert");
-    expect(state.textContent).toContain("The assistant is unavailable");
+    expect(state.textContent).toContain("Pixie is unavailable");
     // No composer is mounted while the binding is unresolved.
     expect(screen.queryByLabelText("Send message")).toBeNull();
   });

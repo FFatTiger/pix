@@ -31,7 +31,7 @@ describe("AssistantEntryChip", () => {
     const onActivate = vi.fn();
     const onDismiss = vi.fn();
     mountChip({ state: "selected", onActivate, onDismiss });
-    expect(screen.getByTestId("assistant-entry-chip-selected").textContent).toContain("Assistant");
+    expect(screen.getByTestId("assistant-entry-chip-selected").textContent).toContain("Pixie");
     fireEvent.click(screen.getByTestId("assistant-entry-chip-dismiss"));
     expect(onDismiss).toHaveBeenCalledTimes(1);
     expect(onActivate).not.toHaveBeenCalled();
