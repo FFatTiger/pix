@@ -21,10 +21,17 @@ import {
   ASSISTANT_TOOL_NAMES,
   assistantExtensionFactoriesForCwd,
   createAssistantToolsExtension,
+  effectiveAssistantSystemPromptFor,
   ensureAssistantToolsActive,
   isAssistantWorkspaceCwd,
+  resetAssistantPromptViewForTests,
   resetAssistantToolsListCacheForTests,
 } from "../src/internal/assistant-tools.js";
+import {
+  ASSISTANT_PREAMBLE_TEMPLATE,
+  ASSISTANT_SEGMENT_TEMPLATE,
+  extractPromptSegmentInner,
+} from "../src/internal/assistant-system-prompt.js";
 import { createPiSdkSessionStore } from "../src/internal/session-store.js";
 import { createPiSdkSessionCatalog } from "../src/sessions/index.js";
 
@@ -159,6 +166,15 @@ interface RegisteredTool {
 /** Register the extension against a capturing ExtensionAPI. */
 type StatusItem = { sessionId: string; cwd: string; state: "busy" | "waitingUser" | "live" };
 
+type CapturedBeforeAgentStart = (event: {
+  readonly systemPrompt: string;
+  systemPromptOptions: {
+    customPrompt?: string | undefined;
+    forceSystemPrompt?: string | undefined;
+    sections?: Record<string, string>;
+  };
+}) => void | Promise<void>;
+
 function realAssistantDirForTest(): string {
   return resolveAssistantWorkspaceDir(homedir());
 }
@@ -169,9 +185,32 @@ function collectTools(sessionStatus?: () => Promise<readonly StatusItem[]>): Map
     registerTool(tool: RegisteredTool) {
       tools.set(tool.name, tool);
     },
+    on(_event: string, _handler: unknown) {
+      return () => {};
+    },
   };
   (createAssistantToolsExtension(sessionStatus as () => Promise<readonly never[]>) as (pi: unknown) => void)(api);
   return tools;
+}
+
+/** Capture the extension's registrations, including the before_agent_start handler. */
+function collectExtension(sessionStatus?: () => Promise<readonly StatusItem[]>): {
+  tools: Map<string, RegisteredTool>;
+  beforeAgentStart: CapturedBeforeAgentStart | null;
+} {
+  const tools = new Map<string, RegisteredTool>();
+  let beforeAgentStart: CapturedBeforeAgentStart | null = null;
+  const api = {
+    registerTool(tool: RegisteredTool) {
+      tools.set(tool.name, tool);
+    },
+    on(event: string, handler: unknown) {
+      if (event === "before_agent_start") beforeAgentStart = handler as CapturedBeforeAgentStart;
+      return () => {};
+    },
+  };
+  (createAssistantToolsExtension(sessionStatus as () => Promise<readonly never[]>) as (pi: unknown) => void)(api);
+  return { tools, beforeAgentStart };
 }
 
 async function runTool(tools: Map<string, RegisteredTool>, name: string, params: Record<string, unknown>) {
@@ -206,7 +245,7 @@ describe("assistant tools (search_sessions / read_session)", () => {
     await dispose(fixture);
   });
 
-  it("registers exactly the two assistant tools with direct semantics", () => {
+  it("registers exactly the assistant tool set with direct semantics", () => {
     assert.deepEqual([...tools.keys()].sort(), [...ASSISTANT_TOOL_NAMES].sort());
     assert.equal(tools.get("search_sessions")!.name, "search_sessions");
     assert.equal(tools.get("read_session")!.name, "read_session");
@@ -453,7 +492,7 @@ describe("assistant session capabilities (round 3 tools)", () => {
     await dispose(fixture);
   });
 
-  it("registers all nine assistant tools", () => {
+  it("registers all ten assistant tools", () => {
     assert.deepEqual([...tools.keys()].sort(), [...ASSISTANT_TOOL_NAMES].sort());
   });
 
@@ -667,5 +706,338 @@ describe("assistant session capabilities (round 3 tools)", () => {
     assert.match(ok.content[0]!.text!, /不会自动发送/);
     const miss = await runTool(tools, "draft_to_session", { session: "ghost", text: "hi" });
     assert.equal(miss.isError, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 5: assistant role prompt (preamble replacement + assistant segment)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PREAMBLE = "You are an expert coding assistant operating inside pi, a coding agent harness.";
+const DEFAULT_SECTIONS: Record<string, string> = {
+  tools: "- read: Read file contents\n- bash: Execute a bash command\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.",
+  rules: "- Use bash for file operations like ls, rg, find\n- Be concise in your responses",
+  docs: "Pi documentation (read only when the user asks about pi itself):\n- Main documentation: /readme.md",
+};
+
+/**
+ * Mirror of Pi's render semantics for the options subset we mutate: the
+ * preamble (customPrompt, else the default; tools/rules/docs only without a
+ * custom prompt), then cwd, then custom sections — each wrapped in its tag,
+ * blank-line joined. Production uses Pi's own builder; this local mirror
+ * keeps the unit test deterministic without importing SDK internals.
+ */
+function makeRender(optionsRef: { customPrompt?: string | undefined; forceSystemPrompt?: string | undefined; sections?: Record<string, string> }): () => string {
+  return () => {
+    if (optionsRef.forceSystemPrompt !== undefined) return optionsRef.forceSystemPrompt;
+    const parts: string[] = [];
+    if (optionsRef.customPrompt !== undefined && optionsRef.customPrompt !== "") {
+      parts.push(optionsRef.customPrompt);
+    } else {
+      parts.push(DEFAULT_PREAMBLE);
+      for (const name of ["tools", "rules", "docs"] as const) {
+        parts.push(`<${name}>\n${DEFAULT_SECTIONS[name]}\n</${name}>`);
+      }
+    }
+    parts.push(`<cwd>\n/repos/pix\n</cwd>`);
+    for (const [name, value] of Object.entries(optionsRef.sections ?? {})) {
+      parts.push(`<${name}>\n${value}\n</${name}>`);
+    }
+    return parts.join("\n\n");
+  };
+}
+
+/** Default prompt text with optional raw section overrides (already unwrapped). */
+function renderDefaultPiPrompt(sectionOverrides: Partial<Record<"tools" | "rules" | "docs", string>> = {}): string {
+  const sections: Record<string, string> = {};
+  for (const name of ["tools", "rules", "docs"] as const) {
+    const value = sectionOverrides[name] ?? DEFAULT_SECTIONS[name];
+    sections[name] = `<${name}>\n${value}\n</${name}>`;
+  }
+  return [
+    DEFAULT_PREAMBLE,
+    ...Object.values(sections),
+    "<cwd>\n/repos/pix\n</cwd>",
+  ].join("\n\n");
+}
+
+describe("assistant role prompt (system-prompt segments)", () => {
+  // The handler derives the machine's own home/workspace (same pattern as the
+  // cwd-gate tests in this file); the assertions prove substitution happened,
+  // not any specific absolute path.
+  const HOME = homedir();
+  const WORKSPACE = resolveAssistantWorkspaceDir(HOME);
+
+  beforeEach(() => { resetAssistantPromptViewForTests(); });
+  afterEach(() => { resetAssistantPromptViewForTests(); });
+
+  type PromptOptions = { customPrompt?: string | undefined; forceSystemPrompt?: string | undefined; sections?: Record<string, string> };
+
+  function applyToFreshOptions(rendered: string) {
+    // Static rendering (no force interplay): the event's getter returns the
+    // given text regardless of mutations.
+    const options: PromptOptions = {};
+    const { beforeAgentStart } = collectExtension();
+    assert.ok(beforeAgentStart, "extension registers before_agent_start");
+    beforeAgentStart({ systemPrompt: rendered, systemPromptOptions: options });
+    return options;
+  }
+
+  /** Live-getter application (mirrors the real event: render reflects options). */
+  function applyLive(options: PromptOptions) {
+    const { beforeAgentStart } = collectExtension();
+    assert.ok(beforeAgentStart, "extension registers before_agent_start");
+    const event = {
+      get systemPrompt() {
+        return makeRender(options)();
+      },
+      systemPromptOptions: options,
+    };
+    beforeAgentStart(event as never);
+    return options;
+  }
+
+  it("replaces the preamble segment and preserves tools/rules/docs verbatim, appending the assistant segment", () => {
+    const options = applyLive({});
+    assert.equal(options.forceSystemPrompt, undefined);
+    assert.equal(options.customPrompt, ASSISTANT_PREAMBLE_TEMPLATE);
+    // Preserved segments are the exact inner content Pi built (unwrapped; Pi
+    // re-wraps custom sections itself, so the wire text stays identical).
+    assert.equal(options.sections!.tools, DEFAULT_SECTIONS.tools);
+    assert.equal(options.sections!.rules, DEFAULT_SECTIONS.rules);
+    assert.equal(options.sections!.docs, DEFAULT_SECTIONS.docs);
+    // The assistant segment carries the substituted absolute paths.
+    assert.equal(options.sections!.assistant, ASSISTANT_SEGMENT_TEMPLATE.replaceAll("{workspace}", WORKSPACE).replaceAll("{home}", HOME));
+    assert.ok(options.sections!.assistant.includes(WORKSPACE));
+    assert.ok(!options.sections!.assistant.includes("{home}"));
+  });
+
+  it("a base that already carries the assistant preamble (loader override) still recovers the suppressed segments per turn", () => {
+    // The loader-level systemPromptOverride makes the preamble durable
+    // between turns, but a customPrompt suppresses tools/rules/docs — the
+    // handler must clear it, render the full default, and re-inject.
+    const options = applyLive({ customPrompt: ASSISTANT_PREAMBLE_TEMPLATE });
+    assert.equal(options.customPrompt, ASSISTANT_PREAMBLE_TEMPLATE);
+    assert.equal(options.sections!.tools, DEFAULT_SECTIONS.tools);
+    assert.equal(options.sections!.rules, DEFAULT_SECTIONS.rules);
+    assert.equal(options.sections!.docs, DEFAULT_SECTIONS.docs);
+    assert.ok(options.sections!.assistant);
+  });
+
+  it("is idempotent: re-application on an equivalent fresh base yields the same sections", () => {
+    const first = applyLive({});
+    const second = applyLive({});
+    assert.deepEqual(second, first);
+  });
+
+  it("keeps earlier custom sections and never fights an empty forced prompt", () => {
+    // An earlier extension's custom section survives.
+    const options = applyLive({ sections: { ponytail: "lazy mode" } });
+    assert.equal(options.sections!.ponytail, "lazy mode");
+    assert.equal(options.sections!.assistant !== undefined, true);
+
+    // The adapter's all-tools-off policy forces an EMPTY prompt: the handler
+    // must leave it fully authoritative (no sections, no preamble swap).
+    const forcedEmpty = applyLive({ forceSystemPrompt: "" });
+    assert.equal(forcedEmpty.sections, undefined, "empty forced prompt is untouched");
+    assert.equal(forcedEmpty.customPrompt, undefined);
+    assert.equal(forcedEmpty.forceSystemPrompt, "");
+  });
+
+  it("re-bases a subagents-style forced prompt (default + foreign suffix) onto the assistant prompt", () => {
+    // Path-based extensions (the bundled subagents plugin) load BEFORE inline
+    // ones and force `${currentPrompt}\n\n${parentPolicy}`. The handler must
+    // replace the base portion and keep the foreign suffix verbatim.
+    const base = makeRender({})();
+    const policy = "\n\n<subagent-policy>\nAlways delegate.\n</subagent-policy>";
+    const options = applyLive({ forceSystemPrompt: base + policy });
+    assert.ok(options.forceSystemPrompt !== undefined);
+    assert.ok(options.forceSystemPrompt!.startsWith(ASSISTANT_PREAMBLE_TEMPLATE), "forced prompt starts with the assistant preamble");
+    assert.ok(options.forceSystemPrompt!.endsWith(policy), "foreign suffix preserved verbatim");
+    assert.ok(!options.forceSystemPrompt!.includes(DEFAULT_PREAMBLE), "default preamble gone");
+    assert.ok(options.forceSystemPrompt!.includes("- read: Read file contents"), "tools segment preserved inside the forced prompt");
+    assert.ok(options.forceSystemPrompt!.includes("<assistant>"), "assistant segment present");
+    // Sections still land for the transcript/popup path.
+    assert.ok(options.sections!.assistant);
+    assert.equal(options.sections!.tools, DEFAULT_SECTIONS.tools);
+
+    // An UNKNOWN forcer shape (not default+suffix) is left completely alone.
+    const unknown = applyLive({ forceSystemPrompt: "someone else owns this prompt" });
+    assert.equal(unknown.forceSystemPrompt, "someone else owns this prompt");
+    assert.equal(unknown.sections, undefined);
+    assert.equal(unknown.customPrompt, undefined);
+  });
+
+  it("a user SYSTEM.md preamble is replaced AND the suppressed segments are still recovered", () => {
+    // The handler clears ANY loader custom prompt (user SYSTEM.md) to render
+    // the full default, so the assistant takes over the preamble without
+    // losing tools/rules/docs.
+    const optionsWithSystemMd = applyLive({ customPrompt: "用户的全局 SYSTEM.md 内容" });
+    assert.equal(optionsWithSystemMd.customPrompt, ASSISTANT_PREAMBLE_TEMPLATE);
+    assert.equal(optionsWithSystemMd.sections!.tools, DEFAULT_SECTIONS.tools);
+    assert.ok(optionsWithSystemMd.sections!.assistant);
+  });
+
+  it("fails safe on malformed default segments: Pi construction kept, assistant segment still appended", () => {
+    // A malformed segment (nested same-family tag line) must not be sliced
+    // through: keep Pi's default construction, append only the segment.
+    const rawMalformed = `You are an expert coding assistant operating inside pi, a coding agent harness.
+
+<tools>
+- read: reads
+</tools>
+- weird: snippet
+</tools>
+
+<rules>
+- Be concise
+</rules>
+
+<cwd>
+/repos/pix
+</cwd>`;
+    const bailed = applyToFreshOptions(rawMalformed);
+    assert.equal(bailed.customPrompt, undefined);
+    assert.ok(bailed.sections!.assistant);
+    assert.equal(bailed.sections!.tools, undefined);
+
+    // Missing closing tag: same fail-safe.
+    const rawUnclosed = `You are an expert coding assistant operating inside pi, a coding agent harness.
+
+<rules>
+- never closed`;
+    const bailed2 = applyToFreshOptions(rawUnclosed);
+    assert.equal(bailed2.customPrompt, undefined);
+    assert.ok(bailed2.sections!.assistant);
+  });
+
+  it("extractPromptSegmentInner handles the documented wrapped format", () => {
+    assert.equal(extractPromptSegmentInner("<tools>\nline1\nline2\n</tools>", "tools"), "line1\nline2");
+    assert.equal(extractPromptSegmentInner("preamble text\n\n<rules>\n- a\n</rules>\n\n<cwd>\n/x\n</cwd>", "rules"), "- a");
+    assert.equal(extractPromptSegmentInner("no sections at all", "tools"), null);
+    assert.equal(extractPromptSegmentInner("<tools>\nnever closed", "tools"), null);
+    // A full-line tag INSIDE the segment bails (unexpected nesting).
+    assert.equal(extractPromptSegmentInner("<tools>\n<rules>\n- a\n</rules>\n</tools>", "tools"), null);
+    // A stray same-name close after the real close bails too.
+    assert.equal(extractPromptSegmentInner("<tools>\n- x: y\n</tools>\n</tools>", "tools"), null);
+    // Inline tag mentions (not alone on a line) are ordinary content.
+    assert.equal(extractPromptSegmentInner("<tools>\n- x: sees </tools> inline but not alone\n</tools>", "tools"), "- x: sees </tools> inline but not alone");
+    // A different section's tag line after the close is a normal boundary.
+    assert.equal(extractPromptSegmentInner("<rules>\n- a\n</rules>\n<cwd>\n/x\n</cwd>", "rules"), "- a");
+  });
+
+  it("the last effective prompt view feeds the driver's published systemPrompt (assistant cwd only)", () => {
+    // After a turn the view carries the full effective prompt (mutated
+    // sections, or the re-based forced text) so snapshots / the context popup
+    // do not under-report between turns; ordinary cwds and the pre-first-turn
+    // state fall back to the session's own prompt.
+    assert.equal(effectiveAssistantSystemPromptFor(realAssistantDirForTest()), null, "null before any turn");
+    const options = applyLive({});
+    const view = effectiveAssistantSystemPromptFor(realAssistantDirForTest());
+    assert.ok(view !== null);
+    assert.ok(view!.startsWith(ASSISTANT_PREAMBLE_TEMPLATE));
+    assert.ok(view!.includes("<tools>"));
+    assert.ok(view!.includes("<assistant>"));
+    assert.equal(options.customPrompt, ASSISTANT_PREAMBLE_TEMPLATE);
+    // Ordinary sessions never see it, and the reset helper restores the
+    // pre-turn fallback.
+    assert.equal(effectiveAssistantSystemPromptFor(PROJECT_DIR), null);
+    resetAssistantPromptViewForTests();
+    assert.equal(effectiveAssistantSystemPromptFor(realAssistantDirForTest()), null);
+  });
+
+  it("the role prompt rides ONLY the assistant extension (ordinary cwd sessions never register it)", () => {
+    assert.equal(assistantExtensionFactoriesForCwd("/repos/pix").length, 0);
+    const factories = assistantExtensionFactoriesForCwd(realAssistantDirForTest());
+    assert.equal(factories.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 5: list_projects
+// ---------------------------------------------------------------------------
+
+describe("assistant list_projects", () => {
+  let fixture: Fixture;
+  let previousAgentDir: string | undefined;
+
+  beforeEach(async () => {
+    fixture = await setup();
+    previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = fixture.root;
+    resetAssistantToolsListCacheForTests();
+  });
+  afterEach(async () => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    resetAssistantToolsListCacheForTests();
+    await dispose(fixture);
+  });
+
+  const seedProjectSessions = () => {
+    // Two sessions in one project, one in another; plus a session_only dir
+    // (system scratch) and the assistant's own dir which must never surface.
+    seedSession("/repos/pix", undefined, "pix one", "r1", NOW - 5_000);
+    seedSession("/repos/pix", undefined, "pix two", "r2", NOW - 1_000);
+    seedSession("/repos/quant", undefined, "quant one", "q1", NOW - 60_000);
+    seedSession("/tmp/scratch-session", undefined, "scratch", "s", NOW);
+    seedSession(fixture.assistantDir, undefined, "assistant internal", "ai");
+  };
+
+  it("groups visible sessions by project cwd with counts and latest activity, excluding non-project workspaces", async () => {
+    seedProjectSessions();
+    const result = await runTool(collectTools(), "list_projects", {});
+    assert.equal(result.isError, undefined);
+    const text = result.content[0]!.text!;
+    assert.match(text, /共 2 个项目/);
+    assert.match(text, /- pix｜\/repos\/pix｜2 个会话/);
+    assert.match(text, /quant｜\/repos\/quant｜1 个会话/);
+    // Most recently active project first.
+    assert.ok(text.indexOf("/repos/pix") < text.indexOf("/repos/quant"), "sorted by latest activity");
+    assert.doesNotMatch(text, /scratch/);
+    assert.doesNotMatch(text, /assistant internal/);
+  });
+
+  it("running counts come only from the authoritative channel (busy counts, waitingUser does not)", async () => {
+    seedProjectSessions();
+    const channel = async () => [
+      { sessionId: "b1", cwd: "/repos/pix", state: "busy" as const },
+      { sessionId: "w1", cwd: "/repos/quant", state: "waitingUser" as const },
+    ];
+    const result = await runTool(collectTools(channel), "list_projects", {});
+    const text = result.content[0]!.text!;
+    assert.match(text, /pix｜\/repos\/pix｜2 个会话｜.*｜1 个运行中/);
+    assert.match(text, /quant｜\/repos\/quant｜1 个会话｜.*｜无运行中/);
+  });
+
+  it("without the status channel the running state is honestly unknown, never inferred", async () => {
+    seedProjectSessions();
+    const result = await runTool(collectTools(), "list_projects", {});
+    assert.match(result.content[0]!.text!, /运行状态未知/);
+  });
+
+  it("channel failure is an honest error", async () => {
+    seedProjectSessions();
+    const failing = async () => { throw new Error("pipe closed"); };
+    const result = await runTool(collectTools(failing), "list_projects", {});
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]!.text!, /查询实时会话状态失败/);
+  });
+
+  it("filters by name or path and is bounded with a truncation note", async () => {
+    for (let index = 0; index < 32; index += 1) {
+      seedSession(`/repos/bulk-${String(index).padStart(2, "0")}`, undefined, `bulk ${index}`, `b${index}`, NOW - index * 1_000);
+    }
+    const all = await runTool(collectTools(), "list_projects", {});
+    const text = all.content[0]!.text!;
+    assert.match(text, /共 32 个项目/);
+    assert.match(text, /只列出最近活跃的 30 个/);
+    assert.doesNotMatch(text, /bulk-31/);
+
+    const byName = await runTool(collectTools(), "list_projects", { query: "bulk-07" });
+    assert.match(byName.content[0]!.text!, /共 1 个项目/);
+    assert.match(byName.content[0]!.text!, /\/repos\/bulk-07/);
+    const none = await runTool(collectTools(), "list_projects", { query: "no-such-project" });
+    assert.match(none.content[0]!.text!, /没有匹配/);
   });
 });

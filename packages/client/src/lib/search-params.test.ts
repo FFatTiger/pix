@@ -134,3 +134,22 @@ describe("assistant selector", () => {
     expect(validateWorkspaceSearch({ assistant: "1" })).toEqual({ assistant: true });
   });
 });
+
+describe("assistant draft selector", () => {
+  it("parses ?draft=assistant only on the project-less home draft", () => {
+    expect(parseWorkspaceSearch({ draft: "assistant" })).toEqual({ assistantDraft: true });
+    // Stronger selectors drop it: the draft state only exists before a
+    // project/session is chosen.
+    expect(parseWorkspaceSearch({ draft: "assistant", cwd: "/repo" })).toEqual({ cwd: "/repo" });
+    expect(parseWorkspaceSearch({ draft: "assistant", session: "s1" })).toEqual({ session: "s1" });
+    expect(parseWorkspaceSearch({ draft: "assistant", assistant: "1" })).toEqual({ assistant: true });
+    expect(parseWorkspaceSearch({ draft: "new" }).assistantDraft).toBeUndefined();
+  });
+
+  it("serializes the draft selector as draft=assistant", () => {
+    expect(workspaceSearchToParams({ assistantDraft: true }).get("draft")).toBe("assistant");
+    expect(workspaceSearchToParams({}).get("draft")).toBeNull();
+    const params = workspaceSearchToParams({ assistantDraft: true });
+    expect(parseWorkspaceSearch(Object.fromEntries(params.entries()))).toEqual({ assistantDraft: true });
+  });
+});

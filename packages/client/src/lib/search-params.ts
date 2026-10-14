@@ -17,6 +17,14 @@ export interface WorkspaceSearch {
    * a half-selected state).
    */
   assistant?: boolean;
+  /**
+   * Assistant draft selector (`/?draft=assistant`): the new-session page in
+   * "assistant state" — the first assistant message is composed on the home
+   * composer with the project picker hidden; sending creates the assistant
+   * session. Only meaningful on home: `cwd`/`session`/`file` are stronger
+   * selectors and drop it.
+   */
+  assistantDraft?: boolean;
   /** Optional return path used by login redirect. */
   next?: string;
 }
@@ -30,6 +38,7 @@ export function parseWorkspaceSearch(
   const file = typeof search.file === "string" && search.file.length > 0 ? search.file : undefined;
   const next = typeof search.next === "string" && search.next.length > 0 ? search.next : undefined;
   const assistant = search.assistant === true || search.assistant === "1" || search.assistant === "true";
+  const assistantDraft = search.draft === "assistant";
   if (cwd !== undefined) out.cwd = cwd;
   // Active selectors are mutually exclusive. When both are present the file
   // wins (the file tab is the more specific active content). A file selector
@@ -43,6 +52,11 @@ export function parseWorkspaceSearch(
   // The assistant view is its own selector: only when no session/file wins.
   if (assistant && out.session === undefined && out.file === undefined) {
     out.assistant = true;
+  }
+  // The assistant draft only exists on the project-less home draft: any
+  // stronger selector (assistant view, session, file, cwd) drops it.
+  if (assistantDraft && out.assistant === undefined && out.session === undefined && out.file === undefined && out.cwd === undefined) {
+    out.assistantDraft = true;
   }
   if (next !== undefined) out.next = next;
   return out;
@@ -65,6 +79,7 @@ export function workspaceSearchToParams(
   if (search.file && search.cwd) params.set("file", search.file);
   else if (search.session) params.set("session", search.session);
   else if (search.assistant) params.set("assistant", "1");
+  if (search.assistantDraft) params.set("draft", "assistant");
   if (search.next) params.set("next", search.next);
   return params;
 }

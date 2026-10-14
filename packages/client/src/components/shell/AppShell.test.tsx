@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { AppShell } from "./AppShell";
 import type { WorkspaceSearch } from "@/lib/search-params";
+import { getDraft } from "@/lib/draft-store";
 import { queryKeys } from "@/api/query-keys";
 import type { SessionEntry, SessionHeader } from "@fffattiger/pix-protocol";
 import { RuntimeProvider, SelectedSessionProvider } from "@/runtime/runtime-provider";
@@ -4804,50 +4805,67 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     vi.useRealTimers();
   });
 
-  it("shows the sidebar entry (capability-gated) and navigates to the assistant selector", async () => {
+  it("sidebar entry with NO assistant session yet routes to the new-session draft entry; an existing session opens the conversation", async () => {
     globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
     mountApp({}, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
-    await act(async () => { await flush(8); });
+    await act(async () => { for (let i = 0; i < 12; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
 
     const entry = screen.getByTestId("sidebar-assistant");
     expect(entry.textContent).toContain("Assistant");
     expect(entry.getAttribute("data-active")).toBe(null);
 
     await act(async () => { fireEvent.click(entry); await flush(4); });
+    // No conversation yet: the draft entry on the new-session page (the old
+    // landing page is gone).
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { assistantDraft: true } }));
+  });
+
+  it("sidebar entry with an EXISTING assistant session opens the conversation directly", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "assist-live" });
+    mountApp({}, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { for (let i = 0; i < 12; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+
+    await act(async () => { fireEvent.click(screen.getByTestId("sidebar-assistant")); await flush(4); });
     expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { assistant: true } }));
   });
 
-  it("hides the entry without the assistant capability and degrades the URL flag to home", async () => {
+  it("hides the entry without the assistant capability and degrades both URL flags to home", async () => {
     globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
     mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models"] });
     await act(async () => { await flush(8); });
     expect(screen.queryByTestId("sidebar-assistant")).toBeNull();
     // Degrade honestly to the ordinary home draft, never a broken assistant view.
     expect(screen.getByTestId("home-stack")).toBeTruthy();
+    // The draft entry chip is capability-gated too.
+    expect(screen.queryByTestId("assistant-entry-tab")).toBeNull();
   });
 
-  it("first entry with no session: empty state + assistant composer placeholder, no home stack, no assistant tab", async () => {
+  it("?assistant=1 with no session yet redirects to the draft entry (the landing page is gone)", async () => {
     const fetchImpl = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
     globalThis.fetch = fetchImpl;
     mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
     await act(async () => { for (let i = 0; i < 30; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
 
-    expect(screen.queryByTestId("home-stack")).toBeNull();
-    expect(screen.getByTestId("transcript-home").textContent).toContain("Your assistant");
-    const textarea = composerTextarea();
-    expect(textarea.getAttribute("placeholder")).toContain("Ask me anything");
+    // The old "Your assistant" empty state never renders; the binding resolved
+    // null, so the app redirects to the new-session page assistant state.
+    expect(screen.queryByTestId("transcript-home")?.textContent ?? "").not.toContain("Your assistant");
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { assistantDraft: true } }));
     // The binding endpoint was consulted exactly through the typed transport.
     expect(countMockFetchCalls(fetchImpl, "/v1/assistant")).toBeGreaterThan(0);
     // No workspace session tab was materialized for the assistant selector.
     expect(window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "{}").not.toContain("assistant");
   });
 
-  it("first send creates the session in the FIXED assistant cwd and stays on the assistant (no session URL)", async () => {
+  it("first send from the DRAFT entry creates the session in the FIXED assistant cwd and navigates to the assistant view", async () => {
     globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
     const qc = authenticatedQueryClient();
-    mountApp({ assistant: true }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
+    mountApp({ assistantDraft: true }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
     const ws = await acceptAutomaticConnection(submitTurnAck());
     await act(async () => { await flush(10); });
+
+    // Draft state: chip selected, assistant placeholder, no project picker.
+    expect(screen.getByTestId("assistant-entry-tab").getAttribute("data-state")).toBe("selected");
+    expect(composerTextarea().getAttribute("placeholder")).toContain("follow up on a project");
 
     await typeAndSend("帮我找一下上次的会话");
     const create = lastFrame<{ type: "create"; id: string; payload: { cwd: string } }>(ws, "create")!;
@@ -4863,9 +4881,11 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
 
     const submit = lastSubmitTurn(ws);
     expect(submit.payload.sessionId).toBe("assist-1");
-    // The assistant URL carries no session id: the binding is published to the
-    // query cache, never a navigation to /?session=assist-1.
-    expect(navigateMock).not.toHaveBeenCalled();
+    // The draft-originated create navigates to the assistant conversation URL
+    // (the same selector the sidebar uses) and publishes the binding — never
+    // a /?session=assist-1 URL.
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { assistant: true } }));
+    expect(navigateMock).not.toHaveBeenCalledWith(expect.objectContaining({ search: expect.objectContaining({ session: "assist-1" }) }));
     expect(qc.getQueryData(queryKeys.assistant.info())).toEqual({ cwd: ASSISTANT_CWD, sessionId: "assist-1" });
     await acceptSubmitTurn(ws, { sessionId: "assist-1", epoch: "eA" });
     // No session tab ever materializes for the assistant conversation.
@@ -4923,10 +4943,14 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
       await flush(8);
     });
 
-    // The home presentation is a DIFFERENT draft key: no navigation, no
-    // assistant-binding publish from the stale assistant create (the cached
-    // binding stays whatever the endpoint last answered — never assist-late).
-    expect(navigateMock).not.toHaveBeenCalled();
+    // The home presentation is a DIFFERENT draft key: no navigation to a
+    // session URL, no assistant-binding publish from the stale assistant
+    // create (the cached binding stays whatever the endpoint last answered —
+    // never assist-late). The only navigation so far is the no-session
+    // redirect to the draft entry, which the rerender away from ?assistant=1
+    // supersedes.
+    expect(navigateMock).not.toHaveBeenCalledWith(expect.objectContaining({ search: expect.objectContaining({ session: "assist-late" }) }));
+    expect(navigateMock).not.toHaveBeenCalledWith(expect.objectContaining({ search: expect.objectContaining({ assistant: true }) }));
     expect(qc.getQueryData<{ sessionId: string | null }>(queryKeys.assistant.info())?.sessionId ?? null).toBe(null);
   });
 
@@ -4957,6 +4981,62 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     const binding = qc.getQueryData<{ cwd: string; sessionId: string | null }>(queryKeys.assistant.info());
     expect(binding?.sessionId ?? null).toBe(null);
     expect(binding?.cwd).toBe(ASSISTANT_CWD);
+  });
+
+  it("assistant entry chip: idle entry enters the draft state; ✕ returns with the draft preserved", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    const app = mountApp({}, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { for (let i = 0; i < 12; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+
+    // Idle chip above the composer, no project selected yet.
+    const chip = screen.getByTestId("assistant-entry-tab");
+    expect(chip.getAttribute("data-state")).toBe("idle");
+    expect(screen.getByTestId("assistant-entry-chip-activate").textContent).toContain("Ask the assistant");
+    // The home composer still offers the project picker.
+    expect(screen.queryByTitle("Select project")).not.toBeNull();
+
+    // A typed draft travels into the assistant state (never sent).
+    await act(async () => { fireEvent.change(composerTextarea(), { target: { value: "随手的事" } }); await flush(2); });
+    await act(async () => { fireEvent.click(screen.getByTestId("assistant-entry-chip-activate")); await flush(4); });
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { assistantDraft: true } }));
+
+    await act(async () => { app.rerender({ assistantDraft: true }); await flush(6); });
+    expect(screen.getByTestId("assistant-entry-tab").getAttribute("data-state")).toBe("selected");
+    // Placeholder swapped, project picker hidden, draft preserved.
+    expect(composerTextarea().getAttribute("placeholder")).toContain("follow up on a project");
+    expect(screen.queryByTitle("Select project")).toBeNull();
+    expect(composerTextarea().value).toBe("随手的事");
+
+    // ✕ returns to the ordinary new-session state, draft still intact.
+    await act(async () => { fireEvent.click(screen.getByTestId("assistant-entry-chip-dismiss")); await flush(4); });
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: {} }));
+    await act(async () => { app.rerender({}); await flush(6); });
+    expect(screen.getByTestId("assistant-entry-tab").getAttribute("data-state")).toBe("idle");
+    expect(composerTextarea().value).toBe("随手的事");
+    expect(screen.queryByTitle("Select project")).not.toBeNull();
+  });
+
+  it("chip click with an EXISTING assistant session moves the draft text into the assistant composer (never sends)", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "assist-live" });
+    mountApp({}, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { for (let i = 0; i < 12; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+
+    await act(async () => { fireEvent.change(composerTextarea(), { target: { value: "跟进一下 pix 的进度" } }); await flush(2); });
+    await act(async () => { fireEvent.click(screen.getByTestId("assistant-entry-chip-activate")); await flush(4); });
+    // Straight to the assistant conversation; the draft text rides along into
+    // the assistant session's draft slot, not sent anywhere.
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { assistant: true } }));
+    expect(getDraft("assist-live")?.value).toBe("跟进一下 pix 的进度");
+  });
+
+  it("the chip collapses when a project is selected and re-expands when cleared", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: null });
+    const app = mountApp({ cwd: "/repos/pix" }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    await act(async () => { await flush(8); });
+    expect(screen.getByTestId("assistant-entry-tab").getAttribute("data-state")).toBe("hidden");
+
+    await act(async () => { app.rerender({}); await flush(6); });
+    expect(screen.getByTestId("assistant-entry-tab").getAttribute("data-state")).toBe("idle");
   });
 
   it("switching from the assistant to a normal session clears the selector", async () => {

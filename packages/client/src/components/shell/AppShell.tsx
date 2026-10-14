@@ -55,6 +55,8 @@ import { useGateStatus } from "@/features/gate/useGate";
 import { useHttpClient } from "@/app/http-context";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { ChatsCircleIcon, FilesIcon, RobotIcon } from "@phosphor-icons/react";
+import { AssistantEntryChip } from "@/components/shell/AssistantEntryChip";
+import { setDraft } from "@/lib/draft-store";
 import {
   getDefaultRightPanelWidth,
   getRightPanelMaxWidth,
@@ -129,12 +131,16 @@ export function AppShell({ search }: AppShellProps) {
   // first-send transaction with the resolved cwd.
   const canAssistant = can("assistant");
   const isAssistantView = search.assistant === true && canAssistant;
-  const assistantQuery = useQuery({ ...options.assistant.info(), enabled: isAssistantView });
-  const assistantInfo = isAssistantView ? assistantQuery.data : undefined;
+  // The binding is also needed OUTSIDE the view (the sidebar entry and the
+  // home composer's assistant chip both branch on "does the assistant
+  // conversation exist yet"), so the query runs whenever the capability is
+  // advertised — still read-only, never creating or activating anything.
+  const assistantQuery = useQuery({ ...options.assistant.info(), enabled: canAssistant });
+  const assistantInfo = canAssistant ? assistantQuery.data : undefined;
   /** Fixed assistant cwd once the binding resolved (undefined while loading/errored). */
   const assistantCwd = assistantInfo?.cwd;
   /** The assistant conversation session (null = not started yet). */
-  const assistantSessionId = isAssistantView ? assistantInfo?.sessionId ?? null : null;
+  const assistantSessionId = assistantInfo?.sessionId ?? null;
   // Exact runtime for the assistant's server-resolved session (the URL carries
   // no session id, so the provider-bound selection alone cannot see it). Null
   // outside the assistant view; `activeRuntime` below is the view-effective one.
@@ -160,6 +166,7 @@ export function AppShell({ search }: AppShellProps) {
       && search.file === undefined
       && search.cwd === undefined
       && search.assistant === undefined
+      && search.assistantDraft === undefined
       && search.next === undefined;
     coldStartSessionRef.current = emptyStartupRoute ? loadLastWorkspaceSession() : null;
   }
@@ -430,14 +437,14 @@ export function AppShell({ search }: AppShellProps) {
     }
     if (search.session !== undefined) {
       saveLastWorkspaceSession(search.session);
-    } else if (search.file === undefined && !isAssistantView) {
+    } else if (search.file === undefined && !isAssistantView && search.assistantDraft === undefined) {
       // A cwd-scoped new-session page is an intentional home. File tabs are
       // ephemeral, so viewing one preserves the previous session target; the
-      // assistant view is NOT a home declaration — visiting it must not erase
-      // the cold-start restore target.
+      // assistant view and the assistant draft state are NOT home declarations
+      // — visiting them must not erase the cold-start restore target.
       saveLastWorkspaceSession(null);
     }
-  }, [search.cwd, search.file, search.session]);
+  }, [search.cwd, search.file, search.session, search.assistantDraft]);
   useEffect(() => subscribeWorkspaceSessionTabs(() => {
     setTabs((current) => [
       ...loadWorkspaceSessionTabs(),
@@ -540,18 +547,58 @@ export function AppShell({ search }: AppShellProps) {
     void navigate({ to: "/", search: {} });
   }, [navigate]);
 
-  // Assistant entry: always the SAME evergreen conversation — the URL carries
-  // only the selector; the binding (cwd + latest session) is resolved by the
-  // view. Capability-gated by the Sidebar (canAssistant).
+  // Assistant entry: the SAME evergreen conversation. With an existing
+  // assistant session the sidebar opens it directly; without one it routes to
+  // the new-session page in assistant state (the draft entry) — the old
+  // first-entry landing page is gone. Capability-gated by the Sidebar
+  // (canAssistant); while the binding is unresolved (loading/error) the view
+  // URL stays the honest fallback (its own degraded copy handles it).
   const handleOpenAssistant = useCallback(() => {
     if (isMobile) setSidebarOpen(false);
     if (liveSearchRef.current.assistant === true) return;
-    void navigate({ to: "/", search: { assistant: true } });
-  }, [isMobile, navigate]);
+    if (liveSearchRef.current.assistantDraft === true) return;
+    void navigate(
+      assistantInfo !== undefined && assistantInfo.sessionId === null
+        ? { to: "/", search: { assistantDraft: true } }
+        : { to: "/", search: { assistant: true } },
+    );
+  }, [assistantInfo, isMobile, navigate]);
+
+  // The assistant chip on the new-session page: with an existing assistant
+  // conversation the draft text travels along (filled into the assistant
+  // composer, never sent); without one the page enters assistant state.
+  const handleAssistantChipActivate = useCallback(() => {
+    const existing = assistantInfo?.sessionId;
+    if (existing !== undefined && existing !== null) {
+      const draftText = composerTextareaRef.current?.value ?? "";
+      if (draftText.trim() !== "") setDraft(existing, { value: draftText, images: [] });
+      if (isMobile) setSidebarOpen(false);
+      void navigate({ to: "/", search: { assistant: true } });
+      return;
+    }
+    void navigate({ to: "/", search: { assistantDraft: true } });
+  }, [assistantInfo, isMobile, navigate]);
+
+  const handleAssistantChipDismiss = useCallback(() => {
+    void navigate({ to: "/", search: {} });
+  }, [navigate]);
 
   // The assistant view renders the conversation branch even with no session
-  // tab (its first-entry empty state lives in that branch, not on home).
+  // tab. The assistant DRAFT (`/?draft=assistant`) lives on the home stack:
+  // the first assistant message is composed with the project picker hidden.
   const isHome = activeTab === null && !isAssistantView;
+  const isAssistantDraft = isHome && search.assistantDraft === true && canAssistant;
+
+  // A direct `?assistant=1` visit with no assistant conversation yet (old
+  // bookmark / sidebar before the binding cached) lands on the draft entry
+  // instead of the removed first-entry landing page. Runs only after the
+  // binding resolved — while unresolved the view keeps its honest loading /
+  // degraded copy.
+  useEffect(() => {
+    if (!isAssistantView || assistantInfo === undefined) return;
+    if (assistantInfo.sessionId !== null) return;
+    void navigate({ to: "/", search: { assistantDraft: true } });
+  }, [assistantInfo, isAssistantView, navigate]);
 
   // ── Project trust ─────────────────────────────────────────────────────────
   // Read and write stay independently capability-gated. The dialog only shows
@@ -750,17 +797,20 @@ export function AppShell({ search }: AppShellProps) {
     // navigation, no lease steal (the turn itself keeps running and settles on
     // its own controller).
     if (registry.promoteCreatedPresentation(created.sessionId)) {
-      if (isAssistantView) {
+      if (isAssistantView || isAssistantDraft) {
         // The assistant URL carries no session id: publish the binding so the
-        // view switches from the first-entry empty state to the conversation.
-        // (The endpoint stays the authority; this only makes the transition
-        // immediate instead of waiting for the refetch.)
+        // view switches from the draft/loading state to the conversation. A
+        // draft-originated create also navigates from the home page to the
+        // assistant conversation (the sidebar's assistant URL).
         queryClient.setQueryData(queryKeys.assistant.info(), { cwd: created.cwd, sessionId: created.sessionId });
+        if (isAssistantDraft) {
+          void navigate({ to: "/", search: { assistant: true } });
+        }
       } else {
         void navigate({ to: "/", search: { cwd: created.cwd, session: created.sessionId } });
       }
     }
-  }, [isAssistantView, navigate, primeMissingSession, queryClient, registry]);
+  }, [isAssistantDraft, isAssistantView, navigate, primeMissingSession, queryClient, registry]);
 
   // runtime.create may return before Pi has persisted the JSONL catalog entry.
   // The prompt command settlement is the persistence boundary; refresh the HTTP
@@ -1242,14 +1292,28 @@ export function AppShell({ search }: AppShellProps) {
                   <div className="transcript-home-logo" aria-hidden="true" />
                   <h1 className="transcript-home-title">{t("desktop.startConversation")}</h1>
                 </div>
+                {canAssistant ? (
+                  <AssistantEntryChip
+                    state={
+                      isAssistantDraft
+                        ? "selected"
+                        : search.cwd === undefined ? "idle" : "hidden"
+                    }
+                    onActivate={handleAssistantChipActivate}
+                    onDismiss={handleAssistantChipDismiss}
+                  />
+                ) : null}
                 <Composer
                   live={false}
                   textareaRef={composerTextareaRef}
-                  onCreateSession={handleCreateSession}
+                  onCreateSession={isAssistantDraft ? handleCreateAssistantSession : handleCreateSession}
                   onCreatedSessionDispatched={handleCreatedSessionDispatched}
                   onSessionActivitySettled={handleSessionActivitySettled}
-                  projectRoots={knownProjectRoots}
-                  onProjectChange={handleOpenHomeForProject}
+                  {...(isAssistantDraft ? {} : {
+                    projectRoots: knownProjectRoots,
+                    onProjectChange: handleOpenHomeForProject,
+                  })}
+                  {...(isAssistantDraft ? { placeholder: t("desktop.assistantDraftPlaceholder") } : {})}
                   {...(search.cwd === undefined ? {} : { cwd: search.cwd })}
                 />
               </div>
@@ -1311,12 +1375,6 @@ export function AppShell({ search }: AppShellProps) {
                     key={viewSessionId ?? (isAssistantView ? "assistant" : "home")}
                     live={selectionMatchesLive}
                     overscan={12}
-                    {...(isAssistantView ? {
-                      emptyState: {
-                        title: t("desktop.assistantEmptyTitle"),
-                        hint: t("desktop.assistantEmptyHint"),
-                      },
-                    } : {})}
                     {...(viewSessionId === null ? {} : { sessionId: viewSessionId })}
                   />
                 )}

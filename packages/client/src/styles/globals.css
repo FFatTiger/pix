@@ -4031,6 +4031,75 @@ html.pi-booted body::before {
 }
 .workspace .subagent-activity-capsule { margin-left: 0; }
 
+/* Assistant entry tab on the new-session page: the same "grows out of the
+   composer" language as the status tab — open bottom, composer surface fill,
+   no hair line — but left-aligned with the input box's top-left edge. It
+   collapses (short fade) when a project is selected and re-expands when the
+   project is cleared. */
+.assistant-entry-tab {
+  position: relative;
+  z-index: 30;
+  flex: 0 0 auto;
+  width: 100%;
+  margin: 0 0 -1px; /* covers the composer's top edge like the status tab */
+  padding: 0 16px;
+  max-height: 40px;
+  opacity: 1;
+  overflow: hidden;
+  transition: opacity 160ms ease, max-height 160ms ease, margin 160ms ease;
+}
+.assistant-entry-tab[data-state="hidden"] {
+  max-height: 0;
+  margin-bottom: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.assistant-entry-chip,
+.assistant-entry-chip--selected {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 10px 10px 0 0;
+  background: var(--composer-bg);
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+button.assistant-entry-chip:hover { background: var(--composer-bg); color: var(--text); }
+.assistant-entry-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.assistant-entry-chip-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.assistant-entry-chip-dismiss:hover { background: var(--bg-hover); color: var(--text); }
+@media (min-width: 641px) {
+  /* The composer shell hangs 13px past the region on desktop; start the tab
+     on the shell's left edge. */
+  .assistant-entry-tab { padding-left: 3px; }
+}
+/* Step aside while a composer popover is open, exactly like the status tab. */
+.workspace:has(.chat-input-popover) .assistant-entry-tab { visibility: hidden; }
+
 /* Composer popovers (slash / @ / history): content surface, hairline, soft
    shadow; on desktop they span the same hanging width as the composer. While
    one is open the status tab steps aside so the two never overlap. */

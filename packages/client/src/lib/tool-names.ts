@@ -33,6 +33,7 @@ const ASSISTANT_TOOL_LABELS: Record<string, AssistantToolLabel> = {
   list_open_todos: { labelKey: "desktop.codexAssistantOpenTodos", detailKey: "desktop.codexAssistantOpenTodosDetail", iconName: "checklist" },
   summarize_activity: { labelKey: "desktop.codexAssistantActivity", detailKey: "desktop.codexAssistantActivityDetail", iconName: "listBullets" },
   find_file_changes: { labelKey: "desktop.codexAssistantFileChanges", detailKey: "desktop.codexAssistantFileChangesDetail", iconName: "folder" },
+  list_projects: { labelKey: "desktop.codexAssistantProjects", detailKey: "desktop.codexAssistantProjectsDetail", iconName: "stacks" },
   open_session: { labelKey: "desktop.codexAssistantOpenSession", detailKey: "desktop.codexAssistantOpenSessionDetail", iconName: "arrowRight" },
   organize_sessions: { labelKey: "desktop.codexAssistantOrganize", detailKey: "desktop.codexAssistantOrganizeDetail", iconName: "stacks" },
   draft_to_session: { labelKey: "desktop.codexAssistantDraft", detailKey: "desktop.codexAssistantDraftDetail", iconName: "penNib" },

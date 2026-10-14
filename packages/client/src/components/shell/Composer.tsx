@@ -276,8 +276,11 @@ export function Composer({ live: liveProp, textareaRef, sessionId: selectedSessi
   // Bridge the AppShell-owned textarea ref onto the exact ChatInput's textarea
   // (the ported component owns its ref internally; the wrapper captures the
   // DOM node once mounted so extension-request focus restore keeps working).
+  // Attached for every mounted composer — including the non-live home draft,
+  // whose typed text the shell's assistant entry carries into the assistant
+  // conversation (never sent from the home page).
   useEffect(() => {
-    if (!textareaRef || !live) return;
+    if (!textareaRef) return;
     textareaRef.current = rootRef.current?.querySelector("textarea") ?? null;
     return () => {
       if (textareaRef.current !== null) textareaRef.current = null;

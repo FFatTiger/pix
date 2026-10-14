@@ -73,13 +73,6 @@ export interface TranscriptListProps {
    * the main session. Does not take scroll ownership.
    */
   externalStreaming?: StreamingAgentMessage | null;
-  /**
-   * Overrides the no-session empty-state fallback (the home-logo block) with
-   * caller-owned copy — used by the assistant view's first-entry state. Only
-   * applies when no sessionId is set and the transcript has no rows; every
-   * other state (loading, error, empty existing session) keeps its own copy.
-   */
-  emptyState?: { title: string; hint?: string | undefined };
 }
 
 /** Combine the virtualizer measurement ref with the minimap message ref. */
@@ -102,7 +95,6 @@ export function TranscriptList({
   publishScrollRef = true,
   tailActive = false,
   externalStreaming = null,
-  emptyState,
 }: TranscriptListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   // Row that currently owns DOM focus (kept mounted so focus follows content).
@@ -663,14 +655,6 @@ export function TranscriptList({
         ) : rows.length === 0 ? (
           sessionId ? (
             <div className="transcript-empty">{t("desktop.noMessages")}</div>
-          ) : emptyState !== undefined ? (
-            <div className="transcript-home" data-testid="transcript-home">
-              <div className="transcript-home-logo" aria-hidden="true" />
-              <h1 className="transcript-home-title">{emptyState.title}</h1>
-              {emptyState.hint === undefined ? null : (
-                <p className="transcript-home-copy">{emptyState.hint}</p>
-              )}
-            </div>
           ) : (
             <div className="transcript-home" data-testid="transcript-home">
               <div className="transcript-home-logo" aria-hidden="true" />

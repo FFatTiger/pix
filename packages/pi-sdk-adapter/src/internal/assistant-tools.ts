@@ -25,7 +25,8 @@ import { basename, sep as pathSep } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
-import { isAssistantWorkspacePath, matchesAssistantWorkspacePattern, normalizeAssistantWorkspacePath } from "@fffattiger/pix-runtime-core";
+import { isAssistantWorkspacePath, matchesAssistantWorkspacePattern, normalizeAssistantWorkspacePath, resolveAssistantWorkspaceDir } from "@fffattiger/pix-runtime-core";
+import { applyAssistantSystemPrompt } from "./assistant-system-prompt.js";
 import { browseKindForWorkspace } from "./session-projection.js";
 
 /** Fixed tool names (also used by the client's process-line labels). */
@@ -36,6 +37,7 @@ export const ASSISTANT_TOOL_NAMES = [
   "list_open_todos",
   "summarize_activity",
   "find_file_changes",
+  "list_projects",
   "open_session",
   "organize_sessions",
   "draft_to_session",
@@ -44,6 +46,32 @@ export const ASSISTANT_TOOL_NAMES = [
 /** True when a session cwd IS the assistant workspace on this machine. */
 export function isAssistantWorkspaceCwd(cwd: string): boolean {
   return isAssistantWorkspacePath(cwd, homedir());
+}
+
+/**
+ * The last effective assistant system prompt (the text the model actually
+ * received on the most recent assistant-session turn, including any foreign
+ * forced suffix). One worker process hosts one session, so the holder is
+ * scoped by construction; the driver's state projection prefers it over
+ * `session.systemPrompt` (which falls back to the base options — the durable
+ * preamble without the per-turn segments — between turns).
+ */
+const lastAssistantPromptView: { current: string | null } = { current: null };
+
+/** Test-only: reset the last-effective-prompt view. */
+export function resetAssistantPromptViewForTests(): void {
+  lastAssistantPromptView.current = null;
+}
+
+/**
+ * The system prompt the driver should publish for a session cwd: the last
+ * effective assistant prompt for the assistant workspace (null before the
+ * first turn, or for every ordinary session — callers fall back to the
+ * session's own prompt).
+ */
+export function effectiveAssistantSystemPromptFor(cwd: string): string | null {
+  if (!isAssistantWorkspaceCwd(cwd) || lastAssistantPromptView.current === null) return null;
+  return lastAssistantPromptView.current;
 }
 
 /**
@@ -289,6 +317,8 @@ function readSessionResultText(
 const TAIL_ENTRY_BUDGET = 40;
 /** Bounded sessions per status/activity listing. */
 const LIST_SESSION_BUDGET = 15;
+/** Bounded projects for list_projects. */
+const LIST_PROJECTS_BUDGET = 30;
 
 type SdkMessageContentBlock = {
   type?: string;
@@ -434,6 +464,21 @@ export function createAssistantToolsExtension(
   sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>,
 ): InlineExtension {
   return (pi: ExtensionAPI): void => {
+    // Assistant role prompt (see assistant-system-prompt.ts): replace Pi's
+    // default preamble segment and append the `assistant` segment on every
+    // user turn. Registered here so ONLY assistant-workspace sessions get it;
+    // the mutation rides Pi's own structured-section pipeline, so it persists
+    // in the transcript (context popup), survives reload/compaction (the
+    // handler re-applies before each turn and the section diff is then a
+    // no-op), and follows model switches (options are rebuilt per turn).
+    pi.on("before_agent_start", (event) => {
+      const home = homedir();
+      applyAssistantSystemPrompt(event.systemPromptOptions, () => event.systemPrompt, home, resolveAssistantWorkspaceDir(home));
+      // Publish the turn's effective prompt (the forced projection when one
+      // is active, else the mutated section rendering) for the driver state.
+      lastAssistantPromptView.current = event.systemPrompt;
+    });
+
     pi.registerTool({
       name: "search_sessions",
       label: "查找会话",
@@ -443,7 +488,7 @@ export function createAssistantToolsExtension(
         "返回会话标题、项目、最后活动时间、会话 id 和命中摘录。",
         "需要详细内容时再用 read_session 读取。",
       ].join(""),
-      promptSnippet: "Search past sessions across all projects (read-only).",
+      promptSnippet: "按关键词搜索所有项目的历史会话（只读）。",
       parameters: Type.Object({
         query: Type.Optional(Type.String({ description: "关键词，匹配标题和消息内容" })),
         project: Type.Optional(Type.String({ description: "项目目录名或路径前缀" })),
@@ -499,7 +544,7 @@ export function createAssistantToolsExtension(
         "列出：正在运行的会话、等待用户回答的会话（未回答的提问卡片/扩展请求）、最近一轮报错的会话。",
         "状态实时来自会话管理器；「最近报错」来自各会话记录的最后错误。",
       ].join(""),
-      promptSnippet: "Read-only live session status (running/waiting-user/recent-error).",
+      promptSnippet: "查看各会话的实时状态：运行中、等用户回复、刚报错（只读）。",
       parameters: Type.Object({
         project: Type.Optional(Type.String({ description: "可选：仅当用户明确要求按某个项目过滤时才传（目录名或路径前缀）。默认不传=返回全部项目" })),
       }),
@@ -558,7 +603,7 @@ export function createAssistantToolsExtension(
         "汇总各会话待办清单里未完成的项（只读，按会话分组；pending 和 in_progress 算未完成）。",
         "数据来自每个会话记录里最后一次待办快照，不会激活任何会话。",
       ].join(""),
-      promptSnippet: "Read-only open-todo digest grouped by session.",
+      promptSnippet: "汇总各会话未完成的待办（只读）。",
       parameters: Type.Object({
         project: Type.Optional(Type.String({ description: "只看某个项目（目录名或路径前缀）" })),
       }),
@@ -600,7 +645,7 @@ export function createAssistantToolsExtension(
         "整理一段时间内各会话的活动（只读）：每个会话的轮数、写入过的文件、最后一条助手消息摘要。",
         "用于写日报/周报；本身不调用模型。默认今天；range 可为 today/week 或 N（最近 N 天）。",
       ].join(""),
-      promptSnippet: "Read-only per-session activity digest for a time range.",
+      promptSnippet: "整理一段时间内各会话的动态（只读）。",
       parameters: Type.Object({
         range: Type.Optional(Type.String({ description: "today（默认）、week，或最近 N 天（如 3）" })),
         project: Type.Optional(Type.String({ description: "只看某个项目（目录名或路径前缀）" })),
@@ -669,7 +714,7 @@ export function createAssistantToolsExtension(
         "查一个文件最近被哪些会话写过/改过（只读）：返回会话、时间、路径和那一轮的说明。",
         "数据来自各会话记录里的写入/编辑工具调用（含 write/edit 及常见别名）。",
       ].join(""),
-      promptSnippet: "Read-only which sessions recently wrote/edited a file.",
+      promptSnippet: "查某个文件最近被哪些会话改过（只读）。",
       parameters: Type.Object({
         path: Type.String({ description: "文件路径或文件名（如 nginx.conf 或 /etc/nginx/nginx.conf）" }),
         limit: Type.Optional(Type.Integer({ description: "返回条数上限，默认 5，最大 10", minimum: 1, maximum: 10 })),
@@ -733,13 +778,86 @@ export function createAssistantToolsExtension(
     });
 
     pi.registerTool({
+      name: "list_projects",
+      label: "查看项目列表",
+      description: [
+        "列出 Pix 已知的项目，以及它们的路径和活跃情况（只读）。",
+        "每个项目给出：名称、绝对路径、会话数、最近活跃时间、正在运行的会话数。",
+        "数据来自会话目录（与界面的项目列表同源）；「正在运行」来自实时状态通道。",
+      ].join(""),
+      promptSnippet: "列出 Pix 已知的项目，以及它们的路径和活跃情况（只读）。",
+      parameters: Type.Object({
+        query: Type.Optional(Type.String({ description: "按项目名称或路径过滤（子串匹配）" })),
+      }),
+      execute: async (_toolCallId, params, signal) => {
+        let sessions: AssistantSessionInfo[];
+        try {
+          sessions = await listSessionsForAssistant(signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          return toolFailure("读取会话目录失败", error);
+        }
+        // One row per project cwd, counting only visible sessions. Groups are
+        // restricted to real user workspaces (`regular` browse kind): system
+        // scratch/hidden directories never surface as "projects" — the same
+        // vocabulary the catalog's project pages use, never a second policy.
+        const groups = new Map<string, { count: number; lastModified: number }>();
+        for (const info of sessions) {
+          if (browseKindForWorkspace(info.cwd) !== "regular") continue;
+          const group = groups.get(info.cwd);
+          if (group === undefined) {
+            groups.set(info.cwd, { count: 1, lastModified: info.modified.getTime() });
+          } else {
+            group.count += 1;
+            group.lastModified = Math.max(group.lastModified, info.modified.getTime());
+          }
+        }
+        const rawQuery = typeof params.query === "string" ? params.query.trim().toLowerCase() : "";
+        const entries = [...groups.entries()]
+          .map(([cwd, group]) => ({ cwd, ...group }))
+          .filter((row) =>
+            rawQuery === "" || row.cwd.toLowerCase().includes(rawQuery) || projectLabel(row.cwd).toLowerCase().includes(rawQuery))
+          .sort((a, b) => b.lastModified - a.lastModified);
+        if (entries.length === 0) {
+          return toolText(rawQuery === "" ? "还没有任何项目会话。" : `没有匹配「${concise(params.query ?? "", 60)}」的项目。`);
+        }
+        // Running counts come ONLY from the authoritative status channel
+        // (round 4) — never inferred from JSONL. Without the channel the row
+        // honestly says so instead of guessing.
+        let runningByCwd = new Map<string, number>();
+        let runningKnown = false;
+        if (sessionStatus !== undefined) {
+          try {
+            const live = await sessionStatus();
+            runningKnown = true;
+            for (const item of live) {
+              if (item.state !== "busy") continue;
+              runningByCwd.set(item.cwd, (runningByCwd.get(item.cwd) ?? 0) + 1);
+            }
+          } catch (error) {
+            signal?.throwIfAborted();
+            return toolFailure("查询实时会话状态失败", error);
+          }
+        }
+        const capped = entries.slice(0, LIST_PROJECTS_BUDGET);
+        const lines = capped.map((row) => {
+          const running = !runningKnown ? null : runningByCwd.get(row.cwd) ?? 0;
+          const runningLabel = running === null ? "运行状态未知" : running === 0 ? "无运行中" : `${running} 个运行中`;
+          return `- ${projectLabel(row.cwd)}｜${row.cwd}｜${row.count} 个会话｜最近 ${relativeDate(row.lastModified)}｜${runningLabel}`;
+        });
+        const suffix = entries.length > capped.length ? `\n（共 ${entries.length} 个项目，只列出最近活跃的 ${capped.length} 个）` : "";
+        return toolText(`共 ${entries.length} 个项目：\n${lines.join("\n")}${suffix}`);
+      },
+    });
+
+    pi.registerTool({
       name: "open_session",
       label: "建议打开会话",
       description: [
         "建议用户打开某个会话（不直接执行）。工具解析目标并返回信息；界面会渲染「打开」按钮，用户点击后才会切换。",
         "session 用 search_sessions 拿到的 id，或标题。",
       ].join(""),
-      promptSnippet: "Suggest opening a session (user confirms via button).",
+      promptSnippet: "生成「打开会话」按钮，用户点击后跳转。",
       parameters: Type.Object({
         session: Type.String({ description: "会话 id 或标题" }),
       }),
@@ -759,7 +877,7 @@ export function createAssistantToolsExtension(
         "界面会渲染「执行」按钮，用户点击后才会真正整理；删除还需要二次确认。",
         "重命名/删除是服务端会话操作。",
       ].join(""),
-      promptSnippet: "Suggest a batch organize action (user confirms via button).",
+      promptSnippet: "生成「改名 / 删除会话」按钮，用户点击后执行。",
       parameters: Type.Object({
         action: Type.String({ enum: ["rename", "delete"] }),
         sessions: Type.Array(Type.Object({ session: Type.String({ description: "会话 id 或标题" }) }), { minItems: 1, maxItems: 20, description: "目标会话列表" }),
@@ -804,7 +922,7 @@ export function createAssistantToolsExtension(
         "为另一个会话起草一段接续输入（不发送）。界面会渲染「填入输入框」按钮，用户点击后会切到该会话并把文字填进输入框，仍需用户自己发送。",
         "session 用 search_sessions 拿到的 id，或标题；text 是要填入的完整输入。",
       ].join(""),
-      promptSnippet: "Draft a follow-up message into another session (fill only, never send).",
+      promptSnippet: "把一段文字起草进另一个会话的输入框，由用户自己发送。",
       parameters: Type.Object({
         session: Type.String({ description: "目标会话 id 或标题" }),
         text: Type.String({ description: "要填入目标会话输入框的文字（完整可发送的中文输入）", minLength: 1, maxLength: 8000 }),
@@ -825,7 +943,7 @@ export function createAssistantToolsExtension(
         "用 search_sessions 拿到的会话 id，或会话标题。",
         "返回该会话的标题、项目和最近消息的文本摘要：用户消息与助手正文保留原文（截断），工具调用只给名字和简短结果。",
       ].join(""),
-      promptSnippet: "Read the tail of a past session (read-only summary).",
+      promptSnippet: "读取某个历史会话最近的消息（只读）。",
       parameters: Type.Object({
         session: Type.String({ description: "会话 id 或标题" }),
         tail: Type.Optional(Type.Integer({ description: "读取最近 N 条消息，默认 20，最大 50", minimum: 1, maximum: READ_MAX_TAIL })),

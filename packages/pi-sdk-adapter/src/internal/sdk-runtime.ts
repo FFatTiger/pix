@@ -15,7 +15,8 @@ import type {
   ToolInfo,
 } from "@fffattiger/pix-runtime-core";
 import { makeRuntimeError, QUESTIONNAIRE_LIMITS, RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
-import { ensureAssistantToolsActive, assistantExtensionFactoriesForCwd } from "./assistant-tools.js";
+import { effectiveAssistantSystemPromptFor, ensureAssistantToolsActive, assistantExtensionFactoriesForCwd } from "./assistant-tools.js";
+import { renderAssistantPreamble } from "./assistant-system-prompt.js";
 import { redactText } from "./sanitize.js";
 import { createPiSdkSessionStore } from "./session-store.js";
 import { readGlobalToolsPreference } from "./settings-config-store.js";
@@ -255,7 +256,14 @@ function driverState(
   return {
     model: model ? { provider: model.provider, id: model.id } : null,
     thinkingLevel: session.thinkingLevel as ThinkingLevel,
-    systemPrompt: forcedEmpty ? "" : session.systemPrompt,
+    // Assistant sessions publish the LAST EFFECTIVE turn prompt (with the
+    // per-turn segments) once one exists; `session.systemPrompt` falls back
+    // to the base options between turns and would under-report the role
+    // prompt to snapshots / the context popup. Ordinary sessions and the
+    // forced-empty tool policy are unaffected.
+    systemPrompt: forcedEmpty
+      ? ""
+      : effectiveAssistantSystemPromptFor(session.sessionManager.getCwd()) ?? session.systemPrompt,
     isStreaming: session.isStreaming,
     isCompacting: session.isCompacting,
     isBashRunning: session.isBashRunning,
@@ -1108,8 +1116,12 @@ function defaultComposition(sessionStatus?: DriverFactoryOptions["sessionStatus"
         ? { resourceLoaderReloadOptions: { resolveProjectTrust: async () => trusted } }
         : {};
       // Assistant-workspace sessions additionally get the read-only
-      // session-history tools (search_sessions / read_session). Ordinary
-      // project sessions never register them.
+      // session-history tools (search_sessions / read_session) and the role
+      // prompt. Ordinary project sessions never register them. The
+      // loader-level system prompt override makes the assistant preamble
+      // durable BETWEEN turns (worker snapshots / reloads rebuild the base
+      // from the loader); the per-turn segment surgery lives in the
+      // extension's before_agent_start handler (see assistant-system-prompt).
       const assistantExtensions = assistantExtensionFactoriesForCwd(cwd, sessionStatus);
       return createAgentSessionServices({
         cwd,
@@ -1117,6 +1129,12 @@ function defaultComposition(sessionStatus?: DriverFactoryOptions["sessionStatus"
         resourceLoaderOptions: {
           ...resourceLoaderOptionsForBuiltIns(agentDir),
           extensionFactories: [createToolPolicyExtension(toolPolicy), ...assistantExtensions, ...nativeBuiltinExtensionFactories()],
+          ...(assistantExtensions.length > 0
+            ? {
+                systemPromptOverride: (base: string | undefined) =>
+                  base ? base : renderAssistantPreamble(),
+              }
+            : {}),
         },
         ...trustOptions,
       });

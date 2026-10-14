@@ -462,11 +462,38 @@ packages/
 - **隐藏**：该目录按 browse-kind `hidden` 从 sessions/projects 页消失（projection
   schema v7 强制重建；内存 fallback 同样排除），但按 id 的 detail/context 照常。
   客户端永不为其物化标签、不持久化标签。
-- **两个助手专属工具**：`search_sessions` / `read_session` 只在 cwd 为助手目录的
-  会话注册（pi-sdk-adapter InlineExtension；全局工具选择收窄后仍保持 active）。
-  只读 JSONL、有界输出、排除 hidden 工作区/子会话/助手自身会话；不激活任何 Worker。
+- **助手专属工具（十个，只读为主）**：`search_sessions` / `read_session` /
+  `session_status` / `list_open_todos` / `summarize_activity` /
+  `find_file_changes` / `list_projects` / `open_session` / `organize_sessions` /
+  `draft_to_session`，只在 cwd 为助手目录的会话注册（pi-sdk-adapter
+  InlineExtension；全局工具选择收窄后仍保持 active，不受工具白名单遇忘）。
+  只读 JSONL/权威状态通道、有界输出、排除 hidden 工作区/子会话/助手自身会话；
+  不激活任何 Worker。`session_status` 与 `list_projects` 的「运行中」只来自
+  sessiond 权威状态通道，绝不从 JSONL 推断；`list_projects` 只按
+  browse-kind `regular` 聚合真实项目工作区。
+- **角色提示词（第 5 轮）**：助手会话的系统提示词 preamble 固定为随身助手
+  中文角色文案，末尾追加 `assistant` 段（工作位置/工具导航/红线，
+  `{home}`/`{workspace}` 运行时替换）；文案常量在 adapter
+  `assistant-system-prompt.ts` 单点维护。落地方式：createServices 为助手
+  cwd 注入 loader 级 `systemPromptOverride`（preamble 在回合之间持久，
+  snapshot/上下文弹窗/重启后可见），每回合 `before_agent_start` 再做分段
+  手术——临时清 customPrompt 渲染完整默认提示词、按官方 wrapped-tag
+  契约抽取 tools/rules/docs 内客重注入，加 `assistant` 段；段形异常时
+  fail-safe（保留 Pi 默认构造，只追加 assistant 段）。被更早 handler
+  forced 的提示词（内置 subagents 插件的
+  `${当前提示词}\n\n${父策略}`）按前缀重定基：基座换为助手提示词、外来
+  后缀逐字保留；空 forced（全工具关闭策略）与不可识别形状完全不动。
+  普通会话不受任何影响。
 - **无限上下文**：不新造机制 —— 复用 SDK 自动压缩（助手会话 autoCompaction 照常）
   与全局 Lore 扩展（lore_* 工具照常）。压缩条目在对话内渲染为提示行，无"新会话"感。
+- **入口（第 5 轮）**：助手专属起始页已删除。新建会话页输入框上方悬浮
+  助手入口 tab（无项目选择时可见，选中项目后淡出收起）；点击时已有助手
+  会话 → 直接进入对话并携带草稿（不发送），没有 → 进入"助手状态"
+  （`/?draft=assistant`：入口呈选中态（助手 + ✕）、项目选择器隐藏、
+  占位文案切换），发送后在固定 cwd 创建会话并跳转 `/?assistant=1`。
+  侧栏「助手」：已有会话直接打开，没有则进入草稿状态；直接访问
+  `/?assistant=1` 而无会话时重定向到草稿状态。助手绑定查询在
+  `assistant` 能力存在时即运行（侧栏/入口分支需要它），仍为只读。
 - **能力令牌**：Host `assistant` token 仅在 seam 已挂载且 sessiond up 时通告
   （degraded 恒剔除）；客户端按能力隐藏入口，绝不出现破损视图。
 

@@ -21,6 +21,8 @@ describe("assistantToolLabel", () => {
     expect(assistantToolLabel("list_open_todos")?.labelKey).toBe("desktop.codexAssistantOpenTodos");
     expect(assistantToolLabel("summarize_activity")?.labelKey).toBe("desktop.codexAssistantActivity");
     expect(assistantToolLabel("find_file_changes")?.labelKey).toBe("desktop.codexAssistantFileChanges");
+    expect(assistantToolLabel("list_projects")?.labelKey).toBe("desktop.codexAssistantProjects");
+    expect(assistantToolLabel("list_projects")?.iconName).toBe("stacks");
     expect(assistantToolLabel("open_session")?.labelKey).toBe("desktop.codexAssistantOpenSession");
     expect(assistantToolLabel("organize_sessions")?.labelKey).toBe("desktop.codexAssistantOrganize");
     expect(assistantToolLabel("draft_to_session")?.labelKey).toBe("desktop.codexAssistantDraft");
