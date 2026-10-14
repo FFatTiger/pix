@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+import { get as httpGet } from "node:http";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const READINESS_TIMEOUT_MS = 90_000;
@@ -24,6 +25,7 @@ const HOST_HEALTH_TIMEOUT_MS = 120_000;
 const POLL_MS = 250;
 const OVERALL_TIMEOUT_MS = 5 * 60_000;
 const children = [];
+const outputs = [];
 
 const temporary = [];
 function temp(prefix) {
@@ -47,7 +49,26 @@ function startProcess(args, env, label) {
   child.stdout?.on("data", (chunk) => { stdout += chunk; });
   child.stderr?.on("data", (chunk) => { stderr += chunk; });
   const output = () => `--- ${label} stdout ---\n${stdout}\n--- ${label} stderr ---\n${stderr}`;
+  outputs.push(output);
   return { child, output };
+}
+
+// node:http rather than fetch: undici fetch is unusable under Wine (used for
+// the local Windows smoke); http.get behaves the same on every platform.
+function getJson(url) {
+  return new Promise((resolveGet, reject) => {
+    const request = httpGet(url, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        try { resolveGet({ ok: response.statusCode >= 200 && response.statusCode < 300, json: JSON.parse(body) }); }
+        catch (error) { reject(error); }
+      });
+    });
+    request.on("error", reject);
+    request.setTimeout(5_000, () => request.destroy(new Error("timeout")));
+  });
 }
 
 function freePort() {
@@ -143,9 +164,9 @@ async function main() {
       throw new Error(`host exited early (code ${host.child.exitCode})\n${host.output()}`);
     }
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/v1/bootstrap`);
+      const response = await getJson(`http://127.0.0.1:${port}/v1/bootstrap`);
       if (response.ok) {
-        health = await response.json();
+        health = response.json;
         break;
       }
     } catch { /* not listening yet */ }
@@ -190,6 +211,7 @@ main().then(() => {
   process.exit(0);
 }, (error) => {
   console.error(`[smoke] FAIL: ${error instanceof Error ? error.message : String(error)}`);
+  for (const output of outputs) console.error(output().slice(-6000));
   for (const child of children) if (child.exitCode === null) child.kill();
   process.exit(1);
 });
