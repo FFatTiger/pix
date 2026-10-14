@@ -188,7 +188,10 @@ function controllableStubFetch(opts: {
       const visible = parentSessionId === null
         ? sessions.filter((session) => session.parentSessionId === undefined && !/pi-(?:claude-)?subagents/.test(session.projectRoot))
         : sessions.filter((session) => session.parentSessionId === parentSessionId);
-      const filtered = projectRoot === null ? visible : visible.filter((session) => session.projectRoot === projectRoot);
+      const scoped = projectRoot === null ? visible : visible.filter((session) => session.projectRoot === projectRoot);
+      // Round 5 server contract: pinned rows always surface first (durable
+      // identities on every device's first page), then recency.
+      const filtered = [...scoped].sort((a, b) => (b.pinned === true ? 1 : 0) - (a.pinned === true ? 1 : 0));
       const offset = (page - 1) * pageSize;
       return json({ sessions: filtered.slice(offset, offset + pageSize), page, pageSize, total: filtered.length, totalPages: filtered.length === 0 ? 0 : Math.ceil(filtered.length / pageSize), catalogRevision: 0 });
     }
@@ -300,7 +303,7 @@ function authenticatedQueryClient(): QueryClient {
 
 function mountApp(search: WorkspaceSearch, opts: { queryClient?: QueryClient; capabilities?: HostInfo["capabilities"] } = {}) {
   const qc = opts.queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const defaultCapabilities: HostInfo["capabilities"] = opts.capabilities ?? ["agent", "sessions", "files", "models"];
+  const defaultCapabilities: HostInfo["capabilities"] = opts.capabilities ?? ["agent", "sessions", "session.write", "files", "models"];
   const Tree = ({ search: s, capabilities }: { search: WorkspaceSearch; capabilities: HostInfo["capabilities"] }): ReactNode => (
     <QueryClientProvider client={qc}>
       <HttpClientProvider>
@@ -2953,6 +2956,8 @@ describe("AppShell — source-like sidebar rail", () => {
   }
 
   const catalogCaps: HostInfo["capabilities"] = ["agent", "sessions", "files", "models", "plugins", "skills"];
+  // Round 5: pin/archive writes ride the session.write seam (PATCH flags).
+  const catalogWriteCaps: HostInfo["capabilities"] = [...catalogCaps, "session.write"];
 
   it("renders the source hierarchy: Pix, New Session, Projects, Sessions, Settings + pinned right pane", async () => {
     mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
@@ -3040,7 +3045,20 @@ describe("AppShell — source-like sidebar rail", () => {
   });
 
   it("restores an archived session from the settings archive tab", async () => {
-    mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
+    const serverSessions = PROJECT_SESSIONS.map((row) => ({ ...row }));
+    const base = controllableStubFetch({ sessions: serverSessions });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const patchMatch = path.match(/\/v1\/sessions\/([^/?]+)$/);
+      if (init?.method === "PATCH" && patchMatch) {
+        const body = JSON.parse(String(init.body)) as { pinned?: boolean; archived?: boolean };
+        const target = serverSessions.find((row) => row.sessionId === patchMatch[1]);
+        if (target) Object.assign(target, body);
+        return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return base(input, init);
+    }) as unknown as typeof fetch;
+    mountApp({ cwd: "/x" }, { capabilities: catalogWriteCaps });
     await settle();
     const sessionRow = screen.getByTestId("session-select-A").closest(".sidebar-list-row") as HTMLElement;
     fireEvent.click(within(sessionRow).getByLabelText("Archive"));
@@ -3055,16 +3073,10 @@ describe("AppShell — source-like sidebar rail", () => {
 
   it("does not reveal an archived subagent in Settings", async () => {
     const now = Date.now();
-    window.localStorage.setItem("pi-sidebar-item-state", JSON.stringify({
-      pinnedSessions: [],
-      pinnedProjects: [],
-      archivedSessions: ["child"],
-      archivedProjects: [],
-    }));
     globalThis.fetch = controllableStubFetch({
       sessions: [
         { sessionId: "parent", cwd: "/x", projectRoot: "/x", title: "Parent session", createdAt: 1000, updatedAt: now, messageCount: 1, workspaceAccess: AUTHORIZED },
-        { sessionId: "child", cwd: "/x", projectRoot: "/x", title: "Hidden child", parentSessionId: "parent", createdAt: 1000, updatedAt: now + 1, messageCount: 1, workspaceAccess: AUTHORIZED },
+        { sessionId: "child", cwd: "/x", projectRoot: "/x", title: "Hidden child", parentSessionId: "parent", createdAt: 1000, updatedAt: now + 1, messageCount: 1, archived: true, workspaceAccess: AUTHORIZED },
       ],
     });
     mountApp({ cwd: "/x" }, { capabilities: catalogCaps });
@@ -3550,7 +3562,23 @@ describe("AppShell — source-like sidebar rail", () => {
   });
 
   it("hides the pinned section until a session is pinned, then shows pin/archive actions", async () => {
-    globalThis.fetch = controllableStubFetch({ sessions: PROJECT_SESSIONS });
+    // Round 5: session flags are SERVER state — the stub answers PATCH
+    // /v1/sessions/:id by applying {pinned}/{archived} to the row and the
+    // client refetches the list (mutation onSuccess invalidation).
+    const serverSessions = PROJECT_SESSIONS.map((row) => ({ ...row }));
+    const base = controllableStubFetch({ sessions: serverSessions });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const patchMatch = path.match(/\/v1\/sessions\/([^/?]+)$/);
+      if (init?.method === "PATCH" && patchMatch) {
+        const body = JSON.parse(String(init.body)) as { pinned?: boolean; archived?: boolean };
+        const target = serverSessions.find((row) => row.sessionId === patchMatch[1]);
+        if (target) Object.assign(target, body);
+        return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return base(input, init);
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();
     expect(screen.queryByTestId("sidebar-pinned")).toBeNull();
@@ -3751,13 +3779,8 @@ describe("AppShell — source-like sidebar rail", () => {
       messageCount: 1,
       workspaceAccess: AUTHORIZED,
     }));
-    window.localStorage.setItem("pi-sidebar-item-state", JSON.stringify({
-      pinnedSessions: ["PS12"],
-      pinnedProjects: [],
-      archivedSessions: [],
-      archivedProjects: [],
-      expandedProjects: [],
-    }));
+    // Round 5: the pin is server state on the row (not localStorage).
+    many[11] = { ...many[11]!, pinned: true };
     globalThis.fetch = controllableStubFetch({ sessions: many });
     mountApp({ cwd: "/x" });
     await settle();
@@ -3874,13 +3897,10 @@ describe("AppShell — source-like sidebar rail", () => {
       messageCount: 1,
       workspaceAccess: AUTHORIZED,
     }));
-    window.localStorage.setItem("pi-sidebar-item-state", JSON.stringify({
-      pinnedSessions: [],
-      pinnedProjects: [],
-      archivedSessions: grouped.slice(0, 5).map((session) => session.sessionId),
-      archivedProjects: [],
-    }));
-    const fetchImpl = controllableStubFetch({ sessions: grouped });
+    // Round 5: archive flags live on the server rows.
+    const archivedIds = new Set(grouped.slice(0, 5).map((session) => session.sessionId));
+    const flagged = grouped.map((session) => archivedIds.has(session.sessionId) ? { ...session, archived: true } : session);
+    const fetchImpl = controllableStubFetch({ sessions: flagged });
     globalThis.fetch = fetchImpl;
     mountApp({ cwd: "/x" });
     await settle();

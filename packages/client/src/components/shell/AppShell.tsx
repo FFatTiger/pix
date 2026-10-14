@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
 import { createQueryOptions, queryKeys } from "@/api/query-keys";
+import { migrateLocalSessionFlagsToServer, sessionFlagsMigrationDeps } from "@/lib/session-flags";
 import { PROJECT_PICKER_PAGE_SIZE, SESSION_PAGE_SIZE } from "@/api/session-list";
 import { createMutationOptions } from "@/api/mutations";
 import type { WorkspaceSearch } from "@/lib/search-params";
@@ -119,6 +120,28 @@ export function AppShell({ search }: AppShellProps) {
   const options = createQueryOptions(http);
   const sessionsQuery = useQuery(options.sessions.page(1, SESSION_PAGE_SIZE, { enabled: canBrowseSessions }));
   const projectsQuery = useQuery(options.projects.page(1, PROJECT_PICKER_PAGE_SIZE, canBrowseSessions));
+  // ── Cross-device session catalog sync + local-flag migration (round 5) ───
+  // The Host pushes `sessions_changed` whenever session metadata changes
+  // (rename, server-side pin/archive). Invalidate the list queries so every
+  // open device refetches without user action.
+  const sessionsChangedRevision = connection.sessionsChangedRevision;
+  useEffect(() => {
+    if (sessionsChangedRevision === 0) return;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.lists });
+  }, [queryClient, sessionsChangedRevision]);
+
+  // One-time migration: legacy localStorage session pins/archives upload to
+  // the server (additive; server wins on conflict), then leave the local key.
+  const migrationStarted = useRef(false);
+  useEffect(() => {
+    if (migrationStarted.current || !canBrowseSessions || !can("session.write")) return;
+    if (sessionsQuery.isPending) return;
+    migrationStarted.current = true;
+    void migrateLocalSessionFlagsToServer(sessionFlagsMigrationDeps(http, (signal) =>
+      http.get("/v1/sessions?page=1&pageSize=200", { ...(signal === undefined ? {} : { signal }) })
+        .then((page) => ((page as { sessions?: Array<{ sessionId: string; pinned?: boolean; archived?: boolean }> }).sessions ?? []))));
+  }, [can, canBrowseSessions, http, sessionsQuery.isPending]);
+
   // ── Assistant view (project-less evergreen conversation) ────────────────
   // `/?assistant=1` selects the assistant: the URL carries NO session id —
   // the binding (fixed Host-managed cwd + the latest session in it) is

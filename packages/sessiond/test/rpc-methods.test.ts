@@ -35,9 +35,11 @@ test("sessiond RPC method set is derived from the Protocol SESSIOND_RPC_METHODS 
   assert.equal(isSessiondRpcMethod("system.diagnostics"), false);
   assert.equal(isSessiondRpcMethod("runtime.workerPids"), false);
   assert.equal(isSessiondRpcMethod("sessions.rename"), true);
+  assert.equal(isSessiondRpcMethod("sessions.setFlags"), true);
   assert.equal(isSessiondRpcMethod("sessions.delete"), true);
-  // Current coverage includes the sessions rename/delete methods.
+  // Current coverage includes the sessions rename/setFlags/delete methods.
   assert.ok(SESSIOND_RPC_METHODS.includes("sessions.rename"));
+  assert.ok(SESSIOND_RPC_METHODS.includes("sessions.setFlags"));
   assert.ok(SESSIOND_RPC_METHODS.includes("sessions.delete"));
 });
 

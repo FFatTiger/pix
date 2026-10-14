@@ -47,7 +47,7 @@ import {
   type ProtocolErrorCode,
   type WorkerBuild,
 } from "@fffattiger/pix-protocol";
-import type { RuntimeCloseReason } from "@fffattiger/pix-protocol";
+import type { RuntimeCloseReason, SessiondRunningWatchPush } from "@fffattiger/pix-protocol";
 import { READ_ONLY_RUNTIME_COMMAND_TYPES, isRuntimeError, isAssistantWorkspacePath, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
 import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailable, epochChangedCommand, epochChangedInterrupt, rejectedCommand, rejectedInterrupt, unavailableCommand, unavailableInterrupt } from "./errors.js";
 import { EventJournal, type EventJournalOptions } from "./journal.js";
@@ -158,7 +158,7 @@ export interface PreparedAttachment {
 
 export type PushListener = (push: SessiondPush) => void | Promise<void>;
 export type TurnStatusListener = (push: SessiondTurnStatusPush) => void | Promise<void>;
-export type RunningStateListener = (push: SessiondRunningStatePush) => void | Promise<void>;
+export type RunningStateListener = (push: SessiondRunningWatchPush) => void | Promise<void>;
 
 export interface PreparedTurnSubmission {
   readonly result: SubmitTurnAdmission;
@@ -188,7 +188,7 @@ interface Subscriber {
 interface RunningSubscriber {
   closed: boolean;
   draining: boolean;
-  queue: Array<{ push: SessiondRunningStatePush; bytes: number }>;
+  queue: Array<{ push: SessiondRunningWatchPush; bytes: number }>;
   queuedBytes: number;
   listener: RunningStateListener;
   onClosed?: (error: SessiondError | null) => void;
@@ -2774,7 +2774,7 @@ export class SessiondService {
    * RPC response is delivered, then switches atomically to live delivery.
    */
   prepareRunningWatch(): PreparedRunningWatch {
-    const liveBuffer: Array<{ push: SessiondRunningStatePush; bytes: number }> = [];
+    const liveBuffer: Array<{ push: SessiondRunningWatchPush; bytes: number }> = [];
     let liveBufferBytes = 0;
     let overflowed = false;
     let closed = false;
@@ -2941,6 +2941,22 @@ export class SessiondService {
     const subscriber: RunningSubscriber = { closed: false, draining: false, queue: [], queuedBytes: 0, listener, ...(onClosed === undefined ? {} : { onClosed }) };
     this.runningSubscribers.add(subscriber);
     return subscriber;
+  }
+
+  /** Global catalog-change notice to every running-watch subscriber. */
+  private pushSessionsChanged(): void {
+    const push: SessiondRunningWatchPush = { type: "sessions_changed" };
+    const bytes = ndjsonQueuedBytes(push);
+    for (const subscriber of [...this.runningSubscribers]) {
+      if (subscriber.closed) continue;
+      if (subscriber.queue.length >= this.subscriberQueueLimit || subscriber.queuedBytes + bytes > this.subscriberQueueByteLimit) {
+        this.closeRunningSubscriber(subscriber, subscriberOverflowError());
+        continue;
+      }
+      subscriber.queue.push({ push, bytes });
+      subscriber.queuedBytes += bytes;
+      if (!subscriber.draining) void this.drainRunningSubscriber(subscriber);
+    }
   }
 
   private pushRunningState(push: SessiondRunningStatePush): void {
@@ -3438,8 +3454,36 @@ export class SessiondService {
         throw this.mapOfflineRenameFailure(error);
       }
       this.titleOverlay.publish(ctx.canonicalId, canonicalName);
+      this.pushSessionsChanged();
     });
     return { sessionId, name: canonicalName };
+  }
+
+  /**
+   * Server-side sidebar flags (round 5). Same durable JSONL path family as
+   * rename, but flags are catalog metadata — no worker command, no live/offline
+   * lane split: ALWAYS the offline mutation port (append-only custom entry),
+   * working for live and stopped sessions alike. Returns the merged effective
+   * flags read back from the catalog AFTER the write (not the input guess).
+   */
+  async setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ sessionId: string; pinned: boolean; archived: boolean }> {
+    if (flags.pinned === undefined && flags.archived === undefined) {
+      throw new SessiondError("invalid_input", "at least one flag must be provided", false);
+    }
+    let effective: { pinned: boolean; archived: boolean } | undefined;
+    await this.coordinator.admit(sessionId, "rename", async (ctx) => {
+      if (this.shuttingDown) throw new SessiondError("unavailable", "sessiond is shutting down", true);
+      if (ctx.isStale()) throw new SessiondError("conflict", "session identity changed during a flag update", false);
+      if (!this.deps.sessionMutation) throw new SessiondError("unavailable", "session mutation is unavailable", false);
+      try {
+        effective = await this.deps.sessionMutation.setSessionFlags(ctx.canonicalId, flags);
+      } catch (error) {
+        throw this.mapOfflineRenameFailure(error);
+      }
+    });
+    this.pushSessionsChanged();
+    // Effective merged flags read back by the owning store AFTER its write.
+    return { sessionId, pinned: effective?.pinned === true, archived: effective?.archived === true };
   }
 
   /** Map a live-command `{ok:false}` result onto a fixed sanitized SessiondError. */

@@ -313,6 +313,8 @@ export interface SessionDeleteSeam {
  */
 export interface SessionRenameClient {
   rename(sessionId: string, name: string): Promise<unknown>;
+  /** Server-side sidebar flags (round 5): at least one flag required. */
+  setFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<unknown>;
 }
 
 /**

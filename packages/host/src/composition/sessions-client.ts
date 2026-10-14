@@ -160,5 +160,12 @@ export function createSessiondSessionRenameClient(
     async rename(sessionId, name) {
       return client.call("sessions.rename", { sessionId, name });
     },
+    async setFlags(sessionId, flags) {
+      return client.call("sessions.setFlags", {
+        sessionId,
+        ...(flags.pinned === undefined ? {} : { pinned: flags.pinned }),
+        ...(flags.archived === undefined ? {} : { archived: flags.archived }),
+      });
+    },
   };
 }

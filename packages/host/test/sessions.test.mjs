@@ -907,6 +907,10 @@ function fakeRenameClient(impl) {
         calls.push({ id, name });
         return impl?.rename?.(id, name) ?? { sessionId: id, name };
       },
+      async setFlags(id, flags) {
+        calls.push({ id, flags });
+        return impl?.setFlags?.(id, flags) ?? { sessionId: id, pinned: flags.pinned === true, archived: flags.archived === true };
+      },
     },
   };
 }
@@ -1222,4 +1226,42 @@ test("PATCH: raw non-code errors (socket/unknown) ⇒ 503 SESSION_RENAME_UNAVAIL
     assert.ok(!JSON.stringify(body).includes("boom"));
     assert.ok(!JSON.stringify(body).includes("stack"));
   }
+});
+
+
+// ---------------------------------------------------------------------------
+// Round 5: server-side session flags on the same PATCH endpoint
+// ---------------------------------------------------------------------------
+
+test("PATCH /v1/sessions/:id with {pinned}/{archived} calls setFlags exactly once; booleans only; never mixed with name", async () => {
+  const { app, rc } = appWithRename();
+  const okPin = await patch(app, "s1", { body: JSON.stringify({ pinned: true }), headers: { "content-type": "application/json" } });
+  assert.equal(okPin.status, 200);
+  assert.deepEqual(await okPin.json(), { success: true });
+  assert.equal(rc.calls.length, 1);
+  assert.deepEqual(rc.calls[0], { id: "s1", flags: { pinned: true } });
+
+  const okBoth = await patch(app, "s2", { body: JSON.stringify({ archived: true, pinned: false }), headers: { "content-type": "application/json" } });
+  assert.equal(okBoth.status, 200);
+  assert.deepEqual(rc.calls[1], { id: "s2", flags: { archived: true, pinned: false } });
+
+  for (const bad of [
+    { pinned: "yes" },
+    { archived: 1 },
+    { pinned: true, name: "x" },
+    {},
+  ]) {
+    const res = await patch(app, "s1", { body: JSON.stringify(bad), headers: { "content-type": "application/json" } });
+    assert.equal(res.status, 400, JSON.stringify(bad));
+  }
+  assert.equal(rc.calls.length, 2, "invalid bodies must not reach the seam");
+});
+
+test("PATCH flags map seam errors to the fixed rename error surface (404/409/503)", async () => {
+  const notFound = appWithRename({ renameImpl: { setFlags: async () => { throw Object.assign(new Error("nf"), { code: "not_found" }); } } });
+  assert.equal((await patch(notFound.app, "gone", { body: JSON.stringify({ archived: true }), headers: { "content-type": "application/json" } })).status, 404);
+  const conflict = appWithRename({ renameImpl: { setFlags: async () => { throw Object.assign(new Error("c"), { code: "conflict" }); } } });
+  assert.equal((await patch(conflict.app, "s1", { body: JSON.stringify({ archived: true }), headers: { "content-type": "application/json" } })).status, 409);
+  const down = appWithRename({ renameImpl: { setFlags: async () => { throw Object.assign(new Error("u"), { code: "unavailable" }); } } });
+  assert.equal((await patch(down.app, "s1", { body: JSON.stringify({ archived: true }), headers: { "content-type": "application/json" } })).status, 503);
 });

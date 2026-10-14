@@ -223,7 +223,7 @@ test("global running watch converges busy to idle without any session attachment
   assert.deepEqual(watch.result.busySessionIds, []);
   assert.equal(service.diagnostics().subscribers, 0, "global watch is not a per-session subscriber");
   const states: Array<{ revision: number; sessionIds: string[]; busySessionIds: string[] }> = [];
-  await watch.flushTo((push) => { states.push(push.state); });
+  await watch.flushTo((push) => { if (push.type === "running_state") states.push(push.state); });
   workers.workers[0]!.emitEvent({ type: "agent_start", sessionId: "s" });
   workers.workers[0]!.emitEvent({ type: "agent_end", sessionId: "s" });
   workers.workers[0]!.emitEvent({ type: "agent_settled", sessionId: "s" });
@@ -252,7 +252,7 @@ test("running watch baseline precedes buffered updates and starts zero workers",
   workers.workers[0]!.emitEvent({ type: "agent_start", sessionId: "s" });
   await wait();
   const pushes: Array<{ revision: number; busySessionIds: string[] }> = [];
-  await watch.flushTo((push) => { pushes.push(push.state); });
+  await watch.flushTo((push) => { if (push.type === "running_state") pushes.push(push.state); });
   assert.equal(pushes.length, 1);
   assert.ok(pushes[0]!.revision > watch.result.revision);
   assert.deepEqual(pushes[0]!.busySessionIds, ["s"]);
@@ -2571,7 +2571,7 @@ test("RPC running watch delivers response baseline before pushes and is independ
     const client = new SessiondRpcClient({ endpoint, secret: "a".repeat(40), timeoutMs: 500 });
     await client.call("runtime.activate", { sessionId: "watch-s" });
     const states: Array<{ revision: number; busySessionIds: string[] }> = [];
-    const watch = await client.watchRunning((push) => { states.push(push.state); });
+    const watch = await client.watchRunning((push) => { if (push.type === "running_state") states.push(push.state); });
     assert.deepEqual(watch.response.sessionIds, ["watch-s"]);
     assert.deepEqual(watch.response.busySessionIds, []);
     const attach = await client.attach({ sessionId: "watch-s" }, async () => {});

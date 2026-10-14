@@ -86,3 +86,28 @@ test("combineWorkspaceAccess fail-closed lattice is the canonical authority", ()
   assert.deepEqual(combineWorkspaceAccess(history, unavailable), unavailable);
   assert.deepEqual(combineWorkspaceAccess(authorized, unavailable), unavailable);
 });
+
+
+// ---------------------------------------------------------------------------
+// Round 5: server-side sidebar flags on the session header (additive, optional)
+// ---------------------------------------------------------------------------
+
+test("SessionHeader wire accepts optional pinned/archived flags and old producers without them", () => {
+  const base = {
+    sessionId: "s1",
+    cwd: "/repo",
+    projectRoot: "/repo",
+    firstMessage: "hi",
+  };
+  // New producer carrying flags round-trips them.
+  const flagged = SessionHeaderSchema.parse({ ...base, pinned: true, archived: false });
+  assert.equal(flagged.pinned, true);
+  assert.equal(flagged.archived, false);
+  // Old producer (no fields) still parses; absence means unset.
+  const legacy = SessionHeaderSchema.parse(base);
+  assert.equal("pinned" in legacy, false);
+  assert.equal("archived" in legacy, false);
+  // Wrong types fail closed.
+  assert.equal(SessionHeaderSchema.safeParse({ ...base, pinned: "yes" }).success, false);
+  assert.equal(SessionHeaderSchema.safeParse({ ...base, archived: 1 }).success, false);
+});

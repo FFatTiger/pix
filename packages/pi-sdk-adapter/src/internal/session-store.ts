@@ -188,6 +188,8 @@ export interface PiSdkSessionManager {
   getHeader(): { parentSession?: string } | null | undefined;
   /** Append a session_info entry carrying the display name; returns the entry id. */
   appendSessionInfo(name: string): string;
+  /** Append a durable custom entry (pix-owned JSONL metadata, e.g. session flags). */
+  appendCustomEntry(customType: string, data?: unknown): string;
 }
 
 /** Injectable SDK read surface used by the store (real SessionManager is the default). */
@@ -866,7 +868,7 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
    * it can never become an unhandled rejection — the caller owns `run`'s
    * outcome.
    */
-  private enqueueMutation(sessionId: string, task: () => Promise<void>): Promise<void> {
+  private enqueueMutation<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
     const previous = this.mutationQueues.get(sessionId) ?? Promise.resolve();
     const run = previous.then(task, task);
     let tail: Promise<void>;
@@ -1302,6 +1304,40 @@ class PiSdkSessionStoreImpl implements PiSdkSessionStore {
       this.invalidateList();
       const projected = await parseSessionFile(opened.info.path);
       if (projected !== null) await this.applyProjectionMutation([projected], []);
+    });
+  }
+
+  /**
+   * Server-side sidebar flags (round 5): append a `pix-session-flags` custom
+   * entry (durable truth, same append-only JSONL family as rename) and refresh
+   * the shared catalog's projection so lists observe the change immediately.
+   * Absent flags are left unchanged — the JSONL entry records only what this
+   * call sets; the EFFECTIVE state (merged last-entry wins) is read back from
+   * the parsed file, never guessed from the input.
+   */
+  async setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ pinned: boolean; archived: boolean }> {
+    if (flags.pinned === undefined && flags.archived === undefined) {
+      throw makeRuntimeError("invalid_input", "at least one flag must be provided");
+    }
+    return this.enqueueMutation(sessionId, async () => {
+      const opened = await this.openSession(sessionId);
+      if (!opened) throw notFound(sessionId);
+      const { manager } = opened;
+      try {
+        manager.appendCustomEntry("pix-session-flags", {
+          ...(flags.pinned === undefined ? {} : { pinned: flags.pinned }),
+          ...(flags.archived === undefined ? {} : { archived: flags.archived }),
+        });
+      } catch {
+        throw makeRuntimeError("external", `failed to update session flags: ${sessionId}`, {
+          retryable: true,
+          cause: { kind: "file", detail: "session flags append failed" },
+        });
+      }
+      this.invalidateList();
+      const projected = await parseSessionFile(opened.info.path);
+      if (projected !== null) await this.applyProjectionMutation([projected], []);
+      return { pinned: projected?.pinned === true, archived: projected?.archived === true };
     });
   }
 

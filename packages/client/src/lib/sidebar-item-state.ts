@@ -1,12 +1,16 @@
 import { useCallback, useSyncExternalStore } from "react";
+import { useSessionFlags } from "@/lib/session-flags";
 
 /**
- * Client-owned pin / archive lists for the sidebar rail.
+ * Sidebar rail pin / archive state (round 5 split).
  *
- * There is no Host/Protocol pin or archive seam, so this preference lives
- * entirely in the browser. Components never read localStorage directly —
- * this module is the single owner (same pattern as ui-scale / process
- * display mode).
+ * SESSION pin/archive is SERVER state (`SessionHeader.pinned/archived`,
+ * written via PATCH /v1/sessions/:id — see lib/session-flags.ts). PROJECT
+ * pin/archive and project expansion stay browser-local: projects are derived
+ * aggregates with no per-project server record. The localStorage document now
+ * carries only the project fields; legacy session arrays are migrated to the
+ * server once (migrateLocalSessionFlagsToServer). Components keep consuming
+ * the SAME hook shape — the merge is invisible to callers.
  */
 
 const STORAGE_KEY = "pi-sidebar-item-state";
@@ -161,19 +165,33 @@ export function useSidebarItemState(): {
   pinProject: (projectRoot: string, pinned: boolean) => void;
   archiveProject: (projectRoot: string, archived: boolean) => void;
   setProjectExpanded: (projectRoot: string, expanded: boolean) => void;
+  flagError: string | null;
 } {
-  const state = useSyncExternalStore(subscribe, loadSidebarItemState, () => EMPTY_STATE);
+  const local = useSyncExternalStore(subscribe, loadSidebarItemState, () => EMPTY_STATE);
+  const sessionFlags = useSessionFlags();
 
   const commit = useCallback((patch: Parameters<typeof applySidebarItemPatch>[1]) => {
     saveSidebarItemState(applySidebarItemPatch(loadSidebarItemState(), patch));
   }, []);
 
+  // Session sets come from the SERVER projection; project sets stay local.
+  // Pin/archive mutual exclusion for sessions is enforced server-side by the
+  // write path (the optimistic patch sets both fields explicitly).
+  const state: SidebarItemState = {
+    pinnedSessions: sessionFlags.pinnedSessions,
+    archivedSessions: sessionFlags.archivedSessions,
+    pinnedProjects: local.pinnedProjects,
+    archivedProjects: local.archivedProjects,
+    expandedProjects: local.expandedProjects,
+  };
+
   return {
     state,
-    pinSession: useCallback((sessionId, pinned) => commit({ sessionId, pinned }), [commit]),
-    archiveSession: useCallback((sessionId, archived) => commit({ sessionId, archived }), [commit]),
+    pinSession: useCallback((sessionId, pinned) => sessionFlags.setSessionFlags(sessionId, { pinned, ...(pinned ? { archived: false } : {}) }), [sessionFlags]),
+    archiveSession: useCallback((sessionId, archived) => sessionFlags.setSessionFlags(sessionId, { archived, ...(archived ? { pinned: false } : {}) }), [sessionFlags]),
     pinProject: useCallback((projectRoot, pinned) => commit({ projectRoot, pinned }), [commit]),
     archiveProject: useCallback((projectRoot, archived) => commit({ projectRoot, archived }), [commit]),
     setProjectExpanded: useCallback((projectRoot, expanded) => commit({ projectRoot, expanded }), [commit]),
+    flagError: sessionFlags.flagError,
   };
 }

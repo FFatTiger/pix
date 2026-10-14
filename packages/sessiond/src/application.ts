@@ -178,6 +178,13 @@ export class SessiondApplication implements SessiondRpcHandler {
         await this.service.deleteSession(input.sessionId);
         return { sessionId: input.sessionId, deleted: true };
       }
+      case "sessions.setFlags": {
+        const input = params as SessiondMethodParams["sessions.setFlags"];
+        return this.service.setSessionFlags(input.sessionId, {
+          ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
+          ...(input.archived === undefined ? {} : { archived: input.archived }),
+        });
+      }
       case "sessions.findLatest": {
         // Assistant-conversation lookup (read-only, zero workers). Fail closed
         // when the catalog or the exact-cwd lookup is not mounted — never fall

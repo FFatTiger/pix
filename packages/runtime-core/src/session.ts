@@ -89,6 +89,13 @@ export interface SessionHeader {
    * live classification; catalog adapters never invent this field.
    */
   workspaceAccess?: WorkspaceAccess;
+  /**
+   * Server-side sidebar flags (round 5). Durable truth: a `pix-session-flags`
+   * custom entry in the session JSONL; projected through the catalog. Absence
+   * = flag not set (never guessed). Old producers simply omit them.
+   */
+  pinned?: boolean;
+  archived?: boolean;
 }
 
 export interface SessionDetail extends SessionHeader {

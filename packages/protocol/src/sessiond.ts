@@ -517,6 +517,26 @@ export const SessionsRenameResultSchema = z.strictObject({
 });
 export type SessionsRenameResult = z.infer<typeof SessionsRenameResultSchema>;
 
+export const SessionsSetFlagsParamsSchema = z.strictObject({
+  sessionId: NonEmptyStringSchema,
+  /**
+   * Server-side sidebar flags. At least one field must be present; absent
+   * fields are left unchanged (append-only JSONL semantics, last entry wins).
+   */
+  pinned: z.boolean().optional(),
+  archived: z.boolean().optional(),
+}).refine((value) => value.pinned !== undefined || value.archived !== undefined, {
+  message: "at least one flag must be provided",
+});
+export type SessionsSetFlagsParams = z.infer<typeof SessionsSetFlagsParamsSchema>;
+
+export const SessionsSetFlagsResultSchema = z.strictObject({
+  sessionId: NonEmptyStringSchema,
+  pinned: z.boolean(),
+  archived: z.boolean(),
+});
+export type SessionsSetFlagsResult = z.infer<typeof SessionsSetFlagsResultSchema>;
+
 export const SessionsDeleteResultSchema = z.strictObject({
   sessionId: NonEmptyStringSchema,
   deleted: z.boolean(),
@@ -672,6 +692,11 @@ export const SessiondRpcRequestSchema = z.discriminatedUnion("method", [
   }),
   z.strictObject({
     ...rpcEnvelope,
+    method: z.literal("sessions.setFlags"),
+    params: SessionsSetFlagsParamsSchema,
+  }),
+  z.strictObject({
+    ...rpcEnvelope,
     method: z.literal("sessions.delete"),
     params: SessionsDeleteParamsSchema,
   }),
@@ -720,6 +745,7 @@ export const SESSIOND_RPC_METHODS = [
   "sessions.thinking",
   "sessions.tree",
   "sessions.rename",
+  "sessions.setFlags",
   "sessions.delete",
   "sessions.findLatest",
   "config.getSessionIdleTimeoutMs",
@@ -755,6 +781,7 @@ export type SessiondMethodParams = {
   "sessions.thinking": SessionsThinkingParams;
   "sessions.tree": SessionsTreeParams;
   "sessions.rename": SessionsRenameParams;
+  "sessions.setFlags": SessionsSetFlagsParams;
   "sessions.delete": SessionsDeleteParams;
   "sessions.findLatest": SessionsFindLatestParams;
   "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsParams;
@@ -787,6 +814,7 @@ export type SessiondMethodResult = {
   "sessions.thinking": SessionsThinkingResult;
   "sessions.tree": SessionsTreeResult;
   "sessions.rename": SessionsRenameResult;
+  "sessions.setFlags": SessionsSetFlagsResult;
   "sessions.delete": SessionsDeleteResult;
   "sessions.findLatest": SessionsFindLatestResult;
   "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsResult;
@@ -819,6 +847,7 @@ export const SessiondMethodResultSchemas = {
   "sessions.thinking": SessionsThinkingResultSchema,
   "sessions.tree": SessionsTreeResultSchema,
   "sessions.rename": SessionsRenameResultSchema,
+  "sessions.setFlags": SessionsSetFlagsResultSchema,
   "sessions.delete": SessionsDeleteResultSchema,
   "sessions.findLatest": SessionsFindLatestResultSchema,
   "config.getSessionIdleTimeoutMs": ConfigGetSessionIdleTimeoutMsResultSchema,
@@ -851,6 +880,7 @@ export const SessiondRpcSuccessSchema = z.discriminatedUnion("method", [
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.thinking"), result: SessionsThinkingResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.tree"), result: SessionsTreeResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.rename"), result: SessionsRenameResultSchema }),
+  z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.setFlags"), result: SessionsSetFlagsResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.delete"), result: SessionsDeleteResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("sessions.findLatest"), result: SessionsFindLatestResultSchema }),
   z.strictObject({ id: NonEmptyStringSchema, ok: z.literal(true), method: z.literal("config.getSessionIdleTimeoutMs"), result: ConfigGetSessionIdleTimeoutMsResultSchema }),
@@ -942,6 +972,23 @@ export type SessiondRunningStatePush = z.infer<
 >;
 
 /**
+ * Global catalog-change notice riding the running-watch channel (round 5):
+ * session metadata changed (rename / server-side pin-archive flags). Pure
+ * invalidation signal — clients refetch the session list; no payload data.
+ */
+export const SessiondSessionsChangedPushSchema = z.strictObject({
+  type: z.literal("sessions_changed"),
+});
+export type SessiondSessionsChangedPush = z.infer<typeof SessiondSessionsChangedPushSchema>;
+
+/** Everything the running-watch subscription may push to its listener. */
+export const SessiondRunningWatchPushSchema = z.discriminatedUnion("type", [
+  SessiondRunningStatePushSchema,
+  SessiondSessionsChangedPushSchema,
+]);
+export type SessiondRunningWatchPush = z.infer<typeof SessiondRunningWatchPushSchema>;
+
+/**
  * Full server-push union on the sessiond channel: per-session event/snapshot
  * pushes AND the global running_state push (used by the running watch RPC).
  */
@@ -949,6 +996,7 @@ export const SessiondChannelPushSchema = z.discriminatedUnion("type", [
   SessiondPushEventSchema,
   SessiondPushSnapshotSchema,
   SessiondRunningStatePushSchema,
+  SessiondSessionsChangedPushSchema,
   SessiondTurnStatusPushSchema,
 ]);
 export type SessiondChannelPush = z.infer<typeof SessiondChannelPushSchema>;

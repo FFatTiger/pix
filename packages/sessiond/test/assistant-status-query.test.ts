@@ -145,3 +145,49 @@ test("worker.statusQuery: a crashed worker's session disappears from the snapsho
     await service.shutdown();
   }
 });
+
+test("sessions.setFlags: durable write, authoritative read-back, global sessions_changed push, fail-closed input", async () => {
+  const applied: Array<{ sessionId: string; flags: { pinned?: boolean; archived?: boolean } }> = [];
+  const effective = new Map<string, { pinned: boolean; archived: boolean }>();
+  const workers = new FakeWorkerFactory({});
+  const mutation = {
+    async renameSession(): Promise<void> { throw new Error("unused"); },
+    async setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }) {
+      applied.push({ sessionId, flags });
+      const previous = effective.get(sessionId) ?? { pinned: false, archived: false };
+      const next = { pinned: flags.pinned ?? previous.pinned, archived: flags.archived ?? previous.archived };
+      effective.set(sessionId, next);
+      return next;
+    },
+  };
+  const service = new SessiondService({
+    sessionLocator: locator,
+    activationContext: { async resolve(sessionId) { return { cwd: sessionId === "t" ? "/repos/t" : "/repos/x", projectRoot: "/repos" }; } },
+    workerFactory: workers,
+    sessionMutation: mutation,
+  }, { workerStartTimeoutMs: 500, commandTimeoutMs: 500, idleTimeoutMs: 0 });
+  try {
+    const result = await service.setSessionFlags("t", { pinned: true, archived: true });
+    assert.deepEqual(result, { sessionId: "t", pinned: true, archived: true });
+    assert.deepEqual(applied, [{ sessionId: "t", flags: { pinned: true, archived: true } }]);
+
+    // Partial update leaves the other flag unchanged (port merges).
+    const partial = await service.setSessionFlags("t", { archived: false });
+    assert.deepEqual(partial, { sessionId: "t", pinned: true, archived: false });
+
+    // No flags at all → structured invalid_input, no write.
+    await assert.rejects(service.setSessionFlags("t", {}), (error: { code?: string }) => error.code === "invalid_input");
+    assert.equal(applied.length, 2);
+
+    // Global sessions_changed push reaches every running-watch subscriber.
+    const pushes: string[] = [];
+    const watch = service.prepareRunningWatch();
+    await watch.flushTo((push) => { pushes.push(push.type); });
+    await service.setSessionFlags("t", { pinned: false });
+    await wait(150);
+    assert.ok(pushes.includes("sessions_changed"), `pushes=${JSON.stringify(pushes)}`);
+    watch.close();
+  } finally {
+    await service.shutdown();
+  }
+});

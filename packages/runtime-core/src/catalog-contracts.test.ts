@@ -340,13 +340,15 @@ test("the trust mutation port exposes only setProjectTrusted", () => {
   assert.equal(typeof mutation.setProjectTrusted, "function");
 });
 
-test("the session mutation port exposes only renameSession", () => {
+test("the session mutation port exposes renameSession + setSessionFlags (round 5)", () => {
   const mutation: SessionMutationPort = {
     renameSession: () => Promise.resolve(),
+    setSessionFlags: () => Promise.resolve({ pinned: false, archived: false }),
   };
   const keys = Object.keys(mutation);
-  assert.deepEqual(keys, ["renameSession"]);
+  assert.deepEqual(keys, ["renameSession", "setSessionFlags"]);
   assert.equal(typeof mutation.renameSession, "function");
+  assert.equal(typeof mutation.setSessionFlags, "function");
 });
 
 test("a read-only theme catalog object exposes exactly the two read methods", () => {

@@ -92,6 +92,14 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
           return invalidate(queryClient, queryKeys.sessions.lists, queryKeys.sessions.byId(input.id));
         },
       }),
+      setFlags: () => ({
+        mutationKey: ["pix", "sessions", "set-flags"] as const,
+        mutationFn: (input: { id: string; flags: { pinned?: boolean; archived?: boolean } }) => sessions.setFlags(input.id, input.flags),
+        // The optimistic cache patch (session-flags.ts) already carries the
+        // server answer locally; the authoritative refetch happens via the
+        // sessions_changed push / list invalidation.
+        onSuccess: () => invalidate(queryClient, queryKeys.sessions.lists),
+      }),
       remove: () => ({
         mutationKey: ["pix", "sessions", "remove"] as const,
         mutationFn: (id: string) => sessions.remove(id),

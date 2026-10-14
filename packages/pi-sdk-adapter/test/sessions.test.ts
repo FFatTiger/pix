@@ -146,6 +146,7 @@ function fakeManager(id: string): PiSdkSessionManager {
     getSessionId: () => id,
     getHeader: () => undefined,
     appendSessionInfo: () => "",
+    appendCustomEntry: () => "",
   };
 }
 
@@ -528,6 +529,7 @@ describe("pi-sdk sessions list performance (injected SDK)", () => {
         return {
           ...fakeManager(idFromPath(path) === "ok" ? "ok" : "dup"),
           appendSessionInfo: () => { appendCalls += 1; return ""; },
+          appendCustomEntry: () => "",
         };
       },
     };
@@ -709,6 +711,7 @@ describe("pi-sdk sessions rename validation + identity (injected SDK)", () => {
             appended.get(id)?.push(name);
             return "";
           },
+          appendCustomEntry: () => "",
         };
       },
     };
@@ -814,6 +817,7 @@ describe("pi-sdk sessions rename validation + identity (injected SDK)", () => {
           getSessionId: () => "different-session", // path was reused by another session
           getHeader: () => undefined,
           appendSessionInfo: () => { appendCalls += 1; return ""; },
+          appendCustomEntry: () => "",
         };
       },
     };
@@ -838,6 +842,7 @@ describe("pi-sdk sessions rename validation + identity (injected SDK)", () => {
           getSessionId: () => "s1",
           getHeader: () => undefined,
           appendSessionInfo: () => { throw new Error("disk full raw-sdk-message"); },
+          appendCustomEntry: () => "",
         };
       },
     };
@@ -878,6 +883,7 @@ describe("pi-sdk sessions rename validation + identity (injected SDK)", () => {
           getSessionId: () => "s1",
           getHeader: () => undefined,
           appendSessionInfo: (value: string) => { appended.push(value); name = value; return ""; },
+          appendCustomEntry: () => "",
         };
       },
     };
@@ -1407,6 +1413,7 @@ describe("pi-sdk sessions mutation serialization (rename/delete)", () => {
             appended.get(id)?.push(name);
             return "";
           },
+          appendCustomEntry: () => "",
         };
       },
     };
@@ -1517,6 +1524,7 @@ describe("pi-sdk sessions catalog filter (injected store)", () => {
       async readSessionTree(id) { return { sessionId: id, roots: [], entryCount: 0 }; },
       async deleteSession() {},
       async renameSession() {},
+      async setSessionFlags() { return { pinned: false, archived: false }; },
       async locate(id) { return { sessionId: id, sessionFile: `${id}.jsonl`, exists: true }; },
       async resolveLeafId(id) { return id; },
     };
@@ -1622,7 +1630,7 @@ describe("pi-sdk sessions public surface", () => {
       ...Object.getOwnPropertyNames(Object.getPrototypeOf(mutation)),
     ];
     const methods = surface.filter((name) => name !== "store" && name !== "constructor");
-    assert.deepEqual(methods, ["renameSession"], "mutation port method surface is exactly renameSession");
+    assert.deepEqual(methods, ["renameSession", "setSessionFlags"], "mutation port method surface is exactly renameSession + setSessionFlags");
     assert.equal(
       surface.some((name) =>
         /AgentSession|SessionManager|ModelRuntime|ResourceLoader|TrustStore|AuthStorage/.test(name),

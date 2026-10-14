@@ -539,7 +539,7 @@ test("running overview: pending/accepted turns are busy before agent_start and c
 
   const watch = service.prepareRunningWatch();
   const states: Array<{ revision: number; sessionIds: string[]; busySessionIds: string[] }> = [];
-  await watch.flushTo((push) => { states.push(push.state); });
+  await watch.flushTo((push) => { if (push.type === "running_state") states.push(push.state); });
   t.after(() => watch.close());
 
   const request = {
@@ -595,7 +595,7 @@ test("running overview: pending/accepted turns are busy before agent_start and c
 
   const rejectedWatch = service.prepareRunningWatch();
   const rejectedStates: Array<{ busySessionIds: string[] }> = [];
-  await rejectedWatch.flushTo((push) => { rejectedStates.push(push.state); });
+  await rejectedWatch.flushTo((push) => { if (push.type === "running_state") rejectedStates.push(push.state); });
   t.after(() => rejectedWatch.close());
   const rejectedSubmit = service.submitTurn({
     ...request,
@@ -615,7 +615,7 @@ test("running overview: pending/accepted turns are busy before agent_start and c
 
   const cancelWatch = service.prepareRunningWatch();
   const cancelStates: Array<{ busySessionIds: string[] }> = [];
-  await cancelWatch.flushTo((push) => { cancelStates.push(push.state); });
+  await cancelWatch.flushTo((push) => { if (push.type === "running_state") cancelStates.push(push.state); });
   t.after(() => cancelWatch.close());
   const cancelSubmit = service.submitTurn({
     ...request,
@@ -636,7 +636,7 @@ test("running overview: pending/accepted turns are busy before agent_start and c
   worker.releaseHeldAdmissions();
   const stopWatch = service.prepareRunningWatch();
   const stopStates: Array<{ sessionIds: string[]; busySessionIds: string[] }> = [];
-  await stopWatch.flushTo((push) => { stopStates.push(push.state); });
+  await stopWatch.flushTo((push) => { if (push.type === "running_state") stopStates.push(push.state); });
   t.after(() => stopWatch.close());
   const stopSubmit = service.submitTurn({
     ...request,
@@ -1280,7 +1280,7 @@ for (const outcome of ["send failure", "timeout"] as const) {
     worker.send = (message) => message.type === "worker.submitTurn" ? heldSend.promise : send(message);
     const watch = service.prepareRunningWatch();
     const states: string[][] = [];
-    await watch.flushTo((push) => { states.push(push.state.busySessionIds); });
+    await watch.flushTo((push) => { if (push.type === "running_state") states.push(push.state.busySessionIds); });
     t.after(() => watch.close());
     const request = { sessionId: "s", expectedEpoch: activated.epoch, expectedRevision: liveRevision(service, "s", activated.epoch), operationId: outcome, prompt: "hello" };
     const pending = service.submitTurn(request);

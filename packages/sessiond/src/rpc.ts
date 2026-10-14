@@ -344,7 +344,7 @@ export class SessiondRpcServer {
     return this.enqueueSerialized(writer, `${JSON.stringify(parsed)}\n`);
   }
 
-  private writeRunningPush(writer: SerialSocketWriter, push: import("@fffattiger/pix-protocol").SessiondRunningStatePush): Promise<void> {
+  private writeRunningPush(writer: SerialSocketWriter, push: import("@fffattiger/pix-protocol").SessiondRunningWatchPush): Promise<void> {
     const parsed = SessiondRunningStatePushSchema.parse(push);
     return this.enqueueSerialized(writer, `${JSON.stringify(parsed)}\n`);
   }
@@ -599,7 +599,7 @@ export class SessiondRpcClient {
     });
   }
 
-  async watchRunning(onPush: (push: import("@fffattiger/pix-protocol").SessiondRunningStatePush) => void | Promise<void>): Promise<SessiondRpcSubscription<SessiondMethodResult["runtime.watchRunning"]>> {
+  async watchRunning(onPush: (push: import("@fffattiger/pix-protocol").SessiondRunningWatchPush) => void | Promise<void>): Promise<SessiondRpcSubscription<SessiondMethodResult["runtime.watchRunning"]>> {
     const id = crypto.randomUUID();
     const request = SessiondRpcRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, id, method: "runtime.watchRunning", params: {} });
     return new Promise((resolve, reject) => {
@@ -608,7 +608,7 @@ export class SessiondRpcClient {
       let authenticated = false;
       let watching = false;
       let deliveryReady = false;
-      const pendingPushes: import("@fffattiger/pix-protocol").SessiondRunningStatePush[] = [];
+      const pendingPushes: import("@fffattiger/pix-protocol").SessiondRunningWatchPush[] = [];
       let settled = false;
       let closedResolve: (() => void) | undefined;
       const closed = new Promise<void>((settle) => { closedResolve = settle; });

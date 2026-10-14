@@ -97,6 +97,12 @@ export const SessionHeaderSchema = z.strictObject({
    * daemon/Host build-compatibility fence lands.
    */
   workspaceAccess: WorkspaceAccessSchema.optional(),
+  /**
+   * Server-side sidebar flags (additive, Protocol v2-compatible): absence
+   * means unset — old producers simply omit them and old clients ignore them.
+   */
+  pinned: z.boolean().optional(),
+  archived: z.boolean().optional(),
 });
 export type SessionHeader = z.infer<typeof SessionHeaderSchema>;
 
