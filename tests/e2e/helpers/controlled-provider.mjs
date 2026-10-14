@@ -132,23 +132,21 @@ export async function startControlledProvider() {
       let lastUserText = "";
       const userTexts = [];
       let hasCompactionSummary = false;
-      // Pi appends a fixed two-message user tail after the supplied prompt
-      // (current date/time, then the working-directory/guidelines block), so
-      // the prompt is the third user message from the end when the tail is
-      // present and the last one when a request is too short to carry it.
-      const TRAILING_USER_COUNT = 2;
-      const userTotal = messages.filter((message) => message?.role === "user").length;
-      const promptOrdinal = userTotal > TRAILING_USER_COUNT ? userTotal - TRAILING_USER_COUNT : userTotal;
-      let usersSeen = 0;
       for (const message of messages) {
         const text = messageText(message?.content);
         if (message?.role === "user") {
           userTexts.push(text);
-          usersSeen += 1;
-          if (usersSeen === promptOrdinal) lastUserText = text;
+          lastUserText = text;
           if (text.includes(COMPACTION_SUMMARY_MARKER)) hasCompactionSummary = true;
         }
       }
+      // Pi appends its own trailing user context after the supplied prompt, so
+      // the prompt is not always the last user message. A planned script names
+      // that prompt. Later turns keep earlier prompts in their context, so the
+      // LAST matching user message is the prompt this request carries.
+      const planned = new Set(scripts.map((candidate) => candidate?.matchPromptHash).filter((hash) => hash !== undefined));
+      const matched = userTexts.filter((text) => planned.has(hashText(text)));
+      if (matched.length > 0) lastUserText = matched[matched.length - 1];
       const record = {
         index: requestIndex++,
         receivedAt: Date.now(),
