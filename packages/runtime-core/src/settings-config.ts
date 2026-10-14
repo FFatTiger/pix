@@ -161,7 +161,12 @@ export const SMART_COMPACT_THINKING_LEVELS: readonly SmartCompactThinkingLevel[]
 
 /** Pi native auto-compaction (`compaction` object). Null clears the override. */
 export interface NativeCompactionSettings {
-  /** `compaction.enabled` — Pi default true. Off = no native auto-compaction. */
+  /**
+   * `compaction.enabled`. Pix always runs Pi's built-in auto-compaction as the
+   * fallback, so this is forced true on read and on write — a stored `false`
+   * is treated as on and the next structured save persists `true`. There is no
+   * user switch for it.
+   */
   enabled: boolean;
   /** `compaction.reserveTokens` — tokens reserved after native compaction. */
   reserveTokens: number | null;
@@ -353,7 +358,8 @@ export function normalizeCompactionSettings(value: unknown): CompactionSettings 
   if (summaryModel === undefined || segmentationModel === undefined
     || summaryThinkingLevel === undefined || segmentationThinkingLevel === undefined) return null;
   return {
-    native: { enabled: native.enabled, reserveTokens, keepRecentTokens },
+    // Pi's own auto-compaction is the always-on fallback; never persist off.
+    native: { enabled: true, reserveTokens, keepRecentTokens },
     smart: {
       autoTrigger: smart.autoTrigger,
       minContextPercent: smart.minContextPercent,

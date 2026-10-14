@@ -513,7 +513,17 @@ packages/
   subagents 同款结构化链路：runtime-core DTO → protocol wire → adapter store
   （默认值投影、无效枚举回退插件默认、未知键保留、null 删除键、类型错误 fail-closed）
   → host GET/PUT `/v1/settings/compaction`（settings.configure 令牌）→ 客户端
-  「上下文压缩」页（草稿+保存条；能力关闭时智能区置灰并提示回退 Pi 自带压缩）。
+  「上下文压缩」页。页面只有一个「智能压缩」开关，写的就是 `pix-builtins.json`
+  的 `smart_compact`（与「能力」页同一个设置，不是第二个开关）；关闭时其阈值、
+  风格、模型等设置直接收起，不显示状态说明。Pi 自带自动压缩没有开关：
+  `compaction.enabled` 读取时恒为 true（已存的 false 视为开启），结构化保存时
+  写回 true，reserveTokens / keepRecentTokens 留在「高级」里。智能压缩自带的
+  项目记忆工具（smart_recall / smart_save_memory）不向模型暴露——记忆只有
+  记忆提供者一个归属；contextGraphEnabled 保持插件默认（关掉会停掉压缩状态
+  索引），隐藏发生在活动工具集：选择层排除这两个名字，且内联扩展
+  `smart-compact-memory-guard` 在每次 session_start（含 reload）末尾再次关掉，
+  排在插件自己的暴露逻辑之后，插件记不住「用户重新打开」。加载模式是插件
+  默认 eager，smart_tools 因此一直在，但 memory 组被活动集排除后 load 不了。
 - 助手工具对显式 set_tools 白名单保持可用（非空白名单后 union；全关 [] 保持诚实的
   空契约）。
 
@@ -531,8 +541,8 @@ packages/
   0600、token 只写不读、换服务器不换 token 时清 token）→ host GET/PUT
   `/v1/settings/memory` + PUT `/v1/settings/memory/lore` + POST
   `/v1/settings/memory/lore-test`（settings.configure 令牌；探测失败是 200 结果而非错误）
-  → 客户端「记忆」页（三选一单选、Lore 引导链接按语言、测试通过才允许启用、切换
-  后果提示）。
+  → 客户端「记忆」页（三选一、Lore 注册/自部署/已有服务器链接按语言、地址与
+  Token、测试连接；测试通过才允许启用。页面不展示切换后果、生效时机等说明）。
 - sessiond worker env 强制 `PI_MEMORY_EXIT_SUMMARY=0`（闲置回收不该触发退出总结），
   并转发 `PI_MEMORY_DIR`、`LORE_HOME/LORE_BASE_URL/LORE_API_TOKEN` 与
   `PIX_ALLOWED_ROOTS`（助手 create_session 绝对路径分支与 Host 同源）。捆绑

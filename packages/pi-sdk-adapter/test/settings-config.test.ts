@@ -516,7 +516,8 @@ describe("structured context-compaction settings (compaction + smartCompact)", (
     const agentDir = await fixture(source);
     try {
       const snapshot = await createPiSdkSettingsConfigStore({ agentDir }).readCompactionConfig();
-      assert.equal(snapshot.settings.native.enabled, false);
+      // A stored `false` reads as on: Pi auto-compaction has no off switch.
+      assert.equal(snapshot.settings.native.enabled, true);
       assert.equal(snapshot.settings.native.reserveTokens, 20000);
       assert.equal(snapshot.settings.smart.profile, "aggressive");
       assert.equal(snapshot.settings.smart.summaryModel, "huu-gpt/gpt-5.6-sol");
@@ -538,7 +539,7 @@ describe("structured context-compaction settings (compaction + smartCompact)", (
   it("writes the edited subset, preserves unknown keys, and deletes on null", async () => {
     const source = `${JSON.stringify({
       defaultProvider: "acme-gpt",
-      compaction: { enabled: true, reserveTokens: 4096, modelOverrides: { keep: true } },
+      compaction: { enabled: false, reserveTokens: 4096, modelOverrides: { keep: true } },
       smartCompact: { autoTrigger: true, mode: "fast", profiles: { light: { maxChunkTokens: 1 } } },
     }, null, 2)}\n`;
     const agentDir = await fixture(source);
@@ -548,7 +549,8 @@ describe("structured context-compaction settings (compaction + smartCompact)", (
       const saved = await store.writeCompactionConfig({
         expectedRevision: before.revision,
         settings: {
-          native: { enabled: true, reserveTokens: null, keepRecentTokens: 8192 },
+          // A caller still sending false is repaired: the save persists true.
+          native: { enabled: false, reserveTokens: null, keepRecentTokens: 8192 },
           smart: {
             ...before.settings.smart,
             autoTrigger: false,
@@ -568,6 +570,7 @@ describe("structured context-compaction settings (compaction + smartCompact)", (
       assert.deepEqual(persisted.compaction.modelOverrides, { keep: true });
       assert.equal("reserveTokens" in persisted.compaction, false);
       assert.equal(persisted.compaction.keepRecentTokens, 8192);
+      assert.equal(persisted.compaction.enabled, true);
       assert.equal(persisted.smartCompact.mode, "fast");
       assert.deepEqual(persisted.smartCompact.profiles, { light: { maxChunkTokens: 1 } });
       assert.equal(persisted.defaultProvider, "acme-gpt");

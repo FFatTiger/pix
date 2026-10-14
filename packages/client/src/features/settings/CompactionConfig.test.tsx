@@ -61,9 +61,12 @@ function defaultFetch(overrides: { compaction?: unknown; builtIns?: unknown } = 
 }
 
 describe("CompactionConfig", () => {
-  it("renders both sections with current values and no dirty bar", async () => {
+  it("renders the smart-compaction switch with its settings and no dirty bar", async () => {
     mount(defaultFetch());
-    expect((await screen.findByRole("switch", { name: "Automatic compaction" })).getAttribute("aria-checked")).toBe("true");
+    // One switch, shared with the Capabilities page — no separate auto-compaction switch.
+    expect((await screen.findByRole("switch", { name: "Smart compaction" })).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByText("Tidies long conversations automatically and keeps what matters.")).toBeTruthy();
+    expect(screen.queryByRole("switch", { name: "Automatic compaction" })).toBeNull();
     expect(screen.getByRole("switch", { name: "Trigger automatically" }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByText("Balanced")).toBeTruthy();
     expect(screen.getByText("80% used")).toBeTruthy();
@@ -86,7 +89,7 @@ describe("CompactionConfig", () => {
     });
     mount(fetchMock);
 
-    await screen.findByRole("switch", { name: "Automatic compaction" });
+    await screen.findByRole("switch", { name: "Smart compaction" });
     fireEvent.click(screen.getByRole("switch", { name: "Trigger automatically" }));
     fireEvent.click(screen.getByRole("radio", { name: "Aggressive" }));
     // Save bar appears once dirty.
@@ -100,13 +103,37 @@ describe("CompactionConfig", () => {
     expect(body.settings.smart.profile).toBe("aggressive");
   });
 
-  it("grays the smart block with the explicit hint when the capability is off", async () => {
+  it("hides every smart setting when the capability is off, with no status copy", async () => {
     mount(defaultFetch({ builtIns: { revision: "c".repeat(64), capabilities: BUILTINS_ON.capabilities.map((row) => row.id === "smart_compact" ? { ...row, enabled: false } : row) } }));
-    await screen.findByRole("switch", { name: "Automatic compaction" });
-    expect(screen.getByText("Smart compaction is off — the built-in auto-compaction above carries the workload. Enable it on the Capabilities page.")).toBeTruthy();
-    // The disabled fieldset blocks interaction with the smart controls.
-    const fieldset = document.querySelector("fieldset[disabled]");
-    expect(fieldset).toBeTruthy();
+    const toggle = await screen.findByRole("switch", { name: "Smart compaction" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    // Collapsed: no threshold, profile, models, and no explanatory status text.
+    expect(screen.queryByRole("switch", { name: "Trigger automatically" })).toBeNull();
+    expect(screen.queryByText("Balanced")).toBeNull();
+    expect(screen.queryByText(/built-in|fallback/i)).toBeNull();
+  });
+
+  it("writes the same built-ins capability the Capabilities page owns", async () => {
+    let putBody: unknown;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.includes("/v1/settings/built-ins") && init?.method === "PUT") {
+        putBody = JSON.parse(String(init.body));
+        return json({ revision: "d".repeat(64), capabilities: (putBody as { capabilities: unknown }).capabilities });
+      }
+      if (path.includes("/v1/settings/compaction")) return json({ revision, settings: COMPACTION });
+      if (path.includes("/v1/settings/built-ins")) return json(BUILTINS_ON);
+      if (path.includes("/v1/models")) return json({ models: [], defaultModel: null });
+      return json({});
+    });
+    mount(fetchMock);
+    fireEvent.click(await screen.findByRole("switch", { name: "Smart compaction" }));
+    await waitFor(() => expect(putBody).toBeTruthy());
+    const body = putBody as { expectedRevision: string; capabilities: Array<{ id: string; enabled: boolean }> };
+    expect(body.expectedRevision).toBe("c".repeat(64));
+    expect(body.capabilities.find((row) => row.id === "smart_compact")?.enabled).toBe(false);
+    // The other capability rows ride along unchanged — one shared store, not a second switch.
+    expect(body.capabilities.filter((row) => row.id !== "smart_compact").every((row) => row.enabled)).toBe(true);
   });
 
   it("advanced fields stay hidden until expanded, then edit numeric token overrides", async () => {
@@ -123,9 +150,11 @@ describe("CompactionConfig", () => {
       return json({});
     });
     mount(fetchMock);
-    await screen.findByRole("switch", { name: "Automatic compaction" });
+    await screen.findByRole("switch", { name: "Smart compaction" });
     expect(screen.queryByLabelText("Reserve tokens")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show advanced settings" }));
+    // One disclosure only: the Advanced heading itself, never a second expander under it.
+    expect(screen.queryByRole("button", { name: "Show advanced settings" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
     const reserve = await screen.findByLabelText("Reserve tokens");
     fireEvent.change(reserve, { target: { value: "20000" } });
     const save = await screen.findByRole("button", { name: /save/i });

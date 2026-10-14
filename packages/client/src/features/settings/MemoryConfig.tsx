@@ -20,7 +20,6 @@ import {
   SettingsSaveBar,
   SettingsSecretInput,
   SettingsSection,
-  SettingsWarningBanner,
   SegmentedControl,
 } from "./settings-ui";
 
@@ -47,13 +46,11 @@ interface LoreDraft {
 
 /**
  * 记忆 settings page: one three-way provider selection (本地记忆 / Lore /
- * 关闭) — never two independent switches. The bundled pi-memory plugin runs
- * globally with its exit summary off and without semantic search; Lore uses
- * the bundled extension plus the shared ~/.lore/config.json connection
- * (managed here, token write-only). Selecting Lore needs a passing
- * connection test (or an already-configured, untouched connection). Saves
- * apply to NEW sessions and reloads; running sessions keep their loaded
- * memory backend until then.
+ * 关闭) — never two independent switches. Lore uses the bundled extension
+ * plus the shared ~/.lore/config.json connection (managed here, token
+ * write-only) and needs a passing connection test, or an already-configured
+ * untouched connection, before it can be saved. The page shows no
+ * explanatory copy: the rules live in the implementation.
  */
 export function MemoryConfig() {
   const { t, locale } = useI18n();
@@ -135,7 +132,7 @@ export function MemoryConfig() {
   if (!configurable) {
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.memorySettingsTitle")} description={t("desktop.memorySettingsDescription")}>
+        <SettingsSection title={t("desktop.memorySettingsTitle")}>
           <p className="workspace-hint">{t("desktop.memorySettingsUnavailable")}</p>
         </SettingsSection>
       </div>
@@ -144,7 +141,7 @@ export function MemoryConfig() {
   if (!data && query.isPending) {
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.memorySettingsTitle")} description={t("desktop.memorySettingsDescription")}>
+        <SettingsSection title={t("desktop.memorySettingsTitle")}>
           <p className="workspace-hint" aria-busy="true">{t("desktop.loading")}</p>
         </SettingsSection>
       </div>
@@ -153,7 +150,7 @@ export function MemoryConfig() {
   if (!data) {
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.memorySettingsTitle")} description={t("desktop.memorySettingsDescription")}>
+        <SettingsSection title={t("desktop.memorySettingsTitle")}>
           <p className="workspace-hint workspace-hint--error" role="alert">{t("desktop.memorySettingsUnavailable")}</p>
           <button type="button" className="settings-retry" onClick={() => void reload()}>{t("desktop.subagentSettingsRetry")}</button>
         </SettingsSection>
@@ -211,7 +208,7 @@ export function MemoryConfig() {
           void commit();
         }}
       >
-        <SettingsSection title={t("desktop.memoryProviderSection")} description={t("desktop.memorySettingsDescription")}>
+        <SettingsSection title={t("desktop.memoryProviderSection")}>
           <SettingsField label={t("desktop.memoryProviderLabel")}>
             <SegmentedControl<MemoryProviderWire>
               value={provider ?? "local"}
@@ -224,37 +221,10 @@ export function MemoryConfig() {
               onChange={selectProvider}
             />
           </SettingsField>
-          <p className="workspace-hint">
-            {currentProvider === "lore"
-              ? t("desktop.memoryCurrentLore", { baseUrl: data.lore.baseUrl ?? "" })
-              : t(`desktop.memoryCurrent_${currentProvider}`)}
-          </p>
-          {provider !== null && provider !== currentProvider ? (
-            <SettingsWarningBanner>
-              {currentProvider === "lore" && provider === "local"
-                ? t("desktop.memorySwitchLoreToLocal")
-                : currentProvider === "local" && provider === "lore"
-                  ? t("desktop.memorySwitchLocalToLore")
-                  : t("desktop.memorySwitchToOff")}
-            </SettingsWarningBanner>
-          ) : null}
         </SettingsSection>
-
-        {provider === "local" ? (
-          <SettingsSection title={t("desktop.memoryLocalSectionTitle")}>
-            <p className="workspace-hint">{t("desktop.memoryLocalDescription")}</p>
-          </SettingsSection>
-        ) : null}
-
-        {provider === "off" ? (
-          <SettingsSection title={t("desktop.memoryOffSectionTitle")}>
-            <p className="workspace-hint">{t("desktop.memoryOffDescription")}</p>
-          </SettingsSection>
-        ) : null}
 
         {provider === "lore" ? (
           <SettingsSection title={t("desktop.memoryLoreSectionTitle")}>
-            <p className="workspace-hint">{t("desktop.memoryLoreIntro")}</p>
             <p className="workspace-hint">
               <a href={LORE_LINKS.saas(locale)} target="_blank" rel="noreferrer" style={linkStyle}>{t("desktop.memoryLoreLinkSaas")}</a>
               <span> · </span>
@@ -294,9 +264,6 @@ export function MemoryConfig() {
                 <span className="workspace-hint workspace-hint--error" role="alert">{testReasonText(testFailure.reason)}</span>
               ) : null}
             </div>
-            {!loreVerified && provider === "lore" ? (
-              <SettingsWarningBanner>{t("desktop.memoryLoreNeedsTest")}</SettingsWarningBanner>
-            ) : null}
           </SettingsSection>
         ) : null}
       </form>

@@ -16,9 +16,9 @@ Pix 的长期记忆是一个全局设置（settings.json 的 `pixMemoryProvider`
 - **已配置过 Lore 再升级到本版本**（`~/.lore/config.json` 或环境变量里已有服务地址 + token）：`pixMemoryProvider` 缺省时自动解析为 **Lore（已连接）**，用户不用重新填写，也不会被切到本地记忆。设置页直接显示服务地址与连接状态。
 - **未配置 Lore 时选择 Lore**：页面给出三个入口——注册 SaaS（中文 https://loremem.com/zh-cn ，英文 https://loremem.com ）、自己部署（安装文档中文 https://loremem.com/zh-cn/documents/installation/install-lore ，英文 https://loremem.com/documents/installation/install-lore ）、连接已有服务器（https://loremem.com/zh-cn/documents/installation/manual-configuration ）。填「服务地址」（默认 `https://api.loremem.com`）和「API Token」（密码框，已保存的值不回显），点「测试连接」（`GET <base>/api/health` + Bearer）通过后才能保存启用。启用时不安装任何东西——扩展已捆绑。
 - **Lore 连不上 / Token 失效**：测试给出明确原因（地址无效 / 非本机 http / 缺 Token / Token 被拒 / 连不上），可「重新测试」或改选本地记忆。**绝不静默回退到本地记忆**——那会造成记忆分裂。已选 Lore 的机器上，服务端保存（`PUT /v1/settings/memory`）也要求连接已配置（fail-closed）。
-- **Lore → 本地记忆**：保存前页面提示「Lore 里的记忆不会迁移，本地记忆从现有的本地文件开始」。`~/.lore/config.json` 原样保留，方便以后切回；Lore 扩展（包括用户自己在 `~/.pi/agent/extensions/` 装的那份）在 Pix 会话里不再加载。
-- **本地记忆 → Lore**：页面提示「本地记忆文件保留在 ~/.pi/agent/memory，不会上传」。
-- **切换生效时机**：新会话立即生效；已运行的会话保持当前已加载的后端，`/reload` 或重启后跟上（与其他全局设置一致，页面文案已注明）。助手提示词的「记忆」一节按当前提供者逐回合解析。
+- **Lore → 本地记忆**：`~/.lore/config.json` 原样保留，方便以后切回；Lore 扩展（包括用户自己在 `~/.pi/agent/extensions/` 装的那份）在 Pix 会话里不再加载。Lore 里的记忆不会迁移到本地文件。
+- **本地记忆 → Lore**：`~/.pi/agent/memory` 里的本地记忆文件原样保留，不会上传。
+- **切换生效时机**：新会话立即生效；已运行的会话保持当前已加载的后端，`/reload` 或重启后跟上（与其他全局设置一致）。设置页不展示这些说明。助手提示词的「记忆」一节按当前提供者逐回合解析。
 - **Token 安全**：只存 `~/.lore/config.json`（0600，原子写）；Pix 的任何接口不返回明文（GET 只报 `tokenConfigured`），日志不打印。换服务地址而不换 Token 时，旧行为与官方 CLI 一致：旧 Token 被清除。
 
 ## 助手提示词的「记忆」一节

@@ -187,7 +187,8 @@ function projectCompactionSettings(parsed: Record<string, unknown>): CompactionS
     typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
   const settings = normalizeCompactionSettings({
     native: {
-      enabled: booleanWithDefault(native, "enabled", COMPACTION_DEFAULTS.native.enabled),
+      // Always on. A stored `false` reads as on; the next save writes it back.
+      enabled: true,
       reserveTokens: Object.hasOwn(native, "reserveTokens") ? nullableTokens(native.reserveTokens) : null,
       keepRecentTokens: Object.hasOwn(native, "keepRecentTokens") ? nullableTokens(native.keepRecentTokens) : null,
     },
@@ -218,7 +219,9 @@ function projectCompactionSettings(parsed: Record<string, unknown>): CompactionS
 /** Merge the edited subset into the two objects; null deletes the override. */
 function patchCompactionSettings(parsed: Record<string, unknown>, settings: CompactionSettings): void {
   const native = { ...compactionObject(parsed, "compaction") };
-  native.enabled = settings.native.enabled;
+  // Pi's built-in auto-compaction is the always-on fallback: every structured
+  // save persists enabled=true, repairing a file that still stores false.
+  native.enabled = true;
   for (const key of ["reserveTokens", "keepRecentTokens"] as const) {
     const value = settings.native[key];
     if (value === null) delete native[key];

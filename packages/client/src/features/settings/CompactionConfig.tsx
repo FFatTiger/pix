@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   SMART_COMPACT_THINKING_LEVELS,
+  type BuiltInCapabilityId,
   type CompactionSettingsMutation,
   type CompactionSettingsWire,
   type SmartCompactThinkingLevelWire,
@@ -20,7 +21,6 @@ import {
   SettingsSaveBar,
   SettingsSection,
   SettingsSelect,
-  SettingsWarningBanner,
 } from "./settings-ui";
 import { CompactionProfileControl } from "./compaction-profile-control";
 
@@ -35,12 +35,11 @@ function percentOptions(current: number, label: (value: number) => string) {
 }
 
 /**
- * 上下文压缩 settings page: the Pi-native auto-compaction switch plus the
- * smart-compact configuration block. Static settings.json surface only (no
- * runtime state): draft + shared save bar; saves take effect for NEW sessions
- * and reloads. The smart block is grayed out with an explicit hint while the
- * 智能压缩 capability is off (that toggle lives on the 能力 page — off means
- * the plugin never loads and Pi-native compaction carries the workload).
+ * 上下文压缩 settings page. One switch — 智能压缩 — and it is the SAME
+ * setting as the 能力 page (`pix-builtins.json` `smart_compact`), written
+ * through the built-ins mutation. Pi's own auto-compaction has no switch: it
+ * always runs, and its token parameters live under 高级. Smart compaction's
+ * own settings collapse with the switch; nothing explains the internals.
  */
 export function CompactionConfig() {
   const { t } = useI18n();
@@ -53,12 +52,16 @@ export function CompactionConfig() {
   const builtIns = useQuery({ ...createQueryOptions(http).settingsFile.builtIns(), enabled: configurable && can("builtins.configure") });
   const models = useQuery({ ...createQueryOptions(http).models.list(), enabled: configurable && can("models") });
   const save = useMutation(createMutationOptions(http, queryClient).settings.saveCompaction());
+  const saveBuiltIns = useMutation(createMutationOptions(http, queryClient).settings.saveBuiltIns());
   const [draft, setDraft] = useState<CompactionSettingsMutation | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const busy = save.isPending || query.isFetching;
+  const busy = save.isPending || saveBuiltIns.isPending || query.isFetching;
 
-  const smartEnabled = builtIns.data?.capabilities.find((row) => row.id === "smart_compact")?.enabled !== false;
+  // Same capability row the 能力 page writes. Absent data reads as on — that
+  // matches the server default for a missing pix-builtins.json.
+  const smartRow = builtIns.data?.capabilities.find((row) => row.id === "smart_compact");
+  const smartEnabled = smartRow?.enabled !== false;
 
   const reload = async () => {
     if (busy) return;
@@ -90,7 +93,7 @@ export function CompactionConfig() {
   if (!configurable) {
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.compactionSettingsTitle")} description={t("desktop.compactionSettingsDescription")}>
+        <SettingsSection title={t("desktop.compactionSettingsTitle")}>
           <p className="workspace-hint">{t("desktop.compactionSettingsUnavailable")}</p>
         </SettingsSection>
       </div>
@@ -99,7 +102,7 @@ export function CompactionConfig() {
   if (!query.data && query.isPending) {
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.compactionSettingsTitle")} description={t("desktop.compactionSettingsDescription")}>
+        <SettingsSection title={t("desktop.compactionSettingsTitle")}>
           <p className="workspace-hint" aria-busy="true">{t("desktop.loading")}</p>
         </SettingsSection>
       </div>
@@ -108,7 +111,7 @@ export function CompactionConfig() {
   if (!query.data) {
     return (
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto" }}>
-        <SettingsSection title={t("desktop.compactionSettingsTitle")} description={t("desktop.compactionSettingsDescription")}>
+        <SettingsSection title={t("desktop.compactionSettingsTitle")}>
           <p className="workspace-hint workspace-hint--error" role="alert">{t("desktop.compactionSettingsUnavailable")}</p>
           <button type="button" className="settings-retry" onClick={() => void reload()}>{t("desktop.subagentSettingsRetry")}</button>
         </SettingsSection>
@@ -153,6 +156,21 @@ export function CompactionConfig() {
     : displayedError
       ? t("desktop.compactionSaveFailed")
       : null;
+  const setSmartEnabled = (enabled: boolean) => {
+    const current = builtIns.data;
+    if (!current || busy) return;
+    setError(null);
+    saveBuiltIns.mutate({
+      expectedRevision: current.revision,
+      capabilities: current.capabilities.map((row) => row.id === "smart_compact" satisfies BuiltInCapabilityId ? { ...row, enabled } : row),
+    }, {
+      onError: (failure) => {
+        setError(failure);
+        if (failure instanceof HttpError && failure.code === "CONFLICT") void builtIns.refetch();
+      },
+    });
+  };
+
   const commit = () => {
     if (!draft || busy) return;
     setError(null);
@@ -176,21 +194,15 @@ export function CompactionConfig() {
           commit();
         }}
       >
-        <SettingsSection title={t("desktop.compactionNativeSection")} description={t("desktop.compactionSettingsDescription")}>
+        <SettingsSection title={t("desktop.compactionSmartSection")} description={t("desktop.compactionSmartDescription")}>
           <SettingToggle
-            checked={settings.native.enabled}
-            onChange={(enabled) => updateNative((current) => ({ ...current, enabled }))}
-            label={t("desktop.compactionNativeAuto")}
-            description={t("desktop.compactionNativeAutoDescription")}
-            disabled={busy}
+            checked={smartEnabled}
+            onChange={setSmartEnabled}
+            label={t("desktop.agentFeature.smartCompact")}
+            disabled={busy || !builtIns.data}
           />
-        </SettingsSection>
-
-        <SettingsSection title={t("desktop.compactionSmartSection")}>
-          {!smartEnabled ? (
-            <SettingsWarningBanner>{t("desktop.compactionSmartDisabledHint")}</SettingsWarningBanner>
-          ) : null}
-          <fieldset disabled={!smartEnabled} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, opacity: smartEnabled ? 1 : 0.55 }}>
+          {smartEnabled ? (
+          <div style={{ marginTop: 12 }}>
             <SettingToggle
               checked={settings.smart.autoTrigger}
               onChange={(autoTrigger) => updateSmart((current) => ({ ...current, autoTrigger }))}
@@ -221,15 +233,20 @@ export function CompactionConfig() {
               {thinkingField(`${id}-summary-thinking`, t("desktop.compactionSummaryThinking"), settings.smart.summaryThinkingLevel, (summaryThinkingLevel) => updateSmart((current) => ({ ...current, summaryThinkingLevel })))}
               {thinkingField(`${id}-segmentation-thinking`, t("desktop.compactionSegmentationThinking"), settings.smart.segmentationThinkingLevel, (segmentationThinkingLevel) => updateSmart((current) => ({ ...current, segmentationThinkingLevel })))}
             </div>
-          </fieldset>
+          </div>
+          ) : null}
         </SettingsSection>
 
-        <SettingsSection title={t("desktop.compactionAdvancedSection")}>
-          <button type="button" className="settings-advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>
-            {advancedOpen ? t("desktop.compactionAdvancedHide") : t("desktop.compactionAdvancedShow")}
-          </button>
+        <SettingsSection
+          title={
+            <button type="button" className="settings-advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>
+              {t("desktop.compactionAdvancedSection")}
+            </button>
+          }
+        >
           {advancedOpen ? (
-            <div style={{ ...fieldGrid, marginTop: 12 }}>
+            <>
+            <div style={fieldGrid}>
               <SettingsField label={t("desktop.compactionReserveTokens")} htmlFor={`${id}-reserve`}>
                 <SettingsNumInput
                   id={`${id}-reserve`}
@@ -256,11 +273,12 @@ export function CompactionConfig() {
                   disabled={busy}
                 />
               </SettingsField>
+              {smartEnabled ? (
               <SettingsField label={t("desktop.compactionTimeout")} htmlFor={`${id}-timeout`}>
                 <SettingsSelect
                   id={`${id}-timeout`}
                   value={String(settings.smart.autoTriggerTimeoutMs)}
-                  disabled={busy || !smartEnabled}
+                  disabled={busy}
                   options={[30, 60, 120, 180, 300].map((seconds) => ({
                     value: String(seconds * 1000),
                     label: t("desktop.compactionTimeoutSeconds", { value: seconds }),
@@ -268,9 +286,10 @@ export function CompactionConfig() {
                   onChange={(value) => updateSmart((current) => ({ ...current, autoTriggerTimeoutMs: Number(value) }))}
                 />
               </SettingsField>
+              ) : null}
             </div>
-          ) : null}
-          <div style={{ marginTop: 12 }}>
+            {smartEnabled ? (
+            <div style={{ marginTop: 12 }}>
             <SettingToggle
               checked={settings.smart.backupEnabled}
               onChange={(backupEnabled) => updateSmart((current) => ({ ...current, backupEnabled }))}
@@ -306,7 +325,10 @@ export function CompactionConfig() {
               description={t("desktop.compactionDamageFeedbackDescription")}
               disabled={busy || !smartEnabled}
             />
-          </div>
+            </div>
+            ) : null}
+            </>
+          ) : null}
         </SettingsSection>
       </form>
       <SettingsSaveBar

@@ -146,8 +146,12 @@ installed at runtime:
   adapter-bundled instance — the user's copy stays untouched on disk and
   keeps working in the `pi` CLI, it just never loads twice in a Pix session.
 
-The memory-provider UX (local / Lore / off, connection guidance, switch
-consequences) is documented scenario-by-scenario in `docs/memory.md`.
+The memory-provider behavior (local / Lore / off, connection, switch
+consequences) is documented scenario-by-scenario in `docs/memory.md`. The
+settings page itself shows none of that copy. pi-smart-compact's own memory
+tools (`smart_recall` / `smart_save_memory`) are not part of the memory
+surface: the active-tool selection excludes them and the inline
+`smart-compact-memory-guard` re-asserts that at every `session_start`.
 
 - Protocol version: `packages/protocol/src/version.ts` (`PROTOCOL_VERSION`) —
   negotiated at handshake; never re-declared in Host/Client.

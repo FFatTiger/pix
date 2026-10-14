@@ -60,15 +60,7 @@ describe("MemoryConfig", () => {
     expect(await screen.findByRole("radio", { name: "Local memory" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Lore" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Off" })).toBeTruthy();
-    expect(screen.getByText("Current: local memory (all sessions share ~/.pi/agent/memory)")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
-  });
-
-  it("local selection shows the bundled pi-memory description", async () => {
-    mount(defaultFetch());
-    await screen.findByRole("radio", { name: "Local memory" });
-    expect(screen.getByText(/memory_read \/ memory_write/)).toBeTruthy();
-    expect(screen.getByText(/session-exit summary is disabled/)).toBeTruthy();
   });
 
   it("lore selection without a connection shows guidance links and requires a passing test before save", async () => {
@@ -116,18 +108,13 @@ describe("MemoryConfig", () => {
     });
   });
 
-  it("switching lore→local warns that Lore memories are not migrated", async () => {
+  it("switching providers shows no consequence copy", async () => {
     mount(defaultFetch({ memory: { revision, provider: "lore", providerExplicit: true, lore: LORE_CONNECTED } }));
-    await screen.findByText(/Current: Lore \(connected\)/);
+    await screen.findByRole("radio", { name: "Lore" });
     fireEvent.click(screen.getByRole("radio", { name: "Local memory" }));
-    expect(screen.getByText(/memories stored in Lore are NOT migrated/)).toBeTruthy();
-  });
-
-  it("off hides every memory section copy", async () => {
-    mount(defaultFetch());
-    await screen.findByRole("radio", { name: "Local memory" });
+    expect(screen.queryByText(/migrat|upload|reload/i)).toBeNull();
     fireEvent.click(screen.getByRole("radio", { name: "Off" }));
-    expect(screen.getByText(/No memory plugin loads/)).toBeTruthy();
-    expect(screen.queryByText(/memory_read \/ memory_write/)).toBeNull();
+    // Off keeps the page to the three-way choice — no explanatory section.
+    expect(screen.queryByText(/memory_read|plugin/i)).toBeNull();
   });
 });
