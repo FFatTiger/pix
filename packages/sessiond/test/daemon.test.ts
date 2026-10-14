@@ -178,7 +178,11 @@ process.exitCode = code;
     let stderr = "";
     child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
     const code = await new Promise<number>((resolve, reject) => {
-      const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("daemon child did not exit in time")); }, 5_000);
+      // 15s, not 5s. Under a saturated `npm test` the production startup
+      // (private dir, secret, catalog prepare) legitimately takes a few
+      // seconds before the pending SIGINT is applied; 5s killed children
+      // that were shutting down correctly. A hung child still fails.
+      const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("daemon child did not exit in time")); }, 15_000);
       child.once("exit", (c) => { clearTimeout(timer); resolve(c ?? -1); });
     });
     assert.equal(code, 0, `daemon child exited ${code}; stderr: ${stderr}`);

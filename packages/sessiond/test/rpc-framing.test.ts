@@ -162,7 +162,11 @@ test("client readers honor the response frame budget", async () => {
     server.listen(endpoint, () => { server.off("error", reject); resolve(); });
   });
   try {
-    const client = new SessiondRpcClient({ endpoint, secret, timeoutMs: 10_000 });
+    // The oversized body is one full runtime frame (~30 MiB). The bound is
+    // what must reject it, but the rejection only happens once the whole
+    // frame has been read; 10s times out on a loaded machine before the read
+    // finishes, so the assertion saw a timeout instead of the size error.
+    const client = new SessiondRpcClient({ endpoint, secret, timeoutMs: 60_000 });
     await assert.rejects(
       () => client.call("system.ping", {}),
       (error: unknown) => error instanceof SessiondError && /size limit/.test(error.message),
