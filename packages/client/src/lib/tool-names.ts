@@ -28,6 +28,16 @@ const ASSISTANT_TOOL_LABELS: Record<string, AssistantToolLabel> = {
   lore_create_node: { labelKey: "desktop.codexAssistantMemorySaved", detailKey: "desktop.codexAssistantMemorySavedDetail", iconName: "brain" },
   lore_update_node: { labelKey: "desktop.codexAssistantMemorySaved", detailKey: "desktop.codexAssistantMemorySavedDetail", iconName: "brain" },
   lore_delete_node: { labelKey: "desktop.codexAssistantMemorySaved", detailKey: "desktop.codexAssistantMemorySavedDetail", iconName: "brain" },
+  // Local pi-memory tools (bundled pi-memory 0.4.2) share the Lore recall/write
+  // wording; forget / restore / scratchpad get their own verbs.
+  memory_read: { labelKey: "desktop.codexAssistantMemoryRecall", detailKey: "desktop.codexAssistantMemoryRecallDetail", iconName: "brain" },
+  memory_status: { labelKey: "desktop.codexAssistantMemoryRecall", detailKey: "desktop.codexAssistantMemoryRecallDetail", iconName: "brain" },
+  memory_write: { labelKey: "desktop.codexAssistantMemorySaved", detailKey: "desktop.codexAssistantMemorySavedDetail", iconName: "brain" },
+  memory_forget: { labelKey: "desktop.codexAssistantMemoryForgot", detailKey: "desktop.codexAssistantMemoryForgotDetail", iconName: "brain" },
+  // memory_restore's only argument (recoveryId) is not surfaced as a detail
+  // value, so the detail is always empty and the label doubles as fallback.
+  memory_restore: { labelKey: "desktop.codexAssistantMemoryRestored", detailKey: "desktop.codexAssistantMemoryRestored", iconName: "brain" },
+  scratchpad: { labelKey: "desktop.codexAssistantScratchpad", detailKey: "desktop.codexAssistantScratchpadDetail", iconName: "penNib" },
   // Assistant session capabilities (round 3).
   session_status: { labelKey: "desktop.codexAssistantSessionStatus", detailKey: "desktop.codexAssistantSessionStatusDetail", iconName: "listBullets" },
   list_open_todos: { labelKey: "desktop.codexAssistantOpenTodos", detailKey: "desktop.codexAssistantOpenTodosDetail", iconName: "checklist" },
@@ -47,16 +57,23 @@ export function assistantToolLabel(toolName: string): AssistantToolLabel | null 
   return ASSISTANT_TOOL_LABELS[toolName] ?? null;
 }
 
+/** Per-tool argument keys probed for the detail value; unlisted tools fall back to the generic order. */
+const TOOL_DETAIL_KEYS: Record<string, readonly string[]> = {
+  read_session: ["session"],
+  open_session: ["session"],
+  draft_to_session: ["session"],
+  send_to_session: ["session"],
+  stop_session: ["session"],
+  create_session: ["project"],
+  organize_sessions: ["action"],
+  memory_write: ["content"],
+  memory_forget: ["match"],
+  scratchpad: ["text"],
+};
+
 /** First meaningful string argument for a tool-call detail line (bounded). */
 export function assistantToolDetailValue(toolName: string, input: Record<string, unknown> | undefined): string {
-  const keys = toolName === "read_session" || toolName === "open_session" || toolName === "draft_to_session"
-    || toolName === "send_to_session" || toolName === "stop_session"
-    ? ["session"]
-    : toolName === "create_session"
-      ? ["project"]
-      : toolName === "organize_sessions"
-        ? ["action"]
-        : ["query", "project", "path", "range", "uri"];
+  const keys = TOOL_DETAIL_KEYS[toolName] ?? ["query", "project", "path", "range", "uri"];
   for (const key of keys) {
     const value = input?.[key];
     if (typeof value === "string" && value.trim() !== "") {

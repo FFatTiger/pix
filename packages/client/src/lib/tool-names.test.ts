@@ -16,6 +16,21 @@ describe("assistantToolLabel", () => {
     }
   });
 
+  it("maps local pi-memory tools to the same recall/write wording", () => {
+    for (const name of ["memory_read", "memory_status"]) {
+      expect(assistantToolLabel(name)?.labelKey).toBe("desktop.codexAssistantMemoryRecall");
+      expect(assistantToolLabel(name)?.iconName).toBe("brain");
+    }
+    expect(assistantToolLabel("memory_write")?.labelKey).toBe("desktop.codexAssistantMemorySaved");
+    expect(assistantToolLabel("memory_write")?.iconName).toBe("brain");
+    expect(assistantToolLabel("memory_forget")?.labelKey).toBe("desktop.codexAssistantMemoryForgot");
+    expect(assistantToolLabel("memory_forget")?.detailKey).toBe("desktop.codexAssistantMemoryForgotDetail");
+    expect(assistantToolLabel("memory_restore")?.labelKey).toBe("desktop.codexAssistantMemoryRestored");
+    expect(assistantToolLabel("scratchpad")?.labelKey).toBe("desktop.codexAssistantScratchpad");
+    expect(assistantToolLabel("scratchpad")?.detailKey).toBe("desktop.codexAssistantScratchpadDetail");
+    expect(assistantToolLabel("scratchpad")?.iconName).toBe("penNib");
+  });
+
   it("maps the round-3 session-capability tools", () => {
     expect(assistantToolLabel("session_status")?.labelKey).toBe("desktop.codexAssistantSessionStatus");
     expect(assistantToolLabel("list_open_todos")?.labelKey).toBe("desktop.codexAssistantOpenTodos");
@@ -57,6 +72,17 @@ describe("assistantToolDetailValue", () => {
     expect(assistantToolDetailValue("read_session", { session: "布局C 实现" })).toBe("布局C 实现");
     expect(assistantToolDetailValue("search_sessions", { query: "openclash 域名" })).toBe("openclash 域名");
     expect(assistantToolDetailValue("search_sessions", { project: "pix" })).toBe("pix");
+  });
+
+  it("reads content/match/text for the pi-memory tools", () => {
+    expect(assistantToolDetailValue("memory_write", { content: "大哥时区是 Asia/Shanghai" })).toBe("大哥时区是 Asia/Shanghai");
+    expect(assistantToolDetailValue("memory_forget", { match: "旧域名" })).toBe("旧域名");
+    expect(assistantToolDetailValue("scratchpad", { action: "add", text: "检查 e2e" })).toBe("检查 e2e");
+    // memory_restore surfaces no argument value; memory_read/memory_status keep
+    // the generic probe order.
+    expect(assistantToolDetailValue("memory_restore", { recoveryId: "r-1" })).toBe("");
+    expect(assistantToolDetailValue("memory_read", { target: "long_term" })).toBe("");
+    expect(assistantToolDetailValue("memory_write", { content: "x".repeat(200) }).length).toBeLessThanOrEqual(61);
   });
 
   it("bounds long values and tolerates missing args", () => {
