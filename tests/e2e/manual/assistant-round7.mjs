@@ -386,7 +386,10 @@ async function main() {
       60_000,
     );
     const assistantJsonl1 = readSessionJsonl(agentDir, assistant.sessionId);
-    check("assistant really invoked create_session", /"toolName":"create_session"/.test(assistantJsonl1), "");
+    // Pi persists a tool call as {type:"toolCall", name}. A codemode wrap
+    // keeps the inner name on nestedCalls.calls[].name. toolName is the
+    // protocol field and is not what the JSONL records for the call itself.
+    check("assistant really invoked create_session", /"name":"create_session"/.test(assistantJsonl1), "");
     // Find the delegated target session: any OTHER session whose first user
     // message carries the sent-by-assistant marker with our task text.
     const sessionsRoot = join(agentDir, "sessions");

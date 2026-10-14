@@ -392,7 +392,8 @@ async function main() {
     // covering all projects by default (the assistant was never told which
     // project — coverage comes from its tools, not the prompt).
     const assistantJsonl = readAssistantJsonl(agentDir, assistant.sessionId);
-    check("list_projects really invoked with the project row", /"toolName":"list_projects"/.test(assistantJsonl) && assistantJsonl.includes("demo-project｜/Users/proxy/pixa5-e2e-projects/demo-project"), "");
+    // Pi persists a tool call as {type:"toolCall", name}; toolName is the protocol field and is absent from the session JSONL.
+    check("list_projects really invoked with the project row", /"name":"list_projects"/.test(assistantJsonl) && assistantJsonl.includes("demo-project｜/Users/proxy/pixa5-e2e-projects/demo-project"), "");
     check("cross-project answer covers the real project session", assistantJsonl.includes("demo-project") && assistantJsonl.includes("部署"), "answer read from the transcript");
 
     // -- 5. reload: same dirs, same conversation, role prompt survives ---------
