@@ -108,7 +108,9 @@ export function createHostApp(deps: HostDeps = {}): HostApp {
 
   // 4. /v1 routes
   registerGateRoutes(app, gateDeps, logger);
-  registerWorkspaceFlagsRoutes(app, { workspaceFlags: deps.sessions?.workspaceFlags });
+  registerWorkspaceFlagsRoutes(app, {
+    ...(deps.sessions?.workspaceFlags === undefined ? {} : { workspaceFlags: deps.sessions.workspaceFlags }),
+  });
   registerPreferencesRoutes(app, {
     preferencesStore: deps.preferences?.store ?? createFileGatePreferencesStore(),
     ...(deps.preferences?.bodyLimitBytes !== undefined ? { bodyLimitBytes: deps.preferences.bodyLimitBytes } : {}),

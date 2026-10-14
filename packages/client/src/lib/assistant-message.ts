@@ -5,7 +5,7 @@
  * The client imports them from the package export; building the protocol
  * package refreshes the workspace dist the client resolves.
  */
-import { ASSISTANT_NOTIFY_MESSAGE_PREFIX, ASSISTANT_SENT_MESSAGE_PREFIX } from "@fffattigger/pix-protocol";
+import { ASSISTANT_NOTIFY_MESSAGE_PREFIX, ASSISTANT_SENT_MESSAGE_PREFIX } from "@fffattiger/pix-protocol";
 
 export { ASSISTANT_SENT_MESSAGE_PREFIX, ASSISTANT_NOTIFY_MESSAGE_PREFIX };
 

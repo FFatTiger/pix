@@ -12,8 +12,10 @@
  * parsed (fail closed, never a fake success). Project keys must be absolute
  * normalized paths inside AllowedRoots; the sessiond store re-validates.
  */
-import { Hono } from "hono";
-import { HttpError, type MutationGuard } from "../types.js";
+import type { Hono } from "hono";
+import type { HostEnv } from "../env.js";
+import { HttpError } from "../errors.js";
+import type { MutationGuard } from "../resources/types.js";
 import { readJsonObject } from "../resources/request-body.js";
 
 export interface WorkspaceFlagsClient {
@@ -70,7 +72,7 @@ function parseWorkspaceFlagsBody(body: Record<string, unknown>): ParsedFlagsBody
   };
 }
 
-export function registerWorkspaceFlagsRoutes(app: Hono, deps: WorkspaceFlagsRouteDeps): void {
+export function registerWorkspaceFlagsRoutes(app: Hono<HostEnv>, deps: WorkspaceFlagsRouteDeps): void {
   if (deps.workspaceFlags === undefined) return;
   const seam = deps.workspaceFlags;
 
@@ -80,7 +82,7 @@ export function registerWorkspaceFlagsRoutes(app: Hono, deps: WorkspaceFlagsRout
     }
     await seam.mutationGuard.assertAvailable();
     try {
-      return c.json(await seam.getWorkspaceFlags());
+      return c.json(await seam.client.getWorkspaceFlags());
     } catch (error) {
       throw mapWorkspaceFlagsError(error);
     }
@@ -110,7 +112,7 @@ export function registerWorkspaceFlagsRoutes(app: Hono, deps: WorkspaceFlagsRout
       }
     }
     try {
-      await seam.setWorkspaceFlags(parsed.kind, parsed.key, parsed.flags);
+      await seam.client.setWorkspaceFlags(parsed.kind, parsed.key, parsed.flags);
     } catch (error) {
       throw mapWorkspaceFlagsError(error);
     }

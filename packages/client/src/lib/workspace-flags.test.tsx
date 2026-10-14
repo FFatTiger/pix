@@ -57,8 +57,7 @@ describe("useWorkspaceFlags", () => {
   });
 
   it("optimistically patches the flags document and keeps it when the API succeeds", async () => {
-    const fetchMock = vi.fn(async (input: unknown, init?: unknown) => {
-      const path = String((input as URL).href ?? input);
+    const fetchMock = vi.fn(async (_input: unknown, init?: unknown) => {
       if ((init as RequestInit | undefined)?.method === "PATCH") return jsonResponse({ success: true });
       return jsonResponse(FLAGS_DOC);
     });
@@ -76,8 +75,7 @@ describe("useWorkspaceFlags", () => {
   });
 
   it("rolls the optimistic patch back and surfaces an error when the API fails", async () => {
-    const fetchMock = vi.fn(async (input: unknown, init?: unknown) => {
-      const path = String((input as URL).href ?? input);
+    const fetchMock = vi.fn(async (_input: unknown, init?: unknown) => {
       if ((init as RequestInit | undefined)?.method === "PATCH") return jsonResponse({ error: "down" }, 503);
       return jsonResponse(FLAGS_DOC);
     });

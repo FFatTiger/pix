@@ -4,7 +4,7 @@
  * mutation guard and the AllowedRoots classifier for project keys.
  */
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
-import type { MutationGuard } from "../types.js";
+import type { MutationGuard } from "../resources/types.js";
 import type { AllowedRootService } from "../resources/allowed-roots.js";
 import type { WorkspaceFlagsClient, WorkspaceFlagsSeam } from "../routes/workspace-flags.js";
 

@@ -145,7 +145,7 @@ export function AppShell({ search }: AppShellProps) {
     migrationStarted.current = true;
     void migrateLocalOrganizationPrefsToServer({
       setFlags: (kind, key, flags) => http.patch("/v1/workspace-flags", { kind, key, ...flags }),
-      getWorkspaceFlags: async () => http.get("/v1/workspace-flags") as import("@/lib/workspace-flags").WorkspaceFlagsMaps,
+      getWorkspaceFlags: async () => http.get("/v1/workspace-flags") as unknown as import("@/lib/workspace-flags").WorkspaceFlagsMaps,
     });
   }, [can, canBrowseSessions, http]);
 

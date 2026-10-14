@@ -182,10 +182,10 @@ export {
   createSessiondSessionsClient,
   createSessiondSessionDeleteClient,
   createSessiondSessionRenameClient,
-  createSessiondWorkspaceFlagsSeam,
   createSessiondSessionSettingsClient,
   createSessiondAssistantClient,
 } from "./composition/sessions-client.js";
+export { createSessiondWorkspaceFlagsSeam } from "./composition/workspace-flags-client.js";
 export type { SessiondSessionsClientOptions } from "./composition/sessions-client.js";
 export { createAssistantWorkspaceResource } from "./resources/assistant-workspace.js";
 export type { AssistantWorkspaceResource, CreateAssistantWorkspaceOptions } from "./resources/assistant-workspace.js";
