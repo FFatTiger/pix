@@ -54,7 +54,9 @@ describe("status card composer-strip layout", () => {
     // The tab grows into the card: same spot and material, open bottom; the
     // closed clip is the tab footprint (measured width), the open clip is full.
     expect(rule(css, ".status-card-panel")).toContain("bottom: 0");
-    expect(rule(css, ".status-card-panel")).toContain("left: 12px");
+    // Panel and capsule share the shell's left edge, so the card grows out
+    // of the tab without a horizontal jump.
+    expect(rule(css, ".status-card-panel")).toContain("left: 0");
     expect(rule(css, ".status-card-panel")).toContain("border-bottom: 0");
     expect(rule(css, ".status-card-panel")).toContain("border-radius: 10px 10px 0 0");
     expect(rule(css, ".status-card-panel")).toContain("background: var(--bg-secondary)");
@@ -74,15 +76,18 @@ describe("status card composer-strip layout", () => {
     // surface and border, rounded top corners, open bottom, concave fillets,
     // a soft upward shadow, and it follows the composer's focus border.
     expect(rule(css, ".subagent-activity-capsule")).not.toMatch(/^\s*width: 100%;/m);
-    expect(rule(css, ".subagent-activity-capsule")).toContain("min-height: 28px");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("height: 28px");
     expect(rule(css, ".subagent-activity-capsule")).toContain("border-radius: 10px 10px 0 0");
     expect(rule(css, ".subagent-activity-capsule")).toContain("border-bottom: 0");
     expect(rule(css, ".subagent-activity-capsule")).toContain("border: 1px solid var(--border)");
     expect(rule(css, ".subagent-activity-capsule")).toContain("background: var(--bg-secondary)");
     expect(rule(css, ".subagent-activity-capsule")).toContain("box-shadow: 0 -3px 8px -4px");
+    expect(rule(css, ".subagent-activity-capsule")).toContain("margin-left: 0");
     expect(css).toContain(".subagent-activity-capsule::before,\n.subagent-activity-capsule::after {");
-    expect(rule(css, ".workspace:has(.chat-input-shell:focus-within) .subagent-activity-capsule")).toContain("border-color: var(--accent-blue)");
-    expect(rule(css, ".subagent-activity-capsule:hover")).toContain("background: var(--bg-secondary)");
+    // Rest / hover / focus all come from the composer variables, so the tab
+    // never paints its own fill or focus color.
+    expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("background: var(--composer-bg)");
+    expect(rule(css, ".subagent-activity-capsule,\n.subagent-activity-capsule:hover")).toContain("border-color: var(--composer-ring)");
     // Long titles ellipsize inside the label span.
     expect(rule(css, ".status-capsule-label")).toContain("text-overflow: ellipsis");
     expect(rule(css, ".status-capsule-count,\n.status-capsule-agents")).toContain("font-variant-numeric: tabular-nums");

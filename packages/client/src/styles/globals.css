@@ -2402,10 +2402,13 @@ span.linenumber {
 
 .status-card-panel {
   /* The tab grows into the card: same spot, same material, open bottom. The
-     closed clip is exactly the tab's footprint, so the two never coexist. */
+     closed clip is exactly the tab's footprint, so the two never coexist.
+     left: 0 because the capsule no longer indents itself — both sit on the
+     shell's left edge, which the optical-alignment rule lines up with the
+     composer. */
   position: absolute;
   bottom: 0;
-  left: 12px;
+  left: 0;
   z-index: 40;
   display: flex;
   width: 340px;
@@ -2451,13 +2454,20 @@ span.linenumber {
 
 .status-card-header {
   display: flex;
+  box-sizing: border-box;
   flex: 0 0 28px;
   min-width: 0;
   align-items: center;
   gap: 7px;
+  /* The panel's 1px side border already stands where the capsule's side
+     border does, so the header adds none of its own. Padding stays 12px: the
+     capsule's side border is drawn inside its border box, so both content
+     edges sit 13px from the shared outer edge. The transparent top border
+     keeps the flex content box 27px tall, identical to the capsule's, so
+     vertical centering lands on the same pixel. */
   padding: 0 12px;
   border: 0;
-  border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  border-top: 1px solid transparent;
   color: var(--text);
   background: transparent;
   font-size: 12px;
@@ -2496,12 +2506,13 @@ span.linenumber {
 
 .subagent-activity-capsule {
   position: relative;
+  box-sizing: border-box;
   min-width: 0;
-  min-height: 28px;
+  height: 28px;
   max-width: 100%;
   justify-content: flex-start;
   gap: 7px;
-  margin-left: 12px;
+  margin-left: 0;
   padding: 0 12px;
   /* A tab growing out of the composer: same surface and border, open bottom. */
   border: 1px solid var(--border);
@@ -2532,9 +2543,6 @@ span.linenumber {
   background: radial-gradient(circle at 100% 0, transparent 7px, var(--border) 7px, var(--border) 8px, var(--bg-secondary) 8.5px);
 }
 
-.workspace:has(.chat-input-shell:focus-within) .subagent-activity-capsule {
-  border-color: var(--accent-blue);
-}
 
 .status-capsule-label {
   min-width: 0;
@@ -3413,10 +3421,6 @@ html.pi-booted body::before {
   animation: pix-loading-pulse 1.1s ease-in-out infinite;
 }
 
-/* Hover must not break the seam with the composer surface. */
-.subagent-activity-capsule:hover { background: var(--bg-secondary); }
-
-
 /* Tab hides the instant the card takes over and returns only once the card
    has shrunk back into its footprint. */
 .subagent-activity-capsule { transition: opacity 0s linear 220ms; }
@@ -3947,59 +3951,24 @@ html.pi-booted body::before {
 }
 
 /* ───────── Composer surface (2026-10 restyle) ─────────
-   The composer belongs to the frame: at rest it is a frame-gray well with no
-   outline, and it lifts onto the content surface with a soft focus ring while
-   you type. The status tab and its card follow the same two variables, so the
-   tab keeps growing seamlessly out of the composer in both states. */
+   The composer belongs to the frame: filled at rest, a deeper fill on hover,
+   and it lifts onto the content surface with a 1px ring while you type. The
+   status tab and its card consume the same variables, so the tab is the
+   composer's top edge in every state. The ring and shadow values are pinned
+   in the "Filled controls" section below; this block only owns the fill. */
 .workspace,
 .side-chat-panel {
   --composer-bg: var(--surface-frame);
-  --composer-line: transparent;
-}
-.workspace:has(.chat-composer-region:hover),
-.side-chat-panel:has(.side-chat-composer:hover) {
-  --composer-line: var(--surface-hairline);
-}
-.side-chat-panel:has(.chat-input-shell:focus-within),
-.workspace:has(.chat-input-shell:focus-within) {
-  --composer-bg: var(--surface-content);
-  --composer-line: color-mix(in srgb, var(--accent-blue) 55%, var(--border));
 }
 .chat-input-shell,
 .chat-input-shell.is-streaming {
-  border: 1px solid var(--composer-line);
+  border: 1px solid transparent;
   border-radius: 12px;
   background: var(--composer-bg);
   transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
-.chat-input-shell:focus-within,
-.chat-input-shell.is-streaming:focus-within {
-  border-color: var(--composer-line);
-  box-shadow: none;
-}
 .chat-input-streaming-overlay { border-radius: 11px; }
 
-/* Status tab + fillets + card share the composer material. */
-.subagent-activity-capsule,
-.subagent-activity-capsule:hover {
-  border-color: var(--composer-line);
-  background: var(--composer-bg);
-  box-shadow: none;
-  transition: background 160ms ease, border-color 160ms ease;
-}
-.workspace:has(.chat-input-shell:focus-within) .subagent-activity-capsule {
-  border-color: var(--composer-line);
-}
-.subagent-activity-capsule::before {
-  background: radial-gradient(circle at 0 0, transparent 7px, var(--composer-line) 7px, var(--composer-line) 8px, var(--composer-bg) 8.5px);
-}
-.subagent-activity-capsule::after {
-  background: radial-gradient(circle at 100% 0, transparent 7px, var(--composer-line) 7px, var(--composer-line) 8px, var(--composer-bg) 8.5px);
-}
-.status-card-panel {
-  border-color: var(--surface-hairline);
-  background: var(--composer-bg);
-}
 
 /* Composer column = transcript column. The transcript reserves a 34px right
    gutter for the minimap on desktop (16px left); give the composer region the
@@ -4025,11 +3994,12 @@ html.pi-booted body::before {
     width: calc(100% + 26px);
     margin-left: -13px;
   }
-  /* The status tab lives outside the composer region: give it the same
-     minimap-gutter offset so it starts on the transcript text edge too. */
-  .subagent-activity-card { max-width: 870px; padding-right: 34px; }
+  /* The status tab lives outside the composer region. The card's 16px left
+     padding plus a 3px inset lands the tab on the shell's left edge
+     (the shell hangs 13px past the region), and the same 18px minimap
+     gutter the composer region gets keeps the right edge on the column. */
+  .subagent-activity-card { max-width: 870px; padding: 0 34px 0 3px; }
 }
-.workspace .subagent-activity-capsule { margin-left: 0; }
 
 /* Assistant entry tab on the new-session page: the same "grows out of the
    composer" language as the status tab — open bottom, composer surface fill,
@@ -4223,29 +4193,33 @@ button.assistant-entry-chip:hover { background: var(--composer-bg); color: var(-
 .ui-btn--danger:hover:not(:disabled) { background: color-mix(in srgb, var(--status-danger) 18%, transparent); }
 
 /* Menus: no outline; depth from shadow (dark keeps a faint inner edge). */
-.ui-menu, .session-info-bar-popover, .chat-input-popover, .status-card-panel {
+.ui-menu, .session-info-bar-popover, .chat-input-popover {
   border: 0 !important;
   box-shadow: 0 12px 32px -10px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.06) !important;
 }
-.dark .ui-menu, .dark .session-info-bar-popover, .dark .chat-input-popover, .dark .status-card-panel {
+.dark .ui-menu, .dark .session-info-bar-popover, .dark .chat-input-popover {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 14px 36px -10px rgba(0, 0, 0, 0.6) !important;
 }
 .ui-menu-search { border-bottom: 0; }
 
-/* Composer: filled at rest, no lines; focus lifts to the content surface
-   with a soft shadow. The status tab and its fillets follow, line-free. */
+/* Composer: filled at rest, no line; hover deepens the fill; focus lifts to
+   the content surface and draws the 1px ring. The status tab and its fillets
+   consume the same two variables, so the tab is the composer's top edge. */
 .workspace, .side-chat-panel {
-  --composer-line: transparent;
+  --composer-ring: transparent;
 }
 .workspace:has(.chat-composer-region:hover),
 .side-chat-panel:has(.side-chat-composer:hover) {
-  --composer-line: transparent;
   --composer-bg: color-mix(in srgb, var(--text) 3%, var(--surface-frame));
 }
 .side-chat-panel:has(.chat-input-shell:focus-within),
 .workspace:has(.chat-input-shell:focus-within) {
-  --composer-line: transparent;
   --composer-bg: var(--surface-content);
+  --composer-ring: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.dark .side-chat-panel:has(.chat-input-shell:focus-within),
+.dark .workspace:has(.chat-input-shell:focus-within) {
+  --composer-ring: rgba(255, 255, 255, 0.06);
 }
 .chat-input-shell,
 .chat-input-shell.is-streaming,
@@ -4253,11 +4227,37 @@ button.assistant-entry-chip:hover { background: var(--composer-bg); color: var(-
 .chat-input-shell.is-streaming:focus-within { border-color: transparent; }
 .chat-input-shell:focus-within,
 .chat-input-shell.is-streaming:focus-within {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 4%, transparent), 0 8px 28px -12px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 0 0 1px var(--composer-ring), 0 8px 28px -12px rgba(0, 0, 0, 0.22);
 }
 .dark .chat-input-shell:focus-within,
 .dark .chat-input-shell.is-streaming:focus-within {
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 0 0 1px var(--composer-ring), 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+}
+
+/* Status tab + fillets + card: one material with the composer. The focus ring
+   runs along the tab's top and both sides (and through the concave fillets);
+   the seam against the composer stays open, so the two read as one shape. */
+.subagent-activity-capsule,
+.subagent-activity-capsule:hover {
+  border-color: var(--composer-ring);
+  background: var(--composer-bg);
+  box-shadow: none;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.subagent-activity-capsule::before {
+  background: radial-gradient(circle at 0 0, transparent 7px, var(--composer-ring) 7px, var(--composer-ring) 8px, var(--composer-bg) 8.5px);
+}
+.subagent-activity-capsule::after {
+  background: radial-gradient(circle at 100% 0, transparent 7px, var(--composer-ring) 7px, var(--composer-ring) 8px, var(--composer-bg) 8.5px);
+}
+.status-card-panel {
+  border: 1px solid var(--composer-ring);
+  border-bottom: 0;
+  background: var(--composer-bg);
+  box-shadow: 0 -6px 18px -10px color-mix(in srgb, #000 22%, transparent);
+}
+.dark .status-card-panel {
+  box-shadow: 0 -8px 22px -10px rgba(0, 0, 0, 0.6);
 }
 
 /* Settings lists and cards: filled rows instead of outlined boxes. */
