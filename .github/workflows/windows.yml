@@ -1,0 +1,25 @@
+name: windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/windows]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - name: Unit tests (per package)
+        run: npm test
+        continue-on-error: true
+      - name: Startup smoke (real sessiond over a named pipe + host)
+        run: node tests/windows-smoke.mjs
