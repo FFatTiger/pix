@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { resolveSessionDisplayStatus, type SessionDisplayStatus } from "@/components/SessionStatusDot";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCapabilities } from "@/features/capability/CapabilityProvider";
@@ -33,6 +34,9 @@ import {
   loadLastWorkspaceSession,
   loadWorkspaceSessionTabs,
   openFileWorkspaceTab,
+  assistantTabId,
+  minimalAssistantTab,
+  openAssistantWorkspaceTab,
   openSessionWorkspaceTab,
   reconcileWorkspaceCwd,
   saveLastWorkspaceSession,

@@ -130,7 +130,8 @@ const ASSISTANT_PROMPT_SECTIONS: Readonly<Record<string, string>> = {
  * extension's tools; "off" (no registered section) returns "".
  */
 export function assistantMemorySectionText(provider: AssistantMemoryProvider): string {
-  const sectionId = memoryCapabilityRegistryEntry().assistantPromptSections[provider];
+  const sections: Partial<Record<AssistantMemoryProvider, string>> = memoryCapabilityRegistryEntry().assistantPromptSections;
+  const sectionId = sections[provider];
   if (sectionId === undefined) return "";
   const text = ASSISTANT_PROMPT_SECTIONS[sectionId];
   if (text === undefined) throw new Error(`assistant prompt section is not registered: ${sectionId}`);

@@ -55,10 +55,10 @@ test("the catalog tool-name union covers exactly the contributed tools", () => {
   assert.deepEqual(CAPABILITY_CATALOG_TOOL_NAMES, expected);
   // The capability-owned names the tools page and the palette must agree on.
   for (const name of ["Agent", "SendMessage", "TaskOutput", "TaskStop", "todo", "ask_user_question", "smart_compact", "smart_context", "smart_navigation", "smart_tools"]) {
-    assert.ok(CAPABILITY_CATALOG_TOOL_NAMES.includes(name), `missing capability tool ${name}`);
+    assert.ok((CAPABILITY_CATALOG_TOOL_NAMES as readonly string[]).includes(name), `missing capability tool ${name}`);
   }
   for (const hidden of ["smart_recall", "smart_save_memory"]) {
-    assert.equal(CAPABILITY_CATALOG_TOOL_NAMES.includes(hidden), false, `hidden tool ${hidden} must not be catalog-listed`);
+    assert.equal((CAPABILITY_CATALOG_TOOL_NAMES as readonly string[]).includes(hidden), false, `hidden tool ${hidden} must not be catalog-listed`);
   }
 });
 
