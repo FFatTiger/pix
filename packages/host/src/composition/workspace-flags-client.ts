@@ -6,6 +6,7 @@
 import { SessiondRpcClient } from "@fffattiger/pix-sessiond/client";
 import type { MutationGuard } from "../resources/types.js";
 import type { AllowedRootService } from "../resources/allowed-roots.js";
+import { pathWithin } from "../resources/path-canonical.js";
 import type { WorkspaceFlagsClient, WorkspaceFlagsSeam } from "../routes/workspace-flags.js";
 
 export interface SessiondWorkspaceFlagsSeamOptions {
@@ -36,6 +37,8 @@ export function createSessiondWorkspaceFlagsSeam(options: SessiondWorkspaceFlags
   return {
     client: flagsClient,
     mutationGuard: options.mutationGuard,
-    isAllowedPath: (path) => options.allowedRoots.roots().some((root) => path === root || path.startsWith(`${root}/`)),
+    // Containment via the platform-aware helper: separator/prefix/case safe
+    // (win32 `\\?\` realpaths, NTFS case folding) — never a hardcoded `/` join.
+    isAllowedPath: (path) => options.allowedRoots.roots().some((root) => pathWithin(root, path)),
   };
 }

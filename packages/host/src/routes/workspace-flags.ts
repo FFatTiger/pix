@@ -13,6 +13,7 @@
  * normalized paths inside AllowedRoots; the sessiond store re-validates.
  */
 import type { Hono } from "hono";
+import { isAbsolute } from "node:path";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import type { MutationGuard } from "../resources/types.js";
@@ -102,9 +103,11 @@ export function registerWorkspaceFlagsRoutes(app: Hono<HostEnv>, deps: Workspace
         throw new HttpError(400, "INVALID_WORKSPACE_FLAGS", "Workspace flags body is invalid");
       }
     } else {
-      // Project keys are filesystem identities: absolute paths only, and the
-      // Host's AllowedRoots owns the classification (fail closed outside).
-      if (!parsed.key.startsWith("/") || parsed.key.includes("\u0000")) {
+      // Project keys are filesystem identities: absolute paths only (drive /
+      // UNC shapes on win32 via the platform-aware isAbsolute — never a
+      // hardcoded `/` prefix), and the Host's AllowedRoots owns the
+      // classification (fail closed outside).
+      if (!isAbsolute(parsed.key) || parsed.key.includes("\u0000")) {
         throw new HttpError(400, "INVALID_PROJECT_ROOT", "Project root is invalid");
       }
       if (!seam.isAllowedPath(parsed.key)) {

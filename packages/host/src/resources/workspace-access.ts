@@ -27,6 +27,7 @@
  */
 import { lstat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import { samePath, canonicalizeRealpath } from "./path-canonical.js";
 import {
   WORKSPACE_ACCESS_REASONS,
   WORKSPACE_ACCESS_STATES,
@@ -117,7 +118,7 @@ async function resolveLiveDirectory(
 ): Promise<{ ok: true; canonical: string } | { ok: false; access: WorkspaceAccess }> {
   let canonical: string;
   try {
-    canonical = await realpath(normalized);
+    canonical = canonicalizeRealpath(await realpath(normalized));
   } catch (error) {
     return { ok: false, access: mapStatFailure(error, false) };
   }
@@ -181,7 +182,7 @@ async function classifyResolvedDirectory(
         // symlink / different canonical) is unavailable, never history_only.
         // Leaf symlink escape under a still-live root stays history_only.
         const resolvedRequested = resolve(requested);
-        if (roots.roots().some((root) => root === resolvedRequested && canonical !== root)) {
+        if (roots.roots().some((root) => samePath(root, resolvedRequested) && !samePath(canonical, root))) {
           return { state: "unavailable", reason: "deleted" };
         }
         return {
