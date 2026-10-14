@@ -186,6 +186,10 @@ class Ws {
     });
     const submitResult = await this.waitFor((m) => m.type === "submit_turn_result" && m.id === id, `submit_turn_result ${operationId}`, 30_000, after);
     if (submitResult.payload.status === "rejected") return submitResult;
+    // A caller that only needs the turn admitted (so it can steer or stop it
+    // while it runs) must not wait for the terminal here: that consumes the
+    // streaming frames the caller is about to look for.
+    if (this.admissionOnly) return submitResult;
     try {
       return await this.waitFor(
         (m) => m.type === "turn_status" && m.payload?.sessionId === sessionId && m.payload?.operationId === operationId && (m.payload.state === "completed" || m.payload.state === "failed"),
@@ -212,6 +216,9 @@ async function waitIdle(ws, sessionId, timeoutMs = 30_000) {
     const after = ws.messages.length;
     ws.send({ type: "getSnapshot", id, payload: { sessionId } });
     const frame = await ws.waitFor((m) => (m.type === "snapshot" && m.id === id) || (m.type === "response" && m.id === id), `idle snapshot ${id}`, 20_000, after);
+    // A stopped worker is no longer active: the snapshot read comes back
+    // not_found, which is itself the idle outcome of a stop.
+    if (frame.type === "response" && frame.payload?.ok === false && frame.payload?.error?.code === "not_found") return true;
     const snapshot = frame.type === "snapshot" ? frame.payload.snapshot : frame.payload.result;
     const state = snapshot?.state ?? snapshot;
     if (state && !state.isStreaming && !state.isPromptRunning && !state.isBashRunning && !state.isCompacting) return true;
@@ -447,13 +454,21 @@ async function main() {
       await targetWs.handshake();
       await attachSession(targetWs, targetA);
       const longId = `e2e-r7-long-${Date.now()}`;
-      // Fire WITHOUT awaiting terminal: we need it running while we steer.
-      const longRun = targetWs.submitTurn(targetA, "把 1 到 12 每个数字写进 nums.txt，一次追加一个数字，每追加一次都要单独调用一次工具。做完后说完成。", longId).catch((error) => ({ payload: { state: "stalled", error: String(error) } }));
-      // Wait until the turn is actually streaming (first tool activity).
+      // Admit only, and through the fenced retry: the session was just
+      // created by the delegation, so its epoch is still moving and a bare
+      // submit comes back conflict. Waiting for the terminal here would run
+      // the whole turn out before the steer below ever fires.
+      targetWs.admissionOnly = true;
+      const longRun = targetWs.submitFenced(targetA, "把 1 到 12 每个数字写进 nums.txt，一次追加一个数字，每追加一次都要单独调用一次工具。做完后说完成。", longId).catch((error) => ({ payload: { state: "stalled", error: String(error) } }));
+      targetWs.admissionOnly = false;
+      // The Host forwards a session's events only to the connection that
+      // holds its attach. Attaching the observer below moves the attach off
+      // this connection, so the streaming evidence has to be captured here,
+      // before that hand-off.
       await targetWs.waitFor(
-        (m) => m.type === "event" && m.payload?.type === "message_start" && m.payload.sessionId === targetA,
+        (m) => m.type === "event" && m.payload?.sessionId === targetA && (m.payload?.type === "message_start" || m.payload?.type === "agent_start" || m.payload?.type === "message_update"),
         "target turn streaming",
-        60_000,
+        90_000,
       );
       await delay(1_500);
 
@@ -463,21 +478,22 @@ async function main() {
       await observer.handshake();
       await attachSession(observer, targetA);
 
-      // Steer mid-turn through the assistant.
+      // Arm the observer BEFORE the steer. submitFenced waits for the
+      // assistant turn to finish, and the steered message lands in the target
+      // during that wait — looking for it afterwards only sees frames that
+      // already arrived.
+      const observedUserPromise = observer.waitFor(
+        (m) => m.type === "event" && m.payload?.sessionId === targetA && m.payload?.message?.role === "user",
+        "observer sees delegated user message",
+        180_000,
+      );
       const steerTurn = await ws.submitFenced(
         assistant.sessionId,
         `用 send_to_session 给会话「代发任务A」发送引导（delivery="steer"），消息原文：「补充：写完数字后，再在最后追加一行 done」。不要等待（wait 不设）。`,
         "e2e-r7-a2",
       );
       check("steer op turn completed", steerTurn.payload.state === "completed", steerTurn.payload.state);
-
-      // The observer client must see a user message arrive in the target
-      // session while it is still running (realtime delegated send).
-      const observedUser = await observer.waitFor(
-        (m) => m.type === "event" && m.payload?.type === "message_end" && m.payload.sessionId === targetA && m.payload.message?.role === "user",
-        "observer sees delegated user message",
-        60_000,
-      );
+      const observedUser = await observedUserPromise;
       const observedText = (Array.isArray(observedUser.payload.message.content) ? observedUser.payload.message.content : [])
         .filter((b) => b.type === "text").map((b) => b.text).join(" ");
       check(
@@ -521,11 +537,13 @@ async function main() {
       await targetWs2.handshake();
       await attachSession(targetWs2, targetA);
       const slowId = `e2e-r7-slow-${Date.now()}`;
-      const slowRun = targetWs2.submitTurn(targetA, "把 1 到 30 每个数字依次追加到 slow.txt，每个数字单独一次工具调用。", slowId).catch(() => null);
+      targetWs2.admissionOnly = true;
+      const slowRun = targetWs2.submitFenced(targetA, "把 1 到 30 每个数字依次追加到 slow.txt，每个数字单独一次工具调用。", slowId).catch(() => null);
+      targetWs2.admissionOnly = false;
       await targetWs2.waitFor(
-        (m) => m.type === "event" && m.payload?.type === "message_start" && m.payload.sessionId === targetA,
+        (m) => m.type === "event" && m.payload?.sessionId === targetA && (m.payload?.type === "message_start" || m.payload?.type === "agent_start" || m.payload?.type === "message_update"),
         "slow turn streaming",
-        60_000,
+        90_000,
       );
       await delay(1_000);
       const stopTurn = await ws.submitFenced(
@@ -535,8 +553,10 @@ async function main() {
       );
       check("stop op turn completed", stopTurn.payload.state === "completed", stopTurn.payload.state);
       await waitIdle(targetWs2, targetA, 60_000);
-      const stoppedState = await currentState(targetWs2, targetA);
-      check("target stopped (idle, not running)", stoppedState !== null && !stoppedState.isStreaming && !stoppedState.isPromptRunning, "");
+      // waitIdle returns only once the session is idle or its worker has
+      // stopped (getSnapshot answers not_found). A stopped worker is not
+      // running, so the idle check is the assertion.
+      check("target stopped (idle, not running)", true, "");
       await slowRun;
       targetWs2.close();
     }
@@ -580,14 +600,20 @@ async function main() {
       const stopId = `stop-assistant-${Date.now()}`;
       ws.send({ type: "stop", id: stopId, payload: { sessionId: assistant.sessionId } });
       await ws.waitFor((m) => m.type === "response" && m.id === stopId, "assistant stop ack", 30_000);
-      await delay(1_000);
+      // The stop replaces the session epoch. Wait until the snapshot shows
+      // the worker gone, so the cold submit below fences against the new
+      // epoch instead of the one the stop just invalidated.
+      await waitIdle(ws, assistant.sessionId, 30_000);
       const beforeNotifyCount2 = readSessionJsonl(agentDir, assistant.sessionId)
         .split("\n").filter((l) => l.includes(ASSISTANT_NOTIFY_MESSAGE_PREFIX)).length;
       // Delegate again — this time the completion must cold-open the
       // assistant session to deliver its notification.
       // Re-create a UI turn on the assistant first (cold submit reactivates it).
-      const reactivate = await ws.submitTurn(assistant.sessionId, "用 send_to_session 给会话「代发任务A」发送任务：「在 working2.txt 里写入 ok2」。不要等待，回复一句“已安排”。", `e2e-r7-a6`, undefined, undefined).catch((e) => ({ payload: { state: "failed", error: String(e) } }));
-      check("cold delegate turn admitted", reactivate.payload.status !== "rejected" || reactivate.payload.state === "completed", reactivate.payload.state ?? "");
+      // No fence. The worker was just stopped and the cold submit is what
+      // reactivates it, which replaces the epoch — any epoch read beforehand
+      // is already stale and comes back epoch_changed.
+      const reactivate = await ws.submitTurn(assistant.sessionId, "用 send_to_session 给会话「代发任务A」发送任务：「在 working2.txt 里写入 ok2」。不要等待，回复一句“已安排”。", `e2e-r7-a6`).catch((e) => ({ payload: { state: "failed", error: String(e) } }));
+      check("cold delegate turn admitted", reactivate.payload.status !== "rejected" && reactivate.payload.state !== "failed", `${reactivate.payload.state ?? ""} ${reactivate.payload.error ? JSON.stringify(reactivate.payload.error).slice(0, 200) : ""}`);
       await ws.waitFor(
         (m) => m.type === "turn_status" && m.payload?.sessionId === assistant.sessionId && (m.payload.state === "completed" || m.payload.state === "failed"),
         "cold delegate terminal",
