@@ -8,13 +8,16 @@
  * internals, never answers a non-assistant requester, and never reports a
  * delivery it did not actually complete.
  *
- * Persistence is one ledger file next to settings.json. Settlement and
- * notification delivery are driven by the service's running-state
- * transitions (scheduleSettleCheck) plus a bounded idle-confirm timer.
+ * Persistence is the `assistantDelegations` namespace of the sessiond-owned
+ * workspace-state store (single file, single writer, shared revision — see
+ * workspace-state.ts). Settlement and notification delivery are driven by
+ * the service's running-state transitions (scheduleSettleCheck) plus a
+ * bounded idle-confirm timer. The never-shipped standalone
+ * assistant-delegations.json, if present, is imported once and removed.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { basename, join } from "node:path";
 import {
   ASSISTANT_NOTIFY_MESSAGE_PREFIX,
   ASSISTANT_SENT_MESSAGE_PREFIX,
@@ -30,6 +33,7 @@ import {
   type SubmitTurnAdmission,
   type WorkerAssistantOpPayload,
 } from "@fffattiger/pix-protocol";
+import type { WorkspaceStateStore } from "./workspace-state.js";
 import { isAssistantWorkspacePath } from "@fffattiger/pix-runtime-core";
 
 const LEDGER_FILE = "assistant-delegations.json";
@@ -81,8 +85,12 @@ export interface AssistantOpsSurface {
 
 export interface AssistantOpsOptions {
   surface: AssistantOpsSurface;
-  /** sessiond private directory (ledger lives here, next to settings.json). */
-  directory: string;
+  /** Unified sessiond organization-state store (single file, writer, revision).
+   * The ledger lives in its `assistantDelegations` namespace. */
+  store: WorkspaceStateStore;
+  /** Directory that may still hold the never-shipped standalone ledger file
+   * (round-7 dev builds only). Imported once on construction, then removed. */
+  legacyDirectory?: string;
   /** Process home, for the assistant-workspace guard. */
   homedir: string;
   now?: () => number;
@@ -178,10 +186,10 @@ const SEND_NOTES: Record<AssistantDeliveryPath, (title: string) => string> = {
 
 export class AssistantOpsAuthority {
   private readonly surface: AssistantOpsSurface;
-  private readonly directory: string;
+  private readonly store: WorkspaceStateStore;
+  private readonly legacyLedgerPath: string | undefined;
   private readonly homedir: string;
   private readonly now: () => number;
-  private readonly ledgerPath: string;
   private delegations: Delegation[] = [];
   private chains = new Map<string, Chain>();
   private queue: NotifyItem[] = [];
@@ -194,10 +202,10 @@ export class AssistantOpsAuthority {
 
   constructor(options: AssistantOpsOptions) {
     this.surface = options.surface;
-    this.directory = options.directory;
+    this.store = options.store;
+    this.legacyLedgerPath = options.legacyDirectory === undefined ? undefined : join(options.legacyDirectory, LEDGER_FILE);
     this.homedir = options.homedir;
     this.now = options.now ?? Date.now;
-    this.ledgerPath = `${this.directory}/${LEDGER_FILE}`;
     this.load();
   }
 
@@ -811,17 +819,49 @@ export class AssistantOpsAuthority {
   // ---------------------------------------------------------------------
 
   private load(): void {
-    let parsed: unknown;
-    try {
-      if (!existsSync(this.ledgerPath)) return;
-      parsed = JSON.parse(readFileSync(this.ledgerPath, "utf8"));
-    } catch {
-      console.error("[assistant-ops] ledger unreadable; starting empty");
+    const stored = this.store.readAssistantDelegations();
+    if (stored !== undefined) {
+      // Namespace semantics belong HERE (the owner), never to the store: a
+      // semantically-broken value degrades to empty without touching the
+      // user's pin/archive flags in the same file.
+      if (!this.applyLedger(stored)) console.error("[assistant-ops] delegation namespace invalid; starting empty");
       return;
     }
-    if (!isLedger(parsed) || !parsed.queue.every(isNotifyItem) || !parsed.delegations.every(isDelegation) || !chainsValid(parsed.chains)) {
-      console.error("[assistant-ops] ledger corrupt; starting empty");
+    this.importLegacyLedger();
+  }
+
+  /** One-time import of the never-shipped standalone ledger (round-7 dev
+   * trees only). On success the namespace becomes authoritative and the old
+   * file is removed; an unreadable/invalid file is LEFT IN PLACE (never
+   * destroyed — the operator can inspect it) and the ledger starts empty. */
+  private importLegacyLedger(): void {
+    if (this.legacyLedgerPath === undefined) return;
+    let parsed: unknown;
+    try {
+      if (!existsSync(this.legacyLedgerPath)) return;
+      parsed = JSON.parse(readFileSync(this.legacyLedgerPath, "utf8"));
+    } catch {
+      console.error("[assistant-ops] legacy ledger unreadable; leaving the file in place");
       return;
+    }
+    if (!this.applyLedger(parsed)) {
+      console.error("[assistant-ops] legacy ledger invalid; leaving the file in place");
+      return;
+    }
+    this.persist();
+    try {
+      unlinkSync(this.legacyLedgerPath);
+    } catch {
+      // Removal is best-effort: the namespace is now authoritative and the
+      // next construction sees it populated, so the stale file is inert.
+    }
+  }
+
+  /** Validate and adopt a ledger value (shared by the namespace and the
+   * legacy import). Returns false without mutating anything on a bad shape. */
+  private applyLedger(parsed: unknown): boolean {
+    if (!isLedger(parsed) || !parsed.queue.every(isNotifyItem) || !parsed.delegations.every(isDelegation) || !chainsValid(parsed.chains)) {
+      return false;
     }
     this.delegations = parsed.delegations.slice(0, LEDGER_CAP);
     this.chains = new Map(Object.entries(parsed.chains));
@@ -840,22 +880,20 @@ export class AssistantOpsAuthority {
       attempts: this.delegations.find((row) => row.id === item.delegationId)?.notifyAttempts ?? item.attempts,
     }));
     if (this.queue.length > 0) this.armNotify();
+    return true;
   }
 
   private persist(): void {
-    const file: LedgerFile = {
-      version: LEDGER_VERSION,
-      delegations: this.delegations.slice(0, LEDGER_CAP),
-      chains: Object.fromEntries(this.chains),
-      queue: this.queue,
-    };
-    const tmp = `${this.ledgerPath}.tmp`;
     try {
-      mkdirSync(dirname(this.ledgerPath), { recursive: true });
-      writeFileSync(tmp, JSON.stringify(file) + "\n", { encoding: "utf8", mode: 0o600 });
-      renameSync(tmp, this.ledgerPath);
+      this.store.writeAssistantDelegations({
+        version: LEDGER_VERSION,
+        delegations: this.delegations.slice(0, LEDGER_CAP),
+        chains: Object.fromEntries(this.chains),
+        queue: this.queue,
+      });
     } catch (error) {
-      try { unlinkSync(tmp); } catch { /* leftover tmp is best-effort */ }
+      // Store write failed (unavailable): the in-memory ledger stays intact
+      // and the next mutation retries — never a fake success, never a crash.
       console.error(`[assistant-ops] ledger write failed: ${error instanceof Error ? error.message : "unknown"}`);
     }
   }

@@ -1,26 +1,36 @@
 /**
- * Sessiond-owned durable workspace state (round 5 redo).
+ * Sessiond-owned durable workspace state (round 5 redo; round 7 merge).
  *
- * User organization preferences (session + project pin/archive) live HERE —
- * never in the Pi session JSONL (that is chat-record truth with a live writer
- * in the worker process) and never in the disposable SQLite projection. This
- * file is the single writer's store: only SessiondService mutates it, every
- * mutation bumps a revision and writes atomically, and a projection rebuild
- * can never lose it.
+ * User organization preferences (session + project pin/archive) AND the
+ * assistant delegation ledger live HERE — never in the Pi session JSONL
+ * (that is chat-record truth with a live writer in the worker process) and
+ * never in the disposable SQLite projection. This file is the single
+ * writer's store: only SessiondService mutates it, every mutation bumps a
+ * revision and writes atomically, and a projection rebuild can never lose
+ * it.
  *
  * Layout (PIX_SESSIOND_DIR):
- *   workspace-state.json        — schema v1 document (0600, regular file)
+ *   workspace-state.json        — schema v2 document (0600, regular file)
  *   workspace-state.json.tmp    — same-dir staging file, atomic rename target
  *
- * Document shape (namespaced for future organization state — e.g. assistant
- * handed-off work records land beside `sessions`/`projects` later):
+ * Document shape (namespaced for organization state):
  * {
  *   "kind": "pix.sessiond.workspace-state",
- *   "schemaVersion": 1,
+ *   "schemaVersion": 2,
  *   "revision": 42,
  *   "sessions":  { "<sessionId>":  { "pinned": true, "archived": false } },
- *   "projects":  { "<projectRoot>": { "pinned": true, "archived": false } }
+ *   "projects":  { "<projectRoot>": { "pinned": true, "archived": false } },
+ *   "assistantDelegations": { …opaque ledger owned by assistant-ops.ts… }
  * }
+ *
+ * `assistantDelegations` is an OPAQUE namespace: the store only persists and
+ * reloads it verbatim — shape validation belongs to its owner
+ * (assistant-ops.ts), so a semantically-broken ledger degrades to "empty" in
+ * the owner without quarantining the user's pin/archive flags. It never
+ * surfaces on /v1/workspace-flags and never triggers sessions_changed.
+ * Schema v1 files predate the namespace: reading one yields
+ * `assistantDelegations === undefined` (empty), and the next write upgrades
+ * the document to v2.
  *
  * Durability discipline (mirrors the daemon settings file, hardened):
  *   - temp write (0600) → fsync → atomic rename, same directory
@@ -36,8 +46,10 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, w
 import { dirname, isAbsolute, resolve } from "node:path";
 
 export const WORKSPACE_STATE_KIND = "pix.sessiond.workspace-state" as const;
-export const WORKSPACE_STATE_SCHEMA_VERSION = 1 as const;
+export const WORKSPACE_STATE_SCHEMA_VERSION = 2 as const;
 export const WORKSPACE_STATE_FILE_NAME = "workspace-state.json";
+/** Schema versions this build can READ (writes are always current-version). */
+const READABLE_SCHEMA_VERSIONS = new Set([1, WORKSPACE_STATE_SCHEMA_VERSION]);
 
 export interface WorkspaceFlags {
   pinned?: boolean;
@@ -48,6 +60,9 @@ export interface WorkspaceStateSnapshot {
   readonly revision: number;
   readonly sessions: Readonly<Record<string, WorkspaceFlags>>;
   readonly projects: Readonly<Record<string, WorkspaceFlags>>;
+  /** Opaque assistant delegation ledger (owner: assistant-ops.ts). Absent on
+   * schema-v1 documents and until the first delegation write. */
+  readonly assistantDelegations?: unknown;
 }
 
 export interface WorkspaceStateMutationInput {
@@ -95,12 +110,19 @@ function parseDocument(raw: string): WorkspaceStateSnapshot | null {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const record = parsed as Record<string, unknown>;
   if (record.kind !== WORKSPACE_STATE_KIND) return null;
-  if (record.schemaVersion !== WORKSPACE_STATE_SCHEMA_VERSION) return null;
+  const schemaVersion = record.schemaVersion;
+  if (schemaVersion !== WORKSPACE_STATE_SCHEMA_VERSION && !READABLE_SCHEMA_VERSIONS.has(schemaVersion as number)) return null;
   if (typeof record.revision !== "number" || !Number.isSafeInteger(record.revision) || record.revision < 0) return null;
   const sessions = parseNamespace(record.sessions);
   const projects = parseNamespace(record.projects);
   if (sessions === null || projects === null) return null;
-  return { revision: record.revision, sessions, projects };
+  // v1 documents carry no assistantDelegations namespace (undefined = empty).
+  // For v2 the value is passed through verbatim — its shape is validated by
+  // the owning module, never here.
+  const delegations = (schemaVersion as number) >= 2 ? record.assistantDelegations : undefined;
+  return delegations === undefined
+    ? { revision: record.revision, sessions, projects }
+    : { revision: record.revision, sessions, projects, assistantDelegations: delegations };
 }
 
 /** Normalize a project key: absolute, resolved, no trailing separator. */
@@ -121,6 +143,11 @@ export interface WorkspaceStateStore {
   /** Set flags for one entry; at least one field required. Returns effective flags. */
   setSessionFlags(sessionId: string, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags>;
   setProjectFlags(projectRoot: string, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags>;
+  /** Opaque assistant delegation ledger (owner: assistant-ops.ts). Undefined
+   * until the first write; never surfaced on any external API. */
+  readAssistantDelegations(): unknown;
+  /** Replace the whole ledger value and bump the shared revision. */
+  writeAssistantDelegations(value: unknown): void;
 }
 
 export class WorkspaceStateError extends Error {
@@ -135,9 +162,15 @@ export class InMemoryWorkspaceStateStore implements WorkspaceStateStore {
   private revision = 0;
   private readonly sessions: Record<string, WorkspaceFlags> = {};
   private readonly projects: Record<string, WorkspaceFlags> = {};
+  private delegations: unknown;
 
   snapshot(): WorkspaceStateSnapshot {
-    return { revision: this.revision, sessions: { ...this.sessions }, projects: { ...this.projects } };
+    return {
+      revision: this.revision,
+      sessions: { ...this.sessions },
+      projects: { ...this.projects },
+      ...(this.delegations === undefined ? {} : { assistantDelegations: this.delegations }),
+    };
   }
 
   setSessionFlags(sessionId: string, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags> {
@@ -157,6 +190,15 @@ export class InMemoryWorkspaceStateStore implements WorkspaceStateStore {
     this.projects[key] = merged;
     this.revision += 1;
     return merged;
+  }
+
+  readAssistantDelegations(): unknown {
+    return this.delegations;
+  }
+
+  writeAssistantDelegations(value: unknown): void {
+    this.delegations = value;
+    this.revision += 1;
   }
 }
 
@@ -183,8 +225,13 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
     const current = this.snapshot();
     const merged = mergeWorkspaceFlags(current.sessions[sessionId], patch);
     const sessions = { ...current.sessions, [sessionId]: merged };
-    this.persist({ revision: current.revision + 1, sessions, projects: current.projects });
-    this.state = { revision: current.revision + 1, sessions, projects: current.projects };
+    // Every write carries the WHOLE document — a flags mutation must never
+    // drop the assistant delegations namespace (single-file single-writer).
+    const next: WorkspaceStateSnapshot = current.assistantDelegations === undefined
+      ? { revision: current.revision + 1, sessions, projects: current.projects }
+      : { revision: current.revision + 1, sessions, projects: current.projects, assistantDelegations: current.assistantDelegations };
+    this.persist(next);
+    this.state = next;
     return merged;
   }
 
@@ -195,9 +242,23 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
     const current = this.snapshot();
     const merged = mergeWorkspaceFlags(current.projects[key], patch);
     const projects = { ...current.projects, [key]: merged };
-    this.persist({ revision: current.revision + 1, sessions: current.sessions, projects });
-    this.state = { revision: current.revision + 1, sessions: current.sessions, projects };
+    const next: WorkspaceStateSnapshot = current.assistantDelegations === undefined
+      ? { revision: current.revision + 1, sessions: current.sessions, projects }
+      : { revision: current.revision + 1, sessions: current.sessions, projects, assistantDelegations: current.assistantDelegations };
+    this.persist(next);
+    this.state = next;
     return merged;
+  }
+
+  readAssistantDelegations(): unknown {
+    return this.snapshot().assistantDelegations;
+  }
+
+  writeAssistantDelegations(value: unknown): void {
+    const current = this.snapshot();
+    const next: WorkspaceStateSnapshot = { revision: current.revision + 1, sessions: current.sessions, projects: current.projects, assistantDelegations: value };
+    this.persist(next);
+    this.state = next;
   }
 
   private load(): WorkspaceStateSnapshot {
@@ -230,6 +291,7 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
       revision: next.revision,
       sessions: next.sessions,
       projects: next.projects,
+      ...(next.assistantDelegations === undefined ? {} : { assistantDelegations: next.assistantDelegations }),
     }, null, 2)}\n`;
     const tmp = `${this.filePath}.tmp`;
     try {

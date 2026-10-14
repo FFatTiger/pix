@@ -4,13 +4,14 @@
  * routing, quota, chains, settlement and the ledger are deterministic.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ASSISTANT_NOTIFY_MESSAGE_PREFIX, ASSISTANT_SENT_MESSAGE_PREFIX, type CorrelatedRuntimeCommandResult, type ProtocolError, type RuntimeCommand, type RuntimeCreateParams, type RuntimeCreateResult, type RuntimeSubmitTurnParams, type SubmitTurnAdmission } from "@fffattiger/pix-protocol";
 import { resolveAssistantWorkspaceDir } from "@fffattiger/pix-runtime-core";
 import { AssistantOpsAuthority, type AssistantOpsRecordView, type AssistantOpsSurface } from "../src/assistant-ops.js";
+import { FileWorkspaceStateStore } from "../src/workspace-state.js";
 
 const HOME = "/Users/proxy";
 const ASSISTANT_CWD = resolveAssistantWorkspaceDir(HOME);
@@ -120,7 +121,13 @@ function harness() {
   const dir = mkdtempSync(join(tmpdir(), "pix-assistant-ops-"));
   const surface = new FakeSurface();
   let clock = 1_000_000;
-  const authority = new AssistantOpsAuthority({ surface, directory: dir, homedir: HOME, now: () => clock });
+  const authority = new AssistantOpsAuthority({
+    surface,
+    store: new FileWorkspaceStateStore(dir),
+    legacyDirectory: dir,
+    homedir: HOME,
+    now: () => clock,
+  });
   const assistant = makeRecord("assistant", ASSISTANT_CWD, { operationId: "turn-1" });
   surface.records.set(assistant.sessionId, assistant);
   return {
@@ -487,7 +494,7 @@ test("notifications merge, follow a busy assistant, cold-open a missing assistan
   await wait(NOTIFY_MERGE + 100);
   await wait(5_200);
   await wait(5_200);
-  const ledger = JSON.parse(readFileSync(join(env.dir, "assistant-delegations.json"), "utf8")) as { delegations: Array<{ targetSessionId: string; state: string }> };
+  const ledger = JSON.parse(readFileSync(join(env.dir, "workspace-state.json"), "utf8")).assistantDelegations as { delegations: Array<{ targetSessionId: string; state: string }> };
   assert.equal(ledger.delegations.find((row) => row.targetSessionId === "d")?.state, "delivery_failed");
   env.authority.dispose();
 });
@@ -504,7 +511,7 @@ test("ledger round-trip re-enqueues a pending notification and degrades a wait t
   // Settled into the queue, not yet flushed.
   env.authority.dispose();
 
-  const reloaded = new AssistantOpsAuthority({ surface: env.surface, directory: env.dir, homedir: HOME, now: () => env.now });
+  const reloaded = new AssistantOpsAuthority({ surface: env.surface, store: new FileWorkspaceStateStore(env.dir), homedir: HOME, now: () => env.now });
   env.surface.records.set("assistant", env.assistant);
   await wait(NOTIFY_MERGE + 200);
   const resumed = env.surface.submits.at(-1)?.input.prompt ?? "";
@@ -518,10 +525,10 @@ test("ledger round-trip re-enqueues a pending notification and degrades a wait t
   const target2 = makeRecord("target2", "/repos/app", { running: true });
   waiting.records.set("target2", target2);
   waiting.exists.add("target2");
-  const first = new AssistantOpsAuthority({ surface: waiting, directory: dir, homedir: HOME, now: () => 1 });
+  const first = new AssistantOpsAuthority({ surface: waiting, store: new FileWorkspaceStateStore(dir), homedir: HOME, now: () => 1 });
   await first.handleWorkerOp(view(assistant), "p2", { sessionId: "assistant", op: { kind: "send", targetSessionId: "target2", message: "hold", delivery: "steer", waitMinutes: 5 } });
   first.dispose();
-  const second = new AssistantOpsAuthority({ surface: waiting, directory: dir, homedir: HOME, now: () => 2 });
+  const second = new AssistantOpsAuthority({ surface: waiting, store: new FileWorkspaceStateStore(dir), homedir: HOME, now: () => 2 });
   waiting.records.delete("target2");
   second.scheduleSettleCheck();
   await wait(80);
@@ -529,6 +536,77 @@ test("ledger round-trip re-enqueues a pending notification and degrades a wait t
   assert.match(waiting.submits.at(-1)?.input.prompt ?? "", /结果: 已停止/, "a restarted wait settles as a notification");
   assert.equal(assistant.sent.some((frame) => frame.type === "worker.assistantCompletion"), false);
   second.dispose();
+});
+
+test("legacy assistant-delegations.json is imported once and removed; an invalid one is left in place", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pix-assistant-ops-legacy-"));
+  const legacyPath = join(dir, "assistant-delegations.json");
+  const legacy = {
+    version: 1,
+    delegations: [{
+      id: "legacy-1",
+      assistantSessionId: "assistant",
+      targetSessionId: "target",
+      targetTitle: "旧任务",
+      targetCwd: "/repos/app",
+      summary: "旧交办",
+      createdAt: 1,
+      createdEventId: 0,
+      mode: "wait",
+      state: "wait",
+      waitMinutes: 5,
+    }],
+    chains: {},
+    queue: [],
+  };
+  writeFileSync(legacyPath, JSON.stringify(legacy), "utf8");
+  const surface = new FakeSurface();
+  const assistant = makeRecord("assistant", ASSISTANT_CWD);
+  surface.records.set("assistant", assistant);
+  const store = new FileWorkspaceStateStore(dir);
+  const authority = new AssistantOpsAuthority({ surface, store, legacyDirectory: dir, homedir: HOME, now: () => 1 });
+  t.after(() => authority.dispose());
+  // The namespace is now authoritative and the standalone file is gone.
+  const stored = store.readAssistantDelegations() as { delegations: Array<{ id: string; state: string; mode: string }> };
+  assert.equal(stored.delegations.length, 1);
+  assert.equal(stored.delegations[0]?.id, "legacy-1");
+  assert.equal(stored.delegations[0]?.state, "notify", "a legacy wait degrades to notify (its waiter is gone)");
+  assert.equal(existsSync(legacyPath), false, "the standalone file is removed after a successful import");
+
+  // An invalid legacy file is never destroyed and never adopted.
+  const dir2 = mkdtempSync(join(tmpdir(), "pix-assistant-ops-legacy2-"));
+  const badPath = join(dir2, "assistant-delegations.json");
+  writeFileSync(badPath, "{ not json", "utf8");
+  const surface2 = new FakeSurface();
+  surface2.records.set("assistant", makeRecord("assistant", ASSISTANT_CWD));
+  const store2 = new FileWorkspaceStateStore(dir2);
+  const authority2 = new AssistantOpsAuthority({ surface: surface2, store: store2, legacyDirectory: dir2, homedir: HOME, now: () => 1 });
+  t.after(() => authority2.dispose());
+  assert.equal(store2.readAssistantDelegations(), undefined, "nothing was adopted from the invalid file");
+  assert.equal(existsSync(badPath), true, "the invalid file is left in place for inspection");
+
+  // A namespace value already present wins: no second import, no file touch.
+  const dir3 = mkdtempSync(join(tmpdir(), "pix-assistant-ops-legacy3-"));
+  writeFileSync(join(dir3, "assistant-delegations.json"), JSON.stringify(legacy), "utf8");
+  const store3 = new FileWorkspaceStateStore(dir3);
+  store3.writeAssistantDelegations({ version: 1, delegations: [], chains: {}, queue: [] });
+  const authority3 = new AssistantOpsAuthority({ surface: new FakeSurface(), store: store3, legacyDirectory: dir3, homedir: HOME, now: () => 1 });
+  t.after(() => authority3.dispose());
+  assert.deepEqual((store3.readAssistantDelegations() as { delegations: unknown[] }).delegations, [], "the namespace value is authoritative");
+  assert.equal(existsSync(join(dir3, "assistant-delegations.json")), true, "the legacy file is untouched when the namespace already has a value");
+});
+
+test("a semantically-broken namespace value degrades to empty without touching the flags in the same file", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pix-assistant-ops-badns-"));
+  const store = new FileWorkspaceStateStore(dir);
+  store.setSessionFlags("s1", { pinned: true });
+  // Write a value that parses as JSON but fails the owner's ledger shape.
+  store.writeAssistantDelegations({ version: 1, delegations: "not-an-array", chains: {}, queue: [] });
+  const authority = new AssistantOpsAuthority({ surface: new FakeSurface(), store: new FileWorkspaceStateStore(dir), homedir: HOME, now: () => 1 });
+  t.after(() => authority.dispose());
+  // The authority still works (empty ledger) and the flags survive.
+  const fresh = new FileWorkspaceStateStore(dir).snapshot();
+  assert.deepEqual(fresh.sessions, { s1: { pinned: true } }, "flags in the same document are untouched by the bad namespace");
 });
 
 const IDLE_GRACE = 2_500;

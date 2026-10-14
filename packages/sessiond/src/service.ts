@@ -136,11 +136,13 @@ export interface SessiondDependencies {
    */
   sessionMutation?: SessionMutationPort | null;
   /**
-   * Sessiond-owned durable workspace state (round 5 redo): user organization
-   * preferences (session + project pin/archive). `undefined` lets the daemon
+   * Sessiond-owned durable workspace state: user organization preferences
+   * (session + project pin/archive) AND the assistant delegation ledger
+   * (`assistantDelegations` namespace, written by assistant-ops.ts through
+   * this service — the single writer). `undefined` lets the daemon
    * composition build the file-backed store from its runtime directory;
-   * `null` explicitly disables it for fail-closed tests. Single writer: only
-   * this service mutates it.
+   * `null` explicitly disables it for fail-closed tests (which also disables
+   * the assistant write channel's persistence).
    */
   workspaceState?: import("./workspace-state.js").WorkspaceStateStore | null;
   /**
@@ -152,9 +154,9 @@ export interface SessiondDependencies {
    */
   settingsFile?: string;
   /**
-   * Private sessiond directory for the assistant-delegation ledger. Defaults
-   * to the directory of {@link settingsFile} when that is set, so the daemon
-   * composition needs no extra wiring. Absent → the write channel is off.
+   * Private sessiond directory hint for the one-time assistant-ledger import
+   * (the never-shipped round-7 standalone file). Delegation persistence itself
+   * goes through the workspace-state store; absent → nothing to import.
    */
   assistantDirectory?: string;
 }
@@ -626,7 +628,8 @@ export class SessiondService {
   private readonly runningSubscribers = new Set<RunningSubscriber>();
   private runningState: RuntimeRunningState = { revision: 0, sessionIds: [], busySessionIds: [] };
   private shuttingDown = false;
-  /** Assistant write channel. Absent when no sessiond directory is configured. */
+  /** Assistant write channel. Absent when the workspace-state store is
+   * disabled (null) or not provided — persistence and the channel go together. */
   private readonly assistantOps?: AssistantOpsAuthority;
 
   constructor(private readonly deps: SessiondDependencies, options: SessiondOptions = {}) {
@@ -650,8 +653,19 @@ export class SessiondService {
     this.turnOperationLimit = options.turnOperationLimit ?? 1_000;
     this.epochRolloverTimeoutMs = options.epochRolloverTimeoutMs ?? 10_000;
     this.expectedWorkerBuild = options.expectedWorkerBuild ?? WORKER_BUILD_IDENTITY;
-    const assistantDirectory = deps.assistantDirectory ?? (deps.settingsFile === undefined ? undefined : dirname(deps.settingsFile));
-    if (assistantDirectory !== undefined) this.assistantOps = new AssistantOpsAuthority({ surface: this.assistantOpsSurface(), directory: assistantDirectory, homedir: homedir() });
+    // Assistant write channel: it persists through the unified workspace-state
+    // store, so it exists exactly when that store does (null disables both).
+    // The legacy directory hint only feeds the one-time standalone-ledger
+    // import (round-7 dev trees; never shipped).
+    if (deps.workspaceState) {
+      const legacyDirectory = deps.assistantDirectory ?? (deps.settingsFile === undefined ? undefined : dirname(deps.settingsFile));
+      this.assistantOps = new AssistantOpsAuthority({
+        surface: this.assistantOpsSurface(),
+        store: deps.workspaceState,
+        ...(legacyDirectory === undefined ? {} : { legacyDirectory }),
+        homedir: homedir(),
+      });
+    }
     if (!Number.isSafeInteger(this.subscriberQueueLimit) || this.subscriberQueueLimit < 1) throw new RangeError("subscriberQueueLimit must be positive");
     if (!Number.isSafeInteger(this.subscriberQueueByteLimit) || this.subscriberQueueByteLimit < 1) throw new RangeError("subscriberQueueByteLimit must be positive");
     if (!Number.isSafeInteger(this.commandResultLimit) || this.commandResultLimit < 1) throw new RangeError("commandResultLimit must be positive");
