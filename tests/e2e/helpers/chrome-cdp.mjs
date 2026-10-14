@@ -428,10 +428,10 @@ export const PAGE = {
     return textarea.value;
   })`,
   composerText: `(() => document.querySelector(".chat-input-textarea")?.value ?? null)`,
-  sendButtonPresent: `Boolean(document.querySelector("button.chat-input-send"))`,
-  sendButtonDisabled: `Boolean(document.querySelector("button.chat-input-send")?.disabled)`,
+  sendButtonPresent: `Boolean(document.querySelector("button.chat-input-send:not(.is-stop)"))`,
+  sendButtonDisabled: `Boolean(document.querySelector("button.chat-input-send:not(.is-stop)")?.disabled)`,
   clickSend: `(function clickSend() {
-    const button = document.querySelector("button.chat-input-send");
+    const button = document.querySelector("button.chat-input-send:not(.is-stop)");
     if (!button || button.disabled) return false;
     button.click();
     return true;
@@ -442,8 +442,8 @@ export const PAGE = {
   lastAssistantText: `(() => { const nodes = document.querySelectorAll(".chat-assistant-message"); return nodes.length ? nodes[nodes.length - 1].textContent : null; })()`,
   assistantStreaming: `Boolean(document.querySelector(".chat-assistant-message.is-streaming") || document.querySelector(".markdown-body.is-streaming"))`,
   inputStreaming: `Boolean(document.querySelector(".chat-input-streaming-overlay"))`,
-  runningDot: `Boolean(document.querySelector(".workspace-tab-running-dot"))`,
-  stopButtonPresent: `Boolean(document.querySelector("button[aria-label]")) && Array.from(document.querySelectorAll("button[aria-label]")).some((button) => /stop/i.test(button.getAttribute("aria-label") ?? ""))`,
+  runningDot: `Boolean(document.querySelector('.session-status-dot[data-status="running"]'))`,
+  stopButtonPresent: `Boolean(document.querySelector("button.chat-input-send.is-stop"))`,
   /** Model selector (composer toolbar): the DISPLAYED model label — the value a
    *  send must capture into submit_turn.activationOverrides. Icon wrappers can
    *  render text-less spans, so the label is the joined non-empty span text. */
@@ -536,7 +536,7 @@ export const PAGE = {
   })`,
   dumpDom: `(function dumpDom() {
     const textarea = document.querySelector(".chat-input-textarea");
-    const send = document.querySelector("button.chat-input-send");
+    const send = document.querySelector("button.chat-input-send:not(.is-stop)");
     const selected = document.querySelector("[data-session-row=true][data-active=true]");
     const assistants = Array.from(document.querySelectorAll(".chat-assistant-message"));
     const markdown = Array.from(document.querySelectorAll(".markdown-body"));
@@ -544,10 +544,10 @@ export const PAGE = {
     return {
       url: location.href,
       overlay: Boolean(document.querySelector(".chat-input-streaming-overlay")),
-      runningDot: Boolean(document.querySelector(".workspace-tab-running-dot")),
+      runningDot: Boolean(document.querySelector('.session-status-dot[data-status="running"]')),
       sendBtn: Boolean(send),
       sendDisabled: send?.disabled ?? null,
-      stopBtn: Array.from(document.querySelectorAll("button[aria-label]")).some((button) => /stop/i.test(button.getAttribute("aria-label") ?? "")),
+      stopBtn: Boolean(document.querySelector("button.chat-input-send.is-stop")),
       textareaValue: textarea?.value ?? null,
       textareaPlaceholder: textarea?.placeholder ?? null,
       textareaDisabled: textarea?.disabled ?? null,
@@ -614,11 +614,14 @@ export function installRuntimeTapSource() {
         sessionIdPrefix: typeof parsed?.payload?.sessionId === "string" ? parsed.payload.sessionId.slice(0, 8) : (typeof snap?.state?.sessionId === "string" ? snap.state.sessionId.slice(0, 8) : null),
         epoch: parsed?.payload?.epoch ?? snap?.epoch ?? null,
         eventId: parsed?.payload?.eventId ?? parsed?.payload?.lastEventId ?? null,
+        envelopeId: typeof parsed?.id === "string" ? parsed.id : null,
+        promptHash: typeof parsed?.payload?.prompt === "string" ? parsed.payload.prompt.length + ":" + parsed.payload.prompt.slice(0, 24) : null,
         operationId: typeof parsed?.payload?.operationId === "string" ? parsed.payload.operationId : null,
         operationIdPrefix: typeof parsed?.payload?.operationId === "string" ? parsed.payload.operationId.slice(0, 12) : null,
         turnId: typeof parsed?.payload?.turnId === "string" ? parsed.payload.turnId : null,
         turnIdPrefix: typeof parsed?.payload?.turnId === "string" ? parsed.payload.turnId.slice(0, 12) : null,
         status: parsed?.payload?.status ?? parsed?.payload?.state ?? parsed?.payload?.status?.state ?? null,
+        errorCode: parsed?.payload?.error?.code ?? null,
         turnState: parsed?.payload?.state ?? parsed?.payload?.status?.state ?? null,
         promptDone: eventType === "prompt_done" ? { hasError: Boolean(parsed?.payload?.error), errorCode: parsed?.payload?.error?.code ?? null } : null,
         runningRevision: runningState?.revision ?? parsed?.payload?.revision ?? null,
@@ -748,6 +751,7 @@ export function installRuntimeTapSource() {
             operationIdPrefix: frame.operationIdPrefix,
             turnIdPrefix: frame.turnIdPrefix,
             status: frame.status,
+            errorCode: frame.errorCode ?? frame.error?.code ?? null,
             isStreaming: frame.isStreaming,
             isPromptRunning: frame.isPromptRunning,
             streamingActive: frame.streamingActive,

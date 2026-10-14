@@ -230,6 +230,12 @@ async function closeOwnedChrome(chrome) {
   if (pid && pidAlive(pid)) {
     try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
   }
+  // SIGKILL is asynchronous: the pid can still answer kill(pid, 0) until the
+  // kernel reaps it. Wait out that window before calling the close a leak.
+  if (pid) {
+    const deadline = Date.now() + 2_000;
+    while (pidAlive(pid) && Date.now() < deadline) await delay(50);
+  }
   if (pid && pidAlive(pid)) error = `${error ? `${error}; ` : ""}owned chrome pid ${pid} still alive`;
   return { ok: error === null, error };
 }
@@ -334,6 +340,9 @@ async function runCorpus(chromeSlot, stack, provider, dirs, corpus, { includeRes
   const clickAt = Date.now();
   await chrome.waitFor(PAGE.inputStreaming, { timeoutMs: COLD_SEND_TIMEOUT_MS, label: `${corpus.label}: composer streaming overlay while turn runs` });
   await chrome.waitFor(PAGE.runningDot, { timeoutMs: STEP_TIMEOUT_MS, label: `${corpus.label}: workspace running dot while turn runs` });
+  // While a turn runs the composer keeps the same button slot and switches it
+  // to the stop control (chat-input-send is-stop). The send action is gone.
+  await chrome.waitFor(PAGE.stopButtonPresent, { timeoutMs: STEP_TIMEOUT_MS, label: `${corpus.label}: stop control replaces send while turn runs` });
   await chrome.waitFor(`!(${PAGE.sendButtonPresent})`, { timeoutMs: STEP_TIMEOUT_MS, label: `${corpus.label}: send button swapped out while turn runs` });
   await chrome.waitFor(`window.__pixRuntimeTap && window.__pixRuntimeTap.summary().submitResults >= 1`, { timeoutMs: COLD_SEND_TIMEOUT_MS, label: `${corpus.label}: submit_turn_result on Client WS` });
   const deadline1 = Date.now() + COLD_SEND_TIMEOUT_MS;
@@ -464,6 +473,7 @@ async function runNewSessionFirstSend(chrome, stack, provider, dirs, projectCwd)
   await chrome.navigate(`${stack.origin}/?cwd=${encodeURIComponent(projectCwd)}`);
   await chrome.waitFor(`(${PAGE.sendButtonPresent}) || document.querySelector('[data-testid="home-stack"], [data-testid="transcript-home"]')`, { timeoutMs: STEP_TIMEOUT_MS, label: "new-home: composer or home stack" });
   await requireObserveFeature(chrome, "new-home: boot");
+  provider.reset();
   const held = uniqueMarker("newhome-held");
   const prompt = `browser-newhome ${held}`;
   provider.plan(gatedPlan([`${held} ${HELD_CHUNK} `, `${TERMINAL_CHUNK}.`], prompt));
