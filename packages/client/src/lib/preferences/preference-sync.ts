@@ -19,7 +19,6 @@ import type { HttpClient } from "@/api/http-client";
 
 /** The synced preference keys (raw localStorage key names). */
 export const PREFERENCE_KEYS: readonly string[] = [
-  "pi-sidebar-item-state",
   "pi-sidebar-projects-open",
   "pi-sidebar-sessions-open",
   "pi-sidebar-pinned-open",
@@ -38,6 +37,15 @@ export const PREFERENCE_KEYS: readonly string[] = [
 ];
 
 const PREFERENCE_KEY_SET = new Set(PREFERENCE_KEYS);
+
+/**
+ * Keys this module used to sync but whose data now has another owner
+ * (session/project pin & archive live in sessiond's workspace state). On
+ * hydration a legacy server value is handed to the empty local mirror once —
+ * so the workspace-flags migration can pick it up — and then deleted from
+ * the server map.
+ */
+const LEGACY_HANDOFF_KEYS: readonly string[] = ["pi-sidebar-item-state"];
 const FLUSH_DEBOUNCE_MS = 600;
 
 const pendingWrites = new Map<string, string | null>();
@@ -134,7 +142,15 @@ export function hydratePreferencesFromServer(serverMap: Record<string, string>):
       migrationPatch[key] = localValue; // first device uploads its value
     }
   }
-  if (Object.keys(migrationPatch).length === 0) return Promise.resolve();
+  let legacyDeleted = false;
+  for (const key of LEGACY_HANDOFF_KEYS) {
+    const serverValue = serverMap[key];
+    if (serverValue === undefined) continue;
+    if (readLocalValue(key) === null) applyServerValue(key, serverValue);
+    pendingWrites.set(key, null);
+    legacyDeleted = true;
+  }
+  if (Object.keys(migrationPatch).length === 0 && !legacyDeleted) return Promise.resolve();
   for (const [key, value] of Object.entries(migrationPatch)) pendingWrites.set(key, value);
   return flushNow();
 }

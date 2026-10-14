@@ -69,6 +69,12 @@ fork the logic.
   wallpaper preferences were removed client-side (pix ships a fixed dark
   appearance; the backend theme contracts remain backward-compatible but
   unused by this client).
+- **Two server stores, no overlap**: user UI preferences (locale, sound,
+  favorite models, display toggles…) sync through the Host preference map
+  (`pix.json` `preferences`, client `preference-sync.ts`); session/project
+  organization (pin, archive) lives only in sessiond's workspace state
+  (`/v1/workspace-flags`). Never sync the same data through both; project
+  expansion is device-local.
 - **Component-local state → ephemeral UI only** (draft text, panel open/close,
   debounce, focus). If a value must survive reload, derive from a session or
   branch, or reflect remote truth, it belongs to one of the owners above.

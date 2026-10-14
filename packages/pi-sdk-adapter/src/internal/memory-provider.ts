@@ -67,10 +67,11 @@ export function readMemoryRuntimeStateSync(
   const parsed = readSettingsJsonSync(agentDir);
   let explicit: MemoryProvider | undefined;
   if (parsed !== null && parsed[MEMORY_PROVIDER_SETTINGS_KEY] !== undefined) {
-    explicit = normalizeMemoryProviderValue(parsed[MEMORY_PROVIDER_SETTINGS_KEY]);
-    if (explicit === null) {
+    const normalized = normalizeMemoryProviderValue(parsed[MEMORY_PROVIDER_SETTINGS_KEY]);
+    if (normalized === null || normalized === undefined) {
       throw runtimeError("invalid_input", `settings.json ${MEMORY_PROVIDER_SETTINGS_KEY} is invalid`);
     }
+    explicit = normalized;
   }
   const lore = detectLoreConnection(env);
   return { provider: effectiveMemoryProvider(explicit, lore.configured), explicit, lore };

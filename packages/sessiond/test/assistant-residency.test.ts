@@ -56,12 +56,12 @@ function harness(options: HarnessOptions = {}) {
   };
   const catalog = {
     async listSessions() { return []; },
-    async readSession(sessionId) {
+    async readSession(sessionId: string) {
       return { sessionId, cwd: options.cwdFor?.(sessionId) ?? assistantDir, projectRoot: options.cwdFor?.(sessionId) ?? assistantDir, entries: [] };
     },
-    async readSessionContext(sessionId) { return { sessionId, entries: [], pageInfo: { hasMore: false } }; },
+    async readSessionContext(sessionId: string) { return { sessionId, entries: [], pageInfo: { hasMore: false } }; },
     async readSessionThinking() { throw new Error("not used"); },
-    async readSessionTree(sessionId) { return { sessionId, roots: [], entryCount: 0 }; },
+    async readSessionTree(sessionId: string) { return { sessionId, roots: [], entryCount: 0 }; },
     async deleteSession() {},
     async findLatestSessionByCwd(cwd: string) {
       return cwd === assistantDir && latest !== null

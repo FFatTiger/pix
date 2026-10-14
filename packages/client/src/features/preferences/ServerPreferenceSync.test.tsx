@@ -50,7 +50,7 @@ afterEach(() => {
 });
 
 describe("ServerPreferenceSync startup barrier", () => {
-  it("hydrates server pins before a restored workspace can persist automatic expansion", async () => {
+  it("hands the legacy sidebar blob to the local mirror before mount, deletes it server-side, and keeps expansion local", async () => {
     const serverSidebarState = JSON.stringify({
       pinnedSessions: ["pinned-session"],
       pinnedProjects: ["/pinned-project"],
@@ -77,7 +77,6 @@ describe("ServerPreferenceSync startup barrier", () => {
       }
       return json({});
     }));
-
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(queryKeys.gate.status(), {
       status: "enabled",
@@ -105,22 +104,10 @@ describe("ServerPreferenceSync startup barrier", () => {
     });
 
     expect(await screen.findByTestId("workspace")).toBeTruthy();
-    expect(loadSidebarItemState()).toEqual({
-      pinnedSessions: ["pinned-session"],
-      pinnedProjects: ["/pinned-project"],
-      archivedSessions: [],
-      archivedProjects: [],
-      expandedProjects: ["/current"],
-    });
-
+    expect(loadSidebarItemState().expandedProjects).toEqual(["/current"]);
     await act(async () => { await flushNow(); });
-    expect(patches).toHaveLength(1);
-    expect(JSON.parse(patches[0]?.[SIDEBAR_STATE_KEY] ?? "null")).toEqual({
-      pinnedSessions: ["pinned-session"],
-      pinnedProjects: ["/pinned-project"],
-      archivedSessions: [],
-      archivedProjects: [],
-      expandedProjects: ["/current"],
-    });
+    // The legacy key is deleted from the server map; expansion never syncs.
+    expect(patches.some((patch) => patch[SIDEBAR_STATE_KEY] === null)).toBe(true);
+    expect(patches.every((patch) => patch[SIDEBAR_STATE_KEY] === null || patch[SIDEBAR_STATE_KEY] === undefined)).toBe(true);
   });
 });

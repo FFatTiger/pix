@@ -69,9 +69,11 @@ function readSharedLoreConfig(env: NodeJS.ProcessEnv): SharedLoreConfig {
     return { raw: {} };
   }
   if (!isRecord(parsed)) return { raw: {} };
+  const baseUrl = nonEmptyString(parsed.base_url);
+  const apiToken = nonEmptyString(parsed.api_token);
   return {
-    baseUrl: nonEmptyString(parsed.base_url),
-    apiToken: nonEmptyString(parsed.api_token),
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(apiToken === undefined ? {} : { apiToken }),
     raw: parsed,
   };
 }
@@ -135,7 +137,7 @@ export async function saveLoreConnection(
   } else if (previousBase === normalizedBase) {
     apiToken = shared.apiToken;
   }
-  const document = { ...shared.raw, base_url: normalizedBase };
+  const document: Record<string, unknown> = { ...shared.raw, base_url: normalizedBase };
   if (apiToken === undefined) delete document.api_token;
   else document.api_token = apiToken;
 

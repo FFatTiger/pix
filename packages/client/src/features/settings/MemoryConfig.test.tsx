@@ -94,10 +94,10 @@ describe("MemoryConfig", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
     expect(await screen.findByText(/token is invalid or expired/i)).toBeTruthy();
     // Save is blocked while the last test failed.
-    expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
+    expect((screen.getByRole("button", { name: /save/i }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
     expect(await screen.findByText("Connection OK")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /save/i })).not.toBeDisabled();
+    expect((screen.getByRole("button", { name: /save/i }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() => {
       // Connection first (token write-only), then the provider CAS write.

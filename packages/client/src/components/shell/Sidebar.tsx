@@ -97,7 +97,7 @@ export interface SidebarProps {
    * (no conversation yet) render no dot; `online`/`starting`/`error` render
    * the small status dot on the entry, reusing the existing status colors.
    */
-  assistantStatus?: "online" | "starting" | "error";
+  assistantStatus?: "online" | "starting" | "error" | undefined;
 }
 
 /**

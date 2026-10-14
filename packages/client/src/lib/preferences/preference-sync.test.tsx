@@ -43,7 +43,7 @@ afterEach(() => {
 describe("server preference sync core", () => {
   it("registry covers the user-level preference keys and rejects unknown writes", () => {
     expect(PREFERENCE_KEYS).toContain("pi-process-display-mode");
-    expect(PREFERENCE_KEYS).toContain("pi-sidebar-item-state");
+    expect(PREFERENCE_KEYS).not.toContain("pi-sidebar-item-state"); // pin/archive live in sessiond workspace state
     reportPreferenceWrite("some-random-key", "x");
     expect(pendingPatchSnapshot()).toEqual({});
   });

@@ -117,6 +117,7 @@ export function SettingsInput({
   onPaste,
   id,
   inputRef,
+  disabled,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -124,6 +125,7 @@ export function SettingsInput({
   mono?: boolean;
   type?: string;
   style?: CSSProperties;
+  disabled?: boolean;
   onKeyDown?: (e: KeyboardEvent<HTMLInputElement>) => void;
   onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
   onPaste?: (e: React.ClipboardEvent<HTMLInputElement>) => void;
@@ -132,6 +134,7 @@ export function SettingsInput({
 }) {
   return (
     <input
+      disabled={disabled}
       id={id}
       ref={inputRef}
       type={type}
