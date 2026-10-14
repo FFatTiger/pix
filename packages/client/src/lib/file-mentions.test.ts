@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toCwdRelativeMentions } from "./file-mentions";
+import { normalizePathSlashes, pathCompareKey, toCwdRelativeMentions } from "./file-mentions";
 
 // Ported verbatim from the legacy desktop source lib/file-mentions.test.mjs.
 describe("toCwdRelativeMentions", () => {
@@ -28,6 +28,18 @@ describe("toCwdRelativeMentions", () => {
     );
     expect(mentions).toEqual(["src/app.ts"]);
     expect(rejected).toEqual([]);
+  });
+
+  it("folds UNC paths case-insensitively and leaves POSIX case alone", () => {
+    const { mentions, rejected } = toCwdRelativeMentions(
+      ["\\\\Server\\Share\\src\\app.ts"],
+      "//server/share",
+    );
+    expect(mentions).toEqual(["src/app.ts"]);
+    expect(rejected).toEqual([]);
+    expect(pathCompareKey("//Server/Share")).toBe("//server/share");
+    expect(pathCompareKey(normalizePathSlashes("\\\\Server\\Share\\Src"))).toBe("//server/share/src");
+    expect(pathCompareKey("/Repo/Src")).toBe("/Repo/Src");
   });
 
   it("rejects paths outside cwd", () => {

@@ -15,6 +15,7 @@ export function isEphemeralWorkspacePath(path: string): boolean {
   const normalized = normalizePath(path).toLowerCase();
   return (
     normalized.includes("/tmp/") ||
+    normalized.includes("/appdata/local/temp/") ||
     normalized.includes("/var/folders/") ||
     normalized.includes("/pix-e2e-") ||
     normalized.includes("/pix-fake-") ||

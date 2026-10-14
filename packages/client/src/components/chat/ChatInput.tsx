@@ -17,6 +17,7 @@ import {
   type AtQueryMatch, type FileIndexEntry,
 } from "@/lib/file-fuzzy";
 import { toCwdRelativeMentions } from "@/lib/file-mentions";
+import { baseName } from "@/features/workspace/paths";
 import { tokenizeMentions } from "@/lib/mention-tokens";
 // pix adapter: the source fetched the project index / skill catalog through
 // hooks/useProjectContext (Next fetch). Here the same snapshots arrive as
@@ -2157,7 +2158,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   ) : (
                     atMatches.map((entry, index) => {
                       const active = index === atActiveIndex;
-                      const name = entry.path.split("/").pop() ?? entry.path;
+                      const name = baseName(entry.path);
                       const dirPrefix = entry.path.slice(0, entry.path.length - name.length);
                       return (
                         <MenuItem
@@ -2621,7 +2622,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 >
                   <FolderIcon size={14} />
                   <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {currentProject ? currentProject.split("/").filter(Boolean).pop() ?? currentProject : t("desktop.selectProject")}
+                    {currentProject ? baseName(currentProject) : t("desktop.selectProject")}
                   </span>
                   <CaretDownIcon size={11} weight="bold" className="ui-caret" aria-hidden="true" />
                 </ToolbarButton>
@@ -2713,7 +2714,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                 <span style={{ color: "var(--text-dim)", fontSize: 10, flexShrink: 0, maxWidth: "45%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{root}</span>
                               }
                             >
-                              {root.split("/").filter(Boolean).pop() ?? root}
+                              {baseName(root)}
                             </MenuItem>
                           );
                         })}

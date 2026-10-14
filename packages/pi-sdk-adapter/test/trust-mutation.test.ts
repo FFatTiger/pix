@@ -31,6 +31,8 @@ import { createPiSdkTrustCatalog, createPiSdkTrustMutation } from "../src/trust/
 import {
   PiSdkTrustMutationError,
   createPiSdkTrustMutationStore,
+  dirFsyncTolerated,
+  modeBitsSafe,
 } from "../src/internal/trust-store.js";
 
 async function fixture(): Promise<{ root: string; agentDir: string; projectCwd: string }> {
@@ -723,6 +725,103 @@ describe("trust mutation port (D3B trust-mutation slice)", () => {
       const parsed = JSON.parse(await readTrustJson(agentDir)) as Record<string, unknown>;
       assert.equal(parsed["/"], true, "root cwd persisted under the '/' key");
       assert.equal(new ProjectTrustStore(agentDir).get("/"), true, "fresh SDK read of the root key");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts win32's universal 0o666 mode and tolerates NTFS directory-fsync codes", () => {
+    assert.equal(modeBitsSafe(0o666, "win32"), true);
+    assert.equal(modeBitsSafe(0o600, "win32"), true);
+    assert.equal(modeBitsSafe(0o666, "darwin"), false);
+    assert.equal(modeBitsSafe(0o600, "linux"), true);
+    for (const code of ["EINVAL", "ENOTSUP", "EISDIR"]) {
+      assert.equal(dirFsyncTolerated(code, "linux"), true);
+      assert.equal(dirFsyncTolerated(code, "win32"), true);
+    }
+    for (const code of ["EPERM", "EACCES", "EBUSY"]) {
+      assert.equal(dirFsyncTolerated(code, "win32"), true);
+      assert.equal(dirFsyncTolerated(code, "linux"), false);
+    }
+    assert.equal(dirFsyncTolerated("EIO", "win32"), false);
+    assert.equal(dirFsyncTolerated(undefined, "win32"), false);
+  });
+
+  it("win32 rename fallback removes the target once and publishes; POSIX does not", async () => {
+    const { root, agentDir, projectCwd } = await fixture();
+    try {
+      await writeFile(trustPathFor(agentDir), "{}\n", { mode: 0o666 });
+      let renameFaults = 0;
+      await createPiSdkTrustMutationStore({
+        agentDir,
+        platform: "win32",
+        faultInjection: {
+          failRename: () => {
+            renameFaults += 1;
+            const error = new Error("replace denied") as NodeJS.ErrnoException;
+            error.code = "EPERM";
+            throw error;
+          },
+        },
+      }).setProjectTrusted(projectCwd);
+      assert.equal(renameFaults, 1, "retry fires exactly once");
+      assert.equal(new ProjectTrustStore(agentDir).get(projectCwd), true);
+      assert.equal((await readdir(agentDir)).some((name) => name.endsWith(".tmp")), false);
+
+      await assert.rejects(
+        createPiSdkTrustMutationStore({
+          agentDir,
+          faultInjection: {
+            failRename: () => {
+              const error = new Error("replace denied") as NodeJS.ErrnoException;
+              error.code = "EPERM";
+              throw error;
+            },
+          },
+        }).setProjectTrusted(projectCwd),
+        (error: unknown) => {
+          assertFixedCode(error, "TRUST_WRITE_FAILED");
+          return true;
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tolerates an injected win32 directory-fsync failure and still verifies the publish", async () => {
+    const { root, agentDir, projectCwd } = await fixture();
+    try {
+      await createPiSdkTrustMutationStore({
+        agentDir,
+        platform: "win32",
+        faultInjection: {
+          failDirFsync: () => {
+            const error = new Error("dir flush denied") as NodeJS.ErrnoException;
+            error.code = "EPERM";
+            throw error;
+          },
+        },
+      }).setProjectTrusted(projectCwd);
+      assert.equal(new ProjectTrustStore(agentDir).get(projectCwd), true);
+
+      await assert.rejects(
+        createPiSdkTrustMutationStore({
+          agentDir,
+          platform: "win32",
+          faultInjection: {
+            failDirFsync: () => {
+              const error = new Error("disk") as NodeJS.ErrnoException;
+              error.code = "EIO";
+              throw error;
+            },
+          },
+        }).setProjectTrusted(projectCwd),
+        (error: unknown) => {
+          assertFixedCode(error, "TRUST_WRITE_UNVERIFIED");
+          return true;
+        },
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

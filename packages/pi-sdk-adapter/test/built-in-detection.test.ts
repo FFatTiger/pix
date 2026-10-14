@@ -39,11 +39,27 @@ describe("actual loaded built-in detection", () => {
       commands: [],
     });
     assert.deepEqual([...onlyTool], []);
+    // Detection requires the EXACT full pi-smart-compact tool family (the
+    // bundled 10.3.0 surface) plus the smart-compact command.
+    const SMART_FAMILY = [
+      "smart_compact",
+      "smart_recall",
+      "smart_save_memory",
+      "smart_context",
+      "smart_navigation",
+      "smart_tools",
+    ];
     const both = detectLoadedBuiltIns({
-      tools: [{ name: SMART_COMPACT_TOOL_NAME }, { name: "smart_recall" }],
+      tools: SMART_FAMILY.map((name) => ({ name })),
       commands: [{ name: SMART_COMPACT_COMMAND_NAME }],
     });
     assert.deepEqual([...both], ["smart_compact"]);
+    // A partial family signature must NOT be detected as smart_compact.
+    const partial = detectLoadedBuiltIns({
+      tools: [{ name: "smart_compact" }, { name: "smart_recall" }],
+      commands: [{ name: SMART_COMPACT_COMMAND_NAME }],
+    });
+    assert.deepEqual([...partial], []);
     // Loaded smart_compact flips NO runtime token (no consumer surface).
     const caps = capabilitiesWithLoadedTokens(["runtime.prompt"], new Set(["smart_compact"]));
     assert.deepEqual(caps, ["runtime.prompt"]);

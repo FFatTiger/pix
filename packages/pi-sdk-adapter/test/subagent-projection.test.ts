@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MAX_SUBAGENT_MODEL_LENGTH } from "@fffattiger/pix-runtime-core";
 import {
+  containedPathOn,
   isSubagentRefreshEvent,
   nextSubagentProjection,
   readSubagentProjection,
@@ -27,6 +28,16 @@ async function writeTask(agentDir: string, taskId: string, body: Record<string, 
   await writeFile(join(dir, "task.json"), `${JSON.stringify(body)}\n`, { mode: 0o600 });
   return dir;
 }
+
+describe("containedPathOn", () => {
+  it("rejects a win32 absolute relative() result from a different drive", () => {
+    assert.equal(containedPathOn("C:\\a", "D:\\b\\file.jsonl", "win32"), null);
+    assert.equal(containedPathOn("C:\\a", "C:\\a\\sessions\\child.jsonl", "win32"), "C:\\a\\sessions\\child.jsonl");
+    assert.equal(containedPathOn("C:\\a", "C:\\a\\..\\outside.jsonl", "win32"), null);
+    assert.equal(containedPathOn("/sessions", "/outside.jsonl", "darwin"), null);
+    assert.ok(containedPathOn("/sessions", "/sessions/child.jsonl", "darwin")?.endsWith("/sessions/child.jsonl"));
+  });
+});
 
 describe("subagent projection seed and live refresh", () => {
   it("cold-seeds from bounded task.json without a transcript Agent call and resolves a validated child session", async () => {

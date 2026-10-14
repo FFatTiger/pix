@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { RuntimeEvent } from "@fffattiger/pix-runtime-core";
-import { CanonicalAgentRuntimeAdapter } from "../src/internal/adapter.js";
+import { CanonicalAgentRuntimeAdapter, normalizeWrittenPathInto } from "../src/internal/adapter.js";
 import { ScriptedSdkDriverFactory, ScriptedSdkStore } from "./scripted-sdk.js";
 
 async function setup() {
@@ -12,6 +12,25 @@ async function setup() {
   adapter.subscribe((event) => events.push(event));
   return { driver, adapter, events };
 }
+
+describe("normalizeWrittenPathInto", () => {
+  it("keeps the POSIX /a/b shape and cleans segments", () => {
+    assert.equal(normalizeWrittenPathInto("/workspace", "nested.txt", "darwin"), "/workspace/nested.txt");
+    assert.equal(normalizeWrittenPathInto("/workspace/", "a/../b/./c.ts", "linux"), "/workspace/b/c.ts");
+    assert.equal(normalizeWrittenPathInto("/workspace", "/already/abs.ts", "darwin"), "/already/abs.ts");
+  });
+
+  it("keeps win32 drive and UNC shape", () => {
+    assert.equal(normalizeWrittenPathInto("C:\\repo", "src\\a.ts", "win32"), "C:\\repo\\src\\a.ts");
+    assert.equal(normalizeWrittenPathInto("C:\\repo", "C:\\repo\\a.ts", "win32"), "C:\\repo\\a.ts");
+    assert.equal(
+      normalizeWrittenPathInto("C:\\repo", "\\\\server\\share\\a.ts", "win32"),
+      "\\\\server\\share\\a.ts",
+    );
+    assert.equal(normalizeWrittenPathInto("C:\\repo", "a/../b/./c.ts", "win32"), "C:\\repo\\b\\c.ts");
+    assert.equal(normalizeWrittenPathInto("/workspace", "src\\a.ts", "darwin"), "/workspace/src\\a.ts");
+  });
+});
 
 describe("production adapter written-file correlation", () => {
   it("preserves parent call identity on nested writes without losing write tracking", async () => {

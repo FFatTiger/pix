@@ -19,7 +19,7 @@ interface FakeSession {
   active: string[];
 }
 
-function fakeSession(toolNames: string[]): AgentSession {
+function fakeSession(toolNames: string[]): AgentSession & { active: string[] } {
   const session: FakeSession = {
     tools: toolNames.map((name) => ({ name, exposure: "direct" })),
     active: [],
@@ -30,7 +30,15 @@ function fakeSession(toolNames: string[]): AgentSession {
     setActiveToolsByName: (names: readonly string[]) => {
       session.active = [...names];
     },
-  } as unknown as AgentSession;
+    // Test-only accessors so assertions can read/mutate the fake's state
+    // directly (the real AgentSession exposes methods, not fields).
+    get active(): string[] {
+      return session.active;
+    },
+    set active(value: string[]) {
+      session.active = value;
+    },
+  } as unknown as AgentSession & { active: string[] };
 }
 
 const policy = () => ({ forcedEmpty: false });
@@ -100,7 +108,10 @@ describe("capabilityOwnedToolNames (tools follow their capability)", () => {
   });
 
   it("resolves the memory contribution from the provider family", async () => {
-    const local = await agentDirFixture({ builtIns: allOnBuiltIns() });
+    // Explicit provider selection in BOTH fixtures: the absent-settings
+    // migration default (Lore when a machine has an existing ~/.lore) is
+    // environment-dependent and must not leak into this assertion.
+    const local = await agentDirFixture({ builtIns: allOnBuiltIns(), settings: `${JSON.stringify({ pixMemoryProvider: "local" })}\n` });
     const lore = await agentDirFixture({ builtIns: allOnBuiltIns(), settings: `${JSON.stringify({ pixMemoryProvider: "lore" })}\n` });
     try {
       const names = ["memory_read", "memory_write", "memory_forget", "memory_restore", "memory_status", "scratchpad", "memory_search", "lore_search", "lore_get_node", "read"];

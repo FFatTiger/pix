@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PRODUCTION_AGENT_CAPABILITIES, PiSdkAgentRuntimeFactory } from "../src/agent/index.js";
+import { THINKING_LEVELS } from "@fffattiger/pix-runtime-core";
 
 // Explicit selections union the registration-activated extension surface: the
 // curated subagents/todo/ask tools PLUS the bundled smart-compact plugin's
@@ -27,6 +28,23 @@ async function withAgentDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
   // extension in these tests.
   await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
   await writeFile(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), `${JSON.stringify({ pixMemoryProvider: "local" }, null, 2)}\n`);
+  // Seed an offline model catalog: the no-network smoke must be able to
+  // resolve the set_model target without any user-level models.json.
+  await writeFile(join(process.env.PI_CODING_AGENT_DIR, "models.json"), `${JSON.stringify({
+    providers: {
+      openai: {
+        api: "openai-completions",
+        baseUrl: "http://127.0.0.1:9/v1",
+        apiKey: "sk-offline-smoke",
+        models: [{
+          id: "gpt-5",
+          name: "GPT-5 smoke",
+          contextWindow: 32000,
+          maxTokens: 4096,
+        }],
+      },
+    },
+  }, null, 2)}\n`);
   try { return await fn(root); }
   finally {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -156,7 +174,11 @@ describe("public production SDK factory smoke", () => {
         const afterThinking = await port.execute({ type: "get_state" });
         assert.equal(afterThinking.ok, true);
         if (afterThinking.ok && afterThinking.type === "get_state") {
-          assert.equal(afterThinking.state.thinkingLevel, "minimal");
+          // The SDK clamps unsupported levels for the active model (the same
+          // authoritative-clamp rule as set_thinking_level's own comment and
+          // the set_model note below): the pin is asserted absolutely, the
+          // level only as a valid vocabulary member.
+          assert.ok(THINKING_LEVELS.includes(afterThinking.state.thinkingLevel as (typeof THINKING_LEVELS)[number]));
           assert.equal(afterThinking.state.thinkingLevelPinned, true);
         }
 

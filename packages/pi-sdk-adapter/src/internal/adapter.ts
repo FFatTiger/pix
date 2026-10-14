@@ -47,6 +47,7 @@ import {
   type AgentMessage as CoreAgentMessage,
   type StreamingAgentMessage as CoreStreamingAgentMessage,
 } from "@fffattiger/pix-runtime-core";
+import { win32 } from "node:path";
 import { mapDriverError, mapMessage, sanitizeValue } from "../mappers/index.js";
 import { redactText } from "./sanitize.js";
 import type { DriverUiRequest, PiRuntimeDriver } from "./types.js";
@@ -1518,21 +1519,7 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     if (!args || typeof args !== "object") return undefined;
     const path = (args as Record<string, unknown>).path;
     if (typeof path !== "string" || path.trim().length === 0 || path.includes("\0")) return undefined;
-    return this.normalizeWrittenPath(path);
-  }
-
-  private normalizeWrittenPath(path: string): string | undefined {
-    try {
-      const base = this.driver.identity.cwd;
-      const normalized = path.startsWith("/") ? path : `${base.replace(/\/$/, "")}/${path}`;
-      const segments: string[] = [];
-      for (const segment of normalized.split("/")) {
-        if (!segment || segment === ".") continue;
-        if (segment === "..") segments.pop();
-        else segments.push(segment);
-      }
-      return `/${segments.join("/")}`;
-    } catch { return undefined; }
+    return normalizeWrittenPathInto(this.driver.identity.cwd, path);
   }
 
   private publishCommittedBashTerminals(terminals: readonly PendingBashTerminal[]): void {
@@ -1673,4 +1660,31 @@ export class CanonicalAgentRuntimeAdapter implements AgentRuntimePort {
     });
   }
   private emit(event: RuntimeEvent): void { for (const listener of [...this.listeners]) listener(event); }
+}
+
+/**
+ * Canonical written-file path. POSIX output stays `/a/b` (absolute input is
+ * not re-rooted; `.`/`..`/empty segments are cleaned). win32 keeps the
+ * drive/UNC shape from `path.win32.resolve`. NUL is rejected by the caller.
+ */
+export function normalizeWrittenPathInto(
+  cwd: string,
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  try {
+    if (platform === "win32") {
+      // resolve (not bare normalize) so a UNC root keeps its leading \\.
+      const absolute = win32.isAbsolute(path) ? path : win32.resolve(cwd, path);
+      return win32.normalize(win32.resolve(absolute));
+    }
+    const normalized = path.startsWith("/") ? path : `${cwd.replace(/\/$/, "")}/${path}`;
+    const segments: string[] = [];
+    for (const segment of normalized.split("/")) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") segments.pop();
+      else segments.push(segment);
+    }
+    return `/${segments.join("/")}`;
+  } catch { return undefined; }
 }
