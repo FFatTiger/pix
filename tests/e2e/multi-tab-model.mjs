@@ -6,14 +6,14 @@
  * Each tab owns its own RuntimeProvider/WS (per-target runtime tap proves an
  * independent handshake per tab).
  *
- * Contract under test (model-submit regression, "composer shows A then sends B"):
+ * Contract under test:
  *
  *  S1 same session, two tabs:
  *   - tab2 makes the session live with one turn, then tab1 is opened while the
- *     session is idle → detached, branch-resolved display of history model A;
- *   - tab2 (live) mutates the model to B (immediate runtime.model.set); tab1
- *     stays detached and must still SHOW A while the worker now holds B (the
- *     exact "composer shows A" divergence);
+ *     session is idle and shows the history model A;
+ *   - tab2 mutates the model to B (immediate runtime.model.set). The worker
+ *     publishes the change, so the idle tab1 follows it and shows B too — the
+ *     composer and the worker never diverge;
  *   - tab1 sends: the controlled provider's ACTUAL request.model must equal the
  *     model tab1 displayed immediately before the send, exactly one request;
  *   - exactly ONE worker identity for the whole scenario (same sessiond worker
@@ -427,19 +427,21 @@ async function scenarioSameSessionTwoTabs(chrome, stack, provider, dirs) {
   const tab1 = await openSessionTab(chrome, stack, dirs, sessionId, "S1:tab1");
   await waitForModelName(tab1, MODEL_A, NAME_A, "S1: tab1 selector shows the history model A", sessionId);
 
-  // tab2 (live) mutates the model to B — an immediate runtime.model.set. tab1
-  // stays detached with its already-resolved branch read: it must still SHOW A
-  // while the worker now holds B (the exact "composer shows A" divergence).
+  // tab2 (live) mutates the model to B — an immediate runtime.model.set.
+  // The worker publishes that change as a runtime_state_changed context
+  // payload, and every attached client (including the idle tab1) reduces it,
+  // so both composers must show B. The old oracle expected tab1 to keep the
+  // stale history model A; that divergence no longer exists.
   await selectModel(tab2, [NAME_B, MODEL_B], "S1:tab2-select-B");
   await waitForCondition(async () => (await authorityModel(stack, sessionId)) === MODEL_B, { label: "S1: authority model becomes B" });
   await waitForModelName(tab2, MODEL_B, NAME_B, "S1: tab2 selector shows B", sessionId);
-  await waitForModelName(tab1, MODEL_A, NAME_A, "S1: tab1 still shows A after tab2's mutation", sessionId);
+  await waitForModelName(tab1, MODEL_B, NAME_B, "S1: tab1 follows the live model to B", sessionId);
   const visiblePreSend = await visibleModelName(tab1);
   const expectedModelId = NAME_TO_ID.get(visiblePreSend) ?? null;
-  assert.equal(expectedModelId, MODEL_A, `S1: tab1's visible pre-send model must resolve to ${MODEL_A} (got ${String(visiblePreSend)})`);
+  assert.equal(expectedModelId, MODEL_B, `S1: tab1's visible pre-send model must resolve to ${MODEL_B} (got ${String(visiblePreSend)})`);
 
-  // The divergence precondition, asserted immediately before the send.
-  assert.equal(await authorityModel(stack, sessionId), MODEL_B, "S1: precondition — the live worker must still hold model B when tab1 sends");
+  // What the composer shows and what the worker holds are the same model.
+  assert.equal(await authorityModel(stack, sessionId), MODEL_B, "S1: precondition — the live worker holds the model tab1 displays");
   assert.equal((await workerPids(stack)).length, 1, "S1: precondition — exactly one worker identity");
 
   const reply2 = nonce("r2");
@@ -460,16 +462,16 @@ async function scenarioSameSessionTwoTabs(chrome, stack, provider, dirs) {
   await waitForCondition(async () => (await runningIds(stack)).includes(sessionId), { timeoutMs: STEP_TIMEOUT_MS, label: "S1: worker survives tab2 close" });
   assert.deepEqual(await workerPids(stack), workersAfterTurn1, "S1: worker identity unchanged after tab2 close");
 
-  await waitForModelName(tab1, MODEL_A, NAME_A, "S1: tab1 selector back to A after its send", sessionId);
+  await waitForModelName(tab1, MODEL_B, NAME_B, "S1: tab1 keeps the live model B after its send", sessionId);
 
   // The surviving tab must still be able to drive the SAME worker end to end.
   const reply3 = nonce("r3");
   const prompt3 = `mtab-s1-tab1-t3 ${nonce("p3")}`;
   provider.plan({ chunks: [`${reply3} `, `${TERMINAL_MARKER}.`], matchPromptHash: hashPrompt(prompt3) });
-  expectRequest(prompt3, MODEL_A, "S1:tab1-after-tab2-close");
+  expectRequest(prompt3, MODEL_B, "S1:tab1-after-tab2-close");
   await sendAndAwaitRequest(tab1, provider, prompt3, "S1:tab1-after-tab2-close");
   markExactPrompt(provider, prompt3);
-  assertSingleRequest(provider, prompt3, MODEL_A, "S1:tab1-after-tab2-close");
+  assertSingleRequest(provider, prompt3, MODEL_B, "S1:tab1-after-tab2-close");
   await waitTurnTerminal(tab1, reply3, "S1:tab1-after-tab2-close");
   verifyRequestLedger(provider, "S1 final");
   assert.deepEqual(await workerPids(stack), workersAfterTurn1, "S1: still exactly one worker identity at the end");
