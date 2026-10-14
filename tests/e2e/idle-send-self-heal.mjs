@@ -11,11 +11,12 @@
  *  P. normal project session
  *  A. Pixie assistant session (cwd = <home>/.pi/pix/assistant, residency ON)
  *
- * Both: one healthy send, page hidden, killWebSockets(), wait past one
- * heartbeat, page visible, second distinct prompt.
- * Oracle: one provider request, empty alert, visible reply, and exactly one
- * logical submit (two submit_turn frames sharing that operationId is success;
- * two different operationIds is a failure).
+ * Both scenarios: one healthy send, page hidden, killWebSockets(), wait
+ * past one heartbeat, page visible, second distinct prompt. The hidden wait
+ * makes the client treat the socket as unproven, so it reconnects BEFORE
+ * writing: exactly one submit_turn for the second prompt, and that frame is
+ * on the new socket (after the recovery handshake). One provider request,
+ * no alert. Two different operationIds is a failure.
  *
  * Run: node tests/e2e/idle-send-self-heal.mjs
  */
@@ -70,6 +71,7 @@ async function startKillingProxy(targetOrigin) {
   const target = new URL(targetOrigin);
   const targetPort = Number(target.port);
   const livePairs = new Set();
+  const acceptedSockets = new Set();
   let upgradeCount = 0;
   const server = http.createServer((req, res) => {
     const upstream = http.request({
@@ -84,6 +86,10 @@ async function startKillingProxy(targetOrigin) {
     });
     upstream.on("error", () => { res.destroy(); });
     req.pipe(upstream);
+  });
+  server.on("connection", (socket) => {
+    acceptedSockets.add(socket);
+    socket.once("close", () => acceptedSockets.delete(socket));
   });
   server.on("upgrade", (req, socket) => {
     upgradeCount += 1;
@@ -139,13 +145,15 @@ async function startKillingProxy(targetOrigin) {
       }
     },
     close: () => new Promise((resolvePromise) => {
-      for (const pair of livePairs) {
+      for (const pair of [...livePairs]) {
         pair.dead = true;
         pair.socket.destroy();
         pair.upstream.destroy();
       }
+      livePairs.clear();
+      for (const socket of [...acceptedSockets]) socket.destroy();
+      acceptedSockets.clear();
       server.close(() => resolvePromise());
-      server.closeAllConnections?.();
     }),
   };
 }
@@ -291,6 +299,55 @@ async function openAssistantTab(chrome, proxy, stack) {
   return { tab, cwd: info.cwd };
 }
 
+function submitLayout(op) {
+  return `(() => {
+    const frames = window.__pixRuntimeTap?.frames ?? [];
+    const submits = [];
+    let handshakesBefore = 0;
+    let seenHandshake = false;
+    for (const frame of frames) {
+      if (frame.direction === "out" && frame.type === "handshake") {
+        if (submits.length === 0) handshakesBefore += 1;
+        seenHandshake = true;
+      }
+      if (frame.direction === "out" && frame.type === "submit_turn" && frame.operationId === ${JSON.stringify(op)}) {
+        submits.push(seenHandshake);
+        seenHandshake = false;
+      }
+    }
+    const lastHandshake = frames.reduce((index, frame, at) =>
+      frame.direction === "out" && frame.type === "handshake" ? at : index, -1);
+    const submitIndexes = frames
+      .map((frame, at) => frame.direction === "out" && frame.type === "submit_turn" && frame.operationId === ${JSON.stringify(op)} ? at : -1)
+      .filter((at) => at >= 0);
+    return { count: submits.length, handshakesBeforeFirst: handshakesBefore, lastHandshake, submitIndexes };
+  })()`;
+}
+
+async function assertDeliveredOnce(tab, provider, prompt, op, name) {
+  const deadline = Date.now() + SEND_TIMEOUT_MS;
+  let alertSeen = null;
+  for (;;) {
+    const count = requestsFor(provider, prompt).length;
+    const dump = await tab.evaluate(`(${PAGE.dumpDom})()`).catch(() => null);
+    alertSeen = dump?.alert ?? alertSeen;
+    if (alertSeen && FORBIDDEN_ALERTS.some((copy) => String(alertSeen).includes(copy))) {
+      throw new Error(`${name}: forbidden alert=${JSON.stringify(alertSeen)}`);
+    }
+    if (count > 1) throw new Error(`${name}: provider received the prompt ${count} times`);
+    if (count === 1) break;
+    if (Date.now() > deadline) {
+      const detail = await tab.evaluate(`(() => (window.__pixRuntimeTap?.frames ?? [])
+        .filter(frame => frame.type === "submit_turn" || frame.type === "submit_turn_result")
+        .map(frame => ({ direction: frame.direction, type: frame.type, operationId: frame.operationId, envelopeId: frame.envelopeId, prompt: frame.promptHash, status: frame.status, errorCode: frame.errorCode })))()`).catch(() => null);
+      throw new Error(`${name}: no provider request alert=${JSON.stringify(alertSeen)} submits=${JSON.stringify(detail)}`);
+    }
+    await delay(100);
+  }
+  assert.equal(requestsFor(provider, prompt).length, 1, `${name}: exactly one provider request`);
+  return alertSeen;
+}
+
 async function runScenario({ name, chrome, stack, provider, proxy, open, only }) {
   if (only && name !== only) return null;
   const opened = await open();
@@ -314,7 +371,8 @@ async function runScenario({ name, chrome, stack, provider, proxy, open, only })
   await tab.setHidden(true);
   proxy.killWebSockets();
   // Past one client heartbeat (30s). A hidden page cannot prove the socket,
-  // so the next send must recover instead of trusting the last inbound frame.
+  // so the next send reconnects before writing instead of trusting the
+  // last inbound frame.
   await delay(Math.max(HEAL_WAIT_MS, 31_000));
   await tab.setHidden(false);
 
@@ -322,25 +380,7 @@ async function runScenario({ name, chrome, stack, provider, proxy, open, only })
   const prompt2 = `${name}-t2 ${nonce(`${name}-p2`)}`;
   planTurn(provider, reply2);
   const op2 = await typeAndSend(tab, prompt2, `${name}:turn2`);
-  const deadline2 = Date.now() + SEND_TIMEOUT_MS;
-  let alertSeen = null;
-  for (;;) {
-    const count = requestsFor(provider, prompt2).length;
-    const dump = await tab.evaluate(`(${PAGE.dumpDom})()`).catch(() => null);
-    alertSeen = dump?.alert ?? alertSeen;
-    if (alertSeen && FORBIDDEN_ALERTS.some((copy) => String(alertSeen).includes(copy))) {
-      throw new Error(`${name}:turn2: forbidden alert=${JSON.stringify(alertSeen)}`);
-    }
-    if (count > 1) throw new Error(`${name}:turn2: provider received the prompt ${count} times`);
-    if (count === 1) break;
-    if (Date.now() > deadline2) {
-      const frames = await tab.evaluate(`(window.__pixRuntimeTap?.frames ?? [])
-        .filter(frame => frame.direction === "out" && frame.type === "submit_turn")
-        .map(frame => frame.operationId)`).catch(() => null);
-      throw new Error(`${name}:turn2: no provider request alert=${JSON.stringify(alertSeen)} submits=${JSON.stringify(frames)}`);
-    }
-    await delay(100);
-  }
+  await assertDeliveredOnce(tab, provider, prompt2, op2, `${name}:turn2`);
   await waitTurnTerminal(tab, reply2, `${name}:turn2`);
   const providerCount = requestsFor(provider, prompt2).length;
   assert.equal(providerCount, 1, `${name}:turn2: exactly one provider request`);
@@ -352,8 +392,12 @@ async function runScenario({ name, chrome, stack, provider, proxy, open, only })
       .filter(id => id && id !== ${JSON.stringify(op1)});
     return [...new Set(ids)];
   })()`);
-  assert.deepEqual(distinct, [op2], `${name}:turn2: resend must keep the same operationId (got ${JSON.stringify(distinct)}, frames=${frameCount})`);
-  assert.ok(frameCount >= 2, `${name}:turn2: expected the same operationId resent on the new socket (frames=${frameCount})`);
+  const layout = await tab.evaluate(submitLayout(op2));
+  assert.deepEqual(distinct, [op2], `${name}:turn2: one operationId (got ${JSON.stringify(distinct)}, frames=${frameCount})`);
+  assert.equal(frameCount, 1, `${name}:turn2: wake reconnects before writing, so exactly one submit (frames=${frameCount})`);
+  assert.equal(layout.submitIndexes.length, 1, `${name}:turn2: one submit index`);
+  assert.ok(layout.submitIndexes[0] > layout.lastHandshake && layout.handshakesBeforeFirst >= 2,
+    `${name}:turn2: the single submit must be on the new socket: ${JSON.stringify(layout)}`);
   const finalDump = await tab.evaluate(`(${PAGE.dumpDom})()`);
   assert.equal(finalDump.alert, null, `${name}: alert must be empty once the reply arrives: ${JSON.stringify(finalDump.alert)}`);
   assert.ok(proxy.upgradeCount > upgradesAfterTurn1, `${name}: recovery opened a fresh WebSocket`);
