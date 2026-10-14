@@ -998,7 +998,7 @@ export const zhCNLocale = {
     "desktop.assistantPresence.error": "Pixie 异常，正在重试",
     "desktop.assistantPlaceholder": "问我任何事，或者问问你的其他会话…",
     "desktop.assistantDraftPlaceholder": "随便问，或者让我跟进某个项目…",
-    "desktop.assistantEntryChip": "随手的事不用选项目，交给 Pixie",
+    "desktop.assistantEntryChip": "交给 Pixie",
     "desktop.assistantUnavailable": "Pixie 暂时不可用",
     "desktop.codexAssistantSearchedSessions": "查找了会话",
     "desktop.codexAssistantSearchedSessionsDetail": "查找会话：{value}",

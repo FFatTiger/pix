@@ -4007,41 +4007,46 @@ html.pi-booted body::before {
    collapses (short fade) when a project is selected and re-expands when the
    project is cleared. */
 .assistant-entry-tab {
-  position: relative;
-  z-index: 30;
+  display: flex;
+  justify-content: center;
   flex: 0 0 auto;
   width: 100%;
-  margin: 0 0 -1px; /* covers the composer's top edge like the status tab */
-  padding: 0 16px;
-  max-height: 40px;
+  margin: -6px 0 22px;
+  max-height: 48px;
   opacity: 1;
   overflow: hidden;
   transition: opacity 160ms ease, max-height 160ms ease, margin 160ms ease;
 }
 .assistant-entry-tab[data-state="hidden"] {
   max-height: 0;
-  margin-bottom: 0;
+  margin: 0;
   opacity: 0;
   pointer-events: none;
 }
+/* An accent pill under the home title: the same colour language as the
+   other actionable controls (project picker, thinking level). */
 .assistant-entry-chip,
 .assistant-entry-chip--selected {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: 28px;
+  min-height: 32px;
   max-width: 100%;
-  padding: 4px 12px;
+  padding: 0 12px 0 13px;
   border: 0;
-  border-radius: 10px 10px 0 0;
-  background: var(--composer-bg);
-  color: var(--text);
-  font-size: 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: background 160ms ease;
+  transition: background 140ms ease, transform 120ms ease;
 }
-button.assistant-entry-chip:hover { background: var(--composer-bg); color: var(--text); }
+button.assistant-entry-chip:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+button.assistant-entry-chip:active { transform: scale(0.97); }
+button.assistant-entry-chip:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
+.assistant-entry-chip-caret { opacity: 0.75; margin-left: -1px; }
 .assistant-entry-chip-label {
   min-width: 0;
   overflow: hidden;
@@ -4052,21 +4057,17 @@ button.assistant-entry-chip:hover { background: var(--composer-bg); color: var(-
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
+  margin-right: -5px;
   flex: 0 0 auto;
   border: 0;
   border-radius: 50%;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--accent);
   cursor: pointer;
 }
-.assistant-entry-chip-dismiss:hover { background: var(--bg-hover); color: var(--text); }
-@media (min-width: 641px) {
-  /* The composer shell hangs 13px past the region on desktop; start the tab
-     on the shell's left edge. */
-  .assistant-entry-tab { padding-left: 3px; }
-}
+.assistant-entry-chip-dismiss:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 /* Step aside while a composer popover is open, exactly like the status tab. */
 .workspace:has(.chat-input-popover) .assistant-entry-tab { visibility: hidden; }
 

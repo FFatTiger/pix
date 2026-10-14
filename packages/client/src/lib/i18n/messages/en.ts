@@ -998,7 +998,7 @@ export const enLocale = {
     "desktop.assistantPresence.error": "Pixie hit an error and is retrying",
     "desktop.assistantPlaceholder": "Ask me anything, or ask about your other sessions…",
     "desktop.assistantDraftPlaceholder": "Ask anything, or have me follow up on a project…",
-    "desktop.assistantEntryChip": "Not tied to a project? Ask Pixie",
+    "desktop.assistantEntryChip": "Ask Pixie",
     "desktop.assistantUnavailable": "Pixie is unavailable right now",
     "desktop.codexAssistantSearchedSessions": "Searched sessions",
     "desktop.codexAssistantSearchedSessionsDetail": "Searched sessions: {value}",
