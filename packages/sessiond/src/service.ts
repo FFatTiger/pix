@@ -50,6 +50,7 @@ import {
 import type { RuntimeCloseReason, SessiondRunningWatchPush } from "@fffattiger/pix-protocol";
 import { READ_ONLY_RUNTIME_COMMAND_TYPES, isRuntimeError, isAssistantWorkspacePath, type CatalogPageRequest, type ProjectCatalogPort, type ProjectPage, type SessionCatalogPort, type SessionHeader, type SessionListFilter, type SessionLocation, type SessionLocatorPort, type SessionMutationPort, type SessionPage, type SessionPageRequest } from "@fffattiger/pix-runtime-core";
 import { AssistantOpsAuthority, type AssistantOpsRecordView } from "./assistant-ops.js";
+import { WorkspaceStateError } from "./workspace-state.js";
 import { SessiondError, duplicateInterruptUnavailable, duplicateResultUnavailable, epochChangedCommand, epochChangedInterrupt, rejectedCommand, rejectedInterrupt, unavailableCommand, unavailableInterrupt } from "./errors.js";
 import { EventJournal, type EventJournalOptions } from "./journal.js";
 import { AsyncMutex } from "./internal/mutex.js";
@@ -3572,6 +3573,57 @@ export class SessiondService {
     return { sessionId, name: canonicalName };
   }
 
+  /** Map a live-command `{ok:false}` result onto a fixed sanitized SessiondError. */
+  private mapRenameCommandFailure(result: CorrelatedRuntimeCommandResult): SessiondError {
+    const error = result.result.ok ? undefined : result.result.error;
+    const code = error?.code ?? "unavailable";
+    return new SessiondError(code, RENAME_FAILURE_MESSAGES[code] ?? "session rename failed", error?.retryable ?? false);
+  }
+
+  /** Map an offline-mutation failure onto a fixed sanitized SessiondError. */
+  private mapOfflineRenameFailure(error: unknown): SessiondError {
+    if (error instanceof SessiondError) return error;
+    if (isRuntimeError(error)) {
+      const code = error.code as ProtocolErrorCode;
+      return new SessiondError(code, OFFLINE_RENAME_FAILURE_MESSAGES[code] ?? "session rename failed", error.retryable);
+    }
+    return new SessiondError("unavailable", "session rename failed", true);
+  }
+
+  /**
+   * D4 session-history delete (stopped/history only). A live/crashed record (any
+   * `records` entry — idle, prompt, bash, compact, crashed or stopping) or an
+   * earlier activation reservation (in-flight or queued ahead in the identity
+   * lane) fails closed PROMPTLY with a fixed `session_busy` — no wait/stop/
+   * delete, no `force`. The catalog I/O runs INSIDE the per-session lane (never
+   * under the global mutex), so a delete admitted first lets a later activation
+   * queue behind it and fail not_found with zero Workers, and a rename admitted
+   * first commits before the delete removes the file. Concurrent delete/delete
+   * serialize on the lane; the adapter is ENOENT-idempotent, so the second
+   * delete surfaces a fixed `not_found` (or an idempotent success) with no
+   * wrong-file risk.
+   */
+  async deleteSession(sessionId: string): Promise<void> {
+    if (!this.deps.sessionCatalog) throw new SessiondError("unavailable", "session catalog is unavailable", false);
+    const failClosedBusy = (): never => { throw new SessiondError("session_busy", "session is running", false); };
+    // Prompt checks BEFORE enqueue (never wait for a worker).
+    if (this.records.has(sessionId)) failClosedBusy();
+    if (this.activations.has(sessionId)) failClosedBusy();
+    if (this.coordinator.hasPendingKind(sessionId, "activate")) failClosedBusy();
+    await this.coordinator.admit(sessionId, "delete", async (ctx) => {
+      if (this.shuttingDown) throw new SessiondError("unavailable", "sessiond is shutting down", true);
+      if (ctx.isStale()) throw new SessiondError("conflict", "session identity changed during delete", false);
+      // Defensive record check inside the lane: an activation ahead of a delete
+      // would already have made the prompt admission fail closed, and any
+      // activation admitted after this delete queues BEHIND it (never runs
+      // ahead) — so no live record can exist here; stay fail-closed anyway.
+      const canonical = ctx.canonicalId;
+      if (this.records.has(canonical)) failClosedBusy();
+      await this.deps.sessionCatalog!.deleteSession(canonical);
+      this.titleOverlay.remove(canonical);
+    });
+  }
+
   /**
    * Server-side sidebar flags (round 5 redo). Organization preferences live in
    * the sessiond-owned workspace state file — NEVER in the Pi session JSONL
@@ -3619,8 +3671,8 @@ export class SessiondService {
 
   private mapWorkspaceStateFailure(error: unknown, kind: "session" | "project"): SessiondError {
     if (error instanceof SessiondError) return error;
-    const code = error instanceof import("./workspace-state.js").WorkspaceStateError ? error.code : "unavailable";
-    const retryable = error instanceof import("./workspace-state.js").WorkspaceStateError ? error.retryable : true;
+    const code = error instanceof WorkspaceStateError ? error.code : "unavailable";
+    const retryable = error instanceof WorkspaceStateError ? error.retryable : true;
     if (code === "invalid_input") return new SessiondError("invalid_input", `invalid ${kind} flags`, false);
     return new SessiondError("unavailable", `workspace state is unavailable for ${kind} flags`, retryable);
   }
