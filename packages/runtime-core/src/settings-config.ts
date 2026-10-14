@@ -140,6 +140,10 @@ export interface SettingsConfigStorePort {
   readCompactionConfig(): Promise<CompactionSettingsSnapshot>;
   /** Structured CAS write; nullable fields clear the persisted overrides. */
   writeCompactionConfig(input: CompactionSettingsMutation): Promise<CompactionSettingsSnapshot>;
+  /** Structured read of the long-term memory provider (`pixMemoryProvider`). */
+  readMemoryConfig(): Promise<MemorySettingsSnapshot>;
+  /** Structured CAS write of the memory provider (lore requires a connection). */
+  writeMemoryProvider(input: MemoryProviderMutation): Promise<MemorySettingsSnapshot>;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +161,12 @@ export const SMART_COMPACT_THINKING_LEVELS: readonly SmartCompactThinkingLevel[]
 
 /** Pi native auto-compaction (`compaction` object). Null clears the override. */
 export interface NativeCompactionSettings {
-  /** `compaction.enabled` — Pi default true. Off = no native auto-compaction. */
+  /**
+   * `compaction.enabled`. Pix always runs Pi's built-in auto-compaction as the
+   * fallback, so this is forced true on read and on write — a stored `false`
+   * is treated as on and the next structured save persists `true`. There is no
+   * user switch for it.
+   */
   enabled: boolean;
   /** `compaction.reserveTokens` — tokens reserved after native compaction. */
   reserveTokens: number | null;
@@ -200,6 +209,100 @@ export interface CompactionSettingsSnapshot {
 export interface CompactionSettingsMutation {
   expectedRevision: string;
   settings: CompactionSettings;
+}
+
+// ---------------------------------------------------------------------------
+// Long-term memory provider (settings.json `pixMemoryProvider`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which long-term memory backend Pix loads for sessions. Exactly one of the
+ * two bundled memory plugins (pi-memory / Lore) may load; `"off"` loads
+ * neither. Canonical owner: the Pix settings "记忆" page — never a per
+ * capability toggle.
+ */
+export type MemoryProvider = "local" | "lore" | "off";
+
+export const MEMORY_PROVIDERS: readonly MemoryProvider[] = ["local", "lore", "off"];
+
+/**
+ * Normalize a persisted `pixMemoryProvider` value. Returns the provider when
+ * valid, `undefined` when the key is absent, and `null` when present but
+ * invalid (callers fail closed on `null`, never silently re-default).
+ */
+export function normalizeMemoryProviderValue(value: unknown): MemoryProvider | undefined | null {
+  if (value === undefined) return undefined;
+  return MEMORY_PROVIDERS.includes(value as MemoryProvider) ? value as MemoryProvider : null;
+}
+
+/**
+ * Effective-provider resolution: an explicit `pixMemoryProvider` wins; when
+ * the key is absent, a machine that already carries a configured Lore
+ * connection (~/.lore/config.json or LORE_* env) defaults to Lore so an
+ * existing Lore user is never silently switched to local memory; everyone
+ * else defaults to the bundled local memory.
+ */
+export function effectiveMemoryProvider(
+  explicit: MemoryProvider | undefined,
+  loreConfigured: boolean,
+): MemoryProvider {
+  if (explicit !== undefined) return explicit;
+  return loreConfigured ? "lore" : "local";
+}
+
+/** Lore connection facts as the settings page sees them (no secrets). */
+export interface LoreConnectionSnapshot {
+  /** Both a base URL and a token are available (file or env). */
+  configured: boolean;
+  /** Effective base URL (file wins over env); null when neither is set. */
+  baseUrl: string | null;
+  /** Where the effective base URL came from. */
+  source: "config" | "env" | "none";
+  /** A token is present in the same source (never the token itself). */
+  tokenConfigured: boolean;
+}
+
+export interface MemorySettingsSnapshot {
+  /** SHA-256 of the exact settings.json bytes; empty-file digest when absent. */
+  revision: string;
+  /** Effective provider (explicit value, or the migration default). */
+  provider: MemoryProvider;
+  /** Whether `pixMemoryProvider` is explicitly persisted in settings.json. */
+  providerExplicit: boolean;
+  lore: LoreConnectionSnapshot;
+}
+
+export interface MemoryProviderMutation {
+  expectedRevision: string;
+  provider: MemoryProvider;
+}
+
+/**
+ * CAS write of the memory provider (`pixMemoryProvider`). Enabling `"lore"`
+ * requires a configured Lore connection first (adapters enforce it; the UI
+ * additionally gates on a passing connection test).
+ */
+export interface LoreConnectionMutation {
+  /** Absolute http(s) base URL of the Lore server. */
+  baseUrl: string;
+  /**
+   * Write-only API token. Omitted = keep the saved token when the base URL
+   * is unchanged; changing the base URL without a token clears the old one
+   * (mirrors the official @loremem/cli semantics).
+   */
+  apiToken?: string;
+}
+
+/** "Test connection" outcome against `GET <base>/api/health`. */
+export type LoreTestOutcome =
+  | { ok: true; baseUrl: string }
+  | { ok: false; reason: "invalid_url" | "insecure_http" | "missing_token" | "unauthorized" | "unreachable" };
+
+export interface LoreTestRequest {
+  /** Defaults to the effective base URL (config file, then env). */
+  baseUrl?: string;
+  /** Defaults to the saved token (config file, then env). */
+  apiToken?: string;
 }
 
 function normalizeCompactionModel(value: unknown): string | null | undefined {
@@ -255,7 +358,8 @@ export function normalizeCompactionSettings(value: unknown): CompactionSettings 
   if (summaryModel === undefined || segmentationModel === undefined
     || summaryThinkingLevel === undefined || segmentationThinkingLevel === undefined) return null;
   return {
-    native: { enabled: native.enabled, reserveTokens, keepRecentTokens },
+    // Pi's own auto-compaction is the always-on fallback; never persist off.
+    native: { enabled: true, reserveTokens, keepRecentTokens },
     smart: {
       autoTrigger: smart.autoTrigger,
       minContextPercent: smart.minContextPercent,

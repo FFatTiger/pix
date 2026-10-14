@@ -1,22 +1,29 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PRODUCTION_AGENT_CAPABILITIES, PiSdkAgentRuntimeFactory } from "../src/agent/index.js";
 
 // Explicit selections union the registration-activated extension surface: the
 // curated subagents/todo/ask tools PLUS the bundled smart-compact plugin's
-// eager-loaded tools (pinned 10.3.0 surface).
+// eager-loaded tools (pinned 10.3.0 surface). The plugin's own project-memory
+// tools (smart_recall / smart_save_memory) are excluded — Pix memory has one
+// owner, the memory provider.
 const EXPECTED_SELECTED_WITH_CURATED = [
   "Agent", "SendMessage", "TaskOutput", "TaskStop", "ask_user_question", "edit", "read", "todo",
-  "smart_recall", "smart_save_memory", "smart_tools", "smart_navigation", "smart_context", "smart_compact",
+  "smart_tools", "smart_navigation", "smart_context", "smart_compact",
 ].sort();
 
 async function withAgentDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), "pix-pi-sdk-public-smoke-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+  // Deterministic memory provider for the real composition below: machines
+  // with an existing Lore connection must not default to the networked Lore
+  // extension in these tests.
+  await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+  await writeFile(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), `${JSON.stringify({ pixMemoryProvider: "local" }, null, 2)}\n`);
   try { return await fn(root); }
   finally {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;

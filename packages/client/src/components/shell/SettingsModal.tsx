@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   Archive,
   ArrowLeft,
+  Brain,
   ChatCircleText,
   Cpu,
   FileJs,
@@ -22,6 +23,7 @@ import { CompactionConfig } from "@/features/settings/CompactionConfig";
 import { AppearanceConfig } from "@/features/settings/AppearanceConfig";
 import { CapabilitiesConfig } from "@/features/settings/CapabilitiesConfig";
 import { InputConfig } from "@/features/settings/InputConfig";
+import { MemoryConfig } from "@/features/settings/MemoryConfig";
 import { ModelsSettingsTab } from "@/features/settings/ModelsConfig";
 import { PluginsConfig } from "@/features/settings/PluginsConfig";
 import { SessionConfig } from "@/features/settings/SessionConfig";
@@ -45,6 +47,7 @@ export type SettingsPageId =
   | "archive"
   | "providers"
   | "capabilities"
+  | "memory"
   | "subagents"
   | "tools"
   | "compaction"
@@ -150,6 +153,7 @@ export function SettingsModal({
       pages: [
         { id: "providers", labelKey: "desktop.settingsPage.providers", descKey: "desktop.settingsPage.providersDesc", Icon: Cpu, render: () => <ModelsSettingsTab /> },
         { id: "capabilities", labelKey: "desktop.settingsPage.capabilities", descKey: "desktop.settingsPage.capabilitiesDesc", Icon: SlidersHorizontal, render: () => <CapabilitiesConfig /> },
+        { id: "memory", labelKey: "desktop.settingsPage.memory", descKey: "desktop.settingsPage.memoryDesc", Icon: Brain, render: () => <MemoryConfig /> },
         { id: "subagents", labelKey: "desktop.settingsPage.subagents", descKey: "desktop.settingsPage.subagentsDesc", Icon: UsersThree, render: () => <SubagentSettingsConfig /> },
         { id: "tools", labelKey: "desktop.settingsPage.tools", descKey: "desktop.settingsPage.toolsDesc", Icon: Wrench, render: () => <ToolsConfig /> },
         { id: "compaction", labelKey: "desktop.settingsPage.compaction", descKey: "desktop.settingsPage.compactionDesc", Icon: ArrowsClockwise, render: () => <CompactionConfig /> },

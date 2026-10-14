@@ -188,6 +188,29 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
           return invalidate(queryClient, queryKeys.settingsConfig.file());
         },
       }),
+      /** CAS write of the memory provider (`pixMemoryProvider`). */
+      saveMemory: () => ({
+        mutationKey: ["pix", "settings", "save-memory"] as const,
+        mutationFn: (input: Parameters<typeof configuration.memory.save>[0]) =>
+          configuration.memory.save(input),
+        onSuccess: (data: Awaited<ReturnType<typeof configuration.memory.save>>) => {
+          queryClient.setQueryData(queryKeys.settingsConfig.memory(), data);
+          return invalidate(queryClient, queryKeys.settingsConfig.file());
+        },
+      }),
+      /** Save the shared Lore connection (~/.lore/config.json, token write-only). */
+      saveLoreConnection: () => ({
+        mutationKey: ["pix", "settings", "save-lore-connection"] as const,
+        mutationFn: (input: Parameters<typeof configuration.memoryLore.save>[0]) =>
+          configuration.memoryLore.save(input),
+        onSuccess: () => invalidate(queryClient, queryKeys.settingsConfig.memory()),
+      }),
+      /** Probe the Lore server health endpoint; a failed probe is a result. */
+      testLoreConnection: () => ({
+        mutationKey: ["pix", "settings", "test-lore-connection"] as const,
+        mutationFn: (input: Parameters<typeof configuration.memoryLore.test>[0]) =>
+          configuration.memoryLore.test(input),
+      }),
       /** CAS write of the global settings.json raw text. */
       saveConfigFile: () => ({
         mutationKey: ["pix", "settings", "save-config"] as const,
@@ -202,6 +225,7 @@ export function createMutationOptions(http: HttpClient, queryClient: QueryClient
             queryKeys.settingsConfig.builtIns(),
             queryKeys.settingsConfig.subagents(),
             queryKeys.settingsConfig.compaction(),
+            queryKeys.settingsConfig.memory(),
             queryKeys.skills.all,
             queryKeys.plugins.all,
             queryKeys.commands.all,

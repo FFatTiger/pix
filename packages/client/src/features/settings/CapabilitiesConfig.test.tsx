@@ -92,8 +92,8 @@ describe("CapabilitiesConfig", () => {
     });
     mount(fetchMock);
     expect((await screen.findByRole("switch", { name: "Smart compaction" })).getAttribute("aria-checked")).toBe("true");
-    // The description states the honest consequence: Pi-native compaction carries on.
-    expect(screen.getByText("Verified context summaries with recoverable backups. Off: sessions fall back to Pi's built-in auto-compaction.")).toBeTruthy();
+    // Same one-line description the compaction page shows under its switch.
+    expect(screen.getByText("Tidies long conversations automatically and keeps what matters.")).toBeTruthy();
   });
 
   it("does not fetch or fabricate controls without builtins.configure", async () => {

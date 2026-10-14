@@ -163,6 +163,38 @@ test("buildWorkerEnv is a strict allowlist (no process.env spread, no sessiond s
   assert.ok(WORKER_ENV_KEY_ALLOWLIST.includes("OPENAI_API_KEY"));
 });
 
+test("buildWorkerEnv forces the bundled pi-memory exit summary off and forwards only the memory/roots keys", () => {
+  // PI_MEMORY_EXIT_SUMMARY=0 is unconditional: Pix recycles idle workers
+  // constantly, so pi-memory's model-backed exit summary must never fire.
+  const minimal = buildWorkerEnv({ sourceEnv: { PATH: "/bin", HOME: "/home/user" } });
+  assert.equal(minimal.PI_MEMORY_EXIT_SUMMARY, "0");
+
+  const forwarded = buildWorkerEnv({
+    sourceEnv: {
+      PATH: "/bin",
+      HOME: "/home/user",
+      PI_MEMORY_DIR: "/custom/memory",
+      PI_MEMORY_EXIT_SUMMARY: "1",
+      LORE_HOME: "/custom/lore",
+      LORE_BASE_URL: "https://core.example",
+      LORE_API_TOKEN: "lm_t",
+      PIX_ALLOWED_ROOTS: "/repos:/work",
+    },
+  });
+  assert.equal(forwarded.PI_MEMORY_EXIT_SUMMARY, "0", "the forced value wins over the operator env");
+  assert.equal(forwarded.PI_MEMORY_DIR, "/custom/memory");
+  assert.equal(forwarded.LORE_HOME, "/custom/lore");
+  assert.equal(forwarded.LORE_BASE_URL, "https://core.example");
+  assert.equal(forwarded.LORE_API_TOKEN, "lm_t");
+  assert.equal(forwarded.PIX_ALLOWED_ROOTS, "/repos:/work");
+
+  // Absent keys stay absent; other PIX_* keys are still refused.
+  const unset = buildWorkerEnv({ sourceEnv: { PATH: "/bin", HOME: "/home/user", PIX_EVIL: "1" } });
+  assert.equal(unset.PIX_ALLOWED_ROOTS, undefined);
+  assert.equal(unset.LORE_BASE_URL, undefined);
+  assert.equal((unset as Record<string, string | undefined>).PIX_EVIL, undefined);
+});
+
 test("buildWorkerEnv only injects PIX_AGENT_WORKER_FACTORY via explicit options", () => {
   const env = buildWorkerEnv({
     sourceEnv: { PATH: "/bin", PIX_AGENT_WORKER_FACTORY: "/from-env.mjs" },

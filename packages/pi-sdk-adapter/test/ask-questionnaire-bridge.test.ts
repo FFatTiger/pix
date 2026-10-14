@@ -101,6 +101,9 @@ describe("ask questionnaire bridge", () => {
     const agentDir = join(root, "agent");
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    // Deterministic memory provider (machines with a Lore connection must not
+    // default to the networked Lore extension here).
+    await writeFile(join(agentDir, "settings.json"), `${JSON.stringify({ pixMemoryProvider: "local" }, null, 2)}\n`, { mode: 0o600 });
     await writeFile(join(agentDir, "pix-builtins.json"), `${JSON.stringify({
       version: 1,
       subagents: false,

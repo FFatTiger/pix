@@ -17,14 +17,28 @@ export function createRegistryPackage(standalone, destination, overrides = {}) {
   const cli = readJson(join(standalone, "package.json"));
   const scope = join(standalone, "node_modules", "@fffattiger");
   // Bundled plugins: vendored/pinned trees copied verbatim into the registry
-  // package's node_modules and rewritten to their real versions.
+  // package's node_modules and rewritten to their real versions. Every
+  // agent-capability plugin Pix ships is vendored as a fixed tgz (see
+  // AGENTS.md "bundled agent plugins"); none resolve from the registry.
   const pluginRoots = [
     join(standalone, "node_modules", "pi-claude-subagents"),
     join(standalone, "node_modules", "pi-smart-compact"),
+    join(standalone, "node_modules", "pi-memory"),
+    join(standalone, "node_modules", "@local", "lore-pi-extension"),
+    join(standalone, "node_modules", "@juicesharp", "rpiv-todo"),
+    join(standalone, "node_modules", "@juicesharp", "rpiv-ask-user-question"),
+  ];
+  const pluginNames = [
+    "pi-claude-subagents",
+    "pi-smart-compact",
+    "pi-memory",
+    "@local/lore-pi-extension",
+    "@juicesharp/rpiv-todo",
+    "@juicesharp/rpiv-ask-user-question",
   ];
   const plugins = pluginRoots.map((root) => {
     const manifest = readJson(join(root, "package.json"));
-    if (!["pi-claude-subagents", "pi-smart-compact"].includes(manifest.name)) {
+    if (!pluginNames.includes(manifest.name)) {
       throw new Error(`bundled plugin identity mismatch: ${manifest.name}`);
     }
     return { root, manifest };

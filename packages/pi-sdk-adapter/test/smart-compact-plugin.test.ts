@@ -22,6 +22,9 @@ import { detectLoadedBuiltIns } from "../src/internal/built-in-detection.js";
 async function withTempAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
   const agentDir = await mkdtemp(join(tmpdir(), "pix-smart-compact-load-"));
   await chmod(agentDir, 0o700);
+  // Deterministic memory provider: a machine with an existing Lore connection
+  // must not default these loads to the networked Lore extension.
+  await writeFile(join(agentDir, "settings.json"), `${JSON.stringify({ pixMemoryProvider: "local" }, null, 2)}\n`);
   try {
     await run(agentDir);
   } finally {

@@ -145,3 +145,44 @@ distributed; the plugin runs with its local fallbacks without them.
 > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
+
+## pi-memory (MIT License)
+
+The bundled local-memory plugin `node_modules/pi-memory` is the upstream npm
+package `pi-memory@0.4.2` by Jay Zeng, vendored as `vendor/pi-memory-0.4.2.tgz`
+and distributed inside the pix CLI bundle. Pix runs it with the session-exit
+summary disabled (`PI_MEMORY_EXIT_SUMMARY=0`) and without the optional qmd
+semantic-search model (the `memory_search` tool is filtered out).
+
+> MIT License
+>
+> Copyright (c) Jay Zeng
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+## @local/lore-pi-extension (upstream `lore-pi.zip`)
+
+The bundled Lore Pi extension `node_modules/@local/lore-pi-extension` is the
+official GitHub Release artifact `lore-pi.zip` from
+[FFatTiger/lore](https://github.com/FFatTiger/lore) at `v1.5.0` (the same
+artifact the official `@loremem/cli` installer's `pi` channel distributes),
+repacked verbatim as `vendor/lore-pi-extension-1.5.0.tgz` for npm file:
+installation and distributed inside the pix CLI bundle. The upstream package
+declares no license field; it is the user's own product (Lore) and is vendored
+with the release artifact's contents unchanged (including its README).

@@ -84,16 +84,41 @@ import type {
 const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"]);
 
 /**
+ * pi-smart-compact's own project-memory tools (pinned 10.3.0). Pix memory has
+ * exactly one owner — the memory provider (pi-memory / Lore / off) — so these
+ * two are never declared to the model. `contextGraphEnabled` stays at the
+ * plugin default: turning it off would also stop the plugin indexing verified
+ * compaction state, which compaction itself uses. Hiding is done here, at the
+ * active-tool boundary, because the plugin registers its tools from its
+ * extension factory (not the pre-registration tool map) and then re-applies
+ * its own exposure on `session_start`. Pix's tool selection runs AFTER that
+ * event and is the last writer, so the exclusion holds for startup, reload
+ * and every later selection. The plugin's eager mode keeps `smart_tools`
+ * load a no-op for already-loaded groups, and its memory group refuses to
+ * load anything the active set excludes.
+ */
+export const SMART_COMPACT_MEMORY_TOOL_NAMES: readonly string[] = ["smart_recall", "smart_save_memory"];
+
+const SMART_COMPACT_MEMORY_TOOLS = new Set<string>(SMART_COMPACT_MEMORY_TOOL_NAMES);
+
+/** Drop the excluded memory tools from a selected active set. */
+export function withoutSmartCompactMemoryTools(names: readonly string[]): string[] {
+  return names.filter((name) => !SMART_COMPACT_MEMORY_TOOLS.has(name));
+}
+
+/**
  * Extension/resource tools that activate on registration (SDK semantics):
  * declarable exposure (`direct`/`model-only`) and not `defaultActive:false`.
  * Tools the SDK registers inactive on purpose — codemode, tool_search, and
  * MCP tools with codemode/deferred exposure — are only activated by naming
  * them explicitly (defaultTools/setTools), never by the adapter's implicit
- * include-extension-tools union.
+ * include-extension-tools union. The smart-compact memory tools are excluded
+ * even though the plugin registers them active.
  */
 function registrationActivatedToolNames(session: AgentSession): string[] {
   return session.getAllTools()
     .filter((tool) => !BUILTIN_TOOL_NAMES.has(tool.name))
+    .filter((tool) => !SMART_COMPACT_MEMORY_TOOLS.has(tool.name))
     .filter((tool) =>
       (tool.exposure === "direct" || tool.exposure === "model-only")
       && session.getToolDefinition(tool.name)?.defaultActive !== false)
@@ -109,6 +134,33 @@ function createToolPolicyExtension(policy: ToolPolicyState) {
     pi.on("before_agent_start", () => policy.forcedEmpty ? { systemPrompt: "" } : undefined);
   };
 }
+
+/**
+ * Last-writer guard for pi-smart-compact's memory tools.
+ *
+ * The plugin's own `session_start` handler (eager mode) activates
+ * smart_recall / smart_save_memory, and it remembers a tool that vanishes and
+ * later reappears as a user opt-in — so a `smart_tools` load could bring them
+ * back. Inline extension factories load AFTER package extensions and
+ * session_start fires in registration order, so this handler, registered
+ * last, deactivates them at the end of every session_start, including the
+ * one session.reload emits. Pix's own tool selections exclude the same names.
+ */
+function createSmartCompactMemoryGuard(): InlineExtension {
+  return {
+    name: "smart-compact-memory-guard",
+    hidden: true,
+    factory: (pi: ExtensionAPI): void => {
+      pi.on("session_start", () => {
+        const active = pi.getActiveTools();
+        if (!active.some((name) => SMART_COMPACT_MEMORY_TOOLS.has(name))) return;
+        pi.setActiveTools(withoutSmartCompactMemoryTools(active));
+      });
+    },
+  };
+}
+
+
 
 function images(value: readonly ImageAttachment[] | undefined): ImageContent[] | undefined {
   return value?.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
@@ -141,9 +193,11 @@ function toolsView(session: AgentSession): ToolInfo[] {
   // model — `direct` and `model-only` exposure. `hidden`, `codemode` and
   // `deferred` tools (e.g. codemode-exposure MCP tools) are callable through
   // ctx.executeTool without being active, so their active flag is not an ACL
-  // switch and they must not appear as on/off rows.
+  // switch and they must not appear as on/off rows. The smart-compact memory
+  // tools are not a user choice either — memory has one owner.
   return session.getAllTools()
     .filter((tool) => tool.exposure === "direct" || tool.exposure === "model-only")
+    .filter((tool) => !SMART_COMPACT_MEMORY_TOOLS.has(tool.name))
     .map((tool): ToolInfo => ({ name: tool.name, ...(tool.description === undefined ? {} : { description: tool.description }), active: active.has(tool.name) }));
 }
 
@@ -156,6 +210,7 @@ function toolsView(session: AgentSession): ToolInfo[] {
 export function selectableToolNames(session: AgentSession): string[] {
   return session.getAllTools()
     .filter((tool) => tool.exposure === "direct" || tool.exposure === "model-only")
+    .filter((tool) => !SMART_COMPACT_MEMORY_TOOLS.has(tool.name))
     .map((tool) => tool.name);
 }
 
@@ -191,7 +246,7 @@ export function applyToolsSelection(
   const selectable = new Set(selectableToolNames(session));
   const names = selection.mode === "all"
     ? [...selectable]
-    : selection.toolNames.filter((name) => selectable.has(name));
+    : withoutSmartCompactMemoryTools(selection.toolNames.filter((name) => selectable.has(name)));
   policy.forcedEmpty = names.length === 0;
   session.setActiveToolsByName(names);
 }
@@ -634,12 +689,15 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     }
     this.configuredTools = { toolNames: normalized, includeExtensionTools };
     this.toolPolicy.forcedEmpty = normalized.length === 0;
+    // An explicit all-off keeps the honest empty contract. Any non-empty
+    // selection drops the smart-compact memory tools even when the caller
+    // named them: they are not part of Pix's tool surface.
     const selected = normalized.length === 0
       ? []
-      : [
+      : withoutSmartCompactMemoryTools([
           ...normalized,
           ...(includeExtensionTools ? registrationActivatedToolNames(this.session) : []),
-        ];
+        ]);
     this.session.setActiveToolsByName([...new Set(selected)]);
     // The assistant's session-history tools are the assistant's defining
     // capability: a NARROW whitelist must never silently remove them. An
@@ -805,6 +863,16 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
     if (this.configuredTools === undefined) {
       await applyGlobalToolsSelection(this.session, this.toolPolicy, this.agentDir);
       ensureAssistantToolsActive(this.session, this.identity.cwd);
+    }
+    // Memory-mutex startup assertion: pi-memory and the Lore extension are
+    // mutually exclusive by construction (curated filter + pixMemoryProvider);
+    // if BOTH memory surfaces are ever registered in one session, some path
+    // bypassed the owner — fail closed here instead of splitting memory.
+    {
+      const registered = new Set(this.session.getAllTools().map((tool) => tool.name));
+      if (registered.has("memory_read") && registered.has("lore_get_node")) {
+        throw makeRuntimeError("unavailable", "memory plugins are mutually exclusive but both are registered");
+      }
     }
     this.currentCapabilities = this.recomputeProjections(this.currentCapabilities);
     this.trace?.record("bind_extensions");
@@ -1132,12 +1200,21 @@ function defaultComposition(
       // from the loader); the per-turn segment surgery lives in the
       // extension's before_agent_start handler (see assistant-system-prompt).
       const assistantExtensions = assistantExtensionFactoriesForCwd(cwd, effectiveStatus, effectiveOps);
+      // The bundled pi-memory plugin runs with its model-backed exit summary
+      // OFF everywhere Pix loads it: sessiond recycles idle workers
+      // constantly (each recycle would spend a model call), and the same pin
+      // keeps in-process compositions deterministic. sessiond's buildWorkerEnv
+      // sets the same value for real workers; this covers every load path.
+      process.env.PI_MEMORY_EXIT_SUMMARY = "0";
       return createAgentSessionServices({
         cwd,
         agentDir,
         resourceLoaderOptions: {
           ...resourceLoaderOptionsForBuiltIns(agentDir),
-          extensionFactories: [createToolPolicyExtension(toolPolicy), ...assistantExtensions, ...nativeBuiltinExtensionFactories()],
+          // The memory guard is LAST so its session_start handler runs after
+          // pi-smart-compact's own exposure apply (inline factories load
+          // after package extensions; the event fires in that order).
+          extensionFactories: [createToolPolicyExtension(toolPolicy), ...assistantExtensions, ...nativeBuiltinExtensionFactories(), createSmartCompactMemoryGuard()],
           ...(assistantExtensions.length > 0
             ? {
                 systemPromptOverride: (base: string | undefined) =>
@@ -1264,10 +1341,10 @@ export class SdkRuntimeDriverFactory implements PiRuntimeDriverFactory {
     } else {
       const selectedTools = input.toolNames.length === 0
         ? []
-        : [
+        : withoutSmartCompactMemoryTools([
             ...input.toolNames,
             ...registrationActivatedToolNames(result.session),
-          ];
+          ]);
       result.session.setActiveToolsByName([...new Set(selectedTools)]);
     }
     this.trace?.record("active_tools");

@@ -57,7 +57,7 @@ describe("SettingsModal information architecture", () => {
     // The old per-page scope chip is gone.
     expect(screen.queryByText("this device")).toBeNull();
     expect(screen.queryByText("global")).toBeNull();
-    for (const id of ["appearance", "input", "archive", "providers", "capabilities", "subagents", "tools", "session", "skills", "plugins", "access", "advanced"]) {
+    for (const id of ["appearance", "input", "archive", "providers", "capabilities", "memory", "subagents", "tools", "session", "skills", "plugins", "access", "advanced"]) {
       expect(screen.getByTestId(`settings-tab-${id}`)).toBeTruthy();
     }
   });

@@ -1,11 +1,17 @@
 import {
   BuiltInCapabilityConfigResponseSchema,
   CompactionSettingsResponseSchema,
+  LoreConnectionResponseSchema,
+  LoreTestResponseSchema,
+  MemorySettingsResponseSchema,
   SubagentSettingsResponseSchema,
   ToolSettingsResponseSchema,
   type BuiltInCapabilityConfigMutation,
   type SettingsConfigMutation,
   type CompactionSettingsMutation,
+  type LoreConnectionMutation,
+  type LoreTestRequest,
+  type MemoryProviderMutation,
   type SubagentSettingsMutation,
   type ToolSettingsMutation,
 } from "@fffattiger/pix-protocol";
@@ -139,6 +145,30 @@ export function createConfigurationApi(http: HttpClient) {
       save: (input: CompactionSettingsMutation, signal?: AbortSignal) =>
         http.put(urls.settings.compaction(), input, {
           schema: CompactionSettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+    },
+    memory: {
+      get: (signal?: AbortSignal) =>
+        http.get(urls.settings.memory(), {
+          schema: MemorySettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      save: (input: MemoryProviderMutation, signal?: AbortSignal) =>
+        http.put(urls.settings.memory(), input, {
+          schema: MemorySettingsResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+    },
+    memoryLore: {
+      save: (input: LoreConnectionMutation, signal?: AbortSignal) =>
+        http.put(urls.settings.memoryLore(), input, {
+          schema: LoreConnectionResponseSchema,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      test: (input: LoreTestRequest, signal?: AbortSignal) =>
+        http.post(urls.settings.memoryLoreTest(), input, {
+          schema: LoreTestResponseSchema,
           ...(signal === undefined ? {} : { signal }),
         }),
     },

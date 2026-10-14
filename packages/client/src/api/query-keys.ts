@@ -56,6 +56,8 @@ export const queryKeys = {
     builtIns: () => ["pix", "settings", "built-ins"] as const,
     subagents: () => ["pix", "settings", "subagents"] as const,
     compaction: () => ["pix", "settings", "compaction"] as const,
+    /** Memory provider + Lore connection facts. */
+    memory: () => ["pix", "settings", "memory"] as const,
   },
 
   files: {
@@ -193,6 +195,13 @@ export function createQueryOptions(http: HttpClient) {
         queryOptions({
           queryKey: queryKeys.settingsConfig.compaction(),
           queryFn: ({ signal }) => configuration.compaction.get(signal),
+          staleTime: 0,
+          retry: false,
+        }),
+      memory: () =>
+        queryOptions({
+          queryKey: queryKeys.settingsConfig.memory(),
+          queryFn: ({ signal }) => configuration.memory.get(signal),
           staleTime: 0,
           retry: false,
         }),

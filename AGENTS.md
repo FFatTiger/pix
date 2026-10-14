@@ -47,6 +47,8 @@ fork the logic.
 | CLI lifecycle | `packages/cli` | drive sessiond via SIGTERM/PID |
 | Adapter behavior contract | `packages/runtime-contract-tests` | be duplicated in each adapter's own tests |
 | Cross-package semantic parity | `packages/cross-package-contract-tests` | leak into a production package or be parked in an unrelated test suite |
+| Long-term memory provider selection (settings.json `pixMemoryProvider`: local pi-memory / Lore / off) and the two memory plugins' load mutex | `packages/runtime-core` (model + normalization) + `packages/protocol` (wire DTO `/memory-settings`) + `packages/pi-sdk-adapter` (`curated-plugins.ts` mutex + provider resolution, `lore-config-store.ts` connection & probe, `memory-provider.ts`) + `packages/sessiond` (worker env: `PI_MEMORY_EXIT_SUMMARY=0`, `LORE_*`/`PIX_ALLOWED_ROOTS` forwarding) + `packages/host` (settings routes) + `packages/client` (记忆 settings page) | add a second memory toggle elsewhere, load pi-memory and Lore together, store the Lore token anywhere but `~/.lore/config.json`, or silently fall back between providers |
+| Bundled agent-capability plugins (vendor tgz pinned + curated loading + duplicate-load exclusion) | root `vendor/` + `packages/pi-sdk-adapter` (`curated-plugins.ts`) + `scripts/release-package.mjs` (bundle list) | install plugins at runtime, invoke external installers, depend on a user-installed copy, or let a user copy load twice inside a Pix session |
 | Repo gates / cross-platform tooling | root `scripts/*` | be bypassed by ad-hoc shell in package scripts |
 
 ## 2. State ownership (four tiers, never blurred)
@@ -123,6 +125,33 @@ nonmember selector/cursor → `invalid_input`; stale revision/identity race →
 `conflict`. Never create-on-stale, path-reuse, or permissive fallback.
 
 ## 7. Single source for versions, capabilities, vocabularies
+
+### 7a. Bundled agent-capability plugins (捆绑固定版本)
+
+Every agent-capability plugin Pix ships is **vendored as a fixed tarball** in
+`vendor/` and referenced by `file:` from `packages/pi-sdk-adapter` — never a
+floating registry range, never resolved from the user's own install, never
+installed at runtime:
+
+- `pi-claude-subagents` 0.3.9 (patched by `scripts/patch-pi-claude-subagents.mjs`),
+  `pi-smart-compact` 10.3.0, `pi-memory` 0.4.2 (exit summary forced off,
+  `memory_search` filtered — no qmd), `@local/lore-pi-extension` 1.5.0
+  (GitHub Release `FFatTiger/lore` `lore-pi.zip`), `@juicesharp/rpiv-todo`
+  2.11.0, `@juicesharp/rpiv-ask-user-question` 2.11.0.
+- Upgrading a bundled plugin = replacing the vendored tgz + lockfile in the
+  same change; `scripts/release-package.mjs` bundles them all.
+- Duplicate-load prevention is shared, not per-plugin: the curated filter in
+  `curated-plugins.ts` recognizes a user-installed copy (install path under
+  the curated package name, or its registration surface) and keeps ONLY the
+  adapter-bundled instance — the user's copy stays untouched on disk and
+  keeps working in the `pi` CLI, it just never loads twice in a Pix session.
+
+The memory-provider behavior (local / Lore / off, connection, switch
+consequences) is documented scenario-by-scenario in `docs/memory.md`. The
+settings page itself shows none of that copy. pi-smart-compact's own memory
+tools (`smart_recall` / `smart_save_memory`) are not part of the memory
+surface: the active-tool selection excludes them and the inline
+`smart-compact-memory-guard` re-asserts that at every `session_start`.
 
 - Protocol version: `packages/protocol/src/version.ts` (`PROTOCOL_VERSION`) —
   negotiated at handshake; never re-declared in Host/Client.
