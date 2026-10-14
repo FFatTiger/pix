@@ -7,7 +7,8 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHostApp } from "../src/app.js";
+import { createHostApp } from "../dist/app.js";
+import { HttpError } from "../dist/errors.js";
 const DISABLED_GATE = { read: () => ({ status: "disabled", source: "test" }) };
 
 /** Fake seam recording calls. */
@@ -27,7 +28,7 @@ function fakeSeam(impl = {}) {
     },
     mutationGuard: {
       async assertAvailable() {
-        if (impl.down) throw Object.assign(new Error("sessiond is down"), { status: 503, code: "SESSIOND_UNAVAILABLE" });
+        if (impl.down) throw new HttpError(503, "SESSIOND_UNAVAILABLE", "sessiond is down");
       },
     },
     isAllowedPath(path) {

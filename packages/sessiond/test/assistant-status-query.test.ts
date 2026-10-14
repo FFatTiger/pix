@@ -232,4 +232,3 @@ test("workspace flags merge onto list rows; a missing store fails closed", async
     await noStore.shutdown();
   }
 });
-});

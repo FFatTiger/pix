@@ -70,13 +70,16 @@ export interface WorkspaceStateMutationInput {
   readonly archived?: boolean;
 }
 
-/** Effective merged flags for one entry (absent fields keep their value). */
-export function mergeWorkspaceFlags(previous: WorkspaceFlags | undefined, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags> {
-  const base = previous ?? {};
-  return {
-    pinned: patch.pinned !== undefined ? patch.pinned : base.pinned === true,
-    archived: patch.archived !== undefined ? patch.archived : base.archived === true,
-  };
+/**
+ * Merge one flag patch onto the stored entry. Only fields the caller actually
+ * set are stored: an omitted field stays absent (it is not coerced to false),
+ * so a later reader can tell "never set" from "explicitly off".
+ */
+export function mergeWorkspaceFlags(previous: WorkspaceFlags | undefined, patch: WorkspaceStateMutationInput): WorkspaceFlags {
+  const merged: WorkspaceFlags = { ...previous };
+  if (patch.pinned !== undefined) merged.pinned = patch.pinned;
+  if (patch.archived !== undefined) merged.archived = patch.archived;
+  return merged;
 }
 
 function isPlainFlags(value: unknown): value is WorkspaceFlags {
@@ -141,8 +144,8 @@ export interface WorkspaceStateStore {
   /** Point-in-time snapshot (defensive copies; cheap — maps are small). */
   snapshot(): WorkspaceStateSnapshot;
   /** Set flags for one entry; at least one field required. Returns effective flags. */
-  setSessionFlags(sessionId: string, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags>;
-  setProjectFlags(projectRoot: string, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags>;
+  setSessionFlags(sessionId: string, patch: WorkspaceStateMutationInput): WorkspaceFlags;
+  setProjectFlags(projectRoot: string, patch: WorkspaceStateMutationInput): WorkspaceFlags;
   /** Opaque assistant delegation ledger (owner: assistant-ops.ts). Undefined
    * until the first write; never surfaced on any external API. */
   readAssistantDelegations(): unknown;
@@ -173,7 +176,7 @@ export class InMemoryWorkspaceStateStore implements WorkspaceStateStore {
     };
   }
 
-  setSessionFlags(sessionId: string, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags> {
+  setSessionFlags(sessionId: string, patch: WorkspaceStateMutationInput): WorkspaceFlags {
     if (typeof sessionId !== "string" || sessionId.length === 0) throw new WorkspaceStateError("invalid_input", "session id is invalid", false);
     if (patch.pinned === undefined && patch.archived === undefined) throw new WorkspaceStateError("invalid_input", "at least one flag must be provided", false);
     const merged = mergeWorkspaceFlags(this.sessions[sessionId], patch);
@@ -182,7 +185,7 @@ export class InMemoryWorkspaceStateStore implements WorkspaceStateStore {
     return merged;
   }
 
-  setProjectFlags(projectRoot: string, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags> {
+  setProjectFlags(projectRoot: string, patch: WorkspaceStateMutationInput): WorkspaceFlags {
     const key = normalizeProjectKey(projectRoot);
     if (key === null) throw new WorkspaceStateError("invalid_input", "project root is invalid", false);
     if (patch.pinned === undefined && patch.archived === undefined) throw new WorkspaceStateError("invalid_input", "at least one flag must be provided", false);
@@ -219,7 +222,7 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
     return { ...(this.state ?? (this.state = this.load())) };
   }
 
-  setSessionFlags(sessionId: string, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags> {
+  setSessionFlags(sessionId: string, patch: WorkspaceStateMutationInput): WorkspaceFlags {
     if (typeof sessionId !== "string" || sessionId.length === 0) throw new WorkspaceStateError("invalid_input", "session id is invalid", false);
     if (patch.pinned === undefined && patch.archived === undefined) throw new WorkspaceStateError("invalid_input", "at least one flag must be provided", false);
     const current = this.snapshot();
@@ -235,7 +238,7 @@ export class FileWorkspaceStateStore implements WorkspaceStateStore {
     return merged;
   }
 
-  setProjectFlags(projectRoot: string, patch: WorkspaceStateMutationInput): Required<WorkspaceFlags> {
+  setProjectFlags(projectRoot: string, patch: WorkspaceStateMutationInput): WorkspaceFlags {
     const key = normalizeProjectKey(projectRoot);
     if (key === null) throw new WorkspaceStateError("invalid_input", "project root is invalid", false);
     if (patch.pinned === undefined && patch.archived === undefined) throw new WorkspaceStateError("invalid_input", "at least one flag must be provided", false);

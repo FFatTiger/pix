@@ -25,7 +25,7 @@ function behaveLikeStore(make: () => WorkspaceStateStore | Promise<WorkspaceStat
       const store = await make();
       assert.deepEqual(store.snapshot(), { revision: 0, sessions: {}, projects: {} });
       const first = store.setSessionFlags("s1", { pinned: true });
-      assert.deepEqual(first, { pinned: true, archived: false });
+      assert.deepEqual(first, { pinned: true });
       // Absent field keeps its value (partial update).
       const second = store.setSessionFlags("s1", { archived: true });
       assert.deepEqual(second, { pinned: true, archived: true });
@@ -170,7 +170,7 @@ describe("FileWorkspaceStateStore durability", () => {
       store.setProjectFlags("/repos/pix", { archived: true });
       const reloaded = new FileWorkspaceStateStore(dir);
       assert.deepEqual(reloaded.readAssistantDelegations(), ledger);
-      assert.deepEqual(reloaded.snapshot().projects, { "/repos/pix": { pinned: false, archived: true } });
+      assert.deepEqual(reloaded.snapshot().projects, { "/repos/pix": { archived: true } });
       const raw = JSON.parse(await readFile(join(dir, WORKSPACE_STATE_FILE_NAME), "utf8")) as { assistantDelegations?: unknown };
       assert.ok(raw.assistantDelegations, "the namespace is on disk in the same document");
     } finally {

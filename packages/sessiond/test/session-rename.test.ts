@@ -52,7 +52,6 @@ export function renameHarness(options: RenameHarnessOptions = {}): RenameHarness
   const deleted: string[] = [];
   const mutationCalls: string[] = [];
   const baseMutation: SessionMutationPort = {
-    async setSessionFlags(): Promise<{ pinned: boolean; archived: boolean }> { return { pinned: false, archived: false }; },
     async renameSession(sessionId, name) {
       mutationCalls.push(`${sessionId}:${name}`);
       if (!files.get(sessionId)) throw makeRuntimeError("not_found", `session not found: ${sessionId}`);
@@ -107,7 +106,6 @@ export function renameHarness(options: RenameHarnessOptions = {}): RenameHarness
   let releaseGate: () => void = () => {};
   const gatedCalls: string[] = [];
   const gatedMutation: SessionMutationPort = {
-    async setSessionFlags(): Promise<{ pinned: boolean; archived: boolean }> { return { pinned: false, archived: false }; },
     async renameSession(sessionId, name) {
       gatedCalls.push(`${sessionId}:${name}`);
       await gate;
@@ -325,7 +323,6 @@ test("delete admitted while a same-kind rename sibling is pending queues FIFO (n
   const bGate = new Promise<void>((resolve) => { releaseB = resolve; });
   const h = renameHarness({
     mutation: {
-      async setSessionFlags(): Promise<{ pinned: boolean; archived: boolean }> { return { pinned: false, archived: false }; },
       async renameSession(sessionId, name) {
         mutationCalls.push(`${sessionId}:${name}`);
         if (blockForB && name === "B") { bGatedResolve(); await bGate; }
@@ -374,7 +371,6 @@ test("a third same-kind rename C admitted while B is gated cannot run before B; 
   const bGate = new Promise<void>((resolve) => { releaseB = resolve; });
   const h = renameHarness({
     mutation: {
-      async setSessionFlags(): Promise<{ pinned: boolean; archived: boolean }> { return { pinned: false, archived: false }; },
       async renameSession(sessionId, name) {
         mutationCalls.push(`${sessionId}:${name}`);
         if (blockForB && name === "B") { bGatedResolve(); await bGate; }

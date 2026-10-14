@@ -3639,25 +3639,35 @@ export class SessiondService {
 
   async setSessionFlags(sessionId: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ sessionId: string; pinned: boolean; archived: boolean; revision: number }> {
     if (sessionId.length === 0) throw new SessiondError("invalid_input", "session id is invalid", false);
-    let effective: { pinned: boolean; archived: boolean };
+    let stored: import("./workspace-state.js").WorkspaceFlags;
     try {
-      effective = this.workspaceStateStore().setSessionFlags(sessionId, flags);
+      stored = this.workspaceStateStore().setSessionFlags(sessionId, flags);
     } catch (error) {
       throw this.mapWorkspaceStateFailure(error, "session");
     }
     this.pushSessionsChanged();
-    return { sessionId, pinned: effective.pinned, archived: effective.archived, revision: this.workspaceStateStore().snapshot().revision };
+    return {
+      sessionId,
+      pinned: stored.pinned === true,
+      archived: stored.archived === true,
+      revision: this.workspaceStateStore().snapshot().revision,
+    };
   }
 
   async setProjectFlags(projectRoot: string, flags: { pinned?: boolean; archived?: boolean }): Promise<{ projectRoot: string; pinned: boolean; archived: boolean; revision: number }> {
-    let effective: { pinned: boolean; archived: boolean };
+    let stored: import("./workspace-state.js").WorkspaceFlags;
     try {
-      effective = this.workspaceStateStore().setProjectFlags(projectRoot, flags);
+      stored = this.workspaceStateStore().setProjectFlags(projectRoot, flags);
     } catch (error) {
       throw this.mapWorkspaceStateFailure(error, "project");
     }
     this.pushSessionsChanged();
-    return { projectRoot, pinned: effective.pinned, archived: effective.archived, revision: this.workspaceStateStore().snapshot().revision };
+    return {
+      projectRoot,
+      pinned: stored.pinned === true,
+      archived: stored.archived === true,
+      revision: this.workspaceStateStore().snapshot().revision,
+    };
   }
 
   getWorkspaceFlags(): { revision: number; sessions: Record<string, { pinned?: boolean; archived?: boolean }>; projects: Record<string, { pinned?: boolean; archived?: boolean }> } {

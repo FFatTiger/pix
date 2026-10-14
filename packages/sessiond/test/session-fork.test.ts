@@ -38,7 +38,6 @@ function forkHarness(options: ForkHarnessOptions = {}) {
   const deleted: string[] = [];
   const mutationCalls: string[] = [];
   const baseMutation: SessionMutationPort = {
-    async setSessionFlags(): Promise<{ pinned: boolean; archived: boolean }> { return { pinned: false, archived: false }; },
     async renameSession(sessionId, name) {
       mutationCalls.push(`${sessionId}:${name}`);
       if (!files.get(sessionId)) throw { code: "not_found", message: "session not found", retryable: false };
