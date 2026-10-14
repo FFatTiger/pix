@@ -69,8 +69,23 @@ function fakeSettingsMutation(impl = {}) {
     writeToolsConfig: async (input) => impl.writeToolsConfig ? impl.writeToolsConfig(input) : { revision: "6".repeat(64), selection: { mode: "custom", toolNames: input.toolNames ?? [] } },
     readCompactionConfig: async () => impl.readCompactionConfig ? impl.readCompactionConfig() : { revision: "5".repeat(64), settings: COMPACTION_SETTINGS },
     writeCompactionConfig: async (input) => impl.writeCompactionConfig ? impl.writeCompactionConfig(input) : { revision: "6".repeat(64), settings: input.settings },
+    readMemoryConfig: async () => impl.readMemoryConfig ? impl.readMemoryConfig() : { revision: "5".repeat(64), provider: "local", providerExplicit: false, lore: MEMORY_LORE_NONE },
+    writeMemoryProvider: async (input) => impl.writeMemoryProvider ? impl.writeMemoryProvider(input) : { revision: "6".repeat(64), provider: input.provider, providerExplicit: true, lore: MEMORY_LORE_NONE },
   };
 }
+
+const MEMORY_LORE_NONE = { configured: false, baseUrl: null, source: "none", tokenConfigured: false };
+const MEMORY_LORE_CONNECTED = { configured: true, baseUrl: "https://api.loremem.com", source: "config", tokenConfigured: true };
+
+const putMemory = (app, body, suffix = "") => app.request(`http://localhost/v1/settings/memory${suffix}`, {
+  method: "PUT", headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(body),
+});
+const putLoreConnection = (app, body, suffix = "") => app.request(`http://localhost/v1/settings/memory/lore${suffix}`, {
+  method: "PUT", headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(body),
+});
+const postLoreTest = (app, body, suffix = "") => app.request(`http://localhost/v1/settings/memory/lore-test${suffix}`, {
+  method: "POST", headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(body),
+});
 
 const ALL_BUILTINS = [
   { id: "subagents", enabled: true },
@@ -1480,4 +1495,119 @@ test("compaction requests reject queries and malformed DTOs before seam calls", 
     assert.equal((await res.json()).code, "INVALID_SETTINGS_CONFIG");
   }
   assert.equal(calls, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Memory provider settings (`pixMemoryProvider`) + Lore connection seam
+// ---------------------------------------------------------------------------
+
+test("memory settings use strict projection, shared settings seam and no-store", async () => {
+  const roots = await rootsFor(temp("pix-cat-memory-"));
+  let written;
+  const app = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({
+      readMemoryConfig: async () => ({ revision: "5".repeat(64), provider: "lore", providerExplicit: false, lore: MEMORY_LORE_CONNECTED }),
+      writeMemoryProvider: async (input) => { written = input; return { revision: "6".repeat(64), provider: input.provider, providerExplicit: true, lore: MEMORY_LORE_CONNECTED }; },
+    }),
+  });
+  const get = await call(app, "/v1/settings/memory");
+  assert.equal(get.status, 200);
+  assert.equal(get.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await get.json(), { revision: "5".repeat(64), provider: "lore", providerExplicit: false, lore: MEMORY_LORE_CONNECTED });
+  const put = await putMemory(app, { expectedRevision: "5".repeat(64), provider: "off" });
+  assert.equal(put.status, 200);
+  assert.deepEqual(written, { expectedRevision: "5".repeat(64), provider: "off" });
+  assert.deepEqual(await put.json(), { revision: "6".repeat(64), provider: "off", providerExplicit: true, lore: MEMORY_LORE_CONNECTED });
+  // Unmounted seam ⇒ 404, no settings.configure token change needed here.
+  const bare = appWithCatalogs({ roots });
+  assert.equal((await call(bare, "/v1/settings/memory")).status, 404);
+  assert.equal((await putMemory(bare, { expectedRevision: "5".repeat(64), provider: "off" })).status, 404);
+});
+
+test("memory requests reject queries and malformed DTOs before seam calls; lore-without-connection maps to 400", async () => {
+  const roots = await rootsFor(temp("pix-cat-memory-invalid-"));
+  let calls = 0;
+  const forbidden = async () => { calls++; throw new Error("must not call"); };
+  const app = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({ readMemoryConfig: forbidden, writeMemoryProvider: forbidden }) });
+  for (const suffix of ["?", "?cwd=/tmp"]) {
+    for (const res of [await call(app, `/v1/settings/memory${suffix}`), await putMemory(app, { expectedRevision: "5".repeat(64), provider: "local" }, suffix)]) {
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).code, "INVALID_QUERY");
+    }
+  }
+  for (const bad of [
+    { expectedRevision: "5".repeat(64), provider: "both" },
+    { expectedRevision: "not-hex", provider: "local" },
+    { expectedRevision: "5".repeat(64), provider: "local", extra: 1 },
+  ]) {
+    const res = await putMemory(app, bad);
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, "INVALID_SETTINGS_CONFIG");
+  }
+  assert.equal(calls, 0);
+  // Store-side fail-closed (selecting lore without a connection) is a 400
+  // invalid_input, never a fake success.
+  let rejected;
+  const strict = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({
+    writeMemoryProvider: async () => { rejected = true; throw Object.assign(new Error("Lore is not configured"), { code: "invalid_input" }); },
+  }) });
+  const res = await putMemory(strict, { expectedRevision: "5".repeat(64), provider: "lore" });
+  assert.equal(res.status, 400);
+  assert.equal(rejected, true);
+});
+
+test("lore connection save/test mount with the memoryLore seam; failures are results, tokens never echoed", async () => {
+  const roots = await rootsFor(temp("pix-cat-memory-lore-"));
+  let saved;
+  let probed;
+  const app = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({}),
+    memoryLore: {
+      saveLoreConnection: async (input) => { saved = input; return { configured: true, baseUrl: input.baseUrl, source: "config", tokenConfigured: true }; },
+      testLoreConnection: async (input) => { probed = input; return input.baseUrl === "https://down.example" ? { ok: false, reason: "unreachable" } : { ok: true, baseUrl: input.baseUrl }; },
+    },
+  });
+  const put = await putLoreConnection(app, { baseUrl: "https://api.loremem.com", apiToken: "lm_secret" });
+  assert.equal(put.status, 200);
+  assert.deepEqual(saved, { baseUrl: "https://api.loremem.com", apiToken: "lm_secret" });
+  const savedBody = await put.json();
+  assert.equal(JSON.stringify(savedBody).includes("lm_secret"), false, "the response must never carry the token");
+
+  const ok = await postLoreTest(app, { baseUrl: "https://api.loremem.com", apiToken: "lm_secret" });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { ok: true, baseUrl: "https://api.loremem.com" });
+  const failed = await postLoreTest(app, { baseUrl: "https://down.example" });
+  assert.equal(failed.status, 200, "a failed probe is the operation result, not an HTTP error");
+  assert.deepEqual(await failed.json(), { ok: false, reason: "unreachable" });
+  assert.deepEqual(probed, { baseUrl: "https://down.example" });
+
+  // Malformed bodies are 400s before the seam; query strings are refused.
+  for (const bad of [{}, { baseUrl: "" }, { baseUrl: "https://x", extra: 1 }]) {
+    const res = await putLoreConnection(app, bad);
+    assert.equal(res.status, 400);
+    const testRes = await postLoreTest(app, bad);
+    assert.equal(testRes.status, 400);
+  }
+  for (const suffix of ["?", "?cwd=/tmp"]) {
+    assert.equal((await putLoreConnection(app, { baseUrl: "https://x" }, suffix)).status, 400);
+    assert.equal((await postLoreTest(app, {}, suffix)).status, 400);
+  }
+
+  // Seam-level invalid_input (e.g. insecure http) maps to a 400.
+  const insecure = appWithCatalogs({
+    roots,
+    settingsMutation: fakeSettingsMutation({}),
+    memoryLore: {
+      saveLoreConnection: async () => { throw Object.assign(new Error("plain http"), { code: "invalid_input" }); },
+      testLoreConnection: async () => { throw new Error("must not be called"); },
+    },
+  });
+  assert.equal((await putLoreConnection(insecure, { baseUrl: "http://192.168.1.5:18901" })).status, 400);
+
+  // Without the memoryLore seam the sub-routes 404 (settings seam alone is not enough).
+  const noLore = appWithCatalogs({ roots, settingsMutation: fakeSettingsMutation({}) });
+  assert.equal((await putLoreConnection(noLore, { baseUrl: "https://x" })).status, 404);
+  assert.equal((await postLoreTest(noLore, {})).status, 404);
 });

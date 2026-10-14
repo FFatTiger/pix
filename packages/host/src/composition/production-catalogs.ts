@@ -20,6 +20,7 @@
 import { isAbsolute } from "node:path";
 import { createPiSdkModelCatalog, createPiSdkModelsConfig } from "@fffattiger/pix-pi-sdk-adapter/models";
 import { createPiSdkSettingsConfig } from "@fffattiger/pix-pi-sdk-adapter/settings";
+import { createPiSdkLoreConnectionConfig } from "@fffattiger/pix-pi-sdk-adapter/memory";
 import { createPiSdkBuiltInCapabilityConfig } from "@fffattiger/pix-pi-sdk-adapter/builtins";
 import { createPiSdkCredentialCatalog } from "@fffattiger/pix-pi-sdk-adapter/credentials";
 import { createPiSdkGlobalResourceCatalog, createPiSdkResourceCatalog } from "@fffattiger/pix-pi-sdk-adapter/resources";
@@ -130,6 +131,16 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     readCompactionConfig: () => settingsConfig.readCompactionConfig(),
     writeCompactionConfig: (input) => settingsConfig.writeCompactionConfig(input as never),
     writeSubagentConfig: (input) => settingsConfig.writeSubagentConfig(input as never),
+    readMemoryConfig: () => settingsConfig.readMemoryConfig(),
+    writeMemoryProvider: (input) => settingsConfig.writeMemoryProvider(input as never),
+  };
+
+  // Lore connection seam (~/.lore/config.json + health probe). Independent
+  // from settings.json: same "记忆" settings surface, separate document owner.
+  const loreConnection = createPiSdkLoreConnectionConfig({});
+  const memoryLore = {
+    saveLoreConnection: (input: unknown) => loreConnection.saveLoreConnection(input as never),
+    testLoreConnection: (input: unknown) => loreConnection.testLoreConnection(input as never),
   };
 
   const builtinsConfig = createPiSdkBuiltInCapabilityConfig({ agentDir });
@@ -196,5 +207,5 @@ export function createProductionCatalogs(options: ProductionCatalogsOptions): Ca
     },
   };
 
-  return { roots, models, modelsMutation, settingsMutation, builtinsMutation, credentials, resources, trust, trustMutation, themes };
+  return { roots, models, modelsMutation, settingsMutation, memoryLore, builtinsMutation, credentials, resources, trust, trustMutation, themes };
 }

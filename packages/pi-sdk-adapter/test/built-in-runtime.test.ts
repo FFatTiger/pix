@@ -11,6 +11,16 @@ import { SdkRuntimeDriverFactory, type SdkRuntimeComposition } from "../src/inte
 import type { DriverEventListener, DriverState, PiRuntimeDriver } from "../src/internal/types.js";
 import { RUNTIME_CAPABILITIES } from "@fffattiger/pix-runtime-core";
 
+/**
+ * Pin the memory provider to local for real-composition fixtures: without an
+ * explicit `pixMemoryProvider`, machines that already have a Lore connection
+ * (~/.lore) would default to Lore and load the bundled networked extension,
+ * making these tests machine-dependent.
+ */
+async function pinLocalMemory(agentDir: string): Promise<void> {
+  await writeFile(join(agentDir, "settings.json"), `${JSON.stringify({ pixMemoryProvider: "local" }, null, 2)}\n`);
+}
+
 function driverState(patch: Partial<DriverState> = {}): DriverState {
   return {
     model: null,
@@ -136,6 +146,7 @@ describe("real SDK curated load vs disable", () => {
     const agentDir = join(root, "agent");
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await pinLocalMemory(agentDir);
     await writeFile(join(agentDir, "pix-builtins.json"), `${JSON.stringify({
       version: 1,
       subagents: false,
@@ -189,6 +200,7 @@ describe("real SDK curated load vs disable", () => {
     const agentDir = join(root, "agent");
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await pinLocalMemory(agentDir);
     try {
       const settings = SettingsManager.inMemory({}, { projectTrusted: true });
       const modelRuntime = await ModelRuntime.create({
@@ -248,6 +260,7 @@ describe("real driver listener ordering", { concurrency: false }, () => {
     const agentDir = join(root, "agent");
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await pinLocalMemory(agentDir);
     let driver: Awaited<ReturnType<SdkRuntimeDriverFactory["create"]>> | undefined;
     try {
       const sessionsDir = join(agentDir, "sessions", "project");
@@ -388,6 +401,7 @@ describe("real subagent running-start delivery", { concurrency: false }, () => {
     const releaseGate = join(root, "release-gate");
     await mkdir(cwd, { recursive: true });
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
+    await pinLocalMemory(agentDir);
     await mkdir(bin, { recursive: true });
     await writeFile(join(bin, "git"), [
       "#!/bin/sh",

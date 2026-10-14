@@ -5,15 +5,38 @@ import { fileURLToPath } from "node:url";
 import type { BuiltInCapabilityId, BuiltInCapabilityState } from "@fffattiger/pix-runtime-core";
 import { createAskQuestionnaireExtensionsOverride } from "./ask-questionnaire-bridge.js";
 import { readBuiltInCapabilityConfigSync } from "./built-in-capability-store.js";
+import { dropBundledMemorySearchTools } from "./pi-memory-bridge.js";
+import { readMemoryRuntimeStateSync } from "./memory-provider.js";
 
-export const CURATED_PLUGIN_IDS = ["subagents", "todo", "ask_user_question", "smart_compact"] as const;
+/**
+ * Curated plugin ids. The first four are BuiltInCapability toggles
+ * (pix-builtins.json); the two memory plugins are NOT independent
+ * capabilities — they are driven by the settings.json memory provider
+ * selection (`pixMemoryProvider`, see memory-provider.ts) and are mutually
+ * exclusive by construction.
+ */
+export const CURATED_PLUGIN_IDS = [
+  "subagents",
+  "todo",
+  "ask_user_question",
+  "smart_compact",
+  "pi_memory",
+  "lore",
+] as const;
 export type CuratedPluginId = (typeof CURATED_PLUGIN_IDS)[number];
+
+export type BuiltInCuratedPluginId = Exclude<CuratedPluginId, "pi_memory" | "lore">;
+
+/** Capability ids that gate a curated plugin (side_chat is not a package). */
+const CURATED_BUILT_IN_IDS: readonly BuiltInCuratedPluginId[] = ["subagents", "todo", "ask_user_question", "smart_compact"];
 
 const PACKAGE_NAMES = {
   subagents: "pi-claude-subagents",
   todo: "@juicesharp/rpiv-todo",
   ask_user_question: "@juicesharp/rpiv-ask-user-question",
   smart_compact: "pi-smart-compact",
+  pi_memory: "pi-memory",
+  lore: "@local/lore-pi-extension",
 } as const satisfies Record<CuratedPluginId, string>;
 
 const requireFromHere = createRequire(import.meta.url);
@@ -80,8 +103,25 @@ export function bundledPluginRootPaths(): string[] {
   return bundledPluginRoots().map((item) => item.root);
 }
 
-export function desiredEnabledSet(capabilities: readonly BuiltInCapabilityState[]): ReadonlySet<BuiltInCapabilityId> {
-  return new Set(capabilities.filter((row) => row.enabled).map((row) => row.id));
+export function desiredEnabledSet(capabilities: readonly BuiltInCapabilityState[]): ReadonlySet<BuiltInCuratedPluginId> {
+  const enabled = new Set<BuiltInCapabilityId>(capabilities.filter((row) => row.enabled).map((row) => row.id));
+  return new Set(CURATED_BUILT_IN_IDS.filter((id) => enabled.has(id)));
+}
+
+/**
+ * Memory plugins enabled for a provider: exactly the matching one, never
+ * both. Startup-time mutual-exclusion assertion: a future bug that tries to
+ * enable both memory backends at once fails here, loudly, instead of
+ * splitting the user's memory across two stores.
+ */
+export function memoryEnabledPlugins(provider: "local" | "lore" | "off"): ReadonlySet<"pi_memory" | "lore"> {
+  const enabled = new Set<"pi_memory" | "lore">();
+  if (provider === "local") enabled.add("pi_memory");
+  if (provider === "lore") enabled.add("lore");
+  if (enabled.has("pi_memory") && enabled.has("lore")) {
+    throw new Error("memory plugins are mutually exclusive: pi-memory and lore must never load together");
+  }
+  return enabled;
 }
 
 export function isExactBundledPath(value: string, root: BundledPluginRoot): boolean {
@@ -130,6 +170,27 @@ function exactKeys(value: ReadonlyMap<string, unknown> | undefined, expected: re
   return expected.every((name) => value.has(name));
 }
 
+/** Tool families the two memory plugins register (pinned pi-memory 0.4.2 / lore 1.5.0). */
+const PI_MEMORY_TOOL_FAMILY = /^memory_(?:write|read|forget|restore|search|status)$|^scratchpad$/;
+const LORE_TOOL_FAMILY = /^lore_(?:status|boot|get_node|search|list_domains|create_node|update_node|delete_node|move_node|skill_[a-z]+)$/;
+
+function familySurface(
+  extension: ExtensionLike,
+  required: readonly string[],
+  family: RegExp,
+): boolean {
+  if (extension.commands !== undefined && extension.commands.size > 0) return false;
+  const tools = extension.tools;
+  if (tools === undefined) return false;
+  for (const name of required) {
+    if (!tools.has(name)) return false;
+  }
+  for (const name of tools.keys()) {
+    if (!family.test(name)) return false;
+  }
+  return true;
+}
+
 function curatedIdForExtension(extension: ExtensionLike): CuratedPluginId | undefined {
   const exactPathId = curatedIdForExactPath(extension.resolvedPath ?? extension.path);
   if (exactPathId !== undefined) return exactPathId;
@@ -141,6 +202,14 @@ function curatedIdForExtension(extension: ExtensionLike): CuratedPluginId | unde
   if (exactKeys(extension.tools, ["ask_user_question"]) && exactKeys(extension.commands, [])) return "ask_user_question";
   if (exactKeys(extension.tools, ["smart_compact", "smart_recall", "smart_save_memory", "smart_context", "smart_navigation", "smart_tools"])
     && exactKeys(extension.commands, ["smart-compact"])) return "smart_compact";
+  // Memory plugins are recognized by a family surface instead of an exact
+  // registration list: their tool set legitimately varies with configuration
+  // (Lore's skill tools are conditional), so a user-installed copy must match
+  // even when it registers more or fewer tools than the bundled one. Every
+  // registered name must still belong to the plugin's own family, so partial
+  // overlaps and unrelated extensions never match.
+  if (familySurface(extension, ["memory_read", "memory_write", "memory_status"], PI_MEMORY_TOOL_FAMILY)) return "pi_memory";
+  if (familySurface(extension, ["lore_search", "lore_get_node", "lore_boot"], LORE_TOOL_FAMILY)) return "lore";
   return undefined;
 }
 
@@ -155,16 +224,19 @@ export interface LoadExtensionsLike<T extends ExtensionLike, R = unknown> {
  *
  * Curated instances are identified by their exact bundled path, by any
  * install path under the curated package name (the user's own global copy),
- * or by their exact complete tool/command registration surface. Enabled
- * features keep exactly the adapter-bundled instance; disabled features keep
- * none. A separately installed copy of the same curated plugin is removed
- * even when it lives at another path, while partial overlaps and unrelated
+ * or by their registration surface (exact tool/command set; family surface
+ * for the two memory plugins, whose tool set varies with configuration).
+ * Enabled features keep exactly the adapter-bundled instance; disabled
+ * features keep none. A separately installed copy of the same curated
+ * plugin is removed even when it lives at another path (e.g. the user's
+ * `~/.lore/pi` symlink under `~/.pi/agent/extensions/lore` — kept in the pi
+ * CLI, excluded from Pix sessions), while partial overlaps and unrelated
  * extensions remain untouched. Generic errors and the shared runtime pass
  * through; only load errors tied to a disabled bundled identity are dropped.
  */
 export function filterCuratedExtensions<T extends ExtensionLike, R>(
   base: LoadExtensionsLike<T, R>,
-  enabled: ReadonlySet<BuiltInCapabilityId>,
+  enabled: ReadonlySet<CuratedPluginId>,
 ): LoadExtensionsLike<T, R> {
   const seen = new Set<CuratedPluginId>();
   const roots = new Map(bundledPluginRoots().map((root) => [root.id, root]));
@@ -185,10 +257,15 @@ export function filterCuratedExtensions<T extends ExtensionLike, R>(
   return { extensions, errors, runtime: base.runtime };
 }
 
-export function createCuratedExtensionsOverride(agentDir: string) {
+export function createCuratedExtensionsOverride(agentDir: string, env: NodeJS.ProcessEnv = process.env) {
   const filter = <T extends ExtensionLike, R>(base: LoadExtensionsLike<T, R>): LoadExtensionsLike<T, R> => {
     const config = readBuiltInCapabilityConfigSync(agentDir);
-    return filterCuratedExtensions(base, desiredEnabledSet(config.capabilities));
+    const memory = readMemoryRuntimeStateSync(agentDir, env);
+    const enabled = new Set<CuratedPluginId>([
+      ...desiredEnabledSet(config.capabilities),
+      ...memoryEnabledPlugins(memory.provider),
+    ]);
+    return dropBundledMemorySearchTools(filterCuratedExtensions(base, enabled));
   };
   return createAskQuestionnaireExtensionsOverride(filter);
 }

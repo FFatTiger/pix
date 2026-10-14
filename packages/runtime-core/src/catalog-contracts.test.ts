@@ -41,6 +41,8 @@ import type {
   SessionTreeNode,
   SessionTreeNodeKind,
   SettingsConfigStorePort,
+  MemoryProviderMutation,
+  MemorySettingsSnapshot,
   SubagentSettingsMutation,
   SubagentSettingsSnapshot,
   ThemeCatalogPort,
@@ -145,6 +147,10 @@ const _settingsExact: IsExact<
   | "writeToolsConfig"
   | "readSubagentConfig"
   | "writeSubagentConfig"
+  | "readCompactionConfig"
+  | "writeCompactionConfig"
+  | "readMemoryConfig"
+  | "writeMemoryProvider"
 > = true;
 const _subagentReadExact: IsExact<
   SettingsConfigStorePort["readSubagentConfig"],
@@ -153,6 +159,14 @@ const _subagentReadExact: IsExact<
 const _subagentWriteExact: IsExact<
   SettingsConfigStorePort["writeSubagentConfig"],
   (input: SubagentSettingsMutation) => Promise<SubagentSettingsSnapshot>
+> = true;
+const _memoryReadExact: IsExact<
+  SettingsConfigStorePort["readMemoryConfig"],
+  () => Promise<MemorySettingsSnapshot>
+> = true;
+const _memoryWriteExact: IsExact<
+  SettingsConfigStorePort["writeMemoryProvider"],
+  (input: MemoryProviderMutation) => Promise<MemorySettingsSnapshot>
 > = true;
 
 const _builtInsExact: IsExact<

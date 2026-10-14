@@ -166,6 +166,12 @@ export const urls = {
     subagents: () => resource("settings/subagents"),
     /** Context compaction (`compaction` + `smartCompact` objects). */
     compaction: () => resource("settings/compaction"),
+    /** Long-term memory provider (`pixMemoryProvider`) + Lore connection facts. */
+    memory: () => resource("settings/memory"),
+    /** Lore shared connection document (~/.lore/config.json; token write-only). */
+    memoryLore: () => resource("settings/memory/lore"),
+    /** POST — Lore health probe (GET <base>/api/health). */
+    memoryLoreTest: () => resource("settings/memory/lore-test"),
   },
   runtime: { ws: () => resource("runtime") },
   assistant: {

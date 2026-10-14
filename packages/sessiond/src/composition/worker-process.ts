@@ -159,6 +159,23 @@ export function buildWorkerEnv(input: WorkerEnvBuildInput = {}): NodeJS.ProcessE
       : input.defaultPiCodingAgentDir;
   if (explicitPiDir !== undefined) env.PI_CODING_AGENT_DIR = explicitPiDir;
 
+  // Bundled memory plugins (curated, vendor-pinned): Pix runs pi-memory with
+  // the model-backed exit summary DISABLED — sessiond reclaims idle workers
+  // constantly and every recycle would otherwise spend a model call on a
+  // summary (PI_MEMORY_EXIT_SUMMARY=0 is pi-memory's documented switch). The
+  // remaining keys pass a user's own customization through unchanged: the
+  // Lore connection env the bundled Lore extension reads, pi-memory's
+  // directory override, and PIX_ALLOWED_ROOTS so the assistant's
+  // create_session can respect the same workspace roots as the Host.
+  env.PI_MEMORY_EXIT_SUMMARY = "0";
+  for (const key of ["PI_MEMORY_DIR", "LORE_HOME", "LORE_BASE_URL", "LORE_API_TOKEN"] as const) {
+    const value = source[key];
+    if (typeof value === "string" && value.length > 0) env[key] = value;
+  }
+  if (typeof source.PIX_ALLOWED_ROOTS === "string" && source.PIX_ALLOWED_ROOTS.length > 0) {
+    env.PIX_ALLOWED_ROOTS = source.PIX_ALLOWED_ROOTS;
+  }
+
   for (const key of WORKER_ENV_KEY_ALLOWLIST) {
     const value = source[key];
     if (typeof value === "string" && value.length > 0) env[key] = value;

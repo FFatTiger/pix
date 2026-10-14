@@ -14,6 +14,14 @@
 import type { Hono } from "hono";
 import { BUILT_IN_CAPABILITY_IDS } from "@fffattiger/pix-protocol/built-in-capabilities";
 import { CompactionSettingsResponseSchema, CompactionSettingsMutationSchema, SubagentSettingsResponseSchema, SubagentSettingsMutationSchema } from "@fffattiger/pix-protocol/settings-config";
+import {
+  LoreConnectionMutationSchema,
+  LoreConnectionResponseSchema,
+  LoreTestRequestSchema,
+  LoreTestResponseSchema,
+  MemoryProviderMutationSchema,
+  MemorySettingsResponseSchema,
+} from "@fffattiger/pix-protocol/memory-settings";
 import type { HostEnv } from "../env.js";
 import { HttpError } from "../errors.js";
 import { hasTrustMutationSeam } from "./health.js";
@@ -582,6 +590,43 @@ function projectCompactionSettingsSnapshot(raw: unknown) {
   throw catalogUnavailable();
 }
 
+function projectMemorySettingsSnapshot(raw: unknown) {
+  try {
+    const result = MemorySettingsResponseSchema.safeParse(raw);
+    if (result.success) return result.data;
+  } catch {
+    // Same strict-projection rule as the other settings snapshots.
+  }
+  throw catalogUnavailable();
+}
+
+function projectLoreConnection(raw: unknown) {
+  try {
+    const result = LoreConnectionResponseSchema.safeParse(raw);
+    if (result.success) return result.data;
+  } catch {
+    // Untrusted getters/proxies cannot turn projection failure into raw errors.
+  }
+  throw catalogUnavailable();
+}
+
+function projectLoreTestResult(raw: unknown) {
+  try {
+    const result = LoreTestResponseSchema.safeParse(raw);
+    if (result.success) return result.data;
+  } catch {
+    // Same strict-projection rule as the other settings snapshots.
+  }
+  throw catalogUnavailable();
+}
+
+function mapLoreConnectionError(error: unknown): HttpError {
+  if (error instanceof HttpError) return error;
+  const code = catalogErrorCode(error);
+  if (code === "invalid_input") return new HttpError(400, "INVALID_INPUT", "Invalid Lore connection");
+  return new HttpError(503, "CATALOG_UNAVAILABLE", CATALOG_UNAVAILABLE_MESSAGE);
+}
+
 function parseModelsConfigModel(raw: unknown): Record<string, unknown> {
   if (!isPlainObject(raw)) invalidModelsConfigBody();
   const allowed = ["sourceIndex", "id", "name", "api", "reasoning", "input", "contextWindow", "maxTokens", "cost"];
@@ -974,6 +1019,74 @@ export function registerCatalogRoutes(app: Hono<HostEnv>, deps: CatalogDeps): vo
         throw mapSettingsConfigError(error);
       }
     });
+
+    // Long-term memory provider (settings.json `pixMemoryProvider`): same
+    // settings.json ownership, CAS fence and HttpError paths as compaction.
+    // The Lore connection sub-routes (save / test) live in the Lore config
+    // file, not settings.json, and mount only when the memoryLore seam is
+    // wired. Writes take effect for NEW sessions / reloads; selecting Lore
+    // requires a configured connection (fail-closed in the store).
+    app.get("/v1/settings/memory", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      try {
+        return c.json(projectMemorySettingsSnapshot(await deps.settingsMutation!.readMemoryConfig()));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+
+    app.put("/v1/settings/memory", async (c) => {
+      noStore(c);
+      if (c.req.url.includes("?")) {
+        throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+      }
+      const input = MemoryProviderMutationSchema.safeParse(await readJsonObject(c, SETTINGS_CONFIG_BODY_LIMIT));
+      if (!input.success) invalidSettingsConfigBody();
+      try {
+        return c.json(projectMemorySettingsSnapshot(await deps.settingsMutation!.writeMemoryProvider(input.data)));
+      } catch (error) {
+        throw mapSettingsConfigError(error);
+      }
+    });
+
+    if (deps.memoryLore) {
+      // Save the shared Lore connection (~/.lore/config.json, 0600; token
+      // write-only, never echoed). No CAS: the document is owned by the Lore
+      // tooling, last write wins, unknown keys preserved.
+      app.put("/v1/settings/memory/lore", async (c) => {
+        noStore(c);
+        if (c.req.url.includes("?")) {
+          throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+        }
+        const input = LoreConnectionMutationSchema.safeParse(await readJsonObject(c, SETTINGS_CONFIG_BODY_LIMIT));
+        if (!input.success) throw new HttpError(400, "INVALID_INPUT", "Invalid Lore connection");
+        try {
+          return c.json(projectLoreConnection(await deps.memoryLore!.saveLoreConnection(input.data)));
+        } catch (error) {
+          throw mapLoreConnectionError(error);
+        }
+      });
+
+      // Probe GET <base>/api/health. A failed probe is a normal 200 RESULT
+      // (reason drives the fixed UI copy), never a transport error; the
+      // token is never reflected in the response.
+      app.post("/v1/settings/memory/lore-test", async (c) => {
+        noStore(c);
+        if (c.req.url.includes("?")) {
+          throw new HttpError(400, "INVALID_QUERY", "This endpoint does not accept query parameters");
+        }
+        const input = LoreTestRequestSchema.safeParse(await readJsonObject(c, SETTINGS_CONFIG_BODY_LIMIT));
+        if (!input.success) throw new HttpError(400, "INVALID_INPUT", "Invalid Lore connection test");
+        try {
+          return c.json(projectLoreTestResult(await deps.memoryLore!.testLoreConnection(input.data)));
+        } catch (error) {
+          throw mapLoreConnectionError(error);
+        }
+      });
+    }
   }
 
   if (deps.builtinsMutation) {

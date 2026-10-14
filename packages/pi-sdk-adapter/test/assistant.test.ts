@@ -31,6 +31,8 @@ import {
   ASSISTANT_PREAMBLE_TEMPLATE,
   ASSISTANT_SEGMENT_TEMPLATE,
   extractPromptSegmentInner,
+  renderAssistantSegment,
+  type AssistantMemoryProvider,
 } from "../src/internal/assistant-system-prompt.js";
 import { createPiSdkSessionStore } from "../src/internal/session-store.js";
 import { createPiSdkSessionCatalog } from "../src/sessions/index.js";
@@ -194,10 +196,10 @@ function collectTools(sessionStatus?: () => Promise<readonly StatusItem[]>): Map
 }
 
 /** Capture the extension's registrations, including the before_agent_start handler. */
-function collectExtension(sessionStatus?: () => Promise<readonly StatusItem[]>): {
-  tools: Map<string, RegisteredTool>;
-  beforeAgentStart: CapturedBeforeAgentStart | null;
-} {
+function collectExtension(
+  sessionStatus?: () => Promise<readonly StatusItem[]>,
+  memoryProvider: AssistantMemoryProvider = "lore",
+) {
   const tools = new Map<string, RegisteredTool>();
   let beforeAgentStart: CapturedBeforeAgentStart | null = null;
   const api = {
@@ -209,7 +211,7 @@ function collectExtension(sessionStatus?: () => Promise<readonly StatusItem[]>):
       return () => {};
     },
   };
-  (createAssistantToolsExtension(sessionStatus as () => Promise<readonly never[]>) as (pi: unknown) => void)(api);
+  (createAssistantToolsExtension(sessionStatus as () => Promise<readonly never[]>, undefined, memoryProvider) as (pi: unknown) => void)(api);
   return { tools, beforeAgentStart };
 }
 
@@ -409,6 +411,10 @@ describe("assistant tools survive explicit set_tools whitelists (driver)", () =>
       const realAssistantDir = resolveAssistantWorkspaceDir(homedir());
       const agentDir = join(root, "agent");
       await mkdir(agentDir, { recursive: true });
+      // Deterministic memory provider: the assistant prompt handler reads it
+      // per turn; machines with a Lore connection must not default to the
+      // networked Lore extension here.
+      await writeFile(join(agentDir, "settings.json"), `${JSON.stringify({ pixMemoryProvider: "local" }, null, 2)}\n`);
       const manager = SessionManager.inMemory(realAssistantDir);
       const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false, authPath: join(agentDir, "auth.json"), modelsPath: null });
       const composition = {
@@ -807,8 +813,9 @@ describe("assistant role prompt (system-prompt segments)", () => {
     assert.equal(options.sections!.tools, DEFAULT_SECTIONS.tools);
     assert.equal(options.sections!.rules, DEFAULT_SECTIONS.rules);
     assert.equal(options.sections!.docs, DEFAULT_SECTIONS.docs);
-    // The assistant segment carries the substituted absolute paths.
-    assert.equal(options.sections!.assistant, ASSISTANT_SEGMENT_TEMPLATE.replaceAll("{workspace}", WORKSPACE).replaceAll("{home}", HOME));
+    // The assistant segment carries the substituted absolute paths and the
+    // injected memory provider's 记忆 copy.
+    assert.equal(options.sections!.assistant, renderAssistantSegment(HOME, WORKSPACE, "lore"));
     assert.ok(options.sections!.assistant.includes(WORKSPACE));
     assert.ok(!options.sections!.assistant.includes("{home}"));
   });

@@ -517,6 +517,29 @@ packages/
 - 助手工具对显式 set_tools 白名单保持可用（非空白名单后 union；全关 [] 保持诚实的
   空契约）。
 
+### 记忆提供者（pi-memory / Lore，三选一）
+
+- 记忆是全局设置（settings.json `pixMemoryProvider`：`local` | `lore` | `off`），
+  归「设置 → Agent → 记忆」页，不是 pix-builtins 能力开关；两个后端均为 vendor tgz
+  捆绑（pi-memory 0.4.2、@local/lore-pi-extension 1.5.0 = GitHub Release lore-pi.zip），
+  统一 curated 加载与防重复加载（同 smart_compact 规则；记忆插件另按家族工具面识别，
+  覆盖用户自装的 ~/.lore/pi 软链副本）。互斥出结构保证：`memoryEnabledPlugins(provider)`
+  只启用其一，bindExtensions 后另有启动期断言（memory_read 与 lore_get_node 不得同时
+  注册）。链路：runtime-core DTO（含 lore 未配置时 local / 已配置时 lore 的迁移默认，
+  显式值优先、非法值 fail-closed）→ protocol `/memory-settings` 镜像 → adapter
+  （settings-config-store 同一 CAS owner；lore-config-store 读写 ~/.lore/config.json、
+  0600、token 只写不读、换服务器不换 token 时清 token）→ host GET/PUT
+  `/v1/settings/memory` + PUT `/v1/settings/memory/lore` + POST
+  `/v1/settings/memory/lore-test`（settings.configure 令牌；探测失败是 200 结果而非错误）
+  → 客户端「记忆」页（三选一单选、Lore 引导链接按语言、测试通过才允许启用、切换
+  后果提示）。
+- sessiond worker env 强制 `PI_MEMORY_EXIT_SUMMARY=0`（闲置回收不该触发退出总结），
+  并转发 `PI_MEMORY_DIR`、`LORE_HOME/LORE_BASE_URL/LORE_API_TOKEN` 与
+  `PIX_ALLOWED_ROOTS`（助手 create_session 绝对路径分支与 Host 同源）。捆绑
+  pi-memory 的 `memory_search`（依赖 qmd）在 extensionsOverride 阶段移除。助手提示词
+  「记忆」节按提供者生成（local=memory_read/memory_write 文案，Lore=Lore 文案，
+  off=无该节），逐回合解析。场景行为见 [memory.md](./memory.md)。
+
 ### 助手会话能力（第 3 轮：看 / 找 / 管）
 
 - 七个新工具进第 1 轮的同一助手扩展（白名单守卫经 ASSISTANT_TOOL_NAMES 覆盖全部 9 个）。

@@ -7,6 +7,8 @@ import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type {
   CompactionSettings,
   CompactionSettingsMutation,
+  MemoryProviderMutation,
+  MemorySettingsSnapshot,
   SettingsConfigMutation,
   SettingsConfigStorePort,
   ToolSettingsMutation,
@@ -14,8 +16,14 @@ import type {
   SubagentSettings,
   SubagentSettingsMutation,
 } from "@fffattiger/pix-runtime-core";
-import { normalizeCompactionSettings, normalizeSubagentSettings } from "@fffattiger/pix-runtime-core";
+import {
+  effectiveMemoryProvider,
+  normalizeCompactionSettings,
+  normalizeMemoryProviderValue,
+  normalizeSubagentSettings,
+} from "@fffattiger/pix-runtime-core";
 import { stripJsonComments } from "./models-json.js";
+import { detectLoreConnection } from "./lore-config-store.js";
 
 const SETTINGS_MAX_BYTES = 256 * 1024;
 const secureState = createPosixSecureStateBackend();
@@ -109,6 +117,10 @@ function validateKnownFieldTypes(parsed: Record<string, unknown>): void {
     if (parsed[key] !== undefined && !isRecord(parsed[key])) {
       throw runtimeError("invalid_input", `settings.json ${key} must be an object`);
     }
+  }
+  const memoryProvider = parsed.pixMemoryProvider;
+  if (memoryProvider !== undefined && normalizeMemoryProviderValue(memoryProvider) === null) {
+    throw runtimeError("invalid_input", "settings.json pixMemoryProvider must be one of local/lore/off");
   }
 }
 
@@ -372,6 +384,27 @@ interface RawSource {
   present: boolean;
 }
 
+/**
+ * Memory-provider projection for a settings source: explicit key (validated,
+ * fail-closed on an invalid persisted value) + effective provider with the
+ * Lore-connection migration default. The Lore snapshot comes from the
+ * shared lore config (never from settings.json).
+ */
+function projectMemorySettings(source: RawSource, env: NodeJS.ProcessEnv): Omit<MemorySettingsSnapshot, "revision"> {
+  const lore = detectLoreConnection(env);
+  let explicit: ReturnType<typeof normalizeMemoryProviderValue>;
+  if (!source.present) {
+    explicit = undefined;
+  } else {
+    const parsed = parseSettingsObject(source.text);
+    explicit = normalizeMemoryProviderValue(parsed.pixMemoryProvider);
+    if (explicit === null) {
+      throw runtimeError("invalid_input", "settings.json pixMemoryProvider must be one of local/lore/off");
+    }
+  }
+  return { provider: effectiveMemoryProvider(explicit, lore.configured), providerExplicit: explicit !== undefined, lore };
+}
+
 async function readSource(agentDir: string): Promise<RawSource> {
   let text: string;
   try {
@@ -385,6 +418,8 @@ async function readSource(agentDir: string): Promise<RawSource> {
 
 export interface PiSdkSettingsConfigOptions {
   agentDir?: string;
+  /** Lore connection environment override (tests); production uses process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -397,6 +432,7 @@ export interface PiSdkSettingsConfigOptions {
  */
 export function createPiSdkSettingsConfigStore(options: PiSdkSettingsConfigOptions = {}): SettingsConfigStorePort {
   const configuredAgentDir = resolve(options.agentDir ?? getAgentDir());
+  const loreEnv = options.env ?? process.env;
   const canonicalAgentDir = async () => {
     try {
       return await secureState.canonicalizePath(configuredAgentDir);
@@ -523,6 +559,60 @@ export function createPiSdkSettingsConfigStore(options: PiSdkSettingsConfigOptio
         if (error && typeof error === "object" && "code" in error
           && ["invalid_input", "conflict", "unavailable"].includes(String(error.code))) throw error;
         throw runtimeError("unavailable", "compaction configuration could not be saved");
+      } finally {
+        await release?.().catch(() => {});
+      }
+    }),
+    readMemoryConfig: async () => {
+      const source = await readSource(await canonicalAgentDir());
+      return { revision: source.revision, ...projectMemorySettings(source, loreEnv) };
+    },
+    writeMemoryProvider: (input: MemoryProviderMutation) => withMutationQueue(configuredAgentDir, async () => {
+      if (!input || !/^[0-9a-f]{64}$/.test(input.expectedRevision ?? "")) {
+        throw runtimeError("invalid_input", "memory configuration input is invalid");
+      }
+      if (normalizeMemoryProviderValue(input.provider) === null) {
+        throw runtimeError("invalid_input", "memory configuration input is invalid");
+      }
+      // Selecting Lore requires a usable connection first — fail closed so a
+      // half-configured selection can never silently strand the user without
+      // any memory backend (the settings UI additionally requires a passing
+      // connection test before offering the switch).
+      if (input.provider === "lore" && !detectLoreConnection(loreEnv).configured) {
+        throw runtimeError("invalid_input", "Lore is not configured: save a server address and API token first");
+      }
+      const agentDir = await canonicalAgentDir();
+      const settingsPath = join(agentDir, "settings.json");
+      try {
+        await secureState.ensurePrivateDirectory(agentDir);
+      } catch {
+        throw runtimeError("unavailable", "memory configuration is unavailable");
+      }
+      let release: (() => Promise<void>) | undefined;
+      try {
+        release = await lockfile.lock(agentDir, {
+          realpath: false,
+          lockfilePath: `${settingsPath}.lock`,
+          retries: { retries: 9, minTimeout: 20, maxTimeout: 20 },
+        });
+        const current = await readSource(agentDir);
+        if (current.revision !== input.expectedRevision) {
+          throw runtimeError("conflict", "settings configuration changed");
+        }
+        const parsed = current.present ? parseSettingsObject(current.text) : {};
+        // Structured write touches ONLY pixMemoryProvider; unknown keys and
+        // the native settings round-trip untouched (same contract as the
+        // tools editor).
+        parsed.pixMemoryProvider = input.provider;
+        const content = `${JSON.stringify(parsed, null, 2)}\n`;
+        validateSettingsText(content);
+        await secureState.writeStateDocument(settingsPath, content, { maxBytes: SETTINGS_MAX_BYTES });
+        const source = await readSource(agentDir);
+        return { revision: source.revision, ...projectMemorySettings(source, loreEnv) };
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error
+          && ["invalid_input", "conflict", "unavailable"].includes(String(error.code))) throw error;
+        throw runtimeError("unavailable", "memory configuration could not be saved");
       } finally {
         await release?.().catch(() => {});
       }

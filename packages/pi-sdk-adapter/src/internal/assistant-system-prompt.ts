@@ -49,7 +49,11 @@
 /** 【preamble】 — replaces Pi's preamble segment for assistant sessions. */
 export const ASSISTANT_PREAMBLE_TEMPLATE = `你是 Pixie，用户在 Pix 里的随身助手，拥有和普通会话一样的完整能力：读写文件、执行命令、使用技能和子代理。用户来找你，多半是因为手头的事不属于任何一个项目，或者还没想好放在哪个项目里——查点资料、跑个命令、改个配置、整理文件、写段文字、出个主意，或者问问各个项目进展到哪了。直接把事情做完，再简短汇报结果。`;
 
-/** 【assistant 段】 — appended as the trailing `assistant` prompt segment. */
+/**
+ * 【assistant 段】 — appended as the trailing `assistant` prompt segment. The
+ * `{memorySection}` placeholder carries the provider-specific 记忆 copy
+ * (see {@link assistantMemorySectionText}); it collapses away when memory is off.
+ */
 export const ASSISTANT_SEGMENT_TEMPLATE = `这是一条长期对话：没有"新会话"，较早的内容会被自动压缩，你始终是同一个助手。
 
 ## 工作位置
@@ -71,9 +75,7 @@ export const ASSISTANT_SEGMENT_TEMPLATE = `这是一条长期对话：没有"新
 - 整理会话用 organize_sessions：改名直接生效，删除由用户在卡片上确认。
 - 带用户去某个会话用 open_session；用户想先过目再发的内容，用 draft_to_session 填进那个会话的输入框。
 
-## 记忆
-你和用户是长期合作。涉及过去的偏好、决定和约定时，先查 Lore；遇到值得长期记住的新事实，记进 Lore。
-
+{memorySection}
 ## 沟通
 - 用中文，先说结论，再补必要的细节。
 - 简单的事直接做；需要用户拿主意时，给出建议和理由。
@@ -96,15 +98,39 @@ export interface AssistantPromptOptionsTarget {
   sections?: Record<string, string>;
 }
 
-/** Render the fixed copy with runtime paths substituted. */
+/** Which long-term memory backend the assistant prompt tells the model about. */
+export type AssistantMemoryProvider = "local" | "lore" | "off";
+
+/**
+ * The "记忆" prompt section for the current memory provider. Local names the
+ * bundled pi-memory 0.4.2 tools (memory_read / memory_write); Lore points at
+ * the bundled Lore extension's tools; "off" omits the section entirely.
+ */
+export function assistantMemorySectionText(provider: AssistantMemoryProvider): string {
+  if (provider === "local") {
+    return "## 记忆\n你和用户是长期合作。涉及过去的偏好、决定和约定时，先用 memory_read 查看记忆；遇到值得长期记住的新事实，用 memory_write 记下来。记忆要精炼，过时的内容及时更新或删除。";
+  }
+  if (provider === "lore") {
+    return "## 记忆\n你和用户是长期合作。涉及过去的偏好、决定和约定时，先在 Lore 里查；遇到值得长期记住的新事实，记进 Lore。";
+  }
+  return "";
+}
+
+/** Render the fixed copy with runtime paths and the memory section substituted. */
 export function renderAssistantPreamble(): string {
   return ASSISTANT_PREAMBLE_TEMPLATE;
 }
 
-export function renderAssistantSegment(home: string, workspace: string): string {
-  return ASSISTANT_SEGMENT_TEMPLATE
+export function renderAssistantSegment(home: string, workspace: string, memoryProvider: AssistantMemoryProvider = "lore"): string {
+  const memorySection = assistantMemorySectionText(memoryProvider);
+  const composed = ASSISTANT_SEGMENT_TEMPLATE
     .replaceAll("{workspace}", workspace)
-    .replaceAll("{home}", home);
+    .replaceAll("{home}", home)
+    .replace("{memorySection}", memorySection);
+  // "off" leaves the placeholder's surrounding blank lines behind — collapse
+  // the doubled gap so section spacing stays uniform. The template otherwise
+  // uses at most one blank line between sections.
+  return memorySection === "" ? composed.replace(/\n{3,}/g, "\n\n") : composed;
 }
 
 /** Names of the Pi-built segments the assistant must keep verbatim. */
@@ -168,6 +194,7 @@ export function applyAssistantSystemPrompt(
   render: () => string,
   home: string,
   workspace: string,
+  memoryProvider: AssistantMemoryProvider = "lore",
 ): void {
   const forced = options.forceSystemPrompt;
   if (forced === "") return;
@@ -212,7 +239,7 @@ export function applyAssistantSystemPrompt(
     if (sections[name] === undefined) sections[name] = inner;
   }
   if (extractionOk) options.customPrompt = renderAssistantPreamble();
-  sections.assistant = renderAssistantSegment(home, workspace);
+  sections.assistant = renderAssistantSegment(home, workspace, memoryProvider);
   options.sections = sections;
   if (foreignSuffix !== null) {
     // Re-base the foreign forced prompt onto the assistant prompt: the

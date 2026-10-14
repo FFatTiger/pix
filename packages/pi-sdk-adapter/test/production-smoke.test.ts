@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PRODUCTION_AGENT_CAPABILITIES, PiSdkAgentRuntimeFactory } from "../src/agent/index.js";
@@ -17,6 +17,11 @@ async function withAgentDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), "pix-pi-sdk-public-smoke-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+  // Deterministic memory provider for the real composition below: machines
+  // with an existing Lore connection must not default to the networked Lore
+  // extension in these tests.
+  await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+  await writeFile(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), `${JSON.stringify({ pixMemoryProvider: "local" }, null, 2)}\n`);
   try { return await fn(root); }
   finally {
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;

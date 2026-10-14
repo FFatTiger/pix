@@ -26,12 +26,14 @@ import type {
   WorkerAssistantOpResultPayload,
   WorkerSessionStatusItem,
 } from "@fffattiger/pix-protocol";
-import { basename, sep as pathSep } from "node:path";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { basename, delimiter, isAbsolute, relative, sep as pathSep } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import { SessionManager, getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
 import { isAssistantWorkspacePath, matchesAssistantWorkspacePattern, normalizeAssistantWorkspacePath, resolveAssistantWorkspaceDir } from "@fffattiger/pix-runtime-core";
-import { applyAssistantSystemPrompt } from "./assistant-system-prompt.js";
+import { applyAssistantSystemPrompt, type AssistantMemoryProvider } from "./assistant-system-prompt.js";
+import { readMemoryRuntimeStateSync } from "./memory-provider.js";
 import { browseKindForWorkspace } from "./session-projection.js";
 
 /** Fixed tool names (also used by the client's process-line labels). */
@@ -487,6 +489,64 @@ function targetLine(info: AssistantSessionInfo): string {
   return `${title}｜项目:${projectLabel(info.cwd)}｜id:${info.id}`;
 }
 
+// ---------------------------------------------------------------------------
+// Absolute-path project targets (create_session)
+// ---------------------------------------------------------------------------
+
+function isWithinRoot(child: string, root: string): boolean {
+  const rel = relative(root, child);
+  return rel !== "" ? !rel.startsWith("..") && !isAbsolute(rel) : true;
+}
+
+/**
+ * Parse the operator-configured workspace roots (`PIX_ALLOWED_ROOTS`, the
+ * same environment variable the Host consumes). Returns null when unset —
+ * the Host's single-root default is its own launch cwd, which the worker
+ * cannot know, so the fallback boundary is the user's home directory:
+ * permissive enough for the personal single-root workstation, still closed
+ * against system paths (/etc, /tmp, /var). Mirrors the Host's strict parse:
+ * any invalid segment fails closed instead of being skipped.
+ */
+export function parseWorkspaceRootsEnv(env: NodeJS.ProcessEnv = process.env): string[] | null {
+  const raw = env.PIX_ALLOWED_ROOTS;
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const segments = raw.split(delimiter);
+  if (segments.some((segment) => !isAbsolute(segment))) return null;
+  return segments;
+}
+
+/** Validate an absolute-path create_session target (existing dir + roots + trust). */
+export function resolveAbsoluteProjectTarget(raw: string): { cwd: string } | { error: string } {
+  const trimmed = raw.trim();
+  if (trimmed === "" || !isAbsolute(trimmed)) return { error: `不是绝对路径：${concise(trimmed, 120)}` };
+  let info;
+  try {
+    info = statSync(trimmed);
+  } catch {
+    return { error: `目录不存在：${trimmed}` };
+  }
+  if (!info.isDirectory()) return { error: `不是目录：${trimmed}` };
+  let real: string;
+  try {
+    real = realpathSync(trimmed);
+  } catch {
+    return { error: `目录无法解析：${trimmed}` };
+  }
+  const roots = parseWorkspaceRootsEnv();
+  const boundaries = roots ?? [homedir()];
+  if (!boundaries.some((root) => isWithinRoot(real, root))) {
+    return {
+      error: roots === null
+        ? `路径在用户主目录之外，Pix 不会在那里新建会话：${real}`
+        : `路径不在 Pix 允许的根目录内，无法新建会话：${real}`,
+    };
+  }
+  if (hasTrustRequiringProjectResources(real) && new ProjectTrustStore(getAgentDir()).get(real) !== true) {
+    return { error: `项目 ${basename(real)} 含需要信任的项目级配置，尚未被信任；请先在 Pix 里打开并信任该项目。` };
+  }
+  return { cwd: real };
+}
+
 
 function toolText(text: string) {
   return { content: [{ type: "text" as const, text }], details: undefined };
@@ -600,6 +660,7 @@ function opErrorText(res: Extract<WorkerAssistantOpResultPayload, { ok: false }>
 export function createAssistantToolsExtension(
   sessionStatus?: () => Promise<readonly WorkerSessionStatusItem[]>,
   assistantOps?: AssistantOpsChannel,
+  memoryProvider?: AssistantMemoryProvider,
 ): InlineExtension {
   return (pi: ExtensionAPI): void => {
     // Assistant role prompt (see assistant-system-prompt.ts): replace Pi's
@@ -611,7 +672,13 @@ export function createAssistantToolsExtension(
     // no-op), and follows model switches (options are rebuilt per turn).
     pi.on("before_agent_start", (event) => {
       const home = homedir();
-      applyAssistantSystemPrompt(event.systemPromptOptions, () => event.systemPrompt, home, resolveAssistantWorkspaceDir(home));
+      // Fresh per-turn provider read (tests inject an explicit one): a memory
+      // switch reaches assistant sessions after /reload without a worker
+      // restart — the same honesty as the curated extension filter. A
+      // malformed settings.json fails the turn loudly, never silently
+      // re-defaulting the memory copy.
+      const provider = memoryProvider ?? readMemoryRuntimeStateSync(getAgentDir()).provider;
+      applyAssistantSystemPrompt(event.systemPromptOptions, () => event.systemPrompt, home, resolveAssistantWorkspaceDir(home), provider);
       // Publish the turn's effective prompt (the forced projection when one
       // is active, else the mutated section rendering) for the driver state.
       lastAssistantPromptView.current = event.systemPrompt;
@@ -922,8 +989,9 @@ export function createAssistantToolsExtension(
         "列出 Pix 已知的项目，以及它们的路径和活跃情况（只读）。",
         "每个项目给出：名称、绝对路径、会话数、最近活跃时间、正在运行的会话数。",
         "数据来自会话目录（与界面的项目列表同源）；「正在运行」来自实时状态通道。",
+        "列表只包含已有会话的项目；还没有会话的目录，把绝对路径直接传给 create_session 即可。",
       ].join(""),
-      promptSnippet: "列出 Pix 已知的项目，以及它们的路径和活跃情况（只读）。",
+      promptSnippet: "列出 Pix 已知的项目，以及它们的路径和活跃情况（只读）；没有会话的新目录可直接把绝对路径传给 create_session。",
       parameters: Type.Object({
         query: Type.Optional(Type.String({ description: "按项目名称或路径过滤（子串匹配）" })),
       }),
@@ -1128,12 +1196,13 @@ export function createAssistantToolsExtension(
       label: "新建会话",
       description: [
         "在某个项目里新建会话并交代任务。",
-        "项目按路径、路径后缀或目录名匹配；说不清时先用 list_projects。",
+        "项目按路径、路径后缀或目录名匹配；也可以直接给目录的绝对路径（还没有任何会话的新目录也能用，须在 Pix 允许的根目录内）。",
+        "说不清时先用 list_projects。",
         "wait 为真时等到这一轮结束再拿结果。",
       ].join(""),
       promptSnippet: "在某个项目里新建会话并交代任务。",
       parameters: Type.Object({
-        project: Type.String({ description: "项目目录名或路径" }),
+        project: Type.String({ description: "项目目录名、路径或绝对路径" }),
         message: Type.String({ description: "新会话的第一条任务说明", minLength: 1, maxLength: MESSAGE_MAX_CHARS }),
         title: Type.Optional(Type.String({ description: "可选会话标题", minLength: 1, maxLength: 200 })),
         wait: Type.Optional(Type.Boolean({ description: "是否等到这一轮结束再返回结果，默认否" })),
@@ -1151,12 +1220,17 @@ export function createAssistantToolsExtension(
           signal?.throwIfAborted();
           return toolFailure("读取会话目录失败", error);
         }
-        const project = resolveProjectTarget(params.project, sessions);
+        const project = isAbsolute(params.project.trim())
+          ? resolveAbsoluteProjectTarget(params.project)
+          : resolveProjectTarget(params.project, sessions);
+        if ("error" in project) {
+          return toolError(project.error);
+        }
         if ("candidates" in project) {
           return toolError(`「${concise(params.project, 60)}」匹配到多个项目，请用更精确的路径：\n${project.candidates.slice(0, 5).map((cwd) => `- ${projectLabel(cwd)}｜${cwd}`).join("\n")}`);
         }
         if (!("cwd" in project)) {
-          return toolError(`没有找到项目「${concise(params.project, 60)}」。可用 list_projects 查看。`);
+          return toolError(`没有找到项目「${concise(params.project, 60)}」。可用 list_projects 查看；若是还没有会话的新目录，请直接给出它的绝对路径。`);
         }
         const wait = params.wait === true;
         const waitMinutes = clampWaitMinutes(params.wait_minutes);

@@ -390,6 +390,20 @@ export interface CatalogSettingsMutationSeam {
   readCompactionConfig(): Promise<unknown>;
   /** Structured context-compaction CAS write. */
   writeCompactionConfig(input: unknown): Promise<unknown>;
+  /** Structured memory-provider read (`pixMemoryProvider` + Lore facts). */
+  readMemoryConfig(): Promise<unknown>;
+  /** Structured memory-provider CAS write (lore requires a connection). */
+  writeMemoryProvider(input: unknown): Promise<unknown>;
+}
+
+/**
+ * Lore connection seam (`~/.lore/config.json`): write-only token, shared
+ * with the user's other Lore clients. Mounted with the settings seam — the
+ * `settings.configure` capability token covers the whole "记忆" surface.
+ */
+export interface CatalogMemoryLoreSeam {
+  saveLoreConnection(input: unknown): Promise<unknown>;
+  testLoreConnection(input: unknown): Promise<unknown>;
 }
 
 /** Pix built-in desired-enablement seam (`pix-builtins.json`, agent-dir scope). */
@@ -481,6 +495,7 @@ export interface CatalogDeps {
   models?: CatalogModelsSeam;
   modelsMutation?: CatalogModelsMutationSeam;
   settingsMutation?: CatalogSettingsMutationSeam;
+  memoryLore?: CatalogMemoryLoreSeam;
   builtinsMutation?: CatalogBuiltInsMutationSeam;
   credentials?: CatalogCredentialsSeam;
   resources?: CatalogResourcesSeam;

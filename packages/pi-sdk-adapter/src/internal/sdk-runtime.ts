@@ -806,6 +806,16 @@ class SdkRuntimeDriver implements PiRuntimeDriver {
       await applyGlobalToolsSelection(this.session, this.toolPolicy, this.agentDir);
       ensureAssistantToolsActive(this.session, this.identity.cwd);
     }
+    // Memory-mutex startup assertion: pi-memory and the Lore extension are
+    // mutually exclusive by construction (curated filter + pixMemoryProvider);
+    // if BOTH memory surfaces are ever registered in one session, some path
+    // bypassed the owner — fail closed here instead of splitting memory.
+    {
+      const registered = new Set(this.session.getAllTools().map((tool) => tool.name));
+      if (registered.has("memory_read") && registered.has("lore_get_node")) {
+        throw makeRuntimeError("unavailable", "memory plugins are mutually exclusive but both are registered");
+      }
+    }
     this.currentCapabilities = this.recomputeProjections(this.currentCapabilities);
     this.trace?.record("bind_extensions");
     this.trace?.record("ready");
@@ -1132,6 +1142,12 @@ function defaultComposition(
       // from the loader); the per-turn segment surgery lives in the
       // extension's before_agent_start handler (see assistant-system-prompt).
       const assistantExtensions = assistantExtensionFactoriesForCwd(cwd, effectiveStatus, effectiveOps);
+      // The bundled pi-memory plugin runs with its model-backed exit summary
+      // OFF everywhere Pix loads it: sessiond recycles idle workers
+      // constantly (each recycle would spend a model call), and the same pin
+      // keeps in-process compositions deterministic. sessiond's buildWorkerEnv
+      // sets the same value for real workers; this covers every load path.
+      process.env.PI_MEMORY_EXIT_SUMMARY = "0";
       return createAgentSessionServices({
         cwd,
         agentDir,

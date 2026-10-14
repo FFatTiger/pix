@@ -300,7 +300,7 @@ describe("table-driven mutation invalidation", () => {
     expect(options).not.toHaveProperty("plugins");
     expect(options).not.toHaveProperty("auth");
     expect(Object.keys(options.trust)).toEqual(["setTrusted"]);
-    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveSubagents", "saveCompaction", "saveConfigFile", "saveTools"]);
+    expect(Object.keys(options.settings)).toEqual(["sessionIdleTimeout", "saveBuiltIns", "saveSubagents", "saveCompaction", "saveMemory", "saveLoreConnection", "testLoreConnection", "saveConfigFile", "saveTools"]);
   });
 
   it("raw settings save invalidates tools, catalogs, models, and auth", async () => {
@@ -314,6 +314,7 @@ describe("table-driven mutation invalidation", () => {
       { queryKey: queryKeys.settingsConfig.builtIns() },
       { queryKey: queryKeys.settingsConfig.subagents() },
       { queryKey: queryKeys.settingsConfig.compaction() },
+      { queryKey: queryKeys.settingsConfig.memory() },
       { queryKey: queryKeys.skills.all },
       { queryKey: queryKeys.plugins.all },
       { queryKey: queryKeys.commands.all },

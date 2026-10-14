@@ -11,6 +11,8 @@ import { createPiSdkSettingsConfigStore as createInternalStore } from "../intern
 export interface PiSdkSettingsConfigOptions {
   /** Agent config directory; defaults to the SDK agent dir. */
   agentDir?: string;
+  /** Lore connection environment override (tests); production uses process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** Create the global settings.json raw-text editor authority. */
@@ -19,5 +21,6 @@ export function createPiSdkSettingsConfig(
 ): SettingsConfigStorePort {
   return createInternalStore({
     ...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
+    ...(options.env === undefined ? {} : { env: options.env }),
   });
 }
