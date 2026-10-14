@@ -373,6 +373,15 @@ async function main() {
     await ws.submitFenced(assistant.sessionId, "只用一句话回答：你收到这条消息了吗？", "e2e-r7-a0");
     check("assistant session alive", true, "");
 
+    // create_session resolves a project by name only from directories that
+    // already have a session (list_projects reports the same set). Give
+    // demo-project one ordinary session first, the same way round 5 does,
+    // so the name resolves instead of coming back as "no such project".
+    const seeded = await ws.create(project);
+    await attachSession(ws, seeded.sessionId);
+    await ws.submitFenced(seeded.sessionId, "这是 demo-project 的初始会话，回复一个字：好。", "e2e-r7-seed");
+    await attachSession(ws, assistant.sessionId);
+
     // -- 1. create_session with wait ---------------------------------------
     const createTurn = await ws.submitFenced(
       assistant.sessionId,
@@ -401,11 +410,13 @@ async function main() {
       if (text === assistantJsonl1 || !text.includes("hello from pix assistant")) continue;
       if (!text.includes(ASSISTANT_SENT_MESSAGE_PREFIX)) continue;
       targetAJsonl = text;
-      const match = text.match(/"sessionId":"([0-9a-f-]{36})"/);
-      targetA = match ? match[1] : null;
+      // The session id is the filename suffix, not a field inside the JSONL.
+      const fileMatch = String(name).match(/_([0-9a-f-]{36})\.jsonl$/);
+      targetA = fileMatch ? fileMatch[1] : null;
       break;
     }
     check("delegated session exists with marker first line", targetA !== null && targetAJsonl !== "", targetA ?? "not found");
+
     if (targetA !== null) {
       const entries = messageEntries(targetAJsonl, targetA);
       const firstUser = entries.find((e) => e.role === "user");
