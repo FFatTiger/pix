@@ -322,14 +322,25 @@ html {
 .workspace-tab--active .workspace-tab-label {
   font-weight: var(--text-weight-medium);
 }
-.workspace-tab-running-dot {
+/* Shared small status marker (session rows, workspace tabs, Pixie entries):
+   running keeps the busy pulse; waiting/error are quiet static dots in the
+   existing status colors. Same geometry everywhere. */
+.session-status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
+}
+.session-status-dot[data-status="running"] {
   background: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
   animation: workspace-tab-running-pulse 1.4s ease-in-out infinite;
+}
+.session-status-dot[data-status="waiting"] {
+  background: var(--accent-orange);
+}
+.session-status-dot[data-status="error"] {
+  background: var(--accent-red);
 }
 @keyframes workspace-tab-running-pulse {
   0%, 100% { opacity: 1; }

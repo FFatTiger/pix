@@ -70,6 +70,13 @@ export interface RuntimeConnectionView {
   readonly fatal: boolean;
   readonly runningSessionIds: readonly string[];
   readonly liveSessionIds: readonly string[];
+  /**
+   * Live sessions stopped on unanswered user input (pending extension UI),
+   * from the same authoritative running watch as `runningSessionIds`. Empty
+   * when the watch did not project the field (older sessiond) or the
+   * connection runs in legacy mode — never a client-side guess.
+   */
+  readonly waitingSessionIds: readonly string[];
   readonly liveSessionStateKnown: boolean;
   /**
    * Assistant residency presence (always-on Pixie), projected from the
@@ -355,6 +362,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   private fatal = false;
   private runningSessionIds: string[] = [];
   private liveSessionIds: string[] = [];
+  private waitingSessionIds: string[] = [];
   private liveSessionStateKnown = false;
   private runningProjectionRevision = 0;
   private runningRefreshGeneration = 0;
@@ -427,7 +435,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       },
       acceptLegacyRunningEvent: (event) => {
         if (!isCurrent() || event.sessionId !== sessionId || this.runningAuthorityMode !== "legacy") return;
-        this.applyRunningState(event.sessionIds, event.busySessionIds);
+        this.applyRunningState(event.sessionIds, event.busySessionIds, []);
       },
       isCurrent,
       unbind: () => {
@@ -763,6 +771,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
           this.applyRunningState(
             running.sessions.map((item) => item.sessionId),
             running.sessions.filter((item) => item.workerStatus === "busy").map((item) => item.sessionId),
+            [],
           );
           resolve([...this.runningSessionIds]);
         },
@@ -851,7 +860,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       if (this.runningAuthorityMode !== "watch" || generation !== this.runningWatchGeneration) return;
       if (message.payload.revision <= this.runningWatchRevision) return;
       this.runningWatchRevision = message.payload.revision;
-      this.applyRunningState(message.payload.sessionIds, message.payload.busySessionIds);
+      this.applyRunningState(message.payload.sessionIds, message.payload.busySessionIds, message.payload.waitingSessionIds ?? []);
       return;
     }
     if (message.type === "response" || message.type === "snapshot" || message.type === "interrupt_result"
@@ -1241,9 +1250,10 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     });
   }
 
-  private applyRunningState(sessionIds: readonly string[], busySessionIds: readonly string[]): void {
+  private applyRunningState(sessionIds: readonly string[], busySessionIds: readonly string[], waitingSessionIds: readonly string[]): void {
     this.liveSessionIds = [...sessionIds];
     this.runningSessionIds = [...busySessionIds];
+    this.waitingSessionIds = [...waitingSessionIds];
     this.liveSessionStateKnown = true;
     this.runningProjectionRevision += 1;
     this.publish();
@@ -1253,6 +1263,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
     if (requestGeneration !== this.runningRefreshGeneration || revisionAtRequest !== this.runningProjectionRevision) return;
     this.runningSessionIds = [];
     this.liveSessionIds = [];
+    this.waitingSessionIds = [];
     this.liveSessionStateKnown = false;
     this.runningProjectionRevision += 1;
     this.publish();
@@ -1261,6 +1272,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
   private resetRunningAuthority(): void {
     this.runningSessionIds = [];
     this.liveSessionIds = [];
+    this.waitingSessionIds = [];
     this.liveSessionStateKnown = false;
     this.runningProjectionRevision += 1;
     this.runningAuthorityMode = "pending";
@@ -1309,6 +1321,7 @@ export class RuntimeConnection implements RuntimeSocketHandler {
       fatal: this.fatal,
       runningSessionIds: [...this.runningSessionIds],
       liveSessionIds: [...this.liveSessionIds],
+      waitingSessionIds: [...this.waitingSessionIds],
       liveSessionStateKnown: this.liveSessionStateKnown,
       assistantPresence: this.assistantPresenceValue,
       sessionsChangedRevision: this.sessionsChangedRevision,

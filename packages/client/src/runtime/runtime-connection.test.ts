@@ -407,6 +407,22 @@ describe("RuntimeConnection — running watch and create/seeds", () => {
     expect(connection.getSnapshot().runningSessionIds).toEqual(["s1"]);
   });
 
+  it("projects the waiting set from the watch and clears it on transport loss", () => {
+    const { connection, sockets } = makeConnection();
+    const ws = ready(connection, sockets, ["runtime.running-watch.v1"]);
+    ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["s1", "s2"], busySessionIds: ["s1"], waitingSessionIds: ["s2"] } });
+    expect(connection.getSnapshot().waitingSessionIds).toEqual(["s2"]);
+    // An older sessiond without the field degrades by absence — never a guess.
+    ws.serverSend({ type: "running_state", payload: { revision: 2, sessionIds: ["s1"], busySessionIds: ["s1"] } });
+    expect(connection.getSnapshot().waitingSessionIds).toEqual([]);
+    ws.serverSend({ type: "running_state", payload: { revision: 3, sessionIds: ["s1", "s2"], busySessionIds: [], waitingSessionIds: ["s2"] } });
+    expect(connection.getSnapshot().waitingSessionIds).toEqual(["s2"]);
+    // Transport loss resets the projection honestly (unknown, not stale).
+    ws.serverClose(1006);
+    vi.advanceTimersByTime(250);
+    expect(connection.getSnapshot().waitingSessionIds).toEqual([]);
+  });
+
   it("sends an epoch-fenced command to an already-live session with zero attach/create", async () => {
     const { connection, sockets } = makeConnection();
     const ws = ready(connection, sockets, ["runtime.running-watch.v1", "runtime.epoch-rollover.v1"]);

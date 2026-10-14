@@ -222,7 +222,7 @@ interface AgentRuntimePort {
 - prompt transport ack 只是 admission，不是运行终态；UI running marker 持续到权威事件接管，避免 ack→agent_start 闪断。
 - admission 与 observation 可交错到达。Client 已知的同 epoch cursor 比 admission revision 新时，确认仍应完成身份、原 promise 与乐观条目的对账，但不得用旧 admission snapshot/cursor 回退当前权威投影；不同 epoch 的 revision 不排序。发送记录只更新必要的 provenance 字段，不替换 transport callback 正在持有的 pending 对象。
 - 部分回复直接来自共享 Protocol accumulator。不得用没有后续发布保证的第二份节流缓存隐藏已经收到的文字；模型暂停时，最后一段合法回复仍须可见，且不依赖下一条网络事件触发显示。
-- sessiond 以协商 feature `runtime.running-watch.v1` 的 revisioned `running_state` 发布全局 live/turn-busy 真相；该全局订阅独立于 per-session attach，不 touch/activate Worker，首页与只读历史保持 0 Worker，attach replacement 也不会形成 completion 丢失窗口。Client `RuntimeConnection` 是唯一 running owner，按 socket generation + sessiond revision 栅栏原子替换集合，Sidebar 会话、项目目录和顶部 Tab 通过 `useRuntimeConnection()` 只消费该集合，选中会话 exact busy 由 `useSelectedRuntime()` 即时叠加。Protocol v2 未协商时暂保留一次性 `listRunning` + `running_sessions_changed` legacy 路径（Protocol v3 同步删除）；controller 必须先 cursor-accept/reduce legacy event 再通知 connection，协商 watch 后 connection 忽略其 state payload但 cursor仍推进，禁止过滤制造假 gap；禁止轮询。
+- sessiond 以协商 feature `runtime.running-watch.v1` 的 revisioned `running_state` 发布全局 live/turn-busy 真相，`waitingSessionIds`（optional、additive：会话停下等用户输入，pending extension UI）随同一投影推送、仅集合真变化才 bump revision；该全局订阅独立于 per-session attach，不 touch/activate Worker，首页与只读历史保持 0 Worker，attach replacement 也不会形成 completion 丢失窗口。Client `RuntimeConnection` 是唯一 running owner，按 socket generation + sessiond revision 栅栏原子替换集合，Sidebar 会话、项目目录和顶部 Tab 通过 `useRuntimeConnection()` 只消费该集合，选中会话 exact busy 由 `useSelectedRuntime()` 即时叠加；侧栏行与 Tab 的状态小点统一为 进行中/等待中/错误 一套（优先级 错误>等待中>进行中，绝不客户端推断等待）。Protocol v2 未协商时暂保留一次性 `listRunning` + `running_sessions_changed` legacy 路径（Protocol v3 同步删除；legacy 不推等待集合——诚实降级）；controller 必须先 cursor-accept/reduce legacy event 再通知 connection，协商 watch 后 connection 忽略其 state payload但 cursor仍推进，禁止过滤制造假 gap；禁止轮询。
 - 选择历史/文件 Tab 不启动目标 Worker；已有 attach 可作为后台事件订阅保留，所有 transcript/composer/capability/context 均按 active session identity fail-closed，后台 A 状态绝不投影到 B。
 - **本轮评估澄清**：零 Worker 历史浏览限制的是隐式启动执行，不禁止观察一个已运行的 Worker。选择身份、观察订阅、执行激活、中断当前 turn 和结束 Worker 必须分别定义；具体重构契约与迁移顺序见本轮方案。在服务端证明“观察绝不激活”之前，不把放宽客户端自动 attach 条件当作完整修复。
 
@@ -468,7 +468,9 @@ packages/
   精确 cwd 查询，0 Worker）。助手会话 = 该目录下最新的会话；首条消息才创建。
 - **隐藏**：该目录按 browse-kind `hidden` 从 sessions/projects 页消失（projection
   schema v7 强制重建；内存 fallback 同样排除），但按 id 的 detail/context 照常。
-  客户端永不为其物化标签、不持久化标签。
+  客户端永不按 session id 为助手会话物化标签；取而代之的是固定单例 **Pixie 标签**
+  （kind `assistant`、无 session 身份，绑定变化/rekey 不会使标签过期），经同一套
+  workspace-tab 管道物化/持久化/关闭（关闭只关标签，常驻 worker 归 sessiond）。
 - **助手专属工具（十个，只读为主）**：`search_sessions` / `read_session` /
   `session_status` / `list_open_todos` / `summarize_activity` /
   `find_file_changes` / `list_projects` / `open_session` / `organize_sessions` /
@@ -529,8 +531,9 @@ packages/
   watch（`RuntimeRunningState`）上；Host 经协商令牌
   `runtime.assistant-presence.v1` 转发为专用 `assistant_state` 帧（sessiond
   `system.hello` 能力同名；未协商/无投影则永不发帧，旧严格客户端不受影响）。
-  客户端侧栏 Pixie 入口按此渲染小状态点（在线/启动中/异常，复用现有状态色；
-  未知或 armed 不显示），未知时绝不猜测。
+  客户端不渲染在线/启动状态（Pixie 默认常驻，无在线语义）；residency 反复重启
+  （restarting）映射为与普通会话同一套标记体系里的「错误」小点，会话自身的
+  进行中/等待中与普通会话同规则同组件。未知时绝不猜测。
 
 ### 智能压缩（smart_compact，第 2 轮内置）
 

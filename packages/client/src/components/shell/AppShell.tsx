@@ -414,15 +414,18 @@ export function AppShell({ search }: AppShellProps) {
     ? fileTabId(search.cwd, search.file)
     : search.session !== undefined
       ? sessionTabId(search.session)
-      : null;
+      : isAssistantView
+        ? assistantTabId()
+        : null;
   const activeTab = useMemo<WorkspaceTab | null>(() => {
     if (activeTabId === null) return null;
     const inList = tabs.find((tab) => tab.id === activeTabId);
     if (inList) return inList;
     if (search.file !== undefined && search.cwd !== undefined) return minimalFileTab(search.cwd, search.file);
     if (search.session !== undefined) return minimalSessionTab(search.session, search.cwd);
+    if (isAssistantView) return minimalAssistantTab();
     return null;
-  }, [activeTabId, tabs, search.file, search.cwd, search.session]);
+  }, [activeTabId, isAssistantView, tabs, search.file, search.cwd, search.session]);
   const activeSessionId = activeTab?.kind === "session" ? activeTab.sessionId : null;
   // View-effective session: the assistant conversation when the assistant view
   // is selected (the URL carries no session id), else the URL-selected tab.
@@ -430,8 +433,12 @@ export function AppShell({ search }: AppShellProps) {
 
   // URL → tab reconciliation: keep the in-memory tab list in sync with the URL
   // and the current cwd. File tabs are cwd-owned (a cwd switch clears them);
-  // session tabs remember their cwd. This NEVER attaches — it only materializes
-  // the active content as a tab so the strip stays populated.
+  // session tabs remember their cwd; the Pixie tab is a cwd-less singleton.
+  // This NEVER attaches — it only materializes the active content as a tab so
+  // the strip stays populated. The Pixie tab materializes once the binding
+  // resolved WITH a conversation (a null binding redirects to the draft entry,
+  // so no dead tab would linger); until then the URL-derived minimal tab is
+  // enough for the strip.
   useEffect(() => {
     setTabs((prev) => {
       let next = reconcileWorkspaceCwd(prev, search.cwd);
@@ -443,10 +450,12 @@ export function AppShell({ search }: AppShellProps) {
         });
       } else if (search.session !== undefined) {
         next = openSessionWorkspaceTab(next, search.session, search.cwd);
+      } else if (isAssistantView && assistantSessionId !== null) {
+        next = openAssistantWorkspaceTab(next);
       }
       return next;
     });
-  }, [search.cwd, search.session, search.file]);
+  }, [assistantSessionId, isAssistantView, search.cwd, search.session, search.file]);
   useEffect(() => {
     saveWorkspaceSessionTabs(tabs);
   }, [tabs]);
@@ -716,21 +725,32 @@ export function AppShell({ search }: AppShellProps) {
     if (activeRuntime?.attached === true) ids.add(activeRuntime.sessionId);
     return ids;
   }, [connection.liveSessionIds, activeRuntime]);
+  // Waiting-for-user projection from the same authoritative watch (pending
+  // extension UI). Never client-inferred: an older sessiond without the
+  // field projects nothing and no waiting markers appear.
+  const waitingSessionIds = useMemo<ReadonlySet<string>>(
+    () => new Set(connection.waitingSessionIds),
+    [connection.waitingSessionIds],
+  );
   // The liveness baseline is KNOWN once the socket received it (connection
   // truth); selection never fabricates knowledge.
   const liveKnown = connection.liveSessionStateKnown;
 
-  // Always-on Pixie presence, from the same negotiated running watch that
-  // owns global liveness: online while the resident worker is live, starting
-  // during (re)activation, error while the restart backoff runs, hidden while
-  // unknown/armed (no conversation yet).
-  const assistantStatus = useMemo<"online" | "starting" | "error" | undefined>(() => {
-    const presence = connection.assistantPresence;
-    if (presence === null || presence.status === "armed") return undefined;
-    if (presence.status === "online") return "online";
-    if (presence.status === "starting") return "starting";
-    return "error";
-  }, [connection.assistantPresence]);
+  // Pixie entry/tab marker, resolved through the SAME shared rule as ordinary
+  // sessions: error while residency is failing/restarting (restart backoff),
+  // else waiting/running of its conversation. Online/starting residency
+  // states are deliberately NOT shown — Pixie is always-on by design.
+  const assistantStatus = useMemo<SessionDisplayStatus | undefined>(() => {
+    const residencyError = connection.assistantPresence?.status === "restarting";
+    if (assistantSessionId === null) {
+      return residencyError ? "error" : undefined;
+    }
+    return resolveSessionDisplayStatus({
+      error: residencyError,
+      waiting: waitingSessionIds.has(assistantSessionId),
+      running: runningSessionIds.has(assistantSessionId),
+    });
+  }, [assistantSessionId, connection.assistantPresence, runningSessionIds, waitingSessionIds]);
 
   const runningProjectRoots = useMemo<ReadonlySet<string>>(() => {
     const roots = new Set<string>();
@@ -902,12 +922,17 @@ export function AppShell({ search }: AppShellProps) {
   }, [commitSessionNavigation, isMobile]);
 
   // ── Tab activation / navigation (URL is the active-content source of truth) ──
-  // Clicking a tab navigates the URL to that tab's content (cwd+file or
-  // cwd+session). This NEVER attaches: session tabs activate a read-only
-  // history view; sending remains the activation trigger. Back/forward and
-  // deep links are handled by the same derivation (the active tab is read from
-  // the URL), so a route change activates or recreates the matching tab.
+  // Clicking a tab navigates the URL to that tab's content (cwd+file,
+  // cwd+session, or the assistant selector). This NEVER attaches: session
+  // tabs activate a read-only history view; sending remains the activation
+  // trigger. Back/forward and deep links are handled by the same derivation
+  // (the active tab is read from the URL), so a route change activates or
+  // recreates the matching tab.
   const navigateToTab = useCallback((tab: WorkspaceTab): void => {
+    if (tab.kind === "assistant") {
+      void navigate({ to: "/", search: { assistant: true } });
+      return;
+    }
     if (tab.kind === "file") {
       void navigate({ to: "/", search: { cwd: tab.cwd, file: tab.filePath } });
       return;
@@ -1289,6 +1314,7 @@ export function AppShell({ search }: AppShellProps) {
           liveSessionIds={liveSessionIds}
           liveKnown={liveKnown}
           runningSessionIds={runningSessionIds}
+          waitingSessionIds={waitingSessionIds}
           runningProjectRoots={runningProjectRoots}
           onSessionDeleted={handleSessionDeleted}
           onSelectSession={handleSelectSession}
@@ -1324,6 +1350,8 @@ export function AppShell({ search }: AppShellProps) {
           onCloseAllTabs={handleCloseAllTabs}
           sessionLabels={sessionLabels}
           runningSessionIds={runningSessionIds}
+          waitingSessionIds={waitingSessionIds}
+          assistantStatus={assistantStatus}
         />
         <div className="conversation-container" style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           <main className={`workspace${isHome ? " workspace--home" : ""}`}>

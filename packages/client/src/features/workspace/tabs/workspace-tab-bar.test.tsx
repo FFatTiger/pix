@@ -17,6 +17,8 @@ function mount(
     onCloseTabsToRight?: (id: string) => void;
     onCloseAllTabs?: () => void;
     runningSessionIds?: ReadonlySet<string>;
+    waitingSessionIds?: ReadonlySet<string>;
+    assistantStatus?: "running" | "waiting" | "error";
   },
 ) {
   const selectTab = props.onSelectTab ?? vi.fn();
@@ -34,6 +36,8 @@ function mount(
         onCloseAllTabs={props.onCloseAllTabs}
         onCloseTab={closeTab}
         runningSessionIds={props.runningSessionIds}
+        waitingSessionIds={props.waitingSessionIds}
+        assistantStatus={props.assistantStatus}
       />
       </I18nProvider>
     </ContextMenuProvider>,
@@ -235,8 +239,42 @@ describe("WorkspaceTabBar — accessible tabs", () => {
     });
     const roles = screen.getAllByRole("tab");
     expect(roles[0]!.getAttribute("data-running")).toBe("true");
-    expect(roles[0]!.querySelector(".workspace-tab-running-dot")).toBeTruthy();
+    expect(roles[0]!.querySelector(".session-status-dot[data-status=\"running\"]")).toBeTruthy();
     expect(roles[1]!.getAttribute("data-running")).toBeNull();
+  });
+
+  it("waiting outranks running on the shared status dot", () => {
+    const tabs = [sessionTab("A")];
+    mount({
+      tabs,
+      activeTabId: tabs[0]!.id,
+      sessionLabels: { A: "Session A" },
+      runningSessionIds: new Set(["A"]),
+      waitingSessionIds: new Set(["A"]),
+    });
+    const tab = screen.getAllByRole("tab")[0]!;
+    expect(tab.querySelector(".session-status-dot[data-status=\"waiting\"]")).toBeTruthy();
+    expect(tab.querySelector(".session-status-dot[data-status=\"running\"]")).toBeNull();
+    expect(tab.getAttribute("data-running")).toBeNull();
+  });
+
+  it("renders the Pixie tab with its fixed label, mark, and the same close control", () => {
+    const assistantTab: WorkspaceTab = { kind: "assistant", id: "assistant" };
+    const tabs = [sessionTab("A"), assistantTab];
+    const { selectTab, closeTab } = mount({
+      tabs,
+      activeTabId: assistantTab.id,
+      sessionLabels: { A: "Session A" },
+      assistantStatus: "waiting",
+    });
+    const roles = screen.getAllByRole("tab");
+    expect(roles[1]!.getAttribute("aria-selected")).toBe("true");
+    expect(roles[1]!.textContent).toContain("Pixie");
+    expect(roles[1]!.querySelector(".session-status-dot[data-status=\"waiting\"]")).toBeTruthy();
+    fireEvent.click(roles[1]!);
+    expect(selectTab).toHaveBeenCalledWith(assistantTab.id);
+    fireEvent.click(screen.getByRole("button", { name: "Close Pixie" }));
+    expect(closeTab).toHaveBeenCalledWith(assistantTab.id);
   });
 
   it("renders a session icon and file icons via getFileIcon", () => {

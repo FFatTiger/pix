@@ -114,16 +114,21 @@ export type AssistantPresence = z.infer<typeof AssistantPresenceSchema>;
 
 /**
  * Revisioned global running projection. `revision` is a safe non-negative
- * integer that increments ONLY on an actual live/busy set change (or an
- * assistant-residency projection change); `sessionIds`
+ * integer that increments ONLY on an actual live/busy/waiting set change (or
+ * an assistant-residency projection change); `sessionIds`
  * are unique live-worker ids; `busySessionIds` are the live subset whose
- * current turn is authoritatively busy (prompt/bash/compact). Sets are
- * normalized (sorted, deduped) for deterministic comparison.
+ * current turn is authoritatively busy (prompt/bash/compact);
+ * `waitingSessionIds` are the live subset stopped on unanswered user input
+ * (pending extension UI: question cards / extension requests). Optional and
+ * additive: absent when the sessiond build does not project it, so consumers
+ * degrade by field presence. Sets are normalized (sorted, deduped) for
+ * deterministic comparison.
  */
 export const RuntimeRunningStateSchema = z.strictObject({
   revision: z.number().int().nonnegative().safe(),
   sessionIds: z.array(NonEmptyStringSchema),
   busySessionIds: z.array(NonEmptyStringSchema),
+  waitingSessionIds: z.array(NonEmptyStringSchema).optional(),
   assistant: AssistantPresenceSchema.optional(),
 }).superRefine((value, ctx) => {
   if (new Set(value.sessionIds).size !== value.sessionIds.length) {
@@ -136,6 +141,17 @@ export const RuntimeRunningStateSchema = z.strictObject({
     if (!value.sessionIds.includes(id)) {
       ctx.addIssue({ code: "custom", path: ["busySessionIds"], message: "busySessionIds must be a subset of sessionIds" });
       break;
+    }
+  }
+  if (value.waitingSessionIds !== undefined) {
+    if (new Set(value.waitingSessionIds).size !== value.waitingSessionIds.length) {
+      ctx.addIssue({ code: "custom", path: ["waitingSessionIds"], message: "waitingSessionIds must be unique" });
+    }
+    for (const id of value.waitingSessionIds) {
+      if (!value.sessionIds.includes(id)) {
+        ctx.addIssue({ code: "custom", path: ["waitingSessionIds"], message: "waitingSessionIds must be a subset of sessionIds" });
+        break;
+      }
     }
   }
 });

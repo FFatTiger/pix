@@ -1262,6 +1262,20 @@ describe("runtime.running-watch.v1 feature", () => {
     assert.equal(RuntimeRunningStateSchema.safeParse(state()).success, true);
   });
 
+  it("running state carries the OPTIONAL waiting set; strict shape rules", () => {
+    // Absent (older sessiond) parses — consumers degrade by field presence.
+    assert.equal(RuntimeRunningStateSchema.safeParse(state()).success, true);
+    const parsed = RuntimeRunningStateSchema.parse(state({ waitingSessionIds: ["a"] }));
+    assert.deepEqual(parsed.waitingSessionIds, ["a"]);
+    assert.equal(RuntimeRunningStateSchema.safeParse(state({ waitingSessionIds: ["a", "a"] })).success, false, "duplicate waiting ids rejected");
+    assert.equal(RuntimeRunningStateSchema.safeParse(state({ waitingSessionIds: ["zzz"] })).success, false, "waiting outside live rejected");
+    assert.equal(RuntimeRunningStateSchema.safeParse(state({ waitingSessionIds: [""] })).success, false, "blank waiting id rejected");
+    // The channel push and the RPC result carry it identically.
+    assert.equal(SessiondChannelPushSchema.safeParse({ type: "running_state", state: state({ waitingSessionIds: ["b"] }) }).success, true);
+    const result = parseSessiondMethodResult("runtime.watchRunning", state({ waitingSessionIds: ["a"] }));
+    assert.deepEqual(result.waitingSessionIds, ["a"]);
+  });
+
   it("running_state push is separate from the per-session SessiondPush union", () => {
     const channel = SessiondChannelPushSchema.parse({ type: "running_state", state: state() });
     assert.equal(channel.type, "running_state");

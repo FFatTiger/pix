@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { PixieIcon } from "@/components/icons/PixieIcon";
+import { SessionStatusDot, type SessionDisplayStatus } from "@/components/SessionStatusDot";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -65,6 +66,8 @@ export interface SidebarProps {
   liveKnown: boolean;
   /** Session ids currently running according to the shared runtime owner. */
   runningSessionIds: ReadonlySet<string>;
+  /** Session ids stopped on unanswered user input (authoritative watch projection). */
+  waitingSessionIds: ReadonlySet<string>;
   /** Project roots with at least one running session (covers fresh tabs before list refresh). */
   runningProjectRoots: ReadonlySet<string>;
   /**
@@ -92,12 +95,13 @@ export interface SidebarProps {
   /** Honest Host `assistant`-capability gate for showing the fixed entry. */
   canAssistant?: boolean;
   /**
-   * Always-on Pixie presence from the negotiated running watch. `undefined`
-   * (unknown: not negotiated / no baseline / transport lost) or `"armed"`
-   * (no conversation yet) render no dot; `online`/`starting`/`error` render
-   * the small status dot on the entry, reusing the existing status colors.
+   * Resolved marker status for the Pixie entry — the SAME shared rule and
+   * marker set as ordinary session rows: running while its conversation
+   * turns, waiting while it stopped on user input, error while residency is
+   * failing/restarting. Undefined renders nothing (Pixie is otherwise
+   * always-on by design; no online/starting dot exists).
    */
-  assistantStatus?: "online" | "starting" | "error" | undefined;
+  assistantStatus?: SessionDisplayStatus | undefined;
 }
 
 /**
@@ -320,6 +324,7 @@ export function Sidebar({
   liveSessionIds,
   liveKnown,
   runningSessionIds,
+  waitingSessionIds,
   runningProjectRoots,
   onSessionDeleted,
   onSelectSession,
@@ -625,6 +630,7 @@ export function Sidebar({
       node={node}
       selectedSessionId={selectedSessionId}
       runningSessionIds={runningSessionIds}
+      waitingSessionIds={waitingSessionIds}
       // Per-node destructive-action gating from GLOBAL live membership (no
       // guessed selected/holder id): ANY id in liveSessionIds, including a
       // background live holder, stays protected from delete/export.
@@ -758,13 +764,12 @@ export function Sidebar({
             >
               <PixieIcon size={16} />
               <span className="sidebar-nav-item-label sidebar-title-fade">{t("desktop.assistantNav")}</span>
-              {assistantStatus === undefined ? null : (
-                <span
-                  className="sidebar-assistant-dot"
-                  data-testid="sidebar-assistant-dot"
-                  data-status={assistantStatus}
-                  title={t(`desktop.assistantPresence.${assistantStatus}`)}
-                  aria-label={t(`desktop.assistantPresence.${assistantStatus}`)}
+              {assistantStatus === "running" ? (
+                <RunningSessionIndicator />
+              ) : assistantStatus === undefined ? null : (
+                <SessionStatusDot
+                  status={assistantStatus}
+                  label={assistantStatus === "error" ? t("desktop.assistantPresence.error") : undefined}
                 />
               )}
             </button>
@@ -1122,6 +1127,7 @@ function SessionTreeItem({
   node,
   selectedSessionId,
   runningSessionIds,
+  waitingSessionIds,
   liveSessionId,
   liveSessionIds,
   liveKnown,
@@ -1142,6 +1148,7 @@ function SessionTreeItem({
   node: SessionTreeNode;
   selectedSessionId: string | null;
   runningSessionIds: ReadonlySet<string>;
+  waitingSessionIds: ReadonlySet<string>;
   liveSessionId: string | null;
   liveSessionIds: ReadonlySet<string>;
   liveKnown: boolean;
@@ -1204,6 +1211,7 @@ function SessionTreeItem({
           session={node.session}
           isSelected={isSelected}
           isRunning={runningSessionIds.has(node.session.sessionId)}
+          isWaiting={waitingSessionIds.has(node.session.sessionId)}
           liveSessionId={liveSessionId}
           isDead={liveKnown && !liveSessionIds.has(node.session.sessionId)}
           canRename={canRename}
@@ -1233,6 +1241,7 @@ function SessionTreeItem({
               node={child}
               selectedSessionId={selectedSessionId}
               runningSessionIds={runningSessionIds}
+              waitingSessionIds={waitingSessionIds}
               // Same per-node global-membership gating for nested rows.
               liveSessionId={liveSessionIds.has(child.session.sessionId) ? child.session.sessionId : liveSessionId}
               liveSessionIds={liveSessionIds}
@@ -1320,6 +1329,7 @@ function SessionItem({
   session,
   isSelected,
   isRunning,
+  isWaiting,
   liveSessionId,
   isDead = false,
   canRename,
@@ -1340,6 +1350,8 @@ function SessionItem({
   isSelected: boolean;
   /** Row is being prepared by the no-flicker selection flow (lightweight cue only). */
   isRunning?: boolean;
+  /** Stopped on unanswered user input (pending extension UI) — outranks running. */
+  isWaiting?: boolean;
   liveSessionId: string | null;
   /** No live Worker in the authoritative global liveness baseline. */
   isDead?: boolean;
@@ -1615,21 +1627,24 @@ function SessionItem({
 
   const workspaceStatus = sessionWorkspaceStatus(session, t);
   const historyOnly = workspaceStatus !== null;
-  const rowTitle = isRunning
-    ? `${title} · ${t("desktop.agentRunning")}`
-    : historyOnly
-        ? `${title} · ${workspaceStatus}`
-        : (() => {
-            const activity = activityMs(session);
-            return activity === undefined ? title : `${title} · ${formatRelativeTime(activity, t)}`;
-          })();
+  const rowTitle = isWaiting
+    ? `${title} · ${t("desktop.sessionStatus.waiting")}`
+    : isRunning
+      ? `${title} · ${t("desktop.agentRunning")}`
+      : historyOnly
+          ? `${title} · ${workspaceStatus}`
+          : (() => {
+              const activity = activityMs(session);
+              return activity === undefined ? title : `${title} · ${formatRelativeTime(activity, t)}`;
+            })();
 
   return (
     <div
       className={`sidebar-list-row${confirmDelete ? " sidebar-list-row--confirm" : ""}`}
       data-session-row="true"
       data-active={isSelected ? "true" : "false"}
-      data-running={isRunning ? "true" : undefined}
+      data-running={isRunning && !isWaiting ? "true" : undefined}
+      data-waiting={isWaiting ? "true" : undefined}
       data-dead={(isDead || historyOnly) && !isRunning ? "true" : undefined}
       data-workspace-access={historyOnly ? (session.workspaceAccess?.state ?? "unknown") : undefined}
       aria-disabled={historyOnly ? true : undefined}
@@ -1687,7 +1702,7 @@ function SessionItem({
       ) : renaming ? (
         <>
           {depth > 0 && <GitBranch size={14} weight="regular" aria-hidden="true" />}
-          {isRunning ? <RunningSessionIndicator /> : null}
+          {isWaiting ? <SessionStatusDot status="waiting" /> : isRunning ? <RunningSessionIndicator /> : null}
           <input
             ref={inputRef}
             value={renameValue}
@@ -1727,8 +1742,8 @@ function SessionItem({
             {depth > 0 && <GitBranch size={14} weight="regular" aria-hidden="true" />}
             <span className="sidebar-row-title sidebar-title-fade">{title}</span>
           </button>
-          {isRunning ? <RunningSessionIndicator /> : null}
-          {!isRunning ? (() => {
+          {isWaiting ? <SessionStatusDot status="waiting" /> : isRunning ? <RunningSessionIndicator /> : null}
+          {!isRunning && !isWaiting ? (() => {
             const activity = activityMs(session);
             return activity === undefined ? null : (
               <span className="sidebar-row-meta" aria-hidden="true">{formatCompactActivity(activity)}</span>

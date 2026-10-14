@@ -237,6 +237,38 @@ test("global running watch converges busy to idle without any session attachment
   await service.shutdown();
 });
 
+test("pending extension UI flips waitingSessionIds in the global running watch", async () => {
+  const { service, workers } = harness();
+  await service.activate("s");
+  const watch = service.prepareRunningWatch();
+  assert.deepEqual(watch.result.waitingSessionIds, []);
+  const states: Array<{ revision: number; busySessionIds: string[]; waitingSessionIds?: string[] }> = [];
+  await watch.flushTo((push) => { if (push.type === "running_state") states.push(push.state); });
+  // A question card arrives: the turn stops on unanswered USER input — the
+  // authoritative watch projects it as the waiting set (one revisioned push).
+  workers.workers[0]!.emitEvent({ type: "extension_ui_request", sessionId: "s", request: { id: "ui", method: "confirm", title: "t", message: "m" } });
+  await wait();
+  assert.equal(states.length, 1);
+  assert.deepEqual(states[0]!.waitingSessionIds, ["s"]);
+  assert.ok(states[0]!.revision > watch.result.revision);
+  // A second pending request grows the per-session list but NOT the waiting
+  // set — no busy/live/waiting set change means no revision bump.
+  workers.workers[0]!.emitEvent({ type: "extension_ui_request", sessionId: "s", request: { id: "ui-2", method: "confirm", title: "t", message: "m" } });
+  await wait();
+  assert.equal(states.length, 1);
+  // Answering settles one request — still waiting on the other.
+  workers.workers[0]!.emitEvent({ type: "extension_ui_request", sessionId: "s", request: { id: "ui", method: "confirm", title: "t", message: "m", closed: true } });
+  await wait();
+  assert.equal(states.length, 1, "one pending request remains — still waiting");
+  // Settling the last request clears the waiting set with one more push.
+  workers.workers[0]!.emitEvent({ type: "extension_ui_request", sessionId: "s", request: { id: "ui-2", method: "confirm", title: "t", message: "m", closed: true } });
+  await wait();
+  assert.equal(states.length, 2);
+  assert.deepEqual(states[1]!.waitingSessionIds, []);
+  watch.close();
+  await service.shutdown();
+});
+
 test("running watch baseline precedes buffered updates and starts zero workers", async () => {
   const empty = harness();
   const emptyWatch = empty.service.prepareRunningWatch();

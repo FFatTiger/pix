@@ -1,7 +1,7 @@
 /**
- * Top-level workspace tab state (unified session + file tabs).
+ * Top-level workspace tab state (unified session + file + assistant tabs).
  *
- * The tab strip mixes two kinds of tab behind a discriminated union:
+ * The tab strip mixes three kinds of tab behind a discriminated union:
  *  - session tabs: identity `session:<sessionId>`, remember their workspace
  *    cwd, and are labelled from the shared sessions-list query cache (never a
  *    stale snapshot stored on the tab).
@@ -10,6 +10,12 @@
  *    state (mode/wrap/scroll) with the same revision guards the right-panel
  *    file tabs used (`saveFileViewerState`), and keep the source session id
  *    that scopes their reads when opened from a conversation.
+ *  - assistant tabs: the fixed evergreen Pixie conversation — a singleton
+ *    (`assistant`) with no session identity on the tab (the URL carries no
+ *    session id; the binding is server-resolved via GET /v1/assistant, so it
+ *    survives rekeys/creation without the tab going stale). Selecting it
+ *    navigates to `/?assistant=1`; closing it only closes the tab — the
+ *    resident assistant worker is sessiond's business, never the tab's.
  *
  * Tab state owns NO worker lifecycle: opening/closing/activating a tab never
  * attaches or stops a session. URL reconciliation and the runtime mismatch
@@ -49,11 +55,20 @@ export interface SessionWorkspaceTab {
   readonly cwd?: string | undefined;
 }
 
-export type WorkspaceTab = FileWorkspaceTab | SessionWorkspaceTab;
+/** The fixed evergreen Pixie conversation tab (singleton identity). */
+export interface AssistantWorkspaceTab {
+  readonly kind: "assistant";
+  readonly id: string;
+}
+
+export type WorkspaceTab = FileWorkspaceTab | SessionWorkspaceTab | AssistantWorkspaceTab;
 
 interface PersistedSessionTabs {
   readonly version: typeof WORKSPACE_SESSION_TABS_VERSION;
-  readonly sessions: ReadonlyArray<{ readonly sessionId: string; readonly cwd?: string | undefined }>;
+  readonly sessions: ReadonlyArray<
+    | { readonly sessionId: string; readonly cwd?: string | undefined }
+    | { readonly assistant: true }
+  >;
 }
 
 interface PersistedLastSession {
@@ -69,8 +84,15 @@ function isPersistedSession(value: unknown): value is { sessionId: string; cwd?:
     || (typeof candidate.cwd === "string" && candidate.cwd.length > 0 && candidate.cwd.length <= 4096);
 }
 
-/** Restore only session tabs. File tabs remain cwd-scoped, ephemeral views. */
-export function loadWorkspaceSessionTabs(): SessionWorkspaceTab[] {
+/** The persisted assistant marker entry (the singleton Pixie tab). */
+function isPersistedAssistant(value: unknown): value is { assistant: true } {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { assistant?: unknown; sessionId?: unknown };
+  return candidate.assistant === true && candidate.sessionId === undefined;
+}
+
+/** Restore session tabs and the assistant tab. File tabs remain cwd-scoped, ephemeral views. */
+export function loadWorkspaceSessionTabs(): WorkspaceTab[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY);
@@ -78,8 +100,14 @@ export function loadWorkspaceSessionTabs(): SessionWorkspaceTab[] {
     const parsed = JSON.parse(raw) as { version?: unknown; sessions?: unknown };
     if (parsed.version !== WORKSPACE_SESSION_TABS_VERSION || !Array.isArray(parsed.sessions)) return [];
     const seen = new Set<string>();
-    const restored: SessionWorkspaceTab[] = [];
+    const restored: WorkspaceTab[] = [];
     for (const candidate of parsed.sessions.slice(-MAX_PERSISTED_SESSION_TABS)) {
+      if (isPersistedAssistant(candidate)) {
+        if (seen.has(ASSISTANT_TAB_ID)) continue;
+        seen.add(ASSISTANT_TAB_ID);
+        restored.push(minimalAssistantTab());
+        continue;
+      }
       if (!isPersistedSession(candidate) || seen.has(candidate.sessionId)) continue;
       seen.add(candidate.sessionId);
       restored.push(minimalSessionTab(candidate.sessionId, candidate.cwd));
@@ -90,16 +118,16 @@ export function loadWorkspaceSessionTabs(): SessionWorkspaceTab[] {
   }
 }
 
-/** Persist the open session identities without serializing file/runtime state. */
+/** Persist the open session/assistant identities without serializing file/runtime state. */
 export function saveWorkspaceSessionTabs(tabs: readonly WorkspaceTab[]): void {
   if (typeof window === "undefined") return;
   const sessions = tabs
-    .filter((tab): tab is SessionWorkspaceTab => tab.kind === "session")
+    .filter((tab): tab is SessionWorkspaceTab | AssistantWorkspaceTab => tab.kind === "session" || tab.kind === "assistant")
     .slice(-MAX_PERSISTED_SESSION_TABS)
-    .map((tab) => ({
+    .map((tab) => tab.kind === "assistant" ? { assistant: true } as const : {
       sessionId: tab.sessionId,
       ...(tab.cwd === undefined ? {} : { cwd: tab.cwd }),
-    }));
+    });
   const payload: PersistedSessionTabs = { version: WORKSPACE_SESSION_TABS_VERSION, sessions };
   const serialized = JSON.stringify(payload);
   try {
@@ -123,7 +151,7 @@ export function loadLastWorkspaceSession(): SessionWorkspaceTab | null {
     const parsed = JSON.parse(raw) as { version?: unknown; sessionId?: unknown };
     if (parsed.version !== WORKSPACE_LAST_SESSION_VERSION) return null;
     if (typeof parsed.sessionId !== "string" || parsed.sessionId.length === 0 || parsed.sessionId.length > 512) return null;
-    return loadWorkspaceSessionTabs().find((tab) => tab.sessionId === parsed.sessionId) ?? null;
+    return loadWorkspaceSessionTabs().find((tab): tab is SessionWorkspaceTab => tab.kind === "session" && tab.sessionId === parsed.sessionId) ?? null;
   } catch {
     return null;
   }
@@ -165,6 +193,13 @@ export function sessionTabId(sessionId: string): string {
   return `session:${sessionId}`;
 }
 
+/** Fixed identity of the singleton Pixie (assistant) tab. */
+export const ASSISTANT_TAB_ID = "assistant";
+
+export function assistantTabId(): string {
+  return ASSISTANT_TAB_ID;
+}
+
 /** Canonical form of a file path used for tab identity + dedupe. */
 export function normalizeFileTabPath(filePath: string): string {
   return normalizeFilePathSlashes(filePath).replace(/\/+$/, "");
@@ -195,6 +230,11 @@ export function minimalSessionTab(sessionId: string, cwd?: string | undefined): 
     sessionId,
     ...(cwd === undefined ? {} : { cwd }),
   };
+}
+
+/** The bare singleton Pixie tab (URL-derived; no session identity needed). */
+export function minimalAssistantTab(): AssistantWorkspaceTab {
+  return { kind: "assistant", id: ASSISTANT_TAB_ID };
 }
 
 export interface OpenFileTabInput {
@@ -285,6 +325,15 @@ export function openSessionWorkspaceTab(
     sessionId,
     ...(cwd === undefined ? {} : { cwd }),
   }];
+}
+
+/**
+ * Open (or re-focus) the singleton Pixie tab. Deduped by the fixed identity;
+ * idempotent for an already-open tab (same array contents, new reference).
+ */
+export function openAssistantWorkspaceTab(tabs: readonly WorkspaceTab[]): WorkspaceTab[] {
+  if (tabs.some((tab) => tab.kind === "assistant")) return [...tabs];
+  return [...tabs, minimalAssistantTab()];
 }
 
 /**

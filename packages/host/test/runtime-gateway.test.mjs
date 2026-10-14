@@ -268,6 +268,10 @@ test("negotiated assistant presence: baseline and pushes become assistant_state 
   await runningSub.deliver({ type: "running_state", state: { revision: 2, sessionIds: ["pixie"], busySessionIds: [], assistant: { sessionId: "pixie", status: "online" } } });
   assert.deepEqual(session.jsonAt(3), { type: "running_state", payload: { revision: 2, sessionIds: ["pixie"], busySessionIds: [], assistant: { sessionId: "pixie", status: "online" } } });
   assert.deepEqual(session.lastJson(), { type: "assistant_state", payload: { sessionId: "pixie", status: "online" } });
+  // The additive waiting set rides the SAME forwarded running_state frame
+  // verbatim (no host re-projection, no separate frame).
+  await runningSub.deliver({ type: "running_state", state: { revision: 3, sessionIds: ["pixie"], busySessionIds: [], waitingSessionIds: ["pixie"], assistant: { sessionId: "pixie", status: "online" } } });
+  assert.deepEqual(session.jsonAt(5), { type: "running_state", payload: { revision: 3, sessionIds: ["pixie"], busySessionIds: [], waitingSessionIds: ["pixie"], assistant: { sessionId: "pixie", status: "online" } } });
   session.close(1000, "done");
 });
 

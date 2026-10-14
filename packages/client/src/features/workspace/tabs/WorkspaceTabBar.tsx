@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { ChatCircle, X } from "@phosphor-icons/react";
 import { useI18n } from "@/hooks/useI18n";
+import { PixieIcon } from "@/components/icons/PixieIcon";
+import { SessionStatusDot, resolveSessionDisplayStatus, type SessionDisplayStatus } from "@/components/SessionStatusDot";
 import { getFileIcon } from "@/components/files/FileIcons";
 import { useContextMenu, type ContextMenuEntry } from "@/components/ContextMenu";
 import type { WorkspaceTab } from "./workspace-tab-state";
@@ -18,6 +20,14 @@ export interface WorkspaceTabBarProps {
    */
   sessionLabels?: Record<string, string> | undefined;
   runningSessionIds?: ReadonlySet<string> | undefined;
+  /** Session ids stopped on unanswered user input (same authoritative watch). */
+  waitingSessionIds?: ReadonlySet<string> | undefined;
+  /**
+   * Resolved status for the singleton Pixie tab (running / waiting / error
+   * from residency), resolved by the shell through the SAME shared rule as
+   * session tabs.
+   */
+  assistantStatus?: SessionDisplayStatus | undefined;
   /** Right-click → close every tab except the clicked one. */
   onCloseOtherTabs?: ((id: string) => void) | undefined;
   /** Right-click → close every tab to the right of the clicked one. */
@@ -43,6 +53,8 @@ export function WorkspaceTabBar({
   onCloseTab,
   sessionLabels,
   runningSessionIds,
+  waitingSessionIds,
+  assistantStatus,
   onCloseOtherTabs,
   onCloseTabsToRight,
   onCloseAllTabs,
@@ -159,16 +171,25 @@ export function WorkspaceTabBar({
         const isFocused = tab.id === focusedTabId;
         const label = tab.kind === "session"
           ? (sessionLabels?.[tab.sessionId] ?? tab.sessionId.slice(0, 12))
-          : tab.label;
+          : tab.kind === "assistant"
+            ? t("desktop.assistantNav")
+            : tab.label;
         const tooltip = tab.kind === "file" ? tab.filePath : label;
-        const isRunning = tab.kind === "session" && runningSessionIds?.has(tab.sessionId) === true;
+        const status = tab.kind === "assistant"
+          ? assistantStatus
+          : tab.kind === "session"
+            ? resolveSessionDisplayStatus({
+              running: runningSessionIds?.has(tab.sessionId) === true,
+              waiting: waitingSessionIds?.has(tab.sessionId) === true,
+            })
+            : undefined;
         return (
           <div
             key={tab.id}
             role="tab"
             data-tab-id={tab.id}
             aria-selected={isActive}
-            data-running={isRunning ? "true" : undefined}
+            data-running={status === "running" ? "true" : undefined}
             tabIndex={isFocused || (focusedTabId === null && isActive) ? 0 : -1}
             className={`workspace-tab${isActive ? " workspace-tab--active" : ""}`}
             title={tooltip}
@@ -180,12 +201,14 @@ export function WorkspaceTabBar({
             <span className="workspace-tab-icon" aria-hidden="true">
               {tab.kind === "session" ? (
                 <ChatCircle size={13} weight={isActive ? "fill" : "regular"} />
+              ) : tab.kind === "assistant" ? (
+                <PixieIcon size={13} />
               ) : (
                 getFileIcon(tab.label, 13)
               )}
             </span>
             <span className="workspace-tab-label">{label}</span>
-            {isRunning ? <span className="workspace-tab-running-dot" aria-label={t("desktop.sessionRunning")} /> : null}
+            {status !== undefined ? <SessionStatusDot status={status} /> : null}
             <button
               type="button"
               className="workspace-tab-close"

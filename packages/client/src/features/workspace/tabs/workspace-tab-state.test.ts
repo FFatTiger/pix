@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  assistantTabId,
   closeOtherWorkspaceTabs,
   closeWorkspaceTab,
   closeWorkspaceTabsToRight,
   fileTabId,
+  minimalAssistantTab,
   minimalFileTab,
   minimalSessionTab,
   loadLastWorkspaceSession,
   loadWorkspaceSessionTabs,
   normalizeFileTabPath,
+  openAssistantWorkspaceTab,
   openFileWorkspaceTab,
   openSessionWorkspaceTab,
   reconcileWorkspaceCwd,
@@ -18,12 +21,14 @@ import {
   sessionTabId,
   WORKSPACE_SESSION_TABS_STORAGE_KEY,
   WORKSPACE_LAST_SESSION_STORAGE_KEY,
+  type AssistantWorkspaceTab,
   type FileWorkspaceTab,
   type SessionWorkspaceTab,
   type WorkspaceTab,
 } from "./workspace-tab-state";
 
 const sessionA: SessionWorkspaceTab = { kind: "session", id: "session:A", sessionId: "A", cwd: "/x" };
+const assistantTab: AssistantWorkspaceTab = { kind: "assistant", id: "assistant" };
 const fileA = (overrides: Partial<FileWorkspaceTab> = {}): FileWorkspaceTab => ({
   kind: "file",
   id: fileTabId("/x", "/x/src/a.ts"),
@@ -57,6 +62,40 @@ describe("session tab persistence", () => {
         { sessionId: "B", cwd: "/y" },
       ],
     });
+  });
+
+  it("round-trips the assistant tab with the session tabs in strip order", () => {
+    const sessionB: SessionWorkspaceTab = { kind: "session", id: "session:B", sessionId: "B" };
+    saveWorkspaceSessionTabs([sessionA, assistantTab, sessionB]);
+
+    expect(loadWorkspaceSessionTabs()).toEqual([sessionA, assistantTab, sessionB]);
+    expect(JSON.parse(window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "null")).toEqual({
+      version: 1,
+      sessions: [
+        { sessionId: "A", cwd: "/x" },
+        { assistant: true },
+        { sessionId: "B" },
+      ],
+    });
+  });
+
+  it("skips malformed or duplicate assistant entries and never promotes one to the last session", () => {
+    window.localStorage.setItem(WORKSPACE_SESSION_TABS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      sessions: [{ assistant: true }, { assistant: "yes" }, { assistant: true }, { sessionId: "A", cwd: "/x" }],
+    }));
+    expect(loadWorkspaceSessionTabs()).toEqual([assistantTab, sessionA]);
+    saveLastWorkspaceSession("A");
+    // Removing the session tab drops the last-session restore; the assistant
+    // tab alone can never satisfy it (no session identity).
+    saveWorkspaceSessionTabs([assistantTab]);
+    expect(loadLastWorkspaceSession()).toBeNull();
+    window.localStorage.setItem(WORKSPACE_SESSION_TABS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      sessions: [{ assistant: true }],
+    }));
+    expect(loadWorkspaceSessionTabs()).toEqual([assistantTab]);
+    expect(loadLastWorkspaceSession()).toBeNull();
   });
 
   it("fails closed for unknown versions and skips malformed or duplicate identities", () => {
@@ -111,6 +150,36 @@ describe("identity helpers", () => {
     expect(minimalFileTab("/x", "/x/src/a.ts")).toEqual(fileA());
     expect(minimalSessionTab("A", "/x")).toEqual(sessionA);
     expect(minimalSessionTab("A")).toEqual({ kind: "session", id: "session:A", sessionId: "A" });
+    expect(assistantTabId()).toBe("assistant");
+    expect(minimalAssistantTab()).toEqual({ kind: "assistant", id: "assistant" });
+  });
+});
+
+describe("openAssistantWorkspaceTab", () => {
+  it("appends the singleton assistant tab once and never duplicates it", () => {
+    const once = openAssistantWorkspaceTab([sessionA]);
+    expect(once).toEqual([sessionA, assistantTab]);
+    const twice = openAssistantWorkspaceTab(once);
+    expect(twice).toHaveLength(2);
+    expect(twice[1]).toEqual(assistantTab);
+  });
+
+  it("closing the assistant tab falls through to the neighbor like any session tab", () => {
+    const tabs: WorkspaceTab[] = [sessionA, assistantTab];
+    const result = closeWorkspaceTab(tabs, assistantTab.id, assistantTab.id);
+    expect(result.tabs).toEqual([sessionA]);
+    expect(result.nextActiveTabId).toBe(sessionA.id);
+  });
+
+  it("closing the assistant tab alone lands on home", () => {
+    const result = closeWorkspaceTab([assistantTab], assistantTab.id, assistantTab.id);
+    expect(result.tabs).toEqual([]);
+    expect(result.nextActiveTabId).toBeNull();
+  });
+
+  it("the assistant tab survives cwd reconciliation like session tabs", () => {
+    expect(reconcileWorkspaceCwd([assistantTab, sessionA, fileA()], "/y")).toEqual([assistantTab, sessionA]);
+    expect(reconcileWorkspaceCwd([assistantTab], undefined)).toEqual([assistantTab]);
   });
 });
 

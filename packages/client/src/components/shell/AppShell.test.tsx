@@ -4809,7 +4809,7 @@ function assistantStubFetch(binding: { cwd: string; sessionId: string | null } |
   }) as unknown as typeof fetch;
 }
 
-describe("AppShell — assistant view (fixed entry, evergreen conversation, no tabs)", () => {
+describe("AppShell — assistant view (Pixie tab + shared status markers)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     SOCKETS.length = 0;
@@ -4861,7 +4861,7 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     expect(screen.queryByTestId("assistant-entry-tab")).toBeNull();
   });
 
-  it("Pixie entry shows the always-on presence dot from the negotiated running watch", async () => {
+  it("Pixie entry shows only the shared markers: online/starting never render, residency failure is error", async () => {
     globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "assist-live" });
     mountApp({}, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
     const presenceAck = (() => {
@@ -4869,29 +4869,80 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
       return { ...frame, payload: { ...frame.payload, acceptedFeatures: ["runtime.running-watch.v1", "runtime.assistant-presence.v1"] } };
     })();
     const ws = await acceptAutomaticConnection(presenceAck);
-    // Unknown presence (no baseline yet): no dot, no guess.
-    expect(screen.queryByTestId("sidebar-assistant-dot")).toBeNull();
+    // Unknown presence (no baseline yet): no marker, no guess.
+    expect(screen.getByTestId("sidebar-assistant").querySelector(".session-status-dot")).toBeNull();
     await act(async () => {
       ws.serverSend({ type: "assistant_state", payload: { sessionId: "assist-live", status: "online" } });
       await flush(4);
     });
-    expect(screen.getByTestId("sidebar-assistant-dot").getAttribute("data-status")).toBe("online");
+    // Always-on by design: online/starting are NOT user-facing states.
+    expect(screen.getByTestId("sidebar-assistant").querySelector(".session-status-dot")).toBeNull();
     await act(async () => {
       ws.serverSend({ type: "assistant_state", payload: { sessionId: "assist-live", status: "starting" } });
       await flush(4);
     });
-    expect(screen.getByTestId("sidebar-assistant-dot").getAttribute("data-status")).toBe("starting");
+    expect(screen.getByTestId("sidebar-assistant").querySelector(".session-status-dot")).toBeNull();
     await act(async () => {
       ws.serverSend({ type: "assistant_state", payload: { sessionId: "assist-live", status: "restarting" } });
       await flush(4);
     });
-    expect(screen.getByTestId("sidebar-assistant-dot").getAttribute("data-status")).toBe("error");
-    // Armed (no conversation yet) hides the dot again.
+    // Restart backoff (residency failing) maps onto the shared error marker.
+    expect(screen.getByTestId("sidebar-assistant").querySelector(".session-status-dot[data-status=\"error\"]")).toBeTruthy();
+    // Armed (no conversation tracked) hides the marker again.
     await act(async () => {
       ws.serverSend({ type: "assistant_state", payload: { sessionId: null, status: "armed" } });
       await flush(4);
     });
-    expect(screen.queryByTestId("sidebar-assistant-dot")).toBeNull();
+    expect(screen.getByTestId("sidebar-assistant").querySelector(".session-status-dot")).toBeNull();
+  });
+
+  it("waiting-user from the running watch marks the Pixie entry and its tab", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "assist-live" });
+    const app = mountApp({}, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    const ws = await acceptAutomaticConnection(watchAck());
+    // Open the Pixie conversation (sidebar entry = open/activate the tab).
+    await act(async () => { fireEvent.click(screen.getByTestId("sidebar-assistant")); await flush(4); });
+    await act(async () => { app.rerender({ assistant: true }); await flush(8); });
+    const tab = screen.getByRole("tab", { name: "Pixie" });
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    // The authoritative watch projects the conversation as waiting for user
+    // input (pending extension UI) — same marker set as ordinary sessions.
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 1, sessionIds: ["assist-live"], busySessionIds: ["assist-live"], waitingSessionIds: ["assist-live"] } });
+      await flush(4);
+    });
+    expect(screen.getByTestId("sidebar-assistant").querySelector(".session-status-dot[data-status=\"waiting\"]")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Pixie" }).querySelector(".session-status-dot[data-status=\"waiting\"]")).toBeTruthy();
+    // Settling the request clears it in real time.
+    await act(async () => {
+      ws.serverSend({ type: "running_state", payload: { revision: 2, sessionIds: ["assist-live"], busySessionIds: [] } });
+      await flush(4);
+    });
+    expect(screen.getByTestId("sidebar-assistant").querySelector(".session-status-dot")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Pixie" }).querySelector(".session-status-dot")).toBeNull();
+  });
+
+  it("the assistant view materializes a Pixie tab; closing it only closes the tab (never stops the session)", async () => {
+    globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "assist-live" });
+    const app = mountApp({ assistant: true }, { queryClient: authenticatedQueryClient(), capabilities: ["agent", "sessions", "models", "assistant"] });
+    const ws = await acceptAutomaticConnection(watchAck());
+    await act(async () => { for (let i = 0; i < 12; i += 1) { await flush(4); vi.advanceTimersByTime(0); } });
+
+    const tab = screen.getByRole("tab", { name: "Pixie" });
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    // Durable exactly like an ordinary session tab.
+    expect(window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "").toContain("assistant");
+
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Close Pixie" })); await flush(4); });
+    // Tab close is navigation-only: fall home (the mocked navigate needs the
+    // URL to follow it, exactly like a real router would)…
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: {} }));
+    await act(async () => { app.rerender({}); await flush(6); });
+    expect(screen.queryByRole("tab", { name: "Pixie" })).toBeNull();
+    // …persisted tabs drop the assistant entry, and no stop frame ever fires
+    // (the resident worker is sessiond's business).
+    expect(window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "{}").not.toContain("assistant");
+    expect(ws.sent.filter((frame) => (frame as { type: string }).type === "stop")).toHaveLength(0);
   });
 
   it("?assistant=1 with no session yet redirects to the draft entry (the landing page is gone)", async () => {
@@ -4946,7 +4997,7 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     expect((window.localStorage.getItem(WORKSPACE_SESSION_TABS_STORAGE_KEY) ?? "{}")).not.toContain("assist-1");
   });
 
-  it("an existing assistant session binds read-only through the endpoint (no tab, no activation)", async () => {
+  it("an existing assistant session binds read-only through the endpoint (Pixie tab only, no activation)", async () => {
     globalThis.fetch = assistantStubFetch({ cwd: ASSISTANT_CWD, sessionId: "assist-live" });
     const qc = authenticatedQueryClient();
     mountApp({ assistant: true }, { queryClient: qc, capabilities: ["agent", "sessions", "models", "assistant"] });
@@ -4957,7 +5008,9 @@ describe("AppShell — assistant view (fixed entry, evergreen conversation, no t
     expect(screen.queryByTestId("home-stack")).toBeNull();
     expect(screen.queryByTestId("transcript-home")).toBeNull();
     expect(screen.getByLabelText("Send message")).toBeTruthy();
-    // Read-only binding: selection never creates/activates/attaches anything.
+    // Read-only binding: the Pixie tab is pure tab-strip state — selection
+    // never creates/activates/attaches anything, and no SESSION tab is
+    // materialized for the conversation.
     expect(countType(ws, "create")).toBe(0);
     expect(countType(ws, "activate")).toBe(0);
     expect(countType(ws, "attach")).toBe(0);

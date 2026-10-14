@@ -1426,6 +1426,7 @@ export class SessiondService {
   private acceptEvent(record: RecordState, data: RuntimeEventData): void {
     if (record.status === "crashed" || record.status === "stopped" || record.status === "stopping") return;
     const wasTurnRunning = this.isTurnRunning(record);
+    const wasWaitingUser = this.isWaitingUser(record);
     if (data.type === "runtime_closed") {
       if (record.closedEventEmitted) return;
       record.closedEventEmitted = true;
@@ -1441,7 +1442,7 @@ export class SessiondService {
       }
       this.push(record, { type: "event", event: appended.event });
       if (data.type === "extension_ui_request") this.assistantOps?.scheduleSettleCheck();
-      if (data.type !== "running_sessions_changed" && wasTurnRunning !== this.isTurnRunning(record)) {
+      if (data.type !== "running_sessions_changed" && (wasTurnRunning !== this.isTurnRunning(record) || wasWaitingUser !== this.isWaitingUser(record))) {
         this.broadcastRunningChanged(record.sessionId);
       }
     } catch (error) {
@@ -3265,6 +3266,11 @@ export class SessiondService {
     return status === "running";
   }
 
+  /** Live session stopped on unanswered user input (pending extension UI). */
+  private isWaitingUser(record: RecordState): boolean {
+    return (record.projection.snapshot().state.pendingExtensionUi?.length ?? 0) > 0;
+  }
+
   private isBusy(record: RecordState): boolean {
     return this.isTurnRunning(record) || this.isSideChatActive(record) || record.pendingCommands.size > 0 || record.authorityFinalizations.size > 0;
   }
@@ -3447,7 +3453,7 @@ export class SessiondService {
         // A turn blocked on unanswered extension UI (question card / extension
         // request) is waiting for the USER — that refines "busy" exactly like
         // the sidebar shows a question card on an active session.
-        state: (row.projection.snapshot().state.pendingExtensionUi?.length ?? 0) > 0 ? "waitingUser" as const
+        state: this.isWaitingUser(row) ? "waitingUser" as const
           : this.isTurnRunning(row) ? "busy" as const
           : "live" as const,
       }));
@@ -3462,11 +3468,17 @@ export class SessiondService {
     });
   }
 
-  private deriveRunningSets(): { sessionIds: string[]; busySessionIds: string[] } {
+  private deriveRunningSets(): { sessionIds: string[]; busySessionIds: string[]; waitingSessionIds: string[] } {
     const items = this.runningItems();
+    const waiting = new Set<string>();
+    for (const record of this.records.values()) {
+      if (["stopped", "crashed", "stopping"].includes(record.status)) continue;
+      if (this.isWaitingUser(record)) waiting.add(record.sessionId);
+    }
     return {
       sessionIds: items.map((item) => item.sessionId),
       busySessionIds: items.filter((item) => item.workerStatus === "busy").map((item) => item.sessionId),
+      waitingSessionIds: [...waiting].sort(),
     };
   }
 
@@ -3475,6 +3487,7 @@ export class SessiondService {
       revision: this.runningState.revision,
       sessionIds: [...this.runningState.sessionIds],
       busySessionIds: [...this.runningState.busySessionIds],
+      ...(this.runningState.waitingSessionIds === undefined ? {} : { waitingSessionIds: [...this.runningState.waitingSessionIds] }),
       ...(this.runningState.assistant === undefined ? {} : { assistant: this.runningState.assistant }),
     };
   }
@@ -3485,14 +3498,18 @@ export class SessiondService {
       && derived.sessionIds.every((id, index) => id === this.runningState.sessionIds[index]);
     const sameBusy = derived.busySessionIds.length === this.runningState.busySessionIds.length
       && derived.busySessionIds.every((id, index) => id === this.runningState.busySessionIds[index]);
+    const previousWaiting = this.runningState.waitingSessionIds ?? [];
+    const sameWaiting = derived.waitingSessionIds.length === previousWaiting.length
+      && derived.waitingSessionIds.every((id, index) => id === previousWaiting[index]);
     const assistant = this.assistantPresence;
     const sameAssistant = (this.runningState.assistant?.sessionId ?? null) === (assistant?.sessionId ?? null)
       && this.runningState.assistant?.status === assistant?.status;
-    if (sameLive && sameBusy && sameAssistant) return null;
+    if (sameLive && sameBusy && sameWaiting && sameAssistant) return null;
     this.runningState = {
       revision: this.runningState.revision + 1,
       sessionIds: derived.sessionIds,
       busySessionIds: derived.busySessionIds,
+      waitingSessionIds: derived.waitingSessionIds,
       ...(assistant === undefined ? {} : { assistant }),
     };
     return this.currentRunningState();

@@ -1,12 +1,13 @@
 import { List, SidebarSimple } from "@phosphor-icons/react";
 import { useI18n } from "@/hooks/useI18n";
 import { WorkspaceTabBar } from "@/features/workspace/tabs/WorkspaceTabBar";
+import type { SessionDisplayStatus } from "@/components/SessionStatusDot";
 import type { WorkspaceTab } from "@/features/workspace/tabs/workspace-tab-state";
 
 interface AppTitleBarProps {
   sidebarOpen: boolean;
   onSidebarToggle: () => void;
-  /** The unified top-level tab strip (session + file tabs). */
+  /** The unified top-level tab strip (session + file + assistant tabs). */
   tabs: WorkspaceTab[];
   activeTabId: string | null;
   onSelectTab: (id: string) => void;
@@ -18,6 +19,10 @@ interface AppTitleBarProps {
   /** Live session labels resolved from the shared sessions-list query cache. */
   sessionLabels: Record<string, string>;
   runningSessionIds: ReadonlySet<string>;
+  /** Session ids stopped on unanswered user input (same authoritative watch). */
+  waitingSessionIds: ReadonlySet<string>;
+  /** Resolved status for the singleton Pixie tab (same shared rule as sessions). */
+  assistantStatus?: SessionDisplayStatus | undefined;
 }
 
 /**
@@ -37,6 +42,8 @@ export function AppTitleBar({
   onCloseAllTabs,
   sessionLabels,
   runningSessionIds,
+  waitingSessionIds,
+  assistantStatus,
 }: AppTitleBarProps) {
   const { t: translate } = useI18n();
 
@@ -86,6 +93,8 @@ export function AppTitleBar({
           onCloseAllTabs={onCloseAllTabs}
           sessionLabels={sessionLabels}
           runningSessionIds={runningSessionIds}
+          waitingSessionIds={waitingSessionIds}
+          assistantStatus={assistantStatus}
         />
       </div>
     </div>
